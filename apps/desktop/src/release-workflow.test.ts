@@ -169,13 +169,21 @@ describe('desktop trusted release workflow', () => {
         /- name: Typecheck and test (?:unsigned|production) desktop runtime\n\s+shell: bash\n\s+run: \|\n\s+npm run desktop:typecheck\n\s+npm run desktop:test/,
         `${jobName} must run the complete desktop tests without a platform condition`,
       );
+      assert.match(section, /Prove descriptor-backed native DMG mounting is available/);
+      assert.match(section, /release-architecture\.mjs probe-dmg-descriptor/);
       assert.match(section, /Stage architecture(?:-verified| and signer verified) .* with native DMG mount evidence/);
       assert.match(section, /release-artifacts\.mjs stage[\s\S]*--platform "\$\{\{ matrix\.platform \}\}"[\s\S]*--arch "\$\{\{ matrix\.arch \}\}"/);
       assert.match(section, /Expected \$\{process\.env\.EXPECTED_PLATFORM\}-\$\{process\.env\.EXPECTED_ARCH\}/);
     }
-    assert.match(releaseArchitecture, /hdiutil', \['attach', '-readonly', '-nobrowse', '-mountpoint'/);
+    assert.equal(workflow.match(/release-architecture\.mjs probe-dmg-descriptor/g)?.length, 2);
+    assert.match(releaseArchitecture, /'\/dev\/fd\/3'/);
+    assert.match(releaseArchitecture, /stdio: \['ignore', 'pipe', 'pipe', descriptor\]/);
+    assert.match(releaseArtifacts, /fsConstants\.O_RDONLY \| fsConstants\.O_NOFOLLOW \| fsConstants\.O_NONBLOCK/);
+    assert.ok(!releaseArtifacts.includes('modified: stats.mtimeNs'));
+    assert.ok(!releaseArtifacts.includes('changed: stats.ctimeNs'));
+    assert.match(releaseArchitecture, /'hdiutil',\n\s+\['attach', '-readonly', '-nobrowse', '-mountpoint', directory, '\/dev\/fd\/3'\]/);
     assert.ok(
-      releaseArchitecture.indexOf("hdiutil', ['attach', '-readonly'")
+      releaseArchitecture.indexOf("['attach', '-readonly', '-nobrowse', '-mountpoint', directory, '/dev/fd/3']")
         < releaseArchitecture.indexOf('inspectDmgLayout({ root: directory'),
       'native DMG bytes must be mounted read-only before layout validation',
     );

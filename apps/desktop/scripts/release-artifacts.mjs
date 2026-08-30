@@ -1,8 +1,13 @@
-import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
-import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash, createPrivateKey, createPublicKey, randomUUID, sign } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
+import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { inspectArtifactArchitecture, NATIVE_DMG_VALIDATOR } from './release-architecture.mjs';
+import {
+  createHeldDmgArtifact,
+  inspectArtifactArchitecture,
+  NATIVE_DMG_VALIDATOR,
+} from './release-architecture.mjs';
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -163,31 +168,47 @@ const dmgFileState = stats => ({
   mode: stats.mode,
   links: stats.nlink,
   size: stats.size,
-  modified: stats.mtimeNs,
-  changed: stats.ctimeNs,
 });
 
 const sameDmgFileState = (left, right) => Object.keys(left).every(key => left[key] === right[key]);
 
-const captureDmgBytes = async path => {
-  const before = await lstat(path, { bigint: true });
-  if (!before.isFile() || before.isSymbolicLink()) {
+const checksumDmgHandle = async (handle, size) => {
+  const hash = createHash('sha256');
+  const buffer = Buffer.alloc(1024 * 1024);
+  let position = 0;
+  while (position < size) {
+    const length = Math.min(buffer.length, size - position);
+    const { bytesRead } = await handle.read(buffer, 0, length, position);
+    if (bytesRead === 0) throw new Error('Staged DMG changed while its exact bytes were captured');
+    hash.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
+  }
+  return hash.digest('hex');
+};
+
+const captureHeldDmgBytes = async handle => {
+  const before = await handle.stat({ bigint: true });
+  if (!before.isFile()) {
     throw new Error('Staged DMG must be a real regular file, not a symbolic link or special file');
   }
-  const sha256 = await checksum(path);
-  const after = await lstat(path, { bigint: true });
-  if (!after.isFile() || after.isSymbolicLink()
-    || !sameDmgFileState(dmgFileState(before), dmgFileState(after))) {
-    throw new Error('Staged DMG identity or content changed while its exact bytes were captured');
-  }
-  if (after.size <= 0n || after.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+  if (before.size <= 0n || before.size > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error('Staged DMG size must be a positive safe integer');
   }
-  return {
-    state: dmgFileState(after),
-    size: Number(after.size),
-    sha256,
-  };
+  const size = Number(before.size);
+  const sha256 = await checksumDmgHandle(handle, size);
+  const after = await handle.stat({ bigint: true });
+  if (!after.isFile() || !sameDmgFileState(dmgFileState(before), dmgFileState(after))) {
+    throw new Error('Staged DMG identity or content changed while its exact bytes were captured');
+  }
+  return { state: dmgFileState(after), size, sha256 };
+};
+
+const assertDmgPathNamesHeldFile = async (path, held) => {
+  const pathStats = await lstat(path, { bigint: true });
+  if (!pathStats.isFile() || pathStats.isSymbolicLink()
+    || !sameDmgFileState(dmgFileState(pathStats), held.state)) {
+    throw new Error('Staged DMG pathname no longer names the held exact artifact');
+  }
 };
 
 const assertStableDmgBytes = (before, after) => {
@@ -195,6 +216,87 @@ const assertStableDmgBytes = (before, after) => {
     || before.size !== after.size
     || before.sha256 !== after.sha256) {
     throw new Error('Staged DMG identity or content changed during native validation');
+  }
+};
+
+const assertSameDmgContent = (expected, actual) => {
+  if (expected.size !== actual.size || expected.sha256 !== actual.sha256) {
+    throw new Error('Copied DMG bytes do not match the held validated artifact');
+  }
+};
+
+const openHeldDmg = async path => {
+  let handle;
+  try {
+    handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  } catch (error) {
+    if (error?.code === 'ELOOP') {
+      throw new Error('Staged DMG must be a real regular file, not a symbolic link or special file');
+    }
+    throw error;
+  }
+  try {
+    const captured = await captureHeldDmgBytes(handle);
+    await assertDmgPathNamesHeldFile(path, captured);
+    return { handle, captured };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+};
+
+const copyHeldDmgToExclusivePath = async (handle, size, path) => {
+  const output = await open(
+    path,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
+    0o600,
+  );
+  try {
+    const buffer = Buffer.alloc(1024 * 1024);
+    let position = 0;
+    while (position < size) {
+      const length = Math.min(buffer.length, size - position);
+      const { bytesRead } = await handle.read(buffer, 0, length, position);
+      if (bytesRead === 0) throw new Error('Held DMG changed while it was copied for publication');
+      let written = 0;
+      while (written < bytesRead) {
+        const result = await output.write(buffer, written, bytesRead - written, position + written);
+        if (result.bytesWritten === 0) throw new Error('Could not copy held DMG for publication');
+        written += result.bytesWritten;
+      }
+      position += bytesRead;
+    }
+    await output.sync();
+  } finally {
+    await output.close();
+  }
+};
+
+const publishHeldDmg = async ({ handle, captured, destination }) => {
+  const temporary = join(dirname(destination), `.${basename(destination)}.${randomUUID()}.tmp`);
+  try {
+    await copyHeldDmgToExclusivePath(handle, captured.size, temporary);
+    const afterCopy = await captureHeldDmgBytes(handle);
+    assertStableDmgBytes(captured, afterCopy);
+    const copied = await openHeldDmg(temporary);
+    let copiedCapture;
+    try {
+      assertSameDmgContent(afterCopy, copied.captured);
+      copiedCapture = copied.captured;
+    } finally {
+      await copied.handle.close();
+    }
+    await rename(temporary, destination);
+    const published = await openHeldDmg(destination);
+    try {
+      assertStableDmgBytes(copiedCapture, published.captured);
+      assertSameDmgContent(afterCopy, published.captured);
+    } finally {
+      await published.handle.close();
+    }
+    return afterCopy;
+  } finally {
+    await rm(temporary, { force: true });
   }
 };
 
@@ -350,6 +452,47 @@ export const stageArtifacts = async ({
   for (const kind of expectedKinds) {
     const fileName = releaseFileName(version, platform, arch, kind);
     const destination = join(outputDirectory, fileName);
+    if (kind === 'dmg') {
+      const privateDirectory = await mkdtemp(join(outputDirectory, '.dmg-stage-'));
+      const privatePath = join(privateDirectory, 'artifact.dmg');
+      let held;
+      try {
+        await copyFile(byKind.get(kind), privatePath, fsConstants.COPYFILE_EXCL);
+        await chmod(privatePath, 0o600);
+        held = await openHeldDmg(privatePath);
+        const heldArtifact = createHeldDmgArtifact(held.handle, fileName);
+        const inspection = await inspectArchitecture({ heldArtifact, kind, platform, arch });
+        const afterInspection = await captureHeldDmgBytes(held.handle);
+        assertStableDmgBytes(held.captured, afterInspection);
+        await assertDmgPathNamesHeldFile(privatePath, afterInspection);
+        const details = await publishHeldDmg({
+          handle: held.handle,
+          captured: afterInspection,
+          destination,
+        });
+        const artifact = {
+          platform,
+          arch,
+          kind,
+          fileName,
+          size: details.size,
+          sha256: details.sha256,
+          architectureEvidence: { format: inspection.format, executable: inspection.executable },
+        };
+        artifact.nativeDmgValidationEvidence = createNativeDmgEvidence({
+          target,
+          version,
+          arch,
+          artifact,
+          nativeValidation: inspection.nativeValidation,
+        });
+        artifacts.push(artifact);
+      } finally {
+        if (held) await held.handle.close();
+        await rm(privateDirectory, { recursive: true, force: true });
+      }
+      continue;
+    }
     if (kind === 'releases') {
       const originalPackageName = basename(byKind.get('nupkg'));
       const renamedPackageName = releaseFileName(version, platform, arch, 'nupkg');
@@ -365,36 +508,22 @@ export const stageArtifacts = async ({
     } else {
       await copyFile(byKind.get(kind), destination);
     }
-    const dmgBeforeInspection = kind === 'dmg' ? await captureDmgBytes(destination) : undefined;
     const inspection = await inspectArchitecture({
       path: destination,
       kind,
       platform,
       arch,
     });
-    const dmgAfterInspection = kind === 'dmg' ? await captureDmgBytes(destination) : undefined;
-    if (dmgBeforeInspection) assertStableDmgBytes(dmgBeforeInspection, dmgAfterInspection);
-    const details = kind === 'dmg' ? dmgAfterInspection : await stat(destination);
+    const details = await stat(destination);
     const artifact = {
       platform,
       arch,
       kind,
       fileName,
       size: details.size,
-      sha256: kind === 'dmg' ? details.sha256 : await checksum(destination),
-      architectureEvidence: kind === 'dmg'
-        ? { format: inspection.format, executable: inspection.executable }
-        : inspection,
+      sha256: await checksum(destination),
+      architectureEvidence: inspection,
     };
-    if (kind === 'dmg') {
-      artifact.nativeDmgValidationEvidence = createNativeDmgEvidence({
-        target,
-        version,
-        arch,
-        artifact,
-        nativeValidation: inspection.nativeValidation,
-      });
-    }
     artifacts.push(artifact);
   }
   const nativeSigner = readNativeSigner(platform, env);
@@ -498,15 +627,41 @@ export const finalizeArtifacts = async ({
         throw new Error(`Release fragment ${value.target} attaches native DMG evidence to a non-DMG artifact`);
       }
       const source = join(dirname(path), artifact.fileName);
-      if (await checksum(source) !== artifact.sha256 || (await stat(source)).size !== artifact.size) {
-        throw new Error(`Release artifact integrity does not match its fragment: ${artifact.fileName}`);
+      let inspection;
+      if (artifact.kind === 'dmg') {
+        const held = await openHeldDmg(source);
+        try {
+          if (held.captured.sha256 !== artifact.sha256 || held.captured.size !== artifact.size) {
+            throw new Error(`Release artifact integrity does not match its fragment: ${artifact.fileName}`);
+          }
+          inspection = await inspectArchitecture({
+            heldArtifact: createHeldDmgArtifact(held.handle, artifact.fileName),
+            kind: artifact.kind,
+            platform: targetPlatform,
+            arch: targetArch,
+          });
+          const afterInspection = await captureHeldDmgBytes(held.handle);
+          assertStableDmgBytes(held.captured, afterInspection);
+          await assertDmgPathNamesHeldFile(source, afterInspection);
+          await publishHeldDmg({
+            handle: held.handle,
+            captured: afterInspection,
+            destination: join(outputDirectory, artifact.fileName),
+          });
+        } finally {
+          await held.handle.close();
+        }
+      } else {
+        if (await checksum(source) !== artifact.sha256 || (await stat(source)).size !== artifact.size) {
+          throw new Error(`Release artifact integrity does not match its fragment: ${artifact.fileName}`);
+        }
+        inspection = await inspectArchitecture({
+          path: source,
+          kind: artifact.kind,
+          platform: targetPlatform,
+          arch: targetArch,
+        });
       }
-      const inspection = await inspectArchitecture({
-        path: source,
-        kind: artifact.kind,
-        platform: targetPlatform,
-        arch: targetArch,
-      });
       const architectureEvidence = artifact.kind === 'dmg'
         ? { format: inspection.format, executable: inspection.executable }
         : inspection;
@@ -514,7 +669,7 @@ export const finalizeArtifacts = async ({
         throw new Error(`Release artifact architecture evidence does not match its fragment: ${artifact.fileName}`);
       }
       seenNames.add(artifact.fileName);
-      await copyFile(source, join(outputDirectory, artifact.fileName));
+      if (artifact.kind !== 'dmg') await copyFile(source, join(outputDirectory, artifact.fileName));
       artifacts.push(artifact);
     }
     if (targetPlatform === 'win32') {

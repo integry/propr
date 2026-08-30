@@ -1,4 +1,5 @@
 import { execFile as execFileCallback, spawn } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
 import { lstat, open, mkdtemp, readdir, readlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
@@ -7,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 
 const execFile = promisify(execFileCallback);
+const heldDmgArtifacts = new WeakMap();
 const EXECUTABLE_NAME = 'propr-desktop';
 const DMG_INSTALL_LINK = 'Applications';
 const DMG_HELPER_BUNDLES = new Set([
@@ -24,6 +26,39 @@ export const NATIVE_DMG_VALIDATOR = Object.freeze({
   nativePlatform: 'darwin',
   mountMethod: 'hdiutil-attach-readonly',
 });
+
+export const createHeldDmgArtifact = (handle, description) => {
+  if (!handle || !Number.isInteger(handle.fd) || handle.fd < 0) {
+    throw new Error('Held DMG artifact requires an open read-only file handle');
+  }
+  const capability = Object.freeze({ description });
+  heldDmgArtifacts.set(capability, { handle, description });
+  return capability;
+};
+
+const requireHeldDmgArtifact = capability => {
+  const held = heldDmgArtifacts.get(capability);
+  if (!held || held.handle.fd < 0) {
+    throw new Error('DMG inspection requires a live held exact-artifact capability');
+  }
+  return held;
+};
+
+export const readHeldDmgArtifactBytes = async capability => {
+  const { handle } = requireHeldDmgArtifact(capability);
+  const stats = await handle.stat({ bigint: true });
+  if (!stats.isFile() || stats.size < 0n || stats.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Held DMG artifact is not a safe regular file');
+  }
+  const bytes = Buffer.alloc(Number(stats.size));
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+    if (bytesRead === 0) throw new Error('Held DMG artifact changed while it was read');
+    offset += bytesRead;
+  }
+  return bytes;
+};
 const LINUX_APP_DIRECTORY = join('usr', 'lib', EXECUTABLE_NAME);
 const LINUX_PAYLOAD = join(LINUX_APP_DIRECTORY, EXECUTABLE_NAME);
 const LINUX_LAUNCHER = join('usr', 'bin', EXECUTABLE_NAME);
@@ -725,22 +760,85 @@ const inspectRpm = async (path, platform, arch) => {
   }
 };
 
-const inspectDmg = async (path, platform, arch) => {
+const execFileWithHeldDescriptor = (file, arguments_, descriptor) => new Promise((resolvePromise, rejectPromise) => {
+  const child = spawn(file, arguments_, {
+    stdio: ['ignore', 'pipe', 'pipe', descriptor],
+  });
+  const stdout = [];
+  const stderr = [];
+  let outputBytes = 0;
+  const collect = destination => chunk => {
+    outputBytes += chunk.length;
+    if (outputBytes > 16 * 1024 * 1024) {
+      child.kill();
+      rejectPromise(new Error(`${file} produced excessive output`));
+      return;
+    }
+    destination.push(chunk);
+  };
+  child.stdout.on('data', collect(stdout));
+  child.stderr.on('data', collect(stderr));
+  child.once('error', rejectPromise);
+  child.once('close', (code, signal) => {
+    const standardOutput = Buffer.concat(stdout).toString('utf8');
+    const standardError = Buffer.concat(stderr).toString('utf8');
+    if (code === 0) {
+      resolvePromise({ stdout: standardOutput, stderr: standardError });
+      return;
+    }
+    rejectPromise(new Error(
+      `${file} exited with ${signal ? `signal ${signal}` : `code ${code}`}${standardError ? `: ${standardError.trim()}` : ''}`,
+    ));
+  });
+});
+
+const attachHeldDmg = async (heldArtifact, directory) => {
+  const { handle } = requireHeldDmgArtifact(heldArtifact);
+  await execFileWithHeldDescriptor(
+    'hdiutil',
+    ['attach', '-readonly', '-nobrowse', '-mountpoint', directory, '/dev/fd/3'],
+    handle.fd,
+  );
+};
+
+export const probeHeldDmgDescriptorMount = async heldArtifact => {
+  if (process.platform !== 'darwin') {
+    throw new Error('Descriptor-backed DMG mounting is available only on native macOS');
+  }
+  const directory = await mkdtemp(join(tmpdir(), 'propr-dmg-descriptor-probe-'));
+  let mounted = false;
+  try {
+    await attachHeldDmg(heldArtifact, directory);
+    mounted = true;
+    await readdir(directory);
+    return true;
+  } finally {
+    if (mounted) await execFile('hdiutil', ['detach', directory]);
+    await rm(directory, { recursive: true, force: true });
+  }
+};
+
+const inspectDmg = async (heldArtifact, platform, arch) => {
+  const { handle, description } = requireHeldDmgArtifact(heldArtifact);
   const directory = await mkdtemp(join(tmpdir(), 'propr-dmg-'));
   let mounted = false;
   try {
     if (process.platform === 'darwin') {
-      await execFile('hdiutil', ['attach', '-readonly', '-nobrowse', '-mountpoint', directory, path]);
+      await attachHeldDmg(heldArtifact, directory);
       mounted = true;
-      const executable = await inspectDmgLayout({ root: directory, platform, arch, artifact: path });
+      const executable = await inspectDmgLayout({ root: directory, platform, arch, artifact: description });
       return {
         format: 'dmg',
         executable,
         nativeValidation: nativeDmgLayoutEvidence(arch),
       };
     } else {
-      await execFile('7z', ['x', '-y', '-bso0', '-bsp0', `-o${directory}`, path]);
-      const executable = await inspectExtractedDmgArchitecture({ root: directory, platform, arch, artifact: path });
+      await execFileWithHeldDescriptor(
+        '7z',
+        ['x', '-y', '-bso0', '-bsp0', `-o${directory}`, '/dev/fd/3'],
+        handle.fd,
+      );
+      const executable = await inspectExtractedDmgArchitecture({ root: directory, platform, arch, artifact: description });
       return { format: 'dmg', executable };
     }
   } finally {
@@ -923,11 +1021,14 @@ export const inspectDmgLayout = async ({ root, platform, arch, artifact }) => {
   return inspection;
 };
 
-export const inspectArtifactArchitecture = async ({ path, kind, platform, arch }) => {
+export const inspectArtifactArchitecture = async ({ path, heldArtifact, kind, platform, arch }) => {
   if (kind === 'releases') return { format: 'squirrel-releases', target: `${platform}-${arch}` };
   if (kind === 'deb') return inspectDeb(path, platform, arch);
   if (kind === 'rpm') return inspectRpm(path, platform, arch);
-  if (kind === 'dmg') return inspectDmg(path, platform, arch);
+  if (kind === 'dmg') {
+    if (path !== undefined) throw new Error('DMG inspection rejects mutable pathnames; pass a held exact-artifact capability');
+    return inspectDmg(heldArtifact, platform, arch);
+  }
   if (kind === 'setup') {
     const executable = inspectExecutableBytes(await readPrefix(path));
     if (platform !== 'win32') throw new Error(`${path} Squirrel bootstrapper is only valid for Windows targets`);
@@ -948,11 +1049,30 @@ const argument = name => {
 };
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  if (process.argv[2] !== 'inspect') throw new Error('Expected release-architecture.mjs inspect command');
-  const path = argument('--path');
-  const kind = argument('--kind');
-  const platform = argument('--platform');
-  const arch = argument('--arch');
-  if (!path || !kind || !platform || !arch) throw new Error('Archive inspection requires --path, --kind, --platform, and --arch');
-  console.log(JSON.stringify(await inspectArtifactArchitecture({ path: resolve(path), kind, platform, arch })));
+  if (process.argv[2] === 'probe-dmg-descriptor') {
+    const path = argument('--path');
+    if (!path) throw new Error('DMG descriptor probe requires --path');
+    const handle = await open(
+      resolve(path),
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    );
+    try {
+      const stats = await handle.stat();
+      if (!stats.isFile()) throw new Error('DMG descriptor probe requires a real regular file');
+      await probeHeldDmgDescriptorMount(createHeldDmgArtifact(handle, basename(path)));
+      console.log(JSON.stringify({ descriptorBackedDmgMount: true }));
+    } finally {
+      await handle.close();
+    }
+  } else if (process.argv[2] === 'inspect') {
+    const path = argument('--path');
+    const kind = argument('--kind');
+    const platform = argument('--platform');
+    const arch = argument('--arch');
+    if (!path || !kind || !platform || !arch) throw new Error('Archive inspection requires --path, --kind, --platform, and --arch');
+    if (kind === 'dmg') throw new Error('Use release-artifacts staging for descriptor-backed DMG inspection');
+    console.log(JSON.stringify(await inspectArtifactArchitecture({ path: resolve(path), kind, platform, arch })));
+  } else {
+    throw new Error('Expected release-architecture.mjs inspect or probe-dmg-descriptor command');
+  }
 }

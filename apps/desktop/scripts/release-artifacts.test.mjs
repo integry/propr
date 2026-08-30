@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile as execFileCallback } from 'node:child_process';
 import { createHash, generateKeyPairSync, verify } from 'node:crypto';
-import { access, mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { access, lstat, mkdtemp, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { promisify } from 'node:util';
 import {
   finalizeArtifacts,
   parseSquirrelReleases,
@@ -11,7 +14,12 @@ import {
   stageArtifacts,
   validateSquirrelReleases,
 } from './release-artifacts.mjs';
-import { inspectArtifactArchitecture, inspectExecutableBytes } from './release-architecture.mjs';
+import {
+  createHeldDmgArtifact,
+  inspectArtifactArchitecture,
+  inspectExecutableBytes,
+  readHeldDmgArtifactBytes,
+} from './release-architecture.mjs';
 
 const kinds = {
   'linux-x64': ['deb', 'rpm', 'zip'],
@@ -26,6 +34,7 @@ const sourceName = kind => kind === 'setup' ? 'Desktop Setup.exe' : kind === 'nu
 const certificateSha256 = '1'.repeat(64);
 const spkiSha256 = '2'.repeat(64);
 const windowsSignerPins = `certificate-sha256:${certificateSha256},spki-sha256:${spkiSha256}`;
+const execFile = promisify(execFileCallback);
 
 const nativeDmgValidation = arch => ({
   schemaVersion: 1,
@@ -55,9 +64,11 @@ const nativeDmgValidation = arch => ({
   },
 });
 
-const architectureInspector = async ({ path, kind, platform, arch }) => {
+const architectureInspector = async ({ path, heldArtifact, kind, platform, arch }) => {
   if (kind === 'releases') return { format: 'squirrel-releases', target: `${platform}-${arch}` };
-  const contents = await readFile(path, 'utf8');
+  const contents = kind === 'dmg'
+    ? (await readHeldDmgArtifactBytes(heldArtifact)).toString('utf8')
+    : await readFile(path, 'utf8');
   if (!contents.includes(`${platform}-${arch}-${kind}`)) {
     throw new Error(`${kind} packaged executable architecture mismatch for ${platform}-${arch}`);
   }
@@ -248,8 +259,8 @@ describe('desktop release artifacts', () => {
     );
   });
 
-  test('rejects DMG mutation or replacement during native inspection without emitting evidence', async () => {
-    for (const operation of ['mutate', 'replace']) {
+  test('rejects permanent DMG replacement or in-place mutation during held inspection without emitting evidence', async () => {
+    for (const operation of ['in-place-mutation', 'permanent-replace']) {
       const root = await mkdtemp(join(tmpdir(), `propr-release-dmg-inspection-${operation}-`));
       const makeDirectory = join(root, 'make');
       const outputDirectory = join(root, 'stage');
@@ -266,23 +277,106 @@ describe('desktop release artifacts', () => {
           inspectArchitecture: async arguments_ => {
             const inspection = await architectureInspector(arguments_);
             if (arguments_.kind === 'dmg') {
-              if (operation === 'mutate') {
-                await writeFile(arguments_.path, 'darwin-arm64-dmg-mutated-during-native-validation');
+              assert.equal(arguments_.path, undefined, 'DMG inspectors must not receive a mutable pathname');
+              const privateDirectory = (await readdir(outputDirectory)).find(name => name.startsWith('.dmg-stage-'));
+              assert.ok(privateDirectory);
+              const privatePath = join(outputDirectory, privateDirectory, 'artifact.dmg');
+              if (operation === 'in-place-mutation') {
+                await writeFile(privatePath, 'darwin-arm64-dmg-mutated-during-native-validation');
               } else {
-                const replacement = `${arguments_.path}.replacement`;
-                await writeFile(replacement, await readFile(arguments_.path));
-                await rename(replacement, arguments_.path);
+                const displaced = `${privatePath}.displaced`;
+                await rename(privatePath, displaced);
+                await writeFile(privatePath, 'darwin-arm64-dmg-permanent-replacement');
               }
             }
             return inspection;
           },
         }),
-        /Staged DMG identity or content changed during native validation/,
+        /Staged DMG identity or content changed during native validation|pathname no longer names the held exact artifact/,
         operation,
       );
       await assert.rejects(access(join(outputDirectory, 'release-fragment.json')), undefined, operation);
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test('does not let a swap-to-B, inspect-B, restore-A pathname attack emit native evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-swap-restore-'));
+    const makeDirectory = join(root, 'make');
+    const outputDirectory = join(root, 'stage');
+    await mkdir(makeDirectory);
+    await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg-A');
+    await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+    await assert.rejects(
+      stageArtifacts({
+        makeDirectory,
+        outputDirectory,
+        platform: 'darwin',
+        arch: 'arm64',
+        version: '1.2.3',
+        inspectArchitecture: async arguments_ => {
+          if (arguments_.kind !== 'dmg') return architectureInspector(arguments_);
+          assert.equal(arguments_.path, undefined, 'the legacy mutable-path contract must be unavailable');
+          const privateDirectory = (await readdir(outputDirectory)).find(name => name.startsWith('.dmg-stage-'));
+          assert.ok(privateDirectory);
+          const privatePath = join(outputDirectory, privateDirectory, 'artifact.dmg');
+          const displaced = `${privatePath}.held-A`;
+          await rename(privatePath, displaced);
+          await writeFile(privatePath, 'darwin-arm64-dmg-B');
+          const pathInspected = await readFile(privatePath, 'utf8');
+          const heldInspected = (await readHeldDmgArtifactBytes(arguments_.heldArtifact)).toString('utf8');
+          assert.equal(pathInspected, 'darwin-arm64-dmg-B');
+          assert.equal(heldInspected, 'darwin-arm64-dmg-A');
+          try {
+            return await inspectArtifactArchitecture({
+              path: privatePath,
+              kind: 'dmg',
+              platform: 'darwin',
+              arch: 'arm64',
+            });
+          } finally {
+            await rm(privatePath);
+            await rename(displaced, privatePath);
+          }
+        },
+      }),
+      /DMG inspection rejects mutable pathnames/,
+    );
+    await assert.rejects(access(join(outputDirectory, 'release-fragment.json')));
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test('accepts native xattr/ctime-only change when held bytes and identity are unchanged', {
+    skip: process.platform !== 'darwin',
+  }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-xattr-'));
+    const makeDirectory = join(root, 'make');
+    const outputDirectory = join(root, 'stage');
+    await mkdir(makeDirectory);
+    await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
+    await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+    const fragment = await stageArtifacts({
+      makeDirectory,
+      outputDirectory,
+      platform: 'darwin',
+      arch: 'arm64',
+      version: '1.2.3',
+      inspectArchitecture: async arguments_ => {
+        const inspection = await architectureInspector(arguments_);
+        if (arguments_.kind === 'dmg') {
+          const privateDirectory = (await readdir(outputDirectory)).find(name => name.startsWith('.dmg-stage-'));
+          assert.ok(privateDirectory);
+          const privatePath = join(outputDirectory, privateDirectory, 'artifact.dmg');
+          const before = await lstat(privatePath, { bigint: true });
+          await execFile('xattr', ['-w', 'com.propr.descriptor-validation', 'verified', privatePath]);
+          const after = await lstat(privatePath, { bigint: true });
+          assert.notEqual(after.ctimeNs, before.ctimeNs, 'fixture must exercise an xattr-only ctime change');
+        }
+        return inspection;
+      },
+    });
+    assert.equal(fragment.artifacts.find(artifact => artifact.kind === 'dmg').nativeDmgValidationEvidence.validatedNatively, true);
+    await rm(root, { recursive: true, force: true });
   });
 
   test('does not emit claimed DMG layout evidence without the native-validation marker', async () => {
@@ -837,10 +931,22 @@ describe('desktop release artifacts', () => {
       for (const kind of targetKinds.filter(candidate => candidate !== 'releases')) {
         const path = join(root, `${target}-${kind}`);
         await writeFile(path, `${platform}-${oppositeArch}-${kind}`);
-        await assert.rejects(
-          architectureInspector({ path, kind, platform, arch }),
-          new RegExp(`${kind} packaged executable architecture mismatch`),
-        );
+        if (kind === 'dmg') {
+          const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+          try {
+            await assert.rejects(
+              architectureInspector({ heldArtifact: createHeldDmgArtifact(handle, path), kind, platform, arch }),
+              new RegExp(`${kind} packaged executable architecture mismatch`),
+            );
+          } finally {
+            await handle.close();
+          }
+        } else {
+          await assert.rejects(
+            architectureInspector({ path, kind, platform, arch }),
+            new RegExp(`${kind} packaged executable architecture mismatch`),
+          );
+        }
       }
     }
 
