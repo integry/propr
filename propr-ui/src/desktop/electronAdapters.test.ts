@@ -3,8 +3,16 @@ import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import type { DesktopBridge, DesktopProfile as StoredProfile } from '../../../apps/desktop/src/shared/contract';
 import { createElectronDesktopAdapters } from './electronAdapters';
 
-const setDesktopConnectionScope = vi.hoisted(() => vi.fn());
-vi.mock('../api/apiClient', () => ({ setDesktopConnectionScope }));
+const desktopConnectionState = vi.hoisted(() => ({
+  scope: null as null | { bridge: DesktopBridge; profileId: string; transportScope: string },
+}));
+const setDesktopConnectionScope = vi.hoisted(() => vi.fn((scope: typeof desktopConnectionState.scope) => {
+  desktopConnectionState.scope = scope;
+}));
+vi.mock('../api/apiClient', () => ({
+  getDesktopConnectionScope: () => desktopConnectionState.scope,
+  setDesktopConnectionScope,
+}));
 
 const storedProfile: StoredProfile = {
   id: 'profile-1',
@@ -66,6 +74,7 @@ describe('Electron remote instance adapters', () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
+    desktopConnectionState.scope = null;
     setDesktopConnectionScope.mockClear();
   });
   it('matches the shared canonical origin parity table before profile IPC', async () => {
@@ -143,10 +152,7 @@ describe('Electron remote instance adapters', () => {
       status: 'authentication-required',
       message: expect.stringMatching(/connection changed/i),
     }));
-    expect(setDesktopConnectionScope).toHaveBeenCalledWith(null);
-    expect(setDesktopConnectionScope).not.toHaveBeenCalledWith(expect.objectContaining({
-      profileId: 'profile-2',
-    }), expect.anything());
+    expect(setDesktopConnectionScope).not.toHaveBeenCalled();
     expect(window.localStorage.getItem('profile-state')).toBe('A');
     expect(window.sessionStorage.getItem('profile-session')).toBe('A');
     expect(fixture.discard).toHaveBeenCalledWith({
@@ -291,6 +297,35 @@ describe('Electron remote instance adapters', () => {
     expect(fixture.discard).toHaveBeenCalledWith({ profileId: profile.id, transportScope: 'stale-scope' });
   });
 
+  it('does not clear a newer scope while a stale activation discard is pending', async () => {
+    const fixture = bridgeFixture();
+    let finishDiscard!: (value: { discarded: boolean }) => void;
+    fixture.discard.mockReturnValueOnce(new Promise(resolve => { finishDiscard = resolve; }));
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+    const profile = (await adapters.profiles.list())[0];
+    const staleActivation = adapters.connection.activate?.(profile, {
+      status: 'ready', activationTicket: 'ticket-stale',
+    }, () => false);
+    await vi.waitFor(() => expect(fixture.discard).toHaveBeenCalledWith({
+      profileId: profile.id, transportScope: 'scope-7',
+    }));
+
+    adapters.connection.publishActivation?.(profile, {
+      status: 'ready',
+      profileId: profile.id,
+      transportScope: 'newer-scope',
+      identityEpoch: 'BBBBBBBBBBBBBBBBBBBBBB',
+    });
+    finishDiscard({ discarded: true });
+    await staleActivation;
+
+    expect(desktopConnectionState.scope).toEqual(expect.objectContaining({
+      profileId: profile.id,
+      transportScope: 'newer-scope',
+    }));
+    expect(setDesktopConnectionScope).not.toHaveBeenCalledWith(null);
+  });
+
   it('publishes no B scope and restores sentinels when storage clearing fails', async () => {
     const fixture = bridgeFixture();
     await fixture.bridge.profiles.setActive('profile-a');
@@ -313,10 +348,7 @@ describe('Electron remote instance adapters', () => {
     expect(window.localStorage.getItem('profile-state')).toBe('A-local');
     expect(window.sessionStorage.getItem('profile-session')).toBe('A-session');
     expect(fixture.discard).toHaveBeenCalledWith({ profileId: profile.id, transportScope: 'scope-7' });
-    expect(setDesktopConnectionScope).toHaveBeenCalledWith(null);
-    expect(setDesktopConnectionScope).not.toHaveBeenCalledWith(expect.objectContaining({
-      transportScope: 'scope-7',
-    }), expect.anything());
+    expect(setDesktopConnectionScope).not.toHaveBeenCalled();
     clear.mockRestore();
   });
 });

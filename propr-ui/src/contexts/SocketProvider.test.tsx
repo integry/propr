@@ -1,6 +1,7 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SocketProvider } from './SocketProvider';
+import { useSocket } from './useSocket';
 
 type Handler = (value?: unknown) => void;
 const sockets = vi.hoisted(() => [] as Array<{
@@ -108,6 +109,26 @@ describe('SocketProvider', () => {
     expect(socketA.disconnect.mock.invocationCallOrder[0])
       .toBeLessThan(connectSocketMock.mock.invocationCallOrder[1]);
     expect(sockets[1]).not.toBe(socketA);
+  });
+
+  it('reports a replacement Manager as disconnected until its own connect event', () => {
+    const connectedStates: boolean[] = [];
+    const ConnectionState = () => {
+      connectedStates.push(useSocket().isConnected);
+      return null;
+    };
+    state.scope = scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA');
+    render(<SocketProvider><ConnectionState /></SocketProvider>);
+
+    act(() => { sockets[0].handlers.get('connect')?.(); });
+    expect(connectedStates.at(-1)).toBe(true);
+
+    publish(scope('profile-b', 'BBBBBBBBBBBBBBBBBBBBBB'));
+    expect(connectedStates.at(-1)).toBe(false);
+    act(() => { sockets[1].handlers.get('connect_error')?.(new Error('not connected')); });
+    expect(connectedStates.at(-1)).toBe(false);
+    act(() => { sockets[1].handlers.get('connect')?.(); });
+    expect(connectedStates.at(-1)).toBe(true);
   });
 
   it('rotates the Manager when the effective API origin changes', () => {

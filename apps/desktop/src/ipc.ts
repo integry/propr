@@ -104,7 +104,15 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       .flatMap(profileId => after.profiles.find(profile => profile.id === profileId)?.apiBaseUrl
         ?? before.profiles.find(profile => profile.id === profileId)?.apiBaseUrl
         ?? []);
-    await clearDesktopInstanceCookies(options.desktopSession, origins).catch(() => undefined);
+    try {
+      await clearDesktopInstanceCookies(options.desktopSession, origins);
+    } catch (error) {
+      await options.credentials.discardActivation({
+        profileId: activated.profileId,
+        transportScope: activated.transportScope,
+      });
+      throw error;
+    }
     return activated;
   });
   handle(IPC_CHANNELS.connectionDiscard, (_event, value) => options.credentials.discardActivation(value));

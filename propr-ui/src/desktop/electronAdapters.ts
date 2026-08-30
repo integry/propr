@@ -1,7 +1,7 @@
 import { normalizeApiBaseUrl } from '@propr/client';
 import { isProprLoopbackHostname } from '@propr/shared';
 import type { DesktopBridge, DesktopProfile as StoredDesktopProfile } from '../../../apps/desktop/src/shared/contract';
-import { setDesktopConnectionScope } from '../api/apiClient';
+import { getDesktopConnectionScope, setDesktopConnectionScope } from '../api/apiClient';
 import type { DesktopAdapters, DesktopPlatform, DesktopProfile } from './types';
 
 const platform = (value: string): DesktopPlatform => {
@@ -126,7 +126,11 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
           profileId: activated.profileId,
           transportScope: activated.transportScope,
         }).catch(() => undefined);
-        setDesktopConnectionScope(null);
+        const currentScope = getDesktopConnectionScope();
+        if (currentScope?.profileId === activated.profileId
+          && currentScope.transportScope === activated.transportScope) {
+          setDesktopConnectionScope(null);
+        }
       };
       if (activated.profileId !== profile.id || !isCurrent()) {
         await discard();

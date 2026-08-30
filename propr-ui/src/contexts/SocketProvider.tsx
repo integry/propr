@@ -43,6 +43,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       setIsConnected(false);
       return;
     }
+    setIsConnected(false);
     const newSocket = proprClient.connectSocket({
       transports: ['websocket'],
       autoConnect: true,
@@ -83,6 +84,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
 
     const connectionError = (error: Error) => {
       if (!isCurrentScope()) return;
+      setIsConnected(false);
       console.error('[SocketContext] Connection error:', error.message);
       const code = (error as Error & { data?: { code?: string } }).data?.code;
       handleAuthenticationCode(code);
@@ -127,6 +129,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
 
     return () => {
       console.log('[SocketContext] Cleaning up socket connection');
+      setIsConnected(false);
       disposed = true;
       newSocket.off('connect', connected);
       newSocket.off('disconnect', disconnected);
