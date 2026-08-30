@@ -42,9 +42,14 @@ export async function deleteSyntheticAgent(
 ): Promise<SaveSyntheticAgentsResponse> {
   const apiClient = client ?? (await createApiClient());
   const current = await listSyntheticAgents(apiClient);
-  const match = current.synthetic_agents.find(
-    (pool) => pool.id === idOrAlias || pool.alias === idOrAlias
-  );
+  const idMatch = current.synthetic_agents.find((pool) => pool.id === idOrAlias);
+  const aliasMatch = current.synthetic_agents.find((pool) => pool.alias === idOrAlias);
+  if (idMatch && aliasMatch && idMatch.id !== aliasMatch.id) {
+    throw new Error(
+      `Synthetic pool selector '${idOrAlias}' is ambiguous: it matches the ID of '${idMatch.alias}' and the alias of pool '${aliasMatch.id}'. Use a non-conflicting ID or alias.`
+    );
+  }
+  const match = idMatch ?? aliasMatch;
   if (!match) throw new Error(`Synthetic pool '${idOrAlias}' not found`);
   return saveSyntheticAgents(
     current.synthetic_agents.filter((pool) => pool.id !== match.id),

@@ -32,6 +32,7 @@ const AiAgentsPage: React.FC = () => {
   const [syntheticError, setSyntheticError] = useState<string | null>(null);
   const [syntheticWarning, setSyntheticWarning] = useState<string | null>(null);
   const [syntheticSuccess, setSyntheticSuccess] = useState<string | null>(null);
+  const [syntheticReloadRequired, setSyntheticReloadRequired] = useState(false);
   const [configView, setConfigView] = useState<'direct' | 'synthetic'>('direct');
   const [addPoolRequest, setAddPoolRequest] = useState(0);
 
@@ -65,6 +66,7 @@ const AiAgentsPage: React.FC = () => {
         if (typeof getSyntheticAgents !== 'function') return;
         const data = await getSyntheticAgents();
         setSyntheticAgents(data.synthetic_agents ?? []);
+        setSyntheticReloadRequired(false);
       } catch (err) {
         setSyntheticError((err as Error).message || 'Failed to load synthetic pools');
       } finally {
@@ -79,6 +81,10 @@ const AiAgentsPage: React.FC = () => {
       setSyntheticError('Demo mode is read-only. Synthetic pools cannot be saved.');
       return undefined;
     }
+    if (syntheticReloadRequired) {
+      setSyntheticError('Reload the current synthetic pool configuration before saving again.');
+      return undefined;
+    }
     try {
       setSyntheticSaving(true);
       setSyntheticError(null);
@@ -87,10 +93,27 @@ const AiAgentsPage: React.FC = () => {
       const result = await saveSyntheticAgents(updated);
       const saved = result.synthetic_agents ?? updated;
       setSyntheticAgents(saved);
+      setSyntheticReloadRequired(false);
       setSyntheticWarning(result.warnings?.join(' ') || null);
       setSyntheticSuccess('Synthetic pools updated successfully.');
       return saved;
     } catch (err) {
+      if (isCommittedConfigWriteError(err)) {
+        try {
+          const current = await getSyntheticAgents();
+          const saved = current.synthetic_agents ?? [];
+          setSyntheticAgents(saved);
+          setSyntheticReloadRequired(false);
+          setSyntheticError(null);
+          setSyntheticWarning(`${err.message} The saved synthetic pool configuration has been reloaded.`);
+          return saved;
+        } catch (refreshError) {
+          setSyntheticReloadRequired(true);
+          const refreshMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
+          setSyntheticError(`${err.message} Automatic refresh failed (${refreshMessage}). Reload this page before editing synthetic pools again.`);
+          return undefined;
+        }
+      }
       // Do not replace local configuration here: the editor intentionally stays
       // open with its unsaved draft when backend validation fails.
       setSyntheticError((err as Error).message || 'Failed to update synthetic pools');
@@ -155,11 +178,18 @@ const AiAgentsPage: React.FC = () => {
         setSyntheticError('Demo mode is read-only. Synthetic pool configuration cannot be changed.');
         return;
       }
+      if (syntheticReloadRequired) {
+        setSyntheticError('Reload the current synthetic pool configuration before editing again.');
+        return;
+      }
       setAddPoolRequest(value => value + 1);
       return;
     }
     handleAddAgentClick();
-  }, [configView, handleAddAgentClick, isDemoMode]);
+  }, [configView, handleAddAgentClick, isDemoMode, syntheticReloadRequired]);
+
+  const addDisabled = agentsLoading || agentsSaving || syntheticLoading || syntheticSaving || isDemoMode
+    || (configView === 'synthetic' && syntheticReloadRequired);
 
   const handleCloseModal = useCallback(() => {
     setShowAddModal(false);
@@ -183,9 +213,9 @@ const AiAgentsPage: React.FC = () => {
           {mobileTab === 'config' && (
             <button
               onClick={handleAddClick}
-              disabled={agentsLoading || agentsSaving || syntheticLoading || syntheticSaving || isDemoMode}
+              disabled={addDisabled}
               className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors ${
-                agentsLoading || agentsSaving || syntheticLoading || syntheticSaving || isDemoMode
+                addDisabled
                   ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                   : 'border-gray-300 text-gray-700 hover:bg-gray-50'
               }`}
@@ -265,7 +295,8 @@ const AiAgentsPage: React.FC = () => {
                 error={syntheticError}
                 success={syntheticSuccess}
                 warning={syntheticWarning}
-                readOnly={isDemoMode}
+                readOnly={isDemoMode || syntheticReloadRequired}
+                readOnlyMessage={syntheticReloadRequired ? 'Synthetic pool changes are blocked because the saved configuration could not be reloaded. Reload this page to continue.' : undefined}
                 addRequested={addPoolRequest}
                 onSave={handleSaveSyntheticAgents}
               />}
@@ -290,9 +321,9 @@ const AiAgentsPage: React.FC = () => {
               </div>
               <button
                 onClick={handleAddClick}
-                disabled={agentsLoading || agentsSaving || syntheticLoading || syntheticSaving || isDemoMode}
+                disabled={addDisabled}
                 className={`px-3 py-1.5 text-sm font-medium rounded-md border transition-colors ${
-                  agentsLoading || agentsSaving || syntheticLoading || syntheticSaving || isDemoMode
+                  addDisabled
                     ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                     : 'border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400'
                 }`}
@@ -346,7 +377,8 @@ const AiAgentsPage: React.FC = () => {
                   error={syntheticError}
                   success={syntheticSuccess}
                   warning={syntheticWarning}
-                  readOnly={isDemoMode}
+                  readOnly={isDemoMode || syntheticReloadRequired}
+                  readOnlyMessage={syntheticReloadRequired ? 'Synthetic pool changes are blocked because the saved configuration could not be reloaded. Reload this page to continue.' : undefined}
                   addRequested={addPoolRequest}
                   onSave={handleSaveSyntheticAgents}
                 />}

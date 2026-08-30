@@ -17,6 +17,7 @@ interface SyntheticPoolsSectionProps {
   warning: string | null;
   success: string | null;
   readOnly?: boolean;
+  readOnlyMessage?: string;
   addRequested?: number;
   onSave: (pools: SyntheticAgentConfig[]) => Promise<SyntheticAgentConfig[] | undefined>;
 }
@@ -264,7 +265,7 @@ const PoolEditor: React.FC<EditorProps> = ({
 };
 
 const SyntheticPoolsSection: React.FC<SyntheticPoolsSectionProps> = ({
-  agents, pools, loading, saving, error, warning, success, readOnly = false, addRequested = 0, onSave,
+  agents, pools, loading, saving, error, warning, success, readOnly = false, readOnlyMessage, addRequested = 0, onSave,
 }) => {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
@@ -289,7 +290,7 @@ const SyntheticPoolsSection: React.FC<SyntheticPoolsSectionProps> = ({
 
   return (
     <div>
-      {readOnly && <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Demo mode is read-only. Synthetic pools can be inspected but not changed.</div>}
+      {readOnly && <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{readOnlyMessage ?? 'Demo mode is read-only. Synthetic pools can be inspected but not changed.'}</div>}
       {error && <Alert message={error} type="error" />}
       {warning && <Alert message={warning} type="warning" />}
       {success && <Alert message={success} type="success" />}
