@@ -325,7 +325,10 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
 
         let windowDestroyed = false;
         let shutdownFinished = false;
-        const shutdown = createDesktopShutdownCoordinator({
+        let finalQuitCalls = 0;
+        let allowedFinalQuits = 0;
+        let shutdown!: ReturnType<typeof createDesktopShutdownCoordinator>;
+        shutdown = createDesktopShutdownCoordinator({
           credentials: {
             dispose: () => { order.push('credentials-dispose'); return service.dispose(); },
           },
@@ -349,7 +352,16 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
             isDestroyed: () => windowDestroyed,
             destroy: () => { windowDestroyed = true; order.push('window-destroy'); },
           }),
-          quit: () => { order.push('app-quit'); shutdownFinished = true; },
+          quit: () => {
+            finalQuitCalls += 1;
+            order.push('app-quit');
+            let finalQuitPrevented = false;
+            shutdown.beforeQuit({ preventDefault: () => { finalQuitPrevented = true; } });
+            if (!finalQuitPrevented) {
+              allowedFinalQuits += 1;
+              shutdownFinished = true;
+            }
+          },
           onStarted: () => { order.push('shutdown-started'); },
           log: () => undefined,
         });
@@ -384,11 +396,16 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
         const cancellationExpected = scenario.phase !== 'header';
         if (cancellationExpected) {
           await bounded(cancellationStarted.promise);
+          shutdown.beforeQuit({ preventDefault: () => { prevented += 1; } });
+          assert.equal(prevented, 2, 'repeated before-quit was not prevented during cancellation');
           cancellationCanSettle = true;
           await clock.advance(99);
           await Promise.resolve();
           assert.equal(shutdownFinished, false, 'untrusted cancellation escaped its 100ms budget');
           await clock.advance(1);
+        } else {
+          shutdown.beforeQuit({ preventDefault: () => { prevented += 1; } });
+          assert.equal(prevented, 2, 'repeated before-quit was not prevented during header drain');
         }
         await bounded(shutdown.awaitFinished());
         const original = await bounded(admitted);
@@ -401,7 +418,16 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
         assert.equal(handlers.size, 0);
         assert.equal(windowDestroyed, true);
         assert.equal(shutdownFinished, true);
+        assert.equal(finalQuitCalls, 1);
+        assert.equal(allowedFinalQuits, 1);
         assert.equal(activationFailures, scenario.endpoint === 'cancel' ? 2 : 0);
+        for (const step of [
+          'shutdown-started', 'ipc-close', 'session-close', 'protocol-dispose',
+          'credentials-dispose', 'lifecycle-shutdown', 'ipc-drain', 'profiles-close',
+          'session-dispose', 'ipc-dispose', 'window-destroy', 'app-quit',
+        ]) {
+          assert.equal(order.filter(entry => entry === step).length, 1, `${step} ran more than once`);
+        }
         assert.equal(order.indexOf('profiles-close') > order.indexOf('ipc-drain'), true);
         assert.equal(order.indexOf('session-dispose') > order.indexOf('profiles-close'), true);
         assert.equal(order.indexOf('window-destroy') > order.indexOf('ipc-dispose'), true);
@@ -410,6 +436,12 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
         await bounded(registered.awaitIdle());
         assert.deepEqual(service.prepareRequest(`${origin}/api/tasks`, {}), { cancel: true });
         assert.equal(clock.pending, 0);
+
+        let extraQuitPrevented = false;
+        shutdown.beforeQuit({ preventDefault: () => { extraQuitPrevented = true; } });
+        assert.equal(extraQuitPrevented, true, 'more than the deliberate final quit was allowed');
+        assert.equal(finalQuitCalls, 1);
+        assert.equal(allowedFinalQuits, 1);
 
         const countsAtDispose = { ...counts };
         const bytesAtDispose = await durableBytes(directory);

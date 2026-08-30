@@ -36,14 +36,18 @@ export interface DesktopShutdownCoordinator {
 export const createDesktopShutdownCoordinator = (
   options: ShutdownOptions,
 ): DesktopShutdownCoordinator => {
-  let started = false;
+  let state: 'idle' | 'draining' | 'allow-final-quit' | 'finished' = 'idle';
   let completion: Promise<void> | null = null;
 
   return {
     beforeQuit(event) {
-      if (started) return;
+      if (state === 'allow-final-quit') {
+        state = 'finished';
+        return;
+      }
       event.preventDefault();
-      started = true;
+      if (state !== 'idle') return;
+      state = 'draining';
       options.onStarted();
       options.ipc.close();
       options.sessionSecurity.close();
@@ -66,10 +70,11 @@ export const createDesktopShutdownCoordinator = (
         const window = options.getWindow();
         if (window && !window.isDestroyed()) window.destroy();
         options.log('info', 'desktop.app.shutdown');
+        state = 'allow-final-quit';
         options.quit();
       });
     },
-    get started() { return started; },
+    get started() { return state !== 'idle'; },
     awaitFinished() { return completion ?? Promise.resolve(); },
   };
 };
