@@ -31,6 +31,7 @@ const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
   : undefined;
 const PACKAGED_RENDERER_SCHEME = 'propr-app';
 const PACKAGED_RENDERER_HOST = 'renderer';
+const PACKAGED_LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 let mainWindow: BrowserWindow | null = null;
@@ -159,6 +160,47 @@ const openAllowedExternalUrl = async (url: string): Promise<void> => {
     return;
   }
   await shell.openExternal(url);
+};
+
+const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<string, unknown>> => {
+  const rendererLayout = await window.webContents.executeJavaScript(`(async () => {
+    const deadline = performance.now() + 5000;
+    let elements;
+    do {
+      const card = document.querySelector('.desktop-welcome-card');
+      const connectButton = card?.querySelector('.desktop-choice-button');
+      elements = {
+        entry: document.querySelector('.desktop-entry'),
+        card,
+        logo: card?.querySelector('.desktop-brand img'),
+        heading: card?.querySelector('.desktop-welcome-copy h1'),
+        connectButton,
+        connectDescription: connectButton?.querySelector('small'),
+      };
+      if (Object.values(elements).every(Boolean)) break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    } while (performance.now() < deadline);
+
+    const missing = Object.entries(elements).filter(([, element]) => !element).map(([name]) => name);
+    if (missing.length > 0) return { missing };
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const bounds = element => {
+      const rect = element.getBoundingClientRect();
+      return {
+        bottom: rect.bottom,
+        height: rect.height,
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        width: rect.width,
+      };
+    };
+    return {
+      viewport: { height: window.innerHeight, width: window.innerWidth },
+      ...Object.fromEntries(Object.entries(elements).map(([name, element]) => [name, bounds(element)])),
+    };
+  })()`);
+  return { windowBounds: window.getBounds(), ...rendererLayout };
 };
 
 const runPackagedTransportSmoke = async (
@@ -385,6 +427,9 @@ const createMainWindow = async (
   );
   if (preloadBridgeExposed !== true) {
     throw new Error('Desktop preload bridge was not exposed to the renderer');
+  }
+  if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1') {
+    log('info', PACKAGED_LAYOUT_READY_EVENT, { layout: await inspectPackagedLayout(window) });
   }
   log('info', 'desktop.renderer.ready', { preloadBridgeExposed: true });
   return window;

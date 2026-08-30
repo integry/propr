@@ -21,6 +21,7 @@ import {
 const READY_EVENT = 'desktop.renderer.ready';
 const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
 const TRANSPORT_PROOF = 'desktop.renderer.transport_smoke.ready';
+const LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const MAIN_PROCESS_ERROR_MARKERS = [
   'desktop.main_process.uncaught_exception',
   'A JavaScript error occurred in the main process',
@@ -35,6 +36,60 @@ const artifact = process.platform === 'linux'
     : null;
 if (!artifact) throw new Error('The packaged transport smoke requires Linux or Windows');
 const binaryPath = resolve('out', ...artifact);
+
+const parseLayout = smokeOutput => {
+  for (const line of smokeOutput.split(/\r?\n/)) {
+    if (!line.includes(LAYOUT_READY_EVENT)) continue;
+    try {
+      const record = JSON.parse(line.slice(line.indexOf('{')));
+      if (record.event === LAYOUT_READY_EVENT) return record.layout;
+    } catch {
+      // Ignore non-JSON Chromium output that happens to mention the event name.
+    }
+  }
+  return undefined;
+};
+
+const assertPackagedLayout = layout => {
+  if (!layout) throw new Error('Packaged desktop did not report renderer layout bounds');
+  if (layout.missing?.length) {
+    throw new Error(`Packaged renderer layout was missing: ${layout.missing.join(', ')}`);
+  }
+  if (layout.windowBounds?.width !== 1280 || layout.windowBounds?.height !== 820) {
+    throw new Error(`Packaged window was not 1280x820: ${JSON.stringify(layout.windowBounds)}`);
+  }
+  if (layout.viewport.width < 1200 || layout.viewport.height < 740) {
+    throw new Error(`Packaged renderer viewport is unexpectedly small: ${JSON.stringify(layout.viewport)}`);
+  }
+  if (layout.logo.height < 30 || layout.logo.height > 34 || layout.logo.width < 30 || layout.logo.width > 34) {
+    throw new Error(`Packaged welcome-card logo has unreasonable bounds: ${JSON.stringify(layout.logo)}`);
+  }
+  if (
+    layout.entry.left < 0
+    || layout.entry.right > layout.viewport.width
+    || layout.card.left < layout.entry.left
+    || layout.card.right > layout.viewport.width
+    || layout.card.top < layout.entry.top
+    || layout.card.bottom > layout.viewport.height
+  ) {
+    throw new Error('Packaged desktop welcome card extends outside its layout container');
+  }
+  if (layout.card.width < 540 || layout.card.width > 620 || layout.connectButton.height < 60) {
+    throw new Error(`Packaged welcome card or connection control has unreasonable bounds: ${JSON.stringify(layout)}`);
+  }
+  if (
+    layout.logo.left < layout.card.left
+    || layout.logo.right > layout.card.right
+    || layout.heading.top <= layout.logo.bottom
+    || layout.connectButton.top <= layout.heading.bottom
+    || layout.connectButton.left < layout.card.left
+    || layout.connectButton.right > layout.card.right
+    || layout.connectDescription.left < layout.connectButton.left
+    || layout.connectDescription.right > layout.connectButton.right
+  ) {
+    throw new Error('Packaged welcome-card content is overlapping or outside the card');
+  }
+};
 
 await access(binaryPath);
 
@@ -295,6 +350,7 @@ const launch = async mode => {
     || !output.includes('desktop.app.shutdown_retry'))) {
     throw new Error('Packaged retry did not exercise a repeated prevented before-quit event');
   }
+  assertPackagedLayout(parseLayout(output));
 
   const runRequests = requests.slice(requestStart);
   const authenticated = runRequests.filter(request => request.authorization?.startsWith('Bearer propr_it_'));
@@ -340,7 +396,7 @@ try {
   console.log(
     `Packaged ${process.platform} desktop transport smoke passed (3/3 shutdown modes): production OS credentials, `
     + 'real Socket.IO/Engine.IO namespace auth, scope rotation/reconnect/error handling, five-type both-origin '
-    + `rollback cleanup, no cookies, and byte scans of ${scanRoots.join(', ')}.`,
+    + `rollback cleanup, compiled welcome-card layout, no cookies, and byte scans of ${scanRoots.join(', ')}.`,
   );
 } finally {
   for (const { io, server } of fixtures) {

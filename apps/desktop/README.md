@@ -27,11 +27,11 @@ generated workspace `dist` directories.
 Development renderer URLs are accepted only when Electron Forge supplies an HTTP loopback URL. Packaged builds load
 the generated renderer from the application ASAR through an app-owned protocol.
 
-The packaged-binary smoke test verifies the hardened fuse states and launches the Linux or Windows artifact without a
-sandbox-disabling flag. From the packaged custom-protocol renderer it drives preload IPC, activation-scoped REST and
-Socket.IO upgrades through Electron session interception, scope rotation and same-ID origin editing. It also checks
-cookie omission, both-origin storage cleanup, stale-scope fencing, renderer/main secret custody, uncaught exceptions,
-and a clean exit.
+The packaged-binary smoke test verifies the hardened fuse states and launches the Linux or Windows artifact at
+1280x820 without a sandbox-disabling flag. From the packaged custom-protocol renderer it drives preload IPC,
+activation-scoped REST and Socket.IO upgrades through Electron session interception, scope rotation and same-ID origin
+editing. It also checks the real renderer bounds for the desktop welcome card and connection control, cookie omission,
+both-origin storage cleanup, stale-scope fencing, renderer/main secret custody, uncaught exceptions, and a clean exit.
 
 `desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
 the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release
