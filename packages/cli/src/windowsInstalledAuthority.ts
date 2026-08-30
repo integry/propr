@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { connect, type Socket } from "node:net";
+import { spawn } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
 
 export const WINDOWS_CONNECT_AUTHORITY_PIPE = String.raw`\\.\pipe\ProPR.Connect.Authority.v3`;
 export const WINDOWS_CONNECT_AUTHORITY_VERSION = "3.0.0";
@@ -8,6 +9,7 @@ const TIMEOUT_MS = 8_000;
 
 export class WindowsInstalledAuthorityError extends Error {
   readonly code: "ABSENT" | "VERSION" | "AUTHORITY" | "PROTOCOL" | "TIMEOUT";
+  readonly state: "authorityMissing" | "repairRequired";
   constructor(code: WindowsInstalledAuthorityError["code"]) {
     const action = code === "ABSENT"
       ? "Install or repair ProPR Connect Authority from the signed Windows Installer package, then retry."
@@ -17,6 +19,7 @@ export class WindowsInstalledAuthorityError extends Error {
     super(`Windows Connect authority is unavailable [reason=${code}]. ${action}`);
     this.name = "WindowsInstalledAuthorityError";
     this.code = code;
+    this.state = code === "ABSENT" ? "authorityMissing" : "repairRequired";
   }
 }
 
@@ -44,6 +47,13 @@ function canonicalUint(value: unknown, bits: 32 | 64 | 128): value is string {
   try { const parsed = BigInt(value); return parsed >= 0n && parsed < (1n << BigInt(bits)); } catch { return false; }
 }
 
+function canonicalServiceSid(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const parts = value.split("-");
+  return parts.length === 9 && parts.slice(0, 4).join("-") === "S-1-5-80"
+    && parts.slice(4).every((part) => canonicalUint(part, 32));
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -61,9 +71,19 @@ function frame(document: unknown): Buffer {
 }
 
 class PipeSession implements WindowsInstalledAuthoritySession {
-  readonly socket: Socket;
+  readonly readable: Readable;
+  readonly writable: Writable;
+  readonly destroyChannel: () => void;
   private pending = Buffer.alloc(0);
-  constructor(socket: Socket) { this.socket = socket; }
+  constructor(readable: Readable, writable: Writable, destroyChannel: () => void) {
+    this.readable = readable;
+    this.writable = writable;
+    this.destroyChannel = destroyChannel;
+    // Child stdin and stdout are distinct streams. Keep an error listener on
+    // stdin for the lifetime of the proxy so a verifier rejection cannot turn
+    // a later EPIPE into an unhandled process error.
+    this.writable.on("error", () => { this.readable.destroy(); });
+  }
   exchange(document: unknown): Promise<unknown> {
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -71,9 +91,9 @@ class PipeSession implements WindowsInstalledAuthoritySession {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.socket.off("data", onData);
-        this.socket.off("error", onError);
-        this.socket.off("close", onClose);
+        this.readable.off("data", onData);
+        this.readable.off("error", onError);
+        this.readable.off("close", onClose);
         if (error) reject(error); else resolve(value);
       };
       const onError = () => finish(new WindowsInstalledAuthorityError("AUTHORITY"));
@@ -96,22 +116,70 @@ class PipeSession implements WindowsInstalledAuthoritySession {
         } catch { finish(new WindowsInstalledAuthorityError("PROTOCOL")); }
       };
       const timer = setTimeout(() => finish(new WindowsInstalledAuthorityError("TIMEOUT")), TIMEOUT_MS);
-      this.socket.on("data", onData);
-      this.socket.once("error", onError);
-      this.socket.once("close", onClose);
-      this.socket.write(frame(document));
+      this.readable.on("data", onData);
+      this.readable.once("error", onError);
+      this.readable.once("close", onClose);
+      try { this.writable.write(frame(document)); }
+      catch { finish(new WindowsInstalledAuthorityError("AUTHORITY")); }
     });
   }
-  close(): void { this.socket.destroy(); }
+  close(): void { this.destroyChannel(); }
 }
 
-async function connectPipe(): Promise<WindowsInstalledAuthoritySession> {
-  return new Promise((resolve, reject) => {
-    const socket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
-    const timer = setTimeout(() => { socket.destroy(); reject(new WindowsInstalledAuthorityError("TIMEOUT")); }, TIMEOUT_MS);
-    socket.once("connect", () => { clearTimeout(timer); resolve(new PipeSession(socket)); });
-    socket.once("error", () => { clearTimeout(timer); reject(new WindowsInstalledAuthorityError("ABSENT")); });
+async function connectPipe(expected: InstalledAuthorityIdentity): Promise<WindowsInstalledAuthoritySession> {
+  const imagePath = expected.imagePath
+    ?? String.raw`C:\Program Files\ProPR Connect Authority\ProPRConnectAuthority.exe`;
+  const child = spawn(imagePath, ["--client-proxy-v3"], {
+    shell: false,
+    windowsHide: true,
+    env: {},
+    stdio: ["pipe", "pipe", "ignore"],
   });
+  let spawnError = false;
+  child.once("error", () => { spawnError = true; });
+  if (!child.stdin || !child.stdout) throw new WindowsInstalledAuthorityError("ABSENT");
+  const session = new PipeSession(child.stdout, child.stdin, () => {
+    child.stdin?.destroy(); child.stdout?.destroy(); child.kill();
+  });
+  const requestId = randomUUID().replaceAll("-", "");
+  const nonce = randomBytes(32).toString("hex");
+  let ready: unknown;
+  try {
+    ready = await session.exchange({
+      version: 3, kind: "proxy-open", requestId, nonce,
+      serviceVersion: expected.serviceVersion,
+      imagePath,
+      sha256: expected.sha256,
+      authenticodeLeafSha256: expected.authenticodeLeafSha256,
+      authenticodeSpkiSha256: expected.authenticodeSpkiSha256,
+    });
+  } catch (error) {
+    session.close();
+    if (spawnError || (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+      throw new WindowsInstalledAuthorityError("ABSENT");
+    }
+    throw error;
+  }
+  if (!ready || typeof ready !== "object" || Array.isArray(ready)
+    || !exactKeys(ready, ["version", "kind", "requestId", "nonce", "serverPid", "imagePath",
+      "volumeSerialNumber", "fileId", "sha256", "accountSid", "serviceSid", "daclProtected", "verified"])
+    || (ready as Record<string, unknown>).version !== 3
+    || (ready as Record<string, unknown>).kind !== "proxy-ready"
+    || (ready as Record<string, unknown>).requestId !== requestId
+    || (ready as Record<string, unknown>).nonce !== nonce
+    || (ready as Record<string, unknown>).verified !== true
+    || (ready as Record<string, unknown>).accountSid !== "S-1-5-18"
+    || !canonicalServiceSid((ready as Record<string, unknown>).serviceSid)
+    || (ready as Record<string, unknown>).daclProtected !== true
+    || String((ready as Record<string, unknown>).imagePath).toLowerCase() !== imagePath.toLowerCase()
+    || (ready as Record<string, unknown>).sha256 !== expected.sha256
+    || !canonicalUint((ready as Record<string, unknown>).serverPid, 32)
+    || !canonicalUint((ready as Record<string, unknown>).volumeSerialNumber, 64)
+    || !canonicalUint((ready as Record<string, unknown>).fileId, 128)) {
+    session.close();
+    throw new WindowsInstalledAuthorityError("AUTHORITY");
+  }
+  return session;
 }
 
 export interface InstalledWindowsLaunchLease {
@@ -129,7 +197,7 @@ export async function acquireInstalledWindowsLaunchLease(
   expected: InstalledAuthorityIdentity,
   options: { readonly session?: WindowsInstalledAuthoritySession; readonly nonce?: string; readonly requestId?: string } = {},
 ): Promise<InstalledWindowsLaunchLease> {
-  const session = options.session ?? await connectPipe();
+  const session = options.session ?? await connectPipe(expected);
   const nonce = options.nonce ?? randomBytes(32).toString("hex");
   const requestId = options.requestId ?? randomUUID().replaceAll("-", "");
   const request = {

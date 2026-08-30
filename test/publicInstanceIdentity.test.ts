@@ -24,6 +24,7 @@ import {
   ConnectRootError,
   getOrCreatePublicInstanceIdentity as getCliIdentity,
   getOrCreateSnapshotPublicInstanceIdentity,
+  readSnapshotPublicInstanceIdentity,
   readTrustedConnectTunnelOverride,
   TrustedConnectConfigError,
   withOwnedConnectRootSnapshot,
@@ -297,6 +298,21 @@ test('the cross-container model accepts a host-readable root-owned file only', (
   assert.equal(publicIdentityFilePermissionsAllowed({ uid: hostOwner, mode: 0o100600 }, hostOwner, 'linux'), false);
   assert.equal(publicIdentityFilePermissionsAllowed({ uid: 2000, mode: 0o100644 }, hostOwner, 'linux'), false);
   assert.equal(publicIdentityFilePermissionsAllowed({ uid: 0, mode: 0o100666 }, hostOwner, 'linux'), false);
+});
+
+test('status identity reads neither create nor repair snapshot state', async () => {
+  const parent = temporaryRoot('propr-connect-read-only-identity-');
+  const root = connectRoot(parent);
+  try {
+    await withOwnedConnectRootSnapshot(root, async (snapshot) => {
+      await assert.rejects(readSnapshotPublicInstanceIdentity(snapshot.identityDirectory));
+      assert.throws(() => lstatSync(identityPath(join(root, 'data'))), /ENOENT/);
+      assert.equal(await getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory, () => IDS.first), IDS.first);
+      assert.equal(await readSnapshotPublicInstanceIdentity(snapshot.identityDirectory), IDS.first);
+    }, { parseEnvFile: () => ({}) });
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
 });
 
 test('Connect root replacement never redirects env/data reads and fails closed', async () => {

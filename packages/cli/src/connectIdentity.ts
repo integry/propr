@@ -16,6 +16,7 @@ import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { userInfo } from "node:os";
 import {
   getOrCreatePublicInstanceIdentityPinned,
+  readPublicInstanceIdentityPinned,
   type PinnedPublicIdentityDirectory,
 } from "@propr/local-setup";
 import {
@@ -988,6 +989,17 @@ export async function getOrCreateSnapshotPublicInstanceIdentity(
 ): Promise<string> {
   try {
     return await getOrCreatePublicInstanceIdentityPinned(directory, { generate, role: "host" });
+  } catch (error) {
+    if (error instanceof PublicInstanceIdentityError) throw error;
+    throw new PublicInstanceIdentityError();
+  }
+}
+
+export async function readSnapshotPublicInstanceIdentity(
+  directory: PinnedPublicIdentityDirectory,
+): Promise<string> {
+  try {
+    return await readPublicInstanceIdentityPinned(directory);
   } catch (error) {
     if (error instanceof PublicInstanceIdentityError) throw error;
     throw new PublicInstanceIdentityError();

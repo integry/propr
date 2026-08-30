@@ -41,16 +41,20 @@ const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2024.12.2";
 const WINDOWS_AUTHORITY_MANIFEST_PUBLIC_KEY = createPublicKey(`-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEABGK5YqTyhB9t0ItFKrMe9jiZ1two1naR/H1jqb6lRYU=
 -----END PUBLIC KEY-----`);
-const WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS = [
-  ["compiler", "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae", "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560"],
-  ["native-compiler", "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d"],
-  ["native-linker", "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d"],
-];
-const WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES = [
-  ["roslyn-runtime", "72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209", 111, "38581501"],
-  ["msvc-host-runtime", "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2", 53, "62411793"],
-  ["wix-runtime", "732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298", 33, "31929694"],
-];
+const WINDOWS_AUTHORITY_BUILD_POLICIES = Object.freeze({
+  "vs2026-18.9-x64": Object.freeze({
+    signers: [["compiler", "b89f8f6bf4f50250528995fd16e228f1b24ee0017d8f87b0c756c1b85b82f58c", "c36d219b65bcb11b4c7766f5e4707aac8e7f391fb57d9be21b31ff06c0c27d8a"], ["native-compiler", "c30b441672c82883d92eddac6d24cb57e9960bda4486c7fb5865e74157f35850", "72bc03497a5c3fd67db74a5c648239fa9d212ff61a64250d28e475d688d49b97"], ["native-linker", "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d"]],
+    dependencies: [["roslyn-runtime", "d4630911fcc8edd9ea0581c2d905270790b0f3de2b212d4f8a9a8b2164d016e5", 111, "35634755"], ["msvc-host-runtime", "779b6b9ee8d67c416e88a3cb0ec65b83cfb89c1159b8c458183cf2def96bcb13", 84, "126253430"], ["wix-runtime", "732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298", 33, "31929694"]],
+  }),
+  "vs2026-18.9-arm64": Object.freeze({
+    signers: [["compiler", "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae", "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560"], ["native-compiler", "c30b441672c82883d92eddac6d24cb57e9960bda4486c7fb5865e74157f35850", "72bc03497a5c3fd67db74a5c648239fa9d212ff61a64250d28e475d688d49b97"], ["native-linker", "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d"]],
+    dependencies: [["roslyn-runtime", "65c926bb608189705239c90f011b52a1f493d569d00027468cdb5961aa21d026", 111, "35633203"], ["msvc-host-runtime", "779b6b9ee8d67c416e88a3cb0ec65b83cfb89c1159b8c458183cf2def96bcb13", 84, "126253430"], ["wix-runtime", "732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298", 33, "31929694"]],
+  }),
+  "vs2022-17.14-x64": Object.freeze({
+    signers: [["compiler", "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae", "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560"], ["native-compiler", "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d"], ["native-linker", "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d"]],
+    dependencies: [["roslyn-runtime", "72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209", 111, "38581501"], ["msvc-host-runtime", "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2", 53, "62411793"], ["wix-runtime", "732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298", 33, "31929694"]],
+  }),
+});
 
 const canonicalJson = (value) => {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -138,6 +142,7 @@ for (const artifact of [windowsSupervisor, windowsSupervisorManifest, windowsSup
 }
 const supervisorManifestBytes = readFileSync(windowsSupervisorManifest);
 const supervisorManifest = JSON.parse(supervisorManifestBytes.toString("utf8"));
+const windowsBuildPolicy = WINDOWS_AUTHORITY_BUILD_POLICIES[supervisorManifest.build?.toolchainProfile];
 if (supervisorManifestBytes.at(-1) !== 0x0a
   || `${canonicalJson(supervisorManifest)}\n` !== supervisorManifestBytes.toString("utf8")
   || supervisorManifest.format !== "propr-windows-authority-helper-v2"
@@ -145,6 +150,7 @@ if (supervisorManifestBytes.at(-1) !== 0x0a
   || supervisorManifest.pe?.architecture !== "anycpu"
   || supervisorManifest.pe?.managed !== true
   || supervisorManifest.pe?.deterministic !== true
+  || !windowsBuildPolicy
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.sourceSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.launcherSourceSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.helperSha256 ?? "")
@@ -159,10 +165,10 @@ if (supervisorManifestBytes.at(-1) !== 0x0a
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.launcherLinkerSha256 ?? "")
   || JSON.stringify(supervisorManifest.build?.toolSigners?.map((item) => [
     item.name, item.authenticodeLeafSha256, item.authenticodeSpkiSha256,
-  ])) !== JSON.stringify(WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS)
+  ])) !== JSON.stringify(windowsBuildPolicy?.signers)
   || JSON.stringify(supervisorManifest.build?.toolDependencies?.map((item) => [
     item.name, item.sha256, item.files, item.bytes,
-  ])) !== JSON.stringify(WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES)
+  ])) !== JSON.stringify(windowsBuildPolicy?.dependencies)
   || !Array.isArray(supervisorManifest.build?.nativeInputs)
   || supervisorManifest.build.nativeInputs.length !== 7
   || !supervisorManifest.build.nativeInputs.every((input) => input

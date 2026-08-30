@@ -153,33 +153,39 @@ const WINDOWS_AUTHORITY_BOOTSTRAP_SOURCE_SHA256 = "9c78ab7d06b43dcee72420ec6442f
 
 const WINDOWS_AUTHORITY_PROTOCOL_VERSION = 2;
 const WINDOWS_AUTHORITY_SUPERVISOR_SOURCE_SHA256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
-const WINDOWS_AUTHORITY_SERVICE_SOURCE_SHA256 = "d192e97ac87d5d09188da0da9cca778ce9e9a578bd1bd22fc0b4d91a44b28d86";
-const WINDOWS_AUTHORITY_SERVICE_INSTALLER_SOURCE_SHA256 = "ea9c99b8f212e7deb6948172a7e3dae1a888147a2610deb6946904c863d7f6f8";
+const WINDOWS_AUTHORITY_SERVICE_SOURCE_SHA256 = "4b30b4374ad85433f6ff4b065bf9df013ec5393ecd2f49b74ac6eabe9901499c";
+const WINDOWS_AUTHORITY_SERVICE_INSTALLER_SOURCE_SHA256 = "3f3d7034b47bbf1ad7100cdb5ce4bce9360e6479669629a5452c23b4eefc77e6";
 const WINDOWS_AUTHORITY_LAUNCHER_SOURCE_SHA256 = "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c";
+type WindowsBuildToolchainProfile = "vs2026-18.9-x64" | "vs2026-18.9-arm64" | "vs2022-17.14-x64";
 const WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS = Object.freeze({
-  compiler: Object.freeze({
-    leaf: "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae",
-    spki: "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560",
+  "vs2026-18.9-x64": Object.freeze({
+    compiler: Object.freeze({ leaf: "b89f8f6bf4f50250528995fd16e228f1b24ee0017d8f87b0c756c1b85b82f58c", spki: "c36d219b65bcb11b4c7766f5e4707aac8e7f391fb57d9be21b31ff06c0c27d8a" }),
+    "native-compiler": Object.freeze({ leaf: "c30b441672c82883d92eddac6d24cb57e9960bda4486c7fb5865e74157f35850", spki: "72bc03497a5c3fd67db74a5c648239fa9d212ff61a64250d28e475d688d49b97" }),
+    "native-linker": Object.freeze({ leaf: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", spki: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d" }),
   }),
-  "native-compiler": Object.freeze({
-    leaf: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed",
-    spki: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d",
+  "vs2026-18.9-arm64": Object.freeze({
+    compiler: Object.freeze({ leaf: "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae", spki: "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560" }),
+    "native-compiler": Object.freeze({ leaf: "c30b441672c82883d92eddac6d24cb57e9960bda4486c7fb5865e74157f35850", spki: "72bc03497a5c3fd67db74a5c648239fa9d212ff61a64250d28e475d688d49b97" }),
+    "native-linker": Object.freeze({ leaf: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", spki: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d" }),
   }),
-  "native-linker": Object.freeze({
-    leaf: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed",
-    spki: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d",
+  "vs2022-17.14-x64": Object.freeze({
+    compiler: Object.freeze({ leaf: "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae", spki: "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560" }),
+    "native-compiler": Object.freeze({ leaf: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", spki: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d" }),
+    "native-linker": Object.freeze({ leaf: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", spki: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d" }),
   }),
 });
 const WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES = Object.freeze({
-  "roslyn-runtime": Object.freeze({
-    sha256: "72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209",
-    files: 111,
-    bytes: "38581501",
+  "vs2026-18.9-x64": Object.freeze({
+    "roslyn-runtime": Object.freeze({ sha256: "d4630911fcc8edd9ea0581c2d905270790b0f3de2b212d4f8a9a8b2164d016e5", files: 111, bytes: "35634755" }),
+    "msvc-host-runtime": Object.freeze({ sha256: "779b6b9ee8d67c416e88a3cb0ec65b83cfb89c1159b8c458183cf2def96bcb13", files: 84, bytes: "126253430" }),
   }),
-  "msvc-host-runtime": Object.freeze({
-    sha256: "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2",
-    files: 53,
-    bytes: "62411793",
+  "vs2026-18.9-arm64": Object.freeze({
+    "roslyn-runtime": Object.freeze({ sha256: "65c926bb608189705239c90f011b52a1f493d569d00027468cdb5961aa21d026", files: 111, bytes: "35633203" }),
+    "msvc-host-runtime": Object.freeze({ sha256: "779b6b9ee8d67c416e88a3cb0ec65b83cfb89c1159b8c458183cf2def96bcb13", files: 84, bytes: "126253430" }),
+  }),
+  "vs2022-17.14-x64": Object.freeze({
+    "roslyn-runtime": Object.freeze({ sha256: "72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209", files: 111, bytes: "38581501" }),
+    "msvc-host-runtime": Object.freeze({ sha256: "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2", files: 53, bytes: "62411793" }),
   }),
   "wix-runtime": Object.freeze({
     sha256: "732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298",
@@ -352,6 +358,7 @@ interface WindowsSupervisorManifest {
   };
   readonly pe: { readonly architecture: "anycpu"; readonly managed: true; readonly deterministic: true };
   readonly build: {
+    readonly toolchainProfile: WindowsBuildToolchainProfile;
     readonly compilerSha256: string;
     readonly launcherCompilerSha256: string;
     readonly launcherLinkerSha256: string;
@@ -390,9 +397,22 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
   const build = manifest.build as Record<string, unknown> | undefined;
   const trust = manifest.trust as Record<string, unknown> | undefined;
   const service = manifest.service as Record<string, unknown> | undefined;
+  const toolchainProfile = build?.toolchainProfile;
+  const allowedToolchain = typeof toolchainProfile === "string"
+    && Object.hasOwn(WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS, toolchainProfile);
+  const dependencyPolicy = allowedToolchain
+    ? WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES[toolchainProfile as WindowsBuildToolchainProfile]
+    : undefined;
+  const signerPolicy = allowedToolchain
+    ? WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS[toolchainProfile as WindowsBuildToolchainProfile]
+    : undefined;
   if (!pe || Array.isArray(pe) || !exactKeys(pe, ["architecture", "managed", "deterministic"])
     || pe.architecture !== "anycpu" || pe.managed !== true || pe.deterministic !== true
-    || !build || Array.isArray(build) || !exactKeys(build, ["compilerSha256", "launcherCompilerSha256", "launcherLinkerSha256", "bootstrapSourceSha256", "bootstrapSha256", "compilerRelativePath", "toolSigners", "toolDependencies", "references", "nativeInputs"])
+    || !build || Array.isArray(build) || !exactKeys(build, ["toolchainProfile", "compilerSha256", "launcherCompilerSha256", "launcherLinkerSha256", "bootstrapSourceSha256", "bootstrapSha256", "compilerRelativePath", "toolSigners", "toolDependencies", "references", "nativeInputs"])
+    || !allowedToolchain
+    || build.compilerRelativePath !== (String(toolchainProfile).startsWith("vs2026-")
+      ? "VisualStudio/18/MSBuild/Current/Bin/Roslyn/csc.exe"
+      : "VisualStudio/2022/17.14/MSBuild/Current/Bin/Roslyn/csc.exe")
     || typeof build.compilerRelativePath !== "string" || build.compilerRelativePath.length < 1 || build.compilerRelativePath.length > 160
     || !/^[0-9a-f]{64}$/.test(String(build.compilerSha256))
     || !/^[0-9a-f]{64}$/.test(String(build.launcherCompilerSha256))
@@ -405,20 +425,27 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
       && (item as Record<string, unknown>).name
       && (item as Record<string, unknown>).signatureKind === "E"
       && (item as Record<string, unknown>).authenticodeLeafSha256
-        === WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS }).name]?.leaf
+        === signerPolicy?.[(item as { name: "compiler" | "native-compiler" | "native-linker" }).name]?.leaf
       && (item as Record<string, unknown>).authenticodeSpkiSha256
-        === WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS }).name]?.spki)
+        === signerPolicy?.[(item as { name: "compiler" | "native-compiler" | "native-linker" }).name]?.spki)
       .join("\0") !== "compiler\0native-compiler\0native-linker"
     || !Array.isArray(build.toolDependencies) || build.toolDependencies.length !== 3
     || !build.toolDependencies.every((item) => item && typeof item === "object" && !Array.isArray(item)
       && exactKeys(item as Record<string, unknown>, ["name", "sha256", "files", "bytes"])
       && ["roslyn-runtime", "msvc-host-runtime", "wix-runtime"].includes(String((item as Record<string, unknown>).name))
+      && /^[0-9a-f]{64}$/.test(String((item as Record<string, unknown>).sha256))
+      && Number.isInteger((item as Record<string, unknown>).files)
+      && Number((item as Record<string, unknown>).files) > 0
+      && /^(?:0|[1-9]\d{0,12})$/.test(String((item as Record<string, unknown>).bytes))
       && (item as Record<string, unknown>).sha256
-        === WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES }).name]?.sha256
+        === ((item as { name: string }).name === "wix-runtime" ? WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES["wix-runtime"].sha256
+          : dependencyPolicy?.[(item as { name: "roslyn-runtime" | "msvc-host-runtime" }).name]?.sha256)
       && (item as Record<string, unknown>).files
-        === WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES }).name]?.files
+        === ((item as { name: string }).name === "wix-runtime" ? WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES["wix-runtime"].files
+          : dependencyPolicy?.[(item as { name: "roslyn-runtime" | "msvc-host-runtime" }).name]?.files)
       && (item as Record<string, unknown>).bytes
-        === WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES }).name]?.bytes)
+        === ((item as { name: string }).name === "wix-runtime" ? WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES["wix-runtime"].bytes
+          : dependencyPolicy?.[(item as { name: "roslyn-runtime" | "msvc-host-runtime" }).name]?.bytes))
     || build.toolDependencies.map((item) => (item as { name: string }).name).join("\0")
       !== "roslyn-runtime\0msvc-host-runtime\0wix-runtime"
     || !Array.isArray(build.references) || build.references.length < 1 || build.references.length > 16
@@ -2144,12 +2171,35 @@ async function nativeWindowsAcls(entries: readonly WindowsAuthorityTarget[]): Pr
       throw new Error("Windows ACL authority inspection is unavailable");
     }
   }
-  const batch = await enqueueWindowsAuthority(() => runWindowsAuthorityBatch(
-    "inspect",
-    entries.map((entry) => entry.kind),
-    entries.map((entry) => entry.pinnedFd),
-    "Windows ACL authority inspection is unavailable",
-  ));
+  // Read-only discovery must not bootstrap the installed launch authority.
+  // It invokes only the checksum-bound inspection mode and passes the exact
+  // already-open objects as inherited handles. Mutation/protection and the
+  // persistent privileged launch chain continue through the installed
+  // authority below.
+  const helper = windowsSupervisorArtifact();
+  const artifact = authorityBrokerArtifact("win32", "x64", helper.manifest.launcherSha256);
+  const requestId = randomUUID().replaceAll("-", "");
+  const input = Buffer.from([
+    "PROPR_AUTHORITY_V1", requestId, "inspect", String(entries.length),
+    ...entries.map((entry) => entry.kind), "",
+  ].join("\n"), "ascii");
+  let result: BoundedChildResult;
+  try {
+    result = await runBoundedWindowsChild(
+      artifact.path,
+      ["batch-v1"],
+      entries.map((entry) => entry.pinnedFd),
+      input,
+    );
+    revalidateAuthorityBroker(artifact);
+    if (result.status !== 0 || result.stderr.byteLength !== 0) {
+      throw new Error("Windows ACL authority inspection is unavailable");
+    }
+  } finally {
+    closeSync(artifact.fd);
+    closeSync(helper.fd);
+  }
+  const batch = { output: result.stdout, requestId };
   let parsed: unknown;
   try {
     parsed = JSON.parse(decodeBoundedUtf8(batch.output).trim());

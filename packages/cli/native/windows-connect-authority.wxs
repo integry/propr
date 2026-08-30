@@ -12,14 +12,19 @@
             <CreateFolder>
               <Permission User="SYSTEM" GenericAll="yes" />
               <Permission Domain="NT SERVICE" User="TrustedInstaller" GenericAll="yes" />
+              <Permission User="Authenticated Users" Read="yes" Execute="yes" Traverse="yes" />
             </CreateFolder>
             <File Id="AuthorityServiceFile" Source="$(var.AuthorityServicePath)" KeyPath="yes" Checksum="yes" Vital="yes">
               <Permission User="SYSTEM" GenericAll="yes" />
               <Permission Domain="NT SERVICE" User="TrustedInstaller" GenericAll="yes" />
+              <Permission User="Authenticated Users" Read="yes" Execute="yes" />
             </File>
             <ServiceInstall Id="InstallAuthority" Name="ProPRConnectAuthority" DisplayName="ProPR Connect Authority"
               Description="Machine trust anchor for bounded ProPR Connect native launches" Type="ownProcess"
-              Start="auto" ErrorControl="normal" Account="LocalSystem" Vital="yes" />
+              Start="auto" ErrorControl="normal" Account="LocalSystem" Vital="yes">
+              <ServiceConfig Id="AuthorityServiceSid" ServiceSid="unrestricted"
+                OnInstall="yes" OnReinstall="yes" OnUninstall="no" />
+            </ServiceInstall>
             <ServiceControl Id="ControlAuthority" Name="ProPRConnectAuthority" Start="install" Stop="both"
               Remove="uninstall" Wait="yes" />
           </Component>

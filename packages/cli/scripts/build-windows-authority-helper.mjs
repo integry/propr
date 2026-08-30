@@ -27,6 +27,7 @@ import { basename, dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   WindowsHelperBuildError,
+  WINDOWS_BUILD_TOOLCHAIN_PROFILES,
   assertModernRoslynVersion,
   authorizeWindowsBuildToolDependencies,
   authorizeWindowsBuildToolSigner,
@@ -67,8 +68,8 @@ const evidenceStage = evidenceArguments.length === 1 ? evidenceArguments[0].slic
 const nonce = randomBytes(32).toString("hex");
 const protocolVersion = 2;
 const sourceSha256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
-const serviceSourceSha256 = "d192e97ac87d5d09188da0da9cca778ce9e9a578bd1bd22fc0b4d91a44b28d86";
-const serviceInstallerSourceSha256 = "ea9c99b8f212e7deb6948172a7e3dae1a888147a2610deb6946904c863d7f6f8";
+const serviceSourceSha256 = "4b30b4374ad85433f6ff4b065bf9df013ec5393ecd2f49b74ac6eabe9901499c";
+const serviceInstallerSourceSha256 = "3f3d7034b47bbf1ad7100cdb5ce4bce9360e6479669629a5452c23b4eefc77e6";
 const launcherSourceSha256 = "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c";
 const bootstrapSourceSha256 = "9c78ab7d06b43dcee72420ec6442fc639b5542a8ef76be3a46d281843d43ef72";
 const bootstrapSha256 = "2373622afcd21231ff5bd2953f5896af1eb8565bbe395eeb5128b0591145ea17";
@@ -553,19 +554,49 @@ if($currentPowerShell-ne$env:PROPR_BUILD_POWERSHELL-or-not(Test-AuthorizedResolv
 Send-ProprProgress 3
 $vswhere=[IO.Path]::Combine($programFilesX86,'Microsoft Visual Studio','Installer','vswhere.exe')
 if(-not(Test-AuthorizedResolverFile $vswhere)){exit 32}
-$installation=& $vswhere -latest -products '*' -version '[17.14,17.15)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationPath
-if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($installation)-or$installation.Contains([char]10)){exit 33}
+$runnerArchitecture=$env:PROPR_BUILD_RUNNER_ARCHITECTURE
+if($runnerArchitecture-ne'x64'-and$runnerArchitecture-ne'arm64'){exit 33}
+$profile=('vs2026-18.9-'+$runnerArchitecture)
+$installation=& $vswhere -latest -products '*' -version '[18.9,18.10)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationPath
+if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($installation)){
+  if($runnerArchitecture-ne'x64'){
+    Send-ProprProgress 4;Send-ProprProgress 5;Send-ProprProgress 6;Send-ProprProgress 7
+    $document=[ordered]@{profileMismatch='VS18.9.12112_ROSLYN5.900_MSVC14.51_OR_VS17.14_ROSLYN4.14_MSVC14.44';buildWorkspace=$workspace}
+    Send-ProprProgress 8;[Console]::Out.Write(($document|ConvertTo-Json -Compress));return
+  }
+  $profile='vs2022-17.14-x64'
+  $installation=& $vswhere -latest -products '*' -version '[17.14,17.15)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationPath
+}
+if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($installation)-or$installation.Contains([char]10)){
+  Send-ProprProgress 4
+  Send-ProprProgress 5
+  Send-ProprProgress 6
+  Send-ProprProgress 7
+  $document=[ordered]@{profileMismatch='VS18.9.12112_ROSLYN5.900_MSVC14.51_OR_VS17.14_ROSLYN4.14_MSVC14.44';buildWorkspace=$workspace}
+  Send-ProprProgress 8
+  [Console]::Out.Write(($document|ConvertTo-Json -Compress))
+  return
+}
 Send-ProprProgress 4
+$installationVersion=& $vswhere -latest -products '*' -version $(if($profile.StartsWith('vs2026')){'[18.9,18.10)'}else{'[17.14,17.15)'}) -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationVersion
+if(($profile.StartsWith('vs2026')-and$installationVersion-ne'18.9.12112.369')-or
+   ($profile-eq'vs2022-17.14-x64'-and$installationVersion-notmatch'^17\.14\.')){exit 45}
 $compiler=[IO.Path]::Combine($installation.Trim(),'MSBuild','Current','Bin','Roslyn','csc.exe')
 if(-not(Test-Path -LiteralPath $compiler -PathType Leaf)){exit 34}
 $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($compiler).ProductVersion
-if($version-notmatch'^4\.14\.'){exit 35}
-$toolsets=@(Get-ChildItem -LiteralPath ([IO.Path]::Combine($installation.Trim(),'VC','Tools','MSVC')) -Directory|Where-Object{$_.Name-match'^14\.44\.'})
+if(($profile.StartsWith('vs2026')-and$version-ne'5.900.26.35703')-or
+   ($profile-eq'vs2022-17.14-x64'-and$version-notmatch'^4\.14\.')){exit 35}
+$toolsetPattern=if($profile.StartsWith('vs2026')){'^14\.51\.36231$'}else{'^14\.44\.'}
+$toolsets=@(Get-ChildItem -LiteralPath ([IO.Path]::Combine($installation.Trim(),'VC','Tools','MSVC')) -Directory|Where-Object{$_.Name-match$toolsetPattern})
 if($toolsets.Count-ne1){exit 38}
 $nativeCompiler=[IO.Path]::Combine($toolsets[0].FullName,'bin','Hostx64','x64','cl.exe')
 $nativeLinker=[IO.Path]::Combine($toolsets[0].FullName,'bin','Hostx64','x64','link.exe')
 if(-not(Test-Path -LiteralPath $nativeCompiler -PathType Leaf)){exit 39}
 if(-not(Test-Path -LiteralPath $nativeLinker -PathType Leaf)){exit 41}
+if($profile.StartsWith('vs2026')){
+  if([Diagnostics.FileVersionInfo]::GetVersionInfo($nativeCompiler).ProductVersion-ne'14.51.36256.0'-or
+     [Diagnostics.FileVersionInfo]::GetVersionInfo($nativeLinker).ProductVersion-ne'14.51.36256.0'){exit 46}
+}
 Send-ProprProgress 5
 $sdkRoot=[IO.Path]::Combine($programFilesX86,'Windows Kits','10')
 $sdkVersions=@(Get-ChildItem -LiteralPath ([IO.Path]::Combine($sdkRoot,'Include')) -Directory|Where-Object{$_.Name-match'^10\.0\.26100\.'})
@@ -591,7 +622,7 @@ foreach($reference in $references){
   if($acl.Owner-notmatch'^(NT SERVICE\\TrustedInstaller|BUILTIN\\Administrators|NT AUTHORITY\\SYSTEM)$'){exit 37}
 }
 Send-ProprProgress 7
-$document=[ordered]@{windowsDirectory=$windows;systemWindowsDirectory=$windows;systemDirectory=$system;buildWorkspace=$workspace;compiler=$compiler;compilerVersion=$version;nativeCompiler=$nativeCompiler;nativeLinker=$nativeLinker;nativeIncludes=$nativeIncludes;nativeLibraries=$nativeLibraries;references=$references}
+$document=[ordered]@{profile=$profile;windowsDirectory=$windows;systemWindowsDirectory=$windows;systemDirectory=$system;buildWorkspace=$workspace;compiler=$compiler;compilerVersion=$version;nativeCompiler=$nativeCompiler;nativeLinker=$nativeLinker;nativeIncludes=$nativeIncludes;nativeLibraries=$nativeLibraries;references=$references}
 Send-ProprProgress 8
 [Console]::Out.Write(($document|ConvertTo-Json -Compress))
 `;
@@ -619,6 +650,7 @@ try {
       PROPR_BUILD_STAGING_PARENT: outputDirectory,
       PROPR_BUILD_NONCE: nonce,
       PROPR_BUILD_POWERSHELL: trustedPowerShell,
+      PROPR_BUILD_RUNNER_ARCHITECTURE: process.arch,
     },
     sensitiveValues: [trustedPowerShell, bootstrapPaths.windowsDirectory, bootstrapPaths.systemDirectory],
   });
@@ -629,9 +661,16 @@ try {
     ? error
     : new WindowsHelperBuildError("BUILD_COMPILER", "SPAWN_ERROR", error);
 }
+if (resolvedToolchain && typeof resolvedToolchain === "object" && !Array.isArray(resolvedToolchain)
+  && Object.keys(resolvedToolchain).sort().join("\0") === ["buildWorkspace", "profileMismatch"].sort().join("\0")
+  && resolvedToolchain.profileMismatch === "VS18.9.12112_ROSLYN5.900_MSVC14.51_OR_VS17.14_ROSLYN4.14_MSVC14.44"
+  && typeof resolvedToolchain.buildWorkspace === "string") {
+  emergencyBuildWorkspace = resolvedToolchain.buildWorkspace;
+  throw new WindowsHelperBuildError("BUILD_COMPILER", "TOOLCHAIN_MISMATCH");
+}
 if (!resolvedToolchain || typeof resolvedToolchain !== "object" || Array.isArray(resolvedToolchain)
   || Object.keys(resolvedToolchain).sort().join("\0") !== [
-    "buildWorkspace", "compiler", "compilerVersion", "nativeCompiler", "nativeLinker", "nativeIncludes", "nativeLibraries", "references", "systemDirectory", "systemWindowsDirectory", "windowsDirectory",
+    "profile", "buildWorkspace", "compiler", "compilerVersion", "nativeCompiler", "nativeLinker", "nativeIncludes", "nativeLibraries", "references", "systemDirectory", "systemWindowsDirectory", "windowsDirectory",
   ].sort().join("\0")
   || typeof resolvedToolchain.windowsDirectory !== "string"
   || typeof resolvedToolchain.systemWindowsDirectory !== "string"
@@ -639,6 +678,7 @@ if (!resolvedToolchain || typeof resolvedToolchain !== "object" || Array.isArray
   || typeof resolvedToolchain.buildWorkspace !== "string"
   || typeof resolvedToolchain.compiler !== "string"
   || typeof resolvedToolchain.compilerVersion !== "string"
+  || !Object.hasOwn(WINDOWS_BUILD_TOOLCHAIN_PROFILES, resolvedToolchain.profile)
   || typeof resolvedToolchain.nativeCompiler !== "string"
   || typeof resolvedToolchain.nativeLinker !== "string"
   || !Array.isArray(resolvedToolchain.nativeIncludes) || resolvedToolchain.nativeIncludes.length !== 4
@@ -650,7 +690,7 @@ if (!resolvedToolchain || typeof resolvedToolchain !== "object" || Array.isArray
   || !resolvedToolchain.references.every((item) => typeof item === "string")) {
   throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
 }
-assertModernRoslynVersion(resolvedToolchain.compilerVersion.split(/[+-]/u, 1)[0]);
+assertModernRoslynVersion(resolvedToolchain.compilerVersion.split(/[+-]/u, 1)[0], resolvedToolchain.profile);
 const windowsDirectory = realpathSync.native(resolvedToolchain.windowsDirectory);
 const systemWindowsDirectory = realpathSync.native(resolvedToolchain.systemWindowsDirectory);
 const systemDirectory = realpathSync.native(resolvedToolchain.systemDirectory);
@@ -695,11 +735,11 @@ const toolRuntimeInventories = [dirname(compiler), dirname(nativeCompiler)].map(
   path,
   ...authoritativeDirectoryInventory(path),
 }));
-authorizeWindowsBuildToolDependencies("roslyn-runtime", toolRuntimeInventories[0]);
-authorizeWindowsBuildToolDependencies("msvc-host-runtime", toolRuntimeInventories[1]);
+authorizeWindowsBuildToolDependencies(resolvedToolchain.profile, "roslyn-runtime", toolRuntimeInventories[0]);
+authorizeWindowsBuildToolDependencies(resolvedToolchain.profile, "msvc-host-runtime", toolRuntimeInventories[1]);
 const wixRuntimePath = join(cliDir, "..", "..", "node_modules", "electron-winstaller", "vendor");
 const wixRuntimeInventory = { path: wixRuntimePath, ...authoritativeDirectoryInventory(wixRuntimePath) };
-authorizeWindowsBuildToolDependencies("wix-runtime", wixRuntimeInventory);
+authorizeWindowsBuildToolDependencies(resolvedToolchain.profile, "wix-runtime", wixRuntimeInventory);
 const nativeInputInventories = [...nativeIncludes, ...nativeLibraries].map((path) => ({
   path,
   ...authoritativeDirectoryInventory(path),
@@ -737,7 +777,7 @@ const readBuildToolSignerPolicy = (role, path) => {
     new TextDecoder("utf-8", { fatal: true }).decode(result.stdout),
   );
   if (!match) throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
-  return authorizeWindowsBuildToolSigner(role, {
+  return authorizeWindowsBuildToolSigner(resolvedToolchain.profile, role, {
     signatureKind: "E", authenticodeLeafSha256: match[1], authenticodeSpkiSha256: match[2],
   });
 };
@@ -1218,12 +1258,13 @@ try {
     },
     pe: { architecture: "anycpu", managed: true, deterministic: true },
     build: {
+      toolchainProfile: resolvedToolchain.profile,
       compilerSha256: sha256(heldCompiler.bytes),
       launcherCompilerSha256: sha256(heldNativeCompiler.bytes),
       launcherLinkerSha256: sha256(heldNativeLinker.bytes),
       bootstrapSourceSha256,
       bootstrapSha256,
-      compilerRelativePath: "VisualStudio/2022/17.14/MSBuild/Current/Bin/Roslyn/csc.exe",
+      compilerRelativePath: `${WINDOWS_BUILD_TOOLCHAIN_PROFILES[resolvedToolchain.profile].visualStudioPathFamily}/MSBuild/Current/Bin/Roslyn/csc.exe`,
       toolSigners: [
         { name: "compiler", signatureKind: managedToolInputs[0].signatureKind,
           authenticodeLeafSha256: managedToolInputs[0].authenticodeLeafSha256,

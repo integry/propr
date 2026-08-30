@@ -6,6 +6,8 @@ import {
   WindowsHelperBuildError,
   WINDOWS_BUILD_TOOL_SIGNER_POLICY,
   WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY,
+  WINDOWS_BUILD_TOOLCHAIN_PROFILES,
+  assertModernRoslynVersion,
   authorizeWindowsBuildToolDependencies,
   authorizeWindowsBuildToolSigner,
   awaitWindowsBuildLeaseReadiness,
@@ -19,6 +21,32 @@ import {
   validateNativeWindowsDirectories,
   windowsBuildLeaseProgressFrames,
 } from "./windows-authority-build-lib.mjs";
+
+test("hosted x64 and ARM64 compiler families are finite reviewed profiles", () => {
+  assert.deepEqual(WINDOWS_BUILD_TOOLCHAIN_PROFILES, {
+    "vs2026-18.9-x64": {
+      visualStudioRange: "[18.9,18.10)", visualStudioPathFamily: "VisualStudio/18",
+      visualStudioVersion: "18.9.12112.369", roslynVersion: "5.900.26.35703",
+      msvcVersion: "14.51.36231", msvcProductVersion: "14.51.36256.0", runnerArchitecture: "x64",
+    },
+    "vs2026-18.9-arm64": {
+      visualStudioRange: "[18.9,18.10)", visualStudioPathFamily: "VisualStudio/18",
+      visualStudioVersion: "18.9.12112.369", roslynVersion: "5.900.26.35703",
+      msvcVersion: "14.51.36231", msvcProductVersion: "14.51.36256.0", runnerArchitecture: "arm64",
+    },
+    "vs2022-17.14-x64": {
+      visualStudioRange: "[17.14,17.15)", visualStudioPathFamily: "VisualStudio/2022/17.14",
+      visualStudioVersion: "17.14", roslynVersion: "4.14", msvcVersion: "14.44",
+      msvcProductVersion: "14.44", runnerArchitecture: "x64",
+    },
+  });
+  assert.doesNotThrow(() => assertModernRoslynVersion("5.900.26.35703", "vs2026-18.9-x64"));
+  assert.doesNotThrow(() => assertModernRoslynVersion("5.900.26.35703", "vs2026-18.9-arm64"));
+  assert.doesNotThrow(() => assertModernRoslynVersion("4.14.0.0", "vs2022-17.14-x64"));
+  for (const version of ["5.900.26.35704", "5.10.0.0", "6.0.0.0", "4.15.0.0"]) {
+    assert.throws(() => assertModernRoslynVersion(version, "vs2026-18.9-x64"), WindowsHelperBuildError);
+  }
+});
 
 test("x64 and arm64 slow-host lease readiness is inventory-sized and hard bounded", async () => {
   for (const architecture of ["x64", "arm64"]) {
@@ -126,8 +154,8 @@ test("every pinned Windows and fixture source hashes the same canonical bytes th
     ["../native/windows-authority-bootstrap.c", "9c78ab7d06b43dcee72420ec6442fc639b5542a8ef76be3a46d281843d43ef72"],
     ["../native/windows-authority-broker.c", "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c"],
     ["../native/windows-authority-supervisor.cs", "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff"],
-    ["../native/windows-connect-authority-service.cs", "d192e97ac87d5d09188da0da9cca778ce9e9a578bd1bd22fc0b4d91a44b28d86"],
-    ["../native/windows-connect-authority.wxs", "ea9c99b8f212e7deb6948172a7e3dae1a888147a2610deb6946904c863d7f6f8"],
+    ["../native/windows-connect-authority-service.cs", "4b30b4374ad85433f6ff4b065bf9df013ec5393ecd2f49b74ac6eabe9901499c"],
+    ["../native/windows-connect-authority.wxs", "3f3d7034b47bbf1ad7100cdb5ce4bce9360e6479669629a5452c23b4eefc77e6"],
     ["../../../scripts/fixtures/windows-connect-docker-fixture.c", "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c"],
     ["../../../test/fixtures/windowsAuthorityReplacementAttacker.c", "01ccc521cf6784f92cc33bbc4846b218625d61cb3b7dcbd9ed9366f50d12f6fa"],
   ]);
@@ -140,21 +168,24 @@ test("every pinned Windows and fixture source hashes the same canonical bytes th
 });
 
 test("build tools require a fixed reviewed leaf and SPKI before authorization", () => {
-  for (const [role, expected] of Object.entries(WINDOWS_BUILD_TOOL_SIGNER_POLICY)) {
-    assert.deepEqual(authorizeWindowsBuildToolSigner(role, { signatureKind: "E", ...expected }), {
+  for (const [profile, policy] of Object.entries(WINDOWS_BUILD_TOOL_SIGNER_POLICY)) {
+    if (profile === "sign-tool") continue;
+    for (const [role, expected] of Object.entries(policy)) {
+    assert.deepEqual(authorizeWindowsBuildToolSigner(profile, role, { signatureKind: "E", ...expected }), {
       signatureKind: "E", ...expected,
     });
-    assert.throws(() => authorizeWindowsBuildToolSigner(role, {
+    assert.throws(() => authorizeWindowsBuildToolSigner(profile, role, {
       signatureKind: "E", ...expected, authenticodeLeafSha256: "0".repeat(64),
     }), WindowsHelperBuildError, `${role} accepted a same-subject/same-root wrong leaf`);
-    assert.throws(() => authorizeWindowsBuildToolSigner(role, {
+    assert.throws(() => authorizeWindowsBuildToolSigner(profile, role, {
       signatureKind: "E", ...expected, authenticodeSpkiSha256: "f".repeat(64),
     }), WindowsHelperBuildError, `${role} accepted a wrong signing key`);
-    assert.throws(() => authorizeWindowsBuildToolSigner(role, {
+    assert.throws(() => authorizeWindowsBuildToolSigner(profile, role, {
       signatureKind: "C", ...expected,
     }), WindowsHelperBuildError, `${role} accepted a replacement catalog trust mode`);
+    }
   }
-  assert.throws(() => authorizeWindowsBuildToolSigner("unknown", {
+  assert.throws(() => authorizeWindowsBuildToolSigner("unknown", "compiler", {
     signatureKind: "E",
     authenticodeLeafSha256: "0".repeat(64),
     authenticodeSpkiSha256: "0".repeat(64),
@@ -162,14 +193,17 @@ test("build tools require a fixed reviewed leaf and SPKI before authorization", 
 });
 
 test("compiler and linker module/config inventories are fixed before launch", () => {
-  for (const [role, expected] of Object.entries(WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY)) {
-    assert.deepEqual(authorizeWindowsBuildToolDependencies(role, expected), expected);
-    assert.throws(() => authorizeWindowsBuildToolDependencies(role, {
+  for (const [profile, policy] of Object.entries(WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY)) {
+    if (profile === "wix-runtime") continue;
+    for (const [role, expected] of Object.entries(policy)) {
+    assert.deepEqual(authorizeWindowsBuildToolDependencies(profile, role, expected), expected);
+    assert.throws(() => authorizeWindowsBuildToolDependencies(profile, role, {
       ...expected, sha256: "0".repeat(64),
     }), WindowsHelperBuildError, `${role} accepted a dependent module/config swap`);
-    assert.throws(() => authorizeWindowsBuildToolDependencies(role, {
+    assert.throws(() => authorizeWindowsBuildToolDependencies(profile, role, {
       ...expected, files: expected.files + 1,
     }), WindowsHelperBuildError, `${role} accepted a dependent module insertion`);
+    }
   }
 });
 

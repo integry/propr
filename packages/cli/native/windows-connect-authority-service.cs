@@ -27,18 +27,32 @@ namespace Propr.ConnectAuthority {
     private const int MaxFrame = 4096;
     private volatile bool stopping;
     private readonly HashSet<string> replay = new HashSet<string>(StringComparer.Ordinal);
+    private readonly HashSet<string> authenticationReplay = new HashSet<string>(StringComparer.Ordinal);
     private readonly object replayLock = new object();
+    private FileStream serviceImageLease;
 
     internal AuthorityService() { ServiceName = Name; CanStop = true; AutoLog = false; }
     protected override void OnStart(string[] args) {
-      SecurityIdentifier account = WindowsIdentity.GetCurrent().User;
+      WindowsIdentity serviceIdentity = WindowsIdentity.GetCurrent();
+      SecurityIdentifier account = serviceIdentity.User;
       if (account == null || !account.IsWellKnown(WellKnownSidType.LocalSystemSid))
         throw new UnauthorizedAccessException();
+      SecurityIdentifier expectedServiceSid = ServiceSid();
+      if (serviceIdentity.Groups == null || !serviceIdentity.Groups.Cast<IdentityReference>()
+          .Any(group => ((SecurityIdentifier)group.Translate(typeof(SecurityIdentifier))).Value == expectedServiceSid.Value))
+        throw new UnauthorizedAccessException();
       HardenInstalledImage();
+      string servicePath = Process.GetCurrentProcess().MainModule.FileName;
+      serviceImageLease = new FileStream(servicePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096,
+        FileOptions.SequentialScan);
+      if (!FileIdentity.Read(serviceImageLease.SafeFileHandle).Ordinary) throw new UnauthorizedAccessException();
       stopping = false;
       System.Threading.ThreadPool.QueueUserWorkItem(_ => AcceptLoop());
     }
-    protected override void OnStop() { stopping = true; }
+    protected override void OnStop() {
+      stopping = true;
+      if (serviceImageLease != null) { serviceImageLease.Dispose(); serviceImageLease = null; }
+    }
 
     private static void HardenInstalledImage() {
       string path = Process.GetCurrentProcess().MainModule.FileName;
@@ -50,6 +64,9 @@ namespace Propr.ConnectAuthority {
       security.SetAccessRuleProtection(true, false);
       security.AddAccessRule(new FileSystemAccessRule(system, FileSystemRights.FullControl, AccessControlType.Allow));
       security.AddAccessRule(new FileSystemAccessRule(trustedInstaller, FileSystemRights.FullControl, AccessControlType.Allow));
+      security.AddAccessRule(new FileSystemAccessRule(
+        new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
+        FileSystemRights.ReadAndExecute, AccessControlType.Allow));
       File.SetAccessControl(path, security);
       if (!PrivateAcl(path, true)) throw new UnauthorizedAccessException();
     }
@@ -133,11 +150,11 @@ namespace Propr.ConnectAuthority {
       if (!value.Keys.OrderBy(x => x, StringComparer.Ordinal).SequenceEqual(keys.OrderBy(x => x, StringComparer.Ordinal)))
         throw new InvalidDataException();
     }
-    private bool Fresh(string requestId) {
+    private bool Fresh(HashSet<string> seen, string requestId) {
       lock (replayLock) {
-        if (replay.Contains(requestId)) return false;
-        if (replay.Count >= 1024) return false;
-        replay.Add(requestId);
+        if (seen.Contains(requestId)) return false;
+        if (seen.Count >= 1024) return false;
+        seen.Add(requestId);
         return true;
       }
     }
@@ -156,6 +173,25 @@ namespace Propr.ConnectAuthority {
         using (Process client = Process.GetProcessById((int)clientPid)) {
           if (client.SessionId <= 0) throw new UnauthorizedAccessException();
         }
+        Dictionary<string, object> authentication = Parse(ReadFrame(pipe));
+        Exact(authentication, "version", "kind", "requestId", "nonce");
+        string authenticationId = Required(authentication, "requestId", 32);
+        string authenticationNonce = Required(authentication, "nonce", 64);
+        if (Convert.ToInt32(authentication["version"]) != 3 ||
+            Required(authentication, "kind", 32) != "authenticate-server" ||
+            !Hex(authenticationId, 32) || !Hex(authenticationNonce, 64) || !Fresh(authenticationReplay, authenticationId))
+          throw new InvalidDataException();
+        FileIdentity authenticatedSelf = FileIdentity.ReadProcess(Process.GetCurrentProcess());
+        string authenticatedPath = Process.GetCurrentProcess().MainModule.FileName;
+        if (!PrivateAcl(authenticatedPath, true)) throw new UnauthorizedAccessException();
+        WriteFrame(pipe, Document(
+          "version", 3, "kind", "server-authenticated", "requestId", authenticationId,
+          "nonce", authenticationNonce, "serverPid", Process.GetCurrentProcess().Id.ToString(),
+          "imagePath", authenticatedPath, "volumeSerialNumber", authenticatedSelf.Volume.ToString(),
+          "fileId", authenticatedSelf.FileId, "sha256", HashFile(authenticatedPath),
+          "accountSid", "S-1-5-18", "serviceSid", ServiceSid().Value,
+          "daclProtected", true));
+
         Dictionary<string, object> request = Parse(ReadFrame(pipe));
         Exact(request, "version", "kind", "requestId", "nonce", "serviceVersion", "artifactPath", "artifactSha256");
         if (Convert.ToInt32(request["version"]) != 3 || Required(request, "kind", 32) != "authorize-launch")
@@ -172,7 +208,7 @@ namespace Propr.ConnectAuthority {
             "nonce", nonce, "serviceVersion", Version));
           return;
         }
-        if (!Fresh(requestId)) throw new InvalidDataException();
+        if (!Fresh(replay, requestId)) throw new InvalidDataException();
         lease = new FileStream(artifactPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096,
           FileOptions.SequentialScan);
         FileIdentity artifactIdentity = FileIdentity.Read(lease.SafeFileHandle);
@@ -212,7 +248,7 @@ namespace Propr.ConnectAuthority {
       if (Convert.ToInt32(control["version"]) != 3 || Required(control, "kind", 32) != expectedKind ||
           Required(control, "leaseId", 32) != leaseId || !Hex(requestId, 32) || !Hex(nonce, 64))
         throw new InvalidDataException();
-      if (!Fresh(requestId)) throw new InvalidDataException();
+      if (!Fresh(replay, requestId)) throw new InvalidDataException();
       if (expectedKind == "confirm-launch") {
         int pid;
         if (!Int32.TryParse(Required(control, "childPid", 10), out pid) || pid < 1) throw new InvalidDataException();
@@ -246,7 +282,7 @@ namespace Propr.ConnectAuthority {
       for (int i = 0; i < pairs.Length; i += 2) value.Add((string)pairs[i], pairs[i + 1]);
       return value;
     }
-    private static bool PrivateAcl(string path, bool requireSystemOwner) {
+    internal static bool PrivateAcl(string path, bool requireSystemOwner) {
       FileSecurity acl = File.GetAccessControl(path, AccessControlSections.Owner | AccessControlSections.Access);
       SecurityIdentifier owner = (SecurityIdentifier)acl.GetOwner(typeof(SecurityIdentifier));
       if (!acl.AreAccessRulesProtected || (requireSystemOwner &&
@@ -262,7 +298,10 @@ namespace Propr.ConnectAuthority {
       }
       return true;
     }
-    private static string[] SigningPins(string path) {
+    internal static SecurityIdentifier ServiceSid() {
+      return (SecurityIdentifier)new NTAccount("NT SERVICE", Name).Translate(typeof(SecurityIdentifier));
+    }
+    internal static string[] SigningPins(string path) {
 #if PROPR_VALIDATION
       return new[] { new string('0', 64), new string('0', 64) };
 #else
@@ -327,7 +366,7 @@ namespace Propr.ConnectAuthority {
     [StructLayout(LayoutKind.Sequential)] private struct FILE_ID_128 {
       [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)] internal byte[] Identifier;
     }
-    private sealed class FileIdentity {
+    internal sealed class FileIdentity {
       internal ulong Volume; internal string FileId; internal bool Ordinary;
       internal static FileIdentity Read(SafeFileHandle handle) {
         FILE_ID_INFO info;
@@ -375,6 +414,9 @@ namespace Propr.ConnectAuthority {
 
   internal static class Program {
     private static void Main(string[] args) {
+      if (args.Length == 1 && args[0] == "--client-proxy-v3") {
+        Environment.Exit(ClientProxy.Run());
+      }
       if (Environment.UserInteractive && args.Length == 1 && args[0] == "--validation-console") {
         // Installed-service tests use SCM for authority. Console mode only
         // proves that an uninstalled package copy cannot become the service.
@@ -382,5 +424,162 @@ namespace Propr.ConnectAuthority {
       }
       ServiceBase.Run(new AuthorityService());
     }
+  }
+
+  internal static class ClientProxy {
+    private const int MaxFrame = 4096;
+    private static byte[] ReadExact(Stream stream, int length) {
+      byte[] value = new byte[length]; int offset = 0;
+      while (offset < length) { int count = stream.Read(value, offset, length - offset); if (count <= 0) throw new EndOfStreamException(); offset += count; }
+      return value;
+    }
+    private static byte[] ReadFrame(Stream stream) {
+      byte[] prefix = ReadExact(stream, 4); int length = BitConverter.ToInt32(prefix, 0);
+      if (length < 2 || length > MaxFrame) throw new InvalidDataException();
+      return ReadExact(stream, length);
+    }
+    private static void WriteRawFrame(Stream stream, byte[] body) {
+      if (body.Length < 2 || body.Length > MaxFrame) throw new InvalidDataException();
+      byte[] prefix = BitConverter.GetBytes(body.Length); stream.Write(prefix, 0, 4); stream.Write(body, 0, body.Length); stream.Flush();
+    }
+    private static string Required(Dictionary<string, object> value, string key, int max) {
+      object raw; string text;
+      if (!value.TryGetValue(key, out raw) || (text = raw as string) == null || text.Length < 1 || text.Length > max ||
+          text.IndexOfAny(new[] { '\0', '\r', '\n' }) >= 0) throw new InvalidDataException();
+      return text;
+    }
+    private static void Exact(Dictionary<string, object> value, params string[] keys) {
+      if (!value.Keys.OrderBy(x => x, StringComparer.Ordinal).SequenceEqual(keys.OrderBy(x => x, StringComparer.Ordinal)))
+        throw new InvalidDataException();
+    }
+    private static Dictionary<string, object> Parse(byte[] bytes) {
+      string text = new UTF8Encoding(false, true).GetString(bytes);
+      Dictionary<string, object> value = new JavaScriptSerializer { MaxJsonLength = MaxFrame }.Deserialize<Dictionary<string, object>>(text);
+      if (value == null || new JavaScriptSerializer { MaxJsonLength = MaxFrame }.Serialize(
+          new SortedDictionary<string, object>(value, StringComparer.Ordinal)) != text) throw new InvalidDataException();
+      return value;
+    }
+    private static void WriteDocument(Stream stream, SortedDictionary<string, object> value) {
+      WriteRawFrame(stream, new UTF8Encoding(false, true).GetBytes(new JavaScriptSerializer().Serialize(value)));
+    }
+    private static SortedDictionary<string, object> Document(params object[] pairs) {
+      SortedDictionary<string, object> value = new SortedDictionary<string, object>(StringComparer.Ordinal);
+      for (int i = 0; i < pairs.Length; i += 2) value.Add((string)pairs[i], pairs[i + 1]);
+      return value;
+    }
+    private static bool Hex(string value, int length) {
+      return value.Length == length && value.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+    }
+    private static string Hash(Stream stream) {
+      stream.Position = 0; using (SHA256 sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+    }
+    private static bool PipeAcl(NamedPipeClientStream pipe) {
+      PipeSecurity acl = pipe.GetAccessControl();
+      SecurityIdentifier owner = (SecurityIdentifier)acl.GetOwner(typeof(SecurityIdentifier));
+      if (!acl.AreAccessRulesProtected || !owner.IsWellKnown(WellKnownSidType.LocalSystemSid)) return false;
+      bool system = false, administrators = false, authenticated = false;
+      int rules = 0;
+      foreach (PipeAccessRule rule in acl.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+        rules++;
+        SecurityIdentifier sid = (SecurityIdentifier)rule.IdentityReference;
+        if (rule.AccessControlType != AccessControlType.Allow || rule.IsInherited) return false;
+        if (sid.IsWellKnown(WellKnownSidType.LocalSystemSid)) {
+          system = rule.PipeAccessRights == PipeAccessRights.FullControl;
+        } else if (sid.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid)) {
+          administrators = rule.PipeAccessRights == PipeAccessRights.FullControl;
+        } else if (sid.IsWellKnown(WellKnownSidType.AuthenticatedUserSid)) {
+          PipeAccessRights rights = rule.PipeAccessRights;
+          authenticated = rights == PipeAccessRights.ReadWrite ||
+            rights == (PipeAccessRights.ReadWrite | PipeAccessRights.Synchronize);
+        } else return false;
+      }
+      return rules == 3 && system && administrators && authenticated;
+    }
+    private static bool ServerToken(IntPtr process) {
+      IntPtr token;
+      if (!OpenProcessToken(process, 0x0008, out token)) return false;
+      try {
+        using (WindowsIdentity identity = new WindowsIdentity(token)) {
+          if (identity.User == null || !identity.User.IsWellKnown(WellKnownSidType.LocalSystemSid)) return false;
+          SecurityIdentifier service = AuthorityService.ServiceSid();
+          return identity.Groups != null && identity.Groups.Cast<IdentityReference>()
+            .Any(group => ((SecurityIdentifier)group.Translate(typeof(SecurityIdentifier))).Value == service.Value);
+        }
+      } finally { CloseHandle(token); }
+    }
+    internal static int Run() {
+      try {
+        Stream input = Console.OpenStandardInput(); Stream output = Console.OpenStandardOutput();
+        Dictionary<string, object> open = Parse(ReadFrame(input));
+        Exact(open, "version", "kind", "requestId", "nonce", "serviceVersion", "imagePath", "sha256",
+          "authenticodeLeafSha256", "authenticodeSpkiSha256");
+        string requestId = Required(open, "requestId", 32); string nonce = Required(open, "nonce", 64);
+        string expectedPath = Required(open, "imagePath", 1024); string expectedHash = Required(open, "sha256", 64);
+        string expectedLeaf = Required(open, "authenticodeLeafSha256", 64);
+        string expectedSpki = Required(open, "authenticodeSpkiSha256", 64);
+        if (Convert.ToInt32(open["version"]) != 3 || Required(open, "kind", 32) != "proxy-open" ||
+            Required(open, "serviceVersion", 16) != AuthorityService.Version || !Hex(requestId, 32) || !Hex(nonce, 64) ||
+            !Hex(expectedHash, 64) || !Hex(expectedLeaf, 64) || !Hex(expectedSpki, 64)) throw new InvalidDataException();
+
+        using (NamedPipeClientStream pipe = new NamedPipeClientStream(".", "ProPR.Connect.Authority.v3",
+          PipeDirection.InOut, PipeOptions.WriteThrough, TokenImpersonationLevel.Identification)) {
+          pipe.Connect(8000);
+          uint pid;
+          if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out pid) || pid < 1 || !PipeAcl(pipe)) throw new UnauthorizedAccessException();
+          // PROCESS_QUERY_LIMITED_INFORMATION is sufficient for the image and
+          // primary-token queries and remains available to a standard-user
+          // verifier without requesting mutation/debug rights.
+          IntPtr process = OpenProcess(0x00100000, false, pid);
+          if (process == IntPtr.Zero) throw new UnauthorizedAccessException();
+          try {
+            StringBuilder loadedPath = new StringBuilder(32768); uint loadedLength = (uint)loadedPath.Capacity;
+            if (!QueryFullProcessImageName(process, 0, loadedPath, ref loadedLength) ||
+                !String.Equals(Path.GetFullPath(loadedPath.ToString()), Path.GetFullPath(expectedPath), StringComparison.OrdinalIgnoreCase) ||
+                !ServerToken(process)) throw new UnauthorizedAccessException();
+            using (FileStream held = new FileStream(loadedPath.ToString(), FileMode.Open, FileAccess.Read, FileShare.Read)) {
+              AuthorityService.FileIdentity identity = AuthorityService.FileIdentity.Read(held.SafeFileHandle);
+              string[] pins = AuthorityService.SigningPins(loadedPath.ToString());
+              string selfPath = Process.GetCurrentProcess().MainModule.FileName;
+              using (FileStream self = new FileStream(selfPath, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+                AuthorityService.FileIdentity selfIdentity = AuthorityService.FileIdentity.Read(self.SafeFileHandle);
+                if (!String.Equals(Path.GetFullPath(selfPath), Path.GetFullPath(expectedPath), StringComparison.OrdinalIgnoreCase) ||
+                    selfIdentity.Volume != identity.Volume || selfIdentity.FileId != identity.FileId ||
+                    !selfIdentity.Ordinary || !identity.Ordinary || Hash(self) != expectedHash) throw new UnauthorizedAccessException();
+              }
+              if (Hash(held) != expectedHash || pins[0] != expectedLeaf || pins[1] != expectedSpki ||
+                  !AuthorityService.PrivateAcl(loadedPath.ToString(), true)) throw new UnauthorizedAccessException();
+              string authId = Guid.NewGuid().ToString("N"); string authNonce = BitConverter.ToString(Random(32)).Replace("-", "").ToLowerInvariant();
+              WriteDocument(pipe, Document("version", 3, "kind", "authenticate-server", "requestId", authId, "nonce", authNonce));
+              Dictionary<string, object> proof = Parse(ReadFrame(pipe));
+              Exact(proof, "version", "kind", "requestId", "nonce", "serverPid", "imagePath", "volumeSerialNumber", "fileId",
+                "sha256", "accountSid", "serviceSid", "daclProtected");
+              string serviceSid = AuthorityService.ServiceSid().Value;
+              string proofPath = Required(proof, "imagePath", 1024);
+              if (Convert.ToInt32(proof["version"]) != 3 || Required(proof, "kind", 32) != "server-authenticated" ||
+                  Required(proof, "requestId", 32) != authId || Required(proof, "nonce", 64) != authNonce ||
+                  Required(proof, "serverPid", 10) != pid.ToString() ||
+                  !String.Equals(Path.GetFullPath(proofPath), Path.GetFullPath(loadedPath.ToString()), StringComparison.OrdinalIgnoreCase) ||
+                  Required(proof, "volumeSerialNumber", 32) != identity.Volume.ToString() || Required(proof, "fileId", 64) != identity.FileId ||
+                  Required(proof, "sha256", 64) != expectedHash || Required(proof, "accountSid", 32) != "S-1-5-18" ||
+                  Required(proof, "serviceSid", 96) != serviceSid || proof["daclProtected"] as bool? != true)
+                throw new UnauthorizedAccessException();
+              WriteDocument(output, Document("version", 3, "kind", "proxy-ready", "requestId", requestId, "nonce", nonce,
+                "serverPid", pid.ToString(), "imagePath", loadedPath.ToString(), "volumeSerialNumber", identity.Volume.ToString(),
+                "fileId", identity.FileId, "sha256", expectedHash, "accountSid", "S-1-5-18",
+                "serviceSid", serviceSid, "daclProtected", true, "verified", true));
+              while (true) { byte[] body; try { body = ReadFrame(input); } catch (EndOfStreamException) { break; }
+                WriteRawFrame(pipe, body); WriteRawFrame(output, ReadFrame(pipe)); }
+            }
+          } finally { CloseHandle(process); }
+        }
+        return 0;
+      } catch { return 23; }
+    }
+    private static byte[] Random(int length) { byte[] value = new byte[length]; using (RandomNumberGenerator rng = RandomNumberGenerator.Create()) rng.GetBytes(value); return value; }
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder path, ref uint length);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
   }
 }

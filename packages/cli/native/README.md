@@ -94,9 +94,19 @@ uninstall stops and removes the service through Windows Installer. The npm
 package contains the installer for an administrator to install, repair, or
 remove, but the standard-user CLI never invokes MSI or elevates itself.
 
-Before any package native image is executed, the CLI connects to the fixed
-least-privilege named pipe and sends one canonical 4 KiB-bounded launch
-authorization. The service rejects anonymous/SYSTEM clients, wrong sessions,
+Before a privileged package native launch, the CLI executes the read/execute-only
+installed service image as a user-session verifier. That verifier owns the
+actual named-pipe connection and checks its kernel-reported server PID with
+`GetNamedPipeServerProcessId`, opens and retains the process and image, uses
+`QueryFullProcessImageName`, requires a LocalSystem token containing the
+`NT SERVICE\\ProPRConnectAuthority` service SID, and binds the protected pipe
+DACL, held image volume/`FILE_ID_128`/hash/Authenticode pins and protected file
+DACL. A fresh nonce exchange on that same kernel-bound connection precedes any
+launch request, so a service-absent same-user pipe owner cannot synthesize a
+receipt or replay an old one. The verifier communicates with Node only over
+anonymous inherited stdin/stdout and retains its handles through release.
+
+The service rejects anonymous/SYSTEM clients, wrong sessions,
 stale versions, replayed request IDs, invalid UTF-8/schema/framing, nonordinary
 images, hash changes, and (in production) any broker not signed by the same
 fixed leaf/SPKI as the service. It holds a no-write/no-delete file lease while
@@ -106,6 +116,13 @@ SYSTEM identity, and protected service ACL before acknowledging confirmation.
 The CLI releases that OS lease only after the broker's existing self-proof
 barrier. A missing, stopped, crashed, stale, or uninstalled service produces a
 fixed install/repair action and never falls back to the old package-first path.
+
+`propr connect status --json --root` remains outside that privileged launch
+path. Status reads an existing identity without creating or repairing files
+and uses only the checksum-bound broker's read-only inherited-handle ACL mode.
+It does not connect to the service, invoke MSI, elevate, or mutate the selected
+root. Setup/protection and persistent native launch remain authority-gated and
+preserve `authorityMissing` versus `repairRequired`.
 
 The CLI never passes the supervisor path to `child_process.spawn`. It starts
 the manifest-bound x64 native broker in `launch-supervisor-v2` mode with an

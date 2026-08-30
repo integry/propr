@@ -20,6 +20,7 @@ export const WINDOWS_HELPER_DIAGNOSTICS = Object.freeze([
   "INVALID_UTF8",
   "SPAWN_ERROR",
   "UNEXPECTED_EXIT",
+  "TOOLCHAIN_MISMATCH",
 ]);
 
 const MAX_COMPILER_DIAGNOSTIC_BYTES = 64 * 1024;
@@ -295,22 +296,43 @@ export async function awaitWindowsBuildLeaseReadiness(readiness, plan, options =
 }
 
 // Reviewed leaf-certificate and SubjectPublicKeyInfo SHA-256 policy for the
-// exact VS 17.14 / Roslyn 4.14 toolchain selected by the hosted build. These
+// exact VS 17.14/Roslyn 4.14 and VS 18.9/Roslyn 5.900 toolchains selected by
+// the hosted x64 and ARM64 builds. These
 // values come from the signed Microsoft distribution payloads, not from a
 // certificate observed on the runner. A valid chain, matching subject, or
 // shared Microsoft root is deliberately insufficient.
+const VS2026_COMPILER_SIGNER = Object.freeze({
+  authenticodeLeafSha256: "b89f8f6bf4f50250528995fd16e228f1b24ee0017d8f87b0c756c1b85b82f58c",
+  authenticodeSpkiSha256: "c36d219b65bcb11b4c7766f5e4707aac8e7f391fb57d9be21b31ff06c0c27d8a",
+});
+const VS2026_NATIVE_COMPILER_SIGNER = Object.freeze({
+  authenticodeLeafSha256: "c30b441672c82883d92eddac6d24cb57e9960bda4486c7fb5865e74157f35850",
+  authenticodeSpkiSha256: "72bc03497a5c3fd67db74a5c648239fa9d212ff61a64250d28e475d688d49b97",
+});
+const VS2022_COMPILER_SIGNER = Object.freeze({
+  authenticodeLeafSha256: "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae",
+  authenticodeSpkiSha256: "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560",
+});
+const SHARED_NATIVE_LINKER_SIGNER = Object.freeze({
+  authenticodeLeafSha256: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed",
+  authenticodeSpkiSha256: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d",
+});
+
 export const WINDOWS_BUILD_TOOL_SIGNER_POLICY = Object.freeze({
-  compiler: Object.freeze({
-    authenticodeLeafSha256: "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae",
-    authenticodeSpkiSha256: "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560",
+  "vs2026-18.9-x64": Object.freeze({
+    compiler: VS2026_COMPILER_SIGNER,
+    "native-compiler": VS2026_NATIVE_COMPILER_SIGNER,
+    "native-linker": SHARED_NATIVE_LINKER_SIGNER,
   }),
-  "native-compiler": Object.freeze({
-    authenticodeLeafSha256: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed",
-    authenticodeSpkiSha256: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d",
+  "vs2026-18.9-arm64": Object.freeze({
+    compiler: VS2022_COMPILER_SIGNER,
+    "native-compiler": VS2026_NATIVE_COMPILER_SIGNER,
+    "native-linker": SHARED_NATIVE_LINKER_SIGNER,
   }),
-  "native-linker": Object.freeze({
-    authenticodeLeafSha256: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed",
-    authenticodeSpkiSha256: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d",
+  "vs2022-17.14-x64": Object.freeze({
+    compiler: VS2022_COMPILER_SIGNER,
+    "native-compiler": SHARED_NATIVE_LINKER_SIGNER,
+    "native-linker": SHARED_NATIVE_LINKER_SIGNER,
   }),
   "sign-tool": Object.freeze({
     authenticodeLeafSha256: "0a9f9ec4820fcf1943ce23889211269e5d23e16d81c667060653bada8570eeb1",
@@ -318,16 +340,72 @@ export const WINDOWS_BUILD_TOOL_SIGNER_POLICY = Object.freeze({
   }),
 });
 
-export const WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY = Object.freeze({
-  "roslyn-runtime": Object.freeze({
-    sha256: "72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209",
-    files: 111,
-    bytes: "38581501",
+export const WINDOWS_BUILD_TOOLCHAIN_PROFILES = Object.freeze({
+  "vs2026-18.9-x64": Object.freeze({
+    visualStudioRange: "[18.9,18.10)",
+    visualStudioVersion: "18.9.12112.369",
+    visualStudioPathFamily: "VisualStudio/18",
+    roslynVersion: "5.900.26.35703",
+    msvcVersion: "14.51.36231",
+    msvcProductVersion: "14.51.36256.0",
+    runnerArchitecture: "x64",
   }),
-  "msvc-host-runtime": Object.freeze({
-    sha256: "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2",
-    files: 53,
-    bytes: "62411793",
+  "vs2026-18.9-arm64": Object.freeze({
+    visualStudioRange: "[18.9,18.10)",
+    visualStudioVersion: "18.9.12112.369",
+    visualStudioPathFamily: "VisualStudio/18",
+    roslynVersion: "5.900.26.35703",
+    msvcVersion: "14.51.36231",
+    msvcProductVersion: "14.51.36256.0",
+    runnerArchitecture: "arm64",
+  }),
+  "vs2022-17.14-x64": Object.freeze({
+    visualStudioRange: "[17.14,17.15)",
+    visualStudioVersion: "17.14",
+    visualStudioPathFamily: "VisualStudio/2022/17.14",
+    roslynVersion: "4.14",
+    msvcVersion: "14.44",
+    msvcProductVersion: "14.44",
+    runnerArchitecture: "x64",
+  }),
+});
+
+export const WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY = Object.freeze({
+  "vs2026-18.9-x64": Object.freeze({
+    "roslyn-runtime": Object.freeze({
+      sha256: "d4630911fcc8edd9ea0581c2d905270790b0f3de2b212d4f8a9a8b2164d016e5",
+      files: 111,
+      bytes: "35634755",
+    }),
+    "msvc-host-runtime": Object.freeze({
+      sha256: "779b6b9ee8d67c416e88a3cb0ec65b83cfb89c1159b8c458183cf2def96bcb13",
+      files: 84,
+      bytes: "126253430",
+    }),
+  }),
+  "vs2026-18.9-arm64": Object.freeze({
+    "roslyn-runtime": Object.freeze({
+      sha256: "65c926bb608189705239c90f011b52a1f493d569d00027468cdb5961aa21d026",
+      files: 111,
+      bytes: "35633203",
+    }),
+    "msvc-host-runtime": Object.freeze({
+      sha256: "779b6b9ee8d67c416e88a3cb0ec65b83cfb89c1159b8c458183cf2def96bcb13",
+      files: 84,
+      bytes: "126253430",
+    }),
+  }),
+  "vs2022-17.14-x64": Object.freeze({
+    "roslyn-runtime": Object.freeze({
+      sha256: "72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209",
+      files: 111,
+      bytes: "38581501",
+    }),
+    "msvc-host-runtime": Object.freeze({
+      sha256: "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2",
+      files: 53,
+      bytes: "62411793",
+    }),
   }),
   "wix-runtime": Object.freeze({
     sha256: "732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298",
@@ -336,8 +414,10 @@ export const WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY = Object.freeze({
   }),
 });
 
-export function authorizeWindowsBuildToolSigner(role, observed) {
-  const expected = WINDOWS_BUILD_TOOL_SIGNER_POLICY[role];
+export function authorizeWindowsBuildToolSigner(profile, role, observed) {
+  const expected = role === "sign-tool"
+    ? WINDOWS_BUILD_TOOL_SIGNER_POLICY[role]
+    : WINDOWS_BUILD_TOOL_SIGNER_POLICY[profile]?.[role];
   if (!expected || !observed || observed.signatureKind !== "E"
     || observed.authenticodeLeafSha256 !== expected.authenticodeLeafSha256
     || observed.authenticodeSpkiSha256 !== expected.authenticodeSpkiSha256) {
@@ -346,8 +426,10 @@ export function authorizeWindowsBuildToolSigner(role, observed) {
   return { signatureKind: "E", ...expected };
 }
 
-export function authorizeWindowsBuildToolDependencies(role, observed) {
-  const expected = WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY[role];
+export function authorizeWindowsBuildToolDependencies(profile, role, observed) {
+  const expected = role === "wix-runtime"
+    ? WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY[role]
+    : WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY[profile]?.[role];
   if (!expected || !observed || observed.sha256 !== expected.sha256
     || observed.files !== expected.files || observed.bytes !== expected.bytes) {
     throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
@@ -483,11 +565,11 @@ export function runBoundedBuildTool(command, args, options = {}) {
   return { stdout, stderr };
 }
 
-export function assertModernRoslynVersion(version) {
-  // VS 2022's in-box Roslyn has file version 4.x. Refuse Framework csc and
-  // future/unreviewed major versions instead of silently changing toolchains.
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:\.\d+)?$/u.exec(version);
-  if (!match || Number(match[1]) !== 4 || Number(match[2]) < 8 || Number(match[2]) > 20) {
+export function assertModernRoslynVersion(version, profile = "vs2022-17.14-x64") {
+  const allowed = profile === "vs2026-18.9-x64" || profile === "vs2026-18.9-arm64"
+    ? /^5\.900\.26\.35703$/u
+    : profile === "vs2022-17.14-x64" ? /^4\.14(?:\.\d+){1,2}$/u : null;
+  if (!allowed?.test(version)) {
     throw new WindowsHelperBuildError("BUILD_COMPILER", "BAD_FLAG");
   }
 }

@@ -51,6 +51,8 @@ test("Connect status exposes stable exit semantics", () => {
   assert.deepEqual(CONNECT_STATUS_EXIT, {
     ready: 0,
     internalFailure: 1,
+    authorityMissing: 1,
+    repairRequired: 1,
     notReady: 0,
     incompatible: 2,
     invalidConfig: 1,

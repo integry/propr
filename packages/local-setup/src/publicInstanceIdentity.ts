@@ -391,6 +391,16 @@ export async function getOrCreatePublicInstanceIdentityPinned(
   throw new Error("public instance identity remained a non-single-link file or creation did not settle");
 }
 
+/** Read the existing public identity without creating, repairing, or unlinking anything. */
+export async function readPublicInstanceIdentityPinned(
+  directory: PinnedPublicIdentityDirectory,
+  options: Pick<PublicIdentityOptions, "onBoundary"> = {},
+): Promise<string> {
+  const value = await readIdentityIfPresent(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options);
+  if (!value) throw new Error("public instance identity is absent");
+  return value;
+}
+
 function descriptorRoot(): string {
   for (const candidate of ["/proc/self/fd", "/dev/fd"]) {
     try {

@@ -116,3 +116,10 @@ test("service stop, crash, timeout, and uninstall during a request cannot author
     }
   }
 });
+
+test("installed authority errors preserve actionable absence and repair states", () => {
+  assert.equal(new WindowsInstalledAuthorityError("ABSENT").state, "authorityMissing");
+  for (const code of ["VERSION", "AUTHORITY", "PROTOCOL", "TIMEOUT"] as const) {
+    assert.equal(new WindowsInstalledAuthorityError(code).state, "repairRequired");
+  }
+});

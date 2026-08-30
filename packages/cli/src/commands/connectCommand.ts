@@ -12,13 +12,16 @@ import type { OrchestratorConfig } from "../orchestrator/types.js";
 import {
   ConnectRootError,
   PublicInstanceIdentityError,
-  getOrCreateSnapshotPublicInstanceIdentity,
+  readSnapshotPublicInstanceIdentity,
   withOwnedConnectRootSnapshot,
 } from "../connectIdentity.js";
+import { WindowsInstalledAuthorityError } from "../windowsInstalledAuthority.js";
 
 export const CONNECT_STATUS_EXIT = {
   ready: 0,
   internalFailure: 1,
+  authorityMissing: 1,
+  repairRequired: 1,
   notReady: 0,
   incompatible: 2,
   invalidConfig: 1,
@@ -42,7 +45,9 @@ export type ConnectStatusReasonCode =
   | "INVALID_ROOT"
   | "INVALID_ENDPOINT"
   | "IDENTITY_UNAVAILABLE"
-  | "INTERNAL_FAILURE";
+  | "INTERNAL_FAILURE"
+  | "AUTHORITY_MISSING"
+  | "REPAIR_REQUIRED";
 
 export interface ConnectStatusDocument {
   schemaVersion: typeof PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION;
@@ -339,7 +344,9 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
     const prepared = await prepareConnectHostConfig();
     const local = await withOwnedConnectRootSnapshot(root, async (snapshot) => {
       const cfg = await prepared.resolveSnapshot(snapshot);
-      const publicInstanceIdentity = await getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory);
+      // Status is discovery, not setup: never create/repair identity state or
+      // invoke a privileged Windows protection operation from this path.
+      const publicInstanceIdentity = await readSnapshotPublicInstanceIdentity(snapshot.identityDirectory);
       const sidecarInspection = prepared.inspectTunnel(cfg);
       return {
         cfg: {
@@ -365,6 +372,11 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
     }
     if (error instanceof PublicInstanceIdentityError) {
       return baseDocument("invalidConfig", { reasonCodes: ["IDENTITY_UNAVAILABLE"] });
+    }
+    if (error instanceof WindowsInstalledAuthorityError) {
+      return baseDocument(error.state, {
+        reasonCodes: [error.state === "authorityMissing" ? "AUTHORITY_MISSING" : "REPAIR_REQUIRED"],
+      });
     }
     return baseDocument("internalFailure", { reasonCodes: ["INTERNAL_FAILURE"] });
   }

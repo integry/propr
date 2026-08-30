@@ -974,6 +974,8 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     const attackerResultPath = join(tmpdir(), `propr-control-handle-attacker-${process.pid}.json`);
     rmSync(attackerResultPath, { force: true });
     let concurrentRequest: Promise<Awaited<ReturnType<typeof exerciseWindowsAuthorityCapabilityForNativeTest>>> | undefined;
+    let installedServiceIdentity: InstalledAuthorityIdentity | undefined;
+    let installedPackagedBrokerPath: string | undefined;
     const locked = await exerciseWindowsAuthorityCapabilityForNativeTest({
       onInstalledAuthorityAuthorized: async ({
         imagePath, volumeSerialNumber, fileId, sha256, authenticodeLeafSha256,
@@ -1007,7 +1009,6 @@ test('native helper replacement is rejected before attacker bytes can execute', 
             rejectSpoof(new Error('same-user pipe server replaced the installed authority'));
           });
         });
-        completeScenario('authority-pipe-spoof');
 
         const rawRejected = (body: Buffer) => new Promise<void>((resolveRejected, rejectRejected) => {
           const socket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
@@ -1037,16 +1038,34 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         const staleReceipt = await new Promise<Record<string, unknown>>((resolveReceipt, rejectReceipt) => {
           const socket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
           let received = Buffer.alloc(0);
+          let authenticated = false;
           const timer = setTimeout(() => { socket.destroy(); rejectReceipt(new Error('version mismatch did not settle')); }, 5_000);
-          socket.once('connect', () => socket.write(staleFrame));
+          const authentication = frameDocument({
+            kind: 'authenticate-server', nonce: '1'.repeat(64), requestId: '2'.repeat(32), version: 3,
+          });
+          socket.once('connect', () => socket.write(authentication));
           socket.on('data', (chunk) => {
             received = Buffer.concat([received, chunk]);
-            if (received.byteLength < 4) return;
-            const length = received.readUInt32LE(0);
-            if (length < 2 || length > 4096 || received.byteLength !== length + 4) return;
-            clearTimeout(timer);
-            socket.destroy();
-            resolveReceipt(JSON.parse(received.subarray(4).toString('utf8')) as Record<string, unknown>);
+            while (received.byteLength >= 4) {
+              const length = received.readUInt32LE(0);
+              if (length < 2 || length > 4096 || received.byteLength < length + 4) return;
+              const document = JSON.parse(received.subarray(4, length + 4).toString('utf8')) as Record<string, unknown>;
+              received = received.subarray(length + 4);
+              if (!authenticated) {
+                assert.equal(document.kind, 'server-authenticated');
+                assert.equal(document.requestId, '2'.repeat(32));
+                assert.equal(document.nonce, '1'.repeat(64));
+                assert.equal(document.serverPid, String(servicePid));
+                assert.equal(document.accountSid, 'S-1-5-18');
+                assert.match(String(document.serviceSid), /^S-1-5-80-(?:(?:0|[1-9]\d{0,9})-){4}(?:0|[1-9]\d{0,9})$/);
+                authenticated = true;
+                socket.write(staleFrame);
+              } else {
+                clearTimeout(timer);
+                socket.destroy();
+                resolveReceipt(document);
+              }
+            }
           });
           socket.once('error', rejectReceipt);
         });
@@ -1061,6 +1080,8 @@ test('native helper replacement is rejected before attacker bytes can execute', 
           serviceVersion: '3.0.0', imagePath, volumeSerialNumber, fileId, sha256,
           authenticodeLeafSha256, authenticodeSpkiSha256,
         };
+        installedServiceIdentity = expectedService;
+        installedPackagedBrokerPath = packagedBrokerPath;
         const replayId = '5'.repeat(32);
         const abandoned = await acquireInstalledWindowsLaunchLease({
           path: packagedBrokerPath, sha256: sha256Digest(readFileSync(packagedBrokerPath)),
@@ -1091,6 +1112,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         assert.equal(manifest.protocolVersion, 2);
         assert.equal(manifest.pe.architecture, 'anycpu');
         assert.equal(manifest.pe.managed, true);
+        assert.ok(['vs2026-18.9-x64', 'vs2026-18.9-arm64', 'vs2022-17.14-x64'].includes(manifest.build.toolchainProfile));
         assert.deepEqual(manifest.build.toolSigners.map((item) => [item.name, item.signatureKind]), [
           ['compiler', 'E'], ['native-compiler', 'E'], ['native-linker', 'E'],
         ]);
@@ -1098,7 +1120,16 @@ test('native helper replacement is rejected before attacker bytes can execute', 
           assert.match(signer.authenticodeLeafSha256, /^[0-9a-f]{64}$/);
           assert.match(signer.authenticodeSpkiSha256, /^[0-9a-f]{64}$/);
         }
-        assert.deepEqual(manifest.build.toolDependencies, [
+        const dependencyPolicies = {
+          'vs2026-18.9-x64': [
+            { name: 'roslyn-runtime', sha256: 'd4630911fcc8edd9ea0581c2d905270790b0f3de2b212d4f8a9a8b2164d016e5', files: 111, bytes: '35634755' },
+            { name: 'msvc-host-runtime', sha256: '779b6b9ee8d67c416e88a3cb0ec65b83cfb89c1159b8c458183cf2def96bcb13', files: 84, bytes: '126253430' },
+          ],
+          'vs2026-18.9-arm64': [
+            { name: 'roslyn-runtime', sha256: '65c926bb608189705239c90f011b52a1f493d569d00027468cdb5961aa21d026', files: 111, bytes: '35633203' },
+            { name: 'msvc-host-runtime', sha256: '779b6b9ee8d67c416e88a3cb0ec65b83cfb89c1159b8c458183cf2def96bcb13', files: 84, bytes: '126253430' },
+          ],
+          'vs2022-17.14-x64': [
           {
             name: 'roslyn-runtime',
             sha256: '72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209',
@@ -1111,6 +1142,10 @@ test('native helper replacement is rejected before attacker bytes can execute', 
             files: 53,
             bytes: '62411793',
           },
+          ],
+        } as const;
+        assert.deepEqual(manifest.build.toolDependencies, [
+          ...dependencyPolicies[manifest.build.toolchainProfile as keyof typeof dependencyPolicies],
           {
             name: 'wix-runtime',
             sha256: '732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298',
@@ -1368,6 +1403,39 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     });
     assert.equal(stopped.status, 0, 'installed authority service could not be stopped during a partial request');
     await lifecycleClosed;
+    assert.ok(installedServiceIdentity && installedPackagedBrokerPath);
+    const squatterFrame = (document: unknown) => {
+      const body = Buffer.from(JSON.stringify(document));
+      const value = Buffer.alloc(body.byteLength + 4);
+      value.writeUInt32LE(body.byteLength, 0);
+      body.copy(value, 4);
+      return value;
+    };
+    const squatter = createServer((socket) => {
+      // A same-user owner may claim every old receipt field. The installed
+      // verifier must reject its kernel PID/token/image/ACL before trusting it.
+      socket.on('data', () => socket.write(squatterFrame({
+        accountSid: 'S-1-5-18', daclProtected: true,
+        fileId: installedServiceIdentity!.fileId, imagePath: installedServiceIdentity!.imagePath,
+        kind: 'server-authenticated', nonce: '1'.repeat(64), requestId: '2'.repeat(32),
+        serverPid: String(process.pid), serviceSid: 'S-1-5-80-1-2-3-4-5',
+        sha256: installedServiceIdentity!.sha256, version: 3,
+        volumeSerialNumber: installedServiceIdentity!.volumeSerialNumber,
+      })));
+    });
+    await new Promise<void>((resolveListening, rejectListening) => {
+      squatter.once('error', rejectListening);
+      squatter.listen(WINDOWS_CONNECT_AUTHORITY_PIPE, resolveListening);
+    });
+    try {
+      await assert.rejects(acquireInstalledWindowsLaunchLease({
+        path: installedPackagedBrokerPath,
+        sha256: sha256Digest(readFileSync(installedPackagedBrokerPath)),
+      }, installedServiceIdentity));
+    } finally {
+      await new Promise<void>((resolveClosed) => squatter.close(() => resolveClosed()));
+    }
+    completeScenario('authority-pipe-spoof');
     await assert.rejects(new Promise<void>((resolveUnexpected, rejectAbsent) => {
       const socket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
       socket.once('connect', () => { socket.destroy(); resolveUnexpected(); });
