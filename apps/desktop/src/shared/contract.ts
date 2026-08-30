@@ -74,6 +74,7 @@ export interface DesktopConnectionScope {
 
 export interface DesktopActivatedConnection extends DesktopConnectionScope {
   status: 'ready';
+  identityEpoch: string;
 }
 
 export interface DesktopAccessInvalidation extends DesktopConnectionScope {

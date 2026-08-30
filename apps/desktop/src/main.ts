@@ -229,8 +229,12 @@ if (!hasSingleInstanceLock) {
       fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
       openExternal: async url => { await shell.openExternal(url); },
       clientName: `ProPR Desktop (${process.platform})`,
+      reportRevocationFailure: diagnostic => {
+        log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
+      },
     });
     configureSessionSecurity(credentials);
+    await credentials.initialize();
     const lifecycle = new LocalLifecycleController();
     registerIpcHandlers({
       app,

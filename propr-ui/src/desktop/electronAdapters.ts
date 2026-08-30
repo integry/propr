@@ -67,7 +67,7 @@ const clearRendererProfileState = (): boolean => {
 };
 
 export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAdapters => {
-  let publishedProfile: { id: string; origin: string } | null = null;
+  let publishedProfile: { id: string; origin: string; identityEpoch: string } | null = null;
   return {
   platform: platform(navigator.platform || navigator.userAgent),
   profiles: {
@@ -139,10 +139,20 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
         };
       }
       const intendedOrigin = normalizeApiBaseUrl(profile.baseUrl);
+      if (!/^[A-Za-z0-9_-]{22}$/.test(activated.identityEpoch)) {
+        await discard();
+        return {
+          status: 'authentication-required',
+          message: 'This connection changed while it was being activated. Check it again to continue.',
+          version: result.version,
+          authentication: result.authentication,
+        };
+      }
       const isReplacement = publishedProfile === null
         || previousProfileId !== profile.id
         || publishedProfile.id !== profile.id
-        || publishedProfile.origin !== intendedOrigin;
+        || publishedProfile.origin !== intendedOrigin
+        || publishedProfile.identityEpoch !== activated.identityEpoch;
       if (isReplacement && !clearRendererProfileState()) {
         await discard();
         return {
@@ -156,10 +166,12 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
         authentication: result.authentication,
         profileId: activated.profileId,
         transportScope: activated.transportScope,
+        identityEpoch: activated.identityEpoch,
       };
     },
     publishActivation(profile, result) {
       if (result.transportScope === undefined) throw new Error('Desktop transport scope is missing.');
+      if (result.identityEpoch === undefined) throw new Error('Desktop credential identity is missing.');
       if (result.profileId === undefined || result.profileId !== profile.id) {
         setDesktopConnectionScope(null);
         throw new Error('Desktop activation profile changed before publication.');
@@ -169,7 +181,11 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
         profileId: result.profileId,
         transportScope: result.transportScope,
       }, profile.baseUrl);
-      publishedProfile = { id: profile.id, origin: normalizeApiBaseUrl(profile.baseUrl) };
+      publishedProfile = {
+        id: profile.id,
+        origin: normalizeApiBaseUrl(profile.baseUrl),
+        identityEpoch: result.identityEpoch,
+      };
     },
     deactivate() {
       setDesktopConnectionScope(null);

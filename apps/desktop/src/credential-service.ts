@@ -9,7 +9,7 @@ import {
   type DesktopConnectionScope,
 } from './shared/contract';
 import { normalizeApiBaseUrl } from './security';
-import type { ProfileStore, StoredCredential } from './profile-store';
+import type { PendingCredentialRevocation, ProfileStore, StoredCredential } from './profile-store';
 
 const DEFINITIVE_INVALID_CODES = new Set([
   'INVALID_INSTANCE_TOKEN',
@@ -21,15 +21,20 @@ export interface CredentialServiceDependencies {
   profiles: Pick<ProfileStore,
     'list' | 'saveAndDetachCredential' | 'commitPairedProfile' | 'detachProfile' | 'setActive' | 'activateProfile' | 'security'
     | 'readCredential' | 'readProfileCredential' | 'writeCredential' | 'removeCredential'
-    | 'removeCredentialIfCurrent'>;
+    | 'removeCredentialIfCurrent' | 'pendingRevocations' | 'completePendingRevocation'>;
   fetch: typeof globalThis.fetch;
   openExternal(url: string): Promise<void>;
   clientName: string;
   /** Deterministic pairing timing for protocol tests. Production uses the client defaults. */
   pairingTiming?: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
+  reportRevocationFailure?(diagnostic: {
+    code: 'network' | 'http' | 'local-cleanup';
+    status?: number;
+  }): void;
 }
 
 interface ActiveCredential extends StoredCredential {
+  identityEpoch: string;
   profileGeneration: number;
   selectionGeneration: number;
   transportScope: string;
@@ -44,6 +49,7 @@ interface PendingActivation {
   selectionGeneration: number;
   activeProfileId: string | null;
   credential: StoredCredential;
+  identityEpoch: string;
 }
 
 type RequestHeaders = Record<string, string | string[]>;
@@ -110,6 +116,7 @@ export class DesktopCredentialService {
   readonly #openExternal: (url: string) => Promise<void>;
   readonly #clientName: string;
   readonly #pairingTiming: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
+  readonly #reportRevocationFailure: NonNullable<CredentialServiceDependencies['reportRevocationFailure']>;
   readonly #internalRequestKey = randomBytes(32).toString('base64url');
   readonly #profileGenerations = new Map<string, number>();
   readonly #pairingControllers = new Map<string, AbortController>();
@@ -117,6 +124,9 @@ export class DesktopCredentialService {
   #latestProbeTicket = 0;
   #pendingActivation: PendingActivation | null = null;
   #active: ActiveCredential | null = null;
+  #publishingPair = false;
+  #publishWaiters: Array<() => void> = [];
+  #revocationRetry = Promise.resolve();
 
   constructor(dependencies: CredentialServiceDependencies) {
     this.#profiles = dependencies.profiles;
@@ -124,9 +134,16 @@ export class DesktopCredentialService {
     this.#openExternal = dependencies.openExternal;
     this.#clientName = dependencies.clientName;
     this.#pairingTiming = dependencies.pairingTiming ?? {};
+    this.#reportRevocationFailure = dependencies.reportRevocationFailure ?? (() => undefined);
+  }
+
+  async initialize(): Promise<void> {
+    await this.#retryPendingRevocations();
   }
 
   async saveProfile(input: DesktopProfileInput) {
+    await this.#waitForPairPublish();
+    await this.#retryPendingRevocations();
     const before = input.id
       ? (await this.#profiles.list()).profiles.find(profile => profile.id === input.id)
       : undefined;
@@ -150,7 +167,9 @@ export class DesktopCredentialService {
   }
 
   async removeProfile(profileId: string): Promise<string | null> {
+    if (this.#publishingPair) await this.#waitForPairPublish();
     this.#invalidateProfileOperations(profileId);
+    await this.#retryPendingRevocations();
     const detached = await this.#profiles.detachProfile(profileId);
     if (!detached) return null;
     if (detached.credential) this.#clearActiveIfCredential(detached.credential);
@@ -159,16 +178,26 @@ export class DesktopCredentialService {
   }
 
   async setActiveProfile(profileId: string | null): Promise<void> {
+    if (this.#publishingPair) await this.#waitForPairPublish();
     this.#selectionGeneration += 1;
     this.#latestProbeTicket += 1;
     this.#pendingActivation = null;
     for (const controller of this.#pairingControllers.values()) controller.abort();
     this.#pairingControllers.clear();
     this.#active = null;
+    await this.#retryPendingRevocations();
     await this.#profiles.setActive(profileId);
   }
 
   cancelPairing(profileId: string): void {
+    if (this.#publishingPair) {
+      this.#publishWaiters.push(() => this.#cancelPairingNow(profileId));
+      return;
+    }
+    this.#cancelPairingNow(profileId);
+  }
+
+  #cancelPairingNow(profileId: string): void {
     const generation = this.#bumpGeneration(profileId);
     // Cancelling an in-progress edit must not disable the still-committed
     // credential for an active profile.
@@ -178,6 +207,8 @@ export class DesktopCredentialService {
   }
 
   async pair(input: DesktopProfileInput): Promise<{ paired: true }> {
+    await this.#waitForPairPublish();
+    await this.#retryPendingRevocations();
     if (!input.id) throw new Error('Desktop profile id is required');
     const origin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!origin) throw new Error('Invalid desktop API URL');
@@ -221,17 +252,19 @@ export class DesktopCredentialService {
         () => !controller.signal.aborted
           && this.#generation(proposed.id) === profileGeneration
           && this.#selectionGeneration === selectionGeneration,
+        () => this.#beginPairPublish(
+          proposed.id, profileGeneration, selectionGeneration, controller.signal,
+        ),
+        () => {
+          if (this.#active?.profileId === proposed.id) this.#active = null;
+        },
       );
       if (committed && 'stored' in committed) {
         throw new Error('OS-backed secure storage is required for desktop pairing.');
       }
       if (!committed) throw new ProprClientError('Desktop pairing was cancelled.', { kind: 'aborted' });
       transient = null;
-      if (committed.replacedCredential) this.#clearActiveIfCredential(committed.replacedCredential);
-      if (committed.originChanged && this.#active?.profileId === committed.profile.id) this.#active = null;
-      if (committed.replacedCredential) {
-        await this.#revoke(committed.replacedCredential).catch(() => undefined);
-      }
+      await this.#retryPendingRevocations();
       return { paired: true };
     } catch (error) {
       if (transient) {
@@ -247,6 +280,8 @@ export class DesktopCredentialService {
   }
 
   async probe(input: DesktopProfileInput): Promise<DesktopConnectionResult> {
+    await this.#waitForPairPublish();
+    await this.#retryPendingRevocations();
     if (!input.id) throw new Error('Desktop profile id is required');
     const origin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!origin || origin !== input.apiBaseUrl) throw new Error('Invalid desktop API URL');
@@ -360,6 +395,7 @@ export class DesktopCredentialService {
         selectionGeneration: operationSelection,
         activeProfileId: current.activeProfileId,
         credential: { ...credential },
+        identityEpoch: current.identityEpoch!,
       };
       return { status: 'ready', version: discovery.version, authentication, activationTicket };
     }
@@ -394,6 +430,8 @@ export class DesktopCredentialService {
   }
 
   async activate(activationTicket: unknown): Promise<DesktopActivatedConnection> {
+    await this.#waitForPairPublish();
+    await this.#retryPendingRevocations();
     if (typeof activationTicket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(activationTicket)) {
       throw new Error('Invalid desktop activation ticket');
     }
@@ -407,11 +445,12 @@ export class DesktopCredentialService {
 
     const activated = await this.#profiles.activateProfile(
       pending.credential,
+      pending.identityEpoch,
       pending.origin,
       pending.activeProfileId,
       () => this.#pendingIsCurrent(pending),
     );
-    if (!activated || !this.#pendingIsCurrent(pending)) {
+    if (activated !== pending.identityEpoch || !this.#pendingIsCurrent(pending)) {
       this.#active = null;
       throw new Error('Desktop activation expired. Check the connection again.');
     }
@@ -422,14 +461,22 @@ export class DesktopCredentialService {
     this.#pairingControllers.clear();
     this.#active = {
       ...pending.credential,
+      identityEpoch: pending.identityEpoch,
       profileGeneration: pending.profileGeneration,
       selectionGeneration: this.#selectionGeneration,
       transportScope,
     };
-    return { status: 'ready', profileId: pending.profileId, transportScope };
+    return {
+      status: 'ready',
+      profileId: pending.profileId,
+      transportScope,
+      identityEpoch: pending.identityEpoch,
+    };
   }
 
   async invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }> {
+    await this.#waitForPairPublish();
+    await this.#retryPendingRevocations();
     if (!DEFINITIVE_INVALID_CODES.has(value.code)) return { invalidated: false };
     const active = this.#active;
     if (!active || active.profileId !== value.profileId
@@ -447,6 +494,8 @@ export class DesktopCredentialService {
   }
 
   async discardActivation(value: DesktopConnectionScope): Promise<{ discarded: boolean }> {
+    await this.#waitForPairPublish();
+    await this.#retryPendingRevocations();
     const active = this.#active;
     if (!active || typeof value?.profileId !== 'string' || typeof value?.transportScope !== 'string'
       || active.profileId !== value.profileId || active.transportScope !== value.transportScope
@@ -568,6 +617,70 @@ export class DesktopCredentialService {
     if (!response.ok && response.status !== 401 && response.status !== 404) {
       throw new Error(`The instance could not revoke this connection (HTTP ${response.status}).`);
     }
+  }
+
+  #retryPendingRevocations(): Promise<void> {
+    const retry = async () => {
+      let pending: PendingCredentialRevocation[];
+      try {
+        pending = await this.#profiles.pendingRevocations();
+      } catch {
+        this.#reportRevocationFailure({ code: 'local-cleanup' });
+        return;
+      }
+      for (const entry of pending) {
+        let response: Response;
+        try {
+          response = await this.#authenticatedFetch(
+            entry.credential,
+            '/api/desktop/tokens/current',
+            { method: 'DELETE' },
+            8_000,
+          );
+        } catch {
+          this.#reportRevocationFailure({ code: 'network' });
+          continue;
+        }
+        if (!response.ok && response.status !== 401 && response.status !== 404) {
+          this.#reportRevocationFailure({ code: 'http', status: response.status });
+          continue;
+        }
+        try {
+          const completed = await this.#profiles.completePendingRevocation(entry.id, entry.credential);
+          if (!completed) this.#reportRevocationFailure({ code: 'local-cleanup' });
+        } catch {
+          this.#reportRevocationFailure({ code: 'local-cleanup' });
+        }
+      }
+    };
+    const result = this.#revocationRetry.then(retry, retry);
+    this.#revocationRetry = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  #beginPairPublish(
+    profileId: string,
+    profileGeneration: number,
+    selectionGeneration: number,
+    signal: AbortSignal,
+  ): (() => void) | null {
+    if (this.#publishingPair || signal.aborted
+      || this.#generation(profileId) !== profileGeneration
+      || this.#selectionGeneration !== selectionGeneration) return null;
+    this.#publishingPair = true;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#publishingPair = false;
+      const waiters = this.#publishWaiters.splice(0);
+      waiters.forEach(waiter => waiter());
+    };
+  }
+
+  #waitForPairPublish(): Promise<void> {
+    if (!this.#publishingPair) return Promise.resolve();
+    return new Promise(resolve => this.#publishWaiters.push(resolve));
   }
 
   #generation(profileId: string): number {

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
-import { ProfileStore, type EncryptionProvider } from './profile-store';
+import { ProfileStore, type EncryptionProvider, type ProfileStoreDurabilityStep } from './profile-store';
 
 const temporaryDirectories: string[] = [];
 
@@ -81,12 +81,13 @@ describe('desktop profile store', () => {
 
     const activated = await store.activateProfile(
       staleCredential,
+      (await store.readProfileCredential(profile.id)).identityEpoch!,
       profile.apiBaseUrl,
       null,
       () => true,
     );
 
-    assert.equal(activated, false);
+    assert.equal(activated, null);
     assert.equal((await store.list()).activeProfileId, null);
     assert.deepEqual(await store.readCredential(profile.id), staleCredential);
   });
@@ -140,6 +141,42 @@ describe('desktop profile store', () => {
     assert.deepEqual(await store.readCredential(profile.id), credential(profile.id, 'B'));
   });
 
+  it('commits encrypted pending revocation material atomically with B and unlinks A only after durable completion', async () => {
+    const directory = await createDirectory();
+    const store = new ProfileStore(directory, encryption());
+    const profile = await store.save({
+      id: 'profile-1', label: 'Original', apiBaseUrl: 'https://propr.example.com',
+    });
+    const credentialA = credential(profile.id, 'A');
+    await store.writeCredential(credentialA);
+    const baseline = await store.readProfileCredential(profile.id);
+
+    const committed = await store.commitPairedProfile(
+      { id: profile.id, label: 'Replacement', apiBaseUrl: profile.apiBaseUrl },
+      credential(profile.id, 'B'), baseline, () => true,
+    );
+    assert.ok(committed && !('stored' in committed));
+    if (!committed || 'stored' in committed) return;
+    assert.notEqual(committed.identityEpoch, baseline.identityEpoch);
+
+    const pending = await store.pendingRevocations();
+    assert.equal(pending.length, 1);
+    assert.deepEqual(pending[0].credential, credentialA);
+    assert.deepEqual(await store.readCredential(profile.id), credential(profile.id, 'B'));
+    const desktop = join(directory, 'desktop');
+    for (const file of await readdir(desktop)) {
+      if (!file.startsWith('profiles.')) continue;
+      const contents = await readFile(join(desktop, file), 'utf8');
+      assert.equal(contents.includes(credentialA.token), false);
+      assert.equal(contents.includes(credential(profile.id, 'B').token), false);
+    }
+    assert.equal((await readdir(join(desktop, 'credentials'))).length, 2);
+
+    assert.equal(await store.completePendingRevocation(pending[0].id, credentialA), true);
+    assert.deepEqual(await store.pendingRevocations(), []);
+    assert.equal((await readdir(join(desktop, 'credentials'))).length, 1);
+  });
+
   it('migrates legacy fixed credentials through the atomic state pointer and removes the old slot', async () => {
     const directory = await createDirectory();
     const desktop = join(directory, 'desktop');
@@ -156,13 +193,15 @@ describe('desktop profile store', () => {
     await writeFile(join(credentials, `${profile.id}.bin`), encryption().encrypt(JSON.stringify(legacyCredential)));
 
     const store = new ProfileStore(directory, encryption());
-    assert.deepEqual(await store.readProfileCredential(profile.id), {
-      profile, credential: legacyCredential, activeProfileId: profile.id,
+    const migrated = await store.readProfileCredential(profile.id);
+    assert.deepEqual({ ...migrated, identityEpoch: undefined }, {
+      profile, credential: legacyCredential, identityEpoch: undefined, activeProfileId: profile.id,
     });
+    assert.match(migrated.identityEpoch ?? '', /^[A-Za-z0-9_-]{22}$/);
     const state = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as {
       version: number; credentialSlots: Record<string, string>;
     };
-    assert.equal(state.version, 2);
+    assert.equal(state.version, 3);
     assert.match(state.credentialSlots[profile.id], /^profile-1\.[0-9a-f-]{36}\.bin$/);
     assert.deepEqual(await readdir(credentials), [state.credentialSlots[profile.id]]);
   });
@@ -296,11 +335,13 @@ describe('desktop profile store', () => {
   });
 
   it('recovers real process crashes as complete A before the pointer commit and complete B after it', async () => {
-    for (const step of [
+    const steps: ProfileStoreDurabilityStep[] = [
       'credential-encrypted', 'credential-written', 'credential-fsynced', 'credential-renamed',
-      'credential-directory-fsynced', 'state-written', 'state-fsynced', 'state-renamed',
-      'state-directory-fsynced', 'old-credential-removed',
-    ] as const) {
+      ...(process.platform === 'win32' ? [] : ['credential-directory-fsynced'] as const),
+      'state-written', 'state-fsynced', 'journal-written', 'journal-fsynced', 'state-renamed',
+      ...(process.platform === 'win32' ? [] : ['state-directory-fsynced'] as const),
+    ];
+    for (const step of steps) {
       const directory = await createDirectory();
       const setup = new ProfileStore(directory, encryption());
       const profileA = await setup.save({
@@ -314,19 +355,98 @@ describe('desktop profile store', () => {
       const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
         child.once('exit', (code, signal) => resolve({ code, signal }));
       });
-      assert.equal(result.signal, 'SIGKILL', `${step}: child did not crash at the requested boundary`);
+      assert.equal(
+        result.signal === 'SIGKILL' || (process.platform === 'win32' && result.code !== 0),
+        true,
+        `${step}: child did not crash at the requested boundary`,
+      );
 
       const restarted = new ProfileStore(directory, encryption());
       const snapshot = await restarted.readProfileCredential(profileA.id);
-      const committed = step === 'state-renamed'
-        || step === 'state-directory-fsynced'
-        || step === 'old-credential-removed';
+      const committed = step === 'journal-written'
+        || step === 'journal-fsynced'
+        || step === 'state-renamed'
+        || step === 'state-directory-fsynced';
       assert.equal(snapshot.profile?.label, committed ? 'Replacement' : 'Original', step);
       assert.deepEqual(snapshot.credential, credential(profileA.id, committed ? 'B' : 'A'), step);
+      assert.equal((await restarted.pendingRevocations()).length, committed ? 1 : 0, step);
       const files = await readdir(join(directory, 'desktop', 'credentials'));
-      assert.equal(files.length, 1, `${step}: recovery did not remove orphan slots`);
+      assert.equal(files.length, committed ? 2 : 1, `${step}: recovery did not retain exactly the authoritative and pending slots`);
       const desktopFiles = await readdir(join(directory, 'desktop'));
       assert.equal(desktopFiles.some(file => file.endsWith('.tmp')), false, `${step}: recovery left staging files`);
+    }
+  });
+
+  for (const visibility of ['pointer-rollback', 'missing-target', 'state-before-journal'] as const) {
+    it(`recovers a ${visibility} durability view as complete A or complete B`, async () => {
+      const directory = await createDirectory();
+      const desktop = join(directory, 'desktop');
+      const credentialsDirectory = join(desktop, 'credentials');
+      const store = new ProfileStore(directory, encryption());
+      const profileA = await store.save({
+        id: 'profile-1', label: 'Original', apiBaseUrl: 'https://propr.example.com',
+      });
+      const credentialA = credential(profileA.id, 'A');
+      await store.writeCredential(credentialA);
+      const stateA = await readFile(join(desktop, 'profiles.json'));
+      const journalsA = await Promise.all([0, 1].map(async index => {
+        try { return await readFile(join(desktop, `profiles.journal.${index}`)); } catch { return null; }
+      }));
+      const baseline = await store.readProfileCredential(profileA.id);
+      await store.commitPairedProfile(
+        { id: profileA.id, label: 'Replacement', apiBaseUrl: profileA.apiBaseUrl },
+        credential(profileA.id, 'B'), baseline, () => true,
+      );
+      const stateB = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as {
+        credentialSlots: Record<string, string>;
+      };
+
+      if (visibility === 'pointer-rollback') {
+        await writeFile(join(desktop, 'profiles.json'), stateA);
+      } else if (visibility === 'missing-target') {
+        await unlink(join(credentialsDirectory, stateB.credentialSlots[profileA.id]));
+      } else {
+        for (const [index, bytes] of journalsA.entries()) {
+          const path = join(desktop, `profiles.journal.${index}`);
+          if (bytes) await writeFile(path, bytes);
+          else await unlink(path).catch(() => undefined);
+        }
+      }
+
+      const restarted = new ProfileStore(directory, encryption());
+      const recovered = await restarted.readProfileCredential(profileA.id);
+      const expectsB = visibility !== 'state-before-journal';
+      assert.equal(recovered.profile?.label, expectsB ? 'Replacement' : 'Original');
+      assert.deepEqual(recovered.credential, credential(profileA.id, expectsB ? 'B' : 'A'));
+      const activeSlotFiles = (await readdir(credentialsDirectory)).filter(file => file.endsWith('.bin'));
+      assert.equal(activeSlotFiles.length, expectsB ? 2 : 1);
+    });
+  }
+
+  it('runs native Windows child termination recovery for reordered, rolled-back, and missing-slot views', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    for (const visibility of ['pointer-rollback', 'missing-target', 'state-before-journal'] as const) {
+      const directory = await createDirectory();
+      const setup = new ProfileStore(directory, encryption());
+      const profileA = await setup.save({
+        id: 'profile-1', label: 'Original', apiBaseUrl: 'https://propr.example.com',
+      });
+      await setup.writeCredential(credential(profileA.id, 'A'));
+      const child = spawn(process.execPath, [
+        '--import', 'tsx', join(import.meta.dirname, 'profile-store-crash-fixture.ts'),
+        directory, `visibility:${visibility}`,
+      ], { stdio: 'ignore' });
+      const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+        child.once('exit', (code, signal) => resolve({ code, signal }));
+      });
+      assert.equal(result.code === 0, false, `${visibility}: Windows child did not terminate`);
+
+      const restarted = new ProfileStore(directory, encryption());
+      const snapshot = await restarted.readProfileCredential(profileA.id);
+      const expectsB = visibility !== 'state-before-journal';
+      assert.equal(snapshot.profile?.label, expectsB ? 'Replacement' : 'Original', visibility);
+      assert.deepEqual(snapshot.credential, credential(profileA.id, expectsB ? 'B' : 'A'), visibility);
     }
   });
 

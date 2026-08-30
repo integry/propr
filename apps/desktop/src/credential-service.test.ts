@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -548,6 +549,8 @@ describe('main-process desktop credential service', () => {
     if (second.status !== 'ready') return;
     const secondActivation = await service.activate(second.activationTicket);
     assert.notEqual(firstActivation.transportScope, secondActivation.transportScope);
+    assert.equal(firstActivation.identityEpoch, secondActivation.identityEpoch);
+    assert.match(firstActivation.identityEpoch, /^[A-Za-z0-9_-]{22}$/);
     assert.match(firstActivation.transportScope, /^[A-Za-z0-9_-]{22}$/);
     assert.deepEqual(service.prepareRequest(
       'http://localhost:3000/api/tasks', transportHeaders(firstActivation.transportScope),
@@ -838,6 +841,177 @@ describe('main-process desktop credential service', () => {
     assert.deepEqual(stateAtRevocation.credential, replacement);
     assert.deepEqual(await store.readCredential(profile.id), replacement);
   });
+
+  it('retries an encrypted pending A revocation across failure, restart, remote success, and local cleanup failure', async () => {
+    const store = await createStore();
+    const profile = await store.save({
+      id: 'profile-a', label: 'Working A', apiBaseUrl: 'https://a.example.test',
+    });
+    const credentialA = credential(profile.id, profile.apiBaseUrl, 'A');
+    const credentialB = credential(profile.id, profile.apiBaseUrl, 'B');
+    await store.writeCredential(credentialA);
+    const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+    const diagnostics: Array<{ code: string; status?: number }> = [];
+    let expectedProbeToken = credentialA.token;
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
+      openExternal: async () => undefined,
+      reportRevocationFailure: value => diagnostics.push(value),
+      fetch: async (input, init) => {
+        const url = input.toString();
+        if (url.endsWith('/api/desktop/pairings')) return json({
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'C'.repeat(43),
+          approvalUrl: 'https://a.example.test/approve',
+          expiresAt: new Date(pairingNow + 10_000).toISOString(),
+          interval: 1,
+        }, 201);
+        if (url.endsWith('/poll')) {
+          return json({ status: 'complete', token: credentialB.token, tokenType: 'Bearer', expiresAt: null });
+        }
+        if (url.endsWith('/api/desktop/tokens/current')) {
+          assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${credentialA.token}`);
+          return json({ error: 'offline' }, 503);
+        }
+        if (url.endsWith('/api/desktop/discovery')) return json(discovery);
+        if (url.endsWith('/api/auth/user')) {
+          assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${expectedProbeToken}`);
+          return json({ username: 'credential-b' });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+
+    const readyA = await service.probe({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    assert.equal(readyA.status, 'ready');
+    if (readyA.status !== 'ready') return;
+    const activeA = await service.activate(readyA.activationTicket);
+    await service.pair({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    assert.deepEqual(await store.readCredential(profile.id), credentialB);
+    assert.equal((await store.pendingRevocations()).length, 1);
+    assert.deepEqual(diagnostics, [{ code: 'http', status: 503 }]);
+    assert.equal(JSON.stringify(diagnostics).includes(credentialA.token), false);
+    assert.deepEqual(service.prepareRequest(
+      `${profile.apiBaseUrl}/api/tasks`, transportHeaders(activeA.transportScope),
+    ), { cancel: true });
+    expectedProbeToken = credentialB.token;
+    const ready = await service.probe({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    assert.equal(ready.status, 'ready');
+    if (ready.status !== 'ready') return;
+    const activeB = await service.activate(ready.activationTicket);
+    assert.deepEqual(service.prepareRequest(
+      `${profile.apiBaseUrl}/api/tasks`, transportHeaders(activeB.transportScope),
+    ).requestHeaders, { Authorization: `Bearer ${credentialB.token}` });
+
+    const offlineDiagnostics: Array<{ code: string; status?: number }> = [];
+    const offlineRestart = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      reportRevocationFailure: value => offlineDiagnostics.push(value),
+      fetch: async () => { throw new Error('offline'); },
+    });
+    await offlineRestart.initialize();
+    assert.deepEqual(offlineDiagnostics, [{ code: 'network' }]);
+    assert.equal((await store.pendingRevocations()).length, 1);
+
+    let failCleanup = true;
+    const cleanupFailingProfiles = new Proxy(store, {
+      get(target, property) {
+        if (property === 'completePendingRevocation') return async () => {
+          if (failCleanup) {
+            failCleanup = false;
+            throw new Error('injected cleanup failure');
+          }
+          return false;
+        };
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const cleanupDiagnostics: Array<{ code: string; status?: number }> = [];
+    const remoteSucceeded = new DesktopCredentialService({
+      profiles: cleanupFailingProfiles,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      reportRevocationFailure: value => cleanupDiagnostics.push(value),
+      fetch: async () => new Response(null, { status: 204 }),
+    });
+    await remoteSucceeded.initialize();
+    assert.deepEqual(cleanupDiagnostics, [{ code: 'local-cleanup' }]);
+    assert.equal((await store.pendingRevocations()).length, 1);
+
+    let terminalRetries = 0;
+    const onlineRestart = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async () => {
+        terminalRetries += 1;
+        return new Response(null, { status: 404 });
+      },
+    });
+    await onlineRestart.initialize();
+    await onlineRestart.initialize();
+    assert.equal(terminalRetries, 1);
+    assert.deepEqual(await store.pendingRevocations(), []);
+    assert.deepEqual(await store.readCredential(profile.id), credentialB);
+  });
+
+  for (const crashMode of ['during-revoke', 'after-remote-success'] as const) {
+    it(`recovers B and retries idempotently after a real process crash ${crashMode}`, async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
+      temporaryDirectories.push(directory);
+      const setup = new ProfileStore(directory, encryption);
+      const profile = await setup.save({
+        id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test',
+      });
+      const credentialA = credential(profile.id, profile.apiBaseUrl, 'A');
+      const credentialB = credential(profile.id, profile.apiBaseUrl, 'B');
+      await setup.writeCredential(credentialA);
+      const baseline = await setup.readProfileCredential(profile.id);
+      await setup.commitPairedProfile(
+        { id: profile.id, label: 'B', apiBaseUrl: profile.apiBaseUrl },
+        credentialB, baseline, () => true,
+      );
+      assert.equal((await setup.pendingRevocations()).length, 1);
+
+      const child = spawn(process.execPath, [
+        '--import', 'tsx', join(import.meta.dirname, 'pending-revocation-crash-fixture.ts'),
+        directory, crashMode,
+      ], { stdio: 'ignore' });
+      const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+        child.once('exit', (code, signal) => resolve({ code, signal }));
+      });
+      assert.equal(
+        result.signal === 'SIGKILL' || (process.platform === 'win32' && result.code !== 0),
+        true,
+        `${crashMode}: child did not terminate at the requested revocation boundary`,
+      );
+
+      const restarted = new ProfileStore(directory, encryption);
+      assert.deepEqual(await restarted.readCredential(profile.id), credentialB);
+      assert.equal((await restarted.pendingRevocations()).length, 1);
+      let retries = 0;
+      const retryingService = new DesktopCredentialService({
+        profiles: restarted,
+        clientName: 'Restarted desktop',
+        openExternal: async () => undefined,
+        fetch: async (_input, init) => {
+          retries += 1;
+          assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${credentialA.token}`);
+          return new Response(null, { status: 404 });
+        },
+      });
+      await retryingService.initialize();
+      await retryingService.initialize();
+      assert.equal(retries, 1);
+      assert.deepEqual(await restarted.pendingRevocations(), []);
+      assert.deepEqual(await restarted.readCredential(profile.id), credentialB);
+    });
+  }
 
   it('ignores delayed A invalidation after B connects and preserves tokens for authorization/transient codes', async () => {
     const store = await createStore();
@@ -1188,6 +1362,9 @@ describe('main-process desktop credential service', () => {
         removeCredential: (profileId: string) => store.removeCredential(profileId),
         removeCredentialIfCurrent: (...args: Parameters<ProfileStore['removeCredentialIfCurrent']>) =>
           store.removeCredentialIfCurrent(...args),
+        pendingRevocations: () => store.pendingRevocations(),
+        completePendingRevocation: (...args: Parameters<ProfileStore['completePendingRevocation']>) =>
+          store.completePendingRevocation(...args),
       };
       service = new DesktopCredentialService({
         profiles,
@@ -1225,5 +1402,81 @@ describe('main-process desktop credential service', () => {
       assert.equal(await store.readCredential(profileA.id), null);
       assert.deepEqual(revocations, [`Bearer ${token('C')}`]);
     });
+  }
+
+  for (const boundary of ['state-written', 'state-fsynced'] as const) {
+    for (const race of ['cancel', 'switch'] as const) {
+      it(`keeps durable A when ${race} linearizes at paired ${boundary} before publish`, async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
+        temporaryDirectories.push(directory);
+        const reached = deferred<void>();
+        const release = deferred<void>();
+        let armed = false;
+        const store = new ProfileStore(directory, encryption, {
+          afterDurabilityStep: async step => {
+            if (!armed || step !== boundary) return;
+            armed = false;
+            reached.resolve();
+            await release.promise;
+          },
+        });
+        const profileA = await store.save({
+          id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test',
+        });
+        const profileB = await store.save({
+          id: 'profile-b', label: 'Other', apiBaseUrl: 'https://b.example.test',
+        });
+        const credentialA = credential(profileA.id, profileA.apiBaseUrl, 'A');
+        await store.writeCredential(credentialA);
+        await store.setActive(profileA.id);
+        const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+        const revocations: string[] = [];
+        const service = new DesktopCredentialService({
+          profiles: store,
+          clientName: 'Test desktop',
+          pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
+          openExternal: async () => undefined,
+          fetch: async (input, init) => {
+            const url = input.toString();
+            if (url.endsWith('/api/desktop/pairings')) return json({
+              pairingId: `dpr_${'A'.repeat(22)}`,
+              deviceSecret: 'C'.repeat(43),
+              approvalUrl: 'https://a.example.test/approve',
+              expiresAt: new Date(pairingNow + 10_000).toISOString(),
+              interval: 1,
+            }, 201);
+            if (url.endsWith('/poll')) {
+              return json({ status: 'complete', token: token('C'), tokenType: 'Bearer', expiresAt: null });
+            }
+            if (url.endsWith('/api/desktop/tokens/current')) {
+              revocations.push(new Headers(init?.headers).get('Authorization') ?? '');
+              return new Response(null, { status: 204 });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+          },
+        });
+        armed = true;
+        const pairing = service.pair({
+          id: profileA.id, label: 'Proposed B', apiBaseUrl: profileA.apiBaseUrl,
+        });
+        await reached.promise;
+        const raced = race === 'cancel'
+          ? Promise.resolve(service.cancelPairing(profileA.id))
+          : service.setActiveProfile(profileB.id);
+        release.resolve();
+
+        await assert.rejects(pairing, /cancelled/i);
+        await raced;
+        const restarted = new ProfileStore(directory, encryption);
+        const snapshot = await restarted.readProfileCredential(profileA.id);
+        assert.equal(snapshot.profile?.label, 'A');
+        assert.deepEqual(snapshot.credential, credentialA);
+        assert.equal((await restarted.list()).activeProfileId, race === 'cancel' ? profileA.id : profileB.id);
+        assert.deepEqual(revocations, [`Bearer ${token('C')}`]);
+        assert.deepEqual(service.prepareRequest(
+          `${profileA.apiBaseUrl}/api/tasks`, transportHeaders('AAAAAAAAAAAAAAAAAAAAAA'),
+        ), { cancel: true });
+      });
+    }
   }
 });

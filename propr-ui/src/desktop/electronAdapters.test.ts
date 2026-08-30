@@ -26,6 +26,7 @@ const bridgeFixture = () => {
     status: 'ready' as const,
     profileId: storedProfile.id,
     transportScope: 'scope-7',
+    identityEpoch: 'AAAAAAAAAAAAAAAAAAAAAA',
   }));
   const discard = vi.fn(async () => ({ discarded: true }));
   const bridge: DesktopBridge = {
@@ -92,6 +93,7 @@ describe('Electron remote instance adapters', () => {
       authentication: undefined,
       profileId: profile.id,
       transportScope: 'scope-7',
+      identityEpoch: 'AAAAAAAAAAAAAAAAAAAAAA',
     });
     if (activated?.status === 'ready') adapters.connection.publishActivation?.(profile, activated);
     expect(setDesktopConnectionScope).toHaveBeenCalledWith({
@@ -107,6 +109,7 @@ describe('Electron remote instance adapters', () => {
       status: 'ready',
       profileId: 'profile-2',
       transportScope: 'wrong-profile-scope',
+      identityEpoch: 'BBBBBBBBBBBBBBBBBBBBBB',
     });
     const adapters = createElectronDesktopAdapters(fixture.bridge);
     const profile = (await adapters.profiles.list())[0];
@@ -156,6 +159,49 @@ describe('Electron remote instance adapters', () => {
     expect(clear).toHaveBeenCalledTimes(2);
     if (activated?.status === 'ready') adapters.connection.publishActivation?.(profile, activated);
     expect(clear.mock.invocationCallOrder.at(-1)).toBeLessThan(setDesktopConnectionScope.mock.invocationCallOrder[0]);
+    clear.mockRestore();
+  });
+
+  it('retains state for the same credential and clears exactly once for a same-profile identity change', async () => {
+    const fixture = bridgeFixture();
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+    const profile = (await adapters.profiles.list())[0];
+    const activateAndPublish = async () => {
+      const activated = await adapters.connection.activate?.(profile, {
+        status: 'ready', activationTicket: 'ticket-7',
+      });
+      if (activated?.status === 'ready') adapters.connection.publishActivation?.(profile, activated);
+      return activated;
+    };
+
+    await activateAndPublish();
+    await fixture.bridge.profiles.setActive(profile.id);
+    window.localStorage.setItem('profile-state', 'credential-a-local');
+    window.sessionStorage.setItem('profile-session', 'credential-a-session');
+    const clear = vi.spyOn(Storage.prototype, 'clear');
+
+    const reconnect = await activateAndPublish();
+    expect(reconnect).toEqual(expect.objectContaining({
+      status: 'ready', identityEpoch: 'AAAAAAAAAAAAAAAAAAAAAA',
+    }));
+    expect(window.localStorage.getItem('profile-state')).toBe('credential-a-local');
+    expect(window.sessionStorage.getItem('profile-session')).toBe('credential-a-session');
+    expect(clear).not.toHaveBeenCalled();
+
+    fixture.activate.mockResolvedValueOnce({
+      status: 'ready',
+      profileId: profile.id,
+      transportScope: 'scope-b',
+      identityEpoch: 'BBBBBBBBBBBBBBBBBBBBBB',
+    });
+    const replacement = await activateAndPublish();
+    expect(replacement).toEqual(expect.objectContaining({
+      status: 'ready', identityEpoch: 'BBBBBBBBBBBBBBBBBBBBBB',
+    }));
+    expect(window.localStorage.getItem('profile-state')).toBeNull();
+    expect(window.sessionStorage.getItem('profile-session')).toBeNull();
+    expect(clear).toHaveBeenCalledTimes(2);
+    expect(clear.mock.invocationCallOrder.at(-1)).toBeLessThan(setDesktopConnectionScope.mock.invocationCallOrder.at(-1)!);
     clear.mockRestore();
   });
 
@@ -215,6 +261,7 @@ describe('Electron remote instance adapters', () => {
 
     fixture.activate.mockResolvedValueOnce({
       status: 'ready', profileId: profile.id, transportScope: 'stale-scope',
+      identityEpoch: 'AAAAAAAAAAAAAAAAAAAAAA',
     });
     const stale = await adapters.connection.activate?.(profile, {
       status: 'ready', activationTicket: 'ticket-stale',

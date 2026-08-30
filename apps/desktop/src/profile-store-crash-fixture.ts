@@ -1,6 +1,9 @@
+import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { ProfileStore, type EncryptionProvider, type ProfileStoreDurabilityStep } from './profile-store';
 
-const [directory, crashStep] = process.argv.slice(2) as [string, ProfileStoreDurabilityStep];
+const [directory, requestedStep] = process.argv.slice(2) as [string, string];
+const crashStep = requestedStep as ProfileStoreDurabilityStep;
 const encryption: EncryptionProvider = {
   isEncryptionAvailable: () => true,
   backend: () => 'keychain',
@@ -9,9 +12,18 @@ const encryption: EncryptionProvider = {
 };
 const store = new ProfileStore(directory, encryption, {
   afterDurabilityStep: step => {
-    if (step === crashStep) process.kill(process.pid, 'SIGKILL');
+    if (!requestedStep.startsWith('visibility:') && step === crashStep) process.kill(process.pid, 'SIGKILL');
   },
 });
+const desktop = join(directory, 'desktop');
+const stateA = requestedStep.startsWith('visibility:')
+  ? await readFile(join(desktop, 'profiles.json'))
+  : null;
+const journalsA = requestedStep.startsWith('visibility:')
+  ? await Promise.all([0, 1].map(async index => {
+      try { return await readFile(join(desktop, `profiles.journal.${index}`)); } catch { return null; }
+    }))
+  : [];
 const baseline = await store.readProfileCredential('profile-1');
 await store.commitPairedProfile(
   { id: 'profile-1', label: 'Replacement', apiBaseUrl: 'https://propr.example.com' },
@@ -24,3 +36,23 @@ await store.commitPairedProfile(
   baseline,
   () => true,
 );
+if (requestedStep.startsWith('visibility:')) {
+  const mode = requestedStep.slice('visibility:'.length);
+  const stateB = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as {
+    credentialSlots: Record<string, string>;
+  };
+  if (mode === 'pointer-rollback' && stateA) {
+    await writeFile(join(desktop, 'profiles.json'), stateA);
+  } else if (mode === 'missing-target') {
+    await unlink(join(desktop, 'credentials', stateB.credentialSlots['profile-1']));
+  } else if (mode === 'state-before-journal') {
+    for (const [index, bytes] of journalsA.entries()) {
+      const path = join(desktop, `profiles.journal.${index}`);
+      if (bytes) await writeFile(path, bytes);
+      else await unlink(path).catch(() => undefined);
+    }
+  } else {
+    throw new Error(`Unknown visibility mode: ${mode}`);
+  }
+  process.kill(process.pid, 'SIGKILL');
+}
