@@ -2,7 +2,12 @@ import React, { useRef, useState, useEffect, useSyncExternalStore } from 'react'
 import { PlannerAttachment, getAttachmentUrl } from '../../api/proprApi';
 import { X, FileText, Loader2, Paperclip } from 'lucide-react';
 import { resizeImage } from './imageUtils';
-import { apiFetch, getDesktopConnectionScope, subscribeDesktopConnectionScope } from '../../api/apiClient';
+import {
+  apiFetch,
+  getDesktopConnectionScope,
+  handleApiResponse,
+  subscribeDesktopConnectionScope,
+} from '../../api/apiClient';
 import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
 
 interface AttachmentPreviewProps {
@@ -31,6 +36,7 @@ const AttachmentPreview: React.FC<AttachmentPreviewProps> = ({ file, draftId, on
     setTextPreview(null);
     setIsLoadingPreview(true);
     void apiFetch(getAttachmentUrl(draftId, file.id), { credentials: 'include', signal: controller.signal })
+      .then(handleApiResponse)
       .then(res => res.text())
       .then(text => {
         if (controller.signal.aborted) return;

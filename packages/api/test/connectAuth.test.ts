@@ -109,6 +109,19 @@ test('Connect authorization URL carries the exact callback and CSRF state', () =
   assert.equal(url.searchParams.get('installation_id'), '123');
 });
 
+test('Connect authorization URL rejects configured query strings and fragments', () => {
+  for (const connectOrigin of [
+    'https://connect.propr.dev?tenant=attacker',
+    'https://connect.propr.dev#attacker',
+  ]) {
+    assert.throws(() => buildConnectAuthorizationUrl({
+      connectOrigin,
+      callbackUrl: 'https://t-abc.propr.dev/api/auth/github/callback',
+      state: 'random-state',
+    }), /PROPR_CONNECT_URL must be a bare HTTPS origin/);
+  }
+});
+
 test('redeems a Connect code server-to-server without exposing the relay token in the body', async () => {
   let relayRequest: Request | undefined;
   let githubRequest: Request | undefined;

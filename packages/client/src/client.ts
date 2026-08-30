@@ -249,13 +249,15 @@ export class ProprClient {
     clientName: string,
     options: Pick<ProprDesktopPairingOptions, 'signal' | 'now' | 'binding'>,
   ): Promise<ProprDesktopPairingStart> {
-    return parseDesktopPairingStart(await this.requestDesktopPairing('/api/desktop/pairings', {
+    const path = '/api/desktop/pairings';
+    const expectedOrigin = this.resolveRequestOrigin(this.url(path));
+    return parseDesktopPairingStart(await this.requestDesktopPairing(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientName, ...options.binding }),
       redirect: 'manual',
       signal: options.signal,
-    }), this.baseUrl || undefined, options.now);
+    }), expectedOrigin, options.now);
   }
 
   async pairDesktop(
@@ -379,6 +381,22 @@ export class ProprClient {
       });
     }
     return input;
+  }
+
+  private resolveRequestOrigin(input: RequestInfo | URL): string {
+    const raw = input instanceof Request ? input.url : input.toString();
+    const browserOrigin = typeof globalThis.location !== 'undefined'
+      ? globalThis.location.origin
+      : undefined;
+    try {
+      const origin = new URL(raw, browserOrigin).origin;
+      if (origin === 'null') throw new Error();
+      return origin;
+    } catch {
+      throw new ProprClientError('The ProPR instance origin could not be established.', {
+        kind: 'configuration',
+      });
+    }
   }
 
   private authenticate(init?: RequestInit): RequestInit | undefined | Promise<RequestInit> {

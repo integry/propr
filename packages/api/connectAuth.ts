@@ -41,6 +41,8 @@ export function buildConnectAuthorizationUrl(options: {
 }): string {
     const origin = new URL(options.connectOrigin || DEFAULT_PROPR_CONNECT_ORIGIN);
     if (origin.protocol !== 'https:'
+        || origin.search
+        || origin.hash
         || normalizeProprApiOrigin(options.connectOrigin || DEFAULT_PROPR_CONNECT_ORIGIN) !== origin.origin) {
         throw new Error('PROPR_CONNECT_URL must be a bare HTTPS origin');
     }

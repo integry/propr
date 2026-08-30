@@ -135,7 +135,7 @@ export const parseDesktopDiscovery = (
 
 export const parseDesktopPairingStart = (
   value: unknown,
-  expectedOrigin?: string,
+  expectedOrigin: string,
   now: () => number = Date.now,
 ): ProprDesktopPairingStart => {
   const body = record(value);
@@ -155,7 +155,7 @@ export const parseDesktopPairingStart = (
     if (approvalUrl.username || approvalUrl.password) throw new Error();
     // Device approval is intentionally same-origin. A future hosted approval
     // service must define and validate a narrow trust contract here first.
-    if (expectedOrigin && approvalUrl.origin !== expectedOrigin) throw new Error();
+    if (!expectedOrigin || approvalUrl.origin !== expectedOrigin) throw new Error();
   } catch {
     throw new ProprClientError('The ProPR instance returned an unsafe pairing approval URL.', {
       kind: 'invalid_response',

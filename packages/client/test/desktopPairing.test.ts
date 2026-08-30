@@ -190,6 +190,7 @@ describe('desktop instance protocol', () => {
 
   it('rejects an unsafe approval URL', async () => {
     const client = new ProprClient({
+      baseUrl: 'https://propr.example.test',
       fetch: async () => json({
         pairingId: `dpr_${'A'.repeat(22)}`,
         deviceSecret: 'B'.repeat(43),
@@ -200,6 +201,60 @@ describe('desktop instance protocol', () => {
     });
     await assert.rejects(client.startDesktopPairing('Desktop', { now: () => protocolNow }), (error: unknown) =>
       error instanceof ProprClientError && error.kind === 'invalid_response');
+  });
+
+  it('enforces the browser request origin for same-origin pairing clients', async () => {
+    const locationDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    Object.defineProperty(globalThis, 'location', {
+      configurable: true,
+      value: { origin: 'https://propr.example.test' },
+    });
+    try {
+      for (const [approvalUrl, accepted] of [
+        ['https://propr.example.test/approve', true],
+        ['https://attacker.example.test/approve', false],
+      ] as const) {
+        const client = new ProprClient({
+          fetch: async () => json({
+            pairingId: `dpr_${'A'.repeat(22)}`,
+            deviceSecret: 'B'.repeat(43),
+            approvalUrl,
+            expiresAt: protocolDeadline,
+            interval: 2,
+          }, 201),
+        });
+        if (accepted) {
+          await assert.doesNotReject(client.startDesktopPairing('Desktop', { now: () => protocolNow }));
+        } else {
+          await assert.rejects(
+            client.startDesktopPairing('Desktop', { now: () => protocolNow }),
+            (error: unknown) => error instanceof ProprClientError && error.kind === 'invalid_response',
+          );
+        }
+      }
+    } finally {
+      if (locationDescriptor) Object.defineProperty(globalThis, 'location', locationDescriptor);
+      else Reflect.deleteProperty(globalThis, 'location');
+    }
+  });
+
+  it('fails closed before pairing when a same-origin request has no browser origin', async () => {
+    const locationDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    Reflect.deleteProperty(globalThis, 'location');
+    let requests = 0;
+    try {
+      const client = new ProprClient({ fetch: async () => {
+        requests += 1;
+        throw new Error('must not request without a trusted origin');
+      } });
+      await assert.rejects(
+        client.startDesktopPairing('Desktop', { now: () => protocolNow }),
+        (error: unknown) => error instanceof ProprClientError && error.kind === 'configuration',
+      );
+      assert.equal(requests, 0);
+    } finally {
+      if (locationDescriptor) Object.defineProperty(globalThis, 'location', locationDescriptor);
+    }
   });
 
   it('rejects cross-origin, credentialed, malformed, and invalid-deadline approval responses', async () => {
