@@ -14,6 +14,7 @@ import AgentsListSection from './SettingsPage/AgentsListSection';
 import ChatPanel, { type AgentModelSelection } from '../components/AgentChat/ChatPanel';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { isCommittedConfigWriteError } from '../api/apiClient';
+import { useDesktopLayout } from '../hooks/useDesktopLayout';
 import SyntheticPoolsSection from './SyntheticPoolsSection';
 
 type ConfigurationLayout = 'mobile' | 'desktop';
@@ -21,31 +22,6 @@ type ConfigurationLayout = 'mobile' | 'desktop';
 interface AddPoolRequest {
   id: number;
   owner: ConfigurationLayout;
-}
-
-const DESKTOP_MEDIA_QUERY = '(min-width: 640px)';
-
-function useDesktopLayout(): boolean {
-  const getMatches = () => typeof window.matchMedia === 'function'
-    ? window.matchMedia(DESKTOP_MEDIA_QUERY).matches
-    : window.innerWidth >= 640;
-  const [isDesktop, setIsDesktop] = useState(getMatches);
-
-  useEffect(() => {
-    if (typeof window.matchMedia === 'function') {
-      const mediaQuery = window.matchMedia(DESKTOP_MEDIA_QUERY);
-      const handleChange = (event: MediaQueryListEvent) => setIsDesktop(event.matches);
-      setIsDesktop(mediaQuery.matches);
-      mediaQuery.addEventListener('change', handleChange);
-      return () => mediaQuery.removeEventListener('change', handleChange);
-    }
-
-    const handleResize = () => setIsDesktop(window.innerWidth >= 640);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  return isDesktop;
 }
 
 const AiAgentsPage: React.FC = () => {
@@ -246,6 +222,43 @@ const AiAgentsPage: React.FC = () => {
     setMobileTab('playground');
   }, [agents]);
 
+  const renderConfiguration = (layout: ConfigurationLayout) => (
+    <>
+      <div className="mb-4 flex rounded-md bg-slate-100 p-1 text-xs font-medium">
+        <button type="button" onClick={() => setConfigView('direct')} className={`flex-1 rounded px-2 py-1.5 ${configView === 'direct' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Direct agents</button>
+        <button type="button" onClick={() => setConfigView('synthetic')} className={`flex-1 rounded px-2 py-1.5 ${configView === 'synthetic' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Synthetic Pools</button>
+      </div>
+      {configView === 'direct' ? <AgentsListSection
+        agents={agents}
+        loading={agentsLoading}
+        saving={agentsSaving}
+        error={agentsError}
+        success={agentsSuccess}
+        warning={agentsWarning}
+        onSaveAgents={handleSaveAgents}
+        showAddModal={showAddModal}
+        onCloseAddModal={handleCloseModal}
+        onAddClick={handleAddAgentClick}
+        onSelectModel={handleSelectModel}
+        readOnly={isDemoMode}
+      /> : <SyntheticPoolsSection
+        agents={agents}
+        pools={syntheticAgents}
+        loading={syntheticLoading}
+        saving={syntheticSaving}
+        error={syntheticError}
+        success={syntheticSuccess}
+        warning={syntheticWarning}
+        readOnly={isDemoMode || syntheticReloadRequired}
+        readOnlyMessage={syntheticReloadRequired ? 'Synthetic pool changes are blocked because the saved configuration could not be reloaded. Reload this page to continue.' : undefined}
+        editorActive={layout === (isDesktopLayout ? 'desktop' : 'mobile')}
+        addRequested={addPoolRequest?.owner === layout ? addPoolRequest.id : 0}
+        onAddRequestConsumed={handleAddPoolRequestConsumed}
+        onSave={handleSaveSyntheticAgents}
+      />}
+    </>
+  );
+
   // Mobile layout
   const renderMobileLayout = () => (
     <div className="h-full flex flex-col overflow-hidden sm:hidden">
@@ -313,38 +326,7 @@ const AiAgentsPage: React.FC = () => {
         ) : (
           <div className="h-full bg-white">
             <div className="px-4 py-4">
-              <div className="mb-4 flex rounded-md bg-slate-100 p-1 text-xs font-medium">
-                <button type="button" onClick={() => setConfigView('direct')} className={`flex-1 rounded px-2 py-1.5 ${configView === 'direct' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Direct agents</button>
-                <button type="button" onClick={() => setConfigView('synthetic')} className={`flex-1 rounded px-2 py-1.5 ${configView === 'synthetic' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Synthetic Pools</button>
-              </div>
-              {configView === 'direct' ? <AgentsListSection
-                agents={agents}
-                loading={agentsLoading}
-                saving={agentsSaving}
-                error={agentsError}
-                success={agentsSuccess}
-                warning={agentsWarning}
-                onSaveAgents={handleSaveAgents}
-                showAddModal={showAddModal}
-                onCloseAddModal={handleCloseModal}
-                onAddClick={handleAddAgentClick}
-                onSelectModel={handleSelectModel}
-                readOnly={isDemoMode}
-              /> : <SyntheticPoolsSection
-                agents={agents}
-                pools={syntheticAgents}
-                loading={syntheticLoading}
-                saving={syntheticSaving}
-                error={syntheticError}
-                success={syntheticSuccess}
-                warning={syntheticWarning}
-                readOnly={isDemoMode || syntheticReloadRequired}
-                readOnlyMessage={syntheticReloadRequired ? 'Synthetic pool changes are blocked because the saved configuration could not be reloaded. Reload this page to continue.' : undefined}
-                editorActive={!isDesktopLayout}
-                addRequested={addPoolRequest?.owner === 'mobile' ? addPoolRequest.id : 0}
-                onAddRequestConsumed={handleAddPoolRequestConsumed}
-                onSave={handleSaveSyntheticAgents}
-              />}
+              {renderConfiguration('mobile')}
             </div>
           </div>
         )}
@@ -397,38 +379,7 @@ const AiAgentsPage: React.FC = () => {
           <Panel defaultSize={40} minSize={25}>
             <div className="h-full bg-white flex flex-col overflow-y-auto">
               <div className="px-6 py-4">
-                <div className="mb-4 flex rounded-md bg-slate-100 p-1 text-xs font-medium">
-                  <button type="button" onClick={() => setConfigView('direct')} className={`flex-1 rounded px-2 py-1.5 ${configView === 'direct' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Direct agents</button>
-                  <button type="button" onClick={() => setConfigView('synthetic')} className={`flex-1 rounded px-2 py-1.5 ${configView === 'synthetic' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Synthetic Pools</button>
-                </div>
-                {configView === 'direct' ? <AgentsListSection
-                  agents={agents}
-                  loading={agentsLoading}
-                  saving={agentsSaving}
-                  error={agentsError}
-                  success={agentsSuccess}
-                  warning={agentsWarning}
-                  onSaveAgents={handleSaveAgents}
-                  showAddModal={showAddModal}
-                  onCloseAddModal={handleCloseModal}
-                  onAddClick={handleAddAgentClick}
-                  onSelectModel={handleSelectModel}
-                  readOnly={isDemoMode}
-                /> : <SyntheticPoolsSection
-                  agents={agents}
-                  pools={syntheticAgents}
-                  loading={syntheticLoading}
-                  saving={syntheticSaving}
-                  error={syntheticError}
-                  success={syntheticSuccess}
-                  warning={syntheticWarning}
-                  readOnly={isDemoMode || syntheticReloadRequired}
-                  readOnlyMessage={syntheticReloadRequired ? 'Synthetic pool changes are blocked because the saved configuration could not be reloaded. Reload this page to continue.' : undefined}
-                  editorActive={isDesktopLayout}
-                  addRequested={addPoolRequest?.owner === 'desktop' ? addPoolRequest.id : 0}
-                  onAddRequestConsumed={handleAddPoolRequestConsumed}
-                  onSave={handleSaveSyntheticAgents}
-                />}
+                {renderConfiguration('desktop')}
               </div>
             </div>
           </Panel>
