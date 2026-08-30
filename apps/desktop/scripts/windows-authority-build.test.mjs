@@ -129,9 +129,11 @@ test('native compiler signer, image, job, exit, and output failures stay bounded
   const cases = [
     ['compiler-wrong-signer', 'SIGNER_CATALOG'],
     ['compiler-same-root-wrong-certificate', 'SIGNER_CATALOG'],
+    ['compiler-same-root-wrong-signer', 'SIGNER_CATALOG'],
     ['compiler-subject-spoof', 'SIGNER_CATALOG'],
     ['compiler-wrong-spki', 'SIGNER_CATALOG'],
     ['compiler-wrong-catalog', 'SIGNER_CATALOG'],
+    ['compiler-swapped-catalog', 'SIGNER_CATALOG'],
     ['compiler-manifest-replacement', 'SIGNER_CATALOG'],
     ['compiler-job', 'IMAGE'],
     ['compiler-image', 'IMAGE'],

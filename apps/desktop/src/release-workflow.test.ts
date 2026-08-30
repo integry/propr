@@ -21,6 +21,10 @@ const makeDmg = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/make-dmg.mjs', import.meta.url)),
   'utf8',
 ));
+const verifyDarwinImage = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/verify-darwin-image.mjs', import.meta.url)),
+  'utf8',
+));
 const releasePreflight = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/release-preflight.mjs', import.meta.url)),
   'utf8',
@@ -252,8 +256,12 @@ describe('desktop trusted release workflow', () => {
     assert.match(releaseArtifacts, /pathStats\.nlink !== 1n/);
     assert.ok(!releaseArtifacts.includes('modified: stats.mtimeNs'));
     assert.ok(!releaseArtifacts.includes('changed: stats.ctimeNs'));
-    assert.match(releaseArchitecture, /'hdiutil', \['attach', '-readonly', '-nobrowse', '-mountpoint', directory, privatePath\]/);
-    assert.match(releaseArchitecture, /try \{\n\s+if \(mounted\) await execFile\('hdiutil', \['detach', directory\]\);\n\s+\} finally \{\n\s+await rm\(directory/);
+    assert.match(releaseArchitecture, /const HDIUTIL = '\/usr\/bin\/hdiutil'/);
+    assert.match(releaseArchitecture, /HDIUTIL, \['attach', '-readonly', '-nobrowse', '-mountpoint', directory, privatePath\]/);
+    assert.match(releaseArchitecture, /try \{\n\s+if \(mounted\) await execFile\(HDIUTIL, \['detach', directory\]\);\n\s+\} finally \{\n\s+await rm\(directory/);
+    assert.match(verifyDarwinImage, /const HDIUTIL = '\/usr\/bin\/hdiutil'/);
+    assert.match(verifyDarwinImage, /await chmod\(root, 0o500\)/);
+    assert.match(verifyDarwinImage, /await run\(HDIUTIL, \['verify', snapshot\.path\]\)/);
     assert.match(makeDmg, /for \(let attempt = 0; attempt < 2 && !created; attempt \+= 1\)/);
     assert.match(makeDmg, /\^hdiutil: create failed - Resource busy\\s\*\$/);
     assert.match(makeDmg, /await rename\(temporaryOutput, outputPath\)/);
@@ -321,13 +329,17 @@ describe('desktop trusted release workflow', () => {
     assert.match(windowsNativeLauncher, /CompileHeld/);
     assert.match(windowsNativeLauncher, /VerifyMicrosoftCompilerInput/);
     assert.match(windowsNativeLauncher, /CryptCATAdminEnumCatalogFromHash/);
+    assert.match(windowsNativeLauncher, /CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED[^_]/);
+    assert.match(windowsNativeLauncher, /SignerContent::StandaloneCatalog/);
+    assert.match(windowsNativeLauncher, /SignerContent::EmbeddedPe/);
     assert.match(windowsNativeLauncher, /CreateProcessW\(paths\[0\]\.c_str\(\)/);
     assert.match(windowsNativeLauncher, /HANDLE inherited\[\] = \{child_stdin, child_stdout, child_stderr\}/);
     assert.match(windowsNativeLauncher, /SameIdentity\(identities\[0\], loaded_id\)/);
     assert.match(windowsNativeLauncher, /DangerousUntrustedAcl/);
-    assert.match(windowsAuthority, /acquireBootstrapPackageAuthority/);
-    assert.match(windowsAuthority, /Get-AuthenticodeSignature/);
-    assert.match(windowsAuthority, /fsutil file queryfileid/);
+    assert.match(windowsAuthority, /GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe/);
+    assert.doesNotMatch(windowsAuthority, /process\.env\.(?:SystemRoot|windir|COMSPEC|PATH)/i);
+    assert.match(windowsAuthority, /const child = spawn\(KERNEL_SYSTEM_POWERSHELL/);
+    assert.match(windowsAuthority, /env: \{\}/);
     assert.ok(!windowsAuthority.includes('writeBootstrap'));
     assert.ok(!windowsAuthority.includes('brokerSource'));
     assert.match(windowsAuthority, /await session\.write\(JSON\.stringify\(\{/);
@@ -355,7 +367,7 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(windowsAuthorityBuild, /execFileAsync\(compiler/);
     assert.doesNotMatch(windowsAuthorityBuild, /require\(launcher\.path\)/);
     assert.doesNotMatch(windowsAuthority, /require\(launcherProof\.path\)/);
-    assert.doesNotMatch(windowsAuthority, /require\(bootstrapProof\.path\)/);
+    assert.match(windowsAuthority, /require\(bootstrapProof\.path\)/);
     assert.match(windowsAuthority, /bootstrap\.loadVerifiedModule\(\{/);
     assert.match(forgeConfig, /extraResource: \[resolve\('build', 'windows-authority'\)\]/);
     assert.match(forgeConfig, /refreshPackagedWindowsAuthorityManifest/);

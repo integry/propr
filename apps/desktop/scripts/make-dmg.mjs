@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { basename, join, resolve } from 'node:path';
 
 const execFileAsync = promisify(execFile);
+const HDIUTIL = '/usr/bin/hdiutil';
 if (process.platform !== 'darwin') throw new Error('DMG artifacts must be built on a native macOS host');
 
 const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
@@ -29,7 +30,7 @@ for (let attempt = 0; attempt < 2 && !created; attempt += 1) {
   try {
     await cp(appPath, join(stagingDirectory, basename(appPath)), { recursive: true, verbatimSymlinks: true });
     await symlink('/Applications', join(stagingDirectory, 'Applications'));
-    await execFileAsync('hdiutil', [
+    await execFileAsync(HDIUTIL, [
       'create',
       '-volname', 'ProPR Desktop',
       '-srcfolder', stagingDirectory,

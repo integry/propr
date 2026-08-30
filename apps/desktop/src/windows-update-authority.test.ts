@@ -200,15 +200,52 @@ test('Windows helper PE inspection requires a managed PE32 AnyCPU-compatible ima
   assert.throws(() => inspectWindowsAuthorityHelperPeForTest(required32Bit), /compile_load:9/);
 });
 
-test('neither native target executes before the OS package authority and authenticated load boundaries', async () => {
+test('production verifier is kernel-rooted and never selected by the process command environment', async () => {
   const implementation = await readFile(fileURLToPath(new URL('./windows-update-authority.ts', import.meta.url)), 'utf8');
   assert.doesNotMatch(implementation, /require\(launcherProof\.path\)/);
-  assert.doesNotMatch(implementation, /require\(bootstrapProof\.path\)/);
-  assert.match(implementation, /acquireBootstrapPackageAuthority\(/);
-  assert.match(implementation, /Get-AuthenticodeSignature/);
-  assert.match(implementation, /fsutil file queryfileid/);
+  assert.doesNotMatch(implementation, /process\.env\.(?:SystemRoot|windir|COMSPEC|PATH)/i);
+  assert.match(implementation, /GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe/);
+  assert.match(implementation, /const child = spawn\(KERNEL_SYSTEM_POWERSHELL/);
+  assert.match(implementation, /env: \{\}/);
+  assert.match(implementation, /\$fsutilPath = Join-Path \$self\.item\.Directory\.Parent\.Parent\.FullName 'fsutil\.exe'/);
+  assert.match(implementation, /Open-AuthenticatedFile \$selfPath \$true/);
+  assert.match(implementation, /Open-AuthenticatedFile \$fsutilPath \$true/);
+  assert.ok(implementation.indexOf('acquireBootstrapPackageAuthority(')
+    < implementation.indexOf('require(bootstrapProof.path)'));
   assert.match(implementation, /bootstrap\.loadVerifiedModule\(\{/);
 });
+
+test('hostile Windows command environment cannot select a verifier or execute its observable initializer', windowsOnly,
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-hostile-windows-root-'));
+    const marker = join(root, 'fake-verifier-executed');
+    const system32 = join(root, 'System32');
+    const powershellDirectory = join(system32, 'WindowsPowerShell', 'v1.0');
+    const prior = Object.fromEntries(['SystemRoot', 'windir', 'COMSPEC', 'PATH'].map(name => [name, process.env[name]]));
+    try {
+      await mkdir(powershellDirectory, { recursive: true });
+      const observable = `@echo off\r\ntype nul > "${marker}"\r\nexit /b 127\r\n`;
+      await writeFile(join(powershellDirectory, 'powershell.exe'), observable);
+      await writeFile(join(system32, 'fsutil.exe'), observable);
+      await writeFile(join(root, 'cmd.exe'), observable);
+      process.env.SystemRoot = root;
+      process.env.windir = root;
+      process.env.COMSPEC = join(root, 'cmd.exe');
+      process.env.PATH = `${powershellDirectory};${system32};${root}`;
+      const helper = await authenticateWindowsAuthorityHelperForTest();
+      await helper.executableHandle.close();
+      await helper.launcherHandle.close();
+      await helper.bootstrapHandle.close();
+      await helper.manifestHandle.close();
+      await assert.rejects(readFile(marker), error => (error as NodeJS.ErrnoException).code === 'ENOENT');
+    } finally {
+      for (const [name, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
 test('native pre-load swap barrier never transfers control to replacement N-API initialization', windowsOnly, async () => {
   for (const fault of ['barrier-before-module-load-swap', 'barrier-before-module-load-write',

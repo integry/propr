@@ -10,6 +10,7 @@ import { inflateRawSync } from 'node:zlib';
 
 const execFile = promisify(execFileCallback);
 const heldDmgArtifacts = new WeakMap();
+const HDIUTIL = '/usr/bin/hdiutil';
 const EXECUTABLE_NAME = 'propr-desktop';
 const WINDOWS_AUTHORITY_EXECUTABLE = 'lib/net45/resources/windows-authority/propr-windows-authority.exe';
 const WINDOWS_AUTHORITY_MANIFEST = 'lib/net45/resources/windows-authority/propr-windows-authority.manifest.json';
@@ -999,7 +1000,7 @@ const attachPrivateDmg = async (heldArtifact, directory) => {
     throw new Error('Native DMG inspection rejected an invalid private-snapshot pathname capability');
   }
   try {
-    await execFile('hdiutil', ['attach', '-readonly', '-nobrowse', '-mountpoint', directory, privatePath]);
+    await execFile(HDIUTIL, ['attach', '-readonly', '-nobrowse', '-mountpoint', directory, privatePath]);
   } catch {
     // hdiutil includes its source argument in some failures. Keep the internal
     // randomized pathname out of logs while still failing closed.
@@ -1033,7 +1034,7 @@ const inspectDmg = async (heldArtifact, platform, arch, onDmgMounted) => {
     }
   } finally {
     try {
-      if (mounted) await execFile('hdiutil', ['detach', directory]);
+      if (mounted) await execFile(HDIUTIL, ['detach', directory]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

@@ -354,13 +354,23 @@ bool Sha256Bytes(const BYTE* bytes, DWORD length, std::string* result) {
   return ok;
 }
 
-bool SignerEvidence(const std::wstring& path, std::wstring* publisher, std::string* certificate_hash,
-    std::string* spki_hash, std::string* root_spki_hash = nullptr) {
+enum class SignerContent {
+  EmbeddedPe,
+  StandaloneCatalog,
+};
+
+bool SignerEvidence(const std::wstring& path, SignerContent expected_content, std::wstring* publisher,
+    std::string* certificate_hash, std::string* spki_hash, std::string* root_spki_hash = nullptr) {
   HCERTSTORE store = nullptr;
   HCRYPTMSG message = nullptr;
   DWORD encoding = 0, content = 0, format = 0;
-  if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, path.c_str(), CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
-      CERT_QUERY_FORMAT_FLAG_BINARY, 0, &encoding, &content, &format, &store, &message, nullptr)) return false;
+  const DWORD content_flag = expected_content == SignerContent::EmbeddedPe
+    ? CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED : CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED;
+  const DWORD required_content = expected_content == SignerContent::EmbeddedPe
+    ? CERT_QUERY_CONTENT_PKCS7_SIGNED_EMBED : CERT_QUERY_CONTENT_PKCS7_SIGNED;
+  if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, path.c_str(), content_flag,
+      CERT_QUERY_FORMAT_FLAG_BINARY, 0, &encoding, &content, &format, &store, &message, nullptr)
+      || content != required_content || format != CERT_QUERY_FORMAT_BINARY) return false;
   DWORD bytes = 0;
   bool ok = CryptMsgGetParam(message, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &bytes) != FALSE;
   std::vector<BYTE> signer(bytes);
@@ -417,7 +427,7 @@ bool VerifyPinnedSignature(const std::wstring& path, const std::string& expected
   std::wstring publisher;
   std::string certificate, spki;
   std::wstring expected(expected_publisher.begin(), expected_publisher.end());
-  return SignerEvidence(path, &publisher, &certificate, &spki)
+  return SignerEvidence(path, SignerContent::EmbeddedPe, &publisher, &certificate, &spki)
     && publisher == expected && certificate == expected_certificate && spki == expected_spki;
 }
 
@@ -526,7 +536,8 @@ bool VerifyMicrosoftCompilerInput(const std::wstring& path, HANDLE file, std::st
   std::wstring evidence_path;
   const bool trusted = VerifyCatalogTrust(path, file, &evidence_path, catalog_sha256, catalog_identity, held_catalog);
   std::wstring publisher;
-  return trusted && SignerEvidence(evidence_path, &publisher, certificate, spki, root_spki)
+  return trusted && SignerEvidence(evidence_path, SignerContent::StandaloneCatalog,
+      &publisher, certificate, spki, root_spki)
     && ExactMicrosoftSystemPublisher(publisher) && certificate->size() == 64 && spki->size() == 64
     && catalog_sha256->size() == 64 && PinnedMicrosoftRoot(*root_spki);
 }
@@ -1119,8 +1130,10 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
     }
   }
   if (!inputs_valid || fault == "compiler-wrong-signer" || fault == "compiler-same-root-wrong-certificate"
+      || fault == "compiler-same-root-wrong-signer"
       || fault == "compiler-subject-spoof" || fault == "compiler-wrong-spki"
-      || fault == "compiler-wrong-catalog" || fault == "compiler-manifest-replacement") {
+      || fault == "compiler-wrong-catalog" || fault == "compiler-swapped-catalog"
+      || fault == "compiler-manifest-replacement") {
     for (HANDLE handle : inputs) CloseHandle(handle);
     for (HANDLE handle : catalogs) if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
     CloseHandle(directory_lease);

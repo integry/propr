@@ -205,11 +205,6 @@ interface WindowsNativeBootstrap {
   loadVerifiedModule(policy: Record<string, unknown>): WindowsNativeLauncher;
 }
 
-interface BootstrapAuthorityLease {
-  proof: { sha256: string; size: number; volumeSerial: string; fileId128: string };
-  release(): Promise<void>;
-}
-
 interface BrokerChild extends EventEmitter {
   stdin: Writable;
   stdout: Readable;
@@ -224,49 +219,73 @@ interface BrokerChild extends EventEmitter {
 
 const require = createRequire(import.meta.url);
 
+// This namespace is resolved by the Windows object manager, not by the child
+// environment inherited from an attacker-controlled launcher.
+const KERNEL_SYSTEM_POWERSHELL = String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`;
+
 const BOOTSTRAP_AUTHORITY_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $policy = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadLine())) | ConvertFrom-Json
-$stream = [IO.File]::Open($policy.path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+$trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+$trustedPublishers = @(
+  'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
+  'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
+  'CN=Microsoft Windows, O=Microsoft Corporation, C=US',
+  'CN=Microsoft Corporation, O=Microsoft Corporation, C=US'
+)
+$dangerous = [Security.AccessControl.FileSystemRights]::WriteData -bor
+  [Security.AccessControl.FileSystemRights]::AppendData -bor [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+  [Security.AccessControl.FileSystemRights]::WriteAttributes -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+  [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+  [Security.AccessControl.FileSystemRights]::TakeOwnership -bor [Security.AccessControl.FileSystemRights]::FullControl
+$current = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+function Open-AuthenticatedFile([string]$path, [bool]$microsoft) {
+  $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $item = Get-Item -LiteralPath $path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer) { throw 'type' }
+    $acl = Get-Acl -LiteralPath $path
+    $owner = ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -ne $current -and $trustedOwners -notcontains $owner) { throw 'owner' }
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+      if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        (($rule.FileSystemRights -band $dangerous) -ne 0) -and $rule.IdentityReference.Value -ne $current -and
+        $trustedOwners -notcontains $rule.IdentityReference.Value) { throw 'acl' }
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $path
+    if ($microsoft -and ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+      !$signature.SignerCertificate -or $trustedPublishers -notcontains $signature.SignerCertificate.Subject)) { throw 'signature' }
+    return @{ stream=$stream; item=$item; signature=$signature }
+  } catch { $stream.Dispose(); throw }
+}
+$selfPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+$self = Open-AuthenticatedFile $selfPath $true
+# Derive System32 from the exact running, Microsoft-signed OS image. No
+# SystemRoot, windir, COMSPEC, or PATH value participates in this authority.
+$fsutilPath = Join-Path $self.item.Directory.Parent.Parent.FullName 'fsutil.exe'
+$fsutil = Open-AuthenticatedFile $fsutilPath $true
+$target = Open-AuthenticatedFile $policy.path $false
 try {
-  $item = Get-Item -LiteralPath $policy.path -Force
-  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -or $item.Length -ne $policy.size) { throw 'type' }
-  $acl = Get-Acl -LiteralPath $policy.path
-  if (!$acl.Owner) { throw 'acl' }
-  $dangerous = [Security.AccessControl.FileSystemRights]::WriteData -bor
-    [Security.AccessControl.FileSystemRights]::AppendData -bor [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
-    [Security.AccessControl.FileSystemRights]::WriteAttributes -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-    [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-    [Security.AccessControl.FileSystemRights]::TakeOwnership -bor [Security.AccessControl.FileSystemRights]::FullControl
-  $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-  $current = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-  $owner = ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value
-  if ($owner -ne $current -and $trusted -notcontains $owner) { throw 'owner' }
-  foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-    if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
-      (($rule.FileSystemRights -band $dangerous) -ne 0) -and $rule.IdentityReference.Value -ne $current -and
-      $trusted -notcontains $rule.IdentityReference.Value) { throw 'acl' }
-  }
+  if ($target.item.Length -ne $policy.size) { throw 'size' }
   $sha = [Security.Cryptography.SHA256]::Create()
-  try { $digest = ([BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()) } finally { $sha.Dispose() }
+  try { $digest = ([BitConverter]::ToString($sha.ComputeHash($target.stream)).Replace('-', '').ToLowerInvariant()) } finally { $sha.Dispose() }
   if ($digest -cne $policy.sha256) { throw 'hash' }
-  $fsutil = Join-Path $env:SystemRoot 'System32\fsutil.exe'
-  $fileIdOutput = (& $fsutil file queryfileid $policy.path 2>$null) -join [Environment]::NewLine
+  $fileIdOutput = (& $fsutil.item.FullName file queryfileid $policy.path 2>$null) -join [Environment]::NewLine
   if ($LASTEXITCODE -ne 0) { throw 'identity' }
-  $volumeOutput = (& $fsutil fsinfo volumeinfo $item.Directory.Root.FullName 2>$null) -join [Environment]::NewLine
+  $volumeOutput = (& $fsutil.item.FullName fsinfo volumeinfo $target.item.Directory.Root.FullName 2>$null) -join [Environment]::NewLine
   if ($LASTEXITCODE -ne 0) { throw 'identity' }
   $fileIdMatches = [regex]::Matches($fileIdOutput, '(?i)0x([0-9a-f]{32})\b')
   $volumeMatches = [regex]::Matches($volumeOutput, '(?i)0x([0-9a-f]{16})\b')
   if ($fileIdMatches.Count -ne 1 -or $volumeMatches.Count -ne 1) { throw 'identity' }
-  $identity = @($volumeMatches[0].Groups[1].Value.ToLowerInvariant(), $fileIdMatches[0].Groups[1].Value.ToLowerInvariant())
   $signature = Get-AuthenticodeSignature -LiteralPath $policy.path
   $certificate = if ($signature.SignerCertificate) { [Convert]::ToBase64String($signature.SignerCertificate.RawData) } else { $null }
   if ($policy.production -and ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or !$certificate)) { throw 'signature' }
-  [Console]::Out.WriteLine((@{ sha256=$digest; size=[int64]$item.Length; volumeSerial=$identity[0]; fileId128=$identity[1];
+  [Console]::Out.WriteLine((@{ sha256=$digest; size=[int64]$target.item.Length;
+    volumeSerial=$volumeMatches[0].Groups[1].Value.ToLowerInvariant(); fileId128=$fileIdMatches[0].Groups[1].Value.ToLowerInvariant();
     subject=if ($signature.SignerCertificate) {$signature.SignerCertificate.Subject} else {$null}; certificate=$certificate } | ConvertTo-Json -Compress))
   [Console]::Out.Flush()
   if ([Console]::In.ReadLine() -cne 'release') { throw 'release' }
-} finally { $stream.Dispose() }
+} finally { $target.stream.Dispose(); $fsutil.stream.Dispose(); $self.stream.Dispose() }
 `;
 
 const helperError = (stage: WindowsAuthorityCompileStage): WindowsAuthorityBootstrapError =>
@@ -292,22 +311,18 @@ const acquireBootstrapPackageAuthority = async (
   path: string,
   policy: WindowsNativeLauncherPolicy,
   allowUnsignedValidation: boolean,
-): Promise<BootstrapAuthorityLease> => {
+): Promise<() => Promise<void>> => {
   if (process.platform !== 'win32' || (policy.trust !== 'production-signed' && !allowUnsignedValidation)) {
     throw helperError('HELPER_OWNER_DACL');
   }
-  const systemRoot = process.env.SystemRoot;
-  if (!systemRoot || !/^[A-Za-z]:\\[^\0]+$/.test(systemRoot) || systemRoot.indexOf(':', 2) >= 0) {
-    throw helperError('HELPER_OWNER_DACL');
-  }
-  const powershell = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const canonicalPowerShell = await realpath(powershell).catch(() => { throw helperError('HELPER_OWNER_DACL'); });
-  if (canonicalPowerShell.toLowerCase() !== resolve(powershell).toLowerCase()) throw helperError('HELPER_OWNER_DACL');
   const loader = '$p=[Console]::In.ReadLine();$s=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p));&([ScriptBlock]::Create($s))';
-  const child = spawn(canonicalPowerShell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+  const child = spawn(KERNEL_SYSTEM_POWERSHELL, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-Command', loader], {
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
+    // An explicit empty environment proves no hostile command/root variable is
+    // authority. The verifier obtains System32 from its own authenticated image.
+    env: {},
   });
   let output = Buffer.alloc(0);
   let errorOutput = 0;
@@ -356,7 +371,9 @@ const acquireBootstrapPackageAuthority = async (
     try {
       const certificate = new X509Certificate(Buffer.from(record.certificate, 'base64'));
       certificateSha256 = certificate.fingerprint256.replaceAll(':', '').toLowerCase();
-      spkiSha256 = createHash('sha256').update(certificate.publicKey.export({ format: 'der', type: 'spki' })).digest('hex');
+      spkiSha256 = createHash('sha256').update(
+        certificate.publicKey.export({ format: 'der', type: 'spki' }),
+      ).digest('hex');
     } catch { cleanup(); throw helperError('HELPER_OWNER_DACL'); }
     if (certificateSha256 !== policy.signerCertificateSha256 || spkiSha256 !== policy.signerSpkiSha256
       || !policy.signerPins.some(pin => pin === `certificate-sha256:${certificateSha256}`
@@ -364,20 +381,12 @@ const acquireBootstrapPackageAuthority = async (
       cleanup(); throw helperError('HELPER_OWNER_DACL');
     }
   }
-  return {
-    proof: {
-      sha256: String(record.sha256),
-      size: Number(record.size),
-      volumeSerial: String(record.volumeSerial),
-      fileId128: String(record.fileId128),
-    },
-    release: async () => {
-      child.stdin.end('release\n');
-      await new Promise<void>(resolvePromise => {
-        const timer = setTimeout(() => { cleanup(); resolvePromise(); }, 5_000);
-        child.once('exit', () => { clearTimeout(timer); resolvePromise(); });
-      });
-    },
+  return async () => {
+    child.stdin.end('release\n');
+    await new Promise<void>(resolvePromise => {
+      const timer = setTimeout(() => { cleanup(); resolvePromise(); }, 5_000);
+      child.once('exit', () => { clearTimeout(timer); resolvePromise(); });
+    });
   };
 };
 
@@ -658,21 +667,18 @@ const authenticateWindowsAuthorityHelper = async (
       || bootstrapAfter.size !== bootstrapBefore.size || bootstrapAfter.nlink !== bootstrapBefore.nlink) {
       throw helperError('HELPER_IDENTITY');
     }
-    // A canonical OS PowerShell image executes the fixed, ASAR-packaged verifier
-    // before the Windows loader sees this addon. Its no-write/no-delete file
-    // lease spans DACL/reparse/full FILE_ID_128/hash/Authenticode verification,
-    // N-API initialization, and the authenticated launcher load. Therefore a
-    // manifest replacement cannot bless a malicious bootstrap initializer.
-    const bootstrapAuthority = await acquireBootstrapPackageAuthority(
+    // The kernel SystemRoot namespace selects and the OS-serviced policy
+    // authenticates the verifier without consulting process environment roots.
+    // Its held bootstrap lease spans N-API initialization and launcher loading.
+    const releaseBootstrapAuthority = await acquireBootstrapPackageAuthority(
       bootstrapProof.path,
       manifest.bootstrap,
       allowUnsignedBootstrapForValidation,
     );
-    const bootstrapAuthorityPath = bootstrapProof.path;
     let bootstrap: WindowsNativeBootstrap;
     let nativeLauncher: WindowsNativeLauncher;
     try {
-      bootstrap = require(bootstrapAuthorityPath) as WindowsNativeBootstrap;
+      bootstrap = require(bootstrapProof.path) as WindowsNativeBootstrap;
       if (!bootstrap || typeof bootstrap.loadVerifiedModule !== 'function') throw helperError('HELPER_OPEN');
       nativeLauncher = bootstrap.loadVerifiedModule({
         path: launcherProof.path,
@@ -685,7 +691,7 @@ const authenticateWindowsAuthorityHelper = async (
         fault: nativeLoadFaultForTest ?? null,
       });
     } catch { throw helperError('HELPER_IDENTITY'); }
-    finally { await bootstrapAuthority.release(); }
+    finally { await releaseBootstrapAuthority(); }
     if (!nativeLauncher || typeof nativeLauncher.launch !== 'function') throw helperError('HELPER_IDENTITY');
     return { executable: executableProof.path, executableHandle, launcherHandle, bootstrapHandle, manifestHandle, manifest,
       launcher: nativeLauncher };
