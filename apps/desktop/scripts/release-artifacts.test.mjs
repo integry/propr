@@ -173,6 +173,44 @@ const peFixture = machine => {
   return bytes;
 };
 
+const windowsAuthorityFixtureEntries = (executablePath, executable) => {
+  const helper = Buffer.alloc(1024);
+  helper.writeUInt16LE(0x5a4d, 0);
+  helper.writeUInt32LE(0x80, 0x3c);
+  helper.write('PE\0\0', 0x80, 'ascii');
+  helper.writeUInt16LE(0x14c, 0x84);
+  helper.writeUInt16LE(1, 0x86);
+  helper.writeUInt16LE(224, 0x94);
+  helper.writeUInt16LE(0x10b, 0x98);
+  helper.writeUInt32LE(0x2000, 0x98 + 96 + (14 * 8));
+  helper.writeUInt32LE(72, 0x98 + 96 + (14 * 8) + 4);
+  helper.writeUInt32LE(0x200, 0x178 + 8);
+  helper.writeUInt32LE(0x2000, 0x178 + 12);
+  helper.writeUInt32LE(0x200, 0x178 + 16);
+  helper.writeUInt32LE(0x200, 0x178 + 20);
+  helper.writeUInt32LE(0x1, 0x210);
+  const manifest = Buffer.from(`${JSON.stringify({
+    schemaVersion: 1,
+    name: 'propr-windows-authority.exe',
+    format: 'PE32',
+    architecture: 'anycpu',
+    machine: 'I386',
+    clr: true,
+    size: helper.length,
+    sha256: createHash('sha256').update(helper).digest('hex'),
+    sourceSha256: 'a'.repeat(64),
+    protocol: 'propr-windows-authority-v1',
+    trust: 'unsigned-validation',
+    publisher: null,
+    compiler: { kind: 'systemroot-dotnet-framework-csc', framework: 'Framework64-v4.0.30319' },
+  })}\n`);
+  return [
+    [executablePath, executable],
+    ['lib/net45/resources/windows-authority/propr-windows-authority.exe', helper],
+    ['lib/net45/resources/windows-authority/propr-windows-authority.manifest.json', manifest],
+  ];
+};
+
 const machOFixture = cpuType => {
   const bytes = Buffer.alloc(32);
   bytes.writeUInt32LE(0xfeedfacf, 0);
@@ -889,9 +927,9 @@ describe('desktop release artifacts', () => {
     const setup = join(root, 'Setup.exe');
     const arm64Package = join(root, 'desktop-arm64-full.nupkg');
     await writeFile(setup, peFixture(0x014c));
-    await writeFile(arm64Package, storedZip([
-      ['lib/net45/propr-desktop.exe', peFixture(0xaa64)],
-    ]));
+    await writeFile(arm64Package, storedZip(windowsAuthorityFixtureEntries(
+      'lib/net45/propr-desktop.exe', peFixture(0xaa64),
+    )));
 
     assert.deepEqual(
       await inspectArtifactArchitecture({ path: setup, kind: 'setup', platform: 'win32', arch: 'arm64' }),
@@ -906,9 +944,9 @@ describe('desktop release artifacts', () => {
       inspectArtifactArchitecture({ path: arm64Package, kind: 'nupkg', platform: 'win32', arch: 'x64' }),
       /executable architecture mismatch.*pe\/x64.*pe\/arm64/,
     );
-    await writeFile(arm64Package, storedZip([
-      ['lib/net45/propr-desktop.exe', Buffer.from('tampered payload')],
-    ]));
+    await writeFile(arm64Package, storedZip(windowsAuthorityFixtureEntries(
+      'lib/net45/propr-desktop.exe', Buffer.from('tampered payload'),
+    )));
     await assert.rejects(
       inspectArtifactArchitecture({ path: arm64Package, kind: 'nupkg', platform: 'win32', arch: 'arm64' }),
       /not a recognized.*binary/,
@@ -929,9 +967,40 @@ describe('desktop release artifacts', () => {
     ];
     for (const [name, kind, platform, arch, executablePath, bytes] of fixtures) {
       const path = join(root, name);
-      await writeFile(path, storedZip([[executablePath, bytes]]));
+      const entries = kind === 'nupkg'
+        ? windowsAuthorityFixtureEntries(executablePath, bytes)
+        : [[executablePath, bytes]];
+      await writeFile(path, storedZip(entries));
       const result = await inspectArtifactArchitecture({ path, kind, platform, arch });
       assert.equal(result.executable.architectures[0], arch);
+    }
+  });
+
+  test('rejects missing, corrupt, mismatched, and ambiguous packaged Windows authority helpers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-windows-authority-'));
+    const executablePath = 'lib/net45/propr-desktop.exe';
+    const executable = peFixture(0x8664);
+    const exact = windowsAuthorityFixtureEntries(executablePath, executable);
+    const corruptManifest = exact.map(entry => [...entry]);
+    const parsed = JSON.parse(corruptManifest[2][1].toString('utf8'));
+    parsed.sha256 = '0'.repeat(64);
+    corruptManifest[2][1] = Buffer.from(`${JSON.stringify(parsed)}\n`);
+    const corruptHelper = exact.map(entry => [...entry]);
+    corruptHelper[1][1] = Buffer.from(corruptHelper[1][1]);
+    corruptHelper[1][1][0] = 0;
+    const cases = [
+      ['missing', [exact[0]], /missing its exact Windows authority helper binding/],
+      ['manifest', corruptManifest, /does not match its bound manifest/],
+      ['output', corruptHelper, /does not match its bound manifest|not the expected managed/],
+      ['alternate', [...exact, ['tools/propr-windows-authority.exe', exact[1][1]]], /ambiguous Windows authority helper layout/],
+    ];
+    for (const [name, entries, pattern] of cases) {
+      const path = join(root, `${name}.nupkg`);
+      await writeFile(path, storedZip(entries));
+      await assert.rejects(
+        inspectArtifactArchitecture({ path, kind: 'nupkg', platform: 'win32', arch: 'x64' }),
+        pattern,
+      );
     }
   });
 
@@ -1035,7 +1104,7 @@ describe('desktop release artifacts', () => {
       ['alternate', storedZip([['lib/net45/propr-desktop.exe', executable], ['tools/propr-desktop.exe', executable]]), /executable outside/],
       ['wrong-path', storedZip([['lib/net46/propr-desktop.exe', executable]]), /executable outside|missing canonical/],
     ];
-    const valid = storedZip([['lib/net45/propr-desktop.exe', executable]]);
+    const valid = storedZip(windowsAuthorityFixtureEntries('lib/net45/propr-desktop.exe', executable));
     const forged = Buffer.from(valid);
     const localNameOffset = 30;
     Buffer.from('lib/net46/propr-desktop.exe').copy(forged, localNameOffset);

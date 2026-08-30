@@ -1,27 +1,29 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { copyFile, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import {
   crashWindowsLockedArtifactForTest,
-  decodeWindowsAuthoritySourceForTest,
+  authenticateWindowsAuthorityHelperForTest,
   decodeWindowsAuthorityFramesForTest,
-  encodeWindowsAuthoritySourceForTest,
+  encodeWindowsAuthorityFrameForTest,
+  inspectWindowsAuthorityHelperPeForTest,
   ensureWindowsPrivateDirectory,
   injectWindowsAuthorityHeldFaultForTest,
   injectWindowsAuthorityProtocolFaultForTest,
+  injectWindowsAuthorityTransportFaultForTest,
   inspectWindowsPrivatePath,
   openWindowsLockedArtifact,
   parseWindowsAuthorityStartupFailureForTest,
+  parseWindowsAuthorityHelperManifestForTest,
   probeWindowsAuthorityCompile,
   probeWindowsAuthorityCompileFailureForTest,
   probeWindowsAuthorityBootstrapStageForTest,
-  probeWindowsAuthorityFragmentedSourceForTest,
-  probeWindowsAuthorityRawSourceFailureForTest,
+  probeWindowsAuthorityProcessImageMismatchForTest,
   probeWindowsAuthorityStartupFailureForTest,
   protectWindowsPrivateFile,
   shutdownWindowsAuthorityBrokerForTest,
@@ -42,61 +44,133 @@ test('native Windows compile probe bounds startup failure to an enumerated non-s
   assert.equal(await probeWindowsAuthorityStartupFailureForTest(), 'ready_protocol');
 });
 
-test('Windows binary source loader accepts fragmentation at every prefix and multibyte UTF-8 boundary', () => {
-  const source = '// π🙂\r\npublic sealed class ExactSource {}';
-  const payload = encodeWindowsAuthoritySourceForTest(source);
-  for (let split = 1; split < payload.length; split++) {
-    assert.equal(decodeWindowsAuthoritySourceForTest([
-      payload.subarray(0, split),
-      payload.subarray(split),
-    ]), source, `split ${split}`);
-  }
-  assert.equal(decodeWindowsAuthoritySourceForTest([...payload].map(byte => Buffer.from([byte]))), source);
+const helperManifest = (overrides: Record<string, unknown> = {}): Buffer => Buffer.from(`${JSON.stringify({
+  schemaVersion: 1,
+  name: 'propr-windows-authority.exe',
+  format: 'PE32',
+  architecture: 'anycpu',
+  machine: 'I386',
+  clr: true,
+  size: 4096,
+  sha256: 'a'.repeat(64),
+  sourceSha256: 'b'.repeat(64),
+  protocol: 'propr-windows-authority-v1',
+  trust: 'unsigned-validation',
+  publisher: null,
+  compiler: { kind: 'systemroot-dotnet-framework-csc', framework: 'Framework64-v4.0.30319' },
+  ...overrides,
+})}\n`);
+
+test('Windows helper manifest is fatal-UTF8, exact, architecture-bound, and distinguishes unsigned validation', () => {
+  assert.equal(parseWindowsAuthorityHelperManifestForTest(helperManifest()).trust, 'unsigned-validation');
+  assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({ sha256: '0'.repeat(63) })), /compile_load:4/);
+  assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({ architecture: 'x64' })), /compile_load:4/);
+  assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({ unexpected: true })), /compile_load:4/);
+  assert.throws(() => parseWindowsAuthorityHelperManifestForTest(Buffer.from([0xc3, 0x28, 0x0a])), /compile_load:4/);
+  assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest().subarray(0, -1)), /compile_load:4/);
 });
 
-test('Windows binary source loader rejects partial, oversized, invalid UTF-8, and trailing startup bytes', () => {
-  const payload = encodeWindowsAuthoritySourceForTest('// π');
-  assert.throws(() => decodeWindowsAuthoritySourceForTest([payload.subarray(0, 7)]), /compile_load:1/);
-  assert.throws(() => decodeWindowsAuthoritySourceForTest([payload.subarray(0, -1)]), /compile_load:2/);
-  assert.throws(
-    () => decodeWindowsAuthoritySourceForTest([Buffer.from('00040001', 'ascii')]),
-    /compile_load:1/,
-  );
-  assert.throws(
-    () => decodeWindowsAuthoritySourceForTest([Buffer.concat([Buffer.from('00000002', 'ascii'), Buffer.from([0xc3, 0x28])])]),
-    /compile_load:3/,
-  );
-  assert.throws(
-    () => decodeWindowsAuthoritySourceForTest([Buffer.concat([payload, Buffer.from('X')])]),
-    /compile_load:2/,
-  );
+test('Windows helper PE inspection requires a managed PE32 AnyCPU-compatible image', () => {
+  const pe = Buffer.alloc(1024);
+  pe.writeUInt16LE(0x5a4d, 0);
+  pe.writeUInt32LE(0x80, 0x3c);
+  pe.write('PE\0\0', 0x80, 'ascii');
+  pe.writeUInt16LE(0x14c, 0x84);
+  pe.writeUInt16LE(1, 0x86);
+  pe.writeUInt16LE(224, 0x94);
+  pe.writeUInt16LE(0x10b, 0x98);
+  pe.writeUInt32LE(0x2000, 0x98 + 96 + (14 * 8));
+  pe.writeUInt32LE(72, 0x98 + 96 + (14 * 8) + 4);
+  pe.writeUInt32LE(0x200, 0x178 + 8);
+  pe.writeUInt32LE(0x2000, 0x178 + 12);
+  pe.writeUInt32LE(0x200, 0x178 + 16);
+  pe.writeUInt32LE(0x200, 0x178 + 20);
+  pe.writeUInt32LE(0x1, 0x210);
+  assert.doesNotThrow(() => inspectWindowsAuthorityHelperPeForTest(pe));
+  const nativeOnly = Buffer.from(pe);
+  nativeOnly.writeUInt32LE(0, 0x98 + 96 + (14 * 8));
+  assert.throws(() => inspectWindowsAuthorityHelperPeForTest(nativeOnly), /compile_load:9/);
+  const wrongMachine = Buffer.from(pe);
+  wrongMachine.writeUInt16LE(0x8664, 0x84);
+  assert.throws(() => inspectWindowsAuthorityHelperPeForTest(wrongMachine), /compile_load:9/);
+  const required32Bit = Buffer.from(pe);
+  required32Bit.writeUInt32LE(0x3, 0x210);
+  assert.throws(() => inspectWindowsAuthorityHelperPeForTest(required32Bit), /compile_load:9/);
 });
 
 test('native Windows bootstrap reports every injected real boundary including early exit', windowsOnly, async () => {
   for (const stage of WINDOWS_AUTHORITY_COMPILE_STAGES) {
     assert.equal(await probeWindowsAuthorityBootstrapStageForTest(stage), stage);
   }
+  assert.equal(await probeWindowsAuthorityProcessImageMismatchForTest(), 'HELPER_IDENTITY');
 });
 
-test('native Windows loader survives byte fragmentation and classifies malformed raw source transport', windowsOnly, async () => {
-  assert.equal(await probeWindowsAuthorityFragmentedSourceForTest(), 'READY');
-  for (const [kind, stage] of [
-    ['partial-prefix', 'SOURCE_LENGTH'],
-    ['partial-source', 'SOURCE_READ'],
-    ['oversize', 'SOURCE_LENGTH'],
-    ['invalid-utf8', 'SOURCE_UTF8'],
-    ['trailing-source', 'READY'],
-  ] as const) {
-    assert.equal(await probeWindowsAuthorityRawSourceFailureForTest(kind), stage);
+test('native Windows helper authentication rejects manifest/output/compiler, link, reparse, and same-name ABA faults', windowsOnly, async t => {
+  const source = await authenticateWindowsAuthorityHelperForTest();
+  const sourceDirectory = dirname(source.executable);
+  await source.executableHandle.close();
+  await source.manifestHandle.close();
+  await assert.rejects(
+    authenticateWindowsAuthorityHelperForTest(sourceDirectory, undefined, 'CN=Expected Production Publisher'),
+    /compile_load:4/,
+    'an unsigned validation helper must never satisfy a production-publisher expectation',
+  );
+  const sourceManifest = join(sourceDirectory, 'propr-windows-authority.manifest.json');
+
+  const fixture = async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-win-helper-'));
+    const executable = join(root, 'propr-windows-authority.exe');
+    const manifest = join(root, 'propr-windows-authority.manifest.json');
+    await copyFile(source.executable, executable);
+    await copyFile(sourceManifest, manifest);
+    return { root, executable, manifest };
+  };
+
+  for (const scenario of ['manifest', 'output', 'compiler', 'hardlink', 'reparse', 'same-name-aba'] as const) {
+    await t.test(scenario, async () => {
+      const current = await fixture();
+      try {
+        if (scenario === 'manifest') {
+          const bytes = await readFile(current.manifest);
+          bytes[12] ^= 1;
+          await writeFile(current.manifest, bytes);
+        } else if (scenario === 'output') {
+          const bytes = await readFile(current.executable);
+          bytes[bytes.length - 1] ^= 1;
+          await writeFile(current.executable, bytes);
+        } else if (scenario === 'compiler') {
+          const value = JSON.parse(await readFile(current.manifest, 'utf8'));
+          value.compiler.kind = 'path-lookup-csc';
+          await writeFile(current.manifest, `${JSON.stringify(value)}\n`);
+        } else if (scenario === 'hardlink') {
+          await link(current.executable, join(current.root, 'alternate.exe'));
+        } else if (scenario === 'reparse') {
+          await rm(current.executable);
+          await symlink(source.executable, current.executable, 'file');
+        }
+        const barrier = scenario === 'same-name-aba' ? async () => {
+          await rename(current.executable, join(current.root, 'displaced.exe'));
+          await copyFile(source.executable, current.executable);
+        } : undefined;
+        await assert.rejects(authenticateWindowsAuthorityHelperForTest(current.root, barrier), /compile_load:(?:4|7|8|9)/);
+      } finally { await rm(current.root, { recursive: true, force: true }); }
+    });
   }
+});
+
+test('native Windows direct broker fails closed on live stderr, slowloris, and response timeout faults', windowsOnly, async () => {
+  assert.equal(await injectWindowsAuthorityTransportFaultForTest('stderr'), 'stdio_protocol');
+  assert.equal(await injectWindowsAuthorityTransportFaultForTest('slowloris'), 'timeout');
+  assert.equal(await injectWindowsAuthorityTransportFaultForTest('timeout'), 'timeout');
 });
 
 test('Windows broker framing accepts partial JSON and rejects extra frames and strict compile failures', () => {
   const compileFailure = '{"version":1,"type":"error","reason":"compile_load","scenario":0}\n';
+  const encoded = encodeWindowsAuthorityFrameForTest(compileFailure.slice(0, -1));
   const frames = decodeWindowsAuthorityFramesForTest([
-    compileFailure.slice(0, 19),
-    compileFailure.slice(19, 47),
-    compileFailure.slice(47),
+    encoded.subarray(0, 3),
+    encoded.subarray(3, 19),
+    encoded.subarray(19),
   ]);
   const failure = parseWindowsAuthorityStartupFailureForTest(frames[0]);
   assert.equal(
@@ -104,12 +178,12 @@ test('Windows broker framing accepts partial JSON and rejects extra frames and s
     'Verified update cache authority inspection failed [win-authority:compile_load:0]',
   );
   assert.throws(
-    () => decodeWindowsAuthorityFramesForTest([compileFailure + compileFailure]),
+    () => decodeWindowsAuthorityFramesForTest([Buffer.concat([encoded, encoded])]),
     error => error instanceof Error
       && error.message === 'Verified update cache authority inspection failed [win-authority:stdio_protocol:16]',
   );
   assert.throws(
-    () => decodeWindowsAuthorityFramesForTest([compileFailure.slice(0, -1)]),
+    () => decodeWindowsAuthorityFramesForTest([encoded.subarray(0, -1)]),
     error => error instanceof Error
       && error.message === 'Verified update cache authority inspection failed [win-authority:stdio_protocol:16]',
   );
@@ -145,7 +219,7 @@ test('native Windows authority binds protected owner DACL and complete file iden
       'clean-shutdown',
     ]);
     const stats = windowsAuthorityBrokerStatsForTest();
-    assert.equal(stats.compileCount, 1, 'all smoke and authority requests must share one Add-Type compilation');
+    assert.equal(stats.compileCount, 1, 'all smoke and authority requests must share one compiled helper process');
     assert.equal(stats.activeProcessCount, 1);
     assert.ok(stats.requestCount >= 8);
   } finally {
@@ -431,7 +505,7 @@ test('native Windows live broker rejects frame, ID, purpose, and identity faults
       assert.equal(
         windowsAuthorityBrokerStatsForTest().compileCount,
         beforeExtra.compileCount + 1,
-        'one replacement process must perform exactly one production compilation',
+        'one replacement process must launch exactly one authenticated compiled helper',
       );
     } finally {
       await restarted.close();

@@ -73,6 +73,7 @@
     "desktop": "npm run dev -w @propr/desktop",
     "desktop:dev": "npm run dev -w @propr/desktop",
     "desktop:prepare": "npm run build -w @propr/shared && npm run build -w @propr/client",
+    "desktop:broker:build": "npm run broker:build -w @propr/desktop",
     "desktop:typecheck": "npm run typecheck -w @propr/desktop && npm run typecheck -w propr-ui",
     "desktop:test": "npm run test -w @propr/desktop",
     "desktop:package": "npm run package -w @propr/desktop",

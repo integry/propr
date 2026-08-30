@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -11,6 +11,7 @@ import {
   FuseVersion,
   getCurrentFuseWire,
 } from '@electron/fuses';
+import { inspectPackagedWindowsAuthority } from './inspect-packaged-windows-authority.mjs';
 
 const READY_EVENT = 'desktop.renderer.ready';
 const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
@@ -30,6 +31,23 @@ const binaryPath = process.platform === 'darwin'
       `propr-desktop${process.platform === 'win32' ? '.exe' : ''}`,
     );
 const inspectOnly = process.argv.includes('--inspect-only');
+
+if (process.platform === 'win32') {
+  const helperDirectory = resolve('out', `propr-desktop-win32-${process.arch}`, 'resources', 'windows-authority');
+  const entries = (await readdir(helperDirectory)).sort();
+  if (entries.length !== 2 || entries[0] !== 'propr-windows-authority.exe'
+    || entries[1] !== 'propr-windows-authority.manifest.json') {
+    throw new Error('Packaged Windows authority helper layout is missing or ambiguous');
+  }
+  const manifest = await inspectPackagedWindowsAuthority(
+    resolve(helperDirectory, entries[0]),
+    resolve(helperDirectory, entries[1]),
+  );
+  const expectedTrust = process.env.PROPR_DESKTOP_PRODUCTION_RELEASE === '1'
+    ? 'production-signed'
+    : 'unsigned-validation';
+  if (manifest.trust !== expectedTrust) throw new Error('Packaged Windows authority helper trust mode is incorrect');
+}
 
 const parseLayout = smokeOutput => {
   for (const line of smokeOutput.split(/\r?\n/)) {

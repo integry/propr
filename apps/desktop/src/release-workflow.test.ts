@@ -29,6 +29,18 @@ const windowsAuthority = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('./windows-update-authority.ts', import.meta.url)),
   'utf8',
 ));
+const windowsAuthoritySource = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('./native/propr-windows-authority.cs', import.meta.url)),
+  'utf8',
+));
+const windowsAuthorityBuild = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/build-windows-authority-helper.mjs', import.meta.url)),
+  'utf8',
+));
+const forgeConfig = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../forge.config.ts', import.meta.url)),
+  'utf8',
+));
 
 const preflightAppTokenPermissions = (preflight: string): string[] => (
   [...preflight.matchAll(/^\s+permission-([a-z-]+): (read|write)$/gm)]
@@ -273,38 +285,51 @@ describe('desktop trusted release workflow', () => {
       assert.ok(
         section.indexOf('Probe Windows authority production C# before desktop suite')
           < section.indexOf('Smoke Windows authority broker before the runtime suite'),
-        `${jobName} must run the exact-source compile probe before starting the production broker`,
+        `${jobName} must build and directly launch the exact helper before starting the production broker`,
       );
       assert.ok(
         section.indexOf('Smoke Windows authority broker before the runtime suite')
           < section.indexOf(`Typecheck and test ${jobName === 'unsigned validation' ? 'unsigned' : 'production'} desktop runtime`),
-        `${jobName} must compile, load, and exercise the broker before the complete runtime suite`,
+        `${jobName} must build, authenticate, and exercise the compiled broker before the complete runtime suite`,
+      );
+      const packagedProbe = jobName === 'unsigned validation'
+        ? 'Directly launch packaged Windows authority helper to READY'
+        : 'Directly launch signed packaged Windows authority helper to READY';
+      assert.ok(
+        section.indexOf(packagedProbe)
+          < section.indexOf(`Typecheck and test ${jobName === 'unsigned validation' ? 'unsigned' : 'production'} desktop runtime`),
+        `${jobName} must directly exercise the packaged helper before the complete runtime suite`,
       );
     }
-    assert.match(windowsAuthority, /'-EncodedCommand',\n\s+POWERSHELL_BINARY_LOADER_ENCODED/);
-    assert.ok(!windowsAuthority.includes("'-Command'"));
-    assert.match(windowsAuthority, /System32', 'WindowsPowerShell', 'v1\.0', 'powershell\.exe'/);
-    assert.match(windowsAuthority, /'-ExecutionPolicy',\n\s+'Bypass'/);
-    assert.match(windowsAuthority, /const source = options\.source \?\? brokerSource\(\)/);
-    assert.match(windowsAuthority, /await session\.writeBootstrap\(source, options\.bootstrapChunks\)/);
+    assert.match(workflow, /PROPR_DESKTOP_PRODUCTION_RELEASE=0 npm run desktop:broker:build/g);
+    assert.match(windowsAuthority, /spawn\(helper\.executable, \['--broker'\]/);
+    assert.match(windowsAuthority, /shell: false/);
+    assert.ok(!windowsAuthority.toLowerCase().includes('powershell'));
+    assert.ok(!windowsAuthority.includes('writeBootstrap'));
+    assert.ok(!windowsAuthority.includes('brokerSource'));
     assert.match(windowsAuthority, /await session\.write\(JSON\.stringify\(\{/);
     assert.match(windowsAuthority, /BROKER_STARTUP_TIMEOUT_MS = 60_000/);
-    assert.match(windowsAuthority, /"type", "ready"/);
-    assert.match(windowsAuthority, /"nativeSmoke", true/);
-    assert.match(windowsAuthority, /"compileCount", 1/);
+    assert.match(windowsAuthoritySource, /"type", "ready"/);
+    assert.match(windowsAuthoritySource, /"nativeSmoke", true/);
+    assert.match(windowsAuthoritySource, /"compileCount", 1/);
     for (const stage of [
+      'BUILD_COMPILER',
+      'BUILD_SOURCE',
+      'BUILD_OUTPUT',
       'TRANSPORT_SPAWN',
-      'SOURCE_LENGTH',
-      'SOURCE_READ',
-      'SOURCE_UTF8',
-      'SCRIPT_PARSE',
-      'REFERENCE_LOAD',
-      'TYPE_COMPILE',
-      'ENTRYPOINT_RESOLVE',
+      'MANIFEST',
+      'HELPER_OPEN',
+      'HELPER_OWNER_DACL',
+      'HELPER_REPARSE',
+      'HELPER_IDENTITY',
+      'HELPER_HASH',
       'PROTOCOL_INIT',
       'READY',
     ]) assert.match(windowsAuthority, new RegExp(`'${stage}'`));
-    assert.match(windowsAuthority, /-CompilerOptions ''\/langversion:5''/);
+    assert.match(windowsAuthorityBuild, /Microsoft\.NET', layout, 'v4\.0\.30319'/);
+    assert.match(windowsAuthorityBuild, /'\/platform:anycpu'/);
+    assert.match(forgeConfig, /extraResource: \[resolve\('build', 'windows-authority'\)\]/);
+    assert.match(forgeConfig, /refreshPackagedWindowsAuthorityManifest/);
     assert.match(windowsAuthority, /purpose: BrokerPurpose/);
     assert.match(windowsAuthority, /expectedBytes: number \| null/);
   });

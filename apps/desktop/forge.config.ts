@@ -77,6 +77,7 @@ const config: ForgeConfig = {
     buildVersion: releaseVersion,
     name: DESKTOP_EXECUTABLE_NAME,
     executableName: DESKTOP_EXECUTABLE_NAME,
+    ...(process.platform === 'win32' ? { extraResource: [resolve('build', 'windows-authority')] } : {}),
     protocols: [{ name: 'ProPR Desktop', schemes: ['propr'] }],
     ...(macSigning ? {
       osxSign: {
@@ -116,6 +117,23 @@ const config: ForgeConfig = {
         [FuseV1Options.GrantFileProtocolExtraPrivileges]: false,
         [FuseV1Options.WasmTrapHandlers]: true,
       });
+    },
+    postPackage: async (_forgeConfig, packageResult) => {
+      if (packageResult.platform !== 'win32') return;
+      // The Windows signer runs after extra resources are copied and signs every
+      // PE in the application. Bind the manifest to those final signed helper
+      // bytes before Squirrel/checksum assembly consumes the packaged layout.
+      const authorityInspectorModule = './scripts/inspect-packaged-windows-authority.mjs';
+      const { refreshPackagedWindowsAuthorityManifest, inspectPackagedWindowsAuthority } = await import(
+        authorityInspectorModule
+      );
+      for (const outputPath of packageResult.outputPaths) {
+        const helperDirectory = resolve(outputPath, 'resources', 'windows-authority');
+        const executable = resolve(helperDirectory, 'propr-windows-authority.exe');
+        const manifest = resolve(helperDirectory, 'propr-windows-authority.manifest.json');
+        await refreshPackagedWindowsAuthorityManifest(executable, manifest);
+        await inspectPackagedWindowsAuthority(executable, manifest);
+      }
     },
   },
   makers: [

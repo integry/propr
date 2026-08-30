@@ -110,7 +110,9 @@ jobs:
       - name: Probe Windows authority production C# before desktop suite
         if: matrix.platform == 'win32'
         shell: bash
-        run: npx tsx --test --test-name-pattern="native Windows exact production C# compile probe reaches ready" apps/desktop/src/windows-update-authority.test.ts
+        run: |
+          PROPR_DESKTOP_PRODUCTION_RELEASE=0 npm run desktop:broker:build
+          npx tsx --test --test-name-pattern="native Windows exact production C# compile probe reaches ready" apps/desktop/src/windows-update-authority.test.ts
 
       - name: Smoke Windows authority broker before the runtime suite
         if: matrix.platform == 'win32'
@@ -130,6 +132,11 @@ jobs:
           test ! -e packages/client/dist
           test ! -e apps/desktop/out
           npm run desktop:package
+
+      - name: Directly launch packaged Windows authority helper to READY
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: npx tsx apps/desktop/scripts/probe-packaged-windows-authority.ts "$(pwd)/apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority"
 
       - name: Typecheck and test unsigned desktop runtime
         shell: bash
@@ -379,7 +386,9 @@ jobs:
       - name: Probe Windows authority production C# before desktop suite
         if: matrix.platform == 'win32'
         shell: bash
-        run: npx tsx --test --test-name-pattern="native Windows exact production C# compile probe reaches ready" apps/desktop/src/windows-update-authority.test.ts
+        run: |
+          PROPR_DESKTOP_PRODUCTION_RELEASE=0 npm run desktop:broker:build
+          npx tsx --test --test-name-pattern="native Windows exact production C# compile probe reaches ready" apps/desktop/src/windows-update-authority.test.ts
 
       - name: Smoke Windows authority broker before the runtime suite
         if: matrix.platform == 'win32'
@@ -483,6 +492,11 @@ jobs:
           test ! -e apps/desktop/out
           npm run desktop:package
 
+      - name: Directly launch signed packaged Windows authority helper to READY
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: npx tsx apps/desktop/scripts/probe-packaged-windows-authority.ts "$(pwd)/apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority"
+
       - name: Typecheck and test production desktop runtime
         shell: bash
         run: |
@@ -553,6 +567,12 @@ jobs:
           $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Setup.exe')
           $packages = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*-full.nupkg')
           $appExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/propr-desktop.exe"
+          $helperExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-authority.exe"
+          $helperManifest = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-authority.manifest.json"
+          if (!(Test-Path -LiteralPath $helperExecutable -PathType Leaf) -or !(Test-Path -LiteralPath $helperManifest -PathType Leaf)) {
+            throw 'Packaged Windows authority helper or bound manifest is missing'
+          }
+          node apps/desktop/scripts/inspect-packaged-windows-authority.mjs $helperExecutable $helperManifest
           if ($installers.Count -ne 1 -or $packages.Count -ne 1) { throw 'Windows release artifacts are missing or ambiguous' }
           $installer = $installers[0]
           $package = $packages[0]
@@ -567,6 +587,12 @@ jobs:
           Expand-Archive -LiteralPath $zip -DestinationPath $extracted
           $packageExecutable = Get-Item -LiteralPath (Join-Path $extracted 'lib/net45/propr-desktop.exe')
           if (!$packageExecutable -or $packageExecutable.PSIsContainer) { throw 'Windows update package canonical application is missing' }
+          $packageHelper = Get-Item -LiteralPath (Join-Path $extracted 'lib/net45/resources/windows-authority/propr-windows-authority.exe')
+          $packageHelperManifest = Get-Item -LiteralPath (Join-Path $extracted 'lib/net45/resources/windows-authority/propr-windows-authority.manifest.json')
+          if (!$packageHelper -or $packageHelper.PSIsContainer -or !$packageHelperManifest -or $packageHelperManifest.PSIsContainer) {
+            throw 'Windows update package authority helper or bound manifest is missing'
+          }
+          node apps/desktop/scripts/inspect-packaged-windows-authority.mjs $packageHelper.FullName $packageHelperManifest.FullName
           function Get-ValidatedSignerEvidence([string]$Path) {
             $signature = Get-AuthenticodeSignature -LiteralPath $Path
             if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or !$signature.TimeStamperCertificate) {
@@ -584,6 +610,8 @@ jobs:
             Get-ValidatedSignerEvidence $installer.FullName
             Get-ValidatedSignerEvidence $appExecutable
             Get-ValidatedSignerEvidence $packageExecutable.FullName
+            Get-ValidatedSignerEvidence $helperExecutable
+            Get-ValidatedSignerEvidence $packageHelper.FullName
           )
           foreach ($signer in $evidence) {
             if ($signer.Subject -cne $env:UPDATE_WINDOWS_SIGNING_IDENTITY) { throw 'Windows Authenticode signer does not match the configured exact subject' }

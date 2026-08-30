@@ -1,4 +1,5 @@
 import { execFile as execFileCallback, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open, mkdtemp, readdir, readlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,6 +11,8 @@ import { inflateRawSync } from 'node:zlib';
 const execFile = promisify(execFileCallback);
 const heldDmgArtifacts = new WeakMap();
 const EXECUTABLE_NAME = 'propr-desktop';
+const WINDOWS_AUTHORITY_EXECUTABLE = 'lib/net45/resources/windows-authority/propr-windows-authority.exe';
+const WINDOWS_AUTHORITY_MANIFEST = 'lib/net45/resources/windows-authority/propr-windows-authority.manifest.json';
 const DMG_INSTALL_LINK = 'Applications';
 const DMG_HELPER_BUNDLES = new Set([
   `${EXECUTABLE_NAME} Helper.app`,
@@ -623,12 +626,21 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
 
     const ranges = [];
     let executableBytes;
+    let authorityExecutableBytes;
+    let authorityManifestBytes;
     const canonicalExecutable = archiveExecutablePath(kind, platform, arch);
     const expectedExecutableName = platform === 'win32' ? `${EXECUTABLE_NAME}.exe` : EXECUTABLE_NAME;
     const alternateExecutables = entries.filter(entry => !entry.directory
       && basename(entry.path).toLocaleLowerCase('en-US') === expectedExecutableName.toLocaleLowerCase('en-US')
       && entry.path !== canonicalExecutable);
     if (alternateExecutables.length) throw new Error(`ZIP contains an executable outside ${canonicalExecutable}`);
+    if (kind === 'nupkg' && platform === 'win32') {
+      const alternateAuthority = entries.filter(entry => !entry.directory
+        && ['propr-windows-authority.exe', 'propr-windows-authority.manifest.json']
+          .includes(basename(entry.path).toLocaleLowerCase('en-US'))
+        && ![WINDOWS_AUTHORITY_EXECUTABLE, WINDOWS_AUTHORITY_MANIFEST].includes(entry.path));
+      if (alternateAuthority.length) throw new Error('NUPKG contains an ambiguous Windows authority helper layout');
+    }
     for (const entry of entries) {
       if (entry.localOffset + 30 > centralOffset) throw new Error(`ZIP local header offset is invalid for ${entry.name}`);
       const local = await readExact(handle, 30, entry.localOffset, `ZIP local header for ${entry.name}`);
@@ -693,6 +705,8 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
       ranges.push({ start: entry.localOffset, end: recordEnd, name: entry.name });
       if (entry.symbolicLink) entry.bytes = bytes;
       if (entry.path === canonicalExecutable) executableBytes = bytes;
+      if (entry.path === WINDOWS_AUTHORITY_EXECUTABLE) authorityExecutableBytes = bytes;
+      if (entry.path === WINDOWS_AUTHORITY_MANIFEST) authorityManifestBytes = bytes;
     }
     ranges.sort((left, right) => left.start - right.start);
     let expectedOffset = 0;
@@ -705,6 +719,68 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
     if (expectedOffset !== centralOffset) throw new Error('ZIP contains unclaimed data before its central directory');
     validateDarwinFrameworkSymlinks(entries);
     if (!executableBytes) throw new Error(`ZIP is missing canonical executable ${canonicalExecutable}`);
+    if (kind === 'nupkg' && platform === 'win32') {
+      if (!authorityExecutableBytes || !authorityManifestBytes || authorityManifestBytes.length > 16 * 1024
+        || authorityManifestBytes.at(-1) !== 0x0a) throw new Error('NUPKG is missing its exact Windows authority helper binding');
+      let authorityManifest;
+      try { authorityManifest = JSON.parse(UTF8_DECODER.decode(authorityManifestBytes.subarray(0, -1))); }
+      catch { throw new Error('NUPKG Windows authority manifest is not strict UTF-8 JSON'); }
+      const expectedKeys = ['architecture', 'clr', 'compiler', 'format', 'machine', 'name', 'protocol', 'publisher',
+        'schemaVersion', 'sha256', 'size', 'sourceSha256', 'trust'];
+      if (!authorityManifest || typeof authorityManifest !== 'object' || Array.isArray(authorityManifest)
+        || JSON.stringify(Object.keys(authorityManifest).sort()) !== JSON.stringify(expectedKeys)
+        || authorityManifest.schemaVersion !== 1 || authorityManifest.name !== 'propr-windows-authority.exe'
+        || authorityManifest.format !== 'PE32' || authorityManifest.architecture !== 'anycpu'
+        || authorityManifest.machine !== 'I386' || authorityManifest.clr !== true
+        || authorityManifest.protocol !== 'propr-windows-authority-v1'
+        || !authorityManifest.compiler || typeof authorityManifest.compiler !== 'object'
+        || Array.isArray(authorityManifest.compiler)
+        || JSON.stringify(Object.keys(authorityManifest.compiler).sort()) !== JSON.stringify(['framework', 'kind'])
+        || authorityManifest.compiler.kind !== 'systemroot-dotnet-framework-csc'
+        || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String(authorityManifest.compiler.framework))
+        || !['unsigned-validation', 'production-signed'].includes(authorityManifest.trust)
+        || (authorityManifest.trust === 'unsigned-validation' && authorityManifest.publisher !== null)
+        || (authorityManifest.trust === 'production-signed'
+          && (typeof authorityManifest.publisher !== 'string' || !authorityManifest.publisher))
+        || authorityManifest.size !== authorityExecutableBytes.length
+        || authorityManifest.sha256 !== createHash('sha256').update(authorityExecutableBytes).digest('hex')
+        || !/^[a-f0-9]{64}$/.test(String(authorityManifest.sourceSha256))) {
+        throw new Error('NUPKG Windows authority helper does not match its bound manifest');
+      }
+      const peOffset = authorityExecutableBytes.length >= 512 ? authorityExecutableBytes.readUInt32LE(0x3c) : -1;
+      const optional = peOffset + 24;
+      const clrDirectory = optional + 96 + (14 * 8);
+      if (peOffset < 0x40 || clrDirectory + 8 > authorityExecutableBytes.length
+        || authorityExecutableBytes.toString('ascii', peOffset, peOffset + 4) !== 'PE\0\0'
+        || authorityExecutableBytes.readUInt16LE(peOffset + 4) !== 0x14c
+        || authorityExecutableBytes.readUInt16LE(optional) !== 0x10b
+        || authorityExecutableBytes.readUInt32LE(clrDirectory) === 0) {
+        throw new Error('NUPKG Windows authority helper is not the expected managed AnyCPU PE32 executable');
+      }
+      const sectionCount = authorityExecutableBytes.readUInt16LE(peOffset + 6);
+      const optionalSize = authorityExecutableBytes.readUInt16LE(peOffset + 20);
+      const clrRva = authorityExecutableBytes.readUInt32LE(clrDirectory);
+      const sectionTable = optional + optionalSize;
+      let clrOffset = -1;
+      for (let index = 0; index < sectionCount; index += 1) {
+        const section = sectionTable + (index * 40);
+        if (section + 40 > authorityExecutableBytes.length) break;
+        const virtualSize = authorityExecutableBytes.readUInt32LE(section + 8);
+        const virtualAddress = authorityExecutableBytes.readUInt32LE(section + 12);
+        const rawSize = authorityExecutableBytes.readUInt32LE(section + 16);
+        const rawAddress = authorityExecutableBytes.readUInt32LE(section + 20);
+        if (clrRva >= virtualAddress && clrRva < virtualAddress + Math.max(virtualSize, rawSize)) {
+          clrOffset = rawAddress + clrRva - virtualAddress;
+        }
+      }
+      const corFlags = clrOffset >= 0 && clrOffset + 20 <= authorityExecutableBytes.length
+        ? authorityExecutableBytes.readUInt32LE(clrOffset + 16)
+        : 0;
+      if (sectionCount <= 0 || sectionCount > 96 || optionalSize < 224
+        || (corFlags & 0x1) === 0 || (corFlags & (0x2 | 0x10 | 0x20000)) !== 0) {
+        throw new Error('NUPKG Windows authority helper is not the expected managed AnyCPU PE32 executable');
+      }
+    }
     return executableBytes;
   } finally {
     await handle.close();

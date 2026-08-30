@@ -37,6 +37,14 @@ inspection without launching a window. Release CI launches both Linux architectu
 Windows packages on their native runners, validates DMG/ZIP/DEB/RPM/NuGet containers, and validates configured OS
 signatures.
 
+On native Windows builds, `desktop:broker:build` compiles the committed authority-broker C# source with the canonical
+absolute .NET Framework compiler below `SystemRoot`. The build emits a managed AnyCPU PE plus a deterministic strict
+manifest binding its source digest, exact final helper size/SHA-256, format, protocol, and trust mode. Forge packages
+both files under `resources/windows-authority`; Windows signing covers the helper before the post-package hook refreshes
+the bound final-byte hash, and NUPKG/release checksum validation requires the same exact pair. Installed applications
+launch that executable directly with fixed `--broker` argv and binary stdin/stdout. They never compile source and do
+not require PowerShell or a C# compiler on an end-user machine.
+
 `desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
 the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release
 CI runs both checks directly from the committed lockfile before installing or executing the packaging toolchain.
