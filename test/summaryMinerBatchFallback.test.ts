@@ -12,8 +12,11 @@ const {
 } = await import('../packages/core/src/index.js');
 const { processSingleBatch } = await import('../packages/core/src/services/relevance/summaryMinerBatch.js');
 const { processDirectoryBatch } = await import('../packages/core/src/services/relevance/summaryMinerDirectoryBatch.js');
+const { extractKeywordsWithLLM, invalidateSettingsCache } = await import('../packages/core/src/services/relevance/keywordExtractor.js');
+const { scoreSemanticRelevance } = await import('../packages/core/src/services/relevance/semanticScorer.js');
+const { SyntheticRoutingService } = await import('../packages/core/src/services/syntheticRoutingService.js');
 
-function createAgent(alias: string, defaultModel: string, analyze: (prompt: string, options?: { model?: string }) => Promise<unknown>) {
+function createAgent(alias: string, defaultModel: string, analyze: (prompt: string, options?: { model?: string; suppressLlmLog?: boolean }) => Promise<unknown>) {
   return {
     config: {
       id: alias,
@@ -38,6 +41,43 @@ const log = {
   error: () => undefined
 };
 
+function createSyntheticSession(options: {
+  syntheticId: string;
+  alias: string;
+  members: Array<{
+    id: string;
+    agent: ReturnType<typeof createAgent>;
+    model: string;
+    priority: number;
+  }>;
+}) {
+  const agents = new Map(options.members.map(member => [member.agent.config.alias, member.agent]));
+  const router = new SyntheticRoutingService({
+    database: db,
+    loadSyntheticConfigs: async () => [{
+      id: options.syntheticId,
+      alias: options.alias,
+      enabled: true,
+      defaultModel: 'smart',
+      models: [{
+        id: 'smart',
+        enabled: true,
+        strategy: 'round_robin',
+        members: options.members.map(member => ({
+          id: member.id,
+          directAgentAlias: member.agent.config.alias,
+          model: member.model,
+          enabled: true,
+          priority: member.priority
+        }))
+      }]
+    }],
+    getDirectAgent: alias => agents.get(alias) as never,
+    usageSnapshotProvider: { getSnapshot: async () => null }
+  });
+  return router.begin({ requestedAgentAlias: options.alias, requestedModel: 'smart' });
+}
+
 describe('summary miner batch fallback', () => {
   before(async () => {
     await runMigrations();
@@ -46,7 +86,8 @@ describe('summary miner batch fallback', () => {
   beforeEach(async () => {
     await db('file_summaries').delete();
     await db('llm_logs').delete();
-    await db('system_configs').where({ key: 'summarization_runtime_state' }).delete();
+    await db('system_configs').whereIn('key', ['settings', 'summarization_runtime_state']).delete();
+    invalidateSettingsCache();
   });
 
   after(async () => {
@@ -197,6 +238,397 @@ describe('summary miner batch fallback', () => {
     assert.equal(Object.keys(state.cooldowns).length, 1);
     assert.equal(state.warning?.mode, 'cooldown');
     assert.match(state.warning?.message || '', /unusable output/);
+  });
+
+  test('logs the last physical route when all synthetic summarization members fail', async () => {
+    const firstAgent = createAgent('route-large', 'claude-opus-4-6', async (_prompt, options) => {
+      assert.equal(options?.model, 'claude-opus-4-6');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'claude-opus-4-6',
+        executionTimeMs: 1,
+        error: 'primary provider unavailable'
+      };
+    });
+    const secondAgent = createAgent('route-small', 'gpt-5-mini', async (_prompt, options) => {
+      assert.equal(options?.model, 'gpt-5-mini');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'gpt-5-mini',
+        executionTimeMs: 1,
+        error: 'secondary provider unavailable'
+      };
+    });
+    const agents = new Map([
+      [firstAgent.config.alias, firstAgent],
+      [secondAgent.config.alias, secondAgent]
+    ]);
+    const router = new SyntheticRoutingService({
+      database: db,
+      loadSyntheticConfigs: async () => [{
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        alias: 'summary-pool',
+        enabled: true,
+        defaultModel: 'smart',
+        models: [{
+          id: 'smart',
+          enabled: true,
+          strategy: 'round_robin',
+          members: [
+            { id: '33333333-3333-4333-8333-333333333333', directAgentAlias: 'route-large', model: 'claude-opus-4-6', enabled: true, priority: 100 },
+            { id: '44444444-4444-4444-8444-444444444444', directAgentAlias: 'route-small', model: 'gpt-5-mini', enabled: true, priority: 0 }
+          ]
+        }]
+      }],
+      getDirectAgent: alias => agents.get(alias) as never,
+      usageSnapshotProvider: { getSnapshot: async () => null }
+    });
+    const virtualAgent = createAgent('summary-pool', 'smart', async () => {
+      throw new Error('synthetic facade should not be invoked directly');
+    });
+
+    const result = await processSingleBatch({
+      fullName: 'integry/propr',
+      batch: [{ path: 'src/a.ts', content: 'export const a = 1;', blobHash: 'abc123' }],
+      agent: virtualAgent as never,
+      log: log as never,
+      modelUsed: 'smart',
+      primaryAgentAliasSetting: 'summary-pool',
+      branch: 'main',
+      routingSession: router.begin({ requestedAgentAlias: 'summary-pool', requestedModel: 'smart' })
+    });
+
+    assert.equal(result.success, false);
+    const llmLog = await db('llm_logs').orderBy('log_id', 'desc').first();
+    assert.equal(llmLog.agent_alias, 'route-small');
+    assert.equal(llmLog.model_name, 'gpt-5-mini');
+    const metadata = JSON.parse(llmLog.metadata);
+    assert.equal(metadata.syntheticRouting.virtualAgentAlias, 'summary-pool');
+    assert.equal(metadata.syntheticRouting.virtualModel, 'smart');
+    assert.equal(metadata.syntheticRouting.physicalAgentAlias, 'route-small');
+    assert.equal(metadata.syntheticRouting.physicalModel, 'gpt-5-mini');
+    assert.equal(metadata.syntheticRouting.attemptNumber, 2);
+  });
+
+  test('logs the last physical route when all synthetic directory summarization members fail', async () => {
+    const firstAgent = createAgent('directory-route-large', 'claude-opus-4-6', async (_prompt, options) => {
+      assert.equal(options?.model, 'claude-opus-4-6');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'claude-opus-4-6',
+        executionTimeMs: 1,
+        error: 'primary directory provider unavailable'
+      };
+    });
+    const secondAgent = createAgent('directory-route-small', 'gpt-5-mini', async (_prompt, options) => {
+      assert.equal(options?.model, 'gpt-5-mini');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'gpt-5-mini',
+        executionTimeMs: 1,
+        error: 'secondary directory provider unavailable'
+      };
+    });
+    const agents = new Map([
+      [firstAgent.config.alias, firstAgent],
+      [secondAgent.config.alias, secondAgent]
+    ]);
+    const router = new SyntheticRoutingService({
+      database: db,
+      loadSyntheticConfigs: async () => [{
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        alias: 'directory-summary-pool',
+        enabled: true,
+        defaultModel: 'smart',
+        models: [{
+          id: 'smart',
+          enabled: true,
+          strategy: 'round_robin',
+          members: [
+            { id: '55555555-5555-4555-8555-555555555555', directAgentAlias: 'directory-route-large', model: 'claude-opus-4-6', enabled: true, priority: 100 },
+            { id: '66666666-6666-4666-8666-666666666666', directAgentAlias: 'directory-route-small', model: 'gpt-5-mini', enabled: true, priority: 0 }
+          ]
+        }]
+      }],
+      getDirectAgent: alias => agents.get(alias) as never,
+      usageSnapshotProvider: { getSnapshot: async () => null }
+    });
+    const virtualAgent = createAgent('directory-summary-pool', 'smart', async () => {
+      throw new Error('synthetic facade should not be invoked directly');
+    });
+
+    const result = await processDirectoryBatch({
+      directories: [{
+        dirPath: 'integry/propr/src',
+        childFiles: [{ path: 'integry/propr/src/a.ts', summary: 'Exports A.' }],
+        childDirs: [],
+        newHash: 'hash-a'
+      }],
+      agent: virtualAgent as never,
+      log: log as never,
+      modelUsed: 'smart',
+      primaryAgentAliasSetting: 'directory-summary-pool',
+      fullName: 'integry/propr',
+      branch: 'main',
+      routingSession: router.begin({ requestedAgentAlias: 'directory-summary-pool', requestedModel: 'smart' })
+    });
+
+    assert.equal(result[0].summary, null);
+    assert.equal(result.fallbackUsed, false);
+    const llmLog = await db('llm_logs').orderBy('log_id', 'desc').first();
+    assert.equal(llmLog.agent_alias, 'directory-route-small');
+    assert.equal(llmLog.model_name, 'gpt-5-mini');
+    const metadata = JSON.parse(llmLog.metadata);
+    assert.equal(metadata.syntheticRouting.virtualAgentAlias, 'directory-summary-pool');
+    assert.equal(metadata.syntheticRouting.virtualModel, 'smart');
+    assert.equal(metadata.syntheticRouting.physicalAgentAlias, 'directory-route-small');
+    assert.equal(metadata.syntheticRouting.physicalModel, 'gpt-5-mini');
+    assert.equal(metadata.syntheticRouting.attemptNumber, 2);
+  });
+
+  test('keyword extraction logs the last physical model after complete synthetic exhaustion', async () => {
+    await db('system_configs').insert({
+      key: 'settings',
+      value: JSON.stringify({ planner_context_model: 'keyword-pool:smart' })
+    });
+    invalidateSettingsCache();
+
+    const firstAgent = createAgent('keyword-route-large', 'claude-opus-4-6', async (_prompt, options) => {
+      assert.equal(options?.model, 'claude-opus-4-6');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'claude-opus-4-6',
+        executionTimeMs: 1,
+        error: 'primary keyword provider unavailable'
+      };
+    });
+    const secondAgent = createAgent('keyword-route-small', 'gpt-5-mini', async (_prompt, options) => {
+      assert.equal(options?.model, 'gpt-5-mini');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'gpt-5-mini',
+        executionTimeMs: 1,
+        error: 'secondary keyword provider unavailable'
+      };
+    });
+    const agents = new Map([
+      [firstAgent.config.alias, firstAgent],
+      [secondAgent.config.alias, secondAgent]
+    ]);
+    const router = new SyntheticRoutingService({
+      database: db,
+      loadSyntheticConfigs: async () => [{
+        id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        alias: 'keyword-pool',
+        enabled: true,
+        defaultModel: 'smart',
+        models: [{
+          id: 'smart',
+          enabled: true,
+          strategy: 'round_robin',
+          members: [
+            { id: '77777777-7777-4777-8777-777777777777', directAgentAlias: 'keyword-route-large', model: 'claude-opus-4-6', enabled: true, priority: 100 },
+            { id: '88888888-8888-4888-8888-888888888888', directAgentAlias: 'keyword-route-small', model: 'gpt-5-mini', enabled: true, priority: 0 }
+          ]
+        }]
+      }],
+      getDirectAgent: alias => agents.get(alias) as never,
+      usageSnapshotProvider: { getSnapshot: async () => null }
+    });
+    const virtualAgent = createAgent('keyword-pool', 'smart', async () => {
+      throw new Error('synthetic facade should not be invoked directly');
+    });
+
+    const result = await extractKeywordsWithLLM('Fix the authentication failure', {
+      agent: virtualAgent as never,
+      routingSession: router.begin({ requestedAgentAlias: 'keyword-pool', requestedModel: 'smart' })
+    });
+
+    assert.deepEqual(result, { primary: [], alternatives: [], all: [] });
+    const llmLog = await db('llm_logs').orderBy('log_id', 'desc').first();
+    assert.equal(llmLog.success, 0);
+    assert.equal(llmLog.agent_alias, 'keyword-route-small');
+    assert.equal(llmLog.model_name, 'gpt-5-mini');
+    const metadata = JSON.parse(llmLog.metadata);
+    assert.equal(metadata.syntheticRouting.virtualAgentAlias, 'keyword-pool');
+    assert.equal(metadata.syntheticRouting.virtualModel, 'smart');
+    assert.equal(metadata.syntheticRouting.physicalAgentAlias, 'keyword-route-small');
+    assert.equal(metadata.syntheticRouting.physicalModel, 'gpt-5-mini');
+    assert.equal(metadata.syntheticRouting.attemptNumber, 2);
+  });
+
+  test('semantic scoring logs the last physical model after complete synthetic exhaustion', async () => {
+    await db('file_summaries').insert({
+      path: 'integry/propr/src/a.ts',
+      branch: 'main',
+      summary: 'Exports the A helper.',
+      commit_hash: 'semantic-hash',
+      model_used: 'index-model'
+    });
+    const firstAgent = createAgent('semantic-route-large', 'claude-opus-4-6', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'claude-opus-4-6',
+      executionTimeMs: 1,
+      error: 'primary semantic provider unavailable'
+    }));
+    const secondAgent = createAgent('semantic-route-small', 'gpt-5-mini', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'gpt-5-mini',
+      executionTimeMs: 1,
+      error: 'secondary semantic provider unavailable'
+    }));
+    const routingSession = createSyntheticSession({
+      syntheticId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      alias: 'semantic-pool',
+      members: [
+        { id: '99999999-9999-4999-8999-999999999999', agent: firstAgent, model: 'claude-opus-4-6', priority: 100 },
+        { id: 'aaaaaaaa-9999-4999-8999-999999999999', agent: secondAgent, model: 'gpt-5-mini', priority: 0 }
+      ]
+    });
+    const virtualAgent = createAgent('semantic-pool', 'smart', async () => {
+      throw new Error('synthetic facade should not be invoked directly');
+    });
+
+    const result = await scoreSemanticRelevance('Update the A helper', {
+      agent: virtualAgent as never,
+      modelId: 'semantic-pool:smart',
+      repoName: 'integry/propr',
+      branch: 'main',
+      routingSession
+    });
+
+    assert.deepEqual(result, []);
+    const llmLog = await db('llm_logs').orderBy('log_id', 'desc').first();
+    assert.equal(llmLog.success, 0);
+    assert.equal(llmLog.agent_alias, 'semantic-route-small');
+    assert.equal(llmLog.model_name, 'gpt-5-mini');
+    const metadata = JSON.parse(llmLog.metadata);
+    assert.equal(metadata.syntheticRouting.physicalAgentAlias, 'semantic-route-small');
+    assert.equal(metadata.syntheticRouting.physicalModel, 'gpt-5-mini');
+    assert.equal(metadata.syntheticRouting.attemptNumber, 2);
+  });
+
+  test('attributes a failed direct file fallback after synthetic exhaustion to the fallback', async () => {
+    const primaryAgent = createAgent('file-primary-route', 'primary-physical-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'primary-physical-model',
+      executionTimeMs: 1,
+      error: 'primary route unavailable'
+    }));
+    const fallbackAgent = createAgent('file-direct-fallback', 'fallback-direct-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'fallback-direct-model',
+      executionTimeMs: 1,
+      error: 'direct fallback failed'
+    }));
+    const routingSession = createSyntheticSession({
+      syntheticId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      alias: 'file-primary-pool',
+      members: [{
+        id: 'bbbbbbbb-9999-4999-8999-999999999999',
+        agent: primaryAgent,
+        model: 'primary-physical-model',
+        priority: 100
+      }]
+    });
+    const virtualAgent = createAgent('file-primary-pool', 'smart', async () => {
+      throw new Error('synthetic facade should not be invoked directly');
+    });
+
+    const result = await processSingleBatch({
+      fullName: 'integry/propr',
+      batch: [{ path: 'src/a.ts', content: 'export const a = 1;', blobHash: 'abc123' }],
+      agent: virtualAgent as never,
+      log: log as never,
+      modelUsed: 'smart',
+      primaryAgentAliasSetting: 'file-primary-pool',
+      fallbackAgent: fallbackAgent as never,
+      fallbackModelUsed: 'fallback-direct-model',
+      fallbackAgentAliasSetting: 'file-direct-fallback',
+      branch: 'main',
+      routingSession
+    });
+
+    assert.equal(result.success, false);
+    const llmLog = await db('llm_logs').orderBy('log_id', 'desc').first();
+    assert.equal(llmLog.success, 0);
+    assert.equal(llmLog.agent_alias, 'file-direct-fallback');
+    assert.equal(llmLog.model_name, 'fallback-direct-model');
+    const metadata = JSON.parse(llmLog.metadata);
+    assert.equal(metadata.syntheticRouting, undefined);
+  });
+
+  test('attributes a failed direct directory fallback after synthetic exhaustion to the fallback', async () => {
+    const primaryAgent = createAgent('directory-primary-route', 'primary-directory-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'primary-directory-model',
+      executionTimeMs: 1,
+      error: 'primary directory route unavailable'
+    }));
+    const fallbackAgent = createAgent('directory-direct-fallback', 'fallback-directory-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'fallback-directory-model',
+      executionTimeMs: 1,
+      error: 'direct directory fallback failed'
+    }));
+    const routingSession = createSyntheticSession({
+      syntheticId: '12121212-1212-4121-8121-121212121212',
+      alias: 'directory-primary-pool',
+      members: [{
+        id: '34343434-3434-4343-8343-343434343434',
+        agent: primaryAgent,
+        model: 'primary-directory-model',
+        priority: 100
+      }]
+    });
+    const virtualAgent = createAgent('directory-primary-pool', 'smart', async () => {
+      throw new Error('synthetic facade should not be invoked directly');
+    });
+
+    const result = await processDirectoryBatch({
+      directories: [{
+        dirPath: 'integry/propr/src',
+        childFiles: [{ path: 'integry/propr/src/a.ts', summary: 'Exports A.' }],
+        childDirs: [],
+        newHash: 'hash-a'
+      }],
+      agent: virtualAgent as never,
+      log: log as never,
+      modelUsed: 'smart',
+      primaryAgentAliasSetting: 'directory-primary-pool',
+      fallbackAgent: fallbackAgent as never,
+      fallbackModelUsed: 'fallback-directory-model',
+      fallbackAgentAliasSetting: 'directory-direct-fallback',
+      fullName: 'integry/propr',
+      branch: 'main',
+      routingSession
+    });
+
+    assert.equal(result[0].summary, null);
+    const llmLog = await db('llm_logs').orderBy('log_id', 'desc').first();
+    assert.equal(llmLog.success, 0);
+    assert.equal(llmLog.agent_alias, 'directory-direct-fallback');
+    assert.equal(llmLog.model_name, 'fallback-directory-model');
+    const metadata = JSON.parse(llmLog.metadata);
+    assert.equal(metadata.syntheticRouting, undefined);
   });
 
   test('caps the fallback model to a single attempt on transient failure', async () => {

@@ -145,6 +145,11 @@ describe('synthetic agent contracts', () => {
     assert.match(collision.errors.join('; '), /conflicts with a direct agent alias/);
     assert.match(collision.errors.join('; '), /unknown direct agent 'codex-primary'/);
 
+    const idCollision = validateSyntheticAgentReferences(config, [
+      directAgent({ id: AGENT_ID }),
+    ]);
+    assert.match(idCollision.errors.join('; '), /conflicts with a direct agent ID/);
+
     const unsupported = validateSyntheticAgentReferences(config, [
       directAgent({ supportedModels: ['gpt-other'] }),
     ]);

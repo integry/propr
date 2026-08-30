@@ -155,18 +155,18 @@ describe('synthetic agent persistence and API', () => {
     assert.match((unknownResponse.record.body as { error: string }).error, /unsupported model/);
   });
 
-  test('rejects replacements when the configured default is in the previous or proposed synthetic set', async () => {
+  test('allows executable synthetic defaults but rejects removing or disabling the configured default', async () => {
     const noEnabledMembers = syntheticAgent();
     noEnabledMembers.models[0].members[0].enabled = false;
-    const replacements: Array<[string, SyntheticAgentConfig[], SyntheticAgentConfig[]]> = [
-      ['unchanged', [syntheticAgent()], [syntheticAgent()]],
-      ['newly introduced', [], [syntheticAgent()]],
-      ['removed', [syntheticAgent()], []],
-      ['disabled', [syntheticAgent()], [{ ...syntheticAgent(), enabled: false }]],
-      ['without an executable default model', [syntheticAgent()], [noEnabledMembers]],
+    const replacements: Array<[string, SyntheticAgentConfig[], SyntheticAgentConfig[], number]> = [
+      ['unchanged', [syntheticAgent()], [syntheticAgent()], 200],
+      ['newly introduced', [], [syntheticAgent()], 200],
+      ['removed', [syntheticAgent()], [], 409],
+      ['disabled', [syntheticAgent()], [{ ...syntheticAgent(), enabled: false }], 409],
+      ['without an executable default model', [syntheticAgent()], [noEnabledMembers], 409],
     ];
 
-    for (const [name, previous, replacement] of replacements) {
+    for (const [name, previous, replacement, expectedStatus] of replacements) {
       let saved = false;
       let published = false;
       const routes = createSyntheticAgentConfigRoutes({
@@ -189,14 +189,31 @@ describe('synthetic agent persistence and API', () => {
         body: { synthetic_agents: replacement },
       } as Request, response.response);
 
-      assert.equal(response.record.status, 409, name);
-      assert.match((response.record.body as { error: string }).error, /Select a direct default agent first/, name);
-      assert.equal(saved, false, name);
-      assert.equal(published, false, name);
+      assert.equal(response.record.status, expectedStatus, name);
+      assert.equal(saved, expectedStatus === 200, name);
+      assert.equal(published, expectedStatus === 200, name);
     }
+
+    const routes = createSyntheticAgentConfigRoutes({
+      redisClient: redisLockClient(),
+      configStore: {
+        loadAgents: async () => [directAgent({ enabled: false })],
+        loadSettings: async () => ({ default_agent_alias: 'balanced-pool' }),
+        loadSyntheticAgents: async () => [syntheticAgent()],
+        saveSyntheticAgents: async value => parseSyntheticAgentConfigs(value),
+      },
+      publishConfigUpdate: async () => undefined,
+      logActivityHelper: async () => undefined,
+    });
+    const unusableBackingAgent = responseRecorder();
+    await routes.postSyntheticAgents({
+      body: { synthetic_agents: [syntheticAgent()] },
+    } as Request, unusableBackingAgent.response);
+    assert.equal(unusableBackingAgent.record.status, 409);
+    assert.match((unusableBackingAgent.record.body as { error: string }).error, /enabled direct agent/);
   });
 
-  test('rejects settings updates that select a synthetic default alias', async () => {
+  test('allows settings updates that select a synthetic default alias', async () => {
     const database = await createConfigDatabase();
     let published = false;
     try {
@@ -209,6 +226,8 @@ describe('synthetic agent persistence and API', () => {
           lTrim: async () => 1,
         } as never,
         configStore: {
+          loadAgents: async () => [directAgent()],
+          loadSettings: async () => ({}),
           loadSyntheticAgents: async () => [syntheticAgent()],
         },
         database,
@@ -219,13 +238,36 @@ describe('synthetic agent persistence and API', () => {
         body: { settings: { default_agent_alias: ' balanced-pool ' } },
       } as Request, response.response);
 
+      assert.equal(response.record.status, 200);
+      const settingsRow = await database('system_configs').where({ key: 'settings' }).first();
+      assert.deepEqual(JSON.parse(settingsRow.value), { default_agent_alias: 'balanced-pool' });
+      assert.equal(published, true);
+    } finally {
+      await database.destroy();
+    }
+  });
+
+  test('rejects selecting a synthetic default without a usable physical member', async () => {
+    const database = await createConfigDatabase();
+    try {
+      const routes = createConfigRoutes({
+        redisClient: redisLockClient() as never,
+        configStore: {
+          loadAgents: async () => [directAgent({ enabled: false })],
+          loadSettings: async () => ({}),
+          loadSyntheticAgents: async () => [syntheticAgent()],
+        },
+        database,
+      });
+      const response = responseRecorder();
+
+      await routes.postSettings({
+        body: { settings: { default_agent_alias: 'balanced-pool' } },
+      } as Request, response.response);
+
       assert.equal(response.record.status, 409);
-      assert.match((response.record.body as { error: string }).error, /cannot execute at runtime/i);
-      assert.equal(
-        await database('system_configs').where({ key: 'settings' }).first(),
-        undefined,
-      );
-      assert.equal(published, false);
+      assert.match((response.record.body as { error: string }).error, /no enabled member backed by an enabled direct agent/);
+      assert.equal(await database('system_configs').where({ key: 'settings' }).first(), undefined);
     } finally {
       await database.destroy();
     }
@@ -233,7 +275,7 @@ describe('synthetic agent persistence and API', () => {
 });
 
 describe('synthetic direct-agent integrity and catalog', () => {
-  test('replaces a synthetic default with an executable direct default during a direct-agent update', async () => {
+  test('preserves a synthetic default during a direct-agent update', async () => {
     const database = await createConfigDatabase();
     const previous = directAgent();
     const updated = { ...previous, configPath: '/tmp/codex-primary-updated' };
@@ -260,23 +302,22 @@ describe('synthetic direct-agent integrity and catalog', () => {
       });
 
       assert.equal(result.status, 200);
-      assert.equal(appliedDefault, 'codex-primary');
-      assert.deepEqual(publishedUpdates, ['agents_update', 'settings_update']);
+      assert.equal(appliedDefault, 'balanced-pool');
+      assert.deepEqual(publishedUpdates, ['agents_update']);
       const settingsRow = await database('system_configs').where({ key: 'settings' }).first();
-      assert.ok(settingsRow);
-      assert.deepEqual(JSON.parse(settingsRow.value), { default_agent_alias: 'codex-primary' });
+      assert.equal(settingsRow, undefined);
     } finally {
       await database.destroy();
     }
   });
 
-  test('blocks deletion of a referenced direct alias but permits disabling it', async () => {
+  test('blocks deletion of a referenced direct alias and disabling the last member of a synthetic default', async () => {
     const database = await createConfigDatabase();
     const previous = directAgent();
     const configStore = {
       loadAgents: async () => [previous],
       loadSyntheticAgents: async () => [syntheticAgent()],
-      loadSettings: async () => ({}),
+      loadSettings: async () => ({ default_agent_alias: 'balanced-pool' }),
       handleSettingsSaveSideEffects: async () => undefined,
     };
     const common = {
@@ -305,7 +346,8 @@ describe('synthetic direct-agent integrity and catalog', () => {
         processedAgents: [disabled],
         ...common,
       });
-      assert.equal(disable.status, 200);
+      assert.equal(disable.status, 409);
+      assert.match((disable.body as { error: string }).error, /no enabled member backed by an enabled direct agent/);
     } finally {
       await database.destroy();
     }

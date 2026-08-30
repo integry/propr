@@ -85,6 +85,7 @@ export {
   syntheticAgentConfigsSchema,
   parseSyntheticAgentConfigs,
   validateSyntheticAgentReferences,
+  validateExecutableSyntheticDefault,
   findSyntheticReferencesToDirectAgent,
   type SyntheticSelectionStrategy,
   type SyntheticUsageLimits,

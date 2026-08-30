@@ -4,6 +4,7 @@ import { scorePaths, FileScore as PathFileScore } from './relevance/pathScorer.j
 import { scoreSemanticRelevance, type SemanticScoringOptions } from './relevance/semanticScorer.js';
 import { Agent } from '../agents/types.js';
 import logger from '../utils/logger.js';
+import type { SyntheticRoutingSession } from './syntheticRoutingService.js';
 
 export interface RelevantFile {
   path: string;
@@ -36,6 +37,8 @@ export interface RelevanceOptions {
   useLLMKeywords?: boolean;
   /** Timeout for git/path keyword scoring. */
   keywordTimeoutMs?: number;
+  /** Preselected context route; forks are used for distinct logical calls. */
+  routingSession?: SyntheticRoutingSession;
 }
 
 // --- Score Aggregation Weights ---
@@ -165,18 +168,23 @@ function buildSortedFiles(
 /**
  * Extract keywords with optional LLM enhancement
  */
+interface KeywordExtractionOptions {
+  agent?: Agent;
+  useLLMKeywords: boolean;
+  correlationId?: string;
+  routingSession?: SyntheticRoutingSession;
+}
+
 async function extractKeywordsForRelevance(
   prompt: string,
-  agent: Agent | undefined,
-  useLLMKeywords: boolean,
-  correlationId?: string
+  { agent, useLLMKeywords, correlationId, routingSession }: KeywordExtractionOptions,
 ): Promise<string[]> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   let keywords = extractKeywords(prompt);
 
   if (useLLMKeywords && agent) {
     try {
-      const llmKeywords = await extractKeywordsWithLLM(prompt, { agent, correlationId });
+      const llmKeywords = await extractKeywordsWithLLM(prompt, { agent, correlationId, routingSession });
       keywords = mergeKeywords(keywords, llmKeywords);
       correlatedLogger.info({
         basicCount: extractKeywords(prompt).length,
@@ -283,9 +291,9 @@ async function performSummaryScoring(
   prompt: string,
   agent: Agent,
   finalScores: Record<string, AggregatedFileScore>,
-  options: { correlationId?: string; modelId?: string; repoName?: string; branch?: string }
+  options: { correlationId?: string; modelId?: string; repoName?: string; branch?: string; routingSession?: SyntheticRoutingSession }
 ): Promise<boolean> {
-  const { correlationId, modelId, repoName, branch } = options;
+  const { correlationId, modelId, repoName, branch, routingSession } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   try {
@@ -303,7 +311,8 @@ async function performSummaryScoring(
       correlationId,
       modelId,
       repoName,
-      branch
+      branch,
+      routingSession,
     };
 
     const summaryScores = await scoreSemanticRelevance(prompt, summaryOptions);
@@ -338,7 +347,8 @@ export async function findRelevantFiles(
     repoName,
     branch,
     useLLMKeywords = false,
-    keywordTimeoutMs = TIMEOUT_MS
+    keywordTimeoutMs = TIMEOUT_MS,
+    routingSession,
   } = options;
 
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -352,7 +362,12 @@ export async function findRelevantFiles(
   }, 'Starting relevance analysis');
 
   // Extract keywords - optionally enhanced with LLM
-  const keywords = await extractKeywordsForRelevance(prompt, agent, useLLMKeywords, correlationId);
+  const keywords = await extractKeywordsForRelevance(prompt, {
+    agent,
+    useLLMKeywords,
+    correlationId,
+    routingSession: routingSession?.fork(),
+  });
 
   correlatedLogger.debug({ keywords }, 'Extracted keywords');
 
@@ -380,7 +395,7 @@ export async function findRelevantFiles(
   // --- Phase 3: Summary-based Semantic Scoring ---
   if (useSummaryScoring && agent) {
     usedSummaryScoring = await performSummaryScoring(prompt, agent, finalScores, {
-      correlationId, modelId, repoName, branch
+      correlationId, modelId, repoName, branch, routingSession
     });
   }
 

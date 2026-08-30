@@ -7,6 +7,7 @@ import type { Attachment } from '../attachmentService.js';
 import type {
   GenerationTrace, Granularity, TaskDraftConfig, MinimalLogger, Base64Image, ContextRepository
 } from '../planning/index.js';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 export { Plan, PlanItem };
 
@@ -158,6 +159,8 @@ export interface CallLLMOptions {
   additionalContext?: string;
   /** Granularity setting for task enforcement */
   granularity: Granularity;
+  /** Route selected before planner context/token budgets were calculated. */
+  routingSession?: SyntheticRoutingSession;
 }
 
 export interface CallLLMForPlanResult {

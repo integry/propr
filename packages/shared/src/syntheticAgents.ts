@@ -119,6 +119,7 @@ export type SyntheticModelConfig = z.infer<typeof syntheticModelConfigSchema>;
 export type SyntheticAgentConfig = z.infer<typeof syntheticAgentConfigSchema>;
 
 export interface SyntheticDirectAgentReference {
+  id: string;
   alias: string;
   enabled: boolean;
   supportedModels: string[];
@@ -140,8 +141,12 @@ export function validateSyntheticAgentReferences(
   const errors: string[] = [];
   const warnings: string[] = [];
   const directByAlias = new Map(directAgents.map(agent => [agent.alias, agent]));
+  const directIds = new Set(directAgents.map(agent => agent.id));
 
   for (const syntheticAgent of syntheticAgents) {
+    if (directIds.has(syntheticAgent.id)) {
+      errors.push(`Synthetic agent ID '${syntheticAgent.id}' conflicts with a direct agent ID`);
+    }
     if (directByAlias.has(syntheticAgent.alias)) {
       errors.push(`Synthetic alias '${syntheticAgent.alias}' conflicts with a direct agent alias`);
     }
@@ -173,6 +178,38 @@ export function validateSyntheticAgentReferences(
   }
 
   return { errors, warnings };
+}
+
+/** Returns an actionable error when a configured synthetic default cannot execute. */
+export function validateExecutableSyntheticDefault(
+  defaultAlias: string,
+  syntheticAgents: SyntheticAgentConfig[],
+  directAgents: SyntheticDirectAgentReference[],
+  requireSynthetic = false,
+): string | undefined {
+  const syntheticAgent = syntheticAgents.find(agent => agent.alias === defaultAlias);
+  if (!syntheticAgent) {
+    return requireSynthetic
+      ? `Configured synthetic default '${defaultAlias}' no longer exists. Select another default agent first.`
+      : undefined;
+  }
+  if (!syntheticAgent.enabled) {
+    return `Configured synthetic default '${defaultAlias}' is disabled. Select another default agent first.`;
+  }
+  const defaultModel = syntheticAgent.models.find(model => model.id === syntheticAgent.defaultModel);
+  if (!defaultModel?.enabled) {
+    return `Configured synthetic default '${defaultAlias}' has no enabled default model. Select another default agent first.`;
+  }
+  const directByAlias = new Map(directAgents.map(agent => [agent.alias, agent]));
+  const executable = defaultModel.members.some(member => {
+    const directAgent = directByAlias.get(member.directAgentAlias);
+    return member.enabled
+      && directAgent?.enabled
+      && directAgent.supportedModels.includes(member.model);
+  });
+  return executable
+    ? undefined
+    : `Configured synthetic default '${defaultAlias}' has no enabled member backed by an enabled direct agent supporting its physical model. Select another default agent first.`;
 }
 
 export function findSyntheticReferencesToDirectAgent(
