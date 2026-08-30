@@ -143,7 +143,6 @@ export class SyntheticRoutingSession {
     for (;;) {
       const selection = await this.select();
       this.executionAttemptCount += 1;
-      await this.service.recordAttempt(selection, options.taskId);
       const routingMetadata = this.service.metadataFor(selection);
       try {
         const result = await selection.physicalAgent.analyze(prompt, {

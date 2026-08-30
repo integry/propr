@@ -197,6 +197,29 @@ describe('SyntheticRoutingService', () => {
     assert.deepEqual(session.routingMetadata, secondMetadata);
   });
 
+  test('routed PR review analysis keeps routing metadata out of task lifecycle history', async () => {
+    const db = await database();
+    await db('tasks').insert({ task_id: 'review-task' });
+    const large = direct('large', 'claude-opus-4-6');
+    const small = direct('small', 'gpt-5-mini');
+
+    const result = await service(db, config({ priorityB: 100 }), [large, small])
+      .begin({ requestedAgentAlias: 'pool', requestedModel: 'smart' })
+      .analyze('review this pull request', {
+        taskId: 'review-task',
+        prNumber: 1995,
+        executionType: 'pr-review',
+      });
+
+    assert.equal(result.success, true);
+    assert.equal(large.analyzeCalls[0].executionType, 'pr-review');
+    assert.equal(
+      (large.analyzeCalls[0].metadata?.syntheticRouting as Record<string, unknown>).physicalAgentAlias,
+      'large',
+    );
+    assert.deepEqual(await db('task_history').where({ task_id: 'review-task' }), []);
+  });
+
   test('applies call-scoped physical eligibility to initial selection and every retry', async () => {
     const db = await database();
     const large = direct('large', 'claude-opus-4-6');
@@ -246,30 +269,43 @@ describe('SyntheticRoutingService', () => {
     assert.equal(small.analyzeCalls.length, 1);
   });
 
-  test('structured implementation cancellation is not retried when error text is absent', async () => {
+  test('thrown transport AbortError fails over to the next eligible member', async () => {
     const db = await database();
     const large = direct('large', 'claude-opus-4-6');
     const small = direct('small', 'gpt-5-mini');
-    large.taskResults.push({
-      success: false,
-      logs: '',
-      modifiedFiles: [],
-      modelUsed: 'claude-opus-4-6',
-      executionTimeMs: 1,
-      terminationReason: 'cancelled' as never,
-    });
+    const transportAbort = new Error('socket closed while reading response');
+    transportAbort.name = 'AbortError';
+    large.analysisResults.push(transportAbort);
 
     const result = await service(db, config({ priorityB: 100 }), [large, small])
-      .begin({ requestedAgentAlias: 'pool', requestedModel: 'smart' })
-      .executeTask({
-        worktreePath: '/tmp/worktree',
-        issueRef: { number: 1, repoOwner: 'integry', repoName: 'propr' },
-        prompt: 'implement it',
-        model: 'smart',
-        githubToken: 'test-token',
-      });
+      .begin({ requestedAgentAlias: 'pool', requestedModel: 'smart' }).analyze('hello');
 
-    assert.equal(result.success, false);
+    assert.equal(result.success, true);
+    assert.equal(result.response, 'small');
+    assert.equal(large.analyzeCalls.length, 1);
+    assert.equal(small.analyzeCalls.length, 1);
+  });
+
+  test('explicit task cancellation error is not retried when error text is absent', async () => {
+    const db = await database();
+    const large = direct('large', 'claude-opus-4-6');
+    const small = direct('small', 'gpt-5-mini');
+    const taskCancellation = new Error();
+    taskCancellation.name = 'ExecutionAbortedError';
+    large.taskResults.push(taskCancellation);
+
+    await assert.rejects(
+      () => service(db, config({ priorityB: 100 }), [large, small])
+        .begin({ requestedAgentAlias: 'pool', requestedModel: 'smart' })
+        .executeTask({
+          worktreePath: '/tmp/worktree',
+          issueRef: { number: 1, repoOwner: 'integry', repoName: 'propr' },
+          prompt: 'implement it',
+          model: 'smart',
+          githubToken: 'test-token',
+        }),
+      (error: unknown) => error === taskCancellation,
+    );
     assert.equal(large.taskCalls.length, 1);
     assert.equal(small.taskCalls.length, 0);
   });

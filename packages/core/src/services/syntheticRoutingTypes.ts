@@ -90,9 +90,12 @@ export function isNonRetryableSyntheticFailure(error: unknown): boolean {
   const message = [value?.message, value?.error, value?.logs]
     .filter((item): item is string => typeof item === 'string' && item.length > 0)
     .join('\n') || String(error || '');
-  if (names.some(name => name && ['AbortError', 'ExecutionAbortedError', 'IndexingCancelledError', 'SecurityException', 'ContextTokenLimitError'].includes(name))) return true;
-  if (codes.some(code => code && ['ABORT_ERR', 'ERR_CANCELED', 'SECURITY_POLICY_VIOLATION', 'INVALID_CONFIGURATION', 'PROMPT_TOO_LARGE'].includes(code))) return true;
-  if (terminationReason && ['aborted', 'cancelled', 'canceled', 'user_cancelled', 'user_canceled'].includes(terminationReason)) return true;
+  // Generic abort names/codes are also emitted for provider timeouts and
+  // interrupted transports. Only explicit task-cancellation errors stop
+  // failover; an unqualified AbortError/ABORT_ERR/ERR_CANCELED remains retryable.
+  if (names.some(name => name && ['ExecutionAbortedError', 'IndexingCancelledError', 'SecurityException', 'ContextTokenLimitError'].includes(name))) return true;
+  if (codes.some(code => code && ['SECURITY_POLICY_VIOLATION', 'INVALID_CONFIGURATION', 'PROMPT_TOO_LARGE'].includes(code))) return true;
+  if (terminationReason && ['user_cancelled', 'user_canceled'].includes(terminationReason)) return true;
   const explicitCancellation = /\btask\s+(?:was\s+)?(?:aborted|cancelled|canceled)\b|\b(?:execution|request|operation|call)\s+(?:was\s+)?(?:aborted|cancelled|canceled)\s+by\s+(?:the\s+)?(?:user|operator)\b|\b(?:aborted|cancelled|canceled)\s+by\s+(?:the\s+)?(?:user|operator)\b|\b(?:user|operator)\s+(?:requested\s+)?(?:aborted|cancelled|canceled|cancell?ation)\b|\b(?:user|task)[-_\s]+cancell?ation\b|\bcancell?ation\s+(?:was\s+)?requested\s+by\s+(?:the\s+)?(?:user|operator)\b/i;
   if (explicitCancellation.test(message)) return true;
   return /security[- ]policy|security violation|invalid (?:user )?configuration|prompt (?:is )?too (?:large|long)|exceeds (?:the )?(?:model )?context window|context token limit/i.test(message);
