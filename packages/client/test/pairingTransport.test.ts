@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, it } from 'node:test';
 import { completeDesktopPairing, ProprClient, ProprClientError } from '../src/index.js';
+import { requestPairingProtocol, type PairingProtocolRequestOptions } from '../src/pairingProtocol.js';
 
 const protocolNow = Date.parse('2026-01-01T00:00:00.000Z');
 const deadline = new Date(protocolNow + 60_000).toISOString();
@@ -126,6 +127,58 @@ const bounded = async <T>(promise: Promise<T>, milliseconds = 1_000): Promise<T>
   }
 };
 
+class ProtocolClock {
+  #now = 0;
+  #nextId = 1;
+  readonly #timers = new Map<number, { at: number; callback: () => void }>();
+
+  readonly source: NonNullable<PairingProtocolRequestOptions['clock']> = {
+    now: () => this.#now,
+    setTimeout: (callback, milliseconds) => {
+      const id = this.#nextId++;
+      this.#timers.set(id, { at: this.#now + milliseconds, callback });
+      return id as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: timer => { this.#timers.delete(timer as unknown as number); },
+  };
+
+  get now(): number { return this.#now; }
+  get pending(): number { return this.#timers.size; }
+
+  async advance(milliseconds: number): Promise<void> {
+    const target = this.#now + milliseconds;
+    while (true) {
+      const due = [...this.#timers.entries()]
+        .filter(([, timer]) => timer.at <= target)
+        .sort(([leftId, left], [rightId, right]) => left.at - right.at || leftId - rightId)[0];
+      if (!due) break;
+      this.#now = due[1].at;
+      this.#timers.delete(due[0]);
+      due[1].callback();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    this.#now = target;
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+}
+
+const protocolRequest = (
+  path: EndpointName,
+  fetchImplementation: typeof globalThis.fetch,
+  clock: ProtocolClock,
+  options: Omit<PairingProtocolRequestOptions, 'clock'> = {},
+): Promise<unknown> => requestPairingProtocol(
+  fetchImplementation,
+  `https://propr.example.test/${path}`,
+  { method: 'POST' },
+  { ...options, clock: clock.source },
+);
+
+const timeoutKind = (error: unknown): boolean =>
+  error instanceof ProprClientError && error.kind === 'timeout';
+
 describe('bounded pairing protocol response transport', () => {
   for (const endpoint of ['start', 'poll', 'activate', 'cancel'] as const) {
     it(`${endpoint} accepts exact-limit and absent-length bodies but rejects deceptive Content-Length`, async () => {
@@ -216,6 +269,214 @@ describe('bounded pairing protocol response transport', () => {
       }
     });
   }
+
+  for (const endpoint of ['start', 'poll', 'activate', 'cancel'] as const) {
+    it(`${endpoint} enforces automatic header, body, slowloris, and overall deadlines`, async () => {
+      {
+        const clock = new ProtocolClock();
+        let networkSignal: AbortSignal | undefined;
+        const operation = protocolRequest(endpoint, async (_input, init) => {
+          networkSignal = init?.signal ?? undefined;
+          return new Promise<Response>(() => undefined);
+        }, clock, {
+          overallTimeoutMs: 40,
+          deadlines: { headerMs: 10, bodyMs: 10, cancellationMs: 5 },
+        });
+        await clock.advance(9);
+        assert.equal(networkSignal?.aborted, false);
+        await clock.advance(1);
+        await assert.rejects(operation, timeoutKind);
+        assert.equal(networkSignal?.aborted, true);
+        assert.equal(clock.pending, 0);
+      }
+
+      for (const firstChunk of [undefined, new Uint8Array([0x7b])]) {
+        const clock = new ProtocolClock();
+        let networkSignal: AbortSignal | undefined;
+        let cancelled = 0;
+        const operation = protocolRequest(endpoint, async (_input, init) => {
+          networkSignal = init?.signal ?? undefined;
+          return new Response(new ReadableStream<Uint8Array>({
+            start(controller) { if (firstChunk) controller.enqueue(firstChunk); },
+            cancel() { cancelled += 1; },
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }, clock, {
+          overallTimeoutMs: 40,
+          deadlines: { headerMs: 20, bodyMs: 10, cancellationMs: 5 },
+        });
+        await clock.advance(0);
+        await clock.advance(10);
+        await assert.rejects(operation, timeoutKind);
+        assert.equal(networkSignal?.aborted, true);
+        assert.equal(cancelled, 1);
+        assert.equal(clock.pending, 0);
+      }
+
+      {
+        const clock = new ProtocolClock();
+        let networkSignal: AbortSignal | undefined;
+        const operation = protocolRequest(endpoint, async (_input, init) => {
+          networkSignal = init?.signal ?? undefined;
+          return new Promise<Response>(() => undefined);
+        }, clock, {
+          overallTimeoutMs: 10,
+          deadlines: { headerMs: 20, bodyMs: 20, cancellationMs: 5 },
+        });
+        await clock.advance(10);
+        await assert.rejects(operation, timeoutKind);
+        assert.equal(networkSignal?.aborted, true);
+        assert.equal(clock.pending, 0);
+      }
+    });
+
+    it(`${endpoint} bounds never-settling reader cancellation and ignores every late callback`, async () => {
+      const clock = new ProtocolClock();
+      let networkSignal: AbortSignal | undefined;
+      let cancelReject!: (error: Error) => void;
+      const cancellation = new Promise<void>((_resolve, reject) => { cancelReject = reject; });
+      let cancelCalls = 0;
+      const diagnostics: string[] = [];
+      const unhandled: unknown[] = [];
+      const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+      process.on('unhandledRejection', onUnhandled);
+      try {
+        const operation = protocolRequest(endpoint, async (_input, init) => {
+          networkSignal = init?.signal ?? undefined;
+          return new Response(new ReadableStream<Uint8Array>({
+            cancel() {
+              cancelCalls += 1;
+              return cancellation;
+            },
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }, clock, {
+          overallTimeoutMs: 40,
+          deadlines: { headerMs: 20, bodyMs: 10, cancellationMs: 5 },
+          reportDiagnostic: message => { diagnostics.push(message); },
+        });
+        await clock.advance(0);
+        await clock.advance(10);
+        assert.equal(clock.pending, 1);
+        await clock.advance(5);
+        await assert.rejects(operation, timeoutKind);
+        assert.equal(networkSignal?.aborted, true);
+        assert.equal(cancelCalls, 1);
+        assert.deepEqual(diagnostics, [
+          'ProPR pairing response cancellation exceeded its fixed deadline.',
+        ]);
+        assert.equal(clock.pending, 0);
+
+        cancelReject(new Error('private late cancellation failure'));
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(cancelCalls, 1);
+        assert.equal(clock.pending, 0);
+        assert.equal(diagnostics.length, 1);
+        assert.deepEqual(unhandled, []);
+      } finally {
+        process.removeListener('unhandledRejection', onUnhandled);
+      }
+    });
+  }
+
+  it('bounds a never-settling response.body.cancel before a reader exists', async () => {
+    const clock = new ProtocolClock();
+    let networkSignal: AbortSignal | undefined;
+    let rejectCancellation!: (error: Error) => void;
+    const diagnostics: string[] = [];
+    const response = new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        return new Promise<void>((_resolve, reject) => { rejectCancellation = reject; });
+      },
+    }), {
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': '4097',
+      },
+    });
+    const operation = protocolRequest('activate', async (_input, init) => {
+      networkSignal = init?.signal ?? undefined;
+      return response;
+    }, clock, {
+      overallTimeoutMs: 40,
+      deadlines: { headerMs: 20, bodyMs: 20, cancellationMs: 5 },
+      reportDiagnostic: message => { diagnostics.push(message); },
+    });
+    await clock.advance(0);
+    assert.equal(clock.pending, 1);
+    await clock.advance(5);
+    await assert.rejects(operation, (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'invalid_response');
+    assert.equal(networkSignal?.aborted, true);
+    assert.equal(clock.pending, 0);
+    assert.equal(diagnostics.length, 1);
+    rejectCancellation(new Error('private late body cancellation failure'));
+    await new Promise<void>(resolve => setImmediate(resolve));
+  });
+
+  it('makes exact header, body, overall, and cancellation boundaries terminal', async () => {
+    {
+      const clock = new ProtocolClock();
+      let signal: AbortSignal | undefined;
+      const operation = protocolRequest('start', async (_input, init) => {
+        signal = init?.signal ?? undefined;
+        return new Promise<Response>(resolve => {
+          clock.source.setTimeout(() => resolve(jsonResponse(successBody('start'))), 10);
+        });
+      }, clock, {
+        overallTimeoutMs: 40,
+        deadlines: { headerMs: 10, bodyMs: 20, cancellationMs: 5 },
+      });
+      await clock.advance(10);
+      await assert.rejects(operation, timeoutKind);
+      assert.equal(signal?.aborted, true);
+      assert.equal(clock.pending, 0);
+    }
+
+    for (const overallWins of [false, true]) {
+      const clock = new ProtocolClock();
+      let signal: AbortSignal | undefined;
+      let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+      const operation = protocolRequest('activate', async (_input, init) => {
+        signal = init?.signal ?? undefined;
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) { bodyController = controller; },
+        }), { headers: { 'Content-Type': 'application/json' } });
+      }, clock, {
+        overallTimeoutMs: overallWins ? 10 : 40,
+        deadlines: { headerMs: 20, bodyMs: overallWins ? 20 : 10, cancellationMs: 5 },
+      });
+      await clock.advance(0);
+      clock.source.setTimeout(() => {
+        if (signal?.aborted) return;
+        bodyController.enqueue(new TextEncoder().encode(JSON.stringify(successBody('activate'))));
+        bodyController.close();
+      }, 10);
+      await clock.advance(10);
+      await assert.rejects(operation, timeoutKind);
+      assert.equal(signal?.aborted, true);
+      assert.equal(clock.pending, 0);
+    }
+
+    {
+      const clock = new ProtocolClock();
+      const diagnostics: string[] = [];
+      const operation = protocolRequest('cancel', async () => new Response(
+        new ReadableStream<Uint8Array>({ cancel: () => new Promise<void>(() => undefined) }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ), clock, {
+        overallTimeoutMs: 10,
+        deadlines: { headerMs: 20, bodyMs: 8, cancellationMs: 5 },
+        reportDiagnostic: message => { diagnostics.push(message); },
+      });
+      await clock.advance(0);
+      await clock.advance(8);
+      assert.equal(clock.pending, 1);
+      await clock.advance(2);
+      await assert.rejects(operation, timeoutKind);
+      assert.equal(clock.now, 10);
+      assert.equal(clock.pending, 0);
+      assert.equal(diagnostics.length, 1);
+    }
+  });
 });
 
 const servers: Server[] = [];

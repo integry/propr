@@ -3,12 +3,28 @@ import { ProprClientError } from './errors.js';
 const CONNECT_HEADER_TIMEOUT_MS = 8_000;
 const BODY_TIMEOUT_MS = 8_000;
 const OVERALL_TIMEOUT_MS = CONNECT_HEADER_TIMEOUT_MS + BODY_TIMEOUT_MS;
+const CANCELLATION_TIMEOUT_MS = 100;
 const MAX_RESPONSE_BYTES = 4_096;
+const CANCELLATION_TIMEOUT_DIAGNOSTIC = 'ProPR pairing response cancellation exceeded its fixed deadline.';
 
 type TimeoutPhase = 'connect-header' | 'body' | 'overall';
 
 export interface PairingProtocolRequestOptions {
   overallTimeoutMs?: number;
+  /** @internal Deterministic protocol-test deadlines may only shorten production limits. */
+  deadlines?: Partial<{
+    headerMs: number;
+    bodyMs: number;
+    cancellationMs: number;
+  }>;
+  /** @internal Receives only a fixed, redacted cancellation diagnostic. */
+  reportDiagnostic?: (message: string) => void;
+  /** @internal Deterministic monotonic timer source for protocol tests. */
+  clock?: {
+    now(): number;
+    setTimeout(callback: () => void, milliseconds: number): ReturnType<typeof setTimeout>;
+    clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+  };
 }
 
 const timeoutError = (cause?: unknown): ProprClientError =>
@@ -52,6 +68,16 @@ const positiveTimeout = (value: number | undefined): number => {
   return timeout;
 };
 
+const boundedDeadline = (value: number | undefined, maximum: number): number => {
+  const deadline = value ?? maximum;
+  if (!Number.isSafeInteger(deadline) || deadline < 1 || deadline > maximum) {
+    throw new ProprClientError('Desktop pairing request deadlines are invalid.', {
+      kind: 'configuration',
+    });
+  }
+  return deadline;
+};
+
 const contentLength = (response: Response): number | undefined => {
   const raw = response.headers.get('content-length');
   if (raw === null) return undefined;
@@ -74,14 +100,33 @@ export const requestPairingProtocol = async (
 ): Promise<unknown> => {
   const callerSignal = init.signal;
   const overallTimeoutMs = positiveTimeout(options.overallTimeoutMs);
+  const headerTimeoutMs = boundedDeadline(options.deadlines?.headerMs, CONNECT_HEADER_TIMEOUT_MS);
+  const bodyTimeoutMs = boundedDeadline(options.deadlines?.bodyMs, BODY_TIMEOUT_MS);
+  const cancellationTimeoutMs = boundedDeadline(
+    options.deadlines?.cancellationMs,
+    CANCELLATION_TIMEOUT_MS,
+  );
+  const reportDiagnostic = options.reportDiagnostic ?? ((message: string) => console.warn(message));
+  const clock = options.clock ?? {
+    now: () => performance.now(),
+    setTimeout: (callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds),
+    clearTimeout: (timer: ReturnType<typeof setTimeout>) => clearTimeout(timer),
+  };
+  const reportCancellationTimeout = (): void => {
+    try {
+      reportDiagnostic(CANCELLATION_TIMEOUT_DIAGNOSTIC);
+    } catch {
+      // A diagnostic hook must never change transport or shutdown settlement.
+    }
+  };
   const controller = new AbortController();
+  const startedAt = clock.now();
   let timeoutPhase: TimeoutPhase | undefined;
   let headerTimer: ReturnType<typeof setTimeout> | undefined;
   let bodyTimer: ReturnType<typeof setTimeout> | undefined;
   let overallTimer: ReturnType<typeof setTimeout> | undefined;
   let response: Response | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-  let completed = false;
 
   const abortForCaller = (): void => controller.abort(callerSignal?.reason);
   const abortForTimeout = (phase: TimeoutPhase): void => {
@@ -90,38 +135,87 @@ export const requestPairingProtocol = async (
     controller.abort(new DOMException('Desktop pairing deadline exceeded', 'TimeoutError'));
   };
   const raceCancellation = <T>(operation: PromiseLike<T>): Promise<T> => new Promise<T>((resolve, reject) => {
-    const aborted = () => reject(controller.signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      controller.signal.removeEventListener('abort', aborted);
+      callback();
+    };
+    const aborted = () => finish(() => reject(
+      controller.signal.reason ?? new DOMException('Aborted', 'AbortError'),
+    ));
     if (controller.signal.aborted) aborted();
     else controller.signal.addEventListener('abort', aborted, { once: true });
-    Promise.resolve(operation).then(resolve, reject).finally(() => {
-      controller.signal.removeEventListener('abort', aborted);
-    }).catch(() => undefined);
+    // Both handlers remain attached to the foreign promise after our abort
+    // wins. A later resolve/reject is deliberately consumed and cannot alter
+    // endpoint state or become an unhandled rejection.
+    Promise.resolve(operation).then(
+      value => finish(() => resolve(value)),
+      error => finish(() => reject(error)),
+    );
   });
+  const remainingOverall = (): number => Math.max(
+    0,
+    overallTimeoutMs - (clock.now() - startedAt),
+  );
   const cancelResponse = async (): Promise<void> => {
-    if (!controller.signal.aborted) controller.abort();
+    const cancelTarget = reader ?? response?.body;
+    if (!cancelTarget) return;
+    let cancellation: Promise<unknown>;
     try {
-      if (reader) await reader.cancel();
-      else if (response?.body) await response.body.cancel();
+      cancellation = Promise.resolve(cancelTarget.cancel());
     } catch {
-      // Cancellation is best-effort after the owning network signal is aborted.
+      return;
     }
+    // Attach a rejection handler before doing anything else. The underlying
+    // stream controls this promise and may reject long after local shutdown.
+    let cancellationSettled = false;
+    const settled = cancellation.then(
+      () => { cancellationSettled = true; return true; },
+      () => { cancellationSettled = true; return true; },
+    );
+    const budget = Math.min(cancellationTimeoutMs, remainingOverall());
+    if (budget <= 0) {
+      // Give an already-settled cancellation its queued promise reaction, but
+      // never install or await a foreign task beyond the overall boundary.
+      await Promise.resolve();
+      if (!cancellationSettled) reportCancellationTimeout();
+      return;
+    }
+    let cancellationTimer: ReturnType<typeof setTimeout> | undefined;
+    const cancelledInBudget = await Promise.race([
+      settled,
+      new Promise<false>(resolve => {
+        cancellationTimer = clock.setTimeout(() => resolve(false), budget);
+      }),
+    ]);
+    if (cancellationTimer) clock.clearTimeout(cancellationTimer);
+    if (!cancelledInBudget) reportCancellationTimeout();
   };
 
   if (callerSignal?.aborted) abortForCaller();
   else callerSignal?.addEventListener('abort', abortForCaller, { once: true });
-  overallTimer = setTimeout(() => abortForTimeout('overall'), overallTimeoutMs);
-  headerTimer = setTimeout(
-    () => abortForTimeout('connect-header'),
-    Math.min(CONNECT_HEADER_TIMEOUT_MS, overallTimeoutMs),
-  );
+  if (!controller.signal.aborted) {
+    overallTimer = clock.setTimeout(() => abortForTimeout('overall'), overallTimeoutMs);
+    headerTimer = clock.setTimeout(
+      () => abortForTimeout('connect-header'),
+      Math.min(headerTimeoutMs, overallTimeoutMs),
+    );
+  }
 
   try {
+    // Promise argument evaluation would otherwise call an untrusted fetch even
+    // when disposal/caller cancellation was already complete.
+    if (controller.signal.aborted) {
+      throw controller.signal.reason ?? new DOMException('Aborted', 'AbortError');
+    }
     response = await raceCancellation(fetchImplementation(target, {
       ...init,
       redirect: 'manual',
       signal: controller.signal,
     }));
-    if (headerTimer) clearTimeout(headerTimer);
+    if (headerTimer) clock.clearTimeout(headerTimer);
     headerTimer = undefined;
 
     // Browsers may expose a manual cross-origin redirect as opaqueredirect
@@ -138,7 +232,6 @@ export const requestPairingProtocol = async (
       throw invalidResponse(response.status);
     }
     if (!response.body) {
-      completed = true;
       if (!response.ok) {
         throw new ProprClientError(`Desktop pairing request failed with HTTP ${response.status}.`, {
           kind: 'http',
@@ -149,9 +242,9 @@ export const requestPairingProtocol = async (
     }
 
     reader = response.body.getReader();
-    bodyTimer = setTimeout(
+    bodyTimer = clock.setTimeout(
       () => abortForTimeout('body'),
-      Math.min(BODY_TIMEOUT_MS, overallTimeoutMs),
+      Math.min(bodyTimeoutMs, overallTimeoutMs),
     );
     const chunks: Uint8Array[] = [];
     let byteLength = 0;
@@ -189,8 +282,6 @@ export const requestPairingProtocol = async (
       if (!response.ok) value = undefined;
       else throw invalidResponse(response.status, cause);
     }
-    completed = true;
-
     if (!response.ok) {
       throw new ProprClientError(`Desktop pairing request failed with HTTP ${response.status}.`, {
         kind: 'http',
@@ -202,18 +293,23 @@ export const requestPairingProtocol = async (
     if (contentType !== 'application/json') throw invalidResponse(response.status);
     return value;
   } catch (cause) {
-    if (!completed) await cancelResponse();
     if (cause instanceof ProprClientError) throw cause;
     if (callerSignal?.aborted) throw cancelledError(cause);
     if (timeoutPhase) throw timeoutError(cause);
     if (cause instanceof Error && cause.name === 'AbortError') throw cancelledError(cause);
     throw networkError(cause);
   } finally {
-    if (!completed && (response?.body || reader)) await cancelResponse();
-    if (headerTimer) clearTimeout(headerTimer);
-    if (bodyTimer) clearTimeout(bodyTimer);
-    if (overallTimer) clearTimeout(overallTimer);
+    // Network ownership ends before touching the untrusted stream primitive.
+    // All local timers/listeners are detached first; cancellation then gets a
+    // separate short budget which is also clamped to the endpoint deadline.
+    if (!controller.signal.aborted) controller.abort();
+    if (headerTimer) clock.clearTimeout(headerTimer);
+    if (bodyTimer) clock.clearTimeout(bodyTimer);
+    if (overallTimer) clock.clearTimeout(overallTimer);
     callerSignal?.removeEventListener('abort', abortForCaller);
+    await cancelResponse();
     try { reader?.releaseLock(); } catch { /* The stream may already be errored. */ }
+    reader = undefined;
+    response = undefined;
   }
 };

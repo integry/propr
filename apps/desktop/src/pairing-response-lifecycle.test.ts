@@ -22,7 +22,7 @@ const deferred = <T,>() => {
   return { promise, resolve };
 };
 
-it('dispose drains a headers-then-stall activation body before retaining provisional rollback', async () => {
+it('dispose bounds a never-settling activation cancel before retaining provisional rollback', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-pairing-response-'));
   const store = new ProfileStore(directory, encryption);
   const profile = await store.save({
@@ -80,6 +80,7 @@ it('dispose drains a headers-then-stall activation body before retaining provisi
           cancel() {
             streamCancelled = true;
             activationBodyCancelled = true;
+            return new Promise<void>(() => undefined);
           },
         }), { headers: { 'Content-Type': 'application/json' } });
       }
@@ -94,6 +95,7 @@ it('dispose drains a headers-then-stall activation body before retaining provisi
       apiBaseUrl: profile.apiBaseUrl,
     });
     await activationBodyStarted.promise;
+    const callsAtShutdown = networkCalls;
     let disposalTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -109,12 +111,11 @@ it('dispose drains a headers-then-stall activation body before retaining provisi
       if (disposalTimer) clearTimeout(disposalTimer);
     }
     await assert.rejects(pairing, /cancelled/i);
-    const callsAtDispose = networkCalls;
     await new Promise(resolve => setTimeout(resolve, 20));
 
     const pending = await store.pendingRevocations();
     assert.equal(activationBodyCancelled, true);
-    assert.equal(networkCalls, callsAtDispose);
+    assert.equal(networkCalls, callsAtShutdown);
     assert.equal(pending.length, 1);
     assert.deepEqual(pending[0].credential, {
       version: 1,
