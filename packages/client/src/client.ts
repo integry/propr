@@ -28,6 +28,7 @@ import {
   type ProprDesktopPairingOptions,
   type ProprDesktopPairingStart,
 } from './desktopPairing.js';
+import { requestPairingProtocol } from './pairingProtocol.js';
 
 export interface ProprClientOptions extends NormalizeApiBaseUrlOptions {
   baseUrl?: string | null;
@@ -241,12 +242,13 @@ export class ProprClient {
     clientName: string,
     options: Pick<ProprDesktopPairingOptions, 'signal' | 'now' | 'binding'>,
   ): Promise<ProprDesktopPairingStart> {
-    return parseDesktopPairingStart(await this.request<unknown>('/api/desktop/pairings', {
+    return parseDesktopPairingStart(await this.requestDesktopPairing('/api/desktop/pairings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientName, ...options.binding }),
+      redirect: 'manual',
       signal: options.signal,
-    }, { timeoutMs: 8000 }), this.baseUrl || undefined, options.now);
+    }), this.baseUrl || undefined, options.now);
   }
 
   async pairDesktop(
@@ -261,7 +263,7 @@ export class ProprClient {
     pairing: ProprDesktopPairingComplete,
     signal?: AbortSignal,
   ): Promise<ProprDesktopPairingActivationReceipt> {
-    return parseDesktopPairingActivationReceipt(await this.request<unknown>(
+    return parseDesktopPairingActivationReceipt(await this.requestDesktopPairing(
       `/api/desktop/pairings/${encodeURIComponent(pairing.pairingId)}/activate`,
       {
         method: 'POST',
@@ -277,7 +279,6 @@ export class ProprClient {
         redirect: 'manual',
         signal,
       },
-      { timeoutMs: 8_000 },
     ));
   }
 
@@ -285,7 +286,7 @@ export class ProprClient {
     pairing: ProprDesktopPairingComplete,
     signal?: AbortSignal,
   ): Promise<{ status: 'cancelled'; cancelledAt: string }> {
-    const value = await this.request<unknown>(
+    const value = await this.requestDesktopPairing(
       `/api/desktop/pairings/${encodeURIComponent(pairing.pairingId)}/cancel`,
       {
         method: 'POST',
@@ -301,7 +302,6 @@ export class ProprClient {
         redirect: 'manual',
         signal,
       },
-      { timeoutMs: 8_000 },
     );
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new ProprClientError('The ProPR instance returned an invalid pairing cancellation receipt.', {
@@ -317,6 +317,25 @@ export class ProprClient {
       });
     }
     return receipt as unknown as { status: 'cancelled'; cancelledAt: string };
+  }
+
+  /** @internal Pairing keeps transport ownership through the complete body. */
+  async requestDesktopPairing(
+    path: string,
+    init: RequestInit,
+    overallTimeoutMs?: number,
+  ): Promise<unknown> {
+    const target = this.resolveRequestTarget(this.url(path));
+    const authentication = this.authenticate(init);
+    const authenticatedInit = authentication instanceof Promise
+      ? await authentication
+      : authentication;
+    return requestPairingProtocol(
+      this.fetchImplementation,
+      target,
+      authenticatedInit ?? {},
+      { overallTimeoutMs },
+    );
   }
 
   connectSocket(options: ProprSocketOptions = {}): Socket {

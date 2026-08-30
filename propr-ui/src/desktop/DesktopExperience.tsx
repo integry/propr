@@ -44,6 +44,8 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   const [networkOffline, setNetworkOffline] = useState(!navigator.onLine);
   const connectionAttempt = useRef(0);
   const activeProfileId = useRef<string | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const enqueueProfileMutation = useSerializedMutationQueue();
   const closeManager = useCallback(() => { setManagerOpen(false); setEditing(null); }, []);
   const { dialogRef: managerRef, openModal: openManager } = useDesktopModal(managerOpen, setManagerOpen, closeManager);
@@ -144,18 +146,19 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
-      if (state.phase !== 'connected') return;
+      const current = stateRef.current;
+      if (current.phase !== 'connected') return;
       if ((event.metaKey || event.ctrlKey) && event.key === ',') {
         event.preventDefault();
         openManager();
       } else if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'r') {
         event.preventDefault();
-        void connect(state.profile);
+        void connect(current.profile);
       }
     };
     document.addEventListener('keydown', handleKeyboard);
     return () => document.removeEventListener('keydown', handleKeyboard);
-  }, [connect, openManager, state]);
+  }, [connect, openManager]);
 
   const removeProfile = async (profile: DesktopProfile) => {
     if (!window.confirm(`Remove “${profile.name}” from this computer?`)) return;

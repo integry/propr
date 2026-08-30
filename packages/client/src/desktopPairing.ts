@@ -64,6 +64,8 @@ const MIN_POLL_INTERVAL_SECONDS = 1;
 const MAX_POLL_INTERVAL_SECONDS = 60;
 const MAX_PAIRING_LIFETIME_MS = 30 * 60 * 1000;
 const PAIRING_REQUEST_TIMEOUT_MS = 8_000;
+const exactKeys = (body: Record<string, unknown>, keys: readonly string[]): boolean =>
+  Object.keys(body).length === keys.length && Object.keys(body).every(key => keys.includes(key));
 
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -137,7 +139,8 @@ export const parseDesktopPairingStart = (
   now: () => number = Date.now,
 ): ProprDesktopPairingStart => {
   const body = record(value);
-  if (!string(body.pairingId) || !/^dpr_[A-Za-z0-9_-]{22}$/.test(body.pairingId)
+  if (!exactKeys(body, ['pairingId', 'deviceSecret', 'approvalUrl', 'expiresAt', 'interval'])
+    || !string(body.pairingId) || !/^dpr_[A-Za-z0-9_-]{22}$/.test(body.pairingId)
     || !string(body.deviceSecret) || !/^[A-Za-z0-9_-]{43}$/.test(body.deviceSecret)
     || !string(body.approvalUrl)
     || !validPollInterval(body.interval)
@@ -279,16 +282,20 @@ export const completeDesktopPairing = async (
 
       let value: unknown;
       try {
-        value = await raceLifetime(client.request<unknown>(
+        // The pairing reader owns cancellation through body drain/cancel. Do
+        // not race it with a faster outer rejection: completion here is the
+        // operation's guarantee that no response task survives this poll.
+        value = await client.requestDesktopPairing(
           `/api/desktop/pairings/${encodeURIComponent(start.pairingId)}/poll`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ deviceSecret: start.deviceSecret }),
+            redirect: 'manual',
             signal: lifetimeController.signal,
           },
-          { timeoutMs: Math.min(PAIRING_REQUEST_TIMEOUT_MS, safeDelay(remaining)) },
-        ));
+          Math.min(PAIRING_REQUEST_TIMEOUT_MS, safeDelay(remaining)),
+        );
       } catch (error) {
         if (terminal || remainingLifetime() <= 0) {
           if (!terminal) abortForDeadline();
@@ -298,11 +305,18 @@ export const completeDesktopPairing = async (
       }
       requireRemainingLifetime();
       const body = record(value);
-      if (body.status === 'pending' && validPollInterval(body.interval)) {
+      if (body.status === 'pending'
+        && exactKeys(body, ['status', 'interval'])
+        && validPollInterval(body.interval)) {
         intervalSeconds = body.interval;
         continue;
       }
-      if (body.status === 'provisional' && string(body.token)
+      if (body.status === 'provisional'
+        && exactKeys(body, [
+          'status', 'token', 'tokenType', 'activationTicket', 'activationExpiresAt',
+          'instanceId', 'origin', 'scope', 'credentialGeneration',
+        ])
+        && string(body.token)
         && /^propr_it_[A-Za-z0-9_-]{43}$/.test(body.token) && body.tokenType === 'Bearer'
         && string(body.activationTicket) && /^[A-Za-z0-9_-]{43}$/.test(body.activationTicket)
         && validPairingDeadline(body.activationExpiresAt, now())

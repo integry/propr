@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesktopExperience } from './DesktopExperience';
+import { DesktopTitleBar } from './DesktopTitleBar';
 import type { DesktopAdapters, DesktopConnectionResult, DesktopProfile } from './types';
 
 const apiMock = vi.hoisted(() => ({ setApiBaseUrl: vi.fn() }));
@@ -21,6 +22,13 @@ const remoteProfile: DesktopProfile = {
   name: 'Team server',
   baseUrl: 'https://propr.example.com',
   kind: 'remote',
+};
+
+const connectedApp = <><DesktopTitleBar /><div>Connected app</div></>;
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(settle => { resolve = settle; });
+  return { promise, resolve };
 };
 
 const adaptersFor = (
@@ -56,16 +64,16 @@ describe('DesktopExperience profile management', () => {
 
   it('reconnects an edited active instance but saves an inactive edit without connecting', async () => {
     const adapters = adaptersFor([localProfile, remoteProfile], localProfile.id);
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+    render(<DesktopExperience adapters={adapters}>{connectedApp}</DesktopExperience>);
 
-    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Connected: This computer' })).toBeInTheDocument();
     vi.clearAllMocks();
     fireEvent.keyDown(document, { key: ',', ctrlKey: true });
     fireEvent.click(await screen.findByRole('button', { name: 'Edit This computer' }));
     fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://active.example.com/' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Connected: This computer' })).toBeInTheDocument();
     expect(adapters.connection.probe).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://active.example.com' }));
     expect(adapters.profiles.save).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://active.example.com' }));
     expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
@@ -88,9 +96,9 @@ describe('DesktopExperience profile management', () => {
       .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' })
       .mockResolvedValueOnce({ status: 'offline', message: 'The updated server is unavailable.' });
     const adapters = adaptersFor([localProfile], localProfile.id, probe);
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+    render(<DesktopExperience adapters={adapters}>{connectedApp}</DesktopExperience>);
 
-    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Connected: This computer' })).toBeInTheDocument();
     vi.clearAllMocks();
     fireEvent.keyDown(document, { key: ',', ctrlKey: true });
     fireEvent.click(await screen.findByRole('button', { name: 'Edit This computer' }));
@@ -179,5 +187,60 @@ describe('DesktopExperience profile management', () => {
     expect(screen.queryByRole('button', { name: /Set up this computer/i })).not.toBeInTheDocument();
     expect(screen.getByText(/local setup is currently available on Linux/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Connect to an existing instance/i })).toBeInTheDocument();
+  });
+
+  it('keeps management ready after out-of-order profile loading and a concurrent status refresh', async () => {
+    const listed = deferred<DesktopProfile[]>();
+    const selected = deferred<string | null>();
+    const probed = deferred<DesktopConnectionResult>();
+    const adapters = adaptersFor();
+    vi.mocked(adapters.profiles.list).mockImplementation(() => listed.promise);
+    vi.mocked(adapters.profiles.getActiveId).mockImplementation(() => selected.promise);
+    vi.mocked(adapters.connection.probe).mockImplementation(() => probed.promise);
+    render(<DesktopExperience adapters={adapters}>{connectedApp}</DesktopExperience>);
+
+    await act(async () => { selected.resolve(localProfile.id); });
+    expect(screen.getByText('Opening ProPR…')).toBeInTheDocument();
+    await act(async () => { listed.resolve([localProfile, remoteProfile]); });
+    expect(await screen.findByRole('heading', { name: 'Connecting to This computer' })).toBeInTheDocument();
+    await act(async () => { probed.resolve({ status: 'ready', version: '0.8.15' }); });
+
+    expect(await screen.findByRole('button', { name: 'Connected: This computer' })).toBeInTheDocument();
+    fireEvent(window, new Event('offline'));
+    expect(await screen.findByRole('button', { name: 'Offline: This computer' })).toBeInTheDocument();
+    fireEvent(window, new Event('online'));
+    expect(await screen.findByRole('button', { name: 'Connected: This computer' })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit This computer' }));
+    expect(screen.getByLabelText('Display name')).toHaveValue('This computer');
+    expect(screen.queryByText('Opening ProPR…')).not.toBeInTheDocument();
+  });
+
+  it('ignores late profile and status resolutions after unmount without stale publication', async () => {
+    const listed = deferred<DesktopProfile[]>();
+    const selected = deferred<string | null>();
+    const adapters = adaptersFor();
+    vi.mocked(adapters.profiles.list).mockImplementation(() => listed.promise);
+    vi.mocked(adapters.profiles.getActiveId).mockImplementation(() => selected.promise);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const first = render(<DesktopExperience adapters={adapters}>{connectedApp}</DesktopExperience>);
+    first.unmount();
+    await act(async () => {
+      listed.resolve([localProfile]);
+      selected.resolve(localProfile.id);
+      await Promise.resolve();
+    });
+    expect(adapters.connection.probe).not.toHaveBeenCalled();
+
+    const probe = deferred<DesktopConnectionResult>();
+    const probingAdapters = adaptersFor([localProfile], localProfile.id, () => probe.promise);
+    const second = render(<DesktopExperience adapters={probingAdapters}>{connectedApp}</DesktopExperience>);
+    expect(await screen.findByRole('heading', { name: 'Connecting to This computer' })).toBeInTheDocument();
+    second.unmount();
+    await act(async () => { probe.resolve({ status: 'ready', version: '0.8.15' }); });
+    expect(probingAdapters.profiles.save).not.toHaveBeenCalled();
+    expect(apiMock.setApiBaseUrl).not.toHaveBeenCalled();
+    expect(runtimeMock.setDesktopApiBaseUrl).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
   });
 });
