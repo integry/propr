@@ -5,9 +5,9 @@ import { app, BrowserWindow, crashReporter, ipcMain, net, protocol, safeStorage,
 import {
   DESKTOP_RENDERER_ORIGIN,
   DESKTOP_TRANSPORT_SCOPE_HEADER,
-  DESKTOP_TRANSPORT_SCOPE_QUERY,
 } from '@propr/shared';
 import { DeepLinkDelivery } from './deep-link-delivery';
+import { clearDesktopInstanceCookies } from './desktop-session';
 import { DesktopCredentialService } from './credential-service';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
@@ -45,19 +45,22 @@ let shutdownStarted = false;
 interface PackagedTransportSmoke {
   firstOrigin: string;
   secondOrigin: string;
+  shutdownMode: 'success' | 'retry' | 'forced-timeout';
 }
 
 const packagedTransportSmoke = (): PackagedTransportSmoke | null => {
   if (!app.isPackaged || process.env.PROPR_DESKTOP_SMOKE_TEST !== '1') return null;
   const firstOrigin = normalizeApiBaseUrl(process.env.PROPR_DESKTOP_SMOKE_FIRST_ORIGIN ?? '');
   const secondOrigin = normalizeApiBaseUrl(process.env.PROPR_DESKTOP_SMOKE_SECOND_ORIGIN ?? '');
+  const shutdownMode = process.env.PROPR_DESKTOP_SMOKE_SHUTDOWN_MODE;
   const isolatedUserData = basename(app.getPath('userData')).startsWith('propr-desktop-smoke-');
   const loopback = (origin: string | null): origin is string => origin !== null
     && new URL(origin).hostname === '127.0.0.1';
-  if (!isolatedUserData || !loopback(firstOrigin) || !loopback(secondOrigin) || firstOrigin === secondOrigin) {
+  if (!isolatedUserData || !loopback(firstOrigin) || !loopback(secondOrigin) || firstOrigin === secondOrigin
+    || (shutdownMode !== 'success' && shutdownMode !== 'retry' && shutdownMode !== 'forced-timeout')) {
     throw new Error('Packaged desktop transport smoke requires two distinct loopback fixtures and isolated user data');
   }
-  return { firstOrigin, secondOrigin };
+  return { firstOrigin, secondOrigin, shutdownMode };
 };
 
 const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>
@@ -161,152 +164,183 @@ const openAllowedExternalUrl = async (url: string): Promise<void> => {
 const runPackagedTransportSmoke = async (
   window: BrowserWindow,
   profiles: ProfileStore,
+  credentials: DesktopCredentialService,
   smoke: PackagedTransportSmoke,
 ): Promise<void> => {
   const profileId = 'packaged-transport-smoke';
   const tokenA = `propr_it_${randomBytes(32).toString('base64url')}`;
   const tokenB = `propr_it_${randomBytes(32).toString('base64url')}`;
+  const security = profiles.security();
+  if (!security.available || security.backend === 'basic_text') {
+    throw new Error('Packaged transport smoke requires the production OS credential backend');
+  }
   const profileA = await profiles.save({
     id: profileId, label: 'Packaged transport A', apiBaseUrl: smoke.firstOrigin,
   });
-  await profiles.writeCredential({ version: 1, profileId, origin: smoke.firstOrigin, token: tokenA });
-  await Promise.all([
-    session.defaultSession.cookies.set({
-      url: smoke.firstOrigin, name: 'smoke-old-origin', value: 'must-be-cleared',
-    }),
-    session.defaultSession.cookies.set({
-      url: smoke.secondOrigin, name: 'smoke-new-origin', value: 'must-be-cleared',
-    }),
-  ]);
+  const storedA = await profiles.writeCredential({ version: 1, profileId, origin: smoke.firstOrigin, token: tokenA });
+  if (!storedA.stored) throw new Error('Production credential encryption was unavailable');
 
-  const first = await window.webContents.executeJavaScript(`(async () => {
-    const bridge = window.proprDesktop;
-    if (!bridge) throw new Error('Packaged preload bridge is unavailable');
-    const profile = ${JSON.stringify({ id: profileId, label: profileA.label, apiBaseUrl: smoke.firstOrigin })};
-    const rest = async (origin, scope) => {
-      const response = await fetch(origin + '/api/smoke/rest', {
-        credentials: 'include',
-        headers: { ${JSON.stringify(DESKTOP_TRANSPORT_SCOPE_HEADER)}: scope },
-      });
-      if (!response.ok || (await response.json()).ok !== true) throw new Error('Packaged REST fixture failed');
-    };
-    const socket = (origin, scope) => new Promise((resolveSocket, rejectSocket) => {
-      const endpoint = new URL(origin);
-      endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
-      endpoint.pathname = '/socket.io/';
-      endpoint.searchParams.set('EIO', '4');
-      endpoint.searchParams.set('transport', 'websocket');
-      endpoint.searchParams.set(${JSON.stringify(DESKTOP_TRANSPORT_SCOPE_QUERY)}, scope);
-      const connection = new WebSocket(endpoint.href);
-      const timeout = setTimeout(() => { connection.close(); rejectSocket(new Error('Packaged socket fixture timed out')); }, 5000);
-      connection.onopen = () => { clearTimeout(timeout); connection.close(); resolveSocket(true); };
-      connection.onerror = () => { clearTimeout(timeout); rejectSocket(new Error('Packaged socket fixture failed')); };
+  const storageWindows = await Promise.all([smoke.firstOrigin, smoke.secondOrigin].map(async origin => {
+    const storageWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
     });
-    const probeA = await bridge.connection.probe(profile);
-    if (probeA.status !== 'ready') throw new Error('Packaged A probe was not ready');
-    const activatedA = await bridge.connection.activate(probeA.activationTicket);
-    await rest(profile.apiBaseUrl, activatedA.transportScope);
-    await socket(profile.apiBaseUrl, activatedA.transportScope);
-    const reprobeA = await bridge.connection.probe(profile);
-    if (reprobeA.status !== 'ready') throw new Error('Packaged A reprobe was not ready');
-    const rotatedA = await bridge.connection.activate(reprobeA.activationTicket);
-    let staleRestRejected = false;
-    try { await rest(profile.apiBaseUrl, activatedA.transportScope); }
-    catch { staleRestRejected = true; }
-    await rest(profile.apiBaseUrl, rotatedA.transportScope);
-    localStorage.setItem('packaged-smoke-local', 'non-secret sentinel');
-    sessionStorage.setItem('packaged-smoke-session', 'non-secret sentinel');
-    await bridge.profiles.save({
-      id: profile.id, label: 'Packaged transport B', apiBaseUrl: ${JSON.stringify(smoke.secondOrigin)},
-    });
-    return {
-      rendererOrigin: location.origin,
-      profileId: profile.id,
-      firstScope: activatedA.transportScope,
-      rotatedScope: rotatedA.transportScope,
-      scopesRotated: activatedA.transportScope !== rotatedA.transportScope,
-      staleRestRejected,
-      activationContainsSecret: JSON.stringify([probeA, activatedA, reprobeA, rotatedA]).includes('propr_it_'),
-    };
-  })()`);
-  if (first?.rendererOrigin !== DESKTOP_RENDERER_ORIGIN || first?.profileId !== profileId
-    || first?.scopesRotated !== true || first?.staleRestRejected !== true
-    || first?.activationContainsSecret !== false) {
-    throw new Error('Packaged renderer protocol or A transport smoke proof failed');
-  }
+    await storageWindow.loadURL(`${origin}/smoke-storage`);
+    return { origin, window: storageWindow };
+  }));
+  const seedStorage = async (): Promise<void> => {
+    await Promise.all(storageWindows.map(item => item.window.webContents.executeJavaScript(`(async () => {
+        document.cookie = 'packaged-smoke-cookie=present; SameSite=Lax';
+        localStorage.setItem('packaged-smoke-local', 'present');
+        await new Promise((resolve, reject) => {
+          const request = indexedDB.open('packaged-smoke-indexeddb', 1);
+          request.onupgradeneeded = () => request.result.createObjectStore('proof');
+          request.onsuccess = () => { request.result.close(); resolve(true); };
+          request.onerror = () => reject(request.error);
+        });
+        const cache = await caches.open('packaged-smoke-cache');
+        await cache.put('/packaged-smoke-cache-entry', new Response('present'));
+        await navigator.serviceWorker.register('/smoke-sw.js');
+        await navigator.serviceWorker.ready;
+        return true;
+      })()`)));
+  };
+  const storageState = async (expected: 'present' | 'absent'): Promise<boolean> => {
+    const states = await Promise.all(storageWindows.map(async item => {
+      const rendererState = await item.window.webContents.executeJavaScript(`(async () => ({
+        cookie: document.cookie.includes('packaged-smoke-cookie=present'),
+        localStorage: localStorage.getItem('packaged-smoke-local') === 'present',
+        indexedDB: (await indexedDB.databases()).some(database => database.name === 'packaged-smoke-indexeddb'),
+        cacheStorage: (await caches.keys()).includes('packaged-smoke-cache'),
+        serviceWorker: (await navigator.serviceWorker.getRegistrations()).some(registration => registration.scope.startsWith(location.origin)),
+      }))()`);
+      const cookies = await session.defaultSession.cookies.get({ url: item.origin });
+      return { ...rendererState, cookie: rendererState.cookie || cookies.length > 0 } as Record<string, boolean>;
+    }));
+    return states.every(state => Object.values(state).every(value => value === (expected === 'present')));
+  };
 
-  const cookiesAfterEdit = await Promise.all([
-    session.defaultSession.cookies.get({ url: smoke.firstOrigin }),
-    session.defaultSession.cookies.get({ url: smoke.secondOrigin }),
-  ]);
-  if (cookiesAfterEdit.some(cookies => cookies.length !== 0)) {
-    throw new Error('Same-ID URL edit did not clear both Electron origin stores');
-  }
-  await profiles.writeCredential({ version: 1, profileId, origin: smoke.secondOrigin, token: tokenB });
+  try {
+    await window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const started = Date.now();
+      const poll = () => {
+        if (window.__proprPackagedTransportSmoke) return resolve(true);
+        if (Date.now() - started > 5000) return reject(new Error('Packaged renderer smoke harness timed out'));
+        setTimeout(poll, 20);
+      };
+      poll();
+    })`);
+    const profileForRendererA = { id: profileId, name: profileA.label, baseUrl: smoke.firstOrigin, kind: 'local' };
+    const first = await window.webContents.executeJavaScript(`(async () => {
+      const smoke = window.__proprPackagedTransportSmoke;
+      const first = await smoke.activate(${JSON.stringify(profileForRendererA)});
+      await smoke.rest();
+      const socketId = await smoke.connectSocket();
+      const rotated = await smoke.activate(${JSON.stringify(profileForRendererA)});
+      let staleRestRejected = false;
+      try {
+        const response = await fetch(${JSON.stringify(smoke.firstOrigin + '/api/smoke/rest')}, {
+          headers: { ${JSON.stringify(DESKTOP_TRANSPORT_SCOPE_HEADER)}: first.transportScope },
+          credentials: 'include',
+        });
+        staleRestRejected = !response.ok;
+      } catch { staleRestRejected = true; }
+      await smoke.expectSocketRejected(socketId);
+      await smoke.rest();
+      localStorage.setItem('packaged-smoke-local', 'non-secret sentinel');
+      sessionStorage.setItem('packaged-smoke-session', 'non-secret sentinel');
+      return { first, rotated, socketId, staleRestRejected, rendererOrigin: location.origin };
+    })()`);
+    if (first?.rendererOrigin !== DESKTOP_RENDERER_ORIGIN || first?.first?.profileId !== profileId
+      || first?.first?.transportScope === first?.rotated?.transportScope
+      || first?.first?.contractsContainSecret !== false || first?.rotated?.contractsContainSecret !== false
+      || first?.staleRestRejected !== true) {
+      throw new Error('Packaged renderer protocol or A transport smoke proof failed');
+    }
+    await seedStorage();
+    if (!await storageState('present')) throw new Error('Packaged origin storage fixture was incomplete');
 
-  const second = await window.webContents.executeJavaScript(`(async () => {
-    const bridge = window.proprDesktop;
-    const profile = ${JSON.stringify({ id: profileId, label: 'Packaged transport B', apiBaseUrl: smoke.secondOrigin })};
-    const probeB = await bridge.connection.probe(profile);
-    if (probeB.status !== 'ready') throw new Error('Packaged B probe was not ready');
-    const activatedB = await bridge.connection.activate(probeB.activationTicket);
-    const staleInvalidation = await bridge.connection.invalidate({
-      profileId: profile.id,
-      transportScope: ${JSON.stringify(first.rotatedScope)},
-      code: 'INVALID_INSTANCE_TOKEN',
+    let cleanupFailed = false;
+    try {
+      await credentials.saveProfile({
+        id: profileId, label: 'Packaged transport B', apiBaseUrl: smoke.secondOrigin,
+      }, async () => { throw new Error('packaged cleanup failure'); });
+    } catch (error) {
+      cleanupFailed = error instanceof Error && error.message === 'packaged cleanup failure';
+    }
+    const rollback = await profiles.readProfileCredential(profileId);
+    if (!cleanupFailed || rollback.profile?.apiBaseUrl !== smoke.firstOrigin
+      || rollback.credential?.origin !== smoke.firstOrigin || rollback.credential.token !== tokenA
+      || !await storageState('present')) {
+      throw new Error('Origin cleanup failure did not preserve complete durable A');
+    }
+    let precommitStorageCleared = false;
+    await credentials.saveProfile({
+      id: profileId, label: 'Packaged transport B', apiBaseUrl: smoke.secondOrigin,
+    }, async (previousOrigin, nextOrigin) => {
+      await clearDesktopInstanceCookies(session.defaultSession, [previousOrigin, nextOrigin]);
+      precommitStorageCleared = await storageState('absent');
+      if (!precommitStorageCleared) throw new Error('Complete origin storage was not cleared before commit');
     });
-    const response = await fetch(profile.apiBaseUrl + '/api/smoke/rest', {
-      credentials: 'include',
-      headers: { ${JSON.stringify(DESKTOP_TRANSPORT_SCOPE_HEADER)}: activatedB.transportScope },
+    if (!precommitStorageCleared || !await storageState('absent')) {
+      throw new Error('Same-ID URL edit did not clear both complete Electron origin stores');
+    }
+    const storedB = await profiles.writeCredential({ version: 1, profileId, origin: smoke.secondOrigin, token: tokenB });
+    if (!storedB.stored) throw new Error('Replacement credential encryption was unavailable');
+
+    const profileForRendererB = { id: profileId, name: 'Packaged transport B', baseUrl: smoke.secondOrigin, kind: 'local' };
+    const second = await window.webContents.executeJavaScript(`(async () => {
+      const smoke = window.__proprPackagedTransportSmoke;
+      const activated = await smoke.activate(${JSON.stringify(profileForRendererB)});
+      const socketId = await smoke.connectSocket();
+      await smoke.reconnectSocket(socketId);
+      const staleClassification = await smoke.handleStaleInvalidation(
+        ${JSON.stringify(profileId)}, ${JSON.stringify(first.rotated.transportScope)}
+      );
+      smoke.disconnectSocket(${JSON.stringify(first.socketId)});
+      await smoke.rest();
+      const persisted = await window.proprDesktop.profiles.list();
+      const rendererEvidence = smoke.rendererEvidence();
+      return {
+        activated,
+        staleClassification,
+        persisted,
+        rendererEvidence,
+        rendererPersistenceContainsSecret: JSON.stringify([persisted, rendererEvidence]).includes('propr_it_'),
+      };
+    })()`);
+    const secretInMainMetadata = [tokenA, tokenB].some(secret =>
+      process.argv.some(argument => argument.includes(secret))
+      || JSON.stringify(crashReporter.getParameters()).includes(secret));
+    if (second?.staleClassification !== 'retryable' || second?.activated?.profileId !== profileId
+      || second?.activated?.contractsContainSecret !== false
+      || second?.rendererPersistenceContainsSecret !== false
+      || secretInMainMetadata) {
+      throw new Error('Packaged replacement scope or secret-custody smoke proof failed');
+    }
+    log('info', 'desktop.renderer.transport_smoke.ready', {
+      customProtocol: true,
+      restBearer: true,
+      socketIo: true,
+      engineIoHandshake: true,
+      namespaceAuthentication: true,
+      reconnectAndErrorHandling: true,
+      scopeRotation: true,
+      allOriginStorageCleared: true,
+      cleanupRollbackAndRetry: true,
+      staleScopeRejected: true,
+      secretCustody: true,
+      productionCredentialRoundTrip: true,
+      storageBackend: security.backend,
     });
-    if (!response.ok || (await response.json()).ok !== true) throw new Error('Packaged B REST fixture failed');
-    await new Promise((resolveSocket, rejectSocket) => {
-      const endpoint = new URL(profile.apiBaseUrl);
-      endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
-      endpoint.pathname = '/socket.io/';
-      endpoint.searchParams.set('EIO', '4');
-      endpoint.searchParams.set('transport', 'websocket');
-      endpoint.searchParams.set(${JSON.stringify(DESKTOP_TRANSPORT_SCOPE_QUERY)}, activatedB.transportScope);
-      const connection = new WebSocket(endpoint.href);
-      const timeout = setTimeout(() => { connection.close(); rejectSocket(new Error('Packaged B socket timed out')); }, 5000);
-      connection.onopen = () => { clearTimeout(timeout); connection.close(); resolveSocket(true); };
-      connection.onerror = () => { clearTimeout(timeout); rejectSocket(new Error('Packaged B socket failed')); };
-    });
-    const persisted = await bridge.profiles.list();
-    const rendererPersistence = JSON.stringify({
-      local: Object.entries(localStorage),
-      session: Object.entries(sessionStorage),
-      profiles: persisted,
-    });
-    return {
-      staleInvalidated: staleInvalidation.invalidated,
-      replacementReady: activatedB.profileId === profile.id,
-      profileContractContainsSecret: JSON.stringify([probeB, activatedB, persisted]).includes('propr_it_'),
-      rendererPersistenceContainsSecret: rendererPersistence.includes('propr_it_'),
-    };
-  })()`);
-  const secretInMainMetadata = [tokenA, tokenB].some(secret =>
-    process.argv.some(argument => argument.includes(secret))
-    || JSON.stringify(crashReporter.getParameters()).includes(secret));
-  if (second?.staleInvalidated !== false || second?.replacementReady !== true
-    || second?.profileContractContainsSecret !== false
-    || second?.rendererPersistenceContainsSecret !== false
-    || secretInMainMetadata) {
-    throw new Error('Packaged replacement scope or secret-custody smoke proof failed');
+  } finally {
+    for (const item of storageWindows) {
+      if (!item.window.isDestroyed()) item.window.destroy();
+    }
   }
-  log('info', 'desktop.renderer.transport_smoke.ready', {
-    customProtocol: true,
-    restBearer: true,
-    socketBearer: true,
-    scopeRotation: true,
-    bothOriginsCleared: true,
-    staleScopeRejected: true,
-    secretCustody: true,
-  });
 };
 
 const createMainWindow = async (
-  profiles: ProfileStore,
   transportSmoke: PackagedTransportSmoke | null,
 ): Promise<BrowserWindow> => {
   const window = new BrowserWindow(createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged));
@@ -340,7 +374,9 @@ const createMainWindow = async (
   if (validatedDevUrl) {
     await window.loadURL(new URL('renderer.html', validatedDevUrl).href);
   } else {
-    await window.loadURL(packagedRendererUrl);
+    const rendererUrl = new URL(packagedRendererUrl);
+    if (transportSmoke) rendererUrl.hash = 'packaged-transport-smoke';
+    await window.loadURL(rendererUrl.href);
   }
 
   await readyToShow;
@@ -350,13 +386,7 @@ const createMainWindow = async (
   if (preloadBridgeExposed !== true) {
     throw new Error('Desktop preload bridge was not exposed to the renderer');
   }
-  if (transportSmoke) await runPackagedTransportSmoke(window, profiles, transportSmoke);
   log('info', 'desktop.renderer.ready', { preloadBridgeExposed: true });
-  if (transportSmoke) {
-    app.quit();
-  } else {
-    window.show();
-  }
   return window;
 };
 
@@ -402,17 +432,7 @@ if (!hasSingleInstanceLock) {
       encrypt: value => safeStorage.encryptString(value),
       decrypt: value => safeStorage.decryptString(value),
     };
-    // The packaged transport fixture is confined to an isolated temp profile,
-    // two exact loopback origins, synthetic random credentials, and immediate
-    // exit. This exercises the production ProfileStore/service/session path on
-    // Linux runners where no login keyring exists without weakening real data.
-    const encryption: EncryptionProvider = transportSmoke ? {
-      isEncryptionAvailable: () => true,
-      backend: () => 'packaged-smoke-fixture',
-      encrypt: value => Buffer.from(value, 'utf8'),
-      decrypt: value => value.toString('utf8'),
-    } : productionEncryption;
-    const profiles = new ProfileStore(app.getPath('userData'), encryption);
+    const profiles = new ProfileStore(app.getPath('userData'), productionEncryption);
     const credentials = new DesktopCredentialService({
       profiles,
       fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
@@ -442,22 +462,25 @@ if (!hasSingleInstanceLock) {
       packagedRendererUrl,
       openExternal: async url => { await shell.openExternal(url); },
     });
-    mainWindow = await createMainWindow(profiles, transportSmoke);
+    mainWindow = await createMainWindow(transportSmoke);
     deepLinkDelivery.setWindow(mainWindow);
 
     app.on('activate', () => {
       if (shutdownStarted) return;
       if (BrowserWindow.getAllWindows().length === 0) {
-        void createMainWindow(profiles, null).then(window => {
+        void createMainWindow(null).then(window => {
           mainWindow = window;
           deepLinkDelivery.setWindow(window);
         });
       }
     });
 
+    const shutdownLifecycle = transportSmoke?.shutdownMode === 'forced-timeout'
+      ? { shutdown: () => new Promise<void>(() => undefined) }
+      : lifecycle;
     const shutdown = createDesktopShutdownCoordinator({
       credentials,
-      lifecycle,
+      lifecycle: shutdownLifecycle,
       ipc: registeredIpc,
       profiles,
       sessionSecurity,
@@ -466,8 +489,19 @@ if (!hasSingleInstanceLock) {
       quit: () => app.quit(),
       onStarted: () => { shutdownStarted = true; },
       log,
-    });
+    }, transportSmoke?.shutdownMode === 'forced-timeout' ? { drainTimeoutMs: 250 } : undefined);
     app.on('before-quit', event => shutdown.beforeQuit(event));
+
+    if (transportSmoke) {
+      await runPackagedTransportSmoke(mainWindow, profiles, credentials, transportSmoke);
+      app.quit();
+      if (transportSmoke.shutdownMode === 'retry') {
+        log('info', 'desktop.app.shutdown_retry_requested');
+        app.quit();
+      }
+    } else {
+      mainWindow.show();
+    }
   }).catch(error => {
     log('error', 'desktop.app.start_failed', { error });
     app.exit(1);

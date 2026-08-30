@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { Server as SocketIOServer } from 'socket.io';
 import {
   DESKTOP_RENDERER_ORIGIN,
   PROPR_API_COMPATIBILITY,
@@ -61,7 +61,6 @@ for (const [fuse, expectedState] of expectedFuses) {
 }
 
 const requests = [];
-const upgradedSockets = new Set();
 const fixtures = [];
 const corsHeaders = {
   'Access-Control-Allow-Credentials': 'true',
@@ -69,6 +68,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'GET, DELETE, OPTIONS',
   'Access-Control-Allow-Origin': DESKTOP_RENDERER_ORIGIN,
   'Access-Control-Allow-Private-Network': 'true',
+  'Cache-Control': 'no-store',
   'Content-Type': 'application/json',
 };
 const discovery = JSON.stringify({
@@ -93,12 +93,22 @@ const listenFixture = async name => {
       authorization: request.headers.authorization ?? null,
       cookie: request.headers.cookie ?? null,
       origin: request.headers.origin ?? null,
-      upgrade: false,
+      socketIo: false,
     };
     requests.push(record);
     if (request.method === 'OPTIONS') {
       response.writeHead(204, corsHeaders);
       response.end();
+      return;
+    }
+    if (request.url === '/smoke-storage') {
+      response.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
+      response.end('<!doctype html><meta charset="utf-8"><title>storage fixture</title>');
+      return;
+    }
+    if (request.url === '/smoke-sw.js') {
+      response.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store', 'Service-Worker-Allowed': '/' });
+      response.end("self.addEventListener('fetch', () => undefined);");
       return;
     }
     if (request.url === '/api/desktop/discovery') {
@@ -120,45 +130,38 @@ const listenFixture = async name => {
     response.writeHead(401, corsHeaders);
     response.end('{"code":"INVALID_INSTANCE_TOKEN"}');
   });
-  server.on('upgrade', (request, socket) => {
+  const io = new SocketIOServer(server, {
+    path: '/socket.io/',
+    transports: ['websocket'],
+    cors: { origin: DESKTOP_RENDERER_ORIGIN, credentials: false },
+  });
+  io.of('/').use((socket, next) => {
     const record = {
       fixture: name,
-      method: request.method,
-      url: request.url,
-      authorization: request.headers.authorization ?? null,
-      cookie: request.headers.cookie ?? null,
-      origin: request.headers.origin ?? null,
-      upgrade: true,
+      method: 'SOCKET.IO',
+      url: socket.handshake.url,
+      authorization: socket.handshake.headers.authorization ?? null,
+      cookie: socket.handshake.headers.cookie ?? null,
+      origin: socket.handshake.headers.origin ?? null,
+      socketIo: true,
+      namespace: socket.nsp.name,
+      engineProtocol: socket.conn.protocol,
     };
     requests.push(record);
-    const key = request.headers['sec-websocket-key'];
-    if (typeof key !== 'string'
-      || !request.url?.startsWith('/socket.io/?')
-      || !request.url.includes('transport=websocket')
-      || !request.url.includes('proprDesktopTransportScope=')
-      || !/^Bearer propr_it_[A-Za-z0-9_-]{43}$/.test(record.authorization ?? '')) {
-      socket.destroy();
+    if (!/^Bearer propr_it_[A-Za-z0-9_-]{43}$/.test(record.authorization ?? '')) {
+      const error = new Error('invalid desktop bearer');
+      error.data = { code: 'INVALID_INSTANCE_TOKEN' };
+      next(error);
       return;
     }
-    upgradedSockets.add(socket);
-    socket.once('close', () => upgradedSockets.delete(socket));
-    const accept = createHash('sha1')
-      .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
-      .digest('base64');
-    socket.write([
-      'HTTP/1.1 101 Switching Protocols',
-      'Upgrade: websocket',
-      'Connection: Upgrade',
-      `Sec-WebSocket-Accept: ${accept}`,
-      '',
-      '',
-    ].join('\r\n'));
+    next();
   });
+  io.of('/').on('connection', socket => socket.emit('packaged-smoke:connected', { ok: true }));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error(`Packaged ${name} fixture did not bind`);
-  const fixture = { server, origin: `http://127.0.0.1:${address.port}` };
+  const fixture = { server, io, origin: `http://127.0.0.1:${address.port}` };
   fixtures.push(fixture);
   return fixture;
 };
@@ -188,19 +191,45 @@ const scanPathsForSecrets = async (paths, secrets) => {
 
 const first = await listenFixture('first');
 const second = await listenFixture('second');
-const userDataPath = await mkdtemp(resolve(tmpdir(), 'propr-desktop-smoke-'));
-const launchArguments = ['--disable-gpu', `--user-data-dir=${userDataPath}`];
-if (launchArguments.some(argument => argument === '--no-sandbox' || argument === '--disable-sandbox')) {
-  throw new Error('The packaged-binary smoke test must not disable Electron sandboxing');
-}
+const runs = [];
+const createdUserDataPaths = [];
+const shutdownSteps = [
+  'admission-closed',
+  'ipc-closed',
+  'session-closed',
+  'protocol-disposed',
+  'credentials-dispose-started',
+  'authentication-cleared',
+  'lifecycle-drain-started',
+  'ipc-drain-started',
+  'service-drain-finished',
+  'profiles-close-started',
+  'profiles-close-finished',
+  'session-disposed',
+  'ipc-disposed',
+  'window-destroyed',
+  'final-quit',
+];
 
-let output = '';
-try {
+const launch = async mode => {
+  const userDataPath = await mkdtemp(resolve(tmpdir(), `propr-desktop-smoke-${mode}-`));
+  createdUserDataPaths.push(userDataPath);
+  const launchArguments = [
+    '--disable-gpu',
+    `--user-data-dir=${userDataPath}`,
+    ...(process.platform === 'linux' ? ['--password-store=gnome-libsecret'] : []),
+  ];
+  if (launchArguments.some(argument => argument === '--no-sandbox' || argument === '--disable-sandbox')) {
+    throw new Error('The packaged-binary smoke test must not disable Electron sandboxing');
+  }
+  const requestStart = requests.length;
+  let output = '';
   const child = spawn(binaryPath, launchArguments, {
     env: {
       ...process.env,
       PROPR_DESKTOP_SMOKE_FIRST_ORIGIN: first.origin,
       PROPR_DESKTOP_SMOKE_SECOND_ORIGIN: second.origin,
+      PROPR_DESKTOP_SMOKE_SHUTDOWN_MODE: mode,
       PROPR_DESKTOP_SMOKE_TEST: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -216,7 +245,7 @@ try {
   const result = await new Promise((resolveResult, reject) => {
     const timeout = setTimeout(() => {
       child.kill('SIGKILL');
-      reject(new Error(`Packaged desktop transport smoke exceeded ${TIMEOUT_MS / 1000} seconds`));
+      reject(new Error(`Packaged desktop ${mode} smoke exceeded ${TIMEOUT_MS / 1000} seconds`));
     }, TIMEOUT_MS);
     child.once('error', error => { clearTimeout(timeout); reject(error); });
     child.once('close', (code, signal) => {
@@ -230,48 +259,86 @@ try {
   if (result.code !== 0) {
     throw new Error(`Packaged desktop exited with code ${result.code ?? 'null'} (signal ${result.signal ?? 'none'})`);
   }
+  const socketShutdownDeadline = Date.now() + 2_000;
+  while (fixtures.some(fixture => fixture.io.of('/').sockets.size !== 0)
+    && Date.now() < socketShutdownDeadline) {
+    await new Promise(resolveWait => setTimeout(resolveWait, 20));
+  }
+  if (fixtures.some(fixture => fixture.io.of('/').sockets.size !== 0)) {
+    throw new Error(`Packaged ${mode} shutdown left late authenticated Socket.IO work alive`);
+  }
   if (!output.includes(READY_EVENT) || !output.includes(PRELOAD_BRIDGE_PROOF) || !output.includes(TRANSPORT_PROOF)) {
     throw new Error('Packaged desktop did not publish the complete renderer transport proof');
   }
+  const expectedBackend = process.platform === 'linux' ? 'gnome_libsecret' : 'os-protected';
+  if (!output.includes(`"storageBackend":"${expectedBackend}"`)) {
+    throw new Error(`Packaged desktop did not use ${expectedBackend} production credential protection`);
+  }
+  let previousStep = -1;
+  for (const step of shutdownSteps) {
+    const marker = `"step":"${step}"`;
+    if (output.split(marker).length - 1 !== 1 || output.indexOf(marker) <= previousStep) {
+      throw new Error(`Packaged ${mode} shutdown did not run ${step} exactly once in order`);
+    }
+    previousStep = output.indexOf(marker);
+  }
+  const forced = output.includes('desktop.app.shutdown_forced');
+  if (forced !== (mode === 'forced-timeout')) throw new Error(`Packaged ${mode} forced-timeout evidence was incorrect`);
+  if (mode === 'retry' && (!output.includes('desktop.app.shutdown_retry_requested')
+    || !output.includes('desktop.app.shutdown_retry'))) {
+    throw new Error('Packaged retry did not exercise a repeated prevented before-quit event');
+  }
 
-  const authenticated = requests.filter(request => request.authorization?.startsWith('Bearer propr_it_'));
+  const runRequests = requests.slice(requestStart);
+  const authenticated = runRequests.filter(request => request.authorization?.startsWith('Bearer propr_it_'));
   const secrets = [...new Set(authenticated.map(request => request.authorization.slice('Bearer '.length)))];
-  if (secrets.length !== 2) throw new Error(`Expected two activation credentials, observed ${secrets.length}`);
+  if (secrets.length !== 2) throw new Error(`Expected two ${mode} activation credentials, observed ${secrets.length}`);
   for (const name of ['first', 'second']) {
     const fixtureRequests = authenticated.filter(request => request.fixture === name);
+    const namespaceConnections = fixtureRequests.filter(request => request.socketIo);
     if (!fixtureRequests.some(request => request.url === '/api/auth/user')
       || !fixtureRequests.some(request => request.url === '/api/smoke/rest')
-      || !fixtureRequests.some(request => request.upgrade)) {
-      throw new Error(`Packaged ${name} fixture missed REST, probe, or Socket.IO bearer interception`);
+      || namespaceConnections.length < (name === 'second' ? 2 : 1)
+      || namespaceConnections.some(request => request.namespace !== '/' || request.engineProtocol !== 4)) {
+      throw new Error(`Packaged ${mode} ${name} fixture missed REST, Engine.IO, namespace auth, or reconnect proof`);
     }
     if (new Set(fixtureRequests.map(request => request.authorization)).size !== 1) {
-      throw new Error(`Packaged ${name} fixture observed cross-generation bearer use`);
+      throw new Error(`Packaged ${mode} ${name} fixture observed cross-generation bearer use`);
     }
   }
-  if (authenticated.some(request => request.cookie !== null)
-    || requests.some(request => secrets.some(secret => request.url?.includes(secret)))) {
+  if (runRequests.some(request => request.cookie !== null)
+    || runRequests.some(request => secrets.some(secret => request.url?.includes(secret)))) {
     throw new Error('Packaged renderer transport sent cookies or placed a credential in a URL');
   }
   if (secrets.some(secret => output.includes(secret) || launchArguments.some(argument => argument.includes(secret)))) {
     throw new Error('Packaged credential entered stdout, stderr, or argv');
   }
-  if (await scanPathsForSecrets([
-    join(userDataPath, 'logs'),
-    join(userDataPath, 'Crashpad'),
-    join(userDataPath, 'crashpad'),
-  ], secrets)) {
-    throw new Error('Packaged credential entered logs or crash metadata');
+  const credentialFiles = await readdir(join(userDataPath, 'desktop', 'credentials'));
+  if (credentialFiles.length === 0 || await scanPathsForSecrets([userDataPath], secrets)) {
+    throw new Error('Packaged credential material was missing or plaintext anywhere under isolated userData');
   }
+  runs.push({ mode, userDataPath, output, launchArguments, secrets });
+};
 
+try {
+  for (const mode of ['success', 'retry', 'forced-timeout']) await launch(mode);
+  const allSecrets = runs.flatMap(run => run.secrets);
+  const scanRoots = [
+    ...runs.map(run => run.userDataPath),
+    ...(process.env.PROPR_DESKTOP_SMOKE_KEYRING_ROOT ? [resolve(process.env.PROPR_DESKTOP_SMOKE_KEYRING_ROOT)] : []),
+  ];
+  if (await scanPathsForSecrets(scanRoots, allSecrets)) {
+    throw new Error('A packaged credential entered the isolated userData or OS keyring scan roots');
+  }
   console.log(
-    `Packaged ${process.platform} desktop transport smoke passed: custom protocol, session interception, `
-    + 'REST/Socket.IO bearer rotation, no cookies, both-origin cleanup, stale-scope fencing, and secret custody.',
+    `Packaged ${process.platform} desktop transport smoke passed (3/3 shutdown modes): production OS credentials, `
+    + 'real Socket.IO/Engine.IO namespace auth, scope rotation/reconnect/error handling, five-type both-origin '
+    + `rollback cleanup, no cookies, and byte scans of ${scanRoots.join(', ')}.`,
   );
 } finally {
-  for (const socket of upgradedSockets) socket.destroy();
-  for (const { server } of fixtures) {
-    server.closeAllConnections();
-    await new Promise(resolveClose => server.close(resolveClose));
+  for (const { io, server } of fixtures) {
+    await new Promise(resolveClose => io.close(resolveClose));
+    if (server.listening) await new Promise(resolveClose => server.close(resolveClose));
   }
-  await rm(userDataPath, { recursive: true, force: true });
+  for (const userDataPath of createdUserDataPaths) await rm(userDataPath, { recursive: true, force: true });
 }
