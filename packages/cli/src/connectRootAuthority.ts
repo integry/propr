@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  readdirSync,
   readSync,
   realpathSync,
   rmSync,
@@ -172,9 +173,33 @@ const WINDOWS_PRE_PROTOCOL_STAGES = new Set<WindowsSupervisorStage>([
 // two unadvertised handles is the control capability; there is deliberately no
 // environment/argv secret and no reconnectable IPC name.
 const WINDOWS_SUPERVISOR_SCRIPT = String.raw`
+using namespace System
+using namespace System.IO
+using namespace System.Numerics
+using namespace System.Reflection
+using namespace System.Reflection.Emit
+using namespace System.Runtime.InteropServices
+using namespace System.Security.AccessControl
+using namespace System.Security.Principal
 $ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
 $inputStream=[Console]::OpenStandardInput();$outputStream=[Console]::OpenStandardOutput()
-$parent=[IntPtr]::Zero;$job=[IntPtr]::Zero;$file=$null;$dir=$null;$heldIdentity=$null;$expected=$null;$sequence=0;$ready=$false;$requestId=('0'*32)
+$parent=[IntPtr]::Zero;$job=[IntPtr]::Zero;$file=$null;$dir=$null;$heldIdentity=$null;$expected=$null;$sequence=0;$ready=$false;$requestId=('0'*32);$workspace=$null;$h=[IntPtr]::Zero;$ph=[IntPtr]::Zero;$sh=[IntPtr]::Zero;$id=$null;$parentId=$null;$removed=$false
+function R($sid){return [FileSystemAccessRule]::new($sid,[FileSystemRights]2032127,[InheritanceFlags]3,[PropagationFlags]0,[AccessControlType]0)}
+function O([string]$path){$attributes=[File]::GetAttributes($path);if(($attributes-band[FileAttributes]::ReparsePoint)-ne0-or($attributes-band[FileAttributes]::Directory)-eq0){throw 'w'}}
+function N(){
+  $a=[AppDomain]::CurrentDomain.DefineDynamicAssembly([AssemblyName]::new('PWN'),[AssemblyBuilderAccess]::Run);$m=$a.DefineDynamicModule('PWN');$b=$m.DefineType('PWN','Public,Sealed,Abstract')
+  function P($name,$dll,$return,[Type[]]$parameters){$x=$b.DefinePInvokeMethod($name,$dll,'Public,Static,PinvokeImpl',[CallingConventions]::Standard,$return,$parameters,[CallingConvention]::Winapi,[CharSet]::Unicode);$x.SetImplementationFlags($x.GetMethodImplementationFlags()-bor[MethodImplAttributes]::PreserveSig)}
+  P 'CreateFileW' 'kernel32.dll' ([IntPtr]) @([string],[uint32],[uint32],[IntPtr],[uint32],[uint32],[IntPtr]);P 'NtCreateFile' 'ntdll.dll' ([int]) @([IntPtr],[uint32],[IntPtr],[IntPtr],[IntPtr],[uint32],[uint32],[uint32],[uint32],[IntPtr],[uint32]);P 'GetFileInformationByHandleEx' 'kernel32.dll' ([bool]) @([IntPtr],[int],[IntPtr],[uint32]);P 'GetSecurityInfo' 'advapi32.dll' ([uint32]) @([IntPtr],[int],[uint32],[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType());P 'GetSecurityDescriptorLength' 'advapi32.dll' ([uint32]) @([IntPtr]);P 'LocalFree' 'kernel32.dll' ([IntPtr]) @([IntPtr]);P 'SetFileInformationByHandle' 'kernel32.dll' ([bool]) @([IntPtr],[int],[IntPtr],[uint32]);P 'CloseHandle' 'kernel32.dll' ([bool]) @([IntPtr]);$script:N=$b.CreateType()
+}
+function I([IntPtr]$handle){$info=[Marshal]::AllocHGlobal(24);try{if(!$script:N::GetFileInformationByHandleEx($handle,18,$info,24)){throw 'i'};$bytes=New-Object byte[] 24;[Marshal]::Copy($info,$bytes,0,24);$volume=[BitConverter]::ToUInt64($bytes,0);$low=[BitConverter]::ToUInt64($bytes,8);$high=[BitConverter]::ToUInt64($bytes,16);$number=([BigInteger]$high*[BigInteger]::Pow(2,64))+[BigInteger]$low;return @($volume.ToString([Globalization.CultureInfo]::InvariantCulture),$number.ToString([Globalization.CultureInfo]::InvariantCulture))}finally{[Marshal]::FreeHGlobal($info)}}
+function T([IntPtr]$handle){$tag=[Marshal]::AllocHGlobal(8);try{if(!$script:N::GetFileInformationByHandleEx($handle,9,$tag,8)){throw 'r'};return [Marshal]::ReadInt32($tag)}finally{[Marshal]::FreeHGlobal($tag)}}
+function W([IntPtr]$handle,[string[]]$identity){if(((T $handle)-band0x400)-ne0){throw 'r'};$actual=I $handle;if($actual[0]-cne$identity[0]-or$actual[1]-cne$identity[1]){throw 'i'}}
+function V([IntPtr]$handle,[string]$sddl,[string[]]$identity){W $handle $identity;$op=[IntPtr]::Zero;$gp=[IntPtr]::Zero;$dp=[IntPtr]::Zero;$sp=[IntPtr]::Zero;$sd=[IntPtr]::Zero;if($script:N::GetSecurityInfo($handle,1,5,[ref]$op,[ref]$gp,[ref]$dp,[ref]$sp,[ref]$sd)-ne0-or$sd-eq[IntPtr]::Zero){throw 'a'};try{$length=$script:N::GetSecurityDescriptorLength($sd);if($length-lt20-or$length-gt4096){throw 'a'};$bytes=New-Object byte[] $length;[Marshal]::Copy($sd,$bytes,0,$length);$raw=[RawSecurityDescriptor]::new($bytes,0);if($raw.GetSddlForm([AccessControlSections]'Owner,Access')-cne$sddl){throw 'a'}}finally{if($sd-ne[IntPtr]::Zero){[void]$script:N::LocalFree($sd)}}}
+function C([IntPtr]$root,[string]$name,[bool]$create,[IntPtr]$sd,[bool]$directory,[uint32]$share){$nb=[Text.Encoding]::Unicode.GetBytes($name);if($nb.Length-lt2-or$nb.Length-gt510){throw 'n'};$bp=[Marshal]::AllocHGlobal($nb.Length);$us=[Marshal]::AllocHGlobal(16);$oa=[Marshal]::AllocHGlobal(48);$io=[Marshal]::AllocHGlobal(16);$hp=[Marshal]::AllocHGlobal(8);try{[Marshal]::Copy((New-Object byte[] 48),0,$oa,48);[Marshal]::Copy($nb,0,$bp,$nb.Length);[Marshal]::WriteInt16($us,0,$nb.Length);[Marshal]::WriteInt16($us,2,$nb.Length);[Marshal]::WriteIntPtr($us,8,$bp);[Marshal]::WriteInt32($oa,0,48);[Marshal]::WriteIntPtr($oa,8,$root);[Marshal]::WriteIntPtr($oa,16,$us);[Marshal]::WriteInt32($oa,24,64);[Marshal]::WriteIntPtr($oa,32,$sd);[Marshal]::WriteIntPtr($hp,[IntPtr]::Zero);$options=0x00200020+$(if($directory){1}else{64});$status=$script:N::NtCreateFile($hp,0x00130081,$oa,$io,[IntPtr]::Zero,0x80,$share,$(if($create){2}else{1}),$options,[IntPtr]::Zero,0);if($status-lt0){throw 'nt-create'};$value=[Marshal]::ReadIntPtr($hp);if($value-eq[IntPtr]::Zero-or$value-eq[IntPtr](-1)){throw 'nt-handle'};return $value}finally{[Marshal]::FreeHGlobal($hp);[Marshal]::FreeHGlobal($io);[Marshal]::FreeHGlobal($oa);[Marshal]::FreeHGlobal($us);[Marshal]::FreeHGlobal($bp)}}
+function X([IntPtr]$handle){$flag=[Marshal]::AllocHGlobal(4);try{[Marshal]::WriteInt32($flag,19);if(!$script:N::SetFileInformationByHandle($handle,21,$flag,4)){[Marshal]::WriteByte($flag,1);if(!$script:N::SetFileInformationByHandle($handle,4,$flag,1)){throw 'delete'}}}finally{[Marshal]::FreeHGlobal($flag)}}
+function D([IntPtr]$directory){$buffer=[Marshal]::AllocHGlobal(65536);try{$restart=$true;while($true){$class=if($restart){11}else{10};$restart=$false;if(!$script:N::GetFileInformationByHandleEx($directory,$class,$buffer,65536)){break};$offset=0;while($true){$next=[Marshal]::ReadInt32($buffer,$offset);$attrs=[Marshal]::ReadInt32($buffer,$offset+56);$length=[Marshal]::ReadInt32($buffer,$offset+60);if($length-lt2-or$length-gt510-or($length%2)-ne0){throw 'entry'};$name=[Marshal]::PtrToStringUni([IntPtr]::Add($buffer,$offset+104),$length/2);if($name-cne'.'-and$name-cne'..'){$isDir=($attrs-band16)-ne0;$child=C $directory $name $false ([IntPtr]::Zero) $isDir 7;try{$actual=T $child;if(($actual-band0x400)-eq0-and$isDir){D $child};X $child}finally{[void]$script:N::CloseHandle($child)}};if($next-eq0){break};if($next-lt104-or$offset+$next-ge65536){throw 'entry'};$offset+=$next}}}finally{[Marshal]::FreeHGlobal($buffer)}}
+function CloseCompilerWorkspace(){if($script:removed-or$script:h-eq[IntPtr]::Zero){return};$injected=$global:ProprTestFailureStage-ceq'TEMP_WORKSPACE_CLEANUP';$global:ProprStage='TEMP_WORKSPACE_CLEANUP';[GC]::Collect();[GC]::WaitForPendingFinalizers();if($global:ProprWorkspaceMode-ceq'cleanup-swap'){$moved=$script:workspace+'.held';[Directory]::Move($script:workspace,$moved);[void][Directory]::CreateDirectory($script:workspace);[File]::WriteAllText([Path]::Combine($script:workspace,'observer'),'unchanged')};$last=$null;for($attempt=0;$attempt-lt3;$attempt++){try{W $script:ph $script:parentId;W $script:h $script:id;D $script:h;X $script:h;if(!$script:N::CloseHandle($script:h)){throw 'close'};$script:h=[IntPtr]::Zero;$script:removed=$true;$last=$null;break}catch{$last=$_}};if($last){throw 'cleanup'};if($injected){throw 'injected-stage-failure'}}
+function F(){if(!$script:removed-and$script:h-ne[IntPtr]::Zero){CloseCompilerWorkspace}}
 function ExactKeys($value,[string[]]$keys) {
   if($null -eq $value){return $false};$names=@($value.PSObject.Properties.Name)
   if($names.Count -ne $keys.Count){return $false};foreach($key in $keys){if($names -cnotcontains $key){return $false}};return $true
@@ -239,6 +264,10 @@ function HeldResponse($kind,$id,$sequence,$identity,$digest) {
     volumeSerialNumber=$identity[0];fileId=$identity[1];sha256=$digest}
 }
 try {
+  EnterStage 'TEMP_WORKSPACE_CREATE';$systemRoot=[Path]::GetFullPath($env:SystemRoot);$tempRoot=[Path]::GetFullPath([Path]::Combine($systemRoot,'Temp'));if($tempRoot-cne[Path]::Combine($systemRoot,'Temp')-or![Directory]::Exists($tempRoot)){throw 'temp-root'};O $systemRoot;O $tempRoot;N;$sh=$script:N::CreateFileW($systemRoot,0x00120081,7,[IntPtr]::Zero,3,0x02200000,[IntPtr]::Zero);if($sh-eq[IntPtr]::Zero-or$sh-eq[IntPtr](-1)-or((T $sh)-band0x400)-ne0){throw 'system-root'};$ph=C $sh 'Temp' $false ([IntPtr]::Zero) $true 7;if(((T $ph)-band0x400)-ne0){throw 'temp-root'};$parentId=I $ph;$owner=[WindowsIdentity]::GetCurrent().User;$security=[DirectorySecurity]::new();$security.SetOwner($owner);$security.SetAccessRuleProtection($true,$false);foreach($text in @($owner.Value,'S-1-5-18')){[void]$security.AddAccessRule((R ([SecurityIdentifier]::new($text)))}
+  $random=New-Object byte[] 32;$rng=[Security.Cryptography.RandomNumberGenerator]::Create();try{$rng.GetBytes($random)}finally{$rng.Dispose()};$name=if($null-ne$global:ProprWorkspaceName){$global:ProprWorkspaceName}else{'propr-supervisor-'+$PID.ToString([Globalization.CultureInfo]::InvariantCulture)+'-'+([BitConverter]::ToString($random)).Replace('-','').ToLowerInvariant()};$workspace=[Path]::Combine($tempRoot,$name);if($null-ne$global:ProprWorkspaceName){[void][Directory]::CreateDirectory($workspace);[File]::WriteAllText([Path]::Combine($workspace,'observer'),'unchanged')}
+  EnterStage 'TEMP_WORKSPACE_DACL_APPLY';$descriptor=$security.GetSecurityDescriptorBinaryForm();$pin=[GCHandle]::Alloc($descriptor,[GCHandleType]::Pinned);try{$h=C $ph $name $true $pin.AddrOfPinnedObject() $true $(if($global:ProprWorkspaceMode-ceq'cleanup-swap'){7}else{3})}finally{$pin.Free()};$id=I $h;$sddl=$security.GetSecurityDescriptorSddlForm([AccessControlSections]'Owner,Access')
+  EnterStage 'TEMP_WORKSPACE_DACL_VERIFY';$actualParent=I $ph;if($actualParent[0]-cne$parentId[0]-or$actualParent[1]-cne$parentId[1]){throw 'parent'};$verifyHandle=if($global:ProprWorkspaceMode-ceq'invalid-handle'){[IntPtr]::Zero}else{$h};$verifyId=if($global:ProprWorkspaceMode-ceq'identity-mismatch'){@($id[0],$(if($id[1]-ceq'0'){'1'}else{'0'}))}else{$id};V $verifyHandle $sddl $verifyId;if($global:ProprWorkspaceMode-ceq'cleanup-contents'){[void][Directory]::CreateDirectory([Path]::Combine($workspace,'nested'));[File]::WriteAllText([Path]::Combine($workspace,'nested','compiler.tmp'),'bounded')};[Environment]::SetEnvironmentVariable('TEMP',$workspace,[EnvironmentVariableTarget]::Process);[Environment]::SetEnvironmentVariable('TMP',$workspace,[EnvironmentVariableTarget]::Process);if($env:TEMP-cne$workspace-or$env:TMP-cne$workspace){throw 'workspace-env'}
   EnterStage 'REFERENCE_LOAD'
   foreach($requiredType in @([Runtime.InteropServices.Marshal],[Microsoft.Win32.SafeHandles.SafeFileHandle],[Security.AccessControl.DirectorySecurity])){if($null -eq $requiredType){throw 'reference'}}
   EnterStage 'TYPE_COMPILE'
@@ -326,6 +355,7 @@ public static class ProprSupervisorNative {
   if($held[0] -ne $heldIdentity[0] -or $held[1] -ne $heldIdentity[1] -or $heldHash -cne $expected){throw 'replacement'}
   $file.Dispose();$dir.Dispose();[void][ProprSupervisorNative]::CloseHandle($parent);exit 0
 } catch {
+  $failure=$global:ProprStage;try{F}catch{$failure='TEMP_WORKSPACE_CLEANUP'};$global:ProprStage=$failure
   try {
     if($ready -and $null -ne $heldIdentity -and $null -ne $expected){
       WriteFrame $outputStream ([ordered]@{version=1;kind='capability-error';requestId=$requestId;supervisorPid=$PID.ToString([Globalization.CultureInfo]::InvariantCulture);sequence=$sequence;
@@ -333,67 +363,49 @@ public static class ProprSupervisorNative {
     } else {WriteFrame $outputStream ([ordered]@{version=1;kind='startup-error';requestId=$requestId;stage=$global:ProprStage})}
   } catch {}
   try{if($file){$file.Dispose()}}catch{};try{if($dir){$dir.Dispose()}}catch{};try{if($parent -ne [IntPtr]::Zero){[void][ProprSupervisorNative]::CloseHandle($parent)}}catch{};exit 23
-}
+} finally {try{F}catch{};if($ph-ne[IntPtr]::Zero){try{[void]$script:N::CloseHandle($ph)}catch{};$ph=[IntPtr]::Zero};if($sh-ne[IntPtr]::Zero){try{[void]$script:N::CloseHandle($sh)}catch{};$sh=[IntPtr]::Zero};[Environment]::SetEnvironmentVariable('TEMP',$null,[EnvironmentVariableTarget]::Process);[Environment]::SetEnvironmentVariable('TMP',$null,[EnvironmentVariableTarget]::Process)}
 `;
 const WINDOWS_SUPERVISOR_SOURCE_MAX_BYTES = 64 * 1024;
+const WINDOWS_POWERSHELL_COMMAND_LINE_LIMIT = 32_767;
+const WINDOWS_POWERSHELL_COMMAND_LINE_SAFETY_MARGIN = 2_048;
+const WINDOWS_POWERSHELL_FIXED_SWITCHES = Object.freeze([
+  "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand",
+]);
 const WINDOWS_SUPERVISOR_LOADER = String.raw`
 using namespace System
-using namespace System.IO
-using namespace System.Numerics
-using namespace System.Reflection
-using namespace System.Reflection.Emit
-using namespace System.Runtime.InteropServices
-using namespace System.Security.AccessControl
-using namespace System.Security.Principal
-$ErrorActionPreference='Stop';$global:ProprStage='TEMP_WORKSPACE_CREATE';$global:ProprTestFailureStage=$null;$workspace=$null;$h=[IntPtr]::Zero;$id=$null;$removed=$false
+$ErrorActionPreference='Stop';$global:ProprStage='SOURCE_READ';$global:ProprTestFailureStage=$null;$global:ProprWorkspaceName=$null;$global:ProprWorkspaceMode='normal'
 function EnterStage([string]$value){$global:ProprStage=$value;if($global:ProprTestFailureStage -ceq $value){throw 'injected-stage-failure'}}
 function WriteStartupFailure(){try{$body=[Text.Encoding]::UTF8.GetBytes(('{"version":1,"kind":"startup-error","requestId":"00000000000000000000000000000000","stage":"'+$global:ProprStage+'"}'));$out=[Console]::OpenStandardOutput();$header=[BitConverter]::GetBytes([uint32]$body.Length);$out.Write($header,0,4);$out.Write($body,0,$body.Length);$out.Flush()}catch{}}
-function R($sid){return [FileSystemAccessRule]::new($sid,[FileSystemRights]2032127,[InheritanceFlags]3,[PropagationFlags]0,[AccessControlType]0)}
-function O([string]$path){$attributes=[File]::GetAttributes($path);if(($attributes-band[FileAttributes]::ReparsePoint)-ne 0-or($attributes-band[FileAttributes]::Directory)-eq 0){throw 'w'}}
-function N(){
-  $a=[AppDomain]::CurrentDomain.DefineDynamicAssembly([AssemblyName]::new('PWN'),[AssemblyBuilderAccess]::Run);$m=$a.DefineDynamicModule('PWN');$b=$m.DefineType('PWN','Public,Sealed,Abstract')
-  function P($name,$dll,$return,[Type[]]$parameters){$x=$b.DefinePInvokeMethod($name,$dll,'Public,Static,PinvokeImpl',[CallingConventions]::Standard,$return,$parameters,[CallingConvention]::Winapi,[CharSet]::Unicode);$x.SetImplementationFlags($x.GetMethodImplementationFlags()-bor[MethodImplAttributes]::PreserveSig)}
-  P 'CreateDirectoryW' 'kernel32.dll' ([bool]) @([string],[IntPtr]);P 'CreateFileW' 'kernel32.dll' ([IntPtr]) @([string],[uint32],[uint32],[IntPtr],[uint32],[uint32],[IntPtr]);P 'GetFileInformationByHandleEx' 'kernel32.dll' ([bool]) @([IntPtr],[int],[IntPtr],[uint32]);P 'GetSecurityInfo' 'advapi32.dll' ([uint32]) @([IntPtr],[int],[uint32],[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType());P 'GetSecurityDescriptorLength' 'advapi32.dll' ([uint32]) @([IntPtr]);P 'LocalFree' 'kernel32.dll' ([IntPtr]) @([IntPtr]);P 'SetFileInformationByHandle' 'kernel32.dll' ([bool]) @([IntPtr],[int],[IntPtr],[uint32]);P 'CloseHandle' 'kernel32.dll' ([bool]) @([IntPtr]);$script:N=$b.CreateType()
-}
-function I([IntPtr]$handle){$info=[Marshal]::AllocHGlobal(24);try{if(!$script:N::GetFileInformationByHandleEx($handle,18,$info,24)){throw 'i'};$bytes=New-Object byte[] 24;[Marshal]::Copy($info,$bytes,0,24);$volume=[BitConverter]::ToUInt64($bytes,0);$low=[BitConverter]::ToUInt64($bytes,8);$high=[BitConverter]::ToUInt64($bytes,16);$number=([BigInteger]$high*[BigInteger]::Pow(2,64))+[BigInteger]$low;return @($volume.ToString([Globalization.CultureInfo]::InvariantCulture),$number.ToString([Globalization.CultureInfo]::InvariantCulture))}finally{[Marshal]::FreeHGlobal($info)}}
-function V([IntPtr]$handle,[string]$sddl,[string[]]$identity){
-  $tag=[Marshal]::AllocHGlobal(8);try{if(!$script:N::GetFileInformationByHandleEx($handle,9,$tag,8)-or([Marshal]::ReadInt32($tag)-band 0x400)-ne 0){throw 'r'}}finally{[Marshal]::FreeHGlobal($tag)}
-  $actual=I $handle;if($actual[0]-cne$identity[0]-or$actual[1]-cne$identity[1]){throw 'i'};$op=[IntPtr]::Zero;$gp=[IntPtr]::Zero;$dp=[IntPtr]::Zero;$sp=[IntPtr]::Zero;$sd=[IntPtr]::Zero;if($script:N::GetSecurityInfo($handle,1,5,[ref]$op,[ref]$gp,[ref]$dp,[ref]$sp,[ref]$sd)-ne 0-or$sd-eq[IntPtr]::Zero){throw 'a'};try{$length=$script:N::GetSecurityDescriptorLength($sd);if($length-lt 20-or$length-gt 4096){throw 'a'};$bytes=New-Object byte[] $length;[Marshal]::Copy($sd,$bytes,0,$length);$raw=[RawSecurityDescriptor]::new($bytes,0);if($raw.GetSddlForm([AccessControlSections]'Owner,Access')-cne$sddl){throw 'a'}}finally{if($sd-ne[IntPtr]::Zero){[void]$script:N::LocalFree($sd)}}
-}
-function CloseCompilerWorkspace(){if($script:removed-or$script:h-eq[IntPtr]::Zero){return};EnterStage 'TEMP_WORKSPACE_CLEANUP';V $script:h $script:sddl $script:id;[GC]::Collect();[GC]::WaitForPendingFinalizers();$flag=[Marshal]::AllocHGlobal(1);try{[Marshal]::WriteByte($flag,1);if(!$script:N::SetFileInformationByHandle($script:h,13,$flag,1)){throw 'c'}}finally{[Marshal]::FreeHGlobal($flag)};[void]$script:N::CloseHandle($script:h);$script:h=[IntPtr]::Zero;$script:removed=$true}
-function F(){if($script:removed-or$script:h-eq[IntPtr]::Zero){return};try{CloseCompilerWorkspace}finally{if($script:h-ne[IntPtr]::Zero){[void]$script:N::CloseHandle($script:h);$script:h=[IntPtr]::Zero}}}
 function ReadExact($stream,[int]$count,$watch){$bytes=New-Object byte[] $count;$offset=0;while($offset-lt$count){$pending=$stream.BeginRead($bytes,$offset,$count-$offset,$null,$null);try{while(!$pending.AsyncWaitHandle.WaitOne(25)){if($watch.ElapsedMilliseconds-ge 10000){throw 'deadline'}};$read=$stream.EndRead($pending);if($read-le 0){throw 'eof'};$offset+=$read}finally{try{$pending.AsyncWaitHandle.Close()}catch{}}};return $bytes}
 try{
-  EnterStage 'TEMP_WORKSPACE_CREATE';$systemRoot=[Path]::GetFullPath($env:SystemRoot);$tempRoot=[Path]::GetFullPath([Path]::Combine($systemRoot,'Temp'));if($tempRoot-cne[Path]::Combine($systemRoot,'Temp')-or![Directory]::Exists($tempRoot)){throw 'temp-root'};O $tempRoot;N;$owner=[WindowsIdentity]::GetCurrent().User;$security=[DirectorySecurity]::new();$security.SetOwner($owner);$security.SetAccessRuleProtection($true,$false);foreach($text in @($owner.Value,'S-1-5-18')){[void]$security.AddAccessRule((R ([SecurityIdentifier]::new($text)))}
-  $random=New-Object byte[] 32;$rng=[Security.Cryptography.RandomNumberGenerator]::Create();try{$rng.GetBytes($random)}finally{$rng.Dispose()};$name='propr-supervisor-'+$PID.ToString([Globalization.CultureInfo]::InvariantCulture)+'-'+([BitConverter]::ToString($random)).Replace('-','').ToLowerInvariant();$workspace=[Path]::Combine($tempRoot,$name)
-  EnterStage 'TEMP_WORKSPACE_DACL_APPLY';$descriptor=$security.GetSecurityDescriptorBinaryForm();$pin=[GCHandle]::Alloc($descriptor,[GCHandleType]::Pinned);$size=if([IntPtr]::Size-eq 8){24}else{12};$attributes=[Marshal]::AllocHGlobal($size);try{for($i=0;$i-lt$size;$i++){[Marshal]::WriteByte($attributes,$i,0)};[Marshal]::WriteInt32($attributes,0,$size);[Marshal]::WriteIntPtr($attributes,($(if([IntPtr]::Size-eq 8){8}else{4})),$pin.AddrOfPinnedObject());if(!$script:N::CreateDirectoryW($workspace,$attributes)){throw 'workspace-create'}}finally{[Marshal]::FreeHGlobal($attributes);$pin.Free()}
-  EnterStage 'TEMP_WORKSPACE_DACL_VERIFY';$h=$script:N::CreateFileW($workspace,0x00030080,7,[IntPtr]::Zero,3,0x02200000,[IntPtr]::Zero);if($h-eq[IntPtr](-1)-or$h-eq[IntPtr]::Zero){throw 'workspace-open'};$id=I $h;$sddl=$security.GetSecurityDescriptorSddlForm([AccessControlSections]'Owner,Access');V $h $sddl $id;[Environment]::SetEnvironmentVariable('TEMP',$workspace,[EnvironmentVariableTarget]::Process);[Environment]::SetEnvironmentVariable('TMP',$workspace,[EnvironmentVariableTarget]::Process);if($env:TEMP-cne$workspace-or$env:TMP-cne$workspace){throw 'workspace-env'}
-  $stream=[Console]::OpenStandardInput();$watch=[Diagnostics.Stopwatch]::StartNew();EnterStage 'SOURCE_READ';$header=ReadExact $stream 4 $watch;$length=[BitConverter]::ToUInt32($header,0);if($length-lt 2-or$length-gt ${WINDOWS_SUPERVISOR_SOURCE_MAX_BYTES}){throw 'source-length'};$sourceBytes=ReadExact $stream ([int]$length) $watch;EnterStage 'SOURCE_UTF8';$source=([Text.UTF8Encoding]::new($false,$true)).GetString($sourceBytes);EnterStage 'SCRIPT_PARSE';$entrypoint=[ScriptBlock]::Create($source);if($null-eq$entrypoint){throw 'script'};&$entrypoint
-}catch{WriteStartupFailure;exit 23}finally{$global:ProprTestFailureStage=$null;try{F}catch{};[Environment]::SetEnvironmentVariable('TEMP',$null,[EnvironmentVariableTarget]::Process);[Environment]::SetEnvironmentVariable('TMP',$null,[EnvironmentVariableTarget]::Process);Remove-Variable ProprStage,ProprTestFailureStage -Scope Global -ErrorAction SilentlyContinue}
+  if([IntPtr]::Size-ne8){throw 'architecture'};$stream=[Console]::OpenStandardInput();$watch=[Diagnostics.Stopwatch]::StartNew();$bootLength=[BitConverter]::ToUInt32((ReadExact $stream 4 $watch),0);if($bootLength-lt2-or$bootLength-gt512){throw 'bootstrap'};$boot=([Text.UTF8Encoding]::new($false,$true)).GetString((ReadExact $stream ([int]$bootLength) $watch))|ConvertFrom-Json;$keys=@($boot.PSObject.Properties.Name);$missing=@(@('version','kind','failureStage','workspaceName','mode')|?{$keys-cnotcontains$_});if($keys.Count-ne5-or$missing.Count-ne0-or$boot.version-ne1-or$boot.kind-cne'loader-init'-or($null-ne$boot.failureStage-and($boot.failureStage-isnot[string]-or$boot.failureStage-cnotmatch'^[A-Z_]{1,32}$'))-or($null-ne$boot.workspaceName-and($boot.workspaceName-isnot[string]-or$boot.workspaceName-cnotmatch'^propr-supervisor-race-[0-9a-f]{32}$'))-or@('normal','invalid-handle','identity-mismatch','cleanup-swap','cleanup-contents')-cnotcontains$boot.mode){throw 'bootstrap'};$global:ProprTestFailureStage=$boot.failureStage;$global:ProprWorkspaceName=$boot.workspaceName;$global:ProprWorkspaceMode=$boot.mode
+  EnterStage 'SOURCE_READ';$header=ReadExact $stream 4 $watch;$length=[BitConverter]::ToUInt32($header,0);if($length-lt2-or$length-gt ${WINDOWS_SUPERVISOR_SOURCE_MAX_BYTES}){throw 'source-length'};$sourceBytes=ReadExact $stream ([int]$length) $watch;EnterStage 'SOURCE_UTF8';$source=([Text.UTF8Encoding]::new($false,$true)).GetString($sourceBytes);EnterStage 'SCRIPT_PARSE';$entrypoint=[ScriptBlock]::Create($source);if($null-eq$entrypoint){throw 'script'};&$entrypoint
+}catch{WriteStartupFailure;exit 23}finally{$global:ProprTestFailureStage=$null;$global:ProprWorkspaceName=$null;$global:ProprWorkspaceMode='normal';Remove-Variable ProprStage,ProprTestFailureStage,ProprWorkspaceName,ProprWorkspaceMode -Scope Global -ErrorAction SilentlyContinue}
 `;
 
-function windowsSupervisorLoader(
+function encodeWindowsSupervisorLoader(): string {
+  return Buffer.from(WINDOWS_SUPERVISOR_LOADER, "utf16le").toString("base64");
+}
+
+function windowsSupervisorCommandLine(executable: string, encodedLoader: string): string {
+  return [`"${executable.replaceAll('"', '\\"')}"`, ...WINDOWS_POWERSHELL_FIXED_SWITCHES, encodedLoader].join(" ");
+}
+
+function encodeWindowsLoaderInit(
   testFailureStage?: WindowsSupervisorStage,
   testWorkspaceCollisionName?: string,
-): string {
-  let loader = WINDOWS_SUPERVISOR_LOADER;
-  if (testFailureStage) {
-    loader = loader.replace(
-      "$global:ProprTestFailureStage=$null",
-      `$global:ProprTestFailureStage='${testFailureStage}'`,
-    );
+  testWorkspaceMode: "normal" | "invalid-handle" | "identity-mismatch" | "cleanup-swap" | "cleanup-contents" = "normal",
+): Buffer {
+  if (testWorkspaceCollisionName && !/^propr-supervisor-race-[0-9a-f]{32}$/.test(testWorkspaceCollisionName)) {
+    throw new Error("invalid Windows compiler workspace collision probe");
   }
-  if (testWorkspaceCollisionName) {
-    if (!/^propr-supervisor-race-[0-9a-f]{32}$/.test(testWorkspaceCollisionName)) {
-      throw new Error("invalid Windows compiler workspace collision probe");
-    }
-    loader = loader.replace(
-      "$workspace=[Path]::Combine($tempRoot,$name)",
-      `$name='${testWorkspaceCollisionName}';$workspace=[Path]::Combine($tempRoot,$name);`
-        + "[void][Directory]::CreateDirectory($workspace);[File]::WriteAllText([Path]::Combine($workspace,'observer'),'unchanged')",
-    );
-  }
-  return loader;
+  return encodeControlFrame({
+    version: 1,
+    kind: "loader-init",
+    failureStage: testFailureStage ?? null,
+    workspaceName: testWorkspaceCollisionName ?? null,
+    mode: testWorkspaceMode,
+  });
 }
 
 function encodeWindowsSupervisorSource(): Buffer {
@@ -635,15 +647,24 @@ export interface WindowsAuthorityCapabilityProbe {
   readonly onSupervisorStarting?: (details: {
     readonly stagedPath: string;
     readonly environmentKeys: readonly string[];
-    readonly loaderCommandLength: number;
+    readonly executable: string;
+    readonly fixedSwitches: readonly string[];
+    readonly encodedLoader: string;
+    readonly commandLineLength: number;
+    readonly commandLineLimit: number;
+    readonly safetyMargin: number;
+    /** Exact native-test copy of the raw UTF-8 supervisor length frame sent after loader init. */
+    readonly rawSupervisorSourceFrame: Buffer;
   }) => void;
   readonly onSupervisorSpawned?: (stagedPath: string, supervisorPid: number) => void;
   readonly onRequestLocked?: (stagedPath: string, supervisorPid: number) => void | Promise<void>;
   readonly signal?: AbortSignal;
   /** Native-test-only failure injection; never set by production callers. */
   readonly testFailureStage?: WindowsSupervisorStage;
-  /** Native-test-only collision injected immediately before the atomic CreateDirectoryW call. */
+  /** Native-test-only collision injected immediately before the atomic relative NtCreateFile call. */
   readonly testWorkspaceCollisionName?: string;
+  /** Native-test-only cleanup probe selected over the anonymous bootstrap stream. */
+  readonly testWorkspaceMode?: "normal" | "invalid-handle" | "identity-mismatch" | "cleanup-swap" | "cleanup-contents";
 }
 
 let windowsAuthorityCapability: WindowsAuthorityCapability | undefined;
@@ -1184,7 +1205,7 @@ async function destroyWindowsAuthorityCapability(
 }
 
 async function acquireWindowsAuthorityCapability(
-  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName">,
+  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName" | "testWorkspaceMode">,
   signal?: AbortSignal,
 ): Promise<WindowsAuthorityCapability> {
   if (windowsAuthorityCapability) {
@@ -1220,20 +1241,35 @@ async function acquireWindowsAuthorityCapability(
     if (probe?.testFailureStage === parentStage) throw new WindowsSupervisorStartupError(parentStage);
     const systemRoot = trustedWindowsSystemRoot();
     const supervisorEnvironment = { SystemRoot: systemRoot };
-    const loader = windowsSupervisorLoader(
+    const executable = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const encodedLoader = encodeWindowsSupervisorLoader();
+    const commandLine = windowsSupervisorCommandLine(executable, encodedLoader);
+    const commandLineLength = commandLine.length + 1; // Windows' limit includes the terminating UTF-16 NUL.
+    if (commandLineLength > WINDOWS_POWERSHELL_COMMAND_LINE_LIMIT - WINDOWS_POWERSHELL_COMMAND_LINE_SAFETY_MARGIN) {
+      throw new WindowsSupervisorStartupError("CHANNEL_CREATE");
+    }
+    const loaderInit = encodeWindowsLoaderInit(
       probe?.testFailureStage && WINDOWS_PRE_PROTOCOL_STAGES.has(probe.testFailureStage)
         ? probe.testFailureStage
         : undefined,
       probe?.testWorkspaceCollisionName,
+      probe?.testWorkspaceMode,
     );
+    const rawSupervisorSourceFrame = encodeWindowsSupervisorSource();
     probe?.onSupervisorStarting?.({
       stagedPath: staged.path,
       environmentKeys: Object.freeze(Object.keys(supervisorEnvironment)),
-      loaderCommandLength: loader.length,
+      executable,
+      fixedSwitches: WINDOWS_POWERSHELL_FIXED_SWITCHES,
+      encodedLoader,
+      commandLineLength,
+      commandLineLimit: WINDOWS_POWERSHELL_COMMAND_LINE_LIMIT,
+      safetyMargin: WINDOWS_POWERSHELL_COMMAND_LINE_SAFETY_MARGIN,
+      rawSupervisorSourceFrame: Buffer.from(rawSupervisorSourceFrame),
     });
-    supervisor = spawn(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
-      "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-      "-Command", loader,
+    supervisor = spawn(executable, [
+      ...WINDOWS_POWERSHELL_FIXED_SWITCHES,
+      encodedLoader,
     ], {
       shell: false,
       windowsHide: true,
@@ -1270,7 +1306,10 @@ async function acquireWindowsAuthorityCapability(
       sha256: artifact.digest,
       parentPid: String(process.pid),
       ...(probe?.testFailureStage === undefined ? {} : { testFailureStage: probe.testFailureStage }),
-    }, WINDOWS_CAPABILITY_STARTUP_TIMEOUT_MS, signal, encodeWindowsSupervisorSource(), {
+    }, WINDOWS_CAPABILITY_STARTUP_TIMEOUT_MS, signal, Buffer.concat([
+      loaderInit,
+      rawSupervisorSourceFrame,
+    ]), {
       code: 23,
       authenticate: (frame) => isAuthenticatedWindowsStartupError(frame, requestId),
     });
@@ -1592,7 +1631,7 @@ export function exerciseWindowsAuthorityStageFailureForNativeTest(
 }
 
 /**
- * Native-test seam placed immediately before the production CreateDirectoryW
+ * Native-test seam placed immediately before the production NtCreateFile
  * publication. A pre-existing inherited-ACL object must make the atomic call
  * fail without consuming, modifying, or deleting the observer's contents.
  */
@@ -1629,6 +1668,74 @@ export function exerciseWindowsCompilerWorkspacePublicationForNativeTest(): Prom
     } finally {
       await destroyWindowsAuthorityCapability();
       rmSync(path, { recursive: true, force: true });
+    }
+  });
+}
+
+function windowsCompilerWorkspaceSnapshot(): readonly string[] {
+  const parent = join(trustedWindowsSystemRoot(), "Temp");
+  return readdirSync(parent)
+    .filter((name) => /^propr-supervisor-(?:[0-9]+-[0-9a-f]{64}|race-[0-9a-f]{32})(?:\.held)?$/.test(name))
+    .sort();
+}
+
+/** Native-test seam for retained-handle cleanup, descendant removal, and same-name replacement preservation. */
+export function exerciseWindowsCompilerWorkspaceCleanupForNativeTest(
+  mode: "invalid-handle" | "identity-mismatch" | "cleanup-contents" | "cleanup-swap",
+): Promise<{
+  readonly version: 1;
+  readonly mode: "invalid-handle" | "identity-mismatch" | "cleanup-contents" | "cleanup-swap";
+  readonly stage: "TEMP_WORKSPACE_DACL_VERIFY" | "REFERENCE_LOAD";
+  readonly zeroLeaks: true;
+  readonly replacementPreserved: boolean;
+}> {
+  if (process.platform !== "win32") throw new Error("Windows workspace cleanup probe requires Windows");
+  return enqueueWindowsAuthority(async () => {
+    await destroyWindowsAuthorityCapability();
+    const before = windowsCompilerWorkspaceSnapshot();
+    const verificationFailure = mode === "invalid-handle" || mode === "identity-mismatch";
+    const expectedStage = verificationFailure ? "TEMP_WORKSPACE_DACL_VERIFY" : "REFERENCE_LOAD";
+    let replacementPreserved = false;
+    let supervisorPid: number | undefined;
+    try {
+      let failedStage: WindowsSupervisorStage | undefined;
+      try {
+        await acquireWindowsAuthorityCapability({
+          testWorkspaceMode: mode,
+          testFailureStage: verificationFailure ? undefined : "REFERENCE_LOAD",
+          onSupervisorSpawned: (_stagedPath, pid) => { supervisorPid = pid; },
+        });
+      } catch (error) {
+        failedStage = windowsAuthorityStageFromError(error);
+      }
+      if (failedStage !== expectedStage) throw new Error("Windows compiler workspace cleanup stage was not preserved");
+      if (supervisorPid === undefined) throw new Error("Windows compiler workspace cleanup supervisor did not start");
+      const exitDeadline = Date.now() + WINDOWS_CAPABILITY_STOP_TIMEOUT_MS;
+      let stillRunning = true;
+      while (stillRunning && Date.now() < exitDeadline) {
+        try { process.kill(supervisorPid, 0); } catch { stillRunning = false; }
+        if (stillRunning) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      if (stillRunning) throw new Error("Windows compiler workspace cleanup left native handles open");
+      const afterFailure = windowsCompilerWorkspaceSnapshot();
+      if (mode === "cleanup-swap") {
+        const additions = afterFailure.filter((name) => !before.includes(name));
+        if (additions.length !== 1) throw new Error("Windows compiler cleanup swap was not isolated");
+        const replacement = join(trustedWindowsSystemRoot(), "Temp", additions[0]);
+        if (readFileSync(join(replacement, "observer"), "utf8") !== "unchanged") {
+          throw new Error("Windows compiler cleanup deleted or mutated the replacement");
+        }
+        replacementPreserved = true;
+        rmSync(replacement, { recursive: true, force: true });
+      } else if (afterFailure.join("\0") !== before.join("\0")) {
+        throw new Error("Windows compiler workspace cleanup leaked a published directory");
+      }
+      if (windowsCompilerWorkspaceSnapshot().join("\0") !== before.join("\0")) {
+        throw new Error("Windows compiler workspace cleanup did not restore the trusted parent snapshot");
+      }
+      return { version: 1, mode, stage: expectedStage, zeroLeaks: true, replacementPreserved };
+    } finally {
+      await destroyWindowsAuthorityCapability();
     }
   });
 }

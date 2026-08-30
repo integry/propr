@@ -17,7 +17,11 @@ const common = [
   ...(platform === 'win32' ? ['foreign-owner'] : []),
   'packaged-helper-integrity',
   ...(platform === 'win32'
-    ? ['atomic-publication', 'bootstrap-after-lock', 'bootstrap-aba', 'settling-race']
+    ? [
+      'atomic-publication', 'encoded-loader', 'preprotocol-cleanup', 'invalid-handle-cleanup',
+      'identity-mismatch-cleanup', 'contents-cleanup', 'cleanup-swap',
+      'bootstrap-after-lock', 'bootstrap-aba', 'settling-race',
+    ]
     : []),
   'reparse', 'replacement-barrier', 'inspection-handle-swap',
   'config-off', 'config-on', 'config-absence', 'config-disappearance',

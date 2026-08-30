@@ -47,17 +47,27 @@ stdin/stdout plus the staged image handle. Startup material travels in the
 first control frame, never argv or the environment. Readiness, pre-launch,
 post-response, and shutdown use strict 4-byte-length-prefixed versioned frames
 with fresh parent request IDs and sequence/PID/full-identity/digest binding.
-The constant raw loader derives its compiler root only as `SystemRoot\Temp`.
-Before `Add-Type`, it creates a 256-bit-random directory, rejects reparse
-points, replaces inherited access with exact full-control entries for the
-caller, SYSTEM, and Administrators, then verifies the owner and every DACL
-field using built-in .NET APIs. Only that private directory is assigned to
-process-local `TEMP` and `TMP`; no caller value is inherited. Compiler
-finalizers and handles are drained and the directory is removed before job
-creation, so normal shutdown, protocol errors, timeouts, and job termination
-cannot leave a post-compilation workspace. The loader's final guard retries
-cleanup for every caught pre-compilation failure without reporting the path or
-the underlying ACL/compiler diagnostic.
+The small constant loader is passed only as UTF-16LE Base64 through
+`-EncodedCommand`; its complete absolute executable and fixed-switch command
+line is checked against the Windows 32,767-code-unit limit with a safety
+margin. It contains no supervisor source or dynamic startup material. The
+bounded supervisor source remains an exact raw UTF-8 length frame on anonymous
+stdin and is decoded and parsed before any compiler workspace is published.
+The parsed supervisor derives its compiler parent only as `SystemRoot\Temp`,
+holds verified SystemRoot and Temp directory handles, and atomically publishes
+the 256-bit-random directory with its explicit non-inherited security
+descriptor using `NtCreateFile(FILE_CREATE)` relative to the held Temp handle.
+That same native call returns the root handle used to reject reparse points and
+verify full identity, owner, and every DACL field. Only that private directory
+is assigned to process-local `TEMP` and `TMP`; no caller value is inherited.
+Cleanup enumerates and opens descendants relative to held directory handles,
+never traverses a reparse point, deletes each exact opened entry, retries a
+fixed number of times, and finally deletes the exact root through its retained
+handle. Compiler finalizers and handles are drained and the workspace is gone
+before job creation, so startup failures, protocol failures, timeouts, aborts,
+and job termination cannot leave a post-compilation workspace or delete a
+same-name replacement. Diagnostics never report the workspace path or the
+underlying ACL/compiler/cleanup error.
 The parent uses only the documented asynchronous ChildProcess streams with an
 incremental bounded parser, backpressure-aware writes, abort propagation, and
 startup/request/shutdown deadlines; it never extracts private pipe descriptors

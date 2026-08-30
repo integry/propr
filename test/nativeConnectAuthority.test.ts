@@ -17,6 +17,7 @@ import {
   closeWindowsAuthorityCapability,
   exerciseWindowsAuthorityCapabilityControlForNativeTest,
   exerciseWindowsAuthorityCapabilityForNativeTest,
+  exerciseWindowsCompilerWorkspaceCleanupForNativeTest,
   exerciseWindowsCompilerWorkspacePublicationForNativeTest,
   protectWindowsSetupEntries,
   protectWindowsSetupEntry,
@@ -39,7 +40,11 @@ const expectedScenarios = [
   ...(process.platform === 'win32' ? ['foreign-owner'] : []),
   'packaged-helper-integrity',
   ...(process.platform === 'win32'
-    ? ['atomic-publication', 'bootstrap-after-lock', 'bootstrap-aba', 'settling-race']
+    ? [
+      'atomic-publication', 'encoded-loader', 'preprotocol-cleanup', 'invalid-handle-cleanup',
+      'identity-mismatch-cleanup', 'contents-cleanup', 'cleanup-swap',
+      'bootstrap-after-lock', 'bootstrap-aba', 'settling-race',
+    ]
     : []),
   'reparse', 'replacement-barrier', 'inspection-handle-swap',
   'config-off', 'config-on', 'config-absence', 'config-disappearance',
@@ -74,6 +79,13 @@ after(async () => {
 function nativeFixtureParent(prefix: string): string {
   const base = process.platform === 'win32' ? userInfo().homedir : tmpdir();
   return realpathSync(mkdtempSync(join(base, prefix)));
+}
+
+function windowsCompilerWorkspaceSnapshot(): readonly string[] {
+  assert.equal(process.platform, 'win32');
+  return readdirSync(join(process.env.SystemRoot!, 'Temp'))
+    .filter((name) => /^propr-supervisor-(?:[0-9]+-[0-9a-f]{64}|race-[0-9a-f]{32})(?:\.held)?$/.test(name))
+    .sort();
 }
 
 test('native ordinary file and directory authority is accepted without an extended ACL', { timeout: 15_000 }, async (t) => {
@@ -586,13 +598,16 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       'POST_CHALLENGE', 'SHUTDOWN',
     ]);
     for (const stage of WINDOWS_SUPERVISOR_STAGE_VALUES) {
+      const before = windowsCompilerWorkspaceSnapshot();
       assert.deepEqual(await exerciseWindowsAuthorityStageFailureForNativeTest(stage), {
         version: 1,
         status: 'failed',
         stage,
         publicError: 'Windows system authority capability is unavailable',
       });
+      assert.deepEqual(windowsCompilerWorkspaceSnapshot(), before, `${stage} leaked a compiler workspace`);
     }
+    completeScenario('preprotocol-cleanup');
     assert.throws(
       () => exerciseWindowsAuthorityStageFailureForNativeTest(
         'UNKNOWN' as (typeof WINDOWS_SUPERVISOR_STAGE_VALUES)[number],
@@ -640,15 +655,72 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     });
     completeScenario('atomic-publication');
 
+    assert.deepEqual(await exerciseWindowsCompilerWorkspaceCleanupForNativeTest('invalid-handle'), {
+      version: 1,
+      mode: 'invalid-handle',
+      stage: 'TEMP_WORKSPACE_DACL_VERIFY',
+      zeroLeaks: true,
+      replacementPreserved: false,
+    });
+    completeScenario('invalid-handle-cleanup');
+    assert.deepEqual(await exerciseWindowsCompilerWorkspaceCleanupForNativeTest('identity-mismatch'), {
+      version: 1,
+      mode: 'identity-mismatch',
+      stage: 'TEMP_WORKSPACE_DACL_VERIFY',
+      zeroLeaks: true,
+      replacementPreserved: false,
+    });
+    completeScenario('identity-mismatch-cleanup');
+    assert.deepEqual(await exerciseWindowsCompilerWorkspaceCleanupForNativeTest('cleanup-contents'), {
+      version: 1,
+      mode: 'cleanup-contents',
+      stage: 'REFERENCE_LOAD',
+      zeroLeaks: true,
+      replacementPreserved: false,
+    });
+    completeScenario('contents-cleanup');
+    assert.deepEqual(await exerciseWindowsCompilerWorkspaceCleanupForNativeTest('cleanup-swap'), {
+      version: 1,
+      mode: 'cleanup-swap',
+      stage: 'REFERENCE_LOAD',
+      zeroLeaks: true,
+      replacementPreserved: true,
+    });
+    completeScenario('cleanup-swap');
+
     const attackerResultPath = join(tmpdir(), `propr-control-handle-attacker-${process.pid}.json`);
     rmSync(attackerResultPath, { force: true });
     let concurrentRequest: Promise<Awaited<ReturnType<typeof exerciseWindowsAuthorityCapabilityForNativeTest>>> | undefined;
     const locked = await exerciseWindowsAuthorityCapabilityForNativeTest({
-      onSupervisorStarting: ({ stagedPath, environmentKeys, loaderCommandLength }) => {
+      onSupervisorStarting: ({
+        stagedPath, environmentKeys, executable, fixedSwitches, encodedLoader,
+        commandLineLength, commandLineLimit, safetyMargin, rawSupervisorSourceFrame,
+      }) => {
         assert.deepEqual(environmentKeys, ['SystemRoot']);
         assert.equal(environmentKeys.some((key) => key.startsWith('PROPR_')), false);
         assert.equal(environmentKeys.includes(stagedPath), false);
-        assert.ok(loaderCommandLength > 0 && loaderCommandLength < 8_192, 'supervisor loader exceeded its fixed launch bound');
+        assert.deepEqual(fixedSwitches, [
+          '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand',
+        ]);
+        const loader = Buffer.from(encodedLoader, 'base64').toString('utf16le');
+        assert.equal(Buffer.from(loader, 'utf16le').toString('base64'), encodedLoader);
+        assert.ok(loader.length > 0 && loader.length < 8_192, 'supervisor loader exceeded its fixed launch bound');
+        assert.equal(loader.includes('public static class ProprSupervisorNative'), false);
+        assert.equal(loader.includes(stagedPath), false);
+        assert.equal(loader.includes(command), false);
+        assert.equal(loader.includes('PROPR_CAPABILITY'), false);
+        assert.equal(/[A-Za-z]:\\/.test(loader), false, 'encoded loader contained an absolute Windows path');
+        const sourceLength = rawSupervisorSourceFrame.readUInt32LE(0);
+        assert.equal(rawSupervisorSourceFrame.byteLength, sourceLength + 4);
+        assert.ok(sourceLength > loader.length && sourceLength <= 64 * 1024);
+        const rawSource = new TextDecoder('utf-8', { fatal: true }).decode(rawSupervisorSourceFrame.subarray(4));
+        assert.equal(rawSource.includes('public static class ProprSupervisorNative'), true);
+        assert.equal(loader.includes(rawSource), false, 'encoded loader contained the large supervisor source');
+        const completeCommandLine = [`"${executable.replaceAll('"', '\\"')}"`, ...fixedSwitches, encodedLoader].join(' ');
+        assert.equal(commandLineLength, completeCommandLine.length + 1);
+        assert.equal(commandLineLimit, 32_767);
+        assert.ok(commandLineLength <= commandLineLimit - safetyMargin, 'encoded loader command line lost its safety margin');
+        completeScenario('encoded-loader');
       },
       onSupervisorSpawned: (stagedPath, supervisorPid) => {
         const query = spawnSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
@@ -660,8 +732,9 @@ test('native helper replacement is rejected before attacker bytes can execute', 
           timeout: 5_000,
         });
         assert.equal(query.status, 0, query.stderr);
-        assert.equal(query.stdout.includes('-Command'), true, 'supervisor command line was not inspected');
-        assert.equal(query.stdout.includes('EncodedCommand'), false, 'supervisor restored EncodedCommand');
+        assert.equal(query.stdout.includes('-EncodedCommand'), true, 'supervisor command line did not use EncodedCommand');
+        assert.equal(query.stdout.includes('using namespace System'), false, 'supervisor exposed raw loader source');
+        assert.equal(query.stdout.includes('public static class ProprSupervisorNative'), false, 'supervisor exposed raw source');
         assert.equal(query.stdout.includes(stagedPath), false);
         assert.equal(query.stdout.includes('PROPR_CAPABILITY'), false);
       },
@@ -786,6 +859,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     completeScenario('settling-race');
     const afterFramingRecovery = await exerciseWindowsAuthorityCapabilityForNativeTest();
 
+    const beforeJobKill = windowsCompilerWorkspaceSnapshot();
     process.kill(afterFramingRecovery.supervisorPid);
     const crashDeadline = Date.now() + 5_000;
     while (Date.now() < crashDeadline) {
@@ -801,6 +875,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     assert.equal(queuedSecond.supervisorPid, queuedFirst.supervisorPid);
 
     await closeWindowsAuthorityCapability();
+    assert.deepEqual(windowsCompilerWorkspaceSnapshot(), beforeJobKill, 'job kill leaked a compiler workspace');
     assert.throws(() => lstatSync(queuedSecond.directory), /ENOENT/);
     assert.throws(() => process.kill(queuedSecond.supervisorPid, 0));
   }
