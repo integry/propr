@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, closeSync, constants, copyFileSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import {
   ConnectRootError,
@@ -46,7 +46,8 @@ const expectedScenarios = [
       'helper-build-provenance', 'helper-manifest', 'direct-helper-spawn',
       'helper-lease-swap', 'helper-lease-delete', 'helper-lease-reparse',
       'helper-lease-hardlink', 'helper-lease-inplace-write', 'helper-lease-aba',
-      'no-runtime-compiler',
+      'no-runtime-compiler', 'forged-control-pipes', 'extra-child-denied',
+      'job-assignment-failure', 'job-kill-on-close', 'launcher-unload', 'handle-leak',
     ]
     : []),
   'reparse', 'replacement-barrier', 'inspection-handle-swap',
@@ -597,6 +598,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         stage,
         publicError: 'Windows system authority capability is unavailable',
       });
+      if (stage === 'JOB_ASSIGN') completeScenario('job-assignment-failure');
     }
     completeScenario('preprotocol-cleanup');
     assert.throws(
@@ -622,49 +624,69 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     const startupControl = nativeFixtureParent('propr-supervisor-startup-swap-');
     try {
       let swapFired = false;
+      let startupDirectory = '';
       await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
         onSupervisorSpawned: (stagedPath) => {
-          const detached = `${stagedPath}.startup-detached`;
-          renameSync(stagedPath, detached);
-          copyFileSync(command, stagedPath);
+          startupDirectory = dirname(stagedPath);
           swapFired = true;
+          assert.throws(() => renameSync(stagedPath, `${stagedPath}.startup-detached`));
+          assert.throws(() => copyFileSync(command, stagedPath));
+          throw new Error('native launcher lease barrier observed');
         },
-      }), /capability|IMAGE_IDENTITY|LOCK/);
+      }), /capability|authority|lease barrier/);
       assert.equal(swapFired, true, 'startup swap hook did not execute');
+      assert.throws(() => lstatSync(startupDirectory), /ENOENT/);
+      completeScenario('identity-mismatch-cleanup');
+      completeScenario('cleanup-swap');
     } finally {
       await closeWindowsAuthorityCapability();
       rmSync(startupControl, { recursive: true, force: true });
     }
 
+    let invalidHandleCleanupDirectory = '';
+    await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
+      testFailureStage: 'JOB_ASSIGN',
+      onSupervisorStarting: ({ stagedPath }) => {
+        invalidHandleCleanupDirectory = dirname(stagedPath);
+        writeFileSync(join(invalidHandleCleanupDirectory, 'unexpected-cleanup-content'), 'content');
+      },
+    }), /JOB_ASSIGN|capability|authority/);
+    assert.throws(() => lstatSync(invalidHandleCleanupDirectory), /ENOENT/);
+    completeScenario('invalid-handle-cleanup');
+    completeScenario('contents-cleanup');
+
     const deniedHooks = { write: false, delete: false, rename: false, replace: false };
+    const deniedHelperHooks = { write: false, delete: false, rename: false, replace: false };
+    let heldHelperPath = '';
 
     const provenance = exerciseWindowsHelperProvenanceForNativeTest();
     assert.equal(provenance.version, 2);
     assert.equal(provenance.protocolVersion, 2);
     assert.match(provenance.sourceSha256, /^[0-9a-f]{64}$/);
+    assert.match(provenance.launcherSourceSha256, /^[0-9a-f]{64}$/);
     assert.match(provenance.helperSha256, /^[0-9a-f]{64}$/);
+    assert.match(provenance.launcherSha256, /^[0-9a-f]{64}$/);
+    assert.equal(provenance.signerPinsBound, true);
     assert.equal(provenance.noRuntimeCompilerWorkspace, true);
     completeScenario('atomic-publication');
     completeScenario('helper-build-provenance');
     completeScenario('helper-manifest');
     completeScenario('no-runtime-compiler');
-    completeScenario('invalid-handle-cleanup');
-    completeScenario('identity-mismatch-cleanup');
-    completeScenario('contents-cleanup');
-    completeScenario('cleanup-swap');
 
     const attackerResultPath = join(tmpdir(), `propr-control-handle-attacker-${process.pid}.json`);
     rmSync(attackerResultPath, { force: true });
     let concurrentRequest: Promise<Awaited<ReturnType<typeof exerciseWindowsAuthorityCapabilityForNativeTest>>> | undefined;
     const locked = await exerciseWindowsAuthorityCapabilityForNativeTest({
       onSupervisorStarting: ({
-        stagedPath, environmentKeys, executable, constantArgv, manifest,
+        stagedPath, helperPath, environmentKeys, executable, constantArgv, manifest,
       }) => {
+        heldHelperPath = helperPath;
         assert.deepEqual(environmentKeys, []);
         assert.equal(environmentKeys.some((key) => key.startsWith('PROPR_')), false);
         assert.equal(environmentKeys.includes(stagedPath), false);
         assert.deepEqual(constantArgv, ['--lease-validation-v2']);
-        assert.match(executable, /connect-authority-supervisor\.exe$/);
+        assert.equal(executable, stagedPath);
+        assert.match(executable, /broker-[0-9a-f-]+\.exe$/);
         assert.equal(manifest.protocolVersion, 2);
         assert.equal(manifest.pe.architecture, 'anycpu');
         assert.equal(manifest.pe.managed, true);
@@ -681,9 +703,9 @@ test('native helper replacement is rejected before attacker bytes can execute', 
           timeout: 5_000,
         });
         assert.equal(query.status, 0, query.stderr);
-        assert.equal(query.stdout.includes('--lease-validation-v2'), true, 'supervisor command line lost its constant lease switch');
+        assert.equal(query.stdout.includes('launch-supervisor-v2'), true, 'native secure launcher command line was not used');
         assert.equal(query.stdout.toLowerCase().includes('powershell'), false, 'PowerShell hosted the authority protocol');
-        assert.equal(query.stdout.includes(stagedPath), false);
+        assert.equal(query.stdout.includes(stagedPath), true);
         assert.equal(query.stdout.includes('PROPR_CAPABILITY'), false);
       },
       onRequestLocked: async (stagedPath, supervisorPid) => {
@@ -707,6 +729,8 @@ test('native helper replacement is rejected before attacker bytes can execute', 
           advertisedCapability: false,
           deniedRights: { duplicate: false, vmRead: false, query: false },
         });
+        completeScenario('forged-control-pipes');
+        completeScenario('extra-child-denied');
         deniedHooks.write = true;
         assert.throws(() => writeFileSync(stagedPath, 'attacker'));
         deniedHooks.delete = true;
@@ -715,16 +739,23 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         assert.throws(() => renameSync(stagedPath, `${stagedPath}.attacker`));
         deniedHooks.replace = true;
         assert.throws(() => copyFileSync(command, stagedPath));
+        deniedHelperHooks.write = true;
+        assert.throws(() => writeFileSync(heldHelperPath, 'attacker'));
+        deniedHelperHooks.delete = true;
+        assert.throws(() => unlinkSync(heldHelperPath));
+        deniedHelperHooks.rename = true;
+        assert.throws(() => renameSync(heldHelperPath, `${heldHelperPath}.attacker`));
+        deniedHelperHooks.replace = true;
+        assert.throws(() => copyFileSync(command, heldHelperPath));
         concurrentRequest = exerciseWindowsAuthorityCapabilityForNativeTest();
       },
     });
     rmSync(attackerResultPath, { force: true });
     assert.deepEqual(deniedHooks, { write: true, delete: true, rename: true, replace: true });
+    assert.deepEqual(deniedHelperHooks, { write: true, delete: true, rename: true, replace: true });
     completeScenario('helper-lease-inplace-write');
     completeScenario('helper-lease-delete');
     completeScenario('helper-lease-swap');
-    completeScenario('helper-lease-reparse');
-    completeScenario('helper-lease-hardlink');
     assert.equal(locked.stage, 'READY', 'hosted positive startup did not reach READY');
     assert.deepEqual(JSON.parse(locked.output.toString('utf8')), { version: 1, ready: true });
     assert.throws(() => renameSync(locked.stagedPath, `${locked.stagedPath}.between-requests`));
@@ -780,9 +811,47 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     completeScenario('bootstrap-aba');
     completeScenario('helper-lease-aba');
 
+    let hardlinkBarrierFired = false;
+    await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
+      onRequestLocked: (stagedPath) => {
+        linkSync(stagedPath, `${stagedPath}.attacker-hardlink`);
+        hardlinkBarrierFired = lstatSync(stagedPath, { bigint: true }).nlink === 2n;
+      },
+    }), /capability/);
+    assert.equal(hardlinkBarrierFired, true, 'hard-link mutation barrier did not alter the held helper');
+    completeScenario('helper-lease-hardlink');
+
+    const afterHardlink = await exerciseWindowsAuthorityCapabilityForNativeTest();
+    let reparseBarrierFired = false;
+    await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
+      onRequestLocked: async (stagedPath, supervisorPid) => {
+        process.kill(supervisorPid);
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          try { process.kill(supervisorPid, 0); } catch { break; }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        const stagedDirectory = dirname(stagedPath);
+        const detachedDirectory = `${stagedDirectory}.trusted-detached`;
+        const attackerDirectory = `${stagedDirectory}.attacker-target`;
+        mkdirSync(attackerDirectory);
+        copyFileSync(command, join(attackerDirectory, basename(stagedPath)));
+        renameSync(stagedDirectory, detachedDirectory);
+        createWindowsJunction(stagedDirectory, attackerDirectory);
+        reparseBarrierFired = lstatSync(stagedDirectory).isSymbolicLink();
+        rmSync(stagedDirectory, { recursive: true, force: true });
+        renameSync(detachedDirectory, stagedDirectory);
+        rmSync(attackerDirectory, { recursive: true, force: true });
+      },
+    }), /capability/);
+    assert.equal(reparseBarrierFired, true, 'reparse mutation barrier did not alter the helper path boundary');
+    completeScenario('helper-lease-reparse');
+    const afterReparse = await exerciseWindowsAuthorityCapabilityForNativeTest();
+    assert.notEqual(afterReparse.stagedPath, afterHardlink.stagedPath);
+
     await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({ args: ['batch-v1'] }), /capability/);
     const afterRejectedCommand = await exerciseWindowsAuthorityCapabilityForNativeTest();
-    assert.equal(afterRejectedCommand.stagedPath, restarted.stagedPath);
+    assert.equal(afterRejectedCommand.stagedPath, afterReparse.stagedPath);
 
     const unboundResponse = await exerciseWindowsAuthorityCapabilityControlForNativeTest({ mode: 'unparsed-response' });
     assert.ok(unboundResponse.byteLength > 0, 'unparsed response hook did not fire');
@@ -819,6 +888,8 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       try { process.kill(afterFramingRecovery.supervisorPid, 0); } catch { break; }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    assert.throws(() => process.kill(afterFramingRecovery.authorityPid, 0));
+    completeScenario('job-kill-on-close');
     await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);
     const [queuedFirst, queuedSecond] = await Promise.all([
       Promise.resolve().then(() => exerciseWindowsAuthorityCapabilityForNativeTest()),
@@ -830,6 +901,9 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     await closeWindowsAuthorityCapability();
     assert.throws(() => lstatSync(queuedSecond.directory), /ENOENT/);
     assert.throws(() => process.kill(queuedSecond.supervisorPid, 0));
+    assert.throws(() => process.kill(queuedSecond.authorityPid, 0));
+    completeScenario('launcher-unload');
+    completeScenario('handle-leak');
   }
 });
 

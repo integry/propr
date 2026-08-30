@@ -50,14 +50,18 @@ signature, or any hash/metadata mismatch. Thus an installed CLI never needs
 PowerShell, `Add-Type`, `csc.exe`, a compiler temp directory, or source
 transport.
 
-The CLI starts the compiled supervisor directly with the single constant
-`--lease-v2` switch, an empty environment, binary anonymous stdin/stdout,
-and the already-held broker image handle. That mode opens its own canonical PE
-with `FILE_SHARE_READ` only, creates the protocol instance suspended, assigns
-the kill-on-close job, opens the loaded process image, and compares its volume,
-full file ID, and SHA-256 with the leased file object before resuming. The lease
-and job remain open through protocol exit; x64 and arm64 both execute the same
-AnyCPU helper and native API boundary. Stdout is exclusively the strict
+The CLI never passes the supervisor path to `child_process.spawn`. It starts
+the manifest-bound x64 native broker in `launch-supervisor-v2` mode with an
+empty environment, binary anonymous stdin/stdout, and held broker/supervisor
+handles. The native launcher opens the supervisor with `FILE_SHARE_READ` only,
+compares full file identity and SHA-256 with the inherited held object, creates
+the supervisor suspended with the inherited anonymous pipes, assigns its
+kill-on-close job, opens the loaded process image, and repeats the full
+identity/hash proof before resuming. The helper then requires its actual
+Authenticode leaf/SPKI to equal both the signed manifest arguments and its
+embedded signing-policy resource. Launcher/helper leases and jobs remain open
+through protocol exit; x64 and arm64 both execute the same AnyCPU helper after
+the x64 native API boundary. Stdout is exclusively the strict
 4-byte-length-prefixed protocol; stderr is required to remain empty. The
 parent-bound supervisor retains the broker's write/delete-denying image lock,
 full identity and hash for the cached capability lifetime, hardens its process

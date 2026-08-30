@@ -4,6 +4,9 @@
 #include <windows.h>
 #include <aclapi.h>
 #include <sddl.h>
+#include <bcrypt.h>
+#include <wintrust.h>
+#include <softpub.h>
 
 #include <stdint.h>
 #include <errno.h>
@@ -12,9 +15,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "wintrust.lib")
+
 #define PROPR_MAX_ENTRIES 64
 #define PROPR_MAX_OUTPUT (128 * 1024)
 #define PROPR_MAX_REQUEST 4096
+#define PROPR_LAUNCH_FAILURE 23
 
 typedef struct {
   ULONGLONG VolumeSerialNumber;
@@ -360,7 +368,193 @@ static HANDLE reopen_for_protection(HANDLE source, int directory) {
   return reopened;
 }
 
+static int hex_digest(const char *text) {
+  if (text == NULL || strlen(text) != 64) return 0;
+  for (size_t index = 0; index < 64; index += 1) {
+    if (!((text[index] >= '0' && text[index] <= '9') ||
+          (text[index] >= 'a' && text[index] <= 'f'))) return 0;
+  }
+  return 1;
+}
+
+static int sha256_handle(HANDLE file, char output[65]) {
+  BCRYPT_ALG_HANDLE algorithm = NULL;
+  BCRYPT_HASH_HANDLE hash = NULL;
+  BYTE *object = NULL;
+  DWORD object_size = 0;
+  DWORD received = 0;
+  BYTE digest[32];
+  LARGE_INTEGER original;
+  original.QuadPart = 0;
+  LARGE_INTEGER zero;
+  zero.QuadPart = 0;
+  int result = 0;
+  if (!SetFilePointerEx(file, zero, &original, FILE_CURRENT) ||
+      BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0 ||
+      BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, (PUCHAR)&object_size,
+                        sizeof(object_size), &received, 0) < 0 || object_size == 0 || object_size > 65536) goto cleanup;
+  object = (BYTE *)HeapAlloc(GetProcessHeap(), 0, object_size);
+  if (object == NULL || BCryptCreateHash(algorithm, &hash, object, object_size, NULL, 0, 0) < 0 ||
+      !SetFilePointerEx(file, zero, NULL, FILE_BEGIN)) goto cleanup;
+  BYTE buffer[16384];
+  for (;;) {
+    DWORD count = 0;
+    if (!ReadFile(file, buffer, sizeof(buffer), &count, NULL)) goto cleanup;
+    if (count == 0) break;
+    if (BCryptHashData(hash, buffer, count, 0) < 0) goto cleanup;
+  }
+  if (BCryptFinishHash(hash, digest, sizeof(digest), 0) < 0) goto cleanup;
+  static const char hex[] = "0123456789abcdef";
+  for (size_t index = 0; index < sizeof(digest); index += 1) {
+    output[index * 2] = hex[digest[index] >> 4];
+    output[index * 2 + 1] = hex[digest[index] & 15];
+  }
+  output[64] = '\0';
+  result = 1;
+
+cleanup:
+  if (file != INVALID_HANDLE_VALUE) SetFilePointerEx(file, original, NULL, FILE_BEGIN);
+  if (hash != NULL) BCryptDestroyHash(hash);
+  if (object != NULL) HeapFree(GetProcessHeap(), 0, object);
+  if (algorithm != NULL) BCryptCloseAlgorithmProvider(algorithm, 0);
+  return result;
+}
+
+static int ordinary_file(HANDLE handle) {
+  BY_HANDLE_FILE_INFORMATION information;
+  return handle != INVALID_HANDLE_VALUE && GetFileInformationByHandle(handle, &information) &&
+         (information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0;
+}
+
+static int verify_authenticode(const wchar_t *path) {
+  WINTRUST_FILE_INFO file;
+  WINTRUST_DATA data;
+  ZeroMemory(&file, sizeof(file));
+  ZeroMemory(&data, sizeof(data));
+  file.cbStruct = sizeof(file);
+  file.pcwszFilePath = path;
+  data.cbStruct = sizeof(data);
+  data.dwUIChoice = WTD_UI_NONE;
+  data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+  data.dwUnionChoice = WTD_CHOICE_FILE;
+  data.pFile = &file;
+  data.dwStateAction = WTD_STATEACTION_VERIFY;
+  data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN;
+  GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+  LONG status = WinVerifyTrust(INVALID_HANDLE_VALUE, &policy, &data);
+  data.dwStateAction = WTD_STATEACTION_CLOSE;
+  WinVerifyTrust(INVALID_HANDLE_VALUE, &policy, &data);
+  return status == ERROR_SUCCESS;
+}
+
+static int secure_launch_supervisor(int argc, wchar_t **argv) {
+  if (argc != 7 || argv[2] == NULL || argv[2][0] == L'\0' || wcschr(argv[2], L'"') != NULL) return PROPR_LAUNCH_FAILURE;
+  int production = wcscmp(argv[3], L"production") == 0;
+  int validation = wcscmp(argv[3], L"validation") == 0;
+  int validation_job_failure = wcscmp(argv[3], L"validation-job-failure") == 0;
+  char expected[65];
+  char leaf[65];
+  char spki[65];
+  if ((!production && !validation && !validation_job_failure) ||
+      WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[4], -1, expected, sizeof(expected), NULL, NULL) != 65 ||
+      WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[5], -1, leaf, sizeof(leaf), NULL, NULL) != 65 ||
+      WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[6], -1, spki, sizeof(spki), NULL, NULL) != 65 ||
+      !hex_digest(expected) || (production && (!hex_digest(leaf) || !hex_digest(spki)))) return PROPR_LAUNCH_FAILURE;
+  wchar_t launcher_path[32768];
+  DWORD launcher_length = GetModuleFileNameW(NULL, launcher_path,
+    sizeof(launcher_path) / sizeof(launcher_path[0]));
+  if (launcher_length == 0 || launcher_length >= sizeof(launcher_path) / sizeof(launcher_path[0]) ||
+      (production && !verify_authenticode(launcher_path))) return PROPR_LAUNCH_FAILURE;
+
+  intptr_t inherited_value = _get_osfhandle(4);
+  if (inherited_value == -1) return PROPR_LAUNCH_FAILURE;
+  HANDLE inherited = (HANDLE)inherited_value;
+  HANDLE lease = CreateFileW(argv[2], GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  PROPR_FILE_ID_INFO inherited_id;
+  PROPR_FILE_ID_INFO lease_id;
+  char inherited_hash[65];
+  char lease_hash[65];
+  if (!ordinary_file(inherited) || !ordinary_file(lease) || !get_file_id(inherited, &inherited_id) ||
+      !get_file_id(lease, &lease_id) || !same_file_id(&inherited_id, &lease_id) ||
+      !sha256_handle(inherited, inherited_hash) || !sha256_handle(lease, lease_hash) ||
+      strcmp(inherited_hash, expected) != 0 || strcmp(lease_hash, expected) != 0 ||
+      (production && !verify_authenticode(argv[2]))) {
+    if (lease != INVALID_HANDLE_VALUE) CloseHandle(lease);
+    return PROPR_LAUNCH_FAILURE;
+  }
+
+  STARTUPINFOW startup;
+  PROCESS_INFORMATION child;
+  ZeroMemory(&startup, sizeof(startup));
+  ZeroMemory(&child, sizeof(child));
+  startup.cb = sizeof(startup);
+  GetStartupInfoW(&startup);
+  wchar_t command[32768];
+  int length = (validation || validation_job_failure)
+    ? swprintf(command, sizeof(command) / sizeof(command[0]), validation_job_failure
+        ? L"\"%ls\" --lease-validation-job-failure-v2" : L"\"%ls\" --lease-validation-v2", argv[2])
+    : swprintf(command, sizeof(command) / sizeof(command[0]), L"\"%ls\" --lease-v2 %ls %ls", argv[2], argv[5], argv[6]);
+  HANDLE job = NULL;
+  int status = PROPR_LAUNCH_FAILURE;
+  if (length <= 0 || length >= (int)(sizeof(command) / sizeof(command[0])) ||
+      !CreateProcessW(argv[2], command, NULL, NULL, TRUE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                      NULL, NULL, &startup, &child)) goto launch_cleanup;
+  job = CreateJobObjectW(NULL, NULL);
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+  ZeroMemory(&limits, sizeof(limits));
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (job == NULL || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+      !AssignProcessToJobObject(job, child.hProcess)) goto launch_cleanup;
+
+  wchar_t loaded_path[32768];
+  DWORD loaded_length = sizeof(loaded_path) / sizeof(loaded_path[0]);
+  if (!QueryFullProcessImageNameW(child.hProcess, 0, loaded_path, &loaded_length)) goto launch_cleanup;
+  HANDLE loaded = CreateFileW(loaded_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  PROPR_FILE_ID_INFO loaded_id;
+  char loaded_hash[65];
+  int loaded_ok = ordinary_file(loaded) && get_file_id(loaded, &loaded_id) && same_file_id(&lease_id, &loaded_id) &&
+                  sha256_handle(loaded, loaded_hash) && strcmp(loaded_hash, expected) == 0;
+  if (loaded != INVALID_HANDLE_VALUE) CloseHandle(loaded);
+  if (!loaded_ok || ResumeThread(child.hThread) == (DWORD)-1) goto launch_cleanup;
+  if (WaitForSingleObject(child.hProcess, INFINITE) != WAIT_OBJECT_0) goto launch_cleanup;
+  DWORD exit_code = PROPR_LAUNCH_FAILURE;
+  if (GetExitCodeProcess(child.hProcess, &exit_code)) status = (int)exit_code;
+
+launch_cleanup:
+  if (status == PROPR_LAUNCH_FAILURE && child.hProcess != NULL) TerminateProcess(child.hProcess, PROPR_LAUNCH_FAILURE);
+  if (child.hThread != NULL) CloseHandle(child.hThread);
+  if (child.hProcess != NULL) CloseHandle(child.hProcess);
+  if (job != NULL) CloseHandle(job);
+  CloseHandle(lease);
+  return status;
+}
+
+static int print_system_paths(void) {
+  wchar_t windows_path[32768];
+  wchar_t system_windows_path[32768];
+  UINT windows_length = GetWindowsDirectoryW(windows_path, sizeof(windows_path) / sizeof(windows_path[0]));
+  UINT system_length = GetSystemWindowsDirectoryW(system_windows_path,
+    sizeof(system_windows_path) / sizeof(system_windows_path[0]));
+  if (windows_length == 0 || system_length == 0 ||
+      windows_length >= sizeof(windows_path) / sizeof(windows_path[0]) ||
+      system_length >= sizeof(system_windows_path) / sizeof(system_windows_path[0])) return PROPR_LAUNCH_FAILURE;
+  char windows_utf8[32768];
+  char system_utf8[32768];
+  int first = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, windows_path, -1,
+                                  windows_utf8, sizeof(windows_utf8), NULL, NULL);
+  int second = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, system_windows_path, -1,
+                                   system_utf8, sizeof(system_utf8), NULL, NULL);
+  if (first <= 1 || second <= 1) return PROPR_LAUNCH_FAILURE;
+  return fputs(windows_utf8, stdout) >= 0 && fputc('\n', stdout) != EOF &&
+         fputs(system_utf8, stdout) >= 0 && fputc('\n', stdout) != EOF && fflush(stdout) == 0
+    ? 0 : PROPR_LAUNCH_FAILURE;
+}
+
 int wmain(int argc, wchar_t **argv) {
+  if (argc == 2 && wcscmp(argv[1], L"system-paths-v1") == 0) return print_system_paths();
+  if (argc >= 2 && wcscmp(argv[1], L"launch-supervisor-v2") == 0) return secure_launch_supervisor(argc, argv);
   if (argc == 2 && (wcscmp(argv[1], L"ping") == 0 || wcscmp(argv[1], L"ping-hold") == 0)) {
     if (wcscmp(argv[1], L"ping-hold") == 0) Sleep(1000);
     static const char response[] = "{\"version\":1,\"ready\":true}\n";

@@ -24,7 +24,8 @@ const common = [
       'helper-build-provenance', 'helper-manifest', 'direct-helper-spawn',
       'helper-lease-swap', 'helper-lease-delete', 'helper-lease-reparse',
       'helper-lease-hardlink', 'helper-lease-inplace-write', 'helper-lease-aba',
-      'no-runtime-compiler',
+      'no-runtime-compiler', 'forged-control-pipes', 'extra-child-denied',
+      'job-assignment-failure', 'job-kill-on-close', 'launcher-unload', 'handle-leak',
     ]
     : []),
   'reparse', 'replacement-barrier', 'inspection-handle-swap',

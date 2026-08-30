@@ -12,6 +12,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Text;
 using System.Web.Script.Serialization;
@@ -133,6 +134,8 @@ internal static class ProprWindowsAuthoritySupervisor
     private static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
     [DllImport("wintrust.dll", ExactSpelling = true, PreserveSig = true)]
     private static extern int WinVerifyTrust(IntPtr window, ref Guid action, IntPtr data);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -387,7 +390,7 @@ internal static class ProprWindowsAuthoritySupervisor
             data.RevocationChecks = 1; // WTD_REVOKE_WHOLECHAIN
             data.UnionChoice = 1; // WTD_CHOICE_FILE
             data.FileInfo = filePointer;
-            data.ProviderFlags = 0x00000080 | 0x00001000; // REVOCATION_CHECK_CHAIN | CACHE_ONLY_URL_RETRIEVAL
+            data.ProviderFlags = 0x00000080; // WTD_REVOCATION_CHECK_CHAIN
             dataPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(WinTrustData)));
             Marshal.StructureToPtr(data, dataPointer, false);
             Guid action = new Guid("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
@@ -405,10 +408,130 @@ internal static class ProprWindowsAuthoritySupervisor
         }
     }
 
-    private static int LeaseMain(bool unsignedValidation)
+    private static byte[] JoinBytes(params byte[][] values)
+    {
+        int length = 0;
+        foreach (byte[] value in values) length = checked(length + value.Length);
+        byte[] result = new byte[length];
+        int offset = 0;
+        foreach (byte[] value in values) { Buffer.BlockCopy(value, 0, result, offset, value.Length); offset += value.Length; }
+        return result;
+    }
+
+    private static byte[] DerLength(int length)
+    {
+        if (length < 0x80) return new byte[] { (byte)length };
+        if (length <= 0xff) return new byte[] { 0x81, (byte)length };
+        if (length <= 0xffff) return new byte[] { 0x82, (byte)(length >> 8), (byte)length };
+        if (length <= 0xffffff) return new byte[] { 0x83, (byte)(length >> 16), (byte)(length >> 8), (byte)length };
+        return new byte[] { 0x84, (byte)(length >> 24), (byte)(length >> 16), (byte)(length >> 8), (byte)length };
+    }
+
+    private static byte[] Der(byte tag, byte[] value)
+    {
+        return JoinBytes(new byte[] { tag }, DerLength(value.Length), value);
+    }
+
+    private static byte[] DerOid(string text)
+    {
+        string[] fields = text.Split('.');
+        if (fields.Length < 2) throw new CryptographicException();
+        List<byte> body = new List<byte>();
+        ulong first = UInt64.Parse(fields[0], CultureInfo.InvariantCulture);
+        ulong second = UInt64.Parse(fields[1], CultureInfo.InvariantCulture);
+        body.Add(checked((byte)(first * 40 + second)));
+        for (int index = 2; index < fields.Length; ++index)
+        {
+            ulong value = UInt64.Parse(fields[index], CultureInfo.InvariantCulture);
+            byte[] encoded = new byte[10];
+            int cursor = encoded.Length;
+            encoded[--cursor] = (byte)(value & 0x7f);
+            while ((value >>= 7) != 0) encoded[--cursor] = (byte)(0x80 | (value & 0x7f));
+            while (cursor < encoded.Length) body.Add(encoded[cursor++]);
+        }
+        return Der(0x06, body.ToArray());
+    }
+
+    private static byte[] SubjectPublicKeyInfo(X509Certificate2 certificate)
+    {
+        byte[] algorithm = Der(0x30, JoinBytes(
+            DerOid(certificate.PublicKey.Oid.Value),
+            certificate.PublicKey.EncodedParameters.RawData));
+        byte[] key = Der(0x03, JoinBytes(new byte[] { 0 }, certificate.PublicKey.EncodedKeyValue.RawData));
+        return Der(0x30, JoinBytes(algorithm, key));
+    }
+
+    private static string HexHash(byte[] bytes)
+    {
+        using (SHA256 sha = SHA256.Create())
+        {
+            StringBuilder value = new StringBuilder(64);
+            foreach (byte item in sha.ComputeHash(bytes)) value.Append(item.ToString("x2", CultureInfo.InvariantCulture));
+            return value.ToString();
+        }
+    }
+
+    private static bool HasCodeSigningEku(X509Certificate2 certificate)
+    {
+        foreach (X509Extension extension in certificate.Extensions)
+        {
+            X509EnhancedKeyUsageExtension usage = extension as X509EnhancedKeyUsageExtension;
+            if (usage == null) continue;
+            foreach (Oid oid in usage.EnhancedKeyUsages) if (oid.Value == "1.3.6.1.5.5.7.3.3") return true;
+            return false;
+        }
+        return false;
+    }
+
+    private static string[] ActualSigningPins(string path)
+    {
+        if (!VerifyAuthenticode(path)) return null;
+        using (X509Certificate2 certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(path)))
+        {
+            DateTime now = DateTime.UtcNow;
+            if (now < certificate.NotBefore.ToUniversalTime() || now > certificate.NotAfter.ToUniversalTime() || !HasCodeSigningEku(certificate)) return null;
+            return new string[] { HexHash(certificate.RawData), HexHash(SubjectPublicKeyInfo(certificate)) };
+        }
+    }
+
+    private static bool VerifyAuthenticodePins(string path, string expectedLeaf, string expectedSpki)
+    {
+        string[] actual = ActualSigningPins(path);
+        return actual != null && String.Equals(actual[0], expectedLeaf, StringComparison.Ordinal)
+            && String.Equals(actual[1], expectedSpki, StringComparison.Ordinal);
+    }
+
+    private static string[] EmbeddedSigningPins()
+    {
+        using (Stream stream = System.Reflection.Assembly.GetExecutingAssembly()
+            .GetManifestResourceStream("Propr.WindowsAuthority.SigningPins"))
+        {
+            if (stream == null || stream.Length != 130) return null;
+            byte[] bytes = ReadExact(stream, 130, 1000);
+            string text = StrictUtf8.GetString(bytes);
+            if (text[64] != '\n' || text[129] != '\n') return null;
+            string leaf = text.Substring(0, 64);
+            string spki = text.Substring(65, 64);
+            return IsHex(leaf, 64) && IsHex(spki, 64) ? new string[] { leaf, spki } : null;
+        }
+    }
+
+    private static int PrintSigningPins()
+    {
+        string[] pins = ActualSigningPins(System.Reflection.Assembly.GetExecutingAssembly().Location);
+        if (pins == null) return ExitFailure;
+        Console.Out.Write("{\"authenticodeLeafSha256\":\"" + pins[0] + "\",\"authenticodeSpkiSha256\":\"" + pins[1] + "\"}");
+        return 0;
+    }
+
+    private static int LeaseMain(bool unsignedValidation, string expectedLeaf, string expectedSpki, bool forceJobFailure)
     {
         string path = System.Reflection.Assembly.GetExecutingAssembly().Location;
-        if (!unsignedValidation && !VerifyAuthenticode(path)) return ExitFailure;
+        string[] embedded = unsignedValidation ? null : EmbeddedSigningPins();
+        if (!unsignedValidation && (embedded == null || !IsHex(expectedLeaf, 64) || !IsHex(expectedSpki, 64)
+            || !String.Equals(embedded[0], expectedLeaf, StringComparison.Ordinal)
+            || !String.Equals(embedded[1], expectedSpki, StringComparison.Ordinal)
+            || !VerifyAuthenticodePins(path, expectedLeaf, expectedSpki))) return ExitFailure;
         owner = WindowsIdentity.GetCurrent().User;
         if (!HardenProcess()) return ExitFailure;
         IntPtr leaseJob = IntPtr.Zero;
@@ -443,8 +566,26 @@ internal static class ProprWindowsAuthoritySupervisor
                 if (leaseJob == IntPtr.Zero) return ExitFailure;
                 ExtendedLimits limits = new ExtendedLimits();
                 limits.Basic.Flags = 0x2000;
-                if (!SetInformationJobObject(leaseJob, 9, ref limits, (uint)Marshal.SizeOf(typeof(ExtendedLimits))) ||
-                    !AssignProcessToJobObject(leaseJob, child.Process)) return ExitFailure;
+                if (!SetInformationJobObject(leaseJob, 9, ref limits, (uint)Marshal.SizeOf(typeof(ExtendedLimits)))) return ExitFailure;
+                if (forceJobFailure)
+                {
+                    // Exercise a real invalid-handle AssignProcessToJobObject
+                    // failure while the child is still suspended. Bind the
+                    // fixed stage to the parent's strict init frame so a
+                    // forged pipe cannot manufacture an accepted failure.
+                    if (AssignProcessToJobObject(IntPtr.Zero, child.Process)) return ExitFailure;
+                    TerminateProcess(child.Process, ExitFailure);
+                    Dictionary<string, object> init = ReadFrame(Console.OpenStandardInput(), 10000);
+                    if (!ExactKeys(init, "version", "kind", "requestId", "path", "sha256", "parentPid", "testFailureStage")
+                        || Convert.ToInt32(init["version"], CultureInfo.InvariantCulture) != ProtocolVersion
+                        || StringValue(init, "kind") != "init"
+                        || StringValue(init, "testFailureStage") != "JOB_ASSIGN") return ExitFailure;
+                    string initRequestId = StringValue(init, "requestId");
+                    if (!IsHex(initRequestId, 32)) return ExitFailure;
+                    WriteFrame(Console.OpenStandardOutput(), "{\"version\":2,\"kind\":\"startup-error\",\"requestId\":\"" + initRequestId + "\",\"stage\":\"JOB_ASSIGN\"}");
+                    return ExitFailure;
+                }
+                if (!AssignProcessToJobObject(leaseJob, child.Process)) return ExitFailure;
 
                 StringBuilder loadedPath = new StringBuilder(32768);
                 uint loadedLength = (uint)loadedPath.Capacity;
@@ -473,8 +614,10 @@ internal static class ProprWindowsAuthoritySupervisor
 
     public static int Main(string[] args)
     {
-        if (args.Length == 1 && args[0] == "--lease-v2") return LeaseMain(false);
-        if (args.Length == 1 && args[0] == "--lease-validation-v2") return LeaseMain(true);
+        if (args.Length == 1 && args[0] == "--print-signing-pins-v1") return PrintSigningPins();
+        if (args.Length == 3 && args[0] == "--lease-v2") return LeaseMain(false, args[1], args[2], false);
+        if (args.Length == 1 && args[0] == "--lease-validation-v2") return LeaseMain(true, null, null, false);
+        if (args.Length == 1 && args[0] == "--lease-validation-job-failure-v2") return LeaseMain(true, null, null, true);
         if (args.Length != 1 || args[0] != "--authority-v2") return ExitFailure;
         Stream input = Console.OpenStandardInput();
         Stream output = Console.OpenStandardOutput();

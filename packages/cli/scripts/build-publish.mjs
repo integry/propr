@@ -17,7 +17,7 @@
 // The staging package is written to <repoRoot>/dist-publish/propr-cli.
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -38,6 +38,15 @@ const sharedDir = join(repoRoot, "packages", "shared");
 const localSetupDir = join(repoRoot, "packages", "local-setup");
 const stageDir = join(repoRoot, "dist-publish", "propr-cli");
 const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2024.12.2";
+const WINDOWS_AUTHORITY_MANIFEST_PUBLIC_KEY = createPublicKey(`-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEABGK5YqTyhB9t0ItFKrMe9jiZ1two1naR/H1jqb6lRYU=
+-----END PUBLIC KEY-----`);
+
+const canonicalJson = (value) => {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+};
 
 const run = (cmd, cmdArgs, cwd = repoRoot) =>
   execFileSync(cmd, cmdArgs, { cwd, stdio: "inherit" });
@@ -103,7 +112,6 @@ for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {
 const authorityArtifacts = {
   "darwin-arm64/connect-authority-broker": "75fda2624bf093555e726b968401321fef61ea7ae0479f4c1892be0dfc6554c0",
   "darwin-x64/connect-authority-broker": "e5a49be0db85655b9ff1d0614de9d61defd41a0a1b2eff8f11571407f10d809b",
-  "win32-x64/connect-authority-broker.exe": "2ba903761156ef39235347998201710335ebe4fc97e51420ed1d117d384ce1d7",
 };
 for (const [relativeArtifact, expected] of Object.entries(authorityArtifacts)) {
   const artifact = join(stageDir, "dist", "native", "prebuilds", relativeArtifact);
@@ -121,19 +129,52 @@ for (const artifact of [windowsSupervisor, windowsSupervisorManifest, windowsSup
 const supervisorManifestBytes = readFileSync(windowsSupervisorManifest);
 const supervisorManifest = JSON.parse(supervisorManifestBytes.toString("utf8"));
 if (supervisorManifestBytes.at(-1) !== 0x0a
+  || `${canonicalJson(supervisorManifest)}\n` !== supervisorManifestBytes.toString("utf8")
   || supervisorManifest.format !== "propr-windows-authority-helper-v2"
   || supervisorManifest.protocolVersion !== 2
   || supervisorManifest.pe?.architecture !== "anycpu"
   || supervisorManifest.pe?.managed !== true
+  || supervisorManifest.pe?.deterministic !== true
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.sourceSha256 ?? "")
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.launcherSourceSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.helperSha256 ?? "")
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.launcherSha256 ?? "")
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.compilerSha256 ?? "")
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.launcherCompilerSha256 ?? "")
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.launcherLinkerSha256 ?? "")
+  || createHash("sha256").update(readFileSync(join(stageDir, "dist", "native", "windows-authority-supervisor.cs"))).digest("hex") !== supervisorManifest.sourceSha256
+  || createHash("sha256").update(readFileSync(join(stageDir, "dist", "native", "windows-authority-broker.c"))).digest("hex") !== supervisorManifest.launcherSourceSha256
   || createHash("sha256").update(readFileSync(windowsSupervisor)).digest("hex") !== supervisorManifest.helperSha256) {
   throw new Error("Prebuilt Windows authority helper manifest failed integrity verification");
+}
+const windowsLauncher = join(stageDir, "dist", "native", "prebuilds", "win32-x64", "connect-authority-broker.exe");
+if (!existsSync(windowsLauncher)
+  || createHash("sha256").update(readFileSync(windowsLauncher)).digest("hex") !== supervisorManifest.launcherSha256) {
+  throw new Error("Prebuilt Windows authority launcher failed integrity verification");
 }
 if (supervisorManifest.trust?.mode !== "production-signed"
   && !(supervisorManifest.trust?.mode === "unsigned-validation"
     && process.env.PROPR_WINDOWS_AUTHORITY_PACKAGE_VALIDATION === "1")) {
   throw new Error("Unsigned Windows authority helper cannot enter a production npm artifact");
+}
+if (supervisorManifest.trust?.mode === "production-signed"
+  && (!/^[0-9a-f]{64}$/.test(supervisorManifest.trust.authenticodeLeafSha256 ?? "")
+    || !/^[0-9a-f]{64}$/.test(supervisorManifest.trust.authenticodeSpkiSha256 ?? ""))) {
+  throw new Error("Production Windows authority helper signing pins are missing");
+}
+const supervisorSignatureText = readFileSync(windowsSupervisorSignature, "ascii");
+if (supervisorManifest.trust?.mode === "production-signed"
+  && (supervisorSignatureText.at(-1) !== "\n"
+    || !/^[A-Za-z0-9+/]{86}==\n$/.test(supervisorSignatureText)
+    || !verify(null, supervisorManifestBytes, WINDOWS_AUTHORITY_MANIFEST_PUBLIC_KEY,
+      Buffer.from(supervisorSignatureText.trimEnd(), "base64")))) {
+  throw new Error("Production Windows authority manifest signature is invalid");
+}
+if (supervisorManifest.trust?.mode === "unsigned-validation"
+  && (supervisorManifest.trust.authenticodeLeafSha256 !== null
+    || supervisorManifest.trust.authenticodeSpkiSha256 !== null
+    || supervisorSignatureText !== "UNSIGNED-VALIDATION\n")) {
+  throw new Error("Unsigned Windows authority validation metadata contains signer claims");
 }
 const expectedSupervisorFiles = [
   "connect-authority-supervisor.exe",
