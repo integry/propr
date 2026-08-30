@@ -197,9 +197,9 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
     deepLinkDelivery.didFinishLoad(window);
   });
   window.on('closed', () => {
+    deepLinkDelivery.clearWindow(window);
     if (mainWindow === window) {
       mainWindow = null;
-      deepLinkDelivery.clearWindow(window);
     }
   });
 
@@ -218,6 +218,7 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
   if (preloadBridgeExposed !== true) {
     throw new Error('Desktop preload bridge was not exposed to the renderer');
   }
+  deepLinkDelivery.setWindow(window);
   const smokeProfileApiUrl = process.env.PROPR_DESKTOP_SMOKE_PROFILE_API_URL;
   if (packagedSmokeTest && smokeProfileApiUrl) {
     const normalizedSmokeApiUrl = normalizeApiBaseUrl(smokeProfileApiUrl);
@@ -336,7 +337,6 @@ if (!hasSingleInstanceLock) {
       packagedRendererUrl,
     });
     mainWindow = await createMainWindow();
-    deepLinkDelivery.setWindow(mainWindow);
 
     const updateConfig = __PROPR_DESKTOP_UPDATE_MANIFEST_URL__
       ? {
@@ -365,7 +365,6 @@ if (!hasSingleInstanceLock) {
       if (BrowserWindow.getAllWindows().length === 0) {
         void createMainWindow().then(window => {
           mainWindow = window;
-          deepLinkDelivery.setWindow(window);
         });
       }
     });

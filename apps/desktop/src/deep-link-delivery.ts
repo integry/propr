@@ -24,7 +24,7 @@ export class DeepLinkDelivery<TWindow extends DeepLinkWindow> {
   }
 
   didFinishLoad(window: TWindow): void {
-    this.flush(window);
+    if (this.window === window) this.flush(window);
   }
 
   setWindow(window: TWindow): void {
