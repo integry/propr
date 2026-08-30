@@ -44,6 +44,8 @@ export interface BeginSyntheticRoutingOptions {
   promptTokens?: number;
   outputReserveTokens?: number;
   callId?: string;
+  /** Reject physical agents that cannot satisfy call-specific runtime constraints. */
+  physicalAgentEligibility?: (agent: Agent) => boolean;
 }
 
 export interface SyntheticRoutingServiceOptions {
@@ -70,11 +72,22 @@ export class SyntheticPoolExhaustedError extends Error {
 }
 
 export function isNonRetryableSyntheticFailure(error: unknown): boolean {
-  const value = error as { name?: string; code?: string; message?: string };
-  const name = value?.name || '';
-  const code = value?.code || '';
-  const message = value?.message || String(error || '');
-  if (['AbortError', 'ExecutionAbortedError', 'IndexingCancelledError', 'SecurityException', 'ContextTokenLimitError'].includes(name)) return true;
-  if (['ABORT_ERR', 'ERR_CANCELED', 'SECURITY_POLICY_VIOLATION', 'INVALID_CONFIGURATION', 'PROMPT_TOO_LARGE'].includes(code)) return true;
-  return /(?:aborted|cancelled|canceled) by (?:the )?user|security[- ]policy|security violation|invalid (?:user )?configuration|prompt (?:is )?too (?:large|long)|exceeds (?:the )?(?:model )?context window|context token limit/i.test(message);
+  const value = error as {
+    name?: string;
+    code?: string;
+    message?: string;
+    error?: string;
+    errorName?: string;
+    errorCode?: string;
+    terminationReason?: string;
+    logs?: string;
+  };
+  const names = [value?.name, value?.errorName];
+  const codes = [value?.code, value?.errorCode];
+  const message = [value?.message, value?.error, value?.terminationReason, value?.logs]
+    .filter((item): item is string => typeof item === 'string' && item.length > 0)
+    .join('\n') || String(error || '');
+  if (names.some(name => name && ['AbortError', 'ExecutionAbortedError', 'IndexingCancelledError', 'SecurityException', 'ContextTokenLimitError'].includes(name))) return true;
+  if (codes.some(code => code && ['ABORT_ERR', 'ERR_CANCELED', 'SECURITY_POLICY_VIOLATION', 'INVALID_CONFIGURATION', 'PROMPT_TOO_LARGE'].includes(code))) return true;
+  return /(?:aborted|cancelled|canceled|cancell?ation)(?:\s+by (?:the )?user)?|security[- ]policy|security violation|invalid (?:user )?configuration|prompt (?:is )?too (?:large|long)|exceeds (?:the )?(?:model )?context window|context token limit/i.test(message);
 }

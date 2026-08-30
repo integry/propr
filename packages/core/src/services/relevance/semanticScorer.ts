@@ -77,6 +77,10 @@ function getMaxChunkTokens(modelId?: string): number {
   return DEFAULT_MAX_CHUNK_TOKENS;
 }
 
+function routedAgentAlias(metadata: Record<string, unknown> | undefined, fallback: string): string {
+  return typeof metadata?.physicalAgentAlias === 'string' ? metadata.physicalAgentAlias : fallback;
+}
+
 // --- Main Export ---
 
 /**
@@ -169,6 +173,11 @@ export async function scoreSemanticRelevance(
       const prompt = buildSemanticRankingPrompt(userPrompt, chunkContext);
       const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
       const estimatedOutputTokens = 500;
+      let routedMetadata: Record<string, unknown> | undefined;
+      let actualModelUsed: string | undefined;
+      const callRoute = routingSession
+        ? (index === 0 ? routingSession : routingSession.fork())
+        : undefined;
 
       try {
         // Pass modelId to use the configured context analysis model
@@ -181,12 +190,11 @@ export async function scoreSemanticRelevance(
           metadata: { callType: 'semantic_scoring', chunkIndex: index },
           suppressLlmLog: true
         };
-        const callRoute = routingSession
-          ? (index === 0 ? routingSession : routingSession.fork())
-          : undefined;
         const analysisResult = callRoute
           ? await callRoute.analyze(prompt, analyzeOptions)
           : await agent.analyze(prompt, analyzeOptions);
+        routedMetadata = callRoute?.routingMetadata;
+        actualModelUsed = analysisResult.modelUsed;
         if (!analysisResult.success) {
           throw new Error(analysisResult.error || `Semantic scoring chunk ${index} failed`);
         }
@@ -194,14 +202,15 @@ export async function scoreSemanticRelevance(
         const parsed = parseSemanticResponse(response);
 
         const chunkDurationMs = Date.now() - startTime;
-        const modelUsed = modelId || agent.config.defaultModel || 'unknown';
+        const modelUsed = actualModelUsed || modelId || agent.config.defaultModel || 'unknown';
+        const physicalAgentAlias = routedAgentAlias(routedMetadata, agent.config.alias);
 
         // Log metrics for this chunk
         await logSummarizationCall({
           timestamp: new Date().toISOString(),
           callType: 'semantic_scoring',
           model: modelUsed,
-          agentAlias: agent.config.alias,
+          agentAlias: physicalAgentAlias,
           estimatedInputTokens,
           estimatedOutputTokens,
           estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
@@ -221,8 +230,12 @@ export async function scoreSemanticRelevance(
             output_tokens: estimatedOutputTokens,
           },
           correlationId,
-          agentAlias: agent.config.alias,
-          metadata: { callType: 'semantic_scoring', chunkIndex: index },
+          agentAlias: physicalAgentAlias,
+          metadata: {
+            callType: 'semantic_scoring',
+            chunkIndex: index,
+            ...(routedMetadata && { syntheticRouting: routedMetadata }),
+          },
           workRef: {
             workType: 'repository',
             workRepository: repoName,
@@ -232,8 +245,10 @@ export async function scoreSemanticRelevance(
 
         return parsed.files;
       } catch (err) {
+        routedMetadata ??= callRoute?.routingMetadata;
         const chunkDurationMs = Date.now() - startTime;
-        const modelUsed = modelId || agent.config.defaultModel || 'unknown';
+        const modelUsed = actualModelUsed || modelId || agent.config.defaultModel || 'unknown';
+        const physicalAgentAlias = routedAgentAlias(routedMetadata, agent.config.alias);
         const errorMessage = (err as Error).message;
 
         correlatedLogger.warn({
@@ -245,7 +260,7 @@ export async function scoreSemanticRelevance(
           timestamp: new Date().toISOString(),
           callType: 'semantic_scoring',
           model: modelUsed,
-          agentAlias: agent.config.alias,
+          agentAlias: physicalAgentAlias,
           estimatedInputTokens,
           estimatedOutputTokens,
           estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
@@ -266,8 +281,12 @@ export async function scoreSemanticRelevance(
           },
           error: errorMessage,
           correlationId,
-          agentAlias: agent.config.alias,
-          metadata: { callType: 'semantic_scoring', chunkIndex: index },
+          agentAlias: physicalAgentAlias,
+          metadata: {
+            callType: 'semantic_scoring',
+            chunkIndex: index,
+            ...(routedMetadata && { syntheticRouting: routedMetadata }),
+          },
           workRef: {
             workType: 'repository',
             workRepository: repoName,

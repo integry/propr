@@ -183,7 +183,8 @@ describe('SyntheticRoutingService', () => {
     large.analysisResults.push({ response: '', modelUsed: 'claude-opus-4-6', executionTimeMs: 1, success: false, error: 'provider unavailable' });
     const router = service(db, config({ priorityB: 100 }), [large, small]);
 
-    const result = await router.begin({ requestedAgentAlias: 'pool', requestedModel: 'smart' }).analyze('hello');
+    const session = router.begin({ requestedAgentAlias: 'pool', requestedModel: 'smart' });
+    const result = await session.analyze('hello');
     assert.equal(result.response, 'small');
     assert.equal(large.analyzeCalls.length, 1);
     assert.equal(small.analyzeCalls.length, 1);
@@ -193,6 +194,30 @@ describe('SyntheticRoutingService', () => {
     assert.equal(firstMetadata.attemptNumber, 1);
     assert.equal(secondMetadata.attemptNumber, 2);
     assert.equal(firstMetadata.callId, secondMetadata.callId);
+    assert.deepEqual(session.routingMetadata, secondMetadata);
+  });
+
+  test('applies call-scoped physical eligibility to initial selection and every retry', async () => {
+    const db = await database();
+    const large = direct('large', 'claude-opus-4-6');
+    const small = direct('small', 'gpt-5-mini');
+    large.analysisResults.push({ response: '', modelUsed: 'claude-opus-4-6', executionTimeMs: 1, success: false, error: 'provider unavailable' });
+    const router = service(db, config({ priorityB: 100 }), [large, small]);
+    const session = router.begin({
+      requestedAgentAlias: 'pool',
+      requestedModel: 'smart',
+      physicalAgentEligibility: agent => agent.config.alias === 'large',
+    });
+
+    const first = await session.select();
+    assert.equal(first.physicalAgentAlias, 'large');
+    await assert.rejects(
+      () => session.analyze('hello'),
+      (error: unknown) => error instanceof SyntheticPoolExhaustedError
+        && /physical agent is ineligible for this routing session/.test(error.message),
+    );
+    assert.equal(large.analyzeCalls.length, 1);
+    assert.equal(small.analyzeCalls.length, 0);
   });
 
   test('explicit cancellation is not retried', async () => {
@@ -204,6 +229,34 @@ describe('SyntheticRoutingService', () => {
       .begin({ requestedAgentAlias: 'pool', requestedModel: 'smart' }).analyze('hello');
     assert.equal(result.success, false);
     assert.equal(small.analyzeCalls.length, 0);
+  });
+
+  test('structured implementation cancellation is not retried when error text is absent', async () => {
+    const db = await database();
+    const large = direct('large', 'claude-opus-4-6');
+    const small = direct('small', 'gpt-5-mini');
+    large.taskResults.push({
+      success: false,
+      logs: '',
+      modifiedFiles: [],
+      modelUsed: 'claude-opus-4-6',
+      executionTimeMs: 1,
+      terminationReason: 'cancelled' as never,
+    });
+
+    const result = await service(db, config({ priorityB: 100 }), [large, small])
+      .begin({ requestedAgentAlias: 'pool', requestedModel: 'smart' })
+      .executeTask({
+        worktreePath: '/tmp/worktree',
+        issueRef: { number: 1, repoOwner: 'integry', repoName: 'propr' },
+        prompt: 'implement it',
+        model: 'smart',
+        githubToken: 'test-token',
+      });
+
+    assert.equal(result.success, false);
+    assert.equal(large.taskCalls.length, 1);
+    assert.equal(small.taskCalls.length, 0);
   });
 
   test('implementation failover preserves virtual task identity and records each physical container', async () => {

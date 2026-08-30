@@ -126,11 +126,22 @@ async function routeScoutCandidate(options: PrepareRelatedReviewContextOptions, 
     const routingSession = options.registry.beginRoutingSession({
         requestedAgentAlias: candidate.assignment.agentAlias,
         requestedModel: candidate.assignment.model,
+        physicalAgentEligibility: supportsRuntimeEnforcedRepositoryInspection,
     });
-    const selection = await routingSession.select();
-    const agent = options.registry.getAgentByAlias(selection.physicalAgentAlias);
-    if (!agent || !supportsRuntimeEnforcedRepositoryInspection(agent)) return null;
-    return { candidate, agent, model: selection.physicalModel, routingSession };
+    try {
+        const selection = await routingSession.select();
+        const agent = options.registry.getAgentByAlias(selection.physicalAgentAlias);
+        if (!agent || !supportsRuntimeEnforcedRepositoryInspection(agent)) return null;
+        return { candidate, agent, model: selection.physicalModel, routingSession };
+    } catch (error) {
+        options.correlatedLogger.info({
+            source: candidate.source,
+            agentAlias: candidate.assignment.agentAlias,
+            model: candidate.assignment.model,
+            error: (error as Error).message,
+        }, 'Context scout route is unavailable; trying the next candidate');
+        return null;
+    }
 }
 
 async function selectScoutCandidate(options: PrepareRelatedReviewContextOptions): Promise<{
@@ -153,12 +164,18 @@ async function selectScoutCandidate(options: PrepareRelatedReviewContextOptions)
         if (!candidate) continue;
         consideredCandidates.push(candidate);
         const agent = getRepositoryConfinedAgent(options, candidate);
-        if (agent) return routeScoutCandidate(options, candidate);
+        if (agent) {
+            const routed = await routeScoutCandidate(options, candidate);
+            if (routed) return routed;
+        }
     }
     const reviewerCandidate: ScoutCandidate = { source: 'reviewer model', assignment: options.fallbackAssignment };
     consideredCandidates.push(reviewerCandidate);
     const reviewerAgent = getRepositoryConfinedAgent(options, reviewerCandidate);
-    if (reviewerAgent) return routeScoutCandidate(options, reviewerCandidate);
+    if (reviewerAgent) {
+        const routed = await routeScoutCandidate(options, reviewerCandidate);
+        if (routed) return routed;
+    }
 
     options.correlatedLogger.info({
         candidates: consideredCandidates.map(candidate => ({

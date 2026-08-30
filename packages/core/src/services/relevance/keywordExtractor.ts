@@ -227,6 +227,8 @@ export async function extractKeywordsWithLLM(
   const startTime = Date.now();
   let success = false;
   let errorMessage: string | undefined;
+  let routedMetadata: Record<string, unknown> | undefined;
+  let actualModelUsed: string | undefined;
   const cachedSettings = await getCachedSettings();
 
   try {
@@ -247,6 +249,8 @@ export async function extractKeywordsWithLLM(
     const analysisResult = routingSession
       ? await routingSession.analyze(llmPrompt, analyzeOptions)
       : await agent.analyze(llmPrompt, analyzeOptions);
+    routedMetadata = routingSession?.routingMetadata;
+    actualModelUsed = analysisResult.modelUsed;
     if (!analysisResult.success) {
       throw new Error(analysisResult.error || 'Context keyword analysis failed');
     }
@@ -289,7 +293,11 @@ export async function extractKeywordsWithLLM(
     return { primary: [], alternatives: [], all: [] };
   } finally {
     const durationMs = Date.now() - startTime;
-    const modelUsed = cachedSettings.planner_context_model as string || agent.config.defaultModel || 'unknown';
+    routedMetadata ??= routingSession?.routingMetadata;
+    const modelUsed = actualModelUsed || (cachedSettings.planner_context_model as string) || agent.config.defaultModel || 'unknown';
+    const physicalAgentAlias = typeof routedMetadata?.physicalAgentAlias === 'string'
+      ? routedMetadata.physicalAgentAlias
+      : agent.config.alias;
 
     // Persist to llm_logs table
     const logEntry = createLlmLogFromAnalysis({
@@ -299,8 +307,11 @@ export async function extractKeywordsWithLLM(
       success,
       error: errorMessage,
       correlationId,
-      agentAlias: agent.config.alias,
-      metadata: { callType: 'keyword_extraction' },
+      agentAlias: physicalAgentAlias,
+      metadata: {
+        callType: 'keyword_extraction',
+        ...(routedMetadata && { syntheticRouting: routedMetadata }),
+      },
       workRef: {
         workType: 'repository',
       },

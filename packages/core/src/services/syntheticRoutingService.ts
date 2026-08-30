@@ -108,6 +108,7 @@ export class SyntheticRoutingSession {
   private readonly attemptedMemberIds = new Set<string>();
   private readonly attemptFailures = new Map<string, string>();
   private executionAttemptCount = 0;
+  private readonly physicalAgentEligibility?: (agent: Agent) => boolean;
 
   public readonly requestedAgentAlias: string;
   public readonly requestedModel: string;
@@ -116,12 +117,14 @@ export class SyntheticRoutingSession {
 
   constructor(
     private readonly service: SyntheticRoutingService,
-    options: Required<Pick<BeginSyntheticRoutingOptions, 'requestedAgentAlias' | 'requestedModel' | 'requiredTokens' | 'callId'>>,
+    options: Required<Pick<BeginSyntheticRoutingOptions, 'requestedAgentAlias' | 'requestedModel' | 'requiredTokens' | 'callId'>>
+      & Pick<BeginSyntheticRoutingOptions, 'physicalAgentEligibility'>,
   ) {
     this.requestedAgentAlias = options.requestedAgentAlias;
     this.requestedModel = options.requestedModel;
     this._requiredTokens = options.requiredTokens;
     this.callId = options.callId;
+    this.physicalAgentEligibility = options.physicalAgentEligibility;
   }
 
   get requiredTokens(): number {
@@ -131,6 +134,11 @@ export class SyntheticRoutingSession {
   get attemptedMembers(): ReadonlySet<string> {
     return this.attemptedMemberIds;
   }
+
+  /** Metadata for the physical member currently selected by a synthetic call. */
+  get routingMetadata(): Record<string, unknown> | undefined { return this.current?.synthetic ? this.service.metadataFor(this.current) : undefined; }
+
+  isPhysicalAgentEligible(agent: Agent): boolean { return this.physicalAgentEligibility?.(agent) ?? true; }
 
   async select(): Promise<SyntheticPhysicalSelection> {
     if (this.current) return this.current;
@@ -154,6 +162,7 @@ export class SyntheticRoutingSession {
       requestedAgentAlias: this.requestedAgentAlias,
       requestedModel: this.requestedModel,
       requiredTokens: this.requiredTokens,
+      physicalAgentEligibility: this.physicalAgentEligibility,
     });
   }
 
@@ -190,7 +199,7 @@ export class SyntheticRoutingSession {
         });
         if (result.success) return result;
         const failure = resultFailure(result);
-        if (isNonRetryableSyntheticFailure(failure) || !selection.synthetic) return result;
+        if (isNonRetryableSyntheticFailure(result) || !selection.synthetic) return result;
         this.failCurrent(failure.message);
       } catch (error) {
         if (isNonRetryableSyntheticFailure(error) || !selection.synthetic) throw error;
@@ -223,7 +232,7 @@ export class SyntheticRoutingSession {
         });
         if (result.success) return result;
         const failure = resultFailure(result);
-        if (isNonRetryableSyntheticFailure(failure) || !selection.synthetic) return result;
+        if (isNonRetryableSyntheticFailure(result) || !selection.synthetic) return result;
         this.failCurrent(failure.message);
       } catch (error) {
         if (isNonRetryableSyntheticFailure(error) || !selection.synthetic) throw error;
@@ -254,6 +263,7 @@ export class SyntheticRoutingService {
       requestedModel: options.requestedModel || '',
       requiredTokens,
       callId: options.callId || randomUUID(),
+      physicalAgentEligibility: options.physicalAgentEligibility,
     });
   }
 
@@ -284,6 +294,7 @@ export class SyntheticRoutingService {
     if (session.attemptedMembers.has(member.id)) return reject(session.failureReason(member.id) ? `attempt failed: ${session.failureReason(member.id)}` : 'already attempted');
     const agent = this.getDirectAgent(member.directAgentAlias);
     if (!agent || !agent.config.enabled) return reject('direct agent unavailable or disabled');
+    if (!session.isPhysicalAgentEligible(agent)) return reject('physical agent is ineligible for this routing session');
     if (!agent.config.supportedModels.includes(member.model)) return reject('model is not supported by the direct agent');
     const hardLimit = getModelHardLimit(`${member.directAgentAlias}:${member.model}`);
     if (session.requiredTokens > hardLimit) return reject(`context window ${hardLimit} is below required ${session.requiredTokens} tokens`);
@@ -328,6 +339,9 @@ export class SyntheticRoutingService {
     if (!synthetic) {
       const agent = this.getDirectAgent(session.requestedAgentAlias);
       if (!agent) throw new Error(`Agent not found: ${session.requestedAgentAlias}`);
+      if (!session.isPhysicalAgentEligible(agent)) {
+        throw new Error(`Physical agent '${session.requestedAgentAlias}' is ineligible for this routing session`);
+      }
       const physicalModel = session.requestedModel || agent.config.defaultModel;
       if (!physicalModel) throw new Error(`No model configured for direct agent '${session.requestedAgentAlias}'`);
       return {
