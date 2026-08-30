@@ -263,6 +263,22 @@ export const prepareWindowsAuthorityBuildDirectory = async (root = WINDOWS_NATIV
   await authorityAclTool(KERNEL_ICACLS, [root, '/inheritance:r', '/T', '/C', '/Q']);
   await authorityAclTool(KERNEL_ICACLS, [root, '/grant:r', `${ADMINISTRATORS_SID}:(OI)(CI)F`,
     `${SYSTEM_SID}:(OI)(CI)F`, `*${currentSid}:(OI)(CI)M`, '/T', '/C', '/Q']);
+  return currentSid;
+};
+
+// Hosted runners do not consistently materialize the recursive directory ACL
+// transition as an exact protected child-file descriptor. Apply the same
+// already-authorized principals directly to each newly created build artifact,
+// with no inheritance flags, and set its owner to the fixed token SID that was
+// independently derived and checked above. The build bootstrap revalidates
+// every predicate from one held handle before loading the launcher.
+const protectWindowsBuildArtifact = async (target, currentSid) => {
+  if (!canonicalAccountSid(currentSid)) fail('BOOTSTRAP_AUTH');
+  await authorityAclTool(KERNEL_ICACLS, [target, '/reset', '/Q']);
+  await authorityAclTool(KERNEL_ICACLS, [target, '/inheritance:r', '/Q']);
+  await authorityAclTool(KERNEL_ICACLS, [target, '/grant:r', `${ADMINISTRATORS_SID}:F`,
+    `${SYSTEM_SID}:F`, `*${currentSid}:M`, '/Q']);
+  await authorityAclTool(KERNEL_ICACLS, [target, '/setowner', `*${currentSid}`, '/Q']);
 };
 
 // Publish an OS-owned, protected, read/execute-only application authority.
@@ -367,8 +383,10 @@ const stageWindowsNativeLauncher = async (expected, options = {}) => {
   await publishHeldArtifact(WINDOWS_NATIVE_BUILD_BOOTSTRAP, buildBootstrapBytes, process.arch);
   // Newly created children must themselves carry protected DACLs; a protected
   // parent alone does not make a child's security descriptor authoritative.
-  await prepareWindowsAuthorityBuildDirectory(WINDOWS_NATIVE_AUTHORITY_DIRECTORY);
-  await prepareWindowsAuthorityBuildDirectory(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY);
+  const authorityOwnerSid = await prepareWindowsAuthorityBuildDirectory(WINDOWS_NATIVE_AUTHORITY_DIRECTORY);
+  const stagingOwnerSid = await prepareWindowsAuthorityBuildDirectory(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY);
+  if (authorityOwnerSid !== stagingOwnerSid) fail('BOOTSTRAP_AUTH');
+  await protectWindowsBuildArtifact(WINDOWS_NATIVE_LAUNCHER, authorityOwnerSid);
   nativeRebuildEvidence('STAGED');
   return {
     skipped: false,

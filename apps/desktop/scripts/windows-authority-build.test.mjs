@@ -112,7 +112,8 @@ test('compiler failures expose only fixed non-secret authenticate-to-spawn subst
     'POLICY_NAME', 'POLICY_HASH', 'POLICY_TUPLE', 'WINTRUST_POLICY',
     'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
     'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'BOOTSTRAP_READ', 'BOOTSTRAP_AUTH',
-    'LAUNCHER_AUTH', 'SAME_IMAGE', 'LEASE', 'SOURCE_COPY', 'SPAWN',
+    'LAUNCHER_AUTH', 'OPEN', 'FILE_META', 'OWNER', 'DACL', 'DACL_PROTECTED', 'ARCH', 'HASH',
+    'SAME_IMAGE', 'LEASE', 'SOURCE_COPY', 'SPAWN',
     'COMPILE', 'LINK', 'EXIT', 'TIMEOUT', 'OUTPUT_LIMIT', 'IMAGE', 'OUTPUT_VALIDATION',
   ]);
   assert.ok(WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.every(stage => /^[A-Z_]{4,24}$/.test(stage)));
@@ -140,6 +141,9 @@ test('native launcher authentication failures map to fixed secret-free substages
   assert.equal(nativeLauncherAuthenticationSubstage({ code: 'MODULE_AUTHORITY' }), 'LAUNCHER_AUTH');
   assert.equal(nativeLauncherAuthenticationSubstage({ code: 'MODULE_ARGUMENT' }), 'LAUNCHER_AUTH');
   assert.equal(nativeLauncherAuthenticationSubstage({ code: 'MODULE_IMAGE' }), 'SAME_IMAGE');
+  for (const predicate of ['OPEN', 'FILE_META', 'OWNER', 'DACL', 'DACL_PROTECTED', 'ARCH', 'HASH']) {
+    assert.equal(nativeLauncherAuthenticationSubstage({ code: predicate }), predicate);
+  }
   assert.equal(nativeLauncherAuthenticationSubstage(new Error('C:\\secret\\module.node')), 'LAUNCHER_AUTH');
 });
 
@@ -331,6 +335,10 @@ test('the current-owner exception exists only in the unshipped build bootstrap',
   assert.match(nativeBuild, /`\*\$\{currentSid\}:\(OI\)\(CI\)M`/);
   assert.doesNotMatch(nativeBuild, /process\.env\.(?:USERNAME|USER|USERDOMAIN)/);
   assert.match(nativeBuild, /KERNEL_ICACLS, \[root, '\/reset', '\/T', '\/C', '\/Q'\]/);
+  assert.match(nativeBuild, /KERNEL_ICACLS, \[target, '\/reset', '\/Q'\]/);
+  assert.match(nativeBuild, /KERNEL_ICACLS, \[target, '\/inheritance:r', '\/Q'\]/);
+  assert.match(nativeBuild, /KERNEL_ICACLS, \[target, '\/setowner', `\*\$\{currentSid\}`, '\/Q'\]/);
+  assert.match(nativeBuild, /protectWindowsBuildArtifact\(WINDOWS_NATIVE_LAUNCHER, authorityOwnerSid\)/);
   assert.match(nativeBuild, /resolveWindowsAclTool\(tool\)/);
   assert.match(nativeBuild, /await invoke\(tool, args, \{/);
   assert.doesNotMatch(nativeBuild, /execFileAsync\(tool, args,[\s\S]{0,180}\.catch/);
@@ -338,7 +346,13 @@ test('the current-owner exception exists only in the unshipped build bootstrap',
   assert.match(await readFile(new URL('./build-windows-authority-helper.mjs', import.meta.url), 'utf8'),
     /readHeldBuildOutput\([\s\S]*launcher\.buildBootstrap\.path[\s\S]*launcher\.buildBootstrap\.sha256/);
   assert.match(nativeSource, /authentication_mode == "held-build-artifact"/);
-  assert.match(nativeSource, /SecureRegularFile\(held, expected_size, &held_id, allow_current_build_owner, allow_current_build_owner\)/);
+  assert.match(nativeSource, /DiagnoseSecureRegularFile\([\s\S]*held, expected_size, &held_id,[\s\S]*allow_current_build_owner/);
+  assert.match(nativeSource,
+    /SecureRegularFile\([\s\S]{0,80}held, expected_size, &held_id, allow_current_build_owner, allow_current_build_owner\)/);
+  assert.match(nativeSource, /#if defined\(PROPR_WINDOWS_BUILD_BOOTSTRAP\)[\s\S]*Throw\(env, "OPEN"\)/);
+  for (const predicate of ['FILE_META', 'OWNER', 'DACL', 'DACL_PROTECTED', 'ARCH', 'HASH']) {
+    assert.match(nativeSource, new RegExp(`Throw\\(env, "${predicate}"\\)`));
+  }
   assert.match(nativeSource, /SameIdentity\(held_id, loaded_id\)/);
   assert.match(runtime, /authenticationMode: 'runtime'/);
   assert.doesNotMatch(runtime, /held-build-artifact/);
@@ -476,7 +490,7 @@ test('protected build staging removes hostile explicit and inherited ACEs and re
       await rename(root, displaced);
       await mkdir(root);
       await copyFile(launcher.path, artifact);
-      assert.throws(() => buildBootstrap.loadVerifiedModule(policy), error => error?.code === 'MODULE_AUTHORITY',
+      assert.throws(() => buildBootstrap.loadVerifiedModule(policy), error => error?.code === 'DACL',
         'a pathname swap cannot inherit the protected staging capability');
       await rm(root, { recursive: true, force: true });
       await rename(displaced, root);
@@ -509,6 +523,26 @@ test('real filtered current token can read and authenticate exact build staging'
     signerSpkiSha256: null,
   }).compileHeld, 'function');
 });
+
+test('hosted x64 and ARM64 stage the exact launcher predicate before compilation',
+  windowsNativeBuildOnly, async () => {
+    assert.ok(process.arch === 'x64' || process.arch === 'arm64');
+    const launcher = await buildWindowsNativeLauncher({ restage: true });
+    assert.equal(launcher.architecture, process.arch);
+    const buildBootstrap = require(nativeBuildBootstrapPath);
+    const authenticated = buildBootstrap.loadVerifiedModule({
+      path: launcher.path,
+      size: launcher.size,
+      sha256: launcher.sha256,
+      production: false,
+      authenticationMode: 'held-build-artifact',
+      publisher: null,
+      signerCertificateSha256: null,
+      signerSpkiSha256: null,
+    });
+    assert.equal(typeof authenticated.compileHeld, 'function',
+      `${process.arch} staged launcher passes OPEN, FILE_META, OWNER, DACL, DACL_PROTECTED, ARCH, and HASH`);
+  });
 
 test('build-owner module authentication is compile-time-only, ACL-strict, and held-identity-bound',
   windowsNativeBuildOnly, async () => {
@@ -546,13 +580,13 @@ test('build-owner module authentication is compile-time-only, ACL-strict, and he
         [broad, '/inheritance:r', '/grant:r', '*S-1-5-32-545:M', '/Q']);
       assert.throws(() => buildBootstrap.loadVerifiedModule({
         ...policy, path: broad, authenticationMode: 'held-build-artifact',
-      }), error => error?.code === 'MODULE_AUTHORITY');
+      }), error => error?.code === 'DACL');
       await prepareWindowsAuthorityBuildDirectory(root);
       await invokeWindowsAclTool(await resolveWindowsAclTool(kernelIcacls),
         [broad, '/grant', '*S-1-5-21-111111111-222222222-333333333-4444:M', '/Q']);
       assert.throws(() => buildBootstrap.loadVerifiedModule({
         ...policy, path: broad, authenticationMode: 'held-build-artifact',
-      }), error => error?.code === 'MODULE_AUTHORITY', 'a different user SID cannot gain staging write authority');
+      }), error => error?.code === 'DACL', 'a different user SID cannot gain staging write authority');
     } finally { await rm(root, { recursive: true, force: true }); }
 
     const loaded = buildBootstrap.loadVerifiedModule({
@@ -577,7 +611,8 @@ test('bounded build child unloads staging modules before cleanup and preserves a
     assert.deepEqual(exact.buildChildEvidence, WINDOWS_BUILD_CHILD_EVIDENCE);
     await assert.rejects(lstat(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY), error => error?.code === 'ENOENT');
 
-    for (const primary of ['BOOTSTRAP_AUTH', 'LAUNCHER_AUTH', 'SAME_IMAGE']) {
+    for (const primary of ['BOOTSTRAP_AUTH', 'LAUNCHER_AUTH', 'OPEN', 'FILE_META', 'OWNER', 'DACL',
+      'DACL_PROTECTED', 'ARCH', 'HASH', 'SAME_IMAGE']) {
       await assert.rejects(
         buildWindowsAuthorityHelper({
           ...process.env,

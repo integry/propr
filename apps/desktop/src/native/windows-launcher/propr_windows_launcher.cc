@@ -354,6 +354,58 @@ bool SecureObjectAcl(HANDLE object, bool allow_current_user = true) {
   return secure;
 }
 
+#if defined(PROPR_WINDOWS_BUILD_BOOTSTRAP)
+enum class SecureRegularFileFailure {
+  None,
+  FileMeta,
+  Owner,
+  Dacl,
+  DaclProtected,
+};
+
+bool AcceptedFileOwner(PSID owner, bool allow_current_user) {
+  return owner != nullptr
+    && ((allow_current_user && CurrentUserSid(owner)) || SameSid(owner, L"S-1-5-18")
+      || SameSid(owner, L"S-1-5-32-544")
+      || SameSid(owner, L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"));
+}
+
+SecureRegularFileFailure DiagnoseSecureRegularFile(HANDLE file, DWORD expected_size, FileIdInfo* identity,
+    bool require_protected = true, bool allow_current_user = true) {
+  AttributeTagInfo tag{};
+  BY_HANDLE_FILE_INFORMATION basic{};
+  if (!GetFileInformationByHandle(file, &basic)
+      || !GetFileInformationByHandleEx(file, static_cast<FILE_INFO_BY_HANDLE_CLASS>(kFileAttributeTagInfo), &tag, sizeof(tag))
+      || !FileIdentity(file, identity) || (tag.attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+      || (tag.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 || tag.reparse_tag != 0
+      || basic.nNumberOfLinks != 1 || basic.nFileSizeHigh != 0 || basic.nFileSizeLow != expected_size) {
+    return SecureRegularFileFailure::FileMeta;
+  }
+  PSECURITY_DESCRIPTOR owner_descriptor = nullptr;
+  PSID owner = nullptr;
+  const DWORD owner_status = GetSecurityInfo(file, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+    &owner, nullptr, nullptr, nullptr, &owner_descriptor);
+  const bool accepted_owner = owner_status == ERROR_SUCCESS && AcceptedFileOwner(owner, allow_current_user);
+  if (owner_descriptor) LocalFree(owner_descriptor);
+  if (!accepted_owner) return SecureRegularFileFailure::Owner;
+
+  PSECURITY_DESCRIPTOR dacl_descriptor = nullptr;
+  PACL dacl = nullptr;
+  const DWORD dacl_status = GetSecurityInfo(file, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+    nullptr, nullptr, &dacl, nullptr, &dacl_descriptor);
+  if (dacl_status != ERROR_SUCCESS || dacl == nullptr || DangerousUntrustedAcl(dacl, allow_current_user)) {
+    if (dacl_descriptor) LocalFree(dacl_descriptor);
+    return SecureRegularFileFailure::Dacl;
+  }
+  SECURITY_DESCRIPTOR_CONTROL control = 0;
+  DWORD revision = 0;
+  const bool protected_dacl = GetSecurityDescriptorControl(dacl_descriptor, &control, &revision)
+    && (!require_protected || (control & SE_DACL_PROTECTED) != 0);
+  if (dacl_descriptor) LocalFree(dacl_descriptor);
+  return protected_dacl ? SecureRegularFileFailure::None : SecureRegularFileFailure::DaclProtected;
+}
+#endif
+
 bool SecureRegularFile(HANDLE file, DWORD expected_size, FileIdInfo* identity, bool require_protected = true,
     bool allow_current_user = true) {
   AttributeTagInfo tag{};
@@ -1153,13 +1205,43 @@ napi_value LoadVerifiedModule(napi_env env, napi_callback_info info) {
     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
   FileIdInfo held_id{};
   std::string held_hash;
+#if defined(PROPR_WINDOWS_BUILD_BOOTSTRAP)
+  SecureRegularFileFailure file_failure = SecureRegularFileFailure::None;
+  bool regular_file_valid = false;
+  bool architecture_valid = false;
+  bool hash_valid = false;
+  if (held != INVALID_HANDLE_VALUE) {
+    file_failure = DiagnoseSecureRegularFile(
+      held, expected_size, &held_id, allow_current_build_owner, allow_current_build_owner);
+    if (file_failure == SecureRegularFileFailure::None)
+      regular_file_valid = SecureRegularFile(
+        held, expected_size, &held_id, allow_current_build_owner, allow_current_build_owner);
+    if (regular_file_valid) architecture_valid = ExpectedArchitecture(held);
+    if (architecture_valid) {
+      hash_valid = Sha256Handle(held, expected_size, &held_hash) && held_hash == expected_hash;
+    }
+  }
+  const bool authenticated = held != INVALID_HANDLE_VALUE && regular_file_valid && architecture_valid && hash_valid
+    && (!production || VerifyPinnedSignature(path, held, publisher, certificate_pin, spki_pin));
+#else
   const bool authenticated = held != INVALID_HANDLE_VALUE
     && SecureRegularFile(held, expected_size, &held_id, allow_current_build_owner, allow_current_build_owner)
     && ExpectedArchitecture(held)
     && Sha256Handle(held, expected_size, &held_hash) && held_hash == expected_hash
     && (!production || VerifyPinnedSignature(path, held, publisher, certificate_pin, spki_pin));
+#endif
   if (!authenticated) {
     if (held != INVALID_HANDLE_VALUE) CloseHandle(held);
+#if defined(PROPR_WINDOWS_BUILD_BOOTSTRAP)
+    if (held == INVALID_HANDLE_VALUE) { Throw(env, "OPEN"); return nullptr; }
+    if (file_failure == SecureRegularFileFailure::FileMeta) { Throw(env, "FILE_META"); return nullptr; }
+    if (file_failure == SecureRegularFileFailure::Owner) { Throw(env, "OWNER"); return nullptr; }
+    if (file_failure == SecureRegularFileFailure::Dacl) { Throw(env, "DACL"); return nullptr; }
+    if (file_failure == SecureRegularFileFailure::DaclProtected) { Throw(env, "DACL_PROTECTED"); return nullptr; }
+    if (!regular_file_valid) { Throw(env, "MODULE_AUTHORITY"); return nullptr; }
+    if (!architecture_valid) { Throw(env, "ARCH"); return nullptr; }
+    if (!hash_valid) { Throw(env, "HASH"); return nullptr; }
+#endif
     Throw(env, "MODULE_AUTHORITY"); return nullptr;
   }
   if (fault.rfind("barrier-before-module-load-", 0) == 0 && !MutationWasDenied(path, fault)) {
