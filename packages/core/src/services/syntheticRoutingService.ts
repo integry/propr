@@ -1,33 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
-import type {
-  SyntheticAgentConfig,
-  SyntheticModelConfig,
-  SyntheticModelMember,
-} from '@propr/shared';
+import type { SyntheticAgentConfig, SyntheticModelConfig, SyntheticModelMember } from '@propr/shared';
 import { db } from '../db/connection.js';
 import { getModelHardLimit } from '../config/modelLimits.js';
 import { loadAgentTankSettings, loadSyntheticAgents } from '../config/configManager.js';
 import { getStatus, type AgentStatusResponse } from './agentTankService.js';
-import type {
-  Agent,
-  AgentExecutionResult,
-  AgentTaskOptions,
-  AnalysisResult,
-  AnalyzeOptions,
-} from '../agents/types.js';
+import type { Agent, AgentExecutionResult, AgentTaskOptions, AnalysisResult, AnalyzeOptions } from '../agents/types.js';
 import logger from '../utils/logger.js';
 import { estimateTokens } from '../utils/tokenCalculation.js';
-import {
-  SyntheticPoolExhaustedError,
-  isNonRetryableSyntheticFailure,
-  type BeginSyntheticRoutingOptions,
-  type SyntheticMemberDiagnostic,
-  type SyntheticPhysicalSelection,
-  type SyntheticRoutingServiceOptions,
-  type SyntheticUsageSnapshot,
-  type SyntheticUsageSnapshotProvider,
-} from './syntheticRoutingTypes.js';
+import { SyntheticPoolExhaustedError, isNonRetryableSyntheticFailure } from './syntheticRoutingTypes.js';
+import type { BeginSyntheticRoutingOptions, SyntheticMemberDiagnostic, SyntheticPhysicalSelection, SyntheticRoutingServiceOptions, SyntheticUsageSnapshot, SyntheticUsageSnapshotProvider } from './syntheticRoutingTypes.js';
 
 export * from './syntheticRoutingTypes.js';
 

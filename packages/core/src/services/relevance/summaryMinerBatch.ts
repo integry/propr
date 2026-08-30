@@ -5,15 +5,8 @@ import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
 import { resolveExpectedSummaryPath } from './summaryMinerDirectoryHelpers.js';
 import { saveBatchSummaries, logFileBatchCall, type SummaryResult } from './summaryMinerBatchPersistence.js';
-import {
-  clearSummarizationCooldown,
-  clearSummarizationPrimaryQuotaFailures,
-  isSummarizationInvalidResponseError,
-  promoteSummarizationFallbackIfNeeded,
-  recordPrimarySummarizationQuotaFailure,
-  recordPrimarySummarizationResponseFailure,
-  recordSummarizationCooldown
-} from '../../config/configManager.js';
+import { clearSummarizationCooldown, clearSummarizationPrimaryQuotaFailures, isSummarizationInvalidResponseError, promoteSummarizationFallbackIfNeeded } from '../../config/configManager.js';
+import { recordPrimarySummarizationQuotaFailure, recordPrimarySummarizationResponseFailure, recordSummarizationCooldown } from '../../config/configManager.js';
 import { SyntheticPoolExhaustedError, type SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
@@ -65,6 +58,13 @@ export interface ProcessSingleBatchResult {
   stopProcessing: boolean;
   primaryAgentAlias?: string;
   fallbackAgentAlias?: string;
+}
+
+interface BatchAnalysisResult {
+  results: SummaryResult[]; agentUsed: Agent;
+  modelLogged: string;
+  fallbackUsed: boolean;
+  primaryAgentAlias?: string; fallbackAgentAlias?: string;
 }
 
 export const DEFAULT_INSTRUCTIONS = `You are a code expert. Analyze the following source code files.
@@ -150,17 +150,11 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
   };
 }
 
-async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { prompt: string }): Promise<{
-  results: SummaryResult[];
-  agentUsed: Agent;
-  modelLogged: string;
-  fallbackUsed: boolean;
-  primaryAgentAlias?: string;
-  fallbackAgentAlias?: string;
-}> {
+async function analyzeBatchWithFallback(
+  options: ProcessSingleBatchOptions & { prompt: string }
+): Promise<BatchAnalysisResult> {
   const {
-    prompt, batch, agent, log, modelUsed, primaryAgentAliasSetting,
-    fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch
+    prompt, batch, agent, log, modelUsed, primaryAgentAliasSetting, fullName, branch
   } = options;
 
   try {
@@ -176,89 +170,109 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
     );
     return { results, agentUsed: agent, modelLogged: modelUsed, fallbackUsed: false };
   } catch (primaryError) {
-    const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
-    const syntheticRouteUnavailable = primaryError instanceof SyntheticPoolExhaustedError;
-    // Only quota/usage-limit exhaustion and invalid model output trigger the
-    // fallback model. An exhausted synthetic route is also eligible because it
-    // represents the configured primary pool being unavailable for this call.
-    if (!isQuotaExhaustionError(primaryError) && !syntheticRouteUnavailable) {
-      if (isSummarizationInvalidResponseError(primaryError)) {
-        if (fallbackAgent && fallbackAgentAliasSetting) {
-          return analyzeBatchWithInvalidResponseFallback(primaryError, primaryAgentAlias, options);
-        }
-        await recordSummarizationCooldown({
-          repository: fullName,
-          branch,
-          primaryAgentAlias,
-          reason: 'Primary summarization model returned unusable output after retries and no fallback model is configured.'
-        });
-        throw new SummarizationCooldownRecordedError(primaryError);
-      }
-      throw primaryError;
-    }
+    return analyzeBatchAfterPrimaryFailure(
+      primaryError, primaryAgentAliasSetting || agent.config.alias, options
+    );
+  }
+}
 
-    if (syntheticRouteUnavailable && (!fallbackAgent || !fallbackAgentAliasSetting)) {
-      throw primaryError;
-    }
+async function analyzeNonQuotaPrimaryFailure(
+  primaryError: unknown,
+  primaryAgentAlias: string,
+  options: ProcessSingleBatchOptions & { prompt: string }
+): Promise<BatchAnalysisResult> {
+  if (!isSummarizationInvalidResponseError(primaryError)) throw primaryError;
+  if (options.fallbackAgent && options.fallbackAgentAliasSetting) {
+    return analyzeBatchWithInvalidResponseFallback(primaryError, primaryAgentAlias, options);
+  }
+  await recordSummarizationCooldown({
+    repository: options.fullName,
+    branch: options.branch,
+    primaryAgentAlias,
+    reason: 'Primary summarization model returned unusable output after retries and no fallback model is configured.'
+  });
+  throw new SummarizationCooldownRecordedError(primaryError);
+}
 
-    if (!fallbackAgent || !fallbackAgentAliasSetting) {
-      await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias });
-      await recordSummarizationCooldown({
-        repository: fullName,
-        branch,
-        primaryAgentAlias,
-        reason: 'Primary summarization model is quota-limited and no fallback model is configured.'
-      });
-      throw new SummarizationCooldownRecordedError(primaryError);
-    }
+async function analyzeBatchAfterPrimaryFailure(
+  primaryError: unknown,
+  primaryAgentAlias: string,
+  options: ProcessSingleBatchOptions & { prompt: string }
+): Promise<BatchAnalysisResult> {
+  const {
+    prompt, batch, agent, log, fallbackAgent, fallbackModelOverride,
+    fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch
+  } = options;
+  const syntheticRouteUnavailable = primaryError instanceof SyntheticPoolExhaustedError;
+  // Only quota/usage-limit exhaustion and invalid model output trigger the
+  // fallback model. An exhausted synthetic route is also eligible because it
+  // represents the configured primary pool being unavailable for this call.
+  if (!isQuotaExhaustionError(primaryError) && !syntheticRouteUnavailable) {
+    return analyzeNonQuotaPrimaryFailure(primaryError, primaryAgentAlias, options);
+  }
 
+  if (syntheticRouteUnavailable && (!fallbackAgent || !fallbackAgentAliasSetting)) {
+    throw primaryError;
+  }
+
+  if (!fallbackAgent || !fallbackAgentAliasSetting) {
+    await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias });
+    await recordSummarizationCooldown({
+      repository: fullName,
+      branch,
+      primaryAgentAlias,
+      reason: 'Primary summarization model is quota-limited and no fallback model is configured.'
+    });
+    throw new SummarizationCooldownRecordedError(primaryError);
+  }
+
+  if (!syntheticRouteUnavailable) {
+    await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
+  }
+
+  log.warn({
+    error: (primaryError as Error).message,
+    primaryAgentAlias: agent.config.alias,
+    fallbackAgentAlias: fallbackAgent.config.alias,
+    fallbackModel: fallbackModelUsed ?? fallbackModelOverride
+  }, syntheticRouteUnavailable
+    ? 'Primary synthetic summarization route unavailable; retrying batch with fallback'
+    : 'Primary summarization model quota-limited; retrying batch with fallback');
+
+  try {
+    const results = await analyzeBatchWithAgent({
+      prompt,
+      batch,
+      agent: fallbackAgent,
+      model: fallbackModelUsed ?? fallbackModelOverride,
+      context: `batch_summarization_fallback:${fullName}`,
+      fullName,
+      retryOptions: SUMMARIZATION_FALLBACK_RETRY
+    });
     if (!syntheticRouteUnavailable) {
-      await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
-    }
-
-    log.warn({
-      error: (primaryError as Error).message,
-      primaryAgentAlias: agent.config.alias,
-      fallbackAgentAlias: fallbackAgent.config.alias,
-      fallbackModel: fallbackModelUsed ?? fallbackModelOverride
-    }, syntheticRouteUnavailable
-      ? 'Primary synthetic summarization route unavailable; retrying batch with fallback'
-      : 'Primary summarization model quota-limited; retrying batch with fallback');
-
-    try {
-      const results = await analyzeBatchWithAgent({
-        prompt,
-        batch,
-        agent: fallbackAgent,
-        model: fallbackModelUsed ?? fallbackModelOverride,
-        context: `batch_summarization_fallback:${fullName}`,
-        fullName,
-        retryOptions: SUMMARIZATION_FALLBACK_RETRY
-      });
-      if (!syntheticRouteUnavailable) {
-        await clearSummarizationCooldown(fullName, branch, {
-          primaryAgentAlias,
-          fallbackAgentAlias: fallbackAgentAliasSetting,
-          clearDegradationWarning: true
-        });
-        // Promote only now that the fallback has proven it can summarize this batch.
-        await promoteSummarizationFallbackIfNeeded({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
-      }
-      return {
-        results,
-        agentUsed: fallbackAgent,
-        modelLogged: fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent.config.defaultModel ?? 'unknown',
-        fallbackUsed: true,
+      await clearSummarizationCooldown(fullName, branch, {
         primaryAgentAlias,
-        fallbackAgentAlias: fallbackAgentAliasSetting
-      };
-    } catch (fallbackError) {
-      if (syntheticRouteUnavailable) throw fallbackError;
-      await recordCooldownAfterFallbackFailure({
-        error: fallbackError, fullName, branch, agent, primaryAgentAliasSetting, fallbackAgentAliasSetting
+        fallbackAgentAlias: fallbackAgentAliasSetting,
+        clearDegradationWarning: true
       });
-      throw new SummarizationCooldownRecordedError(fallbackError);
+      // Promote only now that the fallback has proven it can summarize this batch.
+      await promoteSummarizationFallbackIfNeeded({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
     }
+    return {
+      results,
+      agentUsed: fallbackAgent,
+      modelLogged: fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent.config.defaultModel ?? 'unknown',
+      fallbackUsed: true,
+      primaryAgentAlias,
+      fallbackAgentAlias: fallbackAgentAliasSetting
+    };
+  } catch (fallbackError) {
+    if (syntheticRouteUnavailable) throw fallbackError;
+    await recordCooldownAfterFallbackFailure({
+      error: fallbackError, fullName, branch, agent,
+      primaryAgentAliasSetting: options.primaryAgentAliasSetting, fallbackAgentAliasSetting
+    });
+    throw new SummarizationCooldownRecordedError(fallbackError);
   }
 }
 
@@ -266,14 +280,7 @@ async function analyzeBatchWithInvalidResponseFallback(
   primaryError: unknown,
   primaryAgentAlias: string,
   options: ProcessSingleBatchOptions & { prompt: string }
-): Promise<{
-  results: SummaryResult[];
-  agentUsed: Agent;
-  modelLogged: string;
-  fallbackUsed: boolean;
-  primaryAgentAlias?: string;
-  fallbackAgentAlias?: string;
-}> {
+): Promise<BatchAnalysisResult> {
   const {
     prompt, batch, fallbackAgent, fallbackModelOverride, fallbackModelUsed,
     fallbackAgentAliasSetting, fullName, log
