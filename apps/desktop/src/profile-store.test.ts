@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import {
+  flushFileData,
   ProfileStore,
   type EncryptionProvider,
   type ProfileStoreDurabilityStep,
@@ -15,8 +16,8 @@ import {
 const temporaryDirectories: string[] = [];
 const NATIVE_VISIBILITY_SCENARIOS = [
   'pointer-rollback', 'pointer-corruption', 'missing-target', 'state-before-journal',
-  'mirror-empty', 'mirror-truncated', 'mirror-malformed', 'mirror-stale',
-  'mirror-future', 'mirror-attacker', 'alternate-slot-rollback',
+  'mirror-missing', 'mirror-truncated', 'mirror-malformed', 'mirror-stale',
+  'mirror-schema-invalid', 'mirror-attacker', 'alternate-slot-rollback',
 ] as const;
 
 const createDirectory = async (): Promise<string> => {
@@ -68,6 +69,12 @@ describe('desktop profile store', () => {
 
   it('encrypts credentials before writing app-owned storage', async () => {
     const directory = await createDirectory();
+    const barrierProof = join(directory, 'writable-file-barrier-proof');
+    const barrierBytes = Buffer.from('native writable fsync proof');
+    await writeFile(barrierProof, barrierBytes);
+    await flushFileData(barrierProof);
+    assert.deepEqual(await readFile(barrierProof), barrierBytes);
+
     const store = new ProfileStore(directory, encryption());
     const profile = await store.save({ label: 'Secure', apiBaseUrl: 'https://propr.example.com' });
     const storedCredential = credential(profile.id);
@@ -297,19 +304,23 @@ describe('desktop profile store', () => {
   for (const failure of ['corrupt-json', 'decrypt'] as const) {
     it(`removes an active profile despite a ${failure} credential failure`, async () => {
       const directory = await createDirectory();
-      let rejectDecrypt = false;
+      let rejectCredential = false;
       const provider: EncryptionProvider = {
         ...encryption(),
         decrypt: value => {
-          if (rejectDecrypt) throw new Error('keychain decrypt failed');
-          return failure === 'corrupt-json' ? '{not-json' : Buffer.from(value.toString(), 'base64url').toString('utf8');
+          const plaintext = Buffer.from(value.toString(), 'base64url').toString('utf8');
+          if (rejectCredential && plaintext.includes('"token":"propr_it_')) {
+            if (failure === 'decrypt') throw new Error('keychain decrypt failed');
+            return '{not-json';
+          }
+          return plaintext;
         },
       };
       const store = new ProfileStore(directory, provider);
       const profile = await store.save({ id: 'profile-1', label: 'Remote', apiBaseUrl: 'https://propr.example.com' });
       await store.writeCredential(credential(profile.id));
       await store.setActive(profile.id);
-      rejectDecrypt = failure === 'decrypt';
+      rejectCredential = true;
 
       const detached = await store.detachProfile(profile.id);
 
@@ -355,7 +366,11 @@ describe('desktop profile store', () => {
     const baseline = await store.readProfileCredential(profile.id);
     for (const step of [
       'credential-encrypted', 'credential-written', 'credential-fsynced',
-      'credential-renamed', 'credential-directory-fsynced', 'state-written', 'state-fsynced',
+      'credential-renamed',
+      ...(process.platform === 'win32' ? [] : ['credential-directory-fsynced'] as const),
+      'state-written', 'state-fsynced',
+      'journal-written', 'journal-fsynced', 'journal-closed', 'journal-reopened',
+      'journal-prepared-verified',
     ]) {
       failure = step;
       await assert.rejects(store.commitPairedProfile(
@@ -369,13 +384,13 @@ describe('desktop profile store', () => {
     }
   });
 
-  it('fails closed before publication for every required write, flush, replace, metadata, and verification failure', async () => {
+  it('fails closed before C and preserves fully verified B when the C flush fails', async () => {
     const failures: ProfileStoreIOOperation[] = [
       'credential-write', 'credential-flush', 'credential-replace',
       'mirror-write', 'mirror-flush', 'metadata-flush',
-      'journal-write', 'journal-flush', 'journal-verify', 'journal-commit',
-      'journal-post-write-verification',
+      'journal-write', 'journal-flush', 'journal-reopen', 'journal-verify', 'journal-commit',
     ];
+    let completedFailures = 0;
     for (const operation of failures) {
       const directory = await createDirectory();
       let injected: ProfileStoreIOOperation | null = null;
@@ -403,7 +418,73 @@ describe('desktop profile store', () => {
       assert.equal((await restarted.list()).profiles[0].label, 'Original', operation);
       assert.deepEqual(await restarted.readCredential(profile.id), credentialA, operation);
       assert.deepEqual(await restarted.pendingRevocations(), [], operation);
+      completedFailures += 1;
     }
+
+    const directory = await createDirectory();
+    let injected: ProfileStoreIOOperation | null = null;
+    let published = false;
+    const store = new ProfileStore(directory, encryption(), {
+      beforeIO: current => {
+        if (current === injected) throw new Error(`injected ${current} failure`);
+      },
+    });
+    const profile = await store.save({
+      id: 'profile-1', label: 'Original', apiBaseUrl: 'https://propr.example.com',
+    });
+    await store.writeCredential(credential(profile.id, 'A'));
+    const baseline = await store.readProfileCredential(profile.id);
+    injected = 'journal-commit-flush';
+    await assert.rejects(store.commitPairedProfile(
+      { id: profile.id, label: 'Replacement', apiBaseUrl: profile.apiBaseUrl },
+      credential(profile.id, 'B'), baseline, () => true, undefined, () => { published = true; },
+    ), /injected journal-commit-flush/);
+    injected = null;
+    assert.equal(published, true);
+    const restarted = new ProfileStore(directory, encryption());
+    assert.equal((await restarted.list()).profiles[0].label, 'Replacement');
+    assert.deepEqual(await restarted.readCredential(profile.id), credential(profile.id, 'B'));
+    assert.equal((await restarted.pendingRevocations()).length, 1);
+    completedFailures += 1;
+
+    const corruptDirectory = await createDirectory();
+    const corruptDesktop = join(corruptDirectory, 'desktop');
+    let corruptPrepared = false;
+    const corruptingStore = new ProfileStore(corruptDirectory, encryption(), {
+      afterDurabilityStep: async step => {
+        if (!corruptPrepared || step !== 'journal-closed') return;
+        corruptPrepared = false;
+        for (const name of ['profiles.journal.0', 'profiles.journal.1']) {
+          const path = join(corruptDesktop, name);
+          try {
+            const bytes = await readFile(path);
+            if (bytes[0] !== 'P'.charCodeAt(0)) continue;
+            bytes[Math.min(20, bytes.length - 1)] ^= 1;
+            await writeFile(path, bytes);
+            return;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          }
+        }
+        throw new Error('prepared journal was not found');
+      },
+    });
+    const corruptProfile = await corruptingStore.save({
+      id: 'profile-1', label: 'Original', apiBaseUrl: 'https://propr.example.com',
+    });
+    const corruptA = credential(corruptProfile.id, 'A');
+    await corruptingStore.writeCredential(corruptA);
+    const corruptBaseline = await corruptingStore.readProfileCredential(corruptProfile.id);
+    corruptPrepared = true;
+    await assert.rejects(corruptingStore.commitPairedProfile(
+      { id: corruptProfile.id, label: 'Replacement', apiBaseUrl: corruptProfile.apiBaseUrl },
+      credential(corruptProfile.id, 'B'), corruptBaseline, () => true,
+    ), /Desktop profile recovery state is unavailable/);
+    const corruptRestart = new ProfileStore(corruptDirectory, encryption());
+    assert.equal((await corruptRestart.list()).profiles[0].label, 'Original');
+    assert.deepEqual(await corruptRestart.readCredential(corruptProfile.id), corruptA);
+    completedFailures += 1;
+    console.log(`NATIVE_CATEGORY barriers expected=${failures.length + 2} executed=${completedFailures}`);
   });
 
   it('treats mirror replace and directory-flush failures after the journal commit as recoverable mirror failures', async () => {
@@ -412,7 +493,7 @@ describe('desktop profile store', () => {
       let injected: ProfileStoreIOOperation | null = null;
       let journalCommitted = false;
       const store = new ProfileStore(directory, encryption(), {
-        afterDurabilityStep: step => { if (step === 'journal-verified') journalCommitted = true; },
+        afterDurabilityStep: step => { if (step === 'journal-commit-fsynced') journalCommitted = true; },
         beforeIO: current => {
           if (journalCommitted && current === injected) throw new Error(`injected ${current} failure`);
         },
@@ -441,10 +522,11 @@ describe('desktop profile store', () => {
       'credential-encrypted', 'credential-written', 'credential-fsynced', 'credential-renamed',
       ...(process.platform === 'win32' ? [] : ['credential-directory-fsynced'] as const),
       'state-written', 'state-fsynced', 'journal-written', 'journal-fsynced',
-      'journal-committed', 'journal-verified', 'state-renamed',
+      'journal-closed', 'journal-reopened', 'journal-prepared-verified',
+      'journal-committed', 'journal-commit-fsynced', 'state-renamed',
       ...(process.platform === 'win32' ? [] : ['state-directory-fsynced'] as const),
     ];
-    assert.equal(steps.length, process.platform === 'win32' ? 11 : 13);
+    assert.equal(steps.length, process.platform === 'win32' ? 14 : 16);
     let completed = 0;
     for (const step of steps) {
       const directory = await createDirectory();
@@ -469,7 +551,7 @@ describe('desktop profile store', () => {
       const restarted = new ProfileStore(directory, encryption());
       const snapshot = await restarted.readProfileCredential(profileA.id);
       const committed = step === 'journal-committed'
-        || step === 'journal-verified'
+        || step === 'journal-commit-fsynced'
         || step === 'state-renamed'
         || step === 'state-directory-fsynced';
       assert.equal(snapshot.profile?.label, committed ? 'Replacement' : 'Original', step);
@@ -482,6 +564,7 @@ describe('desktop profile store', () => {
       completed += 1;
     }
     assert.equal(completed, steps.length, 'a native durability boundary fixture was skipped');
+    console.log(`NATIVE_CATEGORY transaction-boundaries expected=${steps.length} executed=${completed}`);
   });
 
   for (const visibility of ['pointer-rollback', 'missing-target', 'state-before-journal'] as const) {
@@ -531,7 +614,7 @@ describe('desktop profile store', () => {
   }
 
   for (const mirrorView of [
-    'empty', 'truncated', 'malformed', 'stale', 'future-generation', 'attacker-modified',
+    'missing', 'truncated', 'malformed', 'stale', 'schema-invalid', 'attacker-modified',
   ] as const) {
     it(`recovers the authoritative encrypted journal before a ${mirrorView} mirror`, async () => {
       const directory = await createDirectory();
@@ -549,13 +632,13 @@ describe('desktop profile store', () => {
         credential(profile.id, 'B'), baseline, () => true,
       );
       const current = JSON.parse(await readFile(mirror, 'utf8')) as Record<string, unknown>;
-      if (mirrorView === 'empty') await writeFile(mirror, '');
+      if (mirrorView === 'missing') await unlink(mirror);
       else if (mirrorView === 'truncated') await writeFile(mirror, '{"version":3');
       else if (mirrorView === 'malformed') await writeFile(mirror, 'not-json');
       else if (mirrorView === 'stale') await writeFile(mirror, stale);
-      else if (mirrorView === 'future-generation') {
+      else if (mirrorView === 'schema-invalid') {
         await writeFile(mirror, JSON.stringify({
-          ...current, generation: '9007199254740993123456789',
+          ...current, version: 99,
         }));
       } else {
         const profiles = current.profiles as Array<Record<string, unknown>>;
@@ -570,6 +653,7 @@ describe('desktop profile store', () => {
       assert.deepEqual(await restarted.readCredential(profile.id), credential(profile.id, 'B'), mirrorView);
       assert.equal((await restarted.pendingRevocations()).length, 1, mirrorView);
       assert.equal((await readFile(mirror, 'utf8')).includes('Attacker'), false, mirrorView);
+      console.log('NATIVE_SCENARIO mirror-repair');
     });
   }
 
@@ -600,6 +684,21 @@ describe('desktop profile store', () => {
     await assert.rejects(restarted.list(), error => {
       assert.equal((error as Error).message, 'Desktop profile recovery state is unavailable');
       assert.equal((error as Error).message.includes(profile.id), false);
+      return true;
+    });
+
+    const ioDirectory = await createDirectory();
+    const ioStore = new ProfileStore(ioDirectory, encryption());
+    await ioStore.save({
+      id: 'profile-io', label: 'I/O failure', apiBaseUrl: 'https://propr.example.com',
+    });
+    const ioMirror = join(ioDirectory, 'desktop', 'profiles.json');
+    await unlink(ioMirror);
+    await mkdir(ioMirror);
+    await assert.rejects(new ProfileStore(ioDirectory, encryption()).list(), error => {
+      assert.equal((error as Error).message, 'Desktop profile recovery state is unavailable');
+      assert.equal((error as Error).message.includes('EISDIR'), false);
+      assert.equal((error as Error).message.includes(ioMirror), false);
       return true;
     });
   });
@@ -662,6 +761,9 @@ describe('desktop profile store', () => {
       completed += 1;
     }
     assert.equal(completed, NATIVE_VISIBILITY_SCENARIOS.length, 'a native visibility fixture was skipped');
+    console.log(
+      `NATIVE_CATEGORY reordered-visibility expected=${NATIVE_VISIBILITY_SCENARIOS.length} executed=${completed}`,
+    );
   });
 
   it('removes an orphan credential before allowing same-ID recreation', async () => {

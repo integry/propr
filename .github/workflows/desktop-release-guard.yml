@@ -48,6 +48,15 @@ jobs:
       - name: Run production Windows child-process durability matrix
         run: npm run test:native-durability -w @propr/desktop
 
+      - name: Typecheck desktop and renderer on Windows
+        run: npm run desktop:typecheck
+
+      - name: Test desktop runtime on Windows
+        run: npm run desktop:test
+
+      - name: Package Windows x64 desktop app
+        run: npm run desktop:package
+
   verify:
     name: Audit and package desktop app
     runs-on: ubuntu-latest
@@ -80,6 +89,9 @@ jobs:
           test ! -e packages/client/dist
           test ! -e apps/desktop/out
           npm run desktop:package
+
+      - name: Run Linux transaction durability parity
+        run: npm run test:native-durability -w @propr/desktop
 
       - name: Typecheck desktop and renderer
         run: npm run desktop:typecheck

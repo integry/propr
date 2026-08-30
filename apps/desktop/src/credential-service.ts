@@ -223,6 +223,7 @@ export class DesktopCredentialService {
     const profileGeneration = this.#generation(proposed.id);
     const selectionGeneration = this.#selectionGeneration;
     let transient: StoredCredential | null = null;
+    let publicationStarted = false;
     const client = this.#client(proposed.apiBaseUrl);
 
     try {
@@ -256,6 +257,7 @@ export class DesktopCredentialService {
           proposed.id, profileGeneration, selectionGeneration, controller.signal,
         ),
         () => {
+          publicationStarted = true;
           if (this.#active?.profileId === proposed.id) this.#active = null;
         },
       );
@@ -267,7 +269,7 @@ export class DesktopCredentialService {
       await this.#retryPendingRevocations();
       return { paired: true };
     } catch (error) {
-      if (transient) {
+      if (transient && !publicationStarted) {
         await this.#revoke(transient).catch(() => undefined);
       }
       if (error instanceof ProprClientError && error.kind === 'aborted') {

@@ -958,6 +958,62 @@ describe('main-process desktop credential service', () => {
     assert.equal(terminalRetries, 1);
     assert.deepEqual(await store.pendingRevocations(), []);
     assert.deepEqual(await store.readCredential(profile.id), credentialB);
+
+    const uncertainDirectory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
+    temporaryDirectories.push(uncertainDirectory);
+    let failCommitFlush = false;
+    const uncertainStore = new ProfileStore(uncertainDirectory, encryption, {
+      beforeIO: operation => {
+        if (failCommitFlush && operation === 'journal-commit-flush') {
+          throw new Error('injected journal commit flush failure');
+        }
+      },
+    });
+    const uncertainProfile = await uncertainStore.save({
+      id: 'profile-uncertain', label: 'A', apiBaseUrl: 'https://a.example.test',
+    });
+    const uncertainA = credential(uncertainProfile.id, uncertainProfile.apiBaseUrl, 'A');
+    const uncertainB = credential(uncertainProfile.id, uncertainProfile.apiBaseUrl, 'B');
+    await uncertainStore.writeCredential(uncertainA);
+    const uncertainRevocations: string[] = [];
+    const uncertainService = new DesktopCredentialService({
+      profiles: uncertainStore,
+      clientName: 'Test desktop',
+      pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        if (url.endsWith('/api/desktop/pairings')) return json({
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'C'.repeat(43),
+          approvalUrl: 'https://a.example.test/approve',
+          expiresAt: new Date(pairingNow + 10_000).toISOString(),
+          interval: 1,
+        }, 201);
+        if (url.endsWith('/poll')) {
+          return json({ status: 'complete', token: uncertainB.token, tokenType: 'Bearer', expiresAt: null });
+        }
+        if (url.endsWith('/api/desktop/tokens/current')) {
+          uncertainRevocations.push(new Headers(init?.headers).get('Authorization') ?? '');
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+    failCommitFlush = true;
+    await assert.rejects(
+      uncertainService.pair({
+        id: uncertainProfile.id,
+        label: 'B',
+        apiBaseUrl: uncertainProfile.apiBaseUrl,
+      }),
+      /injected journal commit flush failure/,
+    );
+    failCommitFlush = false;
+    assert.deepEqual(uncertainRevocations, [], 'verified B must not be revoked after C becomes observable');
+    const uncertainRestart = new ProfileStore(uncertainDirectory, encryption);
+    assert.deepEqual(await uncertainRestart.readCredential(uncertainProfile.id), uncertainB);
+    assert.equal((await uncertainRestart.pendingRevocations()).length, 1);
   });
 
   const nativeRevocationCrashModes = ['during-revoke', 'after-remote-success'] as const;
@@ -1012,6 +1068,7 @@ describe('main-process desktop credential service', () => {
       assert.equal(retries, 1);
       assert.deepEqual(await restarted.pendingRevocations(), []);
       assert.deepEqual(await restarted.readCredential(profile.id), credentialB);
+      console.log('NATIVE_SCENARIO revocation-crash');
     });
   }
 
@@ -1481,6 +1538,7 @@ describe('main-process desktop credential service', () => {
         assert.deepEqual(service.prepareRequest(
           `${profileA.apiBaseUrl}/api/tasks`, transportHeaders('AAAAAAAAAAAAAAAAAAAAAA'),
         ), { cancel: true });
+        console.log('NATIVE_SCENARIO cancellation-switch');
       });
     }
   }

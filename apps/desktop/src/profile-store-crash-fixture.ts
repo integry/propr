@@ -45,16 +45,16 @@ if (requestedStep.startsWith('visibility:')) {
     await writeFile(join(desktop, 'profiles.json'), stateA);
   } else if (mode === 'pointer-corruption' || mode === 'mirror-malformed') {
     await writeFile(join(desktop, 'profiles.json'), '{corrupt');
-  } else if (mode === 'mirror-empty') {
-    await writeFile(join(desktop, 'profiles.json'), '');
+  } else if (mode === 'mirror-missing') {
+    await unlink(join(desktop, 'profiles.json'));
   } else if (mode === 'mirror-truncated') {
     await writeFile(join(desktop, 'profiles.json'), '{"version":3');
   } else if (mode === 'mirror-stale' && stateA) {
     await writeFile(join(desktop, 'profiles.json'), stateA);
-  } else if (mode === 'mirror-future') {
+  } else if (mode === 'mirror-schema-invalid') {
     const contents = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as Record<string, unknown>;
     await writeFile(join(desktop, 'profiles.json'), JSON.stringify({
-      ...contents, generation: '9007199254740993123456789',
+      ...contents, version: 99,
     }));
   } else if (mode === 'mirror-attacker') {
     const contents = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as Record<string, unknown>;

@@ -119,8 +119,11 @@ export type ProfileStoreDurabilityStep =
   | 'state-fsynced'
   | 'journal-written'
   | 'journal-fsynced'
+  | 'journal-closed'
+  | 'journal-reopened'
+  | 'journal-prepared-verified'
   | 'journal-committed'
-  | 'journal-verified'
+  | 'journal-commit-fsynced'
   | 'state-renamed'
   | 'state-directory-fsynced'
   | 'old-credential-removed';
@@ -136,9 +139,10 @@ export type ProfileStoreIOOperation =
   | 'credential-replace'
   | 'journal-write'
   | 'journal-flush'
+  | 'journal-reopen'
   | 'journal-commit'
+  | 'journal-commit-flush'
   | 'journal-verify'
-  | 'journal-post-write-verification'
   | 'mirror-write'
   | 'mirror-flush'
   | 'mirror-replace'
@@ -159,6 +163,20 @@ const IDENTITY_EPOCH_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const MAX_PENDING_REVOCATIONS = 64;
 const MAX_JOURNAL_BYTES = (MAX_PENDING_REVOCATIONS + 1) * (MAX_CREDENTIAL_LENGTH * 2 + 4_096);
 const RECOVERY_ERROR = 'Desktop profile recovery state is unavailable';
+
+/**
+ * Flush an existing file through a writable handle. Windows rejects fsync on
+ * the read-only handle Node creates for `open(path, 'r')`; O_WRONLY is the
+ * minimum access libuv needs for FlushFileBuffers and works on POSIX too.
+ */
+export const flushFileData = async (path: string): Promise<void> => {
+  const handle = await open(path, constants.O_WRONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+};
 
 const validDate = (value: unknown): value is string =>
   typeof value === 'string' && !Number.isNaN(Date.parse(value));
@@ -784,7 +802,7 @@ export class ProfileStore {
     }
   }
 
-  async #writeJournal(state: PersistedState, onDurable?: () => void): Promise<void> {
+  async #writeJournal(state: PersistedState, onPublished?: () => void): Promise<void> {
     const referenced = new Set([
       ...Object.values(state.credentialSlots),
       ...Object.values(state.pendingRevocations).map(record => record.slot),
@@ -805,67 +823,70 @@ export class ProfileStore {
       encryptedPayload,
       checksum: journalChecksum(encryptedPayload),
     };
-    this.#authenticatedJournalCache.set(record.checksum, {
-      generation: BigInt(state.generation),
-      state: JSON.parse(JSON.stringify(state)) as PersistedState,
-      encryptedSlots: { ...encryptedSlots },
-    });
     const path = this.#journalPaths[Number(BigInt(state.generation) % BigInt(this.#journalPaths.length))];
     const preparedContents = `P${JSON.stringify(record)}\n`;
     if (Buffer.byteLength(preparedContents) > MAX_JOURNAL_BYTES) {
       throw new Error('Desktop transaction journal exceeds its bounded size');
     }
-    const handle = await open(
+    const preparationHandle = await open(
       path,
-      constants.O_RDWR | constants.O_CREAT | constants.O_TRUNC | constants.O_SYNC,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC,
       0o600,
     );
-    let durable: AuthenticatedJournal | null = null;
     try {
       await this.#io('journal-write');
-      await handle.writeFile(preparedContents, 'utf8');
+      await preparationHandle.writeFile(preparedContents, 'utf8');
       await this.#step('journal-written');
 
-      // Flush and authenticate the complete prepared record before publishing
-      // its one-byte commit marker. O_SYNC makes the marker write-through on
-      // Windows; no directory rename or directory fsync is part of the commit.
       await this.#io('journal-flush');
-      await handle.sync();
+      await preparationHandle.sync();
       await this.#step('journal-fsynced');
-      await this.#io('journal-verify');
-      const prepared = await this.#authenticateJournal(await readFile(path, 'utf8'), false);
-      if (prepared.generation !== BigInt(state.generation)) throw new Error(RECOVERY_ERROR);
-
-      await this.#io('journal-commit');
-      try {
-        const written = await handle.write(Buffer.from('C'), 0, 1, 0);
-        if (written.bytesWritten !== 1) throw new Error('Desktop transaction journal commit failed');
-      } catch (error) {
-        // A failed write has unspecified partial-write visibility. Best-effort
-        // replacement of the marker with the non-authoritative prepared value
-        // ensures restart cannot select B after the caller saw a failure.
-        await handle.write(Buffer.from('P'), 0, 1, 0);
-        await handle.sync();
-        throw error;
-      }
-      await this.#step('journal-committed');
-      try {
-        await this.#io('journal-post-write-verification');
-        durable = await this.#authenticateJournal(await readFile(path, 'utf8'), true);
-        if (durable.generation !== BigInt(state.generation)) throw new Error(RECOVERY_ERROR);
-      } catch (error) {
-        await handle.write(Buffer.from('P'), 0, 1, 0);
-        await handle.sync();
-        const rolledBack = await readFile(path, 'utf8');
-        if (!rolledBack.startsWith('P')) throw new Error(RECOVERY_ERROR);
-        throw error;
-      }
     } finally {
-      await handle.close();
+      await preparationHandle.close();
     }
-    if (!durable) throw new Error(RECOVERY_ERROR);
-    await this.#step('journal-verified');
-    onDurable?.();
+    await this.#step('journal-closed');
+
+    // Verification deliberately reopens the prepared slot and does not use an
+    // in-memory authentication cache. This proves the exact persisted bytes,
+    // encrypted schema, generation, and every active/pending credential link.
+    await this.#io('journal-reopen');
+    const verificationHandle = await open(path, constants.O_RDONLY);
+    let verifiedContents: string;
+    try {
+      await this.#step('journal-reopened');
+      verifiedContents = await verificationHandle.readFile('utf8');
+    } finally {
+      await verificationHandle.close();
+    }
+    await this.#io('journal-verify');
+    if (verifiedContents !== preparedContents) throw new Error(RECOVERY_ERROR);
+    const prepared = await this.#authenticateJournal(verifiedContents, false, false);
+    if (prepared.generation !== BigInt(state.generation)
+      || JSON.stringify(prepared.state) !== JSON.stringify(state)
+      || JSON.stringify(prepared.encryptedSlots) !== JSON.stringify(encryptedSlots)) {
+      throw new Error(RECOVERY_ERROR);
+    }
+    await this.#step('journal-prepared-verified');
+
+    // The only authority transition is a one-byte write through a writable
+    // handle. FileHandle.sync maps to the supported Windows FlushFileBuffers
+    // operation because this handle has write access; C is never rolled back.
+    await this.#io('journal-commit');
+    const commitHandle = await open(path, constants.O_WRONLY);
+    try {
+      const written = await commitHandle.write(Buffer.from('C'), 0, 1, 0);
+      if (written.bytesWritten !== 1) throw new Error('Desktop transaction journal commit failed');
+      // From this point B may be observed after a crash even if the explicit
+      // flush reports failure. Notify the shared gate before anything fallible
+      // so the fully verified B credential is never revoked as transient.
+      onPublished?.();
+      await this.#step('journal-committed');
+      await this.#io('journal-commit-flush');
+      await commitHandle.sync();
+      await this.#step('journal-commit-fsynced');
+    } finally {
+      await commitHandle.close();
+    }
     await chmod(path, 0o600).catch(() => undefined);
   }
 
@@ -895,13 +916,17 @@ export class ProfileStore {
     }
   }
 
-  async #authenticateJournal(contents: string, committedOnly: boolean): Promise<AuthenticatedJournal> {
+  async #authenticateJournal(
+    contents: string,
+    committedOnly: boolean,
+    useCache = true,
+  ): Promise<AuthenticatedJournal> {
     const marker = contents[0];
     if ((committedOnly && marker !== 'C') || (!committedOnly && marker !== 'P' && marker !== 'C')) {
       throw new Error('Desktop transaction journal is incomplete');
     }
     const envelope = parseJournalEnvelope(contents.slice(1));
-    const cached = this.#authenticatedJournalCache.get(envelope.checksum);
+    const cached = useCache ? this.#authenticatedJournalCache.get(envelope.checksum) : undefined;
     if (cached) {
       if (cached.generation !== BigInt(envelope.generation)) throw new Error(RECOVERY_ERROR);
       return {
@@ -977,31 +1002,40 @@ export class ProfileStore {
     const journalRecords: AuthenticatedJournal[] = [];
     const legacyJournalRecords: LegacyJournalRecord[] = [];
     let invalidCommittedJournal = false;
-    let sawJournalFile = false;
+    let sawPreparedJournal = false;
+    let sawNonPreparedJournal = false;
     for (const path of this.#journalPaths) {
       try {
         const info = await stat(path);
-        sawJournalFile = true;
         if (info.size > MAX_JOURNAL_BYTES) throw new Error('Desktop transaction journal is invalid');
         const contents = await readFile(path, 'utf8');
         if (contents.startsWith('C') || contents.startsWith('P')) {
           if (contents.startsWith('C')) {
+            sawNonPreparedJournal = true;
             try {
               journalRecords.push(await this.#authenticateJournal(contents, true));
             } catch {
               invalidCommittedJournal = true;
             }
+          } else {
+            sawPreparedJournal = true;
           }
           // A prepared record is deliberately not authoritative. The other
           // alternating slot (or the legacy mirror before the first commit)
           // remains the complete recovery point.
         } else {
+          sawNonPreparedJournal = true;
           legacyJournalRecords.push(parseLegacyJournal(contents));
         }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT'
-          && !(error instanceof SyntaxError)
-          && !(error instanceof Error && error.message.startsWith('Desktop transaction journal'))) throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') continue;
+        if (error instanceof SyntaxError
+          || (error instanceof Error && error.message.startsWith('Desktop transaction journal'))) {
+          sawNonPreparedJournal = true;
+          continue;
+        }
+        throw new Error(RECOVERY_ERROR);
       }
     }
     journalRecords.sort((left, right) => left.generation < right.generation ? -1 : left.generation > right.generation ? 1 : 0);
@@ -1012,7 +1046,12 @@ export class ProfileStore {
     try {
       parsed = parseState(await readFile(this.#statePath, 'utf8'));
     } catch (error) {
-      mirrorMissing = (error as NodeJS.ErrnoException).code === 'ENOENT';
+      const code = (error as NodeJS.ErrnoException).code;
+      mirrorMissing = code === 'ENOENT';
+      if (code && code !== 'ENOENT') throw new Error(RECOVERY_ERROR);
+      if (!(error instanceof SyntaxError)
+        && !(error instanceof Error && error.message.startsWith('Desktop '))
+        && !mirrorMissing) throw new Error(RECOVERY_ERROR);
     }
 
     let state: PersistedState;
@@ -1024,22 +1063,33 @@ export class ProfileStore {
           const actualBytes = await readFile(join(this.#credentialsDirectory, slot));
           if (actualBytes.equals(expectedBytes)) continue;
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(RECOVERY_ERROR);
         }
-        await this.#writeThroughFile(join(this.#credentialsDirectory, slot), expectedBytes);
+        try {
+          await this.#writeThroughFile(join(this.#credentialsDirectory, slot), expectedBytes);
+        } catch {
+          throw new Error(RECOVERY_ERROR);
+        }
       }
       const mirrorMatches = parsed?.version === 3
         && JSON.stringify(parsed) === JSON.stringify(state);
-      if (!mirrorMatches) await this.#writeStateMirror(state);
+      if (!mirrorMatches) {
+        try {
+          await this.#writeStateMirror(state);
+        } catch {
+          throw new Error(RECOVERY_ERROR);
+        }
+      }
     } else {
       if (!parsed) {
-        if (mirrorMissing && !invalidCommittedJournal && legacyJournalRecords.length === 0) {
+        if (mirrorMissing && !sawPreparedJournal && !invalidCommittedJournal
+          && legacyJournalRecords.length === 0) {
           parsed = { version: 1, activeProfileId: null, profiles: [] };
         } else {
           throw new Error(RECOVERY_ERROR);
         }
       }
-      if (invalidCommittedJournal || (sawJournalFile && legacyJournalRecords.length === 0)) {
+      if (invalidCommittedJournal || (sawNonPreparedJournal && legacyJournalRecords.length === 0)) {
         throw new Error(RECOVERY_ERROR);
       }
       if (legacyJournalRecords.length > 0) {
@@ -1080,7 +1130,7 @@ export class ProfileStore {
           state.credentialSlots[profileId] = slot;
           state.credentialEpochs[profileId] = randomBytes(16).toString('base64url');
         }
-        await this.#fsyncDirectory(this.#credentialsDirectory).catch(() => undefined);
+        await this.#flushDirectoryIfSupported(this.#credentialsDirectory);
         await this.#writeState(state);
       } else if (parsed.version === 2) {
         state = {
@@ -1119,8 +1169,8 @@ export class ProfileStore {
         await unlink(join(this.#directory, entry.name));
       }
     }
-    await this.#fsyncDirectory(this.#credentialsDirectory).catch(() => undefined);
-    await this.#fsyncDirectory(this.#directory).catch(() => undefined);
+    await this.#flushDirectoryIfSupported(this.#credentialsDirectory);
+    await this.#flushDirectoryIfSupported(this.#directory);
     for (const slot of referenced) {
       try {
         await readFile(join(this.#credentialsDirectory, slot));
@@ -1137,8 +1187,8 @@ export class ProfileStore {
         await unlink(join(this.#credentialsDirectory, entry.name));
       }
     }
-    await this.#fsyncDirectory(this.#credentialsDirectory).catch(() => undefined);
-    await this.#fsyncDirectory(this.#directory).catch(() => undefined);
+    await this.#flushDirectoryIfSupported(this.#credentialsDirectory);
+    await this.#flushDirectoryIfSupported(this.#directory);
   }
 
   async #writeStateMirror(state: PersistedState): Promise<void> {
@@ -1159,7 +1209,7 @@ export class ProfileStore {
   async #writeThroughFile(path: string, bytes: Buffer): Promise<void> {
     const handle = await open(
       path,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_SYNC,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC,
       0o600,
     );
     try {
@@ -1175,8 +1225,7 @@ export class ProfileStore {
   }
 
   async #fsyncFile(path: string): Promise<void> {
-    const handle = await open(path, 'r');
-    try { await handle.sync(); } finally { await handle.close(); }
+    await flushFileData(path);
   }
 
   async #fsyncDirectory(path: string): Promise<void> {
@@ -1186,14 +1235,13 @@ export class ProfileStore {
 
   async #flushDirectoryIfSupported(path: string): Promise<boolean> {
     await this.#io('metadata-flush');
-    try {
-      await this.#fsyncDirectory(path);
-      return true;
-    } catch (error) {
-      if (process.platform === 'win32' && ['EACCES', 'EBADF', 'EINVAL', 'ENOTSUP', 'EPERM']
-        .includes((error as NodeJS.ErrnoException).code ?? '')) return false;
-      throw error;
-    }
+    // Node does not expose a supported Windows directory FlushFileBuffers
+    // handle. No authority transition depends on it: the committed journal is
+    // self-contained and can recreate both renamed credential entries and the
+    // profiles.json mirror. POSIX platforms still require and perform fsync.
+    if (process.platform === 'win32') return false;
+    await this.#fsyncDirectory(path);
+    return true;
   }
 
   async #unlinkSlot(slot: string): Promise<void> {
