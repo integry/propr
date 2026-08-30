@@ -7,6 +7,7 @@ import { saveBatchSummaries, logFileBatchCall, type SummaryResult } from './summ
 import { clearSummarizationCooldown, clearSummarizationPrimaryQuotaFailures, isSummarizationInvalidResponseError, promoteSummarizationFallbackIfNeeded } from '../../config/configManager.js';
 import { recordPrimarySummarizationQuotaFailure, recordPrimarySummarizationResponseFailure, recordSummarizationCooldown } from '../../config/configManager.js';
 import { SyntheticPoolExhaustedError, type SyntheticRoutingSession } from '../syntheticRoutingService.js';
+import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
 const SUMMARIZATION_RETRY_BASE_DELAY_MS = process.env.NODE_ENV === 'test' ? 0 : 2000;
@@ -39,6 +40,7 @@ interface ProcessSingleBatchOptions {
   fallbackModelOverride?: string; fallbackModelUsed?: string;
   fallbackAgentAliasSetting?: string; branch: string;
   routingSession?: SyntheticRoutingSession;
+  fallbackRoutingSession?: SyntheticRoutingSession;
 }
 
 export interface ProcessSingleBatchResult {
@@ -90,6 +92,10 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
     primaryAgentAliasSetting, fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting
   } = options;
   const prompt = buildBatchPrompt(batch, customPrompt);
+  const fallbackRoutingSession = beginFallbackRoutingSession(
+    fallbackAgent,
+    fallbackModelUsed ?? fallbackModelOverride
+  );
   const startTime = Date.now();
   const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
   const estimatedOutputTokens = batch.length * 120;
@@ -108,6 +114,7 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
       prompt, batch, agent, log, modelUsed, primaryAgentAliasSetting,
       fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch,
       routingSession: options.routingSession,
+      fallbackRoutingSession,
     });
     agentUsed = summaries.agentUsed;
     modelLogged = summaries.modelLogged;
@@ -121,7 +128,8 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
   } catch (error) {
     errorMessage = (error as Error).message;
     stopProcessing = error instanceof SummarizationCooldownRecordedError;
-    routingMetadata = options.routingSession?.routingMetadata;
+    routingMetadata = fallbackRoutingSession?.routingMetadata ?? options.routingSession?.routingMetadata;
+    if (fallbackRoutingSession?.routingMetadata && fallbackAgent) agentUsed = fallbackAgent;
     const physicalModel = routingMetadata?.physicalModel;
     if (typeof physicalModel === 'string') modelLogged = physicalModel;
     log.error({ error: errorMessage, fileCount: batch.length }, 'Failed to process batch');
@@ -238,6 +246,7 @@ async function analyzeBatchAfterPrimaryFailure(
     ? 'Primary synthetic summarization route unavailable; retrying batch with fallback'
     : 'Primary summarization model quota-limited; retrying batch with fallback');
 
+  const fallbackRoutingSession = options.fallbackRoutingSession;
   try {
     const results = await analyzeBatchWithAgent({
       prompt,
@@ -246,7 +255,8 @@ async function analyzeBatchAfterPrimaryFailure(
       model: fallbackModelUsed ?? fallbackModelOverride,
       context: `batch_summarization_fallback:${fullName}`,
       fullName,
-      retryOptions: SUMMARIZATION_FALLBACK_RETRY
+      retryOptions: SUMMARIZATION_FALLBACK_RETRY,
+      routingSession: fallbackRoutingSession,
     });
     if (!syntheticRouteUnavailable) {
       await clearSummarizationCooldown(fullName, branch, {
@@ -257,10 +267,15 @@ async function analyzeBatchAfterPrimaryFailure(
       // Promote only now that the fallback has proven it can summarize this batch.
       await promoteSummarizationFallbackIfNeeded({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
     }
+    const routingMetadata = fallbackRoutingSession?.routingMetadata;
+    const physicalModel = routingMetadata?.physicalModel;
     return {
       results,
       agentUsed: fallbackAgent,
-      modelLogged: fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent.config.defaultModel ?? 'unknown',
+      modelLogged: typeof physicalModel === 'string'
+        ? physicalModel
+        : fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent.config.defaultModel ?? 'unknown',
+      routingMetadata,
       fallbackUsed: true,
       primaryAgentAlias,
       fallbackAgentAlias: fallbackAgentAliasSetting
@@ -291,6 +306,7 @@ async function analyzeBatchWithInvalidResponseFallback(
     fallbackModel: fallbackModelUsed ?? fallbackModelOverride
   }, 'Primary summarization returned unusable output; retrying batch with fallback');
 
+  const fallbackRoutingSession = options.fallbackRoutingSession;
   const results = await analyzeBatchWithAgent({
     prompt,
     batch,
@@ -298,21 +314,31 @@ async function analyzeBatchWithInvalidResponseFallback(
     model: fallbackModelUsed ?? fallbackModelOverride,
     context: `batch_summarization_fallback:${fullName}`,
     fullName,
-    retryOptions: SUMMARIZATION_FALLBACK_RETRY
+    retryOptions: SUMMARIZATION_FALLBACK_RETRY,
+    routingSession: fallbackRoutingSession,
   });
   await recordPrimarySummarizationResponseFailure({
     primaryAgentAlias,
     fallbackAgentAlias: fallbackAgentAliasSetting as string,
     reason: (primaryError as Error).message
   });
+  const routingMetadata = fallbackRoutingSession?.routingMetadata;
+  const physicalModel = routingMetadata?.physicalModel;
   return {
     results,
     agentUsed: fallbackAgent as Agent,
-    modelLogged: fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown',
+    modelLogged: typeof physicalModel === 'string'
+      ? physicalModel
+      : fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown',
+    routingMetadata,
     fallbackUsed: true,
     primaryAgentAlias,
     fallbackAgentAlias: fallbackAgentAliasSetting
   };
+}
+
+function beginFallbackRoutingSession(agent: Agent | undefined, model: string | undefined): SyntheticRoutingSession | undefined {
+  return agent instanceof SyntheticAgent ? agent.beginRoutingSession(model) : undefined;
 }
 
 async function clearSummarizationPrimaryQuotaFailuresSafe(

@@ -13,6 +13,7 @@ import {
   recordSummarizationCooldown
 } from '../../config/configManager.js';
 import { SyntheticPoolExhaustedError, type SyntheticRoutingSession } from '../syntheticRoutingService.js';
+import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import {
   type DirectoryInfo, type DirectoryResult,
   buildBatchDirectoryPrompt, parseBatchDirectoryResponse
@@ -67,6 +68,7 @@ interface ProcessDirectoryBatchOptions {
   fullName: string;
   branch: string;
   routingSession?: SyntheticRoutingSession;
+  fallbackRoutingSession?: SyntheticRoutingSession;
 }
 
 class SummarizationCooldownRecordedError extends Error {
@@ -90,12 +92,22 @@ export async function processDirectoryBatch(options: ProcessDirectoryBatchOption
   const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
   const estimatedOutputTokens = directories.length * 150;
   const state = createDirectoryBatchState(options);
+  const fallbackRoutingSession = beginFallbackRoutingSession(
+    options.fallbackAgent,
+    options.fallbackModelUsed ?? options.fallbackModelOverride
+  );
 
   try {
-    await analyzeDirectoryBatchWithFallback({ ...options, prompt, state });
+    await analyzeDirectoryBatchWithFallback({ ...options, prompt, state, fallbackRoutingSession });
     state.success = state.results.some(r => r.summary !== null);
     options.log.debug({ batchSize: directories.length, successCount: state.results.filter(r => r.summary).length }, 'Processed directory batch');
   } catch (error) {
+    if (fallbackRoutingSession?.routingMetadata && options.fallbackAgent) {
+      state.routingMetadata = fallbackRoutingSession.routingMetadata;
+      state.agentUsed = options.fallbackAgent;
+      const physicalModel = state.routingMetadata.physicalModel;
+      if (typeof physicalModel === 'string') state.modelLogged = physicalModel;
+    }
     state.errorMessage = (error as Error).message;
     state.stopProcessing = error instanceof SummarizationCooldownRecordedError;
     options.log.warn({ error: state.errorMessage, batchSize: directories.length }, 'Failed to process directory batch');
@@ -243,6 +255,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       ? 'Primary synthetic directory summarization route unavailable; retrying batch with fallback'
       : 'Primary directory summarization returned unusable output; retrying batch with fallback');
 
+  const fallbackRoutingSession = options.fallbackRoutingSession;
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
       prompt,
@@ -251,14 +264,18 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       model: fallbackModelUsed ?? fallbackModelOverride,
       context: `directory_aggregation_fallback:${fullName}`,
       fullName,
-      retryOptions: SUMMARIZATION_FALLBACK_RETRY
+      retryOptions: SUMMARIZATION_FALLBACK_RETRY,
+      routingSession: fallbackRoutingSession,
     });
     state.fallbackUsed = true;
     state.fallbackPrimaryAgentAlias = primaryAgentAlias;
     state.fallbackAgentAlias = fallbackAgentAliasSetting;
     state.agentUsed = fallbackAgent as Agent;
-    state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
-    state.routingMetadata = undefined;
+    state.routingMetadata = fallbackRoutingSession?.routingMetadata;
+    const physicalModel = state.routingMetadata?.physicalModel;
+    state.modelLogged = typeof physicalModel === 'string'
+      ? physicalModel
+      : fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
     if (failureKind === 'quota') {
       await clearSummarizationCooldown(fullName, branch, {
         primaryAgentAlias,
@@ -291,6 +308,10 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     });
     throw new SummarizationCooldownRecordedError(fallbackError);
   }
+}
+
+function beginFallbackRoutingSession(agent: Agent | undefined, model: string | undefined): SyntheticRoutingSession | undefined {
+  return agent instanceof SyntheticAgent ? agent.beginRoutingSession(model) : undefined;
 }
 
 async function logDirectoryBatchCall(options: ProcessDirectoryBatchOptions & {

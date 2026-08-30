@@ -406,6 +406,48 @@ export class SyntheticRoutingService {
     };
   }
 
+  /**
+   * Probe pool availability without consuming the persisted round-robin cursor.
+   * Members are checked in priority order so health probes reflect the same
+   * failover tiers as workload routing, while remaining side-effect free.
+   */
+  async healthCheck(session: SyntheticRoutingSession): Promise<boolean> {
+    const synthetic = await this.loadSyntheticModel(session.requestedAgentAlias, session.requestedModel, session.callId);
+    if (!synthetic) {
+      const agent = this.getDirectAgent(session.requestedAgentAlias);
+      if (!agent?.config.enabled || !session.isPhysicalAgentEligible(agent)) return false;
+      try {
+        return await agent.healthCheck();
+      } catch {
+        return false;
+      }
+    }
+
+    if (!synthetic.agent.enabled || !synthetic.model.enabled) return false;
+
+    const inspected = await Promise.all(synthetic.model.members.map(member => this.inspectMember(member, session)));
+    const eligible = inspected.flatMap(item => item.eligible ? [item.eligible] : []);
+    const candidates = [...eligible].sort((a, b) => {
+      const priority = b.member.priority - a.member.priority;
+      if (priority !== 0) return priority;
+      if (synthetic.model.strategy === 'usage_based') {
+        const headroom = b.headroom - a.headroom;
+        if (headroom !== 0) return headroom;
+      }
+      return a.member.id.localeCompare(b.member.id);
+    });
+
+    for (const candidate of candidates) {
+      try {
+        if (await candidate.agent.healthCheck()) return true;
+      } catch {
+        // A failed probe makes only this member unavailable; keep checking the
+        // remaining members and lower-priority failover tiers.
+      }
+    }
+    return false;
+  }
+
   metadataFor(selection: SyntheticPhysicalSelection): Record<string, unknown> {
     return {
       virtualAgentAlias: selection.virtualAgentAlias,

@@ -1,6 +1,10 @@
 import type { SyntheticAgentConfig } from '@propr/shared';
 import type { Agent, AgentConfig, AgentExecutionResult, AgentTaskOptions, AnalysisResult, AnalyzeOptions } from './types.js';
-import { estimateTaskRequiredTokens, type SyntheticRoutingService } from '../services/syntheticRoutingService.js';
+import {
+  estimateTaskRequiredTokens,
+  type SyntheticRoutingService,
+  type SyntheticRoutingSession,
+} from '../services/syntheticRoutingService.js';
 import { estimateTokens } from '../utils/tokenCalculation.js';
 
 /** Agent facade that keeps the requested virtual identity while routing calls centrally. */
@@ -43,6 +47,14 @@ export class SyntheticAgent implements Agent {
     return session.executeTask(options);
   }
 
+  /** Begin a routed call for consumers that suppress the facade's own LLM log. */
+  beginRoutingSession(requestedModel?: string): SyntheticRoutingSession {
+    return this.routing.begin({
+      requestedAgentAlias: this.config.alias,
+      requestedModel: requestedModel || this.config.defaultModel,
+    });
+  }
+
   async healthCheck(): Promise<boolean> {
     try {
       const session = this.routing.begin({
@@ -50,8 +62,7 @@ export class SyntheticAgent implements Agent {
         requestedModel: this.config.defaultModel,
         requiredTokens: 0,
       });
-      const selection = await session.select();
-      return selection.physicalAgent.healthCheck();
+      return await this.routing.healthCheck(session);
     } catch {
       return false;
     }
