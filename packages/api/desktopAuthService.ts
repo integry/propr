@@ -2,7 +2,11 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
-import { isProprConnectReservedHostAttempt, parseProprConnectEndpoint } from '@propr/shared';
+import {
+  isProprConnectReservedHostAttempt,
+  MAX_PROPR_API_BASE_URL_LENGTH,
+  parseProprConnectEndpoint,
+} from '@propr/shared';
 import type { GitHubUser } from './authTypes.js';
 
 const DEFAULT_PAIRING_TTL_MS = 10 * 60_000;
@@ -152,6 +156,13 @@ function frontendApprovalBase(configured?: string): URL {
 function publicApiBase(configured?: string): URL | null {
   const raw = configured ?? process.env.API_PUBLIC_URL;
   if (!raw) return null;
+  if (raw.length > MAX_PROPR_API_BASE_URL_LENGTH) {
+    throw new DesktopAuthError(
+      'PAIRING_CONFIGURATION_INVALID',
+      503,
+      'Desktop pairing is unavailable because the public API URL is invalid',
+    );
+  }
   const canonicalConnectEndpoint = parseProprConnectEndpoint(raw);
   if (isProprConnectReservedHostAttempt(raw) && !canonicalConnectEndpoint) {
     throw new DesktopAuthError(

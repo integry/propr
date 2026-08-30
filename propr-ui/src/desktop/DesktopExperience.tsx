@@ -218,7 +218,13 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   const retry = () => { if ('profile' in state) void connect(state.profile); };
 
-  const runBlockedAction = async (profile: DesktopProfile, action: () => Promise<void>, failureMessage: string, onSuccess?: () => Promise<void>) => {
+  const runBlockedAction = async (
+    profile: DesktopProfile,
+    action: () => Promise<void>,
+    failureMessage: string,
+    connectFailureMessage?: string,
+    onSuccess?: () => Promise<void>,
+  ) => {
     const attempt = connectionAttempt.current;
     try {
       await action();
@@ -228,8 +234,8 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       setState(current => current.phase === 'blocked' && current.profile.id === profile.id
         ? {
           ...current,
-          result: parseProprConnectEndpoint(profile.baseUrl)
-            ? { status: 'offline', message: 'ProPR Connect pairing could not be completed. Try again.' }
+          result: parseProprConnectEndpoint(profile.baseUrl) && connectFailureMessage
+            ? { status: 'offline', message: recoverableError(connectFailureMessage) }
             : { ...current.result, message },
         }
         : current);
@@ -281,7 +287,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     if (state.phase === 'loading') return <div className="desktop-loading"><LoaderCircle className="desktop-spin" /><span>Opening ProPR…</span></div>;
     if (state.phase === 'connecting') return <ConnectionPanel profile={state.profile} onBack={choose} onRetry={retry} onAuthenticate={() => undefined} onHelp={() => undefined} onReenter={() => undefined} onRediscover={() => undefined} />;
     if (state.phase === 'recovery-review') return <ManagedRecoveryReview profile={state.profile} onCancel={() => setState({ phase: 'blocked', profile: state.profile, result: { status: 'offline', message: managedRecoveryMessage } })} onConfirm={() => void connect(state.candidate)} />;
-    if (state.phase === 'blocked') return <ConnectionPanel profile={state.profile} result={state.result} onBack={choose} onRetry={retry} onAuthenticate={() => void runBlockedAction(state.profile, () => adapters.authentication.authenticate(state.profile), 'ProPR Desktop could not open sign in.', () => connect(state.profile))} onHelp={() => void runBlockedAction(state.profile, () => adapters.externalBrowser.open('https://propr.dev'), 'ProPR Desktop could not open connection help.')} onReenter={() => reenterManagedEndpoint(state.profile)} onRediscover={() => void rediscoverManagedEndpoint(state.profile)} />;
+    if (state.phase === 'blocked') return <ConnectionPanel profile={state.profile} result={state.result} onBack={choose} onRetry={retry} onAuthenticate={() => void runBlockedAction(state.profile, () => adapters.authentication.authenticate(state.profile), 'ProPR Desktop could not open sign in.', 'ProPR Connect pairing could not be completed.', () => connect(state.profile))} onHelp={() => void runBlockedAction(state.profile, () => adapters.externalBrowser.open('https://propr.dev'), 'ProPR Desktop could not open connection help.')} onReenter={() => reenterManagedEndpoint(state.profile)} onRediscover={() => void rediscoverManagedEndpoint(state.profile)} />;
     if (editing) return <main className="desktop-welcome-card"><DesktopBrand /><ProfileEditor initial={editing === 'new' ? undefined : editing} operationError={operationError} onCancel={() => setEditing(null)} onSave={profile => void saveProfile(profile)} /></main>;
     return <InstanceChooser profiles={profiles} busy={busy} error={operationError} localSetupSupported={adapters.platform === 'linux'} onLocalSetup={() => void setupLocal()} onConnectNew={() => openEditor('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />;
   };

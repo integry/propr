@@ -209,4 +209,16 @@ describe('DesktopExperience managed Connect recovery', () => {
     expect(await screen.findByText(/pairing could not be completed.*try again/i)).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(/password-sentinel|Users\/private/i);
   });
+
+  it('reports a managed connection-help failure as a bounded help error', async () => {
+    const adapters = adaptersFor();
+    vi.mocked(adapters.externalBrowser.open).mockRejectedValueOnce(
+      new Error('browser-sentinel at /Users/private/config'),
+    );
+    await renderOfflineProfile(adapters);
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection help' }));
+
+    expect(await screen.findByText(/could not open connection help.*try again/i)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/pairing could not be completed|browser-sentinel|Users\/private/i);
+  });
 });

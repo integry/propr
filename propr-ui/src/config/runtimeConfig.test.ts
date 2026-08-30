@@ -262,6 +262,10 @@ describe('hosted tunnel query API base', () => {
     vi.resetModules();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('accepts the Connect tunnel hostname on the hosted UI origin', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
     expect(
@@ -317,6 +321,43 @@ describe('hosted tunnel query API base', () => {
       expect(resolveApiBaseUrl('app.propr.dev', search, undefined, undefined, storage), search).toBe('');
       expect(storage.setItem, search).not.toHaveBeenCalled();
     }
+  });
+
+  it('does not let an encoded tunnel name fall through to valid runtime configuration', async () => {
+    stubHostedWindow({
+      config: { apiBaseUrl: 'https://t-configured.propr.dev' },
+      pathname: '/',
+      search: '?%74unnel=t-selected.propr.dev',
+    });
+    const { getRuntimeApiBaseUrlState, hostedTunnelQueryApiBaseUrl } = await load();
+
+    expect(hostedTunnelQueryApiBaseUrl(
+      'app.propr.dev',
+      '?%74unnel=t-selected.propr.dev',
+    )).toBeNull();
+    expect(getRuntimeApiBaseUrlState()).toMatchObject({
+      apiBaseUrl: '',
+      issue: { code: 'INVALID_RUNTIME_CONFIGURATION' },
+    });
+  });
+
+  it('does not let an encoded tunnel name fall through to a valid stored endpoint', async () => {
+    stubHostedWindow({
+      name: 'propr-hosted-flow-context:stored-context|preserved',
+      pathname: '/',
+      search: '?%74unnel=t-selected.propr.dev&flow=stored-flow',
+      sessionInitial: {
+        'propr.hostedTunnelApiBaseUrl': 'https://t-stored.propr.dev',
+        'propr.hostedTunnelContextId': 'stored-context',
+        'propr.hostedTunnelFlowId': 'stored-flow',
+      },
+    });
+    const { getRuntimeApiBaseUrlState } = await load();
+
+    expect(getRuntimeApiBaseUrlState()).toMatchObject({
+      apiBaseUrl: '',
+      issue: { code: 'INVALID_RUNTIME_CONFIGURATION' },
+    });
   });
 
   it('ignores tunnel query params off the hosted UI origin', async () => {

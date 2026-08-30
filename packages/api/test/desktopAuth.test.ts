@@ -114,6 +114,7 @@ describe('desktop browser pairing', () => {
       'https://t-%zz.propr.dev',
       'https://x.t-instance123.propr.dev',
       'https://nested.t-instance123.propr.dev',
+      `https://t-instance123.propr.dev${' '.repeat(2049)}`,
     ]) {
       const invalidConnect = new DesktopAuthService({
         database,

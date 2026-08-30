@@ -41,8 +41,7 @@ export const hostedTunnelQueryApiBaseUrl = (hostname: string, search: string): s
 
 export const hasHostedTunnelQueryParameter = (search: string): boolean => {
   if (search.length > MAX_HOSTED_QUERY_LENGTH) return true;
-  const query = search.startsWith('?') ? search.slice(1) : search;
-  return query.split('&').some(parameter => parameter === 'tunnel' || parameter.startsWith('tunnel='));
+  return new URLSearchParams(search).has('tunnel');
 };
 
 export const storageForWindow = (): HostedTunnelStorage | undefined => {
