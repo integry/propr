@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   inspectAnyCpuPe,
+  preserveWindowsAuthorityCompilerFailure,
   buildWindowsAuthorityHelper,
   decodeWindowsSystemDirectoryRecord,
   resolveWindowsCompilerLayout,
@@ -90,11 +91,39 @@ test('compiler layout preserves recognized probe substages and redacts unknown f
     });
     await assert.rejects(
       resolveWindowsCompilerLayout({}, async () => { throw recognized; }),
-      error => error === recognized,
+      error => error instanceof Error
+        && error.message === `Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`
+        && !error.message.includes('host detail'),
     );
   }
   await assert.rejects(
     resolveWindowsCompilerLayout({}, async () => { throw new Error('C:\\secret\\host-path'); }),
+    error => error instanceof Error
+      && error.message === 'Windows authority helper build failed [win-authority:BUILD_COMPILER:DIRECTORY_PROBE]'
+      && !error.message.includes('secret'),
+  );
+});
+
+test('every native build boundary preserves only the fixed secret-free compiler stage vocabulary', () => {
+  for (const substage of WINDOWS_AUTHORITY_COMPILER_SUBSTAGES) {
+    const exact = Object.assign(new Error('C:\\host-detail-must-not-be-rendered'), {
+      stage: 'BUILD_COMPILER', substage, code: substage,
+    });
+    assert.throws(
+      () => preserveWindowsAuthorityCompilerFailure(exact),
+      error => error instanceof Error
+        && error.message === `Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`
+        && !error.message.includes('host-detail'),
+    );
+    assert.throws(
+      () => preserveWindowsAuthorityCompilerFailure(Object.assign(new Error('raw native detail'), { code: substage })),
+      error => error instanceof Error
+        && error.message === `Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`
+        && !error.message.includes('raw native detail'),
+    );
+  }
+  assert.throws(
+    () => preserveWindowsAuthorityCompilerFailure(new Error('C:\\secret\\compiler.log')),
     error => error instanceof Error
       && error.message === 'Windows authority helper build failed [win-authority:BUILD_COMPILER:DIRECTORY_PROBE]'
       && !error.message.includes('secret'),
@@ -110,6 +139,8 @@ test('system catalog policy is standalone, cache-only, held, and independently d
   assert.match(source, /SameHeldCatalog\(catalogs\[index\], catalog_identities\[index\], catalog_hashes\[index\]\)/);
   assert.match(source, /kMicrosoftCatalogPolicy/);
   assert.match(source, /ApprovedMicrosoftCatalog/);
+  assert.doesNotMatch(source, /compiler-(?:wrong-signer|same-root-wrong-certificate|same-root-wrong-signer|subject-spoof|wrong-spki|manifest-replacement)/);
+  assert.doesNotMatch(source, /\(void\)presented/);
   assert.doesNotMatch(source, /certificate->size\(\)\s*!=\s*64|spki->size\(\)\s*!=\s*64/);
   for (const digest of [
     '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
@@ -173,14 +204,8 @@ test('native compiler leases defeat compiler, reference, and exact-source substi
 
 test('native compiler signer, image, job, exit, and output failures stay bounded and clean', windowsNativeBuildOnly, async () => {
   const cases = [
-    ['compiler-wrong-signer', 'SIGNER_CATALOG'],
-    ['compiler-same-root-wrong-certificate', 'SIGNER_CATALOG'],
-    ['compiler-same-root-wrong-signer', 'SIGNER_CATALOG'],
-    ['compiler-subject-spoof', 'SIGNER_CATALOG'],
-    ['compiler-wrong-spki', 'SIGNER_CATALOG'],
     ['compiler-wrong-catalog', 'CATALOG_HASH'],
     ['compiler-swapped-catalog', 'CATALOG_LEASE'],
-    ['compiler-manifest-replacement', 'SIGNER_CATALOG'],
     ['compiler-job', 'IMAGE'],
     ['compiler-image', 'IMAGE'],
     ['compiler-exit', 'EXIT'],

@@ -20,8 +20,8 @@ const TARGETS = new Map([
   ['linux-arm64', ['deb', 'rpm', 'zip']],
   ['darwin-x64', ['dmg', 'zip']],
   ['darwin-arm64', ['dmg', 'zip']],
-  ['win32-x64', ['setup', 'nupkg', 'releases']],
-  ['win32-arm64', ['setup', 'nupkg', 'releases']],
+  ['win32-x64', ['setup', 'msi', 'nupkg', 'releases']],
+  ['win32-arm64', ['setup', 'msi', 'nupkg', 'releases']],
 ]);
 const DMG_HELPERS = [
   'propr-desktop Helper.app',
@@ -502,6 +502,7 @@ export const validateSquirrelReleases = (releasesBytes, packages) => {
 const artifactKind = (path, platform) => {
   const name = basename(path);
   if (platform === 'win32') {
+    if (/-Machine-Setup\.msi$/i.test(name)) return 'msi';
     if (/Setup\.exe$/i.test(name)) return 'setup';
     if (/-full\.nupkg$/i.test(name)) return 'nupkg';
     if (name === 'RELEASES') return 'releases';
@@ -513,7 +514,9 @@ const artifactKind = (path, platform) => {
 
 const releaseFileName = (version, platform, arch, kind) => {
   const platformName = platform === 'darwin' ? 'macos' : platform === 'win32' ? 'windows' : 'linux';
-  const suffix = kind === 'setup' ? 'Setup.exe' : kind === 'releases' ? 'RELEASES' : kind === 'nupkg' ? 'full.nupkg' : kind;
+  const suffix = kind === 'setup' ? 'Setup.exe'
+    : kind === 'msi' ? 'Machine-Setup.msi'
+      : kind === 'releases' ? 'RELEASES' : kind === 'nupkg' ? 'full.nupkg' : kind;
   return `ProPR-Desktop-${version}-${platformName}-${arch}-${suffix}`;
 };
 

@@ -176,6 +176,16 @@ jobs:
         shell: pwsh
         run: npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
 
+      - name: Install and exercise machine-protected Windows authority
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
+          if ($installers.Count -ne 1) { throw 'Machine-wide Windows installer is missing or ambiguous' }
+          & apps/desktop/scripts/test-installed-windows-authority.ps1 `
+            -Installer $installers[0].FullName `
+            -Architecture '${{ matrix.arch }}'
+
       - name: Launch packaged Linux application
         if: matrix.platform == 'linux'
         shell: bash
@@ -586,6 +596,16 @@ jobs:
         shell: pwsh
         run: npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
 
+      - name: Install and exercise signed machine-protected Windows authority
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
+          if ($installers.Count -ne 1) { throw 'Signed machine-wide Windows installer is missing or ambiguous' }
+          & apps/desktop/scripts/test-installed-windows-authority.ps1 `
+            -Installer $installers[0].FullName `
+            -Architecture '${{ matrix.arch }}'
+
       - name: Launch packaged Linux application
         if: matrix.platform == 'linux'
         shell: bash
@@ -623,6 +643,7 @@ jobs:
         run: |
           npm run desktop:smoke:inspect
           $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Setup.exe')
+          $machineInstallers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
           $packages = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*-full.nupkg')
           $appExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/propr-desktop.exe"
           $helperExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-authority.exe"
@@ -633,8 +654,9 @@ jobs:
             throw 'Packaged Windows authority helper, launcher, or bound manifest is missing'
           }
           node apps/desktop/scripts/inspect-packaged-windows-authority.mjs $helperExecutable $helperManifest
-          if ($installers.Count -ne 1 -or $packages.Count -ne 1) { throw 'Windows release artifacts are missing or ambiguous' }
+          if ($installers.Count -ne 1 -or $machineInstallers.Count -ne 1 -or $packages.Count -ne 1) { throw 'Windows release artifacts are missing or ambiguous' }
           $installer = $installers[0]
+          $machineInstaller = $machineInstallers[0]
           $package = $packages[0]
           node apps/desktop/scripts/release-architecture.mjs inspect `
             --path $package.FullName `
@@ -670,6 +692,7 @@ jobs:
           }
           $evidence = @(
             Get-ValidatedSignerEvidence $installer.FullName
+            Get-ValidatedSignerEvidence $machineInstaller.FullName
             Get-ValidatedSignerEvidence $appExecutable
             Get-ValidatedSignerEvidence $packageExecutable.FullName
             Get-ValidatedSignerEvidence $helperExecutable

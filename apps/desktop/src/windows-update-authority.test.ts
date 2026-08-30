@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, X509Certificate } from 'node:crypto';
 import { copyFile, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -220,7 +220,11 @@ test('production verifier is kernel-rooted and never selected by the process com
   assert.match(implementation, /\$heldHandle=\$native::_get_osfhandle\(3\)/);
   assert.match(implementation, /GetFileInformationByHandleEx/);
   assert.match(implementation, /GetSecurityInfo/);
-  assert.match(implementation, /Get-AuthenticodeSignature -Content \$bytes/);
+  assert.doesNotMatch(implementation, /Get-AuthenticodeSignature\s+-Content/);
+  assert.match(implementation, /WinVerifyTrust/);
+  assert.match(implementation, /CryptQueryObject\(2,\$blob/);
+  assert.match(implementation, /GCHandleType\]::Pinned/);
+  assert.match(implementation, /Invoke-HeldCatalogTrust \$memberHandle/);
   assert.match(implementation, /CryptCATAdminCalcHashFromFileHandle2/);
   assert.match(implementation, /CryptCATAdminEnumCatalogFromHash/);
   assert.match(implementation, /selfCatalogFileId128/);
@@ -243,7 +247,6 @@ test('bootstrap authority rejects a forged or split held-object identity record'
     nodeIno: identity.ino,
     ownerSid: 'S-1-5-18',
     daclProtected: true,
-    systemAcl: true,
     reparseTag: '00000000',
     subject: null,
     certificate: null,
@@ -259,7 +262,8 @@ test('bootstrap authority rejects a forged or split held-object identity record'
   assert.equal(validateBootstrapIdentityRecordForTest({ ...record, nodeIno: '5679' }, policy, identity), false);
   assert.equal(validateBootstrapIdentityRecordForTest({ ...record, fileId128: '2'.repeat(31) }, policy, identity), false);
   assert.equal(validateBootstrapIdentityRecordForTest({ ...record, ownerSid: 'S-1-5-21-1-2-3-4' }, policy, identity), false);
-  assert.equal(validateBootstrapIdentityRecordForTest({ ...record, systemAcl: false }, policy, identity), false);
+  assert.equal(validateBootstrapIdentityRecordForTest({ ...record, daclProtected: false }, policy, identity), false);
+  assert.equal(validateBootstrapIdentityRecordForTest({ ...record, systemAcl: true }, policy, identity), false);
   assert.equal(validateBootstrapIdentityRecordForTest({ ...record, unexpected: true }, policy, identity), false);
 });
 
@@ -355,7 +359,113 @@ test('OS package authority never executes a malicious replacement bootstrap init
   }
 });
 
-test('bootstrap authority rejects real current-owner, explicit-write, and inherited-write ACL attacks', windowsOnly,
+test('raw production verifier accepts held invalid-UTF16 PE bytes then rejects a real same-root wrong leaf', windowsOnly, async () => {
+  const source = await authenticateWindowsAuthorityHelperForTest();
+  const sourceDirectory = dirname(source.executable);
+  await source.executableHandle.close();
+  await source.launcherHandle.close();
+  await source.bootstrapHandle.close();
+  await source.manifestHandle.close();
+  const root = await mkdtemp(join(tmpdir(), 'propr-real-wrong-leaf-'));
+  const signingScript = join(root, 'sign-hostile-fixture.ps1');
+  let certificateState: { root: string; actual: string; expected: string } | undefined;
+  try {
+    for (const name of ['propr-windows-authority.exe', 'propr-windows-launcher.node',
+      'propr-windows-bootstrap.node', 'propr-windows-authority.manifest.json']) {
+      await copyFile(join(sourceDirectory, name), join(root, name));
+    }
+    await writeFile(signingScript, String.raw`
+$ErrorActionPreference='Stop'
+$fixture=$args[0]
+$ca=New-SelfSignedCertificate -Type Custom -Subject 'CN=ProPR Raw Fixture Root' -KeyUsage CertSign,CRLSign,DigitalSignature -KeyExportPolicy Exportable -TextExtension @('2.5.29.19={critical}{text}ca=1&pathlength=1') -CertStoreLocation Cert:\CurrentUser\My
+$actual=New-SelfSignedCertificate -Type Custom -Subject 'CN=ProPR Raw Fixture Leaf' -Signer $ca -KeyUsage DigitalSignature -KeyExportPolicy Exportable -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3') -CertStoreLocation Cert:\CurrentUser\My
+$expected=New-SelfSignedCertificate -Type Custom -Subject 'CN=ProPR Raw Fixture Leaf' -Signer $ca -KeyUsage DigitalSignature -KeyExportPolicy Exportable -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3') -CertStoreLocation Cert:\CurrentUser\My
+$roots=New-Object Security.Cryptography.X509Certificates.X509Store('Root','CurrentUser');$roots.Open('ReadWrite');$roots.Add($ca);$roots.Close()
+$publishers=New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPublisher','CurrentUser');$publishers.Open('ReadWrite');$publishers.Add($actual);$publishers.Close()
+foreach($name in @('propr-windows-authority.exe','propr-windows-launcher.node','propr-windows-bootstrap.node')) {
+  $path=Join-Path $fixture $name
+  $stream=[IO.File]::Open($path,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::None)
+  try{$invalidUtf16=[byte[]](0,216,255);$stream.Write($invalidUtf16,0,$invalidUtf16.Length)}finally{$stream.Dispose()}
+  $signed=Set-AuthenticodeSignature -LiteralPath $path -Certificate $actual -HashAlgorithm SHA256
+  if($signed.Status -ne 'Valid'){throw 'fixture signing failed'}
+}
+@{root=$ca.Thumbprint;actual=$actual.Thumbprint;expected=$expected.Thumbprint;actualRaw=[Convert]::ToBase64String($actual.RawData);expectedRaw=[Convert]::ToBase64String($expected.RawData)}|ConvertTo-Json -Compress
+`, 'utf8');
+    const { stdout } = await execFileAsync(kernelPowerShell,
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', signingScript, root],
+      { env: {}, windowsHide: true, maxBuffer: 64 * 1024 });
+    const signed = JSON.parse(stdout.trim()) as {
+      root: string; actual: string; expected: string; actualRaw: string; expectedRaw: string;
+    };
+    certificateState = signed;
+    const actual = new X509Certificate(Buffer.from(signed.actualRaw, 'base64'));
+    const expected = new X509Certificate(Buffer.from(signed.expectedRaw, 'base64'));
+    const identity = (certificate: X509Certificate) => {
+      const certificateSha256 = certificate.fingerprint256.replaceAll(':', '').toLowerCase();
+      const spkiSha256 = createHash('sha256').update(
+        certificate.publicKey.export({ format: 'der', type: 'spki' }),
+      ).digest('hex');
+      return {
+        publisher: certificate.subject,
+        certificateSha256,
+        spkiSha256,
+        pins: [`certificate-sha256:${certificateSha256}`, `spki-sha256:${spkiSha256}`].sort(),
+      };
+    };
+    const actualIdentity = identity(actual);
+    const expectedIdentity = identity(expected);
+    const manifestPath = join(root, 'propr-windows-authority.manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const applyIdentity = (signer: ReturnType<typeof identity>) => {
+      for (const record of [manifest, manifest.launcher, manifest.bootstrap]) {
+        record.trust = 'production-signed';
+        record.publisher = signer.publisher;
+        record.signerPins = signer.pins;
+        record.signerCertificateSha256 = signer.certificateSha256;
+        record.signerSpkiSha256 = signer.spkiSha256;
+      }
+    };
+    for (const [record, name] of [[manifest, 'propr-windows-authority.exe'],
+      [manifest.launcher, 'propr-windows-launcher.node'], [manifest.bootstrap, 'propr-windows-bootstrap.node']] as const) {
+      const bytes = await readFile(join(root, name));
+      record.size = bytes.length;
+      record.sha256 = createHash('sha256').update(bytes).digest('hex');
+    }
+    applyIdentity(actualIdentity);
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await rm(signingScript, { force: true });
+    await sealWindowsAuthorityDirectory(root);
+    const accepted = await authenticateWindowsAuthorityHelperForTest(
+      root, undefined, actualIdentity.publisher, actualIdentity.pins, undefined, false,
+    );
+    await accepted.executableHandle.close();
+    await accepted.launcherHandle.close();
+    await accepted.bootstrapHandle.close();
+    await accepted.manifestHandle.close();
+    await prepareWindowsAuthorityBuildDirectory(root);
+    applyIdentity(expectedIdentity);
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await sealWindowsAuthorityDirectory(root);
+    await assert.rejects(
+      authenticateWindowsAuthorityHelperForTest(
+        root, undefined, expectedIdentity.publisher, expectedIdentity.pins, undefined, false,
+      ),
+      /compile_load:(?:5|6|7|8)/,
+    );
+    assert.equal(windowsAuthorityBrokerStatsForTest().activeProcessCount, 0);
+  } finally {
+    await prepareWindowsAuthorityBuildDirectory(root).catch(() => undefined);
+    if (certificateState) {
+      const cleanup = `$values=@('${certificateState.root}','${certificateState.actual}','${certificateState.expected}');`
+        + "foreach($storeName in @('My','Root','TrustedPublisher')){$store=New-Object Security.Cryptography.X509Certificates.X509Store($storeName,'CurrentUser');$store.Open('ReadWrite');foreach($certificate in @($store.Certificates)){if($values -contains $certificate.Thumbprint){$store.Remove($certificate)}};$store.Close()}";
+      await execFileAsync(kernelPowerShell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cleanup],
+        { env: {}, windowsHide: true }).catch(() => undefined);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('bootstrap authority rejects real unprotected, current-owner, explicit-write, and inherited-write ACL attacks', windowsOnly,
   async t => {
     await shutdownWindowsAuthorityBrokerForTest();
     const sourceDirectory = fileURLToPath(new URL('../build/windows-authority', import.meta.url));
@@ -366,7 +476,7 @@ test('bootstrap authority rejects real current-owner, explicit-write, and inheri
       '[Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { env: {}, windowsHide: true });
     const currentSid = stdout.trim();
     assert.match(currentSid, /^S-1-(?:\d+-){1,14}\d+$/);
-    for (const scenario of ['current-owner', 'explicit-write', 'inherited-write'] as const) {
+    for (const scenario of ['unprotected-dacl', 'current-owner', 'explicit-write', 'inherited-write'] as const) {
       await t.test(scenario, async () => {
         const root = await mkdtemp(join(tmpdir(), 'propr-bootstrap-acl-'));
         const marker = join(root, 'initializer-executed');
@@ -381,7 +491,10 @@ test('bootstrap authority rejects real current-owner, explicit-write, and inheri
           manifest.bootstrap.size = bytes.length;
           manifest.bootstrap.sha256 = createHash('sha256').update(bytes).digest('hex');
           await writeFile(join(root, 'propr-windows-authority.manifest.json'), `${JSON.stringify(manifest)}\n`);
-          if (scenario === 'current-owner') {
+          await sealWindowsAuthorityDirectory(root);
+          if (scenario === 'unprotected-dacl') {
+            await execFileAsync(kernelIcacls, [bootstrap, '/inheritance:e', '/Q'], { env: {} });
+          } else if (scenario === 'current-owner') {
             await execFileAsync(kernelIcacls, [root, '/setowner', `*${currentSid}`, '/T', '/C', '/Q'], { env: {} });
           } else if (scenario === 'explicit-write') {
             await execFileAsync(kernelIcacls, [bootstrap, '/grant', `*${currentSid}:M`, '/Q'], { env: {} });
@@ -398,6 +511,7 @@ test('bootstrap authority rejects real current-owner, explicit-write, and inheri
           assert.equal(windowsAuthorityBrokerStatsForTest().activeProcessCount, 0);
         } finally {
           delete process.env.PROPR_WINDOWS_MALICIOUS_BOOTSTRAP_SIDE_EFFECT;
+          await prepareWindowsAuthorityBuildDirectory(root).catch(() => undefined);
           await rm(root, { recursive: true, force: true });
         }
       });
@@ -414,6 +528,12 @@ test('native ACL policy rejects real arbitrary SID, object, callback, and condit
       'O:SYG:SYD:(XA;;GW;;;S-1-5-21-111111111-222222222-333333333-4444)',
       'O:SYG:SYD:(XA;;GW;;;S-1-5-21-111111111-222222222-333333333-4444;(@User.Title == "untrusted"))',
     ]) assert.equal(helper.launcher.dangerousAclForTest?.({ sddl }), true);
+    assert.equal(helper.launcher.dangerousAclForTest?.({
+      sddl: 'O:SYG:SYD:(A;;GR;;;BU)(D;;GW;;;BU)',
+    }), true, 'an explicit deny after an explicit allow is non-canonical and must fail closed');
+    assert.equal(helper.launcher.dangerousAclForTest?.({
+      sddl: 'O:SYG:SYD:(D;;GW;;;BU)(A;;GR;;;BU)',
+    }), false, 'canonical deny/allow order with no effective untrusted write is safe');
   } finally {
     await helper.executableHandle.close();
     await helper.launcherHandle.close();

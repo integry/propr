@@ -259,6 +259,14 @@ if (squirrelStartupHandled) {
   void app.whenReady().then(async () => {
     logger = createDesktopLogger(join(app.getPath('logs'), 'desktop.jsonl'));
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
+    if (process.platform === 'win32' && app.isPackaged && process.argv.includes('--propr-authority-smoke')) {
+      const { probePackagedWindowsAuthorityHelper } = await import('./windows-update-authority');
+      const stage = await probePackagedWindowsAuthorityHelper(join(process.resourcesPath, 'windows-authority'));
+      if (stage !== 'READY') throw new Error(`Installed Windows authority failed at ${stage}`);
+      log('info', 'desktop.windows_authority.ready', { stage });
+      app.exit(0);
+      return;
+    }
     configureSessionSecurity();
     configurePackagedRendererProtocol();
 

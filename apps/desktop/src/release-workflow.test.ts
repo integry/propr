@@ -49,6 +49,14 @@ const forgeConfig = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../forge.config.ts', import.meta.url)),
   'utf8',
 ));
+const windowsMachineInstaller = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/build-windows-machine-installer.mjs', import.meta.url)),
+  'utf8',
+));
+const installedWindowsAuthorityTest = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/test-installed-windows-authority.ps1', import.meta.url)),
+  'utf8',
+));
 
 const preflightAppTokenPermissions = (preflight: string): string[] => (
   [...preflight.matchAll(/^\s+permission-([a-z-]+): (read|write)$/gm)]
@@ -373,5 +381,28 @@ describe('desktop trusted release workflow', () => {
     assert.match(forgeConfig, /refreshPackagedWindowsAuthorityManifest/);
     assert.match(windowsAuthority, /purpose: BrokerPurpose/);
     assert.match(windowsAuthority, /expectedBytes: number \| null/);
+  });
+
+  test('installs the full machine-wide Windows artifact and exercises its protected authority on both architectures', () => {
+    assert.equal(workflow.match(/Install and exercise machine-protected Windows authority/g)?.length, 1);
+    assert.equal(workflow.match(/Install and exercise signed machine-protected Windows authority/g)?.length, 1);
+    assert.equal(workflow.match(/test-installed-windows-authority\.ps1/g)?.length, 2);
+    assert.match(workflow, /\*Machine-Setup\.msi/);
+    assert.match(workflow, /-Architecture '\$\{\{ matrix\.arch \}\}'/);
+    assert.match(forgeConfig, /postMake:/);
+    assert.match(forgeConfig, /buildWindowsMachineInstaller/);
+    assert.match(forgeConfig, /noMsi: true/);
+    assert.match(forgeConfig, /Machine-Setup\.msi/);
+    assert.match(windowsMachineInstaller, /InstallScope="perMachine"/);
+    assert.match(windowsMachineInstaller, /\/inheritance:r/);
+    assert.match(windowsMachineInstaller, /\/setowner \*S-1-5-18/);
+    assert.match(windowsMachineInstaller, /\*S-1-5-32-545:\(OI\)\(CI\)RX/);
+    assert.doesNotMatch(windowsMachineInstaller, /\*S-1-5-32-545:\(OI\)\(CI\)(?:M|F)/);
+    assert.match(installedWindowsAuthorityTest, /AreAccessRulesProtected/);
+    assert.match(installedWindowsAuthorityTest, /--propr-authority-smoke/);
+    assert.match(installedWindowsAuthorityTest, /-Credential \$credential/);
+    assert.match(installedWindowsAuthorityTest, /OpenWrite/);
+    assert.match(installedWindowsAuthorityTest, /File\]::Move/);
+    assert.match(installedWindowsAuthorityTest, /File\]::Delete/);
   });
 });

@@ -26,11 +26,13 @@ const kinds = {
   'linux-arm64': ['deb', 'rpm', 'zip'],
   'darwin-x64': ['dmg', 'zip'],
   'darwin-arm64': ['dmg', 'zip'],
-  'win32-x64': ['setup', 'nupkg', 'releases'],
-  'win32-arm64': ['setup', 'nupkg', 'releases'],
+  'win32-x64': ['setup', 'msi', 'nupkg', 'releases'],
+  'win32-arm64': ['setup', 'msi', 'nupkg', 'releases'],
 };
 
-const sourceName = kind => kind === 'setup' ? 'Desktop Setup.exe' : kind === 'nupkg' ? 'desktop-1.2.3-full.nupkg' : kind === 'releases' ? 'RELEASES' : `desktop.${kind}`;
+const sourceName = kind => kind === 'setup' ? 'Desktop Setup.exe'
+  : kind === 'msi' ? 'Desktop-Machine-Setup.msi'
+    : kind === 'nupkg' ? 'desktop-1.2.3-full.nupkg' : kind === 'releases' ? 'RELEASES' : `desktop.${kind}`;
 const certificateSha256 = '1'.repeat(64);
 const spkiSha256 = '2'.repeat(64);
 const windowsSignerPins = `certificate-sha256:${certificateSha256},spki-sha256:${spkiSha256}`;
@@ -341,13 +343,13 @@ describe('desktop release artifacts', () => {
     const output = join(root, 'final');
     const manifest = await finalizeArtifacts({ inputDirectory: fragments, outputDirectory: output, version: '1.2.3', inspectArchitecture: architectureInspector });
     assert.equal(manifest.schemaVersion, 2);
-    assert.equal(manifest.artifacts.length, 16);
+    assert.equal(manifest.artifacts.length, 18);
     assert.equal(manifest.tag, 'desktop-v1.2.3');
     assert.equal(Object.keys(manifest.feeds).length, 0);
     assert.equal(Object.keys(manifest.nativeSigners).length, 0);
     await assert.rejects(access(join(output, 'desktop-release.json.sig')));
     const checksumLines = (await readFile(join(output, 'SHA256SUMS'), 'utf8')).trim().split('\n');
-    assert.equal(checksumLines.length, 16);
+    assert.equal(checksumLines.length, 18);
     assert.ok(checksumLines.some(line => line.endsWith('ProPR-Desktop-1.2.3-windows-x64-Setup.exe')));
     for (const line of checksumLines) {
       const match = /^([a-f0-9]{64})  ([^/\\]+)$/.exec(line);
@@ -755,6 +757,7 @@ describe('desktop release artifacts', () => {
     const makeDirectory = join(root, 'make');
     await mkdir(makeDirectory, { recursive: true });
     await writeFile(join(makeDirectory, 'Desktop Setup.exe'), 'win32-x64-setup');
+    await writeFile(join(makeDirectory, 'Desktop-Machine-Setup.msi'), 'win32-x64-msi');
     await writeFile(join(makeDirectory, 'desktop-1.2.3-full.nupkg'), 'win32-x64-nupkg');
     await writeFile(
       join(makeDirectory, 'RELEASES'),

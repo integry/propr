@@ -137,11 +137,40 @@ const config: ForgeConfig = {
         await sealWindowsAuthorityDirectory(helperDirectory);
       }
     },
+    postMake: async (_forgeConfig, makeResults) => {
+      if (process.platform !== 'win32') return makeResults;
+      const installerModule = './scripts/build-windows-machine-installer.mjs';
+      const { buildWindowsMachineInstaller } = await import(installerModule);
+      for (const result of makeResults) {
+        if (result.platform !== 'win32' || (result.arch !== 'x64' && result.arch !== 'arm64')) continue;
+        const setup = result.artifacts.find(path => path.endsWith('Setup.exe'));
+        if (!setup) throw new Error('Squirrel output is missing its canonical setup executable');
+        const machineInstaller = resolve(
+          setup,
+          '..',
+          `ProPR-Desktop-${releaseVersion}-Machine-Setup.msi`,
+        );
+        const built = await buildWindowsMachineInstaller({
+          appDirectory: resolve('out', `propr-desktop-win32-${result.arch}`),
+          output: machineInstaller,
+          version: releaseVersion,
+          arch: result.arch,
+        });
+        if (built.skipped) throw new Error('Machine-wide Windows installer was not built');
+        if (windowsSign) {
+          const { sign } = await import('@electron/windows-sign');
+          await sign({ files: [machineInstaller], ...windowsSign });
+        }
+        result.artifacts.push(machineInstaller);
+      }
+      return makeResults;
+    },
   },
   makers: [
     new MakerSquirrel({
       name: SQUIRREL_PACKAGE_NAME,
       setupExe: `ProPR-Desktop-${releaseVersion}-Setup.exe`,
+      noMsi: true,
       version: releaseVersion,
       ...(windowsSign ? { windowsSign } : {}),
     }),

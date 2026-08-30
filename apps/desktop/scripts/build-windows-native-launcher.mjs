@@ -20,7 +20,13 @@ const SYSTEM_SID = '*S-1-5-18';
 const ADMINISTRATORS_SID = '*S-1-5-32-544';
 const TRUSTED_INSTALLER_SID = '*S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464';
 
-const fail = () => { throw new Error('Windows native launcher build failed [win-authority:BUILD_COMPILER]'); };
+const fail = (substage = 'OUTPUT_VALIDATION') => {
+  const error = new Error(`Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`);
+  error.stage = 'BUILD_COMPILER';
+  error.substage = substage;
+  error.code = substage;
+  throw error;
+};
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 const authorityAclTool = async (tool, args) => {
@@ -29,14 +35,16 @@ const authorityAclTool = async (tool, args) => {
     timeout: 30_000,
     maxBuffer: 64 * 1024,
     env: {},
-  }).catch(fail);
+  }).catch(() => fail('DIRECTORY_PROBE'));
 };
 
 const exactAuthorityDirectory = async root => {
   const pathStats = await lstat(root).catch(() => null);
   if (!pathStats) return false;
   if (!pathStats.isDirectory() || pathStats.isSymbolicLink()
-    || (await realpath(root).catch(fail)).toLowerCase() !== resolve(root).toLowerCase()) fail();
+    || (await realpath(root).catch(() => fail('DIRECTORY_PROBE'))).toLowerCase() !== resolve(root).toLowerCase()) {
+    fail('DIRECTORY_PROBE');
+  }
   return true;
 };
 
@@ -54,7 +62,7 @@ export const prepareWindowsAuthorityBuildDirectory = async (root = WINDOWS_NATIV
 // The verifier independently re-reads every effective explicit and inherited
 // ACE from held handles; these setup operations are never accepted as proof.
 export const sealWindowsAuthorityDirectory = async (root = WINDOWS_NATIVE_AUTHORITY_DIRECTORY) => {
-  if (process.platform !== 'win32' || !(await exactAuthorityDirectory(root))) fail();
+  if (process.platform !== 'win32' || !(await exactAuthorityDirectory(root))) fail('DIRECTORY_PROBE');
   // Reset first so an explicit SID planted during the build cannot survive the
   // transition merely because /grant:r only replaces ACEs for named trustees.
   await authorityAclTool(KERNEL_ICACLS, [root, '/reset', '/T', '/C', '/Q']);
@@ -76,20 +84,21 @@ export const inspectWindowsNativeLauncherPe = (bytes, expectedArchitecture) => {
 };
 
 const heldBytes = async path => {
-  const canonical = await realpath(path).catch(fail);
+  const canonical = await realpath(path).catch(() => fail('OUTPUT_VALIDATION'));
   if ((process.platform === 'win32' ? canonical.toLowerCase() : canonical) !== (process.platform === 'win32'
-    ? resolve(path).toLowerCase() : resolve(path))) fail();
-  const pathStats = await lstat(path, { bigint: true }).catch(fail);
+    ? resolve(path).toLowerCase() : resolve(path))) fail('OUTPUT_VALIDATION');
+  const pathStats = await lstat(path, { bigint: true }).catch(() => fail('OUTPUT_VALIDATION'));
   if (!pathStats.isFile() || pathStats.isSymbolicLink() || pathStats.nlink !== 1n
-    || pathStats.size <= 0n || pathStats.size > BigInt(MAX_LAUNCHER_BYTES)) fail();
-  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(fail);
+    || pathStats.size <= 0n || pathStats.size > BigInt(MAX_LAUNCHER_BYTES)) fail('OUTPUT_VALIDATION');
+  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    .catch(() => fail('OUTPUT_VALIDATION'));
   try {
     const before = await handle.stat({ bigint: true });
     const bytes = await handle.readFile();
     const after = await handle.stat({ bigint: true });
     if (before.dev !== pathStats.dev || before.ino !== pathStats.ino || before.size !== pathStats.size
       || before.nlink !== 1n || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
-      || BigInt(bytes.length) !== before.size) fail();
+      || BigInt(bytes.length) !== before.size) fail('OUTPUT_VALIDATION');
     return bytes;
   } finally { await handle.close(); }
 };
@@ -98,12 +107,12 @@ let launcherBuild;
 
 const buildWindowsNativeLauncherOnce = async () => {
   if (process.platform !== 'win32') return { skipped: true };
-  if (process.arch !== 'x64' && process.arch !== 'arm64') fail();
+  if (process.arch !== 'x64' && process.arch !== 'arm64') fail('OUTPUT_VALIDATION');
   await prepareWindowsAuthorityBuildDirectory();
   const nodeGyp = join(repositoryRoot, 'node_modules', 'node-gyp', 'bin', 'node-gyp.js');
   await execFileAsync(process.execPath, [nodeGyp, 'rebuild', '--directory', WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY,
     `--arch=${process.arch}`], { cwd: repositoryRoot, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024 })
-    .catch(fail);
+    .catch(() => fail('SPAWN'));
   const built = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_launcher.node');
   const builtBootstrap = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_bootstrap.node');
   const bytes = await heldBytes(built);
@@ -115,7 +124,7 @@ const buildWindowsNativeLauncherOnce = async () => {
   await copyFile(builtBootstrap, WINDOWS_NATIVE_BOOTSTRAP);
   const published = await heldBytes(WINDOWS_NATIVE_LAUNCHER);
   const publishedBootstrap = await heldBytes(WINDOWS_NATIVE_BOOTSTRAP);
-  if (!published.equals(bytes) || !publishedBootstrap.equals(bootstrapBytes)) fail();
+  if (!published.equals(bytes) || !publishedBootstrap.equals(bootstrapBytes)) fail('OUTPUT_VALIDATION');
   return {
     skipped: false,
     path: WINDOWS_NATIVE_LAUNCHER,

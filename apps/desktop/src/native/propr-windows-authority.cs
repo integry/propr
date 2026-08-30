@@ -39,6 +39,7 @@ public sealed class InspectionResult {
 
 public sealed class SecurityResult {
   public string ownerSid;
+  public bool daclProtected;
   public int aceCount;
 }
 
@@ -188,17 +189,28 @@ public static class ProprUpdateAuthority {
       SecurityIdentifier system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
       SecurityIdentifier administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
       int aceCount = 0;
+      int priorOrder = -1;
       foreach (GenericAce generic in security.DiscretionaryAcl) {
         aceCount++;
         if ((generic.AceFlags & AceFlags.Inherited) != 0) throw new BrokerFailure("dacl_ace", 8);
         QualifiedAce qualified = generic as QualifiedAce;
         KnownAce known = generic as KnownAce;
-        if (qualified == null || known == null || qualified.AceQualifier != AceQualifier.AccessAllowed) continue;
+        if (qualified == null || known == null || known.SecurityIdentifier == null
+          || (qualified.AceQualifier != AceQualifier.AccessAllowed
+            && qualified.AceQualifier != AceQualifier.AccessDenied)) {
+          throw new BrokerFailure("dacl_ace", 8);
+        }
+        bool allowed = qualified.AceQualifier == AceQualifier.AccessAllowed;
+        int order = allowed ? 1 : 0;
+        if (order < priorOrder) throw new BrokerFailure("dacl_ace", 8);
+        priorOrder = order;
         SecurityIdentifier sid = known.SecurityIdentifier;
         bool trusted = sid != null && (sid.Equals(current) || sid.Equals(system) || sid.Equals(administrators));
-        if (!trusted && (known.AccessMask & WRITE_AUTHORITY) != 0) throw new BrokerFailure("dacl_ace", 8);
+        if (allowed && !trusted && (known.AccessMask & WRITE_AUTHORITY) != 0) {
+          throw new BrokerFailure("dacl_ace", 8);
+        }
       }
-      return new SecurityResult { ownerSid = current.Value, aceCount = aceCount };
+      return new SecurityResult { ownerSid = current.Value, daclProtected = true, aceCount = aceCount };
     } finally { LocalFree(descriptor); }
   }
 
@@ -292,7 +304,7 @@ public static class ProprUpdateAuthority {
       size = standard.EndOfFile.ToString(),
       reparseTag = attributes.ReparseTag.ToString("x8"),
       ownerSid = security.ownerSid,
-      daclProtected = true,
+      daclProtected = security.daclProtected,
       aceCount = security.aceCount.ToString(),
       inheritedWriteAces = "0",
       broadWriteAces = "0"

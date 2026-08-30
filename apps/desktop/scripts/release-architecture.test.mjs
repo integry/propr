@@ -7,8 +7,20 @@ import { describe, test } from 'node:test';
 import {
   inspectDmgLayout,
   inspectExtractedDmgArchitecture,
+  inspectArtifactArchitecture,
   inspectLinuxPackageLayout,
 } from './release-architecture.mjs';
+
+test('machine-wide Windows artifacts require a real MSI compound file', async context => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-msi-layout-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const fake = join(root, 'ProPR-Desktop-Machine-Setup.msi');
+  await writeFile(fake, Buffer.alloc(4096));
+  await assert.rejects(
+    inspectArtifactArchitecture({ path: fake, kind: 'msi', platform: 'win32', arch: 'x64' }),
+    /not a compound-file Windows Installer package/,
+  );
+});
 
 const elfFixture = machine => {
   const bytes = Buffer.alloc(64);

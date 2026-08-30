@@ -50,6 +50,16 @@ const fail = (stage, substage) => {
   throw error;
 };
 
+export const preserveWindowsAuthorityCompilerFailure = (error, fallback = 'DIRECTORY_PROBE') => {
+  if (typeof error === 'object' && error !== null) {
+    if (error.stage === 'BUILD_COMPILER' && WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(error.substage)) {
+      fail('BUILD_COMPILER', error.substage);
+    }
+    if (WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(error.code)) fail('BUILD_COMPILER', error.code);
+  }
+  fail('BUILD_COMPILER', fallback);
+};
+
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const isProofArray = (value, pattern) => Array.isArray(value) && value.length === 3
   && value.every(entry => typeof entry === 'string' && pattern.test(entry));
@@ -136,15 +146,7 @@ export const resolveWindowsCompilerLayout = async (env, probe) => {
   let reportedRoot;
   try {
     reportedRoot = await Promise.resolve().then(() => probe(env));
-  } catch (error) {
-    // The native probe has already reduced its failure to the reviewed fixed
-    // catalog/compiler vocabulary. Preserve that bounded evidence verbatim;
-    // only genuinely unknown exceptions are redacted to DIRECTORY_PROBE.
-    if (typeof error === 'object' && error !== null
-      && error.stage === 'BUILD_COMPILER'
-      && WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(error.substage)) throw error;
-    fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
-  }
+  } catch (error) { preserveWindowsAuthorityCompilerFailure(error); }
   const canonicalRoot = await realpath(reportedRoot).catch(() => fail('BUILD_COMPILER', 'DIRECTORY_PROBE'));
   if (!samePath(resolve(reportedRoot), canonicalRoot)) fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
   for (const hint of [env.SystemRoot, env.windir]) {
@@ -293,7 +295,7 @@ const writeAtomic = async (target, bytes) => {
 export const buildWindowsAuthorityHelper = async (env = process.env) => {
   if (process.platform !== 'win32') return { skipped: true };
   await prepareWindowsAuthorityBuildDirectory();
-  const launcher = await buildWindowsNativeLauncher().catch(() => fail('BUILD_COMPILER', 'DIRECTORY_PROBE'));
+  const launcher = await buildWindowsNativeLauncher().catch(error => preserveWindowsAuthorityCompilerFailure(error));
   if (launcher.skipped) fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
   const nativeLauncher = loadAuthenticatedNativeLauncher(launcher);
   const { systemRoot, compiler, framework, systemReference, webReference } = await resolveWindowsCompilerLayout(
@@ -305,8 +307,8 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
       let record;
       try { record = nativeLauncher.probeSystemDirectory({ systemRoot: probeEnv.SystemRoot ?? '', windir: probeEnv.windir ?? '',
         fault: probeEnv.PROPR_WINDOWS_AUTHORITY_TEST_DIRECTORY_PROBE_FAULT ?? null }); }
-      catch (error) { return fail('BUILD_COMPILER', compilerSubstage(error) === 'SPAWN'
-        ? 'DIRECTORY_PROBE' : compilerSubstage(error)); }
+      catch (error) { return preserveWindowsAuthorityCompilerFailure(error,
+        compilerSubstage(error) === 'SPAWN' ? 'DIRECTORY_PROBE' : compilerSubstage(error)); }
       try { return decodeWindowsSystemDirectoryRecord(record); }
       catch { return fail('BUILD_COMPILER', 'DIRECTORY_PROBE'); }
     },

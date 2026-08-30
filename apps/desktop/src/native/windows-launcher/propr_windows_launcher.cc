@@ -55,6 +55,18 @@ struct LaunchLease {
 
 struct FileLeases { std::vector<HANDLE> handles; bool closed = false; };
 
+struct CatalogContextLease {
+  HCATADMIN admin = nullptr;
+  HCATINFO catalog = nullptr;
+  ~CatalogContextLease() {
+    if (catalog) CryptCATAdminReleaseCatalogContext(admin, catalog, 0);
+    if (admin) CryptCATAdminReleaseContext(admin, 0);
+  }
+  CatalogContextLease() = default;
+  CatalogContextLease(const CatalogContextLease&) = delete;
+  CatalogContextLease& operator=(const CatalogContextLease&) = delete;
+};
+
 void CloseFileLeases(FileLeases* leases) {
   if (!leases || leases->closed) return;
   leases->closed = true;
@@ -212,17 +224,28 @@ bool TrustedAuthoritySid(PSID sid, bool allow_current_user) {
     || SameSid(sid, L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
 }
 
-bool AllowedAceSidAndMask(const ACE_HEADER* header, ACCESS_MASK* mask, PSID* sid) {
+bool QualifiedAceSidAndMask(const ACE_HEADER* header, ACCESS_MASK* mask, PSID* sid, bool* allowed) {
   if (!header || header->AceSize < sizeof(ACE_HEADER) + sizeof(ACCESS_MASK) + sizeof(DWORD)) return false;
   const BYTE* bytes = reinterpret_cast<const BYTE*>(header);
   switch (header->AceType) {
     case ACCESS_ALLOWED_ACE_TYPE:
     case ACCESS_ALLOWED_CALLBACK_ACE_TYPE:
+      *allowed = true;
+      *mask = *reinterpret_cast<const ACCESS_MASK*>(bytes + sizeof(ACE_HEADER));
+      *sid = const_cast<BYTE*>(bytes + sizeof(ACE_HEADER) + sizeof(ACCESS_MASK));
+      break;
+    case ACCESS_DENIED_ACE_TYPE:
+    case ACCESS_DENIED_CALLBACK_ACE_TYPE:
+      *allowed = false;
       *mask = *reinterpret_cast<const ACCESS_MASK*>(bytes + sizeof(ACE_HEADER));
       *sid = const_cast<BYTE*>(bytes + sizeof(ACE_HEADER) + sizeof(ACCESS_MASK));
       break;
     case ACCESS_ALLOWED_OBJECT_ACE_TYPE:
-    case ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE: {
+    case ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE:
+    case ACCESS_DENIED_OBJECT_ACE_TYPE:
+    case ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE: {
+      *allowed = header->AceType == ACCESS_ALLOWED_OBJECT_ACE_TYPE
+        || header->AceType == ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE;
       if (header->AceSize < sizeof(ACE_HEADER) + sizeof(ACCESS_MASK) + sizeof(DWORD)) return false;
       *mask = *reinterpret_cast<const ACCESS_MASK*>(bytes + sizeof(ACE_HEADER));
       const DWORD flags = *reinterpret_cast<const DWORD*>(bytes + sizeof(ACE_HEADER) + sizeof(ACCESS_MASK));
@@ -245,6 +268,7 @@ bool AllowedAceSidAndMask(const ACE_HEADER* header, ACCESS_MASK* mask, PSID* sid
 bool DangerousUntrustedAcl(PACL dacl, bool allow_current_user) {
   constexpr DWORD dangerous = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
     | FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
+  int prior_order = -1;
   for (DWORD index = 0; index < dacl->AceCount; ++index) {
     void* raw = nullptr;
     if (!GetAce(dacl, index, &raw)) return true;
@@ -252,20 +276,19 @@ bool DangerousUntrustedAcl(PACL dacl, bool allow_current_user) {
     if ((header->AceFlags & INHERIT_ONLY_ACE) != 0) continue;
     ACCESS_MASK mask = 0;
     PSID sid = nullptr;
-    const bool allow_ace = header->AceType == ACCESS_ALLOWED_ACE_TYPE
-      || header->AceType == ACCESS_ALLOWED_OBJECT_ACE_TYPE
-      || header->AceType == ACCESS_ALLOWED_CALLBACK_ACE_TYPE
-      || header->AceType == ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE;
-    if (header->AceType == ACCESS_ALLOWED_COMPOUND_ACE_TYPE) return true;
-    if (!allow_ace) continue;
+    bool allow_ace = false;
+    if (!QualifiedAceSidAndMask(header, &mask, &sid, &allow_ace)) return true;
+    const int order = (header->AceFlags & INHERITED_ACE) != 0
+      ? (allow_ace ? 3 : 2) : (allow_ace ? 1 : 0);
+    if (order < prior_order) return true;
+    prior_order = order;
     // Callback and conditional allow ACEs are conservatively treated as
     // effective. Evaluating their claims against only the current token would
     // miss a future attacker token for which the condition becomes true.
-    if (!AllowedAceSidAndMask(header, &mask, &sid)) return true;
     // A named attacker SID is just as dangerous as a well-known broad group.
     // Only the user and the fixed Windows authority principals may mutate an
     // authenticated input while it is leased.
-    if ((mask & dangerous) != 0 && !TrustedAuthoritySid(sid, allow_current_user)) return true;
+    if (allow_ace && (mask & dangerous) != 0 && !TrustedAuthoritySid(sid, allow_current_user)) return true;
   }
   return false;
 }
@@ -319,18 +342,19 @@ bool SecureServicedSystemFile(HANDLE file, DWORD expected_size, FileIdInfo* iden
     && SecureObjectAcl(file, false);
 }
 
-bool VerifyTrust(const std::wstring& path) {
+bool VerifyTrust(const std::wstring& path, HANDLE held) {
   WINTRUST_FILE_INFO file{};
   file.cbStruct = sizeof(file);
   file.pcwszFilePath = path.c_str();
+  file.hFile = held;
   WINTRUST_DATA data{};
   data.cbStruct = sizeof(data);
   data.dwUIChoice = WTD_UI_NONE;
-  data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+  data.fdwRevocationChecks = WTD_REVOKE_NONE;
   data.dwUnionChoice = WTD_CHOICE_FILE;
   data.pFile = &file;
   data.dwStateAction = WTD_STATEACTION_VERIFY;
-  data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT;
+  data.dwProvFlags = WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL;
   GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
   const LONG status = WinVerifyTrust(nullptr, &policy, &data);
   data.dwStateAction = WTD_STATEACTION_CLOSE;
@@ -397,7 +421,22 @@ bool RevocationFailure(LONG status) {
     || status == CRYPT_E_REVOCATION_OFFLINE || status == CERT_E_REVOCATION_FAILURE;
 }
 
-bool SignerEvidence(const std::wstring& path, SignerContent expected_content, std::wstring* publisher,
+bool ReadHeldBytes(HANDLE held, DWORD maximum, std::vector<BYTE>* bytes) {
+  LARGE_INTEGER size{};
+  if (!GetFileSizeEx(held, &size) || size.QuadPart <= 0 || size.QuadPart > maximum
+      || SetFilePointer(held, 0, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) return false;
+  bytes->resize(static_cast<size_t>(size.QuadPart));
+  DWORD total = 0;
+  while (total < bytes->size()) {
+    DWORD read = 0;
+    const DWORD requested = std::min<DWORD>(64 * 1024, static_cast<DWORD>(bytes->size()) - total);
+    if (!ReadFile(held, bytes->data() + total, requested, &read, nullptr) || read == 0) return false;
+    total += read;
+  }
+  return total == bytes->size();
+}
+
+bool SignerEvidence(HANDLE held, SignerContent expected_content, std::wstring* publisher,
     std::string* certificate_hash, std::string* spki_hash, std::string* root_spki_hash = nullptr,
     DWORD* chain_errors = nullptr) {
   HCERTSTORE store = nullptr;
@@ -407,7 +446,14 @@ bool SignerEvidence(const std::wstring& path, SignerContent expected_content, st
     ? CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED : CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED;
   const DWORD required_content = expected_content == SignerContent::EmbeddedPe
     ? CERT_QUERY_CONTENT_PKCS7_SIGNED_EMBED : CERT_QUERY_CONTENT_PKCS7_SIGNED;
-  if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, path.c_str(), content_flag,
+  std::vector<BYTE> exact_bytes;
+  CRYPT_DATA_BLOB blob{};
+  const bool read = ReadHeldBytes(held, kMaxBuildInputBytes, &exact_bytes);
+  if (read) {
+    blob.cbData = static_cast<DWORD>(exact_bytes.size());
+    blob.pbData = exact_bytes.data();
+  }
+  if (!read || !CryptQueryObject(CERT_QUERY_OBJECT_BLOB, &blob, content_flag,
       CERT_QUERY_FORMAT_FLAG_BINARY, 0, &encoding, &content, &format, &store, &message, nullptr)
       || content != required_content || format != CERT_QUERY_FORMAT_BINARY) return false;
   DWORD bytes = 0;
@@ -435,7 +481,7 @@ bool SignerEvidence(const std::wstring& path, SignerContent expected_content, st
         CRYPT_ENCODE_ALLOC_FLAG, nullptr, &encoded, &encoded_bytes)
       && Sha256Bytes(encoded, encoded_bytes, spki_hash);
     if (encoded) LocalFree(encoded);
-    if (ok && root_spki_hash) {
+    if (ok) {
       CERT_CHAIN_PARA parameters{};
       parameters.cbSize = sizeof(parameters);
       PCCERT_CHAIN_CONTEXT chain = nullptr;
@@ -457,7 +503,7 @@ bool SignerEvidence(const std::wstring& path, SignerContent expected_content, st
         const DWORD offline_only = CERT_TRUST_REVOCATION_STATUS_UNKNOWN | CERT_TRUST_IS_OFFLINE_REVOCATION;
         ok = (errors & ~offline_only) == CERT_TRUST_NO_ERROR;
       }
-      if (ok) {
+      if (ok && root_spki_hash) {
         PCCERT_CONTEXT root = chain->rgpChain[0]->rgpElement[chain->rgpChain[0]->cElement - 1]->pCertContext;
         BYTE* root_encoded = nullptr;
         DWORD root_bytes = 0;
@@ -475,13 +521,14 @@ bool SignerEvidence(const std::wstring& path, SignerContent expected_content, st
   return ok;
 }
 
-bool VerifyPinnedSignature(const std::wstring& path, const std::string& expected_publisher,
+bool VerifyPinnedSignature(const std::wstring& path, HANDLE held, const std::string& expected_publisher,
     const std::string& expected_certificate, const std::string& expected_spki) {
-  if (!VerifyTrust(path) || expected_publisher.empty() || expected_certificate.size() != 64 || expected_spki.size() != 64) return false;
+  if (!VerifyTrust(path, held) || expected_publisher.empty()
+      || expected_certificate.size() != 64 || expected_spki.size() != 64) return false;
   std::wstring publisher;
   std::string certificate, spki;
   std::wstring expected(expected_publisher.begin(), expected_publisher.end());
-  return SignerEvidence(path, SignerContent::EmbeddedPe, &publisher, &certificate, &spki)
+  return SignerEvidence(held, SignerContent::EmbeddedPe, &publisher, &certificate, &spki)
     && publisher == expected && certificate == expected_certificate && spki == expected_spki;
 }
 
@@ -596,7 +643,7 @@ bool CanonicalMicrosoftCatalog(const std::wstring& path, std::string* sha256, Fi
 
 bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* catalog_path,
     std::string* catalog_sha256, FileIdInfo* catalog_identity, HANDLE* held_catalog,
-    CatalogFailure* failure) {
+    CatalogContextLease* context_lease, CatalogFailure* failure) {
   *failure = CatalogFailure::Enumeration;
   HCATADMIN admin = nullptr;
   if (!CryptCATAdminAcquireContext2(&admin, &DRIVER_ACTION_VERIFY, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) return false;
@@ -613,6 +660,11 @@ bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* cat
   catalog_info.cbStruct = sizeof(catalog_info);
   ok = ok && catalog && CryptCATCatalogInfoFromContext(catalog, &catalog_info, 0);
   std::wstring member_tag;
+  if (ok) {
+    *catalog_path = catalog_info.wszCatalogFile;
+    ok = CanonicalMicrosoftCatalog(*catalog_path, catalog_sha256, catalog_identity, held_catalog);
+    if (!ok) *failure = CatalogFailure::CatalogLease;
+  }
   if (ok) {
     const std::string lower = Hex(hash.data(), hash.size());
     member_tag.assign(lower.begin(), lower.end());
@@ -647,14 +699,19 @@ bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* cat
       ? CatalogFailure::Revocation : CatalogFailure::WinTrustPolicy;
     data.dwStateAction = WTD_STATEACTION_CLOSE;
     WinVerifyTrust(nullptr, &policy, &data);
-    if (ok) {
-      *catalog_path = catalog_info.wszCatalogFile;
-      ok = CanonicalMicrosoftCatalog(*catalog_path, catalog_sha256, catalog_identity, held_catalog);
-      if (!ok) *failure = CatalogFailure::CatalogLease;
-    }
+  }
+  if (!ok && *held_catalog != INVALID_HANDLE_VALUE) {
+    CloseHandle(*held_catalog);
+    *held_catalog = INVALID_HANDLE_VALUE;
+  }
+  if (ok) {
+    context_lease->admin = admin;
+    context_lease->catalog = catalog;
+    admin = nullptr;
+    catalog = nullptr;
   }
   if (catalog) CryptCATAdminReleaseCatalogContext(admin, catalog, 0);
-  CryptCATAdminReleaseContext(admin, 0);
+  if (admin) CryptCATAdminReleaseContext(admin, 0);
   if (ok) *failure = CatalogFailure::None;
   return ok;
 }
@@ -662,18 +719,18 @@ bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* cat
 bool VerifyMicrosoftCompilerInput(const std::wstring& path, HANDLE file, std::string* certificate,
     std::string* spki, std::string* root_spki, std::string* catalog_sha256,
     std::string* catalog_name, std::wstring* catalog_path, FileIdInfo* catalog_identity,
-    HANDLE* held_catalog, CatalogFailure* failure) {
+    HANDLE* held_catalog, CatalogContextLease* context_lease, CatalogFailure* failure) {
   // Inbox compiler/reference authorization is membership in the immutable,
   // OS-serviced Windows catalog rooted at the canonical CatRoot namespace.
   // An arbitrary embedded Authenticode signature, even under a Microsoft root,
   // is deliberately insufficient.
   std::wstring evidence_path;
   const bool trusted = VerifyCatalogTrust(path, file, &evidence_path, catalog_sha256,
-    catalog_identity, held_catalog, failure);
+    catalog_identity, held_catalog, context_lease, failure);
   std::wstring publisher;
   DWORD chain_errors = 0xffffffff;
   if (!trusted) return false;
-  if (!SignerEvidence(evidence_path, SignerContent::StandaloneCatalog,
+  if (!SignerEvidence(*held_catalog, SignerContent::StandaloneCatalog,
       &publisher, certificate, spki, root_spki, &chain_errors)) {
     *failure = (chain_errors & CERT_TRUST_IS_REVOKED) != 0
       ? CatalogFailure::Revocation : chain_errors == 0xffffffff
@@ -795,6 +852,7 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
   FileIdInfo identity{};
   FileIdInfo system_catalog_identity{};
   HANDLE system_catalog = INVALID_HANDLE_VALUE;
+  CatalogContextLease system_catalog_context{};
   CatalogFailure catalog_failure = CatalogFailure::None;
   std::string system_certificate, system_spki, system_root_spki, system_catalog_sha256, system_catalog_name;
   std::wstring system_catalog_path;
@@ -807,7 +865,7 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
     && SecureServicedSystemFile(candidate, static_cast<DWORD>(size.QuadPart), &identity)
     && VerifyMicrosoftCompilerInput(powershell, candidate, &system_certificate, &system_spki,
       &system_root_spki, &system_catalog_sha256, &system_catalog_name, &system_catalog_path,
-      &system_catalog_identity, &system_catalog, &catalog_failure);
+      &system_catalog_identity, &system_catalog, &system_catalog_context, &catalog_failure);
   if (system_catalog != INVALID_HANDLE_VALUE) CloseHandle(system_catalog);
   CloseHandle(candidate);
   if (!valid) { Throw(env, catalog_failure == CatalogFailure::None
@@ -891,7 +949,7 @@ napi_value LoadVerifiedModule(napi_env env, napi_callback_info info) {
   const bool authenticated = held != INVALID_HANDLE_VALUE
     && SecureRegularFile(held, expected_size, &held_id, false) && ExpectedArchitecture(held)
     && Sha256Handle(held, expected_size, &held_hash) && held_hash == expected_hash
-    && (!production || VerifyPinnedSignature(path, publisher, certificate_pin, spki_pin));
+    && (!production || VerifyPinnedSignature(path, held, publisher, certificate_pin, spki_pin));
   if (!authenticated) {
     if (held != INVALID_HANDLE_VALUE) CloseHandle(held);
     Throw(env, "MODULE_AUTHORITY"); return nullptr;
@@ -964,7 +1022,7 @@ napi_value Launch(napi_env env, napi_callback_info info) {
   std::string held_hash;
   if (!SecureRegularFile(image, expected_size, &held_id, false)
       || !Sha256Handle(image, expected_size, &held_hash) || held_hash != expected_hash
-      || (production && !VerifyPinnedSignature(path, publisher, certificate_pin, spki_pin))) {
+      || (production && !VerifyPinnedSignature(path, image, publisher, certificate_pin, spki_pin))) {
     CloseHandle(image); Throw(env, "HELPER_AUTHORITY"); return nullptr;
   }
   if (fault.rfind("barrier-after-hash-", 0) == 0 && !MutationWasDenied(path, fault)) {
@@ -1275,6 +1333,7 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
 
   std::array<HANDLE, 3> inputs{INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE};
   std::array<HANDLE, 3> catalogs{INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE};
+  std::array<CatalogContextLease, 3> catalog_contexts{};
   std::array<FileIdInfo, 3> identities{};
   std::array<FileIdInfo, 3> catalog_identities{};
   std::array<std::string, 3> certificates, spkis, root_spkis, catalog_hashes, catalog_names;
@@ -1305,7 +1364,7 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
     // accepted; reparse points and user-writable aliases are not.
     if (!VerifyMicrosoftCompilerInput(paths[index], inputs[index], &certificates[index], &spkis[index],
         &root_spkis[index], &catalog_hashes[index], &catalog_names[index], &catalog_paths[index],
-        &catalog_identities[index], &catalogs[index], &catalog_failure)) {
+        &catalog_identities[index], &catalogs[index], &catalog_contexts[index], &catalog_failure)) {
       inputs_valid = false;
       break;
     }
@@ -1350,21 +1409,18 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
     presented = presented && wrong != INVALID_HANDLE_VALUE && GetFileSizeEx(wrong, &wrong_size)
       && wrong_size.QuadPart > 0 && wrong_size.QuadPart <= kMaxBuildInputBytes
       && Sha256Handle(wrong, static_cast<DWORD>(wrong_size.QuadPart), &wrong_hash, kMaxBuildInputBytes)
-      && SignerEvidence(wrong_path, SignerContent::StandaloneCatalog, &wrong_publisher,
+      && SignerEvidence(wrong, SignerContent::StandaloneCatalog, &wrong_publisher,
         &wrong_certificate, &wrong_spki, &wrong_root)
       && !ApprovedMicrosoftCatalog(paths[0], wrong_path, wrong_certificate, wrong_spki, wrong_hash);
     if (wrong != INVALID_HANDLE_VALUE) CloseHandle(wrong);
     DeleteFileW(wrong_path.c_str());
-    // Even authentic catalog bytes are not authorized under a substituted
-    // identity. Keep the bounded policy diagnostic independent of host detail.
-    (void)presented;
+    // The copied, genuinely signed bytes reached the same signer parser and
+    // fixed catalog identity policy. A fixture/setup failure is distinct from
+    // the expected exact-name/hash rejection and can never be credited as it.
     inputs_valid = false;
-    catalog_failure = CatalogFailure::CatalogHash;
+    catalog_failure = presented ? CatalogFailure::CatalogHash : CatalogFailure::SignerParse;
   }
-  if (!inputs_valid || fault == "compiler-wrong-signer" || fault == "compiler-same-root-wrong-certificate"
-      || fault == "compiler-same-root-wrong-signer"
-      || fault == "compiler-subject-spoof" || fault == "compiler-wrong-spki"
-      || fault == "compiler-manifest-replacement") {
+  if (!inputs_valid) {
     for (HANDLE handle : inputs) CloseHandle(handle);
     for (HANDLE handle : catalogs) if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
     CloseHandle(directory_lease);
@@ -1698,7 +1754,7 @@ napi_value VerifyModule(napi_env env, napi_callback_info info) {
   std::string hash;
   const bool valid = file != INVALID_HANDLE_VALUE && SecureRegularFile(file, expected_size, &identity, false)
     && ExpectedArchitecture(file) && Sha256Handle(file, expected_size, &hash) && hash == expected_hash
-    && (!production || VerifyPinnedSignature(path.data(), publisher, certificate_pin, spki_pin));
+    && (!production || VerifyPinnedSignature(path.data(), file, publisher, certificate_pin, spki_pin));
   if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
   if (!valid) { Throw(env, "MODULE_AUTHORITY"); return nullptr; }
   napi_value result, value;

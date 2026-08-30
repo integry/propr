@@ -5,10 +5,15 @@ import { lstat, open, mkdtemp, readdir, readlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 
 const execFile = promisify(execFileCallback);
+const desktopRoot = fileURLToPath(new URL('..', import.meta.url));
+const sevenZip = process.platform === 'win32'
+  ? join(desktopRoot, '..', '..', 'node_modules', 'electron-winstaller', 'vendor',
+      process.arch === 'arm64' ? '7z-arm64.exe' : '7z-x64.exe')
+  : '7z';
 const heldDmgArtifacts = new WeakMap();
 const HDIUTIL = '/usr/bin/hdiutil';
 const EXECUTABLE_NAME = 'propr-desktop';
@@ -174,6 +179,48 @@ const assertSupportedSquirrelBootstrap = (inspection, artifact) => {
   if (inspection.format !== 'pe' || inspection.architectures.length !== 1
     || !['x86', 'x64', 'arm64'].includes(architecture)) {
     throw new Error(`${artifact} is not a supported x86, x64, or arm64 Squirrel PE bootstrapper`);
+  }
+};
+
+const inspectMachineMsi = async (path, platform, arch) => {
+  if (platform !== 'win32') throw new Error(`${path} machine installer is only valid for Windows targets`);
+  const header = await readPrefix(path);
+  if (header.length < 512 || header.subarray(0, 8).toString('hex') !== 'd0cf11e0a1b11ae1') {
+    throw new Error(`${path} is not a compound-file Windows Installer package`);
+  }
+  const extraction = await mkdtemp(join(tmpdir(), 'propr-msi-inspect-'));
+  try {
+    await execFile(sevenZip, ['x', '-y', '-bso0', '-bsp0', `-o${extraction}`, path], {
+      timeout: 120_000,
+      maxBuffer: 64 * 1024,
+    });
+    const files = [];
+    const visit = async directory => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const entryPath = join(directory, entry.name);
+        const stats = await lstat(entryPath);
+        if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile())) {
+          throw new Error(`${path} machine installer extracts a link or special file`);
+        }
+        if (stats.isDirectory()) await visit(entryPath);
+        else if (files.push(entryPath) > 10_000) throw new Error(`${path} machine installer has too many files`);
+      }
+    };
+    await visit(extraction);
+    const named = name => files.filter(file => basename(file).toLocaleLowerCase('en-US') === name);
+    const applications = named('propr-desktop.exe');
+    if (applications.length !== 1
+      || named('propr-windows-authority.exe').length !== 1
+      || named('propr-windows-authority.manifest.json').length !== 1
+      || named('propr-windows-launcher.node').length !== 1
+      || named('propr-windows-bootstrap.node').length !== 1) {
+      throw new Error(`${path} machine installer has an incomplete or ambiguous protected application layout`);
+    }
+    const executable = inspectExecutableBytes(await readPrefix(applications[0]));
+    assertExecutableArchitecture(executable, platform, arch, path);
+    return { format: 'windows-machine-msi', scope: 'per-machine', executable };
+  } finally {
+    await rm(extraction, { recursive: true, force: true });
   }
 };
 
@@ -1239,6 +1286,7 @@ export const inspectArtifactArchitecture = async ({ path, heldArtifact, kind, pl
     assertSupportedSquirrelBootstrap(executable, path);
     return { format: 'squirrel-setup', executable };
   }
+  if (kind === 'msi') return inspectMachineMsi(path, platform, arch);
   if (kind === 'zip' || kind === 'nupkg') {
     const executable = inspectExecutableBytes(await readValidatedZipExecutable(path, kind, platform, arch));
     assertExecutableArchitecture(executable, platform, arch, path);

@@ -314,6 +314,13 @@ Add-PInvoke 'CryptCATAdminEnumCatalogFromHash' 'wintrust.dll' ([IntPtr]) @([IntP
 Add-PInvoke 'CryptCATCatalogInfoFromContext' 'wintrust.dll' ([bool]) @([IntPtr], [IntPtr], [uint32])
 Add-PInvoke 'CryptCATAdminReleaseCatalogContext' 'wintrust.dll' ([bool]) @([IntPtr], [IntPtr], [uint32])
 Add-PInvoke 'CryptCATAdminReleaseContext' 'wintrust.dll' ([bool]) @([IntPtr], [uint32])
+Add-PInvoke 'WinVerifyTrust' 'wintrust.dll' ([int32]) @([IntPtr], $guidRef, [IntPtr])
+Add-PInvoke 'CryptQueryObject' 'crypt32.dll' ([bool]) @([uint32], [IntPtr], [uint32], [uint32], [uint32], $uintRef, $uintRef, $uintRef, $intptrRef, $intptrRef, [IntPtr])
+Add-PInvoke 'CryptMsgGetParam' 'crypt32.dll' ([bool]) @([IntPtr], [uint32], [uint32], [IntPtr], $uintRef)
+Add-PInvoke 'CertEnumCertificatesInStore' 'crypt32.dll' ([IntPtr]) @([IntPtr], [IntPtr])
+Add-PInvoke 'CertFreeCertificateContext' 'crypt32.dll' ([bool]) @([IntPtr])
+Add-PInvoke 'CertCloseStore' 'crypt32.dll' ([bool]) @([IntPtr], [uint32])
+Add-PInvoke 'CryptMsgClose' 'crypt32.dll' ([bool]) @([IntPtr])
 $native = $builder.CreateType()
 $catalogLeases=New-Object Collections.Generic.List[object]
 
@@ -353,7 +360,8 @@ function Get-HeldSecurity([IntPtr]$handle) {
     try { $ownerSid=[Runtime.InteropServices.Marshal]::PtrToStringUni($ownerText) } finally { if ($ownerText -ne [IntPtr]::Zero) { [void]$native::LocalFree($ownerText) } }
     if ($trustedOwners -notcontains $ownerSid -or $currentAuthorities.Contains($ownerSid)) { throw 'owner' }
     $control=[uint16]0; $revision=[uint32]0
-    if (!$native::GetSecurityDescriptorControl($descriptor, [ref]$control, [ref]$revision)) { throw 'dacl' }
+    if (!$native::GetSecurityDescriptorControl($descriptor, [ref]$control, [ref]$revision) -or
+        ($control -band 0x1000) -eq 0) { throw 'dacl-protection' }
     $present=$false; $defaulted=$false; $actualDacl=[IntPtr]::Zero
     if (!$native::GetSecurityDescriptorDacl($descriptor, [ref]$present, [ref]$actualDacl, [ref]$defaulted) -or !$present -or $actualDacl -eq [IntPtr]::Zero) { throw 'dacl' }
     $descriptorLength=$native::GetSecurityDescriptorLength($descriptor)
@@ -363,45 +371,155 @@ function Get-HeldSecurity([IntPtr]$handle) {
     $raw=New-Object Security.AccessControl.RawSecurityDescriptor($descriptorBytes,0)
     if (!$raw.DiscretionaryAcl) {throw 'dacl'}
     $aceCount=$raw.DiscretionaryAcl.Count
+    $priorOrder=-1
     foreach ($ace in $raw.DiscretionaryAcl) {
       if (($ace.AceFlags -band [Security.AccessControl.AceFlags]::InheritOnly) -ne 0) {continue}
       $qualified=$ace -as [Security.AccessControl.QualifiedAce]
       $known=$ace -as [Security.AccessControl.KnownAce]
-      if (!$qualified) {
-        # Compound and future effective ACE layouts must never be silently
-        # treated as non-authorizing merely because this verifier cannot parse
-        # their trustee and mask.
-        throw 'ace'
-      }
-      if ($qualified.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) {continue}
-      if (!$known -or !$known.SecurityIdentifier) {throw 'ace'}
+      if (!$qualified -or !$known -or !$known.SecurityIdentifier -or
+          ($qualified.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed -and
+           $qualified.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessDenied)) {throw 'ace'}
+      $allowed=$qualified.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed
+      $inherited=($ace.AceFlags -band [Security.AccessControl.AceFlags]::Inherited) -ne 0
+      $order=if ($inherited) {if ($allowed) {3} else {2}} else {if ($allowed) {1} else {0}}
+      if ($order -lt $priorOrder) {throw 'ace-order'}; $priorOrder=$order
       $mask=[uint32]$known.AccessMask
-      if (($mask -band [uint32]0x500D0156) -eq 0) {continue}
+      if (!$allowed -or ($mask -band [uint32]0x500D0156) -eq 0) {continue}
       $sid=$known.SecurityIdentifier.Value
       if ($currentAuthorities.Contains($sid) -or $trustedOwners -notcontains $sid) {throw 'ace'}
     }
-    return @{ ownerSid=$ownerSid; daclProtected=(($control -band 0x1000) -ne 0); systemAcl=$true; aceCount=$aceCount.ToString() }
+    return @{ ownerSid=$ownerSid; daclProtected=$true; aceCount=$aceCount.ToString() }
   } finally { if ($descriptor -ne [IntPtr]::Zero) {[void]$native::LocalFree($descriptor)} }
 }
 function Get-FinalPath([IntPtr]$handle) { $value=New-Object Text.StringBuilder 32768; $length=$native::GetFinalPathNameByHandleW($handle,$value,32768,0); if ($length -le 0 -or $length -ge 32768) {throw 'path'}; $value.ToString() }
-function Test-Signature([byte[]]$bytes, [string]$extension, [bool]$requiredMicrosoft) {
-  $signature = Get-AuthenticodeSignature -Content $bytes -SourcePathOrExtension $extension
-  if ($requiredMicrosoft -and ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
-      !$signature.SignerCertificate -or $trustedPublishers -notcontains $signature.SignerCertificate.Subject)) { throw 'signature' }
-  $certificate = if ($signature.SignerCertificate) {[Convert]::ToBase64String($signature.SignerCertificate.RawData)} else {$null}
+function Invoke-HeldFileTrust([IntPtr]$handle, [string]$path) {
+  if ([IntPtr]::Size -ne 8) {throw 'wintrust-layout'}
+  $pathPointer=[Runtime.InteropServices.Marshal]::StringToHGlobalUni($path)
+  $file=[Runtime.InteropServices.Marshal]::AllocHGlobal(32); $data=[Runtime.InteropServices.Marshal]::AllocHGlobal(88)
+  try {
+    for ($offset=0;$offset -lt 32;$offset+=4) {[Runtime.InteropServices.Marshal]::WriteInt32($file,$offset,0)}
+    for ($offset=0;$offset -lt 88;$offset+=4) {[Runtime.InteropServices.Marshal]::WriteInt32($data,$offset,0)}
+    [Runtime.InteropServices.Marshal]::WriteInt32($file,0,32)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($file,8,$pathPointer)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($file,16,$handle)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,0,88)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,24,2)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,28,0)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,32,1)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($data,40,$file)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,48,1)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,72,0x1010)
+    $action=[Guid]'00AAC56B-CD44-11d0-8CC2-00C04FC295EE'
+    $status=$native::WinVerifyTrust([IntPtr](-1),[ref]$action,$data)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,48,2); [void]$native::WinVerifyTrust([IntPtr](-1),[ref]$action,$data)
+    if ($status -ne 0) {throw 'signature'}
+  } finally {
+    [Runtime.InteropServices.Marshal]::FreeHGlobal($data); [Runtime.InteropServices.Marshal]::FreeHGlobal($file)
+    [Runtime.InteropServices.Marshal]::FreeHGlobal($pathPointer)
+  }
+}
+function Invoke-HeldCatalogTrust([IntPtr]$memberHandle, [string]$memberPath, [string]$catalogPath, [byte[]]$memberHash, [IntPtr]$admin) {
+  if ([IntPtr]::Size -ne 8) {throw 'wintrust-layout'}
+  $memberTag=(Hex-Bytes $memberHash).ToUpperInvariant()
+  if ($memberTag.Length -ne $memberHash.Length*2) {throw 'member-tag'}
+  $catalogPointer=[Runtime.InteropServices.Marshal]::StringToHGlobalUni($catalogPath)
+  $tagPointer=[Runtime.InteropServices.Marshal]::StringToHGlobalUni($memberTag)
+  $memberPointer=[Runtime.InteropServices.Marshal]::StringToHGlobalUni($memberPath)
+  $pin=[Runtime.InteropServices.GCHandle]::Alloc($memberHash,[Runtime.InteropServices.GCHandleType]::Pinned)
+  $catalog=[Runtime.InteropServices.Marshal]::AllocHGlobal(72); $data=[Runtime.InteropServices.Marshal]::AllocHGlobal(88)
+  try {
+    for ($offset=0;$offset -lt 72;$offset+=4) {[Runtime.InteropServices.Marshal]::WriteInt32($catalog,$offset,0)}
+    for ($offset=0;$offset -lt 88;$offset+=4) {[Runtime.InteropServices.Marshal]::WriteInt32($data,$offset,0)}
+    [Runtime.InteropServices.Marshal]::WriteInt32($catalog,0,72)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($catalog,8,$catalogPointer)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($catalog,16,$tagPointer)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($catalog,24,$memberPointer)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($catalog,32,$memberHandle)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($catalog,40,$pin.AddrOfPinnedObject())
+    [Runtime.InteropServices.Marshal]::WriteInt32($catalog,48,$memberHash.Length)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($catalog,64,$admin)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,0,88)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,24,2)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,28,0)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,32,2)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($data,40,$catalog)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,48,1)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,72,0x1010)
+    $policy=[Guid]'00AAC56B-CD44-11d0-8CC2-00C04FC295EE'
+    $status=$native::WinVerifyTrust([IntPtr](-1),[ref]$policy,$data)
+    [Runtime.InteropServices.Marshal]::WriteInt32($data,48,2); [void]$native::WinVerifyTrust([IntPtr](-1),[ref]$policy,$data)
+    if ($status -ne 0) {throw 'catalog-trust'}
+  } finally {
+    [Runtime.InteropServices.Marshal]::FreeHGlobal($data); [Runtime.InteropServices.Marshal]::FreeHGlobal($catalog)
+    $pin.Free(); [Runtime.InteropServices.Marshal]::FreeHGlobal($memberPointer)
+    [Runtime.InteropServices.Marshal]::FreeHGlobal($tagPointer); [Runtime.InteropServices.Marshal]::FreeHGlobal($catalogPointer)
+  }
+}
+function Get-RawSigner([byte[]]$bytes, [bool]$standaloneCatalog) {
+  if ([IntPtr]::Size -ne 8 -or !$bytes -or $bytes.Length -le 0) {throw 'signer-parse'}
+  $pin=[Runtime.InteropServices.GCHandle]::Alloc($bytes,[Runtime.InteropServices.GCHandleType]::Pinned)
+  $blob=[Runtime.InteropServices.Marshal]::AllocHGlobal(16); $store=[IntPtr]::Zero; $message=[IntPtr]::Zero
+  try {
+    for ($offset=0;$offset -lt 16;$offset+=4) {[Runtime.InteropServices.Marshal]::WriteInt32($blob,$offset,0)}
+    [Runtime.InteropServices.Marshal]::WriteInt32($blob,0,$bytes.Length)
+    [Runtime.InteropServices.Marshal]::WriteIntPtr($blob,8,$pin.AddrOfPinnedObject())
+    $encoding=[uint32]0; $content=[uint32]0; $format=[uint32]0
+    $contentFlag=if ($standaloneCatalog) {[uint32]0x100} else {[uint32]0x400}
+    $expectedContent=if ($standaloneCatalog) {[uint32]8} else {[uint32]10}
+    if (!$native::CryptQueryObject(2,$blob,$contentFlag,2,0,[ref]$encoding,[ref]$content,[ref]$format,[ref]$store,[ref]$message,[IntPtr]::Zero) -or
+        $content -ne $expectedContent -or $format -ne 1 -or $store -eq [IntPtr]::Zero -or $message -eq [IntPtr]::Zero) {throw 'signer-parse'}
+    $signerBytes=[uint32]0
+    if (!$native::CryptMsgGetParam($message,6,0,[IntPtr]::Zero,[ref]$signerBytes) -or $signerBytes -lt 32 -or $signerBytes -gt 65536) {throw 'signer-parse'}
+    $signer=[Runtime.InteropServices.Marshal]::AllocHGlobal([int]$signerBytes)
+    try {
+      if (!$native::CryptMsgGetParam($message,6,0,$signer,[ref]$signerBytes)) {throw 'signer-parse'}
+      $issuerLength=[Runtime.InteropServices.Marshal]::ReadInt32($signer,4); $issuerPointer=[Runtime.InteropServices.Marshal]::ReadIntPtr($signer,8)
+      $serialLength=[Runtime.InteropServices.Marshal]::ReadInt32($signer,16); $serialPointer=[Runtime.InteropServices.Marshal]::ReadIntPtr($signer,24)
+      if ($issuerLength -le 0 -or $issuerLength -gt 4096 -or $serialLength -le 0 -or $serialLength -gt 64) {throw 'signer-parse'}
+      $issuer=New-Object byte[] $issuerLength; [Runtime.InteropServices.Marshal]::Copy($issuerPointer,$issuer,0,$issuerLength)
+      $serial=New-Object byte[] $serialLength; [Runtime.InteropServices.Marshal]::Copy($serialPointer,$serial,0,$serialLength)
+      $certificate=$null; $previous=[IntPtr]::Zero
+      while ($true) {
+        $candidate=$native::CertEnumCertificatesInStore($store,$previous)
+        if ($candidate -eq [IntPtr]::Zero) {$previous=[IntPtr]::Zero; break}
+        $previous=$candidate; $parsed=New-Object Security.Cryptography.X509Certificates.X509Certificate2($candidate)
+        if ((Hex-Bytes $parsed.IssuerName.RawData) -ceq (Hex-Bytes $issuer) -and (Hex-Bytes $parsed.GetSerialNumber()) -ceq (Hex-Bytes $serial)) {
+          $certificate=New-Object Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(,$parsed.RawData)
+          $parsed.Dispose(); [void]$native::CertFreeCertificateContext($candidate); $previous=[IntPtr]::Zero; break
+        }
+        $parsed.Dispose()
+      }
+      if (!$certificate) {throw 'signer-parse'}
+    } finally {[Runtime.InteropServices.Marshal]::FreeHGlobal($signer)}
+  } finally {
+    if ($message -ne [IntPtr]::Zero) {[void]$native::CryptMsgClose($message)}
+    if ($store -ne [IntPtr]::Zero) {[void]$native::CertCloseStore($store,0)}
+    [Runtime.InteropServices.Marshal]::FreeHGlobal($blob); $pin.Free()
+  }
   $root = $null
-  if ($signature.SignerCertificate) {
+  if ($certificate) {
     $chain=New-Object Security.Cryptography.X509Certificates.X509Chain
     try {
       $chain.ChainPolicy.RevocationMode=[Security.Cryptography.X509Certificates.X509RevocationMode]::Offline
       $chain.ChainPolicy.RevocationFlag=[Security.Cryptography.X509Certificates.X509RevocationFlag]::ExcludeRoot
-      [void]$chain.Build($signature.SignerCertificate)
-      foreach ($status in $chain.ChainStatus) { if (($status.Status -band 4) -ne 0 -or ($status.Status -band 32) -ne 0) {throw 'revoked'} }
+      [void]$chain.Build($certificate)
+      foreach ($status in $chain.ChainStatus) {
+        if ($status.Status -ne [Security.Cryptography.X509Certificates.X509ChainStatusFlags]::RevocationStatusUnknown -and
+            $status.Status -ne [Security.Cryptography.X509Certificates.X509ChainStatusFlags]::OfflineRevocation) {throw 'chain'}
+      }
       if ($chain.ChainElements.Count -lt 2) {throw 'chain'}
       $root=[Convert]::ToBase64String($chain.ChainElements[$chain.ChainElements.Count-1].Certificate.RawData)
     } finally {$chain.Dispose()}
   }
-  return @{subject=if ($signature.SignerCertificate) {$signature.SignerCertificate.Subject} else {$null}; certificate=$certificate; rootCertificate=$root}
+  return @{subject=$certificate.Subject;certificate=[Convert]::ToBase64String($certificate.RawData);rootCertificate=$root}
+}
+function Test-Signature([IntPtr]$handle, [string]$path, [byte[]]$bytes, [bool]$standaloneCatalog, [bool]$required, [string]$expectedPublisher) {
+  if (!$required) {return @{subject=$null;certificate=$null;rootCertificate=$null}}
+  if (!$standaloneCatalog) {Invoke-HeldFileTrust $handle $path}
+  $signature=Get-RawSigner $bytes $standaloneCatalog
+  if (($standaloneCatalog -and $trustedPublishers -notcontains $signature.subject) -or
+      (!$standaloneCatalog -and $signature.subject -cne $expectedPublisher)) {throw 'signature'}
+  return $signature
 }
 function Get-SystemCatalogProof([IntPtr]$memberHandle, [string]$windowsRoot) {
   $admin=[IntPtr]::Zero; $catalog=[IntPtr]::Zero; $previous=[IntPtr]::Zero
@@ -428,11 +546,14 @@ function Get-SystemCatalogProof([IntPtr]$memberHandle, [string]$windowsRoot) {
     try {
       $handle=$stream.SafeFileHandle.DangerousGetHandle(); $identity=Get-HeldIdentity $handle $false; [void](Get-HeldSecurity $handle)
       if (!(Get-FinalPath $handle).EndsWith($catalogPath,[StringComparison]::OrdinalIgnoreCase)) {throw 'catalog-path'}
+      Invoke-HeldCatalogTrust $memberHandle (Get-FinalPath $memberHandle) $catalogPath $memberHash $admin
       $bytes=Read-Held $stream $stream.Length 33554432; $sha=[Security.Cryptography.SHA256]::Create()
       try {$digest=Hex-Bytes $sha.ComputeHash($bytes)} finally {$sha.Dispose()}
-      $signature=Test-Signature $bytes '.cat' $true
+      $signature=Test-Signature $handle $catalogPath $bytes $true $true $null
       $catalogLeases.Add([pscustomobject]@{stream=$stream;path=$catalogPath;sha256=$digest;
-        volumeSerial=$identity.volumeSerial;fileId128=$identity.fileId128;length=[int64]$stream.Length})
+        volumeSerial=$identity.volumeSerial;fileId128=$identity.fileId128;length=[int64]$stream.Length;
+        admin=$admin;catalog=$catalog})
+      $admin=[IntPtr]::Zero; $catalog=[IntPtr]::Zero
       return @{name=[IO.Path]::GetFileName($catalogPath);sha256=$digest;volumeSerial=$identity.volumeSerial;fileId128=$identity.fileId128;signature=$signature}
     } catch {$stream.Dispose();throw}
   } finally {
@@ -469,7 +590,7 @@ try {
   $bytes=Read-Held $held ([int64]$policy.size); $sha=[Security.Cryptography.SHA256]::Create()
   try {$digest=Hex-Bytes $sha.ComputeHash($bytes)} finally {$sha.Dispose()}
   if ($digest -cne $policy.sha256) {throw 'hash'}
-  $signature=Test-Signature $bytes '.node' $policy.production
+  $signature=Test-Signature $heldHandle (Get-FinalPath $heldHandle) $bytes $false $policy.production $policy.publisher
   $selfPath=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
   $self=[IO.File]::Open($selfPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
   $selfHandle=$self.SafeFileHandle.DangerousGetHandle()
@@ -485,7 +606,7 @@ try {
   if (!$selfRootSeen) {throw 'self-root'}
   $selfCatalog=Get-SystemCatalogProof $selfHandle $selfRoot
   [Console]::Out.WriteLine((@{sha256=$digest;size=[int64]$bytes.Length;volumeSerial=$heldIdentity.volumeSerial;fileId128=$heldIdentity.fileId128;
-    nodeDev=$heldIdentity.nodeDev;nodeIno=$heldIdentity.nodeIno;ownerSid=$security.ownerSid;daclProtected=$security.daclProtected;systemAcl=$security.systemAcl;reparseTag=$heldIdentity.reparseTag;
+    nodeDev=$heldIdentity.nodeDev;nodeIno=$heldIdentity.nodeIno;ownerSid=$security.ownerSid;daclProtected=$security.daclProtected;reparseTag=$heldIdentity.reparseTag;
     subject=$signature.subject;certificate=$signature.certificate;selfCertificate=$selfCatalog.signature.certificate;selfRootCertificate=$selfCatalog.signature.rootCertificate;
     selfSubject=$selfCatalog.signature.subject;selfCatalogName=$selfCatalog.name;selfCatalogSha256=$selfCatalog.sha256;
     selfCatalogVolumeSerial=$selfCatalog.volumeSerial;selfCatalogFileId128=$selfCatalog.fileId128}|ConvertTo-Json -Compress))
@@ -513,7 +634,15 @@ try {
     if ($catalogDigest -cne $catalogLease.sha256) {throw 'final-catalog'}
   }
   foreach ($handle in $ancestorHandles) {[void](Get-HeldSecurity $handle)}
-} finally { if ($self) {$self.Dispose()}; foreach ($catalogLease in $catalogLeases) {$catalogLease.stream.Dispose()}; foreach ($handle in $ancestorHandles) {[void]$native::CloseHandle($handle)}; $load.Dispose(); $held.Dispose() }
+} finally {
+  if ($self) {$self.Dispose()}
+  foreach ($catalogLease in $catalogLeases) {
+    if ($catalogLease.catalog -ne [IntPtr]::Zero) {[void]$native::CryptCATAdminReleaseCatalogContext($catalogLease.admin,$catalogLease.catalog,0)}
+    if ($catalogLease.admin -ne [IntPtr]::Zero) {[void]$native::CryptCATAdminReleaseContext($catalogLease.admin,0)}
+    $catalogLease.stream.Dispose()
+  }
+  foreach ($handle in $ancestorHandles) {[void]$native::CloseHandle($handle)}; $load.Dispose(); $held.Dispose()
+}
 `;
 
 const helperError = (stage: WindowsAuthorityCompileStage): WindowsAuthorityBootstrapError =>
@@ -543,7 +672,7 @@ export const validateBootstrapIdentityRecordForTest = (
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return exactRecordKeys(record, ['sha256', 'size', 'volumeSerial', 'fileId128', 'nodeDev', 'nodeIno',
-    'ownerSid', 'daclProtected', 'systemAcl', 'reparseTag', 'subject', 'certificate', 'selfSubject', 'selfCertificate', 'selfRootCertificate',
+    'ownerSid', 'daclProtected', 'reparseTag', 'subject', 'certificate', 'selfSubject', 'selfCertificate', 'selfRootCertificate',
     'selfCatalogName', 'selfCatalogSha256', 'selfCatalogVolumeSerial', 'selfCatalogFileId128'])
     && record.sha256 === policy.sha256 && record.size === policy.size
     && /^[a-f0-9]{16}$/.test(String(record.volumeSerial))
@@ -551,7 +680,7 @@ export const validateBootstrapIdentityRecordForTest = (
     && record.nodeDev === nodeIdentity.dev && record.nodeIno === nodeIdentity.ino
     && ['S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464']
       .includes(String(record.ownerSid))
-    && typeof record.daclProtected === 'boolean' && record.systemAcl === true && record.reparseTag === '00000000'
+    && record.daclProtected === true && record.reparseTag === '00000000'
     && typeof record.selfSubject === 'string' && typeof record.selfCertificate === 'string'
     && typeof record.selfRootCertificate === 'string'
     && typeof record.selfCatalogName === 'string' && record.selfCatalogName.length <= 260
