@@ -1,7 +1,8 @@
 import { createHash, randomBytes, X509Certificate } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { constants as fsConstants, createReadStream, createWriteStream } from 'node:fs';
-import { lstat, open, realpath, type FileHandle } from 'node:fs/promises';
+import { constants as fsConstants, rmSync } from 'node:fs';
+import { lstat, mkdtemp, open, realpath, rm, type FileHandle } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
@@ -81,51 +82,8 @@ export const WINDOWS_AUTHORITY_COMPILE_STAGES = Object.freeze([
   'HELPER_HASH',
   'PROTOCOL_INIT',
   'READY',
-  'TRANSPORT_HELPER_OPEN',
-  'TRANSPORT_HELPER_AUTHORITY',
-  'TRANSPORT_PIPE_CREATE',
-  'TRANSPORT_PROCESS_CREATE',
-  'TRANSPORT_JOB_CREATE',
-  'TRANSPORT_JOB_LIMIT',
-  'TRANSPORT_JOB_ASSIGN',
-  'TRANSPORT_IMAGE_QUERY',
-  'TRANSPORT_IMAGE_OPEN',
-  'TRANSPORT_IMAGE_AUTH',
-  'TRANSPORT_PROCESS_RESUME',
-  'TRANSPORT_PIPE_EXPORT',
 ] as const);
 export type WindowsAuthorityCompileStage = typeof WINDOWS_AUTHORITY_COMPILE_STAGES[number];
-
-export const WINDOWS_NATIVE_LAUNCH_FAILURE_CODES = Object.freeze([
-  'HELPER_OPEN',
-  'HELPER_AUTHORITY',
-  'PIPE_CREATE',
-  'PROCESS_CREATE',
-  'JOB_CREATE',
-  'JOB_LIMIT',
-  'JOB_ASSIGN',
-  'IMAGE_QUERY',
-  'IMAGE_OPEN',
-  'IMAGE_AUTH',
-  'PROCESS_RESUME',
-  'PIPE_EXPORT',
-] as const);
-export type WindowsNativeLaunchFailureCode = typeof WINDOWS_NATIVE_LAUNCH_FAILURE_CODES[number];
-
-const NATIVE_LAUNCH_COMPILE_STAGE = Object.freeze({
-  HELPER_OPEN: 'TRANSPORT_HELPER_OPEN',
-  HELPER_AUTHORITY: 'TRANSPORT_HELPER_AUTHORITY',
-  PIPE_CREATE: 'TRANSPORT_PIPE_CREATE',
-  PROCESS_CREATE: 'TRANSPORT_PROCESS_CREATE',
-  JOB_CREATE: 'TRANSPORT_JOB_CREATE',
-  JOB_LIMIT: 'TRANSPORT_JOB_LIMIT',
-  JOB_ASSIGN: 'TRANSPORT_JOB_ASSIGN',
-  IMAGE_QUERY: 'TRANSPORT_IMAGE_QUERY',
-  IMAGE_OPEN: 'TRANSPORT_IMAGE_OPEN',
-  IMAGE_AUTH: 'TRANSPORT_IMAGE_AUTH',
-  PROCESS_RESUME: 'TRANSPORT_PROCESS_RESUME',
-  PIPE_EXPORT: 'TRANSPORT_PIPE_EXPORT',
-} as const satisfies Record<WindowsNativeLaunchFailureCode, WindowsAuthorityCompileStage>);
 
 const BROKER_TIMEOUT_MS = 10_000;
 const BROKER_STARTUP_TIMEOUT_MS = 60_000;
@@ -200,6 +158,7 @@ interface WindowsAuthorityHelperManifest {
 
 interface AuthenticatedWindowsAuthorityHelper {
   executable: string;
+  systemRoot: string;
   executableHandle: FileHandle;
   launcherHandle: FileHandle;
   bootstrapHandle: FileHandle;
@@ -208,22 +167,9 @@ interface AuthenticatedWindowsAuthorityHelper {
   launcher: WindowsNativeLauncher;
 }
 
-interface NativeLaunchLease {
-  lease: object;
-  stdinFd: number;
-  stdoutFd: number;
-  stderrFd: number;
-  pid: number;
-  volumeSerial: string;
-  fileId128: string;
-}
-
 interface WindowsNativeLauncher {
-  launch(policy: Record<string, unknown>): NativeLaunchLease;
-  status(lease: object): number | null;
-  closeInput(lease: object): void;
-  terminate(lease: object): void;
-  close(lease: object): void;
+  probeSystemDirectory(policy: { systemRoot: ''; windir: ''; fault: null }): Buffer;
+  protectPrivateDirectory(policy: { path: string }): boolean;
   compileHeld?(policy: Record<string, unknown>): Record<string, unknown>;
   dangerousAclForTest?(policy: { sddl: string }): boolean;
 }
@@ -238,8 +184,6 @@ interface BrokerChild extends EventEmitter {
   stderr: Readable;
   exitCode: number | null;
   killed: boolean;
-  imageVolumeSerial: string;
-  imageFileId128: string;
   kill(): boolean;
   unref(): void;
 }
@@ -661,6 +605,18 @@ try {
 
 const helperError = (stage: WindowsAuthorityCompileStage): WindowsAuthorityBootstrapError =>
   new WindowsAuthorityBootstrapError('MALFORMED_OUTPUT', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf(stage));
+
+const decodeAuthenticatedSystemRoot = (record: unknown): string => {
+  if (!Buffer.isBuffer(record) || record.length !== 2 + (520 * 2)) throw helperError('HELPER_IDENTITY');
+  const length = record.readUInt16LE(0);
+  if (length < 3 || length >= 520) throw helperError('HELPER_IDENTITY');
+  const pathBytes = record.subarray(2, 2 + (length * 2));
+  if (record.subarray(2 + (length * 2)).some(byte => byte !== 0)) throw helperError('HELPER_IDENTITY');
+  const path = pathBytes.toString('utf16le');
+  if (!/^[A-Za-z]:\\[^\0]+$/.test(path) || path.startsWith('\\\\') || path.includes('\0')
+    || path.indexOf(':', 2) >= 0) throw helperError('HELPER_IDENTITY');
+  return path;
+};
 
 const helperDirectory = (): string => {
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
@@ -1096,9 +1052,18 @@ const authenticateWindowsAuthorityHelper = async (
       });
     } catch { throw helperError('HELPER_IDENTITY'); }
     finally { await releaseBootstrapAuthority(); }
-    if (!nativeLauncher || typeof nativeLauncher.launch !== 'function') throw helperError('HELPER_IDENTITY');
-    return { executable: executableProof.path, executableHandle, launcherHandle, bootstrapHandle, manifestHandle, manifest,
-      launcher: nativeLauncher };
+    if (!nativeLauncher || typeof nativeLauncher.probeSystemDirectory !== 'function'
+      || typeof nativeLauncher.protectPrivateDirectory !== 'function') throw helperError('HELPER_IDENTITY');
+    let systemRoot: string;
+    try {
+      systemRoot = decodeAuthenticatedSystemRoot(nativeLauncher.probeSystemDirectory({
+        systemRoot: '',
+        windir: '',
+        fault: null,
+      }));
+    } catch { throw helperError('HELPER_IDENTITY'); }
+    return { executable: executableProof.path, systemRoot, executableHandle, launcherHandle, bootstrapHandle,
+      manifestHandle, manifest, launcher: nativeLauncher };
   } catch (error) {
     await executableHandle?.close().catch(() => undefined);
     await launcherHandle?.close().catch(() => undefined);
@@ -1110,89 +1075,56 @@ const authenticateWindowsAuthorityHelper = async (
 
 export const authenticateWindowsAuthorityHelperForTest = authenticateWindowsAuthorityHelper;
 
-const spawnBroker = (
-  helper: AuthenticatedWindowsAuthorityHelper,
-  injectedStage?: WindowsAuthorityCompileStage,
-  transportFault?: 'stderr',
-  imageFault?: 'process-image',
-  nativeFault?: string,
-): BrokerChild => {
-  const native = helper.launcher.launch({
-    path: helper.executable,
-    size: helper.manifest.size,
-    sha256: helper.manifest.sha256,
-    production: helper.manifest.trust === 'production-signed',
-    publisher: helper.manifest.publisher,
-    signerCertificateSha256: helper.manifest.signerCertificateSha256,
-    signerSpkiSha256: helper.manifest.signerSpkiSha256,
-    // Fixed test-only enums are interpreted by the native boundary; no path,
-    // capability, challenge, or secret is placed in argv or the child environment.
-    fault: nativeFault ?? injectedStage ?? transportFault ?? imageFault ?? null,
-  });
-  return new NativeBrokerChild(helper.launcher, native);
+const activeSessionTempDirectories = new Set<string>();
+let lastRemovedSessionTempDirectory: string | undefined;
+
+const createPrivateSessionTempDirectory = async (helper: AuthenticatedWindowsAuthorityHelper): Promise<string> => {
+  let created: string | undefined;
+  try {
+    const parent = tmpdir();
+    if (!isAbsolute(parent) || parent.indexOf(':', 2) >= 0) throw helperError('TRANSPORT_SPAWN');
+    created = await mkdtemp(join(parent, 'propr-windows-authority-session-'));
+    const canonical = await realpath(created);
+    const samePath = process.platform === 'win32'
+      ? resolve(created).toLowerCase() === canonical.toLowerCase()
+      : resolve(created) === canonical;
+    const before = await lstat(canonical, { bigint: true });
+    if (!samePath || !before.isDirectory() || before.isSymbolicLink()
+      || helper.launcher.protectPrivateDirectory({ path: canonical }) !== true) {
+      throw helperError('TRANSPORT_SPAWN');
+    }
+    const after = await lstat(canonical, { bigint: true });
+    if (!after.isDirectory() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) {
+      throw helperError('TRANSPORT_SPAWN');
+    }
+    return canonical;
+  } catch (error) {
+    if (created) await rm(created, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
 };
 
-class NativeBrokerChild extends EventEmitter implements BrokerChild {
-  readonly stdin: Writable;
-  readonly stdout: Readable;
-  readonly stderr: Readable;
-  exitCode: number | null = null;
-  killed = false;
-  readonly imageVolumeSerial: string;
-  readonly imageFileId128: string;
-  private poll: NodeJS.Timeout | undefined;
-  private outputEnded = 0;
-  private closed = false;
-
-  constructor(private readonly launcher: WindowsNativeLauncher, private readonly native: NativeLaunchLease) {
-    super();
-    this.imageVolumeSerial = native.volumeSerial;
-    this.imageFileId128 = native.fileId128;
-    this.stdin = createWriteStream('', { fd: native.stdinFd, autoClose: false });
-    this.stdout = createReadStream('', { fd: native.stdoutFd, autoClose: false });
-    this.stderr = createReadStream('', { fd: native.stderrFd, autoClose: false });
-    this.stdin.once('finish', () => {
-      try { this.launcher.closeInput(this.native.lease); } catch { /* process exit owns cleanup */ }
-    });
-    const ended = () => { this.outputEnded += 1; this.finishIfReady(); };
-    this.stdout.once('end', ended);
-    this.stderr.once('end', ended);
-    this.poll = setInterval(() => this.pollExit(), 20);
-    this.poll.unref();
+const spawnBroker = (
+  helper: AuthenticatedWindowsAuthorityHelper,
+  sessionTempDirectory: string,
+): BrokerChild => {
+  const child = spawn(helper.executable, ['--broker'], {
+    shell: false,
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: sessionTempDirectory,
+    env: {
+      SystemRoot: helper.systemRoot,
+      TEMP: sessionTempDirectory,
+      TMP: sessionTempDirectory,
+    },
+  });
+  if (!child.stdin || !child.stdout || !child.stderr) {
+    if (!child.killed) child.kill();
+    throw helperError('TRANSPORT_SPAWN');
   }
-
-  private pollExit(): void {
-    if (this.closed) return;
-    try {
-      const code = this.launcher.status(this.native.lease);
-      if (code !== null) {
-        this.exitCode = code;
-        if (this.poll) clearInterval(this.poll);
-        this.poll = undefined;
-        this.finishIfReady();
-      }
-    } catch {
-      if (this.poll) clearInterval(this.poll);
-      this.poll = undefined;
-      this.emit('error', new Error('Windows native launcher status failed'));
-    }
-  }
-
-  private finishIfReady(): void {
-    if (this.closed || this.exitCode === null || this.outputEnded !== 2) return;
-    this.closed = true;
-    try { this.launcher.close(this.native.lease); } catch { /* fixed close path */ }
-    this.emit('close', this.exitCode);
-  }
-
-  kill(): boolean {
-    if (this.closed || this.killed) return false;
-    this.killed = true;
-    try { this.launcher.terminate(this.native.lease); return true; } catch { return false; }
-  }
-
-  unref(): void { this.poll?.unref(); }
-}
+  return child as BrokerChild;
+};
 
 class WindowsAuthorityError extends Error {
   constructor(readonly reason: WindowsAuthorityReason, readonly scenario: number) {
@@ -1339,6 +1271,7 @@ let compileCount = 0;
 let requestCount = 0;
 let restartCount = 0;
 let activeProcessCount = 0;
+let activeAuthenticatedHandleSets = 0;
 let lastClosedHeldId: string | undefined;
 const brokerChildren = new Set<BrokerChild>();
 
@@ -1382,13 +1315,17 @@ class WindowsAuthoritySession {
   private outputBytes = 0;
   private frames = 0;
   private closing = false;
+  private resourcesCleaned = false;
 
   constructor(
     readonly child: BrokerChild,
     private readonly sharedQueue = true,
     private readonly helper?: AuthenticatedWindowsAuthorityHelper,
+    private readonly sessionTempDirectory?: string,
   ) {
     activeProcessCount++;
+    if (helper) activeAuthenticatedHandleSets++;
+    if (sessionTempDirectory) activeSessionTempDirectories.add(sessionTempDirectory);
     brokerChildren.add(child);
     child.stdout.on('data', (chunk: Buffer) => this.consume(chunk));
     child.stderr.on('data', (chunk: Buffer) => this.consumeBootstrapStage(chunk));
@@ -1396,7 +1333,7 @@ class WindowsAuthoritySession {
       ? authorityError('stdio_protocol', 16) : this.bootstrapError('WRITE_ERROR')));
     child.on('error', () => this.invalidate(this.bootstrapReady
       ? authorityError('process_exit', 19) : this.bootstrapError('SPAWN_ERROR')));
-    this.exited = new Promise(resolve => child.once('close', code => {
+    this.exited = new Promise(resolve => child.once('close', code => { void (async () => {
       activeProcessCount--;
       brokerChildren.delete(child);
       const clean = this.closing && code === 0 && this.stderrBuffered === '' && this.buffered.length === 0;
@@ -1404,16 +1341,34 @@ class WindowsAuthoritySession {
         : this.bootstrapReady ? authorityError('process_exit', 19)
           : this.bootstrapError(this.outputBytes === 0 ? 'EXIT_NO_OUTPUT' : 'EXIT_AFTER_OUTPUT'), false);
       if (brokerSession === this) brokerSession = undefined;
-      void this.helper?.executableHandle.close().catch(() => undefined);
-      void this.helper?.launcherHandle.close().catch(() => undefined);
-      void this.helper?.bootstrapHandle.close().catch(() => undefined);
-      void this.helper?.manifestHandle.close().catch(() => undefined);
+      await this.cleanupResources();
       resolve();
-    }));
+    })(); }));
     child.unref();
     (child.stdin as typeof child.stdin & { unref?(): void }).unref?.();
     (child.stdout as typeof child.stdout & { unref?(): void }).unref?.();
     (child.stderr as typeof child.stderr & { unref?(): void }).unref?.();
+  }
+
+  private async cleanupResources(): Promise<void> {
+    if (this.resourcesCleaned) return;
+    this.resourcesCleaned = true;
+    if (this.helper) {
+      await Promise.allSettled([
+        this.helper.executableHandle.close(),
+        this.helper.launcherHandle.close(),
+        this.helper.bootstrapHandle.close(),
+        this.helper.manifestHandle.close(),
+      ]);
+      activeAuthenticatedHandleSets--;
+    }
+    if (this.sessionTempDirectory) {
+      await rm(this.sessionTempDirectory, { recursive: true, force: true }).catch(() => {
+        try { rmSync(this.sessionTempDirectory!, { recursive: true, force: true }); } catch { /* bounded exit cleanup */ }
+      });
+      activeSessionTempDirectories.delete(this.sessionTempDirectory);
+      lastRemovedSessionTempDirectory = this.sessionTempDirectory;
+    }
   }
 
   private bootstrapError(kind: WindowsAuthorityBootstrapFailureKind = 'EXIT_NO_OUTPUT'): WindowsAuthorityBootstrapError {
@@ -1582,19 +1537,23 @@ class WindowsAuthoritySession {
   }
 
   async shutdown(): Promise<void> {
-    if (this.child.exitCode !== null) return;
-    this.closing = true;
-    this.child.stdin.end();
-    let timer: NodeJS.Timeout | undefined;
+    if (this.child.exitCode === null) {
+      this.closing = true;
+      this.child.stdin.end();
+    }
+    let terminateTimer: NodeJS.Timeout | undefined;
+    let boundTimer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
         this.exited,
-        new Promise<void>(resolve => {
-          timer = setTimeout(() => { this.child.kill(); resolve(); }, BROKER_TIMEOUT_MS);
+        new Promise<void>((_resolve, reject) => {
+          terminateTimer = setTimeout(() => { if (!this.child.killed) this.child.kill(); }, BROKER_TIMEOUT_MS);
+          boundTimer = setTimeout(() => reject(authorityError('process_exit', 19)), BROKER_TIMEOUT_MS * 2);
         }),
       ]);
     } finally {
-      if (timer) clearTimeout(timer);
+      if (terminateTimer) clearTimeout(terminateTimer);
+      if (boundTimer) clearTimeout(boundTimer);
     }
   }
 }
@@ -1622,33 +1581,13 @@ const requestFrame = (operation: BrokerRequestOperation, values: Partial<BrokerR
 });
 
 interface StartBrokerOptions {
-  injectedStage?: WindowsAuthorityCompileStage;
   countCompilation?: boolean;
-  transportFault?: 'stderr';
-  imageFault?: 'process-image';
   helperDirectory?: string;
   expectedPublisher?: string;
-  nativeFault?: string;
   allowUnsignedBootstrapForValidation?: boolean;
 }
 
-const compileStageFromNativeLaunchError = (error: unknown): WindowsAuthorityCompileStage => {
-  try {
-    if (typeof error !== 'object' || error === null || !Object.hasOwn(error, 'code')) return 'TRANSPORT_SPAWN';
-    const code = (error as { code?: unknown }).code;
-    if (typeof code !== 'string' || !Object.hasOwn(NATIVE_LAUNCH_COMPILE_STAGE, code)) return 'TRANSPORT_SPAWN';
-    return NATIVE_LAUNCH_COMPILE_STAGE[code as WindowsNativeLaunchFailureCode];
-  } catch {
-    return 'TRANSPORT_SPAWN';
-  }
-};
-
-export const compileStageFromNativeLaunchErrorForTest = compileStageFromNativeLaunchError;
-
 const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAuthoritySession> => {
-  if (options.injectedStage && WINDOWS_AUTHORITY_COMPILE_STAGES.slice(0, 4).includes(options.injectedStage)) {
-    throw helperError(options.injectedStage);
-  }
   const helper = await authenticateWindowsAuthorityHelper(
     options.helperDirectory,
     undefined,
@@ -1658,56 +1597,69 @@ const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAut
     options.allowUnsignedBootstrapForValidation,
   );
   let child: BrokerChild;
+  let sessionTempDirectory: string | undefined;
   try {
-    child = spawnBroker(helper, options.injectedStage, options.transportFault, options.imageFault, options.nativeFault);
-  } catch (error) {
+    sessionTempDirectory = await createPrivateSessionTempDirectory(helper);
+    child = spawnBroker(helper, sessionTempDirectory);
+  } catch {
+    if (sessionTempDirectory) await rm(sessionTempDirectory, { recursive: true, force: true }).catch(() => undefined);
     await helper.executableHandle.close().catch(() => undefined);
     await helper.launcherHandle.close().catch(() => undefined);
     await helper.bootstrapHandle.close().catch(() => undefined);
     await helper.manifestHandle.close().catch(() => undefined);
-    const stage = compileStageFromNativeLaunchError(error);
-    throw new WindowsAuthorityBootstrapError('SPAWN_ERROR', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf(stage));
+    throw new WindowsAuthorityBootstrapError('SPAWN_ERROR',
+      WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf('TRANSPORT_SPAWN'));
   }
   if (options.countCompilation !== false) {
     compileCount++;
     if (compileCount > 1) restartCount++;
   }
-  const session = new WindowsAuthoritySession(child, options.countCompilation !== false, helper);
-  const challenge = randomBytes(16).toString('hex');
-  const startupDeadline = Date.now() + BROKER_STARTUP_TIMEOUT_MS;
-  const readyPromise = session.receive(BROKER_STARTUP_TIMEOUT_MS, undefined, true);
+  const session = new WindowsAuthoritySession(
+    child,
+    options.countCompilation !== false,
+    helper,
+    sessionTempDirectory,
+  );
   try {
-    await session.write(JSON.stringify({
-      version: WINDOWS_AUTHORITY_PROTOCOL_VERSION,
-      type: 'start',
-      challenge,
-      protocol: 'propr-windows-authority-v1',
-    }));
+    const challenge = randomBytes(16).toString('hex');
+    const startupDeadline = Date.now() + BROKER_STARTUP_TIMEOUT_MS;
+    const readyPromise = session.receive(BROKER_STARTUP_TIMEOUT_MS, undefined, true);
+    try {
+      await session.write(JSON.stringify({
+        version: WINDOWS_AUTHORITY_PROTOCOL_VERSION,
+        type: 'start',
+        challenge,
+        protocol: 'propr-windows-authority-v1',
+      }));
+    } catch (error) {
+      session.invalidate(error instanceof Error ? error : authorityError('compile_load', 0));
+      throw error;
+    }
+    const ready = await readyPromise;
+    const failure = parseFailure(ready);
+    if (failure) {
+      session.invalidate(failure);
+      throw failure;
+    }
+    await session.requireBootstrapReady(Math.max(1, startupDeadline - Date.now()));
+    if (!exactKeys(ready, ['version', 'type', 'challenge', 'protocol', 'maxRequestBytes', 'nativeSmoke', 'compileCount',
+      'imageVolumeSerial', 'imageFileId128', 'imageSha256'])
+      || ready.version !== WINDOWS_AUTHORITY_PROTOCOL_VERSION || ready.type !== 'ready'
+      || ready.challenge !== challenge || ready.protocol !== 'propr-windows-authority-v1'
+      || ready.maxRequestBytes !== BROKER_REQUEST_LINE_BYTES || ready.nativeSmoke !== true || ready.compileCount !== 1
+      || !/^[a-f0-9]{16}$/.test(String(ready.imageVolumeSerial))
+      || !/^[a-f0-9]{32}$/.test(String(ready.imageFileId128))
+      || ready.imageSha256 !== helper.manifest.sha256) {
+      const error = new WindowsAuthorityBootstrapError('MALFORMED_OUTPUT', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf('READY'));
+      session.invalidate(error);
+      throw error;
+    }
+    return session;
   } catch (error) {
-    session.invalidate(error instanceof Error ? error : authorityError('compile_load', 0));
+    session.invalidate(error instanceof Error ? error : authorityError('process_exit', 19));
+    await session.shutdown().catch(() => undefined);
     throw error;
   }
-  const ready = await readyPromise;
-  const failure = parseFailure(ready);
-  if (failure) {
-    session.invalidate(failure);
-    throw failure;
-  }
-  await session.requireBootstrapReady(Math.max(1, startupDeadline - Date.now()));
-  if (!exactKeys(ready, ['version', 'type', 'challenge', 'protocol', 'maxRequestBytes', 'nativeSmoke', 'compileCount',
-    'imageVolumeSerial', 'imageFileId128', 'imageSha256'])
-    || ready.version !== WINDOWS_AUTHORITY_PROTOCOL_VERSION || ready.type !== 'ready'
-    || ready.challenge !== challenge || ready.protocol !== 'propr-windows-authority-v1'
-    || ready.maxRequestBytes !== BROKER_REQUEST_LINE_BYTES || ready.nativeSmoke !== true || ready.compileCount !== 1
-    || !/^[a-f0-9]{16}$/.test(String(ready.imageVolumeSerial))
-    || !/^[a-f0-9]{32}$/.test(String(ready.imageFileId128))
-    || ready.imageVolumeSerial !== child.imageVolumeSerial || ready.imageFileId128 !== child.imageFileId128
-    || ready.imageSha256 !== helper.manifest.sha256) {
-    const error = new WindowsAuthorityBootstrapError('MALFORMED_OUTPUT', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf('READY'));
-    session.invalidate(error);
-    throw error;
-  }
-  return session;
 };
 
 const compileStageFromError = (error: unknown): WindowsAuthorityCompileStage => {
@@ -1753,38 +1705,12 @@ export const probePackagedWindowsAuthorityHelper = (directory: string): Promise<
 export const probeWindowsAuthorityCompileFailureForTest = (): Promise<WindowsAuthorityCompileStage> =>
   Promise.resolve('BUILD_OUTPUT');
 
-/** Native-test-only failure injection at each fixed startup boundary. */
-export const probeWindowsAuthorityBootstrapStageForTest = (
-  stage: WindowsAuthorityCompileStage,
-): Promise<WindowsAuthorityCompileStage> => {
-  const nativeCode = WINDOWS_NATIVE_LAUNCH_FAILURE_CODES.find(code => NATIVE_LAUNCH_COMPILE_STAGE[code] === stage);
-  return runWindowsAuthorityCompileProbe({
-    injectedStage: nativeCode ? undefined : stage,
-    nativeFault: nativeCode ? `launch-stage-${nativeCode}` : undefined,
-  });
-};
-
-export const probeWindowsAuthorityNativeLaunchStageForTest = (
-  code: WindowsNativeLaunchFailureCode,
-): Promise<WindowsAuthorityCompileStage> => runWindowsAuthorityCompileProbe({ nativeFault: `launch-stage-${code}` });
-
-export const probeWindowsAuthorityUnknownNativeLaunchStageForTest = (): Promise<WindowsAuthorityCompileStage> =>
-  runWindowsAuthorityCompileProbe({ nativeFault: 'launch-stage-UNKNOWN' });
-
-export const probeWindowsAuthorityProcessImageMismatchForTest = (): Promise<WindowsAuthorityCompileStage> =>
-  runWindowsAuthorityCompileProbe({ imageFault: 'process-image' });
-
-export const probeWindowsAuthorityNativeBoundaryForTest = (
-  fault: 'barrier-after-hash-delete' | 'barrier-after-hash-swap' | 'barrier-after-hash-write'
-    | 'barrier-before-create-delete' | 'barrier-before-create-swap' | 'barrier-before-create-write'
-    | 'barrier-after-process-delete' | 'barrier-after-process-swap' | 'barrier-after-process-write'
-    | 'extra-child' | 'job-assignment' | 'parent-image-proof' | 'pipe-substitution',
-): Promise<WindowsAuthorityCompileStage> => runWindowsAuthorityCompileProbe({ nativeFault: fault });
-
 /** Native-test-only startup failure against the exact compiled production child. */
 export const probeWindowsAuthorityStartupFailureForTest = async (): Promise<WindowsAuthorityReason> => {
   const helper = await authenticateWindowsAuthorityHelper();
-  const session = new WindowsAuthoritySession(spawnBroker(helper), false, helper);
+  const sessionTempDirectory = await createPrivateSessionTempDirectory(helper);
+  const session = new WindowsAuthoritySession(spawnBroker(helper, sessionTempDirectory), false, helper,
+    sessionTempDirectory);
   try {
     const response = session.receive(BROKER_STARTUP_TIMEOUT_MS, undefined, true);
     await session.write(JSON.stringify({
@@ -1811,7 +1737,7 @@ export const probeWindowsAuthorityStartupFailureForTest = async (): Promise<Wind
 export const injectWindowsAuthorityTransportFaultForTest = async (
   kind: 'stderr' | 'slowloris' | 'timeout',
 ): Promise<WindowsAuthorityReason> => {
-  const session = await startBroker({ countCompilation: false, transportFault: kind === 'stderr' ? 'stderr' : undefined });
+  const session = await startBroker({ countCompilation: false });
   try {
     if (kind === 'stderr') {
       await session.exchange(requestFrame('fault-stderr'));
@@ -2253,12 +2179,18 @@ export const windowsAuthorityBrokerStatsForTest = (): Readonly<{
   requestCount: number;
   restartCount: number;
   activeProcessCount: number;
+  activeAuthenticatedHandleSets: number;
+  activeSessionTempDirectory: string | null;
+  lastRemovedSessionTempDirectory: string | null;
   queuedEntries: number;
 }> => Object.freeze({
   compileCount,
   requestCount,
   restartCount,
   activeProcessCount,
+  activeAuthenticatedHandleSets,
+  activeSessionTempDirectory: activeSessionTempDirectories.values().next().value ?? null,
+  lastRemovedSessionTempDirectory: lastRemovedSessionTempDirectory ?? null,
   queuedEntries: brokerQueue.length,
 });
 
@@ -2299,6 +2231,9 @@ export const shutdownWindowsAuthorityBrokerForTest = async (): Promise<void> => 
 
 process.once('exit', () => {
   for (const child of brokerChildren) if (!child.killed) child.kill();
+  for (const directory of activeSessionTempDirectories) {
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* process teardown is already bounded */ }
+  }
 });
 
 export const smokeWindowsUpdateAuthority = async (path: string): Promise<readonly string[]> => {

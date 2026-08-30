@@ -926,6 +926,20 @@ bool ProtectPrivateBuildDirectory(const std::wstring& path) {
   return valid && CanonicalDirectory(path, true);
 }
 
+napi_value ProtectPrivateDirectory(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  std::wstring path;
+  if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 1
+      || !StringValue(env, args[0], "path", &path) || path.size() < 3 || path.size() >= 32768
+      || path[0] == L'\\' || path[1] != L':' || !ProtectPrivateBuildDirectory(path)) {
+    Throw(env, "PRIVATE_DIRECTORY"); return nullptr;
+  }
+  napi_value result;
+  napi_get_boolean(env, true, &result);
+  return result;
+}
+
 napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
@@ -1160,16 +1174,12 @@ napi_value Launch(napi_env env, napi_callback_info info) {
   Utf8Value(env, args[0], "signerCertificateSha256", &certificate_pin, true);
   Utf8Value(env, args[0], "signerSpkiSha256", &spki_pin, true);
 
-  if (fault == "launch-stage-UNKNOWN") { Throw(env, "LAUNCH_ARGUMENT"); return nullptr; }
-  if (fault == "launch-stage-HELPER_OPEN") { Throw(env, "HELPER_OPEN"); return nullptr; }
-
   HANDLE image = CreateFileW(path.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
   if (image == INVALID_HANDLE_VALUE) { Throw(env, "HELPER_OPEN"); return nullptr; }
   FileIdInfo held_id{};
   std::string held_hash;
-  if (fault == "launch-stage-HELPER_AUTHORITY"
-      || !SecureRegularFile(image, expected_size, &held_id, false)
+  if (!SecureRegularFile(image, expected_size, &held_id, false)
       || !Sha256Handle(image, expected_size, &held_hash) || held_hash != expected_hash
       || (production && !VerifyPinnedSignature(path, image, publisher, certificate_pin, spki_pin))) {
     CloseHandle(image); Throw(env, "HELPER_AUTHORITY"); return nullptr;
@@ -1181,8 +1191,7 @@ napi_value Launch(napi_env env, napi_callback_info info) {
   HANDLE child_in_read = nullptr, parent_in_write = nullptr;
   HANDLE parent_out_read = nullptr, child_out_write = nullptr;
   HANDLE parent_err_read = nullptr, child_err_write = nullptr;
-  if (fault == "launch-stage-PIPE_CREATE"
-      || !PipePair(&child_in_read, &parent_in_write, false)
+  if (!PipePair(&child_in_read, &parent_in_write, false)
       || !PipePair(&parent_out_read, &child_out_write, true)
       || !PipePair(&parent_err_read, &child_err_write, true)) {
     if (child_in_read) CloseHandle(child_in_read);
@@ -1224,7 +1233,7 @@ napi_value Launch(napi_env env, napi_callback_info info) {
   environment.push_back(L'\0');
   const bool attributes_initialized = InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_bytes) != FALSE;
   const bool precreate_barrier = fault.rfind("barrier-before-create-", 0) != 0 || MutationWasDenied(path, fault);
-  bool created = fault != "launch-stage-PROCESS_CREATE" && precreate_barrier && attributes_initialized
+  bool created = precreate_barrier && attributes_initialized
     && UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited), nullptr, nullptr)
     && CreateProcessW(path.c_str(), command.data(), nullptr, nullptr, TRUE,
       CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
@@ -1236,32 +1245,14 @@ napi_value Launch(napi_env env, napi_callback_info info) {
     Throw(env, "PROCESS_CREATE"); return nullptr;
   }
 
-  HANDLE job = fault == "launch-stage-JOB_CREATE" ? nullptr : CreateJobObjectW(nullptr, nullptr);
-  auto fail_launched = [&](const char* code) -> napi_value {
-    TerminateProcess(process.hProcess, 127);
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
-    if (job) CloseHandle(job);
-    CloseHandle(parent_in_write);
-    CloseHandle(parent_out_read);
-    CloseHandle(parent_err_read);
-    CloseHandle(image);
-    Throw(env, code);
-    return nullptr;
-  };
-  if (!job) return fail_launched("JOB_CREATE");
+  HANDLE job = CreateJobObjectW(nullptr, nullptr);
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
   limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
   limits.BasicLimitInformation.ActiveProcessLimit = 1;
-  if (fault == "launch-stage-JOB_LIMIT"
-      || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
-    return fail_launched("JOB_LIMIT");
-  }
-  if (fault == "launch-stage-JOB_ASSIGN" || fault == "job-assignment"
-      || !AssignProcessToJobObject(job, process.hProcess)) {
-    return fail_launched("JOB_ASSIGN");
-  }
-  if (fault == "extra-child") {
+  bool proven = job && SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))
+    && AssignProcessToJobObject(job, process.hProcess);
+  if (fault == "job-assignment") proven = false;
+  if (fault == "extra-child" && proven) {
     STARTUPINFOW extra_startup{};
     extra_startup.cb = sizeof(extra_startup);
     PROCESS_INFORMATION extra{};
@@ -1275,33 +1266,26 @@ napi_value Launch(napi_env env, napi_callback_info info) {
       CloseHandle(extra.hThread);
       CloseHandle(extra.hProcess);
     }
-    if (!process_limit_enforced) return fail_launched("JOB_LIMIT");
+    proven = process_limit_enforced;
   }
-  if (fault.rfind("barrier-after-process-", 0) == 0 && !MutationWasDenied(path, fault)) {
-    return fail_launched("IMAGE_AUTH");
-  }
+  if (fault.rfind("barrier-after-process-", 0) == 0 && !MutationWasDenied(path, fault)) proven = false;
   std::array<wchar_t, 32768> loaded_path{};
   DWORD loaded_length = static_cast<DWORD>(loaded_path.size());
-  if (fault == "launch-stage-IMAGE_QUERY"
-      || !QueryFullProcessImageNameW(process.hProcess, 0, loaded_path.data(), &loaded_length)) {
-    return fail_launched("IMAGE_QUERY");
-  }
-  HANDLE loaded = fault == "launch-stage-IMAGE_OPEN" ? INVALID_HANDLE_VALUE
-    : CreateFileW(loaded_path.data(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr,
-      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-  if (loaded == INVALID_HANDLE_VALUE) return fail_launched("IMAGE_OPEN");
+  proven = proven && QueryFullProcessImageNameW(process.hProcess, 0, loaded_path.data(), &loaded_length);
+  HANDLE loaded = proven ? CreateFileW(loaded_path.data(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr,
+    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr) : INVALID_HANDLE_VALUE;
   FileIdInfo loaded_id{};
   std::string loaded_hash;
-  bool image_authenticated = SecureRegularFile(loaded, expected_size, &loaded_id, false)
+  proven = proven && loaded != INVALID_HANDLE_VALUE && SecureRegularFile(loaded, expected_size, &loaded_id, false)
     && SameIdentity(held_id, loaded_id) && Sha256Handle(loaded, expected_size, &loaded_hash) && loaded_hash == held_hash;
-  if (fault == "launch-stage-IMAGE_AUTH" || fault == "parent-image-proof" || fault == "pipe-substitution") {
-    image_authenticated = false;
+  if (fault == "parent-image-proof" || fault == "pipe-substitution") proven = false;
+  if (loaded != INVALID_HANDLE_VALUE) CloseHandle(loaded);
+  if (!proven || ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
+    TerminateProcess(process.hProcess, 127); CloseHandle(process.hThread); CloseHandle(process.hProcess);
+    if (job) CloseHandle(job);
+    CloseHandle(parent_in_write); CloseHandle(parent_out_read); CloseHandle(parent_err_read); CloseHandle(image);
+    Throw(env, proven ? "PROCESS_RESUME" : "PROCESS_IMAGE"); return nullptr;
   }
-  CloseHandle(loaded);
-  if (!image_authenticated) return fail_launched("IMAGE_AUTH");
-  if (fault == "launch-stage-PROCESS_RESUME"
-      || ResumeThread(process.hThread) == static_cast<DWORD>(-1)) return fail_launched("PROCESS_RESUME");
-  if (fault == "launch-stage-PIPE_EXPORT") return fail_launched("PIPE_EXPORT");
   CloseHandle(process.hThread);
 
   auto* lease = new LaunchLease();
@@ -2013,6 +1997,7 @@ napi_value Init(napi_env env, napi_value exports) {
 #else
   napi_property_descriptor properties[] = {
     {"probeSystemDirectory", nullptr, ProbeSystemDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"protectPrivateDirectory", nullptr, ProtectPrivateDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"launch", nullptr, Launch, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"status", nullptr, Status, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"closeInput", nullptr, CloseInput, nullptr, nullptr, nullptr, napi_default, nullptr},

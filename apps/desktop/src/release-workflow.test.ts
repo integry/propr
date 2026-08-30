@@ -319,17 +319,18 @@ describe('desktop trusted release workflow', () => {
       );
     }
     assert.match(workflow, /PROPR_DESKTOP_PRODUCTION_RELEASE=0 npm run desktop:broker:build/g);
-    assert.match(windowsAuthority, /helper\.launcher\.launch\(\{/);
-    assert.match(windowsAuthority, /ready\.imageVolumeSerial !== child\.imageVolumeSerial/);
+    assert.match(windowsAuthority, /spawn\(helper\.executable, \['--broker'\], \{/);
+    assert.match(windowsAuthority, /shell: false/);
+    assert.match(windowsAuthority, /windowsHide: true/);
+    assert.match(windowsAuthority, /stdio: \['pipe', 'pipe', 'pipe'\]/);
+    assert.match(windowsAuthority,
+      /env: \{\s*SystemRoot: helper\.systemRoot,\s*TEMP: sessionTempDirectory,\s*TMP: sessionTempDirectory/);
+    assert.doesNotMatch(windowsAuthority, /helper\.launcher\.launch\(\{/);
+    assert.match(windowsAuthority, /nativeLauncher\.probeSystemDirectory/);
+    assert.match(windowsAuthority, /nativeLauncher\.protectPrivateDirectory/);
+    assert.match(windowsAuthority, /activeAuthenticatedHandleSets--/);
+    assert.match(windowsAuthority, /rm\(this\.sessionTempDirectory, \{ recursive: true, force: true \}\)/);
     assert.match(windowsNativeLauncher, /CreateFileW\(path\.c_str\(\), GENERIC_READ \| READ_CONTROL, FILE_SHARE_READ/);
-    assert.match(windowsNativeLauncher, /CREATE_SUSPENDED \| CREATE_NO_WINDOW \| EXTENDED_STARTUPINFO_PRESENT/);
-    assert.match(windowsNativeLauncher, /PROC_THREAD_ATTRIBUTE_HANDLE_LIST/);
-    assert.match(windowsNativeLauncher, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE/);
-    assert.match(windowsNativeLauncher, /JOB_OBJECT_LIMIT_ACTIVE_PROCESS/);
-    assert.match(windowsNativeLauncher, /ActiveProcessLimit = 1/);
-    assert.match(windowsNativeLauncher, /AssignProcessToJobObject/);
-    assert.match(windowsNativeLauncher, /QueryFullProcessImageNameW/);
-    assert.match(windowsNativeLauncher, /SameIdentity\(held_id, loaded_id\)/);
     assert.match(windowsNativeLauncher, /VerifyPinnedSignature/);
     assert.match(windowsNativeLauncher, /CompileHeld/);
     assert.match(windowsNativeLauncher, /VerifyMicrosoftCompilerInput/);
@@ -365,35 +366,9 @@ describe('desktop trusted release workflow', () => {
       'HELPER_HASH',
       'PROTOCOL_INIT',
       'READY',
-      'TRANSPORT_HELPER_OPEN',
-      'TRANSPORT_HELPER_AUTHORITY',
-      'TRANSPORT_PIPE_CREATE',
-      'TRANSPORT_PROCESS_CREATE',
-      'TRANSPORT_JOB_CREATE',
-      'TRANSPORT_JOB_LIMIT',
-      'TRANSPORT_JOB_ASSIGN',
-      'TRANSPORT_IMAGE_QUERY',
-      'TRANSPORT_IMAGE_OPEN',
-      'TRANSPORT_IMAGE_AUTH',
-      'TRANSPORT_PROCESS_RESUME',
-      'TRANSPORT_PIPE_EXPORT',
     ]) assert.match(windowsAuthority, new RegExp(`'${stage}'`));
-    for (const stage of [
-      'HELPER_OPEN',
-      'HELPER_AUTHORITY',
-      'PIPE_CREATE',
-      'PROCESS_CREATE',
-      'JOB_CREATE',
-      'JOB_LIMIT',
-      'JOB_ASSIGN',
-      'IMAGE_QUERY',
-      'IMAGE_OPEN',
-      'IMAGE_AUTH',
-      'PROCESS_RESUME',
-      'PIPE_EXPORT',
-    ]) assert.match(windowsNativeLauncher, new RegExp(`"${stage}"`));
-    assert.doesNotMatch(windowsNativeLauncher, /Throw\(env, "PROCESS_IMAGE"\)/);
-    assert.match(windowsAuthority, /!Object\.hasOwn\(error, 'code'\)/);
+    assert.doesNotMatch(windowsAuthority, /TRANSPORT_(?:HELPER|PIPE|PROCESS|JOB|IMAGE)/);
+    assert.doesNotMatch(windowsNativeLauncher, /launch-stage-/);
     assert.match(windowsAuthorityBuild, /Microsoft\.NET', layout, 'v4\.0\.30319'/);
     assert.match(windowsAuthorityBuild, /await invoke\(compiler, args, \{/);
     assert.match(windowsAuthorityBuild, /'\/platform:anycpu'/);

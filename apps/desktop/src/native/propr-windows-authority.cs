@@ -612,9 +612,6 @@ public static class ProprUpdateAuthority {
   static void Stage(int index, string name) {
     Console.Error.WriteLine("PROPR_BOOTSTRAP " + index.ToString("D2") + " " + name);
     Console.Error.Flush();
-    if (Environment.GetEnvironmentVariable("PROPR_WINDOWS_AUTHORITY_TEST_STAGE") == name) {
-      throw new BrokerFailure("compile_load", index);
-    }
   }
 
   static Dictionary<string, object> ReadManifest(string path) {
@@ -922,8 +919,7 @@ public static class ProprUpdateAuthority {
       string reopenedHash = Hash(reopened, reopenedStandard.EndOfFile)[0];
       if ((attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 || attributes.ReparseTag != 0
         || reopenedIdentity.VolumeSerialNumber.ToString("x16") != IMAGE_VOLUME || reopenedFileId != IMAGE_FILE_ID
-        || reopenedStandard.NumberOfLinks != 1 || reopenedHash != IMAGE_SHA256
-        || Environment.GetEnvironmentVariable("PROPR_WINDOWS_AUTHORITY_TEST_IMAGE_FAULT") == "process-image") {
+        || reopenedStandard.NumberOfLinks != 1 || reopenedHash != IMAGE_SHA256) {
         throw new BrokerFailure("compile_load", 8);
       }
     }
@@ -970,8 +966,7 @@ public static class ProprUpdateAuthority {
           id = Text(request, "id");
           string operation = Text(request, "operation");
           string purpose = Text(request, "purpose");
-          if (operation == "fault-stderr"
-            && Environment.GetEnvironmentVariable("PROPR_WINDOWS_AUTHORITY_TEST_TRANSPORT_FAULT") == "stderr") {
+          if (operation == "fault-stderr") {
             Console.Error.WriteLine("PROPR_FAULT 01");
             Console.Error.Flush();
           } else if (operation == "hold") {
@@ -1052,8 +1047,7 @@ public static class ProprUpdateAuthority {
       if (args == null || args.Length != 1 || args[0] != "--broker") return 64;
       AuthenticateImage();
       Stage(10, "PROTOCOL_INIT");
-      // The signed native parent boundary creates and owns the kill-on-close
-      // job and proves this process image before it resumes this entrypoint.
+      // Startup authenticates and pins this exact image before any request is served.
       Initialize();
       Serve();
       return 0;
