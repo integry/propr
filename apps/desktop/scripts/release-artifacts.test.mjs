@@ -189,6 +189,13 @@ const windowsAuthorityFixtureEntries = (executablePath, executable) => {
   helper.writeUInt32LE(0x200, 0x178 + 16);
   helper.writeUInt32LE(0x200, 0x178 + 20);
   helper.writeUInt32LE(0x1, 0x210);
+  const executablePe = executable.length >= 64 && executable.readUInt16LE(0) === 0x5a4d
+    ? executable.readUInt32LE(0x3c) : -1;
+  const launcherMachine = executablePe >= 0 && executablePe + 6 <= executable.length
+    ? executable.readUInt16LE(executablePe + 4) : 0x8664;
+  const launcherArchitecture = launcherMachine === 0xaa64 ? 'arm64' : 'x64';
+  const launcher = Buffer.from(helper);
+  launcher.writeUInt16LE(launcherMachine, 0x84);
   const manifest = Buffer.from(`${JSON.stringify({
     schemaVersion: 1,
     name: 'propr-windows-authority.exe',
@@ -205,8 +212,21 @@ const windowsAuthorityFixtureEntries = (executablePath, executable) => {
     signerPins: [],
     signerCertificateSha256: null,
     signerSpkiSha256: null,
+    launcher: {
+      name: 'propr-windows-launcher.node',
+      format: 'PE',
+      architecture: launcherArchitecture,
+      machine: launcherArchitecture === 'arm64' ? 'ARM64' : 'AMD64',
+      size: launcher.length,
+      sha256: createHash('sha256').update(launcher).digest('hex'),
+      trust: 'unsigned-validation',
+      publisher: null,
+      signerPins: [],
+      signerCertificateSha256: null,
+      signerSpkiSha256: null,
+    },
     compiler: {
-      kind: 'kernel-systemroot-dotnet-framework-csc',
+      kind: 'kernel-system-directory-probe-dotnet-framework-csc',
       framework: 'Framework64-v4.0.30319',
       inputs: [
         { name: 'csc.exe', size: 1, sha256: 'b'.repeat(64) },
@@ -219,6 +239,7 @@ const windowsAuthorityFixtureEntries = (executablePath, executable) => {
     [executablePath, executable],
     ['lib/net45/resources/windows-authority/propr-windows-authority.exe', helper],
     ['lib/net45/resources/windows-authority/propr-windows-authority.manifest.json', manifest],
+    ['lib/net45/resources/windows-authority/propr-windows-launcher.node', launcher],
   ];
 };
 

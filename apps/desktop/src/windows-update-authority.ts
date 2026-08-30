@@ -1,10 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, createReadStream, createWriteStream } from 'node:fs';
 import { lstat, open, realpath, type FileHandle } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
+import { createRequire } from 'node:module';
+import { EventEmitter } from 'node:events';
+import type { Readable, Writable } from 'node:stream';
 
 export interface WindowsFileIdentity {
   platform: 'win32';
@@ -103,13 +105,29 @@ const lockedArtifactProcesses = new WeakMap<WindowsLockedArtifact, LockedArtifac
 
 const HELPER_NAME = 'propr-windows-authority.exe';
 const HELPER_MANIFEST_NAME = 'propr-windows-authority.manifest.json';
+const LAUNCHER_NAME = 'propr-windows-launcher.node';
 const HELPER_MAX_BYTES = 4 * 1024 * 1024;
 const HELPER_MANIFEST_BYTES = 16 * 1024;
 const HELPER_MANIFEST_KEYS = Object.freeze([
   'schemaVersion', 'name', 'format', 'architecture', 'machine', 'clr', 'size', 'sha256', 'sourceSha256',
   'protocol', 'trust', 'publisher', 'compiler',
   'signerPins', 'signerCertificateSha256', 'signerSpkiSha256',
+  'launcher',
 ] as const);
+
+interface WindowsNativeLauncherPolicy {
+  name: typeof LAUNCHER_NAME;
+  format: 'PE';
+  architecture: 'x64' | 'arm64';
+  machine: 'AMD64' | 'ARM64';
+  size: number;
+  sha256: string;
+  trust: 'unsigned-validation' | 'production-signed';
+  publisher: string | null;
+  signerPins: readonly string[];
+  signerCertificateSha256: string | null;
+  signerSpkiSha256: string | null;
+}
 
 interface WindowsAuthorityHelperManifest {
   schemaVersion: 1;
@@ -127,8 +145,9 @@ interface WindowsAuthorityHelperManifest {
   signerPins: readonly string[];
   signerCertificateSha256: string | null;
   signerSpkiSha256: string | null;
+  launcher: WindowsNativeLauncherPolicy;
   compiler: {
-    kind: 'kernel-systemroot-dotnet-framework-csc';
+    kind: 'kernel-system-directory-probe-dotnet-framework-csc';
     framework: string;
     inputs: readonly { name: string; size: number; sha256: string }[];
   };
@@ -137,9 +156,44 @@ interface WindowsAuthorityHelperManifest {
 interface AuthenticatedWindowsAuthorityHelper {
   executable: string;
   executableHandle: FileHandle;
+  launcherHandle: FileHandle;
   manifestHandle: FileHandle;
   manifest: WindowsAuthorityHelperManifest;
+  launcher: WindowsNativeLauncher;
 }
+
+interface NativeLaunchLease {
+  lease: object;
+  stdinFd: number;
+  stdoutFd: number;
+  stderrFd: number;
+  pid: number;
+  volumeSerial: string;
+  fileId128: string;
+}
+
+interface WindowsNativeLauncher {
+  launch(policy: Record<string, unknown>): NativeLaunchLease;
+  status(lease: object): number | null;
+  closeInput(lease: object): void;
+  terminate(lease: object): void;
+  close(lease: object): void;
+  verifyModule(policy: Record<string, unknown>): Record<string, unknown>;
+}
+
+interface BrokerChild extends EventEmitter {
+  stdin: Writable;
+  stdout: Readable;
+  stderr: Readable;
+  exitCode: number | null;
+  killed: boolean;
+  imageVolumeSerial: string;
+  imageFileId128: string;
+  kill(): boolean;
+  unref(): void;
+}
+
+const require = createRequire(import.meta.url);
 
 const helperError = (stage: WindowsAuthorityCompileStage): WindowsAuthorityBootstrapError =>
   new WindowsAuthorityBootstrapError('MALFORMED_OUTPUT', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf(stage));
@@ -174,9 +228,15 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw helperError('MANIFEST');
   const manifest = value as Record<string, unknown>;
   const compiler = manifest.compiler;
+  const launcher = manifest.launcher;
   if (!exactRecordKeys(manifest, HELPER_MANIFEST_KEYS)
     || typeof compiler !== 'object' || compiler === null || Array.isArray(compiler)
+    || typeof launcher !== 'object' || launcher === null || Array.isArray(launcher)
     || !exactRecordKeys(compiler as Record<string, unknown>, ['kind', 'framework', 'inputs'])
+    || !exactRecordKeys(launcher as Record<string, unknown>, [
+      'name', 'format', 'architecture', 'machine', 'size', 'sha256', 'trust', 'publisher', 'signerPins',
+      'signerCertificateSha256', 'signerSpkiSha256',
+    ])
     || manifest.schemaVersion !== 1 || manifest.name !== HELPER_NAME || manifest.format !== 'PE32'
     || manifest.architecture !== 'anycpu' || manifest.machine !== 'I386' || manifest.clr !== true
     || !Number.isSafeInteger(manifest.size) || Number(manifest.size) <= 0 || Number(manifest.size) > HELPER_MAX_BYTES
@@ -201,7 +261,22 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
         || !/^[a-f0-9]{64}$/.test(String(manifest.signerSpkiSha256))
         || !manifest.signerPins.some(pin => pin === `certificate-sha256:${manifest.signerCertificateSha256}`
           || pin === `spki-sha256:${manifest.signerSpkiSha256}`)))
-    || (compiler as Record<string, unknown>).kind !== 'kernel-systemroot-dotnet-framework-csc'
+    || (launcher as Record<string, unknown>).name !== LAUNCHER_NAME
+    || (launcher as Record<string, unknown>).format !== 'PE'
+    || !['x64', 'arm64'].includes(String((launcher as Record<string, unknown>).architecture))
+    || ((launcher as Record<string, unknown>).architecture === 'x64'
+      ? (launcher as Record<string, unknown>).machine !== 'AMD64'
+      : (launcher as Record<string, unknown>).machine !== 'ARM64')
+    || !Number.isSafeInteger((launcher as Record<string, unknown>).size)
+    || Number((launcher as Record<string, unknown>).size) <= 0
+    || Number((launcher as Record<string, unknown>).size) > HELPER_MAX_BYTES
+    || !/^[a-f0-9]{64}$/.test(String((launcher as Record<string, unknown>).sha256))
+    || (launcher as Record<string, unknown>).trust !== manifest.trust
+    || (launcher as Record<string, unknown>).publisher !== manifest.publisher
+    || JSON.stringify((launcher as Record<string, unknown>).signerPins) !== JSON.stringify(manifest.signerPins)
+    || (launcher as Record<string, unknown>).signerCertificateSha256 !== manifest.signerCertificateSha256
+    || (launcher as Record<string, unknown>).signerSpkiSha256 !== manifest.signerSpkiSha256
+    || (compiler as Record<string, unknown>).kind !== 'kernel-system-directory-probe-dotnet-framework-csc'
     || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String((compiler as Record<string, unknown>).framework))
     || !Array.isArray((compiler as Record<string, unknown>).inputs)
     || ((compiler as Record<string, unknown>).inputs as unknown[]).length !== 3
@@ -253,6 +328,15 @@ export const inspectWindowsAuthorityHelperPeForTest = (bytes: Buffer): void => {
   if ((corFlags & 0x1) === 0 || (corFlags & (0x2 | 0x10 | 0x20000)) !== 0) throw helperError('HELPER_HASH');
 };
 
+export const inspectWindowsNativeLauncherPeForTest = (bytes: Buffer, architecture: 'x64' | 'arm64'): void => {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 512 || bytes.length > HELPER_MAX_BYTES
+    || bytes.readUInt16LE(0) !== 0x5a4d) throw helperError('HELPER_HASH');
+  const pe = bytes.readUInt32LE(0x3c);
+  const expectedMachine = architecture === 'arm64' ? 0xaa64 : 0x8664;
+  if (pe < 0x40 || pe + 24 > bytes.length || bytes.toString('ascii', pe, pe + 4) !== 'PE\0\0'
+    || bytes.readUInt16LE(pe + 4) !== expectedMachine) throw helperError('HELPER_HASH');
+};
+
 const readHeldExactly = async (handle: FileHandle, size: number, stage: WindowsAuthorityCompileStage): Promise<Buffer> => {
   const bytes = Buffer.alloc(size);
   let offset = 0;
@@ -294,9 +378,11 @@ const authenticateWindowsAuthorityHelper = async (
 ): Promise<AuthenticatedWindowsAuthorityHelper> => {
   if (!isAbsolute(directory) || directory.indexOf(':', 2) >= 0) throw helperError('MANIFEST');
   const executableProof = await proveCanonicalTree(directory, join(directory, HELPER_NAME));
+  const launcherProof = await proveCanonicalTree(directory, join(directory, LAUNCHER_NAME));
   const manifestProof = await proveCanonicalTree(directory, join(directory, HELPER_MANIFEST_NAME));
   await beforeOpenForTest?.();
   let executableHandle: FileHandle | undefined;
+  let launcherHandle: FileHandle | undefined;
   let manifestHandle: FileHandle | undefined;
   try {
     manifestHandle = await open(manifestProof.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
@@ -325,9 +411,48 @@ const authenticateWindowsAuthorityHelper = async (
     const after = await executableHandle.stat({ bigint: true });
     if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
       || before.nlink !== after.nlink) throw helperError('HELPER_IDENTITY');
-    return { executable: executableProof.path, executableHandle, manifestHandle, manifest };
+    launcherHandle = await open(launcherProof.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+      .catch(() => { throw helperError('HELPER_OPEN'); });
+    const launcherBefore = await launcherHandle.stat({ bigint: true });
+    if (!launcherBefore.isFile() || launcherBefore.dev !== launcherProof.identity.dev
+      || launcherBefore.ino !== launcherProof.identity.ino || launcherBefore.nlink !== 1n
+      || launcherBefore.size !== BigInt(manifest.launcher.size)
+      || manifest.launcher.architecture !== process.arch) throw helperError('HELPER_IDENTITY');
+    const launcherBytes = await readHeldExactly(launcherHandle, manifest.launcher.size, 'HELPER_HASH');
+    inspectWindowsNativeLauncherPeForTest(launcherBytes, manifest.launcher.architecture);
+    if (createHash('sha256').update(launcherBytes).digest('hex') !== manifest.launcher.sha256) {
+      throw helperError('HELPER_HASH');
+    }
+    const launcherAfter = await launcherHandle.stat({ bigint: true });
+    if (launcherAfter.dev !== launcherBefore.dev || launcherAfter.ino !== launcherBefore.ino
+      || launcherAfter.size !== launcherBefore.size || launcherAfter.nlink !== launcherBefore.nlink) {
+      throw helperError('HELPER_IDENTITY');
+    }
+    let nativeLauncher: WindowsNativeLauncher;
+    try { nativeLauncher = require(launcherProof.path) as WindowsNativeLauncher; }
+    catch { throw helperError('HELPER_OPEN'); }
+    if (!nativeLauncher || typeof nativeLauncher.launch !== 'function' || typeof nativeLauncher.verifyModule !== 'function') {
+      throw helperError('HELPER_OPEN');
+    }
+    let moduleProof: Record<string, unknown>;
+    try {
+      moduleProof = nativeLauncher.verifyModule({
+        path: launcherProof.path,
+        size: manifest.launcher.size,
+        sha256: manifest.launcher.sha256,
+        production: manifest.launcher.trust === 'production-signed',
+        publisher: manifest.launcher.publisher,
+        signerCertificateSha256: manifest.launcher.signerCertificateSha256,
+        signerSpkiSha256: manifest.launcher.signerSpkiSha256,
+      });
+    } catch { throw helperError('HELPER_IDENTITY'); }
+    if (moduleProof.sha256 !== manifest.launcher.sha256
+      || moduleProof.architecture !== manifest.launcher.architecture) throw helperError('HELPER_IDENTITY');
+    return { executable: executableProof.path, executableHandle, launcherHandle, manifestHandle, manifest,
+      launcher: nativeLauncher };
   } catch (error) {
     await executableHandle?.close().catch(() => undefined);
+    await launcherHandle?.close().catch(() => undefined);
     await manifestHandle?.close().catch(() => undefined);
     throw error;
   }
@@ -340,24 +465,84 @@ const spawnBroker = (
   injectedStage?: WindowsAuthorityCompileStage,
   transportFault?: 'stderr',
   imageFault?: 'process-image',
-): ChildProcessWithoutNullStreams => {
-  const env = { ...process.env };
-  delete env.PROPR_WINDOWS_AUTHORITY_TEST_STAGE;
-  delete env.PROPR_WINDOWS_AUTHORITY_TEST_TRANSPORT_FAULT;
-  delete env.PROPR_WINDOWS_AUTHORITY_TEST_IMAGE_FAULT;
-  env.PROPR_WINDOWS_AUTHORITY_PARENT_PID = String(process.pid);
-  if (injectedStage && !WINDOWS_AUTHORITY_COMPILE_STAGES.slice(0, 4).includes(injectedStage)) {
-    env.PROPR_WINDOWS_AUTHORITY_TEST_STAGE = injectedStage;
-  }
-  if (transportFault) env.PROPR_WINDOWS_AUTHORITY_TEST_TRANSPORT_FAULT = transportFault;
-  if (imageFault) env.PROPR_WINDOWS_AUTHORITY_TEST_IMAGE_FAULT = imageFault;
-  return spawn(helper.executable, ['--broker'], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
-    shell: false,
-    env,
+  nativeFault?: string,
+): BrokerChild => {
+  const native = helper.launcher.launch({
+    path: helper.executable,
+    size: helper.manifest.size,
+    sha256: helper.manifest.sha256,
+    production: helper.manifest.trust === 'production-signed',
+    publisher: helper.manifest.publisher,
+    signerCertificateSha256: helper.manifest.signerCertificateSha256,
+    signerSpkiSha256: helper.manifest.signerSpkiSha256,
+    // Fixed test-only enums are interpreted by the native boundary; no path,
+    // capability, challenge, or secret is placed in argv or the child environment.
+    fault: nativeFault ?? injectedStage ?? transportFault ?? imageFault ?? null,
   });
+  return new NativeBrokerChild(helper.launcher, native);
 };
+
+class NativeBrokerChild extends EventEmitter implements BrokerChild {
+  readonly stdin: Writable;
+  readonly stdout: Readable;
+  readonly stderr: Readable;
+  exitCode: number | null = null;
+  killed = false;
+  readonly imageVolumeSerial: string;
+  readonly imageFileId128: string;
+  private poll: NodeJS.Timeout | undefined;
+  private outputEnded = 0;
+  private closed = false;
+
+  constructor(private readonly launcher: WindowsNativeLauncher, private readonly native: NativeLaunchLease) {
+    super();
+    this.imageVolumeSerial = native.volumeSerial;
+    this.imageFileId128 = native.fileId128;
+    this.stdin = createWriteStream('', { fd: native.stdinFd, autoClose: false });
+    this.stdout = createReadStream('', { fd: native.stdoutFd, autoClose: false });
+    this.stderr = createReadStream('', { fd: native.stderrFd, autoClose: false });
+    this.stdin.once('finish', () => {
+      try { this.launcher.closeInput(this.native.lease); } catch { /* process exit owns cleanup */ }
+    });
+    const ended = () => { this.outputEnded += 1; this.finishIfReady(); };
+    this.stdout.once('end', ended);
+    this.stderr.once('end', ended);
+    this.poll = setInterval(() => this.pollExit(), 20);
+    this.poll.unref();
+  }
+
+  private pollExit(): void {
+    if (this.closed) return;
+    try {
+      const code = this.launcher.status(this.native.lease);
+      if (code !== null) {
+        this.exitCode = code;
+        if (this.poll) clearInterval(this.poll);
+        this.poll = undefined;
+        this.finishIfReady();
+      }
+    } catch {
+      if (this.poll) clearInterval(this.poll);
+      this.poll = undefined;
+      this.emit('error', new Error('Windows native launcher status failed'));
+    }
+  }
+
+  private finishIfReady(): void {
+    if (this.closed || this.exitCode === null || this.outputEnded !== 2) return;
+    this.closed = true;
+    try { this.launcher.close(this.native.lease); } catch { /* fixed close path */ }
+    this.emit('close', this.exitCode);
+  }
+
+  kill(): boolean {
+    if (this.closed || this.killed) return false;
+    this.killed = true;
+    try { this.launcher.terminate(this.native.lease); return true; } catch { return false; }
+  }
+
+  unref(): void { this.poll?.unref(); }
+}
 
 class WindowsAuthorityError extends Error {
   constructor(readonly reason: WindowsAuthorityReason, readonly scenario: number) {
@@ -505,7 +690,7 @@ let requestCount = 0;
 let restartCount = 0;
 let activeProcessCount = 0;
 let lastClosedHeldId: string | undefined;
-const brokerChildren = new Set<ChildProcessWithoutNullStreams>();
+const brokerChildren = new Set<BrokerChild>();
 
 const encodeProtocolFrame = (value: string): Buffer => {
   const bytes = Buffer.from(value, 'utf8');
@@ -549,7 +734,7 @@ class WindowsAuthoritySession {
   private closing = false;
 
   constructor(
-    readonly child: ChildProcessWithoutNullStreams,
+    readonly child: BrokerChild,
     private readonly sharedQueue = true,
     private readonly helper?: AuthenticatedWindowsAuthorityHelper,
   ) {
@@ -570,6 +755,7 @@ class WindowsAuthoritySession {
           : this.bootstrapError(this.outputBytes === 0 ? 'EXIT_NO_OUTPUT' : 'EXIT_AFTER_OUTPUT'), false);
       if (brokerSession === this) brokerSession = undefined;
       void this.helper?.executableHandle.close().catch(() => undefined);
+      void this.helper?.launcherHandle.close().catch(() => undefined);
       void this.helper?.manifestHandle.close().catch(() => undefined);
       resolve();
     }));
@@ -791,6 +977,7 @@ interface StartBrokerOptions {
   imageFault?: 'process-image';
   helperDirectory?: string;
   expectedPublisher?: string;
+  nativeFault?: string;
 }
 
 const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAuthoritySession> => {
@@ -802,11 +989,12 @@ const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAut
     undefined,
     options.expectedPublisher ?? embeddedExpectedPublisher(),
   );
-  let child: ChildProcessWithoutNullStreams;
+  let child: BrokerChild;
   try {
-    child = spawnBroker(helper, options.injectedStage, options.transportFault, options.imageFault);
+    child = spawnBroker(helper, options.injectedStage, options.transportFault, options.imageFault, options.nativeFault);
   } catch {
     await helper.executableHandle.close().catch(() => undefined);
+    await helper.launcherHandle.close().catch(() => undefined);
     await helper.manifestHandle.close().catch(() => undefined);
     throw new WindowsAuthorityBootstrapError('SPAWN_ERROR', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf('TRANSPORT_SPAWN'));
   }
@@ -843,6 +1031,7 @@ const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAut
     || ready.maxRequestBytes !== BROKER_REQUEST_LINE_BYTES || ready.nativeSmoke !== true || ready.compileCount !== 1
     || !/^[a-f0-9]{16}$/.test(String(ready.imageVolumeSerial))
     || !/^[a-f0-9]{32}$/.test(String(ready.imageFileId128))
+    || ready.imageVolumeSerial !== child.imageVolumeSerial || ready.imageFileId128 !== child.imageFileId128
     || ready.imageSha256 !== helper.manifest.sha256) {
     const error = new WindowsAuthorityBootstrapError('MALFORMED_OUTPUT', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf('READY'));
     session.invalidate(error);
@@ -896,6 +1085,13 @@ export const probeWindowsAuthorityBootstrapStageForTest = (stage: WindowsAuthori
 
 export const probeWindowsAuthorityProcessImageMismatchForTest = (): Promise<WindowsAuthorityCompileStage> =>
   runWindowsAuthorityCompileProbe({ imageFault: 'process-image' });
+
+export const probeWindowsAuthorityNativeBoundaryForTest = (
+  fault: 'barrier-after-hash-delete' | 'barrier-after-hash-swap' | 'barrier-after-hash-write'
+    | 'barrier-before-create-delete' | 'barrier-before-create-swap' | 'barrier-before-create-write'
+    | 'barrier-after-process-delete' | 'barrier-after-process-swap' | 'barrier-after-process-write'
+    | 'extra-child' | 'job-assignment' | 'parent-image-proof' | 'pipe-substitution',
+): Promise<WindowsAuthorityCompileStage> => runWindowsAuthorityCompileProbe({ nativeFault: fault });
 
 /** Native-test-only startup failure against the exact compiled production child. */
 export const probeWindowsAuthorityStartupFailureForTest = async (): Promise<WindowsAuthorityReason> => {

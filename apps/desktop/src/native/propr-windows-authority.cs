@@ -10,7 +10,6 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Text;
-using System.Threading;
 using System.Web.Script.Serialization;
 using Microsoft.Win32.SafeHandles;
 
@@ -78,7 +77,6 @@ public static class ProprUpdateAuthority {
   static string IMAGE_VOLUME;
   static string IMAGE_FILE_ID;
   static string IMAGE_SHA256;
-  static IntPtr PROCESS_JOB;
 
   [StructLayout(LayoutKind.Sequential)]
   struct FILE_STANDARD_INFO {
@@ -119,62 +117,8 @@ public static class ProprUpdateAuthority {
   [DllImport("kernel32.dll")]
   static extern IntPtr LocalFree(IntPtr memory);
 
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
-
-  [DllImport("kernel32.dll", SetLastError = true)]
-  static extern bool SetInformationJobObject(IntPtr job, int informationClass, IntPtr information, uint length);
-
-  [DllImport("kernel32.dll", SetLastError = true)]
-  static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-
-  [DllImport("kernel32.dll")]
-  static extern IntPtr GetCurrentProcess();
-
-  [DllImport("kernel32.dll", SetLastError = true)]
-  static extern bool CloseHandle(IntPtr handle);
-
-  [DllImport("kernel32.dll", SetLastError = true)]
-  static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
-
-  [DllImport("kernel32.dll")]
-  static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
-
   [DllImport("wintrust.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
   static extern int WinVerifyTrust(IntPtr window, [In] ref Guid action, IntPtr data);
-
-  [StructLayout(LayoutKind.Sequential)]
-  struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
-    public long PerProcessUserTimeLimit;
-    public long PerJobUserTimeLimit;
-    public uint LimitFlags;
-    public UIntPtr MinimumWorkingSetSize;
-    public UIntPtr MaximumWorkingSetSize;
-    public uint ActiveProcessLimit;
-    public UIntPtr Affinity;
-    public uint PriorityClass;
-    public uint SchedulingClass;
-  }
-
-  [StructLayout(LayoutKind.Sequential)]
-  struct IO_COUNTERS {
-    public ulong ReadOperationCount;
-    public ulong WriteOperationCount;
-    public ulong OtherOperationCount;
-    public ulong ReadTransferCount;
-    public ulong WriteTransferCount;
-    public ulong OtherTransferCount;
-  }
-
-  [StructLayout(LayoutKind.Sequential)]
-  struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
-    public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
-    public IO_COUNTERS IoInfo;
-    public UIntPtr ProcessMemoryLimit;
-    public UIntPtr JobMemoryLimit;
-    public UIntPtr PeakProcessMemoryUsed;
-    public UIntPtr PeakJobMemoryUsed;
-  }
 
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
   struct WINTRUST_FILE_INFO {
@@ -637,7 +581,7 @@ public static class ProprUpdateAuthority {
     Dictionary<string, object> compiler = manifest["compiler"] as Dictionary<string, object>;
     string[] fields = { "kind", "framework", "inputs" };
     if (compiler == null || !ExactFields(compiler, fields)
-      || Text(compiler, "kind") != "kernel-systemroot-dotnet-framework-csc"
+      || Text(compiler, "kind") != "kernel-system-directory-probe-dotnet-framework-csc"
       || (Text(compiler, "framework") != "Framework64-v4.0.30319"
         && Text(compiler, "framework") != "Framework-v4.0.30319")) throw new BrokerFailure("compile_load", 4);
     IList inputs = compiler["inputs"] as IList;
@@ -677,7 +621,7 @@ public static class ProprUpdateAuthority {
     catch { throw new BrokerFailure("compile_load", 4); }
     string[] fields = { "schemaVersion", "name", "format", "architecture", "machine", "clr", "size", "sha256",
       "sourceSha256", "protocol", "trust", "publisher", "signerPins", "signerCertificateSha256",
-      "signerSpkiSha256", "compiler" };
+      "signerSpkiSha256", "compiler", "launcher" };
     if (!ExactFields(value, fields) || Integer(value, "schemaVersion") != 1
       || Text(value, "name") != "propr-windows-authority.exe" || Text(value, "format") != "PE32"
       || Text(value, "architecture") != "anycpu" || Text(value, "machine") != "I386"
@@ -697,6 +641,18 @@ public static class ProprUpdateAuthority {
     } else if (value["publisher"] != null || value["signerCertificateSha256"] != null
       || value["signerSpkiSha256"] != null || !(value["signerPins"] is IList)
       || ((IList)value["signerPins"]).Count != 0) throw new BrokerFailure("compile_load", 4);
+    Dictionary<string, object> launcher = value["launcher"] as Dictionary<string, object>;
+    string[] launcherFields = { "name", "format", "architecture", "machine", "size", "sha256", "trust",
+      "publisher", "signerPins", "signerCertificateSha256", "signerSpkiSha256" };
+    if (!ExactFields(launcher, launcherFields) || Text(launcher, "name") != "propr-windows-launcher.node"
+      || Text(launcher, "format") != "PE"
+      || (Text(launcher, "architecture") != "x64" && Text(launcher, "architecture") != "arm64")
+      || (Text(launcher, "architecture") == "x64" ? Text(launcher, "machine") != "AMD64"
+        : Text(launcher, "machine") != "ARM64")
+      || Integer(launcher, "size") <= 0 || Integer(launcher, "size") > 4194304
+      || !Hex(Text(launcher, "sha256"), 64) || Text(launcher, "trust") != Text(value, "trust")
+      || (launcher["publisher"] == null ? value["publisher"] != null
+        : Text(launcher, "publisher") != Text(value, "publisher"))) throw new BrokerFailure("compile_load", 4);
     VerifyCompilerAttestation(value);
     return value;
   }
@@ -890,40 +846,6 @@ public static class ProprUpdateAuthority {
     }
   }
 
-  static void AssignKillOnCloseJob() {
-    IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
-    if (job == IntPtr.Zero) throw new BrokerFailure("compile_load", 10);
-    int size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
-    IntPtr information = Marshal.AllocHGlobal(size);
-    try {
-      JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-      limits.BasicLimitInformation.LimitFlags = 0x00002000;
-      Marshal.StructureToPtr(limits, information, false);
-      if (!SetInformationJobObject(job, 9, information, (uint)size)
-        || !AssignProcessToJobObject(job, GetCurrentProcess())) throw new BrokerFailure("compile_load", 10);
-      PROCESS_JOB = job;
-      job = IntPtr.Zero;
-    } finally {
-      Marshal.FreeHGlobal(information);
-      if (job != IntPtr.Zero) CloseHandle(job);
-    }
-  }
-
-  static void WatchParent() {
-    uint parentId;
-    if (!UInt32.TryParse(Environment.GetEnvironmentVariable("PROPR_WINDOWS_AUTHORITY_PARENT_PID"), out parentId)
-      || parentId == 0) throw new BrokerFailure("compile_load", 10);
-    IntPtr parent = OpenProcess(0x00100000, false, parentId);
-    if (parent == IntPtr.Zero) throw new BrokerFailure("compile_load", 10);
-    Thread watcher = new Thread(delegate() {
-      try {
-        if (WaitForSingleObject(parent, 0xffffffff) == 0 && PROCESS_JOB != IntPtr.Zero) CloseHandle(PROCESS_JOB);
-      } finally { CloseHandle(parent); }
-    });
-    watcher.IsBackground = true;
-    watcher.Start();
-  }
-
   static void AuthenticateImage() {
     Stage(4, "MANIFEST");
     string imagePath = Path.GetFullPath(Assembly.GetExecutingAssembly().Location);
@@ -1113,8 +1035,8 @@ public static class ProprUpdateAuthority {
       if (args == null || args.Length != 1 || args[0] != "--broker") return 64;
       AuthenticateImage();
       Stage(10, "PROTOCOL_INIT");
-      AssignKillOnCloseJob();
-      WatchParent();
+      // The signed native parent boundary creates and owns the kill-on-close
+      // job and proves this process image before it resumes this entrypoint.
       Initialize();
       Serve();
       return 0;

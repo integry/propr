@@ -37,6 +37,10 @@ const windowsAuthorityBuild = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/build-windows-authority-helper.mjs', import.meta.url)),
   'utf8',
 ));
+const windowsNativeLauncher = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('./native/windows-launcher/propr_windows_launcher.cc', import.meta.url)),
+  'utf8',
+));
 const forgeConfig = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../forge.config.ts', import.meta.url)),
   'utf8',
@@ -302,8 +306,18 @@ describe('desktop trusted release workflow', () => {
       );
     }
     assert.match(workflow, /PROPR_DESKTOP_PRODUCTION_RELEASE=0 npm run desktop:broker:build/g);
-    assert.match(windowsAuthority, /spawn\(helper\.executable, \['--broker'\]/);
-    assert.match(windowsAuthority, /shell: false/);
+    assert.match(windowsAuthority, /helper\.launcher\.launch\(\{/);
+    assert.match(windowsAuthority, /ready\.imageVolumeSerial !== child\.imageVolumeSerial/);
+    assert.match(windowsNativeLauncher, /CreateFileW\(path\.c_str\(\), GENERIC_READ \| READ_CONTROL, FILE_SHARE_READ/);
+    assert.match(windowsNativeLauncher, /CREATE_SUSPENDED \| CREATE_NO_WINDOW \| EXTENDED_STARTUPINFO_PRESENT/);
+    assert.match(windowsNativeLauncher, /PROC_THREAD_ATTRIBUTE_HANDLE_LIST/);
+    assert.match(windowsNativeLauncher, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE/);
+    assert.match(windowsNativeLauncher, /JOB_OBJECT_LIMIT_ACTIVE_PROCESS/);
+    assert.match(windowsNativeLauncher, /ActiveProcessLimit = 1/);
+    assert.match(windowsNativeLauncher, /AssignProcessToJobObject/);
+    assert.match(windowsNativeLauncher, /QueryFullProcessImageNameW/);
+    assert.match(windowsNativeLauncher, /SameIdentity\(held_id, loaded_id\)/);
+    assert.match(windowsNativeLauncher, /VerifyPinnedSignature/);
     assert.ok(!windowsAuthority.toLowerCase().includes('powershell'));
     assert.ok(!windowsAuthority.includes('writeBootstrap'));
     assert.ok(!windowsAuthority.includes('brokerSource'));

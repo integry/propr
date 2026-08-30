@@ -37,13 +37,16 @@ inspection without launching a window. Release CI launches both Linux architectu
 Windows packages on their native runners, validates DMG/ZIP/DEB/RPM/NuGet containers, and validates configured OS
 signatures.
 
-On native Windows builds, `desktop:broker:build` compiles the committed authority-broker C# source with the canonical
-absolute .NET Framework compiler below `SystemRoot`. The build emits a managed AnyCPU PE plus a deterministic strict
-manifest binding its source digest, exact final helper size/SHA-256, format, protocol, and trust mode. Forge packages
-both files under `resources/windows-authority`; Windows signing covers the helper before the post-package hook refreshes
-the bound final-byte hash, and NUPKG/release checksum validation requires the same exact pair. Installed applications
-launch that executable directly with fixed `--broker` argv and binary stdin/stdout. They never compile source and do
-not require PowerShell or a C# compiler on an end-user machine.
+On native Windows builds, `desktop:broker:build` obtains the Windows directory from a fixed-size native
+`GetSystemWindowsDirectoryW` probe after authenticating the canonical system PowerShell image, then compiles the
+committed authority-broker C# source with the exact leased .NET Framework compiler and reference files below that
+directory. The build emits a managed AnyCPU PE, a per-architecture Node-API lease/launcher, and a deterministic strict
+manifest binding both binaries, the source and compiler-input digests, format, protocol, signer pins, and trust mode.
+Forge packages exactly those three files under `resources/windows-authority`; Windows signing covers both PE images
+before the post-package hook refreshes their final-byte hashes, and NUPKG/release checksum validation requires the same
+exact set. The packaged application uses the native boundary to hold the helper file against write/delete/rename,
+create it with only three inherited anonymous-pipe handles, assign a parent-owned kill-on-close job, and prove the
+loaded process image before accepting READY. End-user machines never compile source or invoke a shell.
 
 `desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
 the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release

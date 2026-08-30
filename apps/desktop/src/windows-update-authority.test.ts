@@ -24,6 +24,7 @@ import {
   probeWindowsAuthorityCompileFailureForTest,
   probeWindowsAuthorityBootstrapStageForTest,
   probeWindowsAuthorityProcessImageMismatchForTest,
+  probeWindowsAuthorityNativeBoundaryForTest,
   probeWindowsAuthorityStartupFailureForTest,
   protectWindowsPrivateFile,
   shutdownWindowsAuthorityBrokerForTest,
@@ -60,8 +61,21 @@ const helperManifest = (overrides: Record<string, unknown> = {}): Buffer => Buff
   signerPins: [],
   signerCertificateSha256: null,
   signerSpkiSha256: null,
+  launcher: {
+    name: 'propr-windows-launcher.node',
+    format: 'PE',
+    architecture: 'x64',
+    machine: 'AMD64',
+    size: 4096,
+    sha256: 'f'.repeat(64),
+    trust: 'unsigned-validation',
+    publisher: null,
+    signerPins: [],
+    signerCertificateSha256: null,
+    signerSpkiSha256: null,
+  },
   compiler: {
-    kind: 'kernel-systemroot-dotnet-framework-csc',
+    kind: 'kernel-system-directory-probe-dotnet-framework-csc',
     framework: 'Framework64-v4.0.30319',
     inputs: [
       { name: 'csc.exe', size: 1, sha256: 'c'.repeat(64) },
@@ -74,9 +88,42 @@ const helperManifest = (overrides: Record<string, unknown> = {}): Buffer => Buff
 
 test('Windows helper manifest is fatal-UTF8, exact, architecture-bound, and distinguishes unsigned validation', () => {
   assert.equal(parseWindowsAuthorityHelperManifestForTest(helperManifest()).trust, 'unsigned-validation');
+  const base = JSON.parse(helperManifest().toString());
+  const certificate = '1'.repeat(64);
+  const spki = '2'.repeat(64);
+  const pins = [`certificate-sha256:${certificate}`, `spki-sha256:${spki}`].sort();
+  const production = {
+    trust: 'production-signed',
+    publisher: 'CN=ProPR Test Publisher',
+    signerPins: pins,
+    signerCertificateSha256: certificate,
+    signerSpkiSha256: spki,
+    launcher: {
+      ...base.launcher,
+      trust: 'production-signed',
+      publisher: 'CN=ProPR Test Publisher',
+      signerPins: pins,
+      signerCertificateSha256: certificate,
+      signerSpkiSha256: spki,
+    },
+  };
+  assert.equal(parseWindowsAuthorityHelperManifestForTest(helperManifest(production)).trust, 'production-signed');
+  assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({
+    ...production, signerPins: [], launcher: { ...production.launcher, signerPins: [] },
+  })), /compile_load:4/, 'production cannot omit its cryptographic pin');
+  assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({
+    ...production,
+    launcher: { ...production.launcher, signerSpkiSha256: '3'.repeat(64) },
+  })), /compile_load:4/, 'a same-subject launcher signed by a different key cannot satisfy production');
   assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({ sha256: '0'.repeat(63) })), /compile_load:4/);
   assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({ architecture: 'x64' })), /compile_load:4/);
   assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({ unexpected: true })), /compile_load:4/);
+  assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({
+    launcher: { ...base.launcher, architecture: 'arm64' },
+  })), /compile_load:4/);
+  assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({
+    launcher: { ...base.launcher, sha256: '0'.repeat(63) },
+  })), /compile_load:4/);
   assert.throws(() => parseWindowsAuthorityHelperManifestForTest(Buffer.from([0xc3, 0x28, 0x0a])), /compile_load:4/);
   assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest().subarray(0, -1)), /compile_load:4/);
 });
@@ -120,6 +167,7 @@ test('native Windows helper authentication rejects manifest/output/compiler, lin
   const source = await authenticateWindowsAuthorityHelperForTest();
   const sourceDirectory = dirname(source.executable);
   await source.executableHandle.close();
+  await source.launcherHandle.close();
   await source.manifestHandle.close();
   await assert.rejects(
     authenticateWindowsAuthorityHelperForTest(sourceDirectory, undefined, 'CN=Expected Production Publisher'),
@@ -132,12 +180,15 @@ test('native Windows helper authentication rejects manifest/output/compiler, lin
     const root = await mkdtemp(join(tmpdir(), 'propr-win-helper-'));
     const executable = join(root, 'propr-windows-authority.exe');
     const manifest = join(root, 'propr-windows-authority.manifest.json');
+    const launcher = join(root, 'propr-windows-launcher.node');
     await copyFile(source.executable, executable);
+    await copyFile(join(sourceDirectory, 'propr-windows-launcher.node'), launcher);
     await copyFile(sourceManifest, manifest);
-    return { root, executable, manifest };
+    return { root, executable, manifest, launcher };
   };
 
-  for (const scenario of ['manifest', 'output', 'compiler', 'hardlink', 'reparse', 'same-name-aba'] as const) {
+  for (const scenario of ['manifest', 'output', 'compiler', 'hardlink', 'reparse', 'same-name-aba',
+    'launcher-output', 'launcher-hardlink', 'launcher-reparse', 'launcher-same-name-aba'] as const) {
     await t.test(scenario, async () => {
       const current = await fixture();
       try {
@@ -158,16 +209,44 @@ test('native Windows helper authentication rejects manifest/output/compiler, lin
         } else if (scenario === 'reparse') {
           await rm(current.executable);
           await symlink(source.executable, current.executable, 'file');
+        } else if (scenario === 'launcher-output') {
+          const bytes = await readFile(current.launcher);
+          bytes[bytes.length - 1] ^= 1;
+          await writeFile(current.launcher, bytes);
+        } else if (scenario === 'launcher-hardlink') {
+          await link(current.launcher, join(current.root, 'alternate.node'));
+        } else if (scenario === 'launcher-reparse') {
+          await rm(current.launcher);
+          await symlink(join(sourceDirectory, 'propr-windows-launcher.node'), current.launcher, 'file');
         }
-        const barrier = scenario === 'same-name-aba' ? async () => {
-          await rename(current.executable, join(current.root, 'displaced.exe'));
-          await copyFile(source.executable, current.executable);
+        const barrier = scenario === 'same-name-aba' || scenario === 'launcher-same-name-aba' ? async () => {
+          const target = scenario === 'same-name-aba' ? current.executable : current.launcher;
+          const sourcePath = scenario === 'same-name-aba' ? source.executable
+            : join(sourceDirectory, 'propr-windows-launcher.node');
+          await rename(target, join(current.root, scenario === 'same-name-aba' ? 'displaced.exe' : 'displaced.node'));
+          await copyFile(sourcePath, target);
         } : undefined;
         await assert.rejects(authenticateWindowsAuthorityHelperForTest(current.root, barrier), /compile_load:(?:4|7|8|9)/);
       } finally { await rm(current.root, { recursive: true, force: true }); }
     });
   }
 });
+
+test('native Windows parent boundary denies post-hash and post-create mutation and fails closed before READY', windowsOnly,
+  async () => {
+    for (const fault of ['barrier-after-hash-delete', 'barrier-after-hash-swap', 'barrier-after-hash-write',
+      'barrier-before-create-delete', 'barrier-before-create-swap', 'barrier-before-create-write',
+      'barrier-after-process-delete', 'barrier-after-process-swap', 'barrier-after-process-write'] as const) {
+      assert.equal(await probeWindowsAuthorityNativeBoundaryForTest(fault), 'READY');
+      assert.equal(windowsAuthorityBrokerStatsForTest().activeProcessCount, 0);
+    }
+    assert.equal(await probeWindowsAuthorityNativeBoundaryForTest('extra-child'), 'READY');
+    assert.equal(windowsAuthorityBrokerStatsForTest().activeProcessCount, 0);
+    for (const fault of ['job-assignment', 'parent-image-proof', 'pipe-substitution'] as const) {
+      assert.equal(await probeWindowsAuthorityNativeBoundaryForTest(fault), 'TRANSPORT_SPAWN');
+      assert.equal(windowsAuthorityBrokerStatsForTest().activeProcessCount, 0);
+    }
+  });
 
 test('native Windows direct broker fails closed on live stderr, slowloris, and response timeout faults', windowsOnly, async () => {
   assert.equal(await injectWindowsAuthorityTransportFaultForTest('stderr'), 'stdio_protocol');

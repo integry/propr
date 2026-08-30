@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   inspectAnyCpuPe,
+  decodeWindowsSystemDirectoryRecord,
+  resolveWindowsCompilerLayout,
   validateWindowsAuthoritySource,
   WINDOWS_AUTHORITY_SOURCE,
 } from './build-windows-authority-helper.mjs';
@@ -32,6 +34,39 @@ const managedPe = () => {
   bytes.writeUInt32LE(0x1, 0x210);
   return bytes;
 };
+
+const systemDirectoryRecord = path => {
+  const output = Buffer.alloc(2 + (520 * 2));
+  output.writeUInt16LE(path.length, 0);
+  output.write(path, 2, 'utf16le');
+  return output;
+};
+
+test('bounded Windows system-directory channel rejects NT aliases, malformed records, and trailing data', () => {
+  assert.equal(decodeWindowsSystemDirectoryRecord(systemDirectoryRecord('C:\\Windows')), 'C:\\Windows');
+  assert.throws(() => decodeWindowsSystemDirectoryRecord(systemDirectoryRecord('\\\\?\\GLOBALROOT\\SystemRoot')), /BUILD_COMPILER/);
+  assert.throws(() => decodeWindowsSystemDirectoryRecord(Buffer.alloc(8)), /BUILD_COMPILER/);
+  const trailing = systemDirectoryRecord('C:\\Windows');
+  trailing[trailing.length - 1] = 1;
+  assert.throws(() => decodeWindowsSystemDirectoryRecord(trailing), /BUILD_COMPILER/);
+});
+
+test('compiler layout treats SystemRoot and windir as disagreement checks and rejects reparse references', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-system-directory-'));
+  try {
+    const framework = join(root, 'Microsoft.NET', 'Framework64', 'v4.0.30319');
+    await mkdir(framework, { recursive: true });
+    for (const name of ['csc.exe', 'System.dll', 'System.Web.Extensions.dll']) await writeFile(join(framework, name), name);
+    await chmod(join(framework, 'csc.exe'), 0o700);
+    const exact = await resolveWindowsCompilerLayout({ SystemRoot: root, windir: root }, async () => root);
+    assert.equal(exact.systemRoot, await realpath(root));
+    await assert.rejects(resolveWindowsCompilerLayout({ SystemRoot: root, windir: join(root, 'fake') }, async () => root),
+      /BUILD_COMPILER/);
+    await rm(join(framework, 'System.dll'));
+    await symlink(join(framework, 'System.Web.Extensions.dll'), join(framework, 'System.dll'));
+    await assert.rejects(resolveWindowsCompilerLayout({}, async () => root), /BUILD_COMPILER/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test('committed Windows broker source is nonempty strict UTF-8 with a real executable entrypoint', async () => {
   const source = await readFile(WINDOWS_AUTHORITY_SOURCE);
@@ -61,10 +96,14 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
   const trustedTempRoot = await realpath(tmpdir());
   const root = await realpath(await mkdtemp(join(trustedTempRoot, 'propr-packaged-helper-')));
   const executable = join(root, 'propr-windows-authority.exe');
+  const launcherPath = join(root, 'propr-windows-launcher.node');
   const manifestPath = join(root, 'propr-windows-authority.manifest.json');
   try {
     const bytes = managedPe();
+    const launcher = Buffer.from(bytes);
+    launcher.writeUInt16LE(0x8664, 0x84);
     await writeFile(executable, bytes);
+    await writeFile(launcherPath, launcher);
     await writeFile(manifestPath, `${JSON.stringify({
       schemaVersion: 1,
       name: 'propr-windows-authority.exe',
@@ -81,8 +120,21 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
       signerPins: [],
       signerCertificateSha256: null,
       signerSpkiSha256: null,
+      launcher: {
+        name: 'propr-windows-launcher.node',
+        format: 'PE',
+        architecture: 'x64',
+        machine: 'AMD64',
+        size: launcher.length,
+        sha256: createHash('sha256').update(launcher).digest('hex'),
+        trust: 'unsigned-validation',
+        publisher: null,
+        signerPins: [],
+        signerCertificateSha256: null,
+        signerSpkiSha256: null,
+      },
       compiler: {
-        kind: 'kernel-systemroot-dotnet-framework-csc',
+        kind: 'kernel-system-directory-probe-dotnet-framework-csc',
         framework: 'Framework64-v4.0.30319',
         inputs: [
           { name: 'csc.exe', size: 1, sha256: 'b'.repeat(64) },
@@ -99,6 +151,15 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
     const corrupt = Buffer.from(bytes);
     corrupt[700] ^= 1;
     await writeFile(executable, corrupt);
+    await assert.rejects(inspectPackagedWindowsAuthority(executable, manifestPath), /inspection failed/);
+    await writeFile(executable, bytes);
+    const corruptLauncher = Buffer.from(launcher);
+    corruptLauncher[700] ^= 1;
+    await writeFile(launcherPath, corruptLauncher);
+    await assert.rejects(inspectPackagedWindowsAuthority(executable, manifestPath), /inspection failed/);
+    const wrongArchitecture = Buffer.from(launcher);
+    wrongArchitecture.writeUInt16LE(0xaa64, 0x84);
+    await writeFile(launcherPath, wrongArchitecture);
     await assert.rejects(inspectPackagedWindowsAuthority(executable, manifestPath), /inspection failed/);
   } finally {
     await rm(root, { recursive: true, force: true });

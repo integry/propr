@@ -5,6 +5,8 @@ import { access, chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rename,
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { createRequire } from 'node:module';
+import { buildWindowsNativeLauncher } from './build-windows-native-launcher.mjs';
 
 const execFileAsync = promisify(execFile);
 const desktopRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -16,6 +18,8 @@ export const WINDOWS_AUTHORITY_BUILD_STAGES = Object.freeze(['BUILD_COMPILER', '
 const MAX_SOURCE_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAX_BUILD_INPUT_BYTES = 32 * 1024 * 1024;
+const SYSTEM_DIRECTORY_RECORD_BYTES = 2 + (520 * 2);
+const require = createRequire(import.meta.url);
 
 const fail = stage => {
   const error = new Error(`Windows authority helper build failed [win-authority:${stage}]`);
@@ -70,13 +74,39 @@ const readHeldBuildOutput = async (root, target) => {
   } finally { await handle.close(); }
 };
 
-const compilerLayout = async env => {
-  // GLOBALROOT\SystemRoot is the kernel-maintained Windows-directory alias;
-  // environment variables are accepted only when they resolve back to it.
-  const canonicalRoot = await realpath('\\\\?\\GLOBALROOT\\SystemRoot').catch(() => fail('BUILD_COMPILER'));
-  if (env.SystemRoot) {
-    if (!isAbsolute(env.SystemRoot)
-      || !samePath(await realpath(env.SystemRoot).catch(() => fail('BUILD_COMPILER')), canonicalRoot)) fail('BUILD_COMPILER');
+export const decodeWindowsSystemDirectoryRecord = record => {
+  if (!Buffer.isBuffer(record) || record.length !== SYSTEM_DIRECTORY_RECORD_BYTES) fail('BUILD_COMPILER');
+  const length = record.readUInt16LE(0);
+  if (length < 3 || length >= 520) fail('BUILD_COMPILER');
+  const pathBytes = record.subarray(2, 2 + (length * 2));
+  if (record.subarray(2 + (length * 2)).some(byte => byte !== 0)) fail('BUILD_COMPILER');
+  const path = pathBytes.toString('utf16le');
+  if (!/^[A-Za-z]:\\[^\0]+$/.test(path) || path.startsWith('\\\\') || path.includes('\0')
+    || path.indexOf(':', 2) >= 0) fail('BUILD_COMPILER');
+  return path;
+};
+
+const nativeSystemDirectoryProbe = (launcherPath, env) => {
+  let launcher;
+  try { launcher = require(launcherPath); } catch { fail('BUILD_COMPILER'); }
+  if (!launcher || typeof launcher.probeSystemDirectory !== 'function') fail('BUILD_COMPILER');
+  let record;
+  try { record = launcher.probeSystemDirectory({ systemRoot: env.SystemRoot ?? '', windir: env.windir ?? '' }); }
+  catch { fail('BUILD_COMPILER'); }
+  return decodeWindowsSystemDirectoryRecord(record);
+};
+
+export const resolveWindowsCompilerLayout = async (env, probe) => {
+  // The native boundary returns one fixed-size UTF-16 record from
+  // GetSystemWindowsDirectoryW, after opening and authenticating the canonical
+  // system PowerShell image. Environment roots are disagreement checks only.
+  const reportedRoot = await probe(env);
+  const canonicalRoot = await realpath(reportedRoot).catch(() => fail('BUILD_COMPILER'));
+  if (!samePath(resolve(reportedRoot), canonicalRoot)) fail('BUILD_COMPILER');
+  for (const hint of [env.SystemRoot, env.windir]) {
+    if (hint && (!isAbsolute(hint) || !samePath(await realpath(hint).catch(() => fail('BUILD_COMPILER')), canonicalRoot))) {
+      fail('BUILD_COMPILER');
+    }
   }
   const layouts = ['Framework64', 'Framework'];
   for (const layout of layouts) {
@@ -183,7 +213,12 @@ const writeAtomic = async (target, bytes) => {
 
 export const buildWindowsAuthorityHelper = async (env = process.env) => {
   if (process.platform !== 'win32') return { skipped: true };
-  const { systemRoot, compiler, framework, systemReference, webReference } = await compilerLayout(env);
+  const launcher = await buildWindowsNativeLauncher();
+  if (launcher.skipped) fail('BUILD_COMPILER');
+  const { systemRoot, compiler, framework, systemReference, webReference } = await resolveWindowsCompilerLayout(
+    env,
+    probeEnv => nativeSystemDirectoryProbe(launcher.path, probeEnv),
+  );
   const source = await readFile(WINDOWS_AUTHORITY_SOURCE).catch(() => fail('BUILD_SOURCE'));
   const sourceSha256 = validateWindowsAuthoritySource(source);
   await mkdir(WINDOWS_AUTHORITY_BUILD_DIRECTORY, { recursive: true });
@@ -191,10 +226,19 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
   await chmod(privateOutputDirectory, 0o700).catch(() => fail('BUILD_OUTPUT'));
   const temporaryOutput = join(privateOutputDirectory, 'propr-windows-authority.exe');
   const buildInputs = [];
+  let nativeInputLease;
+  let nativeLauncher;
   try {
     buildInputs.push(await holdBuildInput(systemRoot, compiler, 'csc.exe'));
     buildInputs.push(await holdBuildInput(systemRoot, systemReference, 'System.dll'));
     buildInputs.push(await holdBuildInput(systemRoot, webReference, 'System.Web.Extensions.dll'));
+    try {
+      nativeLauncher = require(launcher.path);
+      // The first native lease is the OS-reported Windows directory itself;
+      // the remaining leases are the exact compiler/reference file objects.
+      nativeInputLease = nativeLauncher.leaseFiles([systemRoot, ...buildInputs.map(input => input.path)]);
+    } catch { fail('BUILD_COMPILER'); }
+    await Promise.all(buildInputs.map(reverifyBuildInput));
     const frameworkIdentity = framework.toLowerCase().endsWith(`${sep}framework64${sep}v4.0.30319`.toLowerCase())
       ? 'Framework64-v4.0.30319'
       : 'Framework-v4.0.30319';
@@ -228,8 +272,21 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
       signerPins: [],
       signerCertificateSha256: null,
       signerSpkiSha256: null,
+      launcher: {
+        name: launcher.name,
+        format: launcher.format,
+        architecture: launcher.architecture,
+        machine: launcher.machine,
+        size: launcher.size,
+        sha256: launcher.sha256,
+        trust: 'unsigned-validation',
+        publisher: null,
+        signerPins: [],
+        signerCertificateSha256: null,
+        signerSpkiSha256: null,
+      },
       compiler: {
-        kind: 'kernel-systemroot-dotnet-framework-csc',
+        kind: 'kernel-system-directory-probe-dotnet-framework-csc',
         framework: frameworkIdentity,
         inputs: buildInputs.map(input => ({
           name: input.name,
@@ -241,6 +298,9 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
     await writeAtomic(WINDOWS_AUTHORITY_MANIFEST, Buffer.from(`${JSON.stringify(manifest)}\n`, 'utf8'));
     return { skipped: false, executable: WINDOWS_AUTHORITY_EXECUTABLE, manifest: WINDOWS_AUTHORITY_MANIFEST, ...manifest };
   } finally {
+    if (nativeInputLease) {
+      try { nativeLauncher.closeFileLease(nativeInputLease); } catch { /* fixed build failure is already authoritative */ }
+    }
     await Promise.all(buildInputs.map(input => input.handle.close().catch(() => undefined)));
     await rm(privateOutputDirectory, { recursive: true, force: true });
   }
