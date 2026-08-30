@@ -138,6 +138,24 @@ test('node-gyp failures retain bounded secret-free compiler causes and evidence'
   })), 'EXIT');
 });
 
+test('native rebuild has one bounded hosted deadline, fixed progress evidence, and failure cleanup', async () => {
+  const source = await readFile(new URL('./build-windows-native-launcher.mjs', import.meta.url), 'utf8');
+  assert.match(source, /WINDOWS_NATIVE_REBUILD_TIMEOUT_MS = 6 \* 60_000/);
+  assert.match(source, /timeout: WINDOWS_NATIVE_REBUILD_TIMEOUT_MS/);
+  assert.match(source, /killSignal: 'SIGKILL'/);
+  assert.match(source, /WINDOWS_NATIVE_REBUILD_MAX_BUFFER_BYTES = 64 \* 1024/);
+  assert.match(source, /WINDOWS_NATIVE_REBUILD_PROGRESS_INTERVAL_MS = 60_000/);
+  assert.match(source, /WINDOWS_NATIVE_REBUILD_PROGRESS_BUCKETS = 5/);
+  assert.match(source, /nativeRebuildEvidence\('STARTED'\)/);
+  assert.match(source, /nativeRebuildEvidence\(`ACTIVE_\$\{progressBucket\}`\)/);
+  assert.match(source, /nativeRebuildEvidence\('PROCESS_COMPLETE'\)/);
+  assert.match(source, /nativeRebuildEvidence\('OUTPUT_VERIFIED'\)/);
+  assert.match(source, /nativeRebuildEvidence\('STAGED'\)/);
+  assert.match(source, /rm\(nativeBuildDirectory, \{ recursive: true, force: true \}\)/);
+  assert.match(source, /finally \{ clearInterval\(progress\); \}/);
+  assert.doesNotMatch(source, /nativeRebuildEvidence\([^\n]*(?:stdout|stderr|process\.env)/);
+});
+
 test('ACL tool launch maps synchronous throws and asynchronous rejections to one bounded spawn diagnostic', async () => {
   const canonical = String.raw`C:\Windows\System32\icacls.exe`;
   for (const invoke of [
