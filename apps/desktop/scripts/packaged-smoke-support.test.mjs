@@ -165,13 +165,53 @@ describe('packaged smoke child environment', () => {
 
   test('accepts only a normalized absolute Windows SystemRoot directory', async () => {
     const directoryStats = { isDirectory: () => true, isSymbolicLink: () => false };
-    assert.equal(
-      await validateWindowsSystemRoot(String.raw`C:\Windows`, async () => directoryStats),
+    const inspectedPaths = [];
+    const inspectDirectory = async value => {
+      inspectedPaths.push(value);
+      return directoryStats;
+    };
+    const validRoots = [
       String.raw`C:\Windows`,
-    );
-    for (const value of ['Windows', String.raw`C:\Windows\..\secrets`, String.raw`\\server\share`]) {
-      await assert.rejects(validateWindowsSystemRoot(value, async () => directoryStats), /system root is invalid/);
+      String.raw`z:\Windows\System32`,
+      String.raw`D:\Program Files\Windows`,
+      `C:\\${'a'.repeat(257)}`,
+    ];
+    for (const value of validRoots) {
+      assert.equal(await validateWindowsSystemRoot(value, inspectDirectory), value);
     }
+    assert.deepEqual(inspectedPaths, validRoots);
+
+    const repeatedDotPath = `C:\\${'.\\'.repeat(128)}.`;
+    assert.equal(repeatedDotPath.length, 260);
+    const invalidRoots = [
+      repeatedDotPath,
+      String.raw`C:\Windows\\System32`,
+      `${String.raw`C:\Windows`}\\`,
+      String.raw`C:\Windows/System32`,
+      `C:\\Windows\0System32`,
+      'Windows',
+      String.raw`C:\Windows\.\System32`,
+      String.raw`C:\Windows\..\secrets`,
+      String.raw`\\server\share`,
+      String.raw`1:\Windows`,
+      String.raw`é:\Windows`,
+      `C:\\${'a'.repeat(258)}`,
+    ];
+    let invalidInspectionCount = 0;
+    for (const value of invalidRoots) {
+      await assert.rejects(
+        validateWindowsSystemRoot(value, async () => {
+          invalidInspectionCount += 1;
+          return directoryStats;
+        }),
+        {
+          name: 'Error',
+          message: 'Packaged smoke Windows system root is invalid',
+        },
+      );
+    }
+    assert.equal(invalidInspectionCount, 0);
+
     await assert.rejects(
       validateWindowsSystemRoot(String.raw`C:\Windows`, async () => ({
         isDirectory: () => true,

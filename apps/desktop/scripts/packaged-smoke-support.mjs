@@ -224,10 +224,19 @@ const validateXAuthority = async (value, inspectPath) => {
 };
 
 export const validateWindowsSystemRoot = async (value, inspectPath = lstat) => {
+  const driveCode = typeof value === 'string' ? value.charCodeAt(0) : -1;
   if (
     typeof value !== 'string'
     || value.length > 260
-    || !/^[A-Za-z]:\\[^\0/]+(?:\\[^\0/]+)*$/.test(value)
+    || !(
+      (driveCode >= 65 && driveCode <= 90)
+      || (driveCode >= 97 && driveCode <= 122)
+    )
+    || value[1] !== ':'
+    || value[2] !== '\\'
+    || value.includes('\0')
+    || value.includes('/')
+    || value.slice(3).split('\\').some(segment => segment.length === 0)
     || !win32.isAbsolute(value)
     || win32.normalize(value) !== value
   ) {
