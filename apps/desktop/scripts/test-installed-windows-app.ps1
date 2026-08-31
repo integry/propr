@@ -74,6 +74,14 @@ if (!$windowsDirectoryItem.PSIsContainer -or
     ($windowsDirectoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
   throw 'Windows directory is invalid'
 }
+$commonPrograms = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)
+if (!$commonPrograms -or ![IO.Path]::IsPathRooted($commonPrograms)) {
+  throw 'common Start Menu directory is unavailable'
+}
+$commonPrograms = (Resolve-Path -LiteralPath $commonPrograms -ErrorAction Stop).Path
+$startMenuShortcutFolder = Join-Path $commonPrograms 'ProPR Desktop'
+$startMenuShortcut = Join-Path $startMenuShortcutFolder 'ProPR Desktop.lnk'
+$productMarker = 'Registry::HKEY_LOCAL_MACHINE\Software\ProPR\Desktop'
 
 function Write-Stage(
   [ValidateSet('INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP')][string]$Stage,
@@ -342,6 +350,81 @@ function Invoke-Msi([string[]]$Arguments, [string]$Operation) {
     -Operation $Operation)
 }
 
+function Test-StartMenuShortcutAsOrdinaryUser(
+  [Management.Automation.PSCredential]$Credential,
+  [string]$Domain,
+  [string]$UserName,
+  [bool]$ExpectedPresent
+) {
+  $expectedLiteral = if ($ExpectedPresent) { '$true' } else { '$false' }
+  $probeTemplate = @'
+$shortcut = Join-Path `
+  ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)) `
+  'ProPR Desktop\ProPR Desktop.lnk'
+$present = Test-Path -LiteralPath $shortcut -PathType Leaf
+if ($present -ne __EXPECTED_PRESENT__) { exit 1 }
+if ($present) {
+  $stream = $null
+  try {
+    $item = Get-Item -LiteralPath $shortcut -Force -ErrorAction Stop
+    if (!($item -is [IO.FileInfo]) -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $item.Length -le 0) {
+      exit 1
+    }
+    $stream = [IO.File]::Open(
+      $shortcut,
+      [IO.FileMode]::Open,
+      [IO.FileAccess]::Read,
+      [IO.FileShare]::ReadWrite
+    )
+    if ($stream.Length -le 0) { exit 1 }
+  } catch {
+    exit 1
+  } finally {
+    if ($null -ne $stream) { $stream.Dispose() }
+  }
+}
+exit 0
+'@
+  $probeSource = $probeTemplate.Replace('__EXPECTED_PRESENT__', $expectedLiteral)
+  $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeSource))
+  $powershell = Join-Path $windowsDirectory 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $operation = if ($ExpectedPresent) {
+    'ordinary-user common Start Menu shortcut presence probe'
+  } else {
+    'ordinary-user common Start Menu shortcut removal probe'
+  }
+
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.Environment.Clear()
+  $startInfo.Environment.Add('SystemRoot', $windowsDirectory)
+  $startInfo.FileName = $powershell
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.WorkingDirectory = $windowsDirectory
+  $startInfo.UserName = $UserName
+  $startInfo.Domain = $Domain
+  $startInfo.Password = $Credential.Password
+  $startInfo.LoadUserProfile = $true
+  foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedProbe)) {
+    $startInfo.ArgumentList.Add($argument)
+  }
+
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  try {
+    if (!$process.Start()) { throw "$operation did not start" }
+    [void](Wait-BoundedProcess `
+      -Process $process `
+      -TimeoutMilliseconds $terminationTimeoutMilliseconds `
+      -AllowedExitCodes @(0) `
+      -Operation $operation)
+  } finally {
+    $process.Dispose()
+  }
+}
+
 function New-SmokeUserDataDirectory([Security.Principal.SecurityIdentifier]$UserSid) {
   $path = Join-Path $machineTemp "propr-desktop-smoke-$([Guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $path | Out-Null
@@ -588,6 +671,18 @@ try {
     if ($protocolCommand -cne "`"$application`" `"%1`"") {
       throw 'machine installer did not register canonical ProPR Connect protocol discovery'
     }
+    $shortcutItem = Get-Item -LiteralPath $startMenuShortcut -Force -ErrorAction Stop
+    if (!($shortcutItem -is [IO.FileInfo]) -or
+        ($shortcutItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $shortcutItem.Length -le 0) {
+      throw 'machine installer did not create the common Start Menu shortcut'
+    }
+    $markerValue = (Get-Item -LiteralPath $productMarker -ErrorAction Stop).GetValue(
+      'installed',
+      $null,
+      [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+    )
+    if ($markerValue -ne 1) { throw 'machine installer did not create its machine product marker' }
     Write-Stage 'VALIDATION' 'COMPLETE'
   } catch {
     Write-Stage 'VALIDATION' 'FAILED'
@@ -599,6 +694,11 @@ try {
     New-LocalUser -Name $testUser -Password $password -AccountNeverExpires -PasswordNeverExpires | Out-Null
     $testUserSid = (Get-LocalUser -Name $testUser).SID
     $smokeUserDataDirectory = New-SmokeUserDataDirectory $testUserSid
+    Test-StartMenuShortcutAsOrdinaryUser `
+      -Credential $credential `
+      -Domain $env:COMPUTERNAME `
+      -UserName $testUser `
+      -ExpectedPresent $true
     Write-Stage 'USER_SETUP' 'COMPLETE'
   } catch {
     Write-Stage 'USER_SETUP' 'FAILED'
@@ -680,6 +780,22 @@ try {
       if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr') {
         throw 'machine uninstall left protocol discovery metadata behind'
       }
+      if (Test-Path -LiteralPath $startMenuShortcut) {
+        throw 'machine uninstall left the common Start Menu shortcut behind'
+      }
+      if (Test-Path -LiteralPath $startMenuShortcutFolder) {
+        throw 'machine uninstall left the common Start Menu folder behind'
+      }
+      if (Test-Path -LiteralPath $productMarker) {
+        throw 'machine uninstall left its machine product marker behind'
+      }
+      if ($null -ne $testUserSid) {
+        Test-StartMenuShortcutAsOrdinaryUser `
+          -Credential $credential `
+          -Domain $env:COMPUTERNAME `
+          -UserName $testUser `
+          -ExpectedPresent $false
+      }
       Write-Stage 'UNINSTALL' 'COMPLETE'
     } catch {
       Write-Stage 'UNINSTALL' 'FAILED'
@@ -720,6 +836,20 @@ try {
   try {
     if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr') {
       Remove-Item -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr' -Recurse -Force -ErrorAction Stop
+    }
+  } catch {
+    $cleanupFailed = $true
+  }
+  try {
+    if (Test-Path -LiteralPath $startMenuShortcutFolder) {
+      Remove-Item -LiteralPath $startMenuShortcutFolder -Recurse -Force -ErrorAction Stop
+    }
+  } catch {
+    $cleanupFailed = $true
+  }
+  try {
+    if (Test-Path -LiteralPath $productMarker) {
+      Remove-Item -LiteralPath $productMarker -Recurse -Force -ErrorAction Stop
     }
   } catch {
     $cleanupFailed = $true

@@ -229,15 +229,15 @@ ${tree.content}
           </Component>
         </Directory>
       </Directory>
-      <Directory Id="ProgramMenuFolder">
+      <Directory Id="CommonProgramMenuFolder">
         <Directory Id="ApplicationProgramsFolder" Name="ProPR Desktop">
-          <Component Id="ApplicationStartMenuShortcutComponent" Guid="*">
+          <Component Id="ApplicationStartMenuShortcutComponent" Guid="*" Win64="yes">
             <Shortcut Id="ApplicationStartMenuShortcut" Directory="ApplicationProgramsFolder" Name="ProPR Desktop"
               Description="ProPR Desktop" Target="[INSTALLFOLDER]propr-desktop.exe" WorkingDirectory="INSTALLFOLDER">
               <ShortcutProperty Key="System.AppUserModel.ID" Value="dev.propr.desktop" />
             </Shortcut>
             <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
-            <RegistryValue Root="HKCU" Key="Software\\ProPR\\Desktop" Name="installed"
+            <RegistryValue Root="HKLM" Key="Software\\ProPR\\Desktop" Name="installed"
               Value="1" Type="integer" KeyPath="yes" />
           </Component>
         </Directory>
