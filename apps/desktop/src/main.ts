@@ -20,6 +20,7 @@ import {
 import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
+import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
 import { createBrowserWindowOptions } from './window-options';
 
 const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
@@ -37,12 +38,15 @@ const packagedSmokeUserDataDirectory = authorizePackagedSmokeTest({
   isPackaged: app.isPackaged,
   platform: process.platform,
 });
+let packagedSmokeEvidence: ReturnType<typeof createPackagedSmokeEvidenceSink> = null;
 if (packagedSmokeUserDataDirectory) {
   const smokeDirectoryStats = lstatSync(packagedSmokeUserDataDirectory);
   if (!smokeDirectoryStats.isDirectory() || smokeDirectoryStats.isSymbolicLink()) {
     throw new Error('Packaged desktop smoke --user-data-dir must be an existing non-link directory');
   }
   app.setPath('userData', packagedSmokeUserDataDirectory);
+  packagedSmokeEvidence = createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory);
+  packagedSmokeEvidence?.write('desktop.smoke.authorized');
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 let mainWindow: BrowserWindow | null = null;
@@ -57,10 +61,14 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('dev.propr.desktop');
 }
 
-const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>
-  logger
-    ? logger.log(level, event, fields)
-    : console.error(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...fields }));
+const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) => {
+  packagedSmokeEvidence?.write(event);
+  if (logger) {
+    logger.log(level, event, fields);
+  } else {
+    console.error(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...fields }));
+  }
+};
 
 process.on('uncaughtExceptionMonitor', error => {
   log('error', 'desktop.main_process.uncaught_exception', { error });
@@ -306,7 +314,10 @@ if (!hasSingleInstanceLock) {
 
   registerProtocolClient();
   void app.whenReady().then(async () => {
-    logger = createDesktopLogger(join(app.getPath('logs'), 'desktop.jsonl'));
+    logger = createDesktopLogger(
+      join(app.getPath('logs'), 'desktop.jsonl'),
+      () => packagedSmokeEvidence?.write('desktop.log.write_failed'),
+    );
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
     configureSessionSecurity();
     configurePackagedRendererProtocol();
@@ -386,4 +397,9 @@ if (!hasSingleInstanceLock) {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('will-quit', () => {
+  packagedSmokeEvidence?.close();
+  packagedSmokeEvidence = null;
 });

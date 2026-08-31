@@ -15,7 +15,7 @@ const authorize = (overrides: Partial<Parameters<typeof authorizePackagedSmokeTe
   authorizePackagedSmokeTest({
     argv: ['propr-desktop', '--propr-smoke-test', `--user-data-dir=${smokeDirectory}`],
     defaultUserDataDirectory,
-    environmentTriggered: false,
+    environmentTriggered: true,
     isPackaged: true,
     platform: process.platform,
     ...overrides,
@@ -23,21 +23,18 @@ const authorize = (overrides: Partial<Parameters<typeof authorizePackagedSmokeTe
 );
 
 describe('packaged smoke profile authorization', () => {
-  it('enables argv and environment smoke triggers only with the explicit isolated directory', () => {
+  it('requires both argv and environment smoke triggers with the explicit isolated directory', () => {
     assert.equal(authorize(), smokeDirectory);
+    assert.equal(authorize({ environmentTriggered: false }), null);
     assert.equal(authorize({
       argv: ['propr-desktop', `--user-data-dir=${smokeDirectory}`],
       environmentTriggered: true,
-    }), smokeDirectory);
+    }), null);
   });
 
-  it('rejects argv and environment smoke flags when the isolated directory is missing', () => {
+  it('rejects a dual-authorized smoke invocation when the isolated directory is missing', () => {
     assert.throws(
       () => authorize({ argv: ['propr-desktop', '--propr-smoke-test'] }),
-      /exactly one explicit --user-data-dir/,
-    );
-    assert.throws(
-      () => authorize({ argv: ['propr-desktop'], environmentTriggered: true }),
       /exactly one explicit --user-data-dir/,
     );
   });
@@ -77,6 +74,7 @@ describe('packaged smoke profile authorization', () => {
   it('does not enable mutating smoke behavior in development or without a trigger', () => {
     assert.equal(authorize({ isPackaged: false }), null);
     assert.equal(authorize({ argv: ['propr-desktop', `--user-data-dir=${smokeDirectory}`] }), null);
+    assert.equal(authorize({ environmentTriggered: false }), null);
   });
 
   it('authorizes the isolated directory before profile and lifecycle construction', () => {
@@ -89,5 +87,21 @@ describe('packaged smoke profile authorization', () => {
     assert.ok(isolation < main.indexOf('new LocalLifecycleController('));
     assert.ok(authorization < main.indexOf('new ProfileStore('));
     assert.ok(authorization < main.indexOf('new LocalLifecycleController('));
+  });
+
+  it('creates the fixed evidence sink immediately after isolation and emits the real lifecycle in order', () => {
+    const main = readFileSync(fileURLToPath(new URL('./main.ts', import.meta.url)), 'utf8');
+    const isolation = main.indexOf("app.setPath('userData', packagedSmokeUserDataDirectory)");
+    const sink = main.indexOf('createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory)');
+    const authorized = main.indexOf("packagedSmokeEvidence?.write('desktop.smoke.authorized')");
+    const appReady = main.indexOf("log('info', 'desktop.app.ready'");
+    const createWindow = main.indexOf('mainWindow = await createMainWindow()');
+    const mvpReady = main.indexOf("log('info', 'desktop.renderer.mvp_flows.ready'");
+    const layoutReady = main.indexOf("log('info', PACKAGED_LAYOUT_READY_EVENT");
+    const rendererReady = main.indexOf("log('info', 'desktop.renderer.ready'");
+    const shutdown = main.indexOf("log('info', 'desktop.app.shutdown'");
+    assert.ok(isolation < sink && sink < authorized);
+    assert.ok(authorized < appReady && appReady < createWindow && createWindow < shutdown);
+    assert.ok(mvpReady < layoutReady && layoutReady < rendererReady);
   });
 });

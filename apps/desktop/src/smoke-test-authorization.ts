@@ -41,8 +41,8 @@ export const authorizePackagedSmokeTest = ({
   isPackaged: boolean;
   platform: NodeJS.Platform;
 }): string | null => {
-  const triggered = argv.includes('--propr-smoke-test') || environmentTriggered;
-  if (!isPackaged || !triggered) return null;
+  const argumentTriggered = argv.includes('--propr-smoke-test');
+  if (!isPackaged || !argumentTriggered || !environmentTriggered) return null;
 
   const requested = explicitUserDataDirectory(argv);
   if (!isAbsolute(requested) || /[\0\r\n]/.test(requested)) {

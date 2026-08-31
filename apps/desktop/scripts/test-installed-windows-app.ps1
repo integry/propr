@@ -35,18 +35,28 @@ $smokeEvidenceFileByteCap = 64 * 1024
 $smokeEvidenceOpenRetryDeadlineMilliseconds = 2 * 1000
 $smokeEvidenceOpenRetryDelayMilliseconds = 50
 $smokeEventCodes = [ordered]@{
+  'desktop.smoke.authorized' = 'SMOKE_AUTHORIZED'
   'desktop.app.ready' = 'APP_READY'
   'desktop.renderer.mvp_flows.ready' = 'MVP_FLOWS_READY'
   'desktop.renderer.layout.ready' = 'LAYOUT_READY'
   'desktop.renderer.ready' = 'RENDERER_READY'
+  'desktop.app.shutdown' = 'APP_SHUTDOWN'
   'desktop.app.start_failed' = 'START_FAILED'
   'desktop.main_process.uncaught_exception' = 'UNCAUGHT_EXCEPTION'
   'desktop.log.write_failed' = 'LOG_WRITE_FAILURE'
 }
 $requiredSmokeEvents = @(
+  'desktop.smoke.authorized',
+  'desktop.app.ready',
   'desktop.renderer.mvp_flows.ready',
   'desktop.renderer.layout.ready',
-  'desktop.renderer.ready'
+  'desktop.renderer.ready',
+  'desktop.app.shutdown'
+)
+$smokeEvidenceFileNames = @(
+  'application.smoke-evidence.jsonl',
+  'application.stdout.log',
+  'application.stderr.log'
 )
 $machineTempValue = [Environment]::GetEnvironmentVariable('TEMP', [EnvironmentVariableTarget]::Machine)
 if (!$machineTempValue) { throw 'machine temporary directory is unavailable' }
@@ -245,10 +255,14 @@ function Get-SmokeEventEvidence(
     $events = @{}
     foreach ($eventName in $smokeEventCodes.Keys) { $events[$eventName] = $false }
     $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
-    foreach ($fileName in @('application.stdout.log', 'application.stderr.log')) {
+    foreach ($fileName in $smokeEvidenceFileNames) {
       $inspectionPhase = [SmokeEvidenceInspectionPhase]::FILE_METADATA
       $filePath = Join-Path $fullPath $fileName
-      $item = Get-Item -LiteralPath $filePath -Force -ErrorAction Stop
+      try {
+        $item = Get-Item -LiteralPath $filePath -Force -ErrorAction Stop
+      } catch [Management.Automation.ItemNotFoundException] {
+        continue
+      }
       if (!($item -is [IO.FileInfo]) -or $item.PSIsContainer -or
           ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'invalid smoke evidence file'
@@ -318,6 +332,10 @@ function Get-SmokeEventEvidence(
           $eventProperty = $record.PSObject.Properties['event']
           if ($null -eq $eventProperty -or $eventProperty.Name -cne 'event' -or
               $eventProperty.Value -isnot [string]) {
+            continue
+          }
+          if ($fileName -ceq 'application.smoke-evidence.jsonl' -and
+              @($record.PSObject.Properties).Count -ne 1) {
             continue
           }
           $eventName = $eventProperty.Value
@@ -403,12 +421,13 @@ try {
     "`"--user-data-dir=$smokeUserDataDirectory`"",
     'propr://connect?api=https%3A%2F%2Fconnect.propr.dev'
   )
+  $applicationArgumentLine = [string]::Join(' ', $arguments)
   Write-Stage 'APP_LAUNCH' 'BEGIN'
   $applicationProcess = $null
   try {
     $applicationStart = @{
       FilePath = $application
-      ArgumentList = $arguments
+      ArgumentList = $applicationArgumentLine
       Credential = $credential
       LoadUserProfile = $true
       RedirectStandardOutput = (Join-Path $smokeUserDataDirectory 'application.stdout.log')

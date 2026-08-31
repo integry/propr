@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
+import { PACKAGED_SMOKE_EVIDENCE_EVENTS } from './smoke-test-evidence';
 
 const normalizeWorkflowText = (contents: string): string => contents.replace(/\r\n?/g, '\n');
 const platformArchitecturePattern = /platform: (linux|darwin|win32)\n\s+arch: (x64|arm64)/g;
@@ -355,8 +356,10 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /LoadUserProfile = \$true/);
     assert.match(installedWindowsAppTest, /RedirectStandardOutput = \(Join-Path \$smokeUserDataDirectory 'application\.stdout\.log'\)/);
     assert.match(installedWindowsAppTest, /RedirectStandardError = \(Join-Path \$smokeUserDataDirectory 'application\.stderr\.log'\)/);
+    assert.match(installedWindowsAppTest, /\$applicationArgumentLine = \[string\]::Join\(' ', \$arguments\)/);
     const applicationStart = installedWindowsAppTest.match(/\$applicationStart = @\{([\s\S]*?)\n\s+\}/);
     assert.ok(applicationStart);
+    assert.match(applicationStart[1], /^\s+ArgumentList = \$applicationArgumentLine$/m);
     assert.match(applicationStart[1], /^\s+Environment = @\{ PROPR_DESKTOP_SMOKE_TEST = '1' \}$/m);
     assert.equal(installedWindowsAppTest.match(/PROPR_DESKTOP_SMOKE_TEST/g)?.length, 1);
     assert.doesNotMatch(installedWindowsAppTest, /Get-Content|Write-(?:Output|Verbose|Debug|Information)/);
@@ -372,7 +375,8 @@ describe('desktop trusted release workflow', () => {
     );
 
     assert.match(installedWindowsAppTest, /\$smokeEvidenceFileByteCap = 64 \* 1024/);
-    assert.match(installedWindowsAppTest, /foreach \(\$fileName in @\('application\.stdout\.log', 'application\.stderr\.log'\)\)/);
+    assert.match(installedWindowsAppTest, /\$smokeEvidenceFileNames = @\([\s\S]*'application\.smoke-evidence\.jsonl',[\s\S]*'application\.stdout\.log',[\s\S]*'application\.stderr\.log'[\s\S]*\)/);
+    assert.match(installedWindowsAppTest, /foreach \(\$fileName in \$smokeEvidenceFileNames\)/);
     assert.match(installedWindowsAppTest, /\[Math\]::Min\(\[int64\]\$item\.Length, \[int64\]\$smokeEvidenceFileByteCap\)/);
     assert.match(installedWindowsAppTest, /!\(\$item -is \[IO\.FileInfo\]\)/);
     assert.match(installedWindowsAppTest, /\$item\.PSIsContainer/);
@@ -384,15 +388,22 @@ describe('desktop trusted release workflow', () => {
       /\$smokeEventCodes = \[ordered\]@\{([\s\S]*?)\n\}/,
     );
     assert.ok(smokeEventAllowlist);
-    assert.deepEqual([...smokeEventAllowlist[1].matchAll(/^\s+'([^']+)' = '[A-Z_]+'$/gm)].map(match => match[1]), [
+    const expectedSmokeEvents = [
+      'desktop.smoke.authorized',
       'desktop.app.ready',
       'desktop.renderer.mvp_flows.ready',
       'desktop.renderer.layout.ready',
       'desktop.renderer.ready',
+      'desktop.app.shutdown',
       'desktop.app.start_failed',
       'desktop.main_process.uncaught_exception',
       'desktop.log.write_failed',
-    ]);
+    ];
+    assert.deepEqual(PACKAGED_SMOKE_EVIDENCE_EVENTS, expectedSmokeEvents);
+    assert.deepEqual(
+      [...smokeEventAllowlist[1].matchAll(/^\s+'([^']+)' = '[A-Z_]+'$/gm)].map(match => match[1]),
+      expectedSmokeEvents,
+    );
     assert.match(installedWindowsAppTest, /ConvertFrom-Json -InputObject \$line -ErrorAction Stop/);
     assert.match(installedWindowsAppTest, /\$smokeEventCodes\.Contains\(\$eventName\)/);
     assert.match(
@@ -400,7 +411,7 @@ describe('desktop trusted release workflow', () => {
       /PROPR_WINDOWS_INSTALLED_SMOKE:EVIDENCE:\{0\}['"] -f \(\$summary -join ','\)/,
     );
     assert.doesNotMatch(installedWindowsAppTest, /Write-Host[^\n]*(?:\$line|\$text|\$record|\$filePath|\$eventProperty)/);
-    assert.match(installedWindowsAppTest, /\$requiredSmokeEvents = @\([\s\S]*desktop\.renderer\.mvp_flows\.ready[\s\S]*desktop\.renderer\.layout\.ready[\s\S]*desktop\.renderer\.ready/);
+    assert.match(installedWindowsAppTest, /\$requiredSmokeEvents = @\([\s\S]*desktop\.smoke\.authorized[\s\S]*desktop\.app\.ready[\s\S]*desktop\.renderer\.mvp_flows\.ready[\s\S]*desktop\.renderer\.layout\.ready[\s\S]*desktop\.renderer\.ready[\s\S]*desktop\.app\.shutdown/);
     assert.match(installedWindowsAppTest, /Get-SmokeEventEvidence \$smokeUserDataDirectory \$testUserSid/);
     assert.match(installedWindowsAppTest, /if \(\$null -ne \$waitFailure\) \{ throw \$waitFailure \}/);
     assert.match(installedWindowsAppTest, /SMOKE_REQUIRED_EVENTS_MISSING/);
@@ -475,7 +486,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.ok(evidenceReader);
     const reader = evidenceReader[0];
-    assert.match(reader, /foreach \(\$fileName in @\('application\.stdout\.log', 'application\.stderr\.log'\)\)/);
+    assert.match(reader, /foreach \(\$fileName in \$smokeEvidenceFileNames\)/);
     assert.doesNotMatch(reader, /Get-ChildItem|Get-Content|ReadAll|ReadToEnd/);
     assert.match(reader, /Get-Item -LiteralPath \$filePath -Force -ErrorAction Stop/);
     assert.match(reader, /!\(\$item -is \[IO\.FileInfo\]\)/);
@@ -523,6 +534,10 @@ describe('desktop trusted release workflow', () => {
     assert.match(
       reader,
       /\$eventName = \$eventProperty\.Value\n\s+if \(!\$smokeEventCodes\.Contains\(\$eventName\)\) \{ continue \}\n\s+\$events\[\$eventName\] = \$true\n\s+\} catch \{\n\s+continue\n\s+\}/,
+    );
+    assert.match(
+      reader,
+      /\$fileName -ceq 'application\.smoke-evidence\.jsonl' -and\n\s+@\(\$record\.PSObject\.Properties\)\.Count -ne 1/,
     );
 
     assert.match(
