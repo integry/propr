@@ -45,6 +45,10 @@ import {
   printChecks,
   STACK_CONFIG_CHECK_NAME,
 } from "./commands/index.js";
+import {
+  CONNECT_STATUS_EXIT,
+  invalidConnectRootStatus,
+} from "./commands/connectCommand.js";
 
 // Re-export completion generation for programmatic use
 export { completionScript, buildCompletionMetadata } from "./completion.js";
@@ -129,10 +133,36 @@ export function isExplicitConnectStatusInvocation(argv: readonly string[]): bool
   return positionals[0] === "connect" && positionals[1] === "status";
 }
 
+/** Require one non-empty raw root option before Commander can reject or overwrite it. */
+export function hasExactlyOneExplicitConnectStatusRoot(argv: readonly string[]): boolean {
+  if (!isExplicitConnectStatusInvocation(argv)) return false;
+  const args = argv.slice(2);
+  let rootCount = 0;
+  let rootIsValid = true;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--root") {
+      rootCount += 1;
+      const value = args[index + 1];
+      if (value === undefined || value === "" || value.startsWith("-")) {
+        rootIsValid = false;
+      } else {
+        index += 1;
+      }
+    } else if (arg.startsWith("--root=")) {
+      rootCount += 1;
+      if (arg.slice("--root=".length).length === 0) rootIsValid = false;
+    }
+  }
+  return rootCount === 1 && rootIsValid;
+}
+
 // Identify the command shape before Commander validates required, malformed, or
 // duplicate root options. Every Connect status invocation (and therefore every
 // --json failure shape) must avoid pre-reading a replaceable cwd/.env.
 const connectStatusInvocation = isExplicitConnectStatusInvocation(process.argv);
+const malformedConnectStatusRoot = connectStatusInvocation
+  && !hasExactlyOneExplicitConnectStatusRoot(process.argv);
 if (!connectStatusInvocation) config();
 
 const packageJson = JSON.parse(
@@ -416,6 +446,11 @@ if (isCliEntryPoint() && !process.argv.slice(2).length) {
       process.exit(1);
     }
   })();
+} else if (isCliEntryPoint() && malformedConnectStatusRoot) {
+  const document = invalidConnectRootStatus();
+  process.stdout.write(`${JSON.stringify(document)}\n`);
+  process.stderr.write(`ProPR Connect discovery: ${document.status}.\n`);
+  process.exitCode = CONNECT_STATUS_EXIT[document.status];
 } else if (isCliEntryPoint()) {
   program.parse();
 }

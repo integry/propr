@@ -95,6 +95,11 @@ function baseDocument(
   };
 }
 
+/** The fixed failure document for a missing, empty, or ambiguous explicit root. */
+export function invalidConnectRootStatus(): ConnectStatusDocument {
+  return baseDocument("invalidConfig", { reasonCodes: ["INVALID_ROOT"] });
+}
+
 function parseContentLength(response: Response): number | null {
   const raw = response.headers.get("content-length");
   if (raw === null) return null;
@@ -392,7 +397,7 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
     });
   } catch (error) {
     if (error instanceof ConnectRootError) {
-      return baseDocument("invalidConfig", { reasonCodes: ["INVALID_ROOT"] });
+      return invalidConnectRootStatus();
     }
     if (error instanceof PublicInstanceIdentityError) {
       return baseDocument("invalidConfig", { reasonCodes: ["IDENTITY_UNAVAILABLE"] });

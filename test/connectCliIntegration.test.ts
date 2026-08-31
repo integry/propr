@@ -329,6 +329,23 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(missingRoot.status, 1, JSON.stringify(missingRoot.document));
     assert.deepEqual(missingRoot.document.reasonCodes, ['INVALID_ROOT']);
 
+    let malformedRootDocument: Record<string, unknown> | undefined;
+    for (const arguments_ of [
+      ['connect', 'status', '--json'],
+      ['connect', 'status', '--json', '--root'],
+      ['connect', 'status', '--json', '--root='],
+      ['connect', 'status', '--json', '--root', ''],
+      ['connect', 'status', '--json', '--root', readyRoot, '--root', readyRoot],
+      ['connect', 'status', '--json', `--root=${readyRoot}`, `--root=${readyRoot}`],
+    ]) {
+      const malformedRoot = invoke(readyRoot, 'ready', bin, parent, { arguments: arguments_ });
+      assert.equal(malformedRoot.status, 1, arguments_.join(' '));
+      assert.equal(malformedRoot.document.status, 'invalidConfig', arguments_.join(' '));
+      assert.deepEqual(malformedRoot.document.reasonCodes, ['INVALID_ROOT'], arguments_.join(' '));
+      malformedRootDocument ??= malformedRoot.document;
+      assert.deepEqual(malformedRoot.document, malformedRootDocument, arguments_.join(' '));
+    }
+
     const timeout = invoke(readyRoot, 'timeout', bin, parent);
     assert.equal(timeout.status, 0);
     assert.equal(timeout.document.status, 'timeout');
@@ -381,8 +398,8 @@ test('the built CLI rejects malformed Unix roots and reports unavailable Windows
     chmodSync(join(root, 'data'), 0o700);
     assert.equal(await getOrCreatePublicInstanceIdentity(join(root, 'data'), () => IDENTITY), IDENTITY);
     const windows = invoke(root, 'ready', bin, parent, { windowsSemantics: true });
-    assert.equal(windows.status, 0);
-    assert.equal(windows.document.status, 'ready');
+    assert.equal(windows.status, 1);
+    assert.equal(windows.document.status, 'invalidConfig');
     assert.deepEqual(windows.document.reasonCodes, ['ACL_DIAGNOSTIC_UNAVAILABLE']);
   } finally {
     rmSync(parent, { recursive: true, force: true });
