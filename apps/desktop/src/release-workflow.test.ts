@@ -528,7 +528,7 @@ describe('desktop trusted release workflow', () => {
 
     assert.match(
       installedWindowsAppTest,
-      /\} finally \{\n\s+\$cleanupFailed = \$false[\s\S]*Invoke-Msi @\('\/x'[\s\S]*Remove-SmokeUserDataDirectory \$smokeUserDataDirectory/,
+      /\} catch \{\n\s+\$primaryFailure = \$_\n\s+throw\n\} finally \{\n\s+\$cleanupFailed = \$false[\s\S]*Invoke-Msi @\('\/x'[\s\S]*Remove-SmokeUserDataDirectory \$smokeUserDataDirectory/,
     );
     assert.match(installedWindowsAppTest, /Get-CimInstance -ClassName Win32_UserProfile/);
     assert.match(installedWindowsAppTest, /Remove-LocalUser -Name \$testUser -ErrorAction Stop/);
@@ -539,6 +539,160 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /- platform: win32\n\s+arch: arm64\n/);
       assert.equal(section.match(/test-installed-windows-app\.ps1/g)?.length, 1);
     }
+  });
+
+  test('maps every shortcut child outcome to one fixed redacted parent category', () => {
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
+    const childSource = shortcutProbe.match(/\$probeTemplate = @'\n([\s\S]*?)\n'@/);
+    assert.ok(childSource);
+
+    const exitCategorySource = installedWindowsAppTest.match(
+      /\$shortcutProbeExitCategories = \[ordered\]@\{([\s\S]*?)\n\}/,
+    );
+    assert.ok(exitCategorySource);
+    const exitCategories = Object.fromEntries(
+      [...exitCategorySource[1].matchAll(/^\s+(\d+) = '([A-Z_]+)'$/gm)]
+        .map(([, code, category]) => [Number(code), category]),
+    );
+    assert.deepEqual(exitCategories, {
+      10: 'ENV_PATH_MISSING_OR_EMPTY',
+      11: 'PATH_NOT_ROOTED',
+      12: 'PRESENCE_MISMATCH',
+      13: 'ITEM_LOOKUP_OR_TYPE_FAILURE',
+      14: 'REPARSE_REJECTED',
+      15: 'ZERO_SIZE_REJECTED',
+      16: 'READ_OPEN_DENIED_OR_FAILED',
+      17: 'EMPTY_STREAM',
+      18: 'UNEXPECTED_CHILD_FAILURE',
+    });
+    const childExitCodes = [...new Set(
+      [...childSource[1].matchAll(/\bexit (\d+)\b/g)].map(([, code]) => Number(code)),
+    )].sort((left, right) => left - right);
+    assert.deepEqual(childExitCodes, [0, ...Object.keys(exitCategories).map(Number)]);
+
+    assert.match(childSource[1], /IsNullOrWhiteSpace\(\$shortcut\)\) \{ exit 10 \}/);
+    assert.match(childSource[1], /!\[IO\.Path\]::IsPathRooted\(\$shortcut\)\) \{ exit 11 \}/);
+    assert.match(childSource[1], /\$present -ne __EXPECTED_PRESENT__\) \{ exit 12 \}/);
+    assert.match(childSource[1], /Get-Item[\s\S]*?catch \{\n\s+exit 13/);
+    assert.match(childSource[1], /!\(\$item -is \[IO\.FileInfo\]\)\) \{ exit 13 \}/);
+    assert.match(childSource[1], /ReparsePoint\) -ne 0\) \{ exit 14 \}/);
+    assert.match(childSource[1], /\$item\.Length -le 0\) \{ exit 15 \}/);
+    assert.match(childSource[1], /\[IO\.File\]::Open\([\s\S]*?catch \{\n\s+exit 16/);
+    assert.match(childSource[1], /\$stream\.Length -le 0\) \{ exit 17 \}/);
+    assert.match(childSource[1], /\} catch \{\n\s+exit 18\n\} finally/);
+    const absentSuccess = childSource[1].indexOf('if (!__EXPECTED_PRESENT__ -and !$present) { exit 0 }');
+    assert.ok(absentSuccess >= 0);
+    assert.ok(absentSuccess < childSource[1].indexOf('if ($present -ne __EXPECTED_PRESENT__)'));
+    assert.ok(absentSuccess < childSource[1].indexOf('Get-Item -LiteralPath $shortcut'));
+
+    assert.match(shortcutProbe, /\$expectation = if \(\$ExpectedPresent\) \{ 'PRESENT' \} else \{ 'ABSENT' \}/);
+    assert.match(shortcutProbe, /catch \{\n\s+\$failureCategory = 'SPAWN_FAILED'\n\s+\}/);
+    assert.match(shortcutProbe, /!\$started\) \{\n\s+\$failureCategory = 'SPAWN_FAILED'/);
+    assert.match(shortcutProbe, /\$process\.WaitForExit\(\$terminationTimeoutMilliseconds\)/);
+    assert.match(shortcutProbe, /!\$completed\) \{\n\s+\$failureCategory = 'TIMEOUT'/);
+    assert.match(shortcutProbe, /\$exitCode = \$process\.ExitCode\n\s+\} catch \{\n\s+\$failureCategory = 'UNKNOWN'/);
+    assert.match(
+      shortcutProbe,
+      /if \(\$shortcutProbeExitCategories\.Contains\(\$exitCode\)\)[\s\S]*?else \{\n\s+\$failureCategory = 'UNKNOWN'/,
+    );
+    assert.match(shortcutProbe, /\$process\.Kill\(\$true\)/);
+    assert.match(shortcutProbe, /\$process\.Dispose\(\)/);
+    assert.match(shortcutProbe, /\$startInfo\.RedirectStandardOutput = \$true/);
+    assert.match(shortcutProbe, /\$startInfo\.RedirectStandardError = \$true/);
+
+    assert.equal(
+      shortcutProbe.match(/PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE/g)?.length,
+      2,
+    );
+    assert.match(
+      shortcutProbe,
+      /if \(\$null -eq \$failureCategory\) \{\n\s+Write-Host \('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:\{0\}:SUCCESS' -f \$expectation\)\n\s+return/,
+    );
+    assert.match(
+      shortcutProbe,
+      /Write-Host \('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:\{0\}:\{1\}' -f \$expectation, \$failureCategory\)\n\s+throw 'ordinary-user shortcut probe failed'/,
+    );
+    assert.doesNotMatch(shortcutProbe, /(?:Write-Host|throw)[^\n]*(?:\$exitCode|\$ShortcutPath|\$UserName|\$Domain|\.Exception|StandardOutput|StandardError)/);
+    assert.doesNotMatch(shortcutProbe, /(?:Write-Host|throw)[^\n]*\$process\.|ReadToEnd|Write-(?:Output|Error|Warning|Verbose|Debug|Information)/);
+  });
+
+  test('emits fixed uninstall and cleanup substages without masking the primary failure', () => {
+    const writerStart = installedWindowsAppTest.indexOf('function Write-CleanupSubstage(');
+    const writerEnd = installedWindowsAppTest.indexOf('function Stop-SpawnedProcessTree(', writerStart);
+    assert.ok(writerStart >= 0 && writerEnd > writerStart);
+    const writer = installedWindowsAppTest.slice(writerStart, writerEnd);
+    const substageAllowlist = writer.match(/\[ValidateSet\(\n([\s\S]*?)\n\s+\)\]\[string\]\$Substage/);
+    assert.ok(substageAllowlist);
+    const substages = [...substageAllowlist[1].matchAll(/'([A-Z_]+)'/g)].map(match => match[1]);
+    assert.deepEqual(substages, [
+      'MSI_UNINSTALL',
+      'INSTALL_TREE',
+      'PROTOCOL',
+      'SHORTCUT_FILE',
+      'SHORTCUT_FOLDER',
+      'ORDINARY_USER_ABSENCE_PROBE',
+      'SMOKE_DATA',
+      'PROFILE',
+      'USER',
+      'INSTALL_ROOT_FALLBACK',
+      'PROTOCOL_FALLBACK',
+      'SHORTCUT_FALLBACK',
+      'FINAL_AGGREGATION',
+    ]);
+    assert.match(writer, /\[ValidateSet\('BEGIN','COMPLETE','FAILED','SKIPPED'\)\]\[string\]\$Status/);
+    assert.match(
+      writer,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:\{0\}:\{1\}:\{2\}' -f \$Scope, \$Substage, \$Status/,
+    );
+
+    const cleanupCalls = [...installedWindowsAppTest.matchAll(
+      /^\s+Write-CleanupSubstage '([A-Z_]+)' '([A-Z_]+)' '([A-Z_]+)'$/gm,
+    )];
+    assert.ok(cleanupCalls.length > 0);
+    assert.equal(
+      installedWindowsAppTest.match(/^\s+Write-CleanupSubstage /gm)?.length,
+      cleanupCalls.length,
+      'every cleanup diagnostic call must use fixed literal allowlisted fields',
+    );
+    for (const [, scope, substage, status] of cleanupCalls) {
+      assert.ok(['UNINSTALL', 'CLEANUP'].includes(scope));
+      assert.ok(substages.includes(substage));
+      assert.ok(['BEGIN', 'COMPLETE', 'FAILED', 'SKIPPED'].includes(status));
+    }
+    for (const substage of ['MSI_UNINSTALL', 'INSTALL_TREE', 'PROTOCOL', 'SHORTCUT_FILE', 'SHORTCUT_FOLDER']) {
+      for (const status of ['BEGIN', 'COMPLETE', 'FAILED']) {
+        assert.ok(cleanupCalls.some(match => match[1] === 'UNINSTALL' && match[2] === substage && match[3] === status));
+      }
+    }
+    assert.ok(cleanupCalls.some(match => (
+      match[1] === 'UNINSTALL'
+      && match[2] === 'ORDINARY_USER_ABSENCE_PROBE'
+      && match[3] === 'SKIPPED'
+    )));
+    for (const substage of [
+      'SMOKE_DATA',
+      'PROFILE',
+      'USER',
+      'INSTALL_ROOT_FALLBACK',
+      'PROTOCOL_FALLBACK',
+      'SHORTCUT_FALLBACK',
+      'FINAL_AGGREGATION',
+    ]) {
+      for (const status of ['BEGIN', 'COMPLETE', 'FAILED']) {
+        assert.ok(cleanupCalls.some(match => match[1] === 'CLEANUP' && match[2] === substage && match[3] === status));
+      }
+    }
+    assert.match(
+      installedWindowsAppTest,
+      /\} catch \{\n\s+\$primaryFailure = \$_\n\s+throw\n\} finally \{/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /if \(\$cleanupFailed\)[\s\S]*?if \(\$null -eq \$primaryFailure\) \{\n\s+throw 'installed Windows cleanup did not complete'/,
+    );
   });
 
   test('hands the canonical common shortcut to a profileless ordinary-user probe and cleans only owned paths', () => {
@@ -575,7 +729,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(shortcutProbe, /\$startInfo\.UserName = \$UserName/);
     assert.match(shortcutProbe, /\$startInfo\.Domain = \$Domain/);
     assert.match(shortcutProbe, /\$startInfo\.Password = \$Credential\.Password/);
-    assert.match(shortcutProbe, /-TimeoutMilliseconds \$terminationTimeoutMilliseconds/);
+    assert.match(shortcutProbe, /\$process\.WaitForExit\(\$terminationTimeoutMilliseconds\)/);
     assert.equal(installedWindowsAppTest.match(/-ShortcutPath \$startMenuShortcut/g)?.length, 2);
 
     const installStart = installedWindowsAppTest.indexOf("Write-Stage 'INSTALL' 'BEGIN'");

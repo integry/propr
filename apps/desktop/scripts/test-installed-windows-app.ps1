@@ -14,6 +14,7 @@ enum SmokeEvidenceInspectionPhase {
 }
 
 $ErrorActionPreference = 'Stop'
+$primaryFailure = $null
 try {
   $installerPath = (Resolve-Path -LiteralPath $Installer -ErrorAction Stop).Path
 } catch {
@@ -85,12 +86,46 @@ $startMenuShortcutExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortc
 $startMenuShortcutFolderExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcutFolder
 $startMenuShortcutCreatedByRun = $false
 $startMenuShortcutFolderCreatedByRun = $false
+# Fixed encoded-child contract. Keep these codes in exact parity with $probeTemplate.
+$shortcutProbeExitCategories = [ordered]@{
+  10 = 'ENV_PATH_MISSING_OR_EMPTY'
+  11 = 'PATH_NOT_ROOTED'
+  12 = 'PRESENCE_MISMATCH'
+  13 = 'ITEM_LOOKUP_OR_TYPE_FAILURE'
+  14 = 'REPARSE_REJECTED'
+  15 = 'ZERO_SIZE_REJECTED'
+  16 = 'READ_OPEN_DENIED_OR_FAILED'
+  17 = 'EMPTY_STREAM'
+  18 = 'UNEXPECTED_CHILD_FAILURE'
+}
 
 function Write-Stage(
   [ValidateSet('INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP')][string]$Stage,
   [ValidateSet('BEGIN','COMPLETE','FAILED')][string]$Status
 ) {
   Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:{0}:{1}' -f $Stage, $Status)
+}
+
+function Write-CleanupSubstage(
+  [ValidateSet('UNINSTALL','CLEANUP')][string]$Scope,
+  [ValidateSet(
+    'MSI_UNINSTALL',
+    'INSTALL_TREE',
+    'PROTOCOL',
+    'SHORTCUT_FILE',
+    'SHORTCUT_FOLDER',
+    'ORDINARY_USER_ABSENCE_PROBE',
+    'SMOKE_DATA',
+    'PROFILE',
+    'USER',
+    'INSTALL_ROOT_FALLBACK',
+    'PROTOCOL_FALLBACK',
+    'SHORTCUT_FALLBACK',
+    'FINAL_AGGREGATION'
+  )][string]$Substage,
+  [ValidateSet('BEGIN','COMPLETE','FAILED','SKIPPED')][string]$Status
+) {
+  Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:{0}:{1}:{2}' -f $Scope, $Substage, $Status)
 }
 
 function Stop-SpawnedProcessTree(
@@ -362,30 +397,39 @@ function Test-StartMenuShortcutAsOrdinaryUser(
 ) {
   $expectedLiteral = if ($ExpectedPresent) { '$true' } else { '$false' }
   $probeTemplate = @'
+$ErrorActionPreference = 'Stop'
 $shortcut = $env:PROPR_DESKTOP_START_MENU_SHORTCUT
-if ([string]::IsNullOrWhiteSpace($shortcut) -or ![IO.Path]::IsPathRooted($shortcut)) { exit 1 }
-$present = Test-Path -LiteralPath $shortcut -PathType Leaf
-if ($present -ne __EXPECTED_PRESENT__) { exit 1 }
-if ($present) {
-  $stream = $null
+if ([string]::IsNullOrWhiteSpace($shortcut)) { exit 10 }
+if (![IO.Path]::IsPathRooted($shortcut)) { exit 11 }
+$stream = $null
+try {
+  $present = Test-Path -LiteralPath $shortcut -PathType Leaf -ErrorAction Stop
+  if (!__EXPECTED_PRESENT__ -and !$present) { exit 0 }
+  if ($present -ne __EXPECTED_PRESENT__) { exit 12 }
   try {
     $item = Get-Item -LiteralPath $shortcut -Force -ErrorAction Stop
-    if (!($item -is [IO.FileInfo]) -or
-        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-        $item.Length -le 0) {
-      exit 1
-    }
+  } catch {
+    exit 13
+  }
+  if (!($item -is [IO.FileInfo])) { exit 13 }
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 14 }
+  if ($item.Length -le 0) { exit 15 }
+  try {
     $stream = [IO.File]::Open(
       $shortcut,
       [IO.FileMode]::Open,
       [IO.FileAccess]::Read,
       [IO.FileShare]::ReadWrite
     )
-    if ($stream.Length -le 0) { exit 1 }
   } catch {
-    exit 1
-  } finally {
-    if ($null -ne $stream) { $stream.Dispose() }
+    exit 16
+  }
+  if ($stream.Length -le 0) { exit 17 }
+} catch {
+  exit 18
+} finally {
+  if ($null -ne $stream) {
+    try { $stream.Dispose() } catch { exit 18 }
   }
 }
 exit 0
@@ -393,11 +437,7 @@ exit 0
   $probeSource = $probeTemplate.Replace('__EXPECTED_PRESENT__', $expectedLiteral)
   $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeSource))
   $powershell = Join-Path $windowsDirectory 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  $operation = if ($ExpectedPresent) {
-    'ordinary-user common Start Menu shortcut presence probe'
-  } else {
-    'ordinary-user common Start Menu shortcut removal probe'
-  }
+  $expectation = if ($ExpectedPresent) { 'PRESENT' } else { 'ABSENT' }
 
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.Environment.Clear()
@@ -411,22 +451,81 @@ exit 0
   $startInfo.Domain = $Domain
   $startInfo.Password = $Credential.Password
   $startInfo.LoadUserProfile = $false
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
   foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedProbe)) {
     $startInfo.ArgumentList.Add($argument)
   }
 
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
+  $started = $false
+  $failureCategory = $null
+  $processCleanupFailed = $false
   try {
-    if (!$process.Start()) { throw "$operation did not start" }
-    [void](Wait-BoundedProcess `
-      -Process $process `
-      -TimeoutMilliseconds $terminationTimeoutMilliseconds `
-      -AllowedExitCodes @(0) `
-      -Operation $operation)
+    try {
+      $started = $process.Start()
+    } catch {
+      $failureCategory = 'SPAWN_FAILED'
+    }
+    if ($null -eq $failureCategory -and !$started) {
+      $failureCategory = 'SPAWN_FAILED'
+    }
+
+    if ($null -eq $failureCategory) {
+      try {
+        $completed = $process.WaitForExit($terminationTimeoutMilliseconds)
+      } catch {
+        $failureCategory = 'UNKNOWN'
+      }
+      if ($null -eq $failureCategory -and !$completed) {
+        $failureCategory = 'TIMEOUT'
+      }
+    }
+
+    if ($null -eq $failureCategory) {
+      try {
+        $exitCode = $process.ExitCode
+      } catch {
+        $failureCategory = 'UNKNOWN'
+      }
+      if ($null -eq $failureCategory -and $exitCode -ne 0) {
+        if ($shortcutProbeExitCategories.Contains($exitCode)) {
+          $failureCategory = $shortcutProbeExitCategories[$exitCode]
+        } else {
+          $failureCategory = 'UNKNOWN'
+        }
+      }
+    }
   } finally {
-    $process.Dispose()
+    if ($started) {
+      try {
+        if (!$process.HasExited) {
+          $process.Kill($true)
+          if (!$process.WaitForExit($terminationTimeoutMilliseconds)) {
+            $processCleanupFailed = $true
+          }
+        }
+      } catch {
+        $processCleanupFailed = $true
+      }
+    }
+    try {
+      $process.Dispose()
+    } catch {
+      $processCleanupFailed = $true
+    }
   }
+
+  if ($processCleanupFailed -and $null -eq $failureCategory) {
+    $failureCategory = 'UNKNOWN'
+  }
+  if ($null -eq $failureCategory) {
+    Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:{0}:SUCCESS' -f $expectation)
+    return
+  }
+  Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:{0}:{1}' -f $expectation, $failureCategory)
+  throw 'ordinary-user shortcut probe failed'
 }
 
 function New-SmokeUserDataDirectory([Security.Principal.SecurityIdentifier]$UserSid) {
@@ -776,43 +875,103 @@ try {
       }
     }
   }
+} catch {
+  $primaryFailure = $_
+  throw
 } finally {
   $cleanupFailed = $false
   if ($installAttempted) {
     Write-Stage 'UNINSTALL' 'BEGIN'
+    $uninstallFailed = $false
+
+    Write-CleanupSubstage 'UNINSTALL' 'MSI_UNINSTALL' 'BEGIN'
     try {
       Invoke-Msi @('/x', "`"$installerPath`"", '/qn', '/norestart') 'machine uninstall'
+      Write-CleanupSubstage 'UNINSTALL' 'MSI_UNINSTALL' 'COMPLETE'
+    } catch {
+      Write-CleanupSubstage 'UNINSTALL' 'MSI_UNINSTALL' 'FAILED'
+      $uninstallFailed = $true
+    }
+
+    Write-CleanupSubstage 'UNINSTALL' 'INSTALL_TREE' 'BEGIN'
+    try {
       if (Test-Path -LiteralPath $installRoot) { throw 'machine uninstall left the canonical install tree behind' }
+      Write-CleanupSubstage 'UNINSTALL' 'INSTALL_TREE' 'COMPLETE'
+    } catch {
+      Write-CleanupSubstage 'UNINSTALL' 'INSTALL_TREE' 'FAILED'
+      $uninstallFailed = $true
+    }
+
+    Write-CleanupSubstage 'UNINSTALL' 'PROTOCOL' 'BEGIN'
+    try {
       if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr') {
         throw 'machine uninstall left protocol discovery metadata behind'
       }
+      Write-CleanupSubstage 'UNINSTALL' 'PROTOCOL' 'COMPLETE'
+    } catch {
+      Write-CleanupSubstage 'UNINSTALL' 'PROTOCOL' 'FAILED'
+      $uninstallFailed = $true
+    }
+
+    Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FILE' 'BEGIN'
+    try {
       if (Test-Path -LiteralPath $startMenuShortcut) {
         throw 'machine uninstall left the common Start Menu shortcut behind'
       }
+      Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FILE' 'COMPLETE'
+    } catch {
+      Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FILE' 'FAILED'
+      $uninstallFailed = $true
+    }
+
+    Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FOLDER' 'BEGIN'
+    try {
       if (Test-Path -LiteralPath $startMenuShortcutFolder) {
         throw 'machine uninstall left the common Start Menu folder behind'
       }
-      if ($null -ne $testUserSid) {
+      Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FOLDER' 'COMPLETE'
+    } catch {
+      Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FOLDER' 'FAILED'
+      $uninstallFailed = $true
+    }
+
+    if ($null -ne $testUserSid) {
+      Write-CleanupSubstage 'UNINSTALL' 'ORDINARY_USER_ABSENCE_PROBE' 'BEGIN'
+      try {
         Test-StartMenuShortcutAsOrdinaryUser `
           -Credential $credential `
           -Domain $env:COMPUTERNAME `
           -UserName $testUser `
           -ShortcutPath $startMenuShortcut `
           -ExpectedPresent $false
+        Write-CleanupSubstage 'UNINSTALL' 'ORDINARY_USER_ABSENCE_PROBE' 'COMPLETE'
+      } catch {
+        Write-CleanupSubstage 'UNINSTALL' 'ORDINARY_USER_ABSENCE_PROBE' 'FAILED'
+        $uninstallFailed = $true
       }
-      Write-Stage 'UNINSTALL' 'COMPLETE'
-    } catch {
+    } else {
+      Write-CleanupSubstage 'UNINSTALL' 'ORDINARY_USER_ABSENCE_PROBE' 'SKIPPED'
+    }
+
+    if ($uninstallFailed) {
       Write-Stage 'UNINSTALL' 'FAILED'
       $cleanupFailed = $true
+    } else {
+      Write-Stage 'UNINSTALL' 'COMPLETE'
     }
   }
 
   Write-Stage 'CLEANUP' 'BEGIN'
+  Write-CleanupSubstage 'CLEANUP' 'SMOKE_DATA' 'BEGIN'
   try {
     Remove-SmokeUserDataDirectory $smokeUserDataDirectory
+    Write-CleanupSubstage 'CLEANUP' 'SMOKE_DATA' 'COMPLETE'
   } catch {
+    Write-CleanupSubstage 'CLEANUP' 'SMOKE_DATA' 'FAILED'
     $cleanupFailed = $true
   }
+
+  Write-CleanupSubstage 'CLEANUP' 'PROFILE' 'BEGIN'
   try {
     if ($null -ne $testUserSid) {
       $profiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
@@ -820,36 +979,53 @@ try {
       })
       foreach ($profile in $profiles) { Remove-CimInstance -InputObject $profile -ErrorAction Stop }
     }
+    Write-CleanupSubstage 'CLEANUP' 'PROFILE' 'COMPLETE'
   } catch {
+    Write-CleanupSubstage 'CLEANUP' 'PROFILE' 'FAILED'
     $cleanupFailed = $true
   }
+
+  Write-CleanupSubstage 'CLEANUP' 'USER' 'BEGIN'
   try {
     if (Get-LocalUser -Name $testUser -ErrorAction SilentlyContinue) {
       Remove-LocalUser -Name $testUser -ErrorAction Stop
     }
+    Write-CleanupSubstage 'CLEANUP' 'USER' 'COMPLETE'
   } catch {
+    Write-CleanupSubstage 'CLEANUP' 'USER' 'FAILED'
     $cleanupFailed = $true
   }
+
+  Write-CleanupSubstage 'CLEANUP' 'INSTALL_ROOT_FALLBACK' 'BEGIN'
   try {
     if (Test-Path -LiteralPath $installRoot) {
       Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction Stop
     }
+    Write-CleanupSubstage 'CLEANUP' 'INSTALL_ROOT_FALLBACK' 'COMPLETE'
   } catch {
+    Write-CleanupSubstage 'CLEANUP' 'INSTALL_ROOT_FALLBACK' 'FAILED'
     $cleanupFailed = $true
   }
+
+  Write-CleanupSubstage 'CLEANUP' 'PROTOCOL_FALLBACK' 'BEGIN'
   try {
     if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr') {
       Remove-Item -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr' -Recurse -Force -ErrorAction Stop
     }
+    Write-CleanupSubstage 'CLEANUP' 'PROTOCOL_FALLBACK' 'COMPLETE'
   } catch {
+    Write-CleanupSubstage 'CLEANUP' 'PROTOCOL_FALLBACK' 'FAILED'
     $cleanupFailed = $true
   }
+
+  Write-CleanupSubstage 'CLEANUP' 'SHORTCUT_FALLBACK' 'BEGIN'
+  $shortcutFallbackFailed = $false
   try {
     if ($startMenuShortcutCreatedByRun -and (Test-Path -LiteralPath $startMenuShortcut)) {
       Remove-Item -LiteralPath $startMenuShortcut -Force -ErrorAction Stop
     }
   } catch {
-    $cleanupFailed = $true
+    $shortcutFallbackFailed = $true
   }
   try {
     if ($startMenuShortcutFolderCreatedByRun -and (Test-Path -LiteralPath $startMenuShortcutFolder)) {
@@ -864,11 +1040,24 @@ try {
       }
     }
   } catch {
+    $shortcutFallbackFailed = $true
+  }
+  if ($shortcutFallbackFailed) {
+    Write-CleanupSubstage 'CLEANUP' 'SHORTCUT_FALLBACK' 'FAILED'
     $cleanupFailed = $true
+  } else {
+    Write-CleanupSubstage 'CLEANUP' 'SHORTCUT_FALLBACK' 'COMPLETE'
   }
+
+  Write-CleanupSubstage 'CLEANUP' 'FINAL_AGGREGATION' 'BEGIN'
   if ($cleanupFailed) {
+    Write-CleanupSubstage 'CLEANUP' 'FINAL_AGGREGATION' 'FAILED'
     Write-Stage 'CLEANUP' 'FAILED'
-    throw 'installed Windows cleanup did not complete'
+    if ($null -eq $primaryFailure) {
+      throw 'installed Windows cleanup did not complete'
+    }
+  } else {
+    Write-CleanupSubstage 'CLEANUP' 'FINAL_AGGREGATION' 'COMPLETE'
+    Write-Stage 'CLEANUP' 'COMPLETE'
   }
-  Write-Stage 'CLEANUP' 'COMPLETE'
 }
