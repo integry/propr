@@ -362,40 +362,41 @@ describe('goal routes', () => {
     configureDemoMode(false);
   });
 
-  test('creation is idempotent across retries with a key', async () => {
+  test('completed creation replays after its repository is disabled', async () => {
     const routes = makeRoutes();
+    const request = () => makeRequest({
+      body: { objective: 'Ship it', repository: 'octo/repo', agent: 'claude', model: 'claude-opus-4-8' },
+      headers: { 'Idempotency-Key': 'create-1' },
+    });
     const first = makeResponse();
-    await routes.createGoal(
-      makeRequest({
-        body: {
-          objective: 'Ship it',
-          repository: 'octo/repo',
-          agent: 'claude',
-          model: 'claude-opus-4-8',
-        },
-        headers: { 'Idempotency-Key': 'create-1' },
-      }),
-      first.res
-    );
+    await routes.createGoal(request(), first.res);
     const second = makeResponse();
-    await routes.createGoal(
-      makeRequest({
-        body: {
-          objective: 'Ship it',
-          repository: 'octo/repo',
-          agent: 'claude',
-          model: 'claude-opus-4-8',
-        },
-        headers: { 'Idempotency-Key': 'create-1' },
-      }),
-      second.res
-    );
-    const firstId = (first.state.body as { goal: { goalId: string } }).goal.goalId;
-    const secondId = (second.state.body as { goal: { goalId: string } }).goal.goalId;
-    assert.equal(firstId, secondId);
-    assert.notEqual(firstId, 'create-1');
-    const count = await database('goals').count({ c: '*' }).first();
-    assert.equal(Number(count?.c), 1);
+    repositories[0].enabled = false;
+    try { await routes.createGoal(request(), second.res); }
+    finally { repositories[0].enabled = true; }
+    assert.deepEqual(second.state.body, first.state.body);
+    assert.notEqual((first.state.body as { goal: { goalId: string } }).goal.goalId, 'create-1');
+    assert.equal(Number((await database('goals').count({ c: '*' }).first())?.c), 1);
+  });
+
+  test('completed model change replays after its model is removed from the catalog', async () => {
+    const created = await createGoalViaApi();
+    const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
+    const routes = makeRoutes();
+    const request = () => makeRequest({
+      params: { goalId },
+      body: { model: 'claude-sonnet-5', reason: 'use the selected model' },
+      headers: { 'Idempotency-Key': 'model-replay' },
+    });
+    const first = makeResponse();
+    await routes.requestModelChange(request(), first.res);
+    const modelIndex = agents[0].supportedModels.indexOf('claude-sonnet-5');
+    agents[0].supportedModels.splice(modelIndex, 1);
+    const retry = makeResponse();
+    try { await routes.requestModelChange(request(), retry.res); }
+    finally { agents[0].supportedModels.splice(modelIndex, 0, 'claude-sonnet-5'); }
+    assert.equal(first.state.statusCode, 200);
+    assert.deepEqual(retry.state.body, first.state.body);
   });
 
   test('idempotent create rejects payload mismatch and is scoped to the owner', async () => {

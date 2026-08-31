@@ -22,6 +22,7 @@ import {
   idempotencyKey,
   nowIso,
   optionalReason,
+  readIdempotentReplay,
   requireGoalRecord,
   runIdempotent,
   toGoal,
@@ -202,14 +203,8 @@ export class GoalMutationRepository {
     requestedModel: string,
     options: ModelChangeOptions = {}
   ): Promise<Goal> {
-    const model = boundedText(requestedModel, 'requestedModel') as string;
-    const normalized = {
-      expectedVersion: validateVersion(options.expectedVersion),
-      reason: optionalReason(options.reason),
-      idempotencyKey: options.idempotencyKey === undefined ? undefined : idempotencyKey(options.idempotencyKey),
-    };
+    const { model, normalized, request } = normalizeModelChange(requestedModel, options);
     const initial = await requireGoalRecord(this.db, goalId);
-    const request = { requestedModel: model, expectedVersion: normalized.expectedVersion ?? null, reason: normalized.reason ?? null };
     const effect = (trx: Knex.Transaction) => this.performModelRequest(trx, goalId, model, normalized);
     if (normalized.idempotencyKey === undefined) return goalTransaction(this.db, effect);
     return runIdempotent({
@@ -220,6 +215,22 @@ export class GoalMutationRepository {
       request,
       goalId,
       effect,
+    });
+  }
+
+  async readModelChangeReplay(
+    goalId: string,
+    requestedModel: string,
+    options: ModelChangeOptions = {}
+  ): Promise<Goal | null> {
+    const { normalized, request } = normalizeModelChange(requestedModel, options);
+    if (normalized.idempotencyKey === undefined) return null;
+    const initial = await requireGoalRecord(this.db, goalId);
+    return readIdempotentReplay<Goal>(this.db, {
+      ownerUserId: initial.owner_user_id,
+      operation: `model-change:${goalId}`,
+      key: normalized.idempotencyKey,
+      request,
     });
   }
 
@@ -358,6 +369,24 @@ export class GoalMutationRepository {
     }
     return toGoal(await requireGoalRecord(trx, goal.goal_id));
   }
+}
+
+function normalizeModelChange(requestedModel: string, options: ModelChangeOptions) {
+  const model = boundedText(requestedModel, 'requestedModel') as string;
+  const normalized: ModelChangeOptions = {
+    expectedVersion: validateVersion(options.expectedVersion),
+    reason: optionalReason(options.reason),
+    idempotencyKey: options.idempotencyKey === undefined ? undefined : idempotencyKey(options.idempotencyKey),
+  };
+  return {
+    model,
+    normalized,
+    request: {
+      requestedModel: model,
+      expectedVersion: normalized.expectedVersion ?? null,
+      reason: normalized.reason ?? null,
+    },
+  };
 }
 
 function normalizeTransition(input: InternalTransitionInput): InternalTransitionInput {

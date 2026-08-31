@@ -209,6 +209,39 @@ interface IdempotentRun<T> {
   effect: (trx: Knex.Transaction) => Promise<T>;
 }
 
+export interface IdempotentReplay {
+  ownerUserId: string;
+  operation: string;
+  key: string;
+  request: unknown;
+}
+
+/**
+ * Read a durable response without reserving a new key. This lets API callers
+ * replay completed work before consulting mutable authorization or catalogs.
+ */
+export async function readIdempotentReplay<T>(
+  db: Knex,
+  options: IdempotentReplay
+): Promise<T | null> {
+  const ownerUserId = boundedText(options.ownerUserId, 'ownerUserId') as string;
+  const operation = boundedText(options.operation, 'operation', 512) as string;
+  const key = idempotencyKey(options.key);
+  const row = await db<GoalIdempotencyRecord>('goal_idempotency_keys').where({
+    owner_user_id: ownerUserId,
+    operation,
+    idempotency_key: key,
+  }).first();
+  if (!row) return null;
+  if (row.request_hash !== hashRequest(options.request)) {
+    throw new GoalError(GOAL_ERROR_CODES.idempotencyConflict, 'Idempotency key was reused with a different payload', 409);
+  }
+  if (row.response_json === null) {
+    throw new GoalError(GOAL_ERROR_CODES.idempotencyConflict, 'Idempotent request is already in progress', 409);
+  }
+  return JSON.parse(row.response_json) as T;
+}
+
 export async function runIdempotent<T>(options: IdempotentRun<T>): Promise<T> {
   const key = idempotencyKey(options.key);
   const requestHash = hashRequest(options.request);

@@ -33,6 +33,7 @@ import {
   goalTransaction,
   idempotencyKey,
   nowIso,
+  readIdempotentReplay,
   runIdempotent,
   toGoal,
   toSummary,
@@ -45,19 +46,7 @@ export class GoalReadRepository {
   async createGoal(input: CreateGoalInput): Promise<Goal> {
     const normalized = normalizeCreateInput(input);
     const goalId = normalized.goalId ?? crypto.randomUUID();
-    const request = {
-      goalId: normalized.goalId ?? null,
-      repository: normalized.repository,
-      objective: normalized.objective,
-      agent: normalized.agent,
-      requestedModel: normalized.requestedModel,
-      effectiveModel: normalized.effectiveModel,
-      maxActiveTasks: normalized.maxActiveTasks,
-      ultrafixEnabled: normalized.ultrafixEnabled,
-      ultrafixGoal: normalized.ultrafixGoal,
-      ultrafixMaxCycles: normalized.ultrafixMaxCycles,
-      mergePolicy: normalized.mergePolicy,
-    };
+    const request = createIdempotencyRequest(normalized);
     const effect = (trx: Knex.Transaction) => this.insertGoal(trx, goalId, normalized);
     if (input.idempotencyKey === undefined) {
       return goalTransaction(this.db, effect);
@@ -70,6 +59,17 @@ export class GoalReadRepository {
       request,
       goalId,
       effect,
+    });
+  }
+
+  async readCreateGoalReplay(input: CreateGoalInput): Promise<Goal | null> {
+    const normalized = normalizeCreateInput(input);
+    if (input.idempotencyKey === undefined) return null;
+    return readIdempotentReplay<Goal>(this.db, {
+      ownerUserId: normalized.ownerUserId,
+      operation: 'create',
+      key: input.idempotencyKey,
+      request: createIdempotencyRequest(normalized),
     });
   }
 
@@ -218,6 +218,17 @@ interface NormalizedCreateInput {
   ultrafixGoal: number | null;
   ultrafixMaxCycles: number | null;
   mergePolicy: NonNullable<CreateGoalInput['mergePolicy']>;
+}
+
+function createIdempotencyRequest(input: NormalizedCreateInput): object {
+  return {
+    goalId: input.goalId ?? null, repository: input.repository,
+    objective: input.objective, agent: input.agent,
+    requestedModel: input.requestedModel, effectiveModel: input.effectiveModel,
+    maxActiveTasks: input.maxActiveTasks, ultrafixEnabled: input.ultrafixEnabled,
+    ultrafixGoal: input.ultrafixGoal, ultrafixMaxCycles: input.ultrafixMaxCycles,
+    mergePolicy: input.mergePolicy,
+  };
 }
 
 function normalizeCreateInput(input: CreateGoalInput): NormalizedCreateInput {

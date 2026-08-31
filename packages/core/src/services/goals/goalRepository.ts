@@ -50,6 +50,10 @@ export class GoalRepository {
     return this.reads.createGoal(input);
   }
 
+  readCreateGoalReplay(input: CreateGoalInput): Promise<Goal | null> {
+    return this.reads.readCreateGoalReplay(input);
+  }
+
   getGoal(goalId: string): Promise<Goal | null> {
     return this.reads.getGoal(goalId);
   }
@@ -167,6 +171,14 @@ export class GoalRepository {
     options: { expectedVersion?: number; reason?: string; idempotencyKey?: string } = {}
   ): Promise<Goal> {
     return this.mutations.requestModelChange(goalId, requestedModel, options);
+  }
+
+  readModelChangeReplay(
+    goalId: string,
+    requestedModel: string,
+    options: { expectedVersion?: number; reason?: string; idempotencyKey?: string } = {}
+  ): Promise<Goal | null> {
+    return this.mutations.readModelChangeReplay(goalId, requestedModel, options);
   }
 
   applyModelChange(goalId: string, fence: GoalLeaseFence): Promise<Goal> {

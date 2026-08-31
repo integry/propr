@@ -39,7 +39,8 @@ import {
 import type { Knex } from 'knex';
 import { isDemoMode } from '../demoMode.js';
 import {
-  validateCreateGoalInput,
+  normalizeCreateGoalInput,
+  validateCreateGoalConfiguration,
   validateGoalAgentModel,
 } from './goalRouteValidation.js';
 import {
@@ -177,19 +178,25 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     if (!userId) return;
     try {
       const idempotencyKey = resolveIdempotencyKey(req);
-      const result = await validateCreateGoalInput(
-        (req.body ?? {}) as Record<string, unknown>,
-        userId,
-        { loadAgents: loadAgentsFn, loadRepositories: loadRepositoriesFn }
-      );
+      const result = normalizeCreateGoalInput((req.body ?? {}) as Record<string, unknown>, userId);
       if (!result.ok) {
         res.status(result.status).json({ code: result.code, error: result.error });
         return;
       }
-      const goal = await repository.createGoal({
-        ...result.input,
-        idempotencyKey,
+      const input = { ...result.input, idempotencyKey };
+      const replay = await repository.readCreateGoalReplay(input);
+      if (replay) {
+        res.status(201).json({ goal: toPublicGoal(replay) });
+        return;
+      }
+      const configurationError = await validateCreateGoalConfiguration(result.input, {
+        loadAgents: loadAgentsFn, loadRepositories: loadRepositoriesFn,
       });
+      if (configurationError) {
+        res.status(configurationError.status).json({ code: configurationError.code, error: configurationError.error });
+        return;
+      }
+      const goal = await repository.createGoal(input);
       res.status(201).json({ goal: toPublicGoal(goal) });
     } catch (error) {
       sendGoalError(res, error);
@@ -287,6 +294,15 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
       if (!requestedModel) {
         throw new GoalError(GOAL_ERROR_CODES.validation, 'model is required', 400);
       }
+      const expectedVersion = parseExpectedVersion(req);
+      const reason = boundedOptionalText(body.reason, 'reason', GOAL_REASON_MAX_LENGTH);
+      const replay = await repository.readModelChangeReplay(
+        req.params.goalId, requestedModel, { expectedVersion, reason, idempotencyKey }
+      );
+      if (replay) {
+        res.json({ goal: toPublicGoal(replay) });
+        return;
+      }
       // Validate against the goal's agent catalog so an unusable model cannot
       // be requested.
       const catalogError = await validateGoalAgentModel(goal.agent, requestedModel, loadAgentsFn);
@@ -301,8 +317,8 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         req.params.goalId,
         requestedModel,
         {
-          expectedVersion: parseExpectedVersion(req),
-          reason: boundedOptionalText(body.reason, 'reason', GOAL_REASON_MAX_LENGTH),
+          expectedVersion,
+          reason,
           idempotencyKey,
         }
       );

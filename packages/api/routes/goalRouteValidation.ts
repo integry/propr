@@ -116,26 +116,30 @@ export async function validateGoalAgentModel(
   return null;
 }
 
-export async function validateCreateGoalInput(
+export function normalizeCreateGoalInput(
   body: Record<string, unknown>,
-  ownerUserId: string,
-  services: {
-    loadAgents: () => Promise<AgentConfig[]>;
-    loadRepositories: () => Promise<RepoToMonitor[]>;
-  }
-): Promise<{ ok: true; input: CreateGoalInput } | GoalRouteRejection> {
+  ownerUserId: string
+): { ok: true; input: CreateGoalInput } | GoalRouteRejection {
   const selection = validateSelection(body);
   if ('ok' in selection) return selection;
   const ultrafix = validateUltrafix(body);
   if ('ok' in ultrafix) return ultrafix;
-  const repositories = await services.loadRepositories();
-  if (!repositories.some(entry => entry.name === selection.repository && entry.enabled)) {
-    return reject(403, GOAL_ERROR_CODES.repositoryForbidden, 'Repository is not accessible');
-  }
-  const catalogError = await validateGoalAgentModel(selection.agent, selection.requestedModel, services.loadAgents);
-  if (catalogError) return catalogError;
   return {
     ok: true,
-    input: { ownerUserId, ...selection, repository: selection.repository, ...ultrafix },
+    input: { ownerUserId, ...selection, ...ultrafix },
   };
+}
+
+export async function validateCreateGoalConfiguration(
+  input: CreateGoalInput,
+  services: {
+    loadAgents: () => Promise<AgentConfig[]>;
+    loadRepositories: () => Promise<RepoToMonitor[]>;
+  }
+): Promise<GoalRouteRejection | null> {
+  const repositories = await services.loadRepositories();
+  if (!repositories.some(entry => entry.name === input.repository && entry.enabled)) {
+    return reject(403, GOAL_ERROR_CODES.repositoryForbidden, 'Repository is not accessible');
+  }
+  return validateGoalAgentModel(input.agent, input.requestedModel, services.loadAgents);
 }
