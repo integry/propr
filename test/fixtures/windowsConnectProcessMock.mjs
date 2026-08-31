@@ -12,7 +12,7 @@ const nativeStages = new Set([
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
-  "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose",
+  "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose", "broker:entry-build",
   "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
   "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ]);

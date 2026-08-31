@@ -33,7 +33,7 @@ export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
-  "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose",
+  "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose", "broker:entry-build",
   "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
   "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ] as const);
@@ -188,7 +188,10 @@ try {
   $afterHigh=Read-ProprUInt32 $after 44;$afterLow=Read-ProprUInt32 $after 48
   $stage=82
   $beforeId=Join-ProprUInt64 $beforeLow $beforeHigh
+  if($beforeId-isnot [uint64]){exit $stage}
   $afterId=Join-ProprUInt64 $afterLow $afterHigh
+  if($afterId-isnot [uint64]){exit $stage}
+  $stage=83
   $entry=[pscustomobject][ordered]@{
     index=__PROPR_INDEX__;kind='__PROPR_ENTRY_KIND__';authorityKind='__PROPR_AUTHORITY_KIND__';currentUserSid=$currentSid;ownerSid=$ownerSid
     daclProtected=[bool](($control-band 0x1000)-ne 0);reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
@@ -274,6 +277,7 @@ try {
   $probeVolume=Read-ProprUInt32 $info 28
   $probeHigh=Read-ProprUInt32 $info 44;$probeLow=Read-ProprUInt32 $info 48
   $probeId=Join-ProprUInt64 $probeLow $probeHigh
+  if($probeId-isnot [uint64]){exit $stage}
   Write-ProprMilestone 'standard-handle-identity'
   exit 0
 }catch{exit $stage}
@@ -397,7 +401,7 @@ export function windowsBrokerFailureStage(status: number | null): WindowsNativeS
     71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info-initial",
     75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
     78: "broker:current-user-sid", 79: "broker:index-info-revalidation", 80: "broker:fd-duplicate",
-    81: "broker:index-info-decode", 82: "broker:index-info-compose",
+    81: "broker:index-info-decode", 82: "broker:index-info-compose", 83: "broker:entry-build",
   };
   return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
 }
