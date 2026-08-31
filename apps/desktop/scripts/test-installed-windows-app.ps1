@@ -81,6 +81,10 @@ if (!$commonPrograms -or ![IO.Path]::IsPathRooted($commonPrograms)) {
 $commonPrograms = (Resolve-Path -LiteralPath $commonPrograms -ErrorAction Stop).Path
 $startMenuShortcutFolder = Join-Path $commonPrograms 'ProPR Desktop'
 $startMenuShortcut = Join-Path $startMenuShortcutFolder 'ProPR Desktop.lnk'
+$startMenuShortcutExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcut
+$startMenuShortcutFolderExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcutFolder
+$startMenuShortcutCreatedByRun = $false
+$startMenuShortcutFolderCreatedByRun = $false
 
 function Write-Stage(
   [ValidateSet('INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP')][string]$Stage,
@@ -353,13 +357,13 @@ function Test-StartMenuShortcutAsOrdinaryUser(
   [Management.Automation.PSCredential]$Credential,
   [string]$Domain,
   [string]$UserName,
+  [string]$ShortcutPath,
   [bool]$ExpectedPresent
 ) {
   $expectedLiteral = if ($ExpectedPresent) { '$true' } else { '$false' }
   $probeTemplate = @'
-$shortcut = Join-Path `
-  ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)) `
-  'ProPR Desktop\ProPR Desktop.lnk'
+$shortcut = $env:PROPR_DESKTOP_START_MENU_SHORTCUT
+if ([string]::IsNullOrWhiteSpace($shortcut) -or ![IO.Path]::IsPathRooted($shortcut)) { exit 1 }
 $present = Test-Path -LiteralPath $shortcut -PathType Leaf
 if ($present -ne __EXPECTED_PRESENT__) { exit 1 }
 if ($present) {
@@ -398,6 +402,7 @@ exit 0
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.Environment.Clear()
   $startInfo.Environment.Add('SystemRoot', $windowsDirectory)
+  $startInfo.Environment.Add('PROPR_DESKTOP_START_MENU_SHORTCUT', $ShortcutPath)
   $startInfo.FileName = $powershell
   $startInfo.UseShellExecute = $false
   $startInfo.CreateNoWindow = $true
@@ -405,7 +410,7 @@ exit 0
   $startInfo.UserName = $UserName
   $startInfo.Domain = $Domain
   $startInfo.Password = $Credential.Password
-  $startInfo.LoadUserProfile = $true
+  $startInfo.LoadUserProfile = $false
   foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedProbe)) {
     $startInfo.ArgumentList.Add($argument)
   }
@@ -637,7 +642,14 @@ try {
   Write-Stage 'INSTALL' 'BEGIN'
   try {
     $installAttempted = $true
-    Invoke-Msi @('/i', "`"$installerPath`"", '/qn', '/norestart') 'machine install'
+    try {
+      Invoke-Msi @('/i', "`"$installerPath`"", '/qn', '/norestart') 'machine install'
+    } finally {
+      $startMenuShortcutCreatedByRun =
+        !$startMenuShortcutExistedBeforeInstall -and (Test-Path -LiteralPath $startMenuShortcut)
+      $startMenuShortcutFolderCreatedByRun =
+        !$startMenuShortcutFolderExistedBeforeInstall -and (Test-Path -LiteralPath $startMenuShortcutFolder)
+    }
     Write-Stage 'INSTALL' 'COMPLETE'
   } catch {
     Write-Stage 'INSTALL' 'FAILED'
@@ -691,6 +703,7 @@ try {
       -Credential $credential `
       -Domain $env:COMPUTERNAME `
       -UserName $testUser `
+      -ShortcutPath $startMenuShortcut `
       -ExpectedPresent $true
     Write-Stage 'USER_SETUP' 'COMPLETE'
   } catch {
@@ -784,6 +797,7 @@ try {
           -Credential $credential `
           -Domain $env:COMPUTERNAME `
           -UserName $testUser `
+          -ShortcutPath $startMenuShortcut `
           -ExpectedPresent $false
       }
       Write-Stage 'UNINSTALL' 'COMPLETE'
@@ -831,8 +845,23 @@ try {
     $cleanupFailed = $true
   }
   try {
-    if (Test-Path -LiteralPath $startMenuShortcutFolder) {
-      Remove-Item -LiteralPath $startMenuShortcutFolder -Recurse -Force -ErrorAction Stop
+    if ($startMenuShortcutCreatedByRun -and (Test-Path -LiteralPath $startMenuShortcut)) {
+      Remove-Item -LiteralPath $startMenuShortcut -Force -ErrorAction Stop
+    }
+  } catch {
+    $cleanupFailed = $true
+  }
+  try {
+    if ($startMenuShortcutFolderCreatedByRun -and (Test-Path -LiteralPath $startMenuShortcutFolder)) {
+      $ownedShortcutFolder = Get-Item -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop
+      if (!$ownedShortcutFolder.PSIsContainer -or
+          ($ownedShortcutFolder.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'owned common Start Menu folder is invalid'
+      }
+      $ownedShortcutFolderContents = @(Get-ChildItem -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop)
+      if ($ownedShortcutFolderContents.Count -eq 0) {
+        Remove-Item -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop
+      }
     }
   } catch {
     $cleanupFailed = $true

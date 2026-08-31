@@ -541,6 +541,86 @@ describe('desktop trusted release workflow', () => {
     }
   });
 
+  test('hands the canonical common shortcut to a profileless ordinary-user probe and cleans only owned paths', () => {
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
+    const childSource = shortcutProbe.match(/\$probeTemplate = @'\n([\s\S]*?)\n'@/);
+    assert.ok(childSource);
+
+    assert.match(shortcutProbe, /\[string\]\$ShortcutPath/);
+    assert.match(childSource[1], /\$shortcut = \$env:PROPR_DESKTOP_START_MENU_SHORTCUT/);
+    assert.match(childSource[1], /\[string\]::IsNullOrWhiteSpace\(\$shortcut\)/);
+    assert.match(childSource[1], /!\[IO\.Path\]::IsPathRooted\(\$shortcut\)/);
+    assert.match(childSource[1], /Test-Path -LiteralPath \$shortcut -PathType Leaf/);
+    assert.match(childSource[1], /!\(\$item -is \[IO\.FileInfo\]\)/);
+    assert.match(childSource[1], /\$item\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint/);
+    assert.match(childSource[1], /\$item\.Length -le 0/);
+    assert.match(childSource[1], /\[IO\.File\]::Open\(/);
+    assert.match(childSource[1], /\$stream\.Length -le 0/);
+    assert.doesNotMatch(childSource[1], /CommonPrograms|ShortcutPath|Write-|Out-/);
+    assert.match(shortcutProbe, /\$startInfo\.Environment\.Clear\(\)/);
+    assert.match(
+      shortcutProbe,
+      /\$startInfo\.Environment\.Add\('PROPR_DESKTOP_START_MENU_SHORTCUT', \$ShortcutPath\)/,
+    );
+    assert.deepEqual(
+      [...shortcutProbe.matchAll(/\$startInfo\.Environment\.Add\('([^']+)'/g)].map(([, name]) => name),
+      ['SystemRoot', 'PROPR_DESKTOP_START_MENU_SHORTCUT'],
+    );
+    assert.equal(shortcutProbe.match(/PROPR_DESKTOP_START_MENU_SHORTCUT/g)?.length, 2);
+    assert.match(shortcutProbe, /\$startInfo\.LoadUserProfile = \$false/);
+    assert.doesNotMatch(shortcutProbe, /\$startInfo\.LoadUserProfile = \$true/);
+    assert.match(shortcutProbe, /\$startInfo\.UserName = \$UserName/);
+    assert.match(shortcutProbe, /\$startInfo\.Domain = \$Domain/);
+    assert.match(shortcutProbe, /\$startInfo\.Password = \$Credential\.Password/);
+    assert.match(shortcutProbe, /-TimeoutMilliseconds \$terminationTimeoutMilliseconds/);
+    assert.equal(installedWindowsAppTest.match(/-ShortcutPath \$startMenuShortcut/g)?.length, 2);
+
+    const installStart = installedWindowsAppTest.indexOf("Write-Stage 'INSTALL' 'BEGIN'");
+    assert.ok(
+      installedWindowsAppTest.indexOf(
+        '$startMenuShortcutExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcut',
+      ) < installStart,
+    );
+    assert.ok(
+      installedWindowsAppTest.indexOf(
+        '$startMenuShortcutFolderExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcutFolder',
+      ) < installStart,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /\$startMenuShortcutCreatedByRun =\n\s+!\$startMenuShortcutExistedBeforeInstall -and \(Test-Path -LiteralPath \$startMenuShortcut\)/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /\$startMenuShortcutFolderCreatedByRun =\n\s+!\$startMenuShortcutFolderExistedBeforeInstall -and \(Test-Path -LiteralPath \$startMenuShortcutFolder\)/,
+    );
+
+    const cleanupStart = installedWindowsAppTest.indexOf("Write-Stage 'CLEANUP' 'BEGIN'");
+    assert.ok(cleanupStart >= 0);
+    const cleanup = installedWindowsAppTest.slice(cleanupStart);
+    assert.match(
+      cleanup,
+      /if \(\$startMenuShortcutCreatedByRun -and \(Test-Path -LiteralPath \$startMenuShortcut\)\) \{\n\s+Remove-Item -LiteralPath \$startMenuShortcut -Force -ErrorAction Stop/,
+    );
+    assert.match(
+      cleanup,
+      /if \(\$startMenuShortcutFolderCreatedByRun[\s\S]*\$ownedShortcutFolderContents\.Count -eq 0\) \{\n\s+Remove-Item -LiteralPath \$startMenuShortcutFolder -Force -ErrorAction Stop/,
+    );
+    assert.doesNotMatch(
+      cleanup,
+      /Remove-Item -LiteralPath \$startMenuShortcut(?:Folder)?[^\n]*-Recurse/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppTest,
+      /Remove-Item[^\n]*(?:\$commonPrograms|\$startMenuShortcut(?:Folder)?)[^\n]*-Recurse|Remove-Item[^\n]*-Recurse[^\n]*(?:\$commonPrograms|\$startMenuShortcut(?:Folder)?)/,
+    );
+    assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu shortcut behind/);
+    assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu folder behind/);
+  });
+
   test('replaces a hostile privileged parent environment with the exact smoke child allowlist', () => {
     const allowlist = installedWindowsAppTest.match(
       /\$childEnvironment = \[ordered\]@\{([\s\S]*?)\n\s+\}/,
