@@ -269,10 +269,15 @@ function publicApiBase(configured?: string): PublicApiBase | null {
   const managedLabelInProprNamespace = normalizedHostname.endsWith('.propr.dev')
     && normalizedHostname.split('.').slice(0, -2).some(label => label.startsWith('t-'));
   const rawAuthority = raw.slice(raw.indexOf('://') + 3).split(/[/?#]/, 1)[0]?.split('@').pop()?.toLowerCase() ?? '';
+  const rawHostname = rawAuthority.replace(/:\d+$/, '').replace(/\.$/, '');
+  const rawHostnameLabels = rawHostname.split('.');
+  const rawManagedLabelInProprNamespace = rawHostnameLabels[0]?.startsWith('t-') === true
+    && rawHostnameLabels.at(-2) === 'propr'
+    && rawHostnameLabels.at(-1) === 'dev';
   const claimsManagedNamespace = (
     managedLabelInProprNamespace
   ) || (
-    rawAuthority.startsWith('t-') && rawAuthority.includes('.propr.dev')
+    rawManagedLabelInProprNamespace
   );
   if (claimsManagedNamespace && !canonicalManagedUrl) {
     throw new Error('API_PUBLIC_URL uses a noncanonical reserved ProPR tunnel host');

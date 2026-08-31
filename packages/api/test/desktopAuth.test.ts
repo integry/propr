@@ -95,6 +95,15 @@ describe('desktop browser pairing', () => {
       hosted.getFrontendApprovalUrl(pairing.pairingId).toString(),
       `https://app.propr.dev/desktop/pairing?pairing_id=${pairing.pairingId}&tunnel=t-instance123.propr.dev`,
     );
+    const selfManaged = new DesktopAuthService({
+      database,
+      approvalBaseUrl: 'https://app.propr.dev',
+      publicApiUrl: 'https://t-tenant.propr.dev.example.com',
+    });
+    assert.equal(
+      selfManaged.getFrontendApprovalUrl(pairing.pairingId).toString(),
+      `https://app.propr.dev/desktop/pairing?pairing_id=${pairing.pairingId}`,
+    );
   });
 
   test('pairing rejects noncanonical spellings in the reserved managed tunnel namespace', () => {

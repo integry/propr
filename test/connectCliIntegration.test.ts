@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   mkdirSync,
   rmSync,
+  rmdirSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -376,7 +377,7 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(internal.status, 1);
     assert.equal(internal.document.status, 'internalFailure');
   } finally {
-    if (removeOsConfigDir) rmSync(osConfigDir, { recursive: true, force: true });
+    if (removeOsConfigDir) rmdirSync(osConfigDir);
     rmSync(parent, { recursive: true, force: true });
   }
 });
