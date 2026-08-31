@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import { TASK_UPDATE, DRAFT_UPDATE, GOAL_SUMMARY_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, GoalSummaryUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
 import { getApiBaseUrl } from '../config/runtimeConfig';
 
@@ -17,6 +17,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
   const indexingUpdateCallbacksRef = useRef<Set<(payload: IndexingUpdatePayload) => void>>(new Set());
   const queueStatsUpdateCallbacksRef = useRef<Set<(payload: QueueStatsUpdatePayload) => void>>(new Set());
   const taskLiveUpdateCallbacksRef = useRef<Set<(payload: TaskLiveUpdatePayload) => void>>(new Set());
+  const goalSummaryUpdateCallbacksRef = useRef<Set<(payload: GoalSummaryUpdatePayload) => void>>(new Set());
 
   useEffect(() => {
     if (disabled) {
@@ -76,6 +77,10 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     newSocket.on(TASK_LIVE_UPDATE, (payload: TaskLiveUpdatePayload) => {
       console.log('[SocketContext] Received task live update:', payload);
       taskLiveUpdateCallbacksRef.current.forEach((callback) => callback(payload));
+    });
+
+    newSocket.on(GOAL_SUMMARY_UPDATE, (payload: GoalSummaryUpdatePayload) => {
+      goalSummaryUpdateCallbacksRef.current.forEach((callback) => callback(payload));
     });
 
     setSocket(newSocket);
@@ -170,6 +175,14 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     }
   }, [socket, isConnected]);
 
+  const subscribeToGoalUpdates = useCallback(() => {
+    if (socket && isConnected) socket.emit('subscribe:goals');
+  }, [socket, isConnected]);
+
+  const unsubscribeFromGoalUpdates = useCallback(() => {
+    if (socket && isConnected) socket.emit('unsubscribe:goals');
+  }, [socket, isConnected]);
+
   const onTaskUpdate = useCallback((callback: (payload: TaskUpdatePayload) => void) => {
     taskUpdateCallbacksRef.current.add(callback);
     return () => {
@@ -205,6 +218,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     };
   }, []);
 
+  const onGoalSummaryUpdate = useCallback((callback: (payload: GoalSummaryUpdatePayload) => void) => {
+    goalSummaryUpdateCallbacksRef.current.add(callback);
+    return () => {
+      goalSummaryUpdateCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
   const value: SocketContextValue = {
     socket,
     isConnected,
@@ -220,11 +240,14 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     unsubscribeFromQueueStats,
     subscribeToTaskLive,
     unsubscribeFromTaskLive,
+    subscribeToGoalUpdates,
+    unsubscribeFromGoalUpdates,
     onTaskUpdate,
     onDraftUpdate,
     onIndexingUpdate,
     onQueueStatsUpdate,
     onTaskLiveUpdate,
+    onGoalSummaryUpdate,
   };
 
   return (

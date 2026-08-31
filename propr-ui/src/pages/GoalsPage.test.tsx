@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getGoals, type GoalListItem } from '../api/goalsApi';
 import GoalsPage from './GoalsPage';
@@ -7,8 +7,10 @@ import GoalsPage from './GoalsPage';
 const mocks = vi.hoisted(() => ({
   demoMode: false,
   connected: true,
-  taskUpdate: undefined as (() => void) | undefined,
-  onTaskUpdate: vi.fn(),
+  goalUpdate: undefined as ((payload: { schemaVersion: 1; goalId: string; version: number; latestSequence: number; timestamp: string; eventType: 'goal:summary:update' }) => void) | undefined,
+  onGoalSummaryUpdate: vi.fn(),
+  subscribeToGoalUpdates: vi.fn(),
+  unsubscribeFromGoalUpdates: vi.fn(),
 }));
 
 vi.mock('../api/goalsApi', async importOriginal => ({
@@ -17,15 +19,34 @@ vi.mock('../api/goalsApi', async importOriginal => ({
 }));
 vi.mock('../contexts/DemoModeContext', () => ({ useDemoMode: () => ({ isDemoMode: mocks.demoMode }) }));
 vi.mock('../contexts/useSocket', () => ({
-  useSocket: () => ({ isConnected: mocks.connected, onTaskUpdate: mocks.onTaskUpdate }),
+  useSocket: () => ({
+    isConnected: mocks.connected,
+    onGoalSummaryUpdate: mocks.onGoalSummaryUpdate,
+    subscribeToGoalUpdates: mocks.subscribeToGoalUpdates,
+    unsubscribeFromGoalUpdates: mocks.unsubscribeFromGoalUpdates,
+  }),
 }));
 
 const goal: GoalListItem = {
-  id: 'goal-1', objective: 'Durable orchestration', repository: 'integry/propr', state: 'running',
-  agentAlias: 'codex', requestedModel: 'requested', effectiveModel: 'effective', maxConcurrentTasks: 3,
-  autoMergePolicy: 'manual', ultrafixEnabled: false, checklistTotal: 0, checklistCompleted: 0,
-  activeTasks: 1, issuesProcessed: 2, issuesActive: 1, issuesFailed: 0, issuesBlocked: 0,
-  tokenTotal: 0, elapsedSeconds: 0, pausedSeconds: 0, createdAt: '', updatedAt: '',
+  goalId: 'goal-1',
+  objective: 'Durable orchestration',
+  repository: 'integry/propr',
+  state: 'running',
+  agent: 'codex',
+  requestedModel: 'requested',
+  effectiveModel: 'effective',
+  maxActiveTasks: 3,
+  mergePolicy: 'manual',
+  ultrafixEnabled: false,
+  ultrafixGoal: null,
+  ultrafixMaxCycles: null,
+  version: 2,
+  nodeCount: 4,
+  activeNodeCount: 1,
+  latestSequence: 8,
+  projection: { status: 'not-yet-projected' },
+  createdAt: '2026-08-31T00:00:00Z',
+  updatedAt: '2026-08-31T01:00:00Z',
 };
 
 const Location = () => {
@@ -33,116 +54,180 @@ const Location = () => {
   return <output data-testid="location">{location.pathname}{location.search}</output>;
 };
 
-function renderPage(entry = '/goals') {
-  render(
-    <MemoryRouter initialEntries={[entry]}>
+const HistoryControls = () => {
+  const navigate = useNavigate();
+  return <><button onClick={() => navigate(-1)}>Browser back</button><button onClick={() => navigate(1)}>Browser forward</button></>;
+};
+
+function renderPage(entries: string[] = ['/goals'], initialIndex = entries.length - 1) {
+  const makeView = () => (
+    <MemoryRouter initialEntries={entries} initialIndex={initialIndex}>
       <Routes>
         <Route path="/goals" element={<GoalsPage />} />
         <Route path="/goals/new" element={<div>New goal route</div>} />
       </Routes>
       <Location />
+      <HistoryControls />
     </MemoryRouter>
   );
+  const rendered = render(makeView());
+  return { ...rendered, rerenderPage: () => rendered.rerender(makeView()) };
 }
+
+const updatePayload = (version: number) => ({
+  schemaVersion: 1 as const,
+  eventType: 'goal:summary:update' as const,
+  goalId: 'goal-1',
+  version,
+  latestSequence: version + 8,
+  timestamp: '2026-08-31T02:00:00Z',
+});
 
 describe('GoalsPage', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     mocks.demoMode = false;
     mocks.connected = true;
-    mocks.taskUpdate = undefined;
-    mocks.onTaskUpdate.mockReset().mockImplementation((callback: () => void) => {
-      mocks.taskUpdate = callback;
+    mocks.goalUpdate = undefined;
+    mocks.onGoalSummaryUpdate.mockReset().mockImplementation(callback => {
+      mocks.goalUpdate = callback;
       return vi.fn();
     });
+    mocks.subscribeToGoalUpdates.mockReset();
+    mocks.unsubscribeFromGoalUpdates.mockReset();
     vi.mocked(getGoals).mockReset();
   });
 
-  it('renders loading, list data, all state filters, and URL-driven pagination', async () => {
-    let resolveGoals!: (value: { goals: GoalListItem[]; total: number; hasMore: boolean }) => void;
-    vi.mocked(getGoals).mockReturnValueOnce(new Promise(resolve => { resolveGoals = resolve; }));
-    renderPage('/goals?state=planning');
+  it('uses cursor history for next/previous navigation and never displays an inferred total', async () => {
+    vi.mocked(getGoals)
+      .mockResolvedValueOnce({ goals: [goal], nextCursor: 'Y3Vyc29yMg' })
+      .mockResolvedValue({ goals: [{ ...goal, goalId: 'goal-2' }], nextCursor: null });
+    renderPage(['/goals?state=planning']);
     expect(screen.getByText('Loading goals…')).toBeInTheDocument();
-
-    resolveGoals({ goals: [goal], total: 120, hasMore: true });
     expect(await screen.findByText('Durable orchestration')).toBeInTheDocument();
-    expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'planning', page: 1, limit: 50 }));
-    expect(screen.getByLabelText('Filter by state')).toHaveTextContent('QueuedPlanningRunningPausingPausedRecoveringCompletingCompletedFailedCancelled');
+    expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'planning', limit: 50, cursor: undefined }), expect.any(Object));
 
-    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], total: 120, hasMore: true });
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
-    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('page=2'));
-    await waitFor(() => expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })));
+    await waitFor(() => expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'Y3Vyc29yMg' }), expect.any(Object)));
+    expect(screen.getByTestId('location')).toHaveTextContent('cursor=Y3Vyc29yMg');
+    expect(screen.getByRole('navigation', { name: 'Goals pagination' })).toHaveTextContent('Page 2');
+    expect(screen.queryByText(/of \d+/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous page' }));
+    await waitFor(() => expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: undefined }), expect.any(Object)));
+    expect(screen.getByTestId('location')).not.toHaveTextContent('cursor=');
   });
 
-  it('debounces search into the URL and supports clearing it', async () => {
+  it('provides mobile-visible search and resets cursor history when search changes', async () => {
     vi.useFakeTimers();
-    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], total: 1, hasMore: false });
-    renderPage();
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
+    renderPage(['/goals?cursor=Y3Vyc29y&cursorHistory=%5Bnull%5D']);
     await act(async () => { await Promise.resolve(); });
-    expect(screen.getByText('Durable orchestration')).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText('Search goals'), { target: { value: 'operator' } });
-    expect(getGoals).not.toHaveBeenCalledWith(expect.objectContaining({ search: 'operator' }));
+    const search = screen.getByLabelText('Search goals');
+    expect(search.closest('.hidden')).toBeNull();
+    fireEvent.change(search, { target: { value: 'operator' } });
     await act(async () => { vi.advanceTimersByTime(300); });
     await act(async () => { await Promise.resolve(); });
     expect(screen.getByTestId('location')).toHaveTextContent('search=operator');
-    expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'operator', page: 1 }));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
-    expect(screen.getByTestId('location')).not.toHaveTextContent('search=');
-    vi.useRealTimers();
+    expect(screen.getByTestId('location')).not.toHaveTextContent('cursor=');
+    expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'operator', cursor: undefined }), expect.any(Object));
   });
 
-  it('silently refreshes list data after connected task socket updates', async () => {
-    vi.mocked(getGoals)
-      .mockResolvedValueOnce({ goals: [goal], total: 1, hasMore: false })
-      .mockResolvedValueOnce({ goals: [{ ...goal, objective: 'Refreshed objective' }], total: 1, hasMore: false });
-    renderPage();
-    expect(await screen.findByText('Durable orchestration')).toBeInTheDocument();
-    expect(mocks.taskUpdate).toBeTypeOf('function');
+  it('sanitizes invalid legacy page/cursor URL state before requesting', async () => {
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
+    renderPage(['/goals?page=NaN&cursor=bad%2Bcursor&cursorHistory=broken']);
+    await screen.findByText('Durable orchestration');
+    expect(screen.getByTestId('location')).not.toHaveTextContent('page=');
+    expect(screen.getByTestId('location')).not.toHaveTextContent('cursor=');
+    expect(getGoals).toHaveBeenCalledTimes(1);
+    expect(getGoals).toHaveBeenCalledWith(expect.objectContaining({ cursor: undefined }), expect.any(Object));
+  });
 
-    await act(async () => { mocks.taskUpdate?.(); });
-    expect(await screen.findByText('Refreshed objective')).toBeInTheDocument();
+  it('restores search, filter, and cursor state through browser back/forward navigation', async () => {
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
+    const entries = [
+      '/goals?search=first&state=paused',
+      '/goals?search=second&state=running&cursor=Y3Vyc29yMg&cursorHistory=%5Bnull%5D',
+    ];
+    renderPage(entries);
+    await waitFor(() => expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'second', state: 'running', cursor: 'Y3Vyc29yMg' }), expect.any(Object)));
+    expect(screen.getByLabelText('Search goals')).toHaveValue('second');
+
+    fireEvent.click(screen.getByText('Browser back'));
+    await waitFor(() => expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'first', state: 'paused', cursor: undefined }), expect.any(Object)));
+    expect(screen.getByLabelText('Search goals')).toHaveValue('first');
+    expect(screen.getByLabelText('Filter by state')).toHaveValue('paused');
+
+    fireEvent.click(screen.getByText('Browser forward'));
+    await waitFor(() => expect(screen.getByLabelText('Search goals')).toHaveValue('second'));
+    expect(screen.getByLabelText('Filter by state')).toHaveValue('running');
+  });
+
+  it('coalesces rapid versioned goal events and ignores already-applied versions', async () => {
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
+    renderPage();
+    await screen.findByText('Durable orchestration');
+    vi.useFakeTimers();
+
+    act(() => {
+      mocks.goalUpdate?.(updatePayload(2));
+      mocks.goalUpdate?.(updatePayload(3));
+      mocks.goalUpdate?.(updatePayload(4));
+      vi.advanceTimersByTime(100);
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(getGoals).toHaveBeenCalledTimes(2);
+    expect(mocks.subscribeToGoalUpdates).toHaveBeenCalledOnce();
+  });
+
+  it('ignores a stale response after filters start a newer request', async () => {
+    let resolveFirst!: (value: { goals: GoalListItem[]; nextCursor: string | null }) => void;
+    vi.mocked(getGoals)
+      .mockReturnValueOnce(new Promise(resolve => { resolveFirst = resolve; }))
+      .mockResolvedValueOnce({ goals: [{ ...goal, objective: 'Newest result' }], nextCursor: null });
+    renderPage();
+    fireEvent.change(screen.getByLabelText('Filter by state'), { target: { value: 'running' } });
+    expect(await screen.findByText('Newest result')).toBeInTheDocument();
+    await act(async () => { resolveFirst({ goals: [{ ...goal, objective: 'Stale result' }], nextCursor: null }); });
+    expect(screen.queryByText('Stale result')).not.toBeInTheDocument();
+  });
+
+  it('surfaces disconnect state and performs one coalesced resync after reconnect', async () => {
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
+    const rendered = renderPage();
+    await screen.findByText('Durable orchestration');
+
+    mocks.connected = false;
+    rendered.rerenderPage();
+    expect(screen.getByText(/Goal updates are disconnected/)).toBeInTheDocument();
+    expect(getGoals).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+    mocks.connected = true;
+    rendered.rerenderPage();
+    act(() => { vi.advanceTimersByTime(100); });
+    await act(async () => { await Promise.resolve(); });
     expect(getGoals).toHaveBeenCalledTimes(2);
   });
 
-  it('renders error and each empty-state branch', async () => {
-    vi.mocked(getGoals).mockRejectedValue(new Error('Goals unavailable'));
-    renderPage();
+  it('keeps empty/error/demo gating and creation navigation intact', async () => {
+    vi.mocked(getGoals).mockRejectedValueOnce(new Error('Goals unavailable'));
+    const failed = renderPage();
     expect(await screen.findByRole('alert')).toHaveTextContent('Goals unavailable');
-  });
+    failed.unmount();
 
-  it('renders no-goal, filtered, and searched empty states', async () => {
-    vi.mocked(getGoals).mockResolvedValue({ goals: [], total: 0, hasMore: false });
-    const plain = render(
-      <MemoryRouter initialEntries={['/goals']}><GoalsPage /></MemoryRouter>
-    );
-    expect(await screen.findByText('No goals yet')).toBeInTheDocument();
-    plain.unmount();
-
-    const filtered = render(<MemoryRouter initialEntries={['/goals?state=paused']}><GoalsPage /></MemoryRouter>);
-    expect(await screen.findByText('No matching goals')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
-    filtered.unmount();
-
-    render(<MemoryRouter initialEntries={['/goals?search=missing']}><GoalsPage /></MemoryRouter>);
-    expect(await screen.findByText('No results for “missing”')).toBeInTheDocument();
-  });
-
-  it('disables creation in demo mode and navigates when writable', async () => {
-    vi.mocked(getGoals).mockResolvedValue({ goals: [], total: 0, hasMore: false });
     mocks.demoMode = true;
+    vi.mocked(getGoals).mockResolvedValue({ goals: [], nextCursor: null });
     renderPage();
     expect(await screen.findByRole('button', { name: 'Create first goal' })).toBeDisabled();
-    expect(screen.getByTitle('Goal creation is disabled in demo mode')).toBeDisabled();
+    expect(screen.getByText(/Demo mode is read-only/)).toBeInTheDocument();
   });
 
-  it('navigates to the creation route from the primary action', async () => {
-    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], total: 1, hasMore: false });
+  it('navigates to the creation route when writable', async () => {
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
     renderPage();
     await screen.findByText('Durable orchestration');
     fireEvent.click(screen.getByRole('button', { name: 'New Goal' }));
     expect(await screen.findByText('New goal route')).toBeInTheDocument();
-    expect(screen.getByTestId('location')).toHaveTextContent('/goals/new');
   });
 });

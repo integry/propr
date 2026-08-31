@@ -278,6 +278,8 @@ describe('instance catalog', () => {
                 alias: 'default',
                 enabled: true,
                 supportedModels: ['gpt-5.4'],
+                goalCapable: false,
+                goalCapableModels: [],
                 defaultModel: 'gpt-5.4'
             }],
             repositories: [{

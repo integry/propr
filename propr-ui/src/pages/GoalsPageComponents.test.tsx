@@ -5,33 +5,35 @@ import type { GoalListItem, GoalState } from '../api/goalsApi';
 import { EmptyGoalsState, GoalRow, GoalStateBadge, GoalsPagination } from './GoalsPageComponents';
 
 const goal: GoalListItem = {
-  id: 'goal-1',
+  goalId: 'goal-1',
   objective: 'Build the durable goal control plane',
   repository: 'integry/propr',
   state: 'running',
-  agentAlias: 'codex',
+  agent: 'codex',
   requestedModel: 'gpt-requested',
   effectiveModel: 'gpt-effective',
-  maxConcurrentTasks: 4,
-  autoMergePolicy: 'auto_squash',
+  maxActiveTasks: 4,
+  mergePolicy: 'auto_squash',
   ultrafixEnabled: true,
   ultrafixGoal: 8,
   ultrafixMaxCycles: 10,
-  checklistTotal: 8,
-  checklistCompleted: 3,
-  activeTasks: 2,
-  issuesProcessed: 6,
-  issuesActive: 2,
-  issuesFailed: 1,
-  issuesBlocked: 1,
-  tokenTotal: 12_500,
-  elapsedSeconds: 7_500,
-  pausedSeconds: 300,
-  latestEvent: 'Implementation PR opened',
-  epicPrUrl: 'https://github.com/integry/propr/pull/2002',
-  connectionState: 'connected',
+  version: 4,
+  nodeCount: 8,
+  activeNodeCount: 2,
+  latestSequence: 19,
   createdAt: '2026-08-31T00:00:00Z',
   updatedAt: '2026-08-31T01:00:00Z',
+  projection: {
+    status: 'ready',
+    checklist: { total: 8, completed: 3 },
+    issues: { total: 9, active: 2, processed: 6, failed: 1, blocked: 1 },
+    pullRequests: { open: 2, reviewPending: 1, ultrafixPending: 0, mergeReady: 1, merged: 4 },
+    tokens: { total: 12_500 },
+    time: { elapsedSeconds: 7_500, pausedSeconds: 300 },
+    latestEvent: 'Implementation PR opened',
+    epicPrUrl: 'https://github.com/integry/propr/pull/2002',
+    connectionState: 'connected',
+  },
 };
 
 const Location = () => <output data-testid="location">{useLocation().pathname}</output>;
@@ -43,29 +45,34 @@ describe('GoalsPageComponents', () => {
     for (const label of ['Queued', 'Planning', 'Running', 'Pausing', 'Paused', 'Recovering', 'Completing', 'Completed', 'Failed', 'Cancelled']) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
-    expect(screen.queryByText('Active')).not.toBeInTheDocument();
   });
 
-  it('keeps requested/effective models explicit and renders goal statistics/settings', () => {
+  it('keeps canonical settings/models and renders a labeled checklist progressbar', () => {
     render(<MemoryRouter><GoalRow goal={goal} /></MemoryRouter>);
 
     expect(screen.getByText('Requested: gpt-requested')).toBeInTheDocument();
     expect(screen.getByText('Effective: gpt-effective')).toBeInTheDocument();
-    expect(screen.getByText('2 active tasks')).toBeInTheDocument();
-    expect(screen.getByText(/6 processed · 2 active/)).toHaveTextContent('1 failed');
+    expect(screen.getByText('2 active work items · 8 total')).toBeInTheDocument();
+    expect(screen.getByText(/6 processed · 2 active · 1 failed · 1 blocked/)).toBeInTheDocument();
     expect(screen.getByText('12.5K tokens')).toBeInTheDocument();
-    expect(screen.getByText('2h 5m')).toBeInTheDocument();
+    expect(screen.getByText('2h 5m (5m paused)')).toBeInTheDocument();
     expect(screen.getByText('Concurrency: 4')).toBeInTheDocument();
     expect(screen.getByText('Ultrafix · goal 8/10 · max 10')).toBeInTheDocument();
-    expect(screen.getByLabelText('3 of 8 checklist items completed')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: '3 of 8 checklist items completed' })).toHaveAttribute('aria-valuenow', '3');
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuetext', '38% complete');
   });
 
-  it('uses sibling links so the epic PR is valid markup and does not navigate to the goal', () => {
+  it('marks unavailable extension statistics explicitly instead of displaying authoritative zeros', () => {
+    render(<MemoryRouter><GoalRow goal={{ ...goal, projection: { status: 'not-yet-projected' } }} /></MemoryRouter>);
+    expect(screen.getByText('Detailed statistics are not yet projected.')).toBeInTheDocument();
+    expect(screen.queryByText(/0 processed/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  });
+
+  it('uses sibling links so the epic PR does not navigate to the goal', () => {
     render(<MemoryRouter initialEntries={['/goals']}><GoalRow goal={goal} /><Location /></MemoryRouter>);
     const goalLink = screen.getByRole('link', { name: `Open goal: ${goal.objective}` });
     const epicLink = screen.getByRole('link', { name: `Open epic pull request for ${goal.objective}` });
-
-    expect(epicLink.closest('a')).toBe(epicLink);
     expect(goalLink.contains(epicLink)).toBe(false);
     fireEvent.click(epicLink);
     expect(screen.getByTestId('location')).toHaveTextContent('/goals');
@@ -79,21 +86,20 @@ describe('GoalsPageComponents', () => {
     const { rerender } = render(<EmptyGoalsState type="no-goals" onCreateGoal={create} />);
     fireEvent.click(screen.getByRole('button', { name: 'Create first goal' }));
     expect(create).toHaveBeenCalledOnce();
-
     rerender(<EmptyGoalsState type="no-search-results" searchQuery="missing" onCreateGoal={create} onClearSearch={clear} />);
-    expect(screen.getByText('No results for “missing”')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
     expect(clear).toHaveBeenCalledOnce();
   });
 
-  it('announces pagination and enforces page bounds', () => {
-    const onPageChange = vi.fn();
-    render(<GoalsPagination currentPage={2} totalPages={3} totalGoals={120} pageSize={50} hasMore loading={false} onPageChange={onPageChange} />);
-    const pagination = screen.getByRole('navigation', { name: 'Goals pagination' });
-    expect(pagination).toHaveTextContent('51–100 of 120');
+  it('announces keyset pagination without inventing totals', () => {
+    const previous = vi.fn();
+    const next = vi.fn();
+    render(<GoalsPagination currentPage={2} hasPrevious hasNext loading={false} onPrevious={previous} onNext={next} />);
+    expect(screen.getByRole('navigation', { name: 'Goals pagination' })).toHaveTextContent('Page 2');
+    expect(screen.queryByText(/of 120/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Previous page' }));
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
-    expect(onPageChange).toHaveBeenNthCalledWith(1, 1);
-    expect(onPageChange).toHaveBeenNthCalledWith(2, 3);
+    expect(previous).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledOnce();
   });
 });

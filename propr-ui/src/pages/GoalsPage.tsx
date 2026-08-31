@@ -1,282 +1,116 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Filter, Search, Target, X } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { getGoals, GOAL_STATES, type GoalListItem, type GoalState } from '../api/goalsApi';
 import { useDemoMode } from '../contexts/DemoModeContext';
-import { useSocket } from '../contexts/useSocket';
 import { EmptyGoalsState, GoalsList, GoalsPagination } from './GoalsPageComponents';
-import { DEFAULT_GOALS_PAGE_SIZE, GOAL_STATE_OPTIONS } from './goalsPageUtils';
+import { GOAL_STATE_OPTIONS } from './goalsPageUtils';
+import { useGoalsList } from './useGoalsList';
 
-const GoalsPage: React.FC = () => {
+const GoalsPage = () => {
   useDocumentTitle('Goals');
   const navigate = useNavigate();
   const { isDemoMode } = useDemoMode();
-  const { isConnected, onTaskUpdate } = useSocket();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const isInitialMount = useRef(true);
-
-  const requestedState = searchParams.get('state');
-  const stateFilter: GoalState | 'all' = requestedState && GOAL_STATES.includes(requestedState as GoalState)
-    ? requestedState as GoalState
-    : 'all';
-  const repoFilter = searchParams.get('repository') || '';
-  const urlSearch = searchParams.get('search') || '';
-  const currentPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
-
-  const [searchQuery, setSearchQuery] = useState(urlSearch);
-  const [debouncedSearch, setDebouncedSearch] = useState(urlSearch);
-
-  const [goals, setGoals] = useState<GoalListItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [totalGoals, setTotalGoals] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
-
-  const totalPages = useMemo(
-    () => Math.ceil(totalGoals / DEFAULT_GOALS_PAGE_SIZE),
-    [totalGoals]
-  );
-
-  const loadGoals = useCallback(
-    async (page: number, state: GoalState | 'all', repository: string, showLoading = true) => {
-      if (showLoading) setLoading(true);
-      setError(null);
-      try {
-        const data = await getGoals({
-          page,
-          limit: DEFAULT_GOALS_PAGE_SIZE,
-          state: state === 'all' ? undefined : state,
-          repository: repository || undefined,
-          search: debouncedSearch || undefined,
-        });
-        setGoals(data.goals);
-        setTotalGoals(data.total);
-        setHasMore(data.hasMore);
-      } catch (err) {
-        if (showLoading) {
-          setError((err as Error).message || 'Failed to load goals');
-        } else {
-          console.error('Goals silent refresh failed:', err);
-        }
-      } finally {
-        if (showLoading) setLoading(false);
-      }
-    },
-    [debouncedSearch]
-  );
-
-  // Sync URL search on initial mount
-  useEffect(() => {
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
-      setSearchQuery(urlSearch);
-      setDebouncedSearch(urlSearch);
-    }
-  }, [urlSearch]);
-
-  // Debounce search → URL
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (searchQuery !== debouncedSearch) {
-        setDebouncedSearch(searchQuery);
-        setSearchParams(
-          prev => {
-            const next = new URLSearchParams(prev);
-            if (searchQuery) next.set('search', searchQuery);
-            else next.delete('search');
-            next.set('page', '1');
-            return next;
-          },
-          { replace: true }
-        );
-      }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery, debouncedSearch, setSearchParams]);
-
-  useEffect(() => {
-    loadGoals(currentPage, stateFilter, repoFilter);
-  }, [currentPage, stateFilter, repoFilter, debouncedSearch, loadGoals]);
-
-  useEffect(() => {
-    if (!isConnected) return;
-    return onTaskUpdate(() => {
-      void loadGoals(currentPage, stateFilter, repoFilter, false);
-    });
-  }, [currentPage, isConnected, loadGoals, onTaskUpdate, repoFilter, stateFilter]);
-
-  const updateSearchParams = useCallback(
-    (updates: Record<string, string | null>) => {
-      setSearchParams(
-        prev => {
-          const next = new URLSearchParams(prev);
-          Object.entries(updates).forEach(([key, value]) => {
-            if (value === null || value === 'all' || value === '') next.delete(key);
-            else next.set(key, value);
-          });
-          return next;
-        },
-        { replace: true }
-      );
-    },
-    [setSearchParams]
-  );
-
-  const handleStateFilterChange = (value: string) =>
-    updateSearchParams({ state: value, page: '1' });
-
-  const handleSearchClear = () => {
-    setSearchQuery('');
-    setDebouncedSearch('');
-    updateSearchParams({ search: null, page: '1' });
-  };
+  const list = useGoalsList();
 
   const handleNewGoal = useCallback(() => {
     if (!isDemoMode) navigate('/goals/new');
   }, [isDemoMode, navigate]);
 
-  const handlePageChange = (page: number) =>
-    updateSearchParams({ page: String(page) });
-
-  // ── Loading skeleton ──────────────────────────────────────────────────────
-  if (loading && goals.length === 0) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Goals</h1>
-        </div>
-        <div className="flex-1 overflow-auto px-4 sm:px-6 py-4">
-          <div role="status" className="text-gray-500 text-sm">Loading goals…</div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Error state ────────────────────────────────────────────────────────────
-  if (error && goals.length === 0) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Goals</h1>
-        </div>
-        <div className="flex-1 overflow-auto px-4 sm:px-6 py-4">
-          <div role="alert" className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-            {error}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   const renderContent = () => {
-    if (goals.length === 0 && !loading && totalGoals === 0 && !debouncedSearch && stateFilter === 'all') {
-      return (
-        <EmptyGoalsState
-          type="no-goals"
-          onCreateGoal={handleNewGoal}
-          createDisabled={isDemoMode}
-        />
-      );
+    if (list.loading && list.goals.length === 0) {
+      return <div role="status" className="text-sm text-gray-500">Loading goals…</div>;
     }
-    if (goals.length === 0 && !loading && debouncedSearch) {
-      return (
-        <EmptyGoalsState
-          type="no-search-results"
-          searchQuery={debouncedSearch}
-          onCreateGoal={handleNewGoal}
-          onClearSearch={handleSearchClear}
-        />
-      );
+    if (list.error && list.goals.length === 0) {
+      return <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{list.error}</div>;
     }
-    if (goals.length === 0 && !loading) {
-      return (
-        <EmptyGoalsState
-          type="no-filter-results"
-          onCreateGoal={handleNewGoal}
-          onClearFilter={() => updateSearchParams({ state: 'all', repository: null, page: '1' })}
-        />
-      );
+    if (list.goals.length === 0 && !list.appliedSearch && list.stateFilter === 'all' && !list.repositoryFilter && !list.hasPrevious) {
+      return <EmptyGoalsState type="no-goals" onCreateGoal={handleNewGoal} createDisabled={isDemoMode} />;
     }
-    return <GoalsList goals={goals} />;
+    if (list.goals.length === 0 && list.appliedSearch) {
+      return <EmptyGoalsState type="no-search-results" searchQuery={list.appliedSearch} onCreateGoal={handleNewGoal} onClearSearch={list.clearSearch} />;
+    }
+    if (list.goals.length === 0) {
+      return <EmptyGoalsState type="no-filter-results" onCreateGoal={handleNewGoal} onClearFilter={list.clearFilters} />;
+    }
+    return <GoalsList goals={list.goals} />;
   };
 
   return (
-    <div className="flex flex-col h-full">
-      {/* ── Header ─────────────────────────────────────────────────────── */}
-      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-        <div className="flex items-center justify-between gap-2 sm:gap-4">
-          <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Goals</h1>
-          <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
-            {/* Desktop search */}
-            <div className="relative hidden sm:block">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+    <div className="flex h-full flex-col">
+      <header className="flex-shrink-0 border-b border-gray-200 bg-slate-50 px-4 py-3 sm:px-6 sm:py-4">
+        <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-4">
+          <h1 className="mr-auto flex-shrink-0 text-lg font-bold text-gray-800 sm:text-2xl">Goals</h1>
+          <div className="order-3 w-full sm:order-none sm:w-auto">
+            <div className="relative">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" aria-hidden="true" />
               <input
                 type="search"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
+                value={list.searchQuery}
+                onChange={event => list.setSearchQuery(event.target.value)}
+                maxLength={200}
                 placeholder="Search goals…"
                 aria-label="Search goals"
-                className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                className="w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-8 text-sm text-gray-700 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500 sm:w-64"
               />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={handleSearchClear}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  aria-label="Clear search"
-                >
-                  <X size={16} />
+              {list.searchQuery && (
+                <button type="button" onClick={list.clearSearch} className="absolute right-2 top-1/2 -translate-y-1/2 rounded text-gray-400 hover:text-gray-600" aria-label="Clear search">
+                  <X size={16} aria-hidden="true" />
                 </button>
               )}
             </div>
-
-            {/* Filters */}
-            <div className="flex items-center gap-2 min-w-0">
-              <Filter size={16} className="text-gray-500 hidden sm:block" aria-hidden="true" />
-              <select
-                value={stateFilter}
-                onChange={e => handleStateFilterChange(e.target.value)}
-                aria-label="Filter by state"
-                className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-              >
-                {GOAL_STATE_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* New Goal button */}
-            <button
-              type="button"
-              onClick={handleNewGoal}
-              disabled={isDemoMode}
-              title={isDemoMode ? 'Goal creation is disabled in demo mode' : 'Create a new goal'}
-              className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 bg-teal-600 text-white text-sm font-medium rounded-md hover:bg-teal-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
-            >
-              <Target className="w-4 h-4" />
-              <span className="hidden sm:inline">New Goal</span>
-            </button>
           </div>
+          <div className="flex min-w-0 items-center gap-2">
+            <Filter size={16} className="hidden text-gray-500 sm:block" aria-hidden="true" />
+            <select
+              value={list.stateFilter}
+              onChange={event => list.setStateFilter(event.target.value)}
+              aria-label="Filter by state"
+              className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500 sm:px-3 sm:py-2"
+            >
+              {GOAL_STATE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </div>
+          <button
+            type="button"
+            onClick={handleNewGoal}
+            disabled={isDemoMode}
+            title={isDemoMode ? 'Goal creation is disabled in demo mode' : 'Create a new goal'}
+            aria-label="New Goal"
+            className="inline-flex flex-shrink-0 items-center gap-1.5 rounded-md bg-teal-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50 sm:px-4 sm:py-2"
+          >
+            <Target className="h-4 w-4" aria-hidden="true" />
+            <span className="hidden sm:inline">New Goal</span>
+          </button>
         </div>
-      </div>
+        {isDemoMode && <p className="mt-2 text-xs text-amber-700">Demo mode is read-only. You can inspect goals, but you cannot create or change them.</p>}
+      </header>
 
-      {/* ── Content ──────────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 sm:px-6 w-full">
-        <div className="py-4">{renderContent()}</div>
-      </div>
+      {!list.isConnected && (
+        <div role="status" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800 sm:px-6">
+          Goal updates are disconnected. Showing the last loaded data while the connection recovers.
+        </div>
+      )}
+      {list.error && list.goals.length > 0 && (
+        <div role="alert" className="border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700 sm:px-6">{list.error}</div>
+      )}
 
-      {/* ── Pagination ────────────────────────────────────────────────────── */}
-      {goals.length > 0 && totalPages > 1 && (
-        <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200">
+      <main className="flex-1 overflow-x-hidden overflow-y-auto px-4 sm:px-6">
+        <div className="py-4">
+          {list.loading && list.goals.length > 0 && <span className="sr-only" role="status">Refreshing goals…</span>}
+          {renderContent()}
+        </div>
+      </main>
+
+      {(list.hasPrevious || list.hasNext) && list.goals.length > 0 && (
+        <div className="flex-shrink-0 border-t border-gray-200 bg-slate-50">
           <GoalsPagination
-            currentPage={currentPage}
-            totalPages={totalPages}
-            totalGoals={totalGoals}
-            pageSize={DEFAULT_GOALS_PAGE_SIZE}
-            hasMore={hasMore}
-            loading={loading}
-            onPageChange={handlePageChange}
+            currentPage={list.currentPage}
+            hasPrevious={list.hasPrevious}
+            hasNext={list.hasNext}
+            loading={list.loading}
+            onPrevious={list.previousPage}
+            onNext={list.nextPage}
           />
         </div>
       )}

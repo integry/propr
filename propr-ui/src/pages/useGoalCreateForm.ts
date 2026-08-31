@@ -7,7 +7,7 @@ import {
   type InstanceCatalogRepository,
 } from '@propr/shared';
 import { getInstanceCatalog } from '../api/proprApi';
-import { createGoal } from '../api/goalsApi';
+import { createGoal, isGoalApiErrorCode } from '../api/goalsApi';
 import { isDemoModeReadOnlyError } from '../api/apiClient';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { useToast } from '../components/ui/useToast';
@@ -46,8 +46,16 @@ export function useGoalCreateForm() {
   const [values, setValues] = useState<GoalFormValues>(initialValues);
   const [errors, setErrors] = useState<GoalFormErrors>({});
   const [submitting, setSubmitting] = useState(false);
-  const idempotencyKeyRef = useRef(newIdempotencyKey());
+  const idempotencyKeyRef = useRef<string | null>(null);
+  if (idempotencyKeyRef.current === null) idempotencyKeyRef.current = newIdempotencyKey();
+  const lastAttemptRef = useRef<{ payload: string; key: string } | null>(null);
   const submissionInFlightRef = useRef(false);
+
+  const beginNewIntent = useCallback(() => {
+    if (!lastAttemptRef.current) return;
+    idempotencyKeyRef.current = newIdempotencyKey();
+    lastAttemptRef.current = null;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,11 +90,13 @@ export function useGoalCreateForm() {
   }, []);
 
   const setField = useCallback(<K extends keyof GoalFormValues>(field: K, value: GoalFormValues[K]) => {
+    beginNewIntent();
     setValues(current => ({ ...current, [field]: value }));
     setErrors(current => ({ ...current, [field]: undefined, submit: undefined }));
-  }, []);
+  }, [beginNewIntent]);
 
   const setAgent = useCallback((alias: string) => {
+    beginNewIntent();
     const agent = agents.find(candidate => candidate.alias === alias);
     const models = agent ? getGoalCapableModels(agent) : [];
     const model = agent?.defaultModel && models.includes(agent.defaultModel)
@@ -94,7 +104,7 @@ export function useGoalCreateForm() {
       : models[0] ?? '';
     setValues(current => ({ ...current, agent: alias, model }));
     setErrors(current => ({ ...current, agent: undefined, model: undefined, submit: undefined }));
-  }, [agents]);
+  }, [agents, beginNewIntent]);
 
   const submit = useCallback(async () => {
     if (isDemoMode || submissionInFlightRef.current) return;
@@ -106,13 +116,29 @@ export function useGoalCreateForm() {
     submissionInFlightRef.current = true;
     setSubmitting(true);
     setErrors({});
+    const params = buildCreateGoalParams(values);
+    const payload = JSON.stringify(params);
+    if (lastAttemptRef.current && lastAttemptRef.current.payload !== payload) {
+      idempotencyKeyRef.current = newIdempotencyKey();
+      lastAttemptRef.current = null;
+    }
+    const key = idempotencyKeyRef.current ?? newIdempotencyKey();
+    idempotencyKeyRef.current = key;
+    lastAttemptRef.current = { payload, key };
     try {
-      await createGoal(buildCreateGoalParams(values), idempotencyKeyRef.current);
+      await createGoal(params, key);
       addToast({ type: 'success', message: 'Goal created successfully.' });
       navigate('/goals');
     } catch (error) {
+      const idempotencyConflict = isGoalApiErrorCode(error, 'goal_idempotency_conflict');
+      if (idempotencyConflict) {
+        idempotencyKeyRef.current = newIdempotencyKey();
+        lastAttemptRef.current = null;
+      }
       setErrors({
-        submit: isDemoModeReadOnlyError(error)
+        submit: idempotencyConflict
+          ? 'This retry key was already used for different goal settings. A new key is ready; submit again to start this goal as a new intent.'
+          : isDemoModeReadOnlyError(error)
           ? 'Goal creation is disabled in demo mode.'
           : (error as Error).message || 'Failed to create goal. Please try again.',
       });

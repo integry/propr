@@ -11,6 +11,8 @@ describe('resolvePlanIssueDefaultSelection', () => {
       dockerImage: 'claude',
       configPath: '/tmp/claude.json',
       supportedModels: ['claude-haiku-4-5'],
+      goalCapable: false,
+      goalCapableModels: [],
       defaultModel: 'claude-haiku-4-5'
     },
     {
@@ -21,6 +23,8 @@ describe('resolvePlanIssueDefaultSelection', () => {
       dockerImage: 'codex',
       configPath: '/tmp/codex.json',
       supportedModels: ['gpt-5.4'],
+      goalCapable: false,
+      goalCapableModels: [],
       defaultModel: 'gpt-5.4'
     }
   ];
@@ -35,6 +39,8 @@ describe('resolvePlanIssueDefaultSelection', () => {
       dockerImage: 'propr/agent:latest',
       configPath: '~/.vibe',
       supportedModels: ['mistral-medium-3.5', 'devstral-2512'],
+      goalCapable: false,
+      goalCapableModels: [],
       defaultModel: 'mistral-medium-3.5'
     }
   ];

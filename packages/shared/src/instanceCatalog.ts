@@ -2,18 +2,11 @@ export interface InstanceCatalogAgent {
   alias: string;
   /** Always true: the operational catalog omits disabled entries. */
   enabled: boolean;
-  /**
-   * Explicit opt-in for long-running goal execution. Optional so older catalog
-   * producers and consumers remain wire-compatible; goal UIs must require
-   * `true` instead of treating every enabled coding agent as goal-capable.
-   */
-  goalCapable?: boolean;
-  /**
-   * Optional model-level goal allowlist. When omitted, every supported model
-   * on an explicitly goal-capable agent is eligible.
-   */
-  goalCapableModels?: string[];
   supportedModels: string[];
+  /** Goal creation requires this explicit agent opt-in. */
+  goalCapable: boolean;
+  /** Supported models explicitly opted into goal execution. */
+  goalCapableModels: string[];
   defaultModel?: string;
 }
 
@@ -27,7 +20,9 @@ export function isGoalCapableCatalogAgent(
 
 export function getGoalCapableModels(agent: InstanceCatalogAgent): string[] {
   if (!isGoalCapableCatalogAgent(agent)) return [];
-  if (!agent.goalCapableModels) return agent.supportedModels;
+  // Fail closed for stale/malformed catalog producers even though the V1 type
+  // makes the allowlist required.
+  if (!Array.isArray(agent.goalCapableModels)) return [];
   const allowed = new Set(agent.goalCapableModels);
   return agent.supportedModels.filter(model => allowed.has(model));
 }

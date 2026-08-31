@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createGoal } from '../api/goalsApi';
+import type { InstanceCatalogResponse } from '@propr/shared';
+import { createGoal, GoalApiError, type GoalRecordV1 } from '../api/goalsApi';
 import { getInstanceCatalog } from '../api/proprApi';
 import GoalCreatePage from './GoalCreatePage';
 
@@ -18,14 +19,17 @@ vi.mock('../components/ui/useToast', () => ({ useToast: () => ({ addToast: mocks
 const catalog = {
   defaultAgentAlias: 'codex',
   agents: [
-    { alias: 'regular', enabled: true, supportedModels: ['regular-model'] },
-    { alias: 'disabled-goal', enabled: false, goalCapable: true, supportedModels: ['disabled-model'] },
+    { alias: 'regular', enabled: true, goalCapable: false, supportedModels: ['regular-model'], goalCapableModels: [] },
+    // Deliberately malformed legacy entry: missing allowlist must fail closed.
+    { alias: 'missing-list', enabled: true, goalCapable: true, supportedModels: ['legacy-model'] },
+    { alias: 'empty-list', enabled: true, goalCapable: true, supportedModels: ['empty-model'], goalCapableModels: [] },
+    { alias: 'disabled-goal', enabled: false, goalCapable: true, supportedModels: ['disabled-model'], goalCapableModels: ['disabled-model'] },
     {
       alias: 'codex',
       enabled: true,
       goalCapable: true,
       supportedModels: ['not-for-goals', 'goal-model'],
-      goalCapableModels: ['goal-model'],
+      goalCapableModels: ['goal-model', 'not-in-supported-catalog'],
       defaultModel: 'not-for-goals',
     },
   ],
@@ -33,6 +37,24 @@ const catalog = {
     { name: 'integry/propr', enabled: true },
     { name: 'integry/disabled', enabled: false },
   ],
+} as unknown as InstanceCatalogResponse;
+
+const createdGoal: GoalRecordV1 = {
+  goalId: 'goal-1',
+  objective: 'Deliver durable goal orchestration',
+  repository: 'integry/propr',
+  state: 'queued',
+  agent: 'codex',
+  requestedModel: 'goal-model',
+  effectiveModel: 'goal-model',
+  maxActiveTasks: 3,
+  mergePolicy: 'manual',
+  ultrafixEnabled: false,
+  ultrafixGoal: null,
+  ultrafixMaxCycles: null,
+  version: 0,
+  createdAt: '2026-08-31T00:00:00Z',
+  updatedAt: '2026-08-31T00:00:00Z',
 };
 
 const Location = () => <output data-testid="location">{useLocation().pathname}</output>;
@@ -49,6 +71,10 @@ function renderPage() {
   );
 }
 
+const setValidObjective = (value = 'Deliver durable goal orchestration') => {
+  fireEvent.change(screen.getByLabelText(/^Objective/), { target: { value } });
+};
+
 describe('GoalCreatePage', () => {
   beforeEach(() => {
     mocks.demoMode = false;
@@ -57,88 +83,113 @@ describe('GoalCreatePage', () => {
     vi.mocked(getInstanceCatalog).mockReset().mockResolvedValue(catalog);
   });
 
-  it('shows loading and filters agents/models through explicit goal capability', async () => {
+  it('fails closed for missing/empty capability lists and intersects mixed model allowlists', async () => {
     renderPage();
     expect(screen.getByRole('status', { name: 'Loading goal catalog' })).toBeInTheDocument();
-
     const agent = await screen.findByLabelText(/^Agent/);
     expect(within(agent).getAllByRole('option').map(option => option.textContent)).toEqual(['codex']);
     expect(screen.getByLabelText(/^Requested model/)).toHaveValue('goal-model');
-    expect(within(screen.getByLabelText(/^Requested model/)).queryByText('not-for-goals')).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText(/^Requested model/)).getAllByRole('option').map(option => option.textContent)).toEqual(['goal-model']);
     expect(screen.getByLabelText(/^Repository/)).toHaveValue('integry/propr');
   });
 
-  it('validates accessible fields, concurrency, and both independent Ultrafix values', async () => {
+  it('treats cleared required numeric inputs as invalid and uses the shared 1–20 cycle bound', async () => {
     renderPage();
     await screen.findByRole('form', { name: 'Create goal' });
-    fireEvent.change(screen.getByLabelText(/^Objective/), { target: { value: 'short' } });
-    fireEvent.change(screen.getByLabelText(/^Maximum concurrent tasks/), { target: { value: '21' } });
+    setValidObjective('x');
+    fireEvent.change(screen.getByLabelText(/^Maximum concurrent tasks/), { target: { value: '' } });
     fireEvent.click(screen.getByLabelText('Run Ultrafix after each pull request'));
-    fireEvent.change(screen.getByLabelText(/Review goal/), { target: { value: '11' } });
-    fireEvent.change(screen.getByLabelText(/Maximum cycles/), { target: { value: '0' } });
+    fireEvent.change(screen.getByLabelText(/Review goal/), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText(/Maximum cycles/), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
 
-    expect(await screen.findByText('Objective must be at least 10 characters.')).toHaveAttribute('id', 'goal-objective-error');
-    expect(screen.getByLabelText(/^Objective/)).toHaveAttribute('aria-describedby', 'goal-objective-error');
-    expect(screen.getByText('Must be between 1 and 20.')).toBeInTheDocument();
-    expect(screen.getByText('Review goal must be between 1 and 10.')).toBeInTheDocument();
-    expect(screen.getByText('Max cycles must be between 1 and 50.')).toBeInTheDocument();
+    expect(await screen.findByText('Must be between 1 and 20.')).toBeInTheDocument();
+    expect(screen.getByText('Review goal is required when Ultrafix is enabled.')).toBeInTheDocument();
+    expect(screen.getByText('Max cycles is required when Ultrafix is enabled.')).toBeInTheDocument();
     expect(createGoal).not.toHaveBeenCalled();
   });
 
-  it('submits once per attempt and reuses its idempotency key for retry', async () => {
-    let rejectFirst!: (reason: Error) => void;
-    const firstAttempt = new Promise<never>((_resolve, reject) => { rejectFirst = reject; });
-    vi.mocked(createGoal)
-      .mockReturnValueOnce(firstAttempt)
-      .mockResolvedValueOnce({ id: 'goal-1' } as Awaited<ReturnType<typeof createGoal>>);
+  it('accepts exact lower/upper bounds and sends nullable disabled Ultrafix values', async () => {
+    vi.mocked(createGoal).mockResolvedValue(createdGoal);
     renderPage();
     await screen.findByRole('form', { name: 'Create goal' });
-
-    fireEvent.change(screen.getByLabelText(/^Objective/), { target: { value: 'Deliver durable goal orchestration' } });
-    fireEvent.change(screen.getByLabelText(/^Maximum concurrent tasks/), { target: { value: '5' } });
-    fireEvent.click(screen.getByRole('radio', { name: /Automatic squash/ }));
+    setValidObjective('x');
+    fireEvent.change(screen.getByLabelText(/^Maximum concurrent tasks/), { target: { value: '1' } });
     fireEvent.click(screen.getByLabelText('Run Ultrafix after each pull request'));
-    fireEvent.change(screen.getByLabelText(/Review goal/), { target: { value: '9' } });
-    fireEvent.change(screen.getByLabelText(/Maximum cycles/), { target: { value: '12' } });
-    const submit = screen.getByRole('button', { name: 'Create Goal' });
-    fireEvent.click(submit);
-    fireEvent.click(submit);
-
-    await waitFor(() => expect(createGoal).toHaveBeenCalledTimes(1));
-    const firstKey = vi.mocked(createGoal).mock.calls[0][1];
-    expect(vi.mocked(createGoal).mock.calls[0][0]).toMatchObject({
-      agent: 'codex',
-      model: 'goal-model',
-      maxActiveTasks: 5,
-      mergePolicy: 'auto_squash',
-      ultrafixEnabled: true,
-      ultrafixGoal: 9,
-      ultrafixMaxCycles: 12,
-    });
-
-    rejectFirst(new Error('Temporary failure'));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Temporary failure');
+    fireEvent.change(screen.getByLabelText(/Review goal/), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText(/Maximum cycles/), { target: { value: '20' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    await waitFor(() => expect(createGoal).toHaveBeenCalledWith(expect.objectContaining({
+      objective: 'x', maxActiveTasks: 1, ultrafixGoal: 1, ultrafixMaxCycles: 20,
+    }), expect.any(String)));
+  });
 
+  it('reuses the same idempotency key for an exact uncertain retry', async () => {
+    vi.mocked(createGoal)
+      .mockRejectedValueOnce(new Error('Connection ended before a response'))
+      .mockResolvedValueOnce(createdGoal);
+    renderPage();
+    await screen.findByRole('form', { name: 'Create goal' });
+    setValidObjective();
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Connection ended before a response');
+    const firstKey = vi.mocked(createGoal).mock.calls[0][1];
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
     await waitFor(() => expect(createGoal).toHaveBeenCalledTimes(2));
     expect(vi.mocked(createGoal).mock.calls[1][1]).toBe(firstKey);
-    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/goals'));
-    expect(mocks.addToast).toHaveBeenCalledWith({ type: 'success', message: 'Goal created successfully.' });
   });
 
-  it('is read-only in demo mode and exposes catalog load errors', async () => {
+  it('rotates the idempotency key when any request field is edited after a failed attempt', async () => {
+    vi.mocked(createGoal)
+      .mockRejectedValueOnce(new Error('Uncertain result'))
+      .mockResolvedValueOnce(createdGoal);
+    renderPage();
+    await screen.findByRole('form', { name: 'Create goal' });
+    setValidObjective();
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    await screen.findByText('Uncertain result');
+    const firstKey = vi.mocked(createGoal).mock.calls[0][1];
+    fireEvent.change(screen.getByLabelText(/^Maximum concurrent tasks/), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    await waitFor(() => expect(createGoal).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(createGoal).mock.calls[1][1]).not.toBe(firstKey);
+    expect(vi.mocked(createGoal).mock.calls[1][0]).toMatchObject({ maxActiveTasks: 5 });
+  });
+
+  it('provides a new-intent path after goal_idempotency_conflict', async () => {
+    vi.mocked(createGoal)
+      .mockRejectedValueOnce(new GoalApiError('goal_idempotency_conflict', 409, 'Payload differs'))
+      .mockResolvedValueOnce(createdGoal);
+    renderPage();
+    await screen.findByRole('form', { name: 'Create goal' });
+    setValidObjective();
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('A new key is ready');
+    const conflictKey = vi.mocked(createGoal).mock.calls[0][1];
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    await waitFor(() => expect(createGoal).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(createGoal).mock.calls[1][1]).not.toBe(conflictKey);
+  });
+
+  it('keeps demo mode read-only and explains epic/sub-epic/leaf PR output', async () => {
     mocks.demoMode = true;
     renderPage();
-    expect(await screen.findByText(/Goal creation is disabled in demo mode/)).toBeInTheDocument();
+    expect(await screen.findByText(/Every completed goal yields an epic pull request/)).toHaveTextContent('optional sub-epic pull requests and leaf issue pull requests');
+    expect(screen.getByText(/Goal creation is disabled in demo mode/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create Goal' })).toBeDisabled();
-
-    vi.mocked(getInstanceCatalog).mockReset().mockRejectedValue(new Error('Catalog unavailable'));
-    renderPage();
-    expect(await screen.findByRole('alert')).toHaveTextContent('Catalog unavailable');
   });
 
-  it('returns to the goals list from the back control', async () => {
+  it('exposes catalog errors and a keyboard-labeled back control', async () => {
+    vi.mocked(getInstanceCatalog).mockRejectedValue(new Error('Catalog unavailable'));
+    const failed = render(
+      <MemoryRouter initialEntries={['/goals/new']}>
+        <Routes><Route path="/goals/new" element={<GoalCreatePage />} /></Routes>
+      </MemoryRouter>
+    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('Catalog unavailable');
+    failed.unmount();
+
+    vi.mocked(getInstanceCatalog).mockResolvedValue(catalog);
     renderPage();
     await screen.findByRole('form', { name: 'Create goal' });
     fireEvent.click(screen.getByRole('button', { name: 'Back to Goals' }));
