@@ -340,8 +340,9 @@ export class InMemoryGoalSessionPorts implements
         const key = keyOf(expected);
         const current = this.states.get(key);
         const commitKey = transitionCommitKey(transition);
-        if (this.transitionCommits.has(commitKey)) return current ? clone(current) : null;
-        if (!matchesTransitionFence(current, expected, transition)) return null;
+        if (!matchesTransitionLiveFence(current, transition)) return null;
+        if (this.transitionCommits.has(commitKey)) return clone(current);
+        if (current.version !== expected.version) return null;
         if (this.transitionFault === 'before_commit') {
             this.transitionFault = undefined;
             throw new Error('Injected crash before state/audit transaction commit');
@@ -367,13 +368,11 @@ export class InMemoryGoalSessionPorts implements
     }
 }
 
-function matchesTransitionFence(
+function matchesTransitionLiveFence(
     current: GoalSessionState | undefined,
-    expected: GoalSessionState,
     transition: GoalSessionControlTransition,
 ): current is GoalSessionState {
-    if (!current || current.version !== expected.version
-        || current.controllerEpoch !== transition.fence.controllerEpoch
+    if (!current || current.controllerEpoch !== transition.fence.controllerEpoch
         || current.status === 'cancelling' || current.status === 'terminated' || current.status === 'failed') return false;
     if (transition.turnScoped !== true) return true;
     if (!('turnId' in transition.fence)) return false;
@@ -403,6 +402,8 @@ function transitionCommitKey(transition: GoalSessionControlTransition): string {
         transition.fence.sessionId,
         transition.fence.controllerEpoch,
         transition.turnScoped === true && 'turnId' in transition.fence ? transition.fence.turnId : null,
+        transition.execution.executionId,
+        transition.execution.attemptId,
         transition.transitionId,
     ]);
 }

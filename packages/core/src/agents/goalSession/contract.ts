@@ -98,6 +98,8 @@ export interface GoalRecoveryAttempt {
     controllerEpoch: number;
     authoritativeAttemptId?: string;
     claimedAt: string;
+    /** Claimed work is cancellation-preemptible until the provider call is durably marked in doubt. */
+    phase?: 'claimed' | 'provider_in_doubt';
 }
 
 /** Durable cancellation claim recorded before the provider cancellation side effect. */
@@ -116,8 +118,12 @@ export interface GoalModelChangeIntent {
     modelChangeId: string;
     model: string;
     requestedAt: string;
+    /** Monotonic session-local ordering for external provider application. */
+    generation?: number;
+    /** Stable audit predecessor captured when this generation is accepted. */
+    previousModel?: string;
     /** Durable provider-call phase; missing is treated as pending for older records. */
-    phase?: 'pending' | 'provider_in_doubt' | 'committed';
+    phase?: 'pending' | 'provider_in_doubt' | 'committed' | 'superseded_in_doubt' | 'superseded';
     /** Retained after commit so an ambiguous retry can return the original acknowledgement. */
     acknowledgement?: GoalModelChangeAcknowledgement;
 }
@@ -188,6 +194,10 @@ export interface GoalSessionState extends GoalSessionIdentity {
     cancellationIntent?: GoalCancellationIntent;
     /** Provider model application/reconciliation identity retained across crashes. */
     modelChangeIntent?: GoalModelChangeIntent;
+    /** Ordered immediate-model generations, retained so overlapping requests cannot overwrite one another. */
+    modelChangeIntents?: GoalModelChangeIntent[];
+    /** Last allocated immediate-model generation. */
+    modelChangeGeneration?: number;
     failureReason?: string;
     /** Optimistic concurrency token owned by the state port. */
     version: number;
@@ -206,10 +216,10 @@ export type GoalSessionEvent =
     | { type: 'checkpoint'; checkpointId: string; recoveryMetadata: GoalSessionJsonValue; providerSessionId?: string }
     | { type: 'message_acknowledged'; messageId: string }
     | { type: 'pause_requested'; appliesAt: 'immediate' | 'next_safe_boundary' | 'after_turn' }
-    | { type: 'pause_boundary'; boundary: string; checkpointId?: string }
+    | { type: 'pause_boundary'; boundary: string; checkpointId?: string; providerEventId?: string; providerEventOrdinal?: number }
     | { type: 'session_resumed' }
     | { type: 'model_change_acknowledged'; requestedModel: string; appliesAt: 'immediate' | 'next_safe_boundary' | 'next_turn' }
-    | { type: 'model_changed'; previousModel?: string; model: string }
+    | { type: 'model_changed'; previousModel?: string; model: string; providerEventId?: string; providerEventOrdinal?: number }
     | { type: 'turn_resumed'; turnId: string }
     | { type: 'reconciliation'; outcome: 'alive' | 'resumed' | 'failed' | 'blocked'; reason: string }
     | { type: 'completion'; outcome: 'succeeded' | 'failed' | 'cancelled'; summary?: string; error?: string };

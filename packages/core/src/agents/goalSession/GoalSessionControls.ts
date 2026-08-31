@@ -2,18 +2,16 @@ import type {
     GoalCancelRequest,
     GoalExecutionIdentity,
     GoalMessageDeliveryOutcome,
-    GoalModelChangeAcknowledgement,
-    GoalModelChangeRequest,
     GoalPauseAcknowledgement,
     GoalPauseRequest,
     GoalPendingCancellationContext,
     GoalSessionControlFence,
-    GoalSessionEvent,
     GoalSessionState,
     GoalSteeringRequest,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
-import { GoalTurnRunner } from './GoalTurnRunner.js';
+import { GoalImmediateModelControls } from './GoalImmediateModelControls.js';
+import { hasProviderOperations, waitForProviderOperations } from './providerOperationCoordinator.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
 import {
     assertProviderIdentity,
@@ -23,7 +21,7 @@ import {
 } from './support.js';
 
 /** Capability-aware steering, pause, resume, model, and cancellation controls. */
-export abstract class GoalSessionControls extends GoalTurnRunner {
+export abstract class GoalSessionControls extends GoalImmediateModelControls {
     async deliverMessage(request: GoalSteeringRequest): Promise<GoalMessageDeliveryOutcome> {
         const state = await this.requireActiveTurnState(request);
         const pending = (await this.ports.messages.listPending(request)).sort((a, b) => a.sequence - b.sequence);
@@ -142,113 +140,8 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
         return resumed;
     }
 
-    async requestModelChange(request: GoalModelChangeRequest): Promise<GoalModelChangeAcknowledgement> {
-        let state = await this.requireControlledState(request);
-        if (state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') {
-            throw new GoalSessionContractError(`Cannot change model while the session is ${state.status}`, 'SESSION_NOT_CONTROLLABLE');
-        }
-        if (this.adapter.capabilities.modelChange === 'next_turn') {
-            const acknowledgement = { requestedModel: request.model, appliesAt: 'next_turn' as const };
-            if (state.pendingModelChange === request.model && state.modelChangeIntent?.model === request.model) {
-                return acknowledgement;
-            }
-            const modelChangeId = this.controlOperationId('model', state);
-            state = await this.commitControlTransition({
-                state,
-                fence: request,
-                changes: {
-                    requestedModel: request.model,
-                    pendingModelChange: request.model,
-                    modelChangeIntent: { modelChangeId, model: request.model, requestedAt: new Date().toISOString() },
-                },
-                auditEvents: [{ type: 'model_change_acknowledged', ...acknowledgement }],
-                transitionId: `model-requested:${modelChangeId}`,
-            });
-            return acknowledgement;
-        }
-        return this.applyImmediateModelChange(request, state);
-    }
-
-    /** Resumes a durable next-safe-boundary intent after an ambiguous provider/local outcome. */
-    protected async resumeImmediateModelChangeIntent(
-        fence: GoalSessionControlFence,
-        state: GoalSessionState,
-    ): Promise<GoalSessionState> {
-        const intent = state.modelChangeIntent;
-        if (this.adapter.capabilities.modelChange !== 'next_safe_boundary'
-            || !intent || intent.phase === 'committed') return state;
-        await this.applyImmediateModelChange({ ...fence, model: intent.model }, state);
-        return this.requireControlledState(fence);
-    }
-
-    private async applyImmediateModelChange(
-        request: GoalModelChangeRequest,
-        initial: GoalSessionState,
-    ): Promise<GoalModelChangeAcknowledgement> {
-        let state = initial;
-        let intent = state.modelChangeIntent?.model === request.model ? state.modelChangeIntent : undefined;
-        if (intent?.phase === 'committed' && intent.acknowledgement) return intent.acknowledgement;
-        if (!intent) {
-            intent = {
-                modelChangeId: this.controlOperationId('model', state),
-                model: request.model,
-                requestedAt: new Date().toISOString(),
-                phase: 'pending',
-            };
-            state = await this.compareAndSetExact(state, {
-                requestedModel: request.model,
-                modelChangeIntent: intent,
-            }, 'A newer model intent superseded this request');
-        }
-        if (intent.phase !== 'provider_in_doubt') {
-            intent = { ...intent, phase: 'provider_in_doubt' };
-            state = await this.compareAndSetExact(state, { modelChangeIntent: intent },
-                'A newer model intent superseded the provider-call claim');
-        }
-        const acknowledgement = await this.adapter.requestModelChange(
-            { ...request, modelChangeId: intent.modelChangeId },
-            persistedSnapshot(state),
-        );
-        this.validateImmediateModelAcknowledgement(request, state, acknowledgement);
-        const auditEvents: Array<Exclude<GoalSessionEvent, { type: 'completion' }>> = [{
-            type: 'model_change_acknowledged', requestedModel: request.model, appliesAt: acknowledgement.appliesAt,
-        }];
-        if (acknowledgement.effectiveModel) {
-            auditEvents.push({
-                type: 'model_changed', previousModel: state.currentModel, model: acknowledgement.effectiveModel,
-            });
-        }
-        await this.commitControlTransition({
-            state,
-            fence: request,
-            changes: {
-                currentModel: acknowledgement.effectiveModel ?? state.currentModel,
-                modelChangeIntent: { ...intent, phase: 'committed', acknowledgement },
-            },
-            auditEvents,
-            transitionId: `model-applied:${intent.modelChangeId}`,
-        });
-        return acknowledgement;
-    }
-
-    private validateImmediateModelAcknowledgement(
-        request: GoalModelChangeRequest,
-        state: GoalSessionState,
-        acknowledgement: GoalModelChangeAcknowledgement,
-    ): void {
-        if (acknowledgement.requestedModel !== request.model) {
-            throw new GoalSessionContractError('Provider acknowledged a different requested model', 'MODEL_ACK_MISMATCH');
-        }
-        if (acknowledgement.appliesAt === 'next_turn') {
-            throw new GoalSessionContractError('Provider deferred beyond its declared model boundary', 'CAPABILITY_ACK_MISMATCH');
-        }
-        if (acknowledgement.appliesAt === 'immediate'
-            && (state.status === 'running' || state.status === 'pause_requested')) {
-            throw new GoalSessionContractError('Provider applied a model change before an active-turn safe boundary', 'CAPABILITY_ACK_MISMATCH');
-        }
-    }
-
     async cancel(request: GoalCancelRequest): Promise<GoalSessionState> {
+        await waitForProviderOperations(this.ports.state, request, 'reconcile');
         const state = await this.claimCancellation(request);
         if (state.status === 'terminated') return state;
         return this.resumeClaimedCancellation(request, state);
@@ -284,6 +177,7 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             recoveryAttempt: undefined,
             pendingAfterTurnPause: undefined,
             modelChangeIntent: undefined,
+            modelChangeIntents: undefined,
         }, { type: 'completion', outcome: 'cancelled', error: intent.reason });
         // Terminal fencing is authoritative even when the adapter reports that
         // its best-effort process signal failed. Surface that failure only after
@@ -293,10 +187,16 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
     }
 
     private async claimCancellation(request: GoalCancelRequest): Promise<GoalSessionState> {
-        for (let attempt = 0; attempt < 4; attempt += 1) {
+        for (;;) {
             const state = await this.requireControlledState(request);
             if (state.status === 'terminated') return state;
             if (state.status === 'cancelling' && state.cancellationIntent) return state;
+            if (state.recoveryAttempt?.phase === 'provider_in_doubt'
+                && state.recoveryAttempt.controllerEpoch === request.controllerEpoch
+                && hasProviderOperations(this.ports.state, request, 'reconcile')) {
+                await new Promise<void>(resolve => setImmediate(resolve));
+                continue;
+            }
             if (!state.providerSessionId && (!state.initializationIntent || !this.adapter.cancelPending)) {
                 throw new GoalSessionContractError(
                     'A lazy-ID provider must implement pending cancellation before it can be cancelled safely',
@@ -307,6 +207,7 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             const claimed = await this.ports.state.compareAndSet(state, nextState(state, {
                 status: 'cancelling',
                 activeTurn: undefined,
+                recoveryAttempt: undefined,
                 cancellationIntent: {
                     cancellationId: this.controlOperationId('cancel', state),
                     reason: request.reason,
@@ -316,7 +217,6 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             }));
             if (claimed) return claimed;
         }
-        throw new StaleGoalSessionFenceError('A newer operation repeatedly superseded cancellation');
     }
 
     private pendingCancellationContext(state: GoalSessionState): GoalPendingCancellationContext | undefined {

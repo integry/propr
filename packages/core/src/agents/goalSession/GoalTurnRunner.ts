@@ -38,7 +38,11 @@ interface TurnStreamOptions {
     openStream: () => AsyncIterable<GoalSessionEvent>;
 }
 
-/** Turn lifecycle: one provider invocation per fenced logical turn, plus same-turn resume. */
+type TurnEventOptions = {
+    fence: GoalSessionFence; current: GoalSessionState; execution: GoalExecutionIdentity;
+    event: GoalSessionEvent; streamOrdinal: number;
+};
+
 export abstract class GoalTurnRunner extends GoalSessionCore {
     async runTurn(request: RunGoalTurnRequest): Promise<RunGoalTurnResult> {
         validateControlFence(request);
@@ -163,11 +167,6 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             .map(({ messageId, sequence, body }) => ({ messageId, sequence, body }));
     }
 
-    /**
-     * Continues the exact active turn after a pause (optionally across a
-     * container/supervisor restart). It refreshes the provider snapshot, streams
-     * further ordered events through the same turn fence, and completes once.
-     */
     async resumeTurn(fence: GoalSessionControlFence): Promise<RunGoalTurnResult | GoalTurnResumeCapabilityOutcome> {
         let state = await this.requireControlledState(fence);
         if (this.adapter.capabilities.pause === 'after_turn') {
@@ -292,6 +291,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         const awaitingMessageIds = options.nextTurnMessages.map(message => message.messageId);
         let reachedPause = false;
         let completed = false;
+        let streamOrdinal = 0;
         try {
             // Invoke the provider inside the fenced try so a synchronous/early
             // invocation failure is normalized into failed state plus one
@@ -311,7 +311,8 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 if (event.type === 'completion' && this.adapter.capabilities.pause === 'after_turn') {
                     current = await this.requireActiveAttemptState(fence, execution);
                 }
-                current = await this.applyTurnEvent(fence, current, execution, event);
+                current = await this.applyTurnEvent({ fence, current, execution, event, streamOrdinal });
+                streamOrdinal += 1;
                 if (event.type === 'pause_boundary') reachedPause = true;
                 if (event.type === 'completion') completed = true;
                 if (event.type !== 'completion' && !isAtomicTurnAudit(event)) {
@@ -355,12 +356,8 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         awaitingMessageIds.shift();
     }
 
-    private async applyTurnEvent(
-        fence: GoalSessionFence,
-        current: GoalSessionState,
-        execution: GoalExecutionIdentity,
-        event: GoalSessionEvent,
-    ): Promise<GoalSessionState> {
+    private async applyTurnEvent(options: TurnEventOptions): Promise<GoalSessionState> {
+        const { fence, current, execution, event, streamOrdinal } = options;
         if (event.type === 'checkpoint') return this.persistCheckpoint(fence, current, execution, event);
         if (event.type === 'model_changed') {
             return this.commitTurnTransition({
@@ -372,7 +369,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                     pendingModelChange: value.pendingModelChange === event.model ? undefined : value.pendingModelChange,
                 }),
                 auditEvents: [event],
-                transitionId: streamAuditTransitionId(fence, event),
+                transitionId: streamAuditTransitionId(fence, execution, event, streamOrdinal),
             });
         }
         if (event.type === 'pause_boundary') {
@@ -385,7 +382,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                     activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
                 }),
                 auditEvents: [event],
-                transitionId: streamAuditTransitionId(fence, event),
+                transitionId: streamAuditTransitionId(fence, execution, event, streamOrdinal),
             });
         }
         if (event.type === 'completion') return this.commitTurnCompletion(fence, execution, event);
