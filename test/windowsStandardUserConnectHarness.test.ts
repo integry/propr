@@ -4,16 +4,21 @@ import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 
 const harness = readFileSync('scripts/verify-windows-standard-user-connect.mjs', 'utf8');
+const processMock = readFileSync('test/fixtures/windowsConnectProcessMock.mjs', 'utf8');
+const windowsAuthority = readFileSync('packages/cli/src/connectWindowsAuthority.ts', 'utf8');
 
 function diagnosticDefinitions(): {
   scenarioAllowlist: string[];
   assertionStageAllowlist: string[];
   statusKindAllowlist: string[];
   reasonCodeAllowlist: string[];
+  nativeStageAllowlist: string[];
   createFailureDiagnostic: (
     scenario: string,
     stage: string,
     failureStatus: { status?: unknown; reasonCodes?: unknown } | null,
+    nativeStage: string | null,
+    assumptions: { extraStdio: string | null; alreadyContained: boolean | null; nestedJob: string | null },
   ) => Record<string, unknown>;
 } {
   const start = harness.indexOf('const scenarioAllowlist =');
@@ -25,6 +30,7 @@ function diagnosticDefinitions(): {
     assertionStageAllowlist,
     statusKindAllowlist,
     reasonCodeAllowlist,
+    nativeStageAllowlist,
     createFailureDiagnostic,
   })`) as ReturnType<typeof diagnosticDefinitions>;
 }
@@ -78,7 +84,7 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
   const definitions = diagnosticDefinitions();
   assert.deepEqual([...definitions.scenarioAllowlist], [
     'ready', 'down', 'disabled', 'restart-required', 'malformed', 'oversized', 'timeout',
-    'identity-mismatch', 'secret-sentinel', 'path-aba', 'api', 'authority-malformed', 'authority-oversized',
+    'identity-mismatch', 'secret-sentinel', 'api', 'path-aba', 'authority-malformed', 'authority-oversized',
     'authority-extra-key', 'authority-duplicate', 'authority-stderr', 'authority-nonzero',
     'authority-timeout', 'authority-descriptor-mismatch', 'authority-index-mismatch',
     'authority-kind-mismatch', 'authority-authority-kind-mismatch', 'authority-identity-mismatch',
@@ -87,7 +93,7 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'authority-missing-system-root', 'authority-mismatched-system-root', 'authority-untrusted-system-root',
   ]);
   assert.deepEqual([...definitions.assertionStageAllowlist], [
-    'authority-probe', 'scaffold', 'identity-assertion', 'config-init', 'config-save',
+    'native-assumptions', 'authority-probe', 'scaffold', 'identity-assertion', 'config-init', 'config-save',
     'config-assertion',
     'write-env', 'spawn', 'signal', 'exit', 'bounds', 'schema', 'status', 'endpoint',
     'identity', 'reasons', 'api-ready', 'restart', 'stderr', 'sentinel', 'api-spawn',
@@ -102,6 +108,13 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'DESKTOP_AUTHENTICATION_UNSUPPORTED',
     'IDENTITY_MISMATCH', 'ENDPOINT_MISMATCH', 'RESTART_REQUIRED', 'INVALID_ROOT', 'INVALID_ENDPOINT',
     'IDENTITY_UNAVAILABLE', 'INTERNAL_FAILURE', 'ACL_DIAGNOSTIC_UNAVAILABLE',
+  ]);
+  assert.deepEqual([...definitions.nativeStageAllowlist], [
+    'resolver:env', 'resolver:canonical', 'resolver:global-open', 'resolver:global-id',
+    'spawn:create', 'spawn:error', 'spawn:timeout', 'spawn:status', 'spawn:stderr',
+    'broker:ps-version', 'broker:job', 'broker:fd', 'broker:index-info',
+    'broker:security-info', 'broker:acl', 'broker:json',
+    'parent:utf8', 'parent:json-shape', 'parent:descriptor-bind', 'parent:post-bind',
   ]);
   const assignedStages = [...harness.matchAll(/currentStage = "([^"]+)";/g)]
     .map((match) => match[1]);
@@ -120,13 +133,22 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     identity: 'identity-SENTINEL',
     endpoint: 'endpoint-SENTINEL',
     secret: 'secret-SENTINEL',
-  } as { status: string; reasonCodes: string[] });
-  assert.deepEqual(Object.keys(diagnostic), ['scenario', 'stage', 'status', 'reasonCodes']);
+  } as { status: string; reasonCodes: string[] }, 'broker:fd', {
+    extraStdio: 'unusable', alreadyContained: true, nestedJob: 'failed',
+  });
+  assert.deepEqual(Object.keys(diagnostic), [
+    'scenario', 'stage', 'nativeStage', 'status', 'reasonCodes',
+    'extraStdio', 'alreadyContained', 'nestedJob',
+  ]);
   assert.deepEqual(JSON.parse(JSON.stringify(diagnostic)), {
     scenario: 'ready',
     stage: 'stderr',
+    nativeStage: 'broker:fd',
     status: 'ready',
     reasonCodes: ['ACL_DIAGNOSTIC_UNAVAILABLE'],
+    extraStdio: 'unusable',
+    alreadyContained: true,
+    nestedJob: 'failed',
   });
   assert.equal(JSON.stringify(diagnostic).includes('SENTINEL'), false);
 
@@ -134,18 +156,56 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'private-scenario-SENTINEL',
     'raw-output-SENTINEL',
     { status: 'secret-status-SENTINEL', reasonCodes: ['secret-reason-SENTINEL'] },
+    'raw-native-stage-SENTINEL',
+    { extraStdio: 'secret-SENTINEL', alreadyContained: 'secret-SENTINEL' as unknown as boolean, nestedJob: 'secret-SENTINEL' },
   );
   assert.deepEqual(JSON.parse(JSON.stringify(rejected)), {
     scenario: 'ready',
     stage: 'write-env',
+    nativeStage: null,
     status: null,
     reasonCodes: [],
+    extraStdio: null,
+    alreadyContained: null,
+    nestedJob: null,
   });
 
   const catchStart = harness.lastIndexOf('} catch {');
   const catchEnd = harness.indexOf('} finally {', catchStart);
   const catchBody = harness.slice(catchStart, catchEnd);
-  assert.match(catchBody, /createFailureDiagnostic\(currentScenario, currentStage, failureStatus\)/);
+  assert.match(catchBody, /createFailureDiagnostic\(\s*currentScenario, currentStage, failureStatus, currentNativeStage, hostedAssumptions,/);
   assert.match(catchBody, /JSON\.stringify\(\s*diagnostic,\s*\)/);
   assert.doesNotMatch(catchBody, /(?:result|api|error)\.(?:stdout|stderr|message|path|argv|env|config)/i);
+});
+
+test('the hosted proof measures both rejected assumptions and production uses a standard handle', () => {
+  assert.match(windowsAuthority, /'_get_osfhandle' 'msvcrt\.dll'/);
+  assert.match(windowsAuthority, /_get_osfhandle\(3\)/);
+  assert.match(windowsAuthority, /AssignProcessToJobObject/);
+  assert.match(harness, /runWindowsHostedAssumptionProbe\(assumptionFd\)/);
+  assert.match(harness, /extra-stdio=\$\{hostedAssumptions\.extraStdio\}/);
+  assert.match(harness, /nested-job=\$\{hostedAssumptions\.nestedJob\}/);
+
+  const productionSourceStart = windowsAuthority.indexOf('export const WINDOWS_INSPECTION_SOURCE');
+  const productionSourceEnd = windowsAuthority.indexOf('const WINDOWS_HOSTED_ASSUMPTION_SOURCE', productionSourceStart);
+  const productionSource = windowsAuthority.slice(productionSourceStart, productionSourceEnd);
+  assert.match(productionSource, /GetStdHandle\(-10\)/);
+  assert.doesNotMatch(productionSource, /_get_osfhandle|AssignProcessToJobObject|CreateJobObject|Start-Process|CreateProcess/);
+  assert.match(windowsAuthority, /stdio: extraFd === undefined \? \[stdin, "pipe", "pipe"\]/);
+  assert.match(windowsAuthority, /WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false/);
+});
+
+test('the hostile path ABA remains replaced through validation and is rejected as INVALID_ROOT', () => {
+  assert.match(harness, /\{ name: "path-aba", mode: "path-aba", reason: "INVALID_ROOT" \}/);
+  assert.doesNotMatch(harness, /name: "path-aba"[^\n]+status: "ready"/);
+  assert.match(processMock, /attacker-replacement-SENTINEL/);
+  assert.match(processMock, /process\.once\("exit", \(\) => \{/);
+  const replacement = processMock.indexOf('writeFileSync(envPath');
+  const exitHook = processMock.indexOf('process.once("exit"', replacement);
+  const spawn = processMock.indexOf('return originalSpawnSync(command, args, options);', replacement);
+  const restore = processMock.indexOf('renameSync(detached, envPath);', replacement);
+  assert.ok(
+    replacement < exitHook && exitHook < restore && restore < spawn,
+    'restoration must be registered only for process exit before the CLI resumes',
+  );
 });

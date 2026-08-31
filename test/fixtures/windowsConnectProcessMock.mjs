@@ -6,12 +6,23 @@ import { join } from "node:path";
 const originalSpawnSync = childProcess.spawnSync;
 const forbidden = /(?:connect-authority|ProPRConnectAuthority|pwsh|csc|msiexec)(?:\.exe)?$/i;
 let abaPerformed = false;
+const nativeStages = new Set([
+  "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
+  "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr",
+  "broker:ps-version", "broker:job", "broker:fd", "broker:index-info",
+  "broker:security-info", "broker:acl", "broker:json",
+  "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
+]);
+globalThis[Symbol.for("propr.test.windowsNativeDiagnostic")] = (stage) => {
+  const fixed = nativeStages.has(stage) ? stage : "parent:json-shape";
+  process.stderr.write(`[propr-windows-native-stage:${fixed}]\n`);
+};
 
 function authorityDocument(args, options, mode) {
   const encodedIndex = args.indexOf("-EncodedCommand") + 1;
   const source = Buffer.from(args[encodedIndex], "base64").toString("utf16le");
-  const specs = [...source.matchAll(/@\((\d+),'(directory|file)','(ancestor|home|root|data|env)'\)/g)];
-  const identities = options.stdio.slice(3).map((fd) => {
+  const specs = [...source.matchAll(/index=(\d+);kind='(directory|file)';authorityKind='(ancestor|home|root|data|env)'/g)];
+  const identities = [options.stdio[0]].map((fd) => {
     const stat = fstatSync(fd, { bigint: true });
     return { device: stat.dev.toString(10), file: stat.ino.toString(10) };
   });
@@ -36,30 +47,29 @@ function authorityDocument(args, options, mode) {
       rights: "2032127",
     }],
   }));
-  if (mode === "descriptor-mismatch" && entries.length > 1) {
-    entries[0].volumeSerialNumber = identities.at(-1).device;
-    entries[0].fileId = identities.at(-1).file;
-    entries[0].verifiedVolumeSerialNumber = identities.at(-1).device;
-    entries[0].verifiedFileId = identities.at(-1).file;
+  const protectedEntry = entries.find((entry) => ["root", "data", "env"].includes(entry.authorityKind));
+  if (mode === "descriptor-mismatch") {
+    entries[0].fileId = (BigInt(entries[0].fileId) + 1n).toString(10);
+    entries[0].verifiedFileId = entries[0].fileId;
   } else if (mode === "index-mismatch") entries[0].index += 1;
   else if (mode === "kind-mismatch") entries[0].kind = entries[0].kind === "file" ? "directory" : "file";
   else if (mode === "authority-kind-mismatch") entries[0].authorityKind = entries[0].authorityKind === "root" ? "data" : "root";
   else if (mode === "identity-mismatch") {
     entries[0].fileId = (BigInt(entries[0].fileId) + 1n).toString(10);
-  } else if (mode === "sid-mismatch" && entries.length > 1) {
-    entries[1].currentUserSid = "S-1-5-21-100-200-300-1002";
-  } else if (mode === "broad-write") {
-    entries.find((entry) => ["root", "data", "env"].includes(entry.authorityKind)).rules = [{
+  } else if (mode === "sid-mismatch" && entries[0].index > 0) {
+    entries[0].currentUserSid = "S-1-5-21-100-200-300-1002";
+  } else if (mode === "broad-write" && protectedEntry) {
+    protectedEntry.rules = [{
       identitySid: "S-1-1-0", inherited: false, accessType: "allow", appliesToSelf: true, rights: "2",
     }];
-  } else if (mode === "inherited-write") {
-    entries.find((entry) => ["root", "data", "env"].includes(entry.authorityKind)).rules[0].inherited = true;
-  } else if (mode === "unprotected") {
-    entries.find((entry) => ["root", "data", "env"].includes(entry.authorityKind)).daclProtected = false;
-  } else if (mode === "owner-mismatch") {
-    entries.find((entry) => ["root", "data", "env"].includes(entry.authorityKind)).ownerSid = "S-1-5-18";
-  } else if (mode === "reparse") {
-    entries.find((entry) => ["root", "data", "env"].includes(entry.authorityKind)).reparsePoint = true;
+  } else if (mode === "inherited-write" && protectedEntry) {
+    protectedEntry.rules[0].inherited = true;
+  } else if (mode === "unprotected" && protectedEntry) {
+    protectedEntry.daclProtected = false;
+  } else if (mode === "owner-mismatch" && protectedEntry) {
+    protectedEntry.ownerSid = "S-1-5-18";
+  } else if (mode === "reparse" && protectedEntry) {
+    protectedEntry.reparsePoint = true;
   }
   return JSON.stringify({ version: 1, entries });
 }
@@ -91,13 +101,19 @@ childProcess.spawnSync = (command, args, options) => {
       const envPath = join(process.env.PROPR_TEST_AUTHORITY_ROOT, ".env");
       const detached = `${envPath}-aba-detached`;
       renameSync(envPath, detached);
-      writeFileSync(envPath, "PROPR_STACK=private-path-SENTINEL\n");
-      try {
-        return originalSpawnSync(command, args, options);
-      } finally {
+      writeFileSync(envPath, [
+        "PROPR_STACK=attacker-replacement-SENTINEL",
+        "PROPR_INSTANCE_ID=attacker",
+        "PROPR_UI_PUBLIC_API_URL=https://t-attacker.propr.dev",
+        "PROPR_UI_TUNNEL_ENABLED=true",
+        "PROPR_UI_TUNNEL_TOKEN=attacker-replacement-SENTINEL",
+        "",
+      ].join("\n"));
+      process.once("exit", () => {
         rmSync(envPath, { force: true });
         renameSync(detached, envPath);
-      }
+      });
+      return originalSpawnSync(command, args, options);
     }
     return originalSpawnSync(command, args, options);
   }

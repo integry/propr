@@ -19,7 +19,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   parseWindowsInspectionDocument,
+  reportWindowsNativeStage,
   runWindowsReadOnlyInspection,
+  WindowsNativeStageError,
   windowsInspectionEntryKind,
 } from "./connectWindowsAuthority.js";
 
@@ -370,7 +372,8 @@ async function nativeWindowsAcls(
 ): Promise<readonly WindowsAuthorityInspection[]> {
   try {
     return runWindowsReadOnlyInspection(entries);
-  } catch {
+  } catch (error) {
+    if (error instanceof WindowsNativeStageError) reportWindowsNativeStage(error.stage);
     throw new WindowsAuthorityInspectionError();
   }
 }
@@ -549,6 +552,11 @@ export async function assertNativeEntryAuthority(
     const inspection = await inspector.inspectWindowsAcl(path, before, pinnedFd, kind);
     try {
       assertWindowsInspectionShape(inspection);
+    } catch {
+      reportWindowsNativeStage("parent:json-shape");
+      throw new WindowsAuthorityInspectionError();
+    }
+    try {
       if (
         inspection.index !== 0
         || inspection.authorityKind !== kind
@@ -587,10 +595,14 @@ export async function assertNativeWindowsEntriesAuthority(
     : await Promise.all(targets.map((target) => inspector.inspectWindowsAcl(
       target.path, target.expectedIdentity, target.pinnedFd, target.kind,
     )));
-  if (inspections.length !== targets.length) throw new WindowsAuthorityInspectionError();
+  if (inspections.length !== targets.length) {
+    reportWindowsNativeStage("parent:json-shape");
+    throw new WindowsAuthorityInspectionError();
+  }
   for (let index = 0; index < targets.length; index += 1) {
     const after = stableAuthorityIdentity(entries[index].pinnedFd);
     if (after.device !== targets[index].expectedIdentity.device || after.file !== targets[index].expectedIdentity.file) {
+      reportWindowsNativeStage("parent:post-bind");
       throw new WindowsAuthorityInspectionError();
     }
   }
@@ -601,6 +613,11 @@ export async function assertNativeWindowsEntriesAuthority(
     const inspection = inspections[index];
     try {
       assertWindowsInspectionShape(inspection);
+    } catch {
+      reportWindowsNativeStage("parent:json-shape");
+      throw new WindowsAuthorityInspectionError();
+    }
+    try {
       totalAces += inspection.rules.length;
       if (
         inspection.index !== (batched ? index : 0)
@@ -615,6 +632,7 @@ export async function assertNativeWindowsEntriesAuthority(
       ) throw new Error();
       currentUserSid = inspection.currentUserSid;
     } catch {
+      reportWindowsNativeStage("parent:descriptor-bind");
       throw new WindowsAuthorityInspectionError();
     }
     assertSafeWindowsAuthority(inspection, target.kind);

@@ -14,6 +14,7 @@ import {
   type ConnectRootAuthorityInspector,
   type WindowsAuthorityInspection,
 } from "./connectRootAuthority.js";
+import { WindowsNativeStageError } from "./connectWindowsAuthority.js";
 
 const USER = "S-1-5-21-100-200-300-1001";
 const SYSTEM = "S-1-5-18";
@@ -101,8 +102,14 @@ test("Windows broker JSON is canonical, exact-keyed, and bounded", () => {
     JSON.stringify({ version: 2, entries: [] }),
     JSON.stringify({ version: 1, entries: Array.from({ length: 33 }, () => inspection()) }),
     "{",
-  ]) assert.throws(() => parseWindowsInspectionDocument(malformed));
-  assert.throws(() => parseWindowsInspectionDocument("x".repeat(128 * 1024 + 1)));
+  ]) assert.throws(
+    () => parseWindowsInspectionDocument(malformed),
+    (error) => error instanceof WindowsNativeStageError && error.stage === "parent:json-shape",
+  );
+  assert.throws(
+    () => parseWindowsInspectionDocument("x".repeat(128 * 1024 + 1)),
+    (error) => error instanceof WindowsNativeStageError && error.stage === "parent:utf8",
+  );
   assert.throws(() => assertWindowsInspectionShape({ ...inspection(), extra: true }));
   assert.throws(() => assertWindowsInspectionShape({ ...inspection(), rules: [
     { identitySid: USER, inherited: false, accessType: "audit", appliesToSelf: true, rights: "1" },

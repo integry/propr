@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,6 +20,7 @@ const cli = join(repo, "packages", "cli", "dist", "index.js");
 const fetchFixture = pathToFileURL(join(repo, "test", "fixtures", "connectFetchMock.mjs")).href;
 const processFixture = pathToFileURL(join(repo, "test", "fixtures", "windowsConnectProcessMock.mjs")).href;
 const authorityModule = pathToFileURL(join(repo, "packages", "cli", "dist", "connectRootAuthority.js")).href;
+const windowsAuthorityModule = pathToFileURL(join(repo, "packages", "cli", "dist", "connectWindowsAuthority.js")).href;
 const initStackModule = pathToFileURL(join(repo, "packages", "cli", "dist", "commands", "initStack.js")).href;
 const configManagerModule = pathToFileURL(join(repo, "packages", "cli", "dist", "config", "ConfigManager.js")).href;
 const fixtureNodeArgs = Object.freeze([
@@ -46,7 +47,7 @@ function tunnelFixtureEnvLines({ enabled }) {
 
 const scenarioAllowlist = Object.freeze([
   "ready", "down", "disabled", "restart-required", "malformed", "oversized", "timeout",
-  "identity-mismatch", "secret-sentinel", "path-aba", "api", "authority-malformed", "authority-oversized",
+  "identity-mismatch", "secret-sentinel", "api", "path-aba", "authority-malformed", "authority-oversized",
   "authority-extra-key", "authority-duplicate", "authority-stderr", "authority-nonzero",
   "authority-timeout", "authority-descriptor-mismatch", "authority-index-mismatch",
   "authority-kind-mismatch", "authority-authority-kind-mismatch", "authority-identity-mismatch",
@@ -55,7 +56,7 @@ const scenarioAllowlist = Object.freeze([
   "authority-missing-system-root", "authority-mismatched-system-root", "authority-untrusted-system-root",
 ]);
 const assertionStageAllowlist = Object.freeze([
-  "authority-probe", "scaffold", "identity-assertion", "config-init", "config-save",
+  "native-assumptions", "authority-probe", "scaffold", "identity-assertion", "config-init", "config-save",
   "config-assertion",
   "write-env", "spawn", "signal", "exit", "bounds", "schema", "status", "endpoint",
   "identity", "reasons", "api-ready", "restart", "stderr", "sentinel", "api-spawn",
@@ -71,11 +72,19 @@ const reasonCodeAllowlist = Object.freeze([
   "IDENTITY_MISMATCH", "ENDPOINT_MISMATCH", "RESTART_REQUIRED", "INVALID_ROOT", "INVALID_ENDPOINT",
   "IDENTITY_UNAVAILABLE", "INTERNAL_FAILURE", "ACL_DIAGNOSTIC_UNAVAILABLE",
 ]);
+const nativeStageAllowlist = Object.freeze([
+  "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
+  "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr",
+  "broker:ps-version", "broker:job", "broker:fd", "broker:index-info",
+  "broker:security-info", "broker:acl", "broker:json",
+  "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
+]);
 const scenarioNames = new Set(scenarioAllowlist);
 const assertionStages = new Set(assertionStageAllowlist);
 const statusKinds = new Set(statusKindAllowlist);
 const diagnosticStatuses = new Set([null, ...statusKindAllowlist]);
 const reasonCodes = new Set(reasonCodeAllowlist);
+const nativeStages = new Set(nativeStageAllowlist);
 
 function parseBoundedFailureStatus(stdout) {
   if (typeof stdout !== "string" || stdout.length === 0 || Buffer.byteLength(stdout, "utf8") >= 2048) return null;
@@ -93,15 +102,36 @@ function parseBoundedFailureStatus(stdout) {
   }
 }
 
-function createFailureDiagnostic(scenario, stage, failureStatus) {
+function createFailureDiagnostic(scenario, stage, failureStatus, nativeStage, assumptions) {
   const status = failureStatus?.status ?? null;
   const codes = failureStatus?.reasonCodes ?? [];
   if (!scenarioNames.has(scenario) || !assertionStages.has(stage) || !diagnosticStatuses.has(status)
+    || (nativeStage !== null && !nativeStages.has(nativeStage))
+    || (assumptions.extraStdio !== null && assumptions.extraStdio !== "usable" && assumptions.extraStdio !== "unusable")
+    || (assumptions.nestedJob !== null && assumptions.nestedJob !== "succeeded" && assumptions.nestedJob !== "failed")
+    || (assumptions.alreadyContained !== null && typeof assumptions.alreadyContained !== "boolean")
     || !Array.isArray(codes) || codes.length > reasonCodes.size
     || new Set(codes).size !== codes.length || codes.some((code) => !reasonCodes.has(code))) {
-    return { scenario: "ready", stage: "write-env", status: null, reasonCodes: [] };
+    return {
+      scenario: "ready", stage: "write-env", nativeStage: null, status: null, reasonCodes: [],
+      extraStdio: null, alreadyContained: null, nestedJob: null,
+    };
   }
-  return { scenario, stage, status, reasonCodes: [...codes] };
+  return {
+    scenario, stage, nativeStage, status, reasonCodes: [...codes],
+    extraStdio: assumptions.extraStdio,
+    alreadyContained: assumptions.alreadyContained,
+    nestedJob: assumptions.nestedJob,
+  };
+}
+
+function extractNativeDiagnostic(stderr) {
+  let nativeStage = null;
+  const applicationStderr = stderr.replace(/^\[propr-windows-native-stage:([^\]]+)\]\r?\n/gm, (_line, stage) => {
+    nativeStage = nativeStages.has(stage) ? stage : "parent:json-shape";
+    return "";
+  });
+  return { applicationStderr, nativeStage };
 }
 
 const cases = [
@@ -114,9 +144,9 @@ const cases = [
   { name: "timeout", fetch: "timeout", docker: "ready", enabled: true, status: "timeout", exit: 0, reasons: ["API_TIMEOUT"] },
   { name: "identity-mismatch", fetch: "identity-mismatch", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["IDENTITY_MISMATCH"] },
   { name: "secret-sentinel", fetch: "secret-sentinel", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["API_UNREACHABLE"] },
-  { name: "path-aba", fetch: "ready", docker: "ready", enabled: true, status: "ready", exit: 0, reasons: [], authorityMode: "path-aba" },
 ];
 const authorityFailures = [
+  { name: "path-aba", mode: "path-aba", reason: "INVALID_ROOT" },
   { name: "authority-malformed", mode: "malformed" },
   { name: "authority-oversized", mode: "oversized" },
   { name: "authority-extra-key", mode: "extra-key" },
@@ -143,8 +173,27 @@ const authorityFailures = [
 let currentScenario = "ready";
 let currentStage = "write-env";
 let failureStatus = null;
+let currentNativeStage = null;
+const hostedAssumptions = { extraStdio: null, alreadyContained: null, nestedJob: null };
 try {
   assert.ok(expectedUser && actualUser.toLowerCase() === expectedUser.toLowerCase(), "proof did not run as the limited user");
+  currentStage = "native-assumptions";
+  const nativeAuthority = await import(windowsAuthorityModule);
+  const assumptionFd = openSync(root, "r");
+  try {
+    try {
+      const proof = nativeAuthority.runWindowsHostedAssumptionProbe(assumptionFd);
+      assert.equal(proof.version, 1);
+      hostedAssumptions.extraStdio = proof.extraStdio;
+      hostedAssumptions.alreadyContained = proof.alreadyContained;
+      hostedAssumptions.nestedJob = proof.nestedJob;
+    } catch (error) {
+      currentNativeStage = nativeStages.has(error?.stage) ? error.stage : "parent:json-shape";
+      throw error;
+    }
+  } finally {
+    closeSync(assumptionFd);
+  }
   currentStage = "authority-probe";
   const authority = await import(authorityModule);
   await assert.rejects(
@@ -183,6 +232,7 @@ try {
     currentScenario = scenario.name;
     currentStage = "write-env";
     failureStatus = null;
+    currentNativeStage = null;
     writeFileSync(join(root, ".env"), [
       "PROPR_STACK=authorized",
       "PROPR_INSTANCE_ID=abc123",
@@ -223,6 +273,8 @@ try {
         GITHUB_TOKEN: "github-token-SENTINEL",
       },
     });
+    const nativeDiagnostic = extractNativeDiagnostic(result.stderr);
+    currentNativeStage = nativeDiagnostic.nativeStage;
     currentStage = "bounds";
     failureStatus = parseBoundedFailureStatus(result.stdout);
     currentStage = "signal";
@@ -248,14 +300,14 @@ try {
     assert.equal(document.restartRequired, scenario.name === "restart-required", scenario.name);
     currentStage = "stderr";
     const expectedStderr = scenario.status === "ready" ? "" : `ProPR Connect discovery: ${scenario.status}.\n`;
-    assert.equal(result.stderr, expectedStderr, scenario.name);
+    assert.equal(nativeDiagnostic.applicationStderr, expectedStderr, scenario.name);
     currentStage = "sentinel";
     for (const sentinel of [
       "root-token-SENTINEL", "connector-token-SENTINEL", "relay-token-SENTINEL",
       "github-token-SENTINEL", "docker-secret-SENTINEL", "private-path-SENTINEL", fixture,
     ]) {
       assert.equal(result.stdout.includes(sentinel), false, `${scenario.name} stdout leaked ${sentinel}`);
-      assert.equal(result.stderr.includes(sentinel), false, `${scenario.name} stderr leaked ${sentinel}`);
+      assert.equal(nativeDiagnostic.applicationStderr.includes(sentinel), false, `${scenario.name} stderr leaked ${sentinel}`);
     }
   }
 
@@ -263,6 +315,7 @@ try {
     currentScenario = scenario.name;
     currentStage = "spawn";
     failureStatus = null;
+    currentNativeStage = null;
     const result = spawnSync(process.execPath, [
       ...fixtureNodeArgs,
       cli,
@@ -291,8 +344,11 @@ try {
         PROPR_TEST_DOCKER_MODE: "ready",
         PROPR_TEST_PUBLIC_IDENTITY: identity,
         PROPR_TEST_AUTHORITY_MODE: scenario.mode,
+        ...(scenario.mode === "path-aba" ? { PROPR_TEST_AUTHORITY_ROOT: root } : {}),
       },
     });
+    const nativeDiagnostic = extractNativeDiagnostic(result.stderr);
+    currentNativeStage = nativeDiagnostic.nativeStage;
     currentStage = "bounds";
     failureStatus = parseBoundedFailureStatus(result.stdout);
     currentStage = "signal";
@@ -306,11 +362,14 @@ try {
     currentStage = "reasons";
     assert.deepEqual(document.reasonCodes, [scenario.reason ?? "ACL_DIAGNOSTIC_UNAVAILABLE"], scenario.name);
     currentStage = "stderr";
-    assert.equal(result.stderr, "ProPR Connect discovery: invalidConfig.\n", scenario.name);
+    assert.equal(nativeDiagnostic.applicationStderr, "ProPR Connect discovery: invalidConfig.\n", scenario.name);
     currentStage = "sentinel";
-    for (const sentinel of [fixture, "private-path-SENTINEL", "S-1-5-21-999", "raw-error-SENTINEL"]) {
+    for (const sentinel of [
+      fixture, "private-path-SENTINEL", "attacker-replacement-SENTINEL",
+      "S-1-5-21-999", "raw-error-SENTINEL",
+    ]) {
       assert.equal(result.stdout.includes(sentinel), false, scenario.name);
-      assert.equal(result.stderr.includes(sentinel), false, scenario.name);
+      assert.equal(nativeDiagnostic.applicationStderr.includes(sentinel), false, scenario.name);
     }
   }
 
@@ -335,9 +394,11 @@ try {
   const fail = [...api.stdout.matchAll(/^# fail (\d+)$/gm)].at(-1);
   assert.ok(pass && Number(pass[1]) > 0, "API discovery tests did not report passes");
   assert.equal(Number(fail?.[1]), 0, "API discovery tests reported failures");
-  process.stdout.write(`Windows ordinary-user discovery proof: cli=${cases.length} api=${pass[1]} authority=1 user=${actualUser}\n`);
+  process.stdout.write(`Windows ordinary-user discovery proof: cli=${cases.length} api=${pass[1]} authority=${authorityFailures.length} extra-stdio=${hostedAssumptions.extraStdio} contained=${hostedAssumptions.alreadyContained} nested-job=${hostedAssumptions.nestedJob} user=${actualUser}\n`);
 } catch {
-  const diagnostic = createFailureDiagnostic(currentScenario, currentStage, failureStatus);
+  const diagnostic = createFailureDiagnostic(
+    currentScenario, currentStage, failureStatus, currentNativeStage, hostedAssumptions,
+  );
   process.stderr.write(`Windows ordinary-user discovery assertion failed: ${JSON.stringify(
     diagnostic,
   )}\n`);

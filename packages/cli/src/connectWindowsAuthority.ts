@@ -19,16 +19,55 @@ const WINDOWS_INSPECTION_MAX_BYTES = 128 * 1024;
 const WINDOWS_INSPECTION_MAX_ENTRIES = 32;
 const GLOBAL_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
 
-// PowerShell 5.1's Add-Type compiler requires a writable temporary directory.
-// Define the fixed P/Invoke surface with Reflection.Emit instead so discovery
-// remains entirely in memory and performs no filesystem mutation.
-const WINDOWS_INSPECTION_SOURCE = String.raw`
+export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
+  "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
+  "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr",
+  "broker:ps-version", "broker:job", "broker:fd", "broker:index-info",
+  "broker:security-info", "broker:acl", "broker:json",
+  "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
+] as const);
+
+export type WindowsNativeStageCode = (typeof WINDOWS_NATIVE_STAGE_CODES)[number];
+
+const WINDOWS_NATIVE_STAGE_SET: ReadonlySet<string> = new Set(WINDOWS_NATIVE_STAGE_CODES);
+const WINDOWS_NATIVE_DIAGNOSTIC_HOOK = Symbol.for("propr.test.windowsNativeDiagnostic");
+
+export class WindowsNativeStageError extends Error {
+  constructor(readonly stage: WindowsNativeStageCode) {
+    super("Windows native authority inspection failed");
+    this.name = "WindowsNativeStageError";
+  }
+}
+
+export function reportWindowsNativeStage(stage: WindowsNativeStageCode): void {
+  if (!WINDOWS_NATIVE_STAGE_SET.has(stage)) return;
+  const hook = (globalThis as Record<symbol, unknown>)[WINDOWS_NATIVE_DIAGNOSTIC_HOOK];
+  if (typeof hook !== "function") return;
+  try { (hook as (value: string) => void)(stage); } catch { /* Diagnostics never alter production status. */ }
+}
+
+function stageError(stage: WindowsNativeStageCode): WindowsNativeStageError {
+  return new WindowsNativeStageError(stage);
+}
+
+// Each production inspector receives exactly one already-open target as its
+// standard-input HANDLE. Unlike Node extra stdio slots, STARTF_USESTDHANDLES is
+// a documented Windows process boundary and GetStdHandle returns the inherited
+// HANDLE directly. The script contains no process-creation API or external
+// command; terminating powershell.exe therefore terminates the complete tree.
+export const WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false;
+export const WINDOWS_INSPECTOR_TRANSPORT = "inherited-standard-handle" as const;
+
+// Reflection.Emit keeps the fixed P/Invoke surface in memory. Add-Type and its
+// writable compiler workspace are deliberately absent.
+export const WINDOWS_INSPECTION_SOURCE = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Set-StrictMode -Version 2
+$stage=71
 try {
   if($PSVersionTable.PSVersion.Major-ne 5-or $PSVersionTable.PSVersion.Minor-ne 1-or
-     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){exit 70}
+     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){exit $stage}
   $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly(
     (New-Object Reflection.AssemblyName('ProprReadOnlyAuthorityAssembly')),
     [Reflection.Emit.AssemblyBuilderAccess]::Run)
@@ -40,95 +79,116 @@ try {
       $returnType,$parameters,$nativeConvention,[Runtime.InteropServices.CharSet]::Unicode)
     $method.SetImplementationFlags($method.GetMethodImplementationFlags()-bor [Reflection.MethodImplAttributes]::PreserveSig)
   }
-  $winapi=[Runtime.InteropServices.CallingConvention]::Winapi;$cdecl=[Runtime.InteropServices.CallingConvention]::Cdecl
-  $intptr=[IntPtr];$intptrRef=$intptr.MakeByRefType();$uint=[uint32];$uintRef=$uint.MakeByRefType();$ushortRef=([uint16]).MakeByRefType()
-  Add-NativeMethod '_get_osfhandle' 'msvcrt.dll' $intptr @([int]) $cdecl
+  $winapi=[Runtime.InteropServices.CallingConvention]::Winapi
+  $intptr=[IntPtr];$intptrRef=$intptr.MakeByRefType();$uint=[uint32];$uintRef=$uint.MakeByRefType();$ushortRef=([uint16]).MakeByRefType();$boolRef=([bool]).MakeByRefType()
+  Add-NativeMethod 'GetStdHandle' 'kernel32.dll' $intptr @([int]) $winapi
   Add-NativeMethod 'GetFileInformationByHandle' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
   Add-NativeMethod 'GetSecurityInfo' 'advapi32.dll' $uint @($intptr,$uint,$uint,$intptrRef,$intptrRef,$intptrRef,$intptrRef,$intptrRef) $winapi
   Add-NativeMethod 'GetSecurityDescriptorControl' 'advapi32.dll' ([bool]) @($intptr,$ushortRef,$uintRef) $winapi
   Add-NativeMethod 'GetAclInformation' 'advapi32.dll' ([bool]) @($intptr,$intptr,$uint,$uint) $winapi
   Add-NativeMethod 'GetAce' 'advapi32.dll' ([bool]) @($intptr,$uint,$intptrRef) $winapi
   Add-NativeMethod 'LocalFree' 'kernel32.dll' $intptr @($intptr) $winapi
-  Add-NativeMethod 'CreateJobObject' 'kernel32.dll' $intptr @($intptr,[string]) $winapi
-  Add-NativeMethod 'SetInformationJobObject' 'kernel32.dll' ([bool]) @($intptr,[int],$intptr,$uint) $winapi
-  Add-NativeMethod 'AssignProcessToJobObject' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
+  Add-NativeMethod 'IsProcessInJob' 'kernel32.dll' ([bool]) @($intptr,$intptr,$boolRef) $winapi
   Add-NativeMethod 'GetCurrentProcess' 'kernel32.dll' $intptr @() $winapi
   $null=$builder.CreateType()
-  $job=[ProprReadOnlyAuthority]::CreateJobObject([IntPtr]::Zero,$null)
-  if($job-eq [IntPtr]::Zero){exit 70}
-  $jobInfo=[Runtime.InteropServices.Marshal]::AllocHGlobal(144)
-  for($offset=0;$offset-lt 144;$offset++){[Runtime.InteropServices.Marshal]::WriteByte($jobInfo,$offset,0)}
-  [Runtime.InteropServices.Marshal]::WriteInt32($jobInfo,16,0x2000)
-  if(-not [ProprReadOnlyAuthority]::SetInformationJobObject($job,9,$jobInfo,144)){exit 70}
-  if(-not [ProprReadOnlyAuthority]::AssignProcessToJobObject($job,[ProprReadOnlyAuthority]::GetCurrentProcess())){exit 70}
+  $stage=72
+  $inJob=$false
+  if(-not [ProprReadOnlyAuthority]::IsProcessInJob([ProprReadOnlyAuthority]::GetCurrentProcess(),[IntPtr]::Zero,[ref]$inJob)){exit $stage}
+  $stage=73
+  $handle=[ProprReadOnlyAuthority]::GetStdHandle(-10)
+  if($handle-eq [IntPtr](-1)-or $handle-eq [IntPtr](-2)-or $handle-eq [IntPtr]::Zero){exit $stage}
+  $stage=74
+  $before=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
+  if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($handle,$before)){exit $stage}
   $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
-  if($null-eq $current){exit 70}
+  if($null-eq $current){exit $stage}
   $currentSid=$current.Value
-  $specs=__PROPR_SPECS__
-  $entries=New-Object Collections.Generic.List[object]
-  $totalAces=0
-  foreach($spec in $specs){
-    $index=[int]$spec[0];$entryKind=[string]$spec[1];$authorityKind=[string]$spec[2];$fd=3+$index
-    $handle=[ProprReadOnlyAuthority]::_get_osfhandle($fd)
-    if($handle-eq [IntPtr](-1)-or $handle-eq [IntPtr](-2)-or $handle-eq [IntPtr]::Zero){exit 70}
-    $before=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-    if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($handle,$before)){exit 70}
-    $owner=[IntPtr]::Zero;$group=[IntPtr]::Zero;$dacl=[IntPtr]::Zero;$sacl=[IntPtr]::Zero;$descriptor=[IntPtr]::Zero
-    try {
-      if([ProprReadOnlyAuthority]::GetSecurityInfo($handle,1,5,[ref]$owner,[ref]$group,[ref]$dacl,[ref]$sacl,[ref]$descriptor)-ne 0){exit 70}
-      if($owner-eq [IntPtr]::Zero-or $dacl-eq [IntPtr]::Zero-or $descriptor-eq [IntPtr]::Zero){exit 70}
-      $ownerSid=(New-Object Security.Principal.SecurityIdentifier($owner)).Value
-      $control=[uint16]0;$revision=[uint32]0
-      if(-not [ProprReadOnlyAuthority]::GetSecurityDescriptorControl($descriptor,[ref]$control,[ref]$revision)){exit 70}
-      $aclInfo=[Runtime.InteropServices.Marshal]::AllocHGlobal(12)
-      if(-not [ProprReadOnlyAuthority]::GetAclInformation($dacl,$aclInfo,12,2)){exit 70}
-      $aceCount=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($aclInfo,0)
-      $aclBytes=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($aclInfo,4)
-      if($aceCount-gt 128-or $aclBytes-lt 8-or $aclBytes-gt 65535){exit 70}
-      $aclRevision=[Runtime.InteropServices.Marshal]::ReadByte($dacl,0)
-      if(($aclRevision-ne 2-and $aclRevision-ne 4)-or [Runtime.InteropServices.Marshal]::ReadByte($dacl,1)-ne 0){exit 70}
-      $rules=New-Object Collections.Generic.List[object]
-      for($aceIndex=0;$aceIndex-lt $aceCount;$aceIndex++){
-        $ace=[IntPtr]::Zero
-        if(-not [ProprReadOnlyAuthority]::GetAce($dacl,$aceIndex,[ref]$ace)-or $ace-eq [IntPtr]::Zero){exit 70}
-        $aceType=[Runtime.InteropServices.Marshal]::ReadByte($ace,0);$flags=[Runtime.InteropServices.Marshal]::ReadByte($ace,1)
-        $aceSize=[uint16][Runtime.InteropServices.Marshal]::ReadInt16($ace,2)
-        if(($aceType-ne 0-and $aceType-ne 1)-or ($flags-band 0xE0)-ne 0-or $aceSize-lt 16-or $aceSize-gt 4096){exit 70}
-        $mask=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($ace,4)
-        $sidPointer=[IntPtr]::Add($ace,8);$sid=New-Object Security.Principal.SecurityIdentifier($sidPointer)
-        if($sid.BinaryLength-gt ($aceSize-8)){exit 70}
-        $rules.Add([pscustomobject][ordered]@{
-          identitySid=$sid.Value;inherited=[bool](($flags-band 0x10)-ne 0)
-          accessType=$(if($aceType-eq 0){'allow'}else{'deny'});appliesToSelf=[bool](($flags-band 8)-eq 0)
-          rights=$mask.ToString([Globalization.CultureInfo]::InvariantCulture)
-        })
-        $totalAces++;if($totalAces-gt 512){exit 70}
-      }
-    } finally {if($descriptor-ne [IntPtr]::Zero){$null=[ProprReadOnlyAuthority]::LocalFree($descriptor)}}
-    $after=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-    if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($handle,$after)){exit 70}
-    $beforeVolume=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,28)
-    $afterVolume=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($after,28)
-    $beforeHigh=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,44);$beforeLow=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,48)
-    $afterHigh=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($after,44);$afterLow=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($after,48)
-    $beforeId=([uint64]$beforeHigh*4294967296)+[uint64]$beforeLow
-    $afterId=([uint64]$afterHigh*4294967296)+[uint64]$afterLow
-    $entries.Add([pscustomobject][ordered]@{
-      index=$index;kind=$entryKind;authorityKind=$authorityKind;currentUserSid=$currentSid;ownerSid=$ownerSid
-      daclProtected=[bool](($control-band 0x1000)-ne 0);reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
-      volumeSerialNumber=$beforeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
-      fileId=$beforeId.ToString([Globalization.CultureInfo]::InvariantCulture)
-      verifiedVolumeSerialNumber=$afterVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
-      verifiedFileId=$afterId.ToString([Globalization.CultureInfo]::InvariantCulture);rules=@($rules)
-    })
+  $stage=75
+  $owner=[IntPtr]::Zero;$group=[IntPtr]::Zero;$dacl=[IntPtr]::Zero;$sacl=[IntPtr]::Zero;$descriptor=[IntPtr]::Zero
+  try {
+    if([ProprReadOnlyAuthority]::GetSecurityInfo($handle,1,5,[ref]$owner,[ref]$group,[ref]$dacl,[ref]$sacl,[ref]$descriptor)-ne 0){exit $stage}
+    if($owner-eq [IntPtr]::Zero-or $dacl-eq [IntPtr]::Zero-or $descriptor-eq [IntPtr]::Zero){exit $stage}
+    $ownerSid=(New-Object Security.Principal.SecurityIdentifier($owner)).Value
+    $control=[uint16]0;$revision=[uint32]0
+    if(-not [ProprReadOnlyAuthority]::GetSecurityDescriptorControl($descriptor,[ref]$control,[ref]$revision)){exit $stage}
+    $stage=76
+    $aclInfo=[Runtime.InteropServices.Marshal]::AllocHGlobal(12)
+    if(-not [ProprReadOnlyAuthority]::GetAclInformation($dacl,$aclInfo,12,2)){exit $stage}
+    $aceCount=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($aclInfo,0)
+    $aclBytes=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($aclInfo,4)
+    if($aceCount-gt 128-or $aclBytes-lt 8-or $aclBytes-gt 65535){exit $stage}
+    $aclRevision=[Runtime.InteropServices.Marshal]::ReadByte($dacl,0)
+    if(($aclRevision-ne 2-and $aclRevision-ne 4)-or [Runtime.InteropServices.Marshal]::ReadByte($dacl,1)-ne 0){exit $stage}
+    $rules=New-Object Collections.Generic.List[object]
+    for($aceIndex=0;$aceIndex-lt $aceCount;$aceIndex++){
+      $ace=[IntPtr]::Zero
+      if(-not [ProprReadOnlyAuthority]::GetAce($dacl,$aceIndex,[ref]$ace)-or $ace-eq [IntPtr]::Zero){exit $stage}
+      $aceType=[Runtime.InteropServices.Marshal]::ReadByte($ace,0);$flags=[Runtime.InteropServices.Marshal]::ReadByte($ace,1)
+      $aceSize=[uint16][Runtime.InteropServices.Marshal]::ReadInt16($ace,2)
+      if(($aceType-ne 0-and $aceType-ne 1)-or ($flags-band 0xE0)-ne 0-or $aceSize-lt 16-or $aceSize-gt 4096){exit $stage}
+      $mask=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($ace,4)
+      $sidPointer=[IntPtr]::Add($ace,8);$sid=New-Object Security.Principal.SecurityIdentifier($sidPointer)
+      if($sid.BinaryLength-gt ($aceSize-8)){exit $stage}
+      $rules.Add([pscustomobject][ordered]@{
+        identitySid=$sid.Value;inherited=[bool](($flags-band 0x10)-ne 0)
+        accessType=$(if($aceType-eq 0){'allow'}else{'deny'});appliesToSelf=[bool](($flags-band 8)-eq 0)
+        rights=$mask.ToString([Globalization.CultureInfo]::InvariantCulture)
+      })
+    }
+  } finally {if($descriptor-ne [IntPtr]::Zero){$null=[ProprReadOnlyAuthority]::LocalFree($descriptor)}}
+  $stage=74
+  $after=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
+  if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($handle,$after)){exit $stage}
+  $beforeVolume=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,28)
+  $afterVolume=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($after,28)
+  $beforeHigh=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,44);$beforeLow=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,48)
+  $afterHigh=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($after,44);$afterLow=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($after,48)
+  $beforeId=([uint64]$beforeHigh*4294967296)+[uint64]$beforeLow
+  $afterId=([uint64]$afterHigh*4294967296)+[uint64]$afterLow
+  $entry=[pscustomobject][ordered]@{
+    index=__PROPR_INDEX__;kind='__PROPR_ENTRY_KIND__';authorityKind='__PROPR_AUTHORITY_KIND__';currentUserSid=$currentSid;ownerSid=$ownerSid
+    daclProtected=[bool](($control-band 0x1000)-ne 0);reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
+    volumeSerialNumber=$beforeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
+    fileId=$beforeId.ToString([Globalization.CultureInfo]::InvariantCulture)
+    verifiedVolumeSerialNumber=$afterVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
+    verifiedFileId=$afterId.ToString([Globalization.CultureInfo]::InvariantCulture);rules=@($rules)
   }
-  $document=[pscustomobject][ordered]@{version=1;entries=@($entries)}
-  $json=ConvertTo-Json $document -Compress -Depth 5
-  if([Text.Encoding]::UTF8.GetByteCount($json)-gt 131072){exit 70}
+  $stage=77
+  $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;entries=@($entry)}) -Compress -Depth 5
+  if([Text.Encoding]::UTF8.GetByteCount($json)-gt 131072){exit $stage}
   [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false,$true)
   [Console]::Out.Write($json)
   exit 0
-}catch{exit 70}
+}catch{exit $stage}
+`;
+
+const WINDOWS_HOSTED_ASSUMPTION_SOURCE = String.raw`
+$ErrorActionPreference='Stop';Set-StrictMode -Version 2
+try {
+  $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName('ProprHostedAssumptionAssembly')),[Reflection.Emit.AssemblyBuilderAccess]::Run)
+  $module=$assembly.DefineDynamicModule('ProprHostedAssumptionModule');$builder=$module.DefineType('ProprHostedAssumption',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
+  function Add-NativeMethod($name,$library,$returnType,[Type[]]$parameters,$convention){$method=$builder.DefinePInvokeMethod($name,$library,[Reflection.MethodAttributes]'Public,Static,PinvokeImpl',[Reflection.CallingConventions]::Standard,$returnType,$parameters,$convention,[Runtime.InteropServices.CharSet]::Unicode);$method.SetImplementationFlags($method.GetMethodImplementationFlags()-bor [Reflection.MethodImplAttributes]::PreserveSig)}
+  $winapi=[Runtime.InteropServices.CallingConvention]::Winapi;$cdecl=[Runtime.InteropServices.CallingConvention]::Cdecl;$intptr=[IntPtr];$boolRef=([bool]).MakeByRefType()
+  Add-NativeMethod '_get_osfhandle' 'msvcrt.dll' $intptr @([int]) $cdecl
+  Add-NativeMethod 'GetFileInformationByHandle' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
+  Add-NativeMethod 'CreateJobObject' 'kernel32.dll' $intptr @($intptr,[string]) $winapi
+  Add-NativeMethod 'SetInformationJobObject' 'kernel32.dll' ([bool]) @($intptr,[int],$intptr,[uint32]) $winapi
+  Add-NativeMethod 'AssignProcessToJobObject' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
+  Add-NativeMethod 'IsProcessInJob' 'kernel32.dll' ([bool]) @($intptr,$intptr,$boolRef) $winapi
+  Add-NativeMethod 'GetCurrentProcess' 'kernel32.dll' $intptr @() $winapi
+  $null=$builder.CreateType()
+  $fdHandle=[ProprHostedAssumption]::_get_osfhandle(3);$info=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
+  $extraStdio=if($fdHandle-ne [IntPtr](-1)-and $fdHandle-ne [IntPtr](-2)-and $fdHandle-ne [IntPtr]::Zero-and [ProprHostedAssumption]::GetFileInformationByHandle($fdHandle,$info)){'usable'}else{'unusable'}
+  $contained=$false
+  if(-not [ProprHostedAssumption]::IsProcessInJob([ProprHostedAssumption]::GetCurrentProcess(),[IntPtr]::Zero,[ref]$contained)){exit 81}
+  $job=[ProprHostedAssumption]::CreateJobObject([IntPtr]::Zero,$null);if($job-eq [IntPtr]::Zero){exit 81}
+  $jobInfo=[Runtime.InteropServices.Marshal]::AllocHGlobal(144);for($offset=0;$offset-lt 144;$offset++){[Runtime.InteropServices.Marshal]::WriteByte($jobInfo,$offset,0)}
+  [Runtime.InteropServices.Marshal]::WriteInt32($jobInfo,16,0x2000)
+  if(-not [ProprHostedAssumption]::SetInformationJobObject($job,9,$jobInfo,144)){exit 81}
+  $nested=if([ProprHostedAssumption]::AssignProcessToJobObject($job,[ProprHostedAssumption]::GetCurrentProcess())){'succeeded'}else{'failed'}
+  $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;extraStdio=$extraStdio;alreadyContained=[bool]$contained;nestedJob=$nested}) -Compress
+  [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false,$true);[Console]::Out.Write($json);exit 0
+}catch{exit 81}
 `;
 
 interface HeldExecutable {
@@ -137,6 +197,13 @@ interface HeldExecutable {
   readonly fd: number;
   readonly device: string;
   readonly file: string;
+}
+
+export interface WindowsHostedAssumptionProof {
+  readonly version: 1;
+  readonly extraStdio: "usable" | "unusable";
+  readonly alreadyContained: boolean;
+  readonly nestedJob: "succeeded" | "failed";
 }
 
 function sameWindowsPath(left: string, right: string): boolean {
@@ -151,35 +218,46 @@ function ordinaryDosPath(value: string): boolean {
 }
 
 function resolveWindowsPowerShell(): HeldExecutable {
-  if (process.platform !== "win32" || process.arch === "ia32") throw new Error("unavailable");
+  if (process.platform !== "win32" || process.arch === "ia32") throw stageError("resolver:env");
   const suppliedRoot = process.env.SystemRoot;
   const suppliedWindir = process.env.WINDIR;
   if (!suppliedRoot || !suppliedWindir || !ordinaryDosPath(suppliedRoot) || !ordinaryDosPath(suppliedWindir)) {
-    throw new Error("unavailable");
+    throw stageError("resolver:env");
   }
-  const canonicalSupplied = realpathSync.native(suppliedRoot);
-  const canonicalWindir = realpathSync.native(suppliedWindir);
+  let canonicalSupplied: string;
+  let canonicalWindir: string;
+  try {
+    canonicalSupplied = realpathSync.native(suppliedRoot);
+    canonicalWindir = realpathSync.native(suppliedWindir);
+  } catch { throw stageError("resolver:canonical"); }
   if (
     !ordinaryDosPath(canonicalSupplied)
     || !sameWindowsPath(canonicalSupplied, canonicalWindir)
     || !sameWindowsPath(suppliedRoot, canonicalSupplied)
     || !sameWindowsPath(suppliedWindir, canonicalWindir)
-  ) throw new Error("unavailable");
+  ) throw stageError("resolver:canonical");
   const path = win32.join(canonicalSupplied, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const canonicalPath = realpathSync.native(path);
-  const named = lstatSync(path, { bigint: true });
-  if (!sameWindowsPath(path, canonicalPath) || !named.isFile() || named.isSymbolicLink()) throw new Error("unavailable");
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let canonicalPath: string;
+  try { canonicalPath = realpathSync.native(path); } catch { throw stageError("resolver:canonical"); }
+  let named: ReturnType<typeof lstatSync>;
+  try { named = lstatSync(path, { bigint: true }); } catch { throw stageError("resolver:canonical"); }
+  if (!sameWindowsPath(path, canonicalPath) || !named.isFile() || named.isSymbolicLink()) {
+    throw stageError("resolver:canonical");
+  }
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); } catch { throw stageError("resolver:canonical"); }
   let globalFd: number | undefined;
   try {
     const held = fstatSync(fd, { bigint: true });
-    globalFd = openSync(
-      `${GLOBAL_SYSTEM_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
-      constants.O_RDONLY | constants.O_NOFOLLOW,
-    );
+    try {
+      globalFd = openSync(
+        `${GLOBAL_SYSTEM_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+    } catch { throw stageError("resolver:global-open"); }
     const global = fstatSync(globalFd, { bigint: true });
     if (!held.isFile() || !global.isFile() || held.dev !== named.dev || held.ino !== named.ino
-      || held.dev !== global.dev || held.ino !== global.ino) throw new Error("unavailable");
+      || held.dev !== global.dev || held.ino !== global.ino) throw stageError("resolver:global-id");
     return { path, systemRoot: canonicalSupplied, fd, device: held.dev.toString(10), file: held.ino.toString(10) };
   } catch (error) {
     closeSync(fd);
@@ -192,58 +270,67 @@ function resolveWindowsPowerShell(): HeldExecutable {
 function revalidateWindowsPowerShell(executable: HeldExecutable): void {
   let namedFd: number | undefined;
   try {
-    namedFd = openSync(executable.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { namedFd = openSync(executable.path, constants.O_RDONLY | constants.O_NOFOLLOW); } catch {
+      throw stageError("resolver:global-id");
+    }
     const held = fstatSync(executable.fd, { bigint: true });
     const named = fstatSync(namedFd, { bigint: true });
     if (
       !held.isFile() || !named.isFile()
       || held.dev.toString(10) !== executable.device || held.ino.toString(10) !== executable.file
       || named.dev.toString(10) !== executable.device || named.ino.toString(10) !== executable.file
-    ) throw new Error("unavailable");
+    ) throw stageError("resolver:global-id");
   } finally {
     if (namedFd !== undefined) closeSync(namedFd);
   }
 }
 
-function powershellSpecs(targets: readonly WindowsAuthorityTarget[]): string {
-  const records = targets.map((target, index) => {
-    const entryKind = target.kind === "env" ? "file" : "directory";
-    return `@(${index},'${entryKind}','${target.kind}')`;
-  });
-  return `@(${records.join(",")})`;
-}
-
 function strictUtf8(value: Buffer | string | null | undefined): string {
   const bytes = typeof value === "string" ? Buffer.from(value, "utf8") : (value ?? Buffer.alloc(0));
-  if (bytes.byteLength === 0 || bytes.byteLength > WINDOWS_INSPECTION_MAX_BYTES) throw new Error("malformed");
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  if (bytes.byteLength === 0 || bytes.byteLength > WINDOWS_INSPECTION_MAX_BYTES) {
+    throw stageError("parent:utf8");
+  }
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {
+    throw stageError("parent:utf8");
+  }
 }
 
 export function parseWindowsInspectionDocument(value: Buffer | string): readonly WindowsAuthorityInspection[] {
   const text = strictUtf8(value);
   let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { throw new Error("malformed"); }
+  try { parsed = JSON.parse(text); } catch { throw stageError("parent:json-shape"); }
   if (JSON.stringify(parsed) !== text || !parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("malformed");
+    throw stageError("parent:json-shape");
   }
   const document = parsed as Record<string, unknown>;
   if (Object.keys(document).sort().join(",") !== "entries,version" || document.version !== 1
     || !Array.isArray(document.entries) || document.entries.length > WINDOWS_INSPECTION_MAX_ENTRIES) {
-    throw new Error("malformed");
+    throw stageError("parent:json-shape");
   }
   return document.entries as WindowsAuthorityInspection[];
 }
 
-export function runWindowsReadOnlyInspection(
-  targets: readonly WindowsAuthorityTarget[],
-): readonly WindowsAuthorityInspection[] {
-  if (targets.length < 1 || targets.length > WINDOWS_INSPECTION_MAX_ENTRIES) throw new Error("unavailable");
-  const executable = resolveWindowsPowerShell();
+function brokerFailureStage(status: number | null): WindowsNativeStageCode {
+  const stages: Readonly<Record<number, WindowsNativeStageCode>> = {
+    71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info",
+    75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
+  };
+  return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
+}
+
+function inspectionSource(target: WindowsAuthorityTarget, index: number): string {
+  const entryKind = target.kind === "env" ? "file" : "directory";
+  return WINDOWS_INSPECTION_SOURCE
+    .replace("__PROPR_INDEX__", String(index))
+    .replace("__PROPR_ENTRY_KIND__", entryKind)
+    .replace("__PROPR_AUTHORITY_KIND__", target.kind);
+}
+
+function spawnPowerShell(executable: HeldExecutable, source: string, stdin: "ignore" | number, extraFd?: number) {
+  const encoded = Buffer.from(source, "utf16le").toString("base64");
+  if (encoded.length > 28_000) throw stageError("spawn:create");
   try {
-    const source = WINDOWS_INSPECTION_SOURCE.replace("__PROPR_SPECS__", powershellSpecs(targets));
-    const encoded = Buffer.from(source, "utf16le").toString("base64");
-    if (encoded.length > 28_000) throw new Error("unavailable");
-    const result = spawnSync(executable.path, [
+    return spawnSync(executable.path, [
       "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded,
     ], {
       shell: false,
@@ -254,13 +341,90 @@ export function runWindowsReadOnlyInspection(
       timeout: WINDOWS_INSPECTION_TIMEOUT_MS,
       killSignal: "SIGKILL",
       maxBuffer: WINDOWS_INSPECTION_MAX_BYTES,
-      stdio: ["ignore", "pipe", "pipe", ...targets.map((target) => target.pinnedFd)],
+      stdio: extraFd === undefined ? [stdin, "pipe", "pipe"] : [stdin, "pipe", "pipe", extraFd],
     });
-    revalidateWindowsPowerShell(executable);
-    if (result.error || result.signal || result.status !== 0 || (result.stderr?.byteLength ?? 0) !== 0) {
-      throw new Error("unavailable");
+  } catch { throw stageError("spawn:create"); }
+}
+
+function assertSpawnSuccess(result: ReturnType<typeof spawnSync>): void {
+  if (result.error) {
+    if ((result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") throw stageError("spawn:timeout");
+    throw stageError("spawn:error");
+  }
+  if (result.signal) throw stageError(result.signal === "SIGKILL" ? "spawn:timeout" : "spawn:status");
+  if (result.status !== 0) throw stageError(brokerFailureStage(result.status));
+  const stderrBytes = typeof result.stderr === "string"
+    ? Buffer.byteLength(result.stderr, "utf8")
+    : (result.stderr?.byteLength ?? 0);
+  if (stderrBytes !== 0) throw stageError("spawn:stderr");
+}
+
+export function runWindowsReadOnlyInspection(
+  targets: readonly WindowsAuthorityTarget[],
+): readonly WindowsAuthorityInspection[] {
+  if (targets.length < 1 || targets.length > WINDOWS_INSPECTION_MAX_ENTRIES) {
+    throw stageError("parent:json-shape");
+  }
+  const executable = resolveWindowsPowerShell();
+  const inspections: WindowsAuthorityInspection[] = [];
+  let totalOutputBytes = 0;
+  try {
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index];
+      const result = spawnPowerShell(executable, inspectionSource(target, index), target.pinnedFd);
+      assertSpawnSuccess(result);
+      totalOutputBytes += typeof result.stdout === "string"
+        ? Buffer.byteLength(result.stdout, "utf8")
+        : (result.stdout?.byteLength ?? 0);
+      if (totalOutputBytes > WINDOWS_INSPECTION_MAX_BYTES) throw stageError("parent:utf8");
+      const entries = parseWindowsInspectionDocument(result.stdout ?? Buffer.alloc(0));
+      if (entries.length !== 1) throw stageError("parent:json-shape");
+      const entry = entries[0];
+      try {
+        if (
+          entry.index !== index
+          || entry.kind !== (target.kind === "env" ? "file" : "directory")
+          || entry.authorityKind !== target.kind
+          || BigInt(entry.volumeSerialNumber) !== BigInt(target.expectedIdentity.device)
+          || BigInt(entry.fileId) !== BigInt(target.expectedIdentity.file)
+          || BigInt(entry.volumeSerialNumber) !== BigInt(entry.verifiedVolumeSerialNumber)
+          || BigInt(entry.fileId) !== BigInt(entry.verifiedFileId)
+        ) throw new Error();
+      } catch { throw stageError("parent:descriptor-bind"); }
+      const after = fstatSync(target.pinnedFd, { bigint: true });
+      if (after.dev.toString(10) !== target.expectedIdentity.device || after.ino.toString(10) !== target.expectedIdentity.file) {
+        throw stageError("parent:post-bind");
+      }
+      inspections.push(entry);
     }
-    return parseWindowsInspectionDocument(result.stdout ?? Buffer.alloc(0));
+    revalidateWindowsPowerShell(executable);
+    return inspections;
+  } finally {
+    closeSync(executable.fd);
+  }
+}
+
+export function runWindowsHostedAssumptionProbe(targetFd: number): WindowsHostedAssumptionProof {
+  const executable = resolveWindowsPowerShell();
+  try {
+    const result = spawnPowerShell(executable, WINDOWS_HOSTED_ASSUMPTION_SOURCE, "ignore", targetFd);
+    assertSpawnSuccess(result);
+    const text = strictUtf8(result.stdout ?? Buffer.alloc(0));
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { throw stageError("parent:json-shape"); }
+    if (JSON.stringify(parsed) !== text || !parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw stageError("parent:json-shape");
+    }
+    const proof = parsed as Record<string, unknown>;
+    if (Object.keys(proof).sort().join(",") !== "alreadyContained,extraStdio,nestedJob,version"
+      || proof.version !== 1
+      || (proof.extraStdio !== "usable" && proof.extraStdio !== "unusable")
+      || typeof proof.alreadyContained !== "boolean"
+      || (proof.nestedJob !== "succeeded" && proof.nestedJob !== "failed")) {
+      throw stageError("parent:json-shape");
+    }
+    revalidateWindowsPowerShell(executable);
+    return proof as unknown as WindowsHostedAssumptionProof;
   } finally {
     closeSync(executable.fd);
   }
