@@ -347,6 +347,17 @@ if (!hasSingleInstanceLock) {
       devServerUrl,
       packagedRendererUrl,
     });
+
+    app.on('before-quit', event => {
+      if (shutdownStarted) return;
+      event.preventDefault();
+      shutdownStarted = true;
+      void lifecycle.shutdown().finally(() => {
+        log('info', 'desktop.app.shutdown');
+        app.quit();
+      });
+    });
+
     mainWindow = await createMainWindow();
 
     const updateConfig = __PROPR_DESKTOP_UPDATE_MANIFEST_URL__
@@ -380,15 +391,6 @@ if (!hasSingleInstanceLock) {
       }
     });
 
-    app.on('before-quit', event => {
-      if (shutdownStarted) return;
-      event.preventDefault();
-      shutdownStarted = true;
-      void lifecycle.shutdown().finally(() => {
-        log('info', 'desktop.app.shutdown');
-        app.quit();
-      });
-    });
   }).catch(error => {
     log('error', 'desktop.app.start_failed', { error });
     app.exit(1);
