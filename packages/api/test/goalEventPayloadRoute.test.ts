@@ -10,6 +10,7 @@ import {
 } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260831000000_create_goal_control_plane.js';
 import { configureDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
+import { toPublicGoalEventPayload } from '../routes/goalRouteDtos.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 
 type BetterSqliteConnection = {
@@ -109,8 +110,18 @@ test('event route projects poisoned nested payloads without mutating persistence
   const githubToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
   const poisonedPayload = {
     status: 'working',
+    requestedModel: 'claude-opus-4-8',
+    requestedBy: 'safe-user-display',
+    requestedAt: '2026-08-31T10:00:00.000Z',
+    eventName: 'model-change-requested',
     progress: { current: 2, total: 5, note: `safe context ${githubToken}` },
     safeArray: ['alpha', { message: 'beta', count: 3 }, `array context ${githubToken}`],
+    cwd: '/srv/propr/private-top-level-cwd',
+    hostPath: '/var/lib/propr/private-host-path',
+    dockerHost: 'unix:///var/run/private-docker.sock',
+    workspacePath: '/workspaces/private-top-level-workspace',
+    workerId: 'private-top-level-worker',
+    turnId: 'private-top-level-turn',
     controller: { ownerUserId: 'user-1', leaseEpoch: 47 },
     sessionId: 'provider-session-private',
     nested: [{
@@ -125,6 +136,16 @@ test('event route projects poisoned nested payloads without mutating persistence
       credentialPath: '/run/secrets/github-token',
       env: { GITHUB_TOKEN: githubToken, SAFE_SETTING: 'not-public-either' },
       mounts: [{ source: '/home/propr/.ssh', target: '/root/.ssh' }],
+      cwd: '/srv/propr/private-nested-cwd',
+      hostPath: '/var/lib/propr/private-nested-host-path',
+      dockerHost: 'tcp://private-nested-host:2375',
+      workspacePath: '/workspaces/private-nested-workspace',
+      workerId: 'private-nested-worker',
+      rawTurnId: 'private-nested-turn',
+      requestedModel: 'claude-opus-4-8',
+      requestedBy: 'safe-nested-user-display',
+      requestedAt: '2026-08-31T10:01:00.000Z',
+      eventLabel: 'safe nested event',
     }],
     auditTrail: Array.from({ length: 120 }, (_, index) => ({ index, label: `safe-${index}` })),
   };
@@ -156,18 +177,29 @@ test('event route projects poisoned nested payloads without mutating persistence
   const payload = events[0].payload;
   const serialized = JSON.stringify(payload);
   assert.equal(payload.status, 'working');
+  assert.equal(payload.requestedModel, 'claude-opus-4-8');
+  assert.equal(payload.requestedBy, 'safe-user-display');
+  assert.equal(payload.requestedAt, '2026-08-31T10:00:00.000Z');
+  assert.equal(payload.eventName, 'model-change-requested');
   assert.deepEqual((payload.safeArray as unknown[]).slice(0, 2), [
     'alpha',
     { message: 'beta', count: 3 },
   ]);
   assert.match((payload.safeArray as string[])[2], /\[REDACTED_GITHUB_TOKEN\]/);
-  assert.equal((payload.nested as Array<{ name: string }>)[0].name, 'safe nested item');
+  assert.deepEqual(payload.nested, [{
+    name: 'safe nested item',
+    requestedModel: 'claude-opus-4-8',
+    requestedBy: 'safe-nested-user-display',
+    requestedAt: '2026-08-31T10:01:00.000Z',
+    eventLabel: 'safe nested event',
+  }]);
   assert.equal((payload.auditTrail as unknown[]).length, 100);
   assert.match((payload.progress as { note: string }).note, /\[REDACTED_GITHUB_TOKEN\]/);
   for (const forbiddenKey of [
     'controller', 'ownerUserId', 'leaseEpoch', 'sessionId', 'idempotencyKey',
     'claimToken', 'request', 'response', 'runtime', 'containerId', 'worktreePath',
     'configPath', 'credentialPath', 'env', 'GITHUB_TOKEN', 'SAFE_SETTING', 'mounts',
+    'cwd', 'hostPath', 'dockerHost', 'workspacePath', 'workerId', 'turnId', 'rawTurnId',
   ]) {
     assert.equal(serialized.includes(`"${forbiddenKey}"`), false, forbiddenKey);
   }
@@ -177,6 +209,12 @@ test('event route projects poisoned nested payloads without mutating persistence
     '/var/run/docker.sock', '/tmp/worktrees/private-goal',
     '/home/propr/.config/private/config.json', '/run/secrets/github-token',
     '/home/propr/.ssh', '/root/.ssh',
+    '/srv/propr/private-top-level-cwd', '/var/lib/propr/private-host-path',
+    'unix:///var/run/private-docker.sock', '/workspaces/private-top-level-workspace',
+    'private-top-level-worker', 'private-top-level-turn',
+    '/srv/propr/private-nested-cwd', '/var/lib/propr/private-nested-host-path',
+    'tcp://private-nested-host:2375', '/workspaces/private-nested-workspace',
+    'private-nested-worker', 'private-nested-turn',
   ]) {
     assert.equal(serialized.includes(forbiddenLiteral), false, forbiddenLiteral);
   }
@@ -187,4 +225,15 @@ test('event route projects poisoned nested payloads without mutating persistence
     .first<{ payload_json: string }>('payload_json');
   assert.equal(persistedAfter?.payload_json, persistedBefore?.payload_json);
   assert.deepEqual(JSON.parse(persistedAfter!.payload_json), poisonedPayload);
+});
+
+test('unknown payload projection contains hostile toJSON failures', () => {
+  const payload = {
+    toJSON() {
+      throw new Error('hostile serializer');
+    },
+  };
+
+  assert.equal(toPublicGoalEventPayload(payload), '[Unserializable]');
+  assert.throws(() => JSON.stringify(payload), /hostile serializer/);
 });

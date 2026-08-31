@@ -24,7 +24,13 @@ const PUBLIC_EVENT_PAYLOAD_LIMITS = {
   totalStringBytes: 65_536,
 } as const;
 
-const PRIVATE_EVENT_KEY_TERMS = [
+const SAFE_EVENT_KEY_NAMES = new Set([
+  'requestedat',
+  'requestedby',
+  'requestedmodel',
+]);
+
+const PRIVATE_EVENT_KEY_WORDS = new Set([
   'controller',
   'session',
   'owner',
@@ -36,7 +42,19 @@ const PRIVATE_EVENT_KEY_TERMS = [
   'response',
   'runtime',
   'container',
+  'worker',
+  'turn',
+  'rawturn',
   'worktree',
+  'workspace',
+  'path',
+  'directory',
+  'dir',
+  'cwd',
+  'host',
+  'docker',
+  'socket',
+  'sock',
   'config',
   'configuration',
   'env',
@@ -51,10 +69,10 @@ const PRIVATE_EVENT_KEY_TERMS = [
   'passphrase',
   'private',
   'internal',
-] as const;
+]);
 
 const PRIVATE_EVENT_KEY_NAMES = new Set([
-  '__proto__',
+  'proto',
   'prototype',
   'constructor',
   'apikey',
@@ -75,7 +93,18 @@ const PRIVATE_EVENT_KEY_NAMES = new Set([
   'providerthreadid',
   'lastcheckpoint',
   'recoverymetadata',
+  'cwd',
+  'dockerhost',
+  'dockerhostname',
+  'hostpath',
+  'hostname',
+  'rawturnid',
+  'turnid',
+  'workerid',
+  'workspacepath',
 ]);
+
+const UNSERIALIZABLE_PAYLOAD_MARKER = '[Unserializable]';
 
 interface PublicPayloadProjectionState {
   nodes: number;
@@ -104,22 +133,34 @@ function truncateUtf8(value: string, maxBytes: number): string {
 }
 
 function isPrivateEventKey(key: string): boolean {
-  if (key === '__proto__' || key === 'prototype' || key === 'constructor') return true;
   const words = key
     .normalize('NFKC')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(Boolean);
-  if (PRIVATE_EVENT_KEY_NAMES.has(words.join(''))) return true;
-  return words.some((word) => PRIVATE_EVENT_KEY_TERMS.some(
-    (term) => word === term || word === `${term}s` || word.startsWith(term)
-  ));
+  const normalizedName = words.join('');
+  if (SAFE_EVENT_KEY_NAMES.has(normalizedName)) return false;
+  if (PRIVATE_EVENT_KEY_NAMES.has(normalizedName)) return true;
+  return words.some((word) => PRIVATE_EVENT_KEY_WORDS.has(word)
+    || (word.endsWith('s') && PRIVATE_EVENT_KEY_WORDS.has(word.slice(0, -1)))
+    || (word.endsWith('ies') && PRIVATE_EVENT_KEY_WORDS.has(`${word.slice(0, -3)}y`)));
 }
 
 function isUnsupportedPayloadValue(value: unknown): boolean {
   return value === undefined || typeof value === 'function' || typeof value === 'symbol'
     || typeof value === 'bigint';
+}
+
+function applyPayloadToJson(value: object): unknown {
+  try {
+    const toJSON = (value as { toJSON?: unknown }).toJSON;
+    return typeof toJSON === 'function'
+      ? (toJSON as (this: object, key: string) => unknown).call(value, '')
+      : value;
+  } catch {
+    return UNSERIALIZABLE_PAYLOAD_MARKER;
+  }
 }
 
 function projectPublicPayloadValue(
@@ -151,9 +192,7 @@ function projectPublicPayloadValue(
       .slice(0, PUBLIC_EVENT_PAYLOAD_LIMITS.collectionEntries)
       .map((item) => projectPublicPayloadValue(item, state, depth + 1) ?? null);
   }
-  const serializable = typeof (value as { toJSON?: unknown }).toJSON === 'function'
-    ? (value as { toJSON: (key: string) => unknown }).toJSON('')
-    : value;
+  const serializable = applyPayloadToJson(value);
   if (serializable !== value) {
     return projectPublicPayloadValue(serializable, state, depth + 1);
   }
@@ -177,11 +216,15 @@ function projectPublicPayloadValue(
 
 /** Canonical, conservative projection for all event payloads crossing the API. */
 export function toPublicGoalEventPayload(payload: unknown): JsonValue {
-  return projectPublicPayloadValue(payload, {
-    nodes: 0,
-    remainingStringBytes: PUBLIC_EVENT_PAYLOAD_LIMITS.totalStringBytes,
-    seen: new WeakSet(),
-  }, 0) ?? null;
+  try {
+    return projectPublicPayloadValue(payload, {
+      nodes: 0,
+      remainingStringBytes: PUBLIC_EVENT_PAYLOAD_LIMITS.totalStringBytes,
+      seen: new WeakSet(),
+    }, 0) ?? null;
+  } catch {
+    return UNSERIALIZABLE_PAYLOAD_MARKER;
+  }
 }
 
 /** Explicit public projections keep persistence/controller fields off the wire. */
