@@ -31,6 +31,7 @@ $smokeUserDataDirectory = $null
 $msiTimeoutMilliseconds = 10 * 60 * 1000
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
+$redirectedStreamDrainTimeoutMilliseconds = 30 * 1000
 $smokeEvidenceFileByteCap = 64 * 1024
 $smokeEvidenceOpenRetryDeadlineMilliseconds = 2 * 1000
 $smokeEvidenceOpenRetryDelayMilliseconds = 50
@@ -93,6 +94,110 @@ function Start-DirectProcess([hashtable]$StartParameters, [string]$Operation) {
   } catch {
     throw "$Operation could not start"
   }
+}
+
+function Start-AlternateCredentialApplication(
+  [string]$FilePath,
+  [string[]]$Arguments,
+  [Management.Automation.PSCredential]$Credential,
+  [string]$Domain,
+  [string]$UserName,
+  [string]$WorkingDirectory,
+  [string]$StandardOutputPath,
+  [string]$StandardErrorPath,
+  [string]$Operation
+) {
+  $process = $null
+  $standardOutputStream = $null
+  $standardErrorStream = $null
+  $standardOutputCopy = $null
+  $standardErrorCopy = $null
+  $started = $false
+  try {
+    if (![IO.Path]::IsPathRooted($FilePath) -or ![IO.Path]::IsPathRooted($WorkingDirectory)) {
+      throw 'alternate-credential application launch requires absolute paths'
+    }
+
+    $standardOutputStream = [IO.FileStream]::new(
+      $StandardOutputPath,
+      [IO.FileMode]::CreateNew,
+      [IO.FileAccess]::Write,
+      [IO.FileShare]::Read,
+      4096,
+      [IO.FileOptions]::Asynchronous
+    )
+    $standardErrorStream = [IO.FileStream]::new(
+      $StandardErrorPath,
+      [IO.FileMode]::CreateNew,
+      [IO.FileAccess]::Write,
+      [IO.FileShare]::Read,
+      4096,
+      [IO.FileOptions]::Asynchronous
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UserName = $UserName
+    $startInfo.Domain = $Domain
+    $startInfo.Password = $Credential.Password
+    $startInfo.LoadUserProfile = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $Arguments) {
+      $startInfo.ArgumentList.Add($argument)
+    }
+    $startInfo.Environment['PROPR_DESKTOP_SMOKE_TEST'] = '1'
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    if (!$process.Start()) { throw 'alternate-credential application process did not start' }
+    $started = $true
+    $standardOutputCopy = $process.StandardOutput.BaseStream.CopyToAsync($standardOutputStream)
+    $standardErrorCopy = $process.StandardError.BaseStream.CopyToAsync($standardErrorStream)
+    return [PSCustomObject]@{
+      Process = $process
+      StandardOutputStream = $standardOutputStream
+      StandardErrorStream = $standardErrorStream
+      StandardOutputCopy = $standardOutputCopy
+      StandardErrorCopy = $standardErrorCopy
+    }
+  } catch {
+    if ($started -and $null -ne $process) {
+      try { Stop-SpawnedProcessTree $process $Operation } catch {}
+    }
+    foreach ($stream in @($standardOutputStream, $standardErrorStream)) {
+      if ($null -ne $stream) { $stream.Dispose() }
+    }
+    foreach ($task in @($standardOutputCopy, $standardErrorCopy)) {
+      if ($null -ne $task -and $task.IsCompleted) { $task.Dispose() }
+    }
+    if ($null -ne $process) { $process.Dispose() }
+    throw "$Operation could not start"
+  }
+}
+
+function Close-RedirectedApplicationStreams([PSCustomObject]$Launch, [string]$Operation) {
+  $streamFailure = $false
+  try {
+    $copyTasks = [Threading.Tasks.Task[]]@($Launch.StandardOutputCopy, $Launch.StandardErrorCopy)
+    if (![Threading.Tasks.Task]::WaitAll($copyTasks, $redirectedStreamDrainTimeoutMilliseconds)) {
+      $streamFailure = $true
+    } elseif (@($copyTasks | Where-Object { $_.IsCanceled -or $_.IsFaulted }).Count -ne 0) {
+      $streamFailure = $true
+    }
+  } catch {
+    $streamFailure = $true
+  } finally {
+    $Launch.StandardOutputStream.Dispose()
+    $Launch.StandardErrorStream.Dispose()
+    foreach ($task in @($Launch.StandardOutputCopy, $Launch.StandardErrorCopy)) {
+      if ($task.IsCompleted) { $task.Dispose() }
+    }
+  }
+  if ($streamFailure) { throw "$Operation redirected-stream drain failed" }
 }
 
 function Wait-BoundedProcess(
@@ -418,25 +523,22 @@ try {
   $arguments = @(
     '--disable-gpu',
     '--propr-smoke-test',
-    "`"--user-data-dir=$smokeUserDataDirectory`"",
+    "--user-data-dir=$smokeUserDataDirectory",
     'propr://connect?api=https%3A%2F%2Fconnect.propr.dev'
   )
-  $applicationArgumentLine = [string]::Join(' ', $arguments)
   Write-Stage 'APP_LAUNCH' 'BEGIN'
-  $applicationProcess = $null
+  $applicationLaunch = $null
   try {
-    $applicationStart = @{
-      FilePath = $application
-      ArgumentList = $applicationArgumentLine
-      Credential = $credential
-      LoadUserProfile = $true
-      RedirectStandardOutput = (Join-Path $smokeUserDataDirectory 'application.stdout.log')
-      RedirectStandardError = (Join-Path $smokeUserDataDirectory 'application.stderr.log')
-      WorkingDirectory = $env:ProgramFiles
-      Environment = @{ PROPR_DESKTOP_SMOKE_TEST = '1' }
-    }
-    $applicationProcess = Start-DirectProcess $applicationStart `
-      'ordinary-user installed application launch/render/profile smoke'
+    $applicationLaunch = Start-AlternateCredentialApplication `
+      -FilePath $application `
+      -Arguments $arguments `
+      -Credential $credential `
+      -Domain $env:COMPUTERNAME `
+      -UserName $testUser `
+      -WorkingDirectory $env:ProgramFiles `
+      -StandardOutputPath (Join-Path $smokeUserDataDirectory 'application.stdout.log') `
+      -StandardErrorPath (Join-Path $smokeUserDataDirectory 'application.stderr.log') `
+      -Operation 'ordinary-user installed application launch/render/profile smoke'
     Write-Stage 'APP_LAUNCH' 'COMPLETE'
   } catch {
     Write-Stage 'APP_LAUNCH' 'FAILED'
@@ -447,7 +549,7 @@ try {
     $waitFailure = $null
     try {
       [void](Wait-BoundedProcess `
-        -Process $applicationProcess `
+        -Process $applicationLaunch.Process `
         -TimeoutMilliseconds $applicationTimeoutMilliseconds `
         -AllowedExitCodes @(0) `
         -Operation 'ordinary-user installed application launch/render/profile smoke')
@@ -455,9 +557,13 @@ try {
       $waitFailure = $_
     } finally {
       try {
-        $applicationProcess.Dispose()
+        Close-RedirectedApplicationStreams $applicationLaunch `
+          'ordinary-user installed application launch/render/profile smoke'
+      } catch {
+        if ($null -eq $waitFailure) { $waitFailure = $_ }
       } finally {
-        $applicationProcess = $null
+        $applicationLaunch.Process.Dispose()
+        $applicationLaunch = $null
       }
     }
     $smokeEvidence = Get-SmokeEventEvidence $smokeUserDataDirectory $testUserSid
@@ -470,7 +576,12 @@ try {
     Write-Stage 'APP_EXIT' 'FAILED'
     throw
   } finally {
-    if ($null -ne $applicationProcess) { $applicationProcess.Dispose() }
+    if ($null -ne $applicationLaunch) {
+      try { Close-RedirectedApplicationStreams $applicationLaunch `
+        'ordinary-user installed application launch/render/profile smoke' } finally {
+        $applicationLaunch.Process.Dispose()
+      }
+    }
   }
 } finally {
   $cleanupFailed = $false

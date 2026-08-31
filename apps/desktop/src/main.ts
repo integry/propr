@@ -31,22 +31,27 @@ const PACKAGED_RENDERER_HOST = 'renderer';
 const PACKAGED_LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
-const packagedSmokeUserDataDirectory = authorizePackagedSmokeTest({
-  argv: process.argv,
-  defaultUserDataDirectory: join(app.getPath('appData'), app.name),
-  environmentTriggered: process.env.PROPR_DESKTOP_SMOKE_TEST === '1',
-  isPackaged: app.isPackaged,
-  platform: process.platform,
-});
+let packagedSmokeUserDataDirectory: string | null = null;
 let packagedSmokeEvidence: ReturnType<typeof createPackagedSmokeEvidenceSink> = null;
-if (packagedSmokeUserDataDirectory) {
-  const smokeDirectoryStats = lstatSync(packagedSmokeUserDataDirectory);
-  if (!smokeDirectoryStats.isDirectory() || smokeDirectoryStats.isSymbolicLink()) {
-    throw new Error('Packaged desktop smoke --user-data-dir must be an existing non-link directory');
+try {
+  packagedSmokeUserDataDirectory = authorizePackagedSmokeTest({
+    argv: process.argv,
+    defaultUserDataDirectory: join(app.getPath('appData'), app.name),
+    environmentTriggered: process.env.PROPR_DESKTOP_SMOKE_TEST === '1',
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+  });
+  if (packagedSmokeUserDataDirectory) {
+    const smokeDirectoryStats = lstatSync(packagedSmokeUserDataDirectory);
+    if (!smokeDirectoryStats.isDirectory() || smokeDirectoryStats.isSymbolicLink()) {
+      throw new Error('Packaged desktop smoke --user-data-dir must be an existing non-link directory');
+    }
+    app.setPath('userData', packagedSmokeUserDataDirectory);
+    packagedSmokeEvidence = createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory);
+    packagedSmokeEvidence?.write('desktop.smoke.authorized');
   }
-  app.setPath('userData', packagedSmokeUserDataDirectory);
-  packagedSmokeEvidence = createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory);
-  packagedSmokeEvidence?.write('desktop.smoke.authorized');
+} catch {
+  process.exit(1);
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 let mainWindow: BrowserWindow | null = null;

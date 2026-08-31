@@ -42,7 +42,11 @@ export const authorizePackagedSmokeTest = ({
   platform: NodeJS.Platform;
 }): string | null => {
   const argumentTriggered = argv.includes('--propr-smoke-test');
-  if (!isPackaged || !argumentTriggered || !environmentTriggered) return null;
+  if (!isPackaged) return null;
+  if (!argumentTriggered && !environmentTriggered) return null;
+  if (!argumentTriggered || !environmentTriggered) {
+    throw new Error('Packaged desktop smoke requires both explicit authorization triggers');
+  }
 
   const requested = explicitUserDataDirectory(argv);
   if (!isAbsolute(requested) || /[\0\r\n]/.test(requested)) {

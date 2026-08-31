@@ -25,11 +25,17 @@ const authorize = (overrides: Partial<Parameters<typeof authorizePackagedSmokeTe
 describe('packaged smoke profile authorization', () => {
   it('requires both argv and environment smoke triggers with the explicit isolated directory', () => {
     assert.equal(authorize(), smokeDirectory);
-    assert.equal(authorize({ environmentTriggered: false }), null);
-    assert.equal(authorize({
-      argv: ['propr-desktop', `--user-data-dir=${smokeDirectory}`],
-      environmentTriggered: true,
-    }), null);
+    assert.throws(
+      () => authorize({ environmentTriggered: false }),
+      /requires both explicit authorization triggers/,
+    );
+    assert.throws(
+      () => authorize({
+        argv: ['propr-desktop', `--user-data-dir=${smokeDirectory}`],
+        environmentTriggered: true,
+      }),
+      /requires both explicit authorization triggers/,
+    );
   });
 
   it('rejects a dual-authorized smoke invocation when the isolated directory is missing', () => {
@@ -73,8 +79,22 @@ describe('packaged smoke profile authorization', () => {
 
   it('does not enable mutating smoke behavior in development or without a trigger', () => {
     assert.equal(authorize({ isPackaged: false }), null);
-    assert.equal(authorize({ argv: ['propr-desktop', `--user-data-dir=${smokeDirectory}`] }), null);
-    assert.equal(authorize({ environmentTriggered: false }), null);
+    assert.equal(authorize({
+      argv: ['propr-desktop', `--user-data-dir=${smokeDirectory}`],
+      environmentTriggered: false,
+    }), null);
+  });
+
+  it('terminates a malformed packaged smoke attempt without an interactive failure path', () => {
+    const main = readFileSync(fileURLToPath(new URL('./main.ts', import.meta.url)), 'utf8');
+    const authorization = main.indexOf('authorizePackagedSmokeTest({');
+    const failureGuard = main.indexOf('} catch {', authorization);
+    const noninteractiveExit = main.indexOf('process.exit(1);', failureGuard);
+    const applicationReady = main.indexOf('void app.whenReady()');
+
+    assert.ok(authorization < failureGuard && failureGuard < noninteractiveExit);
+    assert.ok(noninteractiveExit < applicationReady);
+    assert.doesNotMatch(main.slice(failureGuard, noninteractiveExit), /dialog|showMessageBox|console\.|\berror\b/i);
   });
 
   it('authorizes the isolated directory before profile and lifecycle construction', () => {
