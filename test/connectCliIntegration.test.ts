@@ -337,11 +337,17 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
       ['connect', 'status', '--json', '--root', ''],
       ['connect', 'status', '--json', '--root', readyRoot, '--root', readyRoot],
       ['connect', 'status', '--json', `--root=${readyRoot}`, `--root=${readyRoot}`],
+      ['connect', 'status', '--json', '--', '--root', '/x'],
+      ['connect', 'status', '--json', '--', '--root=/x'],
+      ['connect', 'status', '--json', '--', '--help'],
+      ['connect', 'status', '--json', '--', '-h'],
     ]) {
       const malformedRoot = invoke(readyRoot, 'ready', bin, parent, { arguments: arguments_ });
       assert.equal(malformedRoot.status, 1, arguments_.join(' '));
       assert.equal(malformedRoot.document.status, 'invalidConfig', arguments_.join(' '));
       assert.deepEqual(malformedRoot.document.reasonCodes, ['INVALID_ROOT'], arguments_.join(' '));
+      assert.doesNotMatch(malformedRoot.stdout, /(?:^|\n)(?:Usage:|error:)/i, arguments_.join(' '));
+      assert.doesNotMatch(malformedRoot.stderr, /(?:Usage:|error:)/i, arguments_.join(' '));
       malformedRootDocument ??= malformedRoot.document;
       assert.deepEqual(malformedRoot.document, malformedRootDocument, arguments_.join(' '));
     }

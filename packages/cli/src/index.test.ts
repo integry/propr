@@ -17,7 +17,14 @@ test('every Connect status argument shape is identified before dotenv or option 
     ['connect', 'status', '--json', '--root='],
     ['connect', 'status', '--root', '/one', '--root', '/two', '--json'],
     ['--project', 'owner/repo', 'connect', 'status', '--root=/one', '-j'],
+    ['connect', 'status', '--json', '--', '--root', '/ignored'],
+    ['connect', 'status', '--root=/one', '--', '--root=/ignored'],
   ]) assert.equal(isExplicitConnectStatusInvocation(['node', 'propr', ...args]), true, args.join(' '));
+
+  for (const args of [
+    ['connect', '--', 'status', '--json', '--root=/ignored'],
+    ['--', 'connect', 'status', '--json', '--root=/ignored'],
+  ]) assert.equal(isExplicitConnectStatusInvocation(['node', 'propr', ...args]), false, args.join(' '));
 
   for (const args of [
     ['connect', 'status', '--json'],
@@ -26,11 +33,15 @@ test('every Connect status argument shape is identified before dotenv or option 
     ['connect', 'status', '--json', '--root', ''],
     ['connect', 'status', '--root', '/one', '--root', '/two', '--json'],
     ['connect', 'status', '--root=/one', '--root=/two', '--json'],
+    ['connect', 'status', '--json', '--', '--root', '/ignored'],
+    ['connect', 'status', '--json', '--', '--root=/ignored'],
   ]) assert.equal(hasExactlyOneExplicitConnectStatusRoot(['node', 'propr', ...args]), false, args.join(' '));
 
   for (const args of [
     ['connect', 'status', '--json', '--root', '/one'],
     ['--project', 'owner/repo', 'connect', 'status', '--root=/one', '-j'],
+    ['connect', 'status', '--json', '--root', '/one', '--', '--root', '/ignored'],
+    ['connect', 'status', '--root=/one', '--', '--root=/ignored', '--help'],
   ]) assert.equal(hasExactlyOneExplicitConnectStatusRoot(['node', 'propr', ...args]), true, args.join(' '));
 });
 
@@ -63,6 +74,7 @@ test('direct CLI execution is not disabled by test environment variables', () =>
       ['connect', 'status', '--json', '--root', '--help'],
       ['connect', 'status', '--root=/one', '-h', '--root=/two', '--json'],
       ['--project', 'owner/repo', 'connect', 'status', '--root=', '--json', '-h'],
+      ['connect', 'status', '--json', '--help', '--', '--root=/ignored'],
     ]) {
       const help = spawnSync(process.execPath, [builtEntryPoint, ...args], {
         cwd: hostileCwd,

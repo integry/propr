@@ -107,9 +107,16 @@ export type {
   FormatOutputOptions,
 } from "./utils/index.js";
 
+/** Return only raw CLI arguments which precede the POSIX end-of-options marker. */
+function argsBeforeEndOfOptions(argv: readonly string[]): readonly string[] {
+  const args = argv.slice(2);
+  const delimiterIndex = args.indexOf("--");
+  return delimiterIndex === -1 ? args : args.slice(0, delimiterIndex);
+}
+
 /** Parse the discovery shape without depending on option order or spelling. */
 export function isExplicitConnectStatusInvocation(argv: readonly string[]): boolean {
-  const args = argv.slice(2);
+  const args = argsBeforeEndOfOptions(argv);
   const positionals: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -136,7 +143,7 @@ export function isExplicitConnectStatusInvocation(argv: readonly string[]): bool
 /** Require one non-empty raw root option before Commander can reject or overwrite it. */
 export function hasExactlyOneExplicitConnectStatusRoot(argv: readonly string[]): boolean {
   if (!isExplicitConnectStatusInvocation(argv)) return false;
-  const args = argv.slice(2);
+  const args = argsBeforeEndOfOptions(argv);
   let rootCount = 0;
   let rootIsValid = true;
   for (let index = 0; index < args.length; index += 1) {
@@ -162,7 +169,7 @@ export function hasExactlyOneExplicitConnectStatusRoot(argv: readonly string[]):
 // --json failure shape) must avoid pre-reading a replaceable cwd/.env.
 const connectStatusInvocation = isExplicitConnectStatusInvocation(process.argv);
 const connectStatusHelpRequested = connectStatusInvocation
-  && process.argv.slice(2).some((arg) => arg === "--help" || arg === "-h");
+  && argsBeforeEndOfOptions(process.argv).some((arg) => arg === "--help" || arg === "-h");
 const malformedConnectStatusRoot = connectStatusInvocation
   && !hasExactlyOneExplicitConnectStatusRoot(process.argv);
 if (!connectStatusInvocation) config();
