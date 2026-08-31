@@ -213,18 +213,28 @@ describe('GoalRepository', () => {
     assert.deepEqual(e2.payload, { line: 'hello' });
   });
 
-  test('retried event append with same key has one effect', async () => {
+  test('retried event append accepts reordered nested payload keys', async () => {
     const goal = await seedGoal();
     const fence = await claimFence(goal.goalId);
     const first = await repo.appendEvent(goal.goalId, {
       kind: 'lifecycle',
       eventType: 'created',
+      payload: {
+        alpha: 1,
+        nested: { first: true, second: { left: 'a', right: 'b' } },
+        omega: 2,
+      },
       idempotencyKey: 'dup',
       ...fence,
     });
     const retry = await repo.appendEvent(goal.goalId, {
       kind: 'lifecycle',
       eventType: 'created',
+      payload: {
+        omega: 2,
+        nested: { second: { right: 'b', left: 'a' }, first: true },
+        alpha: 1,
+      },
       idempotencyKey: 'dup',
       ...fence,
     });
@@ -376,6 +386,15 @@ describe('GoalRepository', () => {
     });
     assert.equal(completed.state, 'completed');
     assert.equal(completed.terminalReason, 'objective_met');
+  });
+
+  test('requestCancel defaults its optional terminal reason', async () => {
+    const goal = await seedGoal();
+
+    const cancelled = await repo.requestCancel(goal.goalId);
+
+    assert.equal(cancelled.state, 'cancelled');
+    assert.equal(cancelled.terminalReason, 'user_cancelled');
   });
 
   test('enforces optimistic version preconditions', async () => {

@@ -24,118 +24,44 @@ const PUBLIC_EVENT_PAYLOAD_LIMITS = {
   totalStringBytes: 65_536,
 } as const;
 
+// Event payloads have no persisted schema, so the public boundary must not
+// infer safety from an unfamiliar key name. Keep this list to fields that are
+// part of the public event vocabulary; every other object member is omitted.
 const PUBLIC_EVENT_KEY_NAMES = new Set([
+  'auditTrail',
+  'count',
+  'current',
+  'eventLabel',
+  'eventName',
   'repositoryOwner',
   'requestedModel',
   'requestedAt',
   'pullRequestNumber',
   'prNumber',
   'filePath',
+  'index',
+  'label',
+  'line',
+  'message',
+  'name',
+  'nested',
+  'note',
+  'pathDescription',
+  'paths',
+  'progress',
+  'relativeCopy',
+  'relativePath',
+  'safeArray',
+  'safeSource',
+  'sensitiveCopy',
+  'setting',
+  'socketDescription',
+  'source',
+  'status',
+  'target',
+  'total',
+  'value',
 ]);
-
-const PRIVATE_EVENT_KEY_FAMILIES = new Set((
-  'controller session lease epoch idempotency claim request response runtime container worker turn owner '
-  + 'worktree workspace directory dir cwd host docker config configuration env environment mount mounts '
-  + 'volume volumes credential credentials fence secret secrets password passwd passphrase private internal '
-  + 'token authorization cookie'
-).split(' '));
-
-const PRIVATE_EVENT_KEY_NAMES = new Set([
-  'owner',
-  'rawturn',
-  'path',
-  'socket',
-  'sock',
-  'proto',
-  'prototype',
-  'constructor',
-  'apikey',
-  'accesstoken',
-  'authtoken',
-  'refreshtoken',
-  'githubtoken',
-  'npmtoken',
-  'slacktoken',
-  'citoken',
-  'deploytoken',
-  'servicetoken',
-  'setcookie',
-  // Camel-case splitting produces "requested"/"by", so deny the joined normalized name.
-  'requestedby',
-  'userid',
-  'providerthreadid',
-  'lastcheckpoint',
-  'recoverymetadata',
-  'dockerhost',
-  'dockerhostname',
-  'hostpath',
-  'hostname',
-  'rawturnid',
-  'turnid',
-  'workerid',
-  'workspacepath',
-  'worktreepath',
-  'runtimepath',
-  'containerpath',
-  'configpath',
-  'credentialpath',
-]);
-
-const PRIVATE_EVENT_KEY_SUFFIXES = [
-  // Deliberately use specific ownership/request identities, not generic owner/request suffixes.
-  // repositoryOwner, requestedModel, and pullRequestNumber are public event context.
-  'owneruserid',
-  'leaseowner',
-  'controllerowner',
-  'leaseepoch',
-  'sessionid',
-  'idempotencykey',
-  'claimtoken',
-  'requestid',
-  'requestheaders',
-  'requestbody',
-  'requestmetadata',
-  'requestcontext',
-  'responseheaders',
-  'responsebody',
-  'responsemetadata',
-  'responsecontext',
-  'containerid',
-  'workerid',
-  'rawturnid',
-  'turnid',
-  'providerthreadid',
-  'lastcheckpoint',
-  'recoverymetadata',
-  'requestedby',
-  'epoch',
-  'cwd',
-  'host',
-  'hostname',
-  'socket',
-  'sock',
-  'config',
-  'configuration',
-  'env',
-  'environment',
-  'mount',
-  'mounts',
-  'volume',
-  'volumes',
-  'credential',
-  'credentials',
-  'apikey',
-  'token',
-  'authorization',
-  'cookie',
-  'secret',
-  'secrets',
-  'password',
-  'passwd',
-  'passphrase',
-  'private',
-  'internal',
-] as const;
 
 const UNSERIALIZABLE_PAYLOAD_MARKER = '[Unserializable]';
 const SENSITIVE_PATH_MARKER = '[REDACTED_SENSITIVE_PATH]';
@@ -227,26 +153,6 @@ function redactSensitiveEventValues(value: string, inputTruncated: boolean): str
   return sanitized;
 }
 
-function isPrivateEventKey(key: string): boolean {
-  if (PUBLIC_EVENT_KEY_NAMES.has(key)) return false;
-  const normalizedKey = key.normalize('NFKC');
-  // Compatibility-equivalent aliases are not public API spellings. Normalize
-  // only after exact matching so they fail closed as private keys.
-  if (PUBLIC_EVENT_KEY_NAMES.has(normalizedKey)) return true;
-  const words = normalizedKey
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
-  const normalizedName = words.join('');
-  const isCredentialKey = words.some((word) => word === 'key' || word === 'keys')
-    || /^[a-z0-9]*keys?(?:id|value|material|metadata)$/.test(normalizedName);
-  return PRIVATE_EVENT_KEY_NAMES.has(normalizedName)
-    || isCredentialKey
-    || words.some((word) => PRIVATE_EVENT_KEY_FAMILIES.has(word))
-    || PRIVATE_EVENT_KEY_SUFFIXES.some((suffix) => normalizedName.endsWith(suffix));
-}
-
 function isUnsupportedPayloadValue(value: unknown): boolean {
   return value === undefined || typeof value === 'function' || typeof value === 'symbol'
     || typeof value === 'bigint';
@@ -307,7 +213,8 @@ function projectPublicPayloadValue(
   let retainedEntries = 0;
   for (const key of Object.keys(value)) {
     if (retainedEntries >= PUBLIC_EVENT_PAYLOAD_LIMITS.collectionEntries) break;
-    if (utf8Bytes(key) > PUBLIC_EVENT_PAYLOAD_LIMITS.keyBytes || isPrivateEventKey(key)) continue;
+    if (utf8Bytes(key) > PUBLIC_EVENT_PAYLOAD_LIMITS.keyBytes
+      || !PUBLIC_EVENT_KEY_NAMES.has(key)) continue;
     const child = projectPublicPayloadValue(
       (value as Record<string, unknown>)[key],
       state,

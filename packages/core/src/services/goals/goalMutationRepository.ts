@@ -92,7 +92,7 @@ export class GoalMutationRepository {
       toState: 'cancelled',
       expectedVersion: input.expectedVersion,
       reason: input.reason,
-      terminalReason: input.terminalReason,
+      terminalReason: input.terminalReason ?? 'user_cancelled',
       idempotencyKey: input.idempotencyKey,
       idempotencyOperation: `cancel:${goalId}`,
     }, CANCEL_SOURCE_STATES);

@@ -108,6 +108,7 @@ test('event route projects poisoned nested payloads without mutating persistence
   const githubToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
   const poisonedPayload = {
     status: 'working',
+    authMaterial: 'opaque-controller-credential',
     requestedModel: 'claude-opus-4-8',
     repositoryOwner: 'integry',
     prNumber: 2018,
@@ -214,7 +215,7 @@ test('event route projects poisoned nested payloads without mutating persistence
   assert.equal((payload.auditTrail as unknown[]).length, 100);
   assert.match((payload.progress as { note: string }).note, /\[REDACTED_GITHUB_TOKEN\]/);
   for (const forbiddenKey of [
-    'requestedBy', 'owner', 'controller', 'ownerUserId', 'leaseOwner',
+    'authMaterial', 'requestedBy', 'owner', 'controller', 'ownerUserId', 'leaseOwner',
     'controllerOwner', 'xApiKey', 'X-API-Key', 'accessKey', 'auth_key', 'signing-key', 'nestedAccessKeyId', 'apiKeyValue', 'encryptionKeyMaterial', 'opaqueKeyId', 'backupkeymaterial', 'leaseEpoch',
     'sessionId', 'idempotencyKey',
     'claimToken', 'request', 'response', 'runtime', 'containerId', 'worktreePath',
@@ -225,7 +226,8 @@ test('event route projects poisoned nested payloads without mutating persistence
     assert.equal(serialized.includes(`"${forbiddenKey}"`), false, forbiddenKey);
   }
   for (const forbiddenLiteral of [
-    githubToken, 'private-requesting-actor', 'private-nested-requesting-actor',
+    githubToken, 'opaque-controller-credential', 'private-requesting-actor',
+    'private-nested-requesting-actor',
     'exact-private-owner', 'exact-private-controller', 'private-owner-user',
     'private-lease-owner', 'private-controller-owner', 'short-one', 'short-two', 'short-access', 'short-auth', 'short-signing', 'short-access-id', '"kv"', '"km"', '"ki"', '"bk"',
     'provider-session-private', 'private-write-key', 'private-claim-token',
@@ -263,41 +265,24 @@ test('unknown payload projection contains hostile toJSON failures', () => {
   assert.throws(() => JSON.stringify(payload), /hostile serializer/);
 });
 
-test('event payload omits normalized private key families without substring over-redaction', () => {
-  const cases = [
-    { family: 'owner', camel: 'ownerMetadata', safe: 'ownershipSummary',
-      aliases: ['owner_name', 'owner-name', 'ownerName', 'buildOwner'] },
-    { family: 'controller', camel: 'controllerMetadata', safe: 'microcontrollerMetadata' },
-    { family: 'session', camel: 'sessionState', safe: 'sessionalState' },
-    { family: 'runtime', camel: 'runtimeInfo', safe: 'runtimeishInfo' },
-    { family: 'container', camel: 'containerName', safe: 'containerizedName' },
-    { family: 'worktree', camel: 'worktreeRoot', safe: 'worktreehouseRoot' },
-    { family: 'config', camel: 'configFile', safe: 'configurableFile' },
-    { family: 'environment', camel: 'environmentVariables', safe: 'environmentalVariables' },
-    { family: 'mount', camel: 'mountSources', safe: 'mountainSources' },
-    { family: 'credential', camel: 'credentialFile', safe: 'credentialedFile' },
-  ] satisfies readonly { family: string; camel: string; safe: string;
-    aliases?: readonly string[] }[];
-  const input: Record<string, string> = { repositoryOwner: 'integry' };
+test('event payload fails closed for unclassified fields', () => {
+  const projected = toPublicGoalEventPayload({
+    status: 'working',
+    authMaterial: 'opaque-controller-credential',
+    plausiblePublicAlias: 'also-private-until-classified',
+    nested: {
+      message: 'safe nested content',
+      authMaterial: 'nested-opaque-controller-credential',
+    },
+  });
 
-  for (const { family, camel, safe, aliases = [] } of cases) {
-    const snake = camel.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-    const privateKeys = [camel, snake, snake.replaceAll('_', '-'), ...aliases];
-    for (const key of privateKeys) input[key] = `private-${family}-${key}`;
-    input[safe] = `safe-${family}`;
-  }
-
-  const projected = toPublicGoalEventPayload(input) as Record<string, string>;
+  assert.deepEqual(projected, {
+    status: 'working',
+    nested: { message: 'safe nested content' },
+  });
   const serialized = JSON.stringify(projected);
-  assert.equal(projected.repositoryOwner, 'integry');
-  for (const { family, camel, safe, aliases = [] } of cases) {
-    const snake = camel.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-    for (const key of [camel, snake, snake.replaceAll('_', '-'), ...aliases]) {
-      assert.equal(projected[key], undefined, key);
-      assert.equal(serialized.includes(`private-${family}-${key}`), false, key);
-    }
-    assert.equal(projected[safe], `safe-${family}`, safe);
-  }
+  assert.equal(serialized.includes('opaque-controller-credential'), false);
+  assert.equal(serialized.includes('also-private-until-classified'), false);
 });
 
 test('event payload retains only exact public owner, request, and path overrides', () => {
@@ -389,18 +374,18 @@ test('event payload redacts a minimum AWS key across the aggregate UTF-8 cutoff'
   const awsAccessKey = `AKIA${'0'.repeat(16)}`;
   const boundary = '界:';
   const payload = {
-    first: 'a'.repeat(stringByteLimit),
-    second: 'b'.repeat(stringByteLimit),
-    third: 'c'.repeat(stringByteLimit),
-    fourth: 'd'.repeat(aggregatePrefixBytes - (stringByteLimit * 3)),
-    last: `${boundary}${awsAccessKey}${'z'.repeat(256)}`,
+    status: 'a'.repeat(stringByteLimit),
+    eventName: 'b'.repeat(stringByteLimit),
+    repositoryOwner: 'c'.repeat(stringByteLimit),
+    requestedModel: 'd'.repeat(aggregatePrefixBytes - (stringByteLimit * 3)),
+    message: `${boundary}${awsAccessKey}${'z'.repeat(256)}`,
   };
   const projected = toPublicGoalEventPayload(payload) as Record<string, string>;
   const serialized = JSON.stringify(projected);
   const projectedStringBytes = Object.values(projected)
     .reduce((total, value) => total + Buffer.byteLength(value), 0);
 
-  assert.equal(Buffer.byteLength(projected.last), aggregateRemainingBytes);
+  assert.equal(Buffer.byteLength(projected.message), aggregateRemainingBytes);
   assert.equal(projectedStringBytes, totalStringByteLimit);
   assert.equal(serialized.includes(awsAccessKey), false);
   assert.equal(serialized.includes(awsAccessKey.slice(0, 10)), false);
