@@ -6,6 +6,7 @@ import {
   probeConnectDiscovery,
   readBoundedBody,
   resolveConnectStatus,
+  unavailableRootAuthorityStatus,
 } from "./connectCommand.js";
 import type { OrchestratorConfig } from "../orchestrator/types.js";
 
@@ -56,6 +57,15 @@ test("Connect status exposes stable exit semantics", () => {
     invalidConfig: 1,
     timeout: 0,
   });
+});
+
+test("unavailable root authority fails closed before API readiness", () => {
+  const status = unavailableRootAuthorityStatus();
+  assert.equal(status.status, "invalidConfig");
+  assert.equal(status.apiReady, false);
+  assert.equal(status.configured, false);
+  assert.equal(status.publicInstanceIdentity, null);
+  assert.deepEqual(status.reasonCodes, ["ACL_DIAGNOSTIC_UNAVAILABLE"]);
 });
 
 test("missing, disabled, and stopped tunnel states do not probe", async () => {

@@ -61,6 +61,11 @@ export interface ConnectStatusDocument {
   reasonCodes: ConnectStatusReasonCode[];
 }
 
+/** An unavailable root-authority diagnostic is a hard readiness boundary. */
+export function unavailableRootAuthorityStatus(): ConnectStatusDocument {
+  return baseDocument("invalidConfig", { reasonCodes: ["ACL_DIAGNOSTIC_UNAVAILABLE"] });
+}
+
 type DiscoveryProbeResult =
   | { kind: "ok"; discovery: ProprDesktopDiscovery }
   | { kind: "timeout" }
@@ -352,12 +357,16 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
   try {
     const prepared = await prepareConnectHostConfig();
     const local = await withOwnedConnectRootSnapshot(root, async (snapshot) => {
+      if (snapshot.authorityDiagnostic === "acl-unavailable") {
+        return { kind: "unverifiedAuthority" as const };
+      }
       const cfg = prepared.resolveSnapshot(snapshot);
       // Status is discovery, not setup: never create/repair identity state or
       // invoke a privileged Windows protection operation from this path.
       const publicInstanceIdentity = await readSnapshotPublicInstanceIdentity(snapshot.identityDirectory);
       const sidecarInspection = prepared.inspectTunnel(cfg);
       return {
+        kind: "verified" as const,
         cfg: {
           uiPublicApiUrl: cfg.uiPublicApiUrl,
           proprInstanceId: cfg.proprInstanceId,
@@ -365,7 +374,6 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
         },
         publicInstanceIdentity,
         sidecarInspection,
-        authorityDiagnostic: snapshot.authorityDiagnostic,
       };
     }, {
       parseEnvFile: prepared.parseEnvFile,
@@ -373,19 +381,15 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
       // diagnostic explicitly instead of executing a mutable packaged helper.
       allowUnavailableWindowsAclDiagnostic: process.platform === "win32",
     });
-    const withAuthorityDiagnostic = (document: ConnectStatusDocument): ConnectStatusDocument => (
-      local.authorityDiagnostic === "acl-unavailable"
-        ? { ...document, reasonCodes: [...document.reasonCodes, "ACL_DIAGNOSTIC_UNAVAILABLE"] }
-        : document
-    );
+    if (local.kind === "unverifiedAuthority") return unavailableRootAuthorityStatus();
     if (local.sidecarInspection.kind === "internalFailure") {
-      return withAuthorityDiagnostic(baseDocument("internalFailure", { reasonCodes: ["INTERNAL_FAILURE"] }));
+      return baseDocument("internalFailure", { reasonCodes: ["INTERNAL_FAILURE"] });
     }
-    return withAuthorityDiagnostic(await resolveConnectStatus({
+    return resolveConnectStatus({
       cfg: local.cfg,
       sidecarRunning: local.sidecarInspection.running,
       publicInstanceIdentity: local.publicInstanceIdentity,
-    }));
+    });
   } catch (error) {
     if (error instanceof ConnectRootError) {
       return baseDocument("invalidConfig", { reasonCodes: ["INVALID_ROOT"] });

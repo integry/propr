@@ -617,7 +617,7 @@ test('read-only Windows snapshot reports unavailable ACL diagnostics without nat
   }
 });
 
-test('trusted Connect config read is bounded, root-specific, replacement-safe, and Windows-case canonical', async () => {
+test('trusted Connect config read is bounded, root-specific, replacement-safe, and Windows-case distinct', async () => {
   const parent = temporaryRoot('propr-connect-trusted-config-');
   const home = join(parent, 'os-home');
   const configDir = join(home, '.propr');
@@ -639,18 +639,20 @@ test('trusted Connect config read is bounded, root-specific, replacement-safe, a
     writeConfig({ githubToken: 'must-never-cross', tunnelEnabledByRoot: { [root]: true } });
     assert.equal(await readTrustedConnectTunnelOverride(root, { trustedHome: home }), true);
 
-    writeConfig({ tunnelEnabledByRoot: { 'C:\\Work\\Stack': false, 'c:\\work\\stack': false } });
+    writeConfig({ tunnelEnabledByRoot: { 'C:\\Work\\Stack': false, 'c:\\work\\stack': true } });
     const inspector: ConnectRootAuthorityInspector = {
       inspectDarwinAcl: (_path, _fd, identity) => ({ version: 1, ...identity, acl: '!#acl 1\n' }),
       inspectWindowsAcl: async (_path, identity, _fd, kind = 'env') => safeWindowsAuthority(identity, kind),
     };
-    assert.equal(await readTrustedConnectTunnelOverride('c:\\WORK\\STACK', {
+    assert.equal(await readTrustedConnectTunnelOverride('C:\\Work\\Stack', {
       platform: 'win32', trustedHome: home, authorityInspector: inspector,
     }), false);
-    writeConfig({ tunnelEnabledByRoot: { 'C:\\Work\\Stack': false, 'c:\\work\\stack': true } });
-    await assert.rejects(readTrustedConnectTunnelOverride('c:\\work\\stack', {
+    assert.equal(await readTrustedConnectTunnelOverride('c:\\work\\stack', {
       platform: 'win32', trustedHome: home, authorityInspector: inspector,
-    }), TrustedConnectConfigError);
+    }), true);
+    assert.equal(await readTrustedConnectTunnelOverride('c:\\WORK\\STACK', {
+      platform: 'win32', trustedHome: home, authorityInspector: inspector,
+    }), undefined);
 
     writeConfig({ tunnelEnabledByRoot: { [root]: false } });
     let swapped = false;

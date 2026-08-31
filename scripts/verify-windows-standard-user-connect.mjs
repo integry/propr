@@ -101,15 +101,15 @@ function createFailureDiagnostic(scenario, stage, failureStatus) {
 }
 
 const cases = [
-  { name: "ready", fetch: "ready", docker: "ready", enabled: true, status: "ready", exit: 0, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "down", fetch: "ready", docker: "down", enabled: true, status: "notReady", exit: 0, reasons: ["SIDECAR_NOT_RUNNING", "ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "disabled", fetch: "ready", docker: "ready", enabled: false, status: "notReady", exit: 0, reasons: ["TUNNEL_DISABLED", "ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "restart-required", fetch: "restart-required", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["ENDPOINT_MISMATCH", "RESTART_REQUIRED", "ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "malformed", fetch: "invalid", docker: "ready", enabled: true, status: "incompatible", exit: 2, reasons: ["DISCOVERY_INVALID", "ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "oversized", fetch: "oversized", docker: "ready", enabled: true, status: "incompatible", exit: 2, reasons: ["DISCOVERY_TOO_LARGE", "ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "timeout", fetch: "timeout", docker: "ready", enabled: true, status: "timeout", exit: 0, reasons: ["API_TIMEOUT", "ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "identity-mismatch", fetch: "identity-mismatch", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["IDENTITY_MISMATCH", "ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "secret-sentinel", fetch: "secret-sentinel", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["API_UNREACHABLE", "ACL_DIAGNOSTIC_UNAVAILABLE"] },
+  { name: "ready", fetch: "ready", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
+  { name: "down", fetch: "ready", docker: "down", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
+  { name: "disabled", fetch: "ready", docker: "ready", enabled: false, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
+  { name: "restart-required", fetch: "restart-required", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
+  { name: "malformed", fetch: "invalid", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
+  { name: "oversized", fetch: "oversized", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
+  { name: "timeout", fetch: "timeout", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
+  { name: "identity-mismatch", fetch: "identity-mismatch", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
+  { name: "secret-sentinel", fetch: "secret-sentinel", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
 ];
 
 let currentScenario = "ready";
@@ -127,8 +127,8 @@ try {
     "privileged Windows mutation did not return the actionable follow-up result",
   );
 
-  // Discovery authority remains unavailable, but it must not be invoked by
-  // the CLI mutation paths which existed before discovery was introduced.
+  // Discovery authority remains unavailable, so status must fail closed. It
+  // must not be invoked by CLI mutation paths which predate discovery.
   currentStage = "scaffold";
   const { scaffoldStack } = await import(initStackModule);
   const mutationRoot = realpathSync.native(mkdtempSync(join(fixture, "stack-")));
@@ -211,15 +211,15 @@ try {
     currentStage = "status";
     assert.equal(document.status, scenario.status, scenario.name);
     currentStage = "endpoint";
-    assert.equal(document.canonicalEndpoint, endpoint, scenario.name);
+    assert.equal(document.canonicalEndpoint, null, scenario.name);
     currentStage = "identity";
-    assert.equal(document.publicInstanceIdentity, identity, scenario.name);
+    assert.equal(document.publicInstanceIdentity, null, scenario.name);
     currentStage = "reasons";
     assert.deepEqual(document.reasonCodes, scenario.reasons, scenario.name);
     currentStage = "api-ready";
-    assert.equal(document.apiReady, scenario.status === "ready", scenario.name);
+    assert.equal(document.apiReady, false, scenario.name);
     currentStage = "restart";
-    assert.equal(document.restartRequired, scenario.name === "restart-required", scenario.name);
+    assert.equal(document.restartRequired, false, scenario.name);
     currentStage = "stderr";
     const expectedStderr = scenario.status === "ready" ? "" : `ProPR Connect discovery: ${scenario.status}.\n`;
     assert.equal(result.stderr, expectedStderr, scenario.name);

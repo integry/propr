@@ -13,7 +13,8 @@ It emits one bounded versioned document, and the CLI verifies the packaged
 binary's SHA-256 before running it from a private staged path.
 
 Windows Connect status deliberately has no native helper in this package. It
-retains descriptor, reparse-point, replacement, and identity checks and reports
-`ACL_DIAGNOSTIC_UNAVAILABLE` when Node cannot safely obtain a same-handle DACL
-diagnostic. Windows operations that would need DACL mutation or privileged
-launch authority return `WINDOWS_AUTHORITY_REQUIRED` until #1997 lands.
+retains descriptor, reparse-point, replacement, and identity checks, but fails
+closed with `invalidConfig` and `ACL_DIAGNOSTIC_UNAVAILABLE` when Node cannot
+safely obtain a same-handle DACL diagnostic. Windows operations that would need
+DACL mutation or privileged launch authority return `WINDOWS_AUTHORITY_REQUIRED`
+until #1997 lands.
