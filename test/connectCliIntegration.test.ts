@@ -250,6 +250,12 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
       dockerEnvironmentExpectations: dockerTransport,
     });
     assert.equal(customDocker.status, 0);
+    const tlsOnlyTransport = { DOCKER_TLS: '1' };
+    const tlsOnlyDocker = invoke(readyRoot, 'ready', bin, parent, {
+      environment: tlsOnlyTransport,
+      dockerEnvironmentExpectations: tlsOnlyTransport,
+    });
+    assert.equal(tlsOnlyDocker.status, 0);
     const unrelatedInventory = invoke(readyRoot, 'ready', bin, parent, { dockerBehavior: 'large-unrelated' });
     assert.equal(unrelatedInventory.status, 0);
     for (const dockerBehavior of ['duplicate', 'unknown'] as const) {

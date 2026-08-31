@@ -200,6 +200,10 @@ test('creation modes are independent of umask', async () => {
   }
 });
 
+test('identity storage rejects the filesystem root before creating state', async () => {
+  await assert.rejects(getApiIdentity('/', () => IDS.first), /filesystem root/);
+});
+
 test('identity storage rejects replaceable directories, symlinks, hardlinks, and unsafe modes', async () => {
   const root = temporaryRoot('propr-public-identity-malicious-');
   try {
@@ -246,6 +250,35 @@ test('identity repairs only the exact recovery/final same-inode crash remnant', 
     linkSync(identityPath(data), join(data, 'hostile-unknown-hardlink'));
     await assert.rejects(getApiIdentity(data), /identity|single-link/);
     assert.equal(lstatSync(identityPath(data)).nlink, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('identity restart repairs interruption between temporary-to-READY link and unlink', {
+  skip: process.platform !== 'linux',
+}, async () => {
+  const root = temporaryRoot('propr-public-identity-temporary-link-crash-');
+  const data = join(root, 'data');
+  privateDirectory(data);
+  const temporary = join(
+    data,
+    `.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.creating-v1-123-${IDS.first}`,
+  );
+  const recovery = join(data, `.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.ready-v1`);
+  try {
+    writeFileSync(temporary, `${JSON.stringify({
+      schemaVersion: 1,
+      publicInstanceIdentity: IDS.second,
+    })}\n`, { mode: PUBLIC_IDENTITY_FILE_MODE });
+    chmodSync(temporary, PUBLIC_IDENTITY_FILE_MODE);
+    linkSync(temporary, recovery);
+    assert.equal(lstatSync(temporary).nlink, 2);
+
+    assert.equal(await getApiIdentity(data, () => IDS.third), IDS.second);
+    assert.equal(lstatSync(identityPath(data)).nlink, 1);
+    assert.throws(() => lstatSync(temporary), /ENOENT/);
+    assert.throws(() => lstatSync(recovery), /ENOENT/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

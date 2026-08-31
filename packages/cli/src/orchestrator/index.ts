@@ -144,6 +144,9 @@ export interface ConnectHostConfigSnapshotInput {
 const CONNECT_DOCKER_ENV_LIMITS = {
   DOCKER_HOST: 4096,
   DOCKER_CONTEXT: 255,
+  // Docker treats any non-empty value as enabling TLS. Keep the value bounded
+  // while preserving that documented transport-selection behavior.
+  DOCKER_TLS: 16,
   DOCKER_TLS_VERIFY: 16,
   DOCKER_CERT_PATH: 4096,
   DOCKER_CONFIG: 4096,

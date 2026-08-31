@@ -9,6 +9,7 @@ import {
   linkSync,
   lstatSync,
   mkdirSync,
+  opendirSync,
   openSync,
   readSync,
   realpathSync,
@@ -30,6 +31,7 @@ export const PUBLIC_IDENTITY_MAX_BYTES = 1024;
 
 const READY_NAME = `.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.ready-v1`;
 const TEMP_PREFIX = `.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.creating-v1-`;
+const MAX_DIRECTORY_ENTRIES = 4096;
 
 export type PublicIdentityRole = "host" | "root-container";
 export type PublicIdentityBoundary =
@@ -58,6 +60,8 @@ export interface PinnedPublicIdentityDirectory {
   };
   /** Validate native owner/ACL/no-reparse authority for this exact open file. */
   validateEntry(name: string, fd: number, newlyCreated?: boolean): void | Promise<void>;
+  /** Bounded names in this exact pinned directory, when crash recovery needs them. */
+  listNames?(): readonly string[];
   publishNoReplace(oldName: string, newName: string): void;
   unlink(name: string): void;
 }
@@ -256,6 +260,86 @@ async function recoverPublishedLinkRemnant(
   }
 }
 
+function isCreationTemporaryName(name: string): boolean {
+  if (!name.startsWith(TEMP_PREFIX)) return false;
+  return /^[1-9]\d{0,19}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+    name.slice(TEMP_PREFIX.length),
+  );
+}
+
+/**
+ * Repair the exact link-then-unlink remnant left when temporary publication
+ * reached READY but the process stopped before removing its private source
+ * name. Both names must be the only links to one valid identity inode.
+ */
+async function recoverTemporaryLinkRemnant(
+  directory: PinnedPublicIdentityDirectory,
+  options: Pick<PublicIdentityOptions, "onBoundary"> = {},
+): Promise<void> {
+  if (!directory.listNames) throw new Error("public identity recovery state is ambiguous");
+  const names = directory.listNames();
+  if (names.length > MAX_DIRECTORY_ENTRIES) {
+    throw new Error("public identity recovery directory is too large");
+  }
+
+  let readyFd: number | undefined;
+  let temporaryFd: number | undefined;
+  try {
+    readyFd = directory.open(READY_NAME, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const readyStat = fstatSync(readyFd);
+    const readyIdentity = exactIdentity(readyFd);
+    validateFileStat(readyStat, directory.ownerUid, 2);
+    await directory.validateEntry(READY_NAME, readyFd);
+
+    let temporaryName: string | undefined;
+    for (const name of names) {
+      if (!isCreationTemporaryName(name)) continue;
+      let candidateFd: number | undefined;
+      try {
+        candidateFd = directory.open(name, constants.O_RDONLY | constants.O_NOFOLLOW);
+        if (!sameIdentity(readyIdentity, exactIdentity(candidateFd))) continue;
+        if (temporaryName !== undefined) {
+          throw new Error("public identity recovery state is ambiguous");
+        }
+        validateFileStat(fstatSync(candidateFd), directory.ownerUid, 2);
+        await directory.validateEntry(name, candidateFd);
+        temporaryName = name;
+        temporaryFd = candidateFd;
+        candidateFd = undefined;
+      } finally {
+        if (candidateFd !== undefined) closeSync(candidateFd);
+      }
+    }
+    if (temporaryName === undefined || temporaryFd === undefined) {
+      throw new Error("public identity recovery state is ambiguous");
+    }
+
+    await readIdentity(directory, READY_NAME, options, 2);
+    const readyAfter = fstatSync(readyFd);
+    const temporaryAfter = fstatSync(temporaryFd);
+    const namedReady = directory.identify(READY_NAME);
+    const namedTemporary = directory.identify(temporaryName);
+    if (
+      readyAfter.nlink !== 2
+      || temporaryAfter.nlink !== 2
+      || !sameIdentity(readyIdentity, exactIdentity(readyFd))
+      || !sameIdentity(readyIdentity, exactIdentity(temporaryFd))
+      || namedReady.kind !== "file"
+      || namedTemporary.kind !== "file"
+      || !sameIdentity(readyIdentity, namedReady)
+      || !sameIdentity(readyIdentity, namedTemporary)
+    ) throw new Error("public identity hardlink state changed during recovery");
+
+    directory.unlink(temporaryName);
+    syncDirectory(directory.fd);
+    await options.onBoundary?.("directory-synced");
+    await readIdentity(directory, READY_NAME, options);
+  } finally {
+    if (temporaryFd !== undefined) closeSync(temporaryFd);
+    if (readyFd !== undefined) closeSync(readyFd);
+  }
+}
+
 function unlinkIfPresent(directory: PinnedPublicIdentityDirectory, name: string): void {
   try {
     directory.unlink(name);
@@ -342,7 +426,9 @@ export async function getOrCreatePublicInstanceIdentityPinned(
       const repaired = await recoverPublishedLinkRemnant(directory, options);
       if (repaired) return repaired;
     }
-    if (recoveryEntryBusy) throw new Error("public identity recovery state is ambiguous");
+    if (recoveryEntryBusy) {
+      await recoverTemporaryLinkRemnant(directory, options);
+    }
 
     const recovered = await publishRecovery(directory, options.onBoundary);
     if (recovered) return recovered;
@@ -450,6 +536,9 @@ function openPinnedDataDirectory(dataDir: string, role: PublicIdentityRole): {
     throw new Error(`safe public identity directory access is not supported on ${process.platform}`);
   }
   const absolute = resolve(dataDir);
+  if (absolute === parse(absolute).root) {
+    throw new Error("public identity data directory cannot be the filesystem root");
+  }
   const parent = dirname(absolute);
   try {
     lstatSync(absolute);
@@ -487,6 +576,22 @@ function openPinnedDataDirectory(dataDir: string, role: PublicIdentityRole): {
     validateAncestorOwnership(ancestry, terminal.uid, role);
     if (realpathSync.native(absolute) !== absolute) throw new Error("public identity directory uses a symbolic-link ancestor");
     const anchor = join(fdRoot, String(fd));
+    const listNames = (): readonly string[] => {
+      const names: string[] = [];
+      const entries = opendirSync(anchor);
+      try {
+        for (;;) {
+          const entry = entries.readSync();
+          if (entry === null) return names;
+          names.push(entry.name);
+          if (names.length > MAX_DIRECTORY_ENTRIES) {
+            throw new Error("public identity recovery directory is too large");
+          }
+        }
+      } finally {
+        entries.closeSync();
+      }
+    };
     const directory: PinnedPublicIdentityDirectory = {
       fd,
       ownerUid: terminal.uid,
@@ -506,6 +611,7 @@ function openPinnedDataDirectory(dataDir: string, role: PublicIdentityRole): {
         };
       },
       validateEntry: () => undefined,
+      listNames,
       publishNoReplace: (oldName, newName) => {
         linkSync(join(anchor, oldName), join(anchor, newName));
         unlinkSync(join(anchor, oldName));
