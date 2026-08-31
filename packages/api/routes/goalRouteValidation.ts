@@ -5,6 +5,8 @@ import {
   GOAL_MAX_MAX_ACTIVE_TASKS,
   GOAL_MERGE_POLICIES,
   GOAL_MIN_MAX_ACTIVE_TASKS,
+  GOAL_IDENTIFIER_MAX_LENGTH,
+  GOAL_OBJECTIVE_MAX_LENGTH,
   GOAL_ULTRAFIX_GOAL_MAX,
   GOAL_ULTRAFIX_GOAL_MIN,
   GOAL_ULTRAFIX_MAX_CYCLES_MAX,
@@ -41,6 +43,12 @@ function validateSelection(body: Record<string, unknown>): ValidatedSelection | 
   const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
   if (!objective || !repository || !agent || !requestedModel) {
     return reject(400, GOAL_ERROR_CODES.validation, 'objective, repository, agent, and model are required');
+  }
+  if (Array.from(objective).length > GOAL_OBJECTIVE_MAX_LENGTH) {
+    return reject(400, GOAL_ERROR_CODES.validation, `objective must not exceed ${GOAL_OBJECTIVE_MAX_LENGTH} characters`);
+  }
+  if ([repository, agent, requestedModel].some(value => Array.from(value).length > GOAL_IDENTIFIER_MAX_LENGTH)) {
+    return reject(400, GOAL_ERROR_CODES.validation, `repository, agent, and model must not exceed ${GOAL_IDENTIFIER_MAX_LENGTH} characters`);
   }
   const maxActiveTasks = body.maxActiveTasks ?? GOAL_DEFAULT_MAX_ACTIVE_TASKS;
   if (typeof maxActiveTasks !== 'number' || !Number.isInteger(maxActiveTasks)

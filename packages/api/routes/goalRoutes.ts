@@ -24,6 +24,13 @@ import {
 } from '@propr/core';
 import {
   GOAL_ERROR_CODES,
+  GOAL_EVENT_MAX_LIMIT,
+  GOAL_IDEMPOTENCY_KEY_MAX_LENGTH,
+  GOAL_IDENTIFIER_MAX_LENGTH,
+  GOAL_LIST_MAX_LIMIT,
+  GOAL_MESSAGE_BODY_MAX_LENGTH,
+  GOAL_REASON_MAX_LENGTH,
+  GOAL_SEARCH_MAX_LENGTH,
   GOAL_STATES,
   GOAL_EVENT_KINDS,
   type GoalState,
@@ -61,15 +68,44 @@ function sendGoalError(res: Response, error: unknown): void {
   res.status(500).json({ code: 'goal_internal_error', error: 'Internal server error' });
 }
 
-/** The idempotency key comes from a header or the body, header taking priority. */
-function resolveIdempotencyKey(req: Request): string | undefined {
+/** Canonical header with a documented body fallback for older typed clients. */
+function resolveIdempotencyKey(req: Request): string {
   const header = req.header('Idempotency-Key');
-  if (typeof header === 'string' && header.trim().length > 0) return header.trim();
   const body = req.body as { idempotencyKey?: unknown } | undefined;
-  if (typeof body?.idempotencyKey === 'string' && body.idempotencyKey.trim().length > 0) {
-    return body.idempotencyKey.trim();
+  const candidate = header !== undefined ? header : body?.idempotencyKey;
+  if (typeof candidate === 'string') {
+    const normalized = candidate.trim();
+    if (normalized && Array.from(normalized).length <= GOAL_IDEMPOTENCY_KEY_MAX_LENGTH) {
+      return normalized;
+    }
   }
-  return undefined;
+  throw new GoalError(
+    GOAL_ERROR_CODES.invalidIdempotencyKey,
+    `Idempotency-Key must contain between 1 and ${GOAL_IDEMPOTENCY_KEY_MAX_LENGTH} characters`,
+    400
+  );
+}
+
+function boundedOptionalText(value: unknown, field: string, maxLength: number): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') throw new GoalError(GOAL_ERROR_CODES.validation, `${field} must be a string`, 400);
+  const normalized = value.trim();
+  if (!normalized || Array.from(normalized).length > maxLength) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, `${field} must contain between 1 and ${maxLength} characters`, 400);
+  }
+  return normalized;
+}
+
+function parseLimit(value: unknown, max: number): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, `limit must be an integer from 1 to ${max}`, 400);
+  }
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > max) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, `limit must be an integer from 1 to ${max}`, 400);
+  }
+  return limit;
 }
 
 function parseExpectedVersion(req: Request): number | undefined {
@@ -115,6 +151,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     const userId = requireUserId(req, res);
     if (!userId) return;
     try {
+      const idempotencyKey = resolveIdempotencyKey(req);
       const result = await validateCreateGoalInput(
         (req.body ?? {}) as Record<string, unknown>,
         userId,
@@ -126,7 +163,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
       }
       const goal = await repository.createGoal({
         ...result.input,
-        idempotencyKey: resolveIdempotencyKey(req),
+        idempotencyKey,
       });
       res.status(201).json({ goal });
     } catch (error) {
@@ -139,29 +176,36 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     if (!userId) return;
     try {
       const repositoryFilter =
-        typeof req.query.repository === 'string' ? req.query.repository : undefined;
+        boundedOptionalText(req.query.repository, 'repository', GOAL_IDENTIFIER_MAX_LENGTH);
       const stateFilter =
         typeof req.query.state === 'string' &&
         GOAL_STATES.includes(req.query.state as GoalState)
           ? (req.query.state as GoalState)
           : undefined;
-      if (typeof req.query.state === 'string' && !stateFilter) {
+      if (req.query.state !== undefined && !stateFilter) {
         res.status(400).json({
           code: GOAL_ERROR_CODES.validation,
           error: `state must be one of: ${GOAL_STATES.join(', ')}`,
         });
         return;
       }
-      const limit =
-        typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+      if (req.query.page !== undefined) {
+        throw new GoalError(GOAL_ERROR_CODES.validation, 'page is not supported; use cursor keyset pagination', 400);
+      }
+      const limit = parseLimit(req.query.limit, GOAL_LIST_MAX_LIMIT);
+      if (req.query.cursor !== undefined && typeof req.query.cursor !== 'string') {
+        throw new GoalError(GOAL_ERROR_CODES.invalidCursor, 'Goal cursor is invalid', 400);
+      }
       const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+      const search = boundedOptionalText(req.query.search, 'search', GOAL_SEARCH_MAX_LENGTH);
 
       const result = await repository.listGoals({
         // In demo mode all goals share the demo user, matching read-only semantics.
         ownerUserId: userId,
         repository: repositoryFilter,
         state: stateFilter,
-        limit: limit !== undefined && Number.isFinite(limit) ? limit : undefined,
+        search,
+        limit,
         cursor,
       });
       res.json(result);
@@ -185,7 +229,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
   function mutation(
     handler: (
       goalId: string,
-      options: { expectedVersion?: number; reason?: string; idempotencyKey?: string }
+      options: { expectedVersion?: number; reason?: string; idempotencyKey: string }
     ) => Promise<unknown>
   ) {
     return async (req: FlatRequest, res: Response): Promise<void> => {
@@ -193,11 +237,12 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
       if (!userId) return;
       try {
         await ensureOwnedGoal(req.params.goalId, userId);
+        const idempotencyKey = resolveIdempotencyKey(req);
         const body = (req.body ?? {}) as { reason?: unknown };
         const goal = await handler(req.params.goalId, {
           expectedVersion: parseExpectedVersion(req),
-          reason: typeof body.reason === 'string' ? body.reason : undefined,
-          idempotencyKey: resolveIdempotencyKey(req),
+          reason: boundedOptionalText(body.reason, 'reason', GOAL_REASON_MAX_LENGTH),
+          idempotencyKey,
         });
         res.json({ goal });
       } catch (error) {
@@ -215,15 +260,12 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     if (!userId) return;
     try {
       await ensureOwnedGoal(req.params.goalId, userId);
+      const idempotencyKey = resolveIdempotencyKey(req);
       const goal = await repository.requireGoal(req.params.goalId);
       const body = (req.body ?? {}) as { model?: unknown; reason?: unknown };
-      const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
+      const requestedModel = boundedOptionalText(body.model, 'model', GOAL_IDENTIFIER_MAX_LENGTH);
       if (!requestedModel) {
-        res.status(400).json({
-          code: GOAL_ERROR_CODES.validation,
-          error: 'model is required',
-        });
-        return;
+        throw new GoalError(GOAL_ERROR_CODES.validation, 'model is required', 400);
       }
       // Validate against the goal's agent catalog so an unusable model cannot
       // be requested.
@@ -240,8 +282,8 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         requestedModel,
         {
           expectedVersion: parseExpectedVersion(req),
-          reason: typeof body.reason === 'string' ? body.reason : undefined,
-          idempotencyKey: resolveIdempotencyKey(req),
+          reason: boundedOptionalText(body.reason, 'reason', GOAL_REASON_MAX_LENGTH),
+          idempotencyKey,
         }
       );
       res.json({ goal: updated });
@@ -259,24 +301,13 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         body?: unknown;
         predefinedKind?: unknown;
       };
-      const messageBody = typeof body.body === 'string' ? body.body.trim() : '';
-      const predefinedKind =
-        typeof body.predefinedKind === 'string' ? body.predefinedKind.trim() : null;
-      if (!messageBody) {
-        res.status(400).json({
-          code: GOAL_ERROR_CODES.validation,
-          error: 'body is required',
-        });
-        return;
-      }
+      const messageBody = boundedOptionalText(body.body, 'body', GOAL_MESSAGE_BODY_MAX_LENGTH) ?? '';
+      const predefinedKind = boundedOptionalText(
+        body.predefinedKind,
+        'predefinedKind',
+        GOAL_IDENTIFIER_MAX_LENGTH
+      ) ?? null;
       const idempotencyKey = resolveIdempotencyKey(req);
-      if (!idempotencyKey) {
-        res.status(400).json({
-          code: GOAL_ERROR_CODES.validation,
-          error: 'An Idempotency-Key is required to enqueue a message',
-        });
-        return;
-      }
       const message = await repository.enqueueMessage(req.params.goalId, {
         body: messageBody,
         predefinedKind,
@@ -294,19 +325,16 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     try {
       await ensureOwnedGoal(req.params.goalId, userId);
       const afterRaw = req.query.afterSequence ?? req.query.cursor;
-      const afterSequence =
-        typeof afterRaw === 'string' && afterRaw.length > 0
-          ? Number(afterRaw)
-          : undefined;
-      if (afterSequence !== undefined && (!Number.isInteger(afterSequence) || afterSequence < 0)) {
+      const afterSequence = afterRaw === undefined ? undefined
+        : typeof afterRaw === 'string' && /^\d+$/.test(afterRaw) ? Number(afterRaw) : Number.NaN;
+      if (afterSequence !== undefined && (!Number.isSafeInteger(afterSequence) || afterSequence < 0)) {
         res.status(400).json({
           code: GOAL_ERROR_CODES.invalidCursor,
           error: 'afterSequence must be a non-negative integer',
         });
         return;
       }
-      const limit =
-        typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+      const limit = parseLimit(req.query.limit, GOAL_EVENT_MAX_LIMIT);
       const kind = typeof req.query.kind === 'string' ? req.query.kind : undefined;
       if (kind !== undefined && !GOAL_EVENT_KINDS.includes(kind as (typeof GOAL_EVENT_KINDS)[number])) {
         res.status(400).json({
@@ -317,7 +345,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
       }
       const result = await repository.readEvents(req.params.goalId, {
         afterSequence,
-        limit: limit !== undefined && Number.isFinite(limit) ? limit : undefined,
+        limit,
         kind,
       });
       res.json(result);

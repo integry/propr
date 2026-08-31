@@ -26,31 +26,11 @@ function isoNow(knex) {
 }
 
 const GOAL_STATES = [
-  'queued',
-  'planning',
-  'running',
-  'pausing',
-  'paused',
-  'recovering',
-  'completing',
-  'completed',
-  'failed',
-  'cancelled',
+  'queued', 'planning', 'running', 'pausing', 'paused', 'recovering',
+  'completing', 'completed', 'failed', 'cancelled',
 ];
-const NODE_KINDS = [
-  'root_epic',
-  'sub_epic',
-  'implementation_issue',
-  'implementation_pr',
-];
-const NODE_STATUSES = [
-  'pending',
-  'in_progress',
-  'blocked',
-  'completed',
-  'failed',
-  'cancelled',
-];
+const NODE_KINDS = ['root_epic', 'sub_epic', 'implementation_issue', 'implementation_pr'];
+const NODE_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'failed', 'cancelled'];
 const EVENT_KINDS = ['lifecycle', 'output', 'domain'];
 const MERGE_POLICIES = ['manual', 'auto', 'auto_squash'];
 
@@ -104,12 +84,17 @@ export async function up(knex) {
       'goals_ultrafix_boolean_check'
     );
     table.check(
+      "terminal_reason IS NULL OR terminal_reason IN ('objective_met', 'user_cancelled', 'unrecoverable_error', 'concurrency_exhausted', 'superseded')",
+      {},
+      'goals_terminal_reason_check'
+    );
+    table.check(
       '(ultrafix_enabled = 0 AND ultrafix_goal IS NULL AND ultrafix_max_cycles IS NULL) OR (ultrafix_enabled = 1 AND typeof(ultrafix_goal) = \'integer\' AND ultrafix_goal BETWEEN 1 AND 10 AND typeof(ultrafix_max_cycles) = \'integer\' AND ultrafix_max_cycles BETWEEN 1 AND 20)',
       {},
       'goals_ultrafix_settings_check'
     );
     table.check(
-      "length(trim(goal_id)) > 0 AND length(trim(owner_user_id)) > 0 AND length(trim(repository)) > 0 AND length(trim(objective)) > 0",
+      "length(trim(goal_id)) BETWEEN 1 AND 255 AND length(trim(owner_user_id)) BETWEEN 1 AND 255 AND length(trim(repository)) BETWEEN 1 AND 255 AND length(trim(objective)) BETWEEN 1 AND 4000 AND length(agent) BETWEEN 1 AND 255 AND length(requested_model) BETWEEN 1 AND 255 AND length(effective_model) BETWEEN 1 AND 255 AND (lease_owner IS NULL OR length(lease_owner) BETWEEN 1 AND 255)",
       {},
       'goals_required_text_check'
     );
@@ -125,12 +110,20 @@ export async function up(knex) {
     table.text('operation').notNullable();
     table.text('idempotency_key').notNullable();
     table.text('request_hash').notNullable();
-    table.text('goal_id').notNullable();
-    table.text('response_json').notNullable();
+    table.text('claim_token').nullable();
+    // Nullable until the claimant commits its effect. The primary key itself is
+    // the atomic reservation used by cross-connection idempotent requests.
+    table.text('goal_id').nullable();
+    table.text('response_json').nullable();
     table.text('created_at').notNullable().defaultTo(isoNow(knex));
     table.primary(['owner_user_id', 'operation', 'idempotency_key']);
     table.foreign('goal_id').references('goal_id').inTable('goals').onDelete('CASCADE');
     table.index(['goal_id', 'operation'], 'goal_idempotency_goal_operation_idx');
+    table.check(
+      'length(owner_user_id) BETWEEN 1 AND 255 AND length(operation) BETWEEN 1 AND 512 AND length(idempotency_key) BETWEEN 1 AND 255 AND (claim_token IS NULL OR length(claim_token) BETWEEN 1 AND 255)',
+      {},
+      'goal_idempotency_text_bounds_check'
+    );
   });
 
   await knex.schema.createTable('goal_nodes', (table) => {
@@ -159,6 +152,11 @@ export async function up(knex) {
       'typeof(order_index) = \'integer\' AND order_index >= 0',
       {},
       'goal_nodes_order_index_check'
+    );
+    table.check(
+      'length(node_id) BETWEEN 1 AND 255 AND length(idempotency_key) BETWEEN 1 AND 255 AND (parent_node_id IS NULL OR length(parent_node_id) BETWEEN 1 AND 255) AND (external_ref IS NULL OR length(external_ref) <= 255) AND (external_kind IS NULL OR length(external_kind) <= 255)',
+      {},
+      'goal_nodes_text_bounds_check'
     );
 
     table
@@ -242,6 +240,11 @@ export async function up(knex) {
       'goal_provider_sessions_lease_generation_check'
     );
     table.check(
+      'length(session_id) BETWEEN 1 AND 255 AND length(agent) BETWEEN 1 AND 255 AND (provider_thread_id IS NULL OR length(provider_thread_id) <= 255) AND (runtime_id IS NULL OR length(runtime_id) <= 255) AND (worktree_id IS NULL OR length(worktree_id) <= 255)',
+      {},
+      'goal_provider_sessions_text_bounds_check'
+    );
+    table.check(
       'recovery_metadata_json IS NULL OR (json_valid(recovery_metadata_json) AND length(recovery_metadata_json) <= 4096)',
       {},
       'goal_provider_sessions_recovery_metadata_check'
@@ -276,6 +279,11 @@ export async function up(knex) {
       'typeof(sequence) = \'integer\' AND sequence >= 1',
       {},
       'goal_events_sequence_check'
+    );
+    table.check(
+      'length(event_type) BETWEEN 1 AND 255 AND length(idempotency_key) BETWEEN 1 AND 255',
+      {},
+      'goal_events_text_bounds_check'
     );
 
     table
@@ -317,12 +325,12 @@ export async function up(knex) {
       'goal_messages_sequence_check'
     );
     table.check(
-      'length(trim(body)) > 0',
+      'length(trim(body)) BETWEEN 1 AND 4000',
       {},
       'goal_messages_body_check'
     );
     table.check(
-      "length(trim(state)) > 0 AND (acknowledged_at IS NULL OR delivered_at IS NOT NULL)",
+      "state IN ('queued', 'delivered', 'acknowledged') AND length(message_id) BETWEEN 1 AND 255 AND length(idempotency_key) BETWEEN 1 AND 255 AND (predefined_kind IS NULL OR length(predefined_kind) <= 255) AND (acknowledged_at IS NULL OR delivered_at IS NOT NULL)",
       {},
       'goal_messages_state_consistency_check'
     );
@@ -365,6 +373,11 @@ export async function up(knex) {
       .onDelete('CASCADE');
 
     table.index(['goal_id', 'created_at'], 'goal_state_transitions_goal_idx');
+    table.check(
+      'reason IS NULL OR length(reason) <= 1000',
+      {},
+      'goal_state_transitions_reason_bounds_check'
+    );
   });
 
   await knex.schema.createTable('goal_model_transitions', (table) => {
@@ -390,6 +403,11 @@ export async function up(knex) {
       .onDelete('CASCADE');
 
     table.index(['goal_id', 'created_at'], 'goal_model_transitions_goal_idx');
+    table.check(
+      'length(previous_model) BETWEEN 1 AND 255 AND length(requested_model) BETWEEN 1 AND 255 AND length(effective_model) BETWEEN 1 AND 255 AND (reason IS NULL OR length(reason) <= 1000)',
+      {},
+      'goal_model_transitions_text_bounds_check'
+    );
   });
 
   await knex.schema.createTable('goal_pause_intervals', (table) => {
@@ -413,6 +431,11 @@ export async function up(knex) {
       .onDelete('CASCADE');
 
     table.index(['goal_id', 'paused_at'], 'goal_pause_intervals_goal_idx');
+    table.check(
+      'reason IS NULL OR length(reason) <= 1000',
+      {},
+      'goal_pause_intervals_reason_bounds_check'
+    );
   });
 
   // At most one open pause interval per goal so active-time accounting stays

@@ -104,6 +104,18 @@ export const GOAL_ULTRAFIX_GOAL_MIN = 1;
 export const GOAL_ULTRAFIX_GOAL_MAX = 10;
 export const GOAL_ULTRAFIX_MAX_CYCLES_MIN = 1;
 export const GOAL_ULTRAFIX_MAX_CYCLES_MAX = 20;
+export const GOAL_OBJECTIVE_MAX_LENGTH = 4000;
+export const GOAL_MESSAGE_BODY_MAX_LENGTH = 4000;
+export const GOAL_REASON_MAX_LENGTH = 1000;
+export const GOAL_IDENTIFIER_MAX_LENGTH = 255;
+export const GOAL_IDEMPOTENCY_KEY_MAX_LENGTH = 255;
+export const GOAL_SEARCH_MAX_LENGTH = 200;
+export const GOAL_LIST_DEFAULT_LIMIT = 25;
+export const GOAL_LIST_MAX_LIMIT = 100;
+export const GOAL_EVENT_DEFAULT_LIMIT = 100;
+export const GOAL_EVENT_MAX_LIMIT = 500;
+export const GOAL_CURSOR_MAX_LENGTH = 1024;
+export const GOAL_LEASE_TTL_MAX_MS = 86_400_000;
 
 /** Stable machine-readable error codes for actionable API responses. */
 export const GOAL_ERROR_CODES = {
@@ -117,6 +129,7 @@ export const GOAL_ERROR_CODES = {
   repositoryForbidden: 'goal_repository_forbidden',
   invalidCatalogSelection: 'goal_invalid_catalog_selection',
   concurrencyBound: 'goal_concurrency_bound_exceeded',
+  invalidIdempotencyKey: 'goal_invalid_idempotency_key',
   idempotencyConflict: 'goal_idempotency_conflict',
   hierarchyConflict: 'goal_hierarchy_conflict',
   invalidCursor: 'goal_invalid_cursor',
@@ -162,7 +175,25 @@ export interface CreateGoalRequest {
   ultrafixEnabled: boolean;
   ultrafixGoal: number | null;
   ultrafixMaxCycles: number | null;
-  idempotencyKey?: string;
+  /** Compatible fallback when the canonical Idempotency-Key header is unavailable. */
+  idempotencyKey: string;
+}
+
+/** Shared body shape for pause, resume, and cancel mutations. */
+export interface GoalMutationRequest {
+  idempotencyKey: string;
+  expectedVersion?: number;
+  reason?: string;
+}
+
+export interface GoalModelChangeRequest extends GoalMutationRequest {
+  model: string;
+}
+
+export interface GoalMessageRequest {
+  idempotencyKey: string;
+  body: string;
+  predefinedKind?: string;
 }
 
 /** Credential-free, bounded recovery checkpoint persisted for a provider session. */
@@ -191,4 +222,20 @@ export interface GoalSummaryView {
   nodeCount: number;
   activeNodeCount: number;
   latestSequence: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Canonical keyset-paginated list contract shared by API and UI. */
+export interface GoalListRequest {
+  cursor?: string | null;
+  limit?: number;
+  repository?: string;
+  state?: GoalState;
+  search?: string;
+}
+
+export interface GoalListResponse {
+  goals: GoalSummaryView[];
+  nextCursor: string | null;
 }

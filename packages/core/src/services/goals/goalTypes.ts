@@ -13,6 +13,8 @@ import type {
   GoalMergePolicy,
   GoalTerminalReason,
   GoalRecoveryMetadata,
+  GoalListRequest,
+  GoalListResponse,
 } from '@propr/shared';
 
 export interface GoalRecord {
@@ -101,8 +103,9 @@ export interface GoalIdempotencyRecord {
   operation: string;
   idempotency_key: string;
   request_hash: string;
-  goal_id: string;
-  response_json: string;
+  claim_token: string | null;
+  goal_id: string | null;
+  response_json: string | null;
   created_at: string;
 }
 
@@ -243,18 +246,11 @@ export interface ProviderSessionUpdate extends GoalLeaseFence {
   recoveryMetadata?: GoalRecoveryMetadata | null;
 }
 
-export interface ListGoalsQuery {
+export interface ListGoalsQuery extends GoalListRequest {
   ownerUserId: string;
-  repository?: string;
-  state?: GoalState;
-  limit?: number;
-  cursor?: string | null;
 }
 
-export interface ListGoalsResult {
-  goals: Goal[];
-  nextCursor: string | null;
-}
+export type ListGoalsResult = GoalListResponse;
 
 export interface GoalActiveTimeStats {
   elapsedMs: number;

@@ -1,0 +1,252 @@
+import crypto from 'crypto';
+import type { Knex } from 'knex';
+import {
+  GOAL_DEFAULT_MAX_ACTIVE_TASKS,
+  GOAL_ERROR_CODES,
+  GOAL_LIST_DEFAULT_LIMIT,
+  GOAL_LIST_MAX_LIMIT,
+  GOAL_MAX_MAX_ACTIVE_TASKS,
+  GOAL_MERGE_POLICIES,
+  GOAL_MIN_MAX_ACTIVE_TASKS,
+  GOAL_OBJECTIVE_MAX_LENGTH,
+  GOAL_SEARCH_MAX_LENGTH,
+  GOAL_ULTRAFIX_GOAL_MAX,
+  GOAL_ULTRAFIX_GOAL_MIN,
+  GOAL_ULTRAFIX_MAX_CYCLES_MAX,
+  GOAL_ULTRAFIX_MAX_CYCLES_MIN,
+  isTerminalGoalState,
+} from '@propr/shared';
+import type {
+  CreateGoalInput,
+  Goal,
+  GoalActiveTimeStats,
+  GoalRecord,
+  ListGoalsQuery,
+  ListGoalsResult,
+} from './goalTypes.js';
+import {
+  GoalError,
+  boundedText,
+  characterLength,
+  decodeCursor,
+  encodeCursor,
+  goalTransaction,
+  idempotencyKey,
+  nowIso,
+  runIdempotent,
+  toGoal,
+  toSummary,
+  type GoalSummaryRecord,
+} from './goalRepositorySupport.js';
+
+export class GoalReadRepository {
+  constructor(private readonly db: Knex) {}
+
+  async createGoal(input: CreateGoalInput): Promise<Goal> {
+    const normalized = normalizeCreateInput(input);
+    const goalId = normalized.goalId ?? crypto.randomUUID();
+    const request = {
+      goalId: normalized.goalId ?? null,
+      repository: normalized.repository,
+      objective: normalized.objective,
+      agent: normalized.agent,
+      requestedModel: normalized.requestedModel,
+      effectiveModel: normalized.effectiveModel,
+      maxActiveTasks: normalized.maxActiveTasks,
+      ultrafixEnabled: normalized.ultrafixEnabled,
+      ultrafixGoal: normalized.ultrafixGoal,
+      ultrafixMaxCycles: normalized.ultrafixMaxCycles,
+      mergePolicy: normalized.mergePolicy,
+    };
+    const effect = (trx: Knex.Transaction) => this.insertGoal(trx, goalId, normalized);
+    if (input.idempotencyKey === undefined) {
+      return goalTransaction(this.db, effect);
+    }
+    return runIdempotent({
+      db: this.db,
+      ownerUserId: normalized.ownerUserId,
+      operation: 'create',
+      key: idempotencyKey(input.idempotencyKey),
+      request,
+      goalId,
+      effect,
+    });
+  }
+
+  private async insertGoal(
+    trx: Knex.Transaction,
+    goalId: string,
+    input: NormalizedCreateInput
+  ): Promise<Goal> {
+    const existing = await trx<GoalRecord>('goals').where('goal_id', goalId).first();
+    if (existing) {
+      throw new GoalError(GOAL_ERROR_CODES.idempotencyConflict, 'The requested goal identifier already exists', 409);
+    }
+    const now = nowIso();
+    const record: GoalRecord = {
+      goal_id: goalId,
+      owner_user_id: input.ownerUserId,
+      repository: input.repository,
+      objective: input.objective,
+      state: 'queued',
+      agent: input.agent,
+      requested_model: input.requestedModel,
+      effective_model: input.effectiveModel,
+      max_active_tasks: input.maxActiveTasks,
+      ultrafix_enabled: input.ultrafixEnabled ? 1 : 0,
+      ultrafix_goal: input.ultrafixGoal,
+      ultrafix_max_cycles: input.ultrafixMaxCycles,
+      merge_policy: input.mergePolicy,
+      version: 1,
+      lease_owner: null,
+      lease_epoch: 0,
+      lease_expires_at: null,
+      terminal_reason: null,
+      created_at: now,
+      updated_at: now,
+    };
+    await trx('goals').insert(record);
+    return toGoal(record);
+  }
+
+  async getGoal(goalId: string): Promise<Goal | null> {
+    const id = boundedText(goalId, 'goalId') as string;
+    const row = await this.db<GoalRecord>('goals').where('goal_id', id).first();
+    return row ? toGoal(row) : null;
+  }
+
+  async requireGoal(goalId: string): Promise<Goal> {
+    const goal = await this.getGoal(goalId);
+    if (!goal) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+    return goal;
+  }
+
+  async listGoals(query: ListGoalsQuery): Promise<ListGoalsResult> {
+    const ownerUserId = boundedText(query.ownerUserId, 'ownerUserId') as string;
+    const limit = query.limit ?? GOAL_LIST_DEFAULT_LIMIT;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > GOAL_LIST_MAX_LIMIT) {
+      throw new GoalError(GOAL_ERROR_CODES.validation, `limit must be an integer from 1 to ${GOAL_LIST_MAX_LIMIT}`, 400);
+    }
+    const repository = query.repository === undefined
+      ? undefined
+      : boundedText(query.repository, 'repository') as string;
+    const search = normalizeSearch(query.search);
+    const cursor = decodeCursor(query.cursor);
+    let builder = this.db<GoalSummaryRecord>('goals')
+      .where('owner_user_id', ownerUserId)
+      .select('goals.*')
+      .select(this.db.raw('(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id) AS node_count'))
+      .select(this.db.raw("(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id AND n.status = 'in_progress') AS active_node_count"))
+      .select(this.db.raw('(SELECT COALESCE(MAX(sequence), 0) FROM goal_events e WHERE e.goal_id = goals.goal_id) AS latest_sequence'));
+    if (repository) builder = builder.andWhere('repository', repository);
+    if (query.state) builder = builder.andWhere('state', query.state);
+    if (search) {
+      const pattern = `%${escapeLike(search)}%`;
+      builder = builder.andWhere((nested) => {
+        void nested.whereRaw("objective LIKE ? ESCAPE '\\' COLLATE NOCASE", [pattern])
+          .orWhereRaw("repository LIKE ? ESCAPE '\\' COLLATE NOCASE", [pattern]);
+      });
+    }
+    if (cursor) {
+      builder = builder.andWhere((nested) => {
+        void nested.where('created_at', '<', cursor.createdAt).orWhere((sameTime) => {
+          void sameTime.where('created_at', cursor.createdAt).andWhere('goal_id', '<', cursor.goalId);
+        });
+      });
+    }
+    const rows = await builder.orderBy('created_at', 'desc').orderBy('goal_id', 'desc').limit(limit + 1);
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      goals: page.map(toSummary),
+      nextCursor: rows.length > limit && last ? encodeCursor(last.created_at, last.goal_id) : null,
+    };
+  }
+
+  async getActiveTimeStats(goalId: string): Promise<GoalActiveTimeStats> {
+    const goal = await this.requireGoal(goalId);
+    const intervals = await this.db('goal_pause_intervals').where('goal_id', goalId).select('paused_at', 'resumed_at');
+    const now = Date.now();
+    const end = isTerminalGoalState(goal.state) ? Date.parse(goal.updatedAt) : now;
+    const elapsedMs = Math.max(0, end - Date.parse(goal.createdAt));
+    let pausedMs = 0;
+    let currentlyPaused = false;
+    for (const interval of intervals) {
+      const resumedAt = interval.resumed_at ? Date.parse(interval.resumed_at) : end;
+      if (!interval.resumed_at) currentlyPaused = true;
+      pausedMs += Math.max(0, resumedAt - Date.parse(interval.paused_at));
+    }
+    return { elapsedMs, pausedMs, activeMs: Math.max(0, elapsedMs - pausedMs), currentlyPaused };
+  }
+}
+
+interface NormalizedCreateInput {
+  goalId?: string;
+  ownerUserId: string;
+  repository: string;
+  objective: string;
+  agent: string;
+  requestedModel: string;
+  effectiveModel: string;
+  maxActiveTasks: number;
+  ultrafixEnabled: boolean;
+  ultrafixGoal: number | null;
+  ultrafixMaxCycles: number | null;
+  mergePolicy: NonNullable<CreateGoalInput['mergePolicy']>;
+}
+
+function normalizeCreateInput(input: CreateGoalInput): NormalizedCreateInput {
+  const maxActiveTasks = input.maxActiveTasks ?? GOAL_DEFAULT_MAX_ACTIVE_TASKS;
+  if (!Number.isSafeInteger(maxActiveTasks) || maxActiveTasks < GOAL_MIN_MAX_ACTIVE_TASKS
+    || maxActiveTasks > GOAL_MAX_MAX_ACTIVE_TASKS) {
+    throw new GoalError(GOAL_ERROR_CODES.concurrencyBound, 'maxActiveTasks is outside the supported range', 400);
+  }
+  const { ultrafixEnabled, ultrafixGoal, ultrafixMaxCycles } = validateUltrafixInput(input);
+  const mergePolicy = input.mergePolicy ?? 'manual';
+  if (!GOAL_MERGE_POLICIES.includes(mergePolicy)) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, 'mergePolicy is invalid', 400);
+  }
+  return {
+    goalId: input.goalId === undefined ? undefined : boundedText(input.goalId, 'goalId') as string,
+    ownerUserId: boundedText(input.ownerUserId, 'ownerUserId') as string,
+    repository: boundedText(input.repository, 'repository') as string,
+    objective: boundedText(input.objective, 'objective', GOAL_OBJECTIVE_MAX_LENGTH) as string,
+    agent: boundedText(input.agent, 'agent') as string,
+    requestedModel: boundedText(input.requestedModel, 'requestedModel') as string,
+    effectiveModel: boundedText(input.effectiveModel ?? input.requestedModel, 'effectiveModel') as string,
+    maxActiveTasks, ultrafixEnabled, ultrafixGoal, ultrafixMaxCycles, mergePolicy,
+  };
+}
+
+function validateUltrafixInput(input: CreateGoalInput): Pick<
+  NormalizedCreateInput,
+  'ultrafixEnabled' | 'ultrafixGoal' | 'ultrafixMaxCycles'
+> {
+  const ultrafixEnabled = input.ultrafixEnabled ?? false;
+  const ultrafixGoal = input.ultrafixGoal ?? null;
+  const ultrafixMaxCycles = input.ultrafixMaxCycles ?? null;
+  if (typeof ultrafixEnabled !== 'boolean'
+    || (!ultrafixEnabled && (ultrafixGoal !== null || ultrafixMaxCycles !== null))
+    || (ultrafixEnabled && (!Number.isSafeInteger(ultrafixGoal)
+      || (ultrafixGoal as number) < GOAL_ULTRAFIX_GOAL_MIN
+      || (ultrafixGoal as number) > GOAL_ULTRAFIX_GOAL_MAX
+      || !Number.isSafeInteger(ultrafixMaxCycles)
+      || (ultrafixMaxCycles as number) < GOAL_ULTRAFIX_MAX_CYCLES_MIN
+      || (ultrafixMaxCycles as number) > GOAL_ULTRAFIX_MAX_CYCLES_MAX))) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, 'Ultrafix settings are invalid', 400);
+  }
+  return { ultrafixEnabled, ultrafixGoal, ultrafixMaxCycles };
+}
+
+function normalizeSearch(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const search = value.trim();
+  if (!search || characterLength(search) > GOAL_SEARCH_MAX_LENGTH) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, `search must contain between 1 and ${GOAL_SEARCH_MAX_LENGTH} characters`, 400);
+  }
+  return search;
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
+}

@@ -12,7 +12,7 @@ type BetterSqliteConnection = {
   pragma: (arg: string, options?: { simple?: boolean }) => unknown;
 };
 
-let database: Knex;
+let database: Knex, createCounter = 0;
 
 function createDatabase(): Knex {
   return knex({
@@ -104,6 +104,7 @@ async function createGoalViaApi(overrides: Record<string, unknown> = {}) {
   const { res, state } = makeResponse();
   await routes.createGoal(
     makeRequest({
+      headers: { 'Idempotency-Key': `test-create-${createCounter += 1}` },
       body: {
         objective: 'Ship it',
         repository: 'octo/repo',
@@ -248,7 +249,7 @@ describe('goal routes', () => {
     const routes = makeRoutes();
     const { res, state } = makeResponse();
     await routes.pauseGoal(
-      makeRequest({ params: { goalId }, body: { expectedVersion: 99 } }),
+      makeRequest({ params: { goalId }, body: { expectedVersion: 99 }, headers: { 'Idempotency-Key': 'pause-version' } }),
       res
     );
     assert.equal(state.statusCode, 409);
@@ -263,10 +264,10 @@ describe('goal routes', () => {
     const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
     const routes = makeRoutes();
     // queued -> resume(running) is valid, then resume again is invalid.
-    await routes.resumeGoal(makeRequest({ params: { goalId } }), makeResponse().res);
+    await routes.resumeGoal(makeRequest({ params: { goalId }, headers: { 'Idempotency-Key': 'resume-first' } }), makeResponse().res);
     const { res, state } = makeResponse();
     // running -> resume(running) is not a valid transition.
-    await routes.resumeGoal(makeRequest({ params: { goalId } }), res);
+    await routes.resumeGoal(makeRequest({ params: { goalId }, headers: { 'Idempotency-Key': 'resume-second' } }), res);
     assert.equal(state.statusCode, 409);
     assert.equal(
       (state.body as { code: string }).code,

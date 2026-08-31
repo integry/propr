@@ -74,6 +74,8 @@ export class GoalLifecycleService {
       reason: options.reason ?? 'controller_paused',
       leaseOwner: options.leaseOwner,
       leaseEpoch: options.leaseEpoch,
+      idempotencyKey: options.idempotencyKey,
+      idempotencyOperation: `confirm-paused:${goalId}`,
     });
   }
 
@@ -155,6 +157,8 @@ export function buildSummary(
     nodeCount: nodes.length,
     activeNodeCount,
     latestSequence,
+    createdAt: goal.createdAt,
+    updatedAt: goal.updatedAt,
   };
 }
 
