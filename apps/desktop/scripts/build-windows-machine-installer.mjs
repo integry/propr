@@ -223,7 +223,7 @@ ${tree.content}
           </Component>
         </Directory>
       </Directory>
-      <Directory Id="ProgramMenuFolder">
+      <Directory Id="CommonProgramMenuFolder">
         <Directory Id="ApplicationProgramsFolder" Name="ProPR Desktop" />
       </Directory>
     </Directory>

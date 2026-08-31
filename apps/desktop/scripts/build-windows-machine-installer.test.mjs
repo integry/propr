@@ -43,6 +43,20 @@ test('uses per-machine scope without explicitly authoring the derived ALLUSERS p
   }
 });
 
+test('uses the machine-wide Start Menu folder for x64 and ARM64 production WXS', () => {
+  const files = [{
+    path: 'C:\\fixture\\propr-desktop.exe',
+    name: 'propr-desktop.exe',
+    size: 1n,
+  }];
+
+  for (const arch of ['x64', 'arm64']) {
+    const source = windowsMachineInstallerSourceForTest('C:\\fixture', '1.2.3', arch, files);
+    assert.match(source, /<Directory Id="CommonProgramMenuFolder">/);
+    assert.doesNotMatch(source, /<Directory Id="ProgramMenuFolder">/);
+  }
+});
+
 test('uses a ten-minute timeout only for production Light', () => {
   assert.match(installerScript, /TOOL_VERSION: 120_000,/);
   assert.match(installerScript, /CANDLE: 120_000,/);
