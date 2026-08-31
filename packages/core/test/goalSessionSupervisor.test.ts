@@ -835,7 +835,7 @@ test('a delayed same-epoch resume cannot resurrect a terminal session', async ()
 
     const state = await persistence.load(identity);
     assert.equal(state?.status, 'terminated');
-    assert.equal(state?.activeTurn?.status, 'cancelled');
+    assert.equal(state?.activeTurn, undefined);
     const completions = (await persistence.replay(identity)).filter(record => record.event.type === 'completion');
     assert.equal(completions.length, 1);
     assert.equal(completions[0].event.type === 'completion' ? completions[0].event.outcome : '', 'cancelled');

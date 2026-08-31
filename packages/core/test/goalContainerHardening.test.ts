@@ -99,6 +99,39 @@ test('layout logPath is an actually used goal-scoped durable output sink', async
     assert.ok(fs.statSync(layout.logPath).size <= 8 * 1024 * 1024);
 });
 
+test('goal JSONL persists only public output fields from a secret-poisoned start request', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-log-secret-'));
+    const supervisor = createSupervisor(base);
+    const poisoned = {
+        ...baseRequest(),
+        command: ['provider-command', '--token', 'command-secret-value'],
+        environment: { OPENAI_API_KEY: 'environment-secret-value' },
+        credentialMounts: [{ source: approvedCredential, target: '/home/node/.creds' }],
+        taskId: 'private-task-secret',
+    };
+    const { layout } = await supervisor.start(poisoned);
+    child.stderr.emit('data', Buffer.from('public diagnostic\n'));
+    await waitForFile(layout.logPath);
+
+    const bytes = fs.readFileSync(layout.logPath, 'utf8');
+    for (const secret of [
+        'command-secret-value',
+        'environment-secret-value',
+        approvedCredential,
+        approvedWorktree,
+        'private-task-secret',
+        'provider-command',
+    ]) assert.ok(!bytes.includes(secret), `JSONL leaked ${secret}`);
+    const record = JSON.parse(bytes.trim().split('\n')[0]);
+    assert.deepEqual(Object.keys(record).sort(), [
+        'attemptId', 'channel', 'controllerEpoch', 'data', 'executionId', 'goalId',
+        'recordedAt', 'sequence', 'sessionId', 'truncated', 'turnId', 'worktreeFingerprint',
+    ]);
+    assert.equal(record.executionId, idBits.executionId);
+    assert.equal(record.attemptId, idBits.attemptId);
+    assert.equal(record.data, 'public diagnostic\n');
+});
+
 test('layout log sink truncates deterministically at its auditable byte bound', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-log-bound-'));
     const supervisor = createSupervisor(base);

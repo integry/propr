@@ -6,6 +6,7 @@ import type {
     GoalModelChangeRequest,
     GoalPauseAcknowledgement,
     GoalPauseRequest,
+    GoalPendingCancellationContext,
     GoalSessionControlFence,
     GoalSessionState,
     GoalSteeringRequest,
@@ -16,6 +17,7 @@ import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
 import {
     assertProviderIdentity,
     controlExecutionIdentity,
+    nextState,
     persistedSnapshot,
 } from './support.js';
 
@@ -52,13 +54,14 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             || stillOwned.activeTurn?.attemptId !== state.activeTurn?.attemptId) {
             throw new StaleGoalSessionFenceError('A newer operation superseded message delivery');
         }
-        const result = await this.ports.messages.acknowledge(request, request.messageId);
+        const execution = this.activeExecution(state);
+        const result = await this.ports.messages.acknowledge(request, execution, request.messageId);
         if (result === 'stale_fence') throw new StaleGoalSessionFenceError();
         if (result === 'not_found') {
             throw new GoalSessionContractError('Corrective message disappeared before acknowledgement', 'MESSAGE_NOT_FOUND');
         }
         if (result === 'acknowledged') {
-            await this.append(request, this.activeExecution(state), {
+            await this.append(request, execution, {
                 type: 'message_acknowledged', messageId: request.messageId,
             });
         }
@@ -171,15 +174,63 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
     }
 
     async cancel(request: GoalCancelRequest): Promise<GoalSessionState> {
-        let state = await this.requireControlledState(request);
+        let state = await this.claimCancellation(request);
         if (state.status === 'terminated') return state;
-        state = await this.compareAndSetExact(state, { status: 'cancelling' }, 'A newer operation superseded cancellation');
-        await this.adapter.cancel(request, persistedSnapshot(state));
+        const pending = this.pendingCancellationContext(state);
+        let signalError: unknown;
+        try {
+            if (pending) await this.adapter.cancelPending!(request, pending);
+            else await this.adapter.cancel(request, persistedSnapshot(state));
+        } catch (error) {
+            signalError = error;
+        }
         state = await this.commitControlCompletion(state, request, {
             status: 'terminated',
-            activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'cancelled' } : state.activeTurn,
+            activeTurn: undefined,
+            initializationIntent: undefined,
+            retryTurn: undefined,
+            recoveryAttempt: undefined,
+            pendingAfterTurnPause: undefined,
         }, { type: 'completion', outcome: 'cancelled', error: request.reason });
+        // Terminal fencing is authoritative even when the adapter reports that
+        // its best-effort process signal failed. Surface that failure only after
+        // the session can no longer remain permanently stuck in cancelling.
+        if (signalError) throw signalError;
         return state;
+    }
+
+    private async claimCancellation(request: GoalCancelRequest): Promise<GoalSessionState> {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            const state = await this.requireControlledState(request);
+            if (state.status === 'terminated' || state.status === 'cancelling') return state;
+            if (!state.providerSessionId && (!state.initializationIntent || !this.adapter.cancelPending)) {
+                throw new GoalSessionContractError(
+                    'A lazy-ID provider must implement pending cancellation before it can be cancelled safely',
+                    'CAPABILITY_METHOD_MISSING',
+                );
+            }
+            const claimed = await this.ports.state.compareAndSet(state, nextState(state, { status: 'cancelling' }));
+            if (claimed) return claimed;
+        }
+        throw new StaleGoalSessionFenceError('A newer operation repeatedly superseded cancellation');
+    }
+
+    private pendingCancellationContext(state: GoalSessionState): GoalPendingCancellationContext | undefined {
+        if (state.providerSessionId) return undefined;
+        if (!state.initializationIntent || !this.adapter.cancelPending) {
+            throw new GoalSessionContractError(
+                'A lazy-ID provider must implement pending cancellation before it can be cancelled safely',
+                'CAPABILITY_METHOD_MISSING',
+            );
+        }
+        return {
+            initializationIntent: state.initializationIntent,
+            activeTurn: state.activeTurn ? {
+                turnId: state.activeTurn.turnId,
+                executionId: state.activeTurn.executionId,
+                attemptId: state.activeTurn.attemptId,
+            } : undefined,
+        };
     }
 
     private async requestAfterTurnPause(request: GoalPauseRequest): Promise<GoalPauseAcknowledgement> {
@@ -197,17 +248,18 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             await this.appendControl(request, controlExecutionIdentity(state), { type: 'pause_boundary', ...boundaryReached });
             return { appliesAt: 'after_turn', boundaryReached };
         }
-        if (state.status === 'running') state = await this.markPauseRequested(state);
+        if (state.status === 'running') state = await this.markPauseRequested(state, true);
         await this.appendControl(request, controlExecutionIdentity(state), {
             type: 'pause_requested', appliesAt: 'after_turn',
         });
         return { appliesAt: 'after_turn' };
     }
 
-    private markPauseRequested(state: GoalSessionState): Promise<GoalSessionState> {
+    private markPauseRequested(state: GoalSessionState, afterTurn = false): Promise<GoalSessionState> {
         return this.compareAndSetExact(state, {
             status: 'pause_requested',
             activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'pause_requested' } : state.activeTurn,
+            pendingAfterTurnPause: afterTurn ? true : state.pendingAfterTurnPause,
         });
     }
 

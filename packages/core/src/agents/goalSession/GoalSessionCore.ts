@@ -17,6 +17,27 @@ import {
     validateControlFence,
 } from './support.js';
 
+function completesAtAfterTurnPause(
+    state: GoalSessionState,
+    outcome: Extract<GoalSessionEvent, { type: 'completion' }>['outcome'],
+    pauseCapability: 'active_turn' | 'after_turn',
+): boolean {
+    return outcome === 'succeeded'
+        && pauseCapability === 'after_turn'
+        && (state.status === 'pause_requested'
+            || state.status === 'paused'
+            || state.pendingAfterTurnPause === true);
+}
+
+function needsAfterTurnPauseAudit(
+    state: GoalSessionState,
+    outcome: Extract<GoalSessionEvent, { type: 'completion' }>['outcome'],
+    pauseCapability: 'active_turn' | 'after_turn',
+): boolean {
+    return completesAtAfterTurnPause(state, outcome, pauseCapability)
+        && (state.status === 'pause_requested' || state.pendingAfterTurnPause === true);
+}
+
 /**
  * Low-level, fenced state and event primitives shared by every high-level goal
  * session operation. It deliberately separates two fencing scopes:
@@ -125,12 +146,8 @@ export abstract class GoalSessionCore {
         const completedTurns = existing.some(turn => turn.turnId === fence.turnId)
             ? existing
             : [...existing, { turnId: fence.turnId, ...execution }];
-        const recordsAfterTurnPause = outcome === 'succeeded'
-            && state.status === 'pause_requested'
-            && this.adapter.capabilities.pause === 'after_turn';
-        const afterTurnPaused = outcome === 'succeeded'
-            && (state.status === 'pause_requested' || state.status === 'paused')
-            && this.adapter.capabilities.pause === 'after_turn';
+        const afterTurnPaused = completesAtAfterTurnPause(state, outcome, this.adapter.capabilities.pause);
+        const recordsAfterTurnPause = needsAfterTurnPauseAudit(state, outcome, this.adapter.capabilities.pause);
         const next = nextState(state, {
             status: outcome === 'cancelled'
                 ? 'terminated'
@@ -145,6 +162,7 @@ export abstract class GoalSessionCore {
                 ? state.completedTurnIds
                 : [...state.completedTurnIds, fence.turnId],
             completedTurns,
+            pendingAfterTurnPause: undefined,
         });
         const completion: GoalTerminalCommit = {
             scope: 'turn',

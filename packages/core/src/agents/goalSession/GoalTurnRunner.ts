@@ -246,7 +246,11 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             requestedModel,
             status: 'running' as const,
         };
-        const claimed = await this.compareAndSetExact(state, { status: 'running', activeTurn },
+        const recoveringPause = state.pendingAfterTurnPause === true;
+        const claimed = await this.compareAndSetExact(state, {
+            status: recoveringPause ? 'pause_requested' : 'running',
+            activeTurn: recoveringPause ? { ...activeTurn, status: 'pause_requested' } : activeTurn,
+        },
             'A newer operation claimed the reconciled turn before recovery');
         const adapterRequest: GoalBeginTurnRequest = {
             ...turnFence,
@@ -312,7 +316,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 }
                 this.assertFirstTurnIdentityEvent(current, event);
                 if (event.type === 'message_acknowledged') {
-                    await this.acknowledgeNextTurnMessage(fence, event.messageId, awaitingMessageIds);
+                    await this.acknowledgeNextTurnMessage(fence, execution, event.messageId, awaitingMessageIds);
                     await this.append(fence, execution, event);
                     continue;
                 }
@@ -361,6 +365,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
 
     private async acknowledgeNextTurnMessage(
         fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
         messageId: string,
         awaitingMessageIds: string[],
     ): Promise<void> {
@@ -371,7 +376,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 'MESSAGE_ACK_OUT_OF_ORDER',
             );
         }
-        const result = await this.ports.messages.acknowledge(fence, messageId);
+        const result = await this.ports.messages.acknowledge(fence, execution, messageId);
         if (result === 'stale_fence') throw new StaleGoalSessionFenceError();
         if (result === 'not_found') {
             throw new GoalSessionContractError('Corrective message disappeared before acknowledgement', 'MESSAGE_NOT_FOUND');

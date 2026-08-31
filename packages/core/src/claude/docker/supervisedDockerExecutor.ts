@@ -18,11 +18,15 @@ export interface SupervisedDockerFence {
     sessionId: string;
     controllerEpoch: number;
     turnId: string;
+    executionId: string;
     attemptId: string;
     worktreeFingerprint: string;
 }
 
 export interface SupervisedDockerOutput extends SupervisedDockerFence {
+    /** Monotonic arrival order across stdout and stderr for this invocation. */
+    sequence: number;
+    recordedAt: string;
     channel: 'stdout' | 'stderr';
     data: string;
 }
@@ -129,6 +133,7 @@ class OrderedBackpressureSink {
     private draining = false;
     private paused = false;
     private failed = false;
+    private nextSequence = 1;
     private loop: Promise<void> = Promise.resolve();
     private readonly base: SupervisedDockerFence;
     private readonly deliver: (output: SupervisedDockerOutput) => void | Promise<void>;
@@ -153,7 +158,20 @@ class OrderedBackpressureSink {
     enqueue(channel: 'stdout' | 'stderr', buffer: Buffer): void {
         if (this.failed) return;
         for (const slice of splitBuffer(buffer, this.maxChunkBytes)) {
-            this.queue.push({ ...this.base, channel, data: slice.toString() });
+            this.queue.push({
+                goalId: this.base.goalId,
+                sessionId: this.base.sessionId,
+                controllerEpoch: this.base.controllerEpoch,
+                turnId: this.base.turnId,
+                executionId: this.base.executionId,
+                attemptId: this.base.attemptId,
+                worktreeFingerprint: this.base.worktreeFingerprint,
+                sequence: this.nextSequence,
+                recordedAt: new Date().toISOString(),
+                channel,
+                data: slice.toString(),
+            });
+            this.nextSequence += 1;
             this.queuedBytes += slice.length;
             if (this.queuedBytes >= this.highWaterMark) this.setPaused(true);
             // Enforce the hard cap while enqueuing each slice so a single
@@ -221,6 +239,7 @@ export function addGoalFenceLabels(args: string[], fence: SupervisedDockerFence)
         '--label', `propr.goal.session=${fence.sessionId}`,
         '--label', `propr.goal.controller-epoch=${fence.controllerEpoch}`,
         '--label', `propr.goal.turn=${fence.turnId}`,
+        '--label', `propr.goal.execution=${fence.executionId}`,
         '--label', `propr.goal.attempt=${fence.attemptId}`,
         '--label', `propr.goal.worktree-fingerprint=${fence.worktreeFingerprint}`,
         ...args.slice(1),
@@ -229,7 +248,7 @@ export function addGoalFenceLabels(args: string[], fence: SupervisedDockerFence)
 
 function validateSupervisedOptions(args: string[], options: SupervisedDockerOptions): void {
     if (args[0] !== 'run') throw new Error('Supervised Docker execution only supports docker run');
-    if (!options.goalId || !options.sessionId || !options.turnId || !options.attemptId
+    if (!options.goalId || !options.sessionId || !options.turnId || !options.executionId || !options.attemptId
         || !options.worktreeFingerprint || !Number.isSafeInteger(options.controllerEpoch)) {
         throw new Error('A valid goal/session/controller epoch/turn fence is required');
     }
@@ -288,7 +307,18 @@ export function executeSupervisedDockerCommand(
         });
     };
     const sink = new OrderedBackpressureSink({
-        base: options,
+        // Runtime options also carry environment, host paths, callbacks, and
+        // process-control fields. Build the public output fence explicitly so
+        // structural excess properties can never cross the delivery boundary.
+        base: {
+            goalId: options.goalId,
+            sessionId: options.sessionId,
+            controllerEpoch: options.controllerEpoch,
+            turnId: options.turnId,
+            executionId: options.executionId,
+            attemptId: options.attemptId,
+            worktreeFingerprint: options.worktreeFingerprint,
+        },
         deliver: options.durableOutput,
         streams: () => [child.stdout, child.stderr],
         onOverflow: error => { outputFailure ??= error; void cancel(error); },

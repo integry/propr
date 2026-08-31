@@ -132,7 +132,7 @@ test('durable cancellation prevents a completion racing provider cancellation fr
     releaseCancel.resolve();
     const terminal = await cancelling;
     assert.equal(terminal.status, 'terminated');
-    assert.equal(terminal.activeTurn?.status, 'cancelled');
+    assert.equal(terminal.activeTurn, undefined);
     const completions = (await persistence.replay(identity)).filter(record => record.event.type === 'completion');
     assert.equal(completions.length, 1);
     assert.equal(completions[0].event.type === 'completion' ? completions[0].event.outcome : '', 'cancelled');
@@ -231,6 +231,79 @@ test('actual stale streams cannot mutate checkpoint, model, or pause after recov
             await resumed;
         });
     }
+});
+
+test('an old recovery attempt cannot consume or emit corrective-message acknowledgement', async () => {
+    class NextTurnMessageAdapter extends AddendumAdapter {
+        override readonly capabilities: GoalProviderCapabilities = {
+            nativeSessionId: 'eager',
+            steering: 'next_turn',
+            pause: 'active_turn',
+            modelChange: 'next_safe_boundary',
+        };
+    }
+    const adapter = new NextTurnMessageAdapter();
+    const turnStarted = deferred();
+    const releaseOldAcknowledgement = deferred();
+    adapter.turn = async function* (request) {
+        turnStarted.resolve();
+        await releaseOldAcknowledgement.promise;
+        yield { type: 'message_acknowledged', messageId: request.correctiveMessages![0].messageId };
+        yield { type: 'completion', outcome: 'succeeded' };
+    };
+    adapter.reconcileTurn = async () => ({
+        outcome: 'resumed',
+        reason: 'replacement attempt owns the recovered invocation',
+        snapshot: {
+            providerSessionId: 'owner-provider-session',
+            recoveryMetadata: { checkpoint: 'message-recovery' },
+            model: 'model-a',
+        },
+    });
+    const { persistence, supervisor } = await openRuntime(adapter, ['attempt-open', 'attempt-recovery']);
+    persistence.enqueueMessage({ ...identity, messageId: 'message-one', body: 'first correction' });
+    persistence.enqueueMessage({ ...identity, messageId: 'message-two', body: 'second correction' });
+    const running = supervisor.runTurn({
+        ...fence,
+        executionId: 'execution-message-recovery',
+        attemptId: 'attempt-old-message',
+        objective: 'recover before the old acknowledgement arrives',
+        repository,
+        requestedModel: 'model-a',
+    });
+    await turnStarted.promise;
+    persistence.setContainerInspection(identity, { status: 'missing', reason: 'old message attempt disappeared' });
+    persistence.setRepositoryInspection(repository, {
+        ...repository,
+        exists: true,
+        observedRepository: repository.repository,
+        observedBranch: repository.branch,
+        observedHeadSha: repository.headSha,
+        observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
+        resolvedWorktreePath: repository.worktreePath,
+    });
+    const recovered = await supervisor.reconcile(identity, 1, repository);
+    const currentExecution = {
+        executionId: recovered.state.activeTurn!.executionId,
+        attemptId: recovered.state.activeTurn!.attemptId,
+    };
+    assert.equal(currentExecution.attemptId, 'attempt-recovery');
+
+    releaseOldAcknowledgement.resolve();
+    await assert.rejects(running, StaleGoalSessionFenceError);
+    assert.deepEqual((await persistence.listPending(identity)).map(message => message.messageId), [
+        'message-one', 'message-two',
+    ]);
+    assert.equal((await persistence.replay(identity)).some(record =>
+        record.event.type === 'message_acknowledged' && record.attemptId === 'attempt-old-message'), false);
+
+    assert.equal(await persistence.acknowledge(fence, currentExecution, 'message-one'), 'acknowledged');
+    assert.equal(await persistence.acknowledge(fence, currentExecution, 'message-one'), 'already_acknowledged');
+    const appended = await persistence.append(fence, currentExecution, {
+        type: 'message_acknowledged', messageId: 'message-one',
+    });
+    assert.equal(appended.accepted, true);
+    assert.deepEqual((await persistence.listPending(identity)).map(message => message.messageId), ['message-two']);
 });
 
 async function seededRecovery(adapter: AddendumAdapter, ids: string[]) {

@@ -146,6 +146,8 @@ export interface GoalSessionState extends GoalSessionIdentity {
     requestedModel?: string;
     /** Deferred model request awaiting the provider's declared next-turn boundary. */
     pendingModelChange?: string;
+    /** Durable obligation to record an after-turn pause boundary with completion. */
+    pendingAfterTurnPause?: boolean;
     activeTurn?: GoalTurnState;
     completedTurnIds: string[];
     /** Execution identity of each completed turn, keyed by turnId order of completion. */
@@ -270,7 +272,12 @@ export interface DurableCorrectiveMessage extends GoalSessionIdentity {
 /** Message creation belongs to goal persistence/API code; the runtime only consumes and acknowledges it. */
 export interface GoalSessionMessagePort {
     listPending(identity: GoalSessionIdentity): Promise<DurableCorrectiveMessage[]>;
-    acknowledge(fence: GoalSessionFence, messageId: string): Promise<'acknowledged' | 'already_acknowledged' | 'stale_fence' | 'not_found'>;
+    /** Atomically consumes only for the exact live provider invocation. */
+    acknowledge(
+        fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
+        messageId: string,
+    ): Promise<'acknowledged' | 'already_acknowledged' | 'stale_fence' | 'not_found'>;
 }
 
 export interface GoalProviderOpenRequest extends GoalSessionIdentity {
@@ -321,6 +328,12 @@ export interface GoalCancelRequest extends GoalSessionControlFence {
     reason: string;
 }
 
+/** Identity available while a lazy-ID provider has not emitted its first checkpoint. */
+export interface GoalPendingCancellationContext {
+    initializationIntent: GoalSessionInitializationIntent;
+    activeTurn?: Pick<GoalTurnState, 'turnId' | 'executionId' | 'attemptId'>;
+}
+
 export interface GoalPauseAcknowledgement {
     appliesAt: 'immediate' | 'next_safe_boundary' | 'after_turn';
     /** Present when the control call itself reached the boundary; otherwise the turn stream reports it later. */
@@ -360,6 +373,9 @@ export type GoalProviderReconcileResult =
  * Pause/model-change requests are immediate control calls, but their effects may
  * be deferred as explicitly reported by the acknowledgement and later events.
  * deliverMessage must be idempotent by messageId so crash retries do not steer twice.
+ * cancelPending, when implemented for a first-turn-ID provider, must likewise be
+ * idempotent because a crash can occur after signalling the provider but before
+ * the terminal transaction is observed by the caller.
  */
 export interface GoalSessionAdapter {
     readonly provider: string;
@@ -385,6 +401,8 @@ export interface GoalSessionAdapter {
     resumeSession(request: GoalSessionControlFence, snapshot: GoalProviderSessionSnapshot): Promise<GoalProviderSessionSnapshot>;
     requestModelChange(request: GoalModelChangeRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalModelChangeAcknowledgement>;
     cancel(request: GoalCancelRequest, snapshot: GoalProviderSessionSnapshot): Promise<void>;
+    /** Cancels an invocation/container before a native provider session ID exists. */
+    cancelPending?(request: GoalCancelRequest, pending: GoalPendingCancellationContext): Promise<void>;
     reconcile(request: GoalProviderReconcileRequest): Promise<GoalProviderReconcileResult>;
 }
 

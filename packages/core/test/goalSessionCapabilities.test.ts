@@ -5,6 +5,7 @@ import type {
     GoalCancelRequest,
     GoalModelChangeRequest,
     GoalProviderOpenRequest,
+    GoalPendingCancellationContext,
     GoalProviderReconcileRequest,
     GoalProviderReconcileResult,
     GoalProviderSessionSnapshot,
@@ -21,6 +22,7 @@ import {
     FIRST_TURN_BOUNDARY_PROVIDER_CAPABILITIES,
     GoalSessionContractError,
     GoalSessionSupervisor,
+    StaleGoalSessionFenceError,
 } from '../src/agents/goalSession/index.js';
 import { InMemoryGoalSessionPorts } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
 import { fingerprintGoalWorktree } from '../src/agents/goalSession/worktreeIdentity.js';
@@ -52,6 +54,9 @@ class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
     acknowledgeMessages = true;
     reconcileResult: GoalProviderReconcileResult = { outcome: 'failed', reason: 'not used by capability tests' };
     reconcileRequests: GoalProviderReconcileRequest[] = [];
+    pendingCancelContexts: GoalPendingCancellationContext[] = [];
+    pendingCancelStarted: (() => void) | undefined;
+    holdPendingCancel: Promise<void> | undefined;
 
     async openSession(request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot> {
         this.openCalls += 1;
@@ -118,6 +123,15 @@ class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
 
     async cancel(_request: GoalCancelRequest): Promise<void> {}
 
+    async cancelPending(
+        _request: GoalCancelRequest,
+        pending: GoalPendingCancellationContext,
+    ): Promise<void> {
+        this.pendingCancelContexts.push(structuredClone(pending));
+        this.pendingCancelStarted?.();
+        if (this.holdPendingCancel) await this.holdPendingCancel;
+    }
+
     async reconcile(request: GoalProviderReconcileRequest): Promise<GoalProviderReconcileResult> {
         this.reconcileRequests.push(structuredClone(request));
         return this.reconcileResult;
@@ -151,6 +165,29 @@ class GatedCompletionLoadPorts extends InMemoryGoalSessionPorts {
             await gate.release.promise;
         }
         return state;
+    }
+}
+
+class GatedLazyOpenPorts extends InMemoryGoalSessionPorts {
+    private openGate: { blocked: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> } | undefined;
+
+    gateNextLazyOpen(): { blocked: Promise<void>; release: () => void } {
+        const gate = { blocked: deferred(), release: deferred() };
+        this.openGate = gate;
+        return { blocked: gate.blocked.promise, release: gate.release.resolve };
+    }
+
+    override async compareAndSet(
+        expected: GoalSessionState,
+        next: Omit<GoalSessionState, 'version'>,
+    ): Promise<GoalSessionState | null> {
+        const gate = this.openGate;
+        if (gate && expected.status === 'initializing' && next.status === 'idle' && !expected.providerSessionId) {
+            this.openGate = undefined;
+            gate.blocked.resolve();
+            await gate.release.promise;
+        }
+        return super.compareAndSet(expected, next);
     }
 }
 
@@ -189,6 +226,118 @@ test('capability fixtures describe eager-active and lazy-boundary providers with
         pause: 'after_turn',
         modelChange: 'next_turn',
     });
+});
+
+test('lazy-ID cancellation while open reaches one durable terminal outcome without a native ID', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    const persistence = new InMemoryGoalSessionPorts();
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    const opened = await supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    assert.equal(opened.providerSessionId, undefined);
+
+    const cancelled = await supervisor.cancel({ ...identity, controllerEpoch: 1, reason: 'cancel before first turn' });
+    assert.equal(cancelled.status, 'terminated');
+    assert.equal(cancelled.activeTurn, undefined);
+    assert.equal(cancelled.initializationIntent, undefined);
+    assert.equal(adapter.pendingCancelContexts.length, 1);
+    assert.equal(adapter.pendingCancelContexts[0]?.activeTurn, undefined);
+    assert.equal(adapter.pendingCancelContexts[0]?.initializationIntent.deterministicOpenKey,
+        opened.initializationIntent?.deterministicOpenKey);
+
+    const repeated = await supervisor.cancel({ ...identity, controllerEpoch: 1, reason: 'repeat cancellation' });
+    assert.equal(repeated.status, 'terminated');
+    assert.equal(adapter.pendingCancelContexts.length, 1, 'repeat cancel does not signal a terminal session again');
+    const completions = (await persistence.replay(identity)).filter(record => record.event.type === 'completion');
+    assert.equal(completions.length, 1);
+    assert.equal(completions[0]?.event.type === 'completion' ? completions[0].event.outcome : '', 'cancelled');
+});
+
+test('lazy-ID cancellation wins while open is persisting its pending boundary', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    const persistence = new GatedLazyOpenPorts();
+    const gate = persistence.gateNextLazyOpen();
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    const opening = supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    await gate.blocked;
+
+    const terminal = await supervisor.cancel({ ...identity, controllerEpoch: 1, reason: 'cancel during lazy open' });
+    assert.equal(terminal.status, 'terminated');
+    assert.equal(terminal.activeTurn, undefined);
+    assert.equal(adapter.pendingCancelContexts.length, 1);
+    gate.release();
+    await assert.rejects(opening, StaleGoalSessionFenceError);
+    assert.equal((await persistence.load(identity))?.status, 'terminated');
+    assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'completion').length, 1);
+});
+
+test('lazy-ID cancellation fences provider completion before the first checkpoint', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    adapter.emitIdentity = false;
+    const turnStarted = deferred();
+    const releaseTurn = deferred();
+    const cancelStarted = deferred();
+    const releaseCancel = deferred();
+    adapter.turnStarted = turnStarted.resolve;
+    adapter.holdTurn = releaseTurn.promise;
+    adapter.pendingCancelStarted = cancelStarted.resolve;
+    adapter.holdPendingCancel = releaseCancel.promise;
+    const persistence = new InMemoryGoalSessionPorts();
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    const running = supervisor.runTurn({
+        ...firstFence,
+        executionId: 'execution-cancel-before-id',
+        attemptId: 'attempt-cancel-before-id',
+        objective: 'cancel the provider before it binds a native ID',
+        repository,
+        requestedModel: 'model-a',
+    });
+    await turnStarted.promise;
+
+    const cancelling = supervisor.cancel({ ...identity, controllerEpoch: 1, reason: 'cancel pending provider' });
+    await cancelStarted.promise;
+    assert.equal((await persistence.load(identity))?.status, 'cancelling');
+    assert.deepEqual(adapter.pendingCancelContexts[0]?.activeTurn, {
+        turnId: firstFence.turnId,
+        executionId: 'execution-cancel-before-id',
+        attemptId: 'attempt-cancel-before-id',
+    });
+    releaseTurn.resolve();
+    await assert.rejects(running);
+    assert.equal((await persistence.load(identity))?.status, 'cancelling');
+
+    releaseCancel.resolve();
+    const terminal = await cancelling;
+    assert.equal(terminal.status, 'terminated');
+    assert.equal(terminal.activeTurn, undefined);
+    assert.equal(terminal.providerSessionId, undefined);
+    const completions = (await persistence.replay(identity)).filter(record => record.event.type === 'completion');
+    assert.equal(completions.length, 1);
+    assert.equal(completions[0]?.event.type === 'completion' ? completions[0].event.outcome : '', 'cancelled');
+});
+
+test('a restarted lazy-ID controller finishes a cancellation claimed before a crash', async () => {
+    const firstAdapter = new FirstTurnBoundaryAdapter();
+    const persistence = new InMemoryGoalSessionPorts();
+    const initial = new GoalSessionSupervisor(firstAdapter, persistence.asRuntimePorts());
+    const opened = await initial.openSession({ ...identity, provider: firstAdapter.provider, controllerEpoch: 1 });
+    const { version: _version, ...withoutVersion } = opened;
+    const claimed = await persistence.compareAndSet(opened, {
+        ...withoutVersion,
+        status: 'cancelling',
+        updatedAt: new Date().toISOString(),
+    });
+    assert.equal(claimed?.status, 'cancelling');
+
+    const replacementAdapter = new FirstTurnBoundaryAdapter();
+    const replacement = new GoalSessionSupervisor(replacementAdapter, persistence.asRuntimePorts());
+    const terminal = await replacement.cancel({ ...identity, controllerEpoch: 1, reason: 'resume cancellation after crash' });
+    assert.equal(terminal.status, 'terminated');
+    assert.equal(terminal.activeTurn, undefined);
+    assert.equal(replacementAdapter.pendingCancelContexts.length, 1);
+    assert.equal((await replacement.cancel({ ...identity, controllerEpoch: 1, reason: 'idempotent retry' })).status, 'terminated');
+    assert.equal(replacementAdapter.pendingCancelContexts.length, 1);
+    assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'completion').length, 1);
 });
 
 test('first-turn identity, FIFO next-turn ack, and after-turn pause/resume stay boundary-safe', async () => {
@@ -360,6 +509,75 @@ test('late after-turn pause state and canonical audit boundary survive an ambigu
         record.turnId === firstFence.turnId
         && (record.event.type === 'pause_boundary' || record.event.type === 'completion'));
     assert.deepEqual(replayed.map(record => record.event.type), ['pause_boundary', 'completion']);
+});
+
+test('late after-turn pause boundary replays atomically after a pre-commit crash', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    const persistence = new GatedCompletionLoadPorts();
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    const providerRelease = deferred();
+    const providerStarted = deferred();
+    adapter.holdTurn = providerRelease.promise;
+    adapter.turnStarted = providerStarted.resolve;
+    const request = {
+        ...firstFence,
+        executionId: 'execution-pause-precommit',
+        attemptId: 'attempt-pause-precommit',
+        objective: 'recover the atomic late-pause terminal transaction',
+        repository,
+        requestedModel: 'model-a',
+    };
+    const running = supervisor.runTurn(request);
+    await providerStarted.promise;
+    await supervisor.requestPause({ ...firstFence, reason: 'pause before terminal commit' });
+    persistence.setTerminalFault('before_commit_always');
+    providerRelease.resolve();
+    await assert.rejects(running, /Injected crash before terminal transaction commit/);
+
+    const preCommit = await persistence.load(identity);
+    assert.equal(preCommit?.status, 'pause_requested');
+    assert.equal(preCommit?.pendingAfterTurnPause, true);
+    assert.deepEqual((await persistence.replay(identity)).filter(record =>
+        record.turnId === firstFence.turnId
+        && (record.event.type === 'pause_boundary' || record.event.type === 'completion')), []);
+
+    persistence.setTerminalFault(undefined);
+    persistence.setContainerInspection(identity, { status: 'missing', reason: 'worker crashed before terminal commit' });
+    persistence.setRepositoryInspection(repository, {
+        ...repository,
+        exists: true,
+        observedBranch: repository.branch,
+        observedHeadSha: repository.headSha,
+        observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
+    });
+    adapter.reconcileResult = {
+        outcome: 'resumed',
+        snapshot: {
+            providerSessionId: 'native-first-turn-id',
+            recoveryMetadata: { conversation: 'native-first-turn-id', checkpoint: 'terminal-retry' },
+            model: 'model-a',
+        },
+        reason: 'retry the discrete invocation from its durable checkpoint',
+    };
+    adapter.holdTurn = undefined;
+    adapter.turnStarted = undefined;
+    const restarted = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    const reconciled = await restarted.reconcile(identity, 2, repository);
+    assert.equal(reconciled.state.status, 'paused');
+    assert.equal(reconciled.state.pendingAfterTurnPause, true);
+    const recovered = await restarted.resumeTurn({ ...identity, controllerEpoch: 2 });
+    assert.equal(recovered.disposition, 'started');
+    assert.equal(recovered.state.status, 'paused');
+    assert.equal(recovered.state.activeTurn, undefined);
+    assert.equal(recovered.state.pendingAfterTurnPause, undefined);
+    const replayed = (await persistence.replay(identity)).filter(record =>
+        record.turnId === firstFence.turnId
+        && (record.event.type === 'pause_boundary' || record.event.type === 'completion'));
+    assert.deepEqual(replayed.map(record => record.event.type), ['pause_boundary', 'completion']);
+    assert.equal(replayed[0]?.event.type === 'pause_boundary' ? replayed[0].event.boundary : '', 'after_turn');
+    assert.equal(replayed[0]?.attemptId, recovered.execution.attemptId);
+    assert.equal(replayed[1]?.attemptId, recovered.execution.attemptId);
 });
 
 test('first-turn providers reject authoritative output before a real native ID is bound', async () => {

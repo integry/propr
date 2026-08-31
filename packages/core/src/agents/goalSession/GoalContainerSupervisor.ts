@@ -227,8 +227,22 @@ function createGoalLogSink(logPath: string): (output: SupervisedDockerOutput) =>
         usedBytes ??= await stat(logPath).then(value => value.size).catch(() => 0);
         const remaining = MAX_GOAL_LOG_BYTES - usedBytes;
         if (remaining <= 0) return;
-        const { data: outputData, ...fence } = output;
-        const base = { recordedAt: new Date().toISOString(), ...fence };
+        const outputData = output.data;
+        // This is a second, independent allowlist at the persistence boundary.
+        // Never serialize the delivered object wholesale: callers and adapters
+        // can supply structurally valid objects with secret-bearing excess keys.
+        const base = {
+            goalId: output.goalId,
+            sessionId: output.sessionId,
+            controllerEpoch: output.controllerEpoch,
+            turnId: output.turnId,
+            executionId: output.executionId,
+            attemptId: output.attemptId,
+            worktreeFingerprint: output.worktreeFingerprint,
+            sequence: output.sequence,
+            recordedAt: output.recordedAt,
+            channel: output.channel,
+        };
         const overhead = Buffer.byteLength(`${JSON.stringify({ ...base, data: '', truncated: true })}\n`);
         const data = utf8Prefix(outputData, Math.max(0, remaining - overhead));
         const line = `${JSON.stringify({ ...base, data, truncated: data !== outputData })}\n`;
@@ -319,7 +333,16 @@ export class GoalContainerSupervisor {
             ...request.command,
         ];
         const execution = executeSupervisedDockerCommand(dockerArgs, {
-            ...request,
+            goalId: request.goalId,
+            sessionId: request.sessionId,
+            controllerEpoch: request.controllerEpoch,
+            turnId: request.turnId,
+            executionId: request.executionId,
+            attemptId: request.attemptId,
+            worktreeFingerprint: request.worktreeFingerprint,
+            taskId: request.taskId,
+            signal: request.signal,
+            timeout: request.timeout,
             env: environment,
             durableOutput: async output => {
                 const result = await this.events.append(request, request, {

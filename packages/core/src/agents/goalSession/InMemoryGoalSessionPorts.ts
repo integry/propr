@@ -228,11 +228,14 @@ export class InMemoryGoalSessionPorts implements
 
     async acknowledge(
         fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
         messageId: string,
     ): Promise<'acknowledged' | 'already_acknowledged' | 'stale_fence' | 'not_found'> {
         this.assertGoalScope(fence);
         const state = this.states.get(keyOf(fence));
-        if (!state || state.controllerEpoch !== fence.controllerEpoch || state.activeTurn?.turnId !== fence.turnId) {
+        if (!state || state.controllerEpoch !== fence.controllerEpoch || state.activeTurn?.turnId !== fence.turnId
+            || state.activeTurn.executionId !== execution.executionId
+            || state.activeTurn.attemptId !== execution.attemptId) {
             return 'stale_fence';
         }
         const records = this.messages.get(keyOf(fence)) ?? [];

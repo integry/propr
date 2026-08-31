@@ -45,6 +45,7 @@ test('duplex Docker execution fences labels, keeps stdin open, and durably order
             sessionId: 'session-one',
             controllerEpoch: 7,
             turnId: 'turn-one',
+            executionId: 'execution-one',
             attemptId: 'attempt-one',
             worktreeFingerprint: 'worktree-one',
             durableOutput: async event => {
@@ -72,7 +73,46 @@ test('duplex Docker execution fences labels, keeps stdin open, and durably order
     assert.ok(args.includes('propr.goal.session=session-one'));
     assert.ok(args.includes('propr.goal.controller-epoch=7'));
     assert.ok(args.includes('propr.goal.turn=turn-one'));
+    assert.ok(args.includes('propr.goal.execution=execution-one'));
     assert.ok(args.includes('propr.goal.attempt=attempt-one'));
     assert.ok(args.includes('propr.goal.worktree-fingerprint=worktree-one'));
     assert.equal(execution.containerName, 'goal-container');
+});
+
+test('raw durable output is a secret-free allowlist even with poisoned runtime excess properties', async () => {
+    const delivered: unknown[] = [];
+    const secretValues = [
+        'runtime-api-token',
+        '/host/credential/source.json',
+        '/host/private/worktree',
+        'provider --token hidden-command-secret',
+        'arbitrary-extra-secret',
+    ];
+    const options = {
+        goalId: 'goal-safe-output',
+        sessionId: 'session-safe-output',
+        controllerEpoch: 9,
+        turnId: 'turn-safe-output',
+        executionId: 'execution-safe-output',
+        attemptId: 'attempt-safe-output',
+        worktreeFingerprint: 'public-worktree-fingerprint',
+        env: { API_TOKEN: secretValues[0] },
+        cwd: secretValues[2],
+        request: { environment: { API_TOKEN: secretValues[0] }, command: secretValues[3] },
+        credentialMounts: [{ source: secretValues[1], target: '/container/credential' }],
+        arbitraryExtra: secretValues[4],
+        durableOutput: (output: unknown) => { delivered.push(structuredClone(output)); },
+    };
+    const execution = executeSupervisedDockerCommand(['run', 'img'], options);
+    child.stdout.emit('data', Buffer.from('public output'));
+    child.emit('close', 0);
+    await execution.completion;
+
+    assert.equal(delivered.length, 1);
+    assert.deepEqual(Object.keys(delivered[0] as object).sort(), [
+        'attemptId', 'channel', 'controllerEpoch', 'data', 'executionId', 'goalId',
+        'recordedAt', 'sequence', 'sessionId', 'turnId', 'worktreeFingerprint',
+    ]);
+    const raw = JSON.stringify(delivered[0]);
+    for (const secret of secretValues) assert.ok(!raw.includes(secret), `raw delivery leaked ${secret}`);
 });

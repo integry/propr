@@ -251,7 +251,8 @@ export class GoalSessionSupervisor extends GoalSessionControls {
             throw firstTurnIdentityFailure(policy);
         }
         if (state.status === 'idle') return state;
-        return this.updateControlledState(request, value => ({ ...value, status: 'idle', failureReason: undefined }));
+        return this.compareAndSetExact(state, { status: 'idle', failureReason: undefined },
+            'A newer operation superseded lazy provider initialization');
     }
 
     private async cleanAlreadyTerminalFirstTurn(state: GoalSessionState): Promise<boolean> {
