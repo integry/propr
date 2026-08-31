@@ -24,49 +24,28 @@ const PUBLIC_EVENT_PAYLOAD_LIMITS = {
   totalStringBytes: 65_536,
 } as const;
 
+const PUBLIC_EVENT_KEY_NAMES = new Set([
+  'repositoryOwner',
+  'requestedModel',
+  'requestedAt',
+  'pullRequestNumber',
+  'prNumber',
+  'filePath',
+]);
+
+const PRIVATE_EVENT_KEY_FAMILIES = new Set((
+  'controller session lease epoch idempotency claim request response runtime container worker turn '
+  + 'worktree workspace directory dir cwd host docker config configuration env environment mount mounts '
+  + 'volume volumes credential credentials fence secret secrets password passwd passphrase private internal '
+  + 'token authorization cookie'
+).split(' '));
+
 const PRIVATE_EVENT_KEY_NAMES = new Set([
-  'controller',
-  'session',
   'owner',
-  'lease',
-  'epoch',
-  'idempotency',
-  'claim',
-  'request',
-  'response',
-  'runtime',
-  'container',
-  'worker',
-  'turn',
   'rawturn',
-  'worktree',
-  'workspace',
   'path',
-  'directory',
-  'dir',
-  'cwd',
-  'host',
-  'docker',
   'socket',
   'sock',
-  'config',
-  'configuration',
-  'env',
-  'environment',
-  'mount',
-  'mounts',
-  'volume',
-  'volumes',
-  'credential',
-  'credentials',
-  'fence',
-  'secret',
-  'secrets',
-  'password',
-  'passwd',
-  'passphrase',
-  'private',
-  'internal',
   'proto',
   'prototype',
   'constructor',
@@ -80,16 +59,12 @@ const PRIVATE_EVENT_KEY_NAMES = new Set([
   'citoken',
   'deploytoken',
   'servicetoken',
-  'token',
-  'authorization',
-  'cookie',
   'setcookie',
   'requestedby',
   'userid',
   'providerthreadid',
   'lastcheckpoint',
   'recoverymetadata',
-  'cwd',
   'dockerhost',
   'dockerhostname',
   'hostpath',
@@ -171,7 +146,7 @@ const SENSITIVE_EVENT_VALUE_PATTERNS = [
   /(^|[\s"'`=(,:])(?:unix|npipe):\/\/[^\s"'`<>]+/gimu,
   /(^|[\s"'`=(,:])tcp:\/\/[^\s"'`<>]+(?::2375|:2376)(?:\/[^\s"'`<>]*)?/gimu,
   /(^|[\s"'`=(,:])\/(?:app|builds?|data|github|home|root|users|private|var|run|tmp|srv|workspaces?|worktrees?|mnt|etc|opt)(?:\/[^\s"'`<>]*)?/gimu,
-  /(^|[\s"'`=(,:])\/(?:[^\s"'`<>/]+\/)*(?:\.ssh|\.aws|\.azure|\.config|\.docker|\.kube|\.gnupg|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)(?:\/[^\s"'`<>]*)?/gimu,
+  /(^|[\s"'`=(,:])\/(?:[^\s"'`<>/]+\/)*(?:\.env|\.npmrc|\.netrc|\.git-credentials|\.ssh|\.aws|\.azure|\.config|\.docker|\.kube|\.gnupg|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)(?=\/|[\s"'`<>]|$)(?:\/[^\s"'`<>]*)?/gimu,
   /(^|[\s"'`=(,:])[A-Z]:[\\/](?:Users|Windows|ProgramData|workspaces?|worktrees?)[^\s"'`<>]*/gimu,
 ] as const;
 const INCOMPLETE_SENSITIVE_EVENT_VALUE_PATTERN =
@@ -251,11 +226,16 @@ function redactSensitiveEventValues(value: string, inputTruncated: boolean): str
 }
 
 function isPrivateEventKey(key: string): boolean {
-  const normalizedName = key
-    .normalize('NFKC')
+  const normalizedKey = key.normalize('NFKC');
+  if (PUBLIC_EVENT_KEY_NAMES.has(normalizedKey)) return false;
+  const words = normalizedKey
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '');
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const normalizedName = words.join('');
   return PRIVATE_EVENT_KEY_NAMES.has(normalizedName)
+    || words.some((word) => PRIVATE_EVENT_KEY_FAMILIES.has(word))
     || PRIVATE_EVENT_KEY_SUFFIXES.some((suffix) => normalizedName.endsWith(suffix));
 }
 

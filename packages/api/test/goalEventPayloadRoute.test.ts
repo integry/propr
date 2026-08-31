@@ -263,6 +263,87 @@ test('unknown payload projection contains hostile toJSON failures', () => {
   assert.throws(() => JSON.stringify(payload), /hostile serializer/);
 });
 
+test('event payload omits normalized private key families without substring over-redaction', () => {
+  const cases = [
+    { family: 'controller', camel: 'controllerMetadata', safe: 'microcontrollerMetadata' },
+    { family: 'session', camel: 'sessionState', safe: 'sessionalState' },
+    { family: 'runtime', camel: 'runtimeInfo', safe: 'runtimeishInfo' },
+    { family: 'container', camel: 'containerName', safe: 'containerizedName' },
+    { family: 'worktree', camel: 'worktreeRoot', safe: 'worktreehouseRoot' },
+    { family: 'config', camel: 'configFile', safe: 'configurableFile' },
+    { family: 'environment', camel: 'environmentVariables', safe: 'environmentalVariables' },
+    { family: 'mount', camel: 'mountSources', safe: 'mountainSources' },
+    { family: 'credential', camel: 'credentialFile', safe: 'credentialedFile' },
+  ] as const;
+  const input: Record<string, string> = {};
+
+  for (const { family, camel, safe } of cases) {
+    const snake = camel.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+    input[camel] = `private-${family}-camel`;
+    input[snake] = `private-${family}-snake`;
+    input[snake.replaceAll('_', '-')] = `private-${family}-kebab`;
+    input[safe] = `safe-${family}`;
+  }
+
+  const projected = toPublicGoalEventPayload(input) as Record<string, string>;
+  const serialized = JSON.stringify(projected);
+  for (const { family, camel, safe } of cases) {
+    assert.equal(projected[camel], undefined, camel);
+    assert.equal(serialized.includes(`private-${family}-snake`), false, `${family} snake`);
+    assert.equal(serialized.includes(`private-${family}-kebab`), false, `${family} kebab`);
+    assert.equal(projected[safe], `safe-${family}`, safe);
+  }
+});
+
+test('event payload retains only exact public owner, request, and path overrides', () => {
+  const cases = [
+    { publicKey: 'repositoryOwner', privateKey: 'controllerOwner', value: 'integry' },
+    { publicKey: 'requestedModel', privateKey: 'requestModel', value: 'claude-opus-4-8' },
+    { publicKey: 'requestedAt', privateKey: 'requestMetadata', value: '2026-08-31T10:00:00.000Z' },
+    { publicKey: 'pullRequestNumber', privateKey: 'pullRequestMetadata', value: 2018 },
+    { publicKey: 'prNumber', privateKey: 'internalPrNumber', value: 2018 },
+    { publicKey: 'filePath', privateKey: 'configFilePath', value: 'packages/api/src.ts' },
+  ] as const;
+
+  for (const { publicKey, privateKey, value } of cases) {
+    const projected = toPublicGoalEventPayload({
+      [publicKey]: value,
+      [privateKey]: `private-${privateKey}`,
+    }) as Record<string, string | number>;
+    const serialized = JSON.stringify(projected);
+
+    assert.equal(projected[publicKey], value, publicKey);
+    assert.equal(projected[privateKey], undefined, privateKey);
+    assert.equal(serialized.includes(`private-${privateKey}`), false, privateKey);
+  }
+});
+
+test('event payload redacts credential dotfiles under arbitrary roots', () => {
+  const projected = toPublicGoalEventPayload({
+    source: '/project/.env',
+    nested: {
+      setting: { value: '/custom/team/.npmrc' },
+      safeSource: 'packages/api/.env.example',
+    },
+    paths: [
+      '/arbitrary/root/.netrc',
+      { target: '/another/root/.git-credentials' },
+    ],
+  });
+
+  assert.deepEqual(projected, {
+    source: '[REDACTED_SENSITIVE_PATH]',
+    nested: {
+      setting: { value: '[REDACTED_SENSITIVE_PATH]' },
+      safeSource: 'packages/api/.env.example',
+    },
+    paths: [
+      '[REDACTED_SENSITIVE_PATH]',
+      { target: '[REDACTED_SENSITIVE_PATH]' },
+    ],
+  });
+});
+
 test('event payload redacts a GitHub token across the per-string UTF-8 cutoff', () => {
   const stringByteLimit = 16_384;
   const githubToken = `ghp_${'A'.repeat(36)}`;
