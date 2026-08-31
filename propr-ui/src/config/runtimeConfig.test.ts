@@ -145,6 +145,11 @@ describe('getApiBaseUrl', () => {
       'https://t-abc123.propr.dev//',
       ' https://t-abc123.propr.dev',
       'https://T-AbC123.ProPR.dev',
+      'http://t-abc123.propr.dev',
+      'https://t-abc123.propr.dev:444',
+      'https://user:password@t-abc123.propr.dev',
+      'https://t-abc123.propr.dev/api',
+      'https://extra.t-abc123.propr.dev',
     ]) {
       expect(resolveApiBaseUrl(
         'app.propr.dev',

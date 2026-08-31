@@ -12,6 +12,7 @@ import type { OrchestratorConfig } from "../orchestrator/types.js";
 import {
   ConnectRootError,
   PublicInstanceIdentityError,
+  readTrustedConnectTunnelOverride,
   readSnapshotPublicInstanceIdentity,
   withOwnedConnectRootSnapshot,
 } from "../connectIdentity.js";
@@ -364,16 +365,20 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
     const prepared = await prepareConnectHostConfig();
     const local = await withOwnedConnectRootSnapshot(root, async (snapshot) => {
       const cfg = prepared.resolveSnapshot(snapshot);
+      const tunnelEnabledOverride = await readTrustedConnectTunnelOverride(snapshot.requestedRoot);
+      const effectiveCfg = tunnelEnabledOverride === undefined
+        ? cfg
+        : { ...cfg, uiTunnelEnabled: tunnelEnabledOverride };
       // Status is discovery, not setup: never create/repair identity state or
       // invoke a privileged Windows protection operation from this path.
       const publicInstanceIdentity = await readSnapshotPublicInstanceIdentity(snapshot.identityDirectory);
-      const sidecarInspection = prepared.inspectTunnel(cfg);
+      const sidecarInspection = prepared.inspectTunnel(effectiveCfg);
       return {
         kind: "verified" as const,
         cfg: {
-          uiPublicApiUrl: cfg.uiPublicApiUrl,
-          proprInstanceId: cfg.proprInstanceId,
-          uiTunnelEnabled: cfg.uiTunnelEnabled,
+          uiPublicApiUrl: effectiveCfg.uiPublicApiUrl,
+          proprInstanceId: effectiveCfg.proprInstanceId,
+          uiTunnelEnabled: effectiveCfg.uiTunnelEnabled,
         },
         publicInstanceIdentity,
         sidecarInspection,

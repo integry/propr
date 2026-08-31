@@ -6,8 +6,10 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   rmdirSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -224,6 +226,9 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
   const osConfigDir = join(userInfo().homedir, '.propr');
   const removeOsConfigDir = !existsSync(osConfigDir);
   if (removeOsConfigDir) mkdirSync(osConfigDir, { mode: 0o700 });
+  const osConfigPath = join(osConfigDir, 'config.json');
+  const osConfigBackup = existsSync(osConfigPath) ? readFileSync(osConfigPath) : undefined;
+  const osConfigMode = osConfigBackup ? statSync(osConfigPath).mode & 0o777 : undefined;
   writeFileSync(join(parent, 'hostile-cwd', '.env'), [
     'PROPR_STACK=cwd-stack-SENTINEL',
     'PROPR_UI_PUBLIC_API_URL=https://t-cwd-SENTINEL.propr.dev',
@@ -236,6 +241,20 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(ready.status, 0, JSON.stringify(ready.document));
     assert.equal(ready.document.status, 'ready');
     assert.equal(ready.document.canonicalEndpoint, ENDPOINT);
+
+    persistTunnelOverride(userInfo().homedir, readyRoot, false);
+    const persistedOff = invoke(readyRoot, 'ready', bin, parent);
+    assert.equal(persistedOff.status, 0);
+    assert.equal(persistedOff.document.enabled, false);
+    assert.deepEqual(persistedOff.document.reasonCodes, ['TUNNEL_DISABLED']);
+
+    const envDisabledRoot = makeRoot(parent, 'env-disabled-root', ENDPOINT, { enabled: 'false' });
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(envDisabledRoot, 'data'), () => IDENTITY), IDENTITY);
+    persistTunnelOverride(userInfo().homedir, envDisabledRoot, true);
+    const persistedOn = invoke(envDisabledRoot, 'ready', bin, parent);
+    assert.equal(persistedOn.status, 0, JSON.stringify(persistedOn.document));
+    assert.equal(persistedOn.document.status, 'ready');
+    assert.equal(persistedOn.document.enabled, true);
 
     const dockerTransport = {
       DOCKER_HOST: 'ssh://docker.example.test',
@@ -377,6 +396,12 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(internal.status, 1);
     assert.equal(internal.document.status, 'internalFailure');
   } finally {
+    if (osConfigBackup) {
+      writeFileSync(osConfigPath, osConfigBackup, { mode: osConfigMode });
+      chmodSync(osConfigPath, osConfigMode!);
+    } else {
+      rmSync(osConfigPath, { force: true });
+    }
     if (removeOsConfigDir) rmdirSync(osConfigDir);
     rmSync(parent, { recursive: true, force: true });
   }

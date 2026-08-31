@@ -30,7 +30,14 @@
 //   - A new tab opened to app.propr.dev (no tunnel/flow in URL) never has URL
 //     authority, even if sessionStorage was copied from an existing tab.
 
-import { canonicalProprProxySelector, DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl } from '@propr/shared';
+import {
+  canonicalProprProxySelector,
+  canonicalProprProxyUrl,
+  DEFAULT_PROPR_UI_ORIGIN,
+  isProprProxyUrl,
+  PROPR_UI_PROXY_LABEL_PREFIX,
+  PROPR_UI_PROXY_SUFFIX,
+} from '@propr/shared';
 import { normalizeApiBaseUrl } from '@propr/client';
 
 export interface ProprRuntimeConfig {
@@ -100,6 +107,21 @@ export const isHostedOAuthCompletionRoute = (
 export const isValidHttpUrl = (value: string): boolean => {
   try {
     return normalizeApiBaseUrl(value, { allowInsecureHttp: true }) !== '';
+  } catch {
+    return false;
+  }
+};
+
+/** Whether a raw URL places a managed-looking tunnel label under propr.dev. */
+const claimsManagedTunnelNamespace = (value: string): boolean => {
+  try {
+    const hostname = new URL(value.trim()).hostname.toLowerCase().replace(/\.$/, '');
+    const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+    if (!hostname.endsWith(suffix)) return false;
+    return hostname
+      .slice(0, -suffix.length)
+      .split('.')
+      .some(label => label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX));
   } catch {
     return false;
   }
@@ -424,32 +446,10 @@ export const resolveApiBaseUrl = (
     (buildTimeApiBaseUrl?.trim() ? buildTimeApiBaseUrl : undefined) ||
     ''
   );
-  let normalized: string;
-  try {
-    normalized = normalizeApiBaseUrl(selectedApiBaseUrl);
-  } catch (error) {
-    // The transport client now rejects noncanonical origins before the hosted
-    // authority guard below can inspect them. Preserve the hosted UI behavior:
-    // managed-host aliases are ignored, while unrelated invalid config throws.
-    try {
-      const candidate = new URL(selectedApiBaseUrl.trim());
-      if (
-        isHostedUiOrigin(hostname)
-        && canonicalProprProxySelector(candidate.hostname.toLowerCase())
-      ) return '';
-    } catch { /* retain the original configuration error */ }
-    throw error;
+  if (isHostedUiOrigin(hostname) && claimsManagedTunnelNamespace(selectedApiBaseUrl)) {
+    return canonicalProprProxyUrl(selectedApiBaseUrl) ?? '';
   }
-  // The generic client normalizer intentionally accepts equivalent HTTP URL
-  // spellings. A hosted managed origin is an authority selector, though: if
-  // normalization made it canonical, its raw input was not canonical and must
-  // not be trusted.
-  if (
-    isHostedUiOrigin(hostname)
-    && isProprProxyUrl(normalized)
-    && !isProprProxyUrl(selectedApiBaseUrl)
-  ) return '';
-  return normalized;
+  return normalizeApiBaseUrl(selectedApiBaseUrl);
 };
 /* eslint-enable max-params */
 
