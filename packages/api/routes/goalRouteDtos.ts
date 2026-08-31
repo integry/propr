@@ -84,6 +84,7 @@ const PRIVATE_EVENT_KEY_NAMES = new Set([
   'authorization',
   'cookie',
   'setcookie',
+  'requestedby',
   'userid',
   'providerthreadid',
   'lastcheckpoint',
@@ -97,6 +98,11 @@ const PRIVATE_EVENT_KEY_NAMES = new Set([
   'turnid',
   'workerid',
   'workspacepath',
+  'worktreepath',
+  'runtimepath',
+  'containerpath',
+  'configpath',
+  'credentialpath',
 ]);
 
 const PRIVATE_EVENT_KEY_SUFFIXES = [
@@ -125,8 +131,8 @@ const PRIVATE_EVENT_KEY_SUFFIXES = [
   'providerthreadid',
   'lastcheckpoint',
   'recoverymetadata',
+  'requestedby',
   'epoch',
-  'path',
   'cwd',
   'host',
   'hostname',
@@ -155,6 +161,14 @@ const PRIVATE_EVENT_KEY_SUFFIXES = [
 ] as const;
 
 const UNSERIALIZABLE_PAYLOAD_MARKER = '[Unserializable]';
+const SENSITIVE_PATH_MARKER = '[REDACTED_SENSITIVE_PATH]';
+const SENSITIVE_EVENT_VALUE_PATTERNS = [
+  /(^|[\s"'`=(,:])(?:unix|npipe):\/\/[^\s"'`<>]+/gimu,
+  /(^|[\s"'`=(,:])tcp:\/\/[^\s"'`<>]+(?::2375|:2376)(?:\/[^\s"'`<>]*)?/gimu,
+  /(^|[\s"'`=(,:])\/(?:app|builds?|data|github|home|root|users|private|var|run|tmp|srv|workspaces?|worktrees?|mnt|etc|opt)(?:\/[^\s"'`<>]*)?/gimu,
+  /(^|[\s"'`=(,:])\/(?:[^\s"'`<>/]+\/)*(?:\.ssh|\.aws|\.azure|\.config|\.docker|\.kube|\.gnupg|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)(?:\/[^\s"'`<>]*)?/gimu,
+  /(^|[\s"'`=(,:])[A-Z]:[\\/](?:Users|Windows|ProgramData|workspaces?|worktrees?)[^\s"'`<>]*/gimu,
+] as const;
 
 interface PublicPayloadProjectionState {
   nodes: number;
@@ -167,19 +181,31 @@ function utf8Bytes(value: string): number {
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {
-  if (utf8Bytes(value) <= maxBytes) return value;
   const suffix = '[Truncated]';
-  if (maxBytes <= suffix.length) return suffix.slice(0, maxBytes);
-  const contentLimit = maxBytes - suffix.length;
+  const characters: string[] = [];
+  if (maxBytes <= 0) return '';
   let result = '';
   let bytes = 0;
   for (const character of value) {
     const characterBytes = utf8Bytes(character);
-    if (bytes + characterBytes > contentLimit) break;
-    result += character;
+    if (bytes + characterBytes > maxBytes) {
+      const contentLimit = Math.max(0, maxBytes - suffix.length);
+      while (bytes > contentLimit) bytes -= utf8Bytes(characters.pop()!);
+      return `${characters.join('')}${suffix.slice(0, maxBytes - bytes)}`;
+    }
+    characters.push(character);
     bytes += characterBytes;
   }
-  return `${result}${suffix}`;
+  result = characters.join('');
+  return result;
+}
+
+function redactSensitiveEventValues(value: string): string {
+  let sanitized = redactSecrets(value);
+  for (const pattern of SENSITIVE_EVENT_VALUE_PATTERNS) {
+    sanitized = sanitized.replace(pattern, `$1${SENSITIVE_PATH_MARKER}`);
+  }
+  return sanitized;
 }
 
 function isPrivateEventKey(key: string): boolean {
@@ -218,12 +244,12 @@ function projectPublicPayloadValue(
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value === 'string') {
-    const redacted = redactSecrets(value);
     const allowedBytes = Math.min(
       PUBLIC_EVENT_PAYLOAD_LIMITS.stringBytes,
       state.remainingStringBytes
     );
-    const bounded = truncateUtf8(redacted, allowedBytes);
+    const boundedInput = truncateUtf8(value, allowedBytes);
+    const bounded = truncateUtf8(redactSensitiveEventValues(boundedInput), allowedBytes);
     state.remainingStringBytes -= utf8Bytes(bounded);
     return bounded;
   }
