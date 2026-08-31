@@ -294,7 +294,7 @@ describe('desktop trusted release workflow', () => {
   });
 
 
-  test('keeps both Windows architectures mandatory while excluding every deferred update authority gate and resource', () => {
+  test('keeps both Windows architectures and the complete machine-scope installer contract mandatory', () => {
     for (const [jobName, section] of [
       ['unsigned validation', job('package', 'finalize')],
       ['trusted production', job('release-package', 'release-finalize')],
@@ -330,6 +330,20 @@ describe('desktop trusted release workflow', () => {
     assert.match(forgeConfig, /wixDirectory: process\.env\.PROPR_DESKTOP_WIX_DIRECTORY/);
     assert.doesNotMatch(forgeConfig, /MakerSquirrel|noMsi|Setup\.exe|full\.nupkg/);
     assert.match(windowsMachineInstaller, /InstallScope="perMachine"/);
+    assert.match(windowsMachineInstaller, /<Directory Id="ProgramMenuFolder">/);
+    assert.match(
+      windowsMachineInstaller,
+      /<Component Id="ApplicationStartMenuShortcutComponent" Guid="\*">/,
+    );
+    assert.match(
+      windowsMachineInstaller,
+      /<RegistryValue Root="HKCU" Key="Software\\\\ProPR\\\\Desktop" Name="installed"\s+Value="1" Type="integer" KeyPath="yes" \/>/,
+    );
+    assert.doesNotMatch(windowsMachineInstaller, /\bCommonProgramMenuFolder\b/);
+    assert.doesNotMatch(
+      windowsMachineInstaller,
+      /<Component Id="ApplicationStartMenuShortcutComponent"[^>]*(?:\bWin64="yes")/,
+    );
     assert.match(windowsMachineInstaller, /INSTALLED_WIX_DIRECTORY = String\.raw`C:\\Program Files \(x86\)\\WiX Toolset v3\.14\\bin`/);
     assert.match(windowsMachineInstaller, /if \(arch === 'x64'\)/);
     assert.match(windowsMachineInstaller, /arch !== 'arm64'/);
@@ -352,6 +366,11 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /Remove-SmokeUserDataDirectory \$smokeUserDataDirectory/);
     assert.match(installedWindowsAppTest, /propr:\/\/connect/);
     assert.match(installedWindowsAppTest, /deferred Windows update authority resource/);
+    assert.match(installedWindowsAppTest, /\[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::CommonPrograms\)/);
+    assert.match(installedWindowsAppTest, /function Test-StartMenuShortcutAsOrdinaryUser\(/);
+    assert.match(installedWindowsAppTest, /-ExpectedPresent \$true/);
+    assert.match(installedWindowsAppTest, /-ExpectedPresent \$false/);
+    assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu folder behind/);
     assert.equal(workflow.match(/https:\/\/github\.com\/wixtoolset\/wix3\/releases\/download\/wix3141rtm\/wix314-binaries\.zip/g)?.length, 2);
     assert.equal(workflow.match(/6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31/g)?.length, 2);
   });
@@ -509,7 +528,7 @@ describe('desktop trusted release workflow', () => {
 
     assert.match(
       installedWindowsAppTest,
-      /\} finally \{\n\s+\$cleanupFailed = \$false[\s\S]*Invoke-Msi @\('\/x'[\s\S]*Remove-SmokeUserDataDirectory \$smokeUserDataDirectory/,
+      /\} catch \{\n\s+\$primaryFailure = \$_\n\s+throw\n\} finally \{\n\s+\$cleanupFailed = \$false[\s\S]*Invoke-Msi @\('\/x'[\s\S]*Remove-SmokeUserDataDirectory \$smokeUserDataDirectory/,
     );
     assert.match(installedWindowsAppTest, /Get-CimInstance -ClassName Win32_UserProfile/);
     assert.match(installedWindowsAppTest, /Remove-LocalUser -Name \$testUser -ErrorAction Stop/);
@@ -521,6 +540,257 @@ describe('desktop trusted release workflow', () => {
       assert.equal(section.match(/test-installed-windows-app\.ps1/g)?.length, 1);
     }
   });
+
+  test('uses bounded network logon impersonation with secure native credential cleanup', () => {
+    const nativeLogon = installedWindowsAppTest.match(
+      /Add-Type -TypeDefinition @'\n([\s\S]*?)\n'@/,
+    );
+    assert.ok(nativeLogon);
+    assert.match(nativeLogon[1], /using Microsoft\.Win32\.SafeHandles;/);
+    assert.match(nativeLogon[1], /public const int LOGON32_LOGON_NETWORK = 3;/);
+    assert.match(nativeLogon[1], /public const int LOGON32_PROVIDER_DEFAULT = 0;/);
+    assert.match(
+      nativeLogon[1],
+      /\[DllImport\("advapi32\.dll",[\s\S]*EntryPoint = "LogonUserW"\)\]/,
+    );
+    assert.match(nativeLogon[1], /\[return: MarshalAs\(UnmanagedType\.Bool\)\]/);
+    assert.match(
+      nativeLogon[1],
+      /public static extern bool LogonUserW\([\s\S]*IntPtr password,[\s\S]*out SafeAccessTokenHandle token\);/,
+    );
+
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
+    assert.match(
+      shortcutProbe,
+      /\[Runtime\.InteropServices\.Marshal\]::SecureStringToGlobalAllocUnicode\(\n\s+\$Credential\.Password\n\s+\)/,
+    );
+    assert.match(
+      shortcutProbe,
+      /\[ProPRWindowsLogon\]::LogonUserW\([\s\S]*\[ProPRWindowsLogon\]::LOGON32_LOGON_NETWORK,[\s\S]*\[ProPRWindowsLogon\]::LOGON32_PROVIDER_DEFAULT,[\s\S]*\[ref\]\$token/,
+    );
+    assert.match(
+      shortcutProbe,
+      /\[Microsoft\.Win32\.SafeHandles\.SafeAccessTokenHandle\]\$token = \$null/,
+    );
+    const finallyStart = shortcutProbe.indexOf('} finally {');
+    const zeroFree = shortcutProbe.indexOf(
+      '[Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($passwordBuffer)',
+    );
+    const tokenDispose = shortcutProbe.indexOf('$token.Dispose()');
+    assert.ok(finallyStart >= 0 && zeroFree > finallyStart && tokenDispose > zeroFree);
+    assert.match(shortcutProbe, /if \(\$passwordBuffer -ne \[IntPtr\]::Zero\)/);
+    assert.match(shortcutProbe, /if \(\$null -ne \$token\)/);
+  });
+
+  test('requires the exact ordinary-user SID before bounded presence and absence checks', () => {
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
+    const impersonated = shortcutProbe.match(
+      /\[Security\.Principal\.WindowsIdentity\]::RunImpersonated\(\$token, \[Action\]\{([\s\S]*?)\n\s+\}\)/,
+    );
+    assert.ok(impersonated);
+    const action = impersonated[1];
+    const identityCheck = action.indexOf(
+      'if ($null -eq $identity.User -or !$identity.User.Equals($UserSid))',
+    );
+    const presenceCheck = action.indexOf(
+      'Test-Path -LiteralPath $ShortcutPath -ErrorAction Stop',
+    );
+    assert.ok(identityCheck >= 0 && presenceCheck > identityCheck);
+    assert.match(action, /\$identity = \[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)/);
+    assert.match(action, /\[string\]::IsNullOrWhiteSpace\(\$ShortcutPath\)/);
+    assert.match(action, /!\[IO\.Path\]::IsPathRooted\(\$ShortcutPath\)/);
+    assert.match(action, /if \(!\$ExpectedPresent -and !\$present\) \{ return \}/);
+    assert.match(action, /if \(\$present -ne \$ExpectedPresent\)/);
+    assert.match(action, /Get-Item -LiteralPath \$ShortcutPath -Force -ErrorAction Stop/);
+    assert.match(action, /!\(\$item -is \[IO\.FileInfo\]\)/);
+    assert.match(action, /\$item\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint/);
+    assert.match(action, /\$item\.Length -le 0 -or \$item\.Length -gt \$shortcutFileByteCap/);
+    assert.match(action, /\[IO\.File\]::Open\([\s\S]*\[IO\.FileAccess\]::Read/);
+    assert.match(action, /\$stream\.Length -le 0 -or \$stream\.Length -gt \$shortcutFileByteCap/);
+    assert.match(action, /\$stream\.ReadByte\(\) -lt 0/);
+    assert.match(action, /if \(\$null -ne \$stream\) \{ \$stream\.Dispose\(\) \}/);
+    assert.match(action, /if \(\$null -ne \$identity\) \{ \$identity\.Dispose\(\) \}/);
+
+    const shortcutCalls = [...installedWindowsAppTest.matchAll(
+      /Test-StartMenuShortcutAsOrdinaryUser `([\s\S]*?)\n\s+-ExpectedPresent \$(true|false)/g,
+    )];
+    assert.deepEqual(shortcutCalls.map(call => call[2]), ['true', 'false']);
+    for (const call of shortcutCalls) {
+      assert.match(call[1], /-UserSid \$testUserSid `/);
+      assert.match(call[1], /-ShortcutPath \$startMenuShortcut `/);
+    }
+  });
+
+  test('keeps shortcut proof output fixed and redacted and rejects the legacy process proof', () => {
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
+    assert.equal(
+      shortcutProbe.match(/PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE/g)?.length,
+      2,
+    );
+    assert.match(
+      shortcutProbe,
+      /Write-Host \('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:\{0\}:SUCCESS' -f \$expectation\)/,
+    );
+    assert.match(
+      shortcutProbe,
+      /Write-Host \('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:\{0\}:\{1\}' -f \$expectation, \$failureCategory\)/,
+    );
+    const categories = [...shortcutProbe.matchAll(
+      /\$failureCategory = '(LOGON_FAILED|ACCESS_CHECK_FAILED|CLEANUP_FAILED)'/g,
+    )].map(match => match[1]);
+    assert.deepEqual([...new Set(categories)].sort(), [
+      'ACCESS_CHECK_FAILED',
+      'CLEANUP_FAILED',
+      'LOGON_FAILED',
+    ]);
+    assert.doesNotMatch(
+      shortcutProbe,
+      /(?:Write-Host|throw)[^\n]*(?:\$ShortcutPath|\$UserName|\$Domain|\$UserSid|\$Credential|\.Exception|\.Message|NativeErrorCode)/,
+    );
+    assert.doesNotMatch(
+      shortcutProbe,
+      /ProcessStartInfo|\$process\.Start\(|SPAWN_FAILED|EncodedCommand|probeChildEnvironment|PROPR_DESKTOP_START_MENU_SHORTCUT|shortcutProbeExitCategories|StandardOutput|StandardError/,
+    );
+    assert.doesNotMatch(installedWindowsAppTest, /\$shortcutProbeExitCategories|\$probeTemplate/);
+  });
+
+  test('emits fixed uninstall and cleanup substages without masking the primary failure', () => {
+    const writerStart = installedWindowsAppTest.indexOf('function Write-CleanupSubstage(');
+    const writerEnd = installedWindowsAppTest.indexOf('function Stop-SpawnedProcessTree(', writerStart);
+    assert.ok(writerStart >= 0 && writerEnd > writerStart);
+    const writer = installedWindowsAppTest.slice(writerStart, writerEnd);
+    const substageAllowlist = writer.match(/\[ValidateSet\(\n([\s\S]*?)\n\s+\)\]\[string\]\$Substage/);
+    assert.ok(substageAllowlist);
+    const substages = [...substageAllowlist[1].matchAll(/'([A-Z_]+)'/g)].map(match => match[1]);
+    assert.deepEqual(substages, [
+      'MSI_UNINSTALL',
+      'INSTALL_TREE',
+      'PROTOCOL',
+      'SHORTCUT_FILE',
+      'SHORTCUT_FOLDER',
+      'ORDINARY_USER_ABSENCE_PROBE',
+      'SMOKE_DATA',
+      'PROFILE',
+      'USER',
+      'INSTALL_ROOT_FALLBACK',
+      'PROTOCOL_FALLBACK',
+      'SHORTCUT_FALLBACK',
+      'FINAL_AGGREGATION',
+    ]);
+    assert.match(writer, /\[ValidateSet\('BEGIN','COMPLETE','FAILED','SKIPPED'\)\]\[string\]\$Status/);
+    assert.match(
+      writer,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:\{0\}:\{1\}:\{2\}' -f \$Scope, \$Substage, \$Status/,
+    );
+
+    const cleanupCalls = [...installedWindowsAppTest.matchAll(
+      /^\s+Write-CleanupSubstage '([A-Z_]+)' '([A-Z_]+)' '([A-Z_]+)'$/gm,
+    )];
+    assert.ok(cleanupCalls.length > 0);
+    assert.equal(
+      installedWindowsAppTest.match(/^\s+Write-CleanupSubstage /gm)?.length,
+      cleanupCalls.length,
+      'every cleanup diagnostic call must use fixed literal allowlisted fields',
+    );
+    for (const [, scope, substage, status] of cleanupCalls) {
+      assert.ok(['UNINSTALL', 'CLEANUP'].includes(scope));
+      assert.ok(substages.includes(substage));
+      assert.ok(['BEGIN', 'COMPLETE', 'FAILED', 'SKIPPED'].includes(status));
+    }
+    for (const substage of ['MSI_UNINSTALL', 'INSTALL_TREE', 'PROTOCOL', 'SHORTCUT_FILE', 'SHORTCUT_FOLDER']) {
+      for (const status of ['BEGIN', 'COMPLETE', 'FAILED']) {
+        assert.ok(cleanupCalls.some(match => match[1] === 'UNINSTALL' && match[2] === substage && match[3] === status));
+      }
+    }
+    assert.ok(cleanupCalls.some(match => (
+      match[1] === 'UNINSTALL'
+      && match[2] === 'ORDINARY_USER_ABSENCE_PROBE'
+      && match[3] === 'SKIPPED'
+    )));
+    for (const substage of [
+      'SMOKE_DATA',
+      'PROFILE',
+      'USER',
+      'INSTALL_ROOT_FALLBACK',
+      'PROTOCOL_FALLBACK',
+      'SHORTCUT_FALLBACK',
+      'FINAL_AGGREGATION',
+    ]) {
+      for (const status of ['BEGIN', 'COMPLETE', 'FAILED']) {
+        assert.ok(cleanupCalls.some(match => match[1] === 'CLEANUP' && match[2] === substage && match[3] === status));
+      }
+    }
+    assert.match(
+      installedWindowsAppTest,
+      /\} catch \{\n\s+\$primaryFailure = \$_\n\s+throw\n\} finally \{/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /if \(\$cleanupFailed\)[\s\S]*?if \(\$null -eq \$primaryFailure\) \{\n\s+throw 'installed Windows cleanup did not complete'/,
+    );
+  });
+
+  test('keeps the canonical common shortcut and ownership-aware nonrecursive cleanup', () => {
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
+    assert.match(shortcutProbe, /\[string\]\$ShortcutPath/);
+    assert.match(shortcutProbe, /Test-Path -LiteralPath \$ShortcutPath -ErrorAction Stop/);
+    assert.equal(installedWindowsAppTest.match(/-ShortcutPath \$startMenuShortcut/g)?.length, 2);
+
+    const installStart = installedWindowsAppTest.indexOf("Write-Stage 'INSTALL' 'BEGIN'");
+    assert.ok(
+      installedWindowsAppTest.indexOf(
+        '$startMenuShortcutExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcut',
+      ) < installStart,
+    );
+    assert.ok(
+      installedWindowsAppTest.indexOf(
+        '$startMenuShortcutFolderExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcutFolder',
+      ) < installStart,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /\$startMenuShortcutCreatedByRun =\n\s+!\$startMenuShortcutExistedBeforeInstall -and \(Test-Path -LiteralPath \$startMenuShortcut\)/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /\$startMenuShortcutFolderCreatedByRun =\n\s+!\$startMenuShortcutFolderExistedBeforeInstall -and \(Test-Path -LiteralPath \$startMenuShortcutFolder\)/,
+    );
+
+    const cleanupStart = installedWindowsAppTest.indexOf("Write-Stage 'CLEANUP' 'BEGIN'");
+    assert.ok(cleanupStart >= 0);
+    const cleanup = installedWindowsAppTest.slice(cleanupStart);
+    assert.match(
+      cleanup,
+      /if \(\$startMenuShortcutCreatedByRun -and \(Test-Path -LiteralPath \$startMenuShortcut\)\) \{\n\s+Remove-Item -LiteralPath \$startMenuShortcut -Force -ErrorAction Stop/,
+    );
+    assert.match(
+      cleanup,
+      /if \(\$startMenuShortcutFolderCreatedByRun[\s\S]*\$ownedShortcutFolderContents\.Count -eq 0\) \{\n\s+Remove-Item -LiteralPath \$startMenuShortcutFolder -Force -ErrorAction Stop/,
+    );
+    assert.doesNotMatch(
+      cleanup,
+      /Remove-Item -LiteralPath \$startMenuShortcut(?:Folder)?[^\n]*-Recurse/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppTest,
+      /Remove-Item[^\n]*(?:\$commonPrograms|\$startMenuShortcut(?:Folder)?)[^\n]*-Recurse|Remove-Item[^\n]*-Recurse[^\n]*(?:\$commonPrograms|\$startMenuShortcut(?:Folder)?)/,
+    );
+    assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu shortcut behind/);
+    assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu folder behind/);
+  });
+
 
   test('replaces a hostile privileged parent environment with the exact smoke child allowlist', () => {
     const allowlist = installedWindowsAppTest.match(

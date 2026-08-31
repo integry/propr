@@ -44,7 +44,7 @@ test('uses per-machine scope without explicitly authoring the derived ALLUSERS p
   }
 });
 
-test('separates machine registration from the per-user Start Menu component for x64 and ARM64', () => {
+test('authors the complete per-machine Start Menu contract for x64 and ARM64', () => {
   const files = [{
     path: 'C:\\fixture\\propr-desktop.exe',
     name: 'propr-desktop.exe',
@@ -57,9 +57,11 @@ test('separates machine registration from the per-user Start Menu component for 
     const shortcut = source.match(/<Component Id="ApplicationStartMenuShortcutComponent"[\s\S]*?<\/Component>/)?.[0];
     assert.ok(registration);
     assert.ok(shortcut);
+    assert.match(source, /<Package\b[^>]*\bInstallScope="perMachine"[^>]*\/>/);
     assert.equal(registration.match(/Root="HKLM"/g)?.length, 4);
     assert.equal(registration.match(/KeyPath="yes"/g)?.length, 1);
     assert.doesNotMatch(registration, /Root="HKCU"|<Shortcut|<RemoveFolder/);
+    assert.match(shortcut, /<Component Id="ApplicationStartMenuShortcutComponent" Guid="\*">/);
     assert.match(shortcut, /<Shortcut Id="ApplicationStartMenuShortcut"[\s\S]*?<\/Shortcut>/);
     assert.match(shortcut, /<RemoveFolder Id="RemoveApplicationProgramsFolder"[^>]*On="uninstall" \/>/);
     assert.match(
@@ -67,13 +69,14 @@ test('separates machine registration from the per-user Start Menu component for 
       /<RegistryValue Root="HKCU" Key="Software\\ProPR\\Desktop" Name="installed"\s+Value="1" Type="integer" KeyPath="yes" \/>/,
     );
     assert.equal(shortcut.match(/KeyPath="yes"/g)?.length, 1);
-    assert.doesNotMatch(shortcut, /Root="HKLM"/);
+    assert.equal(shortcut.match(/Root="HKCU"/g)?.length, 1);
+    assert.doesNotMatch(shortcut, /\bWin64=|Root="HKLM"/);
     assert.match(source, /<Directory Id="ProgramMenuFolder">\s*<Directory Id="ApplicationProgramsFolder" Name="ProPR Desktop">/);
     assert.match(
       source,
       /<Directory Id="INSTALLFOLDER" Name="ProPR Desktop">[\s\S]*<Component Id="ApplicationRegistration"[\s\S]*?<\/Component>\s*<\/Directory>\s*<\/Directory>\s*<Directory Id="ProgramMenuFolder">/,
     );
-    assert.doesNotMatch(source, /CommonProgramMenuFolder/);
+    assert.doesNotMatch(source, /\bCommonProgramMenuFolder\b/);
     assert.match(source, /<ComponentRef Id="ApplicationRegistration" \/>/);
     assert.match(source, /<ComponentRef Id="ApplicationStartMenuShortcutComponent" \/>/);
   }
