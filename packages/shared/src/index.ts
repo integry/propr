@@ -71,6 +71,9 @@ export {
 } from './instanceAuthorization.js';
 
 export {
+  getGoalCapableModels,
+  isGoalCapableCatalogAgent,
+  type GoalCapableCatalogAgent,
   type InstanceCatalogAgent,
   type InstanceCatalogRepository,
   type InstanceCatalogResponse,

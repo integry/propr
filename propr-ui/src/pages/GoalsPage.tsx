@@ -2,31 +2,24 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Filter, Search, Target, X } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { getGoals, type GoalListItem, type GoalState } from '../api/goalsApi';
+import { getGoals, GOAL_STATES, type GoalListItem, type GoalState } from '../api/goalsApi';
 import { useDemoMode } from '../contexts/DemoModeContext';
+import { useSocket } from '../contexts/useSocket';
 import { EmptyGoalsState, GoalsList, GoalsPagination } from './GoalsPageComponents';
-
-const DEFAULT_PAGE_SIZE = 50;
-
-const GOAL_STATE_OPTIONS: { value: GoalState | 'all'; label: string }[] = [
-  { value: 'all', label: 'All States' },
-  { value: 'active', label: 'Active' },
-  { value: 'pausing', label: 'Pausing' },
-  { value: 'paused', label: 'Paused' },
-  { value: 'recovering', label: 'Recovering' },
-  { value: 'completed', label: 'Completed' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'cancelled', label: 'Cancelled' },
-];
+import { DEFAULT_GOALS_PAGE_SIZE, GOAL_STATE_OPTIONS } from './goalsPageUtils';
 
 const GoalsPage: React.FC = () => {
   useDocumentTitle('Goals');
   const navigate = useNavigate();
   const { isDemoMode } = useDemoMode();
+  const { isConnected, onTaskUpdate } = useSocket();
   const [searchParams, setSearchParams] = useSearchParams();
   const isInitialMount = useRef(true);
 
-  const stateFilter = (searchParams.get('state') || 'all') as GoalState | 'all';
+  const requestedState = searchParams.get('state');
+  const stateFilter: GoalState | 'all' = requestedState && GOAL_STATES.includes(requestedState as GoalState)
+    ? requestedState as GoalState
+    : 'all';
   const repoFilter = searchParams.get('repository') || '';
   const urlSearch = searchParams.get('search') || '';
   const currentPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
@@ -41,7 +34,7 @@ const GoalsPage: React.FC = () => {
   const [hasMore, setHasMore] = useState(false);
 
   const totalPages = useMemo(
-    () => Math.ceil(totalGoals / DEFAULT_PAGE_SIZE),
+    () => Math.ceil(totalGoals / DEFAULT_GOALS_PAGE_SIZE),
     [totalGoals]
   );
 
@@ -52,7 +45,7 @@ const GoalsPage: React.FC = () => {
       try {
         const data = await getGoals({
           page,
-          limit: DEFAULT_PAGE_SIZE,
+          limit: DEFAULT_GOALS_PAGE_SIZE,
           state: state === 'all' ? undefined : state,
           repository: repository || undefined,
           search: debouncedSearch || undefined,
@@ -106,6 +99,13 @@ const GoalsPage: React.FC = () => {
     loadGoals(currentPage, stateFilter, repoFilter);
   }, [currentPage, stateFilter, repoFilter, debouncedSearch, loadGoals]);
 
+  useEffect(() => {
+    if (!isConnected) return;
+    return onTaskUpdate(() => {
+      void loadGoals(currentPage, stateFilter, repoFilter, false);
+    });
+  }, [currentPage, isConnected, loadGoals, onTaskUpdate, repoFilter, stateFilter]);
+
   const updateSearchParams = useCallback(
     (updates: Record<string, string | null>) => {
       setSearchParams(
@@ -133,8 +133,8 @@ const GoalsPage: React.FC = () => {
   };
 
   const handleNewGoal = useCallback(() => {
-    navigate('/goals/new');
-  }, [navigate]);
+    if (!isDemoMode) navigate('/goals/new');
+  }, [isDemoMode, navigate]);
 
   const handlePageChange = (page: number) =>
     updateSearchParams({ page: String(page) });
@@ -147,7 +147,7 @@ const GoalsPage: React.FC = () => {
           <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Goals</h1>
         </div>
         <div className="flex-1 overflow-auto px-4 sm:px-6 py-4">
-          <div className="text-gray-500 text-sm">Loading goals…</div>
+          <div role="status" className="text-gray-500 text-sm">Loading goals…</div>
         </div>
       </div>
     );
@@ -161,7 +161,7 @@ const GoalsPage: React.FC = () => {
           <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Goals</h1>
         </div>
         <div className="flex-1 overflow-auto px-4 sm:px-6 py-4">
-          <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+          <div role="alert" className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
             {error}
           </div>
         </div>
@@ -175,6 +175,7 @@ const GoalsPage: React.FC = () => {
         <EmptyGoalsState
           type="no-goals"
           onCreateGoal={handleNewGoal}
+          createDisabled={isDemoMode}
         />
       );
     }
@@ -272,7 +273,7 @@ const GoalsPage: React.FC = () => {
             currentPage={currentPage}
             totalPages={totalPages}
             totalGoals={totalGoals}
-            pageSize={DEFAULT_PAGE_SIZE}
+            pageSize={DEFAULT_GOALS_PAGE_SIZE}
             hasMore={hasMore}
             loading={loading}
             onPageChange={handlePageChange}

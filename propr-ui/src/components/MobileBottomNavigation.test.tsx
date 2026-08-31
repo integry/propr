@@ -84,6 +84,7 @@ describe('MobileBottomNavigation', () => {
     expect(dialog).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Plans' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Goals' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Coding Agents' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Logs' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
@@ -110,14 +111,14 @@ describe('MobileBottomNavigation', () => {
     const moreButton = screen.getByRole('button', { name: 'More' });
 
     fireEvent.click(moreButton);
-    fireEvent.click(screen.getByRole('link', { name: 'Plans' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Goals' }));
 
-    expect(screen.getByTestId('location')).toHaveTextContent('/plans');
+    expect(screen.getByTestId('location')).toHaveTextContent('/goals');
     expect(screen.queryByRole('dialog', { name: 'More' })).not.toBeInTheDocument();
     expect(moreButton).toHaveAttribute('aria-current', 'page');
   });
 
-  it.each(['/', '/admin/members'])('marks More active for %s', route => {
+  it.each(['/', '/admin/members', '/goals/new'])('marks More active for %s', route => {
     renderNavigation(route);
 
     expect(screen.getByRole('button', { name: 'More' })).toHaveAttribute('aria-current', 'page');
