@@ -122,9 +122,22 @@ export class GoalReadRepository {
   }
 
   async listGoals(query: ListGoalsQuery): Promise<ListGoalsResult> {
-    const ownerUserId = query.visibility === 'owner'
-      ? boundedText(query.ownerUserId, 'ownerUserId') as string
-      : null;
+    const visibility: unknown = (query as Partial<ListGoalsQuery> | null | undefined)?.visibility;
+    let ownerUserId: string | null;
+    if (visibility === 'owner') {
+      ownerUserId = boundedText(
+        (query as { ownerUserId?: unknown }).ownerUserId,
+        'ownerUserId'
+      ) as string;
+    } else if (visibility === 'all-demo') {
+      ownerUserId = null;
+    } else {
+      throw new GoalError(
+        GOAL_ERROR_CODES.validation,
+        "visibility must be 'owner' or 'all-demo'",
+        400
+      );
+    }
     const limit = query.limit ?? GOAL_LIST_DEFAULT_LIMIT;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > GOAL_LIST_MAX_LIMIT) {
       throw new GoalError(GOAL_ERROR_CODES.validation, `limit must be an integer from 1 to ${GOAL_LIST_MAX_LIMIT}`, 400);

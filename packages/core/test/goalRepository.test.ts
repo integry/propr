@@ -663,6 +663,36 @@ describe('GoalRepository', () => {
     assert.equal(ids.size, 4);
   });
 
+  test('list rejects a missing visibility discriminator without exposing goals', async () => {
+    await seedGoal();
+    await seedGoal({ ownerUserId: 'user-2', objective: 'Other owner goal' });
+
+    await assert.rejects(
+      repo.listGoals({} as Parameters<GoalRepository['listGoals']>[0]),
+      (error: GoalError) => error.code === 'goal_validation_error'
+    );
+  });
+
+  test('list rejects an invalid visibility discriminator without exposing goals', async () => {
+    await seedGoal();
+    await seedGoal({ ownerUserId: 'user-2', objective: 'Other owner goal' });
+
+    await assert.rejects(
+      repo.listGoals({ visibility: 'unknown' } as unknown as Parameters<GoalRepository['listGoals']>[0]),
+      (error: GoalError) => error.code === 'goal_validation_error'
+    );
+  });
+
+  test('list rejects a legacy ownerUserId-only call without exposing cross-owner goals', async () => {
+    await seedGoal();
+    await seedGoal({ ownerUserId: 'user-2', objective: 'Other owner goal' });
+
+    await assert.rejects(
+      repo.listGoals({ ownerUserId: 'user-1' } as Parameters<GoalRepository['listGoals']>[0]),
+      (error: GoalError) => error.code === 'goal_validation_error'
+    );
+  });
+
   test('lifecycle service reconstructs a summary from SQL alone', async () => {
     const service = new GoalLifecycleService(database);
     const goal = await seedGoal();
