@@ -321,11 +321,11 @@ test('event payload denies requestedBy owner identity while preserving requested
   assert.equal(JSON.stringify(projected).includes(ownerLikeValue), false);
 });
 
-test('event payload redacts credential dotfiles under arbitrary roots', () => {
+test('event payload redacts absolute and file-URI sensitive paths', () => {
   const projected = toPublicGoalEventPayload({
-    source: '/project/.env',
+    source: 'file:///home/propr/private-build.log',
     nested: {
-      setting: { value: '/custom/team/.npmrc' },
+      setting: { value: 'file:///custom/team/.ssh/id_rsa' },
       safeSource: 'packages/api/.env.example',
     },
     paths: [
