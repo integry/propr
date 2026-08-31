@@ -147,10 +147,12 @@ export const GoalCreateForm = ({
           <textarea
             id="goal-objective"
             value={values.objective}
-            onChange={event => setField('objective', event.target.value)}
+            onChange={event => setField(
+              'objective',
+              Array.from(event.target.value).slice(0, OBJECTIVE_MAX_LENGTH).join('')
+            )}
             rows={4}
             minLength={OBJECTIVE_MIN_LENGTH}
-            maxLength={OBJECTIVE_MAX_LENGTH}
             placeholder="Describe what the goal-capable agent should accomplish."
             disabled={submitting}
             required

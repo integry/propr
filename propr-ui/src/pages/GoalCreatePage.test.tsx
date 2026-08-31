@@ -153,6 +153,18 @@ describe('GoalCreatePage', () => {
     ));
   });
 
+  it('bounds objectives by Unicode code points instead of UTF-16 code units', async () => {
+    renderPage();
+    await screen.findByRole('form', { name: 'Create goal' });
+    const objective = screen.getByLabelText(/^Objective/);
+    expect(objective).not.toHaveAttribute('maxlength');
+
+    fireEvent.change(objective, { target: { value: '🚀'.repeat(4001) } });
+
+    expect(Array.from((objective as HTMLTextAreaElement).value)).toHaveLength(4000);
+    expect(objective).toHaveValue('🚀'.repeat(4000));
+  });
+
   it('reuses the same idempotency key for an exact uncertain retry', async () => {
     vi.mocked(createGoal)
       .mockRejectedValueOnce(new Error('Connection ended before a response'))
@@ -168,7 +180,7 @@ describe('GoalCreatePage', () => {
     expect(vi.mocked(createGoal).mock.calls[1][1]).toBe(firstKey);
   });
 
-  it('rotates the idempotency key when any request field is edited after a failed attempt', async () => {
+  it('rotates the idempotency key when the submitted payload differs after a failed attempt', async () => {
     vi.mocked(createGoal)
       .mockRejectedValueOnce(new Error('Uncertain result'))
       .mockResolvedValueOnce(createdGoal);
@@ -183,6 +195,25 @@ describe('GoalCreatePage', () => {
     await waitFor(() => expect(createGoal).toHaveBeenCalledTimes(2));
     expect(vi.mocked(createGoal).mock.calls[1][1]).not.toBe(firstKey);
     expect(vi.mocked(createGoal).mock.calls[1][0]).toMatchObject({ maxActiveTasks: 5 });
+  });
+
+  it('reuses the idempotency key when an edit is reverted before retrying', async () => {
+    vi.mocked(createGoal)
+      .mockRejectedValueOnce(new Error('Uncertain result'))
+      .mockResolvedValueOnce(createdGoal);
+    renderPage();
+    await screen.findByRole('form', { name: 'Create goal' });
+    setValidObjective();
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    await screen.findByText('Uncertain result');
+    const firstKey = vi.mocked(createGoal).mock.calls[0][1];
+    const concurrency = screen.getByLabelText(/^Maximum concurrent tasks/);
+    fireEvent.change(concurrency, { target: { value: '5' } });
+    fireEvent.change(concurrency, { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    await waitFor(() => expect(createGoal).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(createGoal).mock.calls[1][1]).toBe(firstKey);
+    expect(vi.mocked(createGoal).mock.calls[1][0]).toEqual(vi.mocked(createGoal).mock.calls[0][0]);
   });
 
   it('provides a new-intent path after goal_idempotency_conflict', async () => {

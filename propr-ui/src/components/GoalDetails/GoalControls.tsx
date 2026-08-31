@@ -21,6 +21,8 @@ const stateTone: Record<GoalMessage['state'], string> = {
   failed: 'bg-red-100 text-red-800', cancelled: 'bg-gray-100 text-gray-600',
 };
 
+const GOAL_MESSAGE_MAX_LENGTH = 4000;
+
 function CancelConfirmation({ busy, returnFocus, fallbackFocus, onClose, onConfirm }: { busy: boolean; returnFocus: RefObject<HTMLButtonElement | null>; fallbackFocus: RefObject<HTMLElement | null>; onClose: () => void; onConfirm: (reason: string) => void }) {
   const [reason, setReason] = useState('Cancelled by operator');
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -83,8 +85,8 @@ function GoalMessages({ messages, disabled, busy, onSend, onRetry, onCancel }: {
       </div>
       <form className="mt-2" onSubmit={event => { event.preventDefault(); void submitDraft(); }}>
         <label htmlFor="goal-message" className="sr-only">Message to the goal controller</label>
-        <textarea id="goal-message" value={body} maxLength={4000} onChange={event => setBody(event.target.value)} disabled={disabled || busy} rows={3} placeholder="Send guidance at the next safe boundary…" className="w-full resize-y rounded border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:bg-slate-100" />
-        <div className="mt-1 flex items-center justify-between"><span className="text-[10px] text-slate-400">{Array.from(body).length}/4000</span><button type="submit" disabled={disabled || busy || !body.trim()} className="rounded bg-teal-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{busy ? 'Sending…' : 'Send message'}</button></div>
+        <textarea id="goal-message" value={body} onChange={event => setBody(Array.from(event.target.value).slice(0, GOAL_MESSAGE_MAX_LENGTH).join(''))} disabled={disabled || busy} rows={3} placeholder="Send guidance at the next safe boundary…" className="w-full resize-y rounded border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:bg-slate-100" />
+        <div className="mt-1 flex items-center justify-between"><span className="text-[10px] text-slate-400">{Array.from(body).length}/{GOAL_MESSAGE_MAX_LENGTH}</span><button type="submit" disabled={disabled || busy || !body.trim()} className="rounded bg-teal-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{busy ? 'Sending…' : 'Send message'}</button></div>
       </form>
       <ol aria-label="Goal messages" className="mt-3 max-h-72 space-y-2 overflow-y-auto">
         {messages.map(message => <li key={message.messageId} className="rounded border border-slate-200 p-2 text-xs">

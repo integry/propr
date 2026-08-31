@@ -55,12 +55,6 @@ export function useGoalCreateForm() {
   const lastAttemptRef = useRef<{ payload: string; key: string } | null>(null);
   const submissionInFlightRef = useRef(false);
 
-  const beginNewIntent = useCallback(() => {
-    if (!lastAttemptRef.current) return;
-    idempotencyKeyRef.current = newIdempotencyKey();
-    lastAttemptRef.current = null;
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
     getInstanceCatalog()
@@ -94,13 +88,11 @@ export function useGoalCreateForm() {
   }, []);
 
   const setField = useCallback(<K extends keyof GoalFormValues>(field: K, value: GoalFormValues[K]) => {
-    beginNewIntent();
     setValues(current => ({ ...current, [field]: value }));
     setErrors(current => ({ ...current, [field]: undefined, submit: undefined }));
-  }, [beginNewIntent]);
+  }, []);
 
   const setAgent = useCallback((alias: string) => {
-    beginNewIntent();
     const agent = agents.find(candidate => candidate.alias === alias);
     const models = agent ? getGoalCapableModels(agent) : [];
     const model = agent?.defaultModel && models.includes(agent.defaultModel)
@@ -108,7 +100,7 @@ export function useGoalCreateForm() {
       : models[0] ?? '';
     setValues(current => ({ ...current, agent: alias, model }));
     setErrors(current => ({ ...current, agent: undefined, model: undefined, submit: undefined }));
-  }, [agents, beginNewIntent]);
+  }, [agents]);
 
   const submit = useCallback(async () => {
     if (isDemoMode || submissionInFlightRef.current) return;

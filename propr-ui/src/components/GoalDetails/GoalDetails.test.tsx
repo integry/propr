@@ -149,6 +149,18 @@ describe('GoalControls', () => {
     expect(handlers.onCancelMessage).toHaveBeenCalledWith('message-1');
   });
 
+  it('bounds message drafts by Unicode code points instead of UTF-16 code units', () => {
+    render(<GoalControls {...props()} />);
+    const draft = screen.getByRole('textbox', { name: 'Message to the goal controller' });
+    expect(draft).not.toHaveAttribute('maxlength');
+
+    fireEvent.change(draft, { target: { value: '🚀'.repeat(4001) } });
+
+    expect(Array.from((draft as HTMLTextAreaElement).value)).toHaveLength(4000);
+    expect(draft).toHaveValue('🚀'.repeat(4000));
+    expect(screen.getByText('4000/4000')).toBeInTheDocument();
+  });
+
   it('disables every mutation for each pending action without unmounting the draft', () => {
     const handlers = props();
     const messages = [message(1, 'pending'), message(2, 'failed')];
