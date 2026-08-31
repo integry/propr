@@ -13,6 +13,16 @@ const event = (sequence: number, type: GoalEvent['type'] = 'stdout', content = `
   goalId: 'goal-1', sequence, type, content, source: 'codex', timestamp, turnId: sequence < 3 ? 'turn-1' : 'turn-2', payload: null,
 });
 
+const deferred = <T,>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+};
+
 const message = (sequence: number, state: GoalMessage['state']): GoalMessage => ({
   messageId: `message-${sequence}`, sequence, body: `message ${sequence}`, predefinedKind: null, state,
   responseSource: state === 'acknowledged' ? 'provider' : null,
@@ -156,6 +166,85 @@ describe('GoalTerminal', () => {
     expect(viewport.scrollTop).toBe(100);
   });
 
+  it.each(['empty', 'rejected'] as const)('keeps a newer follow-latest intent after an %s older load and follows the next live event', async outcome => {
+    const load = deferred<void>();
+    let height = 500;
+    const onLoadOlder = vi.fn(() => load.promise);
+    const view = render(<GoalTerminal events={[event(1), event(2)]} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+    const viewport = screen.getByLabelText('Goal terminal transcript');
+    Object.defineProperties(viewport, {
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    viewport.scrollTop = 100;
+    fireEvent.scroll(viewport);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load older output' }));
+    expect(onLoadOlder).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Follow latest' }));
+    expect(viewport.scrollTop).toBe(500);
+    view.rerender(<GoalTerminal events={[event(1), event(2)]} connectionState="recovering" hasMoreBefore loadingOlder onLoadOlder={onLoadOlder} />);
+
+    await act(async () => {
+      if (outcome === 'empty') load.resolve(); else load.reject(new Error('older history unavailable'));
+      await load.promise.catch(() => undefined);
+    });
+    expect(screen.queryByRole('button', { name: 'Follow latest' })).not.toBeInTheDocument();
+
+    height = 700;
+    view.rerender(<GoalTerminal events={[event(1), event(2), event(3)]} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+    await waitFor(() => expect(viewport.scrollTop).toBe(700));
+    expect(screen.queryByRole('button', { name: 'Follow latest' })).not.toBeInTheDocument();
+  });
+
+  it('keeps a search reset made while an empty older load is pending', async () => {
+    const load = deferred<void>();
+    const events = Array.from({ length: 800 }, (_, index) => event(index + 1));
+    const onLoadOlder = vi.fn(() => load.promise);
+    const view = render(<GoalTerminal events={events} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Earlier event window' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load older output' }));
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search terminal output' }), { target: { value: 'line 420' } });
+    expect(screen.getByText('line 420')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Follow latest' })).not.toBeInTheDocument();
+
+    view.rerender(<GoalTerminal events={events} connectionState="recovering" hasMoreBefore loadingOlder onLoadOlder={onLoadOlder} />);
+    await act(async () => { load.resolve(); await load.promise; });
+
+    expect(screen.getByText('line 420')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Follow latest' })).not.toBeInTheDocument();
+  });
+
+  it('does not restore a successful prepend anchor over newer manual scroll intent', async () => {
+    const load = deferred<void>();
+    let prepended = false;
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', { configurable: true, get() {
+      return (this as HTMLElement).dataset.eventSequence === '551' ? (prepended ? 300 : 100) : 0;
+    } });
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 20 });
+    const events = Array.from({ length: 800 }, (_, index) => event(index + 1));
+    const onLoadOlder = vi.fn(() => load.promise);
+    const view = render(<GoalTerminal events={events} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+    const viewport = screen.getByLabelText('Goal terminal transcript');
+    Object.defineProperties(viewport, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    viewport.scrollTop = 30;
+    fireEvent.click(screen.getByRole('button', { name: 'Load older output' }));
+    viewport.scrollTop = 80;
+    fireEvent.scroll(viewport);
+
+    prepended = true;
+    view.rerender(<GoalTerminal events={[event(0), ...events]} connectionState="connected" hasMoreBefore loadingOlder onLoadOlder={onLoadOlder} />);
+    expect(viewport.scrollTop).toBe(80);
+    await act(async () => { load.resolve(); await load.promise; });
+    expect(viewport.scrollTop).toBe(80);
+
+    delete (HTMLElement.prototype as { offsetTop?: number }).offsetTop;
+    delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
+  });
+
   it('restores tail-follow after a rejected older load across rerenders and follows the next live event', async () => {
     let rejectLoad: (reason: Error) => void = () => undefined;
     let height = 500;
@@ -283,6 +372,27 @@ describe('GoalControls', () => {
     expect(handlers.onRetryMessage).toHaveBeenCalledWith(messages[3]);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel pending message' }));
     expect(handlers.onCancelMessage).toHaveBeenCalledWith('message-1');
+  });
+
+  it('disables every mutation for each pending action without unmounting the draft', () => {
+    const handlers = props();
+    const messages = [message(1, 'pending'), message(2, 'failed')];
+    const view = render(<GoalControls {...handlers} detail={{ ...detail, messages }} />);
+    const draft = screen.getByRole('textbox', { name: 'Message to the goal controller' });
+    fireEvent.change(draft, { target: { value: 'Preserve this mounted draft' } });
+    fireEvent.change(screen.getByLabelText('Requested model'), { target: { value: 'gpt-next' } });
+
+    for (const pendingAction of ['pause', 'resume', 'cancel', 'model', 'message', 'cancel-message']) {
+      view.rerender(<GoalControls {...handlers} detail={{ ...detail, messages }} pendingAction={pendingAction} />);
+      for (const name of ['Cancel goal…', 'Request change', 'What’s done?', 'What’s left?', 'Retry', 'Cancel pending message']) {
+        expect(screen.getByRole('button', { name })).toBeDisabled();
+      }
+      expect(screen.getByRole('button', { name: /^(Pause|Requesting pause…)$/ })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /^(Send message|Sending…)$/ })).toBeDisabled();
+      expect(screen.getByLabelText('Requested model')).toBeDisabled();
+      expect(screen.getByRole('textbox', { name: 'Message to the goal controller' })).toBeDisabled();
+      expect(screen.getByRole('textbox', { name: 'Message to the goal controller' })).toHaveValue('Preserve this mounted draft');
+    }
   });
 
   it('annotates and disables all mutations in read-only mode', () => {

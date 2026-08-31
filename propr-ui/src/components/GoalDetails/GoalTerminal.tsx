@@ -23,6 +23,7 @@ interface PendingScrollAnchor {
   sequence: number | null;
   viewportOffset: number;
   earliestSequence: number;
+  navigationRevision: number;
   loadComplete: boolean;
   anchorRestored: boolean;
   previousFollowTail: boolean;
@@ -32,6 +33,7 @@ interface PendingScrollAnchor {
 export default function GoalTerminal({ events, connectionState, hasMoreBefore, loadingOlder, onLoadOlder }: GoalTerminalProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const pendingScrollAnchorRef = useRef<PendingScrollAnchor | null>(null);
+  const navigationRevisionRef = useRef(0);
   const [query, setQuery] = useState('');
   const [enabledTypes, setEnabledTypes] = useState<Set<GoalEventType>>(new Set(EVENT_TYPES));
   const [followTail, setFollowTail] = useState(true);
@@ -59,6 +61,10 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
   useLayoutEffect(() => {
     const pending = pendingScrollAnchorRef.current;
     if (!pending) return;
+    if (pending.navigationRevision !== navigationRevisionRef.current) {
+      pendingScrollAnchorRef.current = null;
+      return;
+    }
     const hasPrependedEvents = events.some(event => event.sequence < pending.earliestSequence);
     if (!hasPrependedEvents) {
       if (pending.loadComplete) {
@@ -87,7 +93,16 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
     if (pending.loadComplete) pendingScrollAnchorRef.current = null;
   }, [completedOlderLoads, events]);
 
+  const recordNavigationIntent = () => {
+    navigationRevisionRef.current += 1;
+    const pending = pendingScrollAnchorRef.current;
+    if (pending && pending.navigationRevision !== navigationRevisionRef.current) {
+      pendingScrollAnchorRef.current = null;
+    }
+  };
+
   const resetFilteredWindow = () => {
+    recordNavigationIntent();
     setWindowAnchor(null);
     setFollowTail(true);
   };
@@ -102,6 +117,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
   };
 
   const moveWindow = (direction: -1 | 1) => {
+    recordNavigationIntent();
     const nextStart = direction < 0
       ? Math.max(0, windowStart - MOUNT_LIMIT)
       : Math.min(latestStart, windowStart + MOUNT_LIMIT);
@@ -120,6 +136,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
       sequence: visible ? Number(visible.dataset.eventSequence) : null,
       viewportOffset: visible && viewport ? visible.offsetTop - viewport.scrollTop : 0,
       earliestSequence: events[0]?.sequence ?? Number.POSITIVE_INFINITY,
+      navigationRevision: navigationRevisionRef.current,
       loadComplete: false,
       anchorRestored: false,
       previousFollowTail: followTail,
@@ -132,8 +149,12 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
       await onLoadOlder();
     } finally {
       if (pendingScrollAnchorRef.current === pending) {
-        pending.loadComplete = true;
-        setCompletedOlderLoads(count => count + 1);
+        if (pending.navigationRevision === navigationRevisionRef.current) {
+          pending.loadComplete = true;
+          setCompletedOlderLoads(count => count + 1);
+        } else {
+          pendingScrollAnchorRef.current = null;
+        }
       }
     }
   };
@@ -173,6 +194,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
       <div
         ref={viewportRef}
         onScroll={event => {
+          recordNavigationIntent();
           const target = event.currentTarget;
           const atTail = target.scrollHeight - target.scrollTop - target.clientHeight < 48;
           if (!atTail && followTail) setWindowAnchor(mounted[0]?.sequence ?? null);
@@ -210,7 +232,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
         </ol>
       </div>
       {!followTail && (
-        <button type="button" onClick={() => { setWindowAnchor(null); setFollowTail(true); const viewport = viewportRef.current; if (viewport) viewport.scrollTop = viewport.scrollHeight; requestAnimationFrame(() => { if (viewport) viewport.scrollTop = viewport.scrollHeight; }); }} className="absolute bottom-4 right-4 rounded-full bg-teal-600 px-3 py-1.5 text-xs font-medium text-white shadow motion-reduce:transition-none">
+        <button type="button" onClick={() => { recordNavigationIntent(); setWindowAnchor(null); setFollowTail(true); const viewport = viewportRef.current; if (viewport) viewport.scrollTop = viewport.scrollHeight; requestAnimationFrame(() => { if (viewport) viewport.scrollTop = viewport.scrollHeight; }); }} className="absolute bottom-4 right-4 rounded-full bg-teal-600 px-3 py-1.5 text-xs font-medium text-white shadow motion-reduce:transition-none">
           Follow latest
         </button>
       )}
