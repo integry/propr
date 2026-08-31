@@ -9,7 +9,7 @@ import { getInstanceCatalog } from '../../api/proprApi';
 import { useCurrentUser } from '../../contexts/AuthContext';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { useSocket } from '../../contexts/useSocket';
-import { makeGoalIntentKey, mergeGoalEvents, scopedGoalKey } from './goalDetailUtils';
+import { makeGoalIntentKey, mergeGoalEvents, scopedGoalKey, type GoalViewportAnchor } from './goalDetailUtils';
 import { drainGoalEventGap } from './goalReplay';
 
 const PAGE_SIZE = 200; const POLL_INTERVAL_MS = 3_000;
@@ -68,6 +68,7 @@ export function useGoalDetail(goalId: string) {
   const actionInFlightRef = useRef<symbol | null>(null);
   const messagePromiseRef = useRef<Promise<boolean> | null>(null);
   const messageIntentRef = useRef<MessageIntent | null>(null);
+  const viewportAnchorRef = useRef<GoalViewportAnchor | null>(null);
   identityRef.current = requestIdentity; transportConnectedRef.current = isConnected;
   detailRef.current = detail; eventsRef.current = events;
 
@@ -103,7 +104,7 @@ export function useGoalDetail(goalId: string) {
     eventsRef.current = [];
     previousCursorRef.current = null;
     recoveryTargetRef.current = 0; actionInFlightRef.current = null;
-    messagePromiseRef.current = null; messageIntentRef.current = null;
+    messagePromiseRef.current = null; messageIntentRef.current = null; viewportAnchorRef.current = null;
     setLoadedIdentity(null); setReplayReady(false); setFallbackRequired(false);
     setDetail(null); setEvents([]); setAgents([]); setHasMoreBefore(false);
     setPendingAction(null); setLoading(false); setLoadingOlder(false); setConnectionState('offline');
@@ -122,7 +123,7 @@ export function useGoalDetail(goalId: string) {
     abortRequests();
     recoveryTargetRef.current = 0; actionInFlightRef.current = null;
     previousCursorRef.current = null;
-    messagePromiseRef.current = null; messageIntentRef.current = null;
+    messagePromiseRef.current = null; messageIntentRef.current = null; viewportAnchorRef.current = null;
     subscriptionCleanupRef.current?.(); subscriptionCleanupRef.current = null;
     setDetail(null); setEvents([]); setAgents([]); setError(null); setActionError(null);
     setLoading(true); setLoadingOlder(false); setHasMoreBefore(false); setConnectionState('offline');
@@ -198,7 +199,7 @@ export function useGoalDetail(goalId: string) {
           const wanted = recoveryTargetRef.current;
           const replay = await drainGoalEventGap(goalId, tail, tail < wanted ? wanted : null, recoveryController.signal);
           if (!current(request, recoveryController)) return false;
-          commitEvents(mergeGoalEvents(eventsRef.current, replay.events, goalId));
+          commitEvents(mergeGoalEvents(eventsRef.current, replay.events, goalId, { viewportAnchorSequence: viewportAnchorRef.current?.sequence }));
           probedCurrentTail = replay.cursor >= recoveryTargetRef.current;
         }
         if (!current(request, recoveryController)) return false;
@@ -255,7 +256,7 @@ export function useGoalDetail(goalId: string) {
         if (event.sequence > lastSequence + 1) {
           setConnectionState('recovering'); void recoverAndRefresh(event.sequence); return;
         }
-        commitEvents(mergeGoalEvents(eventsRef.current, [event], goalId));
+        commitEvents(mergeGoalEvents(eventsRef.current, [event], goalId, { viewportAnchorSequence: viewportAnchorRef.current?.sequence }));
         if (event.type === 'lifecycle' || event.type === 'message' || event.type === 'usage') void refreshDetail();
       } catch {
         setConnectionState('recovering'); void recoverAndRefresh();
@@ -307,7 +308,7 @@ export function useGoalDetail(goalId: string) {
       if (!current(request, olderController)) return;
       const cursorMadeProgress = page.previousCursor !== null && page.previousCursor !== beforeSequence;
       previousCursorRef.current = page.previousCursor;
-      commitEvents(mergeGoalEvents(eventsRef.current, page.events, goalId, 'older'));
+      commitEvents(mergeGoalEvents(eventsRef.current, page.events, goalId, { ingestion: 'older', viewportAnchorSequence: viewportAnchorRef.current?.sequence }));
       setHasMoreBefore(page.hasMoreBefore && cursorMadeProgress);
       if (page.hasMoreBefore && !cursorMadeProgress) {
         setActionError('Older goal history stopped because the server repeated or omitted its pagination cursor.');
@@ -404,11 +405,13 @@ export function useGoalDetail(goalId: string) {
     return agent ? getGoalCapableModels(agent) : [];
   }, [agents, detail?.goal.agent, identityAuthorized]);
 
+  const setViewportAnchor = useCallback((anchor: GoalViewportAnchor | null) => { viewportAnchorRef.current = anchor; }, []);
+
   return {
     detail: identityAuthorized ? detail : null, events: identityAuthorized ? events : [],
     loading: loading || (requestIdentity !== null && !identityAuthorized && error === null),
     error, actionError, pendingAction, connectionState, hasMoreBefore, loadingOlder, goalModels,
-    readOnly: isDemoMode || !userId || !identityAuthorized, loadOlder,
+    readOnly: isDemoMode || !userId || !identityAuthorized, loadOlder, setViewportAnchor,
     pause: () => runMutation('pause', (version, key) => pauseGoal(goalId, version, key)),
     resume: () => runMutation('resume', (version, key) => resumeGoal(goalId, version, key)),
     cancel: (reason: string) => runMutation('cancel', (version, key) => cancelGoal(goalId, version, reason, key)),

@@ -3,6 +3,17 @@ import type { GoalEventV1 as GoalEvent, GoalHierarchyNodeV1 } from '../../api/go
 export const GOAL_TERMINAL_STATES = new Set(['completed', 'failed', 'cancelled']);
 export const GOAL_EVENT_RETENTION_LIMIT = 1_000;
 const GOAL_EVENT_HISTORY_RESERVE = GOAL_EVENT_RETENTION_LIMIT / 2;
+const GOAL_EVENT_OLDER_FRONTIER_RESERVE = 200;
+
+export interface GoalViewportAnchor {
+  sequence: number;
+  viewportOffset: number;
+}
+
+export interface GoalEventRetention {
+  ingestion?: 'tail' | 'older';
+  viewportAnchorSequence?: number | null;
+}
 
 export const scopedGoalKey = (ownerId: string, repository: string, goalId: string): string =>
   JSON.stringify([ownerId, repository, goalId]);
@@ -11,23 +22,42 @@ export const mergeGoalEvents = (
   current: GoalEvent[],
   incoming: GoalEvent[],
   goalId: string,
-  ingestion: 'tail' | 'older' = 'tail'
+  retention: GoalEventRetention = {}
 ): GoalEvent[] => {
   const bySequence = new Map<number, GoalEvent>();
   for (const event of current) if (event.goalId === goalId) bySequence.set(event.sequence, event);
   for (const event of incoming) if (event.goalId === goalId) bySequence.set(event.sequence, event);
   const merged = [...bySequence.values()].sort((left, right) => left.sequence - right.sequence);
   if (merged.length <= GOAL_EVENT_RETENTION_LIMIT) return merged;
-  if (ingestion === 'tail') return merged.slice(-GOAL_EVENT_RETENTION_LIMIT);
+  const ingestion = retention.ingestion ?? 'tail';
+  const anchorIndex = retention.viewportAnchorSequence === null || retention.viewportAnchorSequence === undefined
+    ? -1
+    : merged.findIndex(event => event.sequence === retention.viewportAnchorSequence);
+  if (anchorIndex < 0 && ingestion === 'tail') return merged.slice(-GOAL_EVENT_RETENTION_LIMIT);
 
   // Backward pagination retains a bounded history window and the authoritative
-  // live tail. The middle is intentionally evicted so loading old pages cannot
-  // displace replay/gap recovery state or a concurrent live event.
-  const history = merged.slice(0, GOAL_EVENT_HISTORY_RESERVE);
-  const tail = merged.slice(-(GOAL_EVENT_RETENTION_LIMIT - history.length));
-  return history.at(-1)?.sequence === tail[0]?.sequence
-    ? [...history, ...tail.slice(1)]
-    : [...history, ...tail];
+  // live tail. With a historical viewport anchor, retention also keeps that
+  // row and the mounted rows after it. Older ingestion reserves one full page
+  // at the pagination frontier, so repeated loads remain useful without ever
+  // evicting the operator's visible row.
+  const selected = new Map<number, GoalEvent>();
+  const retain = (events: GoalEvent[]) => {
+    for (const event of events) {
+      if (selected.size >= GOAL_EVENT_RETENTION_LIMIT) break;
+      selected.set(event.sequence, event);
+    }
+  };
+  retain(merged.slice(-GOAL_EVENT_HISTORY_RESERVE));
+  if (anchorIndex >= 0) {
+    retain([merged[anchorIndex]]);
+    if (ingestion === 'older') retain(merged.slice(0, GOAL_EVENT_OLDER_FRONTIER_RESERVE));
+    retain(merged.slice(anchorIndex, anchorIndex + GOAL_EVENT_HISTORY_RESERVE));
+    retain(merged.slice(Math.max(0, anchorIndex - GOAL_EVENT_HISTORY_RESERVE), anchorIndex).reverse());
+  } else {
+    retain(merged.slice(0, GOAL_EVENT_HISTORY_RESERVE));
+  }
+  retain(ingestion === 'older' ? merged : [...merged].reverse());
+  return [...selected.values()].sort((left, right) => left.sequence - right.sequence);
 };
 
 export const hierarchyChildren = (

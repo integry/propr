@@ -54,7 +54,7 @@ export default function GoalDetailPage() {
 
         {(goal.actionError || goal.error) && <div role="alert" aria-live="assertive" className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{goal.actionError ?? goal.error}</div>}
         <div className="mt-3 grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1.7fr)_minmax(22rem,0.8fr)]">
-          <GoalTerminal events={goal.events} connectionState={goal.connectionState} hasMoreBefore={goal.hasMoreBefore} loadingOlder={goal.loadingOlder} onLoadOlder={goal.loadOlder} />
+          <GoalTerminal events={goal.events} connectionState={goal.connectionState} hasMoreBefore={goal.hasMoreBefore} loadingOlder={goal.loadingOlder} onLoadOlder={goal.loadOlder} onViewportAnchorChange={goal.setViewportAnchor} />
           <aside aria-label="Goal operator information" className="space-y-3">
             <GoalControls detail={detail} models={goal.goalModels} readOnly={goal.readOnly} pendingAction={goal.pendingAction} onPause={goal.pause} onResume={goal.resume} onCancel={goal.cancel} onChangeModel={goal.changeModel} onSend={goal.sendMessage} onRetryMessage={goal.retryMessage} onCancelMessage={goal.cancelMessage} />
             <GoalHierarchy nodes={detail.hierarchy.nodes} dependencies={detail.hierarchy.dependencies} providerTodos={detail.providerTodos} />

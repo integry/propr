@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, Copy, Search } from 'lucide-react';
 import type { GoalEvent, GoalEventType } from '../../api/goalsApi';
-import { eventSearchText, sanitizeTerminalLabel, sanitizeTerminalText } from './goalDetailUtils';
+import { eventSearchText, sanitizeTerminalLabel, sanitizeTerminalText, type GoalViewportAnchor } from './goalDetailUtils';
 
 const EVENT_TYPES: GoalEventType[] = ['stdout', 'stderr', 'assistant', 'tool', 'checkpoint', 'usage', 'message', 'lifecycle'];
 const MOUNT_LIMIT = 250;
@@ -19,6 +19,7 @@ interface GoalTerminalProps {
   hasMoreBefore: boolean;
   loadingOlder: boolean;
   onLoadOlder: () => Promise<void>;
+  onViewportAnchorChange?: (anchor: GoalViewportAnchor | null) => void;
 }
 
 interface PendingScrollAnchor {
@@ -32,7 +33,7 @@ interface PendingScrollAnchor {
   previousWindowAnchor: number | null;
 }
 
-export default function GoalTerminal({ events, connectionState, hasMoreBefore, loadingOlder, onLoadOlder }: GoalTerminalProps) {
+export default function GoalTerminal({ events, connectionState, hasMoreBefore, loadingOlder, onLoadOlder, onViewportAnchorChange }: GoalTerminalProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const pendingScrollAnchorRef = useRef<PendingScrollAnchor | null>(null);
   const navigationRevisionRef = useRef(0);
@@ -43,6 +44,23 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
   const [copyStatus, setCopyStatus] = useState<'idle' | 'success' | 'failure'>('idle');
   const copyStatusTimerRef = useRef<number | null>(null);
   const [completedOlderLoads, setCompletedOlderLoads] = useState(0);
+  const retainedViewportAnchorRef = useRef<GoalViewportAnchor | null>(null);
+
+  const publishViewportAnchor = useCallback((anchor: GoalViewportAnchor | null) => {
+    retainedViewportAnchorRef.current = anchor;
+    onViewportAnchorChange?.(anchor);
+  }, [onViewportAnchorChange]);
+
+  const visibleViewportAnchor = useCallback((): GoalViewportAnchor | null => {
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+    const rows = [...viewport.querySelectorAll<HTMLElement>('[data-event-sequence]')];
+    const visible = rows.find(row => row.offsetTop + row.offsetHeight >= viewport.scrollTop) ?? rows[0];
+    return visible ? {
+      sequence: Number(visible.dataset.eventSequence),
+      viewportOffset: visible.offsetTop - viewport.scrollTop,
+    } : null;
+  }, []);
 
   const filtered = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -96,6 +114,23 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
     if (pending.loadComplete) pendingScrollAnchorRef.current = null;
   }, [completedOlderLoads, events]);
 
+  useLayoutEffect(() => {
+    if (followTail) {
+      if (retainedViewportAnchorRef.current) publishViewportAnchor(null);
+      return;
+    }
+    const retained = retainedViewportAnchorRef.current;
+    if (retained && !events.some(event => event.sequence === retained.sequence)) {
+      pendingScrollAnchorRef.current = null;
+      publishViewportAnchor(null);
+      setWindowAnchor(null);
+      setFollowTail(true);
+      return;
+    }
+    const visible = visibleViewportAnchor();
+    if (visible) publishViewportAnchor(visible);
+  }, [events, followTail, mounted, publishViewportAnchor, visibleViewportAnchor]);
+
   const recordNavigationIntent = () => {
     navigationRevisionRef.current += 1;
     const pending = pendingScrollAnchorRef.current;
@@ -106,6 +141,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
 
   const resetFilteredWindow = () => {
     recordNavigationIntent();
+    publishViewportAnchor(null);
     setWindowAnchor(null);
     setFollowTail(true);
   };
@@ -126,18 +162,17 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
       : Math.min(latestStart, windowStart + MOUNT_LIMIT);
     setFollowTail(false);
     setWindowAnchor(filtered[nextStart]?.sequence ?? null);
+    publishViewportAnchor(filtered[nextStart] ? { sequence: filtered[nextStart].sequence, viewportOffset: 0 } : null);
     const viewport = viewportRef.current;
     if (viewport) viewport.scrollTop = 0;
   };
 
   const loadOlder = async () => {
     if (pendingScrollAnchorRef.current) return;
-    const viewport = viewportRef.current;
-    const rows = viewport ? [...viewport.querySelectorAll<HTMLElement>('[data-event-sequence]')] : [];
-    const visible = rows.find(row => row.offsetTop + row.offsetHeight >= (viewport?.scrollTop ?? 0)) ?? rows[0];
+    const viewportAnchor = visibleViewportAnchor();
     const pending: PendingScrollAnchor = {
-      sequence: visible ? Number(visible.dataset.eventSequence) : null,
-      viewportOffset: visible && viewport ? visible.offsetTop - viewport.scrollTop : 0,
+      sequence: viewportAnchor?.sequence ?? null,
+      viewportOffset: viewportAnchor?.viewportOffset ?? 0,
       earliestSequence: events[0]?.sequence ?? Number.POSITIVE_INFINITY,
       navigationRevision: navigationRevisionRef.current,
       loadComplete: false,
@@ -146,8 +181,9 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
       previousWindowAnchor: windowAnchor,
     };
     pendingScrollAnchorRef.current = pending;
+    publishViewportAnchor(viewportAnchor);
     setFollowTail(false);
-    setWindowAnchor(mounted[0]?.sequence ?? null);
+    setWindowAnchor(viewportAnchor?.sequence ?? mounted[0]?.sequence ?? null);
     try {
       await onLoadOlder();
     } finally {
@@ -218,6 +254,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
           const target = event.currentTarget;
           const atTail = target.scrollHeight - target.scrollTop - target.clientHeight < 48;
           if (!atTail && followTail) setWindowAnchor(mounted[0]?.sequence ?? null);
+          publishViewportAnchor(atTail && !hasLaterWindow ? null : visibleViewportAnchor());
           setFollowTail(atTail && !hasLaterWindow);
         }}
         tabIndex={0}
@@ -252,7 +289,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
         </ol>
       </div>
       {!followTail && (
-        <button type="button" onClick={() => { recordNavigationIntent(); setWindowAnchor(null); setFollowTail(true); const viewport = viewportRef.current; if (viewport) viewport.scrollTop = viewport.scrollHeight; requestAnimationFrame(() => { if (viewport) viewport.scrollTop = viewport.scrollHeight; }); }} className="absolute bottom-4 right-4 rounded-full bg-teal-600 px-3 py-1.5 text-xs font-medium text-white shadow motion-reduce:transition-none">
+        <button type="button" onClick={() => { recordNavigationIntent(); publishViewportAnchor(null); setWindowAnchor(null); setFollowTail(true); const viewport = viewportRef.current; if (viewport) viewport.scrollTop = viewport.scrollHeight; requestAnimationFrame(() => { if (viewport) viewport.scrollTop = viewport.scrollHeight; }); }} className="absolute bottom-4 right-4 rounded-full bg-teal-600 px-3 py-1.5 text-xs font-medium text-white shadow motion-reduce:transition-none">
           Follow latest
         </button>
       )}
