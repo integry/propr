@@ -98,10 +98,12 @@ const IPV6_ADDRESS_SOURCE = [
 const BRACKETED_IPV6_DOCKER_HOST_SOURCE =
   `\\[(?:${IPV6_ADDRESS_SOURCE})(?:%25(?:[0-9A-Z._~-]|%[0-9A-F]{2}){1,64})?\\]`;
 const DOCKER_TCP_HOSTNAME_SOURCE = /[^\s"'`<>/?#,;|()[\]{}&:]+/u.source;
+const DOCKER_TCP_PORT_SOURCE = '0*(?:2375|2376)';
 const DOCKER_TCP_EVENT_VALUE_PATTERN = new RegExp(
   /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)tcp:\/\//u.source
     + `(?:${DOCKER_TCP_HOSTNAME_SOURCE}|${BRACKETED_IPV6_DOCKER_HOST_SOURCE})`
-    + /:(?:2375|2376)(?=\/|[?#,;|()[\]{}&\s"'`<>]|$)(?:\/[^\s"'`<>?#,;|()[\]{}&]*)?/u.source,
+    + `:${DOCKER_TCP_PORT_SOURCE}`
+    + /(?=\/|[?#,;|()[\]{}&\s"'`<>]|$)(?:\/[^\s"'`<>?#,;|()[\]{}&]*)?/u.source,
   'gimu'
 );
 const SENSITIVE_EVENT_VALUE_PATTERNS = [

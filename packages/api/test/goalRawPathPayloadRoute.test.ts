@@ -235,6 +235,46 @@ test('bracketed IPv6 Docker TCP values redact with bounded structural boundaries
   });
 });
 
+test('Docker TCP ports redact semantically equivalent leading-zero spellings only', () => {
+  const positiveCases = [
+    ['tcp://localhost:02375', REDACTED],
+    ['tcp://127.0.0.1:002376/path', REDACTED],
+    ['[TCP://LOCALHOST:0002375]', `[${REDACTED}]`],
+    ['{tcp://192.0.2.10:00002376?mode=public}', `{${REDACTED}?mode=public}`],
+    ['(tcp://[::1]:02375)', `(${REDACTED})`],
+    ['tcp://[2001:db8::1]:002376/path', REDACTED],
+    ['|TcP://[fe80::1%25eth0]:0002375#public;', `|${REDACTED}#public;`],
+  ] as const;
+  for (const [input, expected] of positiveCases) assert.equal(projectString(input), expected, input);
+
+  const terminators = [')', ']', '}', ',', ';', '|', '&', ' ', '"'] as const;
+  for (const terminator of terminators) {
+    for (const host of ['localhost', '127.0.0.1', '[2001:db8::1]']) {
+      const input = `tcp://${host}:002375/path${terminator}next`;
+      assert.equal(projectString(input), `${REDACTED}${terminator}next`, input);
+    }
+  }
+
+  assert.deepEqual(toPublicGoalEventPayload({
+    message: '[tcp://localhost:02375]',
+    nested: { source: ['{TCP://127.0.0.1:002376/path}', {
+      value: '|tcp://[fe80::1%25eth0]:0002375;',
+    }] },
+  }), {
+    message: `[${REDACTED}]`,
+    nested: { source: [`{${REDACTED}}`, { value: `|${REDACTED};` }] },
+  });
+
+  const negativeCases = [
+    'public tcp://localhost:23750', 'public tcp://localhost:23751',
+    'public tcp://127.0.0.1:023750', 'public tcp://[::1]:0023751/path',
+    'public tcp://localhost:1234', 'public tcp://localhost:65536',
+    'public tcp://127.0.0.1:00065536', 'public tcp://[2001:db8::1]:99999',
+    'public tcp://localhost:23x75', 'ordinary public text about port 02375',
+  ];
+  for (const input of negativeCases) assert.equal(projectString(input), input);
+});
+
 test('bracketed IPv6 Docker TCP values preserve ports, invalid text, and word boundaries', () => {
   const negativeCases = [
     'public tcp://[::1]:23750',
@@ -273,7 +313,7 @@ test('raw socket, Docker TCP, and Windows values preserve exact controls', () =>
 
   const longSensitiveValues = [
     `|unix:///var/run/${'s'.repeat(4_000)}]`,
-    `;tcp://localhost:2376/${'t'.repeat(4_000)},next`,
+    `;tcp://localhost:0002376/${'t'.repeat(4_000)},next`,
     `${String.raw`[C:\Users\alice\private-`}${'w'.repeat(4_000)}]`,
   ];
   for (const input of longSensitiveValues) {
@@ -334,8 +374,8 @@ test('raw path boundary matching remains safe across public string cutoffs', () 
 test('raw socket, Docker TCP, and Windows values redact across public cutoffs', () => {
   const cases = [
     `|unix:///var/run/${'u'.repeat(600)}`,
-    `;tcp://127.0.0.1:2376/${'t'.repeat(600)}`,
-    `[tcp://[2001:db8::1]:2376/${'v'.repeat(600)}]`,
+    `;tcp://127.0.0.1:0002376/${'t'.repeat(600)}`,
+    `[tcp://[2001:db8::1]:002376/${'v'.repeat(600)}]`,
     `${String.raw`[C:\Users\alice\private-`}${'w'.repeat(600)}]`,
   ];
   for (const sensitiveValue of cases) {
