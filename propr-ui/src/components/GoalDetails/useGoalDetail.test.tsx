@@ -166,35 +166,65 @@ describe('useGoalDetail replay and authorization', () => {
   });
 
   it('bounds repeated older pages without losing a live tail delivered during the load', async () => {
-    const firstOlder = (() => {
-      let resolve!: (value: GoalEventsPage) => void;
-      return { promise: new Promise<GoalEventsPage>(done => { resolve = done; }), resolve: (value: GoalEventsPage) => resolve(value) };
-    })();
-    mocks.getGoal.mockResolvedValue({ ...detail, latestSequence: 1_400 });
-    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
-      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
-      if (options.beforeSequence === undefined) return Promise.resolve(page(Array.from({ length: 200 }, (_, index) => event(1_201 + index)), true, 1_201));
-      if (options.beforeSequence === 1_201) return firstOlder.promise;
-      const start = options.beforeSequence - 200;
-      return Promise.resolve(page(Array.from({ length: 200 }, (_, index) => event(start + index)), true, start));
-    });
-    render(<Harness />);
-    await waitFor(() => expect(screen.getByTestId('events')).toHaveTextContent(/^1201/));
-    fireEvent.click(screen.getByRole('button', { name: 'older' }));
-    const deliver = (sequence: number) => mocks.listeners.get('goal:event')?.forEach(callback => callback({
-      ownerId: 'owner-a', repository: 'integry/propr', goalId: 'goal-1', event: event(sequence),
-    }));
-    act(() => deliver(1_401));
-    await act(async () => firstOlder.resolve(page(Array.from({ length: 200 }, (_, index) => event(1_001 + index)), true, 1_001)));
-    for (let load = 0; load < 4; load += 1) {
-      fireEvent.click(screen.getByRole('button', { name: 'older' }));
-      await waitFor(() => expect(mocks.getGoalEvents.mock.calls.filter(([, options]) => options.beforeSequence !== undefined)).toHaveLength(load + 2));
+    const stressRepetitions = 5;
+    for (let repetition = 0; repetition < stressRepetitions; repetition += 1) {
+      resetGoalDetailMocks();
+      const firstOlder = (() => {
+        let resolve!: (value: GoalEventsPage) => void;
+        return { promise: new Promise<GoalEventsPage>(done => { resolve = done; }), resolve: (value: GoalEventsPage) => resolve(value) };
+      })();
+      mocks.getGoal.mockResolvedValue({ ...detail, latestSequence: 1_400 });
+      mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
+        if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+        if (options.beforeSequence === undefined) return Promise.resolve(page(Array.from({ length: 200 }, (_, index) => event(1_201 + index)), true, 1_201));
+        if (options.beforeSequence === 1_201) return firstOlder.promise;
+        const start = options.beforeSequence - 200;
+        return Promise.resolve(page(Array.from({ length: 200 }, (_, index) => event(start + index)), true, start));
+      });
+      const view = render(<Harness />);
+      await waitFor(() => expect(screen.getByTestId('events')).toHaveTextContent(/^1201/));
+
+      const olderButton = () => screen.getByRole('button', { name: 'older' });
+      const waitForOlderPage = async (earliestSequence: number) => {
+        await waitFor(() => {
+          expect(screen.getByTestId('events')).toHaveTextContent(new RegExp(`^${earliestSequence},`));
+          expect(screen.getByTestId('loading-older')).toHaveTextContent('false');
+          expect(screen.getByTestId('has-more-before')).toHaveTextContent('true');
+          expect(olderButton()).toBeEnabled();
+        });
+      };
+      const loadOlder = async (earliestSequence: number) => {
+        fireEvent.click(olderButton());
+        expect(screen.getByTestId('loading-older')).toHaveTextContent('true');
+        expect(olderButton()).toBeDisabled();
+        await waitForOlderPage(earliestSequence);
+      };
+
+      fireEvent.click(olderButton());
+      expect(screen.getByTestId('loading-older')).toHaveTextContent('true');
+      expect(olderButton()).toBeDisabled();
+      const deliver = (sequence: number) => mocks.listeners.get('goal:event')?.forEach(callback => callback({
+        ownerId: 'owner-a', repository: 'integry/propr', goalId: 'goal-1', event: event(sequence),
+      }));
+      act(() => deliver(1_401));
+      await act(async () => firstOlder.resolve(page(Array.from({ length: 200 }, (_, index) => event(1_001 + index)), true, 1_001)));
+      await waitForOlderPage(1_001);
+
+      for (const earliestSequence of [801, 601, 401, 201]) await loadOlder(earliestSequence);
+
+      const olderCursors = mocks.getGoalEvents.mock.calls
+        .map(([, options]) => options.beforeSequence)
+        .filter((cursor): cursor is number => cursor !== undefined);
+      expect(olderCursors).toEqual([1_201, 1_001, 801, 601, 401]);
+      const retained = (screen.getByTestId('events').textContent ?? '').split(',').filter(Boolean).map(Number);
+      expect(retained).toHaveLength(1_000);
+      expect(new Set(retained).size).toBe(1_000);
+      expect(retained.at(-1)).toBe(1_401);
+      expect(retained.filter(sequence => sequence === 1_401)).toHaveLength(1);
+      expect(retained).toContain(201);
+      expect(retained).toContain(1_201);
+      view.unmount();
     }
-    const retained = (screen.getByTestId('events').textContent ?? '').split(',').filter(Boolean).map(Number);
-    expect(retained).toHaveLength(1_000);
-    expect(retained.at(-1)).toBe(1_401);
-    expect(retained).toContain(201);
-    expect(retained).toContain(1_201);
   });
 
   it('immediately reconciles detail when initial history is newer than its snapshot', async () => {
