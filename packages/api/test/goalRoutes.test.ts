@@ -170,13 +170,14 @@ describe('goal routes', () => {
     agents[0].supportedModels.pop();
   });
 
-  test('rejects out-of-bounds concurrency', async () => {
+  test('rejects invalid concurrency and merge policy values', async () => {
     const state = await createGoalViaApi({ maxActiveTasks: 999 });
     assert.equal(state.statusCode, 400);
-    assert.equal(
-      (state.body as { code: string }).code,
-      'goal_concurrency_bound_exceeded'
-    );
+    assert.equal((state.body as { code: string }).code, 'goal_concurrency_bound_exceeded');
+    const nullConcurrency = await createGoalViaApi({ maxActiveTasks: null });
+    const nullMergePolicy = await createGoalViaApi({ mergePolicy: null });
+    assert.deepEqual([nullConcurrency.statusCode, (nullConcurrency.body as { code: string }).code], [400, 'goal_concurrency_bound_exceeded']);
+    assert.deepEqual([nullMergePolicy.statusCode, (nullMergePolicy.body as { code: string }).code], [400, 'goal_validation_error']);
   });
 
   test('validates and persists the shared Ultrafix contract', async () => {

@@ -50,16 +50,26 @@ function validateSelection(body: Record<string, unknown>): ValidatedSelection | 
   if ([repository, agent, requestedModel].some(value => Array.from(value).length > GOAL_IDENTIFIER_MAX_LENGTH)) {
     return reject(400, GOAL_ERROR_CODES.validation, `repository, agent, and model must not exceed ${GOAL_IDENTIFIER_MAX_LENGTH} characters`);
   }
-  const maxActiveTasks = body.maxActiveTasks ?? GOAL_DEFAULT_MAX_ACTIVE_TASKS;
+  const maxActiveTasks = body.maxActiveTasks === undefined
+    ? GOAL_DEFAULT_MAX_ACTIVE_TASKS
+    : body.maxActiveTasks;
   if (typeof maxActiveTasks !== 'number' || !Number.isInteger(maxActiveTasks)
     || maxActiveTasks < GOAL_MIN_MAX_ACTIVE_TASKS || maxActiveTasks > GOAL_MAX_MAX_ACTIVE_TASKS) {
     return reject(400, GOAL_ERROR_CODES.concurrencyBound, `maxActiveTasks must be between ${GOAL_MIN_MAX_ACTIVE_TASKS} and ${GOAL_MAX_MAX_ACTIVE_TASKS}`);
   }
-  const mergePolicy = (body.mergePolicy ?? 'manual') as GoalMergePolicy;
-  if (!GOAL_MERGE_POLICIES.includes(mergePolicy)) {
+  const mergePolicy = body.mergePolicy === undefined ? 'manual' : body.mergePolicy;
+  if (typeof mergePolicy !== 'string'
+    || !GOAL_MERGE_POLICIES.includes(mergePolicy as GoalMergePolicy)) {
     return reject(400, GOAL_ERROR_CODES.validation, `mergePolicy must be one of: ${GOAL_MERGE_POLICIES.join(', ')}`);
   }
-  return { objective, repository, agent, requestedModel, maxActiveTasks, mergePolicy };
+  return {
+    objective,
+    repository,
+    agent,
+    requestedModel,
+    maxActiveTasks,
+    mergePolicy: mergePolicy as GoalMergePolicy,
+  };
 }
 
 function validateUltrafix(body: Record<string, unknown>): Pick<CreateGoalInput, 'ultrafixEnabled' | 'ultrafixGoal' | 'ultrafixMaxCycles'> | GoalRouteRejection {
