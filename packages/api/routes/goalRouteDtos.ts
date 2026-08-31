@@ -71,16 +71,16 @@ const SENSITIVE_PATH_MARKER = '[REDACTED_SENSITIVE_PATH]';
 // before either public byte cutoff can still be classified without scanning an
 // attacker-sized string.
 const PUBLIC_EVENT_REDACTION_LOOKAHEAD_BYTES = 256;
-// Raw roots and credential paths share explicit opening/closing token
-// delimiters. A pipe is a raw boundary only when it is not attached to a word;
-// embedded file-URI pipe suffixes are classified by redactFileUriTokens before
-// these patterns run.
+// Raw sockets, Docker hosts, Windows paths, roots, and credential paths share
+// explicit opening/closing token delimiters. A pipe is a raw boundary only when
+// it is not attached to a word; embedded file-URI pipe suffixes are classified
+// by redactFileUriTokens before these patterns run.
 const SENSITIVE_EVENT_VALUE_PATTERNS = [
-  /(^|[\s"'`=(,:])(?:unix|npipe):\/\/[^\s"'`<>]+/gimu,
-  /(^|[\s"'`=(,:])tcp:\/\/[^\s"'`<>]+(?::2375|:2376)(?:\/[^\s"'`<>]*)?/gimu,
+  /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)(?:unix|npipe):\/\/[^\s"'`<>?#,;|()[\]{}&]+/gimu,
+  /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)tcp:\/\/[^\s"'`<>/?#,;|()[\]{}&:]+:(?:2375|2376)(?=\/|[?#,;|()[\]{}&\s"'`<>]|$)(?:\/[^\s"'`<>?#,;|()[\]{}&]*)?/gimu,
   /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)\/(?:app|builds?|data|github|home|root|users|private|var|run|tmp|srv|workspaces?|worktrees?|mnt|etc|opt)(?=\/|[?#,;|()[\]{}&\s"'`<>]|$)(?:\/[^\s"'`<>?#,;|()[\]{}&]*)?/gimu,
   /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)\/(?:[^\s"'`<>/]+\/)*(?:\.env(?!\.example(?=\/|[?#,;|()[\]{}&\s"'`<>]|$))(?:\.[^\s"'`<>/?#,;|()[\]{}&]+)?|\.npmrc|\.netrc|\.git-credentials|\.ssh|\.aws|\.azure|\.config|\.docker|\.kube|\.gnupg|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)(?=\/|[?#,;|()[\]{}&\s"'`<>]|$)(?:\/[^\s"'`<>?#,;|()[\]{}&]*)?/gimu,
-  /(^|[\s"'`=(,:])[A-Z]:[\\/](?:Users|Windows|ProgramData|workspaces?|worktrees?)[^\s"'`<>]*/gimu,
+  /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)[A-Z](?::|%3A)(?:[\\/]|%2F|%5C)(?:Users|Windows|ProgramData|workspaces?|worktrees?)(?=(?:[\\/]|%2F|%5C)|[?#,;|()[\]{}&\s"'`<>]|$)(?:(?:[\\/]|%2F|%5C)[^\s"'`<>?#,;|()[\]{}&]*)?/gimu,
 ] as const;
 const INCOMPLETE_SENSITIVE_EVENT_VALUE_PATTERN =
   /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)(?:tcp:\/\/[^\s"'`<>]*|\/(?!\/)[^\s"'`<>]*|[A-Z]:[\\/][^\s"'`<>]*)$/gimu;
