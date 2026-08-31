@@ -111,8 +111,13 @@ test('event route projects poisoned nested payloads without mutating persistence
   const poisonedPayload = {
     status: 'working',
     requestedModel: 'claude-opus-4-8',
+    repositoryOwner: 'integry',
+    prNumber: 2018,
     requestedBy: 'safe-user-display',
     requestedAt: '2026-08-31T10:00:00.000Z',
+    ownerUserId: 'private-owner-user',
+    leaseOwner: 'private-lease-owner',
+    controllerOwner: 'private-controller-owner',
     eventName: 'model-change-requested',
     progress: { current: 2, total: 5, note: `safe context ${githubToken}` },
     safeArray: ['alpha', { message: 'beta', count: 3 }, `array context ${githubToken}`],
@@ -178,6 +183,8 @@ test('event route projects poisoned nested payloads without mutating persistence
   const serialized = JSON.stringify(payload);
   assert.equal(payload.status, 'working');
   assert.equal(payload.requestedModel, 'claude-opus-4-8');
+  assert.equal(payload.repositoryOwner, 'integry');
+  assert.equal(payload.prNumber, 2018);
   assert.equal(payload.requestedBy, 'safe-user-display');
   assert.equal(payload.requestedAt, '2026-08-31T10:00:00.000Z');
   assert.equal(payload.eventName, 'model-change-requested');
@@ -196,7 +203,8 @@ test('event route projects poisoned nested payloads without mutating persistence
   assert.equal((payload.auditTrail as unknown[]).length, 100);
   assert.match((payload.progress as { note: string }).note, /\[REDACTED_GITHUB_TOKEN\]/);
   for (const forbiddenKey of [
-    'controller', 'ownerUserId', 'leaseEpoch', 'sessionId', 'idempotencyKey',
+    'controller', 'ownerUserId', 'leaseOwner', 'controllerOwner', 'leaseEpoch',
+    'sessionId', 'idempotencyKey',
     'claimToken', 'request', 'response', 'runtime', 'containerId', 'worktreePath',
     'configPath', 'credentialPath', 'env', 'GITHUB_TOKEN', 'SAFE_SETTING', 'mounts',
     'cwd', 'hostPath', 'dockerHost', 'workspacePath', 'workerId', 'turnId', 'rawTurnId',
@@ -204,7 +212,8 @@ test('event route projects poisoned nested payloads without mutating persistence
     assert.equal(serialized.includes(`"${forbiddenKey}"`), false, forbiddenKey);
   }
   for (const forbiddenLiteral of [
-    githubToken, 'provider-session-private', 'private-write-key', 'private-claim-token',
+    githubToken, 'private-owner-user', 'private-lease-owner', 'private-controller-owner',
+    'provider-session-private', 'private-write-key', 'private-claim-token',
     'private-controller-response', 'private-container', 'not-public-either',
     '/var/run/docker.sock', '/tmp/worktrees/private-goal',
     '/home/propr/.config/private/config.json', '/run/secrets/github-token',

@@ -24,13 +24,7 @@ const PUBLIC_EVENT_PAYLOAD_LIMITS = {
   totalStringBytes: 65_536,
 } as const;
 
-const SAFE_EVENT_KEY_NAMES = new Set([
-  'requestedat',
-  'requestedby',
-  'requestedmodel',
-]);
-
-const PRIVATE_EVENT_KEY_WORDS = new Set([
+const PRIVATE_EVENT_KEY_NAMES = new Set([
   'controller',
   'session',
   'owner',
@@ -60,18 +54,19 @@ const PRIVATE_EVENT_KEY_WORDS = new Set([
   'env',
   'environment',
   'mount',
+  'mounts',
   'volume',
+  'volumes',
   'credential',
+  'credentials',
   'fence',
   'secret',
+  'secrets',
   'password',
   'passwd',
   'passphrase',
   'private',
   'internal',
-]);
-
-const PRIVATE_EVENT_KEY_NAMES = new Set([
   'proto',
   'prototype',
   'constructor',
@@ -104,6 +99,61 @@ const PRIVATE_EVENT_KEY_NAMES = new Set([
   'workspacepath',
 ]);
 
+const PRIVATE_EVENT_KEY_SUFFIXES = [
+  // Deliberately use specific ownership/request identities, not generic owner/request suffixes.
+  // repositoryOwner, requestedModel, and pullRequestNumber are public event context.
+  'owneruserid',
+  'leaseowner',
+  'controllerowner',
+  'leaseepoch',
+  'sessionid',
+  'idempotencykey',
+  'claimtoken',
+  'requestid',
+  'requestheaders',
+  'requestbody',
+  'requestmetadata',
+  'requestcontext',
+  'responseheaders',
+  'responsebody',
+  'responsemetadata',
+  'responsecontext',
+  'containerid',
+  'workerid',
+  'rawturnid',
+  'turnid',
+  'providerthreadid',
+  'lastcheckpoint',
+  'recoverymetadata',
+  'epoch',
+  'path',
+  'cwd',
+  'host',
+  'hostname',
+  'socket',
+  'sock',
+  'config',
+  'configuration',
+  'env',
+  'environment',
+  'mount',
+  'mounts',
+  'volume',
+  'volumes',
+  'credential',
+  'credentials',
+  'token',
+  'authorization',
+  'cookie',
+  'secret',
+  'secrets',
+  'password',
+  'passwd',
+  'passphrase',
+  'private',
+  'internal',
+] as const;
+
 const UNSERIALIZABLE_PAYLOAD_MARKER = '[Unserializable]';
 
 interface PublicPayloadProjectionState {
@@ -133,18 +183,12 @@ function truncateUtf8(value: string, maxBytes: number): string {
 }
 
 function isPrivateEventKey(key: string): boolean {
-  const words = key
+  const normalizedName = key
     .normalize('NFKC')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
-  const normalizedName = words.join('');
-  if (SAFE_EVENT_KEY_NAMES.has(normalizedName)) return false;
-  if (PRIVATE_EVENT_KEY_NAMES.has(normalizedName)) return true;
-  return words.some((word) => PRIVATE_EVENT_KEY_WORDS.has(word)
-    || (word.endsWith('s') && PRIVATE_EVENT_KEY_WORDS.has(word.slice(0, -1)))
-    || (word.endsWith('ies') && PRIVATE_EVENT_KEY_WORDS.has(`${word.slice(0, -3)}y`)));
+    .replace(/[^a-z0-9]+/g, '');
+  return PRIVATE_EVENT_KEY_NAMES.has(normalizedName)
+    || PRIVATE_EVENT_KEY_SUFFIXES.some((suffix) => normalizedName.endsWith(suffix));
 }
 
 function isUnsupportedPayloadValue(value: unknown): boolean {
