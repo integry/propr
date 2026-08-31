@@ -695,7 +695,7 @@ describe('desktop trusted release workflow', () => {
     );
   });
 
-  test('hands the canonical common shortcut to a profileless ordinary-user probe and cleans only owned paths', () => {
+  test('hands the canonical common shortcut to a profile-loading ordinary-user probe and cleans only owned paths', () => {
     const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
     const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
     assert.ok(probeStart >= 0 && probeEnd > probeStart);
@@ -724,8 +724,8 @@ describe('desktop trusted release workflow', () => {
       ['SystemRoot', 'PROPR_DESKTOP_START_MENU_SHORTCUT'],
     );
     assert.equal(shortcutProbe.match(/PROPR_DESKTOP_START_MENU_SHORTCUT/g)?.length, 2);
-    assert.match(shortcutProbe, /\$startInfo\.LoadUserProfile = \$false/);
-    assert.doesNotMatch(shortcutProbe, /\$startInfo\.LoadUserProfile = \$true/);
+    assert.match(shortcutProbe, /\$startInfo\.LoadUserProfile = \$true/);
+    assert.doesNotMatch(shortcutProbe, /\$startInfo\.LoadUserProfile = \$false/);
     assert.match(shortcutProbe, /\$startInfo\.UserName = \$UserName/);
     assert.match(shortcutProbe, /\$startInfo\.Domain = \$Domain/);
     assert.match(shortcutProbe, /\$startInfo\.Password = \$Credential\.Password/);

@@ -450,7 +450,7 @@ exit 0
   $startInfo.UserName = $UserName
   $startInfo.Domain = $Domain
   $startInfo.Password = $Credential.Password
-  $startInfo.LoadUserProfile = $false
+  $startInfo.LoadUserProfile = $true
   $startInfo.RedirectStandardOutput = $true
   $startInfo.RedirectStandardError = $true
   foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedProbe)) {
