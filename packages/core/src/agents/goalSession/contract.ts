@@ -116,6 +116,10 @@ export interface GoalModelChangeIntent {
     modelChangeId: string;
     model: string;
     requestedAt: string;
+    /** Durable provider-call phase; missing is treated as pending for older records. */
+    phase?: 'pending' | 'provider_in_doubt' | 'committed';
+    /** Retained after commit so an ambiguous retry can return the original acknowledgement. */
+    acknowledgement?: GoalModelChangeAcknowledgement;
 }
 
 export type GoalNativeSessionIdTiming = 'eager' | 'first_turn';
@@ -182,7 +186,7 @@ export interface GoalSessionState extends GoalSessionIdentity {
     recoveryAttempt?: GoalRecoveryAttempt;
     /** In-flight or completed cancellation identity. Active turn ownership is cleared when this is claimed. */
     cancellationIntent?: GoalCancellationIntent;
-    /** In-flight next-turn provider model application, retained across crashes. */
+    /** Provider model application/reconciliation identity retained across crashes. */
     modelChangeIntent?: GoalModelChangeIntent;
     failureReason?: string;
     /** Optimistic concurrency token owned by the state port. */
@@ -233,7 +237,10 @@ export interface GoalSessionStatePort {
 export interface GoalSessionControlTransition {
     /** Stable idempotency identity for ambiguous post-commit recovery. */
     transitionId: string;
-    fence: GoalSessionControlFence;
+    /** A turn fence makes the transaction authoritative only for the exact live invocation. */
+    fence: GoalSessionControlFence | GoalSessionFence;
+    /** Explicit because a control request may carry an ignored excess turnId property at runtime. */
+    turnScoped?: true;
     execution: GoalExecutionIdentity;
     auditEvents: ReadonlyArray<Exclude<GoalSessionEvent, { type: 'completion' }>>;
 }

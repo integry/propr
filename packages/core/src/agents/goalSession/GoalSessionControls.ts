@@ -75,7 +75,20 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
         if (state.status !== 'running' && state.status !== 'pause_requested') {
             throw new GoalSessionContractError(`Cannot pause a session while it is ${state.status}`, 'SESSION_NOT_RUNNING');
         }
-        if (state.status === 'running') state = await this.markPauseRequested(state);
+        if (state.status === 'running') {
+            const activeTurn = state.activeTurn;
+            if (!activeTurn) throw new StaleGoalSessionFenceError('No active turn owns the pause request');
+            state = await this.commitControlTransition({
+                state,
+                fence: request,
+                changes: {
+                    status: 'pause_requested',
+                    activeTurn: { ...activeTurn, status: 'pause_requested' },
+                },
+                auditEvents: [{ type: 'pause_requested', appliesAt: 'next_safe_boundary' }],
+                transitionId: this.controlOperationId('pause-active-requested', state),
+            });
+        }
         if (!this.adapter.requestPause) {
             throw new GoalSessionContractError('Provider declares active-turn pause without implementing it', 'CAPABILITY_METHOD_MISSING');
         }
@@ -87,13 +100,18 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
         if (stillOwned.version !== state.version || stillOwned.status === 'terminated' || stillOwned.status === 'failed') {
             throw new StaleGoalSessionFenceError('A newer operation superseded the pause acknowledgement');
         }
-        await this.appendControl(request, controlExecutionIdentity(state), {
-            type: 'pause_requested', appliesAt: acknowledgement.appliesAt,
-        });
         if (acknowledgement.boundaryReached) {
-            state = await this.markPaused(state);
-            await this.appendControl(request, controlExecutionIdentity(state), {
-                type: 'pause_boundary', ...acknowledgement.boundaryReached,
+            const activeTurn = state.activeTurn;
+            if (!activeTurn) throw new StaleGoalSessionFenceError('No active turn owns the pause boundary');
+            state = await this.commitControlTransition({
+                state,
+                fence: request,
+                changes: {
+                    status: 'paused',
+                    activeTurn: { ...activeTurn, status: 'paused' },
+                },
+                auditEvents: [{ type: 'pause_boundary', ...acknowledgement.boundaryReached }],
+                transitionId: this.controlOperationId('pause-active-boundary', state),
             });
         }
         return acknowledgement;
@@ -148,58 +166,86 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             });
             return acknowledgement;
         }
-        const previousModel = state.currentModel;
-        const previousRequestedModel = state.requestedModel;
-        const modelChangeId = this.controlOperationId('model', state);
-        state = await this.compareAndSetExact(state, {
-            requestedModel: request.model,
-            modelChangeIntent: { modelChangeId, model: request.model, requestedAt: new Date().toISOString() },
-        }, 'A newer model intent superseded this request');
-        let acknowledgement: GoalModelChangeAcknowledgement;
-        try {
-            acknowledgement = await this.adapter.requestModelChange(
-                { ...request, modelChangeId },
-                persistedSnapshot(state),
-            );
-            if (acknowledgement.requestedModel !== request.model) {
-                throw new GoalSessionContractError('Provider acknowledged a different requested model', 'MODEL_ACK_MISMATCH');
-            }
-            if (acknowledgement.appliesAt === 'next_turn') {
-                throw new GoalSessionContractError('Provider deferred beyond its declared model boundary', 'CAPABILITY_ACK_MISMATCH');
-            }
-            if (acknowledgement.appliesAt === 'immediate'
-                && (state.status === 'running' || state.status === 'pause_requested')) {
-                throw new GoalSessionContractError('Provider applied a model change before an active-turn safe boundary', 'CAPABILITY_ACK_MISMATCH');
-            }
-            const auditEvents: Array<Exclude<GoalSessionEvent, { type: 'completion' }>> = [{
-                type: 'model_change_acknowledged', requestedModel: request.model, appliesAt: acknowledgement.appliesAt,
-            }];
-            if (acknowledgement.effectiveModel) {
-                auditEvents.push({
-                    type: 'model_changed', previousModel, model: acknowledgement.effectiveModel,
-                });
-            }
-            state = await this.commitControlTransition({
-                state,
-                fence: request,
-                changes: {
-                    currentModel: acknowledgement.effectiveModel ?? state.currentModel,
-                    modelChangeIntent: undefined,
-                },
-                auditEvents,
-                transitionId: `model-applied:${modelChangeId}`,
-            });
-        } catch (error) {
-            try {
-                await this.compareAndSetExact(state, {
-                    requestedModel: previousRequestedModel,
-                    modelChangeIntent: undefined,
-                });
-            }
-            catch { /* A newer intent owns the field; do not roll it back. */ }
-            throw error;
+        return this.applyImmediateModelChange(request, state);
+    }
+
+    /** Resumes a durable next-safe-boundary intent after an ambiguous provider/local outcome. */
+    protected async resumeImmediateModelChangeIntent(
+        fence: GoalSessionControlFence,
+        state: GoalSessionState,
+    ): Promise<GoalSessionState> {
+        const intent = state.modelChangeIntent;
+        if (this.adapter.capabilities.modelChange !== 'next_safe_boundary'
+            || !intent || intent.phase === 'committed') return state;
+        await this.applyImmediateModelChange({ ...fence, model: intent.model }, state);
+        return this.requireControlledState(fence);
+    }
+
+    private async applyImmediateModelChange(
+        request: GoalModelChangeRequest,
+        initial: GoalSessionState,
+    ): Promise<GoalModelChangeAcknowledgement> {
+        let state = initial;
+        let intent = state.modelChangeIntent?.model === request.model ? state.modelChangeIntent : undefined;
+        if (intent?.phase === 'committed' && intent.acknowledgement) return intent.acknowledgement;
+        if (!intent) {
+            intent = {
+                modelChangeId: this.controlOperationId('model', state),
+                model: request.model,
+                requestedAt: new Date().toISOString(),
+                phase: 'pending',
+            };
+            state = await this.compareAndSetExact(state, {
+                requestedModel: request.model,
+                modelChangeIntent: intent,
+            }, 'A newer model intent superseded this request');
         }
+        if (intent.phase !== 'provider_in_doubt') {
+            intent = { ...intent, phase: 'provider_in_doubt' };
+            state = await this.compareAndSetExact(state, { modelChangeIntent: intent },
+                'A newer model intent superseded the provider-call claim');
+        }
+        const acknowledgement = await this.adapter.requestModelChange(
+            { ...request, modelChangeId: intent.modelChangeId },
+            persistedSnapshot(state),
+        );
+        this.validateImmediateModelAcknowledgement(request, state, acknowledgement);
+        const auditEvents: Array<Exclude<GoalSessionEvent, { type: 'completion' }>> = [{
+            type: 'model_change_acknowledged', requestedModel: request.model, appliesAt: acknowledgement.appliesAt,
+        }];
+        if (acknowledgement.effectiveModel) {
+            auditEvents.push({
+                type: 'model_changed', previousModel: state.currentModel, model: acknowledgement.effectiveModel,
+            });
+        }
+        await this.commitControlTransition({
+            state,
+            fence: request,
+            changes: {
+                currentModel: acknowledgement.effectiveModel ?? state.currentModel,
+                modelChangeIntent: { ...intent, phase: 'committed', acknowledgement },
+            },
+            auditEvents,
+            transitionId: `model-applied:${intent.modelChangeId}`,
+        });
         return acknowledgement;
+    }
+
+    private validateImmediateModelAcknowledgement(
+        request: GoalModelChangeRequest,
+        state: GoalSessionState,
+        acknowledgement: GoalModelChangeAcknowledgement,
+    ): void {
+        if (acknowledgement.requestedModel !== request.model) {
+            throw new GoalSessionContractError('Provider acknowledged a different requested model', 'MODEL_ACK_MISMATCH');
+        }
+        if (acknowledgement.appliesAt === 'next_turn') {
+            throw new GoalSessionContractError('Provider deferred beyond its declared model boundary', 'CAPABILITY_ACK_MISMATCH');
+        }
+        if (acknowledgement.appliesAt === 'immediate'
+            && (state.status === 'running' || state.status === 'pause_requested')) {
+            throw new GoalSessionContractError('Provider applied a model change before an active-turn safe boundary', 'CAPABILITY_ACK_MISMATCH');
+        }
     }
 
     async cancel(request: GoalCancelRequest): Promise<GoalSessionState> {
@@ -325,21 +371,6 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             });
         }
         return { appliesAt: 'after_turn' };
-    }
-
-    private markPauseRequested(state: GoalSessionState, afterTurn = false): Promise<GoalSessionState> {
-        return this.compareAndSetExact(state, {
-            status: 'pause_requested',
-            activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'pause_requested' } : state.activeTurn,
-            pendingAfterTurnPause: afterTurn ? true : state.pendingAfterTurnPause,
-        });
-    }
-
-    private markPaused(state: GoalSessionState): Promise<GoalSessionState> {
-        return this.compareAndSetExact(state, {
-            status: 'paused',
-            activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'paused' } : state.activeTurn,
-        });
     }
 
     private activeExecution(state: GoalSessionState): GoalExecutionIdentity {

@@ -341,9 +341,7 @@ export class InMemoryGoalSessionPorts implements
         const current = this.states.get(key);
         const commitKey = transitionCommitKey(transition);
         if (this.transitionCommits.has(commitKey)) return current ? clone(current) : null;
-        if (!current || current.version !== expected.version
-            || current.controllerEpoch !== transition.fence.controllerEpoch
-            || current.status === 'cancelling' || current.status === 'terminated' || current.status === 'failed') return null;
+        if (!matchesTransitionFence(current, expected, transition)) return null;
         if (this.transitionFault === 'before_commit') {
             this.transitionFault = undefined;
             throw new Error('Injected crash before state/audit transaction commit');
@@ -352,7 +350,9 @@ export class InMemoryGoalSessionPorts implements
         this.states.set(key, saved);
         for (const event of transition.auditEvents) {
             this.record(key, {
-                turnId: `#control-e${transition.fence.controllerEpoch}`,
+                turnId: transition.turnScoped === true && 'turnId' in transition.fence
+                    ? transition.fence.turnId
+                    : `#control-e${transition.fence.controllerEpoch}`,
                 fence: transition.fence,
                 execution: transition.execution,
                 event,
@@ -365,6 +365,24 @@ export class InMemoryGoalSessionPorts implements
         }
         return clone(saved);
     }
+}
+
+function matchesTransitionFence(
+    current: GoalSessionState | undefined,
+    expected: GoalSessionState,
+    transition: GoalSessionControlTransition,
+): current is GoalSessionState {
+    if (!current || current.version !== expected.version
+        || current.controllerEpoch !== transition.fence.controllerEpoch
+        || current.status === 'cancelling' || current.status === 'terminated' || current.status === 'failed') return false;
+    if (transition.turnScoped !== true) return true;
+    if (!('turnId' in transition.fence)) return false;
+    return current.activeTurn?.turnId === transition.fence.turnId
+        && current.activeTurn.executionId === transition.execution.executionId
+        && current.activeTurn.attemptId === transition.execution.attemptId
+        && current.activeTurn.status !== 'completed'
+        && current.activeTurn.status !== 'cancelled'
+        && current.activeTurn.status !== 'failed';
 }
 
 function terminalCommitKey(completion: GoalTerminalCommit): string {
@@ -384,6 +402,7 @@ function transitionCommitKey(transition: GoalSessionControlTransition): string {
         transition.fence.goalId,
         transition.fence.sessionId,
         transition.fence.controllerEpoch,
+        transition.turnScoped === true && 'turnId' in transition.fence ? transition.fence.turnId : null,
         transition.transitionId,
     ]);
 }

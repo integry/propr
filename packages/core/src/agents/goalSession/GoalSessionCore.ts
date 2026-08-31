@@ -229,6 +229,33 @@ export abstract class GoalSessionCore {
         return saved;
     }
 
+    /** Commits a live-turn state change and provider-stream audit under one exact-attempt fence. */
+    protected async commitTurnTransition(
+        options: {
+            state: GoalSessionState;
+            fence: GoalSessionFence;
+            execution: GoalExecutionIdentity;
+            update: (state: GoalSessionState) => Partial<GoalSessionState>;
+            auditEvents: ReadonlyArray<Exclude<GoalSessionEvent, { type: 'completion' }>>;
+            transitionId: string;
+        },
+    ): Promise<GoalSessionState> {
+        const { fence, execution, update, auditEvents, transitionId } = options;
+        let state = options.state;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            const saved = await this.ports.transitions.commit(state, nextState(state, update(state)), {
+                transitionId,
+                fence,
+                execution,
+                auditEvents,
+                turnScoped: true,
+            });
+            if (saved) return saved;
+            state = await this.requireActiveAttemptState(fence, execution);
+        }
+        throw new StaleGoalSessionFenceError('A newer operation repeatedly superseded the turn state/audit transaction');
+    }
+
     private async compareAndSetLoop(
         load: () => Promise<GoalSessionState>,
         update: (state: GoalSessionState) => Partial<GoalSessionState>,

@@ -19,6 +19,7 @@ import {
     validateControlFence,
 } from './support.js';
 import { duplicateTurnResult, type RunGoalTurnResult } from './turnDelivery.js';
+import { assertFirstTurnIdentityEvent, assertSuppliedMessagesAcknowledged, isAtomicTurnAudit, streamAuditTransitionId } from './turnStreamProtocol.js';
 
 export interface RunGoalTurnRequest extends Omit<GoalBeginTurnRequest, 'executionId' | 'attemptId' | 'correctiveMessages'> {
     executionId: string;
@@ -77,7 +78,9 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             requestedModel,
             status: 'running',
             retryTurn: undefined,
-            modelChangeIntent: undefined,
+            modelChangeIntent: this.adapter.capabilities.modelChange === 'next_turn'
+                ? undefined
+                : state.modelChangeIntent,
         }));
         if (!claimed) {
             state = await this.requireControlledState(request);
@@ -258,7 +261,9 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         const claimed = await this.compareAndSetExact(state, {
             status: recoveringPause ? 'pause_requested' : 'running',
             activeTurn: recoveringPause ? { ...activeTurn, status: 'pause_requested' } : activeTurn,
-            modelChangeIntent: undefined,
+            modelChangeIntent: this.adapter.capabilities.modelChange === 'next_turn'
+                ? undefined
+                : state.modelChangeIntent,
         },
             'A newer operation claimed the reconciled turn before recovery');
         const adapterRequest: GoalBeginTurnRequest = {
@@ -296,20 +301,22 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 if (completed) {
                     throw new GoalSessionContractError('Provider emitted an event after turn completion', 'EVENT_AFTER_COMPLETION');
                 }
-                this.assertFirstTurnIdentityEvent(current, event);
+                assertFirstTurnIdentityEvent(current, event, this.adapter.capabilities.nativeSessionId);
                 if (event.type === 'message_acknowledged') {
                     await this.acknowledgeNextTurnMessage(fence, execution, event.messageId, awaitingMessageIds);
                     await this.append(fence, execution, event);
                     continue;
                 }
-                this.assertSuppliedMessagesAcknowledged(event, awaitingMessageIds);
+                assertSuppliedMessagesAcknowledged(event, awaitingMessageIds);
                 if (event.type === 'completion' && this.adapter.capabilities.pause === 'after_turn') {
                     current = await this.requireActiveAttemptState(fence, execution);
                 }
                 current = await this.applyTurnEvent(fence, current, execution, event);
                 if (event.type === 'pause_boundary') reachedPause = true;
                 if (event.type === 'completion') completed = true;
-                if (event.type !== 'completion') await this.append(fence, execution, event);
+                if (event.type !== 'completion' && !isAtomicTurnAudit(event)) {
+                    await this.append(fence, execution, event);
+                }
                 if (event.type === 'pause_boundary' && this.adapter.capabilities.pause === 'active_turn') break;
                 if (event.type === 'completion' && current.status === 'paused') reachedPause = true;
             }
@@ -325,24 +332,6 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             current = await this.finishTurnIfOwned(fence, execution, message);
             throw error;
         }
-    }
-
-    private assertFirstTurnIdentityEvent(state: GoalSessionState, event: GoalSessionEvent): void {
-        if (state.providerSessionId || this.adapter.capabilities.nativeSessionId !== 'first_turn') return;
-        if (event.type !== 'checkpoint' || !event.providerSessionId?.trim()) {
-            throw new GoalSessionContractError(
-                'A first-turn provider must durably bind its native session ID before emitting authoritative work',
-                'FIRST_TURN_ID_NOT_BOUND',
-            );
-        }
-    }
-
-    private assertSuppliedMessagesAcknowledged(event: GoalSessionEvent, awaitingMessageIds: string[]): void {
-        if (event.type !== 'completion' || event.outcome !== 'succeeded' || awaitingMessageIds.length === 0) return;
-        throw new GoalSessionContractError(
-            `Provider reported success without acknowledging supplied corrective message "${awaitingMessageIds[0]}"`,
-            'MESSAGE_ACK_MISSING',
-        );
     }
 
     private async acknowledgeNextTurnMessage(
@@ -374,18 +363,30 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
     ): Promise<GoalSessionState> {
         if (event.type === 'checkpoint') return this.persistCheckpoint(fence, current, execution, event);
         if (event.type === 'model_changed') {
-            return this.updateActiveTurnState(fence, execution, value => ({
-                ...value,
-                currentModel: event.model,
-                pendingModelChange: value.pendingModelChange === event.model ? undefined : value.pendingModelChange,
-            }));
+            return this.commitTurnTransition({
+                state: current,
+                fence,
+                execution,
+                update: value => ({
+                    currentModel: event.model,
+                    pendingModelChange: value.pendingModelChange === event.model ? undefined : value.pendingModelChange,
+                }),
+                auditEvents: [event],
+                transitionId: streamAuditTransitionId(fence, event),
+            });
         }
         if (event.type === 'pause_boundary') {
-            return this.updateActiveTurnState(fence, execution, value => ({
-                ...value,
-                status: 'paused',
-                activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
-            }));
+            return this.commitTurnTransition({
+                state: current,
+                fence,
+                execution,
+                update: value => ({
+                    status: 'paused',
+                    activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
+                }),
+                auditEvents: [event],
+                transitionId: streamAuditTransitionId(fence, event),
+            });
         }
         if (event.type === 'completion') return this.commitTurnCompletion(fence, execution, event);
         return current;

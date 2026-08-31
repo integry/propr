@@ -60,6 +60,9 @@ export class GoalSessionSupervisor extends GoalSessionControls {
             if (state.cancellationIntent) return state;
             throw new GoalSessionContractError('A terminated provider session cannot be resumed', 'SESSION_TERMINATED');
         }
+        if (state.status === 'failed' && this.adapter.capabilities.nativeSessionId === 'eager') {
+            throw new GoalSessionContractError('A failed provider session cannot be resumed', 'SESSION_TERMINATED');
+        }
         if (state.status === 'cancelling') {
             if (!state.cancellationIntent) {
                 return this.cancel({
@@ -93,7 +96,8 @@ export class GoalSessionSupervisor extends GoalSessionControls {
             state = await this.recordProviderOpenAttempt(state);
         }
 
-        return this.callProviderOpen(request, state, deterministicOpenKey);
+        state = await this.callProviderOpen(request, state, deterministicOpenKey);
+        return this.resumeImmediateModelChangeIntent(request, state);
     }
 
     async takeover(identity: GoalSessionIdentity, controllerEpoch: number): Promise<GoalSessionState> {
@@ -120,6 +124,8 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         if (controllerEpoch < state.controllerEpoch) throw new StaleGoalSessionFenceError();
         if (controllerEpoch > state.controllerEpoch) state = await this.takeover(identity, controllerEpoch);
         const controlFence: GoalSessionControlFence = { ...identity, controllerEpoch };
+        const guarded = await this.guardReconciliationState(state, controlFence);
+        if (guarded) return guarded;
         const durableRepository = state.activeTurn?.repository ?? repository;
         const requestedFingerprint = fingerprintGoalWorktree(repository);
         const durableFingerprint = fingerprintGoalWorktree(durableRepository);
@@ -168,6 +174,31 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         if (!saved) throw new StaleGoalSessionFenceError('Ownership changed during crash reconciliation');
         await this.appendControl(controlFence, recovery.execution, { type: 'reconciliation', outcome: result.outcome, reason: result.reason });
         return { ...result, state: saved };
+    }
+
+    private async guardReconciliationState(
+        state: GoalSessionState,
+        fence: GoalSessionControlFence,
+    ): Promise<ReconcileGoalSessionResult | null> {
+        if (state.status === 'terminated' || state.status === 'failed') {
+            return {
+                outcome: 'blocked',
+                reason: `A ${state.status} session cannot be reconciled`,
+                state,
+            };
+        }
+        if (state.status !== 'cancelling') return null;
+        const cancelled = state.cancellationIntent
+            ? await this.resumeClaimedCancellation(fence, state)
+            : await this.cancel({
+                ...fence,
+                reason: state.failureReason ?? 'Resume pending cancellation during reconciliation',
+            });
+        return {
+            outcome: 'blocked',
+            reason: 'Cancellation recovery completed without reconciling provider work',
+            state: cancelled,
+        };
     }
 
     private async claimRecoveryAttempt(
