@@ -225,6 +225,13 @@ export function useGoalDetail(goalId: string) {
     const room = { ownerId: userId, repository: authorizedRepository, goalId, afterSequence: eventsRef.current.at(-1)?.sequence ?? 0 };
     const expectedScope = scopedGoalKey(userId, authorizedRepository, goalId);
     let subscribed = true;
+    const recoverAndRefresh = async (target?: number) => {
+      const previousTail = eventsRef.current.at(-1)?.sequence ?? 0;
+      if (!await recoverTail(target)) return;
+      const detailChanged = eventsRef.current.some(event => event.sequence > previousTail
+        && (event.type === 'lifecycle' || event.type === 'message' || event.type === 'usage'));
+      if (detailChanged) await refreshDetail();
+    };
     const unsubscribe = () => {
       if (!subscribed) return; subscribed = false;
       socket.off('goal:event', handleEvent);
@@ -240,18 +247,18 @@ export function useGoalDetail(goalId: string) {
         const lastSequence = eventsRef.current.at(-1)?.sequence ?? 0;
         if (event.sequence <= lastSequence) return;
         if (event.sequence > lastSequence + 1) {
-          setConnectionState('recovering'); void recoverTail(event.sequence); return;
+          setConnectionState('recovering'); void recoverAndRefresh(event.sequence); return;
         }
         commitEvents(mergeGoalEvents(eventsRef.current, [event], goalId));
         if (event.type === 'lifecycle' || event.type === 'message' || event.type === 'usage') void refreshDetail();
       } catch {
-        setConnectionState('recovering'); void recoverTail();
+        setConnectionState('recovering'); void recoverAndRefresh();
       }
     };
     socket.emit('subscribe:goal', room); socket.on('goal:event', handleEvent);
     subscriptionCleanupRef.current = unsubscribe;
     setConnectionState('recovering');
-    void recoverTail(detailRef.current?.latestSequence ?? 0);
+    void recoverAndRefresh(detailRef.current?.latestSequence ?? 0);
     return () => { unsubscribe(); if (subscriptionCleanupRef.current === unsubscribe) subscriptionCleanupRef.current = null; };
   }, [authorizedRepository, commitEvents, current, goalId, isConnected, refreshDetail, recoverTail, replayReady, socket, token, userId]);
 

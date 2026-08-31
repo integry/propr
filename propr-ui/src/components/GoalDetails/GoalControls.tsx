@@ -42,9 +42,14 @@ function CancelConfirmation({ busy, returnFocus, fallbackFocus, onClose, onConfi
       event.preventDefault(); onClose(); return;
     }
     if (event.key !== 'Tab') return;
-    if (busy) { event.preventDefault(); reasonRef.current?.focus(); return; }
-    if (event.shiftKey && document.activeElement === reasonRef.current) { event.preventDefault(); confirmRef.current?.focus(); }
-    else if (!event.shiftKey && document.activeElement === confirmRef.current) { event.preventDefault(); reasonRef.current?.focus(); }
+    const focusable = [reasonRef.current, cancelRef.current, confirmRef.current]
+      .filter((element): element is HTMLInputElement | HTMLButtonElement => element !== null && !element.disabled);
+    if (focusable.length === 0) return;
+    const activeIndex = focusable.findIndex(element => element === document.activeElement);
+    const nextIndex = event.shiftKey
+      ? (activeIndex <= 0 ? focusable.length - 1 : activeIndex - 1)
+      : (activeIndex < 0 || activeIndex === focusable.length - 1 ? 0 : activeIndex + 1);
+    event.preventDefault(); focusable[nextIndex].focus();
   };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
@@ -65,15 +70,18 @@ function GoalMessages({ messages, disabled, busy, onSend, onRetry, onCancel }: {
   onCancel: (messageId: string) => Promise<void>;
 }) {
   const [body, setBody] = useState('');
-  const submit = async (params: SendGoalMessageParams) => { if (await onSend(params)) setBody(''); };
+  const submitDraft = async () => {
+    const draft = body;
+    if (await onSend({ body: draft.trim() })) setBody(current => current === draft ? '' : current);
+  };
   return (
     <section aria-labelledby="goal-messages-title" className="mt-4 border-t border-slate-200 pt-4">
       <h3 id="goal-messages-title" className="text-sm font-semibold text-slate-800">Steer the goal</h3>
       <div className="mt-2 flex flex-wrap gap-2">
-        <button type="button" onClick={() => void submit({ body: "Summarize what's done.", predefinedKind: 'whats_done' })} disabled={disabled || busy} className="rounded border border-slate-300 px-2.5 py-1.5 text-xs disabled:opacity-50">What’s done?</button>
-        <button type="button" onClick={() => void submit({ body: "Summarize what's left.", predefinedKind: 'whats_left' })} disabled={disabled || busy} className="rounded border border-slate-300 px-2.5 py-1.5 text-xs disabled:opacity-50">What’s left?</button>
+        <button type="button" onClick={() => void onSend({ body: "Summarize what's done.", predefinedKind: 'whats_done' })} disabled={disabled || busy} className="rounded border border-slate-300 px-2.5 py-1.5 text-xs disabled:opacity-50">What’s done?</button>
+        <button type="button" onClick={() => void onSend({ body: "Summarize what's left.", predefinedKind: 'whats_left' })} disabled={disabled || busy} className="rounded border border-slate-300 px-2.5 py-1.5 text-xs disabled:opacity-50">What’s left?</button>
       </div>
-      <form className="mt-2" onSubmit={event => { event.preventDefault(); void submit({ body: body.trim() }); }}>
+      <form className="mt-2" onSubmit={event => { event.preventDefault(); void submitDraft(); }}>
         <label htmlFor="goal-message" className="sr-only">Message to the goal controller</label>
         <textarea id="goal-message" value={body} maxLength={4000} onChange={event => setBody(event.target.value)} disabled={disabled || busy} rows={3} placeholder="Send guidance at the next safe boundary…" className="w-full resize-y rounded border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:bg-slate-100" />
         <div className="mt-1 flex items-center justify-between"><span className="text-[10px] text-slate-400">{Array.from(body).length}/4000</span><button type="submit" disabled={disabled || busy || !body.trim()} className="rounded bg-teal-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{busy ? 'Sending…' : 'Send message'}</button></div>
