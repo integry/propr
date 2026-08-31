@@ -21,6 +21,9 @@ export const TASK_LIVE_UPDATE = 'task:live:update';
 /** Event fired when queue statistics change */
 export const QUEUE_STATS_UPDATE = 'queue:stats:update';
 
+/** Versioned invalidation for an owned goal summary/list projection. */
+export const GOAL_SUMMARY_UPDATE = 'goal:summary:update';
+
 /** Redis channel names for pub/sub */
 export const REDIS_CHANNELS = {
   /** Channel for all task-related events */
@@ -166,6 +169,15 @@ export interface QueueStatsUpdatePayload {
   timestamp: string;
 }
 
+export interface GoalSummaryUpdatePayload {
+  eventType: typeof GOAL_SUMMARY_UPDATE;
+  schemaVersion: 1;
+  goalId: string;
+  version: number;
+  latestSequence: number;
+  timestamp: string;
+}
+
 /** Command mode for slash-command-driven tasks */
 export type CommandMode = 'default' | 'review' | 'fix';
 
@@ -176,4 +188,5 @@ export type EventPayload =
   | PlanStepUpdatePayload
   | IndexingUpdatePayload
   | TaskLiveUpdatePayload
-  | QueueStatsUpdatePayload;
+  | QueueStatsUpdatePayload
+  | GoalSummaryUpdatePayload;

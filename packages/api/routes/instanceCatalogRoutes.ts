@@ -30,6 +30,10 @@ function catalogAgent(agent: AgentConfig): InstanceCatalogAgent {
     alias: agent.alias,
     enabled: true,
     supportedModels: [...agent.supportedModels],
+    // The goal-control integration replaces these fail-closed values with its
+    // explicit agent discriminator and model-catalog intersection.
+    goalCapable: false,
+    goalCapableModels: [],
     ...(agent.defaultModel ? { defaultModel: agent.defaultModel } : {}),
   };
 }
