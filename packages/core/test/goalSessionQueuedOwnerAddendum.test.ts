@@ -180,17 +180,18 @@ test('thousands of model switches stay bounded across a crash, takeover, cached 
     ports.close();
 });
 
-test('Git remotes normalize without userinfo and malformed identities fail closed', () => {
+test('Git remotes normalize canonical identities and reject credential-bearing or malformed values', () => {
     const accepted = new Map([
-        ['https://alice:token-value@github.com/integry/propr.git', 'integry/propr'],
-        ['ssh://git:private-key@github.com/integry/propr.git', 'integry/propr'],
         ['git@github.com:integry/propr.git', 'integry/propr'],
-        ['token-user@github.com:integry/propr.git?access_token=query-secret', 'integry/propr'],
-        ['https://oauth2:secret@gitlab.example.com/group/project.git', 'gitlab.example.com/group/project'],
+        ['https://github.com/integry/propr.git', 'integry/propr'],
     ]);
     for (const [remote, expected] of accepted) assert.equal(normalizeGitRepositoryIdentity(remote), expected);
     for (const remote of [
         'https://alice:secret@/integry/propr',
+        'https://alice:token-value@github.com/integry/propr.git',
+        'ssh://git:private-key@github.com/integry/propr.git',
+        'token-user@github.com:integry/propr.git?access_token=query-secret',
+        'https://oauth2:secret@gitlab.example.com/group/project.git',
         'file:///tmp/credential/repository',
         'alice:secret@github.com/integry/propr',
         'https://github.com',
@@ -205,7 +206,7 @@ test('turn and recovery boundaries never expose credential-bearing remotes in pr
     const turnPorts = new InMemoryGoalSessionPorts();
     const turnSupervisor = new GoalSessionSupervisor(adapter, turnPorts.asRuntimePorts());
     await turnSupervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
-    await turnSupervisor.runTurn({
+    await assert.rejects(turnSupervisor.runTurn({
         ...identity, controllerEpoch: 1, turnId: 'credential-turn', executionId: 'credential-execution',
         attemptId: 'credential-attempt', objective: 'scrub remote',
         repository: {
@@ -214,8 +215,8 @@ test('turn and recovery boundaries never expose credential-bearing remotes in pr
             credentialBearingRemote: credentialRemote,
         } as typeof repository,
         requestedModel: 'model-base',
-    });
-    assert.equal(adapter.beginRequests[0].repository.repository, 'integry/propr');
+    }), /trustworthy Git repository/);
+    assert.equal(adapter.beginRequests.length, 0);
 
     const recoveryIdentity = { goalId: 'credential-recovery-goal', sessionId: 'credential-recovery-session' };
     const recoveryPorts = new InMemoryGoalSessionPorts();
@@ -235,8 +236,9 @@ test('turn and recovery boundaries never expose credential-bearing remotes in pr
         reason: `untrusted diagnostic ${credentialRemote}`,
     });
     const recoverySupervisor = new GoalSessionSupervisor(adapter, recoveryPorts.asRuntimePorts());
-    await recoverySupervisor.reconcile(recoveryIdentity, 1, repository);
-    assert.equal(adapter.reconcileRequests[0].repository.observedRepository, 'integry/propr');
+    const recoveryResult = await recoverySupervisor.reconcile(recoveryIdentity, 1, repository);
+    assert.equal(recoveryResult.outcome, 'blocked');
+    assert.equal(adapter.reconcileRequests.length, 0);
 
     let invalidError = '';
     try {

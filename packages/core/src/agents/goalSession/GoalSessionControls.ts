@@ -12,6 +12,7 @@ import type {
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalImmediateModelControls } from './GoalImmediateModelControls.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
+import { safeDiagnostic, sanitizeGoalSessionEvent } from './securityBoundary.js';
 import {
     assertProviderIdentity,
     controlExecutionIdentity,
@@ -41,7 +42,11 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             throw new GoalSessionContractError('Provider declares active-turn steering without implementing it', 'CAPABILITY_METHOD_MISSING');
         }
         const acknowledgement = await this.adapter.deliverMessage(
-            { ...request, body: message.body },
+            {
+                goalId: request.goalId, sessionId: request.sessionId,
+                controllerEpoch: request.controllerEpoch, turnId: request.turnId,
+                messageId: request.messageId, body: safeDiagnostic(message.body, '[redacted corrective message]'),
+            },
             persistedSnapshot(state),
         );
         if (acknowledgement.messageId !== request.messageId) {
@@ -53,15 +58,11 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             throw new StaleGoalSessionFenceError('A newer operation superseded message delivery');
         }
         const execution = this.activeExecution(state);
-        const result = await this.ports.messages.acknowledge(request, execution, request.messageId);
+        sanitizeGoalSessionEvent({ type: 'message_acknowledged', messageId: request.messageId });
+        const result = await this.ports.messages.acknowledgeWithEvent(request, execution, request.messageId);
         if (result === 'stale_fence') throw new StaleGoalSessionFenceError();
         if (result === 'not_found') {
             throw new GoalSessionContractError('Corrective message disappeared before acknowledgement', 'MESSAGE_NOT_FOUND');
-        }
-        if (result === 'acknowledged') {
-            await this.append(request, execution, {
-                type: 'message_acknowledged', messageId: request.messageId,
-            });
         }
         return { outcome: 'acknowledged', messageId: request.messageId, acknowledgement: result };
     }
@@ -81,6 +82,9 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
                 changes: {
                     status: 'pause_requested',
                     activeTurn: { ...activeTurn, status: 'pause_requested' },
+                    resumeIntent: undefined,
+                    completedResume: undefined,
+                    providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
                 },
                 auditEvents: [{ type: 'pause_requested', appliesAt: 'next_safe_boundary' }],
                 transitionId: this.controlOperationId('pause-active-requested', state),
@@ -89,7 +93,10 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
         if (!this.adapter.requestPause) {
             throw new GoalSessionContractError('Provider declares active-turn pause without implementing it', 'CAPABILITY_METHOD_MISSING');
         }
-        const acknowledgement = await this.adapter.requestPause(request, persistedSnapshot(state));
+        const acknowledgement = await this.adapter.requestPause({
+            goalId: request.goalId, sessionId: request.sessionId, controllerEpoch: request.controllerEpoch,
+            reason: request.reason ? safeDiagnostic(request.reason, 'Operator requested pause') : undefined,
+        }, persistedSnapshot(state));
         if (acknowledgement.appliesAt === 'after_turn') {
             throw new GoalSessionContractError('Active-turn provider returned an after-turn pause acknowledgement', 'CAPABILITY_ACK_MISMATCH');
         }
@@ -122,13 +129,28 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             );
         }
         let state = await this.requireControlledState(request);
+        if (state.status === 'idle' && state.completedResume?.kind === 'after_turn'
+            && state.completedResume.controllerEpoch === request.controllerEpoch) return state;
         if (state.status !== 'paused' || state.activeTurn) {
             throw new GoalSessionContractError(`Cannot resume a session while it is ${state.status}`, 'SESSION_NOT_PAUSED');
         }
-        state = await this.compareAndSetExact(state, {}, 'A newer operation superseded the resume intent');
-        const snapshot = await this.adapter.resumeSession(request, persistedSnapshot(state));
+        const execution = controlExecutionIdentity(state);
+        state = await this.claimResumeOperation(request, state, { kind: 'after_turn', execution });
+        state = await this.promoteResumeOperation(request, state);
+        const intent = state.resumeIntent!;
+        state = await this.requireLiveResumeOperation(request, intent.operationId, intent.operationGeneration);
+        let snapshot;
+        try {
+            snapshot = await this.adapter.resumeSession(
+                this.providerResumeRequest(request, intent), persistedSnapshot(state),
+            );
+        } catch (error) {
+            await this.expireResumeOperation(request, intent.operationId, intent.operationGeneration);
+            throw error;
+        }
         assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
         assertProviderIdentity(state, snapshot);
+        state = await this.requireLiveResumeOperation(request, intent.operationId, intent.operationGeneration);
         return this.commitControlTransition({
             state,
             fence: request,
@@ -137,10 +159,15 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
                 recoveryMetadata: snapshot.recoveryMetadata,
                 currentModel: snapshot.model ?? state.currentModel,
                 status: 'idle',
+                resumeIntent: { ...intent, phase: 'settled' },
+                completedResume: {
+                    operationId: intent.operationId, operationGeneration: intent.operationGeneration,
+                    kind: intent.kind, controllerEpoch: intent.controllerEpoch,
+                },
             },
             auditEvents: [{ type: 'session_resumed' }],
-            transitionId: this.controlOperationId('session-resumed', state),
-            execution: controlExecutionIdentity(state),
+            transitionId: `resume-settled:${intent.operationId}:${intent.operationGeneration}`,
+            execution,
         });
     }
 
@@ -161,7 +188,7 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
         }
         const intent = state.cancellationIntent;
         const request = {
-            ...fence,
+            goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
             reason: intent.reason,
             cancellationId: intent.cancellationId,
         };
@@ -179,6 +206,9 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             retryTurn: undefined,
             recoveryAttempt: undefined,
             completedRecovery: undefined,
+            resumeIntent: undefined,
+            completedResume: undefined,
+            providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
             pendingAfterTurnPause: undefined,
             modelChangeIntent: undefined,
             modelChangeIntents: undefined,
@@ -202,14 +232,18 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
                 );
             }
             const pendingContext = this.pendingCancellationContext(state);
+            const reason = safeDiagnostic(request.reason, 'Operator cancelled the goal session');
             const claimed = await this.ports.state.compareAndSet(state, nextState(state, {
                 status: 'cancelling',
                 activeTurn: undefined,
                 recoveryAttempt: undefined,
                 completedRecovery: undefined,
+                resumeIntent: undefined,
+                completedResume: undefined,
+                providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
                 cancellationIntent: {
                     cancellationId: this.controlOperationId('cancel', state),
-                    reason: request.reason,
+                    reason,
                     claimedAt: new Date().toISOString(),
                     pendingContext,
                 },
@@ -247,7 +281,10 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             state = await this.commitControlTransition({
                 state,
                 fence: request,
-                changes: { status: 'paused' },
+                changes: {
+                    status: 'paused', resumeIntent: undefined, completedResume: undefined,
+                    providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
+                },
                 auditEvents: [
                     { type: 'pause_requested', appliesAt: 'after_turn' },
                     { type: 'pause_boundary', ...boundaryReached },
@@ -264,6 +301,9 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
                     status: 'pause_requested',
                     activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'pause_requested' } : state.activeTurn,
                     pendingAfterTurnPause: true,
+                    resumeIntent: undefined,
+                    completedResume: undefined,
+                    providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
                 },
                 auditEvents: [{ type: 'pause_requested', appliesAt: 'after_turn' }],
                 transitionId: this.controlOperationId('pause-after-turn', state),

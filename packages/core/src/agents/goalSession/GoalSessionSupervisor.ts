@@ -10,8 +10,10 @@ import {
     compactImmediateModelIntents,
     hasUnresolvedImmediateModelIntent,
     immediateModelIntents,
+    retireCompactedModelIds,
 } from './modelChangeProtocol.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
+import { safeDiagnostic } from './securityBoundary.js';
 import {
     assertProviderIdentity,
     nextState,
@@ -100,6 +102,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
         return this.compareAndSetExact(state, {
             modelChangeIntents: compacted,
             modelChangeIntent: compacted.at(-1),
+            modelChangeRetiredFilter: retireCompactedModelIds(state.modelChangeRetiredFilter, intents, compacted),
         }, 'A newer operation superseded model intent retention during reopen');
     }
 
@@ -225,7 +228,10 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 ? createFirstTurnInitializationIntent(request, this.mintAttemptId())
                 : undefined;
             const initial = await this.ports.state.create({
-                ...request,
+                goalId: request.goalId,
+                sessionId: request.sessionId,
+                provider: request.provider,
+                controllerEpoch: request.controllerEpoch,
                 status: 'initializing',
                 completedTurnIds: [],
                 initializationIntent,
@@ -253,7 +259,10 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 throw new GoalSessionContractError('Provider open attempt was not durably claimed', 'OPEN_ATTEMPT_MISSING');
             }
             const snapshot = await this.adapter.openSession({
-                ...request,
+                goalId: request.goalId,
+                sessionId: request.sessionId,
+                provider: request.provider,
+                controllerEpoch: request.controllerEpoch,
                 persisted,
                 deterministicOpenKey,
                 attemptId: state.providerOpenAttemptId,
@@ -274,7 +283,10 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             return saved;
         } catch (error) {
             if (error instanceof StaleGoalSessionFenceError || error instanceof GoalSessionContractError) throw error;
-            await this.ports.state.compareAndSet(state, nextState(state, { status: 'failed', failureReason: `Unable to create or resume provider session: ${(error as Error).message}` }));
+            await this.ports.state.compareAndSet(state, nextState(state, {
+                status: 'failed',
+                failureReason: safeDiagnostic((error as Error).message, 'Unable to create or resume provider session safely'),
+            }));
             throw error;
         }
     }

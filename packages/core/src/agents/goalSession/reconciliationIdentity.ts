@@ -5,9 +5,12 @@ import type {
     GoalSessionState,
 } from './contract.js';
 import { fingerprintGoalWorktree, normalizeGitRepositoryIdentity } from './worktreeIdentity.js';
+import path from 'node:path';
 
 const SHA = /^[a-f\d]{4,64}$/i;
 const FINGERPRINT = /^[a-f\d]{64}$/i;
+const SAFE_IDENTIFIER = /^[A-Za-z0-9._:-]{1,256}$/;
+const SAFE_BRANCH = /^(?![./])(?!.*(?:\.\.|@\{|\\|\s|[~^:?*]|\[))(?!.*\.$)[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
 
 /** Removes untrusted recovery-port fields before provider or audit boundaries. */
 export function sanitizeRepositoryInspection(
@@ -24,14 +27,41 @@ export function sanitizeRepositoryInspection(
         dirty: inspection.dirty === true,
         observedRepository,
         observedHeadSha: SHA.test(inspection.observedHeadSha ?? '') ? inspection.observedHeadSha : undefined,
-        observedBranch: invalidRemote ? undefined : inspection.observedBranch,
+        observedBranch: !invalidRemote && SAFE_BRANCH.test(inspection.observedBranch ?? '')
+            ? inspection.observedBranch : undefined,
         observedWorktreeFingerprint: invalidRemote
             ? undefined
             : FINGERPRINT.test(inspection.observedWorktreeFingerprint ?? '')
                 ? inspection.observedWorktreeFingerprint
                 : undefined,
-        resolvedWorktreePath: inspection.resolvedWorktreePath,
-        reason: invalidRemote ? 'Git remote does not contain a trustworthy repository identity' : undefined,
+        resolvedWorktreePath: inspection.resolvedWorktreePath === path.resolve(expected.worktreePath)
+            ? inspection.resolvedWorktreePath : undefined,
+        reason: invalidRemote ? 'Git remote does not contain a trustworthy repository identity'
+            : inspection.reason ? 'Repository inspection did not establish an authoritative checkout' : undefined,
+    };
+}
+
+/** Explicit allowlist for the untrusted recovery-port container result. */
+export function sanitizeContainerInspection(inspection: GoalContainerInspection): GoalContainerInspection {
+    const status = ['running', 'exited', 'missing', 'daemon_unavailable'].includes(inspection.status)
+        ? inspection.status : 'daemon_unavailable';
+    const identity = inspection.recoveryIdentity;
+    const recoveryIdentity = identity
+        && SAFE_IDENTIFIER.test(identity.goalId) && SAFE_IDENTIFIER.test(identity.sessionId)
+        && SAFE_IDENTIFIER.test(identity.turnId) && SAFE_IDENTIFIER.test(identity.attemptId)
+        && Number.isSafeInteger(identity.executionEpoch) && identity.executionEpoch >= 0
+        && FINGERPRINT.test(identity.worktreeFingerprint)
+        ? {
+            goalId: identity.goalId, sessionId: identity.sessionId,
+            executionEpoch: identity.executionEpoch, turnId: identity.turnId,
+            attemptId: identity.attemptId, worktreeFingerprint: identity.worktreeFingerprint,
+        } : undefined;
+    return {
+        status,
+        containerId: SAFE_IDENTIFIER.test(inspection.containerId ?? '') ? inspection.containerId : undefined,
+        containerName: SAFE_IDENTIFIER.test(inspection.containerName ?? '') ? inspection.containerName : undefined,
+        recoveryIdentity,
+        reason: inspection.reason ? 'Container inspection did not establish an authoritative runtime' : undefined,
     };
 }
 
@@ -58,7 +88,7 @@ export function verifyRecoveredContainer(
     };
     for (const key of Object.keys(expected) as Array<keyof typeof expected>) {
         if (observed[key] !== expected[key]) {
-            return `Recovered container ${key} mismatch: expected ${expected[key]}, found ${observed[key]}`;
+            return `Recovered container ${key} does not match authoritative identity`;
         }
     }
     return null;
@@ -70,20 +100,20 @@ export function verifyReconciliationTarget(
     inspection: GoalRepositoryInspection,
 ): string | null {
     if (!inspection.exists) {
-        return `Worktree ${expected.worktreePath} is unavailable: ${inspection.reason ?? 'not found'}`;
+        return 'Authoritative goal worktree is unavailable';
     }
     if (!inspection.observedBranch) {
-        return `Worktree ${expected.worktreePath} branch could not be observed: ${inspection.reason ?? 'branch unavailable'}`;
+        return 'Authoritative worktree branch could not be observed';
     }
     const expectedFingerprint = fingerprintGoalWorktree(expected);
     if (!inspection.observedWorktreeFingerprint) {
-        return `Worktree ${expected.worktreePath} fingerprint could not be observed: ${inspection.reason ?? 'metadata unavailable'}`;
+        return 'Authoritative worktree fingerprint could not be observed';
     }
     if (inspection.observedWorktreeFingerprint !== expectedFingerprint) {
-        return `Worktree fingerprint mismatch: expected ${expectedFingerprint}, found ${inspection.observedWorktreeFingerprint}`;
+        return 'Worktree fingerprint mismatch against authoritative identity';
     }
     if (inspection.observedBranch !== expected.branch) {
-        return `Worktree branch mismatch: expected ${expected.branch}, found ${inspection.observedBranch}`;
+        return 'Worktree branch mismatch against authoritative identity';
     }
     return null;
 }

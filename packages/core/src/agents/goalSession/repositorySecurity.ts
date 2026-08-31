@@ -11,15 +11,15 @@ export function validateTurnRequestIdentity(request: { turnId: string; execution
     }
 }
 
-export function credentialFreeRepositoryRequest<T extends { repository: GoalRepositoryIdentity }>(request: T): T {
-    const repository = normalizeGoalRepositoryIdentity(request.repository);
+export function credentialFreeRepositoryIdentity(repositoryInput: GoalRepositoryIdentity): GoalRepositoryIdentity {
+    const repository = normalizeGoalRepositoryIdentity(repositoryInput);
     if (!repository) {
         throw new GoalSessionContractError(
             'Repository identity is not a trustworthy Git repository name or remote',
             'INVALID_REPOSITORY',
         );
     }
-    return { ...request, repository };
+    return repository;
 }
 
 export function normalizeRecoveryRepositories(

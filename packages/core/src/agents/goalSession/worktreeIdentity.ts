@@ -5,6 +5,10 @@ import type { GoalRepositoryIdentity } from './contract.js';
 const SAFE_REMOTE_PROTOCOLS = new Set(['git:', 'http:', 'https:', 'ssh:']);
 const SAFE_HOST = /^(?:[a-z\d](?:[a-z\d-]*[a-z\d])?)(?:\.(?:[a-z\d](?:[a-z\d-]*[a-z\d])?))+$/i;
 const SAFE_PATH_SEGMENT = /^[a-z\d._~-]+$/i;
+const SAFE_BRANCH = /^(?![./])(?!.*(?:\.\.|@\{|\\|\s|[~^:?*]|\[))(?!.*\.$)[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
+const SAFE_SHA = /^[a-f\d]{4,64}$/i;
+const SENSITIVE_WORKTREE_ROOTS = ['/', '/etc', '/root', '/home', '/proc', '/sys', '/dev'];
+const SECRET_LIKE = /(?:gh[oprsu]_|github_pat_|sk-|AKIA|bearer[._-]?[A-Za-z0-9]|(?:secret|token|password)[._:-][A-Za-z0-9_-]{6,})/i;
 
 function normalizedRemoteHost(host: string): string | undefined {
     const normalized = host.toLowerCase().replace(/\.$/, '');
@@ -43,13 +47,17 @@ export function normalizeGitRepositoryIdentity(value: string): string | undefine
         try {
             const remote = new URL(trimmed);
             if (!SAFE_REMOTE_PROTOCOLS.has(remote.protocol)) return undefined;
+            if (remote.username || remote.password || remote.search || remote.hash) return undefined;
             return normalizedHostPath(remote.hostname, remote.pathname);
         } catch {
             return undefined;
         }
     }
-    const scp = /^(?:.+@)?([^/:\s]+):\/?(.+)$/.exec(trimmed);
-    if (scp) return normalizedHostPath(scp[1], scp[2]);
+    const scp = /^(?:(.+)@)?([^/:\s]+):\/?(.+)$/.exec(trimmed);
+    if (scp) {
+        if (scp[1] && scp[1].toLowerCase() !== 'git') return undefined;
+        return normalizedHostPath(scp[2], scp[3]);
+    }
     if (trimmed.includes('@') || trimmed.includes(':') || trimmed.includes('\\')) return undefined;
     const logical = cleanPath(trimmed);
     return logical?.toLowerCase();
@@ -59,13 +67,21 @@ export function normalizeGoalRepositoryIdentity(
     repository: GoalRepositoryIdentity,
 ): GoalRepositoryIdentity | undefined {
     const normalized = normalizeGitRepositoryIdentity(repository.repository);
-    if (!normalized) return undefined;
+    const worktreePath = path.resolve(repository.worktreePath);
+    const branch = repository.branch.trim();
+    if (!normalized || SECRET_LIKE.test(normalized) || repository.worktreePath !== worktreePath
+        || SECRET_LIKE.test(worktreePath) || !SAFE_BRANCH.test(branch) || SECRET_LIKE.test(branch)) return undefined;
     return {
         repository: normalized,
-        worktreePath: repository.worktreePath,
-        branch: repository.branch,
-        headSha: repository.headSha,
+        worktreePath,
+        branch,
+        headSha: SAFE_SHA.test(repository.headSha ?? '') ? repository.headSha!.toLowerCase() : undefined,
     };
+}
+
+export function isSensitiveWorktreePath(value: string): boolean {
+    const candidate = path.resolve(value);
+    return SENSITIVE_WORKTREE_ROOTS.some(root => candidate === root || (root !== '/' && candidate.startsWith(`${root}/`)));
 }
 
 /** Stable logical checkout identity. Mutable HEAD/checkpoint state is deliberately excluded. */

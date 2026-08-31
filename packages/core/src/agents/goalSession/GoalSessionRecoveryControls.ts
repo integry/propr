@@ -11,9 +11,12 @@ import { StaleGoalSessionFenceError } from './errors.js';
 import { GoalSessionControls } from './GoalSessionControls.js';
 import { hasUnresolvedImmediateModelIntent } from './modelChangeProtocol.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
-import { isRecoverableStatus, RECOVERY_LEASE_MS, sameRecoverySubject, stoppedReconciliationResult } from './recoveryOperationProtocol.js';
+import {
+    assertLiveRecoveryLease, assertRecoverableExactState, completedRecoveryResult, expireRecoveryLeaseIfOwned,
+    isRecoverableStatus, RECOVERY_LEASE_MS, sameRecoverySubject, stoppedReconciliationResult,
+} from './recoveryOperationProtocol.js';
 import { reconcileRecoveredTurn } from './reconcileRecoveredTurn.js';
-import { sanitizeRepositoryInspection, verifyReconciliationTarget, verifyRecoveredContainer } from './reconciliationIdentity.js';
+import { sanitizeContainerInspection, sanitizeRepositoryInspection, verifyReconciliationTarget, verifyRecoveredContainer } from './reconciliationIdentity.js';
 import { normalizeRecoveryRepositories } from './repositorySecurity.js';
 import {
     assertProviderIdentity,
@@ -25,6 +28,7 @@ import {
     validateIdentity,
 } from './support.js';
 import { fingerprintGoalWorktree } from './worktreeIdentity.js';
+import { safeDiagnostic } from './securityBoundary.js';
 
 export type ReconcileGoalSessionResult = {
     outcome: 'alive' | 'resumed' | 'failed' | 'blocked';
@@ -99,10 +103,14 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         let result: Awaited<ReturnType<typeof this.adapter.reconcile>>;
         try {
             result = await this.adapter.reconcile({
-                ...identity,
+                goalId: identity.goalId,
+                sessionId: identity.sessionId,
                 ...recovery.execution,
                 controllerEpoch,
                 operationToken: state.recoveryAttempt!.operationToken,
+                operationGeneration: state.recoveryAttempt!.operationGeneration,
+                operationPhase: 'provider_in_doubt',
+                operationLeaseExpiresAt: state.recoveryAttempt!.leaseExpiresAt,
                 persisted: persistedSnapshot(state),
                 container: prepared.container,
                 repository: prepared.repository,
@@ -111,7 +119,7 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
             await this.requireLiveRecoveryLease(
                 prepared.fence, recovery.execution, state.recoveryAttempt!.operationToken,
             );
-            await this.expireRecoveryLeaseIfOwned(prepared.fence, state.recoveryAttempt!.operationToken);
+            await expireRecoveryLeaseIfOwned(this.ports, prepared.fence, state.recoveryAttempt!.operationToken);
             throw error;
         }
         state = await this.requireLiveRecoveryLease(
@@ -151,7 +159,9 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         const durableFingerprint = fingerprintGoalWorktree(durableRepository);
         if (fingerprintGoalWorktree(requestedRepository) !== durableFingerprint) return this.blockRecovery(fence, state,
             'Requested worktree does not match the active turn\'s authoritative repository identity');
-        const container = await this.ports.recovery.inspectContainer(identity);
+        const container = sanitizeContainerInspection(await this.ports.recovery.inspectContainer({
+            goalId: identity.goalId, sessionId: identity.sessionId,
+        }));
         state = await this.revalidateInspectionState(state, fence);
         const rawRepositoryInspection = await this.ports.recovery.inspectRepository(durableRepository);
         state = await this.revalidateInspectionState(state, fence);
@@ -205,11 +215,32 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         result: Awaited<ReturnType<typeof this.adapter.reconcile>>,
     ): Promise<ReconcileGoalSessionResult> {
         const snapshot = 'snapshot' in result ? result.snapshot : undefined;
+        const reason = safeDiagnostic(result.reason, 'Provider reconciliation failed safely');
         if (snapshot) {
             assertProviderIdentity(state, snapshot);
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
         }
         const reconciled = reconcileRecoveredTurn(state, execution, result.outcome);
+        if (result.outcome === 'failed') {
+            const saved = await this.ports.terminal.commit(state, nextState(state, {
+                status: 'failed', activeTurn: undefined, recoveryAttempt: undefined,
+                resumeIntent: undefined, completedResume: undefined,
+                completedRecovery: {
+                    operationToken: state.recoveryAttempt!.operationToken,
+                    controllerEpoch: fence.controllerEpoch, outcome: 'failed', reason,
+                },
+                failureReason: reason, initializationIntent: undefined, retryTurn: undefined,
+                pendingAfterTurnPause: undefined, pendingModelChange: undefined,
+                modelChangeIntent: undefined, modelChangeIntents: undefined,
+                providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
+            }), {
+                scope: 'control', fence, execution,
+                auditEvents: [{ type: 'reconciliation', outcome: 'failed', reason }],
+                event: { type: 'completion', outcome: 'failed', error: reason },
+            });
+            if (!saved) throw new StaleGoalSessionFenceError('A newer operation superseded failed reconciliation');
+            return { outcome: 'failed', reason, state: saved };
+        }
         const preserveIntentModel = this.adapter.capabilities.modelChange === 'next_safe_boundary'
             && hasUnresolvedImmediateModelIntent(state);
         let saved: GoalSessionState;
@@ -225,23 +256,23 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                         operationToken: state.recoveryAttempt!.operationToken,
                         controllerEpoch: fence.controllerEpoch,
                         outcome: result.outcome,
-                        reason: result.reason,
+                        reason,
                     },
-                    failureReason: result.outcome === 'failed' ? result.reason : undefined,
+                    failureReason: undefined,
                     providerSessionId: snapshot?.providerSessionId ?? state.providerSessionId,
                     recoveryMetadata: snapshot?.recoveryMetadata ?? state.recoveryMetadata,
                     currentModel: preserveIntentModel ? state.currentModel : snapshot?.model ?? state.currentModel,
                 },
-                auditEvents: [{ type: 'reconciliation', outcome: result.outcome, reason: result.reason }],
+                auditEvents: [{ type: 'reconciliation', outcome: result.outcome, reason }],
                 transitionId: `recovery-result:${state.recoveryAttempt!.operationToken}`,
                 execution,
             });
         } catch (error) {
-            await this.expireRecoveryLeaseIfOwned(fence, state.recoveryAttempt!.operationToken);
+            await expireRecoveryLeaseIfOwned(this.ports, fence, state.recoveryAttempt!.operationToken);
             throw error;
         }
         const recovered = await this.resumeImmediateModelChangeIntent(fence, saved);
-        return { ...result, state: recovered };
+        return { outcome: result.outcome, reason, state: recovered };
     }
 
     private async guardReconciliationState(
@@ -272,7 +303,7 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         state: GoalSessionState,
         controllerEpoch: number,
     ): Promise<{ state: GoalSessionState; execution: GoalExecutionIdentity } | null> {
-        this.assertRecoverableExactState(state, controllerEpoch);
+        assertRecoverableExactState(state, controllerEpoch);
         if (Date.parse(state.recoveryAttempt?.leaseExpiresAt ?? '') > Date.now()) return null;
         const previousAttempt = state.recoveryAttempt?.attemptId
             ?? state.recoveryAttemptId
@@ -283,11 +314,14 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
             executionId: state.activeTurn?.executionId ?? `reconcile-${state.sessionId}`,
             attemptId,
         };
+        const operationGeneration = (state.providerOperationGeneration ?? 0) + 1;
         const saved = await this.compareAndSetExact(state, {
+            providerOperationGeneration: operationGeneration,
             recoveryAttemptId: attemptId,
             completedRecovery: undefined,
             recoveryAttempt: {
                 operationToken: this.controlOperationId('recovery-provider', state),
+                operationGeneration,
                 ...execution,
                 controllerEpoch,
                 authoritativeAttemptId: state.activeTurn?.attemptId,
@@ -307,7 +341,7 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         execution: GoalExecutionIdentity,
         controllerEpoch: number,
     ): Promise<GoalSessionState> {
-        this.assertRecoverableExactState(state, controllerEpoch);
+        assertRecoverableExactState(state, controllerEpoch);
         if (state.recoveryAttempt?.attemptId !== execution.attemptId
             || state.recoveryAttempt.executionId !== execution.executionId
             || state.recoveryAttempt.controllerEpoch !== controllerEpoch
@@ -328,34 +362,7 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         controllerEpoch: number,
     ): Promise<ReconcileGoalSessionResult | null> {
         const state = await this.requireState(identity);
-        const recovery = state.completedRecovery;
-        if (state.controllerEpoch !== controllerEpoch || recovery?.controllerEpoch !== controllerEpoch
-            || state.status === 'cancelling' || state.status === 'terminated') {
-            return null;
-        }
-        return {
-            outcome: recovery.outcome,
-            reason: recovery.reason,
-            state,
-        };
-    }
-
-    private async expireRecoveryLeaseIfOwned(
-        fence: GoalSessionControlFence,
-        operationToken: string,
-    ): Promise<void> {
-        try {
-            const state = await this.requireControlledState(fence);
-            if (state.recoveryAttempt?.operationToken !== operationToken) return;
-            await this.ports.state.compareAndSet(state, nextState(state, {
-                recoveryAttempt: {
-                    ...state.recoveryAttempt,
-                    leaseExpiresAt: new Date(0).toISOString(),
-                },
-            }));
-        } catch (error) {
-            if (!(error instanceof StaleGoalSessionFenceError)) throw error;
-        }
+        return completedRecoveryResult(state, controllerEpoch);
     }
 
     private async revalidateInspectionState(
@@ -386,37 +393,8 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         operationToken: string,
     ): Promise<GoalSessionState> {
         const state = await this.requireControlledState(fence);
-        this.assertRecoverableExactState(state, fence.controllerEpoch);
-        const recovery = state.recoveryAttempt;
-        if (!recovery || recovery.operationToken !== operationToken
-            || recovery.executionId !== execution.executionId
-            || recovery.attemptId !== execution.attemptId
-            || recovery.phase !== 'provider_in_doubt') {
-            throw new StaleGoalSessionFenceError('Reconciliation provider operation was durably preempted');
-        }
+        assertLiveRecoveryLease(state, execution, operationToken);
         return state;
-    }
-
-    private assertRecoverableExactState(state: GoalSessionState, controllerEpoch: number): void {
-        if (state.controllerEpoch !== controllerEpoch || !isRecoverableStatus(state.status)) {
-            throw new StaleGoalSessionFenceError('Session is no longer in an exact recoverable live state');
-        }
-        const recovery = state.recoveryAttempt;
-        if (recovery?.authoritativeAttemptId !== undefined
-            && recovery.authoritativeAttemptId !== state.activeTurn?.attemptId) {
-            throw new StaleGoalSessionFenceError('The authoritative recovery attempt changed');
-        }
-        if (recovery?.authoritativeExecutionId !== undefined
-            && recovery.authoritativeExecutionId !== state.activeTurn?.executionId) {
-            throw new StaleGoalSessionFenceError('The authoritative recovery execution changed');
-        }
-        if (recovery?.sessionStatus !== undefined && recovery.sessionStatus !== state.status) {
-            throw new StaleGoalSessionFenceError('The authoritative recovery status changed');
-        }
-        if (recovery?.authoritativeTurnStatus !== undefined
-            && recovery.authoritativeTurnStatus !== state.activeTurn?.status) {
-            throw new StaleGoalSessionFenceError('The authoritative recovery turn status changed');
-        }
     }
 }
 

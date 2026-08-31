@@ -13,6 +13,7 @@ import type {
     GoalSessionIdentity,
 } from './contract.js';
 import { StaleGoalSessionFenceError } from './errors.js';
+import { isSensitiveWorktreePath } from './worktreeIdentity.js';
 
 export interface GoalContainerLayout {
     executionId: string;
@@ -178,8 +179,14 @@ async function resolveApprovedSource(source: string, allowedSources: ReadonlySet
     validateBindMountPath(source, name);
     const lexical = path.resolve(source);
     if (source !== lexical) throw new Error(`${name} must be canonical and may not contain traversal aliases`);
+    if (name === 'Goal worktree path' && isSensitiveWorktreePath(lexical)) {
+        throw new Error(`${name} may not be a sensitive host root or descendant`);
+    }
     const resolved = await realpath(lexical).catch(() => null);
     if (!resolved || resolved !== lexical) throw new Error(`${name} must exist and may not use a symlink alias`);
+    if (name === 'Goal worktree path' && isSensitiveWorktreePath(resolved)) {
+        throw new Error(`${name} may not resolve to a sensitive host root or descendant`);
+    }
     if (!allowedSources.has(resolved)) throw new Error(`${name} is not explicitly allow-listed`);
     return resolved;
 }

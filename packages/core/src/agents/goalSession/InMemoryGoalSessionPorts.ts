@@ -277,6 +277,25 @@ export class InMemoryGoalSessionPorts implements
         return 'acknowledged';
     }
 
+    async acknowledgeWithEvent(
+        fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
+        messageId: string,
+    ): Promise<'acknowledged' | 'already_acknowledged' | 'stale_fence' | 'not_found'> {
+        this.assertGoalScope(fence);
+        const state = this.states.get(keyOf(fence));
+        if (!matchesLiveMessageFence(state, fence, execution)) return 'stale_fence';
+        const record = (this.messages.get(keyOf(fence)) ?? []).find(message => message.messageId === messageId);
+        if (!record) return 'not_found';
+        if (record.acknowledgedAt) return 'already_acknowledged';
+        record.acknowledgedAt = new Date().toISOString();
+        this.record(keyOf(fence), {
+            turnId: fence.turnId, fence, execution,
+            event: { type: 'message_acknowledged', messageId },
+        });
+        return 'acknowledged';
+    }
+
     /** Test/application helper representing the persistence side of the message port. */
     enqueueMessage(message: Omit<DurableCorrectiveMessage, 'sequence' | 'createdAt'> & Partial<Pick<DurableCorrectiveMessage, 'sequence' | 'createdAt'>>): DurableCorrectiveMessage {
         this.assertGoalScope(message);
@@ -365,6 +384,19 @@ export class InMemoryGoalSessionPorts implements
         }
         return clone(saved);
     }
+}
+
+function matchesLiveMessageFence(
+    state: GoalSessionState | undefined,
+    fence: GoalSessionFence,
+    execution: GoalExecutionIdentity,
+): state is GoalSessionState {
+    return Boolean(state && state.controllerEpoch === fence.controllerEpoch
+        && !['cancelling', 'terminated', 'failed'].includes(state.status)
+        && state.activeTurn?.turnId === fence.turnId
+        && state.activeTurn.executionId === execution.executionId
+        && state.activeTurn.attemptId === execution.attemptId
+        && !['completed', 'cancelled', 'failed'].includes(state.activeTurn.status));
 }
 
 function matchesTransitionLiveFence(

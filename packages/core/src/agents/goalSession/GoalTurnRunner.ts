@@ -3,15 +3,14 @@ import type {
     GoalExecutionIdentity,
     GoalProviderCorrectiveMessage,
     GoalSessionControlFence,
-    GoalSessionEvent,
     GoalSessionFence,
     GoalSessionState,
     GoalTurnResumeCapabilityOutcome,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
-import { GoalSessionCore } from './GoalSessionCore.js';
+import { GoalTurnStreamRunner } from './GoalTurnStreamRunner.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
-import { credentialFreeRepositoryRequest, validateTurnRequestIdentity } from './repositorySecurity.js';
+import { credentialFreeRepositoryIdentity, validateTurnRequestIdentity } from './repositorySecurity.js';
 import {
     assertProviderIdentity,
     nextState,
@@ -20,7 +19,7 @@ import {
     validateControlFence,
 } from './support.js';
 import { duplicateTurnResult, type RunGoalTurnResult } from './turnDelivery.js';
-import { assertFirstTurnIdentityEvent, assertSuppliedMessagesAcknowledged, isAtomicTurnAudit, streamAuditTransitionId } from './turnStreamProtocol.js';
+import { safeDiagnostic } from './securityBoundary.js';
 
 export interface RunGoalTurnRequest extends Omit<GoalBeginTurnRequest, 'executionId' | 'attemptId' | 'correctiveMessages'> {
     executionId: string;
@@ -29,24 +28,20 @@ export interface RunGoalTurnRequest extends Omit<GoalBeginTurnRequest, 'executio
 
 export type { RunGoalTurnResult } from './turnDelivery.js';
 
-type TurnStreamOutcome = { state: GoalSessionState; completed: boolean; reachedPause: boolean };
-
-interface TurnStreamOptions {
-    fence: GoalSessionFence;
-    execution: GoalExecutionIdentity;
-    initial: GoalSessionState;
-    nextTurnMessages: GoalProviderCorrectiveMessage[];
-    openStream: () => AsyncIterable<GoalSessionEvent>;
-}
-
-type TurnEventOptions = { fence: GoalSessionFence; current: GoalSessionState;
-    execution: GoalExecutionIdentity; event: GoalSessionEvent };
-
-export abstract class GoalTurnRunner extends GoalSessionCore {
+export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
     async runTurn(request: RunGoalTurnRequest): Promise<RunGoalTurnResult> {
         validateControlFence(request);
         validateTurnRequestIdentity(request);
-        const safeRequest = credentialFreeRepositoryRequest(request);
+        if (request.context !== undefined) assertCredentialFreeRecoveryMetadata(request.context);
+        const safeRequest: RunGoalTurnRequest = {
+            goalId: request.goalId, sessionId: request.sessionId,
+            controllerEpoch: request.controllerEpoch, turnId: request.turnId,
+            executionId: request.executionId, attemptId: request.attemptId,
+            objective: safeDiagnostic(request.objective, '[redacted objective]'),
+            context: request.context === undefined ? undefined : structuredClone(request.context),
+            repository: credentialFreeRepositoryIdentity(request.repository),
+            requestedModel: safeDiagnostic(request.requestedModel, 'default'),
+        };
         let state = await this.requireControlledState(safeRequest);
         const recoveringRetry = state.retryTurn?.turnId === safeRequest.turnId
             && state.retryTurn.executionId === safeRequest.executionId;
@@ -171,15 +166,35 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
     }
 
     async resumeTurn(fence: GoalSessionControlFence): Promise<RunGoalTurnResult | GoalTurnResumeCapabilityOutcome> {
-        let state = await this.requireControlledState(fence);
-        if (this.adapter.capabilities.pause === 'after_turn') {
-            if (state.status === 'paused'
-                && state.activeTurn?.status === 'paused'
-                && state.recoveryAttemptId === state.activeTurn.attemptId) {
-                return this.retryRecoveredAfterTurn(fence, state);
-            }
-            return { disposition: 'unsupported_same_turn', supportedBoundary: 'after_turn' };
+        const state = await this.requireControlledState(fence);
+        if (settledResumeKind(state, 'recovered_after_turn')) {
+            return this.continueSettledRecoveredAfterTurn(fence, state);
         }
+        if (settledResumeKind(state, 'active_turn')) {
+            return this.continueSettledActiveResume(fence, state);
+        }
+        if (this.adapter.capabilities.pause === 'after_turn') {
+            return this.resumeAfterTurn(fence, state);
+        }
+        return this.resumeActiveTurn(fence, state);
+    }
+
+    private resumeAfterTurn(
+        fence: GoalSessionControlFence,
+        state: GoalSessionState,
+    ): Promise<RunGoalTurnResult> | GoalTurnResumeCapabilityOutcome {
+        if (state.status === 'paused' && state.activeTurn?.status === 'paused'
+            && state.recoveryAttemptId === state.activeTurn.attemptId) {
+            return this.retryRecoveredAfterTurn(fence, state);
+        }
+        return { disposition: 'unsupported_same_turn', supportedBoundary: 'after_turn' };
+    }
+
+    private async resumeActiveTurn(
+        fence: GoalSessionControlFence,
+        initial: GoalSessionState,
+    ): Promise<RunGoalTurnResult> {
+        let state = initial;
         if (state.status !== 'paused' || !state.activeTurn || state.activeTurn.status !== 'paused') {
             throw new GoalSessionContractError(`Cannot resume a turn while the session is ${state.status}`, 'SESSION_NOT_PAUSED');
         }
@@ -190,32 +205,45 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         };
         const turnFence: GoalSessionFence = { ...fence, turnId: state.activeTurn.turnId };
 
+        state = await this.claimResumeOperation(fence, state, {
+            kind: 'active_turn', execution, turnId: turnFence.turnId,
+        });
         state = await this.compareAndSetExact(state, {
-            status: 'running',
-            activeTurn: { ...state.activeTurn, ...execution, executionEpoch: fence.controllerEpoch, status: 'running' },
-        }, 'A newer operation claimed the paused turn before recovery');
-
+            activeTurn: { ...state.activeTurn!, ...execution, executionEpoch: fence.controllerEpoch, status: 'paused' },
+        }, 'A newer operation replaced the claimed paused turn');
+        state = await this.promoteResumeOperation(fence, state);
+        const intent = state.resumeIntent!;
+        state = await this.requireLiveResumeOperation(fence, intent.operationId, intent.operationGeneration);
+        const providerRequest = this.providerResumeRequest(fence, intent);
         let snapshot;
         try {
-            snapshot = await this.adapter.resumeSession(fence, persistedSnapshot(state));
+            snapshot = await this.adapter.resumeSession(providerRequest, persistedSnapshot(state));
         } catch (error) {
-            try {
-                await this.compareAndSetExact(state, {
-                    status: 'paused',
-                    activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'paused' } : state.activeTurn,
-                });
-            } catch { /* A newer operation owns the session; do not roll it back. */ }
+            await this.expireResumeOperation(fence, intent.operationId, intent.operationGeneration);
             throw error;
         }
         assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
         assertProviderIdentity(state, snapshot);
-        state = await this.compareAndSetExact(state, {
-            providerSessionId: snapshot.providerSessionId,
-            recoveryMetadata: snapshot.recoveryMetadata,
-            currentModel: snapshot.model ?? state.currentModel,
-        }, 'A newer operation superseded the recovered provider snapshot');
-        await this.appendControl(fence, execution, { type: 'session_resumed' });
-        await this.append(turnFence, execution, { type: 'turn_resumed', turnId: turnFence.turnId });
+        state = await this.requireLiveResumeOperation(fence, intent.operationId, intent.operationGeneration);
+        state = await this.commitControlTransition({
+            state,
+            fence,
+            changes: {
+                status: 'running',
+                activeTurn: { ...state.activeTurn!, ...execution, executionEpoch: fence.controllerEpoch, status: 'running' },
+                providerSessionId: snapshot.providerSessionId,
+                recoveryMetadata: snapshot.recoveryMetadata,
+                currentModel: snapshot.model ?? state.currentModel,
+                resumeIntent: { ...intent, phase: 'settled' },
+                completedResume: {
+                    operationId: intent.operationId, operationGeneration: intent.operationGeneration,
+                    kind: intent.kind, controllerEpoch: intent.controllerEpoch,
+                },
+            },
+            auditEvents: [{ type: 'session_resumed' }, { type: 'turn_resumed', turnId: turnFence.turnId }],
+            transitionId: `resume-settled:${intent.operationId}:${intent.operationGeneration}`,
+            execution,
+        });
 
         if (!this.adapter.resumeTurn) {
             throw new GoalSessionContractError('Provider declares active-turn pause without implementing turn resume', 'CAPABILITY_METHOD_MISSING');
@@ -226,7 +254,50 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             execution,
             initial: state,
             nextTurnMessages: [],
-            openStream: () => resumeTurn({ ...turnFence, ...execution }, persistedSnapshot(state)),
+            openStream: () => resumeTurn({ ...turnFence, ...execution, ...providerRequest }, persistedSnapshot(state)),
+        });
+        return { disposition: 'started', state: outcome.state, execution };
+    }
+
+    private async continueSettledActiveResume(
+        fence: GoalSessionControlFence,
+        state: GoalSessionState,
+    ): Promise<RunGoalTurnResult> {
+        if (!this.adapter.resumeTurn || !state.activeTurn || !state.resumeIntent) {
+            throw new GoalSessionContractError('Settled active resume is missing its provider primitive', 'CAPABILITY_METHOD_MISSING');
+        }
+        const turn = state.activeTurn;
+        const execution = { executionId: turn.executionId, attemptId: turn.attemptId };
+        const turnFence = { ...fence, turnId: turn.turnId };
+        const providerRequest = this.providerResumeRequest(fence, state.resumeIntent);
+        const resumeTurn = this.adapter.resumeTurn.bind(this.adapter);
+        state = await this.requireActiveAttemptState(turnFence, execution);
+        const outcome = await this.driveTurnStream({
+            fence: turnFence, execution, initial: state, nextTurnMessages: [],
+            openStream: () => resumeTurn({ ...turnFence, ...execution, ...providerRequest }, persistedSnapshot(state)),
+        });
+        return { disposition: 'started', state: outcome.state, execution };
+    }
+
+    private async continueSettledRecoveredAfterTurn(
+        fence: GoalSessionControlFence,
+        state: GoalSessionState,
+    ): Promise<RunGoalTurnResult> {
+        const turn = state.activeTurn!;
+        const intent = state.resumeIntent!;
+        const execution = { executionId: turn.executionId, attemptId: turn.attemptId };
+        const turnFence = { ...fence, turnId: turn.turnId };
+        const correctiveMessages = await this.nextTurnCorrectiveMessages(turnFence);
+        state = await this.requireActiveAttemptState(turnFence, execution);
+        const adapterRequest: GoalBeginTurnRequest = {
+            ...turnFence, ...execution, objective: turn.objective,
+            repository: turn.repository, requestedModel: turn.requestedModel,
+            correctiveMessages: correctiveMessages.length ? correctiveMessages : undefined,
+            providerOperation: this.providerResumeRequest(fence, intent),
+        };
+        const outcome = await this.driveTurnStream({
+            fence: turnFence, execution, initial: state, nextTurnMessages: correctiveMessages,
+            openStream: () => this.adapter.beginTurn(adapterRequest, providerTurnContext(state)),
         });
         return { disposition: 'started', state: outcome.state, execution };
     }
@@ -246,10 +317,23 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             || state.activeTurn.attemptId !== originalTurn.attemptId) {
             throw new StaleGoalSessionFenceError('A newer operation superseded the recovered turn boundary');
         }
-        const requestedModel = state.pendingModelChange ?? state.modelChangeIntent?.model ?? state.activeTurn.requestedModel;
-        state = await this.applyModelAtTurnBoundary(fence, state, requestedModel);
+        const initialTurn = state.activeTurn;
+        const execution = { executionId: initialTurn.executionId, attemptId: this.mintFreshAttemptId(initialTurn.attemptId) };
+        state = await this.claimResumeOperation(fence, state, {
+            kind: 'recovered_after_turn', execution, turnId: initialTurn.turnId,
+        });
+        const claimedIntent = state.resumeIntent!;
+        const requestedModel = state.pendingModelChange ?? state.modelChangeIntent?.model ?? state.activeTurn!.requestedModel;
+        try {
+            state = await this.applyModelAtTurnBoundary(fence, state, requestedModel);
+        } catch (error) {
+            await this.expireResumeOperation(fence, claimedIntent.operationId, claimedIntent.operationGeneration);
+            throw error;
+        }
+        state = await this.promoteResumeOperation(fence, state);
+        const intent = state.resumeIntent!;
+        state = await this.requireLiveResumeOperation(fence, intent.operationId, intent.operationGeneration);
         const turn = state.activeTurn!;
-        const execution = { executionId: turn.executionId, attemptId: this.mintFreshAttemptId(turn.attemptId) };
         const turnFence = { ...fence, turnId: turn.turnId };
         const correctiveMessages = await this.nextTurnCorrectiveMessages(turnFence);
         const activeTurn = {
@@ -260,14 +344,24 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             status: 'running' as const,
         };
         const recoveringPause = state.pendingAfterTurnPause === true;
-        const claimed = await this.compareAndSetExact(state, {
-            status: recoveringPause ? 'pause_requested' : 'running',
-            activeTurn: recoveringPause ? { ...activeTurn, status: 'pause_requested' } : activeTurn,
-            modelChangeIntent: this.adapter.capabilities.modelChange === 'next_turn'
-                ? undefined
-                : state.modelChangeIntent,
-        },
-            'A newer operation claimed the reconciled turn before recovery');
+        const claimed = await this.commitControlTransition({
+            state,
+            fence,
+            changes: {
+                status: recoveringPause ? 'pause_requested' : 'running',
+                activeTurn: recoveringPause ? { ...activeTurn, status: 'pause_requested' } : activeTurn,
+                modelChangeIntent: this.adapter.capabilities.modelChange === 'next_turn'
+                    ? undefined : state.modelChangeIntent,
+                resumeIntent: { ...intent, phase: 'settled' },
+                completedResume: {
+                    operationId: intent.operationId, operationGeneration: intent.operationGeneration,
+                    kind: intent.kind, controllerEpoch: intent.controllerEpoch,
+                },
+            },
+            auditEvents: [{ type: 'session_resumed' }, { type: 'turn_resumed', turnId: turn.turnId }],
+            transitionId: `resume-settled:${intent.operationId}:${intent.operationGeneration}`,
+            execution,
+        });
         const adapterRequest: GoalBeginTurnRequest = {
             ...turnFence,
             ...execution,
@@ -275,9 +369,8 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             repository: turn.repository,
             requestedModel,
             correctiveMessages: correctiveMessages.length ? correctiveMessages : undefined,
+            providerOperation: this.providerResumeRequest(fence, intent),
         };
-        await this.appendControl(fence, execution, { type: 'session_resumed' });
-        await this.append(turnFence, execution, { type: 'turn_resumed', turnId: turn.turnId });
         const outcome = await this.driveTurnStream({
             fence: turnFence,
             execution,
@@ -288,142 +381,15 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         return { disposition: 'started', state: outcome.state, execution };
     }
 
-    private async driveTurnStream(options: TurnStreamOptions): Promise<TurnStreamOutcome> {
-        const { fence, execution } = options;
-        let current = options.initial;
-        const awaitingMessageIds = options.nextTurnMessages.map(message => message.messageId);
-        let reachedPause = false;
-        let completed = false;
-        try {
-            // Invoke the provider inside the fenced try so a synchronous/early
-            // invocation failure is normalized into failed state plus one
-            // completion event, never leaving the session stranded as running.
-            const stream = options.openStream();
-            for await (const event of stream) {
-                if (completed) {
-                    throw new GoalSessionContractError('Provider emitted an event after turn completion', 'EVENT_AFTER_COMPLETION');
-                }
-                assertFirstTurnIdentityEvent(current, event, this.adapter.capabilities.nativeSessionId);
-                if (event.type === 'message_acknowledged') {
-                    await this.acknowledgeNextTurnMessage(fence, execution, event.messageId, awaitingMessageIds);
-                    await this.append(fence, execution, event);
-                    continue;
-                }
-                assertSuppliedMessagesAcknowledged(event, awaitingMessageIds);
-                if (event.type === 'completion' && this.adapter.capabilities.pause === 'after_turn') {
-                    current = await this.requireActiveAttemptState(fence, execution);
-                }
-                current = await this.applyTurnEvent({ fence, current, execution, event });
-                if (event.type === 'pause_boundary') reachedPause = true;
-                if (event.type === 'completion') completed = true;
-                if (event.type !== 'completion' && !isAtomicTurnAudit(event)) {
-                    await this.append(fence, execution, event);
-                }
-                if (event.type === 'pause_boundary' && this.adapter.capabilities.pause === 'active_turn') break;
-                if (event.type === 'completion' && current.status === 'paused') reachedPause = true;
-            }
-            if (!completed && !reachedPause) {
-                const error = 'Provider stream ended without a completion or safe pause boundary';
-                current = await this.commitTurnCompletion(fence, execution, { type: 'completion', outcome: 'failed', error });
-                completed = true;
-            }
-            return { state: current, completed, reachedPause };
-        } catch (error) {
-            if (error instanceof StaleGoalSessionFenceError) throw error;
-            const message = `Provider turn failed: ${(error as Error).message}`;
-            current = await this.finishTurnIfOwned(fence, execution, message);
-            throw error;
-        }
-    }
+}
 
-    private async acknowledgeNextTurnMessage(
-        fence: GoalSessionFence,
-        execution: GoalExecutionIdentity,
-        messageId: string,
-        awaitingMessageIds: string[],
-    ): Promise<void> {
-        const expected = awaitingMessageIds[0];
-        if (expected !== messageId) {
-            throw new GoalSessionContractError(
-                `Provider acknowledged corrective message "${messageId}" while "${expected ?? 'none'}" was next`,
-                'MESSAGE_ACK_OUT_OF_ORDER',
-            );
-        }
-        const result = await this.ports.messages.acknowledge(fence, execution, messageId);
-        if (result === 'stale_fence') throw new StaleGoalSessionFenceError();
-        if (result === 'not_found') {
-            throw new GoalSessionContractError('Corrective message disappeared before acknowledgement', 'MESSAGE_NOT_FOUND');
-        }
-        awaitingMessageIds.shift();
-    }
-
-    private async applyTurnEvent(options: TurnEventOptions): Promise<GoalSessionState> {
-        const { fence, current, execution, event } = options;
-        if (event.type === 'checkpoint') return this.persistCheckpoint(fence, current, execution, event);
-        if (event.type === 'model_changed') {
-            return this.commitTurnTransition({
-                state: current,
-                fence,
-                execution,
-                update: value => ({
-                    currentModel: event.model,
-                    pendingModelChange: value.pendingModelChange === event.model ? undefined : value.pendingModelChange,
-                }),
-                auditEvents: [event],
-                transitionId: streamAuditTransitionId(fence, execution, event),
-            });
-        }
-        if (event.type === 'pause_boundary') {
-            return this.commitTurnTransition({
-                state: current,
-                fence,
-                execution,
-                update: value => ({
-                    status: 'paused',
-                    activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
-                }),
-                auditEvents: [event],
-                transitionId: streamAuditTransitionId(fence, execution, event),
-            });
-        }
-        if (event.type === 'completion') return this.commitTurnCompletion(fence, execution, event);
-        return current;
-    }
-
-    private async persistCheckpoint(
-        fence: GoalSessionFence,
-        state: GoalSessionState,
-        execution: GoalExecutionIdentity,
-        event: Extract<GoalSessionEvent, { type: 'checkpoint' }>,
-    ): Promise<GoalSessionState> {
-        if (event.providerSessionId && state.providerSessionId && event.providerSessionId !== state.providerSessionId) {
-            throw new GoalSessionContractError('Checkpoint attempted to replace the provider session identity', 'PROVIDER_SESSION_CHANGED');
-        }
-        assertCredentialFreeRecoveryMetadata(event.recoveryMetadata);
-        return this.updateActiveTurnState(fence, execution, value => ({
-            ...value,
-            providerSessionId: event.providerSessionId ?? value.providerSessionId,
-            recoveryMetadata: event.recoveryMetadata,
-            initializationIntent: event.providerSessionId ? undefined : value.initializationIntent,
-            currentModel: event.providerSessionId && !value.providerSessionId
-                ? value.activeTurn?.requestedModel ?? value.currentModel
-                : value.currentModel,
-            pendingModelChange: event.providerSessionId
-                && !value.providerSessionId
-                && value.pendingModelChange === value.activeTurn?.requestedModel
-                ? undefined
-                : value.pendingModelChange,
-        }));
-    }
-
-    private async finishTurnIfOwned(
-        fence: GoalSessionFence,
-        execution: GoalExecutionIdentity,
-        error: string,
-    ): Promise<GoalSessionState> {
-        try {
-            return await this.commitTurnCompletion(fence, execution, { type: 'completion', outcome: 'failed', error });
-        }
-        catch { return this.requireState(fence); }
-    }
+function settledResumeKind(
+    state: GoalSessionState,
+    kind: 'active_turn' | 'recovered_after_turn',
+): boolean {
+    const liveStatus = kind === 'active_turn' ? state.status === 'running'
+        : state.status === 'running' || state.status === 'pause_requested';
+    return liveStatus && Boolean(state.activeTurn) && state.resumeIntent?.phase === 'settled'
+        && state.completedResume?.operationId === state.resumeIntent.operationId
+        && state.completedResume.kind === kind;
 }

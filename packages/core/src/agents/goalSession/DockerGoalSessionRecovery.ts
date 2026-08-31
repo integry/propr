@@ -17,14 +17,6 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-function errorText(error: unknown): string {
-    if (error && typeof error === 'object') {
-        const stderr = 'stderr' in error ? String(error.stderr).trim() : '';
-        if (stderr) return stderr;
-    }
-    return error instanceof Error ? error.message : String(error);
-}
-
 /** Read-only Docker/worktree inspection used during daemon or worker restart reconciliation. */
 export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
     constructor(
@@ -73,7 +65,8 @@ export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
                     : 'Recovered container is missing one or more authoritative identity labels',
             };
         } catch (error) {
-            return { status: 'daemon_unavailable', reason: `Docker inspection failed: ${errorText(error)}` };
+            void error;
+            return { status: 'daemon_unavailable', reason: 'Docker inspection failed safely' };
         }
     }
 
@@ -82,9 +75,8 @@ export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
         if (!safeRepository) {
             return {
                 repository: '',
-                worktreePath: repository.worktreePath,
-                branch: repository.branch,
-                headSha: repository.headSha,
+                worktreePath: '/invalid-goal-worktree',
+                branch: 'invalid',
                 exists: false,
                 reason: 'Git remote does not contain a trustworthy repository identity',
             };
@@ -92,7 +84,8 @@ export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
         try {
             await access(safeRepository.worktreePath);
         } catch (error) {
-            return { ...safeRepository, exists: false, reason: `Worktree is unavailable: ${errorText(error)}` };
+            void error;
+            return { ...safeRepository, exists: false, reason: 'Worktree is unavailable' };
         }
         try {
             const lexicalPath = path.resolve(safeRepository.worktreePath);

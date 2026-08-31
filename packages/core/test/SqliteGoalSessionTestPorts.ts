@@ -39,6 +39,10 @@ export class SqliteGoalSessionTestPorts {
                 PRIMARY KEY (scope, sequence)
             );
             CREATE TABLE IF NOT EXISTS goal_commits (kind TEXT NOT NULL, identity TEXT NOT NULL, PRIMARY KEY (kind, identity));
+            CREATE TABLE IF NOT EXISTS goal_messages (
+                scope TEXT NOT NULL, message_id TEXT NOT NULL, sequence INTEGER NOT NULL, payload TEXT NOT NULL,
+                PRIMARY KEY (scope, message_id)
+            );
             CREATE TABLE IF NOT EXISTS goal_fixtures (kind TEXT NOT NULL, identity TEXT NOT NULL, payload TEXT NOT NULL,
                 PRIMARY KEY (kind, identity));
         `);
@@ -134,13 +138,43 @@ export class SqliteGoalSessionTestPorts {
         return rows.map(row => JSON.parse(row.payload) as PersistedGoalSessionEvent);
     }
 
-    async listPending(_identity: GoalSessionIdentity): Promise<DurableCorrectiveMessage[]> { return []; }
+    async listPending(identity: GoalSessionIdentity): Promise<DurableCorrectiveMessage[]> {
+        const rows = this.database.prepare(
+            'SELECT payload FROM goal_messages WHERE scope = ? ORDER BY sequence',
+        ).all(scope(identity)) as Array<{ payload: string }>;
+        return rows.map(row => JSON.parse(row.payload) as DurableCorrectiveMessage)
+            .filter(message => !message.acknowledgedAt);
+    }
 
     async acknowledge(
         _fence: GoalSessionFence,
         _execution: GoalExecutionIdentity,
         _messageId: string,
-    ): Promise<'not_found'> { return 'not_found'; }
+    ): Promise<'acknowledged' | 'already_acknowledged' | 'stale_fence' | 'not_found'> {
+        return this.acknowledgeMessage(_fence, _execution, _messageId, false);
+    }
+
+    async acknowledgeWithEvent(
+        fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
+        messageId: string,
+    ): Promise<'acknowledged' | 'already_acknowledged' | 'stale_fence' | 'not_found'> {
+        return this.database.transaction(() => {
+            const state = this.readState(fence);
+            if (!matchesTurn(state, fence, execution)) return 'stale_fence' as const;
+            const message = this.readMessage(fence, messageId);
+            if (!message) return 'not_found' as const;
+            if (message.acknowledgedAt) return 'already_acknowledged' as const;
+            this.writeMessage({ ...message, acknowledgedAt: new Date().toISOString() });
+            this.record(fence, fence.turnId, execution, { type: 'message_acknowledged', messageId });
+            return 'acknowledged' as const;
+        })();
+    }
+
+    enqueueMessage(message: DurableCorrectiveMessage): void {
+        this.database.prepare('INSERT INTO goal_messages(scope, message_id, sequence, payload) VALUES (?, ?, ?, ?)')
+            .run(scope(message), message.messageId, message.sequence, JSON.stringify(message));
+    }
 
     async inspectContainer(identity: GoalSessionIdentity): Promise<GoalContainerInspection> {
         return this.fixture('container', scope(identity)) ?? { status: 'missing', reason: 'not configured' };
@@ -164,6 +198,34 @@ export class SqliteGoalSessionTestPorts {
         const row = this.database.prepare('SELECT payload FROM goal_state WHERE scope = ?')
             .get(scope(identity)) as { payload: string } | undefined;
         return row ? JSON.parse(row.payload) as GoalSessionState : null;
+    }
+
+    private acknowledgeMessage(
+        fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
+        messageId: string,
+        withEvent: boolean,
+    ): 'acknowledged' | 'already_acknowledged' | 'stale_fence' | 'not_found' {
+        return this.database.transaction(() => {
+            if (!matchesTurn(this.readState(fence), fence, execution)) return 'stale_fence' as const;
+            const message = this.readMessage(fence, messageId);
+            if (!message) return 'not_found' as const;
+            if (message.acknowledgedAt) return 'already_acknowledged' as const;
+            this.writeMessage({ ...message, acknowledgedAt: new Date().toISOString() });
+            if (withEvent) this.record(fence, fence.turnId, execution, { type: 'message_acknowledged', messageId });
+            return 'acknowledged' as const;
+        })();
+    }
+
+    private readMessage(identity: GoalSessionIdentity, messageId: string): DurableCorrectiveMessage | undefined {
+        const row = this.database.prepare('SELECT payload FROM goal_messages WHERE scope = ? AND message_id = ?')
+            .get(scope(identity), messageId) as { payload: string } | undefined;
+        return row ? JSON.parse(row.payload) as DurableCorrectiveMessage : undefined;
+    }
+
+    private writeMessage(message: DurableCorrectiveMessage): void {
+        this.database.prepare('UPDATE goal_messages SET payload = ? WHERE scope = ? AND message_id = ?')
+            .run(JSON.stringify(message), scope(message), message.messageId);
     }
 
     private commitTransition(

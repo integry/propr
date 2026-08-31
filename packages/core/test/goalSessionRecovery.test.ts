@@ -65,7 +65,7 @@ test('repository recovery refuses a path alias instead of reporting expected-der
     assert.equal(inspection.observedWorktreeFingerprint, undefined);
 });
 
-test('Docker recovery strips HTTPS and SSH/scp userinfo before returning repository inspection', async t => {
+test('Docker recovery rejects credential-bearing HTTPS and SSH/scp remotes without returning secrets', async t => {
     const secret = 'DOCKER-REMOTE-SECRET';
     for (const [name, remote] of [
         ['HTTPS', `https://automation:${secret}@github.com/integry/propr.git`],
@@ -78,7 +78,8 @@ test('Docker recovery strips HTTPS and SSH/scp userinfo before returning reposit
             const inspection = await recovery.inspectRepository({
                 repository: 'integry/propr', worktreePath: root, branch: 'actual-branch',
             });
-            assert.equal(inspection.observedRepository, 'integry/propr');
+            assert.equal(inspection.observedRepository, undefined);
+            assert.match(inspection.reason ?? '', /trustworthy repository identity/);
             assert.doesNotMatch(JSON.stringify(inspection), new RegExp(secret));
         });
     }

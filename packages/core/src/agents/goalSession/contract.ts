@@ -95,6 +95,8 @@ export interface GoalSessionInitializationIntent {
 export interface GoalRecoveryAttempt {
     /** Stable idempotency/fencing identity for this recovery provider operation. */
     operationToken: string;
+    /** Monotonic durable provider fence. A provider must reject a lower generation. */
+    operationGeneration: number;
     executionId: string;
     attemptId: string;
     controllerEpoch: number;
@@ -108,6 +110,27 @@ export interface GoalRecoveryAttempt {
     leaseExpiresAt: string;
     /** Claimed work is cancellation-preemptible until the provider call is durably marked in doubt. */
     phase?: 'claimed' | 'provider_in_doubt';
+}
+
+export type GoalResumeKind = 'active_turn' | 'after_turn' | 'recovered_after_turn';
+
+/** Durable exclusive claim around one logical resume provider operation. */
+export interface GoalResumeIntent extends GoalExecutionIdentity {
+    operationId: string;
+    operationGeneration: number;
+    kind: GoalResumeKind;
+    controllerEpoch: number;
+    turnId?: string;
+    claimedAt: string;
+    leaseExpiresAt: string;
+    phase: 'claimed' | 'provider_in_doubt' | 'settled';
+}
+
+export interface GoalCompletedResume {
+    operationId: string;
+    operationGeneration: number;
+    kind: GoalResumeKind;
+    controllerEpoch: number;
 }
 
 /** Atomic recovery-result receipt used to replay an ambiguous committed transaction. */
@@ -214,6 +237,10 @@ export interface GoalSessionState extends GoalSessionIdentity {
     recoveryAttempt?: GoalRecoveryAttempt;
     /** Last atomically committed reconciliation receipt for same-epoch replay. */
     completedRecovery?: GoalCompletedRecovery;
+    /** Last allocated generation across recovery/resume provider operations. */
+    providerOperationGeneration?: number;
+    resumeIntent?: GoalResumeIntent;
+    completedResume?: GoalCompletedResume;
     /** In-flight or completed cancellation identity. Active turn ownership is cleared when this is claimed. */
     cancellationIntent?: GoalCancellationIntent;
     /** Provider model application/reconciliation identity retained across crashes. */
@@ -225,6 +252,8 @@ export interface GoalSessionState extends GoalSessionIdentity {
     modelChangeIntents?: GoalModelChangeIntent[];
     /** Last allocated immediate-model generation. */
     modelChangeGeneration?: number;
+    /** Fixed-size retired-ID membership filter for deterministic outside-horizon retries. */
+    modelChangeRetiredFilter?: string;
     failureReason?: string;
     /** Optimistic concurrency token owned by the state port. */
     version: number;
@@ -364,8 +393,8 @@ export interface DurableCorrectiveMessage extends GoalSessionIdentity {
 /** Message creation belongs to goal persistence/API code; the runtime only consumes and acknowledges it. */
 export interface GoalSessionMessagePort {
     listPending(identity: GoalSessionIdentity): Promise<DurableCorrectiveMessage[]>;
-    /** Atomically consumes only for the exact live provider invocation. */
-    acknowledge(
+    /** Atomically consumes the message and appends its canonical acknowledgement event. */
+    acknowledgeWithEvent(
         fence: GoalSessionFence,
         execution: GoalExecutionIdentity,
         messageId: string,
@@ -395,6 +424,8 @@ export interface GoalBeginTurnRequest extends GoalSessionFence, GoalExecutionIde
      * provider must acknowledge every supplied ID before reporting success.
      */
     correctiveMessages?: GoalProviderCorrectiveMessage[];
+    /** Present when this invocation settles a durable recovered-resume claim. */
+    providerOperation?: Pick<GoalProviderResumeRequest, 'operationId' | 'operationGeneration' | 'operationPhase' | 'operationLeaseExpiresAt' | 'kind'>;
 }
 
 export interface GoalProviderCorrectiveMessage {
@@ -414,6 +445,8 @@ export interface GoalPauseRequest extends GoalSessionControlFence {
 
 export interface GoalModelChangeRequest extends GoalSessionControlFence {
     model: string;
+    /** Stable caller identity for direct retry within the supported durable horizon. */
+    operationId?: string;
 }
 
 /** Provider request; retries with the same modelChangeId must not repeat the external side effect. */
@@ -458,6 +491,7 @@ export type GoalTurnResumeCapabilityOutcome = {
 };
 
 export interface GoalModelChangeAcknowledgement {
+    outcome?: 'acknowledged' | 'outside_retry_horizon';
     requestedModel: string;
     appliesAt: 'immediate' | 'next_safe_boundary' | 'next_turn';
     effectiveModel?: string;
@@ -467,9 +501,20 @@ export interface GoalProviderReconcileRequest extends GoalSessionIdentity, GoalE
     controllerEpoch: number;
     /** Durable recovery operation identity; retries/replacements must be fenced by the provider primitive. */
     operationToken: string;
+    operationGeneration: number;
+    operationPhase: 'provider_in_doubt';
+    operationLeaseExpiresAt: string;
     persisted: GoalProviderSessionSnapshot;
     repository: GoalRepositoryInspection;
     container: GoalContainerInspection;
+}
+
+export interface GoalProviderResumeRequest extends GoalSessionControlFence {
+    operationId: string;
+    operationGeneration: number;
+    operationPhase: 'provider_in_doubt' | 'settled';
+    operationLeaseExpiresAt: string;
+    kind: GoalResumeKind;
 }
 
 export type GoalProviderReconcileResult =
@@ -489,8 +534,10 @@ export type GoalProviderReconcileResult =
  * cancel and cancelPending must likewise be idempotent by cancellationId because
  * a crash can occur after signalling the provider but before the terminal
  * transaction is observed by the caller.
- * reconcile must fence by controllerEpoch plus operationToken/attemptId so a
- * delayed expired lease cannot create authoritative work after its replacement.
+ * reconcile/resume primitives must durably reject an expired lease or an
+ * operationGeneration below the newest generation they have observed, before
+ * starting any provider side effect. operationId/token supplies idempotency;
+ * generation supplies replacement/cancellation ordering.
  */
 export interface GoalSessionAdapter {
     readonly provider: string;
@@ -515,10 +562,10 @@ export interface GoalSessionAdapter {
      * checkpoint and streams further ordered events through to a single
      * completion; it must not start a new logical turn.
      */
-    resumeTurn?(request: GoalSessionFence & GoalExecutionIdentity, snapshot: GoalProviderSessionSnapshot): AsyncIterable<GoalSessionEvent>;
+    resumeTurn?(request: GoalSessionFence & GoalExecutionIdentity & GoalProviderResumeRequest, snapshot: GoalProviderSessionSnapshot): AsyncIterable<GoalSessionEvent>;
     deliverMessage?(request: GoalSteeringRequest, snapshot: GoalProviderSessionSnapshot): Promise<{ messageId: string }>;
     requestPause?(request: GoalPauseRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalPauseAcknowledgement>;
-    resumeSession(request: GoalSessionControlFence, snapshot: GoalProviderSessionSnapshot): Promise<GoalProviderSessionSnapshot>;
+    resumeSession(request: GoalProviderResumeRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalProviderSessionSnapshot>;
     requestModelChange(request: GoalProviderModelChangeRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalModelChangeAcknowledgement>;
     cancel(request: GoalProviderCancelRequest, snapshot: GoalProviderSessionSnapshot): Promise<void>;
     /** Cancels an invocation/container before a native provider session ID exists. */

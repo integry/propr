@@ -295,7 +295,9 @@ test('overlapping model generations converge after reverse completion and cached
     assert.equal((await ports.load(identity))?.currentModel, 'model-c');
     const changed = (await ports.replay(identity)).filter(record => record.event.type === 'model_changed');
     assert.deepEqual(changed.map(record => record.event.type === 'model_changed' ? record.event.model : ''), ['model-c']);
-    assert.equal((await ports.replay(identity)).filter(record => record.event.type === 'model_change_acknowledged').length, 1);
+    const acknowledgements = (await ports.replay(identity))
+        .filter(record => record.event.type === 'model_change_acknowledged');
+    assert.equal(acknowledgements.length, 2, 'each retained model intent has exactly one canonical acknowledgement');
     assert.equal(new Set(adapter.effects.calls.filter(call => call.model === 'model-c').map(call => call.modelChangeId)).size, 1);
 });
 

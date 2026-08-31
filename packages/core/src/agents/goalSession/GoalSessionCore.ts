@@ -9,8 +9,12 @@ import type {
     GoalSessionRuntimePorts,
     GoalSessionState,
     GoalTerminalCommit,
+    GoalResumeKind,
+    GoalResumeIntent,
+    GoalProviderResumeRequest,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
+import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 import {
     controlExecutionIdentity,
     nextState,
@@ -73,6 +77,88 @@ export abstract class GoalSessionCore {
             .digest('hex')
             .slice(0, 24);
         return `${kind}-${scope}-e${state.controllerEpoch}-v${state.version}`;
+    }
+
+    protected async claimResumeOperation(
+        fence: GoalSessionControlFence,
+        state: GoalSessionState,
+        options: { kind: GoalResumeKind; execution: GoalExecutionIdentity; turnId?: string },
+    ): Promise<GoalSessionState> {
+        const { kind, execution, turnId } = options;
+        const previous = state.resumeIntent;
+        if (previous && previous.phase !== 'settled'
+            && Date.parse(previous.leaseExpiresAt) > Date.now()) {
+            throw new GoalSessionContractError('Another process owns the durable resume lease', 'RESUME_IN_PROGRESS');
+        }
+        const generation = (state.providerOperationGeneration ?? 0) + 1;
+        const intent: GoalResumeIntent = {
+            ...execution,
+            operationId: previous?.kind === kind ? previous.operationId : this.controlOperationId(`resume-${kind}`, state),
+            operationGeneration: generation,
+            kind, controllerEpoch: fence.controllerEpoch, turnId,
+            claimedAt: new Date().toISOString(),
+            leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+            phase: 'claimed',
+        };
+        return this.compareAndSetExact(state, {
+            providerOperationGeneration: generation,
+            resumeIntent: intent,
+            completedResume: undefined,
+        }, 'A newer operation claimed the resume lease');
+    }
+
+    protected async promoteResumeOperation(fence: GoalSessionControlFence, state: GoalSessionState): Promise<GoalSessionState> {
+        const intent = state.resumeIntent;
+        if (!intent || intent.phase !== 'claimed') throw new StaleGoalSessionFenceError('Resume lease is not claimable');
+        return this.compareAndSetExact(state, {
+            resumeIntent: { ...intent, phase: 'provider_in_doubt' },
+        }, 'Cancellation or replacement fenced resume before the provider call');
+    }
+
+    protected async requireLiveResumeOperation(
+        fence: GoalSessionControlFence,
+        operationId: string,
+        operationGeneration: number,
+    ): Promise<GoalSessionState> {
+        const state = await this.requireControlledState(fence);
+        const intent = state.resumeIntent;
+        if (!intent || intent.operationId !== operationId
+            || intent.operationGeneration !== operationGeneration
+            || state.providerOperationGeneration !== operationGeneration
+            || intent.phase !== 'provider_in_doubt'
+            || Date.parse(intent.leaseExpiresAt) <= Date.now()
+            || state.status !== 'paused') {
+            throw new StaleGoalSessionFenceError('Resume provider operation was durably preempted or expired');
+        }
+        return state;
+    }
+
+    protected providerResumeRequest(fence: GoalSessionControlFence, intent: GoalResumeIntent): GoalProviderResumeRequest {
+        return {
+            goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
+            operationId: intent.operationId, operationGeneration: intent.operationGeneration,
+            operationPhase: intent.phase === 'settled' ? 'settled' : 'provider_in_doubt', kind: intent.kind,
+            operationLeaseExpiresAt: intent.leaseExpiresAt,
+        };
+    }
+
+    protected async expireResumeOperation(
+        fence: GoalSessionControlFence,
+        operationId: string,
+        operationGeneration: number,
+    ): Promise<void> {
+        try {
+            const state = await this.requireControlledState(fence);
+            const intent = state.resumeIntent;
+            if (!intent || intent.operationId !== operationId
+                || intent.operationGeneration !== operationGeneration) return;
+            await this.ports.state.compareAndSet(state, nextState(state, {
+                providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
+                resumeIntent: { ...intent, leaseExpiresAt: new Date(0).toISOString() },
+            }));
+        } catch (error) {
+            if (!(error instanceof StaleGoalSessionFenceError)) throw error;
+        }
     }
 
     protected async requireState(identity: GoalSessionIdentity): Promise<GoalSessionState> {
@@ -176,6 +262,7 @@ export abstract class GoalSessionCore {
                     : [...state.completedTurnIds, fence.turnId],
                 completedTurns,
                 pendingAfterTurnPause: undefined,
+                resumeIntent: undefined,
             });
             const completion: GoalTerminalCommit = {
                 scope: 'turn',
@@ -184,7 +271,7 @@ export abstract class GoalSessionCore {
                 auditEvents: recordsAfterTurnPause
                     ? [{ type: 'pause_boundary', boundary: 'after_turn' }]
                     : [],
-                event,
+                event: sanitizeGoalSessionEvent(event) as Extract<GoalSessionEvent, { type: 'completion' }>,
             };
             const saved = await this.ports.terminal.commit(state, next, completion);
             if (saved) return saved;
@@ -200,7 +287,8 @@ export abstract class GoalSessionCore {
     ): Promise<GoalSessionState> {
         const execution = controlExecutionIdentity(state);
         const saved = await this.ports.terminal.commit(state, nextState(state, changes), {
-            scope: 'control', fence, execution, auditEvents: [], event,
+            scope: 'control', fence, execution, auditEvents: [],
+            event: sanitizeGoalSessionEvent(event) as Extract<GoalSessionEvent, { type: 'completion' }>,
         });
         if (!saved) throw new StaleGoalSessionFenceError('A newer operation superseded terminal completion');
         return saved;
@@ -223,7 +311,7 @@ export abstract class GoalSessionCore {
             transitionId,
             fence,
             execution,
-            auditEvents,
+            auditEvents: auditEvents.map(event => sanitizeGoalSessionEvent(event)) as typeof auditEvents,
         });
         if (!saved) throw new StaleGoalSessionFenceError('A newer operation superseded the state/audit transaction');
         return saved;
@@ -247,7 +335,7 @@ export abstract class GoalSessionCore {
                 transitionId,
                 fence,
                 execution,
-                auditEvents,
+                auditEvents: auditEvents.map(event => sanitizeGoalSessionEvent(event)) as typeof auditEvents,
                 turnScoped: true,
             });
             if (saved) return saved;
@@ -270,13 +358,13 @@ export abstract class GoalSessionCore {
 
     /** Turn-scoped append; a rejection means this controller no longer owns the turn. */
     protected async append(fence: GoalSessionFence, execution: GoalExecutionIdentity, event: GoalSessionEvent): Promise<void> {
-        const result = await this.ports.events.append(fence, execution, event);
+        const result = await this.ports.events.append(fence, execution, sanitizeGoalSessionEvent(event));
         if (!result.accepted) throw new StaleGoalSessionFenceError(`Durable event sink rejected output: ${result.reason}`);
     }
 
     /** Turn-scoped append tolerant of losing ownership on an error/cleanup path. */
     protected async appendIfOwned(fence: GoalSessionFence, execution: GoalExecutionIdentity, event: GoalSessionEvent): Promise<void> {
-        const result = await this.ports.events.append(fence, execution, event);
+        const result = await this.ports.events.append(fence, execution, sanitizeGoalSessionEvent(event));
         if (!result.accepted && result.reason !== 'stale_fence') {
             throw new GoalSessionContractError(`Durable event sink rejected output: ${result.reason}`, 'EVENT_REJECTED');
         }
@@ -288,7 +376,7 @@ export abstract class GoalSessionCore {
         execution: GoalExecutionIdentity,
         event: GoalSessionEvent,
     ): Promise<void> {
-        const result = await this.ports.events.appendControl(fence, execution, event);
+        const result = await this.ports.events.appendControl(fence, execution, sanitizeGoalSessionEvent(event));
         if (!result.accepted) throw new StaleGoalSessionFenceError(`Durable control sink rejected event: ${result.reason}`);
     }
 }

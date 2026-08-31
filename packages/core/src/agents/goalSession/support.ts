@@ -8,6 +8,7 @@ import type {
     GoalSessionState,
 } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
+import { safeDiagnostic } from './securityBoundary.js';
 
 /** Sentinel turn identity used by session-scoped control/audit events. */
 export function controlExecutionIdentity(state: Pick<GoalSessionState, 'sessionId' | 'controllerEpoch'>): GoalExecutionIdentity {
@@ -78,6 +79,11 @@ export function nextState(state: GoalSessionState, changes: Partial<GoalSessionS
 }
 
 export function assertProviderIdentity(state: GoalSessionState, snapshot: GoalProviderSessionSnapshot): void {
+    if (!snapshot.providerSessionId.trim()
+        || safeDiagnostic(snapshot.providerSessionId, '') !== snapshot.providerSessionId.trim()
+        || (snapshot.model !== undefined && safeDiagnostic(snapshot.model, '') !== snapshot.model.trim())) {
+        throw new GoalSessionContractError('Provider snapshot contains an unsafe identity or model', 'UNSAFE_PROVIDER_VALUE');
+    }
     if (state.providerSessionId && state.providerSessionId !== snapshot.providerSessionId) {
         throw new GoalSessionContractError(
             `Provider attempted to replace session "${state.providerSessionId}" with "${snapshot.providerSessionId}"`,

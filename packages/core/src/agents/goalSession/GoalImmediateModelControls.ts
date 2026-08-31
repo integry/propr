@@ -10,11 +10,15 @@ import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.j
 import { GoalTurnRunner } from './GoalTurnRunner.js';
 import {
     compactImmediateModelIntents,
+    assertModelControllable,
     hasUnresolvedImmediateModelIntent,
     immediateModelIntents,
     latestImmediateModelIntent,
     nextModelGeneration,
     replaceImmediateModelIntent,
+    retireCompactedModelIds,
+    requestedImmediateModelIntent,
+    retiredFilterAfterCompaction,
 } from './modelChangeProtocol.js';
 import { nextState, persistedSnapshot } from './support.js';
 
@@ -32,7 +36,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             if (state.pendingModelChange === request.model && state.modelChangeIntent?.model === request.model) {
                 return acknowledgement;
             }
-            const modelChangeId = this.controlOperationId('model', state);
+            const modelChangeId = request.operationId ?? this.controlOperationId('model', state);
             const generation = nextModelGeneration(state);
             state = await this.commitControlTransition({
                 state,
@@ -70,23 +74,38 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         initial: GoalSessionState,
     ): Promise<GoalModelChangeAcknowledgement> {
         let state = initial;
-        let intent = latestImmediateModelIntent(state);
-        if (intent?.model !== request.model) intent = undefined;
+        const resolved = requestedImmediateModelIntent(state, request);
+        let { intent } = resolved;
+        if (resolved.retired) {
+            return {
+                outcome: 'outside_retry_horizon', requestedModel: request.model,
+                appliesAt: 'next_safe_boundary',
+            };
+        }
+        if (intent && intent.modelChangeId !== latestImmediateModelIntent(state)?.modelChangeId
+            && (intent.phase === 'committed' || intent.phase === 'superseded')) {
+            return intent.acknowledgement ?? {
+                requestedModel: intent.model, appliesAt: 'next_safe_boundary',
+            };
+        }
         if (!intent) {
             const intents = immediateModelIntents(state);
             const generation = nextModelGeneration(state);
             intent = {
-                modelChangeId: this.controlOperationId('model', state),
+                modelChangeId: request.operationId ?? this.controlOperationId('model', state),
                 model: request.model,
                 requestedAt: new Date().toISOString(),
                 generation,
                 previousModel: state.currentModel,
                 phase: 'pending',
             };
+            const before = [...intents, intent];
+            const retained = compactImmediateModelIntents(before);
             state = await this.compareAndSetExact(state, {
                 requestedModel: request.model,
                 modelChangeIntent: intent,
-                modelChangeIntents: compactImmediateModelIntents([...intents, intent]),
+                modelChangeIntents: retained,
+                modelChangeRetiredFilter: retireCompactedModelIds(state.modelChangeRetiredFilter, before, retained),
                 modelChangeGeneration: generation,
             }, 'A newer model intent superseded this request');
         }
@@ -102,12 +121,13 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         requestedIntentId: string,
     ): Promise<GoalModelChangeAcknowledgement> {
         let state = await this.requireControlledState(fence);
+        assertModelControllable(state);
         let intent = immediateModelIntents(state).find(value => value.modelChangeId === requestedIntentId);
         if (!intent) throw new StaleGoalSessionFenceError('The requested model generation was superseded');
         ({ state, intent } = await this.claimModelApplication(fence, state, intent));
         const acknowledgement = await this.adapter.requestModelChange(
             {
-                ...fence,
+                goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
                 model: intent.model,
                 modelChangeId: intent.modelChangeId,
                 applicationGeneration: intent.generation ?? 0,
@@ -132,6 +152,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             }
             throw error;
         }
+        assertModelControllable(state);
         const latest = latestImmediateModelIntent(state);
         const durableIntent = immediateModelIntents(state)
             .find(value => value.modelChangeId === intent.modelChangeId);
@@ -141,7 +162,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         }
         if (latest?.modelChangeId !== intent.modelChangeId) {
             await this.reapplyLatestModel(fence, latest);
-            await this.markModelGenerationSuperseded(fence, intent.modelChangeId);
+            await this.markModelGenerationSuperseded(fence, intent.modelChangeId, acknowledgement);
             throw new StaleGoalSessionFenceError('A newer model intent superseded this provider acknowledgement');
         }
         const committed = {
@@ -169,6 +190,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
                 currentModel: acknowledgement.effectiveModel ?? state.currentModel,
                 modelChangeIntents: intents,
                 modelChangeIntent: intents.at(-1),
+                modelChangeRetiredFilter: retiredFilterAfterCompaction(state, intents),
             },
             auditEvents,
             transitionId: `model-applied:${intent.modelChangeId}`,
@@ -185,13 +207,14 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         let target = intent;
         for (;;) {
             let state = await this.requireControlledState(fence);
+            assertModelControllable(state);
             const durable = immediateModelIntents(state)
                 .find(value => value.modelChangeId === target.modelChangeId);
             if (!durable) return;
             ({ state, intent: target } = await this.claimModelApplication(fence, state, durable));
             const acknowledgement = await this.adapter.requestModelChange(
                 {
-                    ...fence,
+                    goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
                     model: target.model,
                     modelChangeId: target.modelChangeId,
                     applicationGeneration: target.generation ?? 0,
@@ -200,6 +223,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             );
             this.validateImmediateModelAcknowledgement({ ...fence, model: target.model }, state, acknowledgement);
             state = await this.requireControlledState(fence);
+            assertModelControllable(state);
             const latest = latestImmediateModelIntent(state);
             if (latest?.modelChangeId !== target.modelChangeId
                 || latest.applicationToken !== target.applicationToken) {
@@ -268,6 +292,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             if (this.isLiveModelLease(current, state.controllerEpoch)) {
                 await new Promise<void>(resolve => setImmediate(resolve));
                 state = await this.requireControlledState(fence);
+                assertModelControllable(state);
                 continue;
             }
             const claimed: GoalModelChangeIntent = {
@@ -282,6 +307,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
                 const saved = await this.compareAndSetExact(state, {
                     modelChangeIntents: intents,
                     modelChangeIntent: intents.at(-1),
+                    modelChangeRetiredFilter: retiredFilterAfterCompaction(state, intents),
                 }, 'A newer model operation superseded the provider-call lease');
                 return { state: saved, intent: claimed };
             } catch (error) {
@@ -318,20 +344,36 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             const saved = await this.ports.state.compareAndSet(state, nextState(state, {
                 modelChangeIntents: intents,
                 modelChangeIntent: intents.at(-1),
+                modelChangeRetiredFilter: retiredFilterAfterCompaction(state, intents),
             }));
             if (saved) return;
         }
     }
 
-    private async markModelGenerationSuperseded(fence: GoalSessionControlFence, modelChangeId: string): Promise<void> {
+    private async markModelGenerationSuperseded(
+        fence: GoalSessionControlFence,
+        modelChangeId: string,
+        acknowledgement: GoalModelChangeAcknowledgement,
+    ): Promise<void> {
         const state = await this.requireControlledState(fence);
         const intent = immediateModelIntents(state).find(value => value.modelChangeId === modelChangeId);
         if (!intent || intent.phase === 'superseded') return;
-        const intents = replaceImmediateModelIntent(state, { ...intent, phase: 'superseded' });
-        await this.compareAndSetExact(state, {
-            modelChangeIntents: intents,
-            modelChangeIntent: intents.at(-1),
-        }, 'A newer operation superseded obsolete model cleanup');
+        const intents = replaceImmediateModelIntent(state, {
+            ...intent, phase: 'superseded', acknowledgement,
+            applicationToken: undefined, applicationControllerEpoch: undefined, leaseExpiresAt: undefined,
+        });
+        await this.commitControlTransition({
+            state, fence,
+            changes: {
+                modelChangeIntents: intents, modelChangeIntent: intents.at(-1),
+                modelChangeRetiredFilter: retiredFilterAfterCompaction(state, intents),
+            },
+            auditEvents: [{
+                type: 'model_change_acknowledged', requestedModel: intent.model,
+                appliesAt: acknowledgement.appliesAt,
+            }],
+            transitionId: `model-superseded:${modelChangeId}`,
+        });
     }
 
     private async markObsoleteModelGenerations(
@@ -351,6 +393,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         await this.compareAndSetExact(state, {
             modelChangeIntents: intents,
             modelChangeIntent: intents.at(-1),
+            modelChangeRetiredFilter: retiredFilterAfterCompaction(state, intents),
         }, 'A newer operation superseded obsolete model recovery');
     }
 
@@ -370,4 +413,5 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             throw new GoalSessionContractError('Provider applied a model change before an active-turn safe boundary', 'CAPABILITY_ACK_MISMATCH');
         }
     }
+
 }
