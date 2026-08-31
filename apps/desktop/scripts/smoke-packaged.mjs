@@ -17,6 +17,7 @@ import {
   FuseVersion,
   getCurrentFuseWire,
 } from '@electron/fuses';
+import { assertPackagedLayout } from './packaged-layout.mjs';
 
 const READY_EVENT = 'desktop.renderer.ready';
 const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
@@ -48,47 +49,6 @@ const parseLayout = smokeOutput => {
     }
   }
   return undefined;
-};
-
-const assertPackagedLayout = layout => {
-  if (!layout) throw new Error('Packaged desktop did not report renderer layout bounds');
-  if (layout.missing?.length) {
-    throw new Error(`Packaged renderer layout was missing: ${layout.missing.join(', ')}`);
-  }
-  if (layout.windowBounds?.width !== 1280 || layout.windowBounds?.height !== 820) {
-    throw new Error(`Packaged window was not 1280x820: ${JSON.stringify(layout.windowBounds)}`);
-  }
-  if (layout.viewport.width < 1200 || layout.viewport.height < 740) {
-    throw new Error(`Packaged renderer viewport is unexpectedly small: ${JSON.stringify(layout.viewport)}`);
-  }
-  if (layout.logo.height < 30 || layout.logo.height > 34 || layout.logo.width < 30 || layout.logo.width > 34) {
-    throw new Error(`Packaged welcome-card logo has unreasonable bounds: ${JSON.stringify(layout.logo)}`);
-  }
-  if (
-    layout.entry.left < 0
-    || layout.entry.right > layout.viewport.width
-    || layout.card.left < layout.entry.left
-    || layout.card.right > layout.viewport.width
-    || layout.card.top < layout.entry.top
-    || layout.card.bottom > layout.viewport.height
-  ) {
-    throw new Error('Packaged desktop welcome card extends outside its layout container');
-  }
-  if (layout.card.width < 540 || layout.card.width > 620 || layout.connectButton.height < 60) {
-    throw new Error(`Packaged welcome card or connection control has unreasonable bounds: ${JSON.stringify(layout)}`);
-  }
-  if (
-    layout.logo.left < layout.card.left
-    || layout.logo.right > layout.card.right
-    || layout.heading.top <= layout.logo.bottom
-    || layout.connectButton.top <= layout.heading.bottom
-    || layout.connectButton.left < layout.card.left
-    || layout.connectButton.right > layout.card.right
-    || layout.connectDescription.left < layout.connectButton.left
-    || layout.connectDescription.right > layout.connectButton.right
-  ) {
-    throw new Error('Packaged welcome-card content is overlapping or outside the card');
-  }
 };
 
 await access(binaryPath);

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { isAbsolute, basename, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, crashReporter, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
+import { app, BrowserWindow, crashReporter, ipcMain, net, protocol, safeStorage, screen, session, shell } from 'electron';
 import {
   DESKTOP_RENDERER_ORIGIN,
   DESKTOP_TRANSPORT_SCOPE_HEADER,
@@ -200,7 +200,12 @@ const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<stri
       ...Object.fromEntries(Object.entries(elements).map(([name, element]) => [name, bounds(element)])),
     };
   })()`);
-  return { windowBounds: window.getBounds(), ...rendererLayout };
+  const windowBounds = window.getBounds();
+  return {
+    windowBounds,
+    workArea: screen.getDisplayMatching(windowBounds).workArea,
+    ...rendererLayout,
+  };
 };
 
 const runPackagedTransportSmoke = async (

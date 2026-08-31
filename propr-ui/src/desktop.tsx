@@ -4,7 +4,7 @@ import App from './App';
 import { DesktopDeepLinkNavigation } from './desktop-deep-link';
 import './index.css';
 
-const DesktopApp = () => {
+export const DesktopApp = () => {
   const [deepLinkNavigation] = useState(() => new DesktopDeepLinkNavigation(path => {
     window.location.hash = path;
   }));
