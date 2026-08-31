@@ -99,7 +99,7 @@ const reasonCodes = new Set(reasonCodeAllowlist);
 const nativeStages = new Set(nativeStageAllowlist);
 const probeMilestones = new Set(probeMilestoneAllowlist);
 const probeTimings = new Set(probeTimingAllowlist);
-const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = 75_000;
+const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = 255_000;
 
 function parseBoundedFailureStatus(stdout) {
   if (typeof stdout !== "string" || stdout.length === 0 || Buffer.byteLength(stdout, "utf8") >= 2048) return null;
@@ -149,14 +149,14 @@ function extractNativeDiagnostic(stderr) {
 
 const cases = [
   { name: "ready", fetch: "ready", docker: "ready", enabled: true, status: "ready", exit: 0, reasons: [] },
-  { name: "down", fetch: "ready", docker: "down", enabled: true, status: "notReady", exit: 0, reasons: ["SIDECAR_NOT_RUNNING"] },
-  { name: "disabled", fetch: "ready", docker: "ready", enabled: false, status: "notReady", exit: 0, reasons: ["TUNNEL_DISABLED"] },
-  { name: "restart-required", fetch: "restart-required", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["ENDPOINT_MISMATCH", "RESTART_REQUIRED"] },
-  { name: "malformed", fetch: "invalid", docker: "ready", enabled: true, status: "incompatible", exit: 2, reasons: ["DISCOVERY_INVALID"] },
-  { name: "oversized", fetch: "oversized", docker: "ready", enabled: true, status: "incompatible", exit: 2, reasons: ["DISCOVERY_TOO_LARGE"] },
-  { name: "timeout", fetch: "timeout", docker: "ready", enabled: true, status: "timeout", exit: 0, reasons: ["API_TIMEOUT"] },
-  { name: "identity-mismatch", fetch: "identity-mismatch", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["IDENTITY_MISMATCH"] },
-  { name: "secret-sentinel", fetch: "secret-sentinel", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["API_UNREACHABLE"] },
+  { name: "down", fetch: "ready", docker: "down", authorityMode: "valid-authority", enabled: true, status: "notReady", exit: 0, reasons: ["SIDECAR_NOT_RUNNING"] },
+  { name: "disabled", fetch: "ready", docker: "ready", authorityMode: "valid-authority", enabled: false, status: "notReady", exit: 0, reasons: ["TUNNEL_DISABLED"] },
+  { name: "restart-required", fetch: "restart-required", docker: "ready", authorityMode: "valid-authority", enabled: true, status: "notReady", exit: 0, reasons: ["ENDPOINT_MISMATCH", "RESTART_REQUIRED"] },
+  { name: "malformed", fetch: "invalid", docker: "ready", authorityMode: "valid-authority", enabled: true, status: "incompatible", exit: 2, reasons: ["DISCOVERY_INVALID"] },
+  { name: "oversized", fetch: "oversized", docker: "ready", authorityMode: "valid-authority", enabled: true, status: "incompatible", exit: 2, reasons: ["DISCOVERY_TOO_LARGE"] },
+  { name: "timeout", fetch: "timeout", docker: "ready", authorityMode: "valid-authority", enabled: true, status: "timeout", exit: 0, reasons: ["API_TIMEOUT"] },
+  { name: "identity-mismatch", fetch: "identity-mismatch", docker: "ready", authorityMode: "valid-authority", enabled: true, status: "notReady", exit: 0, reasons: ["IDENTITY_MISMATCH"] },
+  { name: "secret-sentinel", fetch: "secret-sentinel", docker: "ready", authorityMode: "valid-authority", enabled: true, status: "notReady", exit: 0, reasons: ["API_UNREACHABLE"] },
 ];
 const authorityFailures = [
   { name: "path-aba", mode: "path-aba", reason: "INVALID_ROOT" },

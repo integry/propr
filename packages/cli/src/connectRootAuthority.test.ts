@@ -188,16 +188,27 @@ test("Windows native timing uses only coarse fixed buckets", () => {
 
 test("Windows production inspection has one cold-start deadline and a cumulative batch cap", () => {
   assert.equal(WINDOWS_INSPECTION_TIMEOUT_MS, 60_000);
-  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 60_000);
+  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 240_000);
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS, 60_000);
-  assert.equal(WINDOWS_INSPECTION_TIMEOUT_MS, WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS);
+  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 4 * WINDOWS_INSPECTION_TIMEOUT_MS);
+  assert.notEqual(
+    WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS / WINDOWS_INSPECTION_TIMEOUT_MS,
+    32,
+  );
   assert.equal(windowsInspectionTimeoutForElapsed(0), 60_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(1), 59_999);
-  assert.equal(windowsInspectionTimeoutForElapsed(29_999), 30_001);
-  assert.equal(windowsInspectionTimeoutForElapsed(45_000), 15_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(59_999.9), 1);
+  assert.equal(windowsInspectionTimeoutForElapsed(60_000), 60_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(120_000), 60_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(180_000), 60_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(180_001), 59_999);
+  assert.equal(windowsInspectionTimeoutForElapsed(210_000), 30_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(225_000), 15_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(239_999.9), 1);
   assert.throws(
-    () => windowsInspectionTimeoutForElapsed(60_000),
+    () => windowsInspectionTimeoutForElapsed(240_000),
+    (error) => error instanceof WindowsNativeStageError && error.stage === "spawn:cumulative-timeout",
+  );
+  assert.throws(
+    () => windowsInspectionTimeoutForElapsed(240_001),
     (error) => error instanceof WindowsNativeStageError && error.stage === "spawn:cumulative-timeout",
   );
 });

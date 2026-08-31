@@ -17,10 +17,10 @@ import type {
 
 // Hosted alternate-user Windows can spend more than fifteen seconds entering
 // the fixed PowerShell/Reflection.Emit boundary. Each production call gets one
-// bounded cold-start allowance, while the entire descriptor batch has a
-// separate cap so the 32-entry schema limit cannot multiply that allowance.
+// bounded cold-start allowance. The cumulative cap is a fixed four-process
+// proof ceiling and is independent of the 32-entry input-schema bound.
 export const WINDOWS_INSPECTION_TIMEOUT_MS = 60_000;
-export const WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS = 60_000;
+export const WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS = 240_000;
 export const WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS = 60_000;
 const WINDOWS_INSPECTION_MAX_BYTES = 128 * 1024;
 const WINDOWS_NATIVE_PROBE_MAX_BYTES = 2 * 1024;

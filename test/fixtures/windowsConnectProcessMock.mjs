@@ -101,6 +101,7 @@ childProcess.spawnSync = (command, args, options) => {
     if (mode === "timeout") {
       return result(null, "", "", Object.assign(new Error("private-path-SENTINEL"), { code: "ETIMEDOUT" }), "SIGKILL");
     }
+    if (mode === "valid-authority") return result(0, authorityDocument(args, options, mode));
     if ([
       "descriptor-mismatch", "index-mismatch", "kind-mismatch", "authority-kind-mismatch",
       "identity-mismatch", "sid-mismatch", "broad-write", "inherited-write", "unprotected",

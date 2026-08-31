@@ -48,7 +48,7 @@ function diagnosticDefinitions(): {
   })`) as ReturnType<typeof diagnosticDefinitions>;
 }
 
-type FixtureScenario = { name: string; enabled: boolean };
+type FixtureScenario = { name: string; enabled: boolean; authorityMode?: string };
 
 function tunnelFixtureEnvLines(scenario: FixtureScenario): string[] {
   const start = harness.indexOf('function tunnelFixtureEnvLines(');
@@ -86,11 +86,23 @@ test('the disabled Windows scenario omits its token while enabled scenarios reta
   }
 });
 
-test('the ordinary-user Windows proof covers existing mutation paths', () => {
+test('the ordinary-user Windows proof retains native security paths and bounds result-matrix reuse', () => {
   assert.match(harness, /await scaffoldStack\(/);
   assert.match(harness, /await manager\.save\(\)/);
   assert.match(harness, /public-instance-identity\.json/);
   assert.match(harness, /config\.json/);
+  const scenarios = fixtureScenarios();
+  const ready = scenarios.find((scenario) => scenario.name === 'ready');
+  assert.ok(ready);
+  assert.equal(ready.authorityMode, undefined);
+  for (const scenario of scenarios.filter(({ name }) => name !== 'ready')) {
+    assert.equal(scenario.authorityMode, 'valid-authority', scenario.name);
+  }
+  assert.match(
+    processMock,
+    /if \(mode === "valid-authority"\) return result\(0, authorityDocument\(args, options, mode\)\);/,
+  );
+  assert.match(harness, /\{ name: "path-aba", mode: "path-aba", reason: "INVALID_ROOT" \}/);
 });
 
 test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all other values', () => {
@@ -278,12 +290,32 @@ test('the staged probe accepts only ordered milestone tokens and coarse timing b
 test('the diagnostic allowance precedes a cumulatively bounded production standard-handle proof', () => {
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS, 60_000);
   assert.equal(WINDOWS_INSPECTION_TIMEOUT_MS, 60_000);
-  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 60_000);
+  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 240_000);
+  assert.match(
+    windowsAuthority,
+    /export const WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS = 240_000;/,
+  );
+  assert.match(harness, /const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = 255_000;/);
+  assert.equal(255_000, WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS + 15_000);
+  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 4 * WINDOWS_INSPECTION_TIMEOUT_MS);
+  assert.notEqual(
+    WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS / WINDOWS_INSPECTION_TIMEOUT_MS,
+    32,
+  );
   assert.equal(windowsInspectionTimeoutForElapsed(0), 60_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(1), 59_999);
-  assert.equal(windowsInspectionTimeoutForElapsed(45_000), 15_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(60_000), 60_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(120_000), 60_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(180_000), 60_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(180_001), 59_999);
+  assert.equal(windowsInspectionTimeoutForElapsed(210_000), 30_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(225_000), 15_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(239_999.9), 1);
   assert.throws(
-    () => windowsInspectionTimeoutForElapsed(60_000),
+    () => windowsInspectionTimeoutForElapsed(240_000),
+    (error) => error instanceof WindowsNativeStageError && error.stage === 'spawn:cumulative-timeout',
+  );
+  assert.throws(
+    () => windowsInspectionTimeoutForElapsed(240_001),
     (error) => error instanceof WindowsNativeStageError && error.stage === 'spawn:cumulative-timeout',
   );
   const probeCall = harness.indexOf('runWindowsNativeTimingProbe(probeFd)');
