@@ -192,9 +192,10 @@ export const windowsMachineInstallerSourceForTest = (appDirectory, version, arch
   const productCode = '*';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="${productCode}" Name="ProPR Desktop" Language="1033" Version="${xml(version)}"
+  <Product Id="${productCode}" Name="ProPR Desktop" Language="1033" Codepage="1252" Version="${xml(version)}"
       Manufacturer="Unchained Development OÜ" UpgradeCode="${UPGRADE_CODE}">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="${platform}" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="${platform}"
+      SummaryCodepage="1252" />
     <Property Id="ALLUSERS" Value="1" />
     <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
       DowngradeErrorMessage="A newer ProPR Desktop is already installed." />
@@ -231,11 +232,12 @@ ${tree.components.map(id => `      <ComponentRef Id="${id}" />`).join('\n')}
 `;
 };
 
-const wixProbeSource = arch => `<?xml version="1.0" encoding="UTF-8"?>
+export const wixProbeSourceForTest = arch => `<?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="ProPR WiX Probe" Language="1033" Version="1.0.0"
+  <Product Id="*" Name="ProPR WiX Probe" Language="1033" Codepage="1252" Version="1.0.0"
       Manufacturer="Unchained Development OÜ" UpgradeCode="1C7701EF-12DE-4C22-9894-D22E1954407D">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="${arch}" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="${arch}"
+      SummaryCodepage="1252" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Component Id="ProbeRegistryComponent" Guid="72D401FB-1E08-4A23-A45E-2551207206D5" Win64="yes">
         <RegistryValue Root="HKLM" Key="Software\\ProPR\\WixProbe" Value="probe" Type="string" KeyPath="yes" />
@@ -273,7 +275,7 @@ export const probeWindowsWixToolset = async ({ arch }) => {
     const object = join(temporary, 'probe.wixobj');
     const output = join(temporary, 'probe.msi');
     const wix = await resolveWixToolset(temporary);
-    await writeFile(source, wixProbeSource(arch), { encoding: 'utf8', flag: 'wx' });
+    await writeFile(source, wixProbeSourceForTest(arch), { encoding: 'utf8', flag: 'wx' });
     await compileWixSource({ source, object, output, arch, wix, cwd: temporary });
     await requireMsi(output);
     return { arch, version: '3.14.1' };
