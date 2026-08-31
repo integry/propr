@@ -58,6 +58,7 @@ export function useGoalDetail(goalId: string) {
   const identityRef = useRef(requestIdentity);
   const transportConnectedRef = useRef(isConnected);
   const generationRef = useRef(0);
+  const detailRevisionRef = useRef(0);
   const controllersRef = useRef(new Set<AbortController>());
   const subscriptionCleanupRef = useRef<(() => void) | null>(null);
   const recoveryPromiseRef = useRef<Promise<boolean> | null>(null);
@@ -162,11 +163,12 @@ export function useGoalDetail(goalId: string) {
 
   const refreshDetail = useCallback(async (): Promise<GoalDetail | null> => {
     const request = token(); if (!request) return null;
+    const detailRevision = detailRevisionRef.current;
     refreshControllerRef.current?.abort();
     const refreshController = controller(); refreshControllerRef.current = refreshController;
     try {
       const next = await getGoal(goalId, { signal: refreshController.signal });
-      if (!current(request, refreshController)) return null;
+      if (!current(request, refreshController) || detailRevision !== detailRevisionRef.current) return null;
       if (next.goal.goalId !== goalId) throw new GoalContractError('response.goal.goalId', `the requested goal ${goalId}`);
       detailRef.current = next; setDetail(next); setError(null); return next;
     } catch (caught) {
@@ -270,10 +272,15 @@ export function useGoalDetail(goalId: string) {
     if (!authorizedGoalId || !replayReady || !isConnected || fallbackRequired) return;
     let active = true;
     let timer: number | null = null;
-    const probe = async () => { await refreshDetail(); if (active) timer = window.setTimeout(() => void probe(), AUTHORIZATION_PROBE_INTERVAL_MS); };
+    const probe = async () => {
+      const fresh = await refreshDetail();
+      const loadedTail = eventsRef.current.at(-1)?.sequence ?? 0;
+      if (fresh && fresh.latestSequence > loadedTail) await recoverTail(fresh.latestSequence);
+      if (active) timer = window.setTimeout(() => void probe(), AUTHORIZATION_PROBE_INTERVAL_MS);
+    };
     timer = window.setTimeout(() => void probe(), AUTHORIZATION_PROBE_INTERVAL_MS);
     return () => { active = false; if (timer !== null) window.clearTimeout(timer); };
-  }, [authorizedGoalId, fallbackRequired, isConnected, refreshDetail, replayReady]);
+  }, [authorizedGoalId, fallbackRequired, isConnected, recoverTail, refreshDetail, replayReady]);
 
   const loadOlder = useCallback(async () => {
     const beforeSequence = previousCursorRef.current;
@@ -312,6 +319,7 @@ export function useGoalDetail(goalId: string) {
     try {
       const goal = await requestMutation(activeDetail.goal.version, makeGoalIntentKey());
       if (!current(request)) return false;
+      detailRevisionRef.current += 1;
       setDetail(existing => existing ? { ...existing, goal: { ...existing.goal, ...goal } } : existing); return true;
     } catch (caught) {
       if (handleAsyncError(caught, request)) return false;
@@ -328,6 +336,7 @@ export function useGoalDetail(goalId: string) {
   }, [current, handleAsyncError, isDemoMode, refreshDetail, token]);
 
   const replaceMessage = useCallback((message: GoalMessage) => {
+    detailRevisionRef.current += 1;
     setDetail(existing => existing ? { ...existing, messages: [...existing.messages.filter(item => item.messageId !== message.messageId), message].sort((a, b) => a.sequence - b.sequence) } : existing);
   }, []);
 

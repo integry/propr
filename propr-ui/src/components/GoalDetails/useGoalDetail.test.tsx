@@ -181,6 +181,51 @@ describe('useGoalDetail replay and authorization', () => {
     expect(screen.getByTestId('detail')).toHaveTextContent('empty');
   });
 
+  it('recovers a terminal event missed by a healthy socket when the detail probe advances', async () => {
+    vi.useFakeTimers();
+    let probeAdvanced = false;
+    mocks.getGoal
+      .mockResolvedValueOnce(detail)
+      .mockImplementationOnce(() => {
+        probeAdvanced = true;
+        return Promise.resolve({ ...detail, latestSequence: 6 });
+      });
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number }) => {
+      if (options.afterSequence === 5) return Promise.resolve(page(probeAdvanced ? [event(6)] : []));
+      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+      return Promise.resolve(page([event(4), event(5)], true));
+    });
+
+    render(<Harness />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByTestId('events')).toHaveTextContent('4,5');
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+
+    expect(screen.getByTestId('events')).toHaveTextContent('4,5,6');
+    expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 5 }));
+  });
+
+  it('does not let a delayed healthy probe overwrite a successful mutation', async () => {
+    vi.useFakeTimers();
+    render(<Harness />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+
+    let resolveProbe!: (value: GoalDetail) => void;
+    mocks.getGoal.mockImplementationOnce(() => new Promise(resolve => { resolveProbe = resolve; }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'pause' }));
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('version')).toHaveTextContent('2');
+
+    await act(async () => resolveProbe(detail));
+
+    expect(screen.getByTestId('version')).toHaveTextContent('2');
+  });
+
   it('uses healthy probes to rescope repository rooms and fences goal identity changes', async () => {
     vi.useFakeTimers();
     const view = render(<Harness />);
