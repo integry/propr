@@ -14,6 +14,7 @@ import type {
     GoalSessionEvent,
     GoalSessionIdentity,
     GoalSessionState,
+    GoalTerminalCommit,
 } from '../src/agents/goalSession/contract.js';
 import {
     EAGER_ACTIVE_TURN_PROVIDER_CAPABILITIES,
@@ -22,6 +23,7 @@ import {
     GoalSessionSupervisor,
 } from '../src/agents/goalSession/index.js';
 import { InMemoryGoalSessionPorts } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
+import { fingerprintGoalWorktree } from '../src/agents/goalSession/worktreeIdentity.js';
 
 const identity = { goalId: 'goal-capabilities', sessionId: 'session-capabilities' };
 const repository = {
@@ -48,6 +50,8 @@ class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
     holdTurn: Promise<void> | undefined;
     emitIdentity = true;
     acknowledgeMessages = true;
+    reconcileResult: GoalProviderReconcileResult = { outcome: 'failed', reason: 'not used by capability tests' };
+    reconcileRequests: GoalProviderReconcileRequest[] = [];
 
     async openSession(request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot> {
         this.openCalls += 1;
@@ -114,8 +118,9 @@ class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
 
     async cancel(_request: GoalCancelRequest): Promise<void> {}
 
-    async reconcile(_request: GoalProviderReconcileRequest): Promise<GoalProviderReconcileResult> {
-        return { outcome: 'failed', reason: 'not used by capability tests' };
+    async reconcile(request: GoalProviderReconcileRequest): Promise<GoalProviderReconcileResult> {
+        this.reconcileRequests.push(structuredClone(request));
+        return this.reconcileResult;
     }
 }
 
@@ -146,6 +151,27 @@ class GatedCompletionLoadPorts extends InMemoryGoalSessionPorts {
             await gate.release.promise;
         }
         return state;
+    }
+}
+
+class ContractIdempotencyPorts extends InMemoryGoalSessionPorts {
+    readonly terminalCommitKeys: string[] = [];
+
+    override async commit(
+        expected: GoalSessionState,
+        next: Omit<GoalSessionState, 'version'>,
+        completion: GoalTerminalCommit,
+    ): Promise<GoalSessionState | null> {
+        this.terminalCommitKeys.push(JSON.stringify([
+            completion.scope,
+            completion.fence.goalId,
+            completion.fence.sessionId,
+            completion.fence.controllerEpoch,
+            completion.scope === 'turn' ? completion.fence.turnId : null,
+            completion.execution.executionId,
+            completion.execution.attemptId,
+        ]));
+        return super.commit(expected, next, completion);
     }
 }
 
@@ -308,6 +334,41 @@ test('first-turn providers reject authoritative output before a real native ID i
     assert.equal((await persistence.load(identity))?.providerSessionId, undefined);
 });
 
+test('reopen cleans an already-terminal first-turn failure without a new epoch completion', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    adapter.emitIdentity = false;
+    const persistence = new ContractIdempotencyPorts();
+    const initial = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await initial.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+
+    await assert.rejects(initial.runTurn({
+        ...firstFence,
+        executionId: 'execution-terminal-failure',
+        attemptId: 'attempt-terminal-failure',
+        objective: 'fail ordinarily before native identity binding',
+        repository,
+        requestedModel: 'model-a',
+    }), (error: unknown) => error instanceof GoalSessionContractError && error.code === 'FIRST_TURN_ID_NOT_BOUND');
+    const terminal = await persistence.load(identity);
+    assert.equal(terminal?.status, 'failed');
+    assert.equal(terminal?.activeTurn?.status, 'failed');
+    assert.equal(persistence.terminalCommitKeys.length, 1);
+
+    const replacement = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await assert.rejects(
+        replacement.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 2 }),
+        (error: unknown) => error instanceof GoalSessionContractError && error.code === 'FIRST_TURN_ID_NOT_BOUND',
+    );
+
+    const cleaned = await persistence.load(identity);
+    assert.equal(cleaned?.controllerEpoch, 2);
+    assert.equal(cleaned?.status, 'failed');
+    assert.equal(cleaned?.activeTurn, undefined);
+    assert.equal(cleaned?.initializationIntent, undefined);
+    assert.equal(persistence.terminalCommitKeys.length, 1, 'the exact contract key is never retried under epoch two');
+    assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'completion').length, 1);
+});
+
 test('fail policy durably fails and clears an unbound first turn after crash and reopen', async () => {
     const adapter = new FirstTurnBoundaryAdapter();
     const persistence = new InMemoryGoalSessionPorts();
@@ -450,4 +511,90 @@ test('deterministic first-turn retry mints a fresh attempt instead of reusing th
     assert.equal(recovered.execution.attemptId, 'fresh-provider-attempt');
     assert.notEqual(recovered.execution.attemptId, 'crashed-attempt');
     assert.equal(adapter.requests.at(-1)?.attemptId, 'fresh-provider-attempt');
+});
+
+test('first-turn after-turn profile reconciles a post-ID container loss through a fresh fenced invocation', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    const persistence = new InMemoryGoalSessionPorts();
+    const initial = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await initial.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    const bound = await initial.runTurn({
+        ...firstFence,
+        executionId: 'execution-binding-turn',
+        attemptId: 'attempt-binding-turn',
+        objective: 'bind the native session before the later crash',
+        repository,
+        requestedModel: 'model-a',
+    });
+    const { version: _version, ...persisted } = bound.state;
+    const crashed = await persistence.compareAndSet(bound.state, {
+        ...persisted,
+        status: 'running',
+        activeTurn: {
+            turnId: 'turn-crashed-after-binding',
+            executionId: 'execution-crashed-after-binding',
+            attemptId: 'attempt-crashed-after-binding',
+            executionEpoch: 1,
+            objective: 'continue the bound session after container loss',
+            requestedModel: 'model-a',
+            repository,
+            status: 'running',
+        },
+    });
+    assert.ok(crashed);
+    persistence.setContainerInspection(identity, { status: 'missing', reason: 'container was lost' });
+    persistence.setRepositoryInspection(repository, {
+        ...repository,
+        exists: true,
+        observedBranch: repository.branch,
+        observedHeadSha: repository.headSha,
+        observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
+    });
+    adapter.reconcileResult = {
+        outcome: 'resumed',
+        snapshot: {
+            providerSessionId: 'native-first-turn-id',
+            recoveryMetadata: { conversation: 'native-first-turn-id', checkpoint: 'reconciled' },
+            model: 'model-a',
+        },
+        reason: 'the bound provider session is recoverable',
+    };
+    const attemptIds = ['attempt-reconciliation', 'attempt-continuation'];
+    const replacement = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => attemptIds.shift()!);
+
+    const reconciled = await replacement.reconcile(identity, 2, repository);
+    assert.equal(reconciled.state.status, 'paused');
+    assert.equal(reconciled.state.activeTurn?.status, 'paused');
+    assert.equal(reconciled.state.activeTurn?.attemptId, 'attempt-reconciliation');
+    assert.equal(adapter.reconcileRequests[0]?.attemptId, 'attempt-reconciliation');
+
+    const continuationStarted = deferred();
+    const continuationRelease = deferred();
+    adapter.turnStarted = continuationStarted.resolve;
+    adapter.holdTurn = continuationRelease.promise;
+    const continuation = replacement.resumeTurn({ ...identity, controllerEpoch: 2 });
+    await continuationStarted.promise;
+    assert.equal((await persistence.load(identity))?.activeTurn?.attemptId, 'attempt-continuation');
+    const staleAppend = await persistence.append(
+        { ...identity, controllerEpoch: 2, turnId: 'turn-crashed-after-binding' },
+        { executionId: 'execution-crashed-after-binding', attemptId: 'attempt-reconciliation' },
+        { type: 'output', channel: 'stdout', data: 'late output from reconciliation attempt' },
+    );
+    assert.deepEqual(staleAppend, { accepted: false, reason: 'turn_not_active' });
+    continuationRelease.resolve();
+    const continued = await continuation;
+    assert.equal(continued.disposition, 'started');
+    assert.equal(continued.state.status, 'idle');
+    assert.equal(continued.execution.executionId, 'execution-crashed-after-binding');
+    assert.equal(continued.execution.attemptId, 'attempt-continuation');
+    assert.notEqual(continued.execution.attemptId, adapter.reconcileRequests[0]?.attemptId);
+    assert.equal(adapter.resumeTurnCalls, 0, 'crash retry uses a fresh discrete invocation, not operator same-turn resume');
+    assert.equal(adapter.requests.at(-1)?.turnId, 'turn-crashed-after-binding');
+    assert.equal(adapter.requests.at(-1)?.attemptId, 'attempt-continuation');
+    assert.equal(adapter.contexts.at(-1)?.binding, 'bound');
+
+    const recoveredCompletions = (await persistence.replay(identity)).filter(record =>
+        record.turnId === 'turn-crashed-after-binding' && record.event.type === 'completion');
+    assert.equal(recoveredCompletions.length, 1);
+    assert.equal(recoveredCompletions[0]?.attemptId, 'attempt-continuation');
 });

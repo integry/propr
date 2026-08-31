@@ -190,9 +190,7 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         const policy = this.adapter.capabilities.nativeSessionId === 'first_turn'
             ? this.adapter.capabilities.firstTurnIdCrashPolicy
             : 'fail';
-        if (policy === 'fail' && state.status === 'failed' && !state.activeTurn) {
-            throw firstTurnIdentityFailure(policy);
-        }
+        if (policy === 'fail' && await this.cleanAlreadyTerminalFirstTurn(state)) throw firstTurnIdentityFailure(policy);
         if (!state.initializationIntent) {
             throw new GoalSessionContractError(
                 'A first-turn provider has no durable initialization intent; refusing to start a different native session',
@@ -252,6 +250,18 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         }
         if (state.status === 'idle') return state;
         return this.updateControlledState(request, value => ({ ...value, status: 'idle', failureReason: undefined }));
+    }
+
+    private async cleanAlreadyTerminalFirstTurn(state: GoalSessionState): Promise<boolean> {
+        if (state.status !== 'failed') return false;
+        if (!state.activeTurn) return true;
+        if (state.activeTurn.status !== 'failed') return false;
+        await this.compareAndSetExact(state, {
+            activeTurn: undefined,
+            initializationIntent: undefined,
+            retryTurn: undefined,
+        }, 'A newer operation superseded terminal first-turn cleanup');
+        return true;
     }
 
     private async recordInitializationIntent(

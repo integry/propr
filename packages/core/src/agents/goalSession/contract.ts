@@ -313,6 +313,7 @@ export type GoalMessageDeliveryOutcome =
     | { outcome: 'unsupported_same_turn'; messageId: string; supportedBoundary: 'next_turn' };
 
 export type GoalTurnResumeCapabilityOutcome = {
+    /** Operator pause cannot retain a resumable active invocation at this boundary. */
     disposition: 'unsupported_same_turn';
     supportedBoundary: 'after_turn';
 };

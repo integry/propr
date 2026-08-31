@@ -61,6 +61,7 @@ export class InMemoryGoalSessionPorts implements
     private readonly messages = new Map<string, DurableCorrectiveMessage[]>();
     private readonly containerInspections = new Map<string, GoalContainerInspection>();
     private readonly repositoryInspections = new Map<string, GoalRepositoryInspection>();
+    private readonly terminalCommits = new Set<string>();
     private terminalFault: 'before_commit' | 'before_commit_always' | 'after_commit' | undefined;
 
     asRuntimePorts(): GoalSessionRuntimePorts {
@@ -112,15 +113,11 @@ export class InMemoryGoalSessionPorts implements
         }
         const key = keyOf(expected);
         const current = this.states.get(key);
+        const commitKey = terminalCommitKey(completion);
         const turnId = completion.scope === 'turn'
             ? completion.fence.turnId
             : `#control-e${completion.fence.controllerEpoch}`;
-        const alreadyCommitted = (this.events.get(key) ?? []).some(record =>
-            record.turnId === turnId
-            && record.executionId === completion.execution.executionId
-            && record.attemptId === completion.execution.attemptId
-            && record.event.type === 'completion');
-        if (alreadyCommitted) return current ? clone(current) : null;
+        if (this.terminalCommits.has(commitKey)) return current ? clone(current) : null;
         if (!current || current.version !== expected.version
             || current.controllerEpoch !== completion.fence.controllerEpoch) return null;
         if (completion.scope === 'turn'
@@ -134,6 +131,7 @@ export class InMemoryGoalSessionPorts implements
         const saved = { ...clone(next), version: current.version + 1 };
         this.states.set(key, saved);
         this.record(key, { turnId, fence: completion.fence, execution: completion.execution, event: completion.event });
+        this.terminalCommits.add(commitKey);
         if (this.terminalFault === 'after_commit') {
             this.terminalFault = undefined;
             throw new Error('Injected crash after terminal transaction commit');
@@ -290,4 +288,16 @@ export class InMemoryGoalSessionPorts implements
         const owner = this.sessionOwners.get(identity.sessionId);
         if (owner !== undefined && owner !== identity.goalId) throw new GoalSessionScopeError();
     }
+}
+
+function terminalCommitKey(completion: GoalTerminalCommit): string {
+    return JSON.stringify([
+        completion.scope,
+        completion.fence.goalId,
+        completion.fence.sessionId,
+        completion.fence.controllerEpoch,
+        completion.scope === 'turn' ? completion.fence.turnId : null,
+        completion.execution.executionId,
+        completion.execution.attemptId,
+    ]);
 }

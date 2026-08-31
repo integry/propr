@@ -137,7 +137,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
     }
 
     private async nextTurnCorrectiveMessages(
-        request: RunGoalTurnRequest,
+        request: GoalSessionControlFence,
     ): Promise<GoalProviderCorrectiveMessage[]> {
         if (this.adapter.capabilities.steering !== 'next_turn') return [];
         const pending = await this.ports.messages.listPending(request);
@@ -152,10 +152,15 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
      * further ordered events through the same turn fence, and completes once.
      */
     async resumeTurn(fence: GoalSessionControlFence): Promise<RunGoalTurnResult | GoalTurnResumeCapabilityOutcome> {
+        let state = await this.requireControlledState(fence);
         if (this.adapter.capabilities.pause === 'after_turn') {
+            if (state.status === 'paused'
+                && state.activeTurn?.status === 'paused'
+                && state.recoveryAttemptId === state.activeTurn.attemptId) {
+                return this.retryRecoveredAfterTurn(fence, state);
+            }
             return { disposition: 'unsupported_same_turn', supportedBoundary: 'after_turn' };
         }
-        let state = await this.requireControlledState(fence);
         if (state.status !== 'paused' || !state.activeTurn || state.activeTurn.status !== 'paused') {
             throw new GoalSessionContractError(`Cannot resume a turn while the session is ${state.status}`, 'SESSION_NOT_PAUSED');
         }
@@ -203,6 +208,42 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             initial: state,
             nextTurnMessages: [],
             openStream: () => resumeTurn({ ...turnFence, ...execution }, persistedSnapshot(state)),
+        });
+        return { disposition: 'started', state: outcome.state, execution };
+    }
+
+    /**
+     * A discrete after-turn provider cannot resume an operator-paused invocation,
+     * but a reconciled crash retains a paused active turn. Retry that exact logical
+     * turn through a fresh discrete invocation on the already-bound native session.
+     */
+    private async retryRecoveredAfterTurn(fence: GoalSessionControlFence, state: GoalSessionState): Promise<RunGoalTurnResult> {
+        const turn = state.activeTurn!;
+        if (!state.providerSessionId) {
+            throw new GoalSessionContractError('A crashed after-turn invocation cannot continue before its native session ID is bound', 'FIRST_TURN_ID_NOT_BOUND');
+        }
+        const execution = { executionId: turn.executionId, attemptId: this.mintFreshAttemptId(turn.attemptId) };
+        const turnFence = { ...fence, turnId: turn.turnId };
+        const correctiveMessages = await this.nextTurnCorrectiveMessages(turnFence);
+        const activeTurn = { ...turn, ...execution, executionEpoch: fence.controllerEpoch, status: 'running' as const };
+        const claimed = await this.compareAndSetExact(state, { status: 'running', activeTurn },
+            'A newer operation claimed the reconciled turn before recovery');
+        const adapterRequest: GoalBeginTurnRequest = {
+            ...turnFence,
+            ...execution,
+            objective: turn.objective,
+            repository: turn.repository,
+            requestedModel: turn.requestedModel,
+            correctiveMessages: correctiveMessages.length ? correctiveMessages : undefined,
+        };
+        await this.appendControl(fence, execution, { type: 'session_resumed' });
+        await this.append(turnFence, execution, { type: 'turn_resumed', turnId: turn.turnId });
+        const outcome = await this.driveTurnStream({
+            fence: turnFence,
+            execution,
+            initial: claimed,
+            nextTurnMessages: correctiveMessages,
+            openStream: () => this.adapter.beginTurn(adapterRequest, providerTurnContext(claimed)),
         });
         return { disposition: 'started', state: outcome.state, execution };
     }
