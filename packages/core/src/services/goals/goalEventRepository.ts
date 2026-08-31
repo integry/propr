@@ -29,6 +29,9 @@ import {
   toEvent,
   toMessage,
 } from './goalRepositorySupport.js';
+import { canonicalizeRuntimeJson, canonicalizeStoredJson } from './strictCanonicalJson.js';
+
+const MAX_EVENT_PAYLOAD_BYTES = 65_536;
 
 export class GoalEventRepository {
   constructor(private readonly db: Knex) {}
@@ -37,16 +40,13 @@ export class GoalEventRepository {
     const normalized = normalizeEvent(input);
     return goalTransaction(this.db, async (trx) => {
       const goal = await guardLease(trx, goalId, normalized);
-      const payloadJson = normalized.payload === undefined
-        ? null
-        : canonicalJsonStringify(normalized.payload);
       const existing = await trx<GoalEventRecord>('goal_events').where({
         goal_id: goalId,
         idempotency_key: normalized.idempotencyKey,
       }).first();
       if (existing) {
         if (existing.kind !== normalized.kind || existing.event_type !== normalized.eventType
-          || canonicalizeStoredPayload(existing.payload_json) !== payloadJson) {
+          || canonicalizeStoredPayload(existing.payload_json) !== normalized.payloadJson) {
           throw new GoalError(GOAL_ERROR_CODES.idempotencyConflict, 'Event idempotency key was reused with a different payload', 409);
         }
         return toEvent(existing);
@@ -54,7 +54,7 @@ export class GoalEventRepository {
       const sequence = await nextSequence(trx, 'goal_events', goalId);
       const record = {
         goal_id: goalId, sequence, kind: normalized.kind,
-        event_type: normalized.eventType, payload_json: payloadJson,
+        event_type: normalized.eventType, payload_json: normalized.payloadJson,
         idempotency_key: normalized.idempotencyKey,
         lease_epoch: goal.lease_epoch, created_at: nowIso(),
       };
@@ -193,37 +193,42 @@ async function nextSequence(trx: Knex.Transaction, table: 'goal_events' | 'goal_
   return (row?.maxSeq ?? 0) + 1;
 }
 
-function normalizeEvent(input: AppendEventInput): AppendEventInput {
+type NormalizedEvent = AppendEventInput & { payloadJson: string | null };
+
+function normalizeEvent(input: AppendEventInput): NormalizedEvent {
   if (!GOAL_EVENT_KINDS.includes(input.kind)) throw new GoalError(GOAL_ERROR_CODES.invalidEventKind, 'Event kind is not recognized', 400);
-  if (input.payload !== undefined && Buffer.byteLength(JSON.stringify(input.payload), 'utf8') > 65_536) {
+  let payloadJson: string | null = null;
+  if (Object.hasOwn(input, 'payload')) {
+    try {
+      payloadJson = canonicalizeRuntimeJson(input.payload);
+    } catch {
+      throw new GoalError(GOAL_ERROR_CODES.validation, 'Event payload must be lossless JSON', 400);
+    }
+  }
+  if (payloadJson !== null && Buffer.byteLength(payloadJson, 'utf8') > MAX_EVENT_PAYLOAD_BYTES) {
     throw new GoalError(GOAL_ERROR_CODES.validation, 'Event payload exceeds 65536 bytes', 400);
   }
   return {
     ...input,
+    payloadJson,
     eventType: boundedText(input.eventType, 'eventType') as string,
     idempotencyKey: idempotencyKey(input.idempotencyKey),
     leaseOwner: boundedText(input.leaseOwner, 'leaseOwner') as string,
   };
 }
 
-function canonicalJsonStringify(value: unknown): string {
-  const serialized = JSON.stringify(value, (_key, nestedValue: unknown) => {
-    if (nestedValue === null || typeof nestedValue !== 'object'
-      || Array.isArray(nestedValue)) return nestedValue;
-    return Object.fromEntries(
-      Object.keys(nestedValue)
-        .sort()
-        .map(key => [key, (nestedValue as Record<string, unknown>)[key]])
-    );
-  });
-  if (serialized === undefined) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, 'Event payload must be JSON-serializable', 400);
-  }
-  return serialized;
-}
-
 function canonicalizeStoredPayload(payloadJson: string | null): string | null {
-  return payloadJson === null ? null : canonicalJsonStringify(JSON.parse(payloadJson));
+  if (payloadJson === null) return null;
+  try {
+    if (Buffer.byteLength(payloadJson, 'utf8') > MAX_EVENT_PAYLOAD_BYTES) throw new Error('oversized');
+    return canonicalizeStoredJson(payloadJson);
+  } catch {
+    throw new GoalError(
+      GOAL_ERROR_CODES.idempotencyConflict,
+      'Stored event payload is malformed or cannot be compared without loss',
+      409
+    );
+  }
 }
 
 interface NormalizedMessage {
