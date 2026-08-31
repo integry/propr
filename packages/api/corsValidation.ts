@@ -7,7 +7,12 @@
 // allowed for local development.
 
 import type { ErrorRequestHandler } from 'express';
-import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
+import {
+  DESKTOP_RENDERER_ORIGIN,
+  canonicalProprHttpUrlOrigin,
+  isProprLoopbackHostname,
+  normalizeProprApiOrigin,
+} from '@propr/shared';
 
 export type CorsOriginCallback = (err: Error | null, allow?: boolean) => void;
 export type CorsOriginValidator = (origin: string | undefined, callback: CorsOriginCallback) => void;
@@ -38,7 +43,8 @@ export const corsRejectionHandler: ErrorRequestHandler = (error, _req, res, next
 export function createCorsOriginValidator(frontendUrl: string, cookieDomain: string | undefined): CorsOriginValidator {
   // Remove leading dot if present for hostname matching
   const baseDomain = cookieDomain?.startsWith('.') ? cookieDomain.slice(1) : cookieDomain;
-  const frontendOrigin = new URL(frontendUrl).origin;
+  const frontendOrigin = canonicalProprHttpUrlOrigin(frontendUrl, { allowInsecureHttp: true });
+  if (!frontendOrigin) throw new Error('FRONTEND_URL must contain a canonical HTTP(S) URL');
 
   return function validateCorsOrigin(origin: string | undefined, callback: CorsOriginCallback): void {
     // Allow requests with no origin (e.g., mobile apps, curl, etc.)
@@ -54,7 +60,9 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
       return;
     }
     try {
-      const url = new URL(origin);
+      const canonicalOrigin = normalizeProprApiOrigin(origin, { allowInsecureHttp: true });
+      if (!canonicalOrigin) throw new CorsOriginError();
+      const url = new URL(canonicalOrigin);
       // Allow the base domain and any subdomain. The previous inline validator
       // allowed both http and https here, and some non-tunnel PR-preview
       // deployments still use http://<sub>.<cookie-domain>. Keep that existing
@@ -68,7 +76,7 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
       } else if (url.origin === frontendOrigin) {
         callback(null, true);
       } else if (
-        (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]') &&
+        isProprLoopbackHostname(url.hostname) &&
         (url.protocol === 'http:' || url.protocol === 'https:')
       ) {
         // Allow loopback hosts for development, but only over http/https so an

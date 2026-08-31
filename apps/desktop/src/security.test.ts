@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import {
   deepLinkFromArguments,
   applyDevelopmentRendererCsp,
@@ -14,9 +15,16 @@ import {
 } from './security';
 
 describe('desktop URL security', () => {
+  it('matches the shared canonical origin parity table', () => {
+    for (const [name, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      assert.equal(normalizeApiBaseUrl(input), expected, name);
+    }
+  });
   it('only accepts HTTPS and loopback HTTP API endpoints', () => {
-    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), 'https://propr.example.com');
+    assert.equal(normalizeApiBaseUrl('https://propr.example.com/'), 'https://propr.example.com');
     assert.equal(normalizeApiBaseUrl('http://localhost:4000/'), 'http://localhost:4000');
+    assert.equal(normalizeApiBaseUrl('http://team.localhost:4000'), 'http://team.localhost:4000');
+    assert.equal(normalizeApiBaseUrl('http://127.99.2.3:4000'), 'http://127.99.2.3:4000');
     assert.equal(normalizeApiBaseUrl('http://127.0.0.1:4000'), 'http://127.0.0.1:4000');
     assert.equal(normalizeApiBaseUrl('http://[::1]:4000/'), 'http://[::1]:4000');
     assert.equal(normalizeApiBaseUrl('https://propr.example.com/base'), null);
@@ -25,6 +33,12 @@ describe('desktop URL security', () => {
     assert.equal(normalizeApiBaseUrl('http://[2001:db8::1]:4000'), null);
     assert.equal(normalizeApiBaseUrl('https://user:secret@propr.example.com'), null);
     assert.equal(normalizeApiBaseUrl('file:///tmp/propr'), null);
+    assert.equal(normalizeApiBaseUrl('http://localhost.:4000'), null);
+    assert.equal(normalizeApiBaseUrl('http://127.1:4000'), null);
+    assert.equal(normalizeApiBaseUrl('http://0177.0.0.1:4000'), null);
+    assert.equal(normalizeApiBaseUrl('http://0x7f000001:4000'), null);
+    assert.equal(normalizeApiBaseUrl('http://[::ffff:127.0.0.1]:4000'), null);
+    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), null);
   });
 
   it('denies unsafe external browser schemes and credential-bearing URLs', () => {
@@ -52,6 +66,10 @@ describe('desktop URL security', () => {
     );
     assert.equal(
       isTrustedRendererUrl('http://127.0.0.1:5173/renderer.html', 'http://localhost:5173/', '/unused'),
+      false,
+    );
+    assert.equal(
+      isTrustedRendererUrl('http://127.1:5173/renderer.html', 'http://127.0.0.1:5173/', '/unused'),
       false,
     );
   });
@@ -150,8 +168,7 @@ describe('desktop URL security', () => {
     assert.match(policy, /frame-src 'none'/);
     assert.doesNotMatch(policy, /unsafe-eval/);
     assert.match(policy, /script-src 'self'(?:;|$)/);
-    assert.match(policy, /http:\/\/\[::1\]:\*/);
-    assert.match(policy, /ws:\/\/\[::1\]:\*/);
+    assert.match(policy, /connect-src 'self' https: http: ws: wss:/);
   });
 
   it('relaxes inline scripts only while Vite serves the development renderer', () => {

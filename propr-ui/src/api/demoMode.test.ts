@@ -1,17 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+import { DEMO_MODE_READ_ONLY_CODE, PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import {
   apiFetch,
   CommittedConfigWriteError,
   getDemoModeStatus,
   handleApiResponse,
+  handleDesktopAccessCode,
   INSTANCE_AUTHORIZATION_CHANGED_EVENT,
+  API_BASE_URL,
+  setApiBaseUrl,
+  setDesktopConnectionScope,
   TokenRefreshRetryRequiredError,
 } from './proprApi';
 
 describe('demo mode API helpers', () => {
   afterEach(() => {
+    setDesktopConnectionScope(null);
+    setApiBaseUrl('');
     vi.restoreAllMocks();
+  });
+
+  it('applies the shared canonical origin parity table to REST and Socket.IO client configuration', () => {
+    for (const [name, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      if (expected === null) expect(() => setApiBaseUrl(input), name).toThrow();
+      else {
+        setApiBaseUrl(input);
+        expect(API_BASE_URL, name).toBe(expected);
+      }
+    }
   });
 
   it('discovers demo mode from the backend metadata endpoint', async () => {
@@ -95,6 +111,42 @@ describe('demo mode API helpers', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('does not replay profile A work with profile B after a same-origin scope switch', async () => {
+    let parsingStarted!: () => void;
+    let releaseParsing!: () => void;
+    const started = new Promise<void>(resolve => { parsingStarted = resolve; });
+    const released = new Promise<void>(resolve => { releaseParsing = resolve; });
+    const refreshed = new Response(JSON.stringify({ code: 'TOKEN_REFRESHED' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    vi.spyOn(refreshed, 'clone').mockReturnValue({
+      json: async () => {
+        parsingStarted();
+        await released;
+        return { code: 'TOKEN_REFRESHED' };
+      },
+    } as Response);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(refreshed);
+    setDesktopConnectionScope({
+      bridge: {} as never,
+      profileId: 'profile-a',
+      transportScope: 'AAAAAAAAAAAAAAAAAAAAAA',
+    });
+
+    const pending = apiFetch('/api/tasks');
+    await started;
+    setDesktopConnectionScope({
+      bridge: {} as never,
+      profileId: 'profile-b',
+      transportScope: 'BBBBBBBBBBBBBBBBBBBBBB',
+    });
+    releaseParsing();
+
+    await expect(pending).resolves.toBe(refreshed);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('surfaces an unreplayed token refresh as retry-required without logging out', async () => {
     const response = new Response(JSON.stringify({
       code: 'TOKEN_REFRESHED',
@@ -131,6 +183,39 @@ describe('demo mode API helpers', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenNthCalledWith(1, request, undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(2, request, undefined);
+  });
+
+  it('preserves Request and init headers plus the captured scope on retry', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'TOKEN_REFRESHED' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    setDesktopConnectionScope({
+      bridge: {} as never,
+      profileId: 'profile-a',
+      transportScope: 'SSSSSSSSSSSSSSSSSSSSSS',
+    });
+    const request = new Request(new URL('/api/tasks', window.location.origin), {
+      headers: { 'X-From-Request': 'request', Authorization: 'Bearer renderer' },
+    });
+
+    await apiFetch(request, {
+      credentials: 'include',
+      headers: { 'X-From-Init': 'init', Cookie: 'renderer=session' },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [input, init] of fetchMock.mock.calls) {
+      expect(input).toBe(request);
+      const headers = new Headers(init?.headers);
+      expect(headers.get('X-From-Request')).toBe('request');
+      expect(headers.get('X-From-Init')).toBe('init');
+      expect(headers.get('X-ProPR-Desktop-Transport-Scope')).toBe('SSSSSSSSSSSSSSSSSSSSSS');
+      expect(headers.get('Authorization')).toBe('Bearer renderer');
+      expect(headers.get('Cookie')).toBe('renderer=session');
+    }
   });
 
   it('does not retry GitHub re-authentication failures', async () => {
@@ -178,6 +263,57 @@ describe('demo mode API helpers', () => {
     );
 
     expect(listener).toHaveBeenCalledOnce();
+    window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
+  });
+
+  it('does not dispatch a stale authorization change after the desktop profile generation switches', async () => {
+    const listener = vi.fn();
+    const scopeA = {
+      bridge: { connection: { invalidate: vi.fn() } } as never,
+      profileId: 'profile-a',
+      transportScope: 'DDDDDDDDDDDDDDDDDDDDDD',
+    };
+    const scopeB = {
+      bridge: { connection: { invalidate: vi.fn() } } as never,
+      profileId: 'profile-b',
+      transportScope: 'EEEEEEEEEEEEEEEEEEEEEE',
+    };
+    setDesktopConnectionScope(scopeA);
+    window.addEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
+    const response = new Response(JSON.stringify({
+      code: 'INSUFFICIENT_INSTANCE_PERMISSION',
+      message: 'Forbidden',
+    }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
+
+    const scopedResponse = await apiFetch('/api/tasks');
+    setDesktopConnectionScope(scopeB);
+    await expect(handleApiResponse(scopedResponse)).rejects.toThrow('Forbidden');
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(listener).not.toHaveBeenCalled();
+    window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
+  });
+
+  it('preserves desktop credentials for authorization changes and transient authentication failures', async () => {
+    const invalidate = vi.fn(async () => ({ invalidated: false }));
+    const scope = {
+      bridge: { connection: { invalidate } } as never,
+      profileId: 'profile-a',
+      transportScope: 'IIIIIIIIIIIIIIIIIIIIII',
+    };
+    const listener = vi.fn();
+    window.addEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
+    setDesktopConnectionScope(scope);
+
+    await expect(handleDesktopAccessCode('AUTHORIZATION_CHANGED', scope)).resolves.toBe('authorization-changed');
+    await expect(handleDesktopAccessCode('AUTHENTICATION_FAILED', scope)).resolves.toBe('retryable');
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(invalidate).not.toHaveBeenCalled();
     window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
   });
 

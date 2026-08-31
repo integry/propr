@@ -23,6 +23,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-windows-durability:
+    name: Native Windows durability (x64)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PROPR_NATIVE_WINDOWS_DURABILITY_REQUIRED: '1'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up x64 Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          architecture: x64
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run production Windows child-process durability matrix
+        run: npm run test:native-durability -w @propr/desktop
+
+      - name: Typecheck desktop and renderer on Windows
+        run: npm run desktop:typecheck
+
+      - name: Test desktop runtime on Windows
+        run: npm run desktop:test
+
+      - name: Package Windows x64 desktop app
+        run: npm run desktop:package
+
+      - name: Launch packaged Windows desktop transport smoke
+        run: npm run desktop:smoke
+
   verify:
     name: Audit and package desktop app
     runs-on: ubuntu-latest
@@ -56,6 +93,9 @@ jobs:
           test ! -e apps/desktop/out
           npm run desktop:package
 
+      - name: Run Linux transaction durability parity
+        run: npm run test:native-durability -w @propr/desktop
+
       - name: Typecheck desktop and renderer
         run: npm run desktop:typecheck
 
@@ -67,5 +107,19 @@ jobs:
           sudo chown root:root apps/desktop/out/propr-desktop-linux-x64/chrome-sandbox
           sudo chmod 4755 apps/desktop/out/propr-desktop-linux-x64/chrome-sandbox
 
-      - name: Launch packaged desktop app with sandboxing
-        run: xvfb-run --auto-servernum npm run desktop:smoke
+      - name: Provision hosted Linux Secret Service
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes dbus-x11 gnome-keyring libsecret-1-0
+
+      - name: Launch packaged desktop app with sandboxing and OS key custody
+        shell: bash
+        run: |
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export XDG_DATA_HOME="$1"
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run desktop:smoke
+          ' bash "$keyring_root"

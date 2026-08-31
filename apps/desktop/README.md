@@ -27,10 +27,11 @@ generated workspace `dist` directories.
 Development renderer URLs are accepted only when Electron Forge supplies an HTTP loopback URL. Packaged builds load
 the generated renderer from the application ASAR through an app-owned protocol.
 
-The packaged-binary smoke test verifies the hardened fuse states, launches the Linux artifact at 1280x820 without a
-sandbox-disabling flag, rejects main-process uncaught exceptions, and requires proof that `window.proprDesktop` is
-exposed. It also checks the real renderer bounds for the title-bar logo and connection-card controls before accepting
-renderer-ready and a clean exit.
+The packaged-binary smoke test verifies the hardened fuse states and launches the Linux or Windows artifact at
+1280x820 without a sandbox-disabling flag. From the packaged custom-protocol renderer it drives preload IPC,
+activation-scoped REST and Socket.IO upgrades through Electron session interception, scope rotation and same-ID origin
+editing. It also checks the real renderer bounds for the desktop welcome card and connection control, cookie omission,
+both-origin storage cleanup, stale-scope fencing, renderer/main secret custody, uncaught exceptions, and a clean exit.
 
 `desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
 the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release
@@ -39,13 +40,22 @@ CI runs both checks directly from the committed lockfile before installing or ex
 ## Security boundary
 
 The renderer has no Node.js integration and receives only the typed `window.proprDesktop` bridge. It exposes metadata,
-validated external-browser opening, profiles, encrypted credentials, lifecycle placeholders, and validated deep-link
-events. It never exposes a shell, command runner, arbitrary IPC call, or filesystem path/API.
+validated profiles, status-only pairing/probe/invalidation operations, lifecycle placeholders, and validated deep-link
+events. Pairing, browser approval, credential persistence, authenticated probes, and revocation run in Electron main.
+The bridge never exposes a credential value, shell, command runner, arbitrary IPC call, or filesystem path/API.
 
 Profile metadata is stored in an app-owned, permission-restricted JSON file. Credential values are encrypted with
 Electron `safeStorage` before they are written separately. If OS encryption is unavailable—or Linux selects the
-`basic_text` backend—the app reports that state and refuses to persist or return credentials; there is no plaintext
+`basic_text` backend—the app reports that state and refuses to persist credentials; there is no plaintext
 fallback. Profiles remain usable because they contain only a display label and validated API endpoint.
+
+Opaque instance tokens are bound to profile ID plus normalized origin in encrypted main-process storage. Electron's
+session request boundary strips renderer-supplied Authorization and Cookie headers from every HTTP(S) and WS(S)
+request, including inactive or mismatched profile origins, then injects the active bearer only for matching REST and
+Socket.IO requests. Set-Cookie is stripped from remote responses, so the packaged renderer has no parallel cookie
+identity. Tokens never enter renderer JavaScript, URLs, logs, localStorage, sessionStorage, or profile metadata.
+Switching named profiles clears renderer and instance-origin state. Removing or changing a paired profile first
+attempts current-token revocation at the old bound origin, then removes the credential.
 
 `propr://connect` and `propr://open` are the only accepted deep-link actions. A single-instance lock routes later
 activations to the existing window. Local lifecycle methods intentionally return `not-implemented`; this scaffold does

@@ -45,10 +45,15 @@ export const createDesktopBridge = (ipc: PreloadIpc): DesktopBridge => {
       remove: (profileId) => invoke(ipc, IPC_CHANNELS.profilesRemove, profileId),
       setActive: (profileId) => invoke(ipc, IPC_CHANNELS.profilesSetActive, profileId),
     },
-    credentials: {
-      read: (profileId) => invoke(ipc, IPC_CHANNELS.credentialsRead, profileId),
-      write: (profileId, value) => invoke(ipc, IPC_CHANNELS.credentialsWrite, profileId, value),
-      remove: (profileId) => invoke(ipc, IPC_CHANNELS.credentialsRemove, profileId),
+    authentication: {
+      pair: (profile) => invoke(ipc, IPC_CHANNELS.authenticationPair, profile),
+      cancel: (profileId) => invoke(ipc, IPC_CHANNELS.authenticationCancel, profileId),
+    },
+    connection: {
+      probe: (profile) => invoke(ipc, IPC_CHANNELS.connectionProbe, profile),
+      activate: (activationTicket) => invoke(ipc, IPC_CHANNELS.connectionActivate, activationTicket),
+      discard: (value) => invoke(ipc, IPC_CHANNELS.connectionDiscard, value),
+      invalidate: (value) => invoke(ipc, IPC_CHANNELS.connectionInvalidate, value),
     },
     lifecycle: {
       status: () => invoke(ipc, IPC_CHANNELS.lifecycleStatus),

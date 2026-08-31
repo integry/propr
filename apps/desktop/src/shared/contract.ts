@@ -9,9 +9,12 @@ export const IPC_CHANNELS = Object.freeze({
   profilesSave: 'desktop:profiles-save',
   profilesRemove: 'desktop:profiles-remove',
   profilesSetActive: 'desktop:profiles-set-active',
-  credentialsRead: 'desktop:credentials-read',
-  credentialsWrite: 'desktop:credentials-write',
-  credentialsRemove: 'desktop:credentials-remove',
+  authenticationPair: 'desktop:authentication-pair',
+  authenticationCancel: 'desktop:authentication-cancel',
+  connectionProbe: 'desktop:connection-probe',
+  connectionActivate: 'desktop:connection-activate',
+  connectionDiscard: 'desktop:connection-discard',
+  connectionInvalidate: 'desktop:connection-invalidate',
   lifecycleStatus: 'desktop:lifecycle-status',
   lifecycleStart: 'desktop:lifecycle-start',
   lifecycleStop: 'desktop:lifecycle-stop',
@@ -58,13 +61,25 @@ export type StorageSecurity = {
   reason: 'os-encryption-unavailable' | 'insecure-basic-text-backend';
 };
 
-export type CredentialReadResult =
-  | { available: false; value: null }
-  | { available: true; value: string | null };
+export type DesktopConnectionResult =
+  | { status: 'ready'; version?: string; authentication?: string; activationTicket: string }
+  | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
+  | { status: 'incompatible'; message: string; version?: string }
+  | { status: 'offline'; message: string };
 
-export type CredentialWriteResult =
-  | { stored: true }
-  | { stored: false; reason: 'encryption-unavailable' };
+export interface DesktopConnectionScope {
+  profileId: string;
+  transportScope: string;
+}
+
+export interface DesktopActivatedConnection extends DesktopConnectionScope {
+  status: 'ready';
+  identityEpoch: string;
+}
+
+export interface DesktopAccessInvalidation extends DesktopConnectionScope {
+  code: string;
+}
 
 export type LocalLifecycleState = 'disconnected' | 'starting' | 'connected' | 'stopping' | 'error';
 
@@ -97,10 +112,15 @@ export interface DesktopBridge {
     remove(profileId: string): Promise<void>;
     setActive(profileId: string | null): Promise<void>;
   };
-  credentials: {
-    read(profileId: string): Promise<CredentialReadResult>;
-    write(profileId: string, value: string): Promise<CredentialWriteResult>;
-    remove(profileId: string): Promise<void>;
+  authentication: {
+    pair(profile: DesktopProfileInput): Promise<{ paired: true }>;
+    cancel(profileId: string): Promise<void>;
+  };
+  connection: {
+    probe(profile: DesktopProfileInput): Promise<DesktopConnectionResult>;
+    activate(activationTicket: string): Promise<DesktopActivatedConnection>;
+    discard(value: DesktopConnectionScope): Promise<{ discarded: boolean }>;
+    invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }>;
   };
   lifecycle: {
     status(): Promise<LocalLifecycleStatus>;

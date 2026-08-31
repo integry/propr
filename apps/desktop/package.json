@@ -6,6 +6,10 @@
   "description": "Secure ProPR desktop application",
   "author": "Unchained Development OÜ / Rinalds Uzkalns",
   "license": "Apache-2.0",
+  "dependencies": {
+    "@propr/client": "*",
+    "@propr/shared": "*"
+  },
   "homepage": "https://github.com/integry/propr",
   "type": "module",
   "main": ".vite/build/main.cjs",
@@ -15,7 +19,10 @@
     "dev": "electron-forge start",
     "pretypecheck": "npm run prepare:renderer",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm run prepare:renderer",
     "test": "tsx --test src/**/*.test.ts",
+    "pretest:native-durability": "npm run prepare:renderer",
+    "test:native-durability": "node scripts/run-native-durability.mjs",
     "prepackage": "npm run prepare:renderer",
     "package": "electron-forge package",
     "smoke:package": "node scripts/smoke-packaged.mjs",
@@ -38,6 +45,7 @@
     "@types/node": "^22.10.0",
     "@vitejs/plugin-react": "^4.6.0",
     "electron": "^44.0.0",
+    "socket.io": "^4.8.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.5"
