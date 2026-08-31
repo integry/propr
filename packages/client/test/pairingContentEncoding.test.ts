@@ -151,4 +151,16 @@ describe('pairing response Content-Encoding', () => {
       );
     }
   });
+
+  it('rejects an encoded Content-Length above the wire limit', async () => {
+    const body = jsonBytes(32);
+
+    await assert.rejects(request('https://propr.example.test/pair', async () => new Response(body, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Encoding': 'gzip',
+        'Content-Length': '4097',
+      },
+    })), invalidResponse);
+  });
 });

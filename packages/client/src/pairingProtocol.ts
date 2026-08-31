@@ -5,6 +5,7 @@ const BODY_TIMEOUT_MS = 8_000;
 const OVERALL_TIMEOUT_MS = CONNECT_HEADER_TIMEOUT_MS + BODY_TIMEOUT_MS;
 const CANCELLATION_TIMEOUT_MS = 100;
 const MAX_RESPONSE_BYTES = 4_096;
+const MAX_ENCODED_RESPONSE_BYTES = 4_096;
 const CANCELLATION_TIMEOUT_DIAGNOSTIC = 'ProPR pairing response cancellation exceeded its fixed deadline.';
 
 type TimeoutPhase = 'connect-header' | 'body' | 'overall';
@@ -243,9 +244,12 @@ export const requestPairingProtocol = async (
 
     const encoding = contentEncoding(response);
     const declaredLength = contentLength(response);
-    if (encoding === 'identity'
-      && declaredLength !== undefined
-      && declaredLength > MAX_RESPONSE_BYTES) {
+    // Content-Length describes the encoded wire representation. Bound it for
+    // every supported encoding before reading Fetch's decoded response stream.
+    const maximumDeclaredLength = encoding === 'identity'
+      ? MAX_RESPONSE_BYTES
+      : MAX_ENCODED_RESPONSE_BYTES;
+    if (declaredLength !== undefined && declaredLength > maximumDeclaredLength) {
       throw invalidResponse(response.status);
     }
     if (!response.body) {
