@@ -5,13 +5,184 @@ import type {
   GoalMessage,
   GoalNode,
 } from '@propr/core';
+import { redactSecrets } from '@propr/core';
 import type {
+  JsonValue,
   PublicGoalDetailDto,
   PublicGoalDto,
   PublicGoalEventDto,
   PublicGoalMessageDto,
   PublicGoalNodeDto,
 } from '@propr/shared';
+
+const PUBLIC_EVENT_PAYLOAD_LIMITS = {
+  depth: 16,
+  nodes: 512,
+  collectionEntries: 100,
+  keyBytes: 255,
+  stringBytes: 16_384,
+  totalStringBytes: 65_536,
+} as const;
+
+const PRIVATE_EVENT_KEY_TERMS = [
+  'controller',
+  'session',
+  'owner',
+  'lease',
+  'epoch',
+  'idempotency',
+  'claim',
+  'request',
+  'response',
+  'runtime',
+  'container',
+  'worktree',
+  'config',
+  'configuration',
+  'env',
+  'environment',
+  'mount',
+  'volume',
+  'credential',
+  'fence',
+  'secret',
+  'password',
+  'passwd',
+  'passphrase',
+  'private',
+  'internal',
+] as const;
+
+const PRIVATE_EVENT_KEY_NAMES = new Set([
+  '__proto__',
+  'prototype',
+  'constructor',
+  'apikey',
+  'accesstoken',
+  'authtoken',
+  'refreshtoken',
+  'githubtoken',
+  'npmtoken',
+  'slacktoken',
+  'citoken',
+  'deploytoken',
+  'servicetoken',
+  'token',
+  'authorization',
+  'cookie',
+  'setcookie',
+  'userid',
+  'providerthreadid',
+  'lastcheckpoint',
+  'recoverymetadata',
+]);
+
+interface PublicPayloadProjectionState {
+  nodes: number;
+  remainingStringBytes: number;
+  seen: WeakSet<object>;
+}
+
+function utf8Bytes(value: string): number {
+  return Buffer.byteLength(value, 'utf8');
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (utf8Bytes(value) <= maxBytes) return value;
+  const suffix = '[Truncated]';
+  if (maxBytes <= suffix.length) return suffix.slice(0, maxBytes);
+  const contentLimit = maxBytes - suffix.length;
+  let result = '';
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = utf8Bytes(character);
+    if (bytes + characterBytes > contentLimit) break;
+    result += character;
+    bytes += characterBytes;
+  }
+  return `${result}${suffix}`;
+}
+
+function isPrivateEventKey(key: string): boolean {
+  if (key === '__proto__' || key === 'prototype' || key === 'constructor') return true;
+  const words = key
+    .normalize('NFKC')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  if (PRIVATE_EVENT_KEY_NAMES.has(words.join(''))) return true;
+  return words.some((word) => PRIVATE_EVENT_KEY_TERMS.some(
+    (term) => word === term || word === `${term}s` || word.startsWith(term)
+  ));
+}
+
+function isUnsupportedPayloadValue(value: unknown): boolean {
+  return value === undefined || typeof value === 'function' || typeof value === 'symbol'
+    || typeof value === 'bigint';
+}
+
+function projectPublicPayloadValue(
+  value: unknown,
+  state: PublicPayloadProjectionState,
+  depth: number
+): JsonValue | undefined {
+  if (state.nodes >= PUBLIC_EVENT_PAYLOAD_LIMITS.nodes) return '[Truncated]';
+  state.nodes += 1;
+  if (depth > PUBLIC_EVENT_PAYLOAD_LIMITS.depth) return '[Truncated]';
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const redacted = redactSecrets(value);
+    const allowedBytes = Math.min(
+      PUBLIC_EVENT_PAYLOAD_LIMITS.stringBytes,
+      state.remainingStringBytes
+    );
+    const bounded = truncateUtf8(redacted, allowedBytes);
+    state.remainingStringBytes -= utf8Bytes(bounded);
+    return bounded;
+  }
+  if (isUnsupportedPayloadValue(value)) return undefined;
+  if (value === null || typeof value !== 'object') return null;
+  if (state.seen.has(value)) return '[Circular]';
+  state.seen.add(value);
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, PUBLIC_EVENT_PAYLOAD_LIMITS.collectionEntries)
+      .map((item) => projectPublicPayloadValue(item, state, depth + 1) ?? null);
+  }
+  const serializable = typeof (value as { toJSON?: unknown }).toJSON === 'function'
+    ? (value as { toJSON: (key: string) => unknown }).toJSON('')
+    : value;
+  if (serializable !== value) {
+    return projectPublicPayloadValue(serializable, state, depth + 1);
+  }
+  const projected: Record<string, JsonValue> = {};
+  let retainedEntries = 0;
+  for (const key of Object.keys(value)) {
+    if (retainedEntries >= PUBLIC_EVENT_PAYLOAD_LIMITS.collectionEntries) break;
+    if (utf8Bytes(key) > PUBLIC_EVENT_PAYLOAD_LIMITS.keyBytes || isPrivateEventKey(key)) continue;
+    const child = projectPublicPayloadValue(
+      (value as Record<string, unknown>)[key],
+      state,
+      depth + 1
+    );
+    if (child !== undefined) {
+      projected[key] = child;
+      retainedEntries += 1;
+    }
+  }
+  return projected;
+}
+
+/** Canonical, conservative projection for all event payloads crossing the API. */
+export function toPublicGoalEventPayload(payload: unknown): JsonValue {
+  return projectPublicPayloadValue(payload, {
+    nodes: 0,
+    remainingStringBytes: PUBLIC_EVENT_PAYLOAD_LIMITS.totalStringBytes,
+    seen: new WeakSet(),
+  }, 0) ?? null;
+}
 
 /** Explicit public projections keep persistence/controller fields off the wire. */
 export function toPublicGoal(goal: Goal): PublicGoalDto {
@@ -71,7 +242,7 @@ export function toPublicGoalEvent(event: GoalEvent): PublicGoalEventDto {
     sequence: event.sequence,
     kind: event.kind,
     eventType: event.eventType,
-    payload: event.payload,
+    payload: toPublicGoalEventPayload(event.payload),
     createdAt: event.createdAt,
   };
 }

@@ -9,6 +9,8 @@
 // service) so every consumer agrees on what a valid transition and an
 // actionable conflict look like.
 
+import type { JsonValue } from './notifications.js';
+
 /**
  * Explicit goal lifecycle states. `pausing`/`recovering`/`completing` are
  * transient controller states; `completed`/`failed`/`cancelled` are terminal.
@@ -283,7 +285,7 @@ export interface PublicGoalEventDto {
   sequence: number;
   kind: GoalEventKind;
   eventType: string;
-  payload: unknown;
+  payload: JsonValue;
   createdAt: string;
 }
 
