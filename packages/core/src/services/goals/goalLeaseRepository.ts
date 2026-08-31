@@ -61,9 +61,10 @@ export class GoalLeaseRepository {
         goal_id: id,
         lease_owner: leaseOwner,
         lease_epoch: epoch,
-      }).whereNotNull('lease_expires_at').andWhere('lease_expires_at', '>', now)
+      }).whereNotIn('state', TERMINAL_GOAL_STATES)
+        .whereNotNull('lease_expires_at').andWhere('lease_expires_at', '>', now)
         .update({ lease_expires_at: expiresAt, updated_at: now });
-      if (affected !== 1) await throwLeaseFailure(trx, id);
+      if (affected !== 1) await throwLeaseFailure(trx, id, true);
       return { expiresAt };
     });
   }
@@ -74,12 +75,17 @@ export class GoalLeaseRepository {
     validateFence({ leaseOwner, leaseEpoch: epoch });
     const now = nowIso();
     await goalTransaction(this.db, async (trx) => {
+      const goal = await requireGoalRecord(trx, id);
       const affected = await trx('goals').where({
         goal_id: id,
         lease_owner: leaseOwner,
         lease_epoch: epoch,
       }).whereNotNull('lease_expires_at').andWhere('lease_expires_at', '>', now)
-        .update({ lease_owner: null, lease_expires_at: null, updated_at: now });
+        .update({
+          lease_owner: null,
+          lease_expires_at: null,
+          ...(isTerminalGoalState(goal.state) ? {} : { updated_at: now }),
+        });
       if (affected !== 1) await throwLeaseFailure(trx, id);
     });
   }
@@ -95,8 +101,15 @@ function validateTtl(ttlMs: number): void {
   }
 }
 
-async function throwLeaseFailure(trx: Knex.Transaction, goalId: string): Promise<never> {
+async function throwLeaseFailure(
+  trx: Knex.Transaction,
+  goalId: string,
+  rejectTerminal = false
+): Promise<never> {
   const goal = await trx<GoalRecord>('goals').where('goal_id', goalId).first();
   if (!goal) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+  if (rejectTerminal && isTerminalGoalState(goal.state)) {
+    throw new GoalError(GOAL_ERROR_CODES.terminalState, 'Terminal goals cannot renew controller authority', 409);
+  }
   throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Controller lease is stale or expired', 409);
 }

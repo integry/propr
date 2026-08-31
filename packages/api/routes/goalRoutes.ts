@@ -117,18 +117,36 @@ function parseLimit(value: unknown, max: number): number | undefined {
 
 function parseExpectedVersion(req: Request): number | undefined {
   const body = req.body as { expectedVersion?: unknown } | undefined;
-  if (typeof body?.expectedVersion === 'number' && Number.isInteger(body.expectedVersion)) {
-    return body.expectedVersion;
-  }
   const header = req.header('If-Match');
-  if (header) {
-    const parsed = Number(header.replace(/"/g, '').trim());
-    if (Number.isInteger(parsed)) return parsed;
+  const bodyVersion = body?.expectedVersion === undefined
+    ? undefined
+    : parseVersionNumber(body.expectedVersion, 'expectedVersion');
+  const headerVersion = header === undefined
+    ? undefined
+    : parseIfMatchVersion(header);
+  if (bodyVersion !== undefined && headerVersion !== undefined && bodyVersion !== headerVersion) {
+    throw new GoalError(
+      GOAL_ERROR_CODES.validation,
+      'expectedVersion and If-Match must agree',
+      400
+    );
   }
-  if (body?.expectedVersion !== undefined || header !== undefined) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, 'expectedVersion must be an integer', 400);
+  return headerVersion ?? bodyVersion;
+}
+
+function parseVersionNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, `${field} must be a positive safe integer`, 400);
   }
-  return undefined;
+  return value;
+}
+
+function parseIfMatchVersion(value: string): number {
+  const match = value.match(/^\s*(?:"([1-9]\d*)"|([1-9]\d*))\s*$/);
+  if (!match) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, 'If-Match must contain one positive integer version', 400);
+  }
+  return parseVersionNumber(Number(match[1] ?? match[2]), 'If-Match');
 }
 
 export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
@@ -206,15 +224,10 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
       const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
       const search = boundedOptionalText(req.query.search, 'search', GOAL_SEARCH_MAX_LENGTH);
 
-      const result = await repository.listGoals({
-        // In demo mode all goals share the demo user, matching read-only semantics.
-        ownerUserId: userId,
-        repository: repositoryFilter,
-        state: stateFilter,
-        search,
-        limit,
-        cursor,
-      });
+      const listOptions = { repository: repositoryFilter, state: stateFilter, search, limit, cursor };
+      const result = await (isDemoMode()
+        ? repository.listGoals({ visibility: 'all-demo', ...listOptions })
+        : repository.listGoals({ visibility: 'owner', ownerUserId: userId, ...listOptions }));
       res.json(result);
     } catch (error) {
       sendGoalError(res, error);

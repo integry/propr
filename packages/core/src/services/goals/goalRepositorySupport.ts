@@ -6,6 +6,8 @@ import {
   GOAL_IDENTIFIER_MAX_LENGTH,
   GOAL_IDEMPOTENCY_KEY_MAX_LENGTH,
   GOAL_REASON_MAX_LENGTH,
+  TERMINAL_GOAL_STATES,
+  isTerminalGoalState,
   type GoalErrorCode,
   type GoalSummaryView,
 } from '@propr/shared';
@@ -182,12 +184,16 @@ export async function guardLease(
     goal_id: id,
     lease_owner: fence.leaseOwner,
     lease_epoch: fence.leaseEpoch,
-  }).whereNotNull('lease_expires_at').andWhere('lease_expires_at', '>', now);
+  }).whereNotIn('state', TERMINAL_GOAL_STATES)
+    .whereNotNull('lease_expires_at').andWhere('lease_expires_at', '>', now);
   if (version !== undefined) update = update.andWhere('version', version);
   const affected = await update.update({ updated_at: trx.ref('updated_at') });
   if (affected !== 1) {
-    const exists = await trx('goals').where('goal_id', id).first('goal_id');
-    if (!exists) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+    const goal = await trx<GoalRecord>('goals').where('goal_id', id).first();
+    if (!goal) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+    if (isTerminalGoalState(goal.state)) {
+      throw new GoalError(GOAL_ERROR_CODES.terminalState, 'Terminal goals reject controller writes', 409);
+    }
     throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Controller lease is stale or expired', 409);
   }
   return requireGoalRecord(trx, id);

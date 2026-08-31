@@ -247,9 +247,10 @@ export interface ProviderSessionUpdate extends GoalLeaseFence {
   recoveryMetadata?: GoalRecoveryMetadata | null;
 }
 
-export interface ListGoalsQuery extends GoalListRequest {
-  ownerUserId: string;
-}
+export type ListGoalsQuery = GoalListRequest & (
+  | { visibility: 'owner'; ownerUserId: string }
+  | { visibility: 'all-demo' }
+);
 
 export type ListGoalsResult = GoalListResponse;
 

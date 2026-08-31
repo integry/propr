@@ -487,6 +487,87 @@ describe('GoalRepository', () => {
         (error: GoalError) => error.code === 'goal_stale_lease'
       );
     });
+
+    test('a leased cancellation fences every controller mutation while exact release still works', async () => {
+      const goal = await seedGoal();
+      const fence = await claimFence(goal.goalId, 'terminal-controller');
+      const firstNode = await repo.addNode(goal.goalId, {
+        kind: 'root_epic', idempotencyKey: 'terminal-root', ...fence,
+      });
+      const secondNode = await repo.addNode(goal.goalId, {
+        kind: 'implementation_issue', idempotencyKey: 'terminal-child', ...fence,
+      });
+      await repo.upsertProviderSession(goal.goalId, 'claude', {
+        ...fence,
+        providerThreadId: 'thread-before-cancel',
+        effectiveModel: 'claude-opus-4-8',
+        recoveryMetadata: { schemaVersion: 1, attempt: 1, providerState: 'active' },
+      });
+      await repo.appendEvent(goal.goalId, {
+        kind: 'lifecycle', eventType: 'before-cancel', idempotencyKey: 'before-cancel', ...fence,
+      });
+      const delivered = await repo.enqueueMessage(goal.goalId, {
+        body: 'ack after cancel', idempotencyKey: 'terminal-ack',
+      });
+      const queued = await repo.enqueueMessage(goal.goalId, {
+        body: 'deliver after cancel', idempotencyKey: 'terminal-deliver',
+      });
+      await repo.markMessageDelivered(goal.goalId, delivered.messageId, fence);
+      await repo.requestModelChange(goal.goalId, 'claude-sonnet-5');
+      const cancelled = await repo.transitionOperatorIntent(goal.goalId, {
+        toState: 'cancelled', terminalReason: 'user_cancelled',
+      });
+      const before = {
+        goal: cancelled,
+        nodes: await repo.getNodes(goal.goalId),
+        dependencies: await repo.getDependencies(goal.goalId),
+        events: (await repo.readEvents(goal.goalId)).events,
+        messages: await repo.getMessages(goal.goalId),
+        provider: await repo.getProviderSession(goal.goalId, 'claude'),
+        modelTransitions: await database('goal_model_transitions').where('goal_id', goal.goalId),
+        stateTransitions: await database('goal_state_transitions').where('goal_id', goal.goalId),
+        pauseIntervals: await database('goal_pause_intervals').where('goal_id', goal.goalId),
+        stats: await repo.getActiveTimeStats(goal.goalId),
+      };
+      await new Promise(resolve => setTimeout(resolve, 2));
+      const expectTerminal = async (operation: Promise<unknown>) => assert.rejects(
+        operation,
+        (error: GoalError) => error.code === 'goal_terminal_state'
+      );
+
+      await expectTerminal(repo.appendEvent(goal.goalId, {
+        kind: 'domain', eventType: 'after-cancel', idempotencyKey: 'after-cancel', ...fence,
+      }));
+      await expectTerminal(repo.addNode(goal.goalId, {
+        kind: 'sub_epic', idempotencyKey: 'after-cancel-node', ...fence,
+      }));
+      await expectTerminal(repo.addDependency(goal.goalId, secondNode.nodeId, firstNode.nodeId, fence));
+      await expectTerminal(repo.upsertProviderSession(goal.goalId, 'claude', {
+        ...fence,
+        providerThreadId: 'thread-after-cancel',
+        effectiveModel: 'claude-sonnet-5',
+        recoveryMetadata: { schemaVersion: 1, attempt: 2, providerState: 'recoverable' },
+      }));
+      await expectTerminal(repo.markMessageDelivered(goal.goalId, queued.messageId, fence));
+      await expectTerminal(repo.markMessageAcknowledged(goal.goalId, delivered.messageId, fence));
+      await expectTerminal(repo.applyModelChange(goal.goalId, fence));
+      await expectTerminal(repo.renewLease(goal.goalId, fence.leaseOwner, fence.leaseEpoch, 60_000));
+      await repo.releaseLease(goal.goalId, fence.leaseOwner, fence.leaseEpoch);
+
+      const afterGoal = await repo.requireGoal(goal.goalId);
+      assert.deepEqual({ ...afterGoal, leaseOwner: before.goal.leaseOwner, leaseExpiresAt: before.goal.leaseExpiresAt }, before.goal);
+      assert.deepEqual(await repo.getNodes(goal.goalId), before.nodes);
+      assert.deepEqual(await repo.getDependencies(goal.goalId), before.dependencies);
+      assert.deepEqual((await repo.readEvents(goal.goalId)).events, before.events);
+      assert.deepEqual(await repo.getMessages(goal.goalId), before.messages);
+      assert.deepEqual(await repo.getProviderSession(goal.goalId, 'claude'), before.provider);
+      assert.deepEqual(await database('goal_model_transitions').where('goal_id', goal.goalId), before.modelTransitions);
+      assert.deepEqual(await database('goal_state_transitions').where('goal_id', goal.goalId), before.stateTransitions);
+      assert.deepEqual(await database('goal_pause_intervals').where('goal_id', goal.goalId), before.pauseIntervals);
+      assert.deepEqual(await repo.getActiveTimeStats(goal.goalId), before.stats);
+      assert.equal(afterGoal.leaseOwner, null);
+      assert.equal(afterGoal.leaseExpiresAt, null);
+    });
   });
 
   test('fences provider sessions and validates bounded credential-free recovery metadata', async () => {
@@ -565,10 +646,11 @@ describe('GoalRepository', () => {
       created.push(await seedGoal({ objective: `goal ${i}` }));
       await new Promise((resolve) => setTimeout(resolve, 2));
     }
-    const page1 = await repo.listGoals({ ownerUserId: 'user-1', limit: 2 });
+    const page1 = await repo.listGoals({ visibility: 'owner', ownerUserId: 'user-1', limit: 2 });
     assert.equal(page1.goals.length, 2);
     assert.ok(page1.nextCursor);
     const page2 = await repo.listGoals({
+      visibility: 'owner',
       ownerUserId: 'user-1',
       limit: 2,
       cursor: page1.nextCursor,

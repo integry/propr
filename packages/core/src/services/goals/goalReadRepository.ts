@@ -122,7 +122,9 @@ export class GoalReadRepository {
   }
 
   async listGoals(query: ListGoalsQuery): Promise<ListGoalsResult> {
-    const ownerUserId = boundedText(query.ownerUserId, 'ownerUserId') as string;
+    const ownerUserId = query.visibility === 'owner'
+      ? boundedText(query.ownerUserId, 'ownerUserId') as string
+      : null;
     const limit = query.limit ?? GOAL_LIST_DEFAULT_LIMIT;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > GOAL_LIST_MAX_LIMIT) {
       throw new GoalError(GOAL_ERROR_CODES.validation, `limit must be an integer from 1 to ${GOAL_LIST_MAX_LIMIT}`, 400);
@@ -133,11 +135,11 @@ export class GoalReadRepository {
     const search = normalizeSearch(query.search);
     const cursor = decodeCursor(query.cursor);
     let builder = this.db<GoalSummaryRecord>('goals')
-      .where('owner_user_id', ownerUserId)
       .select('goals.*')
       .select(this.db.raw('(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id) AS node_count'))
       .select(this.db.raw("(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id AND n.status = 'in_progress') AS active_node_count"))
       .select(this.db.raw('(SELECT COALESCE(MAX(sequence), 0) FROM goal_events e WHERE e.goal_id = goals.goal_id) AS latest_sequence'));
+    if (ownerUserId !== null) builder = builder.where('owner_user_id', ownerUserId);
     if (repository) builder = builder.andWhere('repository', repository);
     if (query.state) builder = builder.andWhere('state', query.state);
     if (search) {
