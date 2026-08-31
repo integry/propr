@@ -368,6 +368,59 @@ test('reconciles a missing container from durable provider and worktree state', 
     assert.equal((await persistence.replay(identity)).at(-1)?.event.type, 'reconciliation');
 });
 
+test('reconciliation accepts legitimate HEAD advancement and reports the current checkpoint separately', async () => {
+    const adapter = new FakeGoalAdapter();
+    const { persistence, supervisor } = await openedRuntime(adapter);
+    const advancedCheckout = {
+        ...repository,
+        repository: 'https://github.com/integry/propr.git',
+        headSha: 'def456',
+    };
+    persistence.setContainerInspection(identity, { status: 'missing', reason: 'worker restarted' });
+    persistence.setRepositoryInspection(repository, {
+        ...repository,
+        exists: true,
+        observedRepository: advancedCheckout.repository,
+        observedBranch: repository.branch,
+        observedHeadSha: advancedCheckout.headSha,
+        observedWorktreeFingerprint: fingerprintGoalWorktree(advancedCheckout),
+    });
+    adapter.reconcileResult = { outcome: 'alive', reason: 'goal commit is still recoverable' };
+
+    const result = await supervisor.reconcile(identity, 2, repository);
+
+    assert.equal(result.outcome, 'alive');
+    assert.equal(adapter.reconcileRequests[0]?.repository.observedHeadSha, 'def456');
+    assert.equal(fingerprintGoalWorktree(repository), fingerprintGoalWorktree(advancedCheckout));
+});
+
+test('reconciliation rejects repository replacement at the same path even without an expected HEAD', async () => {
+    const adapter = new FakeGoalAdapter();
+    const { persistence, supervisor } = await openedRuntime(adapter);
+    const headlessRepository = {
+        repository: repository.repository,
+        worktreePath: repository.worktreePath,
+        branch: repository.branch,
+    };
+    const replacement = { ...headlessRepository, repository: 'https://github.com/foreign/replacement.git' };
+    persistence.setContainerInspection(identity, { status: 'missing', reason: 'worker restarted' });
+    persistence.setRepositoryInspection(headlessRepository, {
+        ...headlessRepository,
+        exists: true,
+        observedRepository: replacement.repository,
+        observedBranch: replacement.branch,
+        observedHeadSha: 'replacement-head',
+        observedWorktreeFingerprint: fingerprintGoalWorktree(replacement),
+    });
+    adapter.reconcileResult = { outcome: 'alive', reason: 'must not inspect a foreign checkout' };
+
+    const result = await supervisor.reconcile(identity, 2, headlessRepository);
+
+    assert.equal(result.outcome, 'blocked');
+    assert.match(result.reason, /fingerprint mismatch/);
+    assert.equal(adapter.reconcileCalls, 0);
+});
+
 test('blocks reconciliation when authoritative container metadata is unavailable', async () => {
     const adapter = new FakeGoalAdapter();
     const { persistence, supervisor } = await openedRuntime(adapter);

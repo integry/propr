@@ -90,18 +90,35 @@ export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
                     reason: 'Worktree path resolves through a symlink or alias',
                 };
             }
-            const [{ stdout: head }, { stdout: status }, { stdout: branch }] = await Promise.all([
+            const [{ stdout: head }, { stdout: status }, { stdout: branch }, { stdout: remote }, { stdout: root }] = await Promise.all([
                 execFileAsync(this.gitPath, ['rev-parse', 'HEAD'], { cwd: repository.worktreePath, timeout: 10_000 }),
                 execFileAsync(this.gitPath, ['status', '--porcelain'], { cwd: repository.worktreePath, timeout: 10_000 }),
                 execFileAsync(this.gitPath, ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repository.worktreePath, timeout: 10_000 }),
+                execFileAsync(this.gitPath, ['config', '--get', 'remote.origin.url'], { cwd: repository.worktreePath, timeout: 10_000 }),
+                execFileAsync(this.gitPath, ['rev-parse', '--show-toplevel'], { cwd: repository.worktreePath, timeout: 10_000 }),
             ]);
+            const observedRepository = remote.trim();
+            const observedBranch = branch.trim();
+            if (path.resolve(root.trim()) !== resolvedWorktreePath) {
+                return {
+                    ...repository,
+                    exists: true,
+                    resolvedWorktreePath,
+                    reason: 'Worktree path is not the observed Git repository root',
+                };
+            }
             return {
                 ...repository,
                 exists: true,
                 dirty: Boolean(status.trim()),
+                observedRepository,
                 observedHeadSha: head.trim(),
-                observedBranch: branch.trim(),
-                observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
+                observedBranch,
+                observedWorktreeFingerprint: fingerprintGoalWorktree({
+                    repository: observedRepository,
+                    worktreePath: resolvedWorktreePath,
+                    branch: observedBranch,
+                }),
                 resolvedWorktreePath,
             };
         } catch (error) {

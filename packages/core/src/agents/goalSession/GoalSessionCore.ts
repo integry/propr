@@ -114,7 +114,7 @@ export abstract class GoalSessionCore {
             ? existing
             : [...existing, { turnId: fence.turnId, ...execution }];
         const afterTurnPaused = outcome === 'succeeded'
-            && state.status === 'paused'
+            && (state.status === 'pause_requested' || state.status === 'paused')
             && this.adapter.capabilities.pause === 'after_turn';
         const next = nextState(state, {
             status: outcome === 'cancelled'

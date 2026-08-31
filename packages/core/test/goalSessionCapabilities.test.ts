@@ -12,6 +12,8 @@ import type {
     GoalSessionAdapter,
     GoalSessionControlFence,
     GoalSessionEvent,
+    GoalSessionIdentity,
+    GoalSessionState,
 } from '../src/agents/goalSession/contract.js';
 import {
     EAGER_ACTIVE_TURN_PROVIDER_CAPABILITIES,
@@ -117,6 +119,36 @@ class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
     }
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    return { promise, resolve };
+}
+
+class GatedCompletionLoadPorts extends InMemoryGoalSessionPorts {
+    private nextRunningLoad: {
+        loaded: ReturnType<typeof deferred>;
+        release: ReturnType<typeof deferred>;
+    } | undefined;
+
+    gateNextRunningLoad(): { loaded: Promise<void>; release: () => void } {
+        const gate = { loaded: deferred(), release: deferred() };
+        this.nextRunningLoad = gate;
+        return { loaded: gate.loaded.promise, release: gate.release.resolve };
+    }
+
+    override async load(request: GoalSessionIdentity): Promise<GoalSessionState | null> {
+        const state = await super.load(request);
+        const gate = this.nextRunningLoad;
+        if (gate && state?.status === 'running') {
+            this.nextRunningLoad = undefined;
+            gate.loaded.resolve();
+            await gate.release.promise;
+        }
+        return state;
+    }
+}
+
 test('capability fixtures describe eager-active and lazy-boundary providers without overlap', () => {
     assert.deepEqual(EAGER_ACTIVE_TURN_PROVIDER_CAPABILITIES, {
         nativeSessionId: 'eager',
@@ -217,6 +249,41 @@ test('first-turn identity, FIFO next-turn ack, and after-turn pause/resume stay 
         .filter(record => record.event.type === 'message_acknowledged')
         .map(record => record.event.type === 'message_acknowledged' ? record.event.messageId : '');
     assert.deepEqual(acknowledgedIds, ['message-one', 'message-two']);
+});
+
+test('after-turn completion honors a pause acknowledged after its pre-completion state read', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    const persistence = new GatedCompletionLoadPorts();
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+
+    const providerRelease = deferred();
+    const providerStarted = deferred();
+    adapter.holdTurn = providerRelease.promise;
+    adapter.turnStarted = providerStarted.resolve;
+    const running = supervisor.runTurn({
+        ...firstFence,
+        executionId: 'execution-pause-race',
+        attemptId: 'attempt-pause-race',
+        objective: 'complete concurrently with an after-turn pause',
+        repository,
+        requestedModel: 'model-a',
+    });
+    await providerStarted.promise;
+
+    const completionLoad = persistence.gateNextRunningLoad();
+    providerRelease.resolve();
+    await completionLoad.loaded;
+    assert.deepEqual(await supervisor.requestPause({ ...firstFence, reason: 'pause at completion' }), {
+        appliesAt: 'after_turn',
+    });
+    assert.equal((await persistence.load(identity))?.status, 'pause_requested');
+    completionLoad.release();
+
+    const finished = await running;
+    assert.equal(finished.state.status, 'paused');
+    assert.equal(finished.state.activeTurn, undefined);
+    assert.equal((await persistence.load(identity))?.status, 'paused');
 });
 
 test('first-turn providers reject authoritative output before a real native ID is bound', async () => {

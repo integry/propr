@@ -33,6 +33,7 @@ export interface GoalRepositoryIdentity {
     repository: string;
     worktreePath: string;
     branch: string;
+    /** Mutable checkout checkpoint for diagnostics/resume, never repository identity. */
     headSha?: string;
 }
 
@@ -388,6 +389,8 @@ export interface GoalRecoveryIdentity extends GoalSessionIdentity {
 export interface GoalRepositoryInspection extends GoalRepositoryIdentity {
     exists: boolean;
     dirty?: boolean;
+    /** Repository URL/name read from Git rather than copied from the request. */
+    observedRepository?: string;
     observedHeadSha?: string;
     observedBranch?: string;
     observedWorktreeFingerprint?: string;

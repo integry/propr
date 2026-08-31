@@ -395,9 +395,9 @@ function reconcileRecoveredTurn(
 
 /**
  * Verifies the worktree matches the expected identity before any resume side
- * effect. It also blocks when the expected branch/head cannot actually be
- * observed, so a worktree whose state could not be inspected never passes by the
- * mere absence of an observed value.
+ * effect. The fingerprint covers immutable logical checkout identity; mutable
+ * HEAD is observed for provider checkpoint recovery but is not compared with
+ * the turn's starting HEAD because the turn may legitimately have committed.
  */
 function verifyReconciliationTarget(
     expected: GoalRepositoryIdentity,
@@ -418,14 +418,6 @@ function verifyReconciliationTarget(
     }
     if (inspection.observedBranch !== expected.branch) {
         return `Worktree branch mismatch: expected ${expected.branch}, found ${inspection.observedBranch}`;
-    }
-    if (expected.headSha) {
-        if (!inspection.observedHeadSha) {
-            return `Worktree ${expected.worktreePath} head could not be observed: ${inspection.reason ?? 'head unavailable'}`;
-        }
-        if (inspection.observedHeadSha !== expected.headSha) {
-            return `Worktree head mismatch: expected ${expected.headSha}, found ${inspection.observedHeadSha}`;
-        }
     }
     return null;
 }
