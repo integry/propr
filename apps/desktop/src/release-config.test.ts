@@ -142,11 +142,50 @@ describe('desktop release configuration', () => {
     }
   });
 
-  test('rejects partially configured signing groups', () => {
+  test('preserves opaque signing credentials while normalizing non-secret members', () => {
+    const password = '  certificate password  ';
+    assert.deepEqual(
+      readCompleteEnvironmentGroup(
+        {
+          CERT: '  /tmp/cert.pfx  ',
+          PASSWORD: password,
+          KEY_ID: '  key-id  ',
+        },
+        ['CERT', 'PASSWORD', 'KEY_ID'],
+        'Windows signing',
+        { opaqueNames: ['PASSWORD'] },
+      ),
+      {
+        CERT: '/tmp/cert.pfx',
+        PASSWORD: password,
+        KEY_ID: 'key-id',
+      },
+    );
+  });
+
+  test('rejects whitespace-only and partially configured signing groups with fixed diagnostics', () => {
     assert.equal(readCompleteEnvironmentGroup({}, ['CERT', 'PASSWORD'], 'Windows signing'), undefined);
     assert.throws(
       () => readCompleteEnvironmentGroup({ CERT: '/tmp/cert.pfx' }, ['CERT', 'PASSWORD'], 'Windows signing'),
-      /missing PASSWORD/,
+      { message: 'Windows signing configuration is incomplete; missing PASSWORD' },
+    );
+    assert.throws(
+      () => readCompleteEnvironmentGroup(
+        { CERT: ' /tmp/cert.pfx ', PASSWORD: ' \t ' },
+        ['CERT', 'PASSWORD'],
+        'Windows signing',
+        { opaqueNames: ['PASSWORD'] },
+      ),
+      { message: 'Windows signing configuration is incomplete; missing PASSWORD' },
+    );
+    assert.throws(
+      () => readCompleteEnvironmentGroup(
+        { CERT: ' ', PASSWORD: '  credential  ', KEY_ID: '' },
+        ['CERT', 'PASSWORD', 'KEY_ID'],
+        'Windows signing',
+        { opaqueNames: ['PASSWORD'] },
+      ),
+      { message: 'Windows signing configuration is incomplete; missing CERT, KEY_ID' },
     );
   });
 

@@ -101,18 +101,26 @@ interface CompleteEnvironmentGroup {
   [name: string]: string;
 }
 
-export const readCompleteEnvironmentGroup = (
+interface CompleteEnvironmentGroupOptions<Name extends string> {
+  opaqueNames?: readonly Name[];
+}
+
+export const readCompleteEnvironmentGroup = <const Name extends string>(
   env: Environment,
-  names: readonly string[],
+  names: readonly Name[],
   label: string,
-): CompleteEnvironmentGroup | undefined => {
+  { opaqueNames = [] }: CompleteEnvironmentGroupOptions<Name> = {},
+): Record<Name, string> | undefined => {
   const present = names.filter(name => Boolean(env[name]?.trim()));
   if (present.length === 0) return undefined;
   if (present.length !== names.length) {
     const missing = names.filter(name => !env[name]?.trim());
     throw new Error(`${label} configuration is incomplete; missing ${missing.join(', ')}`);
   }
-  return Object.fromEntries(names.map(name => [name, env[name]!.trim()]));
+  const opaque = new Set(opaqueNames);
+  return Object.fromEntries(
+    names.map(name => [name, opaque.has(name) ? env[name]! : env[name]!.trim()]),
+  ) as Record<Name, string>;
 };
 
 export const requireProductionReleaseConfiguration = ({

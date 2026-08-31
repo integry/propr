@@ -40,6 +40,7 @@ const windowsSigning = readCompleteEnvironmentGroup(
   process.env,
   ['PROPR_DESKTOP_WINDOWS_CERTIFICATE_FILE', 'PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD'],
   'Windows signing',
+  { opaqueNames: ['PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD'] },
 );
 
 if (macNotarization && !macSigning) {

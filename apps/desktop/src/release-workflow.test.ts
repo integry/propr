@@ -193,6 +193,20 @@ describe('desktop trusted release workflow', () => {
     assert.match(production, /PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS: '1'/);
   });
 
+  test('preserves the opaque Windows certificate password for package and MSI signing', () => {
+    assert.match(
+      forgeConfig,
+      /readCompleteEnvironmentGroup\([\s\S]*?\['PROPR_DESKTOP_WINDOWS_CERTIFICATE_FILE', 'PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD'\],[\s\S]*?\{ opaqueNames: \['PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD'\] \},\n\);/,
+    );
+    assert.match(
+      forgeConfig,
+      /certificatePassword: windowsSigning\.PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD/,
+    );
+    assert.match(forgeConfig, /\.\.\.\(windowsSign \? \{ windowsSign \} : \{\}\)/);
+    assert.match(forgeConfig, /await sign\(\{ files: \[machineInstaller\], \.\.\.windowsSign \}\)/);
+    assert.doesNotMatch(forgeConfig, /PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD[^\n]*\.trim\(/);
+  });
+
   test('rechecks package architecture in staging and finalization and publishes only signed new releases', () => {
     assert.equal(workflow.match(platformArchitecturePattern)?.length, 12);
     assert.equal(workflow.match(/release-artifacts\.mjs stage/g)?.length, 2);
