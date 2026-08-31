@@ -332,3 +332,33 @@ export {
   type PushSubscriptionsResponse,
   type RuntimeSchema,
 } from './notifications.js';
+
+// Export the durable goal control-plane contract shared by backend and UI.
+export {
+  GOAL_STATES,
+  TERMINAL_GOAL_STATES,
+  isTerminalGoalState,
+  GOAL_STATE_TRANSITIONS,
+  isValidGoalTransition,
+  GOAL_NODE_KINDS,
+  GOAL_NODE_STATUSES,
+  GOAL_EVENT_KINDS,
+  GOAL_MESSAGE_STATES,
+  GOAL_MERGE_POLICIES,
+  GOAL_DEFAULT_MAX_ACTIVE_TASKS,
+  GOAL_MIN_MAX_ACTIVE_TASKS,
+  GOAL_MAX_MAX_ACTIVE_TASKS,
+  GOAL_ERROR_CODES,
+  GOAL_TERMINAL_REASONS,
+  isGoalCapableEntry,
+  type GoalState,
+  type GoalNodeKind,
+  type GoalNodeStatus,
+  type GoalEventKind,
+  type GoalMessageState,
+  type GoalMergePolicy,
+  type GoalErrorCode,
+  type GoalTerminalReason,
+  type GoalCapability,
+  type GoalSummaryView,
+} from './goals.js';

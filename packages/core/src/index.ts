@@ -422,6 +422,18 @@ export type { NotificationRecipientInput, NotificationRecipient, CreateNotificat
 export { DEFAULT_NOTIFICATION_LIST_LIMIT, MAX_NOTIFICATION_LIST_LIMIT, NotificationQueryValidationError, parseNotificationListLimit, encodeNotificationCursor, decodeNotificationCursor } from './services/notificationPagination.js';
 export type { NotificationCursor } from './services/notificationPagination.js';
 
+// Goal control plane (durable long-running goals, hierarchy, lifecycle, leases).
+export {
+    GoalRepository, GoalError, GoalLifecycleService, buildGoalSummary, isGoalTerminal
+} from './services/goals/index.js';
+export type {
+    GoalDetail, GoalMutationOptions,
+    Goal, GoalNode, GoalEvent, GoalMessage,
+    GoalRecord, GoalNodeRecord, GoalEventRecord, GoalMessageRecord, GoalProviderSessionRecord,
+    CreateGoalInput, CreateNodeInput, AppendEventInput, EnqueueMessageInput, TransitionInput,
+    ListGoalsQuery, ListGoalsResult, GoalActiveTimeStats
+} from './services/goals/index.js';
+
 // Repository migration (rename/move detection)
 export {
     detectRepositoryRename,

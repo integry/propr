@@ -30,6 +30,7 @@ import {
   createRepoTodoRoutes,
   createUserRepoPreferencesRoutes,
   createAgentRuntimeRoutes, createNotificationRoutes,
+  createGoalRoutes,
   createAdminRoutes,
   createInstanceCatalogRoutes,
   attachmentUpload
@@ -274,6 +275,7 @@ function setupRoutes(): void {
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
   const notificationRoutes = createNotificationRoutes({ webPushDispatcherConfigured });
+  const goalRoutes = createGoalRoutes({ db });
   const adminRoutes = createAdminRoutes();
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
   const agentVersionRoutes = createAgentVersionRoutes();
@@ -301,6 +303,9 @@ function setupRoutes(): void {
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
     ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences], ['get', '/api/notifications', notificationRoutes.getNotifications], ['get', '/api/notifications/unread-count', notificationRoutes.getUnreadCount], ['get', '/api/notifications/config', notificationRoutes.getConfiguration], ['get', '/api/notifications/capabilities', notificationRoutes.getCapabilities],
     ['get', '/api/notifications/preferences', notificationRoutes.getPreferences], ['patch', '/api/notifications/preferences', notificationRoutes.updatePreferences], ['get', '/api/notifications/push-subscriptions', notificationRoutes.listPushSubscriptions], ['post', '/api/notifications/push-subscriptions', notificationRoutes.createPushSubscription], ['delete', '/api/notifications/push-subscriptions', notificationRoutes.revokePushSubscription], ['delete', '/api/notifications/push-subscriptions/:subscriptionId', notificationRoutes.revokePushSubscriptionById], ['post', '/api/notifications/:id/read', notificationRoutes.markRead], ['post', '/api/notifications/:id/dismiss', notificationRoutes.dismiss],
+    ['post', '/api/goals', goalRoutes.createGoal], ['get', '/api/goals', goalRoutes.listGoals], ['get', '/api/goals/:goalId', goalRoutes.getGoal],
+    ['post', '/api/goals/:goalId/pause', goalRoutes.pauseGoal], ['post', '/api/goals/:goalId/resume', goalRoutes.resumeGoal], ['post', '/api/goals/:goalId/cancel', goalRoutes.cancelGoal],
+    ['post', '/api/goals/:goalId/model', goalRoutes.requestModelChange], ['post', '/api/goals/:goalId/messages', goalRoutes.enqueueMessage], ['get', '/api/goals/:goalId/events', goalRoutes.readEvents],
   ];
   const routes = [
     ...operationalRoutes,
