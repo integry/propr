@@ -394,7 +394,7 @@ describe('desktop trusted release workflow', () => {
       'desktop.log.write_failed',
     ]);
     assert.match(installedWindowsAppTest, /ConvertFrom-Json -InputObject \$line -ErrorAction Stop/);
-    assert.match(installedWindowsAppTest, /\$smokeEventCodes\.Contains\(\$eventProperty\.Value\)/);
+    assert.match(installedWindowsAppTest, /\$smokeEventCodes\.Contains\(\$eventName\)/);
     assert.match(
       installedWindowsAppTest,
       /PROPR_WINDOWS_INSTALLED_SMOKE:EVIDENCE:\{0\}['"] -f \(\$summary -join ','\)/,
@@ -467,7 +467,7 @@ describe('desktop trusted release workflow', () => {
     assert.ok(inspectionPhase);
     assert.deepEqual(
       [...inspectionPhase[1].matchAll(/^\s+([A-Z_]+)$/gm)].map(match => match[1]),
-      ['DIRECTORY', 'ACL', 'FILE_METADATA', 'FILE_OPEN', 'FILE_READ', 'SUMMARY'],
+      ['DIRECTORY', 'ACL', 'FILE_METADATA', 'FILE_OPEN', 'FILE_READ', 'EVENT_PARSE', 'SUMMARY'],
     );
 
     const evidenceReader = installedWindowsAppTest.match(
@@ -508,7 +508,22 @@ describe('desktop trusted release workflow', () => {
       /\} finally \{\n\s+if \(\$null -ne \$stream\) \{ \$stream\.Dispose\(\) \}\n\s+\}/,
     );
     assert.match(reader, /\[Text\.UTF8Encoding\]::new\(\$false, \$true\)/);
-    assert.match(reader, /ConvertFrom-Json -InputObject \$line -ErrorAction Stop/);
+    assert.match(
+      reader,
+      /\} finally \{\n\s+if \(\$null -ne \$stream\) \{ \$stream\.Dispose\(\) \}\n\s+\}\n\s+\$inspectionPhase = \[SmokeEvidenceInspectionPhase\]::EVENT_PARSE\n\s+if \(\$offset -eq 0\) \{ continue \}/,
+    );
+    assert.match(
+      reader,
+      /try \{\n\s+\$record = ConvertFrom-Json -InputObject \$line -ErrorAction Stop\n\s+if \(\$null -eq \$record -or \$record -isnot \[PSCustomObject\]\) \{ continue \}/,
+    );
+    assert.match(
+      reader,
+      /\$eventProperty = \$record\.PSObject\.Properties\['event'\]\n\s+if \(\$null -eq \$eventProperty -or \$eventProperty\.Name -cne 'event' -or\n\s+\$eventProperty\.Value -isnot \[string\]\) \{\n\s+continue\n\s+\}/,
+    );
+    assert.match(
+      reader,
+      /\$eventName = \$eventProperty\.Value\n\s+if \(!\$smokeEventCodes\.Contains\(\$eventName\)\) \{ continue \}\n\s+\$events\[\$eventName\] = \$true\n\s+\} catch \{\n\s+continue\n\s+\}/,
+    );
 
     assert.match(
       reader,
@@ -521,7 +536,7 @@ describe('desktop trusted release workflow', () => {
     assert.equal(reader.match(/EVIDENCE_INSPECTION_FAILED/g)?.length, 1);
     assert.doesNotMatch(
       reader,
-      /Write-(?:Host|Warning|Error|Verbose|Debug|Information)[^\n]*(?:\$_|\$filePath|\$fullPath|\$item|\$bytes|\$text|\$line|\$record|Exception|Message)/,
+      /Write-(?:Host|Warning|Error|Verbose|Debug|Information)[^\n]*(?:\$_|\$filePath|\$fullPath|\$item|\$bytes|\$text|\$line|\$record|\$eventProperty|\$eventName|Exception|Message|Error|endpoint)/i,
     );
   });
 

@@ -9,6 +9,7 @@ enum SmokeEvidenceInspectionPhase {
   FILE_METADATA
   FILE_OPEN
   FILE_READ
+  EVENT_PARSE
   SUMMARY
 }
 
@@ -302,6 +303,7 @@ function Get-SmokeEventEvidence(
       } finally {
         if ($null -ne $stream) { $stream.Dispose() }
       }
+      $inspectionPhase = [SmokeEvidenceInspectionPhase]::EVENT_PARSE
       if ($offset -eq 0) { continue }
 
       try {
@@ -312,13 +314,17 @@ function Get-SmokeEventEvidence(
       foreach ($line in ($text -split "`r?`n")) {
         try {
           $record = ConvertFrom-Json -InputObject $line -ErrorAction Stop
+          if ($null -eq $record -or $record -isnot [PSCustomObject]) { continue }
+          $eventProperty = $record.PSObject.Properties['event']
+          if ($null -eq $eventProperty -or $eventProperty.Name -cne 'event' -or
+              $eventProperty.Value -isnot [string]) {
+            continue
+          }
+          $eventName = $eventProperty.Value
+          if (!$smokeEventCodes.Contains($eventName)) { continue }
+          $events[$eventName] = $true
         } catch {
           continue
-        }
-        $eventProperty = $record.PSObject.Properties['event']
-        if ($null -ne $eventProperty -and $eventProperty.Value -is [string] -and
-            $smokeEventCodes.Contains($eventProperty.Value)) {
-          $events[$eventProperty.Value] = $true
         }
       }
     }
