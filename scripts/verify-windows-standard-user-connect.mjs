@@ -200,7 +200,7 @@ const authorityFailures = [
   { name: "authority-unprotected", mode: "unprotected", reason: "INVALID_ROOT" },
   { name: "authority-owner-mismatch", mode: "owner-mismatch", reason: "INVALID_ROOT" },
   { name: "authority-reparse", mode: "reparse", reason: "INVALID_ROOT" },
-  { name: "authority-missing-system-root", systemRootMode: "missing" },
+  { name: "authority-missing-system-root", systemRootMode: "missing", nativeStage: "resolver:env" },
   { name: "authority-mismatched-system-root", systemRootMode: "mismatched" },
   { name: "authority-untrusted-system-root", systemRootMode: "untrusted" },
 ];

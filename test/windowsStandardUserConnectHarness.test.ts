@@ -230,6 +230,7 @@ test('the ordinary-user Windows proof retains native security paths and bounds r
     /if \(mode === "valid-authority"\) return result\(0, authorityDocument\(args, options, mode\)\);/,
   );
   assert.match(harness, /\{ name: "path-aba", mode: "path-aba", reason: "INVALID_ROOT" \}/);
+  assert.match(harness, /\{ name: "authority-missing-system-root", systemRootMode: "missing", nativeStage: "resolver:env" \}/);
 });
 
 test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all other values', () => {
