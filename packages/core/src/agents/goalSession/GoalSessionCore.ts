@@ -12,33 +12,15 @@ import type {
     GoalResumeKind,
     GoalResumeIntent,
     GoalProviderResumeRequest,
-    GoalProviderOperationGuard,
+    GoalProviderOperationFence,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
-import { safeFailureDiagnostic, sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { safeFailureDiagnostic, safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
 import {
     controlExecutionIdentity,
     nextState,
     validateControlFence,
 } from './support.js';
-
-const providerGuardChecks = new WeakMap<object, () => Promise<void>>();
-
-class DurableProviderOperationGuard implements GoalProviderOperationGuard {
-    constructor(
-        readonly generation: number,
-        readonly leaseExpiresAt: string | undefined,
-        check: () => Promise<void>,
-    ) {
-        providerGuardChecks.set(this, check);
-    }
-
-    assertCurrent(): Promise<void> {
-        const check = providerGuardChecks.get(this);
-        if (!check) throw new StaleGoalSessionFenceError('Provider operation guard is not bound to durable storage');
-        return check();
-    }
-}
 
 function completesAtAfterTurnPause(
     state: GoalSessionState,
@@ -158,42 +140,65 @@ export abstract class GoalSessionCore {
             operationId: intent.operationId, operationGeneration: intent.operationGeneration,
             operationPhase: intent.phase === 'settled' ? 'settled' : 'provider_in_doubt', kind: intent.kind,
             operationLeaseExpiresAt: intent.leaseExpiresAt,
-            operationGuard: this.providerOperationGuard(fence, intent.operationGeneration, current =>
-                !['cancelling', 'terminated', 'failed'].includes(current.status)
-                && current.resumeIntent?.operationId === intent.operationId
-                && current.resumeIntent.operationGeneration === intent.operationGeneration
-                && current.resumeIntent.phase !== 'claimed'),
+            operationFence: this.providerOperationFence(
+                fence, intent.operationGeneration,
+                { kind: 'resume', operationId: intent.operationId, leaseExpiresAt: intent.leaseExpiresAt },
+            ),
         };
     }
 
-    protected providerOperationGuard(
+    protected providerOperationFence(
         identity: GoalSessionIdentity,
         generation: number,
-        ownsOperation: (state: GoalSessionState) => boolean,
-        leaseExpiresAt?: string,
-    ): GoalProviderOperationGuard {
-        return new DurableProviderOperationGuard(generation, leaseExpiresAt, async () => {
-            if (leaseExpiresAt && Date.parse(leaseExpiresAt) <= Date.now()) {
-                throw new StaleGoalSessionFenceError('Provider operation lease expired before its effect boundary');
-            }
-            const current = await this.ports.state.load(identity);
-            if (!current || (current.providerOperationGeneration ?? 0) !== generation || !ownsOperation(current)) {
-                throw new StaleGoalSessionFenceError('Provider operation generation was cancelled or replaced');
-            }
-        });
+        operation: Pick<GoalProviderOperationFence, 'kind' | 'operationId' | 'leaseExpiresAt'>,
+    ): GoalProviderOperationFence {
+        return {
+            goalId: identity.goalId,
+            sessionId: identity.sessionId,
+            generation,
+            kind: operation.kind,
+            operationId: operation.operationId,
+            leaseExpiresAt: operation.leaseExpiresAt,
+        };
     }
 
-    protected turnProviderOperationGuard(
+    protected async publishProviderOperationBarrier(
+        identity: GoalSessionIdentity,
+        generation: number,
+        pendingCancellationId?: string,
+    ): Promise<void> {
+        try {
+            await this.adapter.publishOperationBarrier({
+                goalId: identity.goalId,
+                sessionId: identity.sessionId,
+                generation,
+                publishedAt: new Date().toISOString(),
+                pendingCancellationId,
+            });
+        } catch (error) {
+            if (error instanceof GoalSessionContractError) throw error;
+            throw safeProviderException(error, 'Provider barrier publication failed safely');
+        }
+    }
+
+    protected async providerEffect<T>(effect: () => T | Promise<T>): Promise<T> {
+        try {
+            return await effect();
+        } catch (error) {
+            if (error instanceof GoalSessionContractError) throw error;
+            throw safeProviderException(error);
+        }
+    }
+
+    protected turnProviderOperationFence(
         fence: GoalSessionFence,
         execution: GoalExecutionIdentity,
         generation: number,
-    ): GoalProviderOperationGuard {
-        return this.providerOperationGuard(fence, generation, current =>
-            !['cancelling', 'terminated', 'failed'].includes(current.status)
-            && current.activeTurn?.turnId === fence.turnId
-            && current.activeTurn.executionId === execution.executionId
-            && current.activeTurn.attemptId === execution.attemptId
-            && (current.activeTurn.providerOperationGeneration ?? generation) === generation);
+    ): GoalProviderOperationFence {
+        return this.providerOperationFence(
+            fence, generation,
+            { kind: 'turn', operationId: `${fence.turnId}:${execution.executionId}:${execution.attemptId}` },
+        );
     }
 
     protected async expireResumeOperation(
@@ -206,10 +211,11 @@ export abstract class GoalSessionCore {
             const intent = state.resumeIntent;
             if (!intent || intent.operationId !== operationId
                 || intent.operationGeneration !== operationGeneration) return;
-            await this.ports.state.compareAndSet(state, nextState(state, {
+            const saved = await this.ports.state.compareAndSet(state, nextState(state, {
                 providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
                 resumeIntent: { ...intent, leaseExpiresAt: new Date(0).toISOString() },
             }));
+            if (saved) await this.publishProviderOperationBarrier(saved, saved.providerOperationGeneration ?? 0);
         } catch (error) {
             if (!(error instanceof StaleGoalSessionFenceError)) throw error;
         }

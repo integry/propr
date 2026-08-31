@@ -53,6 +53,17 @@ export class SqliteGoalSessionTestPorts {
                 model TEXT NOT NULL, status TEXT NOT NULL, acknowledgement TEXT,
                 PRIMARY KEY (scope, operation_id)
             );
+            CREATE UNIQUE INDEX IF NOT EXISTS goal_model_change_order
+                ON goal_model_changes(scope, sequence);
+            CREATE TABLE IF NOT EXISTS goal_model_sequences (
+                scope TEXT PRIMARY KEY, next_sequence INTEGER NOT NULL CHECK(next_sequence > 0)
+            );
+            INSERT OR IGNORE INTO goal_model_sequences(scope, next_sequence)
+            SELECT scope, sequence + 1 FROM (
+                SELECT scope, sequence,
+                    ROW_NUMBER() OVER (PARTITION BY scope ORDER BY sequence DESC) AS ordering_rank
+                FROM goal_model_changes
+            ) WHERE ordering_rank = 1;
         `);
     }
 
@@ -68,14 +79,16 @@ export class SqliteGoalSessionTestPorts {
         return this.database.transaction(() => {
             const existing = this.readModelChange(identity, operationId);
             if (existing) return existing;
-            const row = this.database.prepare(
-                'SELECT COALESCE(MAX(sequence), 0) AS sequence FROM goal_model_changes WHERE scope = ?',
-            ).get(scope(identity)) as { sequence: number };
+            const row = this.database.prepare(`
+                INSERT INTO goal_model_sequences(scope, next_sequence) VALUES (?, 2)
+                ON CONFLICT(scope) DO UPDATE SET next_sequence = next_sequence + 1
+                RETURNING next_sequence - 1 AS sequence
+            `).get(scope(identity)) as { sequence: number };
             this.database.prepare(
                 'INSERT INTO goal_model_changes(scope, operation_id, sequence, model, status) VALUES (?, ?, ?, ?, ?)',
-            ).run(scope(identity), operationId, row.sequence + 1, model, 'pending');
-            return { operationId, model, status: 'pending' as const };
-        })();
+            ).run(scope(identity), operationId, row.sequence, model, 'pending');
+            return { operationId, model, sequence: row.sequence, status: 'pending' as const };
+        }).immediate();
     }
 
     async settle(
@@ -94,7 +107,7 @@ export class SqliteGoalSessionTestPorts {
                     WHERE scope = ? AND status = 'settled' ORDER BY sequence DESC LIMIT 64
                 )
             `).run(scope(identity), scope(identity));
-        })();
+        }).immediate();
     }
 
     close(): void { this.database.close(); }
@@ -250,12 +263,12 @@ export class SqliteGoalSessionTestPorts {
         operationId: string,
     ): GoalModelChangeHistoryRecord | undefined {
         const row = this.database.prepare(
-            'SELECT model, status, acknowledgement FROM goal_model_changes WHERE scope = ? AND operation_id = ?',
+            'SELECT sequence, model, status, acknowledgement FROM goal_model_changes WHERE scope = ? AND operation_id = ?',
         ).get(scope(identity), operationId) as {
-            model: string; status: GoalModelChangeHistoryRecord['status']; acknowledgement: string | null;
+            sequence: number; model: string; status: GoalModelChangeHistoryRecord['status']; acknowledgement: string | null;
         } | undefined;
         return row ? {
-            operationId, model: row.model, status: row.status,
+            operationId, sequence: row.sequence, model: row.model, status: row.status,
             acknowledgement: row.acknowledgement
                 ? JSON.parse(row.acknowledgement) as GoalModelChangeAcknowledgement : undefined,
         } : undefined;

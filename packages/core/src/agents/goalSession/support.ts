@@ -8,7 +8,7 @@ import type {
     GoalSessionState,
 } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
-import { safeDiagnostic } from './securityBoundary.js';
+import { assertSafeProviderIdentifier } from './securityBoundary.js';
 import { sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 
 /** Sentinel turn identity used by session-scoped control/audit events. */
@@ -48,9 +48,10 @@ export function persistedSnapshot(state: GoalSessionState): GoalProviderSessionS
             'SESSION_NOT_RECOVERABLE',
         );
     }
-    if (safeDiagnostic(state.providerSessionId, '') !== state.providerSessionId.trim()
-        || state.currentModel !== undefined
-        && safeDiagnostic(state.currentModel, '') !== state.currentModel.trim()) {
+    try {
+        assertSafeProviderIdentifier(state.providerSessionId);
+        if (state.currentModel !== undefined) assertSafeProviderIdentifier(state.currentModel);
+    } catch {
         throw new GoalSessionContractError('Durable provider identity contains an unsafe value', 'UNSAFE_PROVIDER_VALUE');
     }
     return {
@@ -65,7 +66,11 @@ export function providerTurnContext(state: GoalSessionState): GoalProviderTurnCo
         return { binding: 'bound', snapshot: persistedSnapshot(state) };
     }
     if (state.initializationIntent) {
-        return { binding: 'pending', initializationIntent: state.initializationIntent };
+        return { binding: 'pending', initializationIntent: {
+            attemptId: state.initializationIntent.attemptId,
+            deterministicOpenKey: state.initializationIntent.deterministicOpenKey,
+            recordedAt: state.initializationIntent.recordedAt,
+        } };
     }
     throw new GoalSessionContractError(
         'The first provider turn has neither a durable native ID nor initialization intent',
@@ -86,9 +91,10 @@ export function nextState(state: GoalSessionState, changes: Partial<GoalSessionS
 }
 
 export function assertProviderIdentity(state: GoalSessionState, snapshot: GoalProviderSessionSnapshot): void {
-    if (!snapshot.providerSessionId.trim()
-        || safeDiagnostic(snapshot.providerSessionId, '') !== snapshot.providerSessionId.trim()
-        || (snapshot.model !== undefined && safeDiagnostic(snapshot.model, '') !== snapshot.model.trim())) {
+    try {
+        assertSafeProviderIdentifier(snapshot.providerSessionId);
+        if (snapshot.model !== undefined) assertSafeProviderIdentifier(snapshot.model);
+    } catch {
         throw new GoalSessionContractError('Provider snapshot contains an unsafe identity or model', 'UNSAFE_PROVIDER_VALUE');
     }
     if (state.providerSessionId && state.providerSessionId !== snapshot.providerSessionId) {

@@ -4,7 +4,10 @@ import { sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 import type { GoalSessionJsonValue } from './contract.js';
 
 const SECRET = /(?:Bearer\s*\S+|gh[oprsu]_|github_pat_|sk-|AKIA|secret|token|password|credential|private.?key|-----BEGIN|https?:\/\/[^\s]*@)/i;
-const SAFE_ID = /^[A-Za-z0-9._:/-]{1,256}$/;
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
+const WINDOWS_OR_UNC = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/;
+const URI_OR_ENDPOINT = /^(?:file|https?|ssh|git|docker|podman|unix|tcp):/i;
+const COMMAND_LIKE = /(?:^|\s)(?:sh|bash|zsh|cmd(?:\.exe)?|powershell|docker|podman|sudo)(?:\s|$)|[;&|`$<>]/i;
 
 export function safeDiagnostic(value: string, fallback: string): string {
     const normalized = value.trim();
@@ -18,6 +21,12 @@ export function safeFailureDiagnostic(value: string, fallback: string): string {
         ? fallback : normalized.slice(0, 512);
 }
 
+/** Rebuilds an untrusted provider exception without its stack, cause, or excess fields. */
+export function safeProviderException(error: unknown, fallback = 'Provider operation failed safely'): GoalSessionContractError {
+    const message = error instanceof Error ? error.message : '';
+    return new GoalSessionContractError(safeFailureDiagnostic(message, fallback), 'PROVIDER_OPERATION_FAILED');
+}
+
 /** Copies only documented event fields; provider excess properties never cross persistence. */
 export function sanitizeGoalSessionEvent(event: GoalSessionEvent): GoalSessionEvent {
     switch (event.type) {
@@ -25,14 +34,14 @@ export function sanitizeGoalSessionEvent(event: GoalSessionEvent): GoalSessionEv
         case 'assistant': return clean({ type: 'assistant', messageId: safeOptionalId(event.messageId), content: safeDiagnostic(event.content, '[redacted]'), data: safeJson(event.data) });
         case 'tool': return clean({ type: 'tool', toolCallId: safeId(event.toolCallId), name: safeId(event.name), phase: closed(event.phase, ['started', 'progress', 'completed', 'failed'], 'tool phase'), data: safeJson(event.data) });
         case 'todo': return clean({ type: 'todo', todoId: safeId(event.todoId), title: safeDiagnostic(event.title, '[redacted]'), status: closed(event.status, ['pending', 'in_progress', 'completed', 'cancelled'], 'todo status'), data: safeJson(event.data) });
-        case 'usage': return clean({ type: 'usage', model: safeOptionalId(event.model), inputTokens: finite(event.inputTokens), outputTokens: finite(event.outputTokens), cachedInputTokens: finite(event.cachedInputTokens), costUsd: finite(event.costUsd), data: safeJson(event.data) });
+        case 'usage': return clean({ type: 'usage', model: safeOptionalId(event.model), inputTokens: nonNegativeInteger(event.inputTokens, 'inputTokens'), outputTokens: nonNegativeInteger(event.outputTokens, 'outputTokens'), cachedInputTokens: nonNegativeInteger(event.cachedInputTokens, 'cachedInputTokens'), costUsd: nonNegativeFinite(event.costUsd, 'costUsd'), data: safeJson(event.data) });
         case 'checkpoint': return clean({ type: 'checkpoint', checkpointId: safeId(event.checkpointId), recoveryMetadata: sanitizeRecoveryMetadata(event.recoveryMetadata), providerSessionId: safeOptionalId(event.providerSessionId) });
         case 'message_acknowledged': return { type: 'message_acknowledged', messageId: safeId(event.messageId) };
         case 'pause_requested': return { type: 'pause_requested', appliesAt: closed(event.appliesAt, ['immediate', 'next_safe_boundary', 'after_turn'], 'pause boundary') };
-        case 'pause_boundary': return clean({ type: 'pause_boundary', boundary: safeId(event.boundary), checkpointId: safeOptionalId(event.checkpointId), providerEventId: safeOptionalId(event.providerEventId), providerEventOrdinal: finite(event.providerEventOrdinal) });
+        case 'pause_boundary': return clean({ type: 'pause_boundary', boundary: safeId(event.boundary), checkpointId: safeOptionalId(event.checkpointId), providerEventId: safeOptionalId(event.providerEventId), providerEventOrdinal: nonNegativeInteger(event.providerEventOrdinal, 'providerEventOrdinal') });
         case 'session_resumed': return { type: 'session_resumed' };
         case 'model_change_acknowledged': return { type: 'model_change_acknowledged', requestedModel: safeId(event.requestedModel), appliesAt: closed(event.appliesAt, ['immediate', 'next_safe_boundary', 'next_turn'], 'model boundary') };
-        case 'model_changed': return clean({ type: 'model_changed', previousModel: safeOptionalId(event.previousModel), model: safeId(event.model), providerEventId: safeOptionalId(event.providerEventId), providerEventOrdinal: finite(event.providerEventOrdinal) });
+        case 'model_changed': return clean({ type: 'model_changed', previousModel: safeOptionalId(event.previousModel), model: safeId(event.model), providerEventId: safeOptionalId(event.providerEventId), providerEventOrdinal: nonNegativeInteger(event.providerEventOrdinal, 'providerEventOrdinal') });
         case 'turn_resumed': return { type: 'turn_resumed', turnId: safeId(event.turnId) };
         case 'reconciliation': return { type: 'reconciliation', outcome: closed(event.outcome, ['alive', 'resumed', 'failed', 'blocked'], 'reconciliation outcome'), reason: safeFailureDiagnostic(event.reason, 'Provider reconciliation completed safely') };
         case 'completion': return clean({ type: 'completion', outcome: closed(event.outcome, ['succeeded', 'failed', 'cancelled'], 'completion outcome'), summary: event.summary ? safeFailureDiagnostic(event.summary, '[redacted]') : undefined, error: event.error ? safeFailureDiagnostic(event.error, 'Provider operation failed') : undefined });
@@ -62,8 +71,20 @@ function safeOutput(value: string): string {
     return Buffer.byteLength(value) <= 1024 * 1024 ? value : Buffer.from(value).subarray(0, 1024 * 1024).toString();
 }
 
-function finite(value: number | undefined): number | undefined {
-    return value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
+function nonNegativeInteger(value: number | undefined, field: string): number | undefined {
+    if (value === undefined) return undefined;
+    if (!Number.isSafeInteger(value) || value < 0) invalidNumeric(field);
+    return value;
+}
+
+function nonNegativeFinite(value: number | undefined, field: string): number | undefined {
+    if (value === undefined) return undefined;
+    if (!Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER) invalidNumeric(field);
+    return value;
+}
+
+function invalidNumeric(field: string): never {
+    throw new GoalSessionContractError(`Provider emitted an invalid ${field}`, 'INVALID_PROVIDER_EVENT');
 }
 
 function safeJson(value: GoalSessionJsonValue | undefined): GoalSessionJsonValue | undefined {
@@ -75,12 +96,64 @@ function safeJson(value: GoalSessionJsonValue | undefined): GoalSessionJsonValue
         if (!allowed.has(key) || (nested !== null && !['string', 'number', 'boolean'].includes(typeof nested))) {
             throw new GoalSessionContractError('Provider event data contains an undeclared field', 'INVALID_PROVIDER_EVENT');
         }
-        if (typeof nested === 'string' && (SECRET.test(nested) || nested.startsWith('/'))) {
-            throw new GoalSessionContractError('Provider event data contains an unsafe value', 'UNSAFE_PROVIDER_VALUE');
-        }
-        result[key] = nested as string | number | boolean | null;
+        if (key === 'file') result[key] = safeRepositoryRelativePath(nested, key);
+        else if (key === 'line' || key === 'count') result[key] = requiredNonNegativeInteger(nested, key);
+        else if (key === 'progress') result[key] = boundedProgress(nested);
+        else if (key === 'status') result[key] = safeClosedScalar(nested, key, ['pending', 'in_progress', 'completed', 'failed', 'cancelled']);
+        else if (key === 'language') result[key] = safeClosedScalar(nested, key, ['typescript', 'javascript', 'json', 'markdown', 'text', 'shell', 'yaml']);
+        else if (key === 'code') result[key] = safeClosedScalar(nested, key, ['ok', 'failed', 'skipped', 'cancelled']);
+        else result[key] = safeResultScalar(nested, key);
     }
     return result;
+}
+
+export function safeRepositoryRelativePath(value: unknown, field = 'file'): string {
+    if (typeof value !== 'string' || !value || Buffer.byteLength(value) > 1024
+        || hasControl(value) || value.startsWith('/') || WINDOWS_OR_UNC.test(value)
+        || URI_OR_ENDPOINT.test(value) || COMMAND_LIKE.test(value) || value.includes('\\')) {
+        throw new GoalSessionContractError(`Provider ${field} is not a safe repository-relative path`, 'UNSAFE_PROVIDER_VALUE');
+    }
+    const segments = value.split('/');
+    if (segments.some(segment => !segment || segment === '.' || segment === '..') || segments.join('/') !== value) {
+        throw new GoalSessionContractError(`Provider ${field} is not normalized`, 'UNSAFE_PROVIDER_VALUE');
+    }
+    return value;
+}
+
+function requiredNonNegativeInteger(value: unknown, field: string): number {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) invalidNumeric(field);
+    return value;
+}
+
+function boundedProgress(value: unknown): number {
+    const result = requiredNonNegativeInteger(value, 'progress');
+    if (result > 100) invalidNumeric('progress');
+    return result;
+}
+
+function safeClosedScalar(value: unknown, field: string, values: readonly string[]): string {
+    if (typeof value !== 'string' || !values.includes(value)) {
+        throw new GoalSessionContractError(`Provider event data contains an invalid ${field}`, 'INVALID_PROVIDER_EVENT');
+    }
+    return value;
+}
+
+function safeResultScalar(value: unknown, field: string): string | number | boolean | null {
+    if (value === null || typeof value === 'boolean') return value;
+    if (typeof value === 'number') return requiredNonNegativeInteger(value, field);
+    if (typeof value !== 'string' || !value || value.length > 256 || SECRET.test(value)
+        || hasControl(value) || URI_OR_ENDPOINT.test(value) || COMMAND_LIKE.test(value)
+        || value.startsWith('/') || WINDOWS_OR_UNC.test(value) || value.includes('../')) {
+        throw new GoalSessionContractError('Provider event data contains an unsafe value', 'UNSAFE_PROVIDER_VALUE');
+    }
+    return value;
+}
+
+function hasControl(value: string): boolean {
+    return [...value].some(character => {
+        const code = character.charCodeAt(0);
+        return code < 32 || code === 127;
+    });
 }
 
 function closed<T extends string>(value: T, allowed: readonly T[], name: string): T {

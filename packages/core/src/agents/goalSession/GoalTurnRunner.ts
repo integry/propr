@@ -1,17 +1,15 @@
-import type { GoalBeginTurnRequest, GoalExecutionIdentity, GoalProviderCorrectiveMessage,
-    GoalSessionControlFence, GoalSessionFence, GoalSessionState,
-    GoalTurnResumeCapabilityOutcome } from './contract.js';
+import type { GoalBeginTurnRequest, GoalExecutionIdentity, GoalProviderCorrectiveMessage, GoalSessionControlFence,
+    GoalSessionFence, GoalSessionState, GoalTurnResumeCapabilityOutcome } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalTurnStreamRunner } from './GoalTurnStreamRunner.js';
 import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 import { credentialFreeRepositoryIdentity, validateTurnRequestIdentity } from './repositorySecurity.js';
-import { assertProviderIdentity, nextState, persistedSnapshot,
-    providerTurnContext, validateControlFence } from './support.js';
+import { assertProviderIdentity, nextState, persistedSnapshot, providerTurnContext, validateControlFence } from './support.js';
 import { duplicateTurnResult, type RunGoalTurnResult } from './turnDelivery.js';
 import { assertSafeProviderIdentifier, safeDiagnostic } from './securityBoundary.js';
 
 export interface RunGoalTurnRequest extends Omit<GoalBeginTurnRequest,
-    'executionId' | 'attemptId' | 'correctiveMessages' | 'operationGeneration' | 'operationGuard'> {
+    'executionId' | 'attemptId' | 'correctiveMessages' | 'operationGeneration' | 'operationFence'> {
     executionId: string;
     attemptId?: string;
 }
@@ -87,7 +85,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             requestedModel,
             correctiveMessages: correctiveMessages.length ? correctiveMessages : undefined,
             operationGeneration,
-            operationGuard: this.turnProviderOperationGuard(safeRequest, execution, operationGeneration),
+            operationFence: this.turnProviderOperationFence(safeRequest, execution, operationGeneration),
         };
         const outcome = await this.driveTurnStream({
             fence: safeRequest,
@@ -95,8 +93,8 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             initial: claimed,
             nextTurnMessages: correctiveMessages,
             openStream: async () => {
-                await adapterRequest.operationGuard.assertCurrent();
-                return this.adapter.beginTurn(adapterRequest, providerTurnContext(claimed));
+                await this.publishProviderOperationBarrier(safeRequest, operationGeneration);
+                return this.providerEffect(() => this.adapter.beginTurn(adapterRequest, providerTurnContext(claimed)));
             },
         });
         return { disposition: 'started', state: outcome.state, execution };
@@ -128,22 +126,24 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
                 modelChangeIntent: intent,
             }, 'A newer model intent superseded the turn-boundary provider claim');
         }
+        assertSafeProviderIdentifier(intent.modelChangeId);
+        assertSafeProviderIdentifier(requestedModel);
         const operationGeneration = state.providerOperationGeneration ?? 0;
-        const operationGuard = this.providerOperationGuard(request, operationGeneration, current =>
-            !['cancelling', 'terminated', 'failed'].includes(current.status)
-            && current.modelChangeIntent?.modelChangeId === intent!.modelChangeId);
-        await operationGuard.assertCurrent();
-        const acknowledgement = await this.adapter.requestModelChange(
+        await this.publishProviderOperationBarrier(request, operationGeneration);
+        const operationFence = this.providerOperationFence(
+            request, operationGeneration, { kind: 'model', operationId: intent.modelChangeId },
+        );
+        const acknowledgement = await this.providerEffect(() => this.adapter.requestModelChange(
             {
                 ...request,
                 model: requestedModel,
                 modelChangeId: intent.modelChangeId,
                 applicationGeneration: intent.generation ?? state.modelChangeGeneration ?? 1,
                 operationGeneration,
-                operationGuard,
+                operationFence,
             },
             persistedSnapshot(state),
-        );
+        ));
         if (acknowledgement.requestedModel !== requestedModel
             || acknowledgement.effectiveModel !== requestedModel) {
             throw new GoalSessionContractError('Provider did not apply the requested model at the turn boundary', 'MODEL_ACK_MISMATCH');
@@ -227,8 +227,8 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
         const providerRequest = this.providerResumeRequest(fence, intent);
         let snapshot;
         try {
-            await providerRequest.operationGuard.assertCurrent();
-            snapshot = await this.adapter.resumeSession(providerRequest, persistedSnapshot(state));
+            await this.publishProviderOperationBarrier(fence, intent.operationGeneration);
+            snapshot = await this.providerEffect(() => this.adapter.resumeSession(providerRequest, persistedSnapshot(state)));
         } catch (error) {
             await this.expireResumeOperation(fence, intent.operationId, intent.operationGeneration);
             throw error;
@@ -266,8 +266,8 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             initial: state,
             nextTurnMessages: [],
             openStream: async () => {
-                await providerRequest.operationGuard.assertCurrent();
-                return resumeTurn({ ...turnFence, ...execution, ...providerRequest }, persistedSnapshot(state));
+                await this.publishProviderOperationBarrier(fence, intent.operationGeneration);
+                return this.providerEffect(() => resumeTurn({ ...turnFence, ...execution, ...providerRequest }, persistedSnapshot(state)));
             },
         });
         return { disposition: 'started', state: outcome.state, execution };
@@ -289,8 +289,8 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
         const outcome = await this.driveTurnStream({
             fence: turnFence, execution, initial: state, nextTurnMessages: [],
             openStream: async () => {
-                await providerRequest.operationGuard.assertCurrent();
-                return resumeTurn({ ...turnFence, ...execution, ...providerRequest }, persistedSnapshot(state));
+                await this.publishProviderOperationBarrier(fence, state.resumeIntent!.operationGeneration);
+                return this.providerEffect(() => resumeTurn({ ...turnFence, ...execution, ...providerRequest }, persistedSnapshot(state)));
             },
         });
         return { disposition: 'started', state: outcome.state, execution };
@@ -312,13 +312,13 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             correctiveMessages: correctiveMessages.length ? correctiveMessages : undefined,
             providerOperation: this.providerResumeRequest(fence, intent),
             operationGeneration: intent.operationGeneration,
-            operationGuard: this.turnProviderOperationGuard(turnFence, execution, intent.operationGeneration),
+            operationFence: this.turnProviderOperationFence(turnFence, execution, intent.operationGeneration),
         };
         const outcome = await this.driveTurnStream({
             fence: turnFence, execution, initial: state, nextTurnMessages: correctiveMessages,
             openStream: async () => {
-                await adapterRequest.operationGuard.assertCurrent();
-                return this.adapter.beginTurn(adapterRequest, providerTurnContext(state));
+                await this.publishProviderOperationBarrier(fence, intent.operationGeneration);
+                return this.providerEffect(() => this.adapter.beginTurn(adapterRequest, providerTurnContext(state)));
             },
         });
         return { disposition: 'started', state: outcome.state, execution };
@@ -394,7 +394,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             correctiveMessages: correctiveMessages.length ? correctiveMessages : undefined,
             providerOperation: this.providerResumeRequest(fence, intent),
             operationGeneration: intent.operationGeneration,
-            operationGuard: this.turnProviderOperationGuard(turnFence, execution, intent.operationGeneration),
+            operationFence: this.turnProviderOperationFence(turnFence, execution, intent.operationGeneration),
         };
         const outcome = await this.driveTurnStream({
             fence: turnFence,
@@ -402,8 +402,8 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             initial: claimed,
             nextTurnMessages: correctiveMessages,
             openStream: async () => {
-                await adapterRequest.operationGuard.assertCurrent();
-                return this.adapter.beginTurn(adapterRequest, providerTurnContext(claimed));
+                await this.publishProviderOperationBarrier(fence, intent.operationGeneration);
+                return this.providerEffect(() => this.adapter.beginTurn(adapterRequest, providerTurnContext(claimed)));
             },
         });
         return { disposition: 'started', state: outcome.state, execution };

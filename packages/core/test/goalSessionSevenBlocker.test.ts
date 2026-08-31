@@ -28,6 +28,13 @@ function deferred<T = void>() {
 }
 
 class MatrixAdapter implements GoalSessionAdapter {
+    private barrierGeneration = 0;
+    async publishOperationBarrier(publication: { generation: number }): Promise<void> {
+        this.barrierGeneration = Math.max(this.barrierGeneration, publication.generation);
+    }
+    protected assertProviderFence(generation: number): void {
+        if (generation < this.barrierGeneration) throw new Error('Provider operation was cancelled or replaced');
+    }
     readonly provider = 'matrix';
     readonly capabilities = {
         nativeSessionId: 'eager' as const, steering: 'active_turn' as const,
@@ -80,7 +87,7 @@ class GuardedSteeringAdapter extends MatrixAdapter {
     override async deliverMessage(request: GoalSteeringRequest) {
         this.entered.resolve();
         await this.release.promise;
-        await request.operationGuard!.assertCurrent();
+        this.assertProviderFence(request.operationFence.generation);
         this.effects += 1;
         return { messageId: request.messageId };
     }

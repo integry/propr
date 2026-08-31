@@ -38,6 +38,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 class AddendumAdapter implements GoalSessionAdapter {
+    async publishOperationBarrier(): Promise<void> {}
     readonly provider = 'owner-test';
     readonly capabilities: GoalProviderCapabilities = {
         nativeSessionId: 'eager',

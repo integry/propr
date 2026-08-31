@@ -1,10 +1,7 @@
-import type { GoalModelChangeAcknowledgement, GoalModelChangeIntent, GoalModelChangeRequest,
-    GoalSessionControlFence, GoalSessionEvent, GoalSessionState } from './contract.js';
+import type { GoalModelChangeAcknowledgement, GoalModelChangeIntent, GoalModelChangeRequest, GoalSessionControlFence, GoalSessionEvent, GoalSessionState } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalTurnRunner } from './GoalTurnRunner.js';
-import { compactImmediateModelIntents, assertModelControllable, hasUnresolvedImmediateModelIntent,
-    immediateModelIntents, latestImmediateModelIntent, nextModelGeneration, replaceImmediateModelIntent,
-    requestedImmediateModelIntent, validateImmediateModelAcknowledgement } from './modelChangeProtocol.js';
+import { compactImmediateModelIntents, assertModelControllable, hasUnresolvedImmediateModelIntent, immediateModelIntents, latestImmediateModelIntent, nextModelGeneration, replaceImmediateModelIntent, requestedImmediateModelIntent, validateImmediateModelAcknowledgement } from './modelChangeProtocol.js';
 import { resolveModelChangeHistory } from './modelChangeHistory.js';
 import { nextState, persistedSnapshot } from './support.js';
 import { assertSafeProviderIdentifier } from './securityBoundary.js';
@@ -23,6 +20,9 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         const operationId = request.operationId
             ?? sameModelIntent?.modelChangeId
             ?? this.controlOperationId('model', state);
+        // Validate before the exact-history claim so a rejected identity cannot
+        // allocate order or leave any durable/provider trace.
+        assertSafeProviderIdentifier(operationId);
         const retainedIntent = immediateModelIntents(state)
             .some(intent => intent.modelChangeId === operationId);
         const appliesAt = this.adapter.capabilities.modelChange === 'next_turn' ? 'next_turn' : 'next_safe_boundary';
@@ -124,19 +124,19 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         assertSafeProviderIdentifier(intent.modelChangeId);
         ({ state, intent } = await this.claimModelApplication(fence, state, intent));
         const operationGeneration = state.providerOperationGeneration ?? 0;
-        const operationGuard = this.modelOperationGuard(fence, operationGeneration, intent);
-        await operationGuard.assertCurrent();
-        const acknowledgement = await this.adapter.requestModelChange(
+        await this.publishProviderOperationBarrier(fence, operationGeneration);
+        const operationFence = this.modelOperationFence(fence, operationGeneration, intent);
+        const acknowledgement = await this.providerEffect(() => this.adapter.requestModelChange(
             {
                 goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
                 model: intent.model,
                 modelChangeId: intent.modelChangeId,
                 applicationGeneration: intent.generation ?? 0,
                 operationGeneration,
-                operationGuard,
+                operationFence,
             },
             persistedSnapshot(state),
-        );
+        ));
         validateImmediateModelAcknowledgement({ ...fence, model: intent.model }, state, acknowledgement);
         return this.finishImmediateModelGeneration(fence, intent, acknowledgement);
     }
@@ -218,19 +218,19 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             assertSafeProviderIdentifier(durable.modelChangeId);
             ({ state, intent: target } = await this.claimModelApplication(fence, state, durable));
             const operationGeneration = state.providerOperationGeneration ?? 0;
-            const operationGuard = this.modelOperationGuard(fence, operationGeneration, target);
-            await operationGuard.assertCurrent();
-            const acknowledgement = await this.adapter.requestModelChange(
+            await this.publishProviderOperationBarrier(fence, operationGeneration);
+            const operationFence = this.modelOperationFence(fence, operationGeneration, target);
+            const acknowledgement = await this.providerEffect(() => this.adapter.requestModelChange(
                 {
                     goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
                     model: target.model,
                     modelChangeId: target.modelChangeId,
                     applicationGeneration: target.generation ?? 0,
                     operationGeneration,
-                    operationGuard,
+                    operationFence,
                 },
                 persistedSnapshot(state),
-            );
+            ));
             validateImmediateModelAcknowledgement({ ...fence, model: target.model }, state, acknowledgement);
             state = await this.requireControlledState(fence);
             assertModelControllable(state);
@@ -404,15 +404,16 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         }, 'A newer operation superseded obsolete model recovery');
     }
 
-    private modelOperationGuard(
+    private modelOperationFence(
         fence: GoalSessionControlFence,
         generation: number,
         intent: GoalModelChangeIntent,
     ) {
-        return this.providerOperationGuard(fence, generation, current => {
-            const durable = immediateModelIntents(current).find(value => value.modelChangeId === intent.modelChangeId);
-            return !['cancelling', 'terminated', 'failed'].includes(current.status)
-                && durable?.applicationToken === intent.applicationToken;
-        }, intent.leaseExpiresAt);
+        return this.providerOperationFence(
+            fence, generation, {
+                kind: 'model', operationId: `${intent.modelChangeId}:${intent.applicationToken ?? 'unclaimed'}`,
+                leaseExpiresAt: intent.leaseExpiresAt,
+            },
+        );
     }
 }

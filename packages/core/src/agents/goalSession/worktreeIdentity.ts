@@ -8,7 +8,10 @@ const SAFE_HOST = /^(?:[a-z\d](?:[a-z\d-]*[a-z\d])?)(?:\.(?:[a-z\d](?:[a-z\d-]*[
 const SAFE_PATH_SEGMENT = /^[a-z\d._~-]+$/i;
 const SAFE_BRANCH = /^(?![./])(?!.*(?:\.\.|@\{|\\|\s|[~^:?*]|\[))(?!.*\.$)[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
 const SAFE_SHA = /^[a-f\d]{4,64}$/i;
-const SENSITIVE_WORKTREE_ROOTS = ['/', '/etc', '/root', '/home', '/proc', '/sys', '/dev'];
+const SENSITIVE_WORKTREE_ROOTS = [
+    '/', '/boot', '/dev', '/etc', '/home', '/proc', '/root', '/run', '/sys',
+    '/var/run', '/var/lib/docker', '/var/lib/containers', '/var/lib/podman', '/var/lib/containerd',
+];
 const SECRET_LIKE = /(?:gh[oprsu]_|github_pat_|sk-|AKIA|bearer[._-]?[A-Za-z0-9]|(?:secret|token|password)[._:-][A-Za-z0-9_-]{6,})/i;
 
 function normalizedRemoteHost(host: string): string | undefined {
@@ -98,6 +101,9 @@ export function isSensitiveWorktreePath(value: string): boolean {
     const candidate = path.resolve(value);
     return SENSITIVE_WORKTREE_ROOTS.some(root => candidate === root || (root !== '/' && candidate.startsWith(`${root}/`)));
 }
+
+/** Shared source policy for worktrees, Git inspection, and credential mounts. */
+export const isSensitiveHostSourcePath = isSensitiveWorktreePath;
 
 /** Stable logical checkout identity. Mutable HEAD/checkpoint state is deliberately excluded. */
 export function fingerprintGoalWorktree(repository: GoalRepositoryIdentity): string {

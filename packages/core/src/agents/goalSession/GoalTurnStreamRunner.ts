@@ -5,7 +5,7 @@ import type {
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalSessionCore } from './GoalSessionCore.js';
 import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
-import { safeFailureDiagnostic, sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { safeFailureDiagnostic, safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
 import {
     assertFirstTurnIdentityEvent, assertSuppliedMessagesAcknowledged,
     isAtomicTurnAudit, streamAuditTransitionId,
@@ -60,7 +60,8 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
             if (error instanceof StaleGoalSessionFenceError) throw error;
             const message = safeFailureDiagnostic((error as Error).message, 'Provider turn failed safely');
             await this.finishTurnIfOwned(fence, execution, message);
-            throw error;
+            if (error instanceof GoalSessionContractError) throw error;
+            throw safeProviderException(error, 'Provider turn failed safely');
         }
     }
 

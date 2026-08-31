@@ -35,6 +35,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 class ReauditAdapter implements GoalSessionAdapter {
+    async publishOperationBarrier(): Promise<void> {}
     readonly provider = 'reaudit-provider';
     readonly capabilities: GoalProviderCapabilities;
     readonly modelCalls: GoalProviderModelChangeRequest[] = [];

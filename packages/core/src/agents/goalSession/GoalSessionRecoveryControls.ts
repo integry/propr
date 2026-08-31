@@ -1,16 +1,11 @@
 import type {
-    GoalContainerInspection,
-    GoalExecutionIdentity,
-    GoalRepositoryIdentity,
-    GoalRepositoryInspection,
-    GoalSessionControlFence,
-    GoalSessionIdentity,
-    GoalSessionState,
+    GoalContainerInspection, GoalExecutionIdentity, GoalRepositoryIdentity, GoalRepositoryInspection,
+    GoalSessionControlFence, GoalSessionIdentity, GoalSessionState,
 } from './contract.js';
 import { StaleGoalSessionFenceError } from './errors.js';
 import { GoalSessionControls } from './GoalSessionControls.js';
 import { hasUnresolvedImmediateModelIntent } from './modelChangeProtocol.js';
-import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
+import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata, scrubDurableRecoveryMetadata } from './recoveryMetadata.js';
 import {
     assertLiveRecoveryLease, assertRecoverableExactState, completedRecoveryResult, expireRecoveryLeaseIfOwned,
     isRecoverableStatus, RECOVERY_LEASE_MS, sameRecoverySubject, stoppedReconciliationResult,
@@ -19,13 +14,8 @@ import { reconcileRecoveredTurn } from './reconcileRecoveredTurn.js';
 import { sanitizeContainerInspection, sanitizeRepositoryInspection, verifyReconciliationTarget, verifyRecoveredContainer } from './reconciliationIdentity.js';
 import { normalizeRecoveryRepositories } from './repositorySecurity.js';
 import {
-    assertProviderIdentity,
-    controlExecutionIdentity,
-    nextState,
-    nowIso,
-    persistedSnapshot,
-    validateEpoch,
-    validateIdentity,
+    assertProviderIdentity, controlExecutionIdentity, nextState, nowIso,
+    persistedSnapshot, validateEpoch, validateIdentity,
 } from './support.js';
 import { fingerprintGoalWorktree } from './worktreeIdentity.js';
 import { safeFailureDiagnostic } from './securityBoundary.js';
@@ -58,7 +48,10 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                 controllerEpoch,
                 providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
             }));
-            if (saved) return saved;
+            if (saved) {
+                await this.publishProviderOperationBarrier(saved, saved.providerOperationGeneration ?? 0);
+                return saved;
+            }
         }
         throw new StaleGoalSessionFenceError('Another controller repeatedly changed the session during takeover');
     }
@@ -106,11 +99,14 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         let result: Awaited<ReturnType<typeof this.adapter.reconcile>>;
         try {
             const operation = state.recoveryAttempt!;
-            const operationGuard = this.providerOperationGuard(prepared.fence, operation.operationGeneration, current =>
-                current.recoveryAttempt?.operationToken === operation.operationToken
-                && current.recoveryAttempt.phase === 'provider_in_doubt', operation.leaseExpiresAt);
-            await operationGuard.assertCurrent();
-            result = await this.adapter.reconcile({
+            await this.publishProviderOperationBarrier(prepared.fence, operation.operationGeneration);
+            const operationFence = this.providerOperationFence(
+                prepared.fence, operation.operationGeneration, {
+                    kind: 'reconcile', operationId: operation.operationToken,
+                    leaseExpiresAt: operation.leaseExpiresAt,
+                },
+            );
+            result = await this.providerEffect(() => this.adapter.reconcile({
                 goalId: identity.goalId,
                 sessionId: identity.sessionId,
                 ...recovery.execution,
@@ -119,16 +115,18 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                 operationGeneration: state.recoveryAttempt!.operationGeneration,
                 operationPhase: 'provider_in_doubt',
                 operationLeaseExpiresAt: state.recoveryAttempt!.leaseExpiresAt,
-                operationGuard,
+                operationFence,
                 persisted: persistedSnapshot(state),
                 container: prepared.container,
                 repository: prepared.repository,
-            });
+            }));
         } catch (error) {
             await this.requireLiveRecoveryLease(
                 prepared.fence, recovery.execution, state.recoveryAttempt!.operationToken,
             );
             await expireRecoveryLeaseIfOwned(this.ports, prepared.fence, state.recoveryAttempt!.operationToken);
+            const expired = await this.requireControlledState(prepared.fence);
+            await this.publishProviderOperationBarrier(expired, expired.providerOperationGeneration ?? 0);
             throw error;
         }
         state = await this.requireLiveRecoveryLease(
@@ -162,7 +160,7 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
             'Recovery repository does not contain a trustworthy credential-free identity');
         const { requested: requestedRepository, durable: durableRepository } = repositories;
         const scrubbedMetadata = state.recoveryMetadata === undefined
-            ? undefined : sanitizeRecoveryMetadata(state.recoveryMetadata);
+            ? undefined : scrubDurableRecoveryMetadata(state.recoveryMetadata);
         const repositoryNeedsScrub = Boolean(state.activeTurn
             && JSON.stringify(state.activeTurn.repository) !== JSON.stringify(durableRepository));
         const metadataNeedsScrub = JSON.stringify(state.recoveryMetadata) !== JSON.stringify(scrubbedMetadata);

@@ -49,21 +49,19 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
         sanitizeGoalSessionEvent({ type: 'message_acknowledged', messageId: request.messageId });
         state = await this.requireActiveAttemptState(request, execution);
         const operationGeneration = state.providerOperationGeneration ?? 0;
-        const operationGuard = this.providerOperationGuard(request, operationGeneration, current =>
-            !['cancelling', 'terminated', 'failed'].includes(current.status)
-            && current.activeTurn?.turnId === request.turnId
-            && current.activeTurn.executionId === execution.executionId
-            && current.activeTurn.attemptId === execution.attemptId);
-        await operationGuard.assertCurrent();
-        const acknowledgement = await this.adapter.deliverMessage(
+        await this.publishProviderOperationBarrier(request, operationGeneration);
+        const operationFence = this.providerOperationFence(
+            request, operationGeneration, { kind: 'steer', operationId: request.messageId },
+        );
+        const acknowledgement = await this.providerEffect(() => this.adapter.deliverMessage!(
             {
                 goalId: request.goalId, sessionId: request.sessionId,
                 controllerEpoch: request.controllerEpoch, turnId: request.turnId,
-                ...execution, operationGeneration, operationGuard,
+                ...execution, operationGeneration, operationFence,
                 messageId: request.messageId, body: safeDiagnostic(message.body, '[redacted corrective message]'),
             },
             persistedSnapshot(state),
-        );
+        ));
         if (acknowledgement.messageId !== request.messageId) {
             throw new GoalSessionContractError('Provider acknowledged a different corrective message', 'MESSAGE_ACK_MISMATCH');
         }
@@ -107,15 +105,16 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             throw new GoalSessionContractError('Provider declares active-turn pause without implementing it', 'CAPABILITY_METHOD_MISSING');
         }
         const operationGeneration = state.providerOperationGeneration ?? 0;
-        const operationGuard = this.providerOperationGuard(request, operationGeneration, current =>
-            !['cancelling', 'terminated', 'failed'].includes(current.status)
-            && (current.status === 'pause_requested' || current.status === 'paused'));
-        await operationGuard.assertCurrent();
-        const acknowledgement = await this.adapter.requestPause({
+        await this.publishProviderOperationBarrier(request, operationGeneration);
+        const operationFence = this.providerOperationFence(
+            request, operationGeneration,
+            { kind: 'pause', operationId: this.controlOperationId('pause', state) },
+        );
+        const acknowledgement = await this.providerEffect(() => this.adapter.requestPause!({
             goalId: request.goalId, sessionId: request.sessionId, controllerEpoch: request.controllerEpoch,
             reason: request.reason ? safeFailureDiagnostic(request.reason, 'Operator requested pause') : undefined,
-            operationGeneration, operationGuard,
-        }, persistedSnapshot(state));
+            operationGeneration, operationFence,
+        }, persistedSnapshot(state)));
         if (acknowledgement.appliesAt === 'after_turn') {
             throw new GoalSessionContractError('Active-turn provider returned an after-turn pause acknowledgement', 'CAPABILITY_ACK_MISMATCH');
         }
@@ -161,10 +160,10 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
         let snapshot;
         try {
             const providerRequest = this.providerResumeRequest(request, intent);
-            await providerRequest.operationGuard.assertCurrent();
-            snapshot = await this.adapter.resumeSession(
+            await this.publishProviderOperationBarrier(request, intent.operationGeneration);
+            snapshot = await this.providerEffect(() => this.adapter.resumeSession(
                 providerRequest, persistedSnapshot(state),
-            );
+            ));
         } catch (error) {
             await this.expireResumeOperation(request, intent.operationId, intent.operationGeneration);
             throw error;
@@ -213,16 +212,19 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             reason: safeFailureDiagnostic(intent.reason, 'Operator cancelled the goal session'),
             cancellationId: intent.cancellationId,
             operationGeneration: state.providerOperationGeneration ?? 0,
-            operationGuard: this.providerOperationGuard(fence, state.providerOperationGeneration ?? 0, current =>
-                current.status === 'cancelling'
-                && current.cancellationIntent?.cancellationId === intent.cancellationId),
+            operationFence: this.providerOperationFence(
+                fence, state.providerOperationGeneration ?? 0,
+                { kind: 'cancel', operationId: intent.cancellationId },
+            ),
         };
         let signalError: unknown;
         try {
-            await request.operationGuard.assertCurrent();
-            const signal = intent.pendingContext
+            await this.publishProviderOperationBarrier(
+                fence, request.operationGeneration, intent.cancellationId,
+            );
+            const signal = this.providerEffect(() => intent.pendingContext
                 ? this.adapter.cancelPending!(request, intent.pendingContext)
-                : this.adapter.cancel(request, persistedSnapshot(state));
+                : this.adapter.cancel(request, persistedSnapshot(state)));
             await boundedCancellation(signal);
         } catch (error) {
             signalError = error;
@@ -241,6 +243,9 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             modelChangeIntent: undefined,
             modelChangeIntents: undefined,
         }, { type: 'completion', outcome: 'cancelled', error: intent.reason });
+        await this.publishProviderOperationBarrier(
+            fence, state.providerOperationGeneration ?? request.operationGeneration, intent.cancellationId,
+        );
         // Terminal fencing is authoritative even when the adapter reports that
         // its best-effort process signal failed. Surface that failure only after
         // the session can no longer remain permanently stuck in cancelling.
@@ -276,7 +281,12 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
                     pendingContext,
                 },
             }));
-            if (claimed) return claimed;
+            if (claimed) {
+                await this.publishProviderOperationBarrier(
+                    request, claimed.providerOperationGeneration ?? 0, claimed.cancellationIntent?.cancellationId,
+                );
+                return claimed;
+            }
         }
     }
 
@@ -289,7 +299,11 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             );
         }
         return {
-            initializationIntent: state.initializationIntent,
+            initializationIntent: {
+                attemptId: state.initializationIntent.attemptId,
+                deterministicOpenKey: state.initializationIntent.deterministicOpenKey,
+                recordedAt: state.initializationIntent.recordedAt,
+            },
             activeTurn: state.activeTurn ? {
                 turnId: state.activeTurn.turnId,
                 executionId: state.activeTurn.executionId,
@@ -319,6 +333,7 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
                 ],
                 transitionId: this.controlOperationId('pause-after-turn', state),
             });
+            await this.publishProviderOperationBarrier(request, state.providerOperationGeneration ?? 0);
             return { appliesAt: 'after_turn', boundaryReached };
         }
         if (state.status === 'running') {
@@ -336,6 +351,7 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
                 auditEvents: [{ type: 'pause_requested', appliesAt: 'after_turn' }],
                 transitionId: this.controlOperationId('pause-after-turn', state),
             });
+            await this.publishProviderOperationBarrier(request, state.providerOperationGeneration ?? 0);
         }
         return { appliesAt: 'after_turn' };
     }

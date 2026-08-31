@@ -45,6 +45,7 @@ function sqlitePersistence(): { filename: string; cleanup: () => void } {
 type Effects = { model: string; calls: GoalProviderModelChangeRequest[] };
 
 class ExactHeadAdapter implements GoalSessionAdapter {
+    async publishOperationBarrier(): Promise<void> {}
     readonly provider = 'exact-head-provider';
     readonly capabilities = {
         nativeSessionId: 'eager' as const,

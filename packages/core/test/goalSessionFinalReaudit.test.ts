@@ -36,6 +36,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 type SharedEffects = { modelIds: Set<string>; cancelIds: Set<string>; model: string };
 
 class FinalReauditAdapter implements GoalSessionAdapter {
+    async publishOperationBarrier(): Promise<void> {}
     readonly provider = 'final-reaudit-provider';
     readonly modelCalls: GoalProviderModelChangeRequest[] = [];
     readonly cancelCalls: GoalProviderCancelRequest[] = [];

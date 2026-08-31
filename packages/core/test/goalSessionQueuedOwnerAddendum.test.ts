@@ -29,6 +29,7 @@ const repository = {
 };
 
 class AddendumAdapter implements GoalSessionAdapter {
+    async publishOperationBarrier(): Promise<void> {}
     readonly provider = 'queued-addendum-provider';
     readonly capabilities = {
         nativeSessionId: 'eager' as const,

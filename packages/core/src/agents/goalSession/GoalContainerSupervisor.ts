@@ -13,8 +13,8 @@ import type {
     GoalSessionIdentity,
 } from './contract.js';
 import { StaleGoalSessionFenceError } from './errors.js';
-import { isSensitiveWorktreePath } from './worktreeIdentity.js';
 import { sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { isSensitiveHostSourcePath } from './worktreeIdentity.js';
 
 export interface GoalContainerLayout {
     executionId: string;
@@ -174,18 +174,17 @@ function validateProviderHomeTarget(target: string, allowedTargets: ReadonlySet<
 
 const SENSITIVE_SOURCE_SEGMENT = /(?:^|\/)(?:\.ssh|\.aws|\.docker|\.config|credentials?|id_rsa|id_ed25519)(?:\/|$)/i;
 const CONTAINER_SOCKET_PATHS = new Set(['/var/run/docker.sock', '/run/docker.sock', '/run/podman/podman.sock']);
-const BROAD_HOST_PATHS = new Set(['/', '/root', '/home', '/etc', '/var/run/docker.sock']);
 
 async function resolveApprovedSource(source: string, allowedSources: ReadonlySet<string>, name: string): Promise<string> {
     validateBindMountPath(source, name);
     const lexical = path.resolve(source);
     if (source !== lexical) throw new Error(`${name} must be canonical and may not contain traversal aliases`);
-    if (name === 'Goal worktree path' && isSensitiveWorktreePath(lexical)) {
+    if (name === 'Goal worktree path' && isSensitiveHostSourcePath(lexical)) {
         throw new Error(`${name} may not be a sensitive host root or descendant`);
     }
     const resolved = await realpath(lexical).catch(() => null);
     if (!resolved || resolved !== lexical) throw new Error(`${name} must exist and may not use a symlink alias`);
-    if (name === 'Goal worktree path' && isSensitiveWorktreePath(resolved)) {
+    if (name === 'Goal worktree path' && isSensitiveHostSourcePath(resolved)) {
         throw new Error(`${name} may not resolve to a sensitive host root or descendant`);
     }
     if (!allowedSources.has(resolved)) throw new Error(`${name} is not explicitly allow-listed`);
@@ -198,7 +197,9 @@ async function canonicalCredentialSource(source: string): Promise<string> {
     if (source !== lexical) throw new Error('Credential mount source must be canonical and may not contain traversal aliases');
     const resolved = await realpath(lexical).catch(() => null);
     if (!resolved || resolved !== lexical) throw new Error('Credential mount source must exist and may not use a symlink alias');
-    if (BROAD_HOST_PATHS.has(resolved) || SENSITIVE_SOURCE_SEGMENT.test(resolved)) {
+    if (isSensitiveHostSourcePath(lexical) || isSensitiveHostSourcePath(resolved)
+        || CONTAINER_SOCKET_PATHS.has(lexical) || CONTAINER_SOCKET_PATHS.has(resolved)
+        || SENSITIVE_SOURCE_SEGMENT.test(resolved)) {
         throw new Error('Credential mount source is a broad or sensitive host path');
     }
     if (!(await stat(resolved)).isFile()) throw new Error('Credential mount source must be an explicitly approved file');

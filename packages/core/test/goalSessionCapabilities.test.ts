@@ -37,6 +37,7 @@ const repository = {
 const firstFence = { ...identity, controllerEpoch: 1, turnId: 'turn-one' };
 
 class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
+    async publishOperationBarrier(): Promise<void> {}
     readonly provider = 'boundary-fake';
     readonly capabilities = FIRST_TURN_BOUNDARY_PROVIDER_CAPABILITIES;
     openCalls = 0;

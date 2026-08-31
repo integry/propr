@@ -37,6 +37,7 @@ const repository = {
 const fence: GoalSessionFence = { ...identity, controllerEpoch: 1, turnId: 'turn-one' };
 
 class FakeGoalAdapter implements GoalSessionAdapter {
+    async publishOperationBarrier(): Promise<void> {}
     readonly provider = 'fake';
     readonly capabilities = {
         nativeSessionId: 'eager',
