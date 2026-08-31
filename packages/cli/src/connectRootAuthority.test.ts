@@ -112,17 +112,20 @@ test("Windows broker JSON is canonical, exact-keyed, and bounded", () => {
   const valid = JSON.stringify({ version: 1, entries: [inspection()] });
   assert.deepEqual(parseWindowsInspectionDocument(valid), [inspection()]);
   assertWindowsInspectionShape(parseWindowsInspectionDocument(valid)[0]);
+  const stageFailure = (document: string, stage: string): void => assert.throws(
+    () => parseWindowsInspectionDocument(document),
+    (error) => error instanceof WindowsNativeStageError && error.stage === stage,
+  );
+  stageFailure("{", "parent:json-parse");
+  stageFailure(`${valid}\n`, "parent:json-canonical");
+  stageFailure(`{"version":1,"version":1,"entries":[]}`, "parent:json-canonical");
   for (const malformed of [
-    `${valid}\n`,
-    `{"version":1,"version":1,"entries":[]}`,
+    "[]",
     JSON.stringify({ version: 1, entries: [], extra: true }),
     JSON.stringify({ version: 2, entries: [] }),
+    JSON.stringify({ version: 1, entries: {} }),
     JSON.stringify({ version: 1, entries: Array.from({ length: 33 }, () => inspection()) }),
-    "{",
-  ]) assert.throws(
-    () => parseWindowsInspectionDocument(malformed),
-    (error) => error instanceof WindowsNativeStageError && error.stage === "parent:json-shape",
-  );
+  ]) stageFailure(malformed, "parent:document-shape");
   assert.throws(
     () => parseWindowsInspectionDocument("x".repeat(128 * 1024 + 1)),
     (error) => error instanceof WindowsNativeStageError && error.stage === "parent:utf8",
@@ -335,8 +338,27 @@ test("Windows batch results remain bound to descriptor index, kind, identity, an
     inspectWindowsAcl: async () => { throw new Error("unused"); },
     inspectWindowsAcls: async () => results,
   });
+  const diagnosticSymbol = Symbol.for("propr.test.windowsNativeDiagnostic");
+  const globals = globalThis as Record<symbol, unknown>;
+  const originalDiagnostic = globals[diagnosticSymbol];
+  const diagnosticStages: string[] = [];
+  globals[diagnosticSymbol] = (stage: string): void => { diagnosticStages.push(stage); };
   try {
     await assertNativeWindowsEntriesAuthority(inspector(validEntries), entries);
+    const noEntries = parseWindowsInspectionDocument('{"version":1,"entries":[]}');
+    await assert.rejects(
+      assertNativeWindowsEntriesAuthority(inspector(noEntries), entries),
+      WindowsAuthorityInspectionError,
+    );
+    assert.equal(diagnosticStages.pop(), "parent:entry-count");
+    const malformedEntries = parseWindowsInspectionDocument('{"version":1,"entries":[{},{}]}');
+    await assert.rejects(
+      assertNativeWindowsEntriesAuthority(
+        inspector(malformedEntries as readonly WindowsAuthorityInspection[]), entries,
+      ),
+      WindowsAuthorityInspectionError,
+    );
+    assert.equal(diagnosticStages.pop(), "parent:entry-shape");
     for (const bad of [
       [{ ...validEntries[0], index: 1 }, validEntries[1]],
       [{ ...validEntries[0], kind: "directory" as const }, validEntries[1]],
@@ -350,6 +372,8 @@ test("Windows batch results remain bound to descriptor index, kind, identity, an
       );
     }
   } finally {
+    if (originalDiagnostic === undefined) delete globals[diagnosticSymbol];
+    else globals[diagnosticSymbol] = originalDiagnostic;
     closeSync(firstFd);
     closeSync(secondFd);
     rmSync(directory, { recursive: true, force: true });

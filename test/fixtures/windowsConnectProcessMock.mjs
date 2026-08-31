@@ -12,8 +12,9 @@ const nativeStages = new Set([
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
-  "broker:index-info-revalidation",
-  "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
+  "broker:index-info-revalidation", "broker:index-info-decode",
+  "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
+  "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ]);
 globalThis[Symbol.for("propr.test.windowsNativeDiagnostic")] = (stage) => {
   const fixed = nativeStages.has(stage) ? stage : "parent:json-shape";
@@ -88,6 +89,12 @@ childProcess.spawnSync = (command, args, options) => {
     if (mode === "oversized") return result(0, "x".repeat(128 * 1024 + 1));
     if (mode === "extra-key") return result(0, '{"version":1,"entries":[],"extra":true}');
     if (mode === "duplicate") return result(0, '{"version":1,"version":1,"entries":[]}');
+    if (mode === "entry-count") return result(0, '{"version":1,"entries":[]}');
+    if (mode === "entry-shape") {
+      const document = JSON.parse(authorityDocument(args, options, mode));
+      document.entries[0].extra = true;
+      return result(0, JSON.stringify(document));
+    }
     if (mode === "stderr") return result(0, "{}", "private-path-SENTINEL S-1-5-21-999 raw-error-SENTINEL");
     if (mode === "nonzero") return result(70, "", "");
     if (mode === "timeout") {

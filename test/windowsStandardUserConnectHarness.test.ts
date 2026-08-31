@@ -98,7 +98,8 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
   assert.deepEqual([...definitions.scenarioAllowlist], [
     'ready', 'down', 'disabled', 'restart-required', 'malformed', 'oversized', 'timeout',
     'identity-mismatch', 'secret-sentinel', 'api', 'path-aba', 'authority-malformed', 'authority-oversized',
-    'authority-extra-key', 'authority-duplicate', 'authority-stderr', 'authority-nonzero',
+    'authority-extra-key', 'authority-duplicate', 'authority-entry-count', 'authority-entry-shape',
+    'authority-stderr', 'authority-nonzero',
     'authority-timeout', 'authority-descriptor-mismatch', 'authority-index-mismatch',
     'authority-kind-mismatch', 'authority-authority-kind-mismatch', 'authority-identity-mismatch',
     'authority-sid-mismatch', 'authority-broad-write', 'authority-inherited-write',
@@ -129,7 +130,8 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'broker:ps-version', 'broker:job', 'broker:fd', 'broker:fd-duplicate', 'broker:index-info-initial',
     'broker:security-info', 'broker:acl', 'broker:json', 'broker:current-user-sid',
     'broker:index-info-revalidation', 'broker:index-info-decode',
-    'parent:utf8', 'parent:json-shape', 'parent:descriptor-bind', 'parent:post-bind',
+    'parent:utf8', 'parent:json-parse', 'parent:json-canonical', 'parent:document-shape',
+    'parent:entry-count', 'parent:entry-shape', 'parent:json-shape', 'parent:descriptor-bind', 'parent:post-bind',
   ]);
   assert.deepEqual([...definitions.probeMilestoneAllowlist], [
     'none', 'entry-ps51-desktop-x64', 'constant-json', 'reflection-emit', 'harmless-win32',

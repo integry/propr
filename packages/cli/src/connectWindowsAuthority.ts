@@ -34,7 +34,8 @@ export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
   "broker:index-info-revalidation", "broker:index-info-decode",
-  "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
+  "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
+  "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ] as const);
 
 export type WindowsNativeStageCode = (typeof WINDOWS_NATIVE_STAGE_CODES)[number];
@@ -365,14 +366,15 @@ function strictUtf8(value: Buffer | string | null | undefined): string {
 export function parseWindowsInspectionDocument(value: Buffer | string): readonly WindowsAuthorityInspection[] {
   const text = strictUtf8(value);
   let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { throw stageError("parent:json-shape"); }
-  if (JSON.stringify(parsed) !== text || !parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw stageError("parent:json-shape");
+  try { parsed = JSON.parse(text); } catch { throw stageError("parent:json-parse"); }
+  if (JSON.stringify(parsed) !== text) throw stageError("parent:json-canonical");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw stageError("parent:document-shape");
   }
   const document = parsed as Record<string, unknown>;
   if (Object.keys(document).sort().join(",") !== "entries,version" || document.version !== 1
     || !Array.isArray(document.entries) || document.entries.length > WINDOWS_INSPECTION_MAX_ENTRIES) {
-    throw stageError("parent:json-shape");
+    throw stageError("parent:document-shape");
   }
   return document.entries as WindowsAuthorityInspection[];
 }
@@ -508,7 +510,7 @@ export function runWindowsReadOnlyInspection(
   targets: readonly WindowsAuthorityTarget[],
 ): readonly WindowsAuthorityInspection[] {
   if (targets.length < 1 || targets.length > WINDOWS_INSPECTION_MAX_ENTRIES) {
-    throw stageError("parent:json-shape");
+    throw stageError("parent:entry-count");
   }
   const executable = resolveWindowsPowerShell();
   const inspections: WindowsAuthorityInspection[] = [];
@@ -525,7 +527,7 @@ export function runWindowsReadOnlyInspection(
         : (result.stdout?.byteLength ?? 0);
       if (totalOutputBytes > WINDOWS_INSPECTION_MAX_BYTES) throw stageError("parent:utf8");
       const entries = parseWindowsInspectionDocument(result.stdout ?? Buffer.alloc(0));
-      if (entries.length !== 1) throw stageError("parent:json-shape");
+      if (entries.length !== 1) throw stageError("parent:entry-count");
       const entry = entries[0];
       try {
         if (

@@ -386,7 +386,10 @@ async function nativeWindowsAcl(
 ): Promise<WindowsAuthorityInspection> {
   if (pinnedFd === undefined) throw new WindowsAuthorityInspectionError();
   const inspections = await nativeWindowsAcls([{ path, expectedIdentity, pinnedFd, kind }]);
-  if (inspections.length !== 1) throw new WindowsAuthorityInspectionError();
+  if (inspections.length !== 1) {
+    reportWindowsNativeStage("parent:entry-count");
+    throw new WindowsAuthorityInspectionError();
+  }
   return inspections[0];
 }
 
@@ -553,7 +556,7 @@ export async function assertNativeEntryAuthority(
     try {
       assertWindowsInspectionShape(inspection);
     } catch {
-      reportWindowsNativeStage("parent:json-shape");
+      reportWindowsNativeStage("parent:entry-shape");
       throw new WindowsAuthorityInspectionError();
     }
     try {
@@ -596,7 +599,7 @@ export async function assertNativeWindowsEntriesAuthority(
       target.path, target.expectedIdentity, target.pinnedFd, target.kind,
     )));
   if (inspections.length !== targets.length) {
-    reportWindowsNativeStage("parent:json-shape");
+    reportWindowsNativeStage("parent:entry-count");
     throw new WindowsAuthorityInspectionError();
   }
   for (let index = 0; index < targets.length; index += 1) {
@@ -614,7 +617,7 @@ export async function assertNativeWindowsEntriesAuthority(
     try {
       assertWindowsInspectionShape(inspection);
     } catch {
-      reportWindowsNativeStage("parent:json-shape");
+      reportWindowsNativeStage("parent:entry-shape");
       throw new WindowsAuthorityInspectionError();
     }
     try {
