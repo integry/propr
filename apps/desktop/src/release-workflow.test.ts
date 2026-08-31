@@ -355,20 +355,16 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /LoadUserProfile = \$true/);
     assert.match(installedWindowsAppTest, /RedirectStandardOutput = \(Join-Path \$smokeUserDataDirectory 'application\.stdout\.log'\)/);
     assert.match(installedWindowsAppTest, /RedirectStandardError = \(Join-Path \$smokeUserDataDirectory 'application\.stderr\.log'\)/);
+    const applicationStart = installedWindowsAppTest.match(/\$applicationStart = @\{([\s\S]*?)\n\s+\}/);
+    assert.ok(applicationStart);
+    assert.match(applicationStart[1], /^\s+Environment = @\{ PROPR_DESKTOP_SMOKE_TEST = '1' \}$/m);
+    assert.equal(installedWindowsAppTest.match(/PROPR_DESKTOP_SMOKE_TEST/g)?.length, 1);
     assert.doesNotMatch(installedWindowsAppTest, /Get-Content|Write-(?:Output|Verbose|Debug|Information)/);
     assert.match(installedWindowsAppTest, /-AllowedExitCodes @\(0\)/);
     assert.match(installedWindowsAppTest, /\$exitCode = \$Process\.ExitCode/);
-    assert.match(
+    assert.doesNotMatch(
       installedWindowsAppTest,
-      /GetEnvironmentVariable\(\n\s+'PROPR_DESKTOP_SMOKE_TEST',\n\s+\[EnvironmentVariableTarget\]::Process/,
-    );
-    assert.match(
-      installedWindowsAppTest,
-      /SetEnvironmentVariable\(\n\s+'PROPR_DESKTOP_SMOKE_TEST',\n\s+'1',\n\s+\[EnvironmentVariableTarget\]::Process/,
-    );
-    assert.match(
-      installedWindowsAppTest,
-      /try \{[\s\S]*Start-DirectProcess \$applicationStart[\s\S]*\} finally \{[\s\S]*\$null -eq \$previousSmokeTrigger[\s\S]*\$previousSmokeTrigger/,
+      /\[Environment\]::(?:Get|Set)EnvironmentVariable\(\s*'PROPR_DESKTOP_SMOKE_TEST'/,
     );
     assert.doesNotMatch(
       installedWindowsAppTest,
@@ -410,6 +406,28 @@ describe('desktop trusted release workflow', () => {
     assert.ok(
       installedWindowsAppTest.indexOf('Wait-BoundedProcess `', installedWindowsAppTest.indexOf("Write-Stage 'APP_EXIT' 'BEGIN'"))
         < installedWindowsAppTest.indexOf('Get-SmokeEventEvidence $smokeUserDataDirectory $testUserSid'),
+    );
+    const applicationExitSection = installedWindowsAppTest.slice(
+      installedWindowsAppTest.indexOf("Write-Stage 'APP_EXIT' 'BEGIN'"),
+      installedWindowsAppTest.indexOf("Write-Stage 'UNINSTALL' 'BEGIN'"),
+    );
+    assert.match(
+      applicationExitSection,
+      /catch \{\n\s+\$waitFailure = \$_\n\s+\} finally \{\n\s+try \{\n\s+\$applicationProcess\.Dispose\(\)\n\s+\} finally \{\n\s+\$applicationProcess = \$null/,
+    );
+    assert.ok(
+      applicationExitSection.indexOf('Wait-BoundedProcess `')
+        < applicationExitSection.indexOf('$applicationProcess.Dispose()'),
+      'the application process must be disposed only after its bounded wait completes or fails',
+    );
+    assert.ok(
+      applicationExitSection.indexOf('$applicationProcess.Dispose()')
+        < applicationExitSection.indexOf('Get-SmokeEventEvidence $smokeUserDataDirectory $testUserSid'),
+      'the application process must release redirected-stream handles before evidence inspection',
+    );
+    assert.match(
+      applicationExitSection,
+      /\} finally \{\n\s+if \(\$null -ne \$applicationProcess\) \{ \$applicationProcess\.Dispose\(\) \}/,
     );
 
     for (const stage of [

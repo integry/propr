@@ -362,34 +362,10 @@ try {
       RedirectStandardOutput = (Join-Path $smokeUserDataDirectory 'application.stdout.log')
       RedirectStandardError = (Join-Path $smokeUserDataDirectory 'application.stderr.log')
       WorkingDirectory = $env:ProgramFiles
+      Environment = @{ PROPR_DESKTOP_SMOKE_TEST = '1' }
     }
-    $previousSmokeTrigger = [Environment]::GetEnvironmentVariable(
-      'PROPR_DESKTOP_SMOKE_TEST',
-      [EnvironmentVariableTarget]::Process
-    )
-    try {
-      [Environment]::SetEnvironmentVariable(
-        'PROPR_DESKTOP_SMOKE_TEST',
-        '1',
-        [EnvironmentVariableTarget]::Process
-      )
-      $applicationProcess = Start-DirectProcess $applicationStart `
-        'ordinary-user installed application launch/render/profile smoke'
-    } finally {
-      if ($null -eq $previousSmokeTrigger) {
-        [Environment]::SetEnvironmentVariable(
-          'PROPR_DESKTOP_SMOKE_TEST',
-          $null,
-          [EnvironmentVariableTarget]::Process
-        )
-      } else {
-        [Environment]::SetEnvironmentVariable(
-          'PROPR_DESKTOP_SMOKE_TEST',
-          $previousSmokeTrigger,
-          [EnvironmentVariableTarget]::Process
-        )
-      }
-    }
+    $applicationProcess = Start-DirectProcess $applicationStart `
+      'ordinary-user installed application launch/render/profile smoke'
     Write-Stage 'APP_LAUNCH' 'COMPLETE'
   } catch {
     Write-Stage 'APP_LAUNCH' 'FAILED'
@@ -406,6 +382,12 @@ try {
         -Operation 'ordinary-user installed application launch/render/profile smoke')
     } catch {
       $waitFailure = $_
+    } finally {
+      try {
+        $applicationProcess.Dispose()
+      } finally {
+        $applicationProcess = $null
+      }
     }
     $smokeEvidence = Get-SmokeEventEvidence $smokeUserDataDirectory $testUserSid
     if ($null -ne $waitFailure) { throw $waitFailure }
