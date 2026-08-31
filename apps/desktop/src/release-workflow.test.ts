@@ -589,7 +589,10 @@ describe('desktop trusted release workflow', () => {
     assert.ok(absentSuccess < childSource[1].indexOf('Get-Item -LiteralPath $shortcut'));
 
     assert.match(shortcutProbe, /\$expectation = if \(\$ExpectedPresent\) \{ 'PRESENT' \} else \{ 'ABSENT' \}/);
-    assert.match(shortcutProbe, /catch \{\n\s+\$failureCategory = 'SPAWN_FAILED'\n\s+\}/);
+    assert.match(
+      shortcutProbe,
+      /catch \{\n\s+if \(\$_\.Exception -is \[System\.ComponentModel\.Win32Exception\]\)/,
+    );
     assert.match(shortcutProbe, /!\$started\) \{\n\s+\$failureCategory = 'SPAWN_FAILED'/);
     assert.match(shortcutProbe, /\$process\.WaitForExit\(\$terminationTimeoutMilliseconds\)/);
     assert.match(shortcutProbe, /!\$completed\) \{\n\s+\$failureCategory = 'TIMEOUT'/);
@@ -617,6 +620,109 @@ describe('desktop trusted release workflow', () => {
     );
     assert.doesNotMatch(shortcutProbe, /(?:Write-Host|throw)[^\n]*(?:\$exitCode|\$ShortcutPath|\$UserName|\$Domain|\.Exception|StandardOutput|StandardError)/);
     assert.doesNotMatch(shortcutProbe, /(?:Write-Host|throw)[^\n]*\$process\.|ReadToEnd|Write-(?:Output|Error|Warning|Verbose|Debug|Information)/);
+  });
+
+  test('allowlists and redacts Win32 shortcut spawn-failure diagnostics', () => {
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
+    const spawnCatch = shortcutProbe.match(
+      /\$started = \$process\.Start\(\)\n\s+\} catch \{([\s\S]*?)\n\s+\}\n\s+if \(\$null -eq \$failureCategory -and !\$started\)/,
+    );
+    assert.ok(spawnCatch);
+
+    assert.match(
+      spawnCatch[1],
+      /^\n\s+if \(\$_\.Exception -is \[System\.ComponentModel\.Win32Exception\]\) \{/,
+    );
+    assert.match(
+      spawnCatch[1],
+      /\$spawnFailureCategories\.Contains\(\$_\.Exception\.NativeErrorCode\)/,
+    );
+    assert.match(
+      spawnCatch[1],
+      /\$spawnFailureCategories\[\$_\.Exception\.NativeErrorCode\]/,
+    );
+    assert.match(spawnCatch[1], /else \{\n\s+'UNKNOWN'\n\s+\}/);
+    assert.match(
+      spawnCatch[1],
+      /\$failureCategory = 'SPAWN_FAILED:\{0\}' -f \$spawnFailureCategory/,
+    );
+    assert.match(
+      spawnCatch[1],
+      /\} else \{\n\s+\$failureCategory = 'SPAWN_FAILED'\n\s+\}$/,
+    );
+
+    const mappings = Object.fromEntries(
+      [...spawnCatch[1].matchAll(/^\s+(\d+) = '([A-Z_]+)'$/gm)]
+        .map(([, code, category]) => [Number(code), category]),
+    );
+    assert.deepEqual(mappings, {
+      2: 'FILE_NOT_FOUND',
+      3: 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID',
+      5: 'ACCESS_DENIED',
+      87: 'INVALID_PARAMETER',
+      267: 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID',
+      1326: 'LOGON_FAILURE',
+      1385: 'LOGON_TYPE_NOT_GRANTED',
+    });
+
+    type SimulatedSpawnFailure = {
+      isWin32: boolean;
+      nativeErrorCode: number;
+      path?: string;
+      user?: string;
+      message?: string;
+    };
+    const renderSpawnFailure = (
+      expectation: 'PRESENT' | 'ABSENT',
+      caught: SimulatedSpawnFailure,
+    ): string => {
+      const category = caught.isWin32
+        ? mappings[caught.nativeErrorCode] ?? 'UNKNOWN'
+        : undefined;
+      return `PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:${expectation}:SPAWN_FAILED${
+        category === undefined ? '' : `:${category}`
+      }`;
+    };
+    for (const [code, category] of Object.entries(mappings)) {
+      assert.equal(
+        renderSpawnFailure('PRESENT', { isWin32: true, nativeErrorCode: Number(code) }),
+        `PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED:${category}`,
+      );
+    }
+    const sentinelFailure = {
+      isWin32: true,
+      nativeErrorCode: 424242,
+      path: String.raw`C:\sentinel-secret\shortcut.lnk`,
+      user: 'sentinel-user',
+      message: 'sentinel exception message',
+    };
+    assert.equal(
+      renderSpawnFailure('ABSENT', sentinelFailure),
+      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:ABSENT:SPAWN_FAILED:UNKNOWN',
+    );
+    assert.equal(
+      renderSpawnFailure('PRESENT', { ...sentinelFailure, isWin32: false }),
+      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED',
+    );
+
+    const diagnosticOutputs = [
+      ...Object.keys(mappings).map(code => renderSpawnFailure(
+        'PRESENT',
+        { isWin32: true, nativeErrorCode: Number(code) },
+      )),
+      renderSpawnFailure('ABSENT', sentinelFailure),
+      renderSpawnFailure('PRESENT', { ...sentinelFailure, isWin32: false }),
+    ].join('\n');
+    for (const sentinel of Object.values(sentinelFailure).slice(1).map(String)) {
+      assert.ok(!diagnosticOutputs.includes(sentinel));
+    }
+    assert.doesNotMatch(
+      spawnCatch[1],
+      /(?:Write-Host|throw)|\.Message|\.ToString\(|\$ShortcutPath|\$UserName|\$Credential|\$probeChildEnvironment|StandardOutput|StandardError/,
+    );
   });
 
   test('emits fixed uninstall and cleanup substages without masking the primary failure', () => {

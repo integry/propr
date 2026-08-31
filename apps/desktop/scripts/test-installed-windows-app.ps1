@@ -547,7 +547,25 @@ exit 0
     try {
       $started = $process.Start()
     } catch {
-      $failureCategory = 'SPAWN_FAILED'
+      if ($_.Exception -is [System.ComponentModel.Win32Exception]) {
+        $spawnFailureCategories = [ordered]@{
+          2 = 'FILE_NOT_FOUND'
+          3 = 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID'
+          5 = 'ACCESS_DENIED'
+          87 = 'INVALID_PARAMETER'
+          267 = 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID'
+          1326 = 'LOGON_FAILURE'
+          1385 = 'LOGON_TYPE_NOT_GRANTED'
+        }
+        $spawnFailureCategory = if ($spawnFailureCategories.Contains($_.Exception.NativeErrorCode)) {
+          $spawnFailureCategories[$_.Exception.NativeErrorCode]
+        } else {
+          'UNKNOWN'
+        }
+        $failureCategory = 'SPAWN_FAILED:{0}' -f $spawnFailureCategory
+      } else {
+        $failureCategory = 'SPAWN_FAILED'
+      }
     }
     if ($null -eq $failureCategory -and !$started) {
       $failureCategory = 'SPAWN_FAILED'
