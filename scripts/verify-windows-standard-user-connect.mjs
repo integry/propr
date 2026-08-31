@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -12,6 +12,7 @@ if (process.platform !== "win32") {
 }
 
 const expectedUser = process.argv[2];
+const preparedFixture = process.argv[3];
 const actualUser = userInfo().username;
 
 const repo = resolve(import.meta.dirname, "..");
@@ -31,11 +32,8 @@ assert.deepEqual(fixtureNodeArgs, [
   "--import", processFixture,
   "--import", fetchFixture,
 ]);
-const fixture = realpathSync.native(mkdtempSync(join(tmpdir(), "propr-windows-discovery-")));
-const createdRoot = join(fixture, "stack-private-path-SENTINEL");
-mkdirSync(createdRoot);
-const root = realpathSync.native(createdRoot);
-const data = join(root, "data");
+const fixture = realpathSync.native(preparedFixture);
+const root = realpathSync.native(join(fixture, "stack-private-path-SENTINEL"));
 const endpoint = "https://t-abc123.propr.dev";
 const identity = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
@@ -48,7 +46,13 @@ function tunnelFixtureEnvLines({ enabled }) {
 
 const scenarioAllowlist = Object.freeze([
   "ready", "down", "disabled", "restart-required", "malformed", "oversized", "timeout",
-  "identity-mismatch", "secret-sentinel", "api",
+  "identity-mismatch", "secret-sentinel", "path-aba", "api", "authority-malformed", "authority-oversized",
+  "authority-extra-key", "authority-duplicate", "authority-stderr", "authority-nonzero",
+  "authority-timeout", "authority-descriptor-mismatch", "authority-index-mismatch",
+  "authority-kind-mismatch", "authority-authority-kind-mismatch", "authority-identity-mismatch",
+  "authority-sid-mismatch", "authority-broad-write", "authority-inherited-write",
+  "authority-unprotected", "authority-owner-mismatch", "authority-reparse",
+  "authority-missing-system-root", "authority-mismatched-system-root", "authority-untrusted-system-root",
 ]);
 const assertionStageAllowlist = Object.freeze([
   "authority-probe", "scaffold", "identity-assertion", "config-init", "config-save",
@@ -101,15 +105,39 @@ function createFailureDiagnostic(scenario, stage, failureStatus) {
 }
 
 const cases = [
-  { name: "ready", fetch: "ready", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "down", fetch: "ready", docker: "down", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "disabled", fetch: "ready", docker: "ready", enabled: false, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "restart-required", fetch: "restart-required", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "malformed", fetch: "invalid", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "oversized", fetch: "oversized", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "timeout", fetch: "timeout", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "identity-mismatch", fetch: "identity-mismatch", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
-  { name: "secret-sentinel", fetch: "secret-sentinel", docker: "ready", enabled: true, status: "invalidConfig", exit: 1, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
+  { name: "ready", fetch: "ready", docker: "ready", enabled: true, status: "ready", exit: 0, reasons: [] },
+  { name: "down", fetch: "ready", docker: "down", enabled: true, status: "notReady", exit: 0, reasons: ["SIDECAR_NOT_RUNNING"] },
+  { name: "disabled", fetch: "ready", docker: "ready", enabled: false, status: "notReady", exit: 0, reasons: ["TUNNEL_DISABLED"] },
+  { name: "restart-required", fetch: "restart-required", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["ENDPOINT_MISMATCH", "RESTART_REQUIRED"] },
+  { name: "malformed", fetch: "invalid", docker: "ready", enabled: true, status: "incompatible", exit: 2, reasons: ["DISCOVERY_INVALID"] },
+  { name: "oversized", fetch: "oversized", docker: "ready", enabled: true, status: "incompatible", exit: 2, reasons: ["DISCOVERY_TOO_LARGE"] },
+  { name: "timeout", fetch: "timeout", docker: "ready", enabled: true, status: "timeout", exit: 0, reasons: ["API_TIMEOUT"] },
+  { name: "identity-mismatch", fetch: "identity-mismatch", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["IDENTITY_MISMATCH"] },
+  { name: "secret-sentinel", fetch: "secret-sentinel", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["API_UNREACHABLE"] },
+  { name: "path-aba", fetch: "ready", docker: "ready", enabled: true, status: "ready", exit: 0, reasons: [], authorityMode: "path-aba" },
+];
+const authorityFailures = [
+  { name: "authority-malformed", mode: "malformed" },
+  { name: "authority-oversized", mode: "oversized" },
+  { name: "authority-extra-key", mode: "extra-key" },
+  { name: "authority-duplicate", mode: "duplicate" },
+  { name: "authority-stderr", mode: "stderr" },
+  { name: "authority-nonzero", mode: "nonzero" },
+  { name: "authority-timeout", mode: "timeout" },
+  { name: "authority-descriptor-mismatch", mode: "descriptor-mismatch" },
+  { name: "authority-index-mismatch", mode: "index-mismatch" },
+  { name: "authority-kind-mismatch", mode: "kind-mismatch" },
+  { name: "authority-authority-kind-mismatch", mode: "authority-kind-mismatch" },
+  { name: "authority-identity-mismatch", mode: "identity-mismatch" },
+  { name: "authority-sid-mismatch", mode: "sid-mismatch" },
+  { name: "authority-broad-write", mode: "broad-write", reason: "INVALID_ROOT" },
+  { name: "authority-inherited-write", mode: "inherited-write", reason: "INVALID_ROOT" },
+  { name: "authority-unprotected", mode: "unprotected", reason: "INVALID_ROOT" },
+  { name: "authority-owner-mismatch", mode: "owner-mismatch", reason: "INVALID_ROOT" },
+  { name: "authority-reparse", mode: "reparse", reason: "INVALID_ROOT" },
+  { name: "authority-missing-system-root", systemRootMode: "missing" },
+  { name: "authority-mismatched-system-root", systemRootMode: "mismatched" },
+  { name: "authority-untrusted-system-root", systemRootMode: "untrusted" },
 ];
 
 let currentScenario = "ready";
@@ -127,8 +155,8 @@ try {
     "privileged Windows mutation did not return the actionable follow-up result",
   );
 
-  // Discovery authority remains unavailable, so status must fail closed. It
-  // must not be invoked by CLI mutation paths which predate discovery.
+  // Privileged mutation stays deferred even though read-only discovery now
+  // inspects the already-open descriptors through the OS PowerShell boundary.
   currentStage = "scaffold";
   const { scaffoldStack } = await import(initStackModule);
   const mutationRoot = realpathSync.native(mkdtempSync(join(fixture, "stack-")));
@@ -150,12 +178,6 @@ try {
   await manager.save();
   currentStage = "config-assertion";
   assert.deepEqual(JSON.parse(readFileSync(join(configDirectory, "config.json"), "utf8")), {});
-
-  mkdirSync(data, { recursive: true });
-  writeFileSync(join(data, "public-instance-identity.json"), `${JSON.stringify({
-    schemaVersion: 1,
-    publicInstanceIdentity: identity,
-  })}\n`);
 
   for (const scenario of cases) {
     currentScenario = scenario.name;
@@ -192,6 +214,10 @@ try {
         PROPR_TEST_DISCOVERY_MODE: scenario.fetch,
         PROPR_TEST_DOCKER_MODE: scenario.docker,
         PROPR_TEST_PUBLIC_IDENTITY: identity,
+        ...(scenario.authorityMode ? {
+          PROPR_TEST_AUTHORITY_MODE: scenario.authorityMode,
+          PROPR_TEST_AUTHORITY_ROOT: root,
+        } : {}),
         PROPR_CONNECTOR_TOKEN: "connector-token-SENTINEL",
         PROPR_RELAY_TOKEN: "relay-token-SENTINEL",
         GITHUB_TOKEN: "github-token-SENTINEL",
@@ -211,15 +237,15 @@ try {
     currentStage = "status";
     assert.equal(document.status, scenario.status, scenario.name);
     currentStage = "endpoint";
-    assert.equal(document.canonicalEndpoint, null, scenario.name);
+    assert.equal(document.canonicalEndpoint, endpoint, scenario.name);
     currentStage = "identity";
-    assert.equal(document.publicInstanceIdentity, null, scenario.name);
+    assert.equal(document.publicInstanceIdentity, identity, scenario.name);
     currentStage = "reasons";
     assert.deepEqual(document.reasonCodes, scenario.reasons, scenario.name);
     currentStage = "api-ready";
-    assert.equal(document.apiReady, false, scenario.name);
+    assert.equal(document.apiReady, scenario.status === "ready", scenario.name);
     currentStage = "restart";
-    assert.equal(document.restartRequired, false, scenario.name);
+    assert.equal(document.restartRequired, scenario.name === "restart-required", scenario.name);
     currentStage = "stderr";
     const expectedStderr = scenario.status === "ready" ? "" : `ProPR Connect discovery: ${scenario.status}.\n`;
     assert.equal(result.stderr, expectedStderr, scenario.name);
@@ -230,6 +256,61 @@ try {
     ]) {
       assert.equal(result.stdout.includes(sentinel), false, `${scenario.name} stdout leaked ${sentinel}`);
       assert.equal(result.stderr.includes(sentinel), false, `${scenario.name} stderr leaked ${sentinel}`);
+    }
+  }
+
+  for (const scenario of authorityFailures) {
+    currentScenario = scenario.name;
+    currentStage = "spawn";
+    failureStatus = null;
+    const result = spawnSync(process.execPath, [
+      ...fixtureNodeArgs,
+      cli,
+      "connect", "status", "--json", "--root", root,
+    ], {
+      cwd: fixture,
+      shell: false,
+      windowsHide: true,
+      encoding: "utf8",
+      timeout: 15_000,
+      maxBuffer: 16 * 1024,
+      env: {
+        PATH: dirname(process.execPath),
+        PATHEXT: process.env.PATHEXT,
+        ...(scenario.systemRootMode === "missing" ? {} : {
+          SYSTEMROOT: scenario.systemRootMode === "untrusted" ? fixture : process.env.SystemRoot,
+          WINDIR: scenario.systemRootMode === "untrusted" || scenario.systemRootMode === "mismatched"
+            ? fixture
+            : process.env.WINDIR,
+        }),
+        COMSPEC: process.env.ComSpec,
+        USERPROFILE: process.env.USERPROFILE,
+        HOMEDRIVE: process.env.HOMEDRIVE,
+        HOMEPATH: process.env.HOMEPATH,
+        PROPR_TEST_DISCOVERY_MODE: "ready",
+        PROPR_TEST_DOCKER_MODE: "ready",
+        PROPR_TEST_PUBLIC_IDENTITY: identity,
+        PROPR_TEST_AUTHORITY_MODE: scenario.mode,
+      },
+    });
+    currentStage = "bounds";
+    failureStatus = parseBoundedFailureStatus(result.stdout);
+    currentStage = "signal";
+    assert.equal(result.signal, null, scenario.name);
+    currentStage = "exit";
+    assert.equal(result.status, 1, scenario.name);
+    currentStage = "schema";
+    const document = JSON.parse(result.stdout);
+    currentStage = "status";
+    assert.equal(document.status, "invalidConfig", scenario.name);
+    currentStage = "reasons";
+    assert.deepEqual(document.reasonCodes, [scenario.reason ?? "ACL_DIAGNOSTIC_UNAVAILABLE"], scenario.name);
+    currentStage = "stderr";
+    assert.equal(result.stderr, "ProPR Connect discovery: invalidConfig.\n", scenario.name);
+    currentStage = "sentinel";
+    for (const sentinel of [fixture, "private-path-SENTINEL", "S-1-5-21-999", "raw-error-SENTINEL"]) {
+      assert.equal(result.stdout.includes(sentinel), false, scenario.name);
+      assert.equal(result.stderr.includes(sentinel), false, scenario.name);
     }
   }
 
@@ -262,5 +343,6 @@ try {
   )}\n`);
   process.exitCode = 1;
 } finally {
-  rmSync(fixture, { recursive: true, force: true });
+  // The elevated workflow owner removes the prepared fixture after the
+  // limited-user process exits.
 }

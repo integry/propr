@@ -43,6 +43,7 @@ import {
   assertNativeWindowsEntriesAuthority,
   assertSafeDarwinAclOutput,
   assertSafeWindowsAuthority,
+  stableAuthorityIdentity,
   type ConnectRootAuthorityInspector,
   type WindowsAuthorityInspection,
 } from '../packages/cli/src/connectRootAuthority.js';
@@ -477,7 +478,7 @@ test('Windows DACL policy accepts only explicit narrow mutators and rejects inhe
   }, 'root'), /authority/);
 });
 
-test('Windows batch binding keeps adjacent full 128-bit identities, indexes, and types exact', async () => {
+test('Windows batch binding keeps descriptor identities, indexes, and types exact', async () => {
   const parent = temporaryRoot('propr-windows-full-identity-');
   const firstPath = join(parent, 'first');
   const secondPath = join(parent, 'second');
@@ -489,12 +490,14 @@ test('Windows batch binding keeps adjacent full 128-bit identities, indexes, and
     { path: firstPath, kind: 'env' as const, pinnedFd: firstFd },
     { path: secondPath, kind: 'env' as const, pinnedFd: secondFd },
   ];
+  const firstIdentity = stableAuthorityIdentity(firstFd);
+  const secondIdentity = stableAuthorityIdentity(secondFd);
   const exactInspector: ConnectRootAuthorityInspector = {
     inspectDarwinAcl: (_path, _fd, identity) => ({ version: 1, ...identity, acl: '!#acl 1\n' }),
     inspectWindowsAcl: async (_path, identity, _fd, kind = 'env') => safeWindowsAuthority(identity, kind),
     inspectWindowsAcls: async () => [
-      safeWindowsAuthority({ device: '18446744073709551614', file: '9007199254740992' }, 'env', 0),
-      safeWindowsAuthority({ device: '18446744073709551614', file: '9007199254740993' }, 'env', 1),
+      safeWindowsAuthority(firstIdentity, 'env', 0),
+      safeWindowsAuthority(secondIdentity, 'env', 1),
     ],
   };
   try {
@@ -502,24 +505,24 @@ test('Windows batch binding keeps adjacent full 128-bit identities, indexes, and
     await assert.rejects(assertNativeWindowsEntriesAuthority({
       ...exactInspector,
       inspectWindowsAcls: async () => [
-        safeWindowsAuthority({ device: '9', file: '9007199254740993' }, 'env', 1),
-        safeWindowsAuthority({ device: '9', file: '9007199254740992' }, 'env', 0),
+        safeWindowsAuthority(secondIdentity, 'env', 1),
+        safeWindowsAuthority(firstIdentity, 'env', 0),
       ],
-    }, entries), /pinned object/);
+    }, entries), /unavailable/);
     await assert.rejects(assertNativeWindowsEntriesAuthority({
       ...exactInspector,
       inspectWindowsAcls: async () => [{
-        ...safeWindowsAuthority({ device: '9', file: '9007199254740992' }, 'env', 0),
-        verifiedFileId: '9007199254740993',
-      }, safeWindowsAuthority({ device: '9', file: '4' }, 'env', 1)],
-    }, entries), /pinned object/);
+        ...safeWindowsAuthority(firstIdentity, 'env', 0),
+        verifiedFileId: (BigInt(firstIdentity.file) + 1n).toString(),
+      }, safeWindowsAuthority(secondIdentity, 'env', 1)],
+    }, entries), /unavailable/);
     await assert.rejects(assertNativeWindowsEntriesAuthority({
       ...exactInspector,
       inspectWindowsAcls: async () => [{
-        ...safeWindowsAuthority({ device: '9', file: '1' }, 'env', 0),
+        ...safeWindowsAuthority(firstIdentity, 'env', 0),
         unexpected: 'unbounded-schema-extension',
-      } as WindowsAuthorityInspection, safeWindowsAuthority({ device: '9', file: '2' }, 'env', 1)],
-    }, entries), /malformed/);
+      } as WindowsAuthorityInspection, safeWindowsAuthority(secondIdentity, 'env', 1)],
+    }, entries), /unavailable/);
   } finally {
     closeSync(secondFd);
     closeSync(firstFd);
@@ -585,7 +588,7 @@ test('injected Windows and Darwin inspectors exercise the real root policy path'
   }
 });
 
-test('read-only Windows snapshot reports unavailable ACL diagnostics without native inspection', async () => {
+test('read-only Windows snapshot fails closed when native inspection cannot complete', async () => {
   const parent = temporaryRoot('propr-connect-windows-read-only-');
   const root = connectRoot(parent, 'PROPR_STACK=readonly\n');
   const data = join(root, 'data');
@@ -600,18 +603,16 @@ test('read-only Windows snapshot reports unavailable ACL diagnostics without nat
     inspectWindowsAcls: async () => { nativeCalls += 1; throw new Error('native inspector executed'); },
   };
   try {
-    const result = await withOwnedConnectRootSnapshot(root, async (snapshot) => ({
+    await assert.rejects(withOwnedConnectRootSnapshot(root, async (snapshot) => ({
       diagnostic: snapshot.authorityDiagnostic,
       identity: await readSnapshotPublicInstanceIdentity(snapshot.identityDirectory),
       stack: snapshot.envFileValues.PROPR_STACK,
     }), {
       platform: 'win32',
       authorityInspector: forbiddenInspector,
-      allowUnavailableWindowsAclDiagnostic: true,
       parseEnvFile: () => ({ PROPR_STACK: 'readonly' }),
-    });
-    assert.deepEqual(result, { diagnostic: 'acl-unavailable', identity: IDS.first, stack: 'readonly' });
-    assert.equal(nativeCalls, 0);
+    }), ConnectRootError);
+    assert.ok(nativeCalls > 0);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }

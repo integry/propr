@@ -17,6 +17,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  parseWindowsInspectionDocument,
+  runWindowsReadOnlyInspection,
+  windowsInspectionEntryKind,
+} from "./connectWindowsAuthority.js";
 
 const NATIVE_INSPECTION_MAX_BYTES = 128 * 1024;
 const WINDOWS_SID = /^S-\d(?:-\d+)+$/;
@@ -38,6 +43,9 @@ const WINDOWS_MUTATING_RIGHTS = BigInt(
 );
 const WINDOWS_GENERIC_MUTATING_RIGHTS = 0x50000000n; // GENERIC_WRITE | GENERIC_ALL
 const WINDOWS_KNOWN_ALLOW_RIGHTS = 0xf01f01ffn;
+const WINDOWS_AUTHORITY_MAX_ENTRIES = 32;
+const WINDOWS_AUTHORITY_MAX_ACES_PER_ENTRY = 128;
+const WINDOWS_AUTHORITY_MAX_TOTAL_ACES = 512;
 
 export const WINDOWS_AUTHORITY_REQUIRED_CODE = "WINDOWS_AUTHORITY_REQUIRED" as const;
 
@@ -131,6 +139,14 @@ export class WindowsAuthorityPolicyError extends Error {
   ) {
     super(`Windows native authority rejected entry ${entryIndex}: ${policyReason}`);
     this.name = "WindowsAuthorityPolicyError";
+  }
+}
+
+/** Fixed, redacted boundary for a failed read-only Windows ACL inspection. */
+export class WindowsAuthorityInspectionError extends Error {
+  constructor() {
+    super("Windows ACL authority inspection is unavailable");
+    this.name = "WindowsAuthorityInspectionError";
   }
 }
 
@@ -349,13 +365,32 @@ function nativeDarwinAcl(
   return parsed;
 }
 
-async function unavailableWindowsAcl(): Promise<WindowsAuthorityInspection> {
-  throw new WindowsAuthorityRequiredError();
+async function nativeWindowsAcls(
+  entries: readonly WindowsAuthorityTarget[],
+): Promise<readonly WindowsAuthorityInspection[]> {
+  try {
+    return runWindowsReadOnlyInspection(entries);
+  } catch {
+    throw new WindowsAuthorityInspectionError();
+  }
+}
+
+async function nativeWindowsAcl(
+  path: string,
+  expectedIdentity: StableAuthorityIdentity,
+  pinnedFd?: number,
+  kind: ConnectAuthorityEntryKind = "root",
+): Promise<WindowsAuthorityInspection> {
+  if (pinnedFd === undefined) throw new WindowsAuthorityInspectionError();
+  const inspections = await nativeWindowsAcls([{ path, expectedIdentity, pinnedFd, kind }]);
+  if (inspections.length !== 1) throw new WindowsAuthorityInspectionError();
+  return inspections[0];
 }
 
 export const nativeConnectRootAuthorityInspector: ConnectRootAuthorityInspector = {
   inspectDarwinAcl: nativeDarwinAcl,
-  inspectWindowsAcl: unavailableWindowsAcl,
+  inspectWindowsAcl: nativeWindowsAcl,
+  inspectWindowsAcls: nativeWindowsAcls,
 };
 
 /** Windows mutation is unsupported until the separately reviewed authority work lands. */
@@ -370,7 +405,7 @@ export async function protectWindowsSetupEntries(
   if (process.platform === "win32" && entries.length > 0) throw new WindowsAuthorityRequiredError();
 }
 
-function assertWindowsInspectionShape(value: unknown): asserts value is WindowsAuthorityInspection {
+export function assertWindowsInspectionShape(value: unknown): asserts value is WindowsAuthorityInspection {
   if (
     !value
     || typeof value !== "object"
@@ -384,7 +419,7 @@ function assertWindowsInspectionShape(value: unknown): asserts value is WindowsA
   if (
     !Number.isInteger(record.index)
     || (record.index as number) < 0
-    || (record.index as number) >= 64
+    || (record.index as number) >= WINDOWS_AUTHORITY_MAX_ENTRIES
     || (record.kind !== "directory" && record.kind !== "file")
     || !["ancestor", "home", "root", "data", "env"].includes(record.authorityKind as string)
     || typeof record.currentUserSid !== "string" || !WINDOWS_SID.test(record.currentUserSid)
@@ -397,7 +432,7 @@ function assertWindowsInspectionShape(value: unknown): asserts value is WindowsA
     || !canonicalUint64(record.verifiedVolumeSerialNumber)
     || typeof record.verifiedFileId !== "string" || !/^(?:0|[1-9]\d{0,38})$/.test(record.verifiedFileId)
     || BigInt(record.verifiedFileId) > 0xffffffffffffffffffffffffffffffffn
-    || !Array.isArray(record.rules) || record.rules.length > 256
+    || !Array.isArray(record.rules) || record.rules.length > WINDOWS_AUTHORITY_MAX_ACES_PER_ENTRY
   ) throw new Error("Windows ACL authority inspection was malformed");
   for (const rule of record.rules) {
     if (
@@ -422,26 +457,30 @@ export function assertSafeWindowsAuthority(
   kind: ConnectAuthorityEntryKind,
 ): void {
   assertWindowsInspectionShape(inspection);
-  if (inspection.ownerSid !== inspection.currentUserSid) {
+  const protectedEntry = kind === "root" || kind === "data" || kind === "env";
+  const trustedOwner = WINDOWS_TRUSTED_MUTATORS.has(inspection.ownerSid)
+    || inspection.ownerSid === "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+  if (inspection.ownerSid !== inspection.currentUserSid
+    && !((kind === "ancestor" || kind === "home") && trustedOwner)) {
     throw new WindowsAuthorityPolicyError(inspection.index, "OWNER_MISMATCH");
   }
   if (inspection.reparsePoint) throw new WindowsAuthorityPolicyError(inspection.index, "REPARSE_POINT");
   for (const rule of inspection.rules) {
-    if (rule.accessType !== "allow" || !rule.appliesToSelf) continue;
     const rights = BigInt(rule.rights);
     if ((rights & ~WINDOWS_KNOWN_ALLOW_RIGHTS) !== 0n) {
       throw new WindowsAuthorityPolicyError(inspection.index, "UNKNOWN_RIGHTS");
     }
+    if (rule.accessType !== "allow" || !rule.appliesToSelf) continue;
     const mutating = (rights & (WINDOWS_MUTATING_RIGHTS | WINDOWS_GENERIC_MUTATING_RIGHTS)) !== 0n;
     if (!mutating) continue;
     if (rule.identitySid !== inspection.currentUserSid && !WINDOWS_TRUSTED_MUTATORS.has(rule.identitySid)) {
       throw new WindowsAuthorityPolicyError(inspection.index, "BROAD_WRITE");
     }
-    if (rule.inherited && kind !== "ancestor") {
+    if (rule.inherited && protectedEntry) {
       throw new WindowsAuthorityPolicyError(inspection.index, "INHERITED_WRITE");
     }
   }
-  if (kind !== "ancestor" && !inspection.daclProtected) {
+  if (protectedEntry && !inspection.daclProtected) {
     throw new WindowsAuthorityPolicyError(inspection.index, "DACL_NOT_PROTECTED");
   }
 }
@@ -508,13 +547,21 @@ export async function assertNativeEntryAuthority(
     assertSafeDarwinAclOutput(inspection.acl);
   } else if (platform === "win32") {
     const inspection = await inspector.inspectWindowsAcl(path, before, pinnedFd, kind);
-    assertWindowsInspectionShape(inspection);
-    if (
-      inspection.index !== 0
-      || inspection.authorityKind !== kind
-      || BigInt(inspection.volumeSerialNumber) !== BigInt(inspection.verifiedVolumeSerialNumber)
-      || BigInt(inspection.fileId) !== BigInt(inspection.verifiedFileId)
-    ) throw new Error("Windows authority inspection did not match the pinned object");
+    try {
+      assertWindowsInspectionShape(inspection);
+      if (
+        inspection.index !== 0
+        || inspection.authorityKind !== kind
+        || inspection.kind !== windowsInspectionEntryKind(kind)
+        || inspection.currentUserSid.length === 0
+        || BigInt(inspection.volumeSerialNumber) !== BigInt(before.device)
+        || BigInt(inspection.fileId) !== BigInt(before.file)
+        || BigInt(inspection.volumeSerialNumber) !== BigInt(inspection.verifiedVolumeSerialNumber)
+        || BigInt(inspection.fileId) !== BigInt(inspection.verifiedFileId)
+      ) throw new Error();
+    } catch {
+      throw new WindowsAuthorityInspectionError();
+    }
     assertSafeWindowsAuthority(inspection, kind);
   }
   const after = stableAuthorityIdentity(pinnedFd);
@@ -523,7 +570,7 @@ export async function assertNativeEntryAuthority(
   }
 }
 
-/** Deterministic fixture helper; production Windows status never calls it. */
+/** Inspect and bind one Windows descriptor batch before applying entry policy. */
 export async function assertNativeWindowsEntriesAuthority(
   inspector: ConnectRootAuthorityInspector,
   entries: readonly { path: string; kind: ConnectAuthorityEntryKind; pinnedFd: number }[],
@@ -540,22 +587,38 @@ export async function assertNativeWindowsEntriesAuthority(
     : await Promise.all(targets.map((target) => inspector.inspectWindowsAcl(
       target.path, target.expectedIdentity, target.pinnedFd, target.kind,
     )));
-  if (inspections.length !== targets.length) throw new Error("Windows ACL authority inspection was malformed");
+  if (inspections.length !== targets.length) throw new WindowsAuthorityInspectionError();
+  for (let index = 0; index < targets.length; index += 1) {
+    const after = stableAuthorityIdentity(entries[index].pinnedFd);
+    if (after.device !== targets[index].expectedIdentity.device || after.file !== targets[index].expectedIdentity.file) {
+      throw new WindowsAuthorityInspectionError();
+    }
+  }
+  let currentUserSid: string | undefined;
+  let totalAces = 0;
   for (let index = 0; index < targets.length; index += 1) {
     const target = targets[index];
     const inspection = inspections[index];
-    assertWindowsInspectionShape(inspection);
-    if (
-      inspection.index !== (batched ? index : 0)
-      || inspection.authorityKind !== target.kind
-      || inspection.kind !== (target.kind === "env" ? "file" : "directory")
-      || BigInt(inspection.volumeSerialNumber) !== BigInt(inspection.verifiedVolumeSerialNumber)
-      || BigInt(inspection.fileId) !== BigInt(inspection.verifiedFileId)
-    ) throw new Error("Windows authority inspection did not match the pinned object");
-    assertSafeWindowsAuthority(inspection, target.kind);
-    const after = stableAuthorityIdentity(entries[index].pinnedFd);
-    if (after.device !== target.expectedIdentity.device || after.file !== target.expectedIdentity.file) {
-      throw new Error("native authority target changed during inspection");
+    try {
+      assertWindowsInspectionShape(inspection);
+      totalAces += inspection.rules.length;
+      if (
+        inspection.index !== (batched ? index : 0)
+        || inspection.authorityKind !== target.kind
+        || inspection.kind !== windowsInspectionEntryKind(target.kind)
+        || (currentUserSid !== undefined && inspection.currentUserSid !== currentUserSid)
+        || BigInt(inspection.volumeSerialNumber) !== BigInt(target.expectedIdentity.device)
+        || BigInt(inspection.fileId) !== BigInt(target.expectedIdentity.file)
+        || BigInt(inspection.volumeSerialNumber) !== BigInt(inspection.verifiedVolumeSerialNumber)
+        || BigInt(inspection.fileId) !== BigInt(inspection.verifiedFileId)
+        || totalAces > WINDOWS_AUTHORITY_MAX_TOTAL_ACES
+      ) throw new Error();
+      currentUserSid = inspection.currentUserSid;
+    } catch {
+      throw new WindowsAuthorityInspectionError();
     }
+    assertSafeWindowsAuthority(inspection, target.kind);
   }
 }
+
+export { parseWindowsInspectionDocument };

@@ -186,11 +186,45 @@ jobs:
           $administrators = Get-LocalGroupMember -Group 'Administrators' | ForEach-Object { $_.Name }
           if ($administrators -contains "$env:COMPUTERNAME\$userName") { throw 'discovery test user is an administrator' }
           $credential = [PSCredential]::new("$env:COMPUTERNAME\$userName", $securePassword)
+          $fixture = Join-Path $env:SystemDrive ("propr-discovery-" + [Guid]::NewGuid().ToString('N'))
+          $stackRoot = Join-Path $fixture 'stack-private-path-SENTINEL'
+          $dataRoot = Join-Path $stackRoot 'data'
+          $envFile = Join-Path $stackRoot '.env'
+          $identityFile = Join-Path $dataRoot 'public-instance-identity.json'
+          $fakePowerShell = Join-Path $fixture 'System32\WindowsPowerShell\v1.0\powershell.exe'
           $stdout = Join-Path $env:RUNNER_TEMP 'propr-discovery.stdout'
           $stderr = Join-Path $env:RUNNER_TEMP 'propr-discovery.stderr'
           try {
+            New-Item -ItemType Directory -Path $fixture,$stackRoot,$dataRoot | Out-Null
+            $utf8 = [Text.UTF8Encoding]::new($false)
+            [IO.File]::WriteAllText($envFile, "PROPR_STACK=authorized`n", $utf8)
+            [IO.File]::WriteAllText($identityFile, "{`"schemaVersion`":1,`"publicInstanceIdentity`":`"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`"}`n", $utf8)
+            New-Item -ItemType Directory -Path (Split-Path -Parent $fakePowerShell) -Force | Out-Null
+            [IO.File]::WriteAllBytes($fakePowerShell, [byte[]]@(0x4d, 0x5a))
+            $userIdentity = [Security.Principal.NTAccount]::new("$env:COMPUTERNAME\$userName")
+            $systemIdentity = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+            $adminIdentity = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+            function Set-DiscoveryAcl([string]$Path, [bool]$Directory, [Security.Principal.IdentityReference]$Owner) {
+              $acl = if ($Directory) { [Security.AccessControl.DirectorySecurity]::new() } else { [Security.AccessControl.FileSecurity]::new() }
+              $acl.SetOwner($Owner)
+              $acl.SetAccessRuleProtection($true, $false)
+              foreach ($identity in @($userIdentity, $systemIdentity, $adminIdentity)) {
+                $rule = if ($Directory) {
+                  [Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+                } else {
+                  [Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'Allow')
+                }
+                $acl.AddAccessRule($rule) | Out-Null
+              }
+              Set-Acl -LiteralPath $Path -AclObject $acl
+            }
+            Set-DiscoveryAcl $fixture $true $adminIdentity
+            Set-DiscoveryAcl $stackRoot $true $userIdentity
+            Set-DiscoveryAcl $dataRoot $true $userIdentity
+            Set-DiscoveryAcl $envFile $false $userIdentity
+            Set-DiscoveryAcl $identityFile $false $userIdentity
             $node = (Get-Command node.exe).Source
-            $process = Start-Process -FilePath $node -ArgumentList @('scripts/verify-windows-standard-user-connect.mjs', $userName) -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $process = Start-Process -FilePath $node -ArgumentList @('scripts/verify-windows-standard-user-connect.mjs', $userName, $fixture) -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
             Get-Content -LiteralPath $stdout
             if ($process.ExitCode -ne 0) {
               Get-Content -LiteralPath $stderr
@@ -198,6 +232,7 @@ jobs:
             }
             if ((Get-Content -Raw -LiteralPath $stderr).Length -ne 0) { throw 'ordinary-user discovery proof wrote stderr' }
           } finally {
+            Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
             Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
           }

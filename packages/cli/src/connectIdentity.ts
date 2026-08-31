@@ -31,6 +31,7 @@ import {
   assertNativeEntryAuthority,
   assertNativeWindowsEntriesAuthority,
   nativeConnectRootAuthorityInspector,
+  WindowsAuthorityInspectionError,
   WindowsAuthorityPolicyError,
   type ConnectAuthorityEntryKind,
   type ConnectRootAuthorityInspector,
@@ -85,8 +86,7 @@ export interface ConnectRootSnapshot {
   readonly identityDirectory: PinnedPublicIdentityDirectory;
   /** Original caller input key; never treated as authority or reopened here. */
   readonly requestedRoot: string;
-  /** Read-only Windows discovery cannot safely inspect DACLs without native code. */
-  readonly authorityDiagnostic: "verified" | "acl-unavailable";
+  readonly authorityDiagnostic: "verified";
 }
 
 export interface ConnectRootSnapshotOptions {
@@ -95,8 +95,6 @@ export interface ConnectRootSnapshotOptions {
   authorityInspector?: ConnectRootAuthorityInspector;
   onBoundary?: (boundary: ConnectRootSnapshotBoundary) => void | Promise<void>;
   parseEnvFile?: (contents: string) => Record<string, string>;
-  /** Status-only boundary: retain descriptor identity checks but execute no packaged native ACL broker. */
-  allowUnavailableWindowsAclDiagnostic?: boolean;
 }
 
 interface HeldDirectory {
@@ -518,6 +516,7 @@ async function authorityEntry(
   try {
     await assertNativeEntryAuthority(inspector, platform, path, kind, pinnedFd);
   } catch (error) {
+    if (error instanceof WindowsAuthorityInspectionError) throw error;
     if (error instanceof WindowsAuthorityPolicyError) throw error;
     throw new ConnectRootError();
   }
@@ -635,7 +634,6 @@ export async function withOwnedConnectRootSnapshot<T>(
       : undefined;
   if (!ioPlatform) throw new ConnectRootError();
   const inspector = options.authorityInspector ?? nativeConnectRootAuthorityInspector;
-  const windowsAclUnavailable = platform === "win32" && options.allowUnavailableWindowsAclDiagnostic === true;
   const callerUid = process.getuid?.();
   if (platform !== "win32" && callerUid === undefined) throw new ConnectRootError();
   const requestedRoot = resolve(flagRoot);
@@ -688,16 +686,14 @@ export async function withOwnedConnectRootSnapshot<T>(
     if (platform === "darwin") {
       await authorityEntry(inspector, platform, join(requestedRoot, ".env"), "env", envFd);
     } else if (platform === "win32") {
-      if (!windowsAclUnavailable) {
-        await authorityEntries(inspector, [
-          ...acquired.ancestry.slice(0, -1).map((entry) => ({
-            path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
-          })),
-          { path: root.visiblePath, kind: "root", pinnedFd: root.fd },
-          { path: data.visiblePath, kind: "data", pinnedFd: data.fd },
-          { path: join(requestedRoot, ".env"), kind: "env", pinnedFd: envFd },
-        ]);
-      }
+      await authorityEntries(inspector, [
+        ...acquired.ancestry.slice(0, -1).map((entry) => ({
+          path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
+        })),
+        { path: root.visiblePath, kind: "root", pinnedFd: root.fd },
+        { path: data.visiblePath, kind: "data", pinnedFd: data.fd },
+        { path: join(requestedRoot, ".env"), kind: "env", pinnedFd: envFd },
+      ]);
       closeAcquiredAncestors(acquired);
       acquiredAncestorsClosed = true;
     }
@@ -745,7 +741,7 @@ export async function withOwnedConnectRootSnapshot<T>(
       },
       validateEntry: async (name, fd) => {
         const entryPath = join(data!.visiblePath, name);
-        if (platform !== "linux" && !windowsAclUnavailable) {
+        if (platform !== "linux") {
           await authorityEntry(inspector, platform, entryPath, "env", fd);
         }
       },
@@ -774,7 +770,7 @@ export async function withOwnedConnectRootSnapshot<T>(
         envFileValues,
         identityDirectory,
         requestedRoot,
-        authorityDiagnostic: windowsAclUnavailable ? "acl-unavailable" : "verified",
+        authorityDiagnostic: "verified",
       });
     } catch (error) {
       operationError = error;
@@ -801,7 +797,7 @@ export async function withOwnedConnectRootSnapshot<T>(
         before.length !== after.length
         || before.some((entry, index) => !sameIdentity(entry.stat, after[index].stat))
       ) throw new ConnectRootError();
-      if (platform === "win32" && !windowsAclUnavailable) {
+      if (platform === "win32") {
         await authorityEntries(inspector, [
           ...reacquired.ancestry.slice(0, -1).map((entry) => ({
             path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
@@ -810,7 +806,7 @@ export async function withOwnedConnectRootSnapshot<T>(
           { path: data.visiblePath, kind: "data", pinnedFd: data.fd },
           { path: join(requestedRoot, ".env"), kind: "env", pinnedFd: envFd },
         ]);
-      } else if (platform !== "win32") {
+      } else {
         await assertPlatformAuthority(reacquired, platform, inspector, callerUid);
       }
     } finally {
@@ -821,6 +817,7 @@ export async function withOwnedConnectRootSnapshot<T>(
   } catch (error) {
     if (error instanceof ConnectSnapshotOperationError) throw error.operationCause;
     if (error instanceof PublicInstanceIdentityError) throw error;
+    if (error instanceof WindowsAuthorityInspectionError) throw error;
     if (error instanceof ConnectRootError) throw error;
     if (error instanceof WindowsAuthorityPolicyError) {
       throw new ConnectRootError(`NATIVE_ENTRY_${error.entryIndex}_${error.policyReason}`);
@@ -988,6 +985,7 @@ export async function getOrCreateSnapshotPublicInstanceIdentity(
   try {
     return await getOrCreatePublicInstanceIdentityPinned(directory, { generate, role: "host" });
   } catch (error) {
+    if (error instanceof WindowsAuthorityInspectionError) throw error;
     if (error instanceof PublicInstanceIdentityError) throw error;
     throw new PublicInstanceIdentityError();
   }
@@ -999,6 +997,7 @@ export async function readSnapshotPublicInstanceIdentity(
   try {
     return await readPublicInstanceIdentityPinned(directory);
   } catch (error) {
+    if (error instanceof WindowsAuthorityInspectionError) throw error;
     if (error instanceof PublicInstanceIdentityError) throw error;
     throw new PublicInstanceIdentityError();
   }

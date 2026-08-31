@@ -78,7 +78,13 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
   const definitions = diagnosticDefinitions();
   assert.deepEqual([...definitions.scenarioAllowlist], [
     'ready', 'down', 'disabled', 'restart-required', 'malformed', 'oversized', 'timeout',
-    'identity-mismatch', 'secret-sentinel', 'api',
+    'identity-mismatch', 'secret-sentinel', 'path-aba', 'api', 'authority-malformed', 'authority-oversized',
+    'authority-extra-key', 'authority-duplicate', 'authority-stderr', 'authority-nonzero',
+    'authority-timeout', 'authority-descriptor-mismatch', 'authority-index-mismatch',
+    'authority-kind-mismatch', 'authority-authority-kind-mismatch', 'authority-identity-mismatch',
+    'authority-sid-mismatch', 'authority-broad-write', 'authority-inherited-write',
+    'authority-unprotected', 'authority-owner-mismatch', 'authority-reparse',
+    'authority-missing-system-root', 'authority-mismatched-system-root', 'authority-untrusted-system-root',
   ]);
   assert.deepEqual([...definitions.assertionStageAllowlist], [
     'authority-probe', 'scaffold', 'identity-assertion', 'config-init', 'config-save',

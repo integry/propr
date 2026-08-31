@@ -15,6 +15,7 @@ import {
   readSnapshotPublicInstanceIdentity,
   withOwnedConnectRootSnapshot,
 } from "../connectIdentity.js";
+import { WindowsAuthorityInspectionError } from "../connectRootAuthority.js";
 
 export const CONNECT_STATUS_EXIT = {
   ready: 0,
@@ -362,9 +363,6 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
   try {
     const prepared = await prepareConnectHostConfig();
     const local = await withOwnedConnectRootSnapshot(root, async (snapshot) => {
-      if (snapshot.authorityDiagnostic === "acl-unavailable") {
-        return { kind: "unverifiedAuthority" as const };
-      }
       const cfg = prepared.resolveSnapshot(snapshot);
       // Status is discovery, not setup: never create/repair identity state or
       // invoke a privileged Windows protection operation from this path.
@@ -380,13 +378,7 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
         publicInstanceIdentity,
         sidecarInspection,
       };
-    }, {
-      parseEnvFile: prepared.parseEnvFile,
-      // Node has no same-handle Windows DACL API. Read-only status reports this
-      // diagnostic explicitly instead of executing a mutable packaged helper.
-      allowUnavailableWindowsAclDiagnostic: process.platform === "win32",
-    });
-    if (local.kind === "unverifiedAuthority") return unavailableRootAuthorityStatus();
+    }, { parseEnvFile: prepared.parseEnvFile });
     if (local.sidecarInspection.kind === "internalFailure") {
       return baseDocument("internalFailure", { reasonCodes: ["INTERNAL_FAILURE"] });
     }
@@ -396,6 +388,7 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
       publicInstanceIdentity: local.publicInstanceIdentity,
     });
   } catch (error) {
+    if (error instanceof WindowsAuthorityInspectionError) return unavailableRootAuthorityStatus();
     if (error instanceof ConnectRootError) {
       return invalidConnectRootStatus();
     }

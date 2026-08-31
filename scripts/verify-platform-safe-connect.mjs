@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '..');
 const files = [
   'packages/cli/src/commands/connectCommand.test.ts',
+  'packages/cli/src/connectRootAuthority.test.ts',
   'packages/cli/src/commands/initStack.test.ts',
   'packages/cli/src/config/ConfigManager.test.ts',
   'packages/cli/src/index.test.ts',
@@ -36,13 +37,13 @@ const tapValue = (name) => {
 const valid = result.status === 0
   && !result.error
   && !result.signal
-  && tapValue('tests') === 74
-  && tapValue('pass') === 74
+  && tapValue('tests') === 78
+  && tapValue('pass') === 78
   && tapValue('fail') === 0
   && tapValue('skipped') === 0;
 
 if (!valid) {
-  process.stderr.write('Platform-safe Connect proof did not complete 74/74 within 90000ms.\n');
+  process.stderr.write('Platform-safe Connect proof did not complete 78/78 within 90000ms.\n');
   process.exit(1);
 }
-process.stdout.write('Platform-safe Connect proof: tests=74 pass=74 fail=0 skipped=0 budgetMs=90000\n');
+process.stdout.write('Platform-safe Connect proof: tests=78 pass=78 fail=0 skipped=0 budgetMs=90000\n');
