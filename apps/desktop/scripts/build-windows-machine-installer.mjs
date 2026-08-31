@@ -229,7 +229,7 @@ ${tree.content}
           </Component>
         </Directory>
       </Directory>
-      <Directory Id="CommonProgramMenuFolder">
+      <Directory Id="ProgramMenuFolder">
         <Directory Id="ApplicationProgramsFolder" Name="ProPR Desktop">
           <Component Id="ApplicationStartMenuShortcutComponent" Guid="*" Win64="yes">
             <Shortcut Id="ApplicationStartMenuShortcut" Directory="ApplicationProgramsFolder" Name="ProPR Desktop"

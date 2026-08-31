@@ -294,7 +294,7 @@ describe('desktop trusted release workflow', () => {
   });
 
 
-  test('keeps both Windows architectures mandatory while excluding every deferred update authority gate and resource', () => {
+  test('keeps both Windows architectures and the complete machine-scope installer contract mandatory', () => {
     for (const [jobName, section] of [
       ['unsigned validation', job('package', 'finalize')],
       ['trusted production', job('release-package', 'release-finalize')],
@@ -330,16 +330,16 @@ describe('desktop trusted release workflow', () => {
     assert.match(forgeConfig, /wixDirectory: process\.env\.PROPR_DESKTOP_WIX_DIRECTORY/);
     assert.doesNotMatch(forgeConfig, /MakerSquirrel|noMsi|Setup\.exe|full\.nupkg/);
     assert.match(windowsMachineInstaller, /InstallScope="perMachine"/);
-    assert.match(windowsMachineInstaller, /<Directory Id="CommonProgramMenuFolder">/);
+    assert.match(windowsMachineInstaller, /<Directory Id="ProgramMenuFolder">/);
     assert.match(
       windowsMachineInstaller,
       /<Component Id="ApplicationStartMenuShortcutComponent" Guid="\*" Win64="yes">/,
     );
     assert.match(
       windowsMachineInstaller,
-      /<RegistryValue Root="HKLM" Key="Software\\\\ProPR\\\\Desktop" Name="installed"/,
+      /<RegistryValue Root="HKLM" Key="Software\\\\ProPR\\\\Desktop" Name="installed"\s+Value="1" Type="integer" KeyPath="yes" \/>/,
     );
-    assert.doesNotMatch(windowsMachineInstaller, /<Directory Id="ProgramMenuFolder">/);
+    assert.doesNotMatch(windowsMachineInstaller, /\bCommonProgramMenuFolder\b/);
     assert.doesNotMatch(windowsMachineInstaller, /<RegistryValue\b[^>]*\bRoot="HKCU"/);
     assert.match(windowsMachineInstaller, /INSTALLED_WIX_DIRECTORY = String\.raw`C:\\Program Files \(x86\)\\WiX Toolset v3\.14\\bin`/);
     assert.match(windowsMachineInstaller, /if \(arch === 'x64'\)/);
