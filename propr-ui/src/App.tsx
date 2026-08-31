@@ -25,6 +25,8 @@ import { NotificationCenterProvider } from './contexts/NotificationCenterContext
 const AiAgentsPage = lazy(() => import('./pages/AiAgentsPage'))
 const AccessManagementPage = lazy(() => import('./pages/AccessManagementPage'))
 const Dashboard = lazy(() => import('./components/Dashboard'))
+const GoalCreatePage = lazy(() => import('./pages/GoalCreatePage'))
+const GoalsPage = lazy(() => import('./pages/GoalsPage'))
 const LlmLogsPage = lazy(() => import('./pages/LlmLogsPage'))
 const InboxPage = lazy(() => import('./pages/InboxPage'))
 const LoginPage = lazy(() => import('./pages/LoginPage'))
@@ -245,6 +247,8 @@ const AppContent: React.FC = () => {
                       }
                     />
                     <Route path="/inbox" element={<Layout><InboxPage /></Layout>} />
+                    <Route path="/goals" element={<Layout><GoalsPage /></Layout>} />
+                    <Route path="/goals/new" element={<Layout><GoalCreatePage /></Layout>} />
                     <Route
                       path="/repositories"
                       element={

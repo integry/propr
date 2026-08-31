@@ -16,6 +16,7 @@ import {
   ScrollText,
   Settings,
   ShieldCheck,
+  Target,
   X,
 } from 'lucide-react';
 import type { HeaderStats } from '../hooks/useHeaderStats';
@@ -49,6 +50,7 @@ const getNavigationState = (pathname: string) => {
     repositories: pathMatches(pathname, '/repositories') || pathMatches(pathname, '/summaries'),
     more: pathname === '/' || pathMatches(pathname, '/plans') ||
       (pathMatches(pathname, '/studio') && !newPlan) ||
+      pathMatches(pathname, '/goals') ||
       pathMatches(pathname, '/ai-agents') || pathMatches(pathname, '/llm-logs') ||
       pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members'),
   };
@@ -57,6 +59,7 @@ const getNavigationState = (pathname: string) => {
 const getMoreItems = (user: CurrentUser | null) => [
   { label: 'Dashboard', to: '/', icon: Home },
   { label: 'Plans', to: '/plans', icon: ScrollText },
+  { label: 'Goals', to: '/goals', icon: Target },
   ...(userHasPermission(user, 'instance.manage_agents')
     ? [{ label: 'Coding Agents', to: '/ai-agents', icon: Bot }]
     : []),
