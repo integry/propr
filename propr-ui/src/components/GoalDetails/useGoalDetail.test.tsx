@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GoalDetail, GoalEventsPage } from '../../api/goalsApi';
 import { GoalApiError } from '../../api/goalsApi';
-import { createGoalDetailHarness, getGoalDetailMocks, detail, event, page, resetGoalDetailMocks, user } from './useGoalDetailTestHarness';
+import { createGoalDetailHarness, getGoalDetailMocks, detail, event, message, page, resetGoalDetailMocks, user } from './useGoalDetailTestHarness';
 
 const mocks = getGoalDetailMocks();
 const Harness = createGoalDetailHarness();
@@ -106,6 +106,63 @@ describe('useGoalDetail replay and authorization', () => {
     retained = (screen.getByTestId('events').textContent ?? '').split(',').filter(Boolean).map(Number);
     expect(retained).toHaveLength(1_000);
     expect(retained[0]).toBe(1_408);
+  });
+
+  it('coalesces authoritative detail reconciliation when an over-limit gap evicts its early detail events', async () => {
+    const latestSequence = 1_205;
+    const refreshed = {
+      ...detail,
+      goal: { ...detail.goal, state: 'completed' as const, version: 2 },
+      messages: [message('reconciled message')],
+      stats: { ...detail.stats, tokens: { total: 321, byModel: [] } },
+      latestSequence,
+    };
+    let gapOpened = false;
+    mocks.getGoal.mockResolvedValueOnce(detail).mockResolvedValueOnce(refreshed);
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number }) => {
+      if (options.afterSequence === undefined) return Promise.resolve(page([event(4), event(5)], true));
+      if (!gapOpened || options.afterSequence >= latestSequence) return Promise.resolve(page([]));
+      const start = options.afterSequence + 1;
+      const end = Math.min(latestSequence, start + 199);
+      const events = Array.from({ length: end - start + 1 }, (_, index) => {
+        const sequence = start + index;
+        if (sequence === 6) return { ...event(sequence), type: 'lifecycle' as const };
+        if (sequence === 7) return { ...event(sequence), type: 'message' as const };
+        if (sequence === 8) return { ...event(sequence), type: 'usage' as const };
+        return event(sequence);
+      });
+      return Promise.resolve(page(events));
+    });
+
+    render(<Harness viewportAnchorSequence={1_000} />);
+    await waitFor(() => expect(screen.getByTestId('connection')).toHaveTextContent('connected'));
+    const replayRequestsBeforeGap = mocks.getGoalEvents.mock.calls.length;
+    gapOpened = true;
+    const deliver = (sequence: number) => mocks.listeners.get('goal:event')?.forEach(callback => callback({
+      ownerId: 'owner-a', repository: 'integry/propr', goalId: 'goal-1', event: event(sequence),
+    }));
+    act(() => { deliver(latestSequence); deliver(latestSequence - 1); deliver(latestSequence); });
+
+    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('completed'));
+    expect(screen.getByTestId('messages')).toHaveTextContent('reconciled message');
+    expect(screen.getByTestId('tokens')).toHaveTextContent('321');
+    expect(mocks.getGoal).toHaveBeenCalledTimes(2);
+
+    const retained = (screen.getByTestId('events').textContent ?? '').split(',').filter(Boolean).map(Number);
+    expect(retained).toHaveLength(1_000);
+    expect(new Set(retained).size).toBe(1_000);
+    expect(retained[0]).toBe(206);
+    expect(retained.at(-1)).toBe(latestSequence);
+    expect(retained).toContain(1_000);
+    expect(retained).not.toEqual(expect.arrayContaining([6, 7, 8]));
+    expect((screen.getByTestId('event-types').textContent ?? '').split(',').every(type => type === 'stdout')).toBe(true);
+
+    const gapRequests = mocks.getGoalEvents.mock.calls.slice(replayRequestsBeforeGap)
+      .filter(([, options]) => options.afterSequence !== undefined);
+    expect(gapRequests.map(([, options]) => options.afterSequence)).toEqual([5, 205, 405, 605, 805, 1_005]);
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.getGoalEvents.mock.calls).toHaveLength(replayRequestsBeforeGap + 6);
+    expect(mocks.getGoal).toHaveBeenCalledTimes(2);
   });
 
   it('bounds repeated older pages without losing a live tail delivered during the load', async () => {

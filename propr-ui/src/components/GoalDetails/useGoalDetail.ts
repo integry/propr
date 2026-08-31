@@ -10,7 +10,7 @@ import { useCurrentUser } from '../../contexts/AuthContext';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { useSocket } from '../../contexts/useSocket';
 import { makeGoalIntentKey, mergeGoalEvents, scopedGoalKey, type GoalViewportAnchor } from './goalDetailUtils';
-import { drainGoalEventGap } from './goalReplay';
+import { drainGoalEventGap, goalEventChangesDetail } from './goalReplay';
 
 const PAGE_SIZE = 200; const POLL_INTERVAL_MS = 3_000;
 const AUTHORIZATION_PROBE_INTERVAL_MS = 30_000;
@@ -19,7 +19,7 @@ const ACCESS_ERROR = 'This goal is unavailable or you no longer have access.';
 type ConnectionState = 'connected' | 'recovering' | 'offline';
 type GoalAction = 'pause' | 'resume' | 'cancel' | 'model' | 'message' | 'cancel-message' | null;
 interface RequestToken { generation: number; identity: string }
-interface MessageIntent { fingerprint: string; key: string }
+interface MessageIntent { fingerprint: string; key: string } interface GoalRecoveryResult { recovered: boolean; detailChanged: boolean }
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : 'The goal request failed.';
 const isAccessLoss = (error: unknown): boolean => error instanceof GoalApiError && (error.status === 403 || error.status === 404);
@@ -61,7 +61,7 @@ export function useGoalDetail(goalId: string) {
   const detailRevisionRef = useRef(0);
   const controllersRef = useRef(new Set<AbortController>());
   const subscriptionCleanupRef = useRef<(() => void) | null>(null);
-  const recoveryPromiseRef = useRef<Promise<boolean> | null>(null);
+  const recoveryPromiseRef = useRef<Promise<GoalRecoveryResult> | null>(null); const reconciledRecoveryRef = useRef<GoalRecoveryResult | null>(null);
   const recoveryTargetRef = useRef(0); const previousCursorRef = useRef<number | null>(null);
   const refreshControllerRef = useRef<AbortController | null>(null);
   const loadOlderControllerRef = useRef<AbortController | null>(null);
@@ -87,7 +87,7 @@ export function useGoalDetail(goalId: string) {
     controllersRef.current.clear();
     refreshControllerRef.current = null;
     loadOlderControllerRef.current = null;
-    recoveryPromiseRef.current = null;
+    recoveryPromiseRef.current = null; reconciledRecoveryRef.current = null;
   }, []);
 
   const commitEvents = useCallback((nextEvents: GoalEvent[]) => {
@@ -183,14 +183,14 @@ export function useGoalDetail(goalId: string) {
     }
   }, [controller, current, goalId, handleAsyncError, release, token]);
 
-  const recoverTail = useCallback((target = 0): Promise<boolean> => {
+  const recoverTail = useCallback((target = 0): Promise<GoalRecoveryResult> => {
     recoveryTargetRef.current = Math.max(recoveryTargetRef.current, target);
     if (recoveryPromiseRef.current) return recoveryPromiseRef.current;
     const request = token();
-    if (!request) return Promise.resolve(false);
+    if (!request) return Promise.resolve({ recovered: false, detailChanged: false });
     const recoveryController = controller();
-    let recovery: Promise<boolean> | null = null;
-    recovery = (async () => {
+    let recovery: Promise<GoalRecoveryResult> | null = null; recovery = (async () => {
+      let detailChanged = false;
       try {
         recoveryTargetRef.current = Math.max(recoveryTargetRef.current, detailRef.current?.latestSequence ?? 0);
         let probedCurrentTail = false;
@@ -198,19 +198,20 @@ export function useGoalDetail(goalId: string) {
           const tail = eventsRef.current.at(-1)?.sequence ?? 0;
           const wanted = recoveryTargetRef.current;
           const replay = await drainGoalEventGap(goalId, tail, tail < wanted ? wanted : null, recoveryController.signal);
-          if (!current(request, recoveryController)) return false;
+          detailChanged ||= replay.detailChanged;
+          if (!current(request, recoveryController)) return { recovered: false, detailChanged: false };
           commitEvents(mergeGoalEvents(eventsRef.current, replay.events, goalId, { viewportAnchorSequence: viewportAnchorRef.current?.sequence }));
           probedCurrentTail = replay.cursor >= recoveryTargetRef.current;
         }
-        if (!current(request, recoveryController)) return false;
+        if (!current(request, recoveryController)) return { recovered: false, detailChanged: false };
         setFallbackRequired(!transportConnectedRef.current);
         setConnectionState(transportConnectedRef.current ? 'connected' : 'recovering');
-        return true;
+        return { recovered: true, detailChanged };
       } catch (caught) {
         if (!handleAsyncError(caught, request) && current(request, recoveryController)) {
           setFallbackRequired(true); setConnectionState(transportConnectedRef.current ? 'recovering' : 'offline');
         }
-        return false;
+        return { recovered: false, detailChanged: false };
       } finally {
         release(recoveryController);
         if (recoveryPromiseRef.current === recovery) recoveryPromiseRef.current = null;
@@ -227,12 +228,12 @@ export function useGoalDetail(goalId: string) {
     const expectedScope = scopedGoalKey(userId, authorizedRepository, goalId);
     let subscribed = true;
     const recoverAndRefresh = async (target?: number) => {
-      const previousTail = eventsRef.current.at(-1)?.sequence ?? 0;
       const detailSequence = detailRef.current?.latestSequence ?? 0;
-      if (!await recoverTail(target)) return;
-      const detailChanged = eventsRef.current.some(event => event.sequence > Math.min(previousTail, detailSequence)
-        && (event.type === 'lifecycle' || event.type === 'message' || event.type === 'usage'));
-      if (!detailChanged || !subscribed || !current(request)) return;
+      const retainedDetailChanged = eventsRef.current.some(event => event.sequence > detailSequence && goalEventChangesDetail(event));
+      const recoveryResult = await recoverTail(target);
+      if (!recoveryResult.recovered || !subscribed || !current(request)) return;
+      if ((!retainedDetailChanged && !recoveryResult.detailChanged) || reconciledRecoveryRef.current === recoveryResult) return;
+      reconciledRecoveryRef.current = recoveryResult;
       const refreshRevision = detailRevisionRef.current;
       const refreshed = await refreshDetail();
       if (!refreshed && subscribed && current(request) && refreshRevision !== detailRevisionRef.current) {

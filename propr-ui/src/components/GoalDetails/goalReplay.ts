@@ -8,7 +8,11 @@ const MAX_NO_PROGRESS_PAGES = 3;
 export interface GoalReplayResult {
   events: GoalEvent[];
   cursor: number;
+  detailChanged: boolean;
 }
+
+export const goalEventChangesDetail = (event: GoalEvent): boolean =>
+  event.type === 'lifecycle' || event.type === 'message' || event.type === 'usage';
 
 const pageEventsAfter = (goalId: string, cursor: number, events: GoalEvent[]): GoalReplayResult => {
   let expected = cursor + 1;
@@ -20,7 +24,7 @@ const pageEventsAfter = (goalId: string, cursor: number, events: GoalEvent[]): G
     if (event.sequence !== expected) throw new GoalContractError('response.events[].sequence', `contiguous sequence ${expected}`);
     replayed.push(event); seen.add(event.sequence); expected += 1;
   }
-  return { events: replayed, cursor: expected - 1 };
+  return { events: replayed, cursor: expected - 1, detailChanged: replayed.some(goalEventChangesDetail) };
 };
 
 const pageResponseCursor = (nextCursor: number | null, eventCursor: number): number => {
@@ -42,11 +46,13 @@ export async function drainGoalEventGap(
   let cursor = afterSequence;
   let noProgress = 0;
   let replayed: GoalEvent[] = [];
+  let detailChanged = false;
 
   let complete = false;
   for (let pageNumber = 0; !complete && pageNumber < MAX_REPLAY_PAGES; pageNumber += 1) {
     const page = await getGoalEvents(goalId, { afterSequence: cursor, limit: PAGE_SIZE, signal });
     const canonicalPage = pageEventsAfter(goalId, cursor, page.events);
+    detailChanged ||= canonicalPage.detailChanged;
     replayed = mergeGoalEvents(replayed, canonicalPage.events, goalId);
     const responseCursor = pageResponseCursor(page.nextCursor, canonicalPage.cursor);
     if (responseCursor <= cursor) {
@@ -68,5 +74,5 @@ export async function drainGoalEventGap(
   if (!complete || (targetSequence !== null && cursor < targetSequence)) {
     throw new GoalContractError('response.nextCursor', `sequence ${targetSequence} within ${MAX_REPLAY_PAGES} replay pages`);
   }
-  return { events: replayed, cursor };
+  return { events: replayed, cursor, detailChanged };
 }

@@ -1,5 +1,6 @@
 import type { CurrentUser } from '../../api/proprTypes';
 import type { GoalDetail, GoalEvent, GoalEventsPage } from '../../api/goalsApi';
+import { useEffect } from 'react';
 import { vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
@@ -53,10 +54,15 @@ export const detail: GoalDetail = {
 };
 
 export const createGoalDetailHarness = () => {
-  function Harness({ goalId = 'goal-1' }: { goalId?: string }) {
+  function Harness({ goalId = 'goal-1', viewportAnchorSequence }: { goalId?: string; viewportAnchorSequence?: number }) {
     const goal = useGoalDetail(goalId);
+    const setViewportAnchor = goal.setViewportAnchor;
     const retry = { ...message('retry me', 'failed-1'), state: 'failed' as const };
-    return <><div data-testid="detail">{goal.detail?.goal.repository ?? 'empty'}</div><div data-testid="version">{goal.detail?.goal.version ?? 'none'}</div><div data-testid="state">{goal.detail?.goal.state ?? 'none'}</div><div data-testid="events">{goal.events.map(item => item.sequence).join(',')}</div><div data-testid="connection">{goal.connectionState}</div><div data-testid="readonly">{String(goal.readOnly)}</div><div role="alert">{goal.actionError}</div><button type="button" onClick={() => void goal.loadOlder()}>older</button><button type="button" onClick={() => void goal.pause()}>pause</button><button type="button" onClick={() => void goal.sendMessage({ body: 'alpha' })}>message alpha</button><button type="button" onClick={() => void goal.sendMessage({ body: 'beta' })}>message beta</button><button type="button" onClick={() => void goal.sendMessage({ body: "Summarize what's done.", predefinedKind: 'whats_done' })}>message canned</button><button type="button" onClick={() => void goal.retryMessage(retry)}>retry failed</button></>;
+    useEffect(() => {
+      setViewportAnchor(viewportAnchorSequence === undefined ? null : { sequence: viewportAnchorSequence, viewportOffset: 70 });
+      return () => setViewportAnchor(null);
+    }, [setViewportAnchor, viewportAnchorSequence]);
+    return <><div data-testid="detail">{goal.detail?.goal.repository ?? 'empty'}</div><div data-testid="version">{goal.detail?.goal.version ?? 'none'}</div><div data-testid="state">{goal.detail?.goal.state ?? 'none'}</div><div data-testid="events">{goal.events.map(item => item.sequence).join(',')}</div><div data-testid="event-types">{goal.events.map(item => item.type).join(',')}</div><div data-testid="messages">{goal.detail?.messages.map(item => item.body).join(',') ?? ''}</div><div data-testid="tokens">{goal.detail?.stats.tokens.total ?? 0}</div><div data-testid="connection">{goal.connectionState}</div><div data-testid="readonly">{String(goal.readOnly)}</div><div role="alert">{goal.actionError}</div><button type="button" onClick={() => void goal.loadOlder()}>older</button><button type="button" onClick={() => void goal.pause()}>pause</button><button type="button" onClick={() => void goal.sendMessage({ body: 'alpha' })}>message alpha</button><button type="button" onClick={() => void goal.sendMessage({ body: 'beta' })}>message beta</button><button type="button" onClick={() => void goal.sendMessage({ body: "Summarize what's done.", predefinedKind: 'whats_done' })}>message canned</button><button type="button" onClick={() => void goal.retryMessage(retry)}>retry failed</button></>;
   }
   return Harness;
 };

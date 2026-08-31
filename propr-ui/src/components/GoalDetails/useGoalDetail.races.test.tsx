@@ -118,6 +118,37 @@ describe('useGoalDetail replay and authorization', () => {
     expect(screen.getByTestId('detail')).toHaveTextContent('integry/goal-two');
   });
 
+  it('discards a detail-changing recovery summary when the goal identity switches mid-gap', async () => {
+    const view = render(<Harness />);
+    await waitFor(() => expect(screen.getByTestId('connection')).toHaveTextContent('connected'));
+
+    let resolveStalePage!: (value: GoalEventsPage) => void;
+    const stalePage = new Promise<GoalEventsPage>(resolve => { resolveStalePage = resolve; });
+    const goalTwo = { ...detail, goal: { ...detail.goal, goalId: 'goal-2', repository: 'integry/goal-two' } };
+    mocks.getGoal.mockImplementation((goalId: string) => Promise.resolve(goalId === 'goal-2' ? goalTwo : detail));
+    mocks.getGoalEvents.mockImplementation((goalId: string, options: { afterSequence?: number }) => {
+      if (goalId === 'goal-1' && options.afterSequence === 5) return stalePage;
+      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+      return Promise.resolve(page([event(4, goalId), event(5, goalId)], false));
+    });
+    act(() => mocks.listeners.get('goal:event')?.forEach(callback => callback({
+      ownerId: 'owner-a', repository: 'integry/propr', goalId: 'goal-1', event: event(1_205),
+    })));
+    await waitFor(() => expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 5 })));
+
+    view.rerender(<Harness goalId="goal-2" />);
+    await waitFor(() => expect(screen.getByTestId('detail')).toHaveTextContent('integry/goal-two'));
+    await act(async () => {
+      resolveStalePage(page(Array.from({ length: 200 }, (_, index) => ({
+        ...event(index + 6), type: index === 0 ? 'lifecycle' as const : 'stdout' as const,
+      }))));
+    });
+
+    expect(screen.getByTestId('detail')).toHaveTextContent('integry/goal-two');
+    expect(screen.getByTestId('events')).toHaveTextContent('4,5');
+    expect(mocks.getGoal.mock.calls.map(([goalId]) => goalId)).toEqual(['goal-1', 'goal-2']);
+  });
+
   it('uses authoritative backward cursors across sparse and empty pages', async () => {
     mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
       if (options.beforeSequence === 20) return Promise.resolve(page([], true, 10));
