@@ -277,8 +277,10 @@ test('the staged probe accepts only ordered milestone tokens and coarse timing b
 
 test('the diagnostic allowance precedes a cumulatively bounded production standard-handle proof', () => {
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS, 60_000);
-  assert.equal(WINDOWS_INSPECTION_TIMEOUT_MS, 30_000);
+  assert.equal(WINDOWS_INSPECTION_TIMEOUT_MS, 60_000);
   assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 60_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(0), 60_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(1), 59_999);
   assert.equal(windowsInspectionTimeoutForElapsed(45_000), 15_000);
   assert.throws(
     () => windowsInspectionTimeoutForElapsed(60_000),
