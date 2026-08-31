@@ -38,6 +38,38 @@ const bounded = <T>(promise: Promise<T>, milliseconds = 1_000): Promise<T> => {
   });
 };
 
+class PairingClock {
+  #now = 0;
+  #nextId = 1;
+  readonly #timers = new Map<number, { at: number; callback: () => void }>();
+
+  readonly source = {
+    now: (): number => this.#now,
+    setTimeout: (callback: () => void, milliseconds: number): ReturnType<typeof setTimeout> => {
+      const id = this.#nextId++;
+      this.#timers.set(id, { at: this.#now + milliseconds, callback });
+      return id as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: (timer: ReturnType<typeof setTimeout>): void => {
+      this.#timers.delete(timer as unknown as number);
+    },
+  };
+
+  async advanceAfterSchedulerDelay(milliseconds: number): Promise<void> {
+    this.#now += milliseconds;
+    while (true) {
+      const due = [...this.#timers.entries()]
+        .filter(([, timer]) => timer.at <= this.#now)
+        .sort(([leftId, left], [rightId, right]) => left.at - right.at || leftId - rightId)[0];
+      if (!due) break;
+      this.#timers.delete(due[0]);
+      due[1].callback();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+  }
+}
+
 describe('desktop instance protocol', () => {
   it('discovers capabilities, opens approval, and polls to a single opaque token', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
@@ -327,21 +359,29 @@ describe('desktop instance protocol', () => {
   });
 
   for (const lateSettlement of ['microtask', 'next-task'] as const) {
-    it(`does not accept a token response that settles in the ${lateSettlement} after deadline abort`, async () => {
+    it(`expires when a scheduler-delayed token response settles in the ${lateSettlement}`, async () => {
       const { completeDesktopPairing } = await import('../src/index.js');
-      const expiresAt = new Date(Date.now() + 40).toISOString();
+      const pairingClock = new PairingClock();
+      const transportClock = new PairingClock();
+      const expiresAt = new Date(protocolNow + 40).toISOString();
       let lateResponseResolved = false;
+      let pollStarted!: () => void;
+      const polling = new Promise<void>(resolve => { pollStarted = resolve; });
       const client = new ProprClient({
         baseUrl: 'https://propr.example.test',
+        pairingProtocol: { clock: transportClock.source },
         fetch: async (_input, init) => new Promise<Response>(resolve => {
+          pollStarted();
           init?.signal?.addEventListener('abort', () => {
             const settle = () => {
               lateResponseResolved = true;
               resolve(json({
-                status: 'complete',
+                status: 'provisional',
                 token: `propr_it_${'C'.repeat(43)}`,
                 tokenType: 'Bearer',
-                expiresAt: null,
+                activationTicket: 'T'.repeat(43),
+                activationExpiresAt: protocolDeadline,
+                ...binding,
               }));
             };
             if (lateSettlement === 'microtask') queueMicrotask(settle);
@@ -356,8 +396,18 @@ describe('desktop instance protocol', () => {
         approvalUrl: 'https://propr.example.test/approve',
         expiresAt,
         interval: 1,
-      }, { sleep: async () => undefined });
+      }, {
+        binding,
+        clock: pairingClock.source,
+        now: () => protocolNow + pairingClock.source.now(),
+        sleep: async () => undefined,
+      });
 
+      await polling;
+      // The transport scheduler reaches the shared boundary while the pairing
+      // scheduler remains stalled. This deterministically reproduces hosted
+      // load without relying on a real 40 ms timer race.
+      await transportClock.advanceAfterSchedulerDelay(75);
       await assert.rejects(bounded(pairing), (error: unknown) =>
         error instanceof ProprClientError && error.code === 'PAIRING_EXPIRED');
       await new Promise<void>(resolve => setImmediate(resolve));

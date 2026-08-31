@@ -58,6 +58,12 @@ export interface ProprDesktopPairingOptions {
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   /** Injectable only to make expiry tests deterministic. */
   now?: () => number;
+  /** @internal Deterministic monotonic deadline source for protocol tests. */
+  clock?: {
+    now(): number;
+    setTimeout(callback: () => void, milliseconds: number): ReturnType<typeof setTimeout>;
+    clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+  };
 }
 
 const MIN_POLL_INTERVAL_SECONDS = 1;
@@ -200,6 +206,11 @@ export const completeDesktopPairing = async (
 ): Promise<ProprDesktopPairingComplete> => {
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
+  const clock = options.clock ?? {
+    now: () => performance.now(),
+    setTimeout: (callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds),
+    clearTimeout: (timer: ReturnType<typeof setTimeout>) => clearTimeout(timer),
+  };
   if (options.signal?.aborted) throw cancelled(options.signal.reason);
   const deadline = Date.parse(start.expiresAt);
   const startedAt = now();
@@ -215,7 +226,7 @@ export const completeDesktopPairing = async (
   if (lifetimeMs <= 0) throw expired();
 
   const lifetimeController = new AbortController();
-  const monotonicStartedAt = performance.now();
+  const monotonicStartedAt = clock.now();
   let terminal: 'caller' | 'deadline' | undefined;
   const abortForCaller = () => {
     if (terminal) return;
@@ -227,7 +238,7 @@ export const completeDesktopPairing = async (
     terminal = 'deadline';
     lifetimeController.abort(expired());
   };
-  const deadlineTimer = setTimeout(abortForDeadline, safeDelay(lifetimeMs));
+  const deadlineTimer = clock.setTimeout(abortForDeadline, safeDelay(lifetimeMs));
   if (options.signal?.aborted) abortForCaller();
   else options.signal?.addEventListener('abort', abortForCaller, { once: true });
 
@@ -236,7 +247,7 @@ export const completeDesktopPairing = async (
     : expired(cause);
   const remainingLifetime = (): number => Math.min(
     deadline - now(),
-    lifetimeMs - (performance.now() - monotonicStartedAt),
+    lifetimeMs - (clock.now() - monotonicStartedAt),
   );
   const requireRemainingLifetime = (): number => {
     if (terminal) throw terminalError();
@@ -281,6 +292,8 @@ export const completeDesktopPairing = async (
       const remaining = requireRemainingLifetime();
 
       let value: unknown;
+      const requestUsesPairingDeadline = remaining <= PAIRING_REQUEST_TIMEOUT_MS;
+      let pairingDeadlineTimedOut = false;
       try {
         // The pairing reader owns cancellation through body drain/cancel. Do
         // not race it with a faster outer rejection: completion here is the
@@ -295,10 +308,23 @@ export const completeDesktopPairing = async (
             signal: lifetimeController.signal,
           },
           Math.min(PAIRING_REQUEST_TIMEOUT_MS, safeDelay(remaining)),
+          requestUsesPairingDeadline ? cause => {
+            pairingDeadlineTimedOut = true;
+            return expired(cause);
+          } : undefined,
         );
       } catch (error) {
-        if (terminal || remainingLifetime() <= 0) {
-          if (!terminal) abortForDeadline();
+        // A request clamped to the remaining lifetime owns the same boundary
+        // as the pairing deadline. Its timer can run first when the pairing
+        // timer's task is delayed, but that must not change expiry into a
+        // transport timeout at the exact boundary.
+        if (terminal) throw terminalError(error);
+        if (pairingDeadlineTimedOut) {
+          abortForDeadline();
+          throw error;
+        }
+        if (remainingLifetime() <= 0) {
+          abortForDeadline();
           throw terminalError(error);
         }
         throw error;
@@ -344,7 +370,7 @@ export const completeDesktopPairing = async (
       });
     }
   } finally {
-    clearTimeout(deadlineTimer);
+    clock.clearTimeout(deadlineTimer);
     options.signal?.removeEventListener('abort', abortForCaller);
   }
 };

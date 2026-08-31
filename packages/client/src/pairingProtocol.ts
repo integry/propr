@@ -5,12 +5,16 @@ const BODY_TIMEOUT_MS = 8_000;
 const OVERALL_TIMEOUT_MS = CONNECT_HEADER_TIMEOUT_MS + BODY_TIMEOUT_MS;
 const CANCELLATION_TIMEOUT_MS = 100;
 const MAX_RESPONSE_BYTES = 4_096;
+const MAX_ENCODED_RESPONSE_BYTES = 4_096;
 const CANCELLATION_TIMEOUT_DIAGNOSTIC = 'ProPR pairing response cancellation exceeded its fixed deadline.';
 
 type TimeoutPhase = 'connect-header' | 'body' | 'overall';
+type ContentEncoding = 'identity' | 'gzip' | 'br';
 
 export interface PairingProtocolRequestOptions {
   overallTimeoutMs?: number;
+  /** @internal Reclassifies only the overall boundary owned by a caller. */
+  overallTimeoutError?: (cause?: unknown) => ProprClientError;
   /** @internal Deterministic protocol-test deadlines may only shorten production limits. */
   deadlines?: Partial<{
     headerMs: number;
@@ -85,6 +89,19 @@ const contentLength = (response: Response): number | undefined => {
   const value = Number(raw);
   if (!Number.isSafeInteger(value)) throw invalidResponse(response.status);
   return value;
+};
+
+const contentEncoding = (response: Response): ContentEncoding => {
+  const raw = response.headers.get('content-encoding');
+  if (raw === null) return 'identity';
+  const encoding = raw.trim().toLowerCase();
+  if (encoding !== 'identity' && encoding !== 'gzip' && encoding !== 'br') {
+    // A comma also makes duplicate and stacked encodings fail closed. Fetch
+    // exposes transparently decoded bytes, so only one known wire encoding can
+    // be related safely to the remaining response metadata.
+    throw invalidResponse(response.status);
+  }
+  return encoding;
 };
 
 /**
@@ -227,8 +244,14 @@ export const requestPairingProtocol = async (
       throw invalidResponse(response.status || undefined);
     }
 
+    const encoding = contentEncoding(response);
     const declaredLength = contentLength(response);
-    if (declaredLength !== undefined && declaredLength > MAX_RESPONSE_BYTES) {
+    // Content-Length describes the encoded wire representation. Bound it for
+    // every supported encoding before reading Fetch's decoded response stream.
+    const maximumDeclaredLength = encoding === 'identity'
+      ? MAX_RESPONSE_BYTES
+      : MAX_ENCODED_RESPONSE_BYTES;
+    if (declaredLength !== undefined && declaredLength > maximumDeclaredLength) {
       throw invalidResponse(response.status);
     }
     if (!response.body) {
@@ -258,7 +281,13 @@ export const requestPairingProtocol = async (
       if (byteLength > MAX_RESPONSE_BYTES) throw invalidResponse(response.status);
       chunks.push(part.value);
     }
-    if (declaredLength !== undefined && declaredLength !== byteLength) {
+    // For gzip and Brotli, Fetch retains the wire Content-Length while exposing
+    // transparently decoded stream chunks. It is not meaningful to compare the
+    // compressed length with byteLength; the decoded cap above remains the
+    // authoritative bound. Identity responses still require an exact match.
+    if (encoding === 'identity'
+      && declaredLength !== undefined
+      && declaredLength !== byteLength) {
       throw invalidResponse(response.status);
     }
 
@@ -295,7 +324,12 @@ export const requestPairingProtocol = async (
   } catch (cause) {
     if (cause instanceof ProprClientError) throw cause;
     if (callerSignal?.aborted) throw cancelledError(cause);
-    if (timeoutPhase) throw timeoutError(cause);
+    if (timeoutPhase) {
+      if (timeoutPhase === 'overall' && options.overallTimeoutError) {
+        throw options.overallTimeoutError(cause);
+      }
+      throw timeoutError(cause);
+    }
     if (cause instanceof Error && cause.name === 'AbortError') throw cancelledError(cause);
     throw networkError(cause);
   } finally {

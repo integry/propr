@@ -333,6 +333,7 @@ export class ProprClient {
     path: string,
     init: RequestInit,
     overallTimeoutMs?: number,
+    overallTimeoutError?: PairingProtocolRequestOptions['overallTimeoutError'],
   ): Promise<unknown> {
     const target = this.resolveRequestTarget(this.url(path));
     const authentication = this.authenticate(init);
@@ -346,6 +347,8 @@ export class ProprClient {
       {
         ...this.pairingProtocolOptions,
         overallTimeoutMs: overallTimeoutMs ?? this.pairingProtocolOptions.overallTimeoutMs,
+        overallTimeoutError: overallTimeoutError
+          ?? this.pairingProtocolOptions.overallTimeoutError,
       },
     );
   }
