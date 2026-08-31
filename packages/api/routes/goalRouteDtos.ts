@@ -75,7 +75,7 @@ const SENSITIVE_EVENT_VALUE_PATTERNS = [
   /(^|[\s"'`=(,:])(?:unix|npipe):\/\/[^\s"'`<>]+/gimu,
   /(^|[\s"'`=(,:])tcp:\/\/[^\s"'`<>]+(?::2375|:2376)(?:\/[^\s"'`<>]*)?/gimu,
   /(^|[\s"'`=(,:])\/(?:app|builds?|data|github|home|root|users|private|var|run|tmp|srv|workspaces?|worktrees?|mnt|etc|opt)(?![\p{L}\p{N}])(?:\/[^\s"'`<>]*)?/gimu,
-  /(^|[\s"'`=(,:])\/(?:[^\s"'`<>/]+\/)*(?:\.env|\.npmrc|\.netrc|\.git-credentials|\.ssh|\.aws|\.azure|\.config|\.docker|\.kube|\.gnupg|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)(?=\/|[\s"'`<>]|$)(?:\/[^\s"'`<>]*)?/gimu,
+  /(^|[\s"'`=(,:])\/(?:[^\s"'`<>/]+\/)*(?:\.env(?!\.example(?=\/|[?#,;|)&\]}\s"'`<>]|$))(?:\.[^\s"'`<>/?#,;|)&\]}]+)?|\.npmrc|\.netrc|\.git-credentials|\.ssh|\.aws|\.azure|\.config|\.docker|\.kube|\.gnupg|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)(?=\/|[?#,;|)&\]}\s"'`<>]|$)(?:\/[^\s"'`<>]*)?/gimu,
   /(^|[\s"'`=(,:])[A-Z]:[\\/](?:Users|Windows|ProgramData|workspaces?|worktrees?)[^\s"'`<>]*/gimu,
 ] as const;
 const INCOMPLETE_SENSITIVE_EVENT_VALUE_PATTERN =

@@ -103,6 +103,60 @@ test('file URI parser redacts colon and legacy pipe drives in paths and URI meta
   for (const candidate of driveCandidates) assertFullyRedacted(candidate);
 });
 
+test('file URI parser rejects anchored drive-relative and drive-anchor escape forms', () => {
+  const unsafeDrives = [
+    // Drive-relative designators are malformed without a complete segment.
+    'file:///C:Users/alice/Desktop/readme.txt',
+    'file:///c|Users\\alice/Desktop/readme.txt',
+    'file:///D%3AUsers%5Calice%2FDesktop/readme.txt',
+    'file:///project/readme.txt?next=e:Users/alice/Desktop/readme.txt',
+    'file:///project/readme.txt#next=F%7CUsers%5Calice/Desktop/readme.txt',
+    // A drive segment is an unpoppable normalization anchor.
+    'file:///C:/../project/readme.txt',
+    'file:///c|/../../project/readme.txt',
+    String.raw`file:///D:\team\..\..\project\readme.txt`,
+    'file:///e%3A/%2E%2E/project/readme.txt',
+    'file:///F%7C%5Cteam%5C%2e%2e%5c%2E%2E%5Cproject/readme.txt',
+    'file:///project/readme.txt?next=g:/../project/readme.txt',
+    'file:///project/readme.txt#next=h%7C%5C..%5Cproject%5Creadme.txt',
+    // Windows trims these spellings, so they remain fail-closed.
+    'file:///I:/Users./alice/Desktop/readme.txt',
+    'file:///j%7C/Users%20/alice/Desktop/readme.txt',
+  ];
+
+  for (const candidate of unsafeDrives) assertFullyRedacted(candidate);
+
+  const nested = toPublicGoalEventPayload({
+    message: unsafeDrives[0],
+    nested: { source: [unsafeDrives[1], { value: unsafeDrives[2] }] },
+  });
+  assert.deepEqual(nested, {
+    message: REDACTED,
+    nested: { source: [REDACTED, { value: REDACTED }] },
+  });
+});
+
+test('file URI metadata matches credential families at exact decoded boundaries', () => {
+  const sensitiveMetadata = [
+    'file:///project/readme.txt?auth=example-value',
+    'file:///project/readme.txt?authentication=session',
+    'file:///project/readme.txt#authorization=bearer',
+    'file:///project/readme.txt?secret=example-value',
+    'file:///project/readme.txt#token=example-value',
+    'file:///project/readme.txt?client_secret=example-value',
+    'file:///project/readme.txt#access-token=example-value',
+  ];
+  const ordinaryMetadata = [
+    'file:///project/readme.txt?author=alice',
+    'file:///project/readme.txt?authority=local',
+    'file:///project/readme.txt#secretary=alice',
+    'file:///project/readme.txt#tokenization=guide',
+  ];
+
+  for (const candidate of sensitiveMetadata) assertFullyRedacted(candidate);
+  for (const candidate of ordinaryMetadata) assert.equal(projectString(candidate), candidate);
+});
+
 test('file URI parser preserves ordinary text, HTTP URLs, and explicitly safe local URIs', () => {
   const safeValues = [
     'ordinary file: handling text',
@@ -154,6 +208,48 @@ test('raw absolute paths preserve alphanumeric sensitive-root continuations', ()
   assert.deepEqual(toPublicGoalEventPayload(payload), payload);
 });
 
+test('credential dotfiles and pipe-separated roots use exact punctuation boundaries', () => {
+  const projected = toPublicGoalEventPayload({
+    message: '/custom/.env?stage=prod',
+    source: '/custom/.npmrc#scope',
+    paths: ['/custom/.ssh, next', '/custom/.env) next', '/custom/.ssh] next'],
+    nested: {
+      value: [
+        'file:///custom/%2Eenv?stage=prod',
+        'file:///custom/.npmrc#scope',
+        'file:///custom/.ssh, next',
+        'file:///project|/run/controller.sock',
+        'file:///project|/home/alice/private.txt',
+      ],
+    },
+  });
+
+  assert.deepEqual(projected, {
+    message: `${REDACTED}?stage=prod`,
+    source: `${REDACTED}#scope`,
+    paths: [`${REDACTED}, next`, `${REDACTED}) next`, `${REDACTED}] next`],
+    nested: {
+      value: [
+        REDACTED,
+        REDACTED,
+        `${REDACTED}, next`,
+        REDACTED,
+        REDACTED,
+      ],
+    },
+  });
+
+  const controls = [
+    '/custom/.env.example',
+    '/custom/.npmrc.bak',
+    'file:///custom/.env.example',
+    'file:///custom/.npmrc.bak',
+    'file:///project|/runtime/report.txt',
+    'file:///project|/optical/manual.txt',
+  ];
+  for (const control of controls) assert.equal(projectString(control), control);
+});
+
 test('file URI parser handles multiple tokens and a token spanning the public cutoff', () => {
   const multiple = [
     'safe file:///project/docs/readme.txt',
@@ -182,6 +278,8 @@ test('file URI parser handles multiple tokens and a token spanning the public cu
 
   const driveUris = [
     `file:///C|/Users/alice/Desktop/${'x'.repeat(600)}`,
+    `file:///C:Users/alice/Desktop/${'x'.repeat(600)}`,
+    `file:///C:/../project/${'x'.repeat(600)}`,
     `file:///project/readme.txt?next=d:/Projects/${'x'.repeat(600)}`,
     String.raw`file:///project/readme.txt#next=e|\Users\alice\Desktop\${'x'.repeat(600)}`,
   ];

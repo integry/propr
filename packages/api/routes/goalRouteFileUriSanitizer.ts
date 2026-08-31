@@ -27,11 +27,13 @@ const LOCAL_RUNTIME_ROOTS = new Set([
   'worktrees',
 ]);
 
-const CREDENTIAL_PATH_SEGMENT = /^(?:\.aws|\.azure|\.config|\.docker|\.env(?:\..*)?|\.git-credentials|\.gnupg|\.kube|\.netrc|\.npmrc|\.ssh|configs?|configuration|credentials?|docker\.sock|secrets?)$/iu;
-const SENSITIVE_URI_METADATA = /(?:api[_-]?key|auth(?:orization)?|bearer|credential|password|passwd|private[_-]?key|secret|token|\.aws|\.env|\.netrc|\.ssh)/iu;
+const CREDENTIAL_PATH_SEGMENT = /^(?:\.aws|\.azure|\.config|\.docker|\.env(?:\.(?!example$).*)?|\.git-credentials|\.gnupg|\.kube|\.netrc|\.npmrc|\.ssh|configs?|configuration|credentials?|docker\.sock|secrets?)$/iu;
+const SENSITIVE_URI_METADATA_TOKEN = /^(?:api[_-]?key|bearer|credentials?|password|passwd|private[_-]?key)$/iu;
+const SENSITIVE_URI_METADATA_FAMILY = /^(?:auth|authentication|authorization|secrets?|tokens?)$/iu;
 const ENCODED_OCTET = /%[0-9a-f]{2}/iu;
 const WINDOWS_DRIVE_DESIGNATOR = /^[a-z][:|]$/iu;
-const WINDOWS_DRIVE_IN_METADATA = /(?:^|[/?#&=;])[a-z][:|](?=\/)/iu;
+const WINDOWS_DRIVE_PREFIX = /^[a-z][:|]/iu;
+const WINDOWS_DRIVE_IN_METADATA = /(?:^|[/?#&=;,])[a-z][:|]/iu;
 
 interface FileUriCandidate {
   end: number;
@@ -56,7 +58,7 @@ function isFileSchemeAt(value: string, index: number): boolean {
 }
 
 function isTokenTerminator(character: string): boolean {
-  return /[\s"'`<>]/u.test(character);
+  return /[\s"'`<>,)}]/u.test(character);
 }
 
 function readFileUriCandidate(
@@ -72,9 +74,13 @@ function readFileUriCandidate(
     }
     end += 1;
   }
+  const reachedInputEnd = end === value.length;
+  while (end > start + FILE_URI_SCHEME.length && /[\])}]/u.test(value[end - 1]!)) {
+    end -= 1;
+  }
   return {
     end,
-    partial: end === value.length && inputTruncated,
+    partial: reachedInputEnd && end === value.length && inputTruncated,
     token: value.slice(start, end),
   };
 }
@@ -137,15 +143,26 @@ function splitLocalFileUri(token: string): {
 
 function normalizeAbsolutePath(path: string): { segments: string[]; valid: boolean } {
   const result: string[] = [];
+  let anchorDepth = 0;
   for (const segment of path.replace(/\\/gu, '/').split('/')) {
     if (segment === '' || segment === '.') continue;
     if (segment === '..') {
-      if (result.length === 0) return { segments: [], valid: false };
+      if (result.length <= anchorDepth) return { segments: [], valid: false };
       result.pop();
       continue;
     }
     if (hasUriControlCharacter(segment)) return { segments: [], valid: false };
-    result.push(segment.toLowerCase());
+    const normalizedSegment = segment.toLowerCase();
+    if (result.length === 0 && WINDOWS_DRIVE_PREFIX.test(normalizedSegment)) {
+      if (!WINDOWS_DRIVE_DESIGNATOR.test(normalizedSegment)) {
+        return { segments: [], valid: false };
+      }
+      anchorDepth = 1;
+    }
+    if (anchorDepth > 0 && /[. ]$/u.test(normalizedSegment)) {
+      return { segments: [], valid: false };
+    }
+    result.push(normalizedSegment);
   }
   return { segments: result, valid: true };
 }
@@ -154,20 +171,29 @@ function hasSensitiveLocalPath(segments: string[]): boolean {
   if (segments.some((segment) => CREDENTIAL_PATH_SEGMENT.test(segment))) return true;
   if (segments.length === 0) return false;
   if (LOCAL_RUNTIME_ROOTS.has(segments[0]!)) return true;
-  return WINDOWS_DRIVE_DESIGNATOR.test(segments[0]!);
+  if (WINDOWS_DRIVE_DESIGNATOR.test(segments[0]!)) return true;
+  return segments.some((segment, index) => index > 0
+    && segments[index - 1]!.endsWith('|')
+    && LOCAL_RUNTIME_ROOTS.has(segment));
+}
+
+function isSensitiveMetadataToken(token: string): boolean {
+  if (CREDENTIAL_PATH_SEGMENT.test(token)
+    || SENSITIVE_URI_METADATA_TOKEN.test(token)) return true;
+  return token
+    .split(/[._-]+/u)
+    .some((family) => SENSITIVE_URI_METADATA_FAMILY.test(family));
 }
 
 function hasSensitiveMetadata(metadata: string): boolean {
   const normalizedMetadata = metadata.replace(/\\/gu, '/');
   if (WINDOWS_DRIVE_IN_METADATA.test(normalizedMetadata)
-    || SENSITIVE_URI_METADATA.test(metadata)
     || redactSecrets(metadata) !== metadata) return true;
-  const segments = metadata
-    .replace(/\\/gu, '/')
-    .split(/[/?#&=;:]+/u)
+  const segments = normalizedMetadata
+    .split(/[/?#&=;:,]+/u)
     .filter(Boolean)
     .map((segment) => segment.toLowerCase());
-  if (segments.some((segment) => CREDENTIAL_PATH_SEGMENT.test(segment))) return true;
+  if (segments.some(isSensitiveMetadataToken)) return true;
   return /(?:^|[=&#])\/(?:app|builds?|data|etc|github|home|mnt|opt|private|root|run|srv|tmp|users|var|workspaces?|worktrees?)(?:\/|[?&#;]|$)/iu
     .test(normalizedMetadata);
 }
