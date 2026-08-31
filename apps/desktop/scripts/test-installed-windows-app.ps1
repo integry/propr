@@ -2,6 +2,16 @@ param(
   [Parameter(Mandatory=$true)][string]$Installer,
   [Parameter(Mandatory=$true)][ValidateSet('x64','arm64')][string]$Architecture
 )
+
+enum SmokeEvidenceInspectionPhase {
+  DIRECTORY
+  ACL
+  FILE_METADATA
+  FILE_OPEN
+  FILE_READ
+  SUMMARY
+}
+
 $ErrorActionPreference = 'Stop'
 try {
   $installerPath = (Resolve-Path -LiteralPath $Installer -ErrorAction Stop).Path
@@ -21,6 +31,8 @@ $msiTimeoutMilliseconds = 10 * 60 * 1000
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
 $smokeEvidenceFileByteCap = 64 * 1024
+$smokeEvidenceOpenRetryDeadlineMilliseconds = 2 * 1000
+$smokeEvidenceOpenRetryDelayMilliseconds = 50
 $smokeEventCodes = [ordered]@{
   'desktop.app.ready' = 'APP_READY'
   'desktop.renderer.mvp_flows.ready' = 'MVP_FLOWS_READY'
@@ -197,6 +209,7 @@ function Get-SmokeEventEvidence(
   [string]$Path,
   [Security.Principal.SecurityIdentifier]$UserSid
 ) {
+  [SmokeEvidenceInspectionPhase]$inspectionPhase = [SmokeEvidenceInspectionPhase]::DIRECTORY
   try {
     $fullPath = [IO.Path]::GetFullPath($Path)
     if ((Split-Path -Leaf $fullPath) -notmatch '^propr-desktop-smoke-[a-f0-9]{32}$' -or
@@ -209,6 +222,7 @@ function Get-SmokeEventEvidence(
       throw 'invalid smoke evidence directory'
     }
 
+    $inspectionPhase = [SmokeEvidenceInspectionPhase]::ACL
     $administratorsSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
     $systemSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
     $expectedSids = @($UserSid.Value, $systemSid.Value, $administratorsSid.Value) | Sort-Object -Unique
@@ -229,26 +243,56 @@ function Get-SmokeEventEvidence(
 
     $events = @{}
     foreach ($eventName in $smokeEventCodes.Keys) { $events[$eventName] = $false }
-    $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+    $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
     foreach ($fileName in @('application.stdout.log', 'application.stderr.log')) {
+      $inspectionPhase = [SmokeEvidenceInspectionPhase]::FILE_METADATA
       $filePath = Join-Path $fullPath $fileName
-      $item = Get-Item -LiteralPath $filePath -Force -ErrorAction SilentlyContinue
-      if ($null -eq $item -or !($item -is [IO.FileInfo]) -or $item.PSIsContainer -or
+      $item = Get-Item -LiteralPath $filePath -Force -ErrorAction Stop
+      if (!($item -is [IO.FileInfo]) -or $item.PSIsContainer -or
           ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        continue
+        throw 'invalid smoke evidence file'
       }
 
       $bytesToRead = [Math]::Min([int64]$item.Length, [int64]$smokeEvidenceFileByteCap)
       $bytes = New-Object byte[] ([int]$bytesToRead)
-      $stream = New-Object IO.FileStream(
-        $filePath,
-        [IO.FileMode]::Open,
-        [IO.FileAccess]::Read,
-        [IO.FileShare]::Read,
-        4096,
-        [IO.FileOptions]::SequentialScan
-      )
+      $inspectionPhase = [SmokeEvidenceInspectionPhase]::FILE_OPEN
+      $stream = $null
       try {
+        $openRetryStopwatch = [Diagnostics.Stopwatch]::StartNew()
+        $openAttempt = 0
+        while ($null -eq $stream) {
+          if ($openAttempt -gt 0 -and
+              $openRetryStopwatch.ElapsedMilliseconds -ge $smokeEvidenceOpenRetryDeadlineMilliseconds) {
+            throw 'smoke evidence file open retry deadline expired'
+          }
+          $openAttempt += 1
+          try {
+            $stream = [IO.FileStream]::new(
+              [string]$filePath,
+              [IO.FileMode]::Open,
+              [IO.FileAccess]::Read,
+              [IO.FileShare]::Read,
+              4096,
+              [IO.FileOptions]::SequentialScan
+            )
+          } catch [IO.IOException] {
+            $nativeErrorCode = $_.Exception.HResult -band 0xffff
+            if ($nativeErrorCode -notin @(32, 33) -or
+                $openRetryStopwatch.ElapsedMilliseconds -ge $smokeEvidenceOpenRetryDeadlineMilliseconds) {
+              throw
+            }
+            $remainingMilliseconds = $smokeEvidenceOpenRetryDeadlineMilliseconds -
+              $openRetryStopwatch.ElapsedMilliseconds
+            $retryDelayMilliseconds = [Math]::Min(
+              $smokeEvidenceOpenRetryDelayMilliseconds,
+              $remainingMilliseconds
+            )
+            if ($retryDelayMilliseconds -le 0) { throw }
+            Start-Sleep -Milliseconds $retryDelayMilliseconds
+          }
+        }
+        $openRetryStopwatch.Stop()
+        $inspectionPhase = [SmokeEvidenceInspectionPhase]::FILE_READ
         $offset = 0
         while ($offset -lt $bytes.Length) {
           $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
@@ -256,7 +300,7 @@ function Get-SmokeEventEvidence(
           $offset += $read
         }
       } finally {
-        $stream.Dispose()
+        if ($null -ne $stream) { $stream.Dispose() }
       }
       if ($offset -eq 0) { continue }
 
@@ -279,6 +323,7 @@ function Get-SmokeEventEvidence(
       }
     }
 
+    $inspectionPhase = [SmokeEvidenceInspectionPhase]::SUMMARY
     $summary = @()
     foreach ($eventName in $smokeEventCodes.Keys) {
       $state = if ($events[$eventName]) { 'PRESENT' } else { 'ABSENT' }
@@ -287,6 +332,7 @@ function Get-SmokeEventEvidence(
     Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:EVIDENCE:{0}' -f ($summary -join ','))
     return $events
   } catch {
+    Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:EVIDENCE_INSPECTION_FAILED:{0}' -f $inspectionPhase)
     throw 'smoke evidence inspection failed'
   }
 }

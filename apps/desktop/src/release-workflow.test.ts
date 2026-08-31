@@ -377,7 +377,8 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /!\(\$item -is \[IO\.FileInfo\]\)/);
     assert.match(installedWindowsAppTest, /\$item\.PSIsContainer/);
     assert.match(installedWindowsAppTest, /\$item\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint/);
-    assert.match(installedWindowsAppTest, /New-Object IO\.FileStream\(/);
+    assert.match(installedWindowsAppTest, /\[IO\.FileStream\]::new\(/);
+    assert.doesNotMatch(installedWindowsAppTest, /New-Object IO\.FileStream\(/);
     assert.doesNotMatch(installedWindowsAppTest, /Get-ChildItem[^\n]*smoke|ReadAll|ReadToEnd/);
     const smokeEventAllowlist = installedWindowsAppTest.match(
       /\$smokeEventCodes = \[ordered\]@\{([\s\S]*?)\n\}/,
@@ -457,6 +458,71 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /- platform: win32\n\s+arch: arm64\n/);
       assert.equal(section.match(/test-installed-windows-app\.ps1/g)?.length, 1);
     }
+  });
+
+  test('opens installed Windows smoke evidence with a bounded, redacted reader', () => {
+    const inspectionPhase = installedWindowsAppTest.match(
+      /enum SmokeEvidenceInspectionPhase \{([\s\S]*?)\n\}/,
+    );
+    assert.ok(inspectionPhase);
+    assert.deepEqual(
+      [...inspectionPhase[1].matchAll(/^\s+([A-Z_]+)$/gm)].map(match => match[1]),
+      ['DIRECTORY', 'ACL', 'FILE_METADATA', 'FILE_OPEN', 'FILE_READ', 'SUMMARY'],
+    );
+
+    const evidenceReader = installedWindowsAppTest.match(
+      /function Get-SmokeEventEvidence\([\s\S]*?\n\}\n\ntry \{/,
+    );
+    assert.ok(evidenceReader);
+    const reader = evidenceReader[0];
+    assert.match(reader, /foreach \(\$fileName in @\('application\.stdout\.log', 'application\.stderr\.log'\)\)/);
+    assert.doesNotMatch(reader, /Get-ChildItem|Get-Content|ReadAll|ReadToEnd/);
+    assert.match(reader, /Get-Item -LiteralPath \$filePath -Force -ErrorAction Stop/);
+    assert.match(reader, /!\(\$item -is \[IO\.FileInfo\]\)/);
+    assert.match(reader, /\$item\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint/);
+    assert.match(reader, /\[Math\]::Min\(\[int64\]\$item\.Length, \[int64\]\$smokeEvidenceFileByteCap\)/);
+
+    assert.match(installedWindowsAppTest, /\$smokeEvidenceOpenRetryDeadlineMilliseconds = 2 \* 1000/);
+    assert.match(installedWindowsAppTest, /\$smokeEvidenceOpenRetryDelayMilliseconds = 50/);
+    assert.match(reader, /\$openRetryStopwatch = \[Diagnostics\.Stopwatch\]::StartNew\(\)/);
+    assert.match(reader, /\$openAttempt -gt 0 -and\n\s+\$openRetryStopwatch\.ElapsedMilliseconds -ge/);
+    assert.match(reader, /catch \[IO\.IOException\] \{/);
+    assert.match(reader, /\$nativeErrorCode -notin @\(32, 33\)/);
+    assert.match(
+      reader,
+      /\$openRetryStopwatch\.ElapsedMilliseconds -ge \$smokeEvidenceOpenRetryDeadlineMilliseconds/,
+    );
+    assert.match(
+      reader,
+      /\$retryDelayMilliseconds = \[Math\]::Min\([\s\S]*?\$smokeEvidenceOpenRetryDelayMilliseconds,[\s\S]*?\$remainingMilliseconds/,
+    );
+    assert.match(reader, /Start-Sleep -Milliseconds \$retryDelayMilliseconds/);
+
+    assert.match(
+      reader,
+      /\[IO\.FileStream\]::new\([\s\S]*?\[IO\.FileMode\]::Open,[\s\S]*?\[IO\.FileAccess\]::Read,[\s\S]*?\[IO\.FileShare\]::Read,[\s\S]*?\[IO\.FileOptions\]::SequentialScan/,
+    );
+    assert.doesNotMatch(reader, /New-Object IO\.FileStream/);
+    assert.match(
+      reader,
+      /\} finally \{\n\s+if \(\$null -ne \$stream\) \{ \$stream\.Dispose\(\) \}\n\s+\}/,
+    );
+    assert.match(reader, /\[Text\.UTF8Encoding\]::new\(\$false, \$true\)/);
+    assert.match(reader, /ConvertFrom-Json -InputObject \$line -ErrorAction Stop/);
+
+    assert.match(
+      reader,
+      /Write-Host \('PROPR_WINDOWS_INSTALLED_SMOKE:EVIDENCE_INSPECTION_FAILED:\{0\}' -f \$inspectionPhase\)\n\s+throw 'smoke evidence inspection failed'/,
+    );
+    assert.match(
+      reader,
+      /\[SmokeEvidenceInspectionPhase\]\$inspectionPhase = \[SmokeEvidenceInspectionPhase\]::DIRECTORY/,
+    );
+    assert.equal(reader.match(/EVIDENCE_INSPECTION_FAILED/g)?.length, 1);
+    assert.doesNotMatch(
+      reader,
+      /Write-(?:Host|Warning|Error|Verbose|Debug|Information)[^\n]*(?:\$_|\$filePath|\$fullPath|\$item|\$bytes|\$text|\$line|\$record|Exception|Message)/,
+    );
   });
 
   test('configures signed updates only for macOS and never advertises a Windows update feed', () => {
