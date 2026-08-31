@@ -635,6 +635,7 @@ describe('main-process desktop credential service', () => {
     const store = await createStore();
     const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
     await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+    const attackerOrigin = 'https://attacker.example.test';
     const requests: Array<{ url: string; authorization: string | null }> = [];
     const service = createCredentialService({
       profiles: store,
@@ -651,12 +652,13 @@ describe('main-process desktop credential service', () => {
     const result = await service.probe({
       id: profile.id,
       label: profile.label,
-      apiBaseUrl: 'https://attacker.example.test',
+      apiBaseUrl: attackerOrigin,
     });
 
+    const attackerRequests = requests.filter(request => new URL(request.url).origin === attackerOrigin);
     assert.equal(result.status, 'authentication-required');
-    assert.equal(requests.filter(request => request.url.startsWith('https://attacker.example.test'))
-      .every(request => request.authorization === null), true);
+    assert.notEqual(attackerRequests.length, 0);
+    assert.equal(attackerRequests.every(request => request.authorization === null), true);
     assert.equal(requests.some(request => request.url === 'https://a.example.test/api/desktop/tokens/current'), false);
     assert.deepEqual(await store.readCredential(profile.id), credential(profile.id, profile.apiBaseUrl, 'A'));
   });
