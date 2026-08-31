@@ -1,6 +1,6 @@
 import { API_BASE_URL, apiFetch } from './apiClient';
 import type { GoalDetailV1, GoalEventsPageV1, GoalMessageV1, GoalRecordV1 } from './goalContracts';
-import { GoalContractError, handleGoalResponse } from './goalApiErrors';
+import { GoalContractError, GoalMutationUncertainError, handleGoalResponse } from './goalApiErrors';
 import { boundedInteger, decodeEventsPage, decodeGoalDetail, decodeGoalMessage, decodeGoalRecord, integer } from './goalDecoders';
 
 const GOAL_IDEMPOTENCY_KEY_MAX_LENGTH = 255;
@@ -94,8 +94,12 @@ export const sendGoalMessage = async (
     credentials: 'include', body: JSON.stringify(params),
   }, { replayMutationAfterTokenRefresh: true });
   await handleGoalResponse(response);
-  const envelope = await response.json() as { message?: unknown };
-  return decodeGoalMessage(envelope.message, 'response.message');
+  try {
+    const envelope = await response.json() as { message?: unknown };
+    return decodeGoalMessage(envelope.message, 'response.message');
+  } catch (caught) {
+    throw new GoalMutationUncertainError(caught);
+  }
 };
 
 export const cancelGoalMessage = async (goalId: string, messageId: string, idempotencyKey: string): Promise<GoalMessageV1> => {

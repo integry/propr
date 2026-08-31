@@ -21,7 +21,7 @@ const stateTone: Record<GoalMessage['state'], string> = {
   failed: 'bg-red-100 text-red-800', cancelled: 'bg-gray-100 text-gray-600',
 };
 
-function CancelConfirmation({ busy, returnFocus, onClose, onConfirm }: { busy: boolean; returnFocus: RefObject<HTMLButtonElement | null>; onClose: () => void; onConfirm: (reason: string) => void }) {
+function CancelConfirmation({ busy, returnFocus, fallbackFocus, onClose, onConfirm }: { busy: boolean; returnFocus: RefObject<HTMLButtonElement | null>; fallbackFocus: RefObject<HTMLElement | null>; onClose: () => void; onConfirm: (reason: string) => void }) {
   const [reason, setReason] = useState('Cancelled by operator');
   const cancelRef = useRef<HTMLButtonElement>(null);
   const reasonRef = useRef<HTMLInputElement>(null);
@@ -29,9 +29,13 @@ function CancelConfirmation({ busy, returnFocus, onClose, onConfirm }: { busy: b
   const dialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const trigger = returnFocus.current;
+    const fallback = fallbackFocus.current;
     cancelRef.current?.focus();
-    return () => trigger?.focus();
-  }, [returnFocus]);
+    return () => {
+      const target = trigger?.isConnected ? trigger : fallback;
+      if (target?.isConnected) target.focus();
+    };
+  }, [fallbackFocus, returnFocus]);
   useEffect(() => { if (busy) reasonRef.current?.focus(); }, [busy]);
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape' && !busy) {
@@ -106,12 +110,13 @@ export default function GoalControls(props: GoalControlsProps) {
   const { detail, models, readOnly, pendingAction, onPause, onResume, onCancel, onChangeModel } = props;
   const [confirmCancel, setConfirmCancel] = useState(false);
   const cancelTriggerRef = useRef<HTMLButtonElement>(null);
+  const controlsRegionRef = useRef<HTMLElement>(null);
   const [selectedModel, setSelectedModel] = useState(detail.goal.requestedModel);
   const terminal = GOAL_TERMINAL_STATES.has(detail.goal.state);
   const controlsDisabled = readOnly || terminal || pendingAction !== null;
   useEffect(() => { setSelectedModel(detail.goal.requestedModel); }, [detail.goal.requestedModel]);
   return (
-    <section aria-labelledby="goal-controls-title" className="rounded-lg border border-slate-200 bg-white p-3">
+    <section ref={controlsRegionRef} tabIndex={-1} aria-labelledby="goal-controls-title" className="rounded-lg border border-slate-200 bg-white p-3">
       <h2 id="goal-controls-title" className="text-sm font-semibold text-slate-800">Controls</h2>
       {(readOnly || terminal) && <p className="mt-1 text-xs text-amber-700">{readOnly ? 'Controls are unavailable in demo/read-only mode or after access loss.' : 'This goal is terminal. Lifecycle, model, and steering operations no longer apply.'}</p>}
       <LifecycleControls state={detail.goal.state} disabled={controlsDisabled} pendingAction={pendingAction} cancelTriggerRef={cancelTriggerRef} onPause={onPause} onResume={onResume} onOpenCancel={() => setConfirmCancel(true)} />
@@ -121,7 +126,7 @@ export default function GoalControls(props: GoalControlsProps) {
         <p className="mt-1 text-[11px] text-slate-500">Effective: <span className="font-medium">{detail.goal.effectiveModel}</span>{detail.goal.requestedModel !== detail.goal.effectiveModel && <span className="ml-1 text-blue-700">· {detail.goal.requestedModel} requested, awaiting runtime acknowledgement</span>}</p>
       </div>
       <GoalMessages messages={detail.messages} disabled={readOnly || terminal} busy={pendingAction === 'message' || pendingAction === 'cancel-message'} onSend={props.onSend} onRetry={props.onRetryMessage} onCancel={props.onCancelMessage} />
-      {confirmCancel && <CancelConfirmation busy={pendingAction === 'cancel'} returnFocus={cancelTriggerRef} onClose={() => setConfirmCancel(false)} onConfirm={reason => { void onCancel(reason).then(success => { if (success) setConfirmCancel(false); }); }} />}
+      {confirmCancel && <CancelConfirmation busy={pendingAction === 'cancel'} returnFocus={cancelTriggerRef} fallbackFocus={controlsRegionRef} onClose={() => setConfirmCancel(false)} onConfirm={reason => { void onCancel(reason).then(success => { if (success) setConfirmCancel(false); }); }} />}
     </section>
   );
 }

@@ -12,8 +12,8 @@ import { useSocket } from '../../contexts/useSocket';
 import { makeGoalIntentKey, mergeGoalEvents, scopedGoalKey } from './goalDetailUtils';
 import { drainGoalEventGap } from './goalReplay';
 
-const PAGE_SIZE = 200;
-const POLL_INTERVAL_MS = 3_000;
+const PAGE_SIZE = 200; const POLL_INTERVAL_MS = 3_000;
+const AUTHORIZATION_PROBE_INTERVAL_MS = 30_000;
 const ACCESS_ERROR = 'This goal is unavailable or you no longer have access.';
 
 type ConnectionState = 'connected' | 'recovering' | 'offline';
@@ -61,16 +61,14 @@ export function useGoalDetail(goalId: string) {
   const controllersRef = useRef(new Set<AbortController>());
   const subscriptionCleanupRef = useRef<(() => void) | null>(null);
   const recoveryPromiseRef = useRef<Promise<boolean> | null>(null);
-  const recoveryTargetRef = useRef(0);
+  const recoveryTargetRef = useRef(0); const previousCursorRef = useRef<number | null>(null);
   const refreshControllerRef = useRef<AbortController | null>(null);
   const loadOlderControllerRef = useRef<AbortController | null>(null);
   const actionInFlightRef = useRef<symbol | null>(null);
   const messagePromiseRef = useRef<Promise<boolean> | null>(null);
   const messageIntentRef = useRef<MessageIntent | null>(null);
-  identityRef.current = requestIdentity;
-  transportConnectedRef.current = isConnected;
-  detailRef.current = detail;
-  eventsRef.current = events;
+  identityRef.current = requestIdentity; transportConnectedRef.current = isConnected;
+  detailRef.current = detail; eventsRef.current = events;
 
   const token = useCallback((): RequestToken | null => requestIdentity
     ? { generation: generationRef.current, identity: requestIdentity } : null, [requestIdentity]);
@@ -91,8 +89,7 @@ export function useGoalDetail(goalId: string) {
   }, []);
 
   const commitEvents = useCallback((nextEvents: GoalEvent[]) => {
-    eventsRef.current = nextEvents;
-    setEvents(nextEvents);
+    eventsRef.current = nextEvents; setEvents(nextEvents);
   }, []);
 
   const invalidateAccess = useCallback((request?: RequestToken) => {
@@ -103,6 +100,7 @@ export function useGoalDetail(goalId: string) {
     subscriptionCleanupRef.current = null;
     detailRef.current = null;
     eventsRef.current = [];
+    previousCursorRef.current = null;
     recoveryTargetRef.current = 0; actionInFlightRef.current = null;
     messagePromiseRef.current = null; messageIntentRef.current = null;
     setLoadedIdentity(null); setReplayReady(false); setFallbackRequired(false);
@@ -122,6 +120,7 @@ export function useGoalDetail(goalId: string) {
     const generation = generationRef.current;
     abortRequests();
     recoveryTargetRef.current = 0; actionInFlightRef.current = null;
+    previousCursorRef.current = null;
     messagePromiseRef.current = null; messageIntentRef.current = null;
     subscriptionCleanupRef.current?.(); subscriptionCleanupRef.current = null;
     setDetail(null); setEvents([]); setAgents([]); setError(null); setActionError(null);
@@ -143,7 +142,8 @@ export function useGoalDetail(goalId: string) {
         if (!current(request, initialController)) return;
         const initialEvents = mergeGoalEvents([], page.events, goalId);
         detailRef.current = authorizedDetail; eventsRef.current = initialEvents;
-        setDetail(authorizedDetail); setEvents(initialEvents); setHasMoreBefore(page.hasMoreBefore);
+        previousCursorRef.current = page.previousCursor;
+        setDetail(authorizedDetail); setEvents(initialEvents); setHasMoreBefore(page.hasMoreBefore && page.previousCursor !== null);
         setAgents(catalog?.agents ?? []); setLoadedIdentity(requestIdentity); setReplayReady(true); setError(null);
       } catch (caught) {
         if (!current(request, initialController)) return;
@@ -266,17 +266,32 @@ export function useGoalDetail(goalId: string) {
     return () => { active = false; if (timer !== null) window.clearTimeout(timer); };
   }, [authorizedGoalId, fallbackRequired, isConnected, recoverTail, refreshDetail, replayReady]);
 
+  useEffect(() => {
+    if (!authorizedGoalId || !replayReady || !isConnected || fallbackRequired) return;
+    let active = true;
+    let timer: number | null = null;
+    const probe = async () => { await refreshDetail(); if (active) timer = window.setTimeout(() => void probe(), AUTHORIZATION_PROBE_INTERVAL_MS); };
+    timer = window.setTimeout(() => void probe(), AUTHORIZATION_PROBE_INTERVAL_MS);
+    return () => { active = false; if (timer !== null) window.clearTimeout(timer); };
+  }, [authorizedGoalId, fallbackRequired, isConnected, refreshDetail, replayReady]);
+
   const loadOlder = useCallback(async () => {
-    const first = eventsRef.current[0]?.sequence;
-    if (first === undefined || loadingOlder || !hasMoreBefore) return;
+    const beforeSequence = previousCursorRef.current;
+    if (beforeSequence === null || loadingOlder || !hasMoreBefore) return;
     const request = token(); if (!request) return;
     loadOlderControllerRef.current?.abort();
     const olderController = controller(); loadOlderControllerRef.current = olderController;
     setLoadingOlder(true);
     try {
-      const page = await getGoalEvents(goalId, { beforeSequence: first, limit: PAGE_SIZE, signal: olderController.signal });
+      const page = await getGoalEvents(goalId, { beforeSequence, limit: PAGE_SIZE, signal: olderController.signal });
       if (!current(request, olderController)) return;
-      commitEvents(mergeGoalEvents(eventsRef.current, page.events, goalId)); setHasMoreBefore(page.hasMoreBefore);
+      const cursorMadeProgress = page.previousCursor !== null && page.previousCursor !== beforeSequence;
+      previousCursorRef.current = page.previousCursor;
+      commitEvents(mergeGoalEvents(eventsRef.current, page.events, goalId));
+      setHasMoreBefore(page.hasMoreBefore && cursorMadeProgress);
+      if (page.hasMoreBefore && !cursorMadeProgress) {
+        setActionError('Older goal history stopped because the server repeated or omitted its pagination cursor.');
+      }
     } catch (caught) {
       if (!handleAsyncError(caught, request) && current(request, olderController)) setActionError(errorMessage(caught));
     } finally {

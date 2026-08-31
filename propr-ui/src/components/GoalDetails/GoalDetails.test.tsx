@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { GoalDetail, GoalEvent, GoalMessage } from '../../api/goalsApi';
@@ -193,6 +194,24 @@ describe('GoalControls', () => {
     fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape' });
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it('restores focus to the controls region when successful cancellation removes its trigger', async () => {
+    const onCancel = vi.fn(async (reason: string) => reason.length > 0);
+    function TerminalCancellation() {
+      const [state, setState] = useState<GoalDetail['goal']['state']>('running');
+      return <GoalControls {...props()} detail={{ ...detail, goal: { ...detail.goal, state } }} onCancel={async reason => {
+        setState('cancelled');
+        return onCancel(reason);
+      }} />;
+    }
+    render(<TerminalCancellation />);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel goal…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel goal' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(onCancel).toHaveBeenCalledWith('Cancelled by operator');
+    expect(screen.getByRole('region', { name: 'Controls' })).toHaveFocus();
+    expect(screen.queryByRole('button', { name: 'Cancel goal…' })).not.toBeInTheDocument();
   });
 
   it('renders every message state and supports failed retry and pending cancellation', () => {

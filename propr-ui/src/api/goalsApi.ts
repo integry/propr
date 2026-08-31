@@ -4,7 +4,7 @@ import { GoalContractError, handleGoalResponse } from './goalApiErrors';
 import { boundedInteger, decodeGoalRecord, decodeListResponse, isBoundedCursor } from './goalDecoders';
 
 export { GOAL_STATES } from './goalContracts';
-export { GoalApiError, GoalContractError, isGoalApiErrorCode } from './goalApiErrors';
+export { GoalApiError, GoalContractError, GoalMutationUncertainError, isGoalApiErrorCode } from './goalApiErrors';
 export { decodeGoalEvent } from './goalDecoders';
 export {
   cancelGoal,

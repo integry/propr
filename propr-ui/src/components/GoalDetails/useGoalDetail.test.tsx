@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CurrentUser } from '../../api/proprTypes';
 import type { GoalDetail, GoalEvent, GoalEventsPage } from '../../api/goalsApi';
 
@@ -35,12 +35,12 @@ vi.mock('../../api/goalsApi', async importOriginal => ({
 }));
 
 import { useGoalDetail } from './useGoalDetail';
-import { GoalApiError } from '../../api/goalsApi';
+import { GoalApiError, GoalContractError, GoalMutationUncertainError } from '../../api/goalsApi';
 
 const timestamp = '2026-08-31T10:00:00.000Z';
 const user = (id: string): CurrentUser => ({ id, login: id, username: id, displayName: id, email: null, avatarUrl: null, role: 'member', permissions: [], authorizationSource: 'local' });
-const event = (sequence: number): GoalEvent => ({ goalId: 'goal-1', sequence, type: 'stdout', source: 'codex', timestamp, turnId: 'turn-1', content: `line ${sequence}`, payload: null });
-const page = (events: GoalEvent[], hasMoreBefore = false): GoalEventsPage => ({ events, hasMoreBefore, previousCursor: events[0]?.sequence ?? null, nextCursor: events.at(-1)?.sequence ?? null });
+const event = (sequence: number, goalId = 'goal-1'): GoalEvent => ({ goalId, sequence, type: 'stdout', source: 'codex', timestamp, turnId: 'turn-1', content: `line ${sequence}`, payload: null });
+const page = (events: GoalEvent[], hasMoreBefore = false, previousCursor = events[0]?.sequence ?? null): GoalEventsPage => ({ events, hasMoreBefore, previousCursor, nextCursor: events.at(-1)?.sequence ?? null });
 const message = (body = 'alpha', messageId = 'message-1') => ({
   messageId, sequence: 10, body, predefinedKind: null, state: 'delivered' as const, responseSource: null,
   response: null, error: null, createdAt: timestamp, updatedAt: timestamp,
@@ -52,10 +52,10 @@ const detail: GoalDetail = {
   recovery: { state: 'healthy', attempt: 0, reason: null }, epicPrUrl: null, completionBlockers: [], latestSequence: 5,
 };
 
-const Harness = () => {
-  const goal = useGoalDetail('goal-1');
+const Harness = ({ goalId = 'goal-1' }: { goalId?: string }) => {
+  const goal = useGoalDetail(goalId);
   const retry = { ...message('retry me', 'failed-1'), state: 'failed' as const };
-  return <><div data-testid="detail">{goal.detail?.goal.repository ?? 'empty'}</div><div data-testid="version">{goal.detail?.goal.version ?? 'none'}</div><div data-testid="events">{goal.events.map(item => item.sequence).join(',')}</div><div data-testid="connection">{goal.connectionState}</div><div role="alert">{goal.actionError}</div><button type="button" onClick={() => void goal.loadOlder()}>older</button><button type="button" onClick={() => void goal.pause()}>pause</button><button type="button" onClick={() => void goal.sendMessage({ body: 'alpha' })}>message alpha</button><button type="button" onClick={() => void goal.sendMessage({ body: 'beta' })}>message beta</button><button type="button" onClick={() => void goal.sendMessage({ body: "Summarize what's done.", predefinedKind: 'whats_done' })}>message canned</button><button type="button" onClick={() => void goal.retryMessage(retry)}>retry failed</button></>;
+  return <><div data-testid="detail">{goal.detail?.goal.repository ?? 'empty'}</div><div data-testid="version">{goal.detail?.goal.version ?? 'none'}</div><div data-testid="events">{goal.events.map(item => item.sequence).join(',')}</div><div data-testid="connection">{goal.connectionState}</div><div data-testid="readonly">{String(goal.readOnly)}</div><div role="alert">{goal.actionError}</div><button type="button" onClick={() => void goal.loadOlder()}>older</button><button type="button" onClick={() => void goal.pause()}>pause</button><button type="button" onClick={() => void goal.sendMessage({ body: 'alpha' })}>message alpha</button><button type="button" onClick={() => void goal.sendMessage({ body: 'beta' })}>message beta</button><button type="button" onClick={() => void goal.sendMessage({ body: "Summarize what's done.", predefinedKind: 'whats_done' })}>message canned</button><button type="button" onClick={() => void goal.retryMessage(retry)}>retry failed</button></>;
 };
 
 describe('useGoalDetail replay and authorization', () => {
@@ -73,6 +73,8 @@ describe('useGoalDetail replay and authorization', () => {
       return Promise.resolve(page([event(4), event(5)], true));
     });
   });
+
+  afterEach(() => vi.useRealTimers());
 
   it('subscribes only after authorized history, uses exclusive reconnect cursors, deduplicates, and preserves older pagination', async () => {
     const view = render(<Harness />);
@@ -157,20 +159,130 @@ describe('useGoalDetail replay and authorization', () => {
     expect(mocks.socket.emit).toHaveBeenCalledWith('unsubscribe:goal', expect.objectContaining({ goalId: 'goal-1' }));
   });
 
+  it('periodically probes authorization on a healthy socket and stays cleared after silent room revocation', async () => {
+    vi.useFakeTimers();
+    render(<Harness />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByTestId('detail')).toHaveTextContent('integry/propr');
+    expect(screen.getByTestId('connection')).toHaveTextContent('connected');
+    const eventRequests = mocks.getGoalEvents.mock.calls.length;
+    mocks.getGoal.mockRejectedValueOnce(new GoalApiError('goal_access_denied', 403, 'Forbidden'));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+
+    expect(screen.getByTestId('detail')).toHaveTextContent('empty');
+    expect(screen.getByTestId('events')).toBeEmptyDOMElement();
+    expect(screen.getByTestId('readonly')).toHaveTextContent('true');
+    expect(mocks.getGoalEvents).toHaveBeenCalledTimes(eventRequests);
+    expect(mocks.socket.emit).toHaveBeenCalledWith('unsubscribe:goal', expect.objectContaining({ goalId: 'goal-1' }));
+    const detailRequests = mocks.getGoal.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(mocks.getGoal).toHaveBeenCalledTimes(detailRequests);
+    expect(screen.getByTestId('detail')).toHaveTextContent('empty');
+  });
+
+  it('uses healthy probes to rescope repository rooms and fences goal identity changes', async () => {
+    vi.useFakeTimers();
+    const view = render(<Harness />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    mocks.getGoal.mockResolvedValueOnce({ ...detail, goal: { ...detail.goal, repository: 'integry/renamed' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(screen.getByTestId('detail')).toHaveTextContent('integry/renamed');
+    expect(mocks.socket.emit).toHaveBeenCalledWith('unsubscribe:goal', expect.objectContaining({ repository: 'integry/propr', goalId: 'goal-1' }));
+    expect(mocks.socket.emit).toHaveBeenCalledWith('subscribe:goal', expect.objectContaining({ repository: 'integry/renamed', goalId: 'goal-1' }));
+
+    let resolveStaleProbe!: (value: GoalDetail) => void;
+    mocks.getGoal.mockImplementationOnce(() => new Promise(resolve => { resolveStaleProbe = resolve; }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    const goalTwo = { ...detail, goal: { ...detail.goal, goalId: 'goal-2', repository: 'integry/goal-two' } };
+    mocks.getGoal.mockImplementation((goalId: string) => Promise.resolve(goalId === 'goal-2' ? goalTwo : detail));
+    mocks.getGoalEvents.mockImplementation((goalId: string, options: { afterSequence?: number }) => {
+      if (options.afterSequence !== undefined) return Promise.resolve(page([], false));
+      return Promise.resolve(page([event(4, goalId), event(5, goalId)], false));
+    });
+    view.rerender(<Harness goalId="goal-2" />);
+    expect(screen.getByTestId('detail')).toHaveTextContent('empty');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByTestId('detail')).toHaveTextContent('integry/goal-two');
+    expect(screen.getByTestId('events')).toHaveTextContent('4,5');
+    expect(mocks.socket.emit).toHaveBeenCalledWith('unsubscribe:goal', expect.objectContaining({ repository: 'integry/renamed', goalId: 'goal-1' }));
+    expect(mocks.socket.emit).toHaveBeenCalledWith('subscribe:goal', expect.objectContaining({ repository: 'integry/goal-two', goalId: 'goal-2' }));
+    await act(async () => resolveStaleProbe({ ...detail, goal: { ...detail.goal, repository: 'sensitive/stale' } }));
+    expect(screen.getByTestId('detail')).toHaveTextContent('integry/goal-two');
+  });
+
+  it('uses authoritative backward cursors across sparse and empty pages', async () => {
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
+      if (options.beforeSequence === 20) return Promise.resolve(page([], true, 10));
+      if (options.beforeSequence === 10) return Promise.resolve(page([event(2)], false, 1));
+      if (options.afterSequence !== undefined) return Promise.resolve(page([], false));
+      return Promise.resolve(page([event(4), event(5)], true, 20));
+    });
+    render(<Harness />);
+    await screen.findByText('integry/propr');
+    fireEvent.click(screen.getByRole('button', { name: 'older' }));
+    await waitFor(() => expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ beforeSequence: 20 })));
+    expect(screen.getByTestId('events')).toHaveTextContent('4,5');
+    fireEvent.click(screen.getByRole('button', { name: 'older' }));
+    await waitFor(() => expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ beforeSequence: 10 })));
+    expect(screen.getByTestId('events')).toHaveTextContent('2,4,5');
+  });
+
+  it('stops older pagination when an authoritative cursor makes no progress', async () => {
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
+      if (options.beforeSequence === 20) return Promise.resolve(page([], true, 20));
+      if (options.afterSequence !== undefined) return Promise.resolve(page([], false));
+      return Promise.resolve(page([event(4), event(5)], true, 20));
+    });
+    render(<Harness />);
+    await screen.findByText('integry/propr');
+    fireEvent.click(screen.getByRole('button', { name: 'older' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/repeated or omitted/));
+    fireEvent.click(screen.getByRole('button', { name: 'older' }));
+    expect(mocks.getGoalEvents.mock.calls.filter(([, options]) => options.beforeSequence === 20)).toHaveLength(1);
+  });
+
   it('never commits a deferred load-older response after the authorization identity changes', async () => {
     let resolveOlder!: (value: GoalEventsPage) => void;
     mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
-      if (options.beforeSequence === 4) return new Promise(resolve => { resolveOlder = resolve; });
+      if (options.beforeSequence === 20) return new Promise(resolve => { resolveOlder = resolve; });
       if (options.afterSequence !== undefined) return Promise.resolve(page([]));
-      return Promise.resolve(page([event(4), event(5)], true));
+      return Promise.resolve(page([event(4), event(5)], true, 20));
     });
     const view = render(<Harness />);
     await screen.findByText('integry/propr');
     fireEvent.click(screen.getByRole('button', { name: 'older' }));
     mocks.user = user('owner-b'); view.rerender(<Harness />);
     await waitFor(() => expect(screen.getByTestId('events')).toBeEmptyDOMElement());
-    await act(async () => resolveOlder(page([event(3)])));
+    await act(async () => resolveOlder(page([event(3)], true, 10)));
     expect(screen.getByTestId('events')).not.toHaveTextContent('3');
+  });
+
+  it('retains exact free-form and canned intents after malformed 2xx response decoding', async () => {
+    const malformedResponse = () => new GoalMutationUncertainError(new GoalContractError('response.message.state', 'a canonical state'));
+    mocks.sendGoalMessage
+      .mockRejectedValueOnce(malformedResponse())
+      .mockResolvedValueOnce(message('alpha'))
+      .mockRejectedValueOnce(malformedResponse())
+      .mockResolvedValueOnce(message("Summarize what's done."));
+    render(<Harness />); await screen.findByText('integry/propr');
+
+    fireEvent.click(screen.getByRole('button', { name: 'message alpha' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('response.message.state'));
+    const freeFormCall = mocks.sendGoalMessage.mock.calls[0];
+    fireEvent.click(screen.getByRole('button', { name: 'message alpha' }));
+    await waitFor(() => expect(mocks.sendGoalMessage).toHaveBeenCalledTimes(2));
+    expect(mocks.sendGoalMessage.mock.calls[1][1]).toEqual(freeFormCall[1]);
+    expect(mocks.sendGoalMessage.mock.calls[1][2]).toBe(freeFormCall[2]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'message canned' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('response.message.state'));
+    expect(mocks.sendGoalMessage).toHaveBeenCalledTimes(3);
+    const cannedCall = mocks.sendGoalMessage.mock.calls[2];
+    fireEvent.click(screen.getByRole('button', { name: 'message canned' }));
+    await waitFor(() => expect(mocks.sendGoalMessage).toHaveBeenCalledTimes(4));
+    expect(mocks.sendGoalMessage.mock.calls[3][1]).toEqual(cannedCall[1]);
+    expect(mocks.sendGoalMessage.mock.calls[3][2]).toBe(cannedCall[2]);
   });
 
   it('reuses uncertain message keys, rotates for edits and definitive outcomes, and sends stable retry intent', async () => {

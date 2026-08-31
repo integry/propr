@@ -7,6 +7,16 @@ export class GoalContractError extends Error {
   }
 }
 
+export class GoalMutationUncertainError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'The mutation response could not be decoded.');
+    this.name = 'GoalMutationUncertainError';
+    this.cause = cause;
+  }
+}
+
 export class GoalApiError extends Error {
   readonly code: string;
   readonly status: number;

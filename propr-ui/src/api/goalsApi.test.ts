@@ -271,7 +271,19 @@ describe('goalsApi', () => {
       messageId: 'message-1', sequence: 9, body: 'Status?', predefinedKind: null, state: 'queued', responseSource: null,
       response: null, error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt,
     } }, 201));
-    await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?' }, 'message-key')).rejects.toThrow('response.message.state');
+    await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?' }, 'message-key')).rejects.toMatchObject({
+      name: 'GoalMutationUncertainError',
+      cause: expect.objectContaining({ name: 'GoalContractError', message: expect.stringContaining('response.message.state') }),
+    });
+  });
+
+  it('distinguishes pre-dispatch validation from a malformed 2xx mutation response', async () => {
+    await expect(goalsApi.sendGoalMessage('goal-1', { body: '   ' }, 'message-key')).rejects.toBeInstanceOf(goalsApi.GoalContractError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fetchMock.mockResolvedValue(jsonResponse({ message: { body: 'missing canonical fields' } }, 200));
+    await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?' }, 'message-key')).rejects.toBeInstanceOf(goalsApi.GoalMutationUncertainError);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it('requires an idempotency key for steering and exposes all durable message states', async () => {
@@ -301,7 +313,10 @@ describe('goalsApi', () => {
       const malformed: Record<string, unknown> = { messageId: 'message-1', sequence: 9, body: 'Status?', predefinedKind: null, state: 'pending', responseSource: null, response: null, error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
       delete malformed[field];
       fetchMock.mockResolvedValue(jsonResponse({ message: malformed }, 201));
-      await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?' }, 'message-key')).rejects.toThrow(`response.message.${field}`);
+      await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?' }, 'message-key')).rejects.toMatchObject({
+        name: 'GoalMutationUncertainError',
+        cause: expect.objectContaining({ message: expect.stringContaining(`response.message.${field}`) }),
+      });
     }
   );
 });
