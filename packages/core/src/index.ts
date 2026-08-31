@@ -233,8 +233,8 @@ export {
     buildClaudePrompt
 } from './claude/claudeHelpers.js';
 export type { ClaudeOutput, ConversationLogEntry, ClaudeOutputResult, BuildClaudePromptOptions, DockerArgsParams, StorePromptOptions } from './claude/claudeHelpers.js';
-export { buildPlannerAbortSignalKey, executeDockerCommand, findRunningDockerContainerForTask, findTaskContainer, inspectLegacyDockerContainerLivenessForTask, runWithExecutionAbortSignal, runWithPlannerAbortContext, stopDockerContainer, ExecutionAbortedError, ensureAgentBundleImage } from './claude/docker/dockerExecutor.js';
-export type { RunningTaskContainer } from './claude/docker/dockerExecutor.js';
+export { buildPlannerAbortSignalKey, executeDockerCommand, executeSupervisedDockerCommand, findRunningDockerContainerForTask, findTaskContainer, inspectLegacyDockerContainerLivenessForTask, runWithExecutionAbortSignal, runWithPlannerAbortContext, stopDockerContainer, ExecutionAbortedError, ensureAgentBundleImage } from './claude/docker/dockerExecutor.js';
+export type { RunningTaskContainer, SupervisedDockerExecution, SupervisedDockerFence, SupervisedDockerOptions, SupervisedDockerOutput } from './claude/docker/dockerExecutor.js';
 export { cleanupUnusedAgentImages, listAgentImages } from './claude/docker/dockerImageManager.js';
 export type { VersionedImageBuildResult } from './claude/docker/dockerExecutor.js';
 export {
@@ -323,6 +323,36 @@ export { buildOpenCodeDockerArgs, buildOpenCodePrompt, hasOpenCodeTokenUsage, is
 export { shortHash, buildDynamicLlmLabel, buildAgentModelLlmLabel, MAX_GITHUB_LABEL_LENGTH } from '@propr/shared';
 export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
 export { toAntigravityCliModelId } from './agents/impl/antigravityModelIds.js';
+
+// Provider-neutral, resumable goal-session runtime. Provider CLI adapters are
+// intentionally separate from this foundation.
+export * from './agents/goalSession/contract.js';
+export {
+    GoalSessionContractError,
+    GoalSessionSupervisor,
+    StaleGoalSessionFenceError,
+    UnsupportedGoalSessionTransitionError,
+    assertCredentialFreeRecoveryMetadata,
+    firstPendingCorrectiveMessage,
+} from './agents/goalSession/GoalSessionSupervisor.js';
+export type {
+    OpenGoalSessionRequest,
+    ReconcileGoalSessionResult,
+    RunGoalTurnRequest,
+    RunGoalTurnResult,
+} from './agents/goalSession/GoalSessionSupervisor.js';
+export { GoalSessionScopeError, InMemoryGoalSessionPorts } from './agents/goalSession/InMemoryGoalSessionPorts.js';
+export {
+    DEFAULT_GOAL_CONTAINER_RETENTION,
+    GoalContainerSupervisor,
+    buildGoalContainerLayout,
+} from './agents/goalSession/GoalContainerSupervisor.js';
+export type {
+    GoalContainerLayout,
+    GoalContainerRetentionPolicy,
+    StartGoalContainerRequest,
+} from './agents/goalSession/GoalContainerSupervisor.js';
+export { DockerGoalSessionRecovery } from './agents/goalSession/DockerGoalSessionRecovery.js';
 
 export {
     toAgentTankAgent,
