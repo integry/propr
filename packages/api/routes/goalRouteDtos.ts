@@ -75,9 +75,38 @@ const PUBLIC_EVENT_REDACTION_LOOKAHEAD_BYTES = 256;
 // explicit opening/closing token delimiters. A pipe is a raw boundary only when
 // it is not attached to a word; embedded file-URI pipe suffixes are classified
 // by redactFileUriTokens before these patterns run.
+const IPV6_HEXTET_SOURCE = '[0-9A-F]{1,4}';
+const IPV4_OCTET_SOURCE = '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])';
+const IPV4_ADDRESS_SOURCE = `${IPV4_OCTET_SOURCE}(?:\\.${IPV4_OCTET_SOURCE}){3}`;
+const IPV6_LOW_32_BITS_SOURCE =
+  `(?:${IPV6_HEXTET_SOURCE}:${IPV6_HEXTET_SOURCE}|${IPV4_ADDRESS_SOURCE})`;
+const IPV6_ADDRESS_SOURCE = [
+  `(?:${IPV6_HEXTET_SOURCE}:){6}${IPV6_LOW_32_BITS_SOURCE}`,
+  `::(?:${IPV6_HEXTET_SOURCE}:){5}${IPV6_LOW_32_BITS_SOURCE}`,
+  `(?:${IPV6_HEXTET_SOURCE})?::(?:${IPV6_HEXTET_SOURCE}:){4}${IPV6_LOW_32_BITS_SOURCE}`,
+  `(?:(?:${IPV6_HEXTET_SOURCE}:){0,1}${IPV6_HEXTET_SOURCE})?::`
+    + `(?:${IPV6_HEXTET_SOURCE}:){3}${IPV6_LOW_32_BITS_SOURCE}`,
+  `(?:(?:${IPV6_HEXTET_SOURCE}:){0,2}${IPV6_HEXTET_SOURCE})?::`
+    + `(?:${IPV6_HEXTET_SOURCE}:){2}${IPV6_LOW_32_BITS_SOURCE}`,
+  `(?:(?:${IPV6_HEXTET_SOURCE}:){0,3}${IPV6_HEXTET_SOURCE})?::`
+    + `${IPV6_HEXTET_SOURCE}:${IPV6_LOW_32_BITS_SOURCE}`,
+  `(?:(?:${IPV6_HEXTET_SOURCE}:){0,4}${IPV6_HEXTET_SOURCE})?::`
+    + IPV6_LOW_32_BITS_SOURCE,
+  `(?:(?:${IPV6_HEXTET_SOURCE}:){0,5}${IPV6_HEXTET_SOURCE})?::${IPV6_HEXTET_SOURCE}`,
+  `(?:(?:${IPV6_HEXTET_SOURCE}:){0,6}${IPV6_HEXTET_SOURCE})?::`,
+].join('|');
+const BRACKETED_IPV6_DOCKER_HOST_SOURCE =
+  `\\[(?:${IPV6_ADDRESS_SOURCE})(?:%25(?:[0-9A-Z._~-]|%[0-9A-F]{2}){1,64})?\\]`;
+const DOCKER_TCP_HOSTNAME_SOURCE = /[^\s"'`<>/?#,;|()[\]{}&:]+/u.source;
+const DOCKER_TCP_EVENT_VALUE_PATTERN = new RegExp(
+  /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)tcp:\/\//u.source
+    + `(?:${DOCKER_TCP_HOSTNAME_SOURCE}|${BRACKETED_IPV6_DOCKER_HOST_SOURCE})`
+    + /:(?:2375|2376)(?=\/|[?#,;|()[\]{}&\s"'`<>]|$)(?:\/[^\s"'`<>?#,;|()[\]{}&]*)?/u.source,
+  'gimu'
+);
 const SENSITIVE_EVENT_VALUE_PATTERNS = [
   /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)(?:unix|npipe):\/\/[^\s"'`<>?#,;|()[\]{}&]+/gimu,
-  /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)tcp:\/\/[^\s"'`<>/?#,;|()[\]{}&:]+:(?:2375|2376)(?=\/|[?#,;|()[\]{}&\s"'`<>]|$)(?:\/[^\s"'`<>?#,;|()[\]{}&]*)?/gimu,
+  DOCKER_TCP_EVENT_VALUE_PATTERN,
   /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)\/(?:app|builds?|data|github|home|root|users|private|var|run|tmp|srv|workspaces?|worktrees?|mnt|etc|opt)(?=\/|[?#,;|()[\]{}&\s"'`<>]|$)(?:\/[^\s"'`<>?#,;|()[\]{}&]*)?/gimu,
   /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)\/(?:[^\s"'`<>/]+\/)*(?:\.env(?!\.example(?=\/|[?#,;|()[\]{}&\s"'`<>]|$))(?:\.[^\s"'`<>/?#,;|()[\]{}&]+)?|\.npmrc|\.netrc|\.git-credentials|\.ssh|\.aws|\.azure|\.config|\.docker|\.kube|\.gnupg|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)(?=\/|[?#,;|()[\]{}&\s"'`<>]|$)(?:\/[^\s"'`<>?#,;|()[\]{}&]*)?/gimu,
   /(^|[\s"'`=()[\]{:};,&]|(?<![\p{L}\p{N}])\|)[A-Z](?::|%3A)(?:[\\/]|%2F|%5C)(?:Users|Windows|ProgramData|workspaces?|worktrees?)(?=(?:[\\/]|%2F|%5C)|[?#,;|()[\]{}&\s"'`<>]|$)(?:(?:[\\/]|%2F|%5C)[^\s"'`<>?#,;|()[\]{}&]*)?/gimu,

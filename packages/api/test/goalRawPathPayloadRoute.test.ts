@@ -199,6 +199,58 @@ test('raw socket, Docker TCP, and Windows values share structural boundaries', (
   });
 });
 
+test('bracketed IPv6 Docker TCP values redact with bounded structural boundaries', () => {
+  const positiveCases = [
+    ['tcp://[::1]:2375', REDACTED],
+    ['[tcp://[::1]:2375]', `[${REDACTED}]`],
+    ['tcp://[2001:db8::1]:2376/path', REDACTED],
+    ['tcp://[fe80::1%25eth0]:2375', REDACTED],
+    ['{TcP://[FE80::A%25ETH0]:2376/%70rivate}', `{${REDACTED}}`],
+    ['|tcp://[2001:DB8::5]:2375;', `|${REDACTED};`],
+  ] as const;
+  for (const [input, expected] of positiveCases) {
+    assert.equal(projectString(input), expected, input);
+  }
+
+  const terminators = [')', ']', '}', ',', ';', '|', '&', ' ', '"'] as const;
+  for (const terminator of terminators) {
+    const input = `tcp://[2001:db8::1]:2376/path${terminator}next`;
+    assert.equal(projectString(input), `${REDACTED}${terminator}next`, terminator);
+  }
+
+  const nested = toPublicGoalEventPayload({
+    message: '[tcp://[::1]:2375]',
+    paths: [
+      { source: '{TCP://[2001:DB8::1]:2376/%70ath}' },
+      '|tcp://[fe80::1%25eth0]:2375;',
+    ],
+    nested: {
+      value: [{ target: '(tcp://[::ffff:192.0.2.1]:2376/path)' }],
+    },
+  });
+  assert.deepEqual(nested, {
+    message: `[${REDACTED}]`,
+    paths: [{ source: `{${REDACTED}}` }, `|${REDACTED};`],
+    nested: { value: [{ target: `(${REDACTED})` }] },
+  });
+});
+
+test('bracketed IPv6 Docker TCP values preserve ports, invalid text, and word boundaries', () => {
+  const negativeCases = [
+    'public tcp://[::1]:23750',
+    'public tcp://[::1]:23751/path',
+    'public tcp://[::1]:1234/path',
+    'public tcp://[example.com]:2375',
+    'public tcp://[12345::1]:2375',
+    'public tcp://[:::]:2376',
+    'public tcp://[::1:2375',
+    'public [ordinary bracketed text]',
+    'prefixtcp://[::1]:2375',
+    'topicC|tcp://[::1]:2376/path',
+  ];
+  for (const input of negativeCases) assert.equal(projectString(input), input);
+});
+
 test('raw socket, Docker TCP, and Windows values preserve exact controls', () => {
   const negativeCases = [
     '[unix-guide]',
@@ -283,6 +335,7 @@ test('raw socket, Docker TCP, and Windows values redact across public cutoffs', 
   const cases = [
     `|unix:///var/run/${'u'.repeat(600)}`,
     `;tcp://127.0.0.1:2376/${'t'.repeat(600)}`,
+    `[tcp://[2001:db8::1]:2376/${'v'.repeat(600)}]`,
     `${String.raw`[C:\Users\alice\private-`}${'w'.repeat(600)}]`,
   ];
   for (const sensitiveValue of cases) {
