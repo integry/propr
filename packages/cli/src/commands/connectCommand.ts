@@ -317,11 +317,26 @@ export async function resolveConnectStatus({
     });
   }
 
-  const compatibility = evaluateProprApiCompatibility(probe.discovery);
   const remoteMetadata = {
     compatibility: probe.discovery.apiCompatibility,
     version: probe.discovery.version,
   };
+  if (probe.discovery.publicInstanceIdentity !== publicInstanceIdentity) {
+    return baseDocument("notReady", {
+      ...common,
+      ...remoteMetadata,
+      reasonCodes: ["IDENTITY_MISMATCH"],
+    });
+  }
+  if (probe.discovery.canonicalEndpoint !== canonicalEndpoint) {
+    return baseDocument("notReady", {
+      ...common,
+      ...remoteMetadata,
+      restartRequired: true,
+      reasonCodes: ["ENDPOINT_MISMATCH", "RESTART_REQUIRED"],
+    });
+  }
+  const compatibility = evaluateProprApiCompatibility(probe.discovery);
   if (!compatibility.compatible) {
     return baseDocument("incompatible", {
       ...common,
@@ -339,21 +354,6 @@ export async function resolveConnectStatus({
       ...common,
       ...remoteMetadata,
       reasonCodes: ["DESKTOP_AUTHENTICATION_UNSUPPORTED"],
-    });
-  }
-  if (probe.discovery.publicInstanceIdentity !== publicInstanceIdentity) {
-    return baseDocument("notReady", {
-      ...common,
-      ...remoteMetadata,
-      reasonCodes: ["IDENTITY_MISMATCH"],
-    });
-  }
-  if (probe.discovery.canonicalEndpoint !== canonicalEndpoint) {
-    return baseDocument("notReady", {
-      ...common,
-      ...remoteMetadata,
-      restartRequired: true,
-      reasonCodes: ["ENDPOINT_MISMATCH", "RESTART_REQUIRED"],
     });
   }
   return baseDocument("ready", { ...common, ...remoteMetadata, apiReady: true });

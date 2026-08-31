@@ -108,12 +108,21 @@ test("ready requires matching canonical origin, identity, and compatibility", as
   assert.deepEqual(status.reasonCodes, []);
 });
 
-test("same API identity with stale runtime origin requires restart", async () => {
+test("same API identity with stale incompatible runtime origin requires restart", async () => {
   const status = await resolveConnectStatus({
     cfg: cfg(),
     sidecarRunning: true,
     publicInstanceIdentity: IDENTITY,
-    fetchImpl: jsonFetch(discovery({ canonicalEndpoint: null })),
+    fetchImpl: jsonFetch(discovery({
+      canonicalEndpoint: null,
+      apiCompatibility: "2025-01-01",
+      desktopAuthentication: {
+        protocolVersion: 2,
+        browserPairing: false,
+        instanceBearerTokens: false,
+        socketIoBearerAuthentication: false,
+      },
+    })),
   });
   assert.equal(status.status, "notReady");
   assert.equal(status.apiReady, false);
@@ -126,9 +135,13 @@ test("a reassigned or stale endpoint cannot pass an identity mismatch", async ()
     cfg: cfg(),
     sidecarRunning: true,
     publicInstanceIdentity: IDENTITY,
-    fetchImpl: jsonFetch(discovery({ publicInstanceIdentity: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" })),
+    fetchImpl: jsonFetch(discovery({
+      publicInstanceIdentity: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      apiCompatibility: "2025-01-01",
+    })),
   });
   assert.equal(status.status, "notReady");
+  assert.equal(status.restartRequired, false);
   assert.deepEqual(status.reasonCodes, ["IDENTITY_MISMATCH"]);
 });
 
