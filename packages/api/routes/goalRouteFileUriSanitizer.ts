@@ -30,16 +30,28 @@ const LOCAL_RUNTIME_ROOTS = new Set([
 const CREDENTIAL_PATH_SEGMENT = /^(?:\.aws|\.azure|\.config|\.docker|\.env(?:\.(?!example$).*)?|\.git-credentials|\.gnupg|\.kube|\.netrc|\.npmrc|\.ssh|configs?|configuration|credentials?|docker\.sock|secrets?)$/iu;
 const SENSITIVE_URI_METADATA_TOKEN = /^(?:api[_-]?key|bearer|credentials?|password|passwd|private[_-]?key)$/iu;
 const SENSITIVE_URI_METADATA_FAMILY = /^(?:auth|authentication|authorization|secrets?|tokens?)$/iu;
+const SENSITIVE_URI_METADATA_SUFFIX = /^(?:[a-z0-9]*(?:api(?:key|keys)|secrets?|tokens?|auth|authentication|authorization))$/u;
 const ENCODED_OCTET = /%[0-9a-f]{2}/iu;
 const WINDOWS_DRIVE_DESIGNATOR = /^[a-z][:|]$/iu;
 const WINDOWS_DRIVE_PREFIX = /^[a-z][:|]/iu;
-const WINDOWS_DRIVE_IN_METADATA = /(?:^|[/?#&=;,])[a-z][:|]/iu;
+// These delimiters bound decoded URI sub-tokens. Pipe remains part of a file
+// URI candidate because it is also a legacy drive designator, but it is a
+// boundary for metadata/path classification.
+const URI_BASE_TOKEN_TERMINATOR = /[\s"'`<>,]/u;
+const URI_OPENING_DELIMITER = /[([{]/u;
+const URI_CLOSING_DELIMITER = /[)\]}]/u;
+const URI_PATH_TOKEN_DELIMITER = /[()[\]{};]/u;
+const URI_METADATA_TOKEN_DELIMITER = /[/?#&=;:,|()[\]{}]+/u;
+const WINDOWS_DRIVE_IN_METADATA = /(?:^|[/?#&=;,|()[\]{}])[a-z][:|]/iu;
+const SENSITIVE_ROOT_IN_METADATA = /(?:^|[=&#;()[\]{}]|(?<![\p{L}\p{N}])\|)\/(?:app|builds?|data|etc|github|home|mnt|opt|private|root|run|srv|tmp|users|var|workspaces?|worktrees?)(?:\/|[?&#;|()[\]{}]|$)/iu;
 
 interface FileUriCandidate {
   end: number;
   partial: boolean;
   token: string;
 }
+
+type FileUriDelimiterAction = 'close' | 'enter-metadata' | 'none' | 'open' | 'terminate';
 
 function hasUriControlCharacter(value: string): boolean {
   for (const character of value) {
@@ -57,8 +69,26 @@ function isFileSchemeAt(value: string, index: number): boolean {
   return !/[\p{L}\p{N}+.-]/u.test(value[index - 1]!);
 }
 
-function isTokenTerminator(character: string): boolean {
-  return /[\s"'`<>,)}]/u.test(character);
+function matchingClosingDelimiter(character: string): string {
+  if (character === '(') return ')';
+  if (character === '[') return ']';
+  return '}';
+}
+
+function fileUriDelimiterAction(
+  character: string,
+  inMetadata: boolean,
+  inAuthority: boolean,
+  expectedCloser: string | undefined
+): FileUriDelimiterAction {
+  if (URI_BASE_TOKEN_TERMINATOR.test(character)) return 'terminate';
+  if (!inMetadata && (character === '?' || character === '#')) return 'enter-metadata';
+  if (!inMetadata) {
+    return !inAuthority && URI_PATH_TOKEN_DELIMITER.test(character) ? 'terminate' : 'none';
+  }
+  if (URI_OPENING_DELIMITER.test(character)) return 'open';
+  if (!URI_CLOSING_DELIMITER.test(character)) return 'none';
+  return expectedCloser === character ? 'close' : 'terminate';
 }
 
 function readFileUriCandidate(
@@ -67,7 +97,35 @@ function readFileUriCandidate(
   inputTruncated: boolean
 ): FileUriCandidate {
   let end = start + FILE_URI_SCHEME.length;
-  while (end < value.length && !isTokenTerminator(value[end]!)) {
+  let inMetadata = false;
+  let inAuthority = value.slice(end, end + 2) === '//';
+  const expectedClosers: string[] = [];
+  while (end < value.length) {
+    const character = value[end]!;
+    if (inAuthority && character === '/'
+      && end >= start + FILE_URI_SCHEME.length + 2) inAuthority = false;
+    const delimiterAction = fileUriDelimiterAction(
+      character,
+      inMetadata,
+      inAuthority,
+      expectedClosers.at(-1)
+    );
+    if (delimiterAction === 'terminate') break;
+    if (delimiterAction === 'enter-metadata') {
+      inMetadata = true;
+      end += 1;
+      continue;
+    }
+    if (delimiterAction === 'open') {
+      expectedClosers.push(matchingClosingDelimiter(character));
+      end += 1;
+      continue;
+    }
+    if (delimiterAction === 'close') {
+      expectedClosers.pop();
+      end += 1;
+      continue;
+    }
     if (end > start + FILE_URI_SCHEME.length && isFileSchemeAt(value, end)) {
       while (end > start && /[,;|]/u.test(value[end - 1]!)) end -= 1;
       break;
@@ -75,9 +133,6 @@ function readFileUriCandidate(
     end += 1;
   }
   const reachedInputEnd = end === value.length;
-  while (end > start + FILE_URI_SCHEME.length && /[\])}]/u.test(value[end - 1]!)) {
-    end -= 1;
-  }
   return {
     end,
     partial: reachedInputEnd && end === value.length && inputTruncated,
@@ -180,9 +235,14 @@ function hasSensitiveLocalPath(segments: string[]): boolean {
 function isSensitiveMetadataToken(token: string): boolean {
   if (CREDENTIAL_PATH_SEGMENT.test(token)
     || SENSITIVE_URI_METADATA_TOKEN.test(token)) return true;
-  return token
-    .split(/[._-]+/u)
-    .some((family) => SENSITIVE_URI_METADATA_FAMILY.test(family));
+  const words = token
+    .normalize('NFKC')
+    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter(Boolean);
+  return words.some((family) => SENSITIVE_URI_METADATA_FAMILY.test(family))
+    || SENSITIVE_URI_METADATA_SUFFIX.test(words.join(''));
 }
 
 function hasSensitiveMetadata(metadata: string): boolean {
@@ -190,12 +250,10 @@ function hasSensitiveMetadata(metadata: string): boolean {
   if (WINDOWS_DRIVE_IN_METADATA.test(normalizedMetadata)
     || redactSecrets(metadata) !== metadata) return true;
   const segments = normalizedMetadata
-    .split(/[/?#&=;:,]+/u)
-    .filter(Boolean)
-    .map((segment) => segment.toLowerCase());
+    .split(URI_METADATA_TOKEN_DELIMITER)
+    .filter(Boolean);
   if (segments.some(isSensitiveMetadataToken)) return true;
-  return /(?:^|[=&#])\/(?:app|builds?|data|etc|github|home|mnt|opt|private|root|run|srv|tmp|users|var|workspaces?|worktrees?)(?:\/|[?&#;]|$)/iu
-    .test(normalizedMetadata);
+  return SENSITIVE_ROOT_IN_METADATA.test(normalizedMetadata);
 }
 
 function shouldRedactFileUri(candidate: FileUriCandidate): boolean {
