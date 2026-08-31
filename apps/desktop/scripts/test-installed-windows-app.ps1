@@ -64,6 +64,16 @@ if (!$machineTempValue) { throw 'machine temporary directory is unavailable' }
 $machineTemp = [Environment]::ExpandEnvironmentVariables($machineTempValue)
 if (![IO.Path]::IsPathRooted($machineTemp)) { throw 'machine temporary directory is not absolute' }
 $machineTemp = (Resolve-Path -LiteralPath $machineTemp).Path
+$windowsDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+if (!$windowsDirectory -or ![IO.Path]::IsPathRooted($windowsDirectory)) {
+  throw 'Windows directory is unavailable'
+}
+$windowsDirectory = (Resolve-Path -LiteralPath $windowsDirectory -ErrorAction Stop).Path
+$windowsDirectoryItem = Get-Item -LiteralPath $windowsDirectory -Force -ErrorAction Stop
+if (!$windowsDirectoryItem.PSIsContainer -or
+    ($windowsDirectoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+  throw 'Windows directory is invalid'
+}
 
 function Write-Stage(
   [ValidateSet('INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP')][string]$Stage,
@@ -103,6 +113,8 @@ function Start-AlternateCredentialApplication(
   [string]$Domain,
   [string]$UserName,
   [string]$WorkingDirectory,
+  [string]$SmokeDirectory,
+  [string]$WindowsDirectory,
   [string]$StandardOutputPath,
   [string]$StandardErrorPath,
   [string]$Operation
@@ -116,6 +128,76 @@ function Start-AlternateCredentialApplication(
   try {
     if (![IO.Path]::IsPathRooted($FilePath) -or ![IO.Path]::IsPathRooted($WorkingDirectory)) {
       throw 'alternate-credential application launch requires absolute paths'
+    }
+
+    $fullSmokeDirectory = [IO.Path]::GetFullPath($SmokeDirectory)
+    if ((Split-Path -Leaf $fullSmokeDirectory) -notmatch '^propr-desktop-smoke-[a-f0-9]{32}$' -or
+        ![string]::Equals(
+          (Split-Path -Parent $fullSmokeDirectory),
+          $machineTemp,
+          [StringComparison]::OrdinalIgnoreCase
+        )) {
+      throw 'alternate-credential application launch requires the verified smoke directory'
+    }
+    $smokeDirectoryItem = Get-Item -LiteralPath $fullSmokeDirectory -Force -ErrorAction Stop
+    if (!$smokeDirectoryItem.PSIsContainer -or
+        ($smokeDirectoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'alternate-credential application launch requires the verified smoke directory'
+    }
+    $smokeDirectoryAcl = Get-Acl -LiteralPath $fullSmokeDirectory
+    $smokeDirectoryRules = @($smokeDirectoryAcl.Access)
+    $smokeDirectorySids = @($smokeDirectoryRules | ForEach-Object {
+      ($_.IdentityReference.Translate([Security.Principal.SecurityIdentifier])).Value
+    }) | Sort-Object -Unique
+    if (!$smokeDirectoryAcl.AreAccessRulesProtected -or $smokeDirectoryRules.Count -ne 3) {
+      throw 'alternate-credential application launch requires the verified smoke directory'
+    }
+
+    $profileDirectory = Join-Path $fullSmokeDirectory 'profile'
+    $appDataDirectory = Join-Path $profileDirectory 'AppData'
+    $roamingAppDataDirectory = Join-Path $appDataDirectory 'Roaming'
+    $localAppDataDirectory = Join-Path $appDataDirectory 'Local'
+    $temporaryDirectory = Join-Path $fullSmokeDirectory 'temp'
+    foreach ($directory in @(
+      $profileDirectory,
+      $appDataDirectory,
+      $roamingAppDataDirectory,
+      $localAppDataDirectory,
+      $temporaryDirectory
+    )) {
+      New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+      $directoryItem = Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+      if (!$directoryItem.PSIsContainer -or
+          ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'alternate-credential child profile layout is invalid'
+      }
+      $directoryAcl = Get-Acl -LiteralPath $directory
+      $directoryRules = @($directoryAcl.Access)
+      $directorySids = @($directoryRules | ForEach-Object {
+        ($_.IdentityReference.Translate([Security.Principal.SecurityIdentifier])).Value
+      }) | Sort-Object -Unique
+      $invalidDirectoryRules = @($directoryRules | Where-Object {
+        !$_.IsInherited -or
+        $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+          [Security.AccessControl.FileSystemRights]::FullControl
+      })
+      if ($directoryAcl.AreAccessRulesProtected -or $directoryRules.Count -ne 3 -or
+          $invalidDirectoryRules.Count -ne 0 -or
+          (Compare-Object $smokeDirectorySids $directorySids)) {
+        throw 'alternate-credential child profile ACL is not inherited from the smoke directory'
+      }
+    }
+
+    # This is the complete child environment. Never add parent/CI variables here.
+    $childEnvironment = [ordered]@{
+      'APPDATA' = $roamingAppDataDirectory
+      'LOCALAPPDATA' = $localAppDataDirectory
+      'PROPR_DESKTOP_SMOKE_TEST' = '1'
+      'SystemRoot' = $WindowsDirectory
+      'TEMP' = $temporaryDirectory
+      'TMP' = $temporaryDirectory
+      'USERPROFILE' = $profileDirectory
     }
 
     $standardOutputStream = [IO.FileStream]::new(
@@ -136,6 +218,7 @@ function Start-AlternateCredentialApplication(
     )
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.Environment.Clear()
     $startInfo.FileName = $FilePath
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
@@ -149,7 +232,9 @@ function Start-AlternateCredentialApplication(
     foreach ($argument in $Arguments) {
       $startInfo.ArgumentList.Add($argument)
     }
-    $startInfo.Environment['PROPR_DESKTOP_SMOKE_TEST'] = '1'
+    foreach ($entry in $childEnvironment.GetEnumerator()) {
+      $startInfo.Environment.Add([string]$entry.Key, [string]$entry.Value)
+    }
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -536,6 +621,8 @@ try {
       -Domain $env:COMPUTERNAME `
       -UserName $testUser `
       -WorkingDirectory $env:ProgramFiles `
+      -SmokeDirectory $smokeUserDataDirectory `
+      -WindowsDirectory $windowsDirectory `
       -StandardOutputPath (Join-Path $smokeUserDataDirectory 'application.stdout.log') `
       -StandardErrorPath (Join-Path $smokeUserDataDirectory 'application.stderr.log') `
       -Operation 'ordinary-user installed application launch/render/profile smoke'

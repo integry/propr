@@ -365,7 +365,8 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /\$startInfo\.RedirectStandardOutput = \$true/);
     assert.match(installedWindowsAppTest, /\$startInfo\.RedirectStandardError = \$true/);
     assert.match(installedWindowsAppTest, /foreach \(\$argument in \$Arguments\) \{\n\s+\$startInfo\.ArgumentList\.Add\(\$argument\)/);
-    assert.match(installedWindowsAppTest, /\$startInfo\.Environment\['PROPR_DESKTOP_SMOKE_TEST'\] = '1'/);
+    assert.match(installedWindowsAppTest, /\$startInfo\.Environment\.Clear\(\)/);
+    assert.match(installedWindowsAppTest, /\$startInfo\.Environment\.Add\(\[string\]\$entry\.Key, \[string\]\$entry\.Value\)/);
     assert.doesNotMatch(installedWindowsAppTest, /\$startInfo\.Arguments\s*=/);
     assert.doesNotMatch(installedWindowsAppTest, /\$applicationArgumentLine|\[string\]::Join\(' ', \$arguments\)/);
     assert.match(installedWindowsAppTest, /"--user-data-dir=\$smokeUserDataDirectory"/);
@@ -484,6 +485,116 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /- platform: win32\n\s+arch: x64\n/);
       assert.match(section, /- platform: win32\n\s+arch: arm64\n/);
       assert.equal(section.match(/test-installed-windows-app\.ps1/g)?.length, 1);
+    }
+  });
+
+  test('replaces a hostile privileged parent environment with the exact smoke child allowlist', () => {
+    const allowlist = installedWindowsAppTest.match(
+      /\$childEnvironment = \[ordered\]@\{([\s\S]*?)\n\s+\}/,
+    );
+    assert.ok(allowlist);
+    const entries = [...allowlist[1].matchAll(/^\s+'([^']+)' = ('[^']*'|\$[A-Za-z][A-Za-z0-9]*)$/gm)]
+      .map(([, key, expression]) => ({ key, expression }));
+    assert.deepEqual(entries.map(({ key }) => key), [
+      'APPDATA',
+      'LOCALAPPDATA',
+      'PROPR_DESKTOP_SMOKE_TEST',
+      'SystemRoot',
+      'TEMP',
+      'TMP',
+      'USERPROFILE',
+    ]);
+
+    const hostileNames = [
+      'BUILD_PASSWORD',
+      'CI_TOKEN',
+      'DEPLOY_SECRET',
+      'SSH_PRIVATE_KEY',
+      'CSC_LINK',
+      'CSC_KEY_PASSWORD',
+      'WIN_CSC_LINK',
+      'WIN_CSC_KEY_PASSWORD',
+      'WINDOWS_CERTIFICATE_FILE',
+      'WINDOWS_CERTIFICATE_PASSWORD',
+      'GITHUB_TOKEN',
+      'GH_TOKEN',
+      'AZURE_CLIENT_ID',
+      'AZURE_CLIENT_SECRET',
+      'AZURE_TENANT_ID',
+      'PROPR_DESKTOP_UPDATE_PRIVATE_KEY',
+      'PROPR_DESKTOP_SIGNING_SECRET',
+      'PROPR_DESKTOP_UNRELATED',
+      'PATH',
+    ];
+    const seededValues = new Set<string>();
+    const childEnvironment = new Map<string, string>();
+    for (const name of [...hostileNames, ...entries.map(({ key }) => key)]) {
+      const value = `hostile-parent-value:${name}`;
+      seededValues.add(value);
+      childEnvironment.set(name, value);
+    }
+
+    const launch = installedWindowsAppTest.match(
+      /\$startInfo = \[Diagnostics\.ProcessStartInfo\]::new\(\)([\s\S]*?)if \(!\$process\.Start\(\)\)/,
+    );
+    assert.ok(launch);
+    const clear = launch[0].indexOf('$startInfo.Environment.Clear()');
+    const add = launch[0].indexOf('$startInfo.Environment.Add([string]$entry.Key, [string]$entry.Value)');
+    const start = launch[0].indexOf('if (!$process.Start())');
+    assert.ok(clear > 0 && clear < add && add < start);
+    assert.equal(launch[0].match(/\$startInfo\.Environment/g)?.length, 2);
+    assert.doesNotMatch(launch[0], /GetEnvironmentVariables|EnvironmentVariables|\.Environment\s*=|Remove\(/);
+
+    const smokeRoot = 'C:\\private smoke root\\propr-desktop-smoke-0123456789abcdef0123456789abcdef';
+    const fixedValues: Record<string, string> = {
+      '$roamingAppDataDirectory': `${smokeRoot}\\profile\\AppData\\Roaming`,
+      '$localAppDataDirectory': `${smokeRoot}\\profile\\AppData\\Local`,
+      '$WindowsDirectory': 'C:\\Windows',
+      '$temporaryDirectory': `${smokeRoot}\\temp`,
+      '$profileDirectory': `${smokeRoot}\\profile`,
+    };
+    childEnvironment.clear();
+    for (const { key, expression } of entries) {
+      const value = expression.startsWith("'")
+        ? expression.slice(1, -1)
+        : fixedValues[expression];
+      assert.ok(value, `unexpected child environment expression ${expression}`);
+      childEnvironment.set(key, value);
+    }
+
+    assert.deepEqual([...childEnvironment.keys()], entries.map(({ key }) => key));
+    assert.equal(childEnvironment.get('PROPR_DESKTOP_SMOKE_TEST'), '1');
+    assert.equal(childEnvironment.get('SystemRoot'), 'C:\\Windows');
+    for (const name of ['APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'USERPROFILE']) {
+      assert.ok(childEnvironment.get(name)?.startsWith(`${smokeRoot}\\`));
+    }
+    for (const hostileName of hostileNames) assert.ok(!childEnvironment.has(hostileName));
+    for (const value of childEnvironment.values()) assert.ok(!seededValues.has(value));
+
+    assert.match(installedWindowsAppTest, /\[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::Windows\)/);
+    assert.doesNotMatch(allowlist[0], /\$env:|PATH/);
+    assert.doesNotMatch(installedWindowsAppTest, /Write-Host[^\n]*(?:childEnvironment|Environment|Password|UserName|Domain)/);
+    assert.match(installedWindowsAppTest, /alternate-credential child profile ACL is not inherited from the smoke directory/);
+  });
+
+  test('keeps spaced and unspaced smoke argv values as distinct ArgumentList entries', () => {
+    const launch = installedWindowsAppTest.match(
+      /function Start-AlternateCredentialApplication\([\s\S]*?\n\}/,
+    );
+    assert.ok(launch);
+    assert.match(
+      launch[0],
+      /foreach \(\$argument in \$Arguments\) \{\n\s+\$startInfo\.ArgumentList\.Add\(\$argument\)\n\s+\}/,
+    );
+    assert.doesNotMatch(launch[0], /\.Arguments\s*=|Join\(|-join|CommandLine|cmd\.exe|powershell\.exe/);
+
+    for (const argumentValues of [
+      ['--propr-smoke-test', '--user-data-dir=C:\\smoke root\\profile'],
+      ['--propr-smoke-test', '--user-data-dir=C:\\smoke-root\\profile'],
+    ]) {
+      const argumentList: string[] = [];
+      for (const argument of argumentValues) argumentList.push(argument);
+      assert.deepEqual(argumentList, argumentValues);
     }
   });
 
