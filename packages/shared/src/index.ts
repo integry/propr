@@ -382,6 +382,12 @@ export {
   type GoalMessageRequest,
   type GoalRecoveryMetadata,
   type GoalSummaryView,
+  type PublicGoalDto,
+  type PublicGoalNodeDto,
+  type PublicGoalMessageDto,
+  type PublicGoalEventDto,
+  type PublicGoalStatsDto,
+  type PublicGoalDetailDto,
   type GoalListRequest,
   type GoalListResponse,
 } from './goals.js';

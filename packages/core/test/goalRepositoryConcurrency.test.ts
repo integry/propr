@@ -209,6 +209,44 @@ describe('GoalRepository WAL contention', () => {
     );
   });
 
+  test('restart cleanup preserves undefined provider fields and clears explicit nulls under the new fence', async () => {
+    const goal = await createGoal('provider-restart-cleanup-goal');
+    const original = await first.claimLease(goal.goalId, 'crashed-controller', 60_000);
+    const staleFence = { leaseOwner: 'crashed-controller', leaseEpoch: original.epoch };
+    await first.upsertProviderSession(goal.goalId, 'claude', {
+      ...staleFence,
+      providerThreadId: 'thread-before-crash', runtimeId: 'runtime-before-crash',
+      worktreeId: 'worktree-before-crash', lastCheckpoint: 'checkpoint-before-crash',
+    });
+    await firstDb('goals').where('goal_id', goal.goalId)
+      .update({ lease_expires_at: '2000-01-01T00:00:00.000Z' });
+    const restarted = await second.claimLease(goal.goalId, 'restarted-controller', 60_000);
+    const restartedFence = { leaseOwner: 'restarted-controller', leaseEpoch: restarted.epoch };
+
+    await assert.rejects(
+      first.upsertProviderSession(goal.goalId, 'claude', {
+        ...staleFence, providerThreadId: null, runtimeId: null,
+        worktreeId: null, lastCheckpoint: null,
+      }),
+      (error: GoalError) => error.code === 'goal_stale_lease'
+    );
+    await second.upsertProviderSession(goal.goalId, 'claude', {
+      ...restartedFence,
+      runtimeId: null, worktreeId: null, lastCheckpoint: null,
+    });
+    let session = await second.getProviderSession(goal.goalId, 'claude');
+    assert.equal(session?.provider_thread_id, 'thread-before-crash');
+    assert.equal(session?.runtime_id, null);
+    assert.equal(session?.worktree_id, null);
+    assert.equal(session?.last_checkpoint, null);
+
+    await second.upsertProviderSession(goal.goalId, 'claude', {
+      ...restartedFence, providerThreadId: null,
+    });
+    session = await second.getProviderSession(goal.goalId, 'claude');
+    assert.equal(session?.provider_thread_id, null);
+  });
+
   test('renew rejects invalid TTLs and non-current owner or epoch', async () => {
     const goal = await createGoal('renew-goal');
     const lease = await first.claimLease(goal.goalId, 'renew-controller', 60_000);
@@ -313,6 +351,70 @@ describe('GoalRepository WAL contention', () => {
       { requested: 'model-a', applied: 0 },
       { requested: goal.effectiveModel, applied: 1 },
     ]);
+  });
+
+  test('cancel fences model application, permits release, and prevents terminal reclaim', async () => {
+    const goal = await createGoal('cancel-model-race-goal');
+    await first.requestModelChange(goal.goalId, 'model-after-cancel', {
+      idempotencyKey: 'cancel-model-request',
+    });
+    const lease = await first.claimLease(goal.goalId, 'terminal-controller', 60_000);
+    const fence = { leaseOwner: 'terminal-controller', leaseEpoch: lease.epoch };
+    const lifecycle = new GoalLifecycleService(second);
+    const [cancelOutcome, applyOutcome] = await Promise.allSettled([
+      lifecycle.cancel(goal.goalId, { idempotencyKey: 'cancel-wins-model-race' }),
+      first.applyModelChange(goal.goalId, fence),
+    ]);
+    if (cancelOutcome.status !== 'fulfilled') throw cancelOutcome.reason;
+    const terminal = cancelOutcome.value;
+    const immediatelyAfterRace = await first.requireGoal(goal.goalId);
+    assert.equal(immediatelyAfterRace.version, terminal.version);
+    assert.equal(immediatelyAfterRace.effectiveModel, terminal.effectiveModel);
+    if (applyOutcome.status === 'rejected') {
+      assert.equal((applyOutcome.reason as GoalError).code, 'goal_terminal_state');
+    }
+    const statsAtTerminal = await first.getActiveTimeStats(goal.goalId);
+
+    await assert.rejects(
+      first.applyModelChange(goal.goalId, fence),
+      (error: GoalError) => error.code === 'goal_terminal_state'
+    );
+    await assert.rejects(
+      second.claimLease(goal.goalId, 'terminal-reclaimer-before-release', 60_000),
+      (error: GoalError) => error.code === 'goal_terminal_state'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await first.releaseLease(goal.goalId, fence.leaseOwner, fence.leaseEpoch);
+    await assert.rejects(
+      second.claimLease(goal.goalId, 'terminal-reclaimer-after-release', 60_000),
+      (error: GoalError) => error.code === 'goal_terminal_state'
+    );
+
+    const reopened = await new GoalLifecycleService(second).getDetail(goal.goalId);
+    assert.equal(reopened.goal.state, 'cancelled');
+    assert.equal(reopened.goal.version, terminal.version);
+    assert.equal(reopened.goal.requestedModel, 'model-after-cancel');
+    assert.equal(reopened.goal.effectiveModel, terminal.effectiveModel);
+    assert.deepEqual(reopened.stats, statsAtTerminal);
+  });
+
+  test('terminal elapsed and active time survive completion, release, and service reopen', async () => {
+    const goal = await createGoal('completed-timing-goal');
+    const lease = await first.claimLease(goal.goalId, 'completion-controller', 60_000);
+    const fence = { leaseOwner: 'completion-controller', leaseEpoch: lease.epoch };
+    await first.transition(goal.goalId, { toState: 'running', ...fence });
+    await first.transition(goal.goalId, { toState: 'completing', ...fence });
+    await first.transition(goal.goalId, {
+      toState: 'completed', terminalReason: 'objective_met', ...fence,
+    });
+    const beforeRelease = await new GoalLifecycleService(first).getDetail(goal.goalId);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await first.releaseLease(goal.goalId, fence.leaseOwner, fence.leaseEpoch);
+    const afterReopen = await new GoalLifecycleService(second).getDetail(goal.goalId);
+    assert.deepEqual(afterReopen.stats, beforeRelease.stats);
+    assert.equal(afterReopen.goal.version, beforeRelease.goal.version);
+    assert.equal(afterReopen.goal.effectiveModel, beforeRelease.goal.effectiveModel);
   });
 
   test('repository trust boundaries reject oversized objectives, bodies, reasons, IDs, and keys', async () => {

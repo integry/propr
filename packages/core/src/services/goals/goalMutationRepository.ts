@@ -180,6 +180,9 @@ export class GoalMutationRepository {
     validateFence(fence);
     return goalTransaction(this.db, async (trx) => {
       const goal = await requireGoalRecord(trx, goalId);
+      if (isTerminalGoalState(goal.state)) {
+        throw new GoalError(GOAL_ERROR_CODES.terminalState, 'Effective model cannot change after the goal is terminal', 409);
+      }
       const transition = await trx('goal_model_transitions')
         .where('goal_id', goalId)
         .orderBy('id', 'desc')

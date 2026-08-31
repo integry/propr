@@ -20,6 +20,7 @@ import {
   loadAgents,
   loadMonitoredReposRaw,
   type AgentConfig,
+  type Goal,
   type RepoToMonitor,
 } from '@propr/core';
 import {
@@ -41,6 +42,12 @@ import {
   validateCreateGoalInput,
   validateGoalAgentModel,
 } from './goalRouteValidation.js';
+import {
+  toPublicGoal,
+  toPublicGoalDetail,
+  toPublicGoalEvent,
+  toPublicGoalMessage,
+} from './goalRouteDtos.js';
 
 interface GoalRoutesDeps {
   db?: Knex;
@@ -165,7 +172,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         ...result.input,
         idempotencyKey,
       });
-      res.status(201).json({ goal });
+      res.status(201).json({ goal: toPublicGoal(goal) });
     } catch (error) {
       sendGoalError(res, error);
     }
@@ -220,7 +227,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     try {
       await ensureOwnedGoal(req.params.goalId, userId);
       const detail = await lifecycle.getDetail(req.params.goalId);
-      res.json(detail);
+      res.json(toPublicGoalDetail(detail));
     } catch (error) {
       sendGoalError(res, error);
     }
@@ -230,7 +237,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     handler: (
       goalId: string,
       options: { expectedVersion?: number; reason?: string; idempotencyKey: string }
-    ) => Promise<unknown>
+    ) => Promise<Goal>
   ) {
     return async (req: FlatRequest, res: Response): Promise<void> => {
       const userId = requireUserId(req, res);
@@ -244,7 +251,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
           reason: boundedOptionalText(body.reason, 'reason', GOAL_REASON_MAX_LENGTH),
           idempotencyKey,
         });
-        res.json({ goal });
+        res.json({ goal: toPublicGoal(goal) });
       } catch (error) {
         sendGoalError(res, error);
       }
@@ -286,7 +293,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
           idempotencyKey,
         }
       );
-      res.json({ goal: updated });
+      res.json({ goal: toPublicGoal(updated) });
     } catch (error) {
       sendGoalError(res, error);
     }
@@ -313,7 +320,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         predefinedKind,
         idempotencyKey,
       });
-      res.status(201).json({ message });
+      res.status(201).json({ message: toPublicGoalMessage(message) });
     } catch (error) {
       sendGoalError(res, error);
     }
@@ -348,7 +355,10 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         limit,
         kind,
       });
-      res.json(result);
+      res.json({
+        events: result.events.map(toPublicGoalEvent),
+        nextCursor: result.nextCursor,
+      });
     } catch (error) {
       sendGoalError(res, error);
     }

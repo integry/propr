@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
-import { closeConnection, type AgentConfig, type RepoToMonitor } from '@propr/core';
+import {
+  closeConnection,
+  GoalLifecycleService,
+  GoalRepository,
+  type AgentConfig,
+  type RepoToMonitor,
+} from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260831000000_create_goal_control_plane.js';
 import { configureDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
@@ -60,6 +66,25 @@ async function create(objective: string, key: string): Promise<ResponseState> {
   return result.state;
 }
 
+const FORBIDDEN_PUBLIC_KEYS = new Set([
+  'ownerUserId', 'leaseOwner', 'leaseEpoch', 'leaseExpiresAt',
+  'idempotencyKey', 'deliveryAttempts', 'lastError', 'attemptCount', 'id',
+  'owner_user_id', 'lease_owner', 'lease_epoch', 'lease_expires_at',
+  'idempotency_key', 'claimToken', 'requestHash', 'responseJson',
+]);
+
+function assertNoControllerInternals(value: unknown, path = 'response'): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoControllerInternals(item, `${path}[${index}]`));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, nested] of Object.entries(value)) {
+    assert.equal(FORBIDDEN_PUBLIC_KEYS.has(key), false, `${path}.${key} is controller-internal`);
+    assertNoControllerInternals(nested, `${path}.${key}`);
+  }
+}
+
 before(async () => {
   database = knex({
     client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true,
@@ -81,6 +106,70 @@ after(async () => {
 });
 
 describe('goal HTTP contract', () => {
+  test('projects every public goal record response through canonical DTOs', async () => {
+    const api = routes();
+    const created = await create('public DTO goal', 'dto-create');
+    const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
+    const repository = new GoalRepository(database);
+    const lease = await repository.claimLease(goalId, 'dto-controller', 60_000);
+    const fence = { leaseOwner: 'dto-controller', leaseEpoch: lease.epoch };
+    await repository.addNode(goalId, {
+      kind: 'root_epic', title: 'Public node', idempotencyKey: 'private-node-key', ...fence,
+    });
+    await repository.appendEvent(goalId, {
+      kind: 'domain', eventType: 'public-event', payload: { progress: 1 },
+      idempotencyKey: 'private-event-key', ...fence,
+    });
+
+    const message = response();
+    await api.enqueueMessage(request({
+      params: { goalId }, body: { body: 'Correct this' },
+      headers: { 'Idempotency-Key': 'private-message-key' },
+    }), message.res);
+    const detail = response();
+    await api.getGoal(request({ params: { goalId } }), detail.res);
+    const model = response();
+    await api.requestModelChange(request({
+      params: { goalId }, body: { model: 'claude-sonnet-5' },
+      headers: { 'Idempotency-Key': 'dto-model' },
+    }), model.res);
+    const events = response();
+    await api.readEvents(request({ params: { goalId } }), events.res);
+    const paused = response();
+    await api.pauseGoal(request({
+      params: { goalId }, headers: { 'Idempotency-Key': 'dto-pause' },
+    }), paused.res);
+    const cancelled = response();
+    await api.cancelGoal(request({
+      params: { goalId }, headers: { 'Idempotency-Key': 'dto-cancel' },
+    }), cancelled.res);
+
+    const resumable = await create('public resume DTO goal', 'dto-resume-create');
+    const resumableId = (resumable.body as { goal: { goalId: string } }).goal.goalId;
+    const lifecycle = new GoalLifecycleService(repository);
+    await lifecycle.pause(resumableId, { idempotencyKey: 'dto-resume-pause' });
+    const resumableLease = await repository.claimLease(resumableId, 'dto-resume-controller', 60_000);
+    await lifecycle.confirmPaused(resumableId, {
+      leaseOwner: 'dto-resume-controller', leaseEpoch: resumableLease.epoch,
+      idempotencyKey: 'dto-resume-confirm',
+    });
+    const resumed = response();
+    await api.resumeGoal(request({
+      params: { goalId: resumableId }, headers: { 'Idempotency-Key': 'dto-resume' },
+    }), resumed.res);
+
+    for (const publicResponse of [
+      created.body, detail.state.body, paused.state.body, resumed.state.body,
+      cancelled.state.body, model.state.body, message.state.body, events.state.body,
+    ]) {
+      assertNoControllerInternals(publicResponse);
+    }
+    assert.deepEqual(
+      Object.keys((events.state.body as { events: Array<Record<string, unknown>> }).events[0]).sort(),
+      ['createdAt', 'eventType', 'goalId', 'kind', 'payload', 'sequence']
+    );
+  });
+
   test('requires one bounded idempotency key on every mutation', async () => {
     const api = routes();
     const missingCreate = response();

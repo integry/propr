@@ -167,7 +167,17 @@ export class GoalReadRepository {
     const goal = await this.requireGoal(goalId);
     const intervals = await this.db('goal_pause_intervals').where('goal_id', goalId).select('paused_at', 'resumed_at');
     const now = Date.now();
-    const end = isTerminalGoalState(goal.state) ? Date.parse(goal.updatedAt) : now;
+    let end = now;
+    if (isTerminalGoalState(goal.state)) {
+      const terminalTransition = await this.db('goal_state_transitions')
+        .where({ goal_id: goalId, to_state: goal.state })
+        .orderBy('id', 'desc')
+        .first('created_at') as { created_at: string } | undefined;
+      if (!terminalTransition) {
+        throw new Error(`Terminal goal ${goalId} has no durable terminal transition`);
+      }
+      end = Date.parse(terminalTransition.created_at);
+    }
     const elapsedMs = Math.max(0, end - Date.parse(goal.createdAt));
     let pausedMs = 0;
     let currentlyPaused = false;

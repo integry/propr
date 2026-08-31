@@ -226,6 +226,84 @@ export interface GoalSummaryView {
   updatedAt: string;
 }
 
+/**
+ * Canonical goal shape exposed by authenticated HTTP routes. Persistence and
+ * controller-only ownership/lease fields deliberately do not belong here.
+ */
+export interface PublicGoalDto {
+  goalId: string;
+  repository: string;
+  objective: string;
+  state: GoalState;
+  agent: string;
+  requestedModel: string;
+  effectiveModel: string;
+  maxActiveTasks: number;
+  ultrafixEnabled: boolean;
+  ultrafixGoal: number | null;
+  ultrafixMaxCycles: number | null;
+  mergePolicy: GoalMergePolicy;
+  version: number;
+  terminalReason: GoalTerminalReason | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Public hierarchy node without durable idempotency/controller metadata. */
+export interface PublicGoalNodeDto {
+  nodeId: string;
+  goalId: string;
+  parentNodeId: string | null;
+  kind: GoalNodeKind;
+  externalRef: string | null;
+  externalKind: string | null;
+  title: string | null;
+  status: GoalNodeStatus;
+  orderIndex: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Public corrective-message state without delivery-worker internals. */
+export interface PublicGoalMessageDto {
+  messageId: string;
+  goalId: string;
+  sequence: number;
+  body: string;
+  predefinedKind: string | null;
+  state: GoalMessageState;
+  deliveredAt: string | null;
+  acknowledgedAt: string | null;
+  createdAt: string;
+}
+
+/** Public event envelope without the database identity, fence, or write key. */
+export interface PublicGoalEventDto {
+  goalId: string;
+  sequence: number;
+  kind: GoalEventKind;
+  eventType: string;
+  payload: unknown;
+  createdAt: string;
+}
+
+export interface PublicGoalStatsDto {
+  elapsedMs: number;
+  pausedMs: number;
+  activeMs: number;
+  currentlyPaused: boolean;
+}
+
+/** Canonical public detail read model shared by the API and UI. */
+export interface PublicGoalDetailDto {
+  goal: PublicGoalDto;
+  nodes: PublicGoalNodeDto[];
+  dependencies: Array<{ nodeId: string; dependsOnNodeId: string }>;
+  messages: PublicGoalMessageDto[];
+  summary: GoalSummaryView;
+  stats: PublicGoalStatsDto;
+}
+
 /** Canonical keyset-paginated list contract shared by API and UI. */
 export interface GoalListRequest {
   cursor?: string | null;

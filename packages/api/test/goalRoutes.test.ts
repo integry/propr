@@ -138,8 +138,8 @@ describe('goal routes', () => {
   test('creates a goal for the authenticated owner', async () => {
     const state = await createGoalViaApi();
     assert.equal(state.statusCode, 201);
-    const goal = (state.body as { goal: { ownerUserId: string; state: string } }).goal;
-    assert.equal(goal.ownerUserId, 'user-1');
+    const goal = (state.body as { goal: { state: string } }).goal;
+    assert.equal('ownerUserId' in goal, false);
     assert.equal(goal.state, 'queued');
   });
 

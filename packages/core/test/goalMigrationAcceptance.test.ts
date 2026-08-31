@@ -1,20 +1,57 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import knex, { type Knex } from 'knex';
 import type { BetterSqliteConnection } from '../src/db/connection.js';
-import { down, up } from '../src/db/migrations/20260831000000_create_goal_control_plane.js';
+import { applyDatabaseMigrations } from '../src/db/migrationGate.js';
 import { GoalLifecycleService } from '../src/services/goals/goalLifecycleService.js';
 import { GoalRepository } from '../src/services/goals/goalRepository.js';
 
-function openDatabase(filename: string): Knex {
+const GOAL_MIGRATION = '20260831000000_create_goal_control_plane.js';
+const MIGRATIONS_DIRECTORY = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'src',
+  'db',
+  'migrations'
+);
+
+class GoalMigrationSource implements Knex.MigrationSource<string> {
+  constructor(private readonly includeGoalMigration: boolean) {}
+
+  async getMigrations(): Promise<string[]> {
+    const migrations = (await readdir(MIGRATIONS_DIRECTORY))
+      .filter((name) => name.endsWith('.js'))
+      .sort();
+    return this.includeGoalMigration
+      ? migrations
+      : migrations.filter((name) => name !== GOAL_MIGRATION);
+  }
+
+  getMigrationName(migration: string): string {
+    return migration;
+  }
+
+  async getMigration(migration: string): Promise<Knex.Migration> {
+    return import(pathToFileURL(join(MIGRATIONS_DIRECTORY, migration)).href) as Promise<Knex.Migration>;
+  }
+}
+
+function openDatabase(filename: string, includeGoalMigration: boolean): Knex {
+  const migrations: Knex.MigratorConfig = includeGoalMigration
+    ? { directory: MIGRATIONS_DIRECTORY, tableName: 'knex_migrations' }
+    : {
+      migrationSource: new GoalMigrationSource(false),
+      tableName: 'knex_migrations',
+    };
   return knex({
     client: 'better-sqlite3',
     connection: { filename },
     useNullAsDefault: true,
+    migrations,
     pool: {
       min: 1,
       max: 1,
@@ -31,19 +68,27 @@ function openDatabase(filename: string): Knex {
   });
 }
 
-test('pre-goal database upgrades, restarts from SQL, and rolls down without data loss', async () => {
+test('real pre-goal Knex chain passes the migration gate, reopen, and rollback', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-goal-migration-'));
   const filename = join(directory, 'upgrade.sqlite');
-  let database = openDatabase(filename);
+  let database = openDatabase(filename, false);
   try {
-    const fixturePath = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'pre-goal-schema.sql');
-    const fixture = await readFile(fixturePath, 'utf8');
-    for (const statement of fixture.split(';').map(value => value.trim()).filter(Boolean)) {
-      await database.raw(statement);
-    }
+    await database.migrate.latest();
+    const preGoalMigrations = await database('knex_migrations').orderBy('id');
+    assert.equal(preGoalMigrations.some((row) => row.name === GOAL_MIGRATION), false);
+    assert.equal(preGoalMigrations.length, (await new GoalMigrationSource(false).getMigrations()).length);
+    await database('system_configs').insert({
+      key: 'goal-migration-acceptance',
+      value: JSON.stringify({ preserve: true }),
+    });
 
-    await up(database);
-    assert.deepEqual(await database('legacy_acceptance_records'), [{ id: 1, value: 'preserve-me' }]);
+    await database.destroy();
+    database = openDatabase(filename, true);
+    await applyDatabaseMigrations(database);
+    const migratedRows = await database('knex_migrations').orderBy('id');
+    const goalMigrationRow = migratedRows.find((row) => row.name === GOAL_MIGRATION);
+    assert.ok(goalMigrationRow);
+    assert.ok(goalMigrationRow.batch > preGoalMigrations.at(-1)!.batch);
     assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), []);
     const eventForeignKeys = await database.raw("PRAGMA foreign_key_list('goal_events')") as Array<{
       table: string;
@@ -83,15 +128,17 @@ test('pre-goal database upgrades, restarts from SQL, and rolls down without data
     const beforeRestart = (await new GoalLifecycleService(repository).getDetail(goal.goalId)).summary;
 
     await database.destroy();
-    database = openDatabase(filename);
-    const freshService = new GoalLifecycleService(database);
-    const afterRestart = (await freshService.getDetail(goal.goalId)).summary;
+    database = openDatabase(filename, true);
+    await applyDatabaseMigrations(database);
+    const afterRestart = (await new GoalLifecycleService(database).getDetail(goal.goalId)).summary;
     assert.deepEqual(afterRestart, beforeRestart);
     assert.equal(afterRestart.nodeCount, 1);
     assert.equal(afterRestart.latestSequence, 1);
 
-    await down(database);
-    assert.deepEqual(await database('legacy_acceptance_records'), [{ id: 1, value: 'preserve-me' }]);
+    await database.migrate.rollback();
+    assert.equal((await database('knex_migrations').where({ name: GOAL_MIGRATION })).length, 0);
+    assert.equal((await database('knex_migrations')).length, preGoalMigrations.length);
+    assert.equal((await database('system_configs').where({ key: 'goal-migration-acceptance' })).length, 1);
     assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), []);
     const goalTables = await database('sqlite_master').where({ type: 'table' }).whereLike('name', 'goal%');
     assert.deepEqual(goalTables, []);

@@ -1,5 +1,10 @@
 import type { Knex } from 'knex';
-import { GOAL_ERROR_CODES, GOAL_LEASE_TTL_MAX_MS } from '@propr/shared';
+import {
+  GOAL_ERROR_CODES,
+  GOAL_LEASE_TTL_MAX_MS,
+  TERMINAL_GOAL_STATES,
+  isTerminalGoalState,
+} from '@propr/shared';
 import type { GoalRecord } from './goalTypes.js';
 import {
   GoalError,
@@ -20,18 +25,23 @@ export class GoalLeaseRepository {
     const now = nowIso();
     const expiresAt = nowIso(Date.now() + ttlMs);
     return goalTransaction(this.db, async (trx) => {
-      const affected = await trx('goals').where('goal_id', id).andWhere((available) => {
-        void available.whereNull('lease_owner')
-          .orWhere((expired) => void expired.whereNotNull('lease_expires_at').andWhere('lease_expires_at', '<=', now));
-      }).update({
-        lease_owner: leaseOwner,
-        lease_epoch: trx.raw('lease_epoch + 1'),
-        lease_expires_at: expiresAt,
-        updated_at: now,
-      });
+      const affected = await trx('goals').where('goal_id', id)
+        .whereNotIn('state', TERMINAL_GOAL_STATES)
+        .andWhere((available) => {
+          void available.whereNull('lease_owner')
+            .orWhere((expired) => void expired.whereNotNull('lease_expires_at').andWhere('lease_expires_at', '<=', now));
+        }).update({
+          lease_owner: leaseOwner,
+          lease_epoch: trx.raw('lease_epoch + 1'),
+          lease_expires_at: expiresAt,
+          updated_at: now,
+        });
       if (affected !== 1) {
-        const exists = await trx('goals').where('goal_id', id).first('goal_id');
-        if (!exists) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+        const goal = await trx<GoalRecord>('goals').where('goal_id', id).first();
+        if (!goal) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+        if (isTerminalGoalState(goal.state)) {
+          throw new GoalError(GOAL_ERROR_CODES.terminalState, 'Terminal goals cannot be claimed', 409);
+        }
         throw new GoalError(GOAL_ERROR_CODES.leaseConflict, 'Controller lease is held by another owner', 409);
       }
       const goal = await requireGoalRecord(trx, id);

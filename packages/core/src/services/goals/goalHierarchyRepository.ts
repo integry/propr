@@ -132,10 +132,10 @@ export class GoalHierarchyRepository {
           goal_id: goalId,
           lease_generation: existing.lease_generation,
         }).update({
-          provider_thread_id: fields.providerThreadId ?? existing.provider_thread_id,
-          runtime_id: fields.runtimeId ?? existing.runtime_id,
-          worktree_id: fields.worktreeId ?? existing.worktree_id,
-          last_checkpoint: fields.lastCheckpoint ?? existing.last_checkpoint,
+          provider_thread_id: preserveUndefined(fields.providerThreadId, existing.provider_thread_id),
+          runtime_id: preserveUndefined(fields.runtimeId, existing.runtime_id),
+          worktree_id: preserveUndefined(fields.worktreeId, existing.worktree_id),
+          last_checkpoint: preserveUndefined(fields.lastCheckpoint, existing.last_checkpoint),
           effective_model: fields.effectiveModel ?? existing.effective_model,
           recovery_metadata_json: recoveryJson,
           lease_generation: fields.leaseEpoch,
@@ -227,6 +227,10 @@ function validateProviderFields(fields: ProviderSessionUpdate): void {
     && (typeof fields.lastCheckpoint !== 'string' || Buffer.byteLength(fields.lastCheckpoint, 'utf8') > 4096)) {
     throw new GoalError(GOAL_ERROR_CODES.validation, 'lastCheckpoint exceeds 4096 bytes', 400);
   }
+}
+
+function preserveUndefined<T>(value: T | undefined, existing: T): T {
+  return value === undefined ? existing : value;
 }
 
 function validateRecoveryMetadata(value: ProviderSessionUpdate['recoveryMetadata']): string | null {
