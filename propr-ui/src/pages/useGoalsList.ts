@@ -2,42 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   getGoals,
-  GOALS_CURSOR_MAX_LENGTH,
   GOALS_SEARCH_MAX_LENGTH,
-  GOAL_STATES,
   type GoalListItem,
-  type GoalState,
 } from '../api/goalsApi';
 import { useSocket } from '../contexts/useSocket';
 import { DEFAULT_GOALS_PAGE_SIZE } from './goalsPageUtils';
+import {
+  boundedGoalsSearch,
+  goalCreatePath,
+  GOALS_CURSOR_HISTORY_PARAM,
+  MAX_GOALS_CURSOR_HISTORY,
+  readGoalsUrlState,
+} from './goalsUrlState';
 
-const CURSOR_HISTORY_PARAM = 'cursorHistory';
-const REPOSITORY_MAX_LENGTH = 255;
-const MAX_CURSOR_HISTORY = 100;
 const INVALIDATION_DELAY_MS = 100;
 const EMPTY_GOALS: GoalListItem[] = [];
-
-const validCursor = (value: string): boolean =>
-  value.length > 0
-  && value.length <= GOALS_CURSOR_MAX_LENGTH
-  && /^[A-Za-z0-9_-]+$/.test(value);
-
-const boundedSearch = (value: string): string =>
-  Array.from(value.trim()).slice(0, GOALS_SEARCH_MAX_LENGTH).join('');
-
-const setOptionalParam = (params: URLSearchParams, key: string, value: string): void => {
-  if (value) params.set(key, value);
-  else params.delete(key);
-};
-
-interface GoalsUrlState {
-  state: GoalState | 'all';
-  repository: string;
-  search: string;
-  cursor?: string;
-  history: Array<string | null>;
-  cleanedParams: URLSearchParams | null;
-}
 
 interface GoalsResult {
   fingerprint: string;
@@ -51,69 +30,11 @@ interface GoalsRequestState {
   error: string | null;
 }
 
-function parseCursorHistory(raw: string | null): Array<string | null> | null {
-  if (!raw) return [];
-  try {
-    const value = JSON.parse(raw) as unknown;
-    if (!Array.isArray(value) || value.length > MAX_CURSOR_HISTORY) return null;
-    if (!value.every(cursor => cursor === null || (typeof cursor === 'string' && validCursor(cursor)))) return null;
-    return value as Array<string | null>;
-  } catch {
-    return null;
-  }
-}
-
-function readUrlState(params: URLSearchParams): GoalsUrlState {
-  const cleaned = new URLSearchParams(params);
-  let changed = false;
-  const rawState = params.get('state');
-  const state = rawState && GOAL_STATES.includes(rawState as GoalState)
-    ? rawState as GoalState
-    : 'all';
-  if (rawState && state === 'all') {
-    cleaned.delete('state');
-    changed = true;
-  }
-
-  const rawRepository = params.get('repository') ?? '';
-  const repository = rawRepository.length <= REPOSITORY_MAX_LENGTH ? rawRepository : '';
-  if (rawRepository && !repository) {
-    cleaned.delete('repository');
-    changed = true;
-  }
-
-  const rawSearch = params.get('search') ?? '';
-  const search = boundedSearch(rawSearch);
-  if (search !== rawSearch) {
-    setOptionalParam(cleaned, 'search', search);
-    changed = true;
-  }
-
-  const rawCursor = params.get('cursor');
-  const cursor = rawCursor && validCursor(rawCursor) ? rawCursor : undefined;
-  let history = parseCursorHistory(params.get(CURSOR_HISTORY_PARAM));
-  if ((rawCursor && !cursor) || history === null) {
-    cleaned.delete('cursor');
-    cleaned.delete(CURSOR_HISTORY_PARAM);
-    history = [];
-    changed = true;
-  }
-  if (!cursor && history.length > 0) {
-    cleaned.delete(CURSOR_HISTORY_PARAM);
-    history = [];
-    changed = true;
-  }
-  if (params.has('page')) {
-    cleaned.delete('page');
-    changed = true;
-  }
-  return { state, repository, search, cursor, history, cleanedParams: changed ? cleaned : null };
-}
-
 export function useGoalsList() {
   const [searchParams, setSearchParams] = useSearchParams();
   const searchParamsKey = searchParams.toString();
-  const url = useMemo(() => readUrlState(new URLSearchParams(searchParamsKey)), [searchParamsKey]);
+  const url = useMemo(() => readGoalsUrlState(new URLSearchParams(searchParamsKey)), [searchParamsKey]);
+  const newGoalPath = useMemo(() => goalCreatePath(new URLSearchParams(searchParamsKey)), [searchParamsKey]);
   const {
     isConnected,
     onGoalSummaryUpdate,
@@ -165,7 +86,7 @@ export function useGoalsList() {
 
   const resetCursor = (params: URLSearchParams) => {
     params.delete('cursor');
-    params.delete(CURSOR_HISTORY_PARAM);
+    params.delete(GOALS_CURSOR_HISTORY_PARAM);
     params.delete('page');
   };
 
@@ -173,7 +94,7 @@ export function useGoalsList() {
     if (searchQuery === url.search) return;
     const timer = setTimeout(() => {
       updateParams(next => {
-        const normalizedSearch = boundedSearch(searchQuery);
+        const normalizedSearch = boundedGoalsSearch(searchQuery);
         if (normalizedSearch) next.set('search', normalizedSearch);
         else next.delete('search');
         resetCursor(next);
@@ -269,7 +190,7 @@ export function useGoalsList() {
   }, [updateParams]);
 
   const updateSearchQuery = useCallback((value: string) => {
-    setSearchQuery(Array.from(value).length > GOALS_SEARCH_MAX_LENGTH ? boundedSearch(value) : value);
+    setSearchQuery(Array.from(value).length > GOALS_SEARCH_MAX_LENGTH ? boundedGoalsSearch(value) : value);
   }, []);
 
   const clearFilters = useCallback(() => {
@@ -281,11 +202,11 @@ export function useGoalsList() {
   }, [updateParams]);
 
   const nextPage = useCallback(() => {
-    if (!nextCursor) return;
+    if (!nextCursor || url.history.length >= MAX_GOALS_CURSOR_HISTORY) return;
     updateParams(next => {
       const history = [...url.history, url.cursor ?? null];
       next.set('cursor', nextCursor);
-      next.set(CURSOR_HISTORY_PARAM, JSON.stringify(history));
+      next.set(GOALS_CURSOR_HISTORY_PARAM, JSON.stringify(history));
       next.delete('page');
     });
   }, [nextCursor, updateParams, url.cursor, url.history]);
@@ -297,8 +218,8 @@ export function useGoalsList() {
       const cursor = url.history.at(-1);
       if (cursor) next.set('cursor', cursor);
       else next.delete('cursor');
-      if (history.length > 0) next.set(CURSOR_HISTORY_PARAM, JSON.stringify(history));
-      else next.delete(CURSOR_HISTORY_PARAM);
+      if (history.length > 0) next.set(GOALS_CURSOR_HISTORY_PARAM, JSON.stringify(history));
+      else next.delete(GOALS_CURSOR_HISTORY_PARAM);
       next.delete('page');
     });
   }, [updateParams, url.history]);
@@ -312,9 +233,10 @@ export function useGoalsList() {
     stateFilter: url.state,
     repositoryFilter: url.repository,
     appliedSearch: url.search,
+    newGoalPath,
     currentPage: url.history.length + 1,
     hasPrevious: url.history.length > 0,
-    hasNext: nextCursor !== null,
+    hasNext: nextCursor !== null && url.history.length < MAX_GOALS_CURSOR_HISTORY,
     setSearchQuery: updateSearchQuery,
     setStateFilter,
     clearSearch,

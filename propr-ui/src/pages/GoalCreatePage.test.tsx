@@ -57,11 +57,14 @@ const createdGoal: GoalRecordV1 = {
   updatedAt: '2026-08-31T00:00:00Z',
 };
 
-const Location = () => <output data-testid="location">{useLocation().pathname}</output>;
+const Location = () => {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}{location.search}</output>;
+};
 
-function renderPage() {
-  render(
-    <MemoryRouter initialEntries={['/goals/new']}>
+function renderPage(entry = '/goals/new') {
+  return render(
+    <MemoryRouter initialEntries={[entry]}>
       <Routes>
         <Route path="/goals/new" element={<GoalCreatePage />} />
         <Route path="/goals" element={<div>Goals list</div>} />
@@ -70,6 +73,11 @@ function renderPage() {
     </MemoryRouter>
   );
 }
+
+const createEntry = (returnTarget: string): string => {
+  const query = new URLSearchParams({ returnTo: returnTarget });
+  return `/goals/new?${query.toString()}`;
+};
 
 const setValidObjective = (value = 'Deliver durable goal orchestration') => {
   fireEvent.change(screen.getByLabelText(/^Objective/), { target: { value } });
@@ -198,6 +206,48 @@ describe('GoalCreatePage', () => {
     expect(await screen.findByText(/Every completed goal yields an epic pull request/)).toHaveTextContent('optional sub-epic pull requests and leaf issue pull requests');
     expect(screen.getByText(/Goal creation is disabled in demo mode/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create Goal' })).toBeDisabled();
+  });
+
+  it('uses the refresh-safe canonical return target for Back and Cancel', async () => {
+    const returnTarget = '/goals?state=paused&repository=integry%2Fpropr&search=durable+work&cursor=cursor2&cursorHistory=%5Bnull%2C%22cursor1%22%5D';
+    const backView = renderPage(createEntry(returnTarget));
+    await screen.findByRole('form', { name: 'Create goal' });
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Goals' }));
+    expect(screen.getByTestId('location')).toHaveTextContent(returnTarget);
+    backView.unmount();
+
+    renderPage(createEntry(returnTarget));
+    await screen.findByRole('form', { name: 'Create goal' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByTestId('location')).toHaveTextContent(returnTarget);
+  });
+
+  it('returns to the canonical filtered cursor URL after a successful submit', async () => {
+    vi.mocked(createGoal).mockResolvedValue(createdGoal);
+    const returnTarget = '/goals?state=running&search=orchestration&cursor=cursor2&cursorHistory=%5Bnull%2C%22cursor1%22%5D';
+    renderPage(createEntry(returnTarget));
+    await screen.findByRole('form', { name: 'Create goal' });
+    setValidObjective();
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(returnTarget));
+  });
+
+  it('rejects external and non-goals return targets instead of redirecting away', async () => {
+    for (const target of ['https://evil.example/steal', '//evil.example/steal', '/tasks?state=running']) {
+      const rendered = render(
+        <MemoryRouter initialEntries={[createEntry(target)]}>
+          <Routes>
+            <Route path="/goals/new" element={<GoalCreatePage />} />
+            <Route path="/goals" element={<div>Goals list</div>} />
+          </Routes>
+          <Location />
+        </MemoryRouter>
+      );
+      await screen.findByRole('form', { name: 'Create goal' });
+      fireEvent.click(screen.getByRole('button', { name: 'Back to Goals' }));
+      expect(screen.getByTestId('location')).toHaveTextContent(/^\/goals$/);
+      rendered.unmount();
+    }
   });
 
   it('exposes catalog errors and a keyboard-labeled back control', async () => {

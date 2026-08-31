@@ -14,8 +14,8 @@ const GoalsPage = () => {
   const list = useGoalsList();
 
   const handleNewGoal = useCallback(() => {
-    if (!isDemoMode) navigate('/goals/new');
-  }, [isDemoMode, navigate]);
+    if (!isDemoMode) navigate(list.newGoalPath);
+  }, [isDemoMode, list.newGoalPath, navigate]);
 
   const renderContent = () => {
     if (list.loading && list.goals.length === 0) {
@@ -101,7 +101,7 @@ const GoalsPage = () => {
         </div>
       </main>
 
-      {(list.hasPrevious || list.hasNext) && list.goals.length > 0 && (
+      {(list.hasPrevious || list.hasNext) && (
         <div className="flex-shrink-0 border-t border-gray-200 bg-slate-50">
           <GoalsPagination
             currentPage={list.currentPage}

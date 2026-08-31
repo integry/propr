@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   getGoalCapableModels,
   isGoalCapableCatalogAgent,
@@ -17,6 +17,7 @@ import {
   type GoalFormValues,
   validateGoalForm,
 } from './goalCreateUtils';
+import { GOALS_RETURN_TO_PARAM, goalsReturnTarget } from './goalsUrlState';
 
 const initialValues: GoalFormValues = {
   objective: '',
@@ -37,6 +38,9 @@ const newIdempotencyKey = (): string => {
 
 export function useGoalCreateForm() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const rawReturnTarget = searchParams.get(GOALS_RETURN_TO_PARAM);
+  const returnTarget = useMemo(() => goalsReturnTarget(rawReturnTarget), [rawReturnTarget]);
   const { isDemoMode } = useDemoMode();
   const { addToast } = useToast();
   const [agents, setAgents] = useState<InstanceCatalogAgent[]>([]);
@@ -128,7 +132,7 @@ export function useGoalCreateForm() {
     try {
       await createGoal(params, key);
       addToast({ type: 'success', message: 'Goal created successfully.' });
-      navigate('/goals');
+      navigate(returnTarget);
     } catch (error) {
       const idempotencyConflict = isGoalApiErrorCode(error, 'goal_idempotency_conflict');
       if (idempotencyConflict) {
@@ -146,7 +150,7 @@ export function useGoalCreateForm() {
       submissionInFlightRef.current = false;
       setSubmitting(false);
     }
-  }, [addToast, isDemoMode, navigate, values]);
+  }, [addToast, isDemoMode, navigate, returnTarget, values]);
 
   return {
     agents,
@@ -160,6 +164,6 @@ export function useGoalCreateForm() {
     setField,
     setAgent,
     submit,
-    cancel: () => navigate('/goals'),
+    cancel: () => navigate(returnTarget),
   };
 }

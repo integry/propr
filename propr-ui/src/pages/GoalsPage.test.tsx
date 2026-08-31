@@ -118,6 +118,58 @@ describe('GoalsPage', () => {
     expect(screen.getByTestId('location')).not.toHaveTextContent('cursor=');
   });
 
+  it('keeps filters on an empty later page and leaves Previous usable', async () => {
+    vi.mocked(getGoals).mockResolvedValue({ goals: [], nextCursor: null });
+    renderPage(['/goals?state=paused&repository=integry%2Fpropr&search=durable&cursor=cursor2&cursorHistory=%5Bnull%5D']);
+
+    expect(await screen.findByText('No results for “durable”')).toBeInTheDocument();
+    expect(screen.getByLabelText('Filter by state')).toHaveValue('paused');
+    expect(screen.getByLabelText('Search goals')).toHaveValue('durable');
+    const previous = screen.getByRole('button', { name: 'Previous page' });
+    expect(previous).toBeEnabled();
+
+    fireEvent.click(previous);
+    await waitFor(() => expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({
+      state: 'paused',
+      repository: 'integry/propr',
+      search: 'durable',
+      cursor: undefined,
+    }), expect.any(Object)));
+    expect(screen.getByTestId('location')).toHaveTextContent('state=paused');
+    expect(screen.getByTestId('location')).toHaveTextContent('repository=integry%2Fpropr');
+    expect(screen.getByTestId('location')).toHaveTextContent('search=durable');
+  });
+
+  it('stops at the parseable cursor-history boundary and reverses the boundary page', async () => {
+    const history = [null, ...Array.from({ length: 98 }, (_, index) => `cursor${index + 1}`)];
+    const query = new URLSearchParams({
+      cursor: 'cursor99',
+      cursorHistory: JSON.stringify(history),
+    });
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: 'cursor100' });
+    renderPage([`/goals?${query.toString()}`]);
+
+    await screen.findByText('Durable orchestration');
+    expect(screen.getByRole('navigation', { name: 'Goals pagination' })).toHaveTextContent('Page 100');
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(getGoals).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: 'cursor100' }),
+      expect.any(Object)
+    ));
+
+    expect(screen.getByRole('navigation', { name: 'Goals pagination' })).toHaveTextContent('Page 101');
+    expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled();
+    const boundaryUrl = new URL(screen.getByTestId('location').textContent ?? '', 'https://propr.invalid');
+    expect(JSON.parse(boundaryUrl.searchParams.get('cursorHistory') ?? '[]')).toHaveLength(100);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous page' }));
+    await waitFor(() => expect(getGoals).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: 'cursor99' }),
+      expect.any(Object)
+    ));
+    expect(screen.getByRole('navigation', { name: 'Goals pagination' })).toHaveTextContent('Page 100');
+  });
+
   it('provides mobile-visible search and resets cursor history when search changes', async () => {
     vi.useFakeTimers();
     vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
@@ -168,6 +220,16 @@ describe('GoalsPage', () => {
     expect(screen.getByTestId('location')).not.toHaveTextContent('cursor=');
     expect(getGoals).toHaveBeenCalledTimes(1);
     expect(getGoals).toHaveBeenCalledWith(expect.objectContaining({ cursor: undefined }), expect.any(Object));
+  });
+
+  it('rejects cursor history with an irreversible null entry', async () => {
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
+    const query = new URLSearchParams({ cursor: 'cursor3', cursorHistory: JSON.stringify([null, 'cursor1', null]) });
+    renderPage([`/goals?${query.toString()}`]);
+    await screen.findByText('Durable orchestration');
+    expect(screen.getByTestId('location')).not.toHaveTextContent('cursor=');
+    expect(screen.getByTestId('location')).not.toHaveTextContent('cursorHistory=');
+    expect(getGoals).toHaveBeenCalledTimes(1);
   });
 
   it('restores search, filter, and cursor state through browser back/forward navigation', async () => {
@@ -267,11 +329,22 @@ describe('GoalsPage', () => {
     expect(screen.getByText(/Demo mode is read-only/)).toBeInTheDocument();
   });
 
-  it('navigates to the creation route when writable', async () => {
+  it('navigates to creation with the complete canonical goals return state', async () => {
     vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
-    renderPage();
+    const history = JSON.stringify([null, 'cursor1']);
+    const query = new URLSearchParams({
+      state: 'planning',
+      repository: 'integry/propr',
+      search: 'durable work',
+      cursor: 'cursor2',
+      cursorHistory: history,
+    });
+    renderPage([`/goals?${query.toString()}`]);
     await screen.findByText('Durable orchestration');
     fireEvent.click(screen.getByRole('button', { name: 'New Goal' }));
     expect(await screen.findByText('New goal route')).toBeInTheDocument();
+    const createUrl = new URL(screen.getByTestId('location').textContent ?? '', 'https://propr.invalid');
+    const returnTarget = createUrl.searchParams.get('returnTo');
+    expect(returnTarget).toBe(`/goals?${query.toString()}`);
   });
 });
