@@ -122,6 +122,38 @@ test('file URI parser preserves ordinary text, HTTP URLs, and explicitly safe lo
   for (const safe of safeValues) assert.equal(projectString(safe), safe);
 });
 
+test('raw absolute paths recognize exact sensitive roots at token boundaries', () => {
+  const projected = toPublicGoalEventPayload({
+    message: '/home?user=alice',
+    source: '/run#fragment',
+    paths: ['/home, next', '/home) next', 'path=/home&x=1'],
+    nested: {
+      value: '/run?service=controller',
+      source: 'list: /opt, /home) done',
+    },
+  });
+
+  assert.deepEqual(projected, {
+    message: `${REDACTED}?user=alice`,
+    source: `${REDACTED}#fragment`,
+    paths: [`${REDACTED}, next`, `${REDACTED}) next`, `path=${REDACTED}&x=1`],
+    nested: {
+      value: `${REDACTED}?service=controller`,
+      source: `list: ${REDACTED}, ${REDACTED}) done`,
+    },
+  });
+});
+
+test('raw absolute paths preserve alphanumeric sensitive-root continuations', () => {
+  const payload = {
+    message: '/homecoming',
+    source: '/runtime/report.txt',
+    nested: { value: '/optical/manual.txt' },
+  };
+
+  assert.deepEqual(toPublicGoalEventPayload(payload), payload);
+});
+
 test('file URI parser handles multiple tokens and a token spanning the public cutoff', () => {
   const multiple = [
     'safe file:///project/docs/readme.txt',
