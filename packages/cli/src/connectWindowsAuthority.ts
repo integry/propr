@@ -31,7 +31,7 @@ export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
   "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
-  "broker:ps-version", "broker:job", "broker:fd", "broker:index-info-initial",
+  "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
   "broker:index-info-revalidation",
   "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
@@ -76,6 +76,8 @@ $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Set-StrictMode -Version 2
 $stage=71
+$privateHandle=[IntPtr]::Zero
+$privateHandleOwned=$false
 try {
   if($PSVersionTable.PSVersion.Major-ne 5-or $PSVersionTable.PSVersion.Minor-ne 1-or
      $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){exit $stage}
@@ -93,6 +95,8 @@ try {
   $winapi=[Runtime.InteropServices.CallingConvention]::Winapi
   $intptr=[IntPtr];$intptrRef=$intptr.MakeByRefType();$uint=[uint32];$uintRef=$uint.MakeByRefType();$ushortRef=([uint16]).MakeByRefType();$boolRef=([bool]).MakeByRefType()
   Add-NativeMethod 'GetStdHandle' 'kernel32.dll' $intptr @([int]) $winapi
+  Add-NativeMethod 'DuplicateHandle' 'kernel32.dll' ([bool]) @($intptr,$intptr,$intptr,$intptrRef,$uint,[bool],$uint) $winapi
+  Add-NativeMethod 'CloseHandle' 'kernel32.dll' ([bool]) @($intptr) $winapi
   Add-NativeMethod 'GetFileInformationByHandle' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
   Add-NativeMethod 'GetSecurityInfo' 'advapi32.dll' $uint @($intptr,$uint,$uint,$intptrRef,$intptrRef,$intptrRef,$intptrRef,$intptrRef) $winapi
   Add-NativeMethod 'GetSecurityDescriptorControl' 'advapi32.dll' ([bool]) @($intptr,$ushortRef,$uintRef) $winapi
@@ -106,11 +110,17 @@ try {
   $inJob=$false
   if(-not [ProprReadOnlyAuthority]::IsProcessInJob([ProprReadOnlyAuthority]::GetCurrentProcess(),[IntPtr]::Zero,[ref]$inJob)){exit $stage}
   $stage=73
-  $handle=[ProprReadOnlyAuthority]::GetStdHandle(-10)
-  if($handle-eq [IntPtr](-1)-or $handle-eq [IntPtr](-2)-or $handle-eq [IntPtr]::Zero){exit $stage}
+  $originalHandle=[ProprReadOnlyAuthority]::GetStdHandle(-10)
+  if($originalHandle-eq [IntPtr](-1)-or $originalHandle-eq [IntPtr](-2)-or $originalHandle-eq [IntPtr]::Zero){exit $stage}
+  $stage=80
+  if(-not [ProprReadOnlyAuthority]::DuplicateHandle(
+    [ProprReadOnlyAuthority]::GetCurrentProcess(),$originalHandle,
+    [ProprReadOnlyAuthority]::GetCurrentProcess(),[ref]$privateHandle,0,$false,2)){exit $stage}
+  $privateHandleOwned=$true
+  if($privateHandle-eq [IntPtr](-1)-or $privateHandle-eq [IntPtr](-2)-or $privateHandle-eq [IntPtr]::Zero){exit $stage}
   $stage=74
   $before=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-  if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($handle,$before)){exit $stage}
+  if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$before)){exit $stage}
   $stage=78
   $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
   if($null-eq $current){exit $stage}
@@ -118,7 +128,7 @@ try {
   $stage=75
   $owner=[IntPtr]::Zero;$group=[IntPtr]::Zero;$dacl=[IntPtr]::Zero;$sacl=[IntPtr]::Zero;$descriptor=[IntPtr]::Zero
   try {
-    if([ProprReadOnlyAuthority]::GetSecurityInfo($handle,1,5,[ref]$owner,[ref]$group,[ref]$dacl,[ref]$sacl,[ref]$descriptor)-ne 0){exit $stage}
+    if([ProprReadOnlyAuthority]::GetSecurityInfo($privateHandle,1,5,[ref]$owner,[ref]$group,[ref]$dacl,[ref]$sacl,[ref]$descriptor)-ne 0){exit $stage}
     if($owner-eq [IntPtr]::Zero-or $dacl-eq [IntPtr]::Zero-or $descriptor-eq [IntPtr]::Zero){exit $stage}
     $ownerSid=(New-Object Security.Principal.SecurityIdentifier($owner)).Value
     $control=[uint16]0;$revision=[uint32]0
@@ -150,7 +160,7 @@ try {
   } finally {if($descriptor-ne [IntPtr]::Zero){$null=[ProprReadOnlyAuthority]::LocalFree($descriptor)}}
   $stage=79
   $after=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-  if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($handle,$after)){exit $stage}
+  if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$after)){exit $stage}
   $beforeVolume=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,28)
   $afterVolume=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($after,28)
   $beforeHigh=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,44);$beforeLow=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,48)
@@ -172,6 +182,7 @@ try {
   [Console]::Out.Write($json)
   exit 0
 }catch{exit $stage}
+finally {if($privateHandleOwned){$null=[ProprReadOnlyAuthority]::CloseHandle($privateHandle)}}
 `;
 
 export const WINDOWS_NATIVE_PROBE_MILESTONES = Object.freeze([
@@ -357,7 +368,7 @@ function brokerFailureStage(status: number | null): WindowsNativeStageCode {
   const stages: Readonly<Record<number, WindowsNativeStageCode>> = {
     71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info-initial",
     75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
-    78: "broker:current-user-sid", 79: "broker:index-info-revalidation",
+    78: "broker:current-user-sid", 79: "broker:index-info-revalidation", 80: "broker:fd-duplicate",
   };
   return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
 }

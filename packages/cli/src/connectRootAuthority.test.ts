@@ -195,22 +195,33 @@ test("Windows production inspection has one cold-start deadline and a cumulative
   );
 });
 
-test("Windows production index and SID failures have distinct fixed redacted stages", () => {
+test("Windows production duplicates the standard handle and retains distinct fixed redacted stages", () => {
+  assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:fd-duplicate"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-initial"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:current-user-sid"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-revalidation"));
   assert.equal((WINDOWS_NATIVE_STAGE_CODES as readonly string[]).includes("broker:index-info"), false);
 
+  const duplicate = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=80");
   const initial = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=74");
   const sid = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=78");
   const revalidation = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=79");
-  assert.ok(initial >= 0 && initial < sid && sid < revalidation);
+  assert.ok(duplicate >= 0 && duplicate < initial && initial < sid && sid < revalidation);
+  assert.match(WINDOWS_INSPECTION_SOURCE.slice(duplicate, initial),
+    /DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{exit \$stage\}/);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(initial, sid),
-    /^\$stage=74\n  \$before=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$handle,\$before\)\)\{exit \$stage\}\n  $/s);
+    /^\$stage=74\n  \$before=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$privateHandle,\$before\)\)\{exit \$stage\}\n  $/s);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(sid, WINDOWS_INSPECTION_SOURCE.indexOf("$stage=75", sid)),
     /^\$stage=78\n  \$current=.*WindowsIdentity\]::GetCurrent\(\)\.User\n  if\(\$null-eq \$current\)\{exit \$stage\}\n  \$currentSid=\$current\.Value\n  $/s);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(revalidation, WINDOWS_INSPECTION_SOURCE.indexOf("$beforeVolume", revalidation)),
-    /^\$stage=79\n  \$after=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$handle,\$after\)\)\{exit \$stage\}\n  $/s);
+    /^\$stage=79\n  \$after=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$privateHandle,\$after\)\)\{exit \$stage\}\n  $/s);
+  assert.match(WINDOWS_INSPECTION_SOURCE,
+    /GetSecurityInfo\(\$privateHandle,1,5,\[ref\]\$owner,\[ref\]\$group,\[ref\]\$dacl,\[ref\]\$sacl,\[ref\]\$descriptor\)/);
+  assert.equal(WINDOWS_INSPECTION_SOURCE.match(/::CloseHandle\(\$privateHandle\)/g)?.length, 1);
+  assert.match(WINDOWS_INSPECTION_SOURCE,
+    /finally \{if\(\$privateHandleOwned\)\{\$null=\[ProprReadOnlyAuthority\]::CloseHandle\(\$privateHandle\)\}\}/);
+  assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE, /CloseHandle\(\$originalHandle\)/);
+  assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE.slice(initial), /\$originalHandle/);
 });
 
 test("Windows PowerShell boundary retains a derived minimal environment and no filesystem writes", () => {
