@@ -201,19 +201,21 @@ test("Windows production inspection has one cold-start deadline and a cumulative
   );
 });
 
-test("Windows production retains private handle lifetime and isolates unsigned identity decoding and composition", () => {
+test("Windows production retains private handle lifetime and isolates identity decoding, composition, and formatting", () => {
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:fd-duplicate"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-initial"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:current-user-sid"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-revalidation"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-decode"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-compose"));
+  assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:entry-format"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:entry-build"));
   assert.equal((WINDOWS_NATIVE_STAGE_CODES as readonly string[]).includes("broker:index-info"), false);
   assert.equal(windowsBrokerFailureStage(79), "broker:index-info-revalidation");
   assert.equal(windowsBrokerFailureStage(81), "broker:index-info-decode");
   assert.equal(windowsBrokerFailureStage(82), "broker:index-info-compose");
   assert.equal(windowsBrokerFailureStage(83), "broker:entry-build");
+  assert.equal(windowsBrokerFailureStage(84), "broker:entry-format");
 
   const duplicate = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=80");
   const initial = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=74");
@@ -221,10 +223,12 @@ test("Windows production retains private handle lifetime and isolates unsigned i
   const revalidation = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=79");
   const decode = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=81", revalidation);
   const compose = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=82", decode);
-  const entryBuild = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=83", compose);
+  const entryFormat = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=84", compose);
+  const entryBuild = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=83", entryFormat);
   const json = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=77", entryBuild);
   assert.ok(duplicate >= 0 && duplicate < initial && initial < sid && sid < revalidation
-    && revalidation < decode && decode < compose && compose < entryBuild && entryBuild < json);
+    && revalidation < decode && decode < compose && compose < entryFormat
+    && entryFormat < entryBuild && entryBuild < json);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(duplicate, initial),
     /DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{exit \$stage\}/);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(initial, sid),
@@ -251,23 +255,34 @@ test("Windows production retains private handle lifetime and isolates unsigned i
   assert.match(WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE,
     /if\(-not \[BitConverter\]::IsLittleEndian\)\{exit \$stage\}\n  \$signed=\[int32\]\[Runtime\.InteropServices\.Marshal\]::ReadInt32\(\$pointer,\$offset\)\n  \$bytes=\[BitConverter\]::GetBytes\(\$signed\)\n  \[BitConverter\]::ToUInt32\(\$bytes,0\)/);
   const composedIdentity = WINDOWS_INSPECTION_SOURCE.slice(
-    compose, entryBuild,
+    compose, entryFormat,
   );
   assert.match(composedIdentity,
     /^\$stage=82\n  \$beforeId=Join-ProprUInt64 \$beforeLow \$beforeHigh\n  if\(\$beforeId-isnot \[uint64\]\)\{exit \$stage\}\n  \$afterId=Join-ProprUInt64 \$afterLow \$afterHigh\n  if\(\$afterId-isnot \[uint64\]\)\{exit \$stage\}\n  $/);
+  const formattedIdentity = WINDOWS_INSPECTION_SOURCE.slice(entryFormat, entryBuild);
+  assert.equal(formattedIdentity, [
+    "$stage=84",
+    "  $beforeVolumeDecimal=$beforeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)",
+    "  $afterVolumeDecimal=$afterVolume.ToString([Globalization.CultureInfo]::InvariantCulture)",
+    "  $beforeIdDecimal=$beforeId.ToString([Globalization.CultureInfo]::InvariantCulture)",
+    "  $afterIdDecimal=$afterId.ToString([Globalization.CultureInfo]::InvariantCulture)",
+    "  if($beforeVolumeDecimal-isnot [string]-or $beforeVolumeDecimal.Length-eq 0-or $beforeVolumeDecimal.Length-gt 10-or $beforeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}",
+    "  if($afterVolumeDecimal-isnot [string]-or $afterVolumeDecimal.Length-eq 0-or $afterVolumeDecimal.Length-gt 10-or $afterVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}",
+    "  if($beforeIdDecimal-isnot [string]-or $beforeIdDecimal.Length-eq 0-or $beforeIdDecimal.Length-gt 20-or $beforeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}",
+    "  if($afterIdDecimal-isnot [string]-or $afterIdDecimal.Length-eq 0-or $afterIdDecimal.Length-gt 20-or $afterIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}",
+    "  ",
+  ].join("\n"));
+  assert.equal(formattedIdentity.match(/\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)/g)?.length, 4);
+  assert.doesNotMatch(formattedIdentity, /\$entry=|Console|Write-|Out\./);
   const entryConstruction = WINDOWS_INSPECTION_SOURCE.slice(entryBuild, json);
   assert.match(entryConstruction, /^\$stage=83\n  \$entry=\[pscustomobject\]\[ordered\]@\{/);
-  assert.equal(entryConstruction.match(/\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)/g)?.length, 4);
-  assert.match(entryConstruction, /verifiedFileId=\$afterId\.ToString\([^\n]+\);rules=@\(\$rules\)\n  \}\n  $/);
+  assert.match(entryConstruction,
+    /volumeSerialNumber=\$beforeVolumeDecimal\n    fileId=\$beforeIdDecimal\n    verifiedVolumeSerialNumber=\$afterVolumeDecimal\n    verifiedFileId=\$afterIdDecimal;rules=@\(\$rules\)\n  \}\n  $/);
+  assert.doesNotMatch(entryConstruction, /\.ToString|InvariantCulture/);
   assert.doesNotMatch(composedIdentity, /ToString|\$entry=/);
   assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE, /4294967296|\[uint64\]\$(?:before|after)High\*/);
   assert.match(WINDOWS_UINT64_COMPOSER_SOURCE,
     /function Join-ProprUInt64\(\[uint32\]\$low,\[uint32\]\$high\)\{\n  if\(-not \[BitConverter\]::IsLittleEndian\)\{exit \$stage\}\n  \$bytes=New-Object byte\[\] 8\n  \[Array\]::Copy\(\[BitConverter\]::GetBytes\(\[uint32\]\$low\),0,\$bytes,0,4\)\n  \[Array\]::Copy\(\[BitConverter\]::GetBytes\(\[uint32\]\$high\),0,\$bytes,4,4\)\n  \[BitConverter\]::ToUInt64\(\$bytes,0\)\n\}/);
-  assert.match(WINDOWS_INSPECTION_SOURCE,
-    /fileId=\$beforeId\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)/);
-  assert.match(WINDOWS_INSPECTION_SOURCE,
-    /verifiedFileId=\$afterId\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)/);
-
   const unsignedDecimal = (value: number): string => {
     const bytes = Buffer.alloc(4);
     bytes.writeInt32LE(value, 0);
@@ -334,11 +349,20 @@ test("Windows timing probe isolates baseline, Reflection.Emit, Win32, and standa
   const probeCompose = WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf(
     "Join-ProprUInt64 $probeLow $probeHigh", probeDecode,
   );
-  assert.ok(populated >= 0 && populated < probeDecode && probeDecode < probeCompose && probeCompose < milestones[4]);
+  const probeFormat = WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf("$probeVolumeDecimal=", probeCompose);
+  assert.ok(populated >= 0 && populated < probeDecode && probeDecode < probeCompose
+    && probeCompose < probeFormat && probeFormat < milestones[4]);
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.match(/function Read-ProprUInt32/g)?.length, 1);
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.match(/Read-ProprUInt32 \$info (?:28|44|48)/g)?.length, 3);
-  assert.match(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.slice(probeCompose, milestones[4]),
+  assert.match(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.slice(probeCompose, probeFormat),
     /^Join-ProprUInt64 \$probeLow \$probeHigh\n  if\(\$probeId-isnot \[uint64\]\)\{exit \$stage\}\n  $/);
+  assert.equal(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.slice(probeFormat, milestones[4]), [
+    "$probeVolumeDecimal=$probeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)",
+    "  $probeIdDecimal=$probeId.ToString([Globalization.CultureInfo]::InvariantCulture)",
+    "  if($probeVolumeDecimal-isnot [string]-or $probeVolumeDecimal.Length-eq 0-or $probeVolumeDecimal.Length-gt 10-or $probeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}",
+    "  if($probeIdDecimal-isnot [string]-or $probeIdDecimal.Length-eq 0-or $probeIdDecimal.Length-gt 20-or $probeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}",
+    "  ",
+  ].join("\n"));
 });
 
 test("Windows batch results remain bound to descriptor index, kind, identity, and user", async () => {

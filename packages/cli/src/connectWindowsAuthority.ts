@@ -33,7 +33,8 @@ export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
-  "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose", "broker:entry-build",
+  "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose", "broker:entry-format",
+  "broker:entry-build",
   "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
   "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ] as const);
@@ -191,14 +192,23 @@ try {
   if($beforeId-isnot [uint64]){exit $stage}
   $afterId=Join-ProprUInt64 $afterLow $afterHigh
   if($afterId-isnot [uint64]){exit $stage}
+  $stage=84
+  $beforeVolumeDecimal=$beforeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
+  $afterVolumeDecimal=$afterVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
+  $beforeIdDecimal=$beforeId.ToString([Globalization.CultureInfo]::InvariantCulture)
+  $afterIdDecimal=$afterId.ToString([Globalization.CultureInfo]::InvariantCulture)
+  if($beforeVolumeDecimal-isnot [string]-or $beforeVolumeDecimal.Length-eq 0-or $beforeVolumeDecimal.Length-gt 10-or $beforeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
+  if($afterVolumeDecimal-isnot [string]-or $afterVolumeDecimal.Length-eq 0-or $afterVolumeDecimal.Length-gt 10-or $afterVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
+  if($beforeIdDecimal-isnot [string]-or $beforeIdDecimal.Length-eq 0-or $beforeIdDecimal.Length-gt 20-or $beforeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
+  if($afterIdDecimal-isnot [string]-or $afterIdDecimal.Length-eq 0-or $afterIdDecimal.Length-gt 20-or $afterIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
   $stage=83
   $entry=[pscustomobject][ordered]@{
     index=__PROPR_INDEX__;kind='__PROPR_ENTRY_KIND__';authorityKind='__PROPR_AUTHORITY_KIND__';currentUserSid=$currentSid;ownerSid=$ownerSid
     daclProtected=[bool](($control-band 0x1000)-ne 0);reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
-    volumeSerialNumber=$beforeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
-    fileId=$beforeId.ToString([Globalization.CultureInfo]::InvariantCulture)
-    verifiedVolumeSerialNumber=$afterVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
-    verifiedFileId=$afterId.ToString([Globalization.CultureInfo]::InvariantCulture);rules=@($rules)
+    volumeSerialNumber=$beforeVolumeDecimal
+    fileId=$beforeIdDecimal
+    verifiedVolumeSerialNumber=$afterVolumeDecimal
+    verifiedFileId=$afterIdDecimal;rules=@($rules)
   }
   $stage=77
   $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;entries=@($entry)}) -Compress -Depth 5
@@ -278,6 +288,10 @@ try {
   $probeHigh=Read-ProprUInt32 $info 44;$probeLow=Read-ProprUInt32 $info 48
   $probeId=Join-ProprUInt64 $probeLow $probeHigh
   if($probeId-isnot [uint64]){exit $stage}
+  $probeVolumeDecimal=$probeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
+  $probeIdDecimal=$probeId.ToString([Globalization.CultureInfo]::InvariantCulture)
+  if($probeVolumeDecimal-isnot [string]-or $probeVolumeDecimal.Length-eq 0-or $probeVolumeDecimal.Length-gt 10-or $probeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
+  if($probeIdDecimal-isnot [string]-or $probeIdDecimal.Length-eq 0-or $probeIdDecimal.Length-gt 20-or $probeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
   Write-ProprMilestone 'standard-handle-identity'
   exit 0
 }catch{exit $stage}
@@ -402,6 +416,7 @@ export function windowsBrokerFailureStage(status: number | null): WindowsNativeS
     75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
     78: "broker:current-user-sid", 79: "broker:index-info-revalidation", 80: "broker:fd-duplicate",
     81: "broker:index-info-decode", 82: "broker:index-info-compose", 83: "broker:entry-build",
+    84: "broker:entry-format",
   };
   return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
 }

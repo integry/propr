@@ -136,11 +136,19 @@ test("a reassigned or stale endpoint cannot pass an identity mismatch", async ()
     sidecarRunning: true,
     publicInstanceIdentity: IDENTITY,
     fetchImpl: jsonFetch(discovery({
+      canonicalEndpoint: null,
       publicInstanceIdentity: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       apiCompatibility: "2025-01-01",
+      desktopAuthentication: {
+        protocolVersion: 2,
+        browserPairing: false,
+        instanceBearerTokens: false,
+        socketIoBearerAuthentication: false,
+      },
     })),
   });
   assert.equal(status.status, "notReady");
+  assert.equal(status.apiReady, false);
   assert.equal(status.restartRequired, false);
   assert.deepEqual(status.reasonCodes, ["IDENTITY_MISMATCH"]);
 });
