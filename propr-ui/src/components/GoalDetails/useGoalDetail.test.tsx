@@ -55,7 +55,7 @@ const detail: GoalDetail = {
 const Harness = ({ goalId = 'goal-1' }: { goalId?: string }) => {
   const goal = useGoalDetail(goalId);
   const retry = { ...message('retry me', 'failed-1'), state: 'failed' as const };
-  return <><div data-testid="detail">{goal.detail?.goal.repository ?? 'empty'}</div><div data-testid="version">{goal.detail?.goal.version ?? 'none'}</div><div data-testid="events">{goal.events.map(item => item.sequence).join(',')}</div><div data-testid="connection">{goal.connectionState}</div><div data-testid="readonly">{String(goal.readOnly)}</div><div role="alert">{goal.actionError}</div><button type="button" onClick={() => void goal.loadOlder()}>older</button><button type="button" onClick={() => void goal.pause()}>pause</button><button type="button" onClick={() => void goal.sendMessage({ body: 'alpha' })}>message alpha</button><button type="button" onClick={() => void goal.sendMessage({ body: 'beta' })}>message beta</button><button type="button" onClick={() => void goal.sendMessage({ body: "Summarize what's done.", predefinedKind: 'whats_done' })}>message canned</button><button type="button" onClick={() => void goal.retryMessage(retry)}>retry failed</button></>;
+  return <><div data-testid="detail">{goal.detail?.goal.repository ?? 'empty'}</div><div data-testid="version">{goal.detail?.goal.version ?? 'none'}</div><div data-testid="state">{goal.detail?.goal.state ?? 'none'}</div><div data-testid="events">{goal.events.map(item => item.sequence).join(',')}</div><div data-testid="connection">{goal.connectionState}</div><div data-testid="readonly">{String(goal.readOnly)}</div><div role="alert">{goal.actionError}</div><button type="button" onClick={() => void goal.loadOlder()}>older</button><button type="button" onClick={() => void goal.pause()}>pause</button><button type="button" onClick={() => void goal.sendMessage({ body: 'alpha' })}>message alpha</button><button type="button" onClick={() => void goal.sendMessage({ body: 'beta' })}>message beta</button><button type="button" onClick={() => void goal.sendMessage({ body: "Summarize what's done.", predefinedKind: 'whats_done' })}>message canned</button><button type="button" onClick={() => void goal.retryMessage(retry)}>retry failed</button></>;
 };
 
 describe('useGoalDetail replay and authorization', () => {
@@ -131,6 +131,61 @@ describe('useGoalDetail replay and authorization', () => {
     expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 5 }));
     expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 205 }));
     expect(screen.getByTestId('connection')).toHaveTextContent('connected');
+  });
+
+  it('immediately reconciles detail when initial history is newer than its snapshot', async () => {
+    vi.useFakeTimers();
+    const paused = { ...detail, goal: { ...detail.goal, state: 'paused' as const, version: 2 }, latestSequence: 6 };
+    mocks.getGoal.mockResolvedValueOnce(detail).mockResolvedValueOnce(paused);
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number }) => {
+      if (options.afterSequence === 6) return Promise.resolve(page([]));
+      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+      return Promise.resolve(page([event(4), event(5), { ...event(6), type: 'lifecycle' }]));
+    });
+
+    render(<Harness />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+
+    expect(mocks.getGoal).toHaveBeenCalledTimes(2);
+    expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 6 }));
+    expect(screen.getByTestId('events')).toHaveTextContent('4,5,6');
+    expect(screen.getByTestId('state')).toHaveTextContent('paused');
+    expect(screen.getByTestId('version')).toHaveTextContent('2');
+  });
+
+  it('retries replay reconciliation once against a mutation revision without committing stale detail', async () => {
+    const replayTarget = { ...detail, latestSequence: 6 };
+    const converged = { ...replayTarget, goal: { ...detail.goal, state: 'paused' as const, version: 2 } };
+    const foreign = { ...replayTarget, goal: { ...detail.goal, goalId: 'goal-2', repository: 'sensitive/foreign', version: 99 } };
+    let resolveStaleRefresh!: (value: GoalDetail) => void;
+    let resolveRetry!: (value: GoalDetail) => void;
+    mocks.getGoal
+      .mockResolvedValueOnce(replayTarget)
+      .mockImplementationOnce(() => new Promise(resolve => { resolveStaleRefresh = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveRetry = resolve; }));
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number }) => {
+      if (options.afterSequence === 5) return Promise.resolve(page([{ ...event(6), type: 'lifecycle' }]));
+      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+      return Promise.resolve(page([event(4), event(5)]));
+    });
+
+    render(<Harness />);
+    await waitFor(() => expect(mocks.getGoal).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'pause' }));
+    await waitFor(() => expect(screen.getByTestId('version')).toHaveTextContent('2'));
+    expect(screen.getByTestId('state')).toHaveTextContent('pausing');
+
+    await act(async () => resolveStaleRefresh(foreign));
+    await waitFor(() => expect(mocks.getGoal).toHaveBeenCalledTimes(3));
+    expect(screen.getByTestId('detail')).toHaveTextContent('integry/propr');
+    expect(screen.getByTestId('version')).toHaveTextContent('2');
+    expect(screen.getByTestId('state')).toHaveTextContent('pausing');
+
+    await act(async () => resolveRetry(converged));
+    expect(screen.getByTestId('state')).toHaveTextContent('paused');
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.getGoal).toHaveBeenCalledTimes(3);
+    expect(mocks.getGoal.mock.calls.every(([requestedGoalId]) => requestedGoalId === 'goal-1')).toBe(true);
   });
 
   it('keeps REST fallback active after connected-transport catch-up failure until replay recovers', async () => {

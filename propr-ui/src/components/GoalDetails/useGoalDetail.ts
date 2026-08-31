@@ -227,10 +227,16 @@ export function useGoalDetail(goalId: string) {
     let subscribed = true;
     const recoverAndRefresh = async (target?: number) => {
       const previousTail = eventsRef.current.at(-1)?.sequence ?? 0;
+      const detailSequence = detailRef.current?.latestSequence ?? 0;
       if (!await recoverTail(target)) return;
-      const detailChanged = eventsRef.current.some(event => event.sequence > previousTail
+      const detailChanged = eventsRef.current.some(event => event.sequence > Math.min(previousTail, detailSequence)
         && (event.type === 'lifecycle' || event.type === 'message' || event.type === 'usage'));
-      if (detailChanged) await refreshDetail();
+      if (!detailChanged || !subscribed || !current(request)) return;
+      const refreshRevision = detailRevisionRef.current;
+      const refreshed = await refreshDetail();
+      if (!refreshed && subscribed && current(request) && refreshRevision !== detailRevisionRef.current) {
+        await refreshDetail();
+      }
     };
     const unsubscribe = () => {
       if (!subscribed) return; subscribed = false;
