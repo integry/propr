@@ -1,11 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type {
-    GoalCancelRequest,
-    GoalExecutionIdentity,
-    GoalModelChangeAcknowledgement,
-    GoalModelChangeRequest,
-    GoalPauseAcknowledgement,
-    GoalPauseRequest,
     GoalProviderReconcileResult,
     GoalRepositoryIdentity,
     GoalRepositoryInspection,
@@ -13,7 +7,6 @@ import type {
     GoalSessionIdentity,
     GoalSessionState,
     GoalSessionStatus,
-    GoalSteeringRequest,
     GoalTurnState,
 } from './contract.js';
 import {
@@ -21,7 +14,7 @@ import {
     StaleGoalSessionFenceError,
     UnsupportedGoalSessionTransitionError,
 } from './errors.js';
-import { GoalTurnRunner } from './GoalTurnRunner.js';
+import { GoalSessionControls } from './GoalSessionControls.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
 import {
     assertProviderIdentity,
@@ -50,7 +43,7 @@ export type ReconcileGoalSessionResult = {
  * Turn execution lives in {@link GoalTurnRunner}; this layer owns session open,
  * crash recovery, and the session-scoped control operations.
  */
-export class GoalSessionSupervisor extends GoalTurnRunner {
+export class GoalSessionSupervisor extends GoalSessionControls {
     async openSession(request: OpenGoalSessionRequest): Promise<GoalSessionState> {
         validateIdentity(request);
         validateEpoch(request.controllerEpoch);
@@ -70,6 +63,9 @@ export class GoalSessionSupervisor extends GoalTurnRunner {
 
         let deterministicOpenKey: string | undefined;
         if (!state.providerSessionId) {
+            if (this.adapter.capabilities.nativeSessionId === 'first_turn') {
+                return this.openFirstTurnIdentitySession(request, state);
+            }
             if (!opened.created && !this.canRecoverIncompleteInit(state)) {
                 throw new GoalSessionContractError(
                     'The previous controller stopped before persisting a provider session identity; reconcile or fail this goal explicitly',
@@ -94,99 +90,6 @@ export class GoalSessionSupervisor extends GoalTurnRunner {
         const saved = await this.ports.state.compareAndSet(state, nextState(state, { controllerEpoch }));
         if (!saved) throw new StaleGoalSessionFenceError('Another controller acquired the session concurrently');
         return saved;
-    }
-
-    async deliverMessage(request: GoalSteeringRequest): Promise<'acknowledged' | 'already_acknowledged'> {
-        const state = await this.requireActiveTurnState(request);
-        const pending = (await this.ports.messages.listPending(request)).sort((a, b) => a.sequence - b.sequence);
-        const message = pending.find(value => value.messageId === request.messageId);
-        if (!message) return 'already_acknowledged';
-        if (pending[0]?.messageId !== request.messageId) {
-            throw new GoalSessionContractError(
-                `Corrective message "${request.messageId}" is out of order; "${pending[0]?.messageId}" must be delivered first`,
-                'MESSAGE_OUT_OF_ORDER',
-            );
-        }
-        const acknowledgement = await this.adapter.deliverMessage({ ...request, body: message.body }, persistedSnapshot(state));
-        if (acknowledgement.messageId !== request.messageId) {
-            throw new GoalSessionContractError('Provider acknowledged a different corrective message', 'MESSAGE_ACK_MISMATCH');
-        }
-        const result = await this.ports.messages.acknowledge(request, request.messageId);
-        if (result === 'stale_fence') throw new StaleGoalSessionFenceError();
-        if (result === 'not_found') throw new GoalSessionContractError('Corrective message disappeared before acknowledgement', 'MESSAGE_NOT_FOUND');
-        if (result === 'acknowledged') {
-            await this.append(request, this.activeExecution(state), { type: 'message_acknowledged', messageId: request.messageId });
-        }
-        return result;
-    }
-
-    async requestPause(request: GoalPauseRequest): Promise<GoalPauseAcknowledgement> {
-        let state = await this.requireControlledState(request);
-        if (state.status !== 'running' && state.status !== 'pause_requested') {
-            throw new GoalSessionContractError(`Cannot pause a session while it is ${state.status}`, 'SESSION_NOT_RUNNING');
-        }
-        if (state.status === 'running') {
-            state = await this.updateControlledState(request, value => ({
-                ...value,
-                status: 'pause_requested',
-                activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'pause_requested' } : value.activeTurn,
-            }));
-        }
-        const acknowledgement = await this.adapter.requestPause(request, persistedSnapshot(state));
-        await this.appendControl(request, controlExecutionIdentity(state), { type: 'pause_requested', appliesAt: acknowledgement.appliesAt });
-        if (acknowledgement.boundaryReached) {
-            state = await this.updateControlledState(request, value => ({
-                ...value,
-                status: 'paused',
-                activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
-            }));
-            await this.appendControl(request, controlExecutionIdentity(state), { type: 'pause_boundary', ...acknowledgement.boundaryReached });
-        }
-        return acknowledgement;
-    }
-
-    async requestModelChange(request: GoalModelChangeRequest): Promise<GoalModelChangeAcknowledgement> {
-        let state = await this.requireControlledState(request);
-        if (state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') {
-            throw new GoalSessionContractError(`Cannot change model while the session is ${state.status}`, 'SESSION_NOT_CONTROLLABLE');
-        }
-        const previousModel = state.currentModel;
-        const acknowledgement = await this.adapter.requestModelChange(request, persistedSnapshot(state));
-        if (acknowledgement.requestedModel !== request.model) {
-            throw new GoalSessionContractError('Provider acknowledged a different requested model', 'MODEL_ACK_MISMATCH');
-        }
-        state = await this.updateControlledState(request, value => ({
-            ...value,
-            requestedModel: request.model,
-            currentModel: acknowledgement.effectiveModel ?? value.currentModel,
-        }));
-        await this.appendControl(request, controlExecutionIdentity(state), {
-            type: 'model_change_acknowledged',
-            requestedModel: request.model,
-            appliesAt: acknowledgement.appliesAt,
-        });
-        if (acknowledgement.effectiveModel) {
-            await this.appendControl(request, controlExecutionIdentity(state), {
-                type: 'model_changed',
-                previousModel,
-                model: acknowledgement.effectiveModel,
-            });
-        }
-        return acknowledgement;
-    }
-
-    async cancel(request: GoalCancelRequest): Promise<GoalSessionState> {
-        let state = await this.requireControlledState(request);
-        if (state.status === 'terminated') return state;
-        state = await this.updateControlledState(request, value => ({ ...value, status: 'cancelling' }));
-        await this.adapter.cancel(request, persistedSnapshot(state));
-        state = await this.updateControlledState(request, value => ({
-            ...value,
-            status: 'terminated',
-            activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'cancelled' } : value.activeTurn,
-        }));
-        await this.appendControl(request, controlExecutionIdentity(state), { type: 'completion', outcome: 'cancelled', error: request.reason });
-        return state;
     }
 
     async reconcile(
@@ -229,13 +132,36 @@ export class GoalSessionSupervisor extends GoalTurnRunner {
         return { ...result, state: saved };
     }
 
-    private activeExecution(state: GoalSessionState): GoalExecutionIdentity {
-        if (!state.activeTurn) throw new StaleGoalSessionFenceError('No active turn owns this operation');
-        return { executionId: state.activeTurn.executionId, attemptId: state.activeTurn.attemptId };
-    }
-
     private canRecoverIncompleteInit(state: GoalSessionState): boolean {
         return this.adapter.supportsDeterministicOpen === true && state.initializationIntent !== undefined;
+    }
+
+    private async openFirstTurnIdentitySession(
+        request: OpenGoalSessionRequest,
+        state: GoalSessionState,
+    ): Promise<GoalSessionState> {
+        if (!state.initializationIntent) {
+            throw new GoalSessionContractError(
+                'A first-turn provider has no durable initialization intent; refusing to start a different native session',
+                'INCOMPLETE_INITIALIZATION',
+            );
+        }
+        const policy = this.adapter.capabilities.nativeSessionId === 'first_turn'
+            ? this.adapter.capabilities.firstTurnIdCrashPolicy
+            : 'fail';
+        if (state.activeTurn && policy === 'retry_deterministically') {
+            return this.updateControlledState(request, value => ({
+                ...value, status: 'idle', activeTurn: undefined, failureReason: undefined,
+            }));
+        }
+        if (state.activeTurn || (state.status !== 'initializing' && state.status !== 'idle')) {
+            throw new GoalSessionContractError(
+                `The first provider invocation ended before binding its native session ID (${policy})`,
+                'FIRST_TURN_ID_NOT_BOUND',
+            );
+        }
+        if (state.status === 'idle') return state;
+        return this.updateControlledState(request, value => ({ ...value, status: 'idle', failureReason: undefined }));
     }
 
     private async recordInitializationIntent(
@@ -258,10 +184,14 @@ export class GoalSessionSupervisor extends GoalTurnRunner {
         let created = false;
         if (!state) {
             const timestamp = nowIso();
+            const initializationIntent = this.adapter.capabilities.nativeSessionId === 'first_turn'
+                ? createInitializationIntent(request)
+                : undefined;
             const initial = await this.ports.state.create({
                 ...request,
                 status: 'initializing',
                 completedTurnIds: [],
+                initializationIntent,
                 createdAt: timestamp,
                 updatedAt: timestamp,
             });
@@ -305,6 +235,16 @@ export class GoalSessionSupervisor extends GoalTurnRunner {
 
 function deterministicOpenKey(identity: GoalSessionIdentity & { provider: string }): string {
     return createHash('sha256').update(`${identity.provider}\0${identity.goalId}\0${identity.sessionId}`).digest('hex');
+}
+
+function createInitializationIntent(
+    identity: GoalSessionIdentity & { provider: string },
+): NonNullable<GoalSessionState['initializationIntent']> {
+    return {
+        attemptId: randomUUID(),
+        deterministicOpenKey: deterministicOpenKey(identity),
+        recordedAt: nowIso(),
+    };
 }
 
 /**

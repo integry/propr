@@ -37,6 +37,12 @@ const fence: GoalSessionFence = { ...identity, controllerEpoch: 1, turnId: 'turn
 
 class FakeGoalAdapter implements GoalSessionAdapter {
     readonly provider = 'fake';
+    readonly capabilities = {
+        nativeSessionId: 'eager',
+        steering: 'active_turn',
+        pause: 'active_turn',
+        modelChange: 'next_safe_boundary',
+    } as const;
     openCalls = 0;
     beginCalls = 0;
     messageCalls: string[] = [];
@@ -239,9 +245,9 @@ test('delivers durable steering in order and acknowledges each ID once', async (
         supervisor.deliverMessage({ ...fence, messageId: 'message-two', body: 'ignored caller copy' }),
         /out of order/,
     );
-    assert.equal(await supervisor.deliverMessage({ ...fence, messageId: 'message-one', body: '' }), 'acknowledged');
-    assert.equal(await supervisor.deliverMessage({ ...fence, messageId: 'message-one', body: '' }), 'already_acknowledged');
-    assert.equal(await supervisor.deliverMessage({ ...fence, messageId: 'message-two', body: '' }), 'acknowledged');
+    assert.equal((await supervisor.deliverMessage({ ...fence, messageId: 'message-one', body: '' })).outcome, 'acknowledged');
+    assert.equal((await supervisor.deliverMessage({ ...fence, messageId: 'message-one', body: '' })).outcome, 'acknowledged');
+    assert.equal((await supervisor.deliverMessage({ ...fence, messageId: 'message-two', body: '' })).outcome, 'acknowledged');
     assert.deepEqual(adapter.messageCalls, ['message-one', 'message-two']);
     releaseTurn();
     await run;

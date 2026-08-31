@@ -2,6 +2,7 @@ import type {
     DurableCorrectiveMessage,
     GoalExecutionIdentity,
     GoalProviderSessionSnapshot,
+    GoalProviderTurnContext,
     GoalSessionControlFence,
     GoalSessionIdentity,
     GoalSessionState,
@@ -49,6 +50,19 @@ export function persistedSnapshot(state: GoalSessionState): GoalProviderSessionS
         recoveryMetadata: state.recoveryMetadata,
         model: state.currentModel,
     };
+}
+
+export function providerTurnContext(state: GoalSessionState): GoalProviderTurnContext {
+    if (state.providerSessionId && state.recoveryMetadata !== undefined) {
+        return { binding: 'bound', snapshot: persistedSnapshot(state) };
+    }
+    if (state.initializationIntent) {
+        return { binding: 'pending', initializationIntent: state.initializationIntent };
+    }
+    throw new GoalSessionContractError(
+        'The first provider turn has neither a durable native ID nor initialization intent',
+        'SESSION_INITIALIZATION_INTENT_MISSING',
+    );
 }
 
 export function nextState(state: GoalSessionState, changes: Partial<GoalSessionState>): Omit<GoalSessionState, 'version'> {

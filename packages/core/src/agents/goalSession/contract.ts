@@ -72,17 +72,40 @@ export interface GoalCompletedTurn extends GoalExecutionIdentity {
 }
 
 /**
- * Durable marker recorded before the very first provider open call. It lets a
+ * Durable marker recorded before the first provider initialization/open call. It lets a
  * later controller distinguish an ordinary crash window (recoverable when the
  * provider can deterministically/idempotently re-open) from a session that was
  * never intended to be initialized.
  */
 export interface GoalSessionInitializationIntent {
     attemptId: string;
-    /** Stable key a deterministic provider uses to re-open the same session. */
+    /** Stable key a deterministic provider uses to re-open or retry the same initialization. */
     deterministicOpenKey: string;
     recordedAt: string;
 }
+
+export type GoalNativeSessionIdTiming = 'eager' | 'first_turn';
+export type GoalSteeringBoundary = 'active_turn' | 'next_turn';
+export type GoalPauseBoundary = 'active_turn' | 'after_turn';
+export type GoalModelChangeBoundary = 'next_safe_boundary' | 'next_turn';
+
+/**
+ * Provider behavior that the supervisor can rely on. A first-turn provider
+ * must also state what happens if its first invocation dies before exposing a
+ * native ID; the supervisor never invents an ID or silently opens a new one.
+ */
+export type GoalProviderCapabilities = {
+    nativeSessionId: 'eager';
+    steering: GoalSteeringBoundary;
+    pause: GoalPauseBoundary;
+    modelChange: GoalModelChangeBoundary;
+} | {
+    nativeSessionId: 'first_turn';
+    firstTurnIdCrashPolicy: 'retry_deterministically' | 'fail';
+    steering: GoalSteeringBoundary;
+    pause: GoalPauseBoundary;
+    modelChange: GoalModelChangeBoundary;
+};
 
 export interface GoalProviderSessionSnapshot {
     /** Stable, provider-issued identity. It must never be replaced during resume. */
@@ -92,6 +115,11 @@ export interface GoalProviderSessionSnapshot {
     model?: string;
 }
 
+/** Provider context for a turn; pending identity never contains a fake native ID. */
+export type GoalProviderTurnContext =
+    | { binding: 'bound'; snapshot: GoalProviderSessionSnapshot }
+    | { binding: 'pending'; initializationIntent: GoalSessionInitializationIntent };
+
 export interface GoalSessionState extends GoalSessionIdentity {
     provider: string;
     providerSessionId?: string;
@@ -100,6 +128,8 @@ export interface GoalSessionState extends GoalSessionIdentity {
     status: GoalSessionStatus;
     currentModel?: string;
     requestedModel?: string;
+    /** Deferred model request awaiting the provider's declared next-turn boundary. */
+    pendingModelChange?: string;
     activeTurn?: GoalTurnState;
     completedTurnIds: string[];
     /** Execution identity of each completed turn, keyed by turnId order of completion. */
@@ -123,7 +153,7 @@ export type GoalSessionEvent =
     | { type: 'usage'; model?: string; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; costUsd?: number; data?: GoalSessionJsonValue }
     | { type: 'checkpoint'; checkpointId: string; recoveryMetadata: GoalSessionJsonValue; providerSessionId?: string }
     | { type: 'message_acknowledged'; messageId: string }
-    | { type: 'pause_requested'; appliesAt: 'immediate' | 'next_safe_boundary' }
+    | { type: 'pause_requested'; appliesAt: 'immediate' | 'next_safe_boundary' | 'after_turn' }
     | { type: 'pause_boundary'; boundary: string; checkpointId?: string }
     | { type: 'session_resumed' }
     | { type: 'model_change_acknowledged'; requestedModel: string; appliesAt: 'immediate' | 'next_safe_boundary' | 'next_turn' }
@@ -205,6 +235,14 @@ export interface GoalBeginTurnRequest extends GoalSessionFence, GoalExecutionIde
     context?: GoalSessionJsonValue;
     repository: GoalRepositoryIdentity;
     requestedModel: string;
+    /** FIFO messages reserved for acceptance by a next-turn-only provider. */
+    correctiveMessages?: GoalProviderCorrectiveMessage[];
+}
+
+export interface GoalProviderCorrectiveMessage {
+    messageId: string;
+    sequence: number;
+    body: string;
 }
 
 export interface GoalSteeringRequest extends GoalSessionFence {
@@ -225,10 +263,19 @@ export interface GoalCancelRequest extends GoalSessionControlFence {
 }
 
 export interface GoalPauseAcknowledgement {
-    appliesAt: 'immediate' | 'next_safe_boundary';
+    appliesAt: 'immediate' | 'next_safe_boundary' | 'after_turn';
     /** Present when the control call itself reached the boundary; otherwise the turn stream reports it later. */
     boundaryReached?: { boundary: string; checkpointId?: string };
 }
+
+export type GoalMessageDeliveryOutcome =
+    | { outcome: 'acknowledged'; messageId: string; acknowledgement: 'acknowledged' | 'already_acknowledged' }
+    | { outcome: 'unsupported_same_turn'; messageId: string; supportedBoundary: 'next_turn' };
+
+export type GoalTurnResumeCapabilityOutcome = {
+    disposition: 'unsupported_same_turn';
+    supportedBoundary: 'after_turn';
+};
 
 export interface GoalModelChangeAcknowledgement {
     requestedModel: string;
@@ -256,6 +303,7 @@ export type GoalProviderReconcileResult =
  */
 export interface GoalSessionAdapter {
     readonly provider: string;
+    readonly capabilities: GoalProviderCapabilities;
     /**
      * When true, openSession is idempotent for a given deterministicOpenKey: a
      * repeated call re-opens the same provider session instead of creating a new
@@ -264,16 +312,16 @@ export interface GoalSessionAdapter {
      */
     readonly supportsDeterministicOpen?: boolean;
     openSession(request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot>;
-    beginTurn(request: GoalBeginTurnRequest, snapshot: GoalProviderSessionSnapshot): AsyncIterable<GoalSessionEvent>;
+    beginTurn(request: GoalBeginTurnRequest, context: GoalProviderTurnContext): AsyncIterable<GoalSessionEvent>;
     /**
      * Continues the exact active turn identified by the fence after a pause or a
      * container/supervisor restart. The provider resumes from the durable
      * checkpoint and streams further ordered events through to a single
      * completion; it must not start a new logical turn.
      */
-    resumeTurn(request: GoalSessionFence, snapshot: GoalProviderSessionSnapshot): AsyncIterable<GoalSessionEvent>;
-    deliverMessage(request: GoalSteeringRequest, snapshot: GoalProviderSessionSnapshot): Promise<{ messageId: string }>;
-    requestPause(request: GoalPauseRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalPauseAcknowledgement>;
+    resumeTurn?(request: GoalSessionFence, snapshot: GoalProviderSessionSnapshot): AsyncIterable<GoalSessionEvent>;
+    deliverMessage?(request: GoalSteeringRequest, snapshot: GoalProviderSessionSnapshot): Promise<{ messageId: string }>;
+    requestPause?(request: GoalPauseRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalPauseAcknowledgement>;
     resumeSession(request: GoalSessionControlFence, snapshot: GoalProviderSessionSnapshot): Promise<GoalProviderSessionSnapshot>;
     requestModelChange(request: GoalModelChangeRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalModelChangeAcknowledgement>;
     cancel(request: GoalCancelRequest, snapshot: GoalProviderSessionSnapshot): Promise<void>;

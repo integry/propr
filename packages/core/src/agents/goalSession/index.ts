@@ -1,5 +1,9 @@
 export * from './contract.js';
 export {
+    EAGER_ACTIVE_TURN_PROVIDER_CAPABILITIES,
+    FIRST_TURN_BOUNDARY_PROVIDER_CAPABILITIES,
+} from './providerCapabilities.js';
+export {
     GoalSessionContractError,
     GoalSessionSupervisor,
     StaleGoalSessionFenceError,

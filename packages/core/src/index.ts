@@ -1,4 +1,3 @@
-/* eslint-disable max-lines -- the package barrel intentionally exposes the complete public API */
 export { default as logger, generateCorrelationId, createCorrelatedLogger } from './utils/logger.js';
 export { handleError, withErrorHandling, safeAsync, makeIdempotent, categorizeError, ErrorCategories } from './utils/errorHandler.js';
 export type { ErrorCategory, ErrorDetails, ErrorHandlerOptions, IssueRef as ErrorIssueRef } from './utils/errorHandler.js';
@@ -325,8 +324,6 @@ export { shortHash, buildDynamicLlmLabel, buildAgentModelLlmLabel, MAX_GITHUB_LA
 export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
 export { toAntigravityCliModelId } from './agents/impl/antigravityModelIds.js';
 
-export * from './agents/goalSession/index.js';
-
 export {
     toAgentTankAgent,
     toProprAgent,
@@ -351,7 +348,7 @@ export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
 export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, loadEffectiveAgentBaseImages, migrateAgentConfigs } from './config/configManager.js';
 
 // Agent version management
-export * from './agents/version/index.js';
+export * from './agents/index.js';
 
 // Repository chat message persistence
 export {
