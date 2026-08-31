@@ -34,7 +34,7 @@ export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
   "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose", "broker:entry-format",
-  "broker:entry-build",
+  "broker:entry-flags", "broker:entry-rules", "broker:entry-build",
   "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
   "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ] as const);
@@ -201,14 +201,24 @@ try {
   if($afterVolumeDecimal-isnot [string]-or $afterVolumeDecimal.Length-eq 0-or $afterVolumeDecimal.Length-gt 10-or $afterVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
   if($beforeIdDecimal-isnot [string]-or $beforeIdDecimal.Length-eq 0-or $beforeIdDecimal.Length-gt 20-or $beforeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
   if($afterIdDecimal-isnot [string]-or $afterIdDecimal.Length-eq 0-or $afterIdDecimal.Length-gt 20-or $afterIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
+  $stage=85
+  $daclProtected=[bool](($control-band 0x1000)-ne 0)
+  $reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
+  if($daclProtected-isnot [bool]-or $reparsePoint-isnot [bool]){exit $stage}
+  $stage=86
+  $rulesArray=@($rules)
+  if($rulesArray-isnot [object[]]-or $rulesArray.Count-ne $rules.Count-or $rulesArray.Count-gt 128){exit $stage}
+  for($ruleIndex=0;$ruleIndex-lt $rulesArray.Count;$ruleIndex++){
+    if(-not [object]::ReferenceEquals($rulesArray[$ruleIndex],$rules[$ruleIndex])){exit $stage}
+  }
   $stage=83
   $entry=[pscustomobject][ordered]@{
     index=__PROPR_INDEX__;kind='__PROPR_ENTRY_KIND__';authorityKind='__PROPR_AUTHORITY_KIND__';currentUserSid=$currentSid;ownerSid=$ownerSid
-    daclProtected=[bool](($control-band 0x1000)-ne 0);reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
+    daclProtected=$daclProtected;reparsePoint=$reparsePoint
     volumeSerialNumber=$beforeVolumeDecimal
     fileId=$beforeIdDecimal
     verifiedVolumeSerialNumber=$afterVolumeDecimal
-    verifiedFileId=$afterIdDecimal;rules=@($rules)
+    verifiedFileId=$afterIdDecimal;rules=$rulesArray
   }
   $stage=77
   $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;entries=@($entry)}) -Compress -Depth 5
@@ -416,7 +426,7 @@ export function windowsBrokerFailureStage(status: number | null): WindowsNativeS
     75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
     78: "broker:current-user-sid", 79: "broker:index-info-revalidation", 80: "broker:fd-duplicate",
     81: "broker:index-info-decode", 82: "broker:index-info-compose", 83: "broker:entry-build",
-    84: "broker:entry-format",
+    84: "broker:entry-format", 85: "broker:entry-flags", 86: "broker:entry-rules",
   };
   return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
 }

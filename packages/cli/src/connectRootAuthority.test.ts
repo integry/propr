@@ -201,7 +201,7 @@ test("Windows production inspection has one cold-start deadline and a cumulative
   );
 });
 
-test("Windows production retains private handle lifetime and isolates identity decoding, composition, and formatting", () => {
+test("Windows production isolates entry fields and retains private handle lifetime", () => {
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:fd-duplicate"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-initial"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:current-user-sid"));
@@ -209,6 +209,8 @@ test("Windows production retains private handle lifetime and isolates identity d
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-decode"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-compose"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:entry-format"));
+  assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:entry-flags"));
+  assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:entry-rules"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:entry-build"));
   assert.equal((WINDOWS_NATIVE_STAGE_CODES as readonly string[]).includes("broker:index-info"), false);
   assert.equal(windowsBrokerFailureStage(79), "broker:index-info-revalidation");
@@ -216,6 +218,8 @@ test("Windows production retains private handle lifetime and isolates identity d
   assert.equal(windowsBrokerFailureStage(82), "broker:index-info-compose");
   assert.equal(windowsBrokerFailureStage(83), "broker:entry-build");
   assert.equal(windowsBrokerFailureStage(84), "broker:entry-format");
+  assert.equal(windowsBrokerFailureStage(85), "broker:entry-flags");
+  assert.equal(windowsBrokerFailureStage(86), "broker:entry-rules");
 
   const duplicate = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=80");
   const initial = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=74");
@@ -224,11 +228,14 @@ test("Windows production retains private handle lifetime and isolates identity d
   const decode = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=81", revalidation);
   const compose = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=82", decode);
   const entryFormat = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=84", compose);
-  const entryBuild = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=83", entryFormat);
+  const entryFlags = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=85", entryFormat);
+  const entryRules = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=86", entryFlags);
+  const entryBuild = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=83", entryRules);
   const json = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=77", entryBuild);
   assert.ok(duplicate >= 0 && duplicate < initial && initial < sid && sid < revalidation
     && revalidation < decode && decode < compose && compose < entryFormat
-    && entryFormat < entryBuild && entryBuild < json);
+    && entryFormat < entryFlags && entryFlags < entryRules && entryRules < entryBuild
+    && entryBuild < json);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(duplicate, initial),
     /DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{exit \$stage\}/);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(initial, sid),
@@ -259,7 +266,7 @@ test("Windows production retains private handle lifetime and isolates identity d
   );
   assert.match(composedIdentity,
     /^\$stage=82\n  \$beforeId=Join-ProprUInt64 \$beforeLow \$beforeHigh\n  if\(\$beforeId-isnot \[uint64\]\)\{exit \$stage\}\n  \$afterId=Join-ProprUInt64 \$afterLow \$afterHigh\n  if\(\$afterId-isnot \[uint64\]\)\{exit \$stage\}\n  $/);
-  const formattedIdentity = WINDOWS_INSPECTION_SOURCE.slice(entryFormat, entryBuild);
+  const formattedIdentity = WINDOWS_INSPECTION_SOURCE.slice(entryFormat, entryFlags);
   assert.equal(formattedIdentity, [
     "$stage=84",
     "  $beforeVolumeDecimal=$beforeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)",
@@ -274,11 +281,42 @@ test("Windows production retains private handle lifetime and isolates identity d
   ].join("\n"));
   assert.equal(formattedIdentity.match(/\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)/g)?.length, 4);
   assert.doesNotMatch(formattedIdentity, /\$entry=|Console|Write-|Out\./);
+  const entryFlagValidation = WINDOWS_INSPECTION_SOURCE.slice(entryFlags, entryRules);
+  assert.equal(entryFlagValidation, [
+    "$stage=85",
+    "  $daclProtected=[bool](($control-band 0x1000)-ne 0)",
+    "  $reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)",
+    "  if($daclProtected-isnot [bool]-or $reparsePoint-isnot [bool]){exit $stage}",
+    "  ",
+  ].join("\n"));
+  assert.doesNotMatch(entryFlagValidation, /Console|Write-|Out\./);
+  const entryRuleValidation = WINDOWS_INSPECTION_SOURCE.slice(entryRules, entryBuild);
+  assert.equal(entryRuleValidation, [
+    "$stage=86",
+    "  $rulesArray=@($rules)",
+    "  if($rulesArray-isnot [object[]]-or $rulesArray.Count-ne $rules.Count-or $rulesArray.Count-gt 128){exit $stage}",
+    "  for($ruleIndex=0;$ruleIndex-lt $rulesArray.Count;$ruleIndex++){",
+    "    if(-not [object]::ReferenceEquals($rulesArray[$ruleIndex],$rules[$ruleIndex])){exit $stage}",
+    "  }",
+    "  ",
+  ].join("\n"));
+  assert.equal(WINDOWS_INSPECTION_SOURCE.match(/\$rulesArray=@\(\$rules\)/g)?.length, 1);
+  assert.doesNotMatch(entryRuleValidation, /ConvertTo-Json|\.ToString|Console|Write-|Out\./);
   const entryConstruction = WINDOWS_INSPECTION_SOURCE.slice(entryBuild, json);
-  assert.match(entryConstruction, /^\$stage=83\n  \$entry=\[pscustomobject\]\[ordered\]@\{/);
-  assert.match(entryConstruction,
-    /volumeSerialNumber=\$beforeVolumeDecimal\n    fileId=\$beforeIdDecimal\n    verifiedVolumeSerialNumber=\$afterVolumeDecimal\n    verifiedFileId=\$afterIdDecimal;rules=@\(\$rules\)\n  \}\n  $/);
-  assert.doesNotMatch(entryConstruction, /\.ToString|InvariantCulture/);
+  assert.equal(entryConstruction, [
+    "$stage=83",
+    "  $entry=[pscustomobject][ordered]@{",
+    "    index=__PROPR_INDEX__;kind='__PROPR_ENTRY_KIND__';authorityKind='__PROPR_AUTHORITY_KIND__';currentUserSid=$currentSid;ownerSid=$ownerSid",
+    "    daclProtected=$daclProtected;reparsePoint=$reparsePoint",
+    "    volumeSerialNumber=$beforeVolumeDecimal",
+    "    fileId=$beforeIdDecimal",
+    "    verifiedVolumeSerialNumber=$afterVolumeDecimal",
+    "    verifiedFileId=$afterIdDecimal;rules=$rulesArray",
+    "  }",
+    "  ",
+  ].join("\n"));
+  assert.doesNotMatch(entryConstruction,
+    /Marshal|\.ToString|InvariantCulture|@\(\$rules\)|ReferenceEquals|-band|\bfor\s*\(/);
   assert.doesNotMatch(composedIdentity, /ToString|\$entry=/);
   assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE, /4294967296|\[uint64\]\$(?:before|after)High\*/);
   assert.match(WINDOWS_UINT64_COMPOSER_SOURCE,
