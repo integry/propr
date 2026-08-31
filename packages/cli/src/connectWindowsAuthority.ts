@@ -33,7 +33,7 @@ export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
-  "broker:index-info-revalidation", "broker:index-info-decode",
+  "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose",
   "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
   "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ] as const);
@@ -78,6 +78,15 @@ function Read-ProprUInt32([IntPtr]$pointer,[int]$offset){
   [BitConverter]::ToUInt32($bytes,0)
 }`;
 
+export const WINDOWS_UINT64_COMPOSER_SOURCE = String.raw`
+function Join-ProprUInt64([uint32]$low,[uint32]$high){
+  if(-not [BitConverter]::IsLittleEndian){exit $stage}
+  $bytes=New-Object byte[] 8
+  [Array]::Copy([BitConverter]::GetBytes([uint32]$low),0,$bytes,0,4)
+  [Array]::Copy([BitConverter]::GetBytes([uint32]$high),0,$bytes,4,4)
+  [BitConverter]::ToUInt64($bytes,0)
+}`;
+
 // Reflection.Emit keeps the fixed P/Invoke surface in memory. Add-Type and its
 // writable compiler workspace are deliberately absent.
 export const WINDOWS_INSPECTION_SOURCE = String.raw`
@@ -85,6 +94,7 @@ $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Set-StrictMode -Version 2
 ${WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE}
+${WINDOWS_UINT64_COMPOSER_SOURCE}
 $stage=71
 $privateHandle=[IntPtr]::Zero
 $privateHandleOwned=$false
@@ -176,8 +186,9 @@ try {
   $afterVolume=Read-ProprUInt32 $after 28
   $beforeHigh=Read-ProprUInt32 $before 44;$beforeLow=Read-ProprUInt32 $before 48
   $afterHigh=Read-ProprUInt32 $after 44;$afterLow=Read-ProprUInt32 $after 48
-  $beforeId=([uint64]$beforeHigh*4294967296)+[uint64]$beforeLow
-  $afterId=([uint64]$afterHigh*4294967296)+[uint64]$afterLow
+  $stage=82
+  $beforeId=Join-ProprUInt64 $beforeLow $beforeHigh
+  $afterId=Join-ProprUInt64 $afterLow $afterHigh
   $entry=[pscustomobject][ordered]@{
     index=__PROPR_INDEX__;kind='__PROPR_ENTRY_KIND__';authorityKind='__PROPR_AUTHORITY_KIND__';currentUserSid=$currentSid;ownerSid=$ownerSid
     daclProtected=[bool](($control-band 0x1000)-ne 0);reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
@@ -217,6 +228,7 @@ $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Set-StrictMode -Version 2
 ${WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE}
+${WINDOWS_UINT64_COMPOSER_SOURCE}
 $clock=[Diagnostics.Stopwatch]::StartNew()
 function Write-ProprMilestone([string]$name){
   $elapsed=$clock.ElapsedMilliseconds
@@ -261,6 +273,7 @@ try {
   if(-not [ProprNativeTimingProbe]::GetFileInformationByHandle($handle,$info)){exit $stage}
   $probeVolume=Read-ProprUInt32 $info 28
   $probeHigh=Read-ProprUInt32 $info 44;$probeLow=Read-ProprUInt32 $info 48
+  $probeId=Join-ProprUInt64 $probeLow $probeHigh
   Write-ProprMilestone 'standard-handle-identity'
   exit 0
 }catch{exit $stage}
@@ -384,7 +397,7 @@ export function windowsBrokerFailureStage(status: number | null): WindowsNativeS
     71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info-initial",
     75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
     78: "broker:current-user-sid", 79: "broker:index-info-revalidation", 80: "broker:fd-duplicate",
-    81: "broker:index-info-decode",
+    81: "broker:index-info-decode", 82: "broker:index-info-compose",
   };
   return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
 }

@@ -25,6 +25,7 @@ import {
   WINDOWS_NATIVE_TIMING_PROBE_SOURCE,
   WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS,
   WINDOWS_NATIVE_STAGE_CODES,
+  WINDOWS_UINT64_COMPOSER_SOURCE,
   WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE,
   windowsBrokerFailureStage,
   windowsInspectionTimeoutForElapsed,
@@ -200,22 +201,26 @@ test("Windows production inspection has one cold-start deadline and a cumulative
   );
 });
 
-test("Windows production retains private handle lifetime and isolates unsigned identity decoding", () => {
+test("Windows production retains private handle lifetime and isolates unsigned identity decoding and composition", () => {
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:fd-duplicate"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-initial"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:current-user-sid"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-revalidation"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-decode"));
+  assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-compose"));
   assert.equal((WINDOWS_NATIVE_STAGE_CODES as readonly string[]).includes("broker:index-info"), false);
   assert.equal(windowsBrokerFailureStage(79), "broker:index-info-revalidation");
   assert.equal(windowsBrokerFailureStage(81), "broker:index-info-decode");
+  assert.equal(windowsBrokerFailureStage(82), "broker:index-info-compose");
 
   const duplicate = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=80");
   const initial = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=74");
   const sid = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=78");
   const revalidation = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=79");
   const decode = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=81", revalidation);
-  assert.ok(duplicate >= 0 && duplicate < initial && initial < sid && sid < revalidation && revalidation < decode);
+  const compose = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=82", decode);
+  assert.ok(duplicate >= 0 && duplicate < initial && initial < sid && sid < revalidation
+    && revalidation < decode && decode < compose);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(duplicate, initial),
     /DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{exit \$stage\}/);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(initial, sid),
@@ -224,7 +229,7 @@ test("Windows production retains private handle lifetime and isolates unsigned i
     /^\$stage=78\n  \$current=.*WindowsIdentity\]::GetCurrent\(\)\.User\n  if\(\$null-eq \$current\)\{exit \$stage\}\n  \$currentSid=\$current\.Value\n  $/s);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(revalidation, decode),
     /^\$stage=79\n  \$after=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$privateHandle,\$after\)\)\{exit \$stage\}\n  $/s);
-  const decodedIdentity = WINDOWS_INSPECTION_SOURCE.slice(decode, WINDOWS_INSPECTION_SOURCE.indexOf("$entry=", decode));
+  const decodedIdentity = WINDOWS_INSPECTION_SOURCE.slice(decode, compose);
   assert.match(decodedIdentity, /^\$stage=81\n  \$beforeVolume=/);
   for (const [field, structure, offset] of [
     ["beforeVolume", "before", 28], ["afterVolume", "after", 28],
@@ -235,14 +240,20 @@ test("Windows production retains private handle lifetime and isolates unsigned i
   }
   assert.equal(WINDOWS_INSPECTION_SOURCE.match(/function Read-ProprUInt32/g)?.length, 1);
   assert.equal(WINDOWS_INSPECTION_SOURCE.match(/Read-ProprUInt32 \$(?:before|after) (?:28|44|48)/g)?.length, 6);
+  assert.match(decodedIdentity,
+    /\$afterHigh=Read-ProprUInt32 \$after 44;\$afterLow=Read-ProprUInt32 \$after 48\n  $/);
   assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE,
     /\[uint32\]\[Runtime\.InteropServices\.Marshal\]::ReadInt32/);
   assert.match(WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE,
     /if\(-not \[BitConverter\]::IsLittleEndian\)\{exit \$stage\}\n  \$signed=\[int32\]\[Runtime\.InteropServices\.Marshal\]::ReadInt32\(\$pointer,\$offset\)\n  \$bytes=\[BitConverter\]::GetBytes\(\$signed\)\n  \[BitConverter\]::ToUInt32\(\$bytes,0\)/);
-  assert.match(decodedIdentity,
-    /\$beforeId=\(\[uint64\]\$beforeHigh\*4294967296\)\+\[uint64\]\$beforeLow/);
-  assert.match(decodedIdentity,
-    /\$afterId=\(\[uint64\]\$afterHigh\*4294967296\)\+\[uint64\]\$afterLow/);
+  const composedIdentity = WINDOWS_INSPECTION_SOURCE.slice(
+    compose, WINDOWS_INSPECTION_SOURCE.indexOf("$entry=", compose),
+  );
+  assert.match(composedIdentity,
+    /^\$stage=82\n  \$beforeId=Join-ProprUInt64 \$beforeLow \$beforeHigh\n  \$afterId=Join-ProprUInt64 \$afterLow \$afterHigh\n  $/);
+  assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE, /4294967296|\[uint64\]\$(?:before|after)High\*/);
+  assert.match(WINDOWS_UINT64_COMPOSER_SOURCE,
+    /function Join-ProprUInt64\(\[uint32\]\$low,\[uint32\]\$high\)\{\n  if\(-not \[BitConverter\]::IsLittleEndian\)\{exit \$stage\}\n  \$bytes=New-Object byte\[\] 8\n  \[Array\]::Copy\(\[BitConverter\]::GetBytes\(\[uint32\]\$low\),0,\$bytes,0,4\)\n  \[Array\]::Copy\(\[BitConverter\]::GetBytes\(\[uint32\]\$high\),0,\$bytes,4,4\)\n  \[BitConverter\]::ToUInt64\(\$bytes,0\)\n\}/);
   assert.match(WINDOWS_INSPECTION_SOURCE,
     /fileId=\$beforeId\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)/);
   assert.match(WINDOWS_INSPECTION_SOURCE,
@@ -257,8 +268,14 @@ test("Windows production retains private handle lifetime and isolates unsigned i
   const allBits = unsignedDecimal(-1);
   assert.equal(highBit, "2147483648");
   assert.equal(allBits, "4294967295");
-  const highBitFileId = (BigInt(highBit) * 4_294_967_296n + BigInt(allBits)).toString(10);
-  const allBitsFileId = (BigInt(allBits) * 4_294_967_296n + BigInt(allBits)).toString(10);
+  const composedDecimal = (low: number, high: number): string => {
+    const bytes = Buffer.alloc(8);
+    bytes.writeUInt32LE(low, 0);
+    bytes.writeUInt32LE(high, 4);
+    return bytes.readBigUInt64LE(0).toString(10);
+  };
+  const highBitFileId = composedDecimal(Number(allBits), Number(highBit));
+  const allBitsFileId = composedDecimal(Number(allBits), Number(allBits));
   assert.equal(highBitFileId, "9223372041149743103");
   assert.equal(allBitsFileId, "18446744073709551615");
   assert.match(JSON.stringify({ highBit, allBits, highBitFileId, allBitsFileId }),
@@ -305,7 +322,10 @@ test("Windows timing probe isolates baseline, Reflection.Emit, Win32, and standa
   assert.ok(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf("::GetFileInformationByHandle") < milestones[4]);
   const populated = WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf("GetFileInformationByHandle($handle,$info)");
   const probeDecode = WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf("Read-ProprUInt32 $info", populated);
-  assert.ok(populated >= 0 && populated < probeDecode && probeDecode < milestones[4]);
+  const probeCompose = WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf(
+    "Join-ProprUInt64 $probeLow $probeHigh", probeDecode,
+  );
+  assert.ok(populated >= 0 && populated < probeDecode && probeDecode < probeCompose && probeCompose < milestones[4]);
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.match(/function Read-ProprUInt32/g)?.length, 1);
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.match(/Read-ProprUInt32 \$info (?:28|44|48)/g)?.length, 3);
 });
