@@ -34,4 +34,9 @@ export type {
     StartGoalContainerRequest,
 } from './GoalContainerSupervisor.js';
 export { DockerGoalSessionRecovery } from './DockerGoalSessionRecovery.js';
-export { fingerprintGoalWorktree } from './worktreeIdentity.js';
+export {
+    fingerprintGoalWorktree,
+    normalizeGitRepositoryIdentity,
+    normalizeGoalRepositoryIdentity,
+} from './worktreeIdentity.js';
+export { MODEL_CHANGE_SETTLED_RETRY_HORIZON } from './modelChangeProtocol.js';

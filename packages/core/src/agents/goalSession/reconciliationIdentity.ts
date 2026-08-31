@@ -4,7 +4,36 @@ import type {
     GoalRepositoryInspection,
     GoalSessionState,
 } from './contract.js';
-import { fingerprintGoalWorktree } from './worktreeIdentity.js';
+import { fingerprintGoalWorktree, normalizeGitRepositoryIdentity } from './worktreeIdentity.js';
+
+const SHA = /^[a-f\d]{4,64}$/i;
+const FINGERPRINT = /^[a-f\d]{64}$/i;
+
+/** Removes untrusted recovery-port fields before provider or audit boundaries. */
+export function sanitizeRepositoryInspection(
+    expected: GoalRepositoryIdentity,
+    inspection: GoalRepositoryInspection,
+): GoalRepositoryInspection {
+    const observedRepository = inspection.observedRepository === undefined
+        ? undefined
+        : normalizeGitRepositoryIdentity(inspection.observedRepository);
+    const invalidRemote = inspection.observedRepository !== undefined && !observedRepository;
+    return {
+        ...expected,
+        exists: inspection.exists === true,
+        dirty: inspection.dirty === true,
+        observedRepository,
+        observedHeadSha: SHA.test(inspection.observedHeadSha ?? '') ? inspection.observedHeadSha : undefined,
+        observedBranch: invalidRemote ? undefined : inspection.observedBranch,
+        observedWorktreeFingerprint: invalidRemote
+            ? undefined
+            : FINGERPRINT.test(inspection.observedWorktreeFingerprint ?? '')
+                ? inspection.observedWorktreeFingerprint
+                : undefined,
+        resolvedWorktreePath: inspection.resolvedWorktreePath,
+        reason: invalidRemote ? 'Git remote does not contain a trustworthy repository identity' : undefined,
+    };
+}
 
 export function verifyRecoveredContainer(
     state: GoalSessionState,

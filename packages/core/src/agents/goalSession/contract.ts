@@ -218,7 +218,10 @@ export interface GoalSessionState extends GoalSessionIdentity {
     cancellationIntent?: GoalCancellationIntent;
     /** Provider model application/reconciliation identity retained across crashes. */
     modelChangeIntent?: GoalModelChangeIntent;
-    /** Ordered immediate-model generations, retained so overlapping requests cannot overwrite one another. */
+    /**
+     * Ordered immediate-model generations. Unresolved work and a bounded settled
+     * retry window are retained; canonical audit history lives in the event log.
+     */
     modelChangeIntents?: GoalModelChangeIntent[];
     /** Last allocated immediate-model generation. */
     modelChangeGeneration?: number;

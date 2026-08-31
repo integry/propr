@@ -11,6 +11,7 @@ import type {
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalSessionCore } from './GoalSessionCore.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
+import { credentialFreeRepositoryRequest, validateTurnRequestIdentity } from './repositorySecurity.js';
 import {
     assertProviderIdentity,
     nextState,
@@ -44,35 +45,34 @@ type TurnEventOptions = { fence: GoalSessionFence; current: GoalSessionState;
 export abstract class GoalTurnRunner extends GoalSessionCore {
     async runTurn(request: RunGoalTurnRequest): Promise<RunGoalTurnResult> {
         validateControlFence(request);
-        if (!request.turnId.trim() || !request.executionId.trim()) {
-            throw new GoalSessionContractError('turnId and executionId must be non-empty', 'INVALID_TURN');
-        }
-        let state = await this.requireControlledState(request);
-        const recoveringRetry = state.retryTurn?.turnId === request.turnId
-            && state.retryTurn.executionId === request.executionId;
+        validateTurnRequestIdentity(request);
+        const safeRequest = credentialFreeRepositoryRequest(request);
+        let state = await this.requireControlledState(safeRequest);
+        const recoveringRetry = state.retryTurn?.turnId === safeRequest.turnId
+            && state.retryTurn.executionId === safeRequest.executionId;
         const execution: GoalExecutionIdentity = {
-            executionId: request.executionId,
+            executionId: safeRequest.executionId,
             attemptId: recoveringRetry
                 ? this.mintFreshAttemptId(state.retryTurn!.crashedAttemptId)
-                : request.attemptId ?? this.mintAttemptId(),
+                : safeRequest.attemptId ?? this.mintAttemptId(),
         };
 
-        const duplicate = duplicateTurnResult(state, request.turnId, execution);
+        const duplicate = duplicateTurnResult(state, safeRequest.turnId, execution);
         if (duplicate) return duplicate;
         if (state.status !== 'idle') {
             throw new GoalSessionContractError(`Cannot begin a turn while session is ${state.status}`, 'SESSION_NOT_IDLE');
         }
 
-        const requestedModel = state.pendingModelChange ?? state.modelChangeIntent?.model ?? request.requestedModel;
-        state = await this.applyModelAtTurnBoundary(request, state, requestedModel);
-        const correctiveMessages = await this.nextTurnCorrectiveMessages(request);
+        const requestedModel = state.pendingModelChange ?? state.modelChangeIntent?.model ?? safeRequest.requestedModel;
+        state = await this.applyModelAtTurnBoundary(safeRequest, state, requestedModel);
+        const correctiveMessages = await this.nextTurnCorrectiveMessages(safeRequest);
         const activeTurn = {
             ...execution,
-            turnId: request.turnId,
-            executionEpoch: request.controllerEpoch,
-            objective: request.objective,
+            turnId: safeRequest.turnId,
+            executionEpoch: safeRequest.controllerEpoch,
+            objective: safeRequest.objective,
             requestedModel,
-            repository: request.repository,
+            repository: safeRequest.repository,
             status: 'running' as const,
         };
         const claimed = await this.ports.state.compareAndSet(state, nextState(state, {
@@ -85,20 +85,20 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 : state.modelChangeIntent,
         }));
         if (!claimed) {
-            state = await this.requireControlledState(request);
-            const redelivery = duplicateTurnResult(state, request.turnId, execution);
+            state = await this.requireControlledState(safeRequest);
+            const redelivery = duplicateTurnResult(state, safeRequest.turnId, execution);
             if (redelivery) return redelivery;
             throw new StaleGoalSessionFenceError('Another delivery claimed the session turn');
         }
 
         const adapterRequest: GoalBeginTurnRequest = {
-            ...request,
+            ...safeRequest,
             ...execution,
             requestedModel,
             correctiveMessages: correctiveMessages.length ? correctiveMessages : undefined,
         };
         const outcome = await this.driveTurnStream({
-            fence: request,
+            fence: safeRequest,
             execution,
             initial: claimed,
             nextTurnMessages: correctiveMessages,

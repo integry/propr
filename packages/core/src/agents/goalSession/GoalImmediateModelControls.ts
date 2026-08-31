@@ -9,6 +9,7 @@ import type {
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalTurnRunner } from './GoalTurnRunner.js';
 import {
+    compactImmediateModelIntents,
     hasUnresolvedImmediateModelIntent,
     immediateModelIntents,
     latestImmediateModelIntent,
@@ -85,7 +86,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             state = await this.compareAndSetExact(state, {
                 requestedModel: request.model,
                 modelChangeIntent: intent,
-                modelChangeIntents: [...intents, intent],
+                modelChangeIntents: compactImmediateModelIntents([...intents, intent]),
                 modelChangeGeneration: generation,
             }, 'A newer model intent superseded this request');
         }
@@ -340,12 +341,12 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
     ): Promise<void> {
         const state = await this.requireControlledState(fence);
         let changed = false;
-        const intents = immediateModelIntents(state).map(intent => {
+        const intents = compactImmediateModelIntents(immediateModelIntents(state).map(intent => {
             if (intent.modelChangeId === latestModelChangeId
                 || intent.phase === 'committed' || intent.phase === 'superseded') return intent;
             changed = true;
             return { ...intent, phase: reconciled ? 'superseded' as const : 'superseded_in_doubt' as const };
-        });
+        }));
         if (!changed) return;
         await this.compareAndSetExact(state, {
             modelChangeIntents: intents,

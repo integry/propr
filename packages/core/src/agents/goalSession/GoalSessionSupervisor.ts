@@ -6,7 +6,11 @@ import {
 } from './errors.js';
 import { createFirstTurnInitializationIntent, deterministicOpenKey, firstTurnIdentityFailure } from './firstTurnIdentity.js';
 import { GoalSessionRecoveryControls } from './GoalSessionRecoveryControls.js';
-import { hasUnresolvedImmediateModelIntent } from './modelChangeProtocol.js';
+import {
+    compactImmediateModelIntents,
+    hasUnresolvedImmediateModelIntent,
+    immediateModelIntents,
+} from './modelChangeProtocol.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
 import {
     assertProviderIdentity,
@@ -66,6 +70,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 controllerEpoch: state.controllerEpoch,
             }, state);
         }
+        state = await this.compactModelIntentRetention(state);
 
         let deterministicOpenKey: string | undefined;
         if (!state.providerSessionId) {
@@ -86,6 +91,16 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
 
         state = await this.callProviderOpen(request, state, deterministicOpenKey);
         return this.resumeImmediateModelChangeIntent(request, state);
+    }
+
+    private async compactModelIntentRetention(state: GoalSessionState): Promise<GoalSessionState> {
+        const intents = immediateModelIntents(state);
+        const compacted = compactImmediateModelIntents(intents);
+        if (compacted.length === intents.length) return state;
+        return this.compareAndSetExact(state, {
+            modelChangeIntents: compacted,
+            modelChangeIntent: compacted.at(-1),
+        }, 'A newer operation superseded model intent retention during reopen');
     }
 
     private canRecoverIncompleteInit(state: GoalSessionState): boolean {

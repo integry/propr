@@ -13,7 +13,8 @@ import { hasUnresolvedImmediateModelIntent } from './modelChangeProtocol.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
 import { isRecoverableStatus, RECOVERY_LEASE_MS, sameRecoverySubject, stoppedReconciliationResult } from './recoveryOperationProtocol.js';
 import { reconcileRecoveredTurn } from './reconcileRecoveredTurn.js';
-import { verifyReconciliationTarget, verifyRecoveredContainer } from './reconciliationIdentity.js';
+import { sanitizeRepositoryInspection, verifyReconciliationTarget, verifyRecoveredContainer } from './reconciliationIdentity.js';
+import { normalizeRecoveryRepositories } from './repositorySecurity.js';
 import {
     assertProviderIdentity,
     controlExecutionIdentity,
@@ -139,17 +140,22 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
             if (state.status !== 'cancelling') return stopped;
             return (await this.guardReconciliationState(state, fence))!;
         }
-        const durableRepository = state.activeTurn?.repository ?? repository;
-        const requestedFingerprint = fingerprintGoalWorktree(repository);
-        const durableFingerprint = fingerprintGoalWorktree(durableRepository);
-        if (requestedFingerprint !== durableFingerprint) {
-            return this.blockRecovery(fence, state,
-                'Requested worktree does not match the active turn\'s authoritative repository identity');
+        const repositories = normalizeRecoveryRepositories(state, repository);
+        if (!repositories) return this.blockRecovery(fence, state,
+            'Recovery repository does not contain a trustworthy credential-free identity');
+        const { requested: requestedRepository, durable: durableRepository } = repositories;
+        if (state.activeTurn && state.activeTurn.repository.repository !== durableRepository.repository) {
+            state = await this.compareAndSetExact(state, { activeTurn: { ...state.activeTurn, repository: durableRepository } },
+                'A newer operation superseded repository credential scrubbing');
         }
+        const durableFingerprint = fingerprintGoalWorktree(durableRepository);
+        if (fingerprintGoalWorktree(requestedRepository) !== durableFingerprint) return this.blockRecovery(fence, state,
+            'Requested worktree does not match the active turn\'s authoritative repository identity');
         const container = await this.ports.recovery.inspectContainer(identity);
         state = await this.revalidateInspectionState(state, fence);
-        const repositoryInspection = await this.ports.recovery.inspectRepository(durableRepository);
+        const rawRepositoryInspection = await this.ports.recovery.inspectRepository(durableRepository);
         state = await this.revalidateInspectionState(state, fence);
+        const repositoryInspection = sanitizeRepositoryInspection(durableRepository, rawRepositoryInspection);
         const mismatch = verifyReconciliationTarget(durableRepository, repositoryInspection)
             ?? verifyRecoveredContainer(state, container, durableFingerprint);
         if (mismatch) return this.blockRecovery(fence, state, mismatch);

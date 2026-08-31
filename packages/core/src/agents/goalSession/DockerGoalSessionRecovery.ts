@@ -9,7 +9,11 @@ import type {
     GoalSessionIdentity,
     GoalSessionRecoveryPort,
 } from './contract.js';
-import { fingerprintGoalWorktree } from './worktreeIdentity.js';
+import {
+    fingerprintGoalWorktree,
+    normalizeGitRepositoryIdentity,
+    normalizeGoalRepositoryIdentity,
+} from './worktreeIdentity.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -74,41 +78,60 @@ export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
     }
 
     async inspectRepository(repository: GoalRepositoryIdentity): Promise<GoalRepositoryInspection> {
-        try {
-            await access(repository.worktreePath);
-        } catch (error) {
-            return { ...repository, exists: false, reason: `Worktree is unavailable: ${errorText(error)}` };
+        const safeRepository = normalizeGoalRepositoryIdentity(repository);
+        if (!safeRepository) {
+            return {
+                repository: '',
+                worktreePath: repository.worktreePath,
+                branch: repository.branch,
+                headSha: repository.headSha,
+                exists: false,
+                reason: 'Git remote does not contain a trustworthy repository identity',
+            };
         }
         try {
-            const lexicalPath = path.resolve(repository.worktreePath);
-            const resolvedWorktreePath = await realpath(repository.worktreePath);
+            await access(safeRepository.worktreePath);
+        } catch (error) {
+            return { ...safeRepository, exists: false, reason: `Worktree is unavailable: ${errorText(error)}` };
+        }
+        try {
+            const lexicalPath = path.resolve(safeRepository.worktreePath);
+            const resolvedWorktreePath = await realpath(safeRepository.worktreePath);
             if (resolvedWorktreePath !== lexicalPath) {
                 return {
-                    ...repository,
+                    ...safeRepository,
                     exists: true,
                     resolvedWorktreePath,
                     reason: 'Worktree path resolves through a symlink or alias',
                 };
             }
             const [{ stdout: head }, { stdout: status }, { stdout: branch }, { stdout: remote }, { stdout: root }] = await Promise.all([
-                execFileAsync(this.gitPath, ['rev-parse', 'HEAD'], { cwd: repository.worktreePath, timeout: 10_000 }),
-                execFileAsync(this.gitPath, ['status', '--porcelain'], { cwd: repository.worktreePath, timeout: 10_000 }),
-                execFileAsync(this.gitPath, ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repository.worktreePath, timeout: 10_000 }),
-                execFileAsync(this.gitPath, ['config', '--get', 'remote.origin.url'], { cwd: repository.worktreePath, timeout: 10_000 }),
-                execFileAsync(this.gitPath, ['rev-parse', '--show-toplevel'], { cwd: repository.worktreePath, timeout: 10_000 }),
+                execFileAsync(this.gitPath, ['rev-parse', 'HEAD'], { cwd: safeRepository.worktreePath, timeout: 10_000 }),
+                execFileAsync(this.gitPath, ['status', '--porcelain'], { cwd: safeRepository.worktreePath, timeout: 10_000 }),
+                execFileAsync(this.gitPath, ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: safeRepository.worktreePath, timeout: 10_000 }),
+                execFileAsync(this.gitPath, ['config', '--get', 'remote.origin.url'], { cwd: safeRepository.worktreePath, timeout: 10_000 }),
+                execFileAsync(this.gitPath, ['rev-parse', '--show-toplevel'], { cwd: safeRepository.worktreePath, timeout: 10_000 }),
             ]);
-            const observedRepository = remote.trim();
+            const observedRepository = normalizeGitRepositoryIdentity(remote);
+            if (!observedRepository) {
+                return {
+                    ...safeRepository,
+                    exists: true,
+                    resolvedWorktreePath,
+                    reason: 'Git remote does not contain a trustworthy repository identity',
+                };
+            }
             const observedBranch = branch.trim();
             if (path.resolve(root.trim()) !== resolvedWorktreePath) {
                 return {
-                    ...repository,
+                    ...safeRepository,
                     exists: true,
                     resolvedWorktreePath,
                     reason: 'Worktree path is not the observed Git repository root',
                 };
             }
             return {
-                ...repository,
+                ...safeRepository,
                 exists: true,
                 dirty: Boolean(status.trim()),
                 observedRepository,
@@ -121,8 +144,12 @@ export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
                 }),
                 resolvedWorktreePath,
             };
-        } catch (error) {
-            return { ...repository, exists: true, reason: `External worktree state could not be inspected: ${errorText(error)}` };
+        } catch {
+            return {
+                ...safeRepository,
+                exists: true,
+                reason: 'External worktree state could not be inspected safely',
+            };
         }
     }
 }
