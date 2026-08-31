@@ -182,11 +182,17 @@ const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<stri
       };
     };
     return {
+      screen: { height: window.screen.height, width: window.screen.width },
+      workArea: { height: window.screen.availHeight, width: window.screen.availWidth },
       viewport: { height: window.innerHeight, width: window.innerWidth },
       ...Object.fromEntries(Object.entries(elements).map(([name, element]) => [name, bounds(element)])),
     };
   })()`);
-  return { windowBounds: window.getBounds(), ...rendererLayout };
+  return {
+    windowBounds: window.getBounds(),
+    contentBounds: window.getContentBounds(),
+    ...rendererLayout,
+  };
 };
 
 const createMainWindow = async (): Promise<BrowserWindow> => {

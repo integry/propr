@@ -1,8 +1,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { access, readdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import {
@@ -11,6 +10,12 @@ import {
   FuseVersion,
   getCurrentFuseWire,
 } from '@electron/fuses';
+import {
+  assertPackagedLayout,
+  createPrivateSmokeProfile,
+  createSmokeChildEnvironment,
+  removePrivateSmokeProfile,
+} from './packaged-smoke-support.mjs';
 
 const READY_EVENT = 'desktop.renderer.ready';
 const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
@@ -53,49 +58,6 @@ const parseLayout = smokeOutput => {
   return undefined;
 };
 
-const assertGap = (before, after, minimum, description) => {
-  const gap = after.top - before.bottom;
-  if (gap < minimum) {
-    throw new Error(`Packaged layout ${description} gap was ${gap}px; expected at least ${minimum}px`);
-  }
-};
-
-const assertPackagedLayout = layout => {
-  if (!layout) throw new Error('Packaged desktop did not report renderer layout bounds');
-  if (layout.missing?.length) {
-    throw new Error(`Packaged renderer layout was missing: ${layout.missing.join(', ')}`);
-  }
-  if (layout.windowBounds?.width !== 1280 || layout.windowBounds?.height !== 820) {
-    throw new Error(`Packaged window was not 1280x820: ${JSON.stringify(layout.windowBounds)}`);
-  }
-  if (layout.viewport.width < 1200 || layout.viewport.height < 740) {
-    throw new Error(`Packaged renderer viewport is unexpectedly small: ${JSON.stringify(layout.viewport)}`);
-  }
-  if (layout.logo.height < 18 || layout.logo.height > 22 || layout.logo.width < 40 || layout.logo.width > 100) {
-    throw new Error(`Packaged title-bar logo has unreasonable bounds: ${JSON.stringify(layout.logo)}`);
-  }
-  if (
-    layout.logo.top < layout.titlebar.top
-    || layout.logo.bottom > layout.titlebar.bottom
-    || layout.card.left < 0
-    || layout.card.right > layout.viewport.width
-    || layout.card.top < layout.titlebar.bottom
-    || layout.card.bottom > layout.viewport.height
-  ) {
-    throw new Error('Packaged logo or connection card extends outside its layout container');
-  }
-  for (const name of ['connectionName', 'apiUrl', 'submit']) {
-    const control = layout[name];
-    if (control.height < 36 || control.left < layout.card.left || control.right > layout.card.right) {
-      throw new Error(`Packaged ${name} control has unreasonable bounds: ${JSON.stringify(control)}`);
-    }
-  }
-  assertGap(layout.connectionName, layout.apiUrl, 28, 'between connection inputs');
-  assertGap(layout.apiUrl, layout.apiHelp, 6, 'between API input and help text');
-  assertGap(layout.apiHelp, layout.submit, 16, 'between API help and submit button');
-  assertGap(layout.submit, layout.footer, 20, 'between submit button and runtime footer');
-};
-
 await access(binaryPath);
 
 const expectedFuses = new Map([
@@ -128,17 +90,8 @@ if (inspectOnly) {
   process.exit(0);
 }
 
-const userDataPath = await mkdtemp(resolve(tmpdir(), 'propr-desktop-smoke-'));
-const launchArguments = [
-  '--disable-gpu',
-  '--propr-smoke-test',
-  `--user-data-dir=${userDataPath}`,
-  'propr://connect?api=https%3A%2F%2Fconnect.propr.dev',
-];
-if (launchArguments.some(argument => argument === '--no-sandbox' || argument === '--disable-sandbox')) {
-  throw new Error('The packaged-binary smoke test must not disable Electron sandboxing');
-}
-
+const smokeProfile = await createPrivateSmokeProfile();
+const userDataPath = smokeProfile.userData;
 let output = '';
 let receivedProfileApiOrigin;
 const profileApiServer = createServer((request, response) => {
@@ -161,21 +114,33 @@ const profileApiServer = createServer((request, response) => {
     ? '{"product":"ProPR","desktopAuthentication":{"protocolVersion":1}}'
     : '{"profileEndpoint":true}');
 });
-profileApiServer.listen(0, '127.0.0.1');
-await once(profileApiServer, 'listening');
-const profileApiAddress = profileApiServer.address();
-if (!profileApiAddress || typeof profileApiAddress === 'string') {
-  throw new Error('Packaged desktop smoke profile API did not bind to a TCP port');
-}
-const profileApiUrl = `http://127.0.0.1:${profileApiAddress.port}`;
 
 try {
+  const launchArguments = [
+    '--disable-gpu',
+    '--propr-smoke-test',
+    `--user-data-dir=${userDataPath}`,
+    'propr://connect?api=https%3A%2F%2Fconnect.propr.dev',
+  ];
+  if (launchArguments.some(argument => argument === '--no-sandbox' || argument === '--disable-sandbox')) {
+    throw new Error('The packaged-binary smoke test must not disable Electron sandboxing');
+  }
+
+  profileApiServer.listen(0, '127.0.0.1');
+  await once(profileApiServer, 'listening');
+  const profileApiAddress = profileApiServer.address();
+  if (!profileApiAddress || typeof profileApiAddress === 'string') {
+    throw new Error('Packaged desktop smoke profile API did not bind to a TCP port');
+  }
+  const profileApiUrl = `http://127.0.0.1:${profileApiAddress.port}`;
+  const childEnvironment = await createSmokeChildEnvironment({
+    profile: smokeProfile,
+    profileApiUrl,
+  });
   const child = spawn(binaryPath, launchArguments, {
-    env: {
-      ...process.env,
-      PROPR_DESKTOP_SMOKE_PROFILE_API_URL: profileApiUrl,
-      PROPR_DESKTOP_SMOKE_TEST: '1',
-    },
+    cwd: smokeProfile.root,
+    env: childEnvironment,
+    shell: false,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -225,7 +190,15 @@ try {
 
   console.log(`Packaged ${process.platform}-${process.arch} desktop reached renderer-ready with compiled layout, sandboxing, and profile API proof.`);
 } finally {
-  profileApiServer.closeAllConnections();
-  await new Promise(resolveClose => profileApiServer.close(resolveClose));
-  await rm(userDataPath, { recursive: true, force: true });
+  try {
+    if (profileApiServer.listening) {
+      profileApiServer.closeAllConnections();
+      await new Promise((resolveClose, rejectClose) => profileApiServer.close(error => {
+        if (error) rejectClose(error);
+        else resolveClose();
+      }));
+    }
+  } finally {
+    await removePrivateSmokeProfile(smokeProfile);
+  }
 }
