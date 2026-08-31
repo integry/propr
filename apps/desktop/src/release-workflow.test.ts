@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
@@ -591,7 +592,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(shortcutProbe, /\$expectation = if \(\$ExpectedPresent\) \{ 'PRESENT' \} else \{ 'ABSENT' \}/);
     assert.match(
       shortcutProbe,
-      /catch \{\n\s+if \(\$_\.Exception -is \[System\.ComponentModel\.Win32Exception\]\)/,
+      /catch \{\n\s+\$diagnosticException = \$null\n\s+\$caughtException = \$_\.Exception/,
     );
     assert.match(shortcutProbe, /!\$started\) \{\n\s+\$failureCategory = 'SPAWN_FAILED'/);
     assert.match(shortcutProbe, /\$process\.WaitForExit\(\$terminationTimeoutMilliseconds\)/);
@@ -634,16 +635,26 @@ describe('desktop trusted release workflow', () => {
 
     assert.match(
       spawnCatch[1],
-      /^\n\s+if \(\$_\.Exception -is \[System\.ComponentModel\.Win32Exception\]\) \{/,
+      /^\n\s+\$diagnosticException = \$null\n\s+\$caughtException = \$_\.Exception\n\s+if \(\$caughtException -is \[System\.ComponentModel\.Win32Exception\]\) \{\n\s+\$diagnosticException = \$caughtException/,
     );
     assert.match(
       spawnCatch[1],
-      /\$spawnFailureCategories\.Contains\(\$_\.Exception\.NativeErrorCode\)/,
+      /\} elseif \(\n\s+\$caughtException\.GetType\(\) -eq \[System\.Management\.Automation\.MethodInvocationException\] -and\n\s+\$caughtException\.InnerException -is \[System\.ComponentModel\.Win32Exception\]\n\s+\) \{\n\s+\$diagnosticException = \$caughtException\.InnerException\n\s+\}/,
     );
     assert.match(
       spawnCatch[1],
-      /\$spawnFailureCategories\[\$_\.Exception\.NativeErrorCode\]/,
+      /if \(\$null -ne \$diagnosticException\) \{/,
     );
+    assert.match(
+      spawnCatch[1],
+      /\$spawnFailureCategories\.Contains\(\$diagnosticException\.NativeErrorCode\)/,
+    );
+    assert.match(
+      spawnCatch[1],
+      /\$spawnFailureCategories\[\$diagnosticException\.NativeErrorCode\]/,
+    );
+    assert.equal(spawnCatch[1].match(/\$caughtException\.InnerException/g)?.length, 2);
+    assert.equal(spawnCatch[1].match(/\.NativeErrorCode/g)?.length, 2);
     assert.match(spawnCatch[1], /else \{\n\s+'UNKNOWN'\n\s+\}/);
     assert.match(
       spawnCatch[1],
@@ -654,11 +665,11 @@ describe('desktop trusted release workflow', () => {
       /\} else \{\n\s+\$failureCategory = 'SPAWN_FAILED'\n\s+\}$/,
     );
 
-    const mappings = Object.fromEntries(
+    const mappings: Record<number, string> = Object.fromEntries(
       [...spawnCatch[1].matchAll(/^\s+(\d+) = '([A-Z_]+)'$/gm)]
         .map(([, code, category]) => [Number(code), category]),
     );
-    assert.deepEqual(mappings, {
+    assert.deepEqual<Record<number, string>>(mappings, {
       2: 'FILE_NOT_FOUND',
       3: 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID',
       5: 'ACCESS_DENIED',
@@ -668,19 +679,26 @@ describe('desktop trusted release workflow', () => {
       1385: 'LOGON_TYPE_NOT_GRANTED',
     });
 
-    type SimulatedSpawnFailure = {
-      isWin32: boolean;
-      nativeErrorCode: number;
+    type SimulatedSpawnException = {
+      exactType: 'Win32Exception' | 'MethodInvocationException' | 'DerivedMethodInvocationException' | 'OtherException';
+      nativeErrorCode?: number;
+      innerException?: SimulatedSpawnException;
       path?: string;
       user?: string;
       message?: string;
     };
     const renderSpawnFailure = (
       expectation: 'PRESENT' | 'ABSENT',
-      caught: SimulatedSpawnFailure,
+      caught: SimulatedSpawnException,
     ): string => {
-      const category = caught.isWin32
-        ? mappings[caught.nativeErrorCode] ?? 'UNKNOWN'
+      const diagnosticException = caught.exactType === 'Win32Exception'
+        ? caught
+        : caught.exactType === 'MethodInvocationException'
+          && caught.innerException?.exactType === 'Win32Exception'
+          ? caught.innerException
+          : undefined;
+      const category = diagnosticException
+        ? mappings[diagnosticException.nativeErrorCode as number] ?? 'UNKNOWN'
         : undefined;
       return `PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:${expectation}:SPAWN_FAILED${
         category === undefined ? '' : `:${category}`
@@ -688,41 +706,180 @@ describe('desktop trusted release workflow', () => {
     };
     for (const [code, category] of Object.entries(mappings)) {
       assert.equal(
-        renderSpawnFailure('PRESENT', { isWin32: true, nativeErrorCode: Number(code) }),
+        renderSpawnFailure('PRESENT', { exactType: 'Win32Exception', nativeErrorCode: Number(code) }),
         `PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED:${category}`,
       );
     }
-    const sentinelFailure = {
-      isWin32: true,
+    const sentinelWin32: SimulatedSpawnException = {
+      exactType: 'Win32Exception',
       nativeErrorCode: 424242,
       path: String.raw`C:\sentinel-secret\shortcut.lnk`,
       user: 'sentinel-user',
       message: 'sentinel exception message',
     };
+    const sentinelWrapper: SimulatedSpawnException = {
+      exactType: 'MethodInvocationException',
+      path: 'sentinel-wrapper-path',
+      user: 'sentinel-wrapper-user',
+      message: 'sentinel wrapper message',
+      innerException: sentinelWin32,
+    };
     assert.equal(
-      renderSpawnFailure('ABSENT', sentinelFailure),
+      renderSpawnFailure('PRESENT', {
+        exactType: 'MethodInvocationException',
+        innerException: { exactType: 'Win32Exception', nativeErrorCode: 5 },
+      }),
+      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED:ACCESS_DENIED',
+    );
+    assert.equal(
+      renderSpawnFailure('ABSENT', {
+        exactType: 'MethodInvocationException',
+        innerException: { exactType: 'OtherException', message: 'sentinel wrapper inner' },
+      }),
+      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:ABSENT:SPAWN_FAILED',
+    );
+    assert.equal(
+      renderSpawnFailure('PRESENT', {
+        exactType: 'MethodInvocationException',
+        innerException: {
+          exactType: 'MethodInvocationException',
+          innerException: { exactType: 'Win32Exception', nativeErrorCode: 5 },
+        },
+      }),
+      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED',
+    );
+    assert.equal(
+      renderSpawnFailure('PRESENT', {
+        exactType: 'DerivedMethodInvocationException',
+        innerException: { exactType: 'Win32Exception', nativeErrorCode: 5 },
+      }),
+      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED',
+    );
+    assert.equal(
+      renderSpawnFailure('PRESENT', { exactType: 'OtherException', message: 'ordinary sentinel' }),
+      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED',
+    );
+    assert.equal(
+      renderSpawnFailure('ABSENT', sentinelWin32),
       'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:ABSENT:SPAWN_FAILED:UNKNOWN',
     );
     assert.equal(
-      renderSpawnFailure('PRESENT', { ...sentinelFailure, isWin32: false }),
-      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED',
+      renderSpawnFailure('ABSENT', sentinelWrapper),
+      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:ABSENT:SPAWN_FAILED:UNKNOWN',
     );
 
     const diagnosticOutputs = [
       ...Object.keys(mappings).map(code => renderSpawnFailure(
         'PRESENT',
-        { isWin32: true, nativeErrorCode: Number(code) },
+        { exactType: 'Win32Exception', nativeErrorCode: Number(code) },
       )),
-      renderSpawnFailure('ABSENT', sentinelFailure),
-      renderSpawnFailure('PRESENT', { ...sentinelFailure, isWin32: false }),
+      renderSpawnFailure('ABSENT', sentinelWrapper),
+      renderSpawnFailure('PRESENT', {
+        exactType: 'OtherException',
+        path: 'sentinel-other-path',
+        user: 'sentinel-other-user',
+        message: 'sentinel other message',
+      }),
     ].join('\n');
-    for (const sentinel of Object.values(sentinelFailure).slice(1).map(String)) {
+    for (const sentinel of [
+      String.raw`C:\sentinel-secret\shortcut.lnk`,
+      'sentinel-user',
+      'sentinel exception message',
+      'sentinel-wrapper-path',
+      'sentinel-wrapper-user',
+      'sentinel wrapper message',
+      'sentinel-other-path',
+      'sentinel-other-user',
+      'sentinel other message',
+      '424242',
+    ]) {
       assert.ok(!diagnosticOutputs.includes(sentinel));
     }
     assert.doesNotMatch(
       spawnCatch[1],
-      /(?:Write-Host|throw)|\.Message|\.ToString\(|\$ShortcutPath|\$UserName|\$Credential|\$probeChildEnvironment|StandardOutput|StandardError/,
+      /(?:Write-Host|throw)|\.Message|\.ToString\(|\.InnerException\.InnerException|\$ShortcutPath|\$UserName|\$Credential|\$probeChildEnvironment|StandardOutput|StandardError/,
     );
+  });
+
+  test('selects only direct and one-wrapper Win32 failures in Windows PowerShell', t => {
+    if (process.platform !== 'win32') {
+      t.skip('requires Windows PowerShell exception wrapping');
+      return;
+    }
+
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
+    const spawnCatch = shortcutProbe.match(
+      /\$started = \$process\.Start\(\)\n\s+\} catch \{([\s\S]*?)\n\s+\}\n\s+if \(\$null -eq \$failureCategory -and !\$started\)/,
+    );
+    assert.ok(spawnCatch);
+
+    const powershellSource = String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+
+public sealed class SpawnCatchFixture
+{
+    public void ThrowWin32(int code) { throw new Win32Exception(code); }
+    public void ThrowOther() { throw new InvalidOperationException("sentinel native message"); }
+}
+'@
+$fixture = [SpawnCatchFixture]::new()
+
+try {
+  throw [System.ComponentModel.Win32Exception]::new(2)
+} catch {
+  if ($_.Exception.GetType() -ne [System.ComponentModel.Win32Exception]) { exit 40 }
+}
+try {
+  $fixture.ThrowWin32(5)
+} catch {
+  if ($_.Exception.GetType() -ne [System.Management.Automation.MethodInvocationException]) { exit 41 }
+  if ($_.Exception.InnerException.GetType() -ne [System.ComponentModel.Win32Exception]) { exit 42 }
+}
+
+function Invoke-SpawnCatch([scriptblock]$Action) {
+  $failureCategory = $null
+  try {
+    & $Action
+  } catch {${spawnCatch[1]}
+  }
+  return $failureCategory
+}
+
+$method = [SpawnCatchFixture].GetMethod('ThrowWin32')
+$results = [ordered]@{
+  direct = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(2) }
+  wrapped = Invoke-SpawnCatch { $fixture.ThrowWin32(5) }
+  wrappedOther = Invoke-SpawnCatch { $fixture.ThrowOther() }
+  deeper = Invoke-SpawnCatch { $method.Invoke($fixture, @(87)) }
+  ordinary = Invoke-SpawnCatch { throw [InvalidOperationException]::new('sentinel ordinary message') }
+  unknown = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(424242) }
+}
+$results | ConvertTo-Json -Compress
+`;
+    const systemRoot = process.env.SystemRoot ?? String.raw`C:\Windows`;
+    const powershell = `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+    const encodedSource = Buffer.from(powershellSource, 'utf16le').toString('base64');
+    const result = spawnSync(
+      powershell,
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedSource],
+      { encoding: 'utf8', windowsHide: true },
+    );
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout.trim()), {
+      direct: 'SPAWN_FAILED:FILE_NOT_FOUND',
+      wrapped: 'SPAWN_FAILED:ACCESS_DENIED',
+      wrappedOther: 'SPAWN_FAILED',
+      deeper: 'SPAWN_FAILED',
+      ordinary: 'SPAWN_FAILED',
+      unknown: 'SPAWN_FAILED:UNKNOWN',
+    });
   });
 
   test('emits fixed uninstall and cleanup substages without masking the primary failure', () => {

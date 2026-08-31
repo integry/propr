@@ -547,7 +547,17 @@ exit 0
     try {
       $started = $process.Start()
     } catch {
-      if ($_.Exception -is [System.ComponentModel.Win32Exception]) {
+      $diagnosticException = $null
+      $caughtException = $_.Exception
+      if ($caughtException -is [System.ComponentModel.Win32Exception]) {
+        $diagnosticException = $caughtException
+      } elseif (
+        $caughtException.GetType() -eq [System.Management.Automation.MethodInvocationException] -and
+        $caughtException.InnerException -is [System.ComponentModel.Win32Exception]
+      ) {
+        $diagnosticException = $caughtException.InnerException
+      }
+      if ($null -ne $diagnosticException) {
         $spawnFailureCategories = [ordered]@{
           2 = 'FILE_NOT_FOUND'
           3 = 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID'
@@ -557,8 +567,8 @@ exit 0
           1326 = 'LOGON_FAILURE'
           1385 = 'LOGON_TYPE_NOT_GRANTED'
         }
-        $spawnFailureCategory = if ($spawnFailureCategories.Contains($_.Exception.NativeErrorCode)) {
-          $spawnFailureCategories[$_.Exception.NativeErrorCode]
+        $spawnFailureCategory = if ($spawnFailureCategories.Contains($diagnosticException.NativeErrorCode)) {
+          $spawnFailureCategories[$diagnosticException.NativeErrorCode]
         } else {
           'UNKNOWN'
         }
