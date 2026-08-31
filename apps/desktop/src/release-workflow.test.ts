@@ -645,6 +645,8 @@ describe('desktop trusted release workflow', () => {
       spawnCatch[1],
       /if \(\$null -ne \$diagnosticException\) \{/,
     );
+    assert.match(spawnCatch[1], /\$spawnFailureCategories = @\{/);
+    assert.doesNotMatch(spawnCatch[1], /\$spawnFailureCategories = \[ordered\]@\{/);
     assert.match(
       spawnCatch[1],
       /\$spawnFailureCategories\.Contains\(\$diagnosticException\.NativeErrorCode\)/,
@@ -851,12 +853,24 @@ function Invoke-SpawnCatch([scriptblock]$Action) {
   return $failureCategory
 }
 
-$method = [SpawnCatchFixture].GetMethod('ThrowWin32')
+$deeperWin32 = [System.ComponentModel.Win32Exception]::new(5)
+$innerWrapper = [System.Management.Automation.MethodInvocationException]::new(
+  'sentinel inner wrapper',
+  $deeperWin32
+)
+$outerWrapper = [System.Management.Automation.MethodInvocationException]::new(
+  'sentinel outer wrapper',
+  $innerWrapper
+)
+if ($outerWrapper.GetType() -ne [System.Management.Automation.MethodInvocationException]) { exit 43 }
+if ($outerWrapper.InnerException.GetType() -ne [System.Management.Automation.MethodInvocationException]) { exit 44 }
+if ($outerWrapper.InnerException.InnerException.GetType() -ne [System.ComponentModel.Win32Exception]) { exit 45 }
 $results = [ordered]@{
   direct = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(2) }
   wrapped = Invoke-SpawnCatch { $fixture.ThrowWin32(5) }
   wrappedOther = Invoke-SpawnCatch { $fixture.ThrowOther() }
-  deeper = Invoke-SpawnCatch { $method.Invoke($fixture, @(87)) }
+  deeper = Invoke-SpawnCatch { throw $outerWrapper }
+  invalidParameter = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(87) }
   ordinary = Invoke-SpawnCatch { throw [InvalidOperationException]::new('sentinel ordinary message') }
   unknown = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(424242) }
 }
@@ -877,6 +891,7 @@ $results | ConvertTo-Json -Compress
       wrapped: 'SPAWN_FAILED:ACCESS_DENIED',
       wrappedOther: 'SPAWN_FAILED',
       deeper: 'SPAWN_FAILED',
+      invalidParameter: 'SPAWN_FAILED:INVALID_PARAMETER',
       ordinary: 'SPAWN_FAILED',
       unknown: 'SPAWN_FAILED:UNKNOWN',
     });

@@ -558,7 +558,7 @@ exit 0
         $diagnosticException = $caughtException.InnerException
       }
       if ($null -ne $diagnosticException) {
-        $spawnFailureCategories = [ordered]@{
+        $spawnFailureCategories = @{
           2 = 'FILE_NOT_FOUND'
           3 = 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID'
           5 = 'ACCESS_DENIED'
