@@ -9,6 +9,7 @@ import {
   Target,
   Zap,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import type { GoalListItem, GoalState } from '../api/goalsApi';
 import { formatDuration, formatTokens, GOAL_STATE_COLORS, GOAL_STATE_LABELS } from './goalsPageUtils';
 
@@ -89,7 +90,7 @@ export const GoalRow = ({ goal }: { goal: GoalListItem }) => {
       <div className="px-4 py-4 sm:px-6">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-gray-900">{goal.objective}</p>
+            <Link to={`/goals/${encodeURIComponent(goal.goalId)}`} aria-label={`Open goal: ${goal.objective}`} className="block truncate rounded text-sm font-semibold text-gray-900 hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">{goal.objective}</Link>
             <p className="mt-0.5 truncate text-xs text-gray-500">{goal.repository}</p>
           </div>
           <div className="flex flex-shrink-0 items-center gap-2">

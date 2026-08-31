@@ -26,6 +26,20 @@ const wireSummary = {
   latestSequence: 12,
 };
 
+const wireDetail = {
+  goal: { ...wireGoal, terminalReason: null },
+  hierarchy: { nodes: [], dependencies: [] },
+  providerTodos: [], messages: [],
+  stats: {
+    issues: { total: 0, active: 0, processed: 0, failed: 0, blocked: 0 },
+    pullRequests: { open: 0, reviewPending: 0, ultrafixPending: 0, mergeReady: 0, merged: 0 },
+    tokens: { total: 0, byModel: [] },
+    time: { elapsedSeconds: 10, activeSeconds: 8, pausedSeconds: 1, recoverySeconds: 1 },
+  },
+  recovery: { state: 'healthy', attempt: 0, reason: null },
+  epicPrUrl: null, completionBlockers: [], latestSequence: 0,
+};
+
 const jsonResponse = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status,
   headers: { 'Content-Type': 'application/json' },
@@ -194,12 +208,39 @@ describe('goalsApi', () => {
     });
   });
 
-  it('keeps the read helper but does not expose unkeyed lifecycle mutation helpers', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ goal: wireGoal }));
-    await expect(goalsApi.getGoal('goal/special')).resolves.toEqual(wireGoal);
-    expect(fetchMock).toHaveBeenCalledWith('/api/goals/goal%2Fspecial', { credentials: 'include' });
-    expect(goalsApi).not.toHaveProperty('pauseGoal');
-    expect(goalsApi).not.toHaveProperty('resumeGoal');
-    expect(goalsApi).not.toHaveProperty('cancelGoal');
+  it('strictly reads detail and sends keyed, versioned lifecycle mutations', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(wireDetail))
+      .mockResolvedValueOnce(jsonResponse({ goal: { ...wireGoal, state: 'pausing', version: 4 } }));
+    await expect(goalsApi.getGoal('goal/special')).resolves.toEqual(wireDetail);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/goals/goal%2Fspecial', { credentials: 'include', signal: undefined });
+    await expect(goalsApi.pauseGoal('goal/special', 3, 'pause-key')).resolves.toMatchObject({ state: 'pausing', version: 4 });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/goals/goal%2Fspecial/pause', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ expectedVersion: 3 }),
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'pause-key' },
+    }));
+  });
+
+  it('pages replay history with mutually exclusive cursors and normalizes durable event envelopes', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({
+      events: [{ goalId: 'goal-1', sequence: 8, kind: 'output', eventType: 'stderr', payload: { content: '<b>inert</b>' }, createdAt: wireGoal.updatedAt }],
+      previousCursor: 8, nextCursor: 8, hasMoreBefore: true,
+    }));
+    await expect(goalsApi.getGoalEvents('goal-1', { afterSequence: 7, limit: 200 })).resolves.toEqual({
+      events: [{ goalId: 'goal-1', sequence: 8, type: 'stderr', source: 'output', content: '<b>inert</b>', payload: { content: '<b>inert</b>' }, timestamp: wireGoal.updatedAt, turnId: null }],
+      previousCursor: 8, nextCursor: 8, hasMoreBefore: true,
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/goals/goal-1/events?afterSequence=7&limit=200', { credentials: 'include', signal: undefined });
+    await expect(goalsApi.getGoalEvents('goal-1', { afterSequence: 7, beforeSequence: 8 })).rejects.toThrow('event cursor');
+  });
+
+  it('requires an idempotency key for steering and exposes all durable message states', async () => {
+    const wireMessage = { messageId: 'message-1', sequence: 9, body: 'Status?', predefinedKind: 'whats_done', state: 'failed', responseSource: 'controller', response: 'Still running', error: 'Provider unavailable', createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
+    await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?' }, '')).rejects.toThrow('Idempotency-Key');
+    fetchMock.mockResolvedValue(jsonResponse({ message: wireMessage }, 201));
+    await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?', predefinedKind: 'whats_done' }, 'message-key')).resolves.toEqual(wireMessage);
+    expect(fetchMock).toHaveBeenCalledWith('/api/goals/goal-1/messages', expect.objectContaining({
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'message-key' },
+    }));
   });
 });
