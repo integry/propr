@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type {
     GoalContainerInspection,
     GoalProviderReconcileResult,
@@ -15,6 +14,7 @@ import {
     StaleGoalSessionFenceError,
     UnsupportedGoalSessionTransitionError,
 } from './errors.js';
+import { createFirstTurnInitializationIntent, deterministicOpenKey, firstTurnIdentityFailure } from './firstTurnIdentity.js';
 import { GoalSessionControls } from './GoalSessionControls.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
 import {
@@ -187,15 +187,18 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         request: OpenGoalSessionRequest,
         state: GoalSessionState,
     ): Promise<GoalSessionState> {
+        const policy = this.adapter.capabilities.nativeSessionId === 'first_turn'
+            ? this.adapter.capabilities.firstTurnIdCrashPolicy
+            : 'fail';
+        if (policy === 'fail' && state.status === 'failed' && !state.activeTurn) {
+            throw firstTurnIdentityFailure(policy);
+        }
         if (!state.initializationIntent) {
             throw new GoalSessionContractError(
                 'A first-turn provider has no durable initialization intent; refusing to start a different native session',
                 'INCOMPLETE_INITIALIZATION',
             );
         }
-        const policy = this.adapter.capabilities.nativeSessionId === 'first_turn'
-            ? this.adapter.capabilities.firstTurnIdCrashPolicy
-            : 'fail';
         if (state.activeTurn && policy === 'retry_deterministically') {
             const crashedTurn = state.activeTurn;
             return this.updateControlledState(request, value => ({
@@ -218,10 +221,34 @@ export class GoalSessionSupervisor extends GoalSessionControls {
             }));
         }
         if (state.activeTurn || (state.status !== 'initializing' && state.status !== 'idle')) {
-            throw new GoalSessionContractError(
-                `The first provider invocation ended before binding its native session ID (${policy})`,
-                'FIRST_TURN_ID_NOT_BOUND',
-            );
+            if (policy === 'fail' && state.activeTurn) {
+                const turn = state.activeTurn;
+                const completedTurns = state.completedTurns?.some(value => value.turnId === turn.turnId)
+                    ? state.completedTurns
+                    : [...(state.completedTurns ?? []), {
+                        turnId: turn.turnId, executionId: turn.executionId, attemptId: turn.attemptId,
+                    }];
+                const failure = firstTurnIdentityFailure(policy);
+                const saved = await this.ports.terminal.commit(state, nextState(state, {
+                    status: 'failed', activeTurn: undefined, initializationIntent: undefined, retryTurn: undefined,
+                    completedTurnIds: state.completedTurnIds.includes(turn.turnId)
+                        ? state.completedTurnIds : [...state.completedTurnIds, turn.turnId],
+                    completedTurns, failureReason: failure.message,
+                }), {
+                    scope: 'turn', fence: { ...request, turnId: turn.turnId },
+                    execution: { executionId: turn.executionId, attemptId: turn.attemptId },
+                    event: { type: 'completion', outcome: 'failed', error: failure.message },
+                });
+                if (!saved) throw new StaleGoalSessionFenceError('A newer operation superseded first-turn crash failure');
+                if (saved.activeTurn) {
+                    await this.compareAndSetExact(saved, {
+                        status: 'failed', activeTurn: undefined, initializationIntent: undefined,
+                        retryTurn: undefined, failureReason: failure.message,
+                    });
+                }
+                throw failure;
+            }
+            throw firstTurnIdentityFailure(policy);
         }
         if (state.status === 'idle') return state;
         return this.updateControlledState(request, value => ({ ...value, status: 'idle', failureReason: undefined }));
@@ -259,7 +286,7 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         if (!state) {
             const timestamp = nowIso();
             const initializationIntent = this.adapter.capabilities.nativeSessionId === 'first_turn'
-                ? createInitializationIntent(request, this.mintAttemptId())
+                ? createFirstTurnInitializationIntent(request, this.mintAttemptId())
                 : undefined;
             const initial = await this.ports.state.create({
                 ...request,
@@ -313,21 +340,6 @@ export class GoalSessionSupervisor extends GoalSessionControls {
             throw error;
         }
     }
-}
-
-function deterministicOpenKey(identity: GoalSessionIdentity & { provider: string }): string {
-    return createHash('sha256').update(`${identity.provider}\0${identity.goalId}\0${identity.sessionId}`).digest('hex');
-}
-
-function createInitializationIntent(
-    identity: GoalSessionIdentity & { provider: string },
-    attemptId: string,
-): NonNullable<GoalSessionState['initializationIntent']> {
-    return {
-        attemptId,
-        deterministicOpenKey: deterministicOpenKey(identity),
-        recordedAt: nowIso(),
-    };
 }
 
 function verifyRecoveredContainer(

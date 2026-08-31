@@ -271,7 +271,10 @@ export interface GoalBeginTurnRequest extends GoalSessionFence, GoalExecutionIde
     context?: GoalSessionJsonValue;
     repository: GoalRepositoryIdentity;
     requestedModel: string;
-    /** FIFO messages reserved for acceptance by a next-turn-only provider. */
+    /**
+     * FIFO messages reserved for acceptance by a next-turn-only provider. The
+     * provider must acknowledge every supplied ID before reporting success.
+     */
     correctiveMessages?: GoalProviderCorrectiveMessage[];
 }
 

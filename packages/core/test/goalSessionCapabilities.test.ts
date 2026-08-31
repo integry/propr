@@ -45,6 +45,7 @@ class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
     turnStarted: (() => void) | undefined;
     holdTurn: Promise<void> | undefined;
     emitIdentity = true;
+    acknowledgeMessages = true;
 
     async openSession(request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot> {
         this.openCalls += 1;
@@ -69,8 +70,10 @@ class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
         }
         this.turnStarted?.();
         if (this.holdTurn) await this.holdTurn;
-        for (const message of request.correctiveMessages ?? []) {
-            yield { type: 'message_acknowledged', messageId: message.messageId };
+        if (this.acknowledgeMessages) {
+            for (const message of request.correctiveMessages ?? []) {
+                yield { type: 'message_acknowledged', messageId: message.messageId };
+            }
         }
         yield { type: 'output', channel: 'stdout', data: `completed ${request.turnId}\n` };
         yield { type: 'completion', outcome: 'succeeded' };
@@ -238,6 +241,105 @@ test('first-turn providers reject authoritative output before a real native ID i
     assert.equal((await persistence.load(identity))?.providerSessionId, undefined);
 });
 
+test('fail policy durably fails and clears an unbound first turn after crash and reopen', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    const persistence = new InMemoryGoalSessionPorts();
+    const initial = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => 'initialization-attempt');
+    const opened = await initial.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    const { version: _version, ...persisted } = opened;
+    const crashed = await persistence.compareAndSet(opened, {
+        ...persisted,
+        status: 'running',
+        activeTurn: {
+            turnId: firstFence.turnId,
+            executionId: 'execution-crashed',
+            attemptId: 'attempt-crashed',
+            executionEpoch: 1,
+            objective: 'crash before native identity checkpoint',
+            requestedModel: 'model-a',
+            repository,
+            status: 'running',
+        },
+    });
+    assert.ok(crashed);
+
+    const replacement = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await assert.rejects(
+        replacement.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 2 }),
+        (error: unknown) => error instanceof GoalSessionContractError && error.code === 'FIRST_TURN_ID_NOT_BOUND',
+    );
+    const failed = await persistence.load(identity);
+    assert.equal(failed?.status, 'failed');
+    assert.equal(failed?.activeTurn, undefined);
+    assert.equal(failed?.initializationIntent, undefined);
+    assert.match(failed?.failureReason ?? '', /before binding its native session ID/);
+    const completions = (await persistence.replay(identity)).filter(record => record.event.type === 'completion');
+    assert.equal(completions.length, 1);
+    assert.equal(completions[0]?.event.type === 'completion' ? completions[0].event.outcome : '', 'failed');
+
+    const terminalVersion = failed?.version;
+    await assert.rejects(
+        replacement.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 2 }),
+        (error: unknown) => error instanceof GoalSessionContractError && error.code === 'FIRST_TURN_ID_NOT_BOUND',
+    );
+    assert.equal((await persistence.load(identity))?.version, terminalVersion, 'repeated opens do not mutate terminal state');
+    assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'completion').length, 1);
+});
+
+test('first-turn binding consumes its deferred requested model without reapplying it on turn two', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    const persistence = new InMemoryGoalSessionPorts();
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    await supervisor.requestModelChange({ ...identity, controllerEpoch: 1, model: 'model-b' });
+
+    const first = await supervisor.runTurn({
+        ...firstFence,
+        executionId: 'execution-model-one',
+        objective: 'apply deferred model in the first invocation',
+        repository,
+        requestedModel: 'model-a',
+    });
+    assert.equal(first.state.currentModel, 'model-b');
+    assert.equal(first.state.pendingModelChange, undefined);
+    assert.deepEqual(adapter.modelCalls, [], 'the first invocation receives its model directly');
+
+    await supervisor.runTurn({
+        ...firstFence,
+        turnId: 'turn-two',
+        executionId: 'execution-model-two',
+        objective: 'do not redundantly reapply the first-turn model',
+        repository,
+        requestedModel: 'model-b',
+    });
+    assert.deepEqual(adapter.modelCalls, []);
+    assert.deepEqual(adapter.requests.map(request => request.requestedModel), ['model-b', 'model-b']);
+});
+
+test('successful completion without acknowledging supplied messages is a protocol violation', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    adapter.acknowledgeMessages = false;
+    const persistence = new InMemoryGoalSessionPorts();
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    persistence.enqueueMessage({ ...identity, messageId: 'message-unacknowledged', body: 'must be accepted' });
+
+    await assert.rejects(
+        supervisor.runTurn({
+            ...firstFence,
+            executionId: 'execution-unacknowledged',
+            objective: 'provider must acknowledge supplied messages',
+            repository,
+            requestedModel: 'model-a',
+        }),
+        (error: unknown) => error instanceof GoalSessionContractError && error.code === 'MESSAGE_ACK_MISSING',
+    );
+    assert.equal((await persistence.load(identity))?.status, 'failed');
+    assert.deepEqual((await persistence.listPending(identity)).map(message => message.messageId), ['message-unacknowledged']);
+    const completion = (await persistence.replay(identity)).find(record => record.event.type === 'completion');
+    assert.equal(completion?.event.type === 'completion' ? completion.event.outcome : '', 'failed');
+});
+
 test('deterministic first-turn retry mints a fresh attempt instead of reusing the crashed invocation', async () => {
     class RetryingFirstTurnAdapter extends FirstTurnBoundaryAdapter {
         override readonly capabilities = {
@@ -261,7 +363,11 @@ test('deterministic first-turn retry mints a fresh attempt instead of reusing th
 
     const ids = ['recovered-initialization-attempt', 'fresh-provider-attempt'];
     const replacement = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => ids.shift()!);
-    await replacement.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 2 });
+    const reopened = await replacement.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 2 });
+    assert.equal(reopened.status, 'idle');
+    assert.equal(reopened.activeTurn, undefined);
+    assert.equal(reopened.retryTurn?.crashedAttemptId, 'crashed-attempt');
+    assert.equal(reopened.initializationIntent?.attemptId, 'recovered-initialization-attempt');
     adapter.emitIdentity = true;
     const recovered = await replacement.runTurn({
         ...firstFence,

@@ -255,6 +255,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                     await this.append(fence, execution, event);
                     continue;
                 }
+                this.assertSuppliedMessagesAcknowledged(event, awaitingMessageIds);
                 if (event.type === 'completion' && this.adapter.capabilities.pause === 'after_turn') {
                     current = await this.requireActiveTurnState(fence);
                 }
@@ -290,6 +291,14 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 'FIRST_TURN_ID_NOT_BOUND',
             );
         }
+    }
+
+    private assertSuppliedMessagesAcknowledged(event: GoalSessionEvent, awaitingMessageIds: string[]): void {
+        if (event.type !== 'completion' || event.outcome !== 'succeeded' || awaitingMessageIds.length === 0) return;
+        throw new GoalSessionContractError(
+            `Provider reported success without acknowledging supplied corrective message "${awaitingMessageIds[0]}"`,
+            'MESSAGE_ACK_MISSING',
+        );
     }
 
     private async acknowledgeNextTurnMessage(
@@ -374,6 +383,14 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             providerSessionId: event.providerSessionId ?? value.providerSessionId,
             recoveryMetadata: event.recoveryMetadata,
             initializationIntent: event.providerSessionId ? undefined : value.initializationIntent,
+            currentModel: event.providerSessionId && !value.providerSessionId
+                ? value.activeTurn?.requestedModel ?? value.currentModel
+                : value.currentModel,
+            pendingModelChange: event.providerSessionId
+                && !value.providerSessionId
+                && value.pendingModelChange === value.activeTurn?.requestedModel
+                ? undefined
+                : value.pendingModelChange,
         }));
     }
 
