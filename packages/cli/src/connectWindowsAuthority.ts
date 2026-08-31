@@ -8,23 +8,29 @@ import {
   realpathSync,
 } from "node:fs";
 import { win32 } from "node:path";
+import { performance } from "node:perf_hooks";
 import type {
   ConnectAuthorityEntryKind,
   WindowsAuthorityInspection,
   WindowsAuthorityTarget,
 } from "./connectRootAuthority.js";
 
-const WINDOWS_INSPECTION_TIMEOUT_MS = 5_000;
-// These diagnostic-only probes pay the hosted Windows PowerShell cold-start
-// cost independently. This does not alter the production inspection bound.
-const WINDOWS_HOSTED_ASSUMPTION_TIMEOUT_MS = 15_000;
+// Hosted alternate-user Windows can spend more than fifteen seconds entering
+// the fixed PowerShell/Reflection.Emit boundary. Each production call gets one
+// bounded cold-start allowance, while the entire descriptor batch has a
+// separate cap so the 32-entry schema limit cannot multiply that allowance.
+export const WINDOWS_INSPECTION_TIMEOUT_MS = 30_000;
+export const WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS = 60_000;
+export const WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS = 60_000;
 const WINDOWS_INSPECTION_MAX_BYTES = 128 * 1024;
+const WINDOWS_NATIVE_PROBE_MAX_BYTES = 2 * 1024;
 const WINDOWS_INSPECTION_MAX_ENTRIES = 32;
 const GLOBAL_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
 
 export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
-  "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr",
+  "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
+  "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:index-info",
   "broker:security-info", "broker:acl", "broker:json",
   "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
@@ -59,6 +65,7 @@ function stageError(stage: WindowsNativeStageCode): WindowsNativeStageError {
 // HANDLE directly. The script contains no process-creation API or external
 // command; terminating powershell.exe therefore terminates the complete tree.
 export const WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false;
+export const WINDOWS_INSPECTOR_WRITES_FILESYSTEM = false;
 export const WINDOWS_INSPECTOR_TRANSPORT = "inherited-standard-handle" as const;
 
 // Reflection.Emit keeps the fixed P/Invoke surface in memory. Add-Type and its
@@ -165,61 +172,71 @@ try {
 }catch{exit $stage}
 `;
 
-const WINDOWS_EXTRA_STDIO_ASSUMPTION_SOURCE = String.raw`
-$ErrorActionPreference='Stop';Set-StrictMode -Version 2
-try {
-  $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName('ProprExtraStdioAssumptionAssembly')),[Reflection.Emit.AssemblyBuilderAccess]::Run)
-  $module=$assembly.DefineDynamicModule('ProprExtraStdioAssumptionModule');$builder=$module.DefineType('ProprExtraStdioAssumption',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
-  function Add-NativeMethod($name,$library,$returnType,[Type[]]$parameters,$convention){$method=$builder.DefinePInvokeMethod($name,$library,[Reflection.MethodAttributes]'Public,Static,PinvokeImpl',[Reflection.CallingConventions]::Standard,$returnType,$parameters,$convention,[Runtime.InteropServices.CharSet]::Unicode);$method.SetImplementationFlags($method.GetMethodImplementationFlags()-bor [Reflection.MethodImplAttributes]::PreserveSig)}
-  $winapi=[Runtime.InteropServices.CallingConvention]::Winapi;$cdecl=[Runtime.InteropServices.CallingConvention]::Cdecl;$intptr=[IntPtr]
-  Add-NativeMethod '_get_osfhandle' 'msvcrt.dll' $intptr @([int]) $cdecl
-  Add-NativeMethod 'GetFileInformationByHandle' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
-  $null=$builder.CreateType()
-  $fdHandle=[ProprExtraStdioAssumption]::_get_osfhandle(3);$info=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-  $extraStdio=if($fdHandle-ne [IntPtr](-1)-and $fdHandle-ne [IntPtr](-2)-and $fdHandle-ne [IntPtr]::Zero-and [ProprExtraStdioAssumption]::GetFileInformationByHandle($fdHandle,$info)){'usable'}else{'unusable'}
-  $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;extraStdio=$extraStdio}) -Compress
-  [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false,$true);[Console]::Out.Write($json);exit 0
-}catch{exit 81}
-`;
+export const WINDOWS_NATIVE_PROBE_MILESTONES = Object.freeze([
+  "entry-ps51-desktop-x64",
+  "constant-json",
+  "reflection-emit",
+  "harmless-win32",
+  "standard-handle-identity",
+] as const);
 
-const WINDOWS_JOB_CONTAINMENT_ASSUMPTION_SOURCE = String.raw`
-$ErrorActionPreference='Stop';Set-StrictMode -Version 2
-try {
-  $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName('ProprJobContainmentAssumptionAssembly')),[Reflection.Emit.AssemblyBuilderAccess]::Run)
-  $module=$assembly.DefineDynamicModule('ProprJobContainmentAssumptionModule');$builder=$module.DefineType('ProprJobContainmentAssumption',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
-  function Add-NativeMethod($name,$library,$returnType,[Type[]]$parameters,$convention){$method=$builder.DefinePInvokeMethod($name,$library,[Reflection.MethodAttributes]'Public,Static,PinvokeImpl',[Reflection.CallingConventions]::Standard,$returnType,$parameters,$convention,[Runtime.InteropServices.CharSet]::Unicode);$method.SetImplementationFlags($method.GetMethodImplementationFlags()-bor [Reflection.MethodImplAttributes]::PreserveSig)}
-  $winapi=[Runtime.InteropServices.CallingConvention]::Winapi;$intptr=[IntPtr];$boolRef=([bool]).MakeByRefType()
-  Add-NativeMethod 'IsProcessInJob' 'kernel32.dll' ([bool]) @($intptr,$intptr,$boolRef) $winapi
-  Add-NativeMethod 'GetCurrentProcess' 'kernel32.dll' $intptr @() $winapi
-  $null=$builder.CreateType()
-  $contained=$false
-  if(-not [ProprJobContainmentAssumption]::IsProcessInJob([ProprJobContainmentAssumption]::GetCurrentProcess(),[IntPtr]::Zero,[ref]$contained)){exit 82}
-  $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;alreadyContained=[bool]$contained}) -Compress
-  [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false,$true);[Console]::Out.Write($json);exit 0
-}catch{exit 82}
-`;
+export type WindowsNativeProbeMilestone = (typeof WINDOWS_NATIVE_PROBE_MILESTONES)[number];
 
-// This process is intentionally sacrificial: no other observation depends on
-// it producing JSON after assigning itself to a kill-on-close job.
-const WINDOWS_NESTED_JOB_ASSUMPTION_SOURCE = String.raw`
-$ErrorActionPreference='Stop';Set-StrictMode -Version 2
+export const WINDOWS_NATIVE_TIMING_BUCKETS = Object.freeze([
+  "under-5s", "5-to-15s", "15-to-30s", "30-to-45s", "45-to-60s", "at-least-60s",
+] as const);
+
+export type WindowsNativeTimingBucket = (typeof WINDOWS_NATIVE_TIMING_BUCKETS)[number];
+
+export const WINDOWS_NATIVE_TIMING_PROBE_SOURCE = String.raw`
+$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+Set-StrictMode -Version 2
+$clock=[Diagnostics.Stopwatch]::StartNew()
+function Write-ProprMilestone([string]$name){
+  $elapsed=$clock.ElapsedMilliseconds
+  $bucket=if($elapsed-lt 5000){'under-5s'}elseif($elapsed-lt 15000){'5-to-15s'}elseif($elapsed-lt 30000){'15-to-30s'}elseif($elapsed-lt 45000){'30-to-45s'}elseif($elapsed-lt 60000){'45-to-60s'}else{'at-least-60s'}
+  [Console]::Out.WriteLine(('PROPR_NATIVE_PROBE_V1|{0}|{1}' -f $name,$bucket))
+  [Console]::Out.Flush()
+}
+$stage=91
 try {
-  $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName('ProprNestedJobAssumptionAssembly')),[Reflection.Emit.AssemblyBuilderAccess]::Run)
-  $module=$assembly.DefineDynamicModule('ProprNestedJobAssumptionModule');$builder=$module.DefineType('ProprNestedJobAssumption',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
-  function Add-NativeMethod($name,$library,$returnType,[Type[]]$parameters,$convention){$method=$builder.DefinePInvokeMethod($name,$library,[Reflection.MethodAttributes]'Public,Static,PinvokeImpl',[Reflection.CallingConventions]::Standard,$returnType,$parameters,$convention,[Runtime.InteropServices.CharSet]::Unicode);$method.SetImplementationFlags($method.GetMethodImplementationFlags()-bor [Reflection.MethodImplAttributes]::PreserveSig)}
-  $winapi=[Runtime.InteropServices.CallingConvention]::Winapi;$intptr=[IntPtr]
-  Add-NativeMethod 'CreateJobObject' 'kernel32.dll' $intptr @($intptr,[string]) $winapi
-  Add-NativeMethod 'SetInformationJobObject' 'kernel32.dll' ([bool]) @($intptr,[int],$intptr,[uint32]) $winapi
-  Add-NativeMethod 'AssignProcessToJobObject' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
-  Add-NativeMethod 'GetCurrentProcess' 'kernel32.dll' $intptr @() $winapi
+  if($PSVersionTable.PSVersion.Major-ne 5-or $PSVersionTable.PSVersion.Minor-ne 1-or
+     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){exit $stage}
+  Write-ProprMilestone 'entry-ps51-desktop-x64'
+  $stage=92
+  $baseline='{"version":1,"baseline":"constant"}'
+  if($baseline-ne '{"version":1,"baseline":"constant"}'){exit $stage}
+  Write-ProprMilestone 'constant-json'
+  $stage=93
+  $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly(
+    (New-Object Reflection.AssemblyName('ProprNativeTimingProbeAssembly')),
+    [Reflection.Emit.AssemblyBuilderAccess]::Run)
+  $module=$assembly.DefineDynamicModule('ProprNativeTimingProbeModule')
+  $builder=$module.DefineType('ProprNativeTimingProbe',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
+  function Add-ProprNativeMethod($name,$returnType,[Type[]]$parameters){
+    $method=$builder.DefinePInvokeMethod($name,'kernel32.dll',
+      [Reflection.MethodAttributes]'Public,Static,PinvokeImpl',[Reflection.CallingConventions]::Standard,
+      $returnType,$parameters,[Runtime.InteropServices.CallingConvention]::Winapi,[Runtime.InteropServices.CharSet]::Unicode)
+    $method.SetImplementationFlags($method.GetMethodImplementationFlags()-bor [Reflection.MethodImplAttributes]::PreserveSig)
+  }
+  $intptr=[IntPtr]
+  Add-ProprNativeMethod 'GetCurrentProcessId' ([uint32]) @()
+  Add-ProprNativeMethod 'GetStdHandle' $intptr @([int])
+  Add-ProprNativeMethod 'GetFileInformationByHandle' ([bool]) @($intptr,$intptr)
   $null=$builder.CreateType()
-  $job=[ProprNestedJobAssumption]::CreateJobObject([IntPtr]::Zero,$null);if($job-eq [IntPtr]::Zero){exit 83}
-  $jobInfo=[Runtime.InteropServices.Marshal]::AllocHGlobal(144);for($offset=0;$offset-lt 144;$offset++){[Runtime.InteropServices.Marshal]::WriteByte($jobInfo,$offset,0)}
-  [Runtime.InteropServices.Marshal]::WriteInt32($jobInfo,16,0x2000)
-  if(-not [ProprNestedJobAssumption]::SetInformationJobObject($job,9,$jobInfo,144)){exit 83}
-  if(-not [ProprNestedJobAssumption]::AssignProcessToJobObject($job,[ProprNestedJobAssumption]::GetCurrentProcess())){exit 83}
+  Write-ProprMilestone 'reflection-emit'
+  $stage=94
+  if([ProprNativeTimingProbe]::GetCurrentProcessId()-eq 0){exit $stage}
+  Write-ProprMilestone 'harmless-win32'
+  $stage=95
+  $handle=[ProprNativeTimingProbe]::GetStdHandle(-10)
+  if($handle-eq [IntPtr](-1)-or $handle-eq [IntPtr](-2)-or $handle-eq [IntPtr]::Zero){exit $stage}
+  $info=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
+  if(-not [ProprNativeTimingProbe]::GetFileInformationByHandle($handle,$info)){exit $stage}
+  Write-ProprMilestone 'standard-handle-identity'
   exit 0
-}catch{exit 83}
+}catch{exit $stage}
 `;
 
 interface HeldExecutable {
@@ -228,13 +245,6 @@ interface HeldExecutable {
   readonly fd: number;
   readonly device: string;
   readonly file: string;
-}
-
-export interface WindowsHostedAssumptionProof {
-  readonly version: 1;
-  readonly extraStdio: "usable" | "unusable" | "timeout";
-  readonly alreadyContained: boolean | "failed" | "timeout";
-  readonly nestedJob: "succeeded" | "failed" | "timeout";
 }
 
 function sameWindowsPath(left: string, right: string): boolean {
@@ -357,12 +367,18 @@ function inspectionSource(target: WindowsAuthorityTarget, index: number): string
     .replace("__PROPR_AUTHORITY_KIND__", target.kind);
 }
 
+/** The fixed inspector receives no caller-controlled executable/module/profile/temp authority. */
+export function windowsPowerShellEnvironment(systemRoot: string): Readonly<Record<string, string>> {
+  if (!ordinaryDosPath(systemRoot)) throw stageError("resolver:env");
+  return Object.freeze({ SystemRoot: systemRoot, WINDIR: systemRoot });
+}
+
 function spawnPowerShell(
   executable: HeldExecutable,
   source: string,
   stdin: "ignore" | number,
-  extraFd?: number,
   timeout = WINDOWS_INSPECTION_TIMEOUT_MS,
+  maxBuffer = WINDOWS_INSPECTION_MAX_BYTES,
 ) {
   const encoded = Buffer.from(source, "utf16le").toString("base64");
   if (encoded.length > 28_000) throw stageError("spawn:create");
@@ -374,82 +390,70 @@ function spawnPowerShell(
       windowsHide: true,
       encoding: "buffer",
       cwd: win32.dirname(executable.path),
-      env: { SystemRoot: executable.systemRoot, WINDIR: executable.systemRoot },
+      env: windowsPowerShellEnvironment(executable.systemRoot),
       timeout,
       killSignal: "SIGKILL",
-      maxBuffer: WINDOWS_INSPECTION_MAX_BYTES,
-      stdio: extraFd === undefined ? [stdin, "pipe", "pipe"] : [stdin, "pipe", "pipe", extraFd],
+      maxBuffer,
+      stdio: [stdin, "pipe", "pipe"],
     });
   } catch { throw stageError("spawn:create"); }
 }
 
-interface HostedProbeProcessResult {
-  readonly error?: Error;
-  readonly signal: NodeJS.Signals | null;
-  readonly status: number | null;
-  readonly stdout?: Buffer | string | null;
-  readonly stderr?: Buffer | string | null;
+export interface WindowsNativeProbeRecord {
+  readonly milestone: WindowsNativeProbeMilestone;
+  readonly timingBucket: WindowsNativeTimingBucket;
 }
 
-function byteLength(value: Buffer | string | null | undefined): number {
-  return typeof value === "string" ? Buffer.byteLength(value, "utf8") : (value?.byteLength ?? 0);
+export interface WindowsNativeTimingProof {
+  readonly version: 1;
+  readonly outcome: "complete" | "timeout";
+  readonly lastMilestone: WindowsNativeProbeMilestone | "none";
+  readonly timingBucket: WindowsNativeTimingBucket;
+  /** Present only after complete strict-prefix validation; timeout diagnostics retain only the last token. */
+  readonly milestones: readonly WindowsNativeProbeRecord[];
 }
 
-function hostedProbeDisposition(result: HostedProbeProcessResult): "complete" | "failed" | "timeout" {
-  if (result.error) {
-    const code = (result.error as NodeJS.ErrnoException).code;
-    if (code === "ETIMEDOUT") return "timeout";
-    if (code === "ENOBUFS") return "failed";
-    throw stageError("spawn:error");
-  }
-  if (result.signal || result.status !== 0 || byteLength(result.stderr) !== 0) return "failed";
-  return "complete";
+export function windowsNativeTimingBucket(elapsedMs: number): WindowsNativeTimingBucket {
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) throw stageError("probe:output");
+  if (elapsedMs < 5_000) return "under-5s";
+  if (elapsedMs < 15_000) return "5-to-15s";
+  if (elapsedMs < 30_000) return "15-to-30s";
+  if (elapsedMs < 45_000) return "30-to-45s";
+  if (elapsedMs < 60_000) return "45-to-60s";
+  return "at-least-60s";
 }
 
-function hostedProbeDocument(result: HostedProbeProcessResult): Record<string, unknown> | null {
-  const bytes = typeof result.stdout === "string"
-    ? Buffer.from(result.stdout, "utf8")
-    : (result.stdout ?? Buffer.alloc(0));
-  if (bytes.byteLength === 0 || bytes.byteLength > WINDOWS_INSPECTION_MAX_BYTES) return null;
+export function parseWindowsNativeProbeOutput(
+  value: Buffer | string | null | undefined,
+  allowTruncatedFinalToken = false,
+): readonly WindowsNativeProbeRecord[] {
+  const bytes = typeof value === "string"
+    ? Buffer.from(value, "utf8")
+    : (value ?? Buffer.alloc(0));
+  if (bytes.byteLength > WINDOWS_NATIVE_PROBE_MAX_BYTES) throw stageError("probe:output");
   let text: string;
-  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return null; }
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (JSON.stringify(parsed) !== text || !parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
-  } catch { return null; }
-}
-
-export function interpretWindowsHostedAssumptionResults(
-  extraStdioResult: HostedProbeProcessResult,
-  containmentResult: HostedProbeProcessResult,
-  nestedJobResult: HostedProbeProcessResult,
-): WindowsHostedAssumptionProof {
-  const extraDisposition = hostedProbeDisposition(extraStdioResult);
-  const containmentDisposition = hostedProbeDisposition(containmentResult);
-  const nestedDisposition = hostedProbeDisposition(nestedJobResult);
-  const extraDocument = extraDisposition === "complete" ? hostedProbeDocument(extraStdioResult) : null;
-  const containmentDocument = containmentDisposition === "complete" ? hostedProbeDocument(containmentResult) : null;
-  const extraStdio = extraDisposition === "timeout"
-    ? "timeout"
-    : (extraDocument
-      && Object.keys(extraDocument).sort().join(",") === "extraStdio,version"
-      && extraDocument.version === 1
-      && (extraDocument.extraStdio === "usable" || extraDocument.extraStdio === "unusable")
-      ? extraDocument.extraStdio
-      : "unusable");
-  const alreadyContained = containmentDisposition === "timeout"
-    ? "timeout"
-    : (containmentDocument
-      && Object.keys(containmentDocument).sort().join(",") === "alreadyContained,version"
-      && containmentDocument.version === 1
-      && typeof containmentDocument.alreadyContained === "boolean"
-      ? containmentDocument.alreadyContained
-      : "failed");
-  const nestedJob = nestedDisposition === "timeout"
-    ? "timeout"
-    : (nestedDisposition === "complete" && byteLength(nestedJobResult.stdout) === 0 ? "succeeded" : "failed");
-  return { version: 1, extraStdio, alreadyContained, nestedJob };
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {
+    throw stageError("probe:output");
+  }
+  if (text.length === 0) return [];
+  const lines = text.split(/\r?\n/);
+  if (lines.at(-1) === "") lines.pop();
+  else if (allowTruncatedFinalToken) lines.pop();
+  else throw stageError("probe:output");
+  if (lines.length > WINDOWS_NATIVE_PROBE_MILESTONES.length) throw stageError("probe:output");
+  const records: WindowsNativeProbeRecord[] = [];
+  let priorBucket = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const milestone = WINDOWS_NATIVE_PROBE_MILESTONES[index];
+    const prefix = `PROPR_NATIVE_PROBE_V1|${milestone}|`;
+    if (!lines[index].startsWith(prefix)) throw stageError("probe:output");
+    const timingBucket = lines[index].slice(prefix.length);
+    const bucketIndex = (WINDOWS_NATIVE_TIMING_BUCKETS as readonly string[]).indexOf(timingBucket);
+    if (bucketIndex < priorBucket || bucketIndex < 0) throw stageError("probe:output");
+    priorBucket = bucketIndex;
+    records.push({ milestone, timingBucket: timingBucket as WindowsNativeTimingBucket });
+  }
+  return records;
 }
 
 function assertSpawnSuccess(result: ReturnType<typeof spawnSync>): void {
@@ -465,6 +469,13 @@ function assertSpawnSuccess(result: ReturnType<typeof spawnSync>): void {
   if (stderrBytes !== 0) throw stageError("spawn:stderr");
 }
 
+export function windowsInspectionTimeoutForElapsed(elapsedMs: number): number {
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) throw stageError("spawn:cumulative-timeout");
+  const remaining = WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS - Math.floor(elapsedMs);
+  if (remaining <= 0) throw stageError("spawn:cumulative-timeout");
+  return Math.min(WINDOWS_INSPECTION_TIMEOUT_MS, remaining);
+}
+
 export function runWindowsReadOnlyInspection(
   targets: readonly WindowsAuthorityTarget[],
 ): readonly WindowsAuthorityInspection[] {
@@ -474,10 +485,12 @@ export function runWindowsReadOnlyInspection(
   const executable = resolveWindowsPowerShell();
   const inspections: WindowsAuthorityInspection[] = [];
   let totalOutputBytes = 0;
+  const inspectionStarted = performance.now();
   try {
     for (let index = 0; index < targets.length; index += 1) {
       const target = targets[index];
-      const result = spawnPowerShell(executable, inspectionSource(target, index), target.pinnedFd);
+      const timeout = windowsInspectionTimeoutForElapsed(performance.now() - inspectionStarted);
+      const result = spawnPowerShell(executable, inspectionSource(target, index), target.pinnedFd, timeout);
       assertSpawnSuccess(result);
       totalOutputBytes += typeof result.stdout === "string"
         ? Buffer.byteLength(result.stdout, "utf8")
@@ -510,22 +523,62 @@ export function runWindowsReadOnlyInspection(
   }
 }
 
-export function runWindowsHostedAssumptionProbe(targetFd: number): WindowsHostedAssumptionProof {
+function probeFailureStage(status: number | null): WindowsNativeStageCode {
+  const stages: Readonly<Record<number, WindowsNativeStageCode>> = {
+    91: "probe:entry",
+    92: "probe:baseline",
+    93: "probe:reflection-emit",
+    94: "probe:win32",
+    95: "probe:standard-handle",
+  };
+  return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
+}
+
+export function runWindowsNativeTimingProbe(targetFd: number): WindowsNativeTimingProof {
   const executable = resolveWindowsPowerShell();
   try {
-    const extraStdioResult = spawnPowerShell(
-      executable, WINDOWS_EXTRA_STDIO_ASSUMPTION_SOURCE, "ignore", targetFd,
-      WINDOWS_HOSTED_ASSUMPTION_TIMEOUT_MS,
+    const started = performance.now();
+    const result = spawnPowerShell(
+      executable,
+      WINDOWS_NATIVE_TIMING_PROBE_SOURCE,
+      targetFd,
+      WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS,
+      WINDOWS_NATIVE_PROBE_MAX_BYTES,
     );
-    const containmentResult = spawnPowerShell(
-      executable, WINDOWS_JOB_CONTAINMENT_ASSUMPTION_SOURCE, "ignore", undefined,
-      WINDOWS_HOSTED_ASSUMPTION_TIMEOUT_MS,
-    );
-    const nestedJobResult = spawnPowerShell(
-      executable, WINDOWS_NESTED_JOB_ASSUMPTION_SOURCE, "ignore", undefined,
-      WINDOWS_HOSTED_ASSUMPTION_TIMEOUT_MS,
-    );
-    const proof = interpretWindowsHostedAssumptionResults(extraStdioResult, containmentResult, nestedJobResult);
+    const elapsed = performance.now() - started;
+    const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+    const records = parseWindowsNativeProbeOutput(result.stdout, timedOut);
+    const stderrBytes = typeof result.stderr === "string"
+      ? Buffer.byteLength(result.stderr, "utf8")
+      : (result.stderr?.byteLength ?? 0);
+    if (stderrBytes !== 0) throw stageError("spawn:stderr");
+    if (timedOut) {
+      const proof: WindowsNativeTimingProof = {
+        version: 1,
+        outcome: "timeout",
+        lastMilestone: records.at(-1)?.milestone ?? "none",
+        timingBucket: windowsNativeTimingBucket(elapsed),
+        milestones: [],
+      };
+      revalidateWindowsPowerShell(executable);
+      return proof;
+    }
+    if (result.error) throw stageError("spawn:error");
+    if (result.signal) throw stageError("spawn:status");
+    if (result.status !== 0) throw stageError(probeFailureStage(result.status));
+    if (
+      records.length !== WINDOWS_NATIVE_PROBE_MILESTONES.length
+      || records.some((record, index) => record.milestone !== WINDOWS_NATIVE_PROBE_MILESTONES[index])
+    ) throw stageError("probe:output");
+    const proof: WindowsNativeTimingProof = {
+      version: 1,
+      outcome: "complete",
+      lastMilestone: "standard-handle-identity",
+      // Script buckets separate the in-process stages; this parent bucket also
+      // includes executable startup before the first token can be written.
+      timingBucket: windowsNativeTimingBucket(elapsed),
+      milestones: records,
+    };
     revalidateWindowsPowerShell(executable);
     return proof;
   } finally {

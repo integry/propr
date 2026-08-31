@@ -3,8 +3,13 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 import {
-  interpretWindowsHostedAssumptionResults,
+  parseWindowsNativeProbeOutput,
+  WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS,
+  WINDOWS_INSPECTION_TIMEOUT_MS,
+  WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS,
+  windowsInspectionTimeoutForElapsed,
   WindowsNativeStageError,
+  windowsNativeTimingBucket,
 } from '../packages/cli/src/connectWindowsAuthority.js';
 
 const harness = readFileSync('scripts/verify-windows-standard-user-connect.mjs', 'utf8');
@@ -17,16 +22,14 @@ function diagnosticDefinitions(): {
   statusKindAllowlist: string[];
   reasonCodeAllowlist: string[];
   nativeStageAllowlist: string[];
+  probeMilestoneAllowlist: string[];
+  probeTimingAllowlist: string[];
   createFailureDiagnostic: (
     scenario: string,
     stage: string,
     failureStatus: { status?: unknown; reasonCodes?: unknown } | null,
     nativeStage: string | null,
-    assumptions: {
-      extraStdio: string | null;
-      alreadyContained: boolean | 'failed' | 'timeout' | null;
-      nestedJob: string | null;
-    },
+    probe: { milestone: string | null; timing: string | null },
   ) => Record<string, unknown>;
 } {
   const start = harness.indexOf('const scenarioAllowlist =');
@@ -39,6 +42,8 @@ function diagnosticDefinitions(): {
     statusKindAllowlist,
     reasonCodeAllowlist,
     nativeStageAllowlist,
+    probeMilestoneAllowlist,
+    probeTimingAllowlist,
     createFailureDiagnostic,
   })`) as ReturnType<typeof diagnosticDefinitions>;
 }
@@ -101,7 +106,7 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'authority-missing-system-root', 'authority-mismatched-system-root', 'authority-untrusted-system-root',
   ]);
   assert.deepEqual([...definitions.assertionStageAllowlist], [
-    'native-assumptions', 'authority-probe', 'scaffold', 'identity-assertion', 'config-init', 'config-save',
+    'native-timing', 'authority-probe', 'scaffold', 'identity-assertion', 'config-init', 'config-save',
     'config-assertion',
     'write-env', 'spawn', 'signal', 'exit', 'bounds', 'schema', 'status', 'endpoint',
     'identity', 'reasons', 'api-ready', 'restart', 'stderr', 'sentinel', 'api-spawn',
@@ -119,10 +124,18 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
   ]);
   assert.deepEqual([...definitions.nativeStageAllowlist], [
     'resolver:env', 'resolver:canonical', 'resolver:global-open', 'resolver:global-id',
-    'spawn:create', 'spawn:error', 'spawn:timeout', 'spawn:status', 'spawn:stderr',
+    'spawn:create', 'spawn:error', 'spawn:timeout', 'spawn:cumulative-timeout', 'spawn:status', 'spawn:stderr',
+    'probe:entry', 'probe:baseline', 'probe:reflection-emit', 'probe:win32', 'probe:standard-handle', 'probe:output',
     'broker:ps-version', 'broker:job', 'broker:fd', 'broker:index-info',
     'broker:security-info', 'broker:acl', 'broker:json',
     'parent:utf8', 'parent:json-shape', 'parent:descriptor-bind', 'parent:post-bind',
+  ]);
+  assert.deepEqual([...definitions.probeMilestoneAllowlist], [
+    'none', 'entry-ps51-desktop-x64', 'constant-json', 'reflection-emit', 'harmless-win32',
+    'standard-handle-identity',
+  ]);
+  assert.deepEqual([...definitions.probeTimingAllowlist], [
+    'under-5s', '5-to-15s', '15-to-30s', '30-to-45s', '45-to-60s', 'at-least-60s',
   ]);
   const assignedStages = [...harness.matchAll(/currentStage = "([^"]+)";/g)]
     .map((match) => match[1]);
@@ -142,11 +155,11 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     endpoint: 'endpoint-SENTINEL',
     secret: 'secret-SENTINEL',
   } as { status: string; reasonCodes: string[] }, 'broker:fd', {
-    extraStdio: 'unusable', alreadyContained: true, nestedJob: 'failed',
+    milestone: 'standard-handle-identity', timing: '15-to-30s',
   });
   assert.deepEqual(Object.keys(diagnostic), [
     'scenario', 'stage', 'nativeStage', 'status', 'reasonCodes',
-    'extraStdio', 'alreadyContained', 'nestedJob',
+    'probeMilestone', 'probeTiming',
   ]);
   assert.deepEqual(JSON.parse(JSON.stringify(diagnostic)), {
     scenario: 'ready',
@@ -154,24 +167,22 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     nativeStage: 'broker:fd',
     status: 'ready',
     reasonCodes: ['ACL_DIAGNOSTIC_UNAVAILABLE'],
-    extraStdio: 'unusable',
-    alreadyContained: true,
-    nestedJob: 'failed',
+    probeMilestone: 'standard-handle-identity',
+    probeTiming: '15-to-30s',
   });
   assert.equal(JSON.stringify(diagnostic).includes('SENTINEL'), false);
 
   assert.deepEqual(JSON.parse(JSON.stringify(definitions.createFailureDiagnostic(
-    'ready', 'native-assumptions', null, null,
-    { extraStdio: 'timeout', alreadyContained: 'failed', nestedJob: 'timeout' },
+    'ready', 'native-timing', null, 'spawn:timeout',
+    { milestone: 'reflection-emit', timing: 'at-least-60s' },
   ))), {
     scenario: 'ready',
-    stage: 'native-assumptions',
-    nativeStage: null,
+    stage: 'native-timing',
+    nativeStage: 'spawn:timeout',
     status: null,
     reasonCodes: [],
-    extraStdio: 'timeout',
-    alreadyContained: 'failed',
-    nestedJob: 'timeout',
+    probeMilestone: 'reflection-emit',
+    probeTiming: 'at-least-60s',
   });
 
   const rejected = definitions.createFailureDiagnostic(
@@ -179,7 +190,7 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'raw-output-SENTINEL',
     { status: 'secret-status-SENTINEL', reasonCodes: ['secret-reason-SENTINEL'] },
     'raw-native-stage-SENTINEL',
-    { extraStdio: 'secret-SENTINEL', alreadyContained: 'secret-SENTINEL' as unknown as boolean, nestedJob: 'secret-SENTINEL' },
+    { milestone: 'secret-SENTINEL', timing: '12345ms-SENTINEL' },
   );
   assert.deepEqual(JSON.parse(JSON.stringify(rejected)), {
     scenario: 'ready',
@@ -187,99 +198,80 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     nativeStage: null,
     status: null,
     reasonCodes: [],
-    extraStdio: null,
-    alreadyContained: null,
-    nestedJob: null,
+    probeMilestone: null,
+    probeTiming: null,
   });
 
   const catchStart = harness.lastIndexOf('} catch {');
   const catchEnd = harness.indexOf('} finally {', catchStart);
   const catchBody = harness.slice(catchStart, catchEnd);
-  assert.match(catchBody, /createFailureDiagnostic\(\s*currentScenario, currentStage, failureStatus, currentNativeStage, hostedAssumptions,/);
+  assert.match(catchBody, /createFailureDiagnostic\(\s*currentScenario, currentStage, failureStatus, currentNativeStage, nativeProbe,/);
   assert.match(catchBody, /JSON\.stringify\(\s*diagnostic,\s*\)/);
   assert.doesNotMatch(catchBody, /(?:result|api|error)\.(?:stdout|stderr|message|path|argv|env|config)/i);
 });
 
-test('the hosted proof measures both rejected assumptions and production uses a standard handle', () => {
-  assert.match(windowsAuthority, /'_get_osfhandle' 'msvcrt\.dll'/);
-  assert.match(windowsAuthority, /_get_osfhandle\(3\)/);
-  assert.match(windowsAuthority, /AssignProcessToJobObject/);
-  assert.match(harness, /runWindowsHostedAssumptionProbe\(assumptionFd\)/);
-  assert.match(harness, /extra-stdio=\$\{hostedAssumptions\.extraStdio\}/);
-  assert.match(harness, /nested-job=\$\{hostedAssumptions\.nestedJob\}/);
+test('the staged hosted probe and production inspector both use the inherited standard handle', () => {
+  assert.doesNotMatch(windowsAuthority, /_get_osfhandle|AssignProcessToJobObject|CreateJobObject/);
+  assert.match(harness, /runWindowsNativeTimingProbe\(probeFd\)/);
+  assert.match(harness, /native-timing=\$\{nativeProbe\.evidence\}/);
+  assert.match(harness, /;total:\$\{nativeProbe\.timing\}/);
   assert.match(harness, /ready=standard-handle-passed/);
 
   const productionSourceStart = windowsAuthority.indexOf('export const WINDOWS_INSPECTION_SOURCE');
-  const productionSourceEnd = windowsAuthority.indexOf('const WINDOWS_EXTRA_STDIO_ASSUMPTION_SOURCE', productionSourceStart);
+  const productionSourceEnd = windowsAuthority.indexOf('export const WINDOWS_NATIVE_PROBE_MILESTONES', productionSourceStart);
   const productionSource = windowsAuthority.slice(productionSourceStart, productionSourceEnd);
   assert.match(productionSource, /GetStdHandle\(-10\)/);
   assert.doesNotMatch(productionSource, /_get_osfhandle|AssignProcessToJobObject|CreateJobObject|Start-Process|CreateProcess/);
-  assert.match(windowsAuthority, /stdio: extraFd === undefined \? \[stdin, "pipe", "pipe"\]/);
+  assert.match(windowsAuthority, /stdio: \[stdin, "pipe", "pipe"\]/);
   assert.match(windowsAuthority, /WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false/);
+  assert.match(windowsAuthority, /WINDOWS_INSPECTOR_WRITES_FILESYSTEM = false/);
 });
 
-test('hosted assumptions isolate fd3, containment, and sacrificial nested-job outcomes', () => {
-  const result = (
-    status: number | null,
-    stdout = '',
-    error?: NodeJS.ErrnoException,
-  ) => ({ status, signal: null, error, stdout: Buffer.from(stdout), stderr: Buffer.alloc(0) });
-  const timeout = () => result(null, '', Object.assign(new Error('redacted'), { code: 'ETIMEDOUT' }));
-
-  assert.deepEqual(interpretWindowsHostedAssumptionResults(
-    timeout(),
-    result(0, '{"version":1,"alreadyContained":false}'),
-    result(0),
-  ), { version: 1, extraStdio: 'timeout', alreadyContained: false, nestedJob: 'succeeded' });
-  assert.deepEqual(interpretWindowsHostedAssumptionResults(
-    result(81),
-    timeout(),
-    result(83),
-  ), { version: 1, extraStdio: 'unusable', alreadyContained: 'timeout', nestedJob: 'failed' });
-  assert.deepEqual(interpretWindowsHostedAssumptionResults(
-    result(0, '{"version":1,"extraStdio":"usable"}'),
-    result(82),
-    timeout(),
-  ), { version: 1, extraStdio: 'usable', alreadyContained: 'failed', nestedJob: 'timeout' });
-
-  assert.match(windowsAuthority, /WINDOWS_HOSTED_ASSUMPTION_TIMEOUT_MS = 15_000/);
-  assert.match(windowsAuthority, /timeout = WINDOWS_INSPECTION_TIMEOUT_MS/);
-  assert.match(windowsAuthority, /WINDOWS_EXTRA_STDIO_ASSUMPTION_SOURCE/);
-  assert.match(windowsAuthority, /WINDOWS_JOB_CONTAINMENT_ASSUMPTION_SOURCE/);
-  assert.match(windowsAuthority, /WINDOWS_NESTED_JOB_ASSUMPTION_SOURCE/);
-  const nestedSourceStart = windowsAuthority.indexOf('const WINDOWS_NESTED_JOB_ASSUMPTION_SOURCE');
-  const nestedSourceEnd = windowsAuthority.indexOf('\n`;\n', nestedSourceStart);
-  const nestedSource = windowsAuthority.slice(nestedSourceStart, nestedSourceEnd);
-  assert.match(nestedSource, /AssignProcessToJobObject/);
-  assert.doesNotMatch(nestedSource, /ConvertTo-Json|Console\]::Out/);
-});
-
-test('legacy probe outcomes continue to the production standard-handle proof while infrastructure fails closed', () => {
-  const result = (error?: NodeJS.ErrnoException) => ({
-    status: error ? null : 0,
-    signal: null,
-    error,
-    stdout: Buffer.from('{"version":1,"extraStdio":"unusable"}'),
-    stderr: Buffer.alloc(0),
-  });
+test('the staged probe accepts only ordered milestone tokens and coarse timing buckets', () => {
+  const prefix = [
+    'PROPR_NATIVE_PROBE_V1|entry-ps51-desktop-x64|under-5s',
+    'PROPR_NATIVE_PROBE_V1|constant-json|5-to-15s',
+    'PROPR_NATIVE_PROBE_V1|reflection-emit|15-to-30s',
+    '',
+  ].join('\r\n');
+  assert.deepEqual(parseWindowsNativeProbeOutput(prefix).map(({ milestone }) => milestone), [
+    'entry-ps51-desktop-x64', 'constant-json', 'reflection-emit',
+  ]);
+  assert.deepEqual([4_999, 5_000, 15_000, 30_000, 45_000, 60_000].map(windowsNativeTimingBucket), [
+    'under-5s', '5-to-15s', '15-to-30s', '30-to-45s', '45-to-60s', 'at-least-60s',
+  ]);
   assert.throws(
-    () => interpretWindowsHostedAssumptionResults(
-      result(Object.assign(new Error('redacted'), { code: 'ENOENT' })),
-      { ...result(), stdout: Buffer.from('{"version":1,"alreadyContained":true}') },
-      { ...result(), stdout: Buffer.alloc(0) },
-    ),
-    (error) => error instanceof WindowsNativeStageError && error.stage === 'spawn:error',
+    () => parseWindowsNativeProbeOutput('private-path-SENTINEL raw-exception-SENTINEL\r\n'),
+    (error) => error instanceof WindowsNativeStageError
+      && error.stage === 'probe:output'
+      && !error.message.includes('SENTINEL'),
   );
+  assert.match(windowsAuthority, /\$baseline='\{"version":1,"baseline":"constant"\}'/);
+  assert.match(windowsAuthority, /DefineDynamicAssembly/);
+  assert.match(windowsAuthority, /GetCurrentProcessId/);
+  assert.match(windowsAuthority, /GetStdHandle\(-10\)/);
+  assert.match(windowsAuthority, /GetFileInformationByHandle/);
+});
 
-  const assumptionCall = harness.indexOf('runWindowsHostedAssumptionProbe(assumptionFd)');
-  const productionMatrix = harness.indexOf('for (const scenario of cases)', assumptionCall);
+test('the diagnostic allowance precedes a cumulatively bounded production standard-handle proof', () => {
+  assert.equal(WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS, 60_000);
+  assert.equal(WINDOWS_INSPECTION_TIMEOUT_MS, 30_000);
+  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 60_000);
+  assert.equal(windowsInspectionTimeoutForElapsed(45_000), 15_000);
+  assert.throws(
+    () => windowsInspectionTimeoutForElapsed(60_000),
+    (error) => error instanceof WindowsNativeStageError && error.stage === 'spawn:cumulative-timeout',
+  );
+  const probeCall = harness.indexOf('runWindowsNativeTimingProbe(probeFd)');
+  const productionMatrix = harness.indexOf('for (const scenario of cases)', probeCall);
   const productionSpawn = harness.indexOf('const result = spawnSync(process.execPath', productionMatrix);
-  assert.ok(assumptionCall < productionMatrix && productionMatrix < productionSpawn);
-  const probeStart = windowsAuthority.indexOf('export function runWindowsHostedAssumptionProbe');
+  assert.ok(probeCall < productionMatrix && productionMatrix < productionSpawn);
+  const probeStart = windowsAuthority.indexOf('export function runWindowsNativeTimingProbe');
   const probeEnd = windowsAuthority.indexOf('\n}\n\nexport function windowsInspectionEntryKind', probeStart);
   const probe = windowsAuthority.slice(probeStart, probeEnd);
   assert.match(probe, /const executable = resolveWindowsPowerShell\(\);/);
   assert.doesNotMatch(probe, /catch\s*\{/);
+  assert.doesNotMatch(harness, /extraStdio|alreadyContained|nestedJob|runWindowsHostedAssumptionProbe/);
 });
 
 test('the hostile path ABA remains replaced through validation and is rejected as INVALID_ROOT', () => {

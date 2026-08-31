@@ -56,7 +56,7 @@ const scenarioAllowlist = Object.freeze([
   "authority-missing-system-root", "authority-mismatched-system-root", "authority-untrusted-system-root",
 ]);
 const assertionStageAllowlist = Object.freeze([
-  "native-assumptions", "authority-probe", "scaffold", "identity-assertion", "config-init", "config-save",
+  "native-timing", "authority-probe", "scaffold", "identity-assertion", "config-init", "config-save",
   "config-assertion",
   "write-env", "spawn", "signal", "exit", "bounds", "schema", "status", "endpoint",
   "identity", "reasons", "api-ready", "restart", "stderr", "sentinel", "api-spawn",
@@ -74,10 +74,18 @@ const reasonCodeAllowlist = Object.freeze([
 ]);
 const nativeStageAllowlist = Object.freeze([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
-  "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr",
+  "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
+  "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:index-info",
   "broker:security-info", "broker:acl", "broker:json",
   "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
+]);
+const probeMilestoneAllowlist = Object.freeze([
+  "none", "entry-ps51-desktop-x64", "constant-json", "reflection-emit", "harmless-win32",
+  "standard-handle-identity",
+]);
+const probeTimingAllowlist = Object.freeze([
+  "under-5s", "5-to-15s", "15-to-30s", "30-to-45s", "45-to-60s", "at-least-60s",
 ]);
 const scenarioNames = new Set(scenarioAllowlist);
 const assertionStages = new Set(assertionStageAllowlist);
@@ -85,6 +93,9 @@ const statusKinds = new Set(statusKindAllowlist);
 const diagnosticStatuses = new Set([null, ...statusKindAllowlist]);
 const reasonCodes = new Set(reasonCodeAllowlist);
 const nativeStages = new Set(nativeStageAllowlist);
+const probeMilestones = new Set(probeMilestoneAllowlist);
+const probeTimings = new Set(probeTimingAllowlist);
+const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = 75_000;
 
 function parseBoundedFailureStatus(stdout) {
   if (typeof stdout !== "string" || stdout.length === 0 || Buffer.byteLength(stdout, "utf8") >= 2048) return null;
@@ -102,29 +113,24 @@ function parseBoundedFailureStatus(stdout) {
   }
 }
 
-function createFailureDiagnostic(scenario, stage, failureStatus, nativeStage, assumptions) {
+function createFailureDiagnostic(scenario, stage, failureStatus, nativeStage, probe) {
   const status = failureStatus?.status ?? null;
   const codes = failureStatus?.reasonCodes ?? [];
   if (!scenarioNames.has(scenario) || !assertionStages.has(stage) || !diagnosticStatuses.has(status)
     || (nativeStage !== null && !nativeStages.has(nativeStage))
-    || (assumptions.extraStdio !== null && assumptions.extraStdio !== "usable"
-      && assumptions.extraStdio !== "unusable" && assumptions.extraStdio !== "timeout")
-    || (assumptions.nestedJob !== null && assumptions.nestedJob !== "succeeded"
-      && assumptions.nestedJob !== "failed" && assumptions.nestedJob !== "timeout")
-    || (assumptions.alreadyContained !== null && typeof assumptions.alreadyContained !== "boolean"
-      && assumptions.alreadyContained !== "failed" && assumptions.alreadyContained !== "timeout")
+    || (probe.milestone !== null && !probeMilestones.has(probe.milestone))
+    || (probe.timing !== null && !probeTimings.has(probe.timing))
     || !Array.isArray(codes) || codes.length > reasonCodes.size
     || new Set(codes).size !== codes.length || codes.some((code) => !reasonCodes.has(code))) {
     return {
       scenario: "ready", stage: "write-env", nativeStage: null, status: null, reasonCodes: [],
-      extraStdio: null, alreadyContained: null, nestedJob: null,
+      probeMilestone: null, probeTiming: null,
     };
   }
   return {
     scenario, stage, nativeStage, status, reasonCodes: [...codes],
-    extraStdio: assumptions.extraStdio,
-    alreadyContained: assumptions.alreadyContained,
-    nestedJob: assumptions.nestedJob,
+    probeMilestone: probe.milestone,
+    probeTiming: probe.timing,
   };
 }
 
@@ -177,25 +183,38 @@ let currentScenario = "ready";
 let currentStage = "write-env";
 let failureStatus = null;
 let currentNativeStage = null;
-const hostedAssumptions = { extraStdio: null, alreadyContained: null, nestedJob: null };
+const nativeProbe = { milestone: null, timing: null, evidence: null };
 try {
   assert.ok(expectedUser && actualUser.toLowerCase() === expectedUser.toLowerCase(), "proof did not run as the limited user");
-  currentStage = "native-assumptions";
+  currentStage = "native-timing";
   const nativeAuthority = await import(windowsAuthorityModule);
-  const assumptionFd = openSync(root, "r");
+  const probeFd = openSync(root, "r");
   try {
     try {
-      const proof = nativeAuthority.runWindowsHostedAssumptionProbe(assumptionFd);
+      const proof = nativeAuthority.runWindowsNativeTimingProbe(probeFd);
       assert.equal(proof.version, 1);
-      hostedAssumptions.extraStdio = proof.extraStdio;
-      hostedAssumptions.alreadyContained = proof.alreadyContained;
-      hostedAssumptions.nestedJob = proof.nestedJob;
+      nativeProbe.milestone = proof.lastMilestone;
+      nativeProbe.timing = proof.timingBucket;
+      if (proof.outcome === "timeout") currentNativeStage = "spawn:timeout";
+      assert.equal(proof.outcome, "complete");
+      assert.deepEqual(proof.milestones.map(({ milestone }) => milestone), [
+        "entry-ps51-desktop-x64", "constant-json", "reflection-emit", "harmless-win32",
+        "standard-handle-identity",
+      ]);
+      assert.ok(proof.milestones.every(({ milestone, timingBucket }) => (
+        probeMilestones.has(milestone) && probeTimings.has(timingBucket)
+      )));
+      nativeProbe.evidence = proof.milestones.map(
+        ({ milestone, timingBucket }) => `${milestone}:${timingBucket}`,
+      ).join(",");
     } catch (error) {
-      currentNativeStage = nativeStages.has(error?.stage) ? error.stage : "parent:json-shape";
+      currentNativeStage = nativeStages.has(error?.stage)
+        ? error.stage
+        : (currentNativeStage ?? "parent:json-shape");
       throw error;
     }
   } finally {
-    closeSync(assumptionFd);
+    closeSync(probeFd);
   }
   currentStage = "authority-probe";
   const authority = await import(authorityModule);
@@ -253,7 +272,7 @@ try {
       shell: false,
       windowsHide: true,
       encoding: "utf8",
-      timeout: 15_000,
+      timeout: WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS,
       maxBuffer: 16 * 1024,
       env: {
         PATH: dirname(process.execPath),
@@ -328,7 +347,7 @@ try {
       shell: false,
       windowsHide: true,
       encoding: "utf8",
-      timeout: 15_000,
+      timeout: WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS,
       maxBuffer: 16 * 1024,
       env: {
         PATH: dirname(process.execPath),
@@ -397,10 +416,10 @@ try {
   const fail = [...api.stdout.matchAll(/^# fail (\d+)$/gm)].at(-1);
   assert.ok(pass && Number(pass[1]) > 0, "API discovery tests did not report passes");
   assert.equal(Number(fail?.[1]), 0, "API discovery tests reported failures");
-  process.stdout.write(`Windows ordinary-user discovery proof: ready=standard-handle-passed cli=${cases.length} api=${pass[1]} authority=${authorityFailures.length} extra-stdio=${hostedAssumptions.extraStdio} contained=${hostedAssumptions.alreadyContained} nested-job=${hostedAssumptions.nestedJob} user=${actualUser}\n`);
+  process.stdout.write(`Windows ordinary-user discovery proof: ready=standard-handle-passed native-timing=${nativeProbe.evidence};total:${nativeProbe.timing} cli=${cases.length} api=${pass[1]} authority=${authorityFailures.length}\n`);
 } catch {
   const diagnostic = createFailureDiagnostic(
-    currentScenario, currentStage, failureStatus, currentNativeStage, hostedAssumptions,
+    currentScenario, currentStage, failureStatus, currentNativeStage, nativeProbe,
   );
   process.stderr.write(`Windows ordinary-user discovery assertion failed: ${JSON.stringify(
     diagnostic,

@@ -37,13 +37,13 @@ const tapValue = (name) => {
 const valid = result.status === 0
   && !result.error
   && !result.signal
-  && tapValue('tests') === 78
-  && tapValue('pass') === 78
+  && tapValue('tests') === 83
+  && tapValue('pass') === 83
   && tapValue('fail') === 0
   && tapValue('skipped') === 0;
 
 if (!valid) {
-  process.stderr.write('Platform-safe Connect proof did not complete 78/78 within 90000ms.\n');
+  process.stderr.write('Platform-safe Connect proof did not complete 83/83 within 90000ms.\n');
   process.exit(1);
 }
-process.stdout.write('Platform-safe Connect proof: tests=78 pass=78 fail=0 skipped=0 budgetMs=90000\n');
+process.stdout.write('Platform-safe Connect proof: tests=83 pass=83 fail=0 skipped=0 budgetMs=90000\n');

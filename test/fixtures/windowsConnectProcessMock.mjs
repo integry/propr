@@ -8,7 +8,8 @@ const forbidden = /(?:connect-authority|ProPRConnectAuthority|pwsh|csc|msiexec)(
 let abaPerformed = false;
 const nativeStages = new Set([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
-  "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr",
+  "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
+  "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:index-info",
   "broker:security-info", "broker:acl", "broker:json",
   "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
