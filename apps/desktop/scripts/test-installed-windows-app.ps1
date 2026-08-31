@@ -86,18 +86,30 @@ $startMenuShortcutExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortc
 $startMenuShortcutFolderExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcutFolder
 $startMenuShortcutCreatedByRun = $false
 $startMenuShortcutFolderCreatedByRun = $false
-# Fixed encoded-child contract. Keep these codes in exact parity with $probeTemplate.
-$shortcutProbeExitCategories = @{
-  10 = 'ENV_PATH_MISSING_OR_EMPTY'
-  11 = 'PATH_NOT_ROOTED'
-  12 = 'PRESENCE_MISMATCH'
-  13 = 'ITEM_LOOKUP_OR_TYPE_FAILURE'
-  14 = 'REPARSE_REJECTED'
-  15 = 'ZERO_SIZE_REJECTED'
-  16 = 'READ_OPEN_DENIED_OR_FAILED'
-  17 = 'EMPTY_STREAM'
-  18 = 'UNEXPECTED_CHILD_FAILURE'
+$shortcutFileByteCap = 64 * 1024
+
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class ProPRWindowsLogon
+{
+    public const int LOGON32_LOGON_NETWORK = 3;
+    public const int LOGON32_PROVIDER_DEFAULT = 0;
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true,
+        ExactSpelling = true, EntryPoint = "LogonUserW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool LogonUserW(
+        string userName,
+        string domain,
+        IntPtr password,
+        int logonType,
+        int logonProvider,
+        out SafeAccessTokenHandle token);
 }
+'@
 
 function Write-Stage(
   [ValidateSet('INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP')][string]$Stage,
@@ -392,259 +404,86 @@ function Test-StartMenuShortcutAsOrdinaryUser(
   [Management.Automation.PSCredential]$Credential,
   [string]$Domain,
   [string]$UserName,
+  [Security.Principal.SecurityIdentifier]$UserSid,
   [string]$ShortcutPath,
-  [string]$SmokeDirectory,
   [bool]$ExpectedPresent
 ) {
-  $fullSmokeDirectory = [IO.Path]::GetFullPath($SmokeDirectory)
-  if ((Split-Path -Leaf $fullSmokeDirectory) -notmatch '^propr-desktop-smoke-[a-f0-9]{32}$' -or
-      ![string]::Equals(
-        (Split-Path -Parent $fullSmokeDirectory),
-        $machineTemp,
-        [StringComparison]::OrdinalIgnoreCase
-      )) {
-    throw 'ordinary-user shortcut probe requires the verified smoke directory'
-  }
-  $smokeDirectoryItem = Get-Item -LiteralPath $fullSmokeDirectory -Force -ErrorAction Stop
-  if (!$smokeDirectoryItem.PSIsContainer -or
-      ($smokeDirectoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-    throw 'ordinary-user shortcut probe requires the verified smoke directory'
-  }
-  $smokeDirectoryAcl = Get-Acl -LiteralPath $fullSmokeDirectory
-  $smokeDirectoryRules = @($smokeDirectoryAcl.Access)
-  $smokeDirectorySids = @($smokeDirectoryRules | ForEach-Object {
-    ($_.IdentityReference.Translate([Security.Principal.SecurityIdentifier])).Value
-  }) | Sort-Object -Unique
-  if (!$smokeDirectoryAcl.AreAccessRulesProtected -or $smokeDirectoryRules.Count -ne 3) {
-    throw 'ordinary-user shortcut probe requires the verified smoke directory'
-  }
-
-  $probeRootDirectory = Join-Path $fullSmokeDirectory 'shortcut-probe'
-  $probeUserProfileDirectory = Join-Path $probeRootDirectory 'USERPROFILE'
-  $probeAppDataDirectory = Join-Path $probeUserProfileDirectory 'AppData'
-  $probeRoamingAppDataDirectory = Join-Path $probeAppDataDirectory 'Roaming'
-  $probeLocalAppDataDirectory = Join-Path $probeAppDataDirectory 'Local'
-  $probeTemporaryDirectory = Join-Path $probeRootDirectory 'TEMP'
-  $probeTmpDirectory = Join-Path $probeRootDirectory 'TMP'
-  $smokeDirectoryPrefix = $fullSmokeDirectory + [IO.Path]::DirectorySeparatorChar
-  foreach ($directory in @(
-    $probeRootDirectory,
-    $probeUserProfileDirectory,
-    $probeAppDataDirectory,
-    $probeRoamingAppDataDirectory,
-    $probeLocalAppDataDirectory,
-    $probeTemporaryDirectory,
-    $probeTmpDirectory
-  )) {
-    $fullDirectory = [IO.Path]::GetFullPath($directory)
-    if (!$fullDirectory.StartsWith($smokeDirectoryPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-      throw 'ordinary-user shortcut probe child profile escaped the smoke directory'
-    }
-    [void][IO.Directory]::CreateDirectory($fullDirectory)
-    $directoryItem = Get-Item -LiteralPath $fullDirectory -Force -ErrorAction Stop
-    if (!$directoryItem.PSIsContainer -or
-        ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-      throw 'ordinary-user shortcut probe child profile layout is invalid'
-    }
-    $directoryAcl = Get-Acl -LiteralPath $fullDirectory
-    $directoryRules = @($directoryAcl.Access)
-    $directorySids = @($directoryRules | ForEach-Object {
-      ($_.IdentityReference.Translate([Security.Principal.SecurityIdentifier])).Value
-    }) | Sort-Object -Unique
-    $invalidDirectoryRules = @($directoryRules | Where-Object {
-      !$_.IsInherited -or
-      $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
-      ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
-        [Security.AccessControl.FileSystemRights]::FullControl
-    })
-    if ($directoryAcl.AreAccessRulesProtected -or $directoryRules.Count -ne 3 -or
-        $invalidDirectoryRules.Count -ne 0 -or
-        (Compare-Object $smokeDirectorySids $directorySids)) {
-      throw 'ordinary-user shortcut probe child profile ACL is not inherited from the smoke directory'
-    }
-  }
-
-  # This is the complete probe child environment. Never add parent/CI variables here.
-  $probeChildEnvironment = [ordered]@{
-    'APPDATA' = $probeRoamingAppDataDirectory
-    'LOCALAPPDATA' = $probeLocalAppDataDirectory
-    'USERPROFILE' = $probeUserProfileDirectory
-    'TEMP' = $probeTemporaryDirectory
-    'TMP' = $probeTmpDirectory
-    'SystemRoot' = $windowsDirectory
-    'PROPR_DESKTOP_START_MENU_SHORTCUT' = $ShortcutPath
-  }
-
-  $expectedLiteral = if ($ExpectedPresent) { '$true' } else { '$false' }
-  $probeTemplate = @'
-$ErrorActionPreference = 'Stop'
-$shortcut = $env:PROPR_DESKTOP_START_MENU_SHORTCUT
-if ([string]::IsNullOrWhiteSpace($shortcut)) { exit 10 }
-if (![IO.Path]::IsPathRooted($shortcut)) { exit 11 }
-$stream = $null
-try {
-  $present = Test-Path -LiteralPath $shortcut -PathType Leaf -ErrorAction Stop
-  if (!__EXPECTED_PRESENT__ -and !$present) { exit 0 }
-  if ($present -ne __EXPECTED_PRESENT__) { exit 12 }
-  try {
-    $item = Get-Item -LiteralPath $shortcut -Force -ErrorAction Stop
-  } catch {
-    exit 13
-  }
-  if (!($item -is [IO.FileInfo])) { exit 13 }
-  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 14 }
-  if ($item.Length -le 0) { exit 15 }
-  try {
-    $stream = [IO.File]::Open(
-      $shortcut,
-      [IO.FileMode]::Open,
-      [IO.FileAccess]::Read,
-      [IO.FileShare]::ReadWrite
-    )
-  } catch {
-    exit 16
-  }
-  if ($stream.Length -le 0) { exit 17 }
-} catch {
-  exit 18
-} finally {
-  if ($null -ne $stream) {
-    try { $stream.Dispose() } catch { exit 18 }
-  }
-}
-exit 0
-'@
-  $probeSource = $probeTemplate.Replace('__EXPECTED_PRESENT__', $expectedLiteral)
-  $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeSource))
-  $powershell = Join-Path $windowsDirectory 'System32\WindowsPowerShell\v1.0\powershell.exe'
   $expectation = if ($ExpectedPresent) { 'PRESENT' } else { 'ABSENT' }
-
-  $startInfo = [Diagnostics.ProcessStartInfo]::new()
-  $startInfo.Environment.Clear()
-  foreach ($entry in $probeChildEnvironment.GetEnumerator()) {
-    $startInfo.Environment.Add([string]$entry.Key, [string]$entry.Value)
-  }
-  $startInfo.FileName = $powershell
-  $startInfo.UseShellExecute = $false
-  $startInfo.CreateNoWindow = $true
-  $startInfo.WorkingDirectory = $windowsDirectory
-  $startInfo.UserName = $UserName
-  $startInfo.Domain = $Domain
-  $startInfo.Password = $Credential.Password
-  $startInfo.LoadUserProfile = $true
-  $startInfo.RedirectStandardOutput = $true
-  $startInfo.RedirectStandardError = $true
-  foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedProbe)) {
-    $startInfo.ArgumentList.Add($argument)
-  }
-
-  $process = [Diagnostics.Process]::new()
-  $process.StartInfo = $startInfo
-  $started = $false
   $failureCategory = $null
-  $processCleanupFailed = $false
+  $passwordBuffer = [IntPtr]::Zero
+  [Microsoft.Win32.SafeHandles.SafeAccessTokenHandle]$token = $null
   try {
-    try {
-      $started = $process.Start()
-    } catch {
-      $diagnosticException = $null
-      $caughtException = $_.Exception
-      if ($caughtException -is [System.ComponentModel.Win32Exception]) {
-        $diagnosticException = $caughtException
-      } elseif (
-        $caughtException.GetType() -eq [System.Management.Automation.MethodInvocationException] -and
-        $caughtException.InnerException -is [System.ComponentModel.Win32Exception]
-      ) {
-        $diagnosticException = $caughtException.InnerException
-      }
-      if ($null -ne $diagnosticException) {
-        $spawnFailureCategories = @{
-          2 = 'FILE_NOT_FOUND'
-          3 = 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID'
-          5 = 'ACCESS_DENIED'
-          6 = 'INVALID_HANDLE'
-          50 = 'NOT_SUPPORTED'
-          87 = 'INVALID_PARAMETER'
-          193 = 'BAD_EXE_FORMAT'
-          206 = 'NAME_TOO_LONG'
-          267 = 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID'
-          740 = 'ELEVATION_REQUIRED'
-          1058 = 'SERVICE_DISABLED'
-          1060 = 'SERVICE_NOT_FOUND'
-          1062 = 'SERVICE_NOT_ACTIVE'
-          1314 = 'PRIVILEGE_NOT_HELD'
-          1326 = 'LOGON_FAILURE'
-          1327 = 'ACCOUNT_RESTRICTION'
-          1328 = 'INVALID_LOGON_HOURS'
-          1329 = 'INVALID_WORKSTATION'
-          1330 = 'PASSWORD_EXPIRED'
-          1331 = 'ACCOUNT_DISABLED'
-          1385 = 'LOGON_TYPE_NOT_GRANTED'
-          1789 = 'TRUST_RELATIONSHIP_FAILURE'
-          1909 = 'ACCOUNT_LOCKED_OUT'
-        }
-        $spawnFailureCategory = if ($spawnFailureCategories.Contains($diagnosticException.NativeErrorCode)) {
-          $spawnFailureCategories[$diagnosticException.NativeErrorCode]
-        } else {
-          'UNKNOWN'
-        }
-        $failureCategory = 'SPAWN_FAILED:{0}' -f $spawnFailureCategory
-      } else {
-        $failureCategory = 'SPAWN_FAILED'
-      }
-    }
-    if ($null -eq $failureCategory -and !$started) {
-      $failureCategory = 'SPAWN_FAILED'
-    }
-
-    if ($null -eq $failureCategory) {
-      try {
-        $completed = $process.WaitForExit($terminationTimeoutMilliseconds)
-      } catch {
-        $failureCategory = 'UNKNOWN'
-      }
-      if ($null -eq $failureCategory -and !$completed) {
-        $failureCategory = 'TIMEOUT'
-      }
-    }
-
-    if ($null -eq $failureCategory) {
-      try {
-        $exitCode = $process.ExitCode
-      } catch {
-        $failureCategory = 'UNKNOWN'
-      }
-      if ($null -eq $failureCategory -and $exitCode -ne 0) {
-        if ($shortcutProbeExitCategories.Contains($exitCode)) {
-          $failureCategory = $shortcutProbeExitCategories[$exitCode]
-        } else {
-          $failureCategory = 'UNKNOWN'
-        }
-      }
-    }
-  } finally {
-    if ($started) {
-      try {
-        if (!$process.HasExited) {
-          $process.Kill($true)
-          if (!$process.WaitForExit($terminationTimeoutMilliseconds)) {
-            $processCleanupFailed = $true
+    $passwordBuffer = [Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode(
+      $Credential.Password
+    )
+    if (![ProPRWindowsLogon]::LogonUserW(
+      $UserName,
+      $Domain,
+      $passwordBuffer,
+      [ProPRWindowsLogon]::LOGON32_LOGON_NETWORK,
+      [ProPRWindowsLogon]::LOGON32_PROVIDER_DEFAULT,
+      [ref]$token
+    )) {
+      $failureCategory = 'LOGON_FAILED'
+    } else {
+      [Security.Principal.WindowsIdentity]::RunImpersonated($token, [Action]{
+        $identity = $null
+        $stream = $null
+        try {
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          if ($null -eq $identity.User -or !$identity.User.Equals($UserSid)) {
+            throw 'ordinary-user shortcut identity mismatch'
           }
+          if ([string]::IsNullOrWhiteSpace($ShortcutPath) -or
+              ![IO.Path]::IsPathRooted($ShortcutPath)) {
+            throw 'ordinary-user shortcut path is invalid'
+          }
+
+          $present = Test-Path -LiteralPath $ShortcutPath -ErrorAction Stop
+          if (!$ExpectedPresent -and !$present) { return }
+          if ($present -ne $ExpectedPresent) {
+            throw 'ordinary-user shortcut presence mismatch'
+          }
+
+          $item = Get-Item -LiteralPath $ShortcutPath -Force -ErrorAction Stop
+          if (!($item -is [IO.FileInfo]) -or
+              ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+              $item.Length -le 0 -or $item.Length -gt $shortcutFileByteCap) {
+            throw 'ordinary-user shortcut metadata is invalid'
+          }
+          $stream = [IO.File]::Open(
+            $ShortcutPath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::ReadWrite
+          )
+          if ($stream.Length -le 0 -or $stream.Length -gt $shortcutFileByteCap -or
+              $stream.ReadByte() -lt 0) {
+            throw 'ordinary-user shortcut read failed'
+          }
+        } finally {
+          if ($null -ne $stream) { $stream.Dispose() }
+          if ($null -ne $identity) { $identity.Dispose() }
         }
+      })
+    }
+  } catch {
+    if ($null -eq $failureCategory) { $failureCategory = 'ACCESS_CHECK_FAILED' }
+  } finally {
+    if ($passwordBuffer -ne [IntPtr]::Zero) {
+      try {
+        [Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($passwordBuffer)
       } catch {
-        $processCleanupFailed = $true
+        if ($null -eq $failureCategory) { $failureCategory = 'CLEANUP_FAILED' }
       }
     }
-    try {
-      $process.Dispose()
-    } catch {
-      $processCleanupFailed = $true
+    if ($null -ne $token) {
+      try { $token.Dispose() } catch {
+        if ($null -eq $failureCategory) { $failureCategory = 'CLEANUP_FAILED' }
+      }
     }
   }
 
-  if ($processCleanupFailed -and $null -eq $failureCategory) {
-    $failureCategory = 'UNKNOWN'
-  }
   if ($null -eq $failureCategory) {
     Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:{0}:SUCCESS' -f $expectation)
     return
@@ -927,8 +766,8 @@ try {
       -Credential $credential `
       -Domain $env:COMPUTERNAME `
       -UserName $testUser `
+      -UserSid $testUserSid `
       -ShortcutPath $startMenuShortcut `
-      -SmokeDirectory $smokeUserDataDirectory `
       -ExpectedPresent $true
     Write-Stage 'USER_SETUP' 'COMPLETE'
   } catch {
@@ -1068,8 +907,8 @@ try {
           -Credential $credential `
           -Domain $env:COMPUTERNAME `
           -UserName $testUser `
+          -UserSid $testUserSid `
           -ShortcutPath $startMenuShortcut `
-          -SmokeDirectory $smokeUserDataDirectory `
           -ExpectedPresent $false
         Write-CleanupSubstage 'UNINSTALL' 'ORDINARY_USER_ABSENCE_PROBE' 'COMPLETE'
       } catch {

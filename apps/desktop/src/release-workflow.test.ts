@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
@@ -542,410 +541,126 @@ describe('desktop trusted release workflow', () => {
     }
   });
 
-  test('maps every shortcut child outcome to one fixed redacted parent category', () => {
+  test('uses bounded network logon impersonation with secure native credential cleanup', () => {
+    const nativeLogon = installedWindowsAppTest.match(
+      /Add-Type -TypeDefinition @'\n([\s\S]*?)\n'@/,
+    );
+    assert.ok(nativeLogon);
+    assert.match(nativeLogon[1], /using Microsoft\.Win32\.SafeHandles;/);
+    assert.match(nativeLogon[1], /public const int LOGON32_LOGON_NETWORK = 3;/);
+    assert.match(nativeLogon[1], /public const int LOGON32_PROVIDER_DEFAULT = 0;/);
+    assert.match(
+      nativeLogon[1],
+      /\[DllImport\("advapi32\.dll",[\s\S]*EntryPoint = "LogonUserW"\)\]/,
+    );
+    assert.match(nativeLogon[1], /\[return: MarshalAs\(UnmanagedType\.Bool\)\]/);
+    assert.match(
+      nativeLogon[1],
+      /public static extern bool LogonUserW\([\s\S]*IntPtr password,[\s\S]*out SafeAccessTokenHandle token\);/,
+    );
+
     const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
     const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
     assert.ok(probeStart >= 0 && probeEnd > probeStart);
     const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
-    const childSource = shortcutProbe.match(/\$probeTemplate = @'\n([\s\S]*?)\n'@/);
-    assert.ok(childSource);
-
-    const exitCategorySource = installedWindowsAppTest.match(
-      /\$shortcutProbeExitCategories = @\{([\s\S]*?)\n\}/,
-    );
-    assert.ok(exitCategorySource);
-    const exitCategories = Object.fromEntries(
-      [...exitCategorySource[1].matchAll(/^\s+(\d+) = '([A-Z_]+)'$/gm)]
-        .map(([, code, category]) => [Number(code), category]),
-    );
-    assert.deepEqual(exitCategories, {
-      10: 'ENV_PATH_MISSING_OR_EMPTY',
-      11: 'PATH_NOT_ROOTED',
-      12: 'PRESENCE_MISMATCH',
-      13: 'ITEM_LOOKUP_OR_TYPE_FAILURE',
-      14: 'REPARSE_REJECTED',
-      15: 'ZERO_SIZE_REJECTED',
-      16: 'READ_OPEN_DENIED_OR_FAILED',
-      17: 'EMPTY_STREAM',
-      18: 'UNEXPECTED_CHILD_FAILURE',
-    });
-    const childExitCodes = [...new Set(
-      [...childSource[1].matchAll(/\bexit (\d+)\b/g)].map(([, code]) => Number(code)),
-    )].sort((left, right) => left - right);
-    assert.deepEqual(childExitCodes, [0, ...Object.keys(exitCategories).map(Number)]);
-
-    assert.match(childSource[1], /IsNullOrWhiteSpace\(\$shortcut\)\) \{ exit 10 \}/);
-    assert.match(childSource[1], /!\[IO\.Path\]::IsPathRooted\(\$shortcut\)\) \{ exit 11 \}/);
-    assert.match(childSource[1], /\$present -ne __EXPECTED_PRESENT__\) \{ exit 12 \}/);
-    assert.match(childSource[1], /Get-Item[\s\S]*?catch \{\n\s+exit 13/);
-    assert.match(childSource[1], /!\(\$item -is \[IO\.FileInfo\]\)\) \{ exit 13 \}/);
-    assert.match(childSource[1], /ReparsePoint\) -ne 0\) \{ exit 14 \}/);
-    assert.match(childSource[1], /\$item\.Length -le 0\) \{ exit 15 \}/);
-    assert.match(childSource[1], /\[IO\.File\]::Open\([\s\S]*?catch \{\n\s+exit 16/);
-    assert.match(childSource[1], /\$stream\.Length -le 0\) \{ exit 17 \}/);
-    assert.match(childSource[1], /\} catch \{\n\s+exit 18\n\} finally/);
-    const absentSuccess = childSource[1].indexOf('if (!__EXPECTED_PRESENT__ -and !$present) { exit 0 }');
-    assert.ok(absentSuccess >= 0);
-    assert.ok(absentSuccess < childSource[1].indexOf('if ($present -ne __EXPECTED_PRESENT__)'));
-    assert.ok(absentSuccess < childSource[1].indexOf('Get-Item -LiteralPath $shortcut'));
-
-    assert.match(shortcutProbe, /\$expectation = if \(\$ExpectedPresent\) \{ 'PRESENT' \} else \{ 'ABSENT' \}/);
     assert.match(
       shortcutProbe,
-      /catch \{\n\s+\$diagnosticException = \$null\n\s+\$caughtException = \$_\.Exception/,
+      /\[Runtime\.InteropServices\.Marshal\]::SecureStringToGlobalAllocUnicode\(\n\s+\$Credential\.Password\n\s+\)/,
     );
-    assert.match(shortcutProbe, /!\$started\) \{\n\s+\$failureCategory = 'SPAWN_FAILED'/);
-    assert.match(shortcutProbe, /\$process\.WaitForExit\(\$terminationTimeoutMilliseconds\)/);
-    assert.match(shortcutProbe, /!\$completed\) \{\n\s+\$failureCategory = 'TIMEOUT'/);
-    assert.match(shortcutProbe, /\$exitCode = \$process\.ExitCode\n\s+\} catch \{\n\s+\$failureCategory = 'UNKNOWN'/);
     assert.match(
       shortcutProbe,
-      /if \(\$shortcutProbeExitCategories\.Contains\(\$exitCode\)\)[\s\S]*?else \{\n\s+\$failureCategory = 'UNKNOWN'/,
+      /\[ProPRWindowsLogon\]::LogonUserW\([\s\S]*\[ProPRWindowsLogon\]::LOGON32_LOGON_NETWORK,[\s\S]*\[ProPRWindowsLogon\]::LOGON32_PROVIDER_DEFAULT,[\s\S]*\[ref\]\$token/,
     );
-    assert.match(shortcutProbe, /\$process\.Kill\(\$true\)/);
-    assert.match(shortcutProbe, /\$process\.Dispose\(\)/);
-    assert.match(shortcutProbe, /\$startInfo\.RedirectStandardOutput = \$true/);
-    assert.match(shortcutProbe, /\$startInfo\.RedirectStandardError = \$true/);
+    assert.match(
+      shortcutProbe,
+      /\[Microsoft\.Win32\.SafeHandles\.SafeAccessTokenHandle\]\$token = \$null/,
+    );
+    const finallyStart = shortcutProbe.indexOf('} finally {');
+    const zeroFree = shortcutProbe.indexOf(
+      '[Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($passwordBuffer)',
+    );
+    const tokenDispose = shortcutProbe.indexOf('$token.Dispose()');
+    assert.ok(finallyStart >= 0 && zeroFree > finallyStart && tokenDispose > zeroFree);
+    assert.match(shortcutProbe, /if \(\$passwordBuffer -ne \[IntPtr\]::Zero\)/);
+    assert.match(shortcutProbe, /if \(\$null -ne \$token\)/);
+  });
 
+  test('requires the exact ordinary-user SID before bounded presence and absence checks', () => {
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
+    const impersonated = shortcutProbe.match(
+      /\[Security\.Principal\.WindowsIdentity\]::RunImpersonated\(\$token, \[Action\]\{([\s\S]*?)\n\s+\}\)/,
+    );
+    assert.ok(impersonated);
+    const action = impersonated[1];
+    const identityCheck = action.indexOf(
+      'if ($null -eq $identity.User -or !$identity.User.Equals($UserSid))',
+    );
+    const presenceCheck = action.indexOf(
+      'Test-Path -LiteralPath $ShortcutPath -ErrorAction Stop',
+    );
+    assert.ok(identityCheck >= 0 && presenceCheck > identityCheck);
+    assert.match(action, /\$identity = \[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)/);
+    assert.match(action, /\[string\]::IsNullOrWhiteSpace\(\$ShortcutPath\)/);
+    assert.match(action, /!\[IO\.Path\]::IsPathRooted\(\$ShortcutPath\)/);
+    assert.match(action, /if \(!\$ExpectedPresent -and !\$present\) \{ return \}/);
+    assert.match(action, /if \(\$present -ne \$ExpectedPresent\)/);
+    assert.match(action, /Get-Item -LiteralPath \$ShortcutPath -Force -ErrorAction Stop/);
+    assert.match(action, /!\(\$item -is \[IO\.FileInfo\]\)/);
+    assert.match(action, /\$item\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint/);
+    assert.match(action, /\$item\.Length -le 0 -or \$item\.Length -gt \$shortcutFileByteCap/);
+    assert.match(action, /\[IO\.File\]::Open\([\s\S]*\[IO\.FileAccess\]::Read/);
+    assert.match(action, /\$stream\.Length -le 0 -or \$stream\.Length -gt \$shortcutFileByteCap/);
+    assert.match(action, /\$stream\.ReadByte\(\) -lt 0/);
+    assert.match(action, /if \(\$null -ne \$stream\) \{ \$stream\.Dispose\(\) \}/);
+    assert.match(action, /if \(\$null -ne \$identity\) \{ \$identity\.Dispose\(\) \}/);
+
+    const shortcutCalls = [...installedWindowsAppTest.matchAll(
+      /Test-StartMenuShortcutAsOrdinaryUser `([\s\S]*?)\n\s+-ExpectedPresent \$(true|false)/g,
+    )];
+    assert.deepEqual(shortcutCalls.map(call => call[2]), ['true', 'false']);
+    for (const call of shortcutCalls) {
+      assert.match(call[1], /-UserSid \$testUserSid `/);
+      assert.match(call[1], /-ShortcutPath \$startMenuShortcut `/);
+    }
+  });
+
+  test('keeps shortcut proof output fixed and redacted and rejects the legacy process proof', () => {
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
     assert.equal(
       shortcutProbe.match(/PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE/g)?.length,
       2,
     );
     assert.match(
       shortcutProbe,
-      /if \(\$null -eq \$failureCategory\) \{\n\s+Write-Host \('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:\{0\}:SUCCESS' -f \$expectation\)\n\s+return/,
+      /Write-Host \('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:\{0\}:SUCCESS' -f \$expectation\)/,
     );
     assert.match(
       shortcutProbe,
-      /Write-Host \('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:\{0\}:\{1\}' -f \$expectation, \$failureCategory\)\n\s+throw 'ordinary-user shortcut probe failed'/,
+      /Write-Host \('PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:\{0\}:\{1\}' -f \$expectation, \$failureCategory\)/,
     );
-    assert.doesNotMatch(shortcutProbe, /(?:Write-Host|throw)[^\n]*(?:\$exitCode|\$ShortcutPath|\$UserName|\$Domain|\.Exception|StandardOutput|StandardError)/);
-    assert.doesNotMatch(shortcutProbe, /(?:Write-Host|throw)[^\n]*\$process\.|ReadToEnd|Write-(?:Output|Error|Warning|Verbose|Debug|Information)/);
-  });
-
-  test('allowlists and redacts Win32 shortcut spawn-failure diagnostics', () => {
-    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
-    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
-    assert.ok(probeStart >= 0 && probeEnd > probeStart);
-    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
-    const spawnCatch = shortcutProbe.match(
-      /\$started = \$process\.Start\(\)\n\s+\} catch \{([\s\S]*?)\n\s+\}\n\s+if \(\$null -eq \$failureCategory -and !\$started\)/,
-    );
-    assert.ok(spawnCatch);
-
-    assert.match(
-      spawnCatch[1],
-      /^\n\s+\$diagnosticException = \$null\n\s+\$caughtException = \$_\.Exception\n\s+if \(\$caughtException -is \[System\.ComponentModel\.Win32Exception\]\) \{\n\s+\$diagnosticException = \$caughtException/,
-    );
-    assert.match(
-      spawnCatch[1],
-      /\} elseif \(\n\s+\$caughtException\.GetType\(\) -eq \[System\.Management\.Automation\.MethodInvocationException\] -and\n\s+\$caughtException\.InnerException -is \[System\.ComponentModel\.Win32Exception\]\n\s+\) \{\n\s+\$diagnosticException = \$caughtException\.InnerException\n\s+\}/,
-    );
-    assert.match(
-      spawnCatch[1],
-      /if \(\$null -ne \$diagnosticException\) \{/,
-    );
-    assert.match(spawnCatch[1], /\$spawnFailureCategories = @\{/);
-    assert.doesNotMatch(spawnCatch[1], /\$spawnFailureCategories = \[ordered\]@\{/);
-    assert.match(
-      spawnCatch[1],
-      /\$spawnFailureCategories\.Contains\(\$diagnosticException\.NativeErrorCode\)/,
-    );
-    assert.match(
-      spawnCatch[1],
-      /\$spawnFailureCategories\[\$diagnosticException\.NativeErrorCode\]/,
-    );
-    assert.equal(spawnCatch[1].match(/\$caughtException\.InnerException/g)?.length, 2);
-    assert.equal(spawnCatch[1].match(/\.NativeErrorCode/g)?.length, 2);
-    assert.match(spawnCatch[1], /else \{\n\s+'UNKNOWN'\n\s+\}/);
-    assert.match(
-      spawnCatch[1],
-      /\$failureCategory = 'SPAWN_FAILED:\{0\}' -f \$spawnFailureCategory/,
-    );
-    assert.match(
-      spawnCatch[1],
-      /\} else \{\n\s+\$failureCategory = 'SPAWN_FAILED'\n\s+\}$/,
-    );
-
-    const mappings: Record<number, string> = Object.fromEntries(
-      [...spawnCatch[1].matchAll(/^\s+(\d+) = '([A-Z_]+)'$/gm)]
-        .map(([, code, category]) => [Number(code), category]),
-    );
-    assert.deepEqual<Record<number, string>>(mappings, {
-      2: 'FILE_NOT_FOUND',
-      3: 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID',
-      5: 'ACCESS_DENIED',
-      6: 'INVALID_HANDLE',
-      50: 'NOT_SUPPORTED',
-      87: 'INVALID_PARAMETER',
-      193: 'BAD_EXE_FORMAT',
-      206: 'NAME_TOO_LONG',
-      267: 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID',
-      740: 'ELEVATION_REQUIRED',
-      1058: 'SERVICE_DISABLED',
-      1060: 'SERVICE_NOT_FOUND',
-      1062: 'SERVICE_NOT_ACTIVE',
-      1314: 'PRIVILEGE_NOT_HELD',
-      1326: 'LOGON_FAILURE',
-      1327: 'ACCOUNT_RESTRICTION',
-      1328: 'INVALID_LOGON_HOURS',
-      1329: 'INVALID_WORKSTATION',
-      1330: 'PASSWORD_EXPIRED',
-      1331: 'ACCOUNT_DISABLED',
-      1385: 'LOGON_TYPE_NOT_GRANTED',
-      1789: 'TRUST_RELATIONSHIP_FAILURE',
-      1909: 'ACCOUNT_LOCKED_OUT',
-    });
-    assert.equal(Object.keys(mappings).length, 23);
-
-    type SimulatedSpawnException = {
-      exactType: 'Win32Exception' | 'MethodInvocationException' | 'DerivedMethodInvocationException' | 'OtherException';
-      nativeErrorCode?: number;
-      innerException?: SimulatedSpawnException;
-      path?: string;
-      user?: string;
-      message?: string;
-      exception?: string;
-      account?: string;
-      service?: string;
-      environment?: string;
-      childOutput?: string;
-    };
-    const renderSpawnFailure = (
-      expectation: 'PRESENT' | 'ABSENT',
-      caught: SimulatedSpawnException,
-    ): string => {
-      const diagnosticException = caught.exactType === 'Win32Exception'
-        ? caught
-        : caught.exactType === 'MethodInvocationException'
-          && caught.innerException?.exactType === 'Win32Exception'
-          ? caught.innerException
-          : undefined;
-      const category = diagnosticException
-        ? mappings[diagnosticException.nativeErrorCode as number] ?? 'UNKNOWN'
-        : undefined;
-      return `PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:${expectation}:SPAWN_FAILED${
-        category === undefined ? '' : `:${category}`
-      }`;
-    };
-    for (const [code, category] of Object.entries(mappings)) {
-      assert.equal(
-        renderSpawnFailure('PRESENT', { exactType: 'Win32Exception', nativeErrorCode: Number(code) }),
-        `PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED:${category}`,
-      );
-    }
-    const sentinelWin32: SimulatedSpawnException = {
-      exactType: 'Win32Exception',
-      nativeErrorCode: 424242,
-      path: String.raw`C:\sentinel-secret\shortcut.lnk`,
-      user: 'sentinel-user',
-      message: 'sentinel exception message',
-      exception: 'sentinel-exception',
-      account: 'sentinel-account',
-      service: 'sentinel-service',
-      environment: 'sentinel-environment',
-      childOutput: 'sentinel-child-output',
-    };
-    const sentinelWrapper: SimulatedSpawnException = {
-      exactType: 'MethodInvocationException',
-      path: 'sentinel-wrapper-path',
-      user: 'sentinel-wrapper-user',
-      message: 'sentinel wrapper message',
-      innerException: sentinelWin32,
-    };
-    assert.equal(
-      renderSpawnFailure('PRESENT', {
-        exactType: 'MethodInvocationException',
-        innerException: { exactType: 'Win32Exception', nativeErrorCode: 5 },
-      }),
-      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED:ACCESS_DENIED',
-    );
-    assert.equal(
-      renderSpawnFailure('ABSENT', {
-        exactType: 'MethodInvocationException',
-        innerException: { exactType: 'OtherException', message: 'sentinel wrapper inner' },
-      }),
-      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:ABSENT:SPAWN_FAILED',
-    );
-    assert.equal(
-      renderSpawnFailure('PRESENT', {
-        exactType: 'MethodInvocationException',
-        innerException: {
-          exactType: 'MethodInvocationException',
-          innerException: { exactType: 'Win32Exception', nativeErrorCode: 5 },
-        },
-      }),
-      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED',
-    );
-    assert.equal(
-      renderSpawnFailure('PRESENT', {
-        exactType: 'DerivedMethodInvocationException',
-        innerException: { exactType: 'Win32Exception', nativeErrorCode: 5 },
-      }),
-      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED',
-    );
-    assert.equal(
-      renderSpawnFailure('PRESENT', { exactType: 'OtherException', message: 'ordinary sentinel' }),
-      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:PRESENT:SPAWN_FAILED',
-    );
-    assert.equal(
-      renderSpawnFailure('ABSENT', sentinelWin32),
-      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:ABSENT:SPAWN_FAILED:UNKNOWN',
-    );
-    assert.equal(
-      renderSpawnFailure('ABSENT', sentinelWrapper),
-      'PROPR_WINDOWS_INSTALLED_SMOKE:SHORTCUT_PROBE:ABSENT:SPAWN_FAILED:UNKNOWN',
-    );
-
-    const diagnosticOutputs = [
-      ...Object.keys(mappings).map(code => renderSpawnFailure(
-        'PRESENT',
-        { exactType: 'Win32Exception', nativeErrorCode: Number(code) },
-      )),
-      renderSpawnFailure('ABSENT', sentinelWrapper),
-      renderSpawnFailure('PRESENT', {
-        exactType: 'OtherException',
-        path: 'sentinel-other-path',
-        user: 'sentinel-other-user',
-        message: 'sentinel other message',
-        exception: 'sentinel-other-exception',
-        account: 'sentinel-other-account',
-        service: 'sentinel-other-service',
-        environment: 'sentinel-other-environment',
-        childOutput: 'sentinel-other-child-output',
-      }),
-    ].join('\n');
-    for (const sentinel of [
-      String.raw`C:\sentinel-secret\shortcut.lnk`,
-      'sentinel-user',
-      'sentinel exception message',
-      'sentinel-exception',
-      'sentinel-account',
-      'sentinel-service',
-      'sentinel-environment',
-      'sentinel-child-output',
-      'sentinel-wrapper-path',
-      'sentinel-wrapper-user',
-      'sentinel wrapper message',
-      'sentinel-other-path',
-      'sentinel-other-user',
-      'sentinel other message',
-      'sentinel-other-exception',
-      'sentinel-other-account',
-      'sentinel-other-service',
-      'sentinel-other-environment',
-      'sentinel-other-child-output',
-      '424242',
-    ]) {
-      assert.ok(!diagnosticOutputs.includes(sentinel));
-    }
-    assert.doesNotMatch(diagnosticOutputs, /\d/);
+    const categories = [...shortcutProbe.matchAll(
+      /\$failureCategory = '(LOGON_FAILED|ACCESS_CHECK_FAILED|CLEANUP_FAILED)'/g,
+    )].map(match => match[1]);
+    assert.deepEqual([...new Set(categories)].sort(), [
+      'ACCESS_CHECK_FAILED',
+      'CLEANUP_FAILED',
+      'LOGON_FAILED',
+    ]);
     assert.doesNotMatch(
-      spawnCatch[1],
-      /(?:Write-Host|throw)|\.Message|\.ToString\(|\.InnerException\.InnerException|\$ShortcutPath|\$UserName|\$Credential|\$probeChildEnvironment|StandardOutput|StandardError/,
+      shortcutProbe,
+      /(?:Write-Host|throw)[^\n]*(?:\$ShortcutPath|\$UserName|\$Domain|\$UserSid|\$Credential|\.Exception|\.Message|NativeErrorCode)/,
     );
-  });
-
-  test('selects only direct and one-wrapper Win32 failures in Windows PowerShell', t => {
-    if (process.platform !== 'win32') {
-      t.skip('requires Windows PowerShell exception wrapping');
-      return;
-    }
-
-    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
-    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
-    assert.ok(probeStart >= 0 && probeEnd > probeStart);
-    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
-    const spawnCatch = shortcutProbe.match(
-      /\$started = \$process\.Start\(\)\n\s+\} catch \{([\s\S]*?)\n\s+\}\n\s+if \(\$null -eq \$failureCategory -and !\$started\)/,
+    assert.doesNotMatch(
+      shortcutProbe,
+      /ProcessStartInfo|\$process\.Start\(|SPAWN_FAILED|EncodedCommand|probeChildEnvironment|PROPR_DESKTOP_START_MENU_SHORTCUT|shortcutProbeExitCategories|StandardOutput|StandardError/,
     );
-    assert.ok(spawnCatch);
-
-    const powershellSource = String.raw`
-$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-
-public sealed class SpawnCatchFixture
-{
-    public void ThrowWin32(int code) { throw new Win32Exception(code); }
-    public void ThrowOther() { throw new InvalidOperationException("sentinel native message"); }
-}
-'@
-$fixture = [SpawnCatchFixture]::new()
-
-try {
-  throw [System.ComponentModel.Win32Exception]::new(2)
-} catch {
-  if ($_.Exception.GetType() -ne [System.ComponentModel.Win32Exception]) { exit 40 }
-}
-try {
-  $fixture.ThrowWin32(5)
-} catch {
-  if ($_.Exception.GetType() -ne [System.Management.Automation.MethodInvocationException]) { exit 41 }
-  if ($_.Exception.InnerException.GetType() -ne [System.ComponentModel.Win32Exception]) { exit 42 }
-}
-
-function Invoke-SpawnCatch([scriptblock]$Action) {
-  $failureCategory = $null
-  try {
-    & $Action
-  } catch {${spawnCatch[1]}
-  }
-  return $failureCategory
-}
-
-$deeperWin32 = [System.ComponentModel.Win32Exception]::new(5)
-$innerWrapper = [System.Management.Automation.MethodInvocationException]::new(
-  'sentinel inner wrapper',
-  $deeperWin32
-)
-$outerWrapper = [System.Management.Automation.MethodInvocationException]::new(
-  'sentinel outer wrapper',
-  $innerWrapper
-)
-if ($outerWrapper.GetType() -ne [System.Management.Automation.MethodInvocationException]) { exit 43 }
-if ($outerWrapper.InnerException.GetType() -ne [System.Management.Automation.MethodInvocationException]) { exit 44 }
-if ($outerWrapper.InnerException.InnerException.GetType() -ne [System.ComponentModel.Win32Exception]) { exit 45 }
-$results = [ordered]@{
-  direct = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(2) }
-  wrapped = Invoke-SpawnCatch { $fixture.ThrowWin32(5) }
-  wrappedOther = Invoke-SpawnCatch { $fixture.ThrowOther() }
-  deeper = Invoke-SpawnCatch { throw $outerWrapper }
-  invalidParameter = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(87) }
-  invalidHandle = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(6) }
-  serviceDisabled = Invoke-SpawnCatch { $fixture.ThrowWin32(1058) }
-  privilegeNotHeld = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(1314) }
-  accountDisabled = Invoke-SpawnCatch { $fixture.ThrowWin32(1331) }
-  ordinary = Invoke-SpawnCatch { throw [InvalidOperationException]::new('sentinel ordinary message') }
-  unknown = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(424242) }
-}
-$results | ConvertTo-Json -Compress
-`;
-    const systemRoot = process.env.SystemRoot ?? String.raw`C:\Windows`;
-    const powershell = `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-    const encodedSource = Buffer.from(powershellSource, 'utf16le').toString('base64');
-    const result = spawnSync(
-      powershell,
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedSource],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    assert.ifError(result.error);
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.deepEqual(JSON.parse(result.stdout.trim()), {
-      direct: 'SPAWN_FAILED:FILE_NOT_FOUND',
-      wrapped: 'SPAWN_FAILED:ACCESS_DENIED',
-      wrappedOther: 'SPAWN_FAILED',
-      deeper: 'SPAWN_FAILED',
-      invalidParameter: 'SPAWN_FAILED:INVALID_PARAMETER',
-      invalidHandle: 'SPAWN_FAILED:INVALID_HANDLE',
-      serviceDisabled: 'SPAWN_FAILED:SERVICE_DISABLED',
-      privilegeNotHeld: 'SPAWN_FAILED:PRIVILEGE_NOT_HELD',
-      accountDisabled: 'SPAWN_FAILED:ACCOUNT_DISABLED',
-      ordinary: 'SPAWN_FAILED',
-      unknown: 'SPAWN_FAILED:UNKNOWN',
-    });
+    assert.doesNotMatch(installedWindowsAppTest, /\$shortcutProbeExitCategories|\$probeTemplate/);
   });
 
   test('emits fixed uninstall and cleanup substages without masking the primary failure', () => {
@@ -1024,46 +739,14 @@ $results | ConvertTo-Json -Compress
     );
   });
 
-  test('hands the canonical common shortcut to an isolated profile-loading ordinary-user probe and cleans only owned paths', () => {
+  test('keeps the canonical common shortcut and ownership-aware nonrecursive cleanup', () => {
     const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
     const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
     assert.ok(probeStart >= 0 && probeEnd > probeStart);
     const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
-    const childSource = shortcutProbe.match(/\$probeTemplate = @'\n([\s\S]*?)\n'@/);
-    assert.ok(childSource);
-
     assert.match(shortcutProbe, /\[string\]\$ShortcutPath/);
-    assert.match(shortcutProbe, /\[string\]\$SmokeDirectory/);
-    assert.match(childSource[1], /\$shortcut = \$env:PROPR_DESKTOP_START_MENU_SHORTCUT/);
-    assert.match(childSource[1], /\[string\]::IsNullOrWhiteSpace\(\$shortcut\)/);
-    assert.match(childSource[1], /!\[IO\.Path\]::IsPathRooted\(\$shortcut\)/);
-    assert.match(childSource[1], /Test-Path -LiteralPath \$shortcut -PathType Leaf/);
-    assert.match(childSource[1], /!\(\$item -is \[IO\.FileInfo\]\)/);
-    assert.match(childSource[1], /\$item\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint/);
-    assert.match(childSource[1], /\$item\.Length -le 0/);
-    assert.match(childSource[1], /\[IO\.File\]::Open\(/);
-    assert.match(childSource[1], /\$stream\.Length -le 0/);
-    assert.doesNotMatch(childSource[1], /CommonPrograms|ShortcutPath|Write-|Out-/);
-    assert.match(shortcutProbe, /\$startInfo\.Environment\.Clear\(\)/);
-    assert.match(
-      shortcutProbe,
-      /foreach \(\$entry in \$probeChildEnvironment\.GetEnumerator\(\)\) \{\n\s+\$startInfo\.Environment\.Add\(\[string\]\$entry\.Key, \[string\]\$entry\.Value\)/,
-    );
-    assert.equal(shortcutProbe.match(/PROPR_DESKTOP_START_MENU_SHORTCUT/g)?.length, 2);
-    assert.match(shortcutProbe, /\$startInfo\.LoadUserProfile = \$true/);
-    assert.doesNotMatch(shortcutProbe, /\$startInfo\.LoadUserProfile = \$false/);
-    assert.match(shortcutProbe, /\$startInfo\.UserName = \$UserName/);
-    assert.match(shortcutProbe, /\$startInfo\.Domain = \$Domain/);
-    assert.match(shortcutProbe, /\$startInfo\.Password = \$Credential\.Password/);
-    assert.match(shortcutProbe, /\$process\.WaitForExit\(\$terminationTimeoutMilliseconds\)/);
+    assert.match(shortcutProbe, /Test-Path -LiteralPath \$ShortcutPath -ErrorAction Stop/);
     assert.equal(installedWindowsAppTest.match(/-ShortcutPath \$startMenuShortcut/g)?.length, 2);
-    const shortcutCalls = [...installedWindowsAppTest.matchAll(
-      /Test-StartMenuShortcutAsOrdinaryUser `([\s\S]*?)\n\s+-ExpectedPresent \$(true|false)/g,
-    )];
-    assert.deepEqual(shortcutCalls.map(call => call[2]), ['true', 'false']);
-    for (const call of shortcutCalls) {
-      assert.match(call[1], /-SmokeDirectory \$smokeUserDataDirectory `/);
-    }
 
     const installStart = installedWindowsAppTest.indexOf("Write-Stage 'INSTALL' 'BEGIN'");
     assert.ok(
@@ -1108,100 +791,6 @@ $results | ConvertTo-Json -Compress
     assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu folder behind/);
   });
 
-  test('builds and reuses a strictly contained probe-only profile with an exact seven-key environment', () => {
-    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
-    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
-    assert.ok(probeStart >= 0 && probeEnd > probeStart);
-    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
-    const profileSetup = shortcutProbe.slice(0, shortcutProbe.indexOf('$expectedLiteral'));
-
-    assert.match(
-      shortcutProbe,
-      /\$fullSmokeDirectory = \[IO\.Path\]::GetFullPath\(\$SmokeDirectory\)/,
-    );
-    assert.match(shortcutProbe, /\^propr-desktop-smoke-\[a-f0-9\]\{32\}\$/);
-    assert.match(
-      shortcutProbe,
-      /\(Split-Path -Parent \$fullSmokeDirectory\),\n\s+\$machineTemp,\n\s+\[StringComparison\]::OrdinalIgnoreCase/,
-    );
-    assert.match(
-      shortcutProbe,
-      /\$smokeDirectoryPrefix = \$fullSmokeDirectory \+ \[IO\.Path\]::DirectorySeparatorChar/,
-    );
-    assert.match(
-      shortcutProbe,
-      /!\$fullDirectory\.StartsWith\(\$smokeDirectoryPrefix, \[StringComparison\]::OrdinalIgnoreCase\)/,
-    );
-
-    assert.match(shortcutProbe, /Join-Path \$fullSmokeDirectory 'shortcut-probe'/);
-    assert.match(shortcutProbe, /Join-Path \$probeRootDirectory 'USERPROFILE'/);
-    assert.match(shortcutProbe, /Join-Path \$probeUserProfileDirectory 'AppData'/);
-    assert.match(shortcutProbe, /Join-Path \$probeAppDataDirectory 'Roaming'/);
-    assert.match(shortcutProbe, /Join-Path \$probeAppDataDirectory 'Local'/);
-    assert.match(shortcutProbe, /Join-Path \$probeRootDirectory 'TEMP'/);
-    assert.match(shortcutProbe, /Join-Path \$probeRootDirectory 'TMP'/);
-    assert.doesNotMatch(shortcutProbe, /Join-Path \$fullSmokeDirectory '(?:profile|temp)'/);
-    assert.doesNotMatch(shortcutProbe, /SpecialFolder\]::UserProfile|Win32_UserProfile/);
-
-    assert.equal(profileSetup.match(/\[IO\.Directory\]::CreateDirectory\(\$fullDirectory\)/g)?.length, 1);
-    assert.doesNotMatch(profileSetup, /New-Item|Remove-Item/);
-    assert.equal(profileSetup.match(/\[IO\.FileAttributes\]::ReparsePoint/g)?.length, 2);
-    assert.match(
-      shortcutProbe,
-      /!\$smokeDirectoryAcl\.AreAccessRulesProtected -or \$smokeDirectoryRules\.Count -ne 3/,
-    );
-    assert.match(shortcutProbe, /!\$_.IsInherited/);
-    assert.match(
-      shortcutProbe,
-      /\$_.AccessControlType -ne \[Security\.AccessControl\.AccessControlType\]::Allow/,
-    );
-    assert.match(
-      shortcutProbe,
-      /\$_.FileSystemRights -band \[Security\.AccessControl\.FileSystemRights\]::FullControl/,
-    );
-    assert.match(
-      shortcutProbe,
-      /\$directoryAcl\.AreAccessRulesProtected -or \$directoryRules\.Count -ne 3[\s\S]*Compare-Object \$smokeDirectorySids \$directorySids/,
-    );
-
-    const probeEnvironment = shortcutProbe.match(
-      /\$probeChildEnvironment = \[ordered\]@\{([\s\S]*?)\n\s+\}/,
-    );
-    assert.ok(probeEnvironment);
-    const entries = [...probeEnvironment[1].matchAll(
-      /^\s+'([^']+)' = (\$[A-Za-z][A-Za-z0-9]*)$/gm,
-    )].map(([, key, expression]) => ({ key, expression }));
-    assert.deepEqual(entries, [
-      { key: 'APPDATA', expression: '$probeRoamingAppDataDirectory' },
-      { key: 'LOCALAPPDATA', expression: '$probeLocalAppDataDirectory' },
-      { key: 'USERPROFILE', expression: '$probeUserProfileDirectory' },
-      { key: 'TEMP', expression: '$probeTemporaryDirectory' },
-      { key: 'TMP', expression: '$probeTmpDirectory' },
-      { key: 'SystemRoot', expression: '$windowsDirectory' },
-      { key: 'PROPR_DESKTOP_START_MENU_SHORTCUT', expression: '$ShortcutPath' },
-    ]);
-    assert.doesNotMatch(
-      probeEnvironment[0],
-      /\$env:|GetEnvironmentVariables|EnvironmentVariables|\bPATH\b|\bCI\b|TOKEN|SECRET|PASSWORD|CERTIFICATE|SSH/,
-    );
-
-    const clear = shortcutProbe.indexOf('$startInfo.Environment.Clear()');
-    const add = shortcutProbe.indexOf(
-      '$startInfo.Environment.Add([string]$entry.Key, [string]$entry.Value)',
-    );
-    const start = shortcutProbe.indexOf('$started = $process.Start()');
-    assert.ok(clear >= 0 && clear < add && add < start);
-    assert.equal(shortcutProbe.match(/\$startInfo\.Environment/g)?.length, 2);
-    assert.doesNotMatch(shortcutProbe, /GetEnvironmentVariables|EnvironmentVariables|\.Environment\s*=|\.Environment\.Remove\(/);
-
-    const applicationLauncher = installedWindowsAppTest.slice(
-      installedWindowsAppTest.indexOf('function Start-AlternateCredentialApplication('),
-      probeStart,
-    );
-    assert.match(applicationLauncher, /Join-Path \$fullSmokeDirectory 'profile'/);
-    assert.match(applicationLauncher, /Join-Path \$fullSmokeDirectory 'temp'/);
-    assert.doesNotMatch(applicationLauncher, /shortcut-probe|probeUserProfileDirectory/);
-  });
 
   test('replaces a hostile privileged parent environment with the exact smoke child allowlist', () => {
     const allowlist = installedWindowsAppTest.match(
