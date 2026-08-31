@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { GoalDetail, GoalEvent, GoalMessage } from '../../api/goalsApi';
 import GoalControls from './GoalControls';
@@ -117,6 +117,65 @@ describe('GoalTerminal', () => {
     delete (HTMLElement.prototype as { offsetTop?: number }).offsetTop;
     delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
   });
+
+  it('restores tail-follow after repeated empty older loads and follows the next live event', async () => {
+    let height = 500;
+    const onLoadOlder = vi.fn().mockResolvedValue(undefined);
+    const view = render(<GoalTerminal events={[event(1)]} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+    const viewport = screen.getByLabelText('Goal terminal transcript');
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, get: () => height });
+    viewport.scrollTop = height;
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      fireEvent.click(screen.getByRole('button', { name: 'Load older output' }));
+      await waitFor(() => expect(onLoadOlder).toHaveBeenCalledTimes(attempt));
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Follow latest' })).not.toBeInTheDocument());
+    }
+
+    height = 700;
+    view.rerender(<GoalTerminal events={[event(1), event(2)]} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+    await waitFor(() => expect(viewport.scrollTop).toBe(700));
+    expect(screen.queryByRole('button', { name: 'Follow latest' })).not.toBeInTheDocument();
+  });
+
+  it('preserves a pre-existing non-tail state after an empty older load', async () => {
+    const onLoadOlder = vi.fn().mockResolvedValue(undefined);
+    const view = render(<GoalTerminal events={[event(1), event(2)]} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+    const viewport = screen.getByLabelText('Goal terminal transcript');
+    Object.defineProperties(viewport, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    viewport.scrollTop = 100;
+    fireEvent.scroll(viewport);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load older output' }));
+    await waitFor(() => expect(onLoadOlder).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Follow latest' })).toBeInTheDocument());
+    view.rerender(<GoalTerminal events={[event(1), event(2), event(3)]} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+    expect(viewport.scrollTop).toBe(100);
+  });
+
+  it('restores tail-follow after a rejected older load across rerenders and follows the next live event', async () => {
+    let rejectLoad: (reason: Error) => void = () => undefined;
+    let height = 500;
+    const onLoadOlder = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectLoad = reject; }));
+    const view = render(<GoalTerminal events={[event(1)]} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+    const viewport = screen.getByLabelText('Goal terminal transcript');
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, get: () => height });
+    viewport.scrollTop = height;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load older output' }));
+    expect(screen.getByRole('button', { name: 'Follow latest' })).toBeInTheDocument();
+    view.rerender(<GoalTerminal events={[event(1)]} connectionState="recovering" hasMoreBefore loadingOlder onLoadOlder={onLoadOlder} />);
+    await act(async () => { rejectLoad(new Error('older history unavailable')); });
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Follow latest' })).not.toBeInTheDocument());
+
+    height = 700;
+    view.rerender(<GoalTerminal events={[event(1), event(2)]} connectionState="recovering" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+    await waitFor(() => expect(viewport.scrollTop).toBe(700));
+    expect(screen.queryByRole('button', { name: 'Follow latest' })).not.toBeInTheDocument();
+  });
 });
 
 describe('goal hierarchy and statistics', () => {
@@ -210,7 +269,7 @@ describe('GoalControls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel goal' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
     expect(onCancel).toHaveBeenCalledWith('Cancelled by operator');
-    expect(screen.getByRole('region', { name: 'Controls' })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Controls' })).toHaveFocus());
     expect(screen.queryByRole('button', { name: 'Cancel goal…' })).not.toBeInTheDocument();
   });
 

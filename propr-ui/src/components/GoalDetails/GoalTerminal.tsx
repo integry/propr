@@ -20,10 +20,13 @@ interface GoalTerminalProps {
 }
 
 interface PendingScrollAnchor {
-  sequence: number;
+  sequence: number | null;
   viewportOffset: number;
   earliestSequence: number;
   loadComplete: boolean;
+  anchorRestored: boolean;
+  previousFollowTail: boolean;
+  previousWindowAnchor: number | null;
 }
 
 export default function GoalTerminal({ events, connectionState, hasMoreBefore, loadingOlder, onLoadOlder }: GoalTerminalProps) {
@@ -58,11 +61,19 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
     if (!pending) return;
     const hasPrependedEvents = events.some(event => event.sequence < pending.earliestSequence);
     if (!hasPrependedEvents) {
+      if (pending.loadComplete) {
+        pendingScrollAnchorRef.current = null;
+        setFollowTail(pending.previousFollowTail);
+        setWindowAnchor(pending.previousWindowAnchor);
+      }
+      return;
+    }
+    if (pending.anchorRestored) {
       if (pending.loadComplete) pendingScrollAnchorRef.current = null;
       return;
     }
     const viewport = viewportRef.current;
-    if (!viewport) {
+    if (!viewport || pending.sequence === null) {
       if (pending.loadComplete) pendingScrollAnchorRef.current = null;
       return;
     }
@@ -72,7 +83,8 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
       return;
     }
     viewport.scrollTop = anchor.offsetTop - pending.viewportOffset;
-    pendingScrollAnchorRef.current = null;
+    pending.anchorRestored = true;
+    if (pending.loadComplete) pendingScrollAnchorRef.current = null;
   }, [completedOlderLoads, events]);
 
   const resetFilteredWindow = () => {
@@ -100,24 +112,26 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
   };
 
   const loadOlder = async () => {
+    if (pendingScrollAnchorRef.current) return;
     const viewport = viewportRef.current;
     const rows = viewport ? [...viewport.querySelectorAll<HTMLElement>('[data-event-sequence]')] : [];
     const visible = rows.find(row => row.offsetTop + row.offsetHeight >= (viewport?.scrollTop ?? 0)) ?? rows[0];
-    if (visible && viewport) {
-      pendingScrollAnchorRef.current = {
-        sequence: Number(visible.dataset.eventSequence),
-        viewportOffset: visible.offsetTop - viewport.scrollTop,
-        earliestSequence: events[0]?.sequence ?? Number.POSITIVE_INFINITY,
-        loadComplete: false,
-      };
-    }
+    const pending: PendingScrollAnchor = {
+      sequence: visible ? Number(visible.dataset.eventSequence) : null,
+      viewportOffset: visible && viewport ? visible.offsetTop - viewport.scrollTop : 0,
+      earliestSequence: events[0]?.sequence ?? Number.POSITIVE_INFINITY,
+      loadComplete: false,
+      anchorRestored: false,
+      previousFollowTail: followTail,
+      previousWindowAnchor: windowAnchor,
+    };
+    pendingScrollAnchorRef.current = pending;
     setFollowTail(false);
     setWindowAnchor(mounted[0]?.sequence ?? null);
-    const pending = pendingScrollAnchorRef.current;
     try {
       await onLoadOlder();
     } finally {
-      if (pending && pendingScrollAnchorRef.current === pending) {
+      if (pendingScrollAnchorRef.current === pending) {
         pending.loadComplete = true;
         setCompletedOlderLoads(count => count + 1);
       }
@@ -169,7 +183,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
         className="scrollbar-stealth-dark min-h-0 flex-1 overflow-auto overscroll-contain font-mono text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 motion-reduce:scroll-auto"
       >
         <div className="sticky top-0 z-10 flex flex-wrap items-center justify-center gap-2 bg-zinc-950/95 p-2">
-          {hasMoreBefore && <button type="button" onClick={() => void loadOlder()} disabled={loadingOlder} className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">{loadingOlder ? 'Loading older output…' : 'Load older output'}</button>}
+          {hasMoreBefore && <button type="button" onClick={() => void loadOlder().catch(() => undefined)} disabled={loadingOlder} className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">{loadingOlder ? 'Loading older output…' : 'Load older output'}</button>}
           {filtered.length > MOUNT_LIMIT && (
             <nav aria-label="Terminal event windows" className="flex items-center gap-2">
               <button type="button" onClick={() => moveWindow(-1)} disabled={!hasEarlierWindow} aria-label="Earlier event window" className="rounded border border-zinc-700 p-1 disabled:opacity-40"><ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" /></button>
