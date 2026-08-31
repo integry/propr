@@ -196,7 +196,6 @@ export const windowsMachineInstallerSourceForTest = (appDirectory, version, arch
       Manufacturer="Unchained Development OÜ" UpgradeCode="${UPGRADE_CODE}">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="${platform}"
       SummaryCodepage="1252" />
-    <Property Id="ALLUSERS" Value="1" />
     <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
       DowngradeErrorMessage="A newer ProPR Desktop is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />

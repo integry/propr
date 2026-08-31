@@ -29,6 +29,20 @@ test('sets explicit Windows-1252 MSI and summary code pages in probe and product
   assertExplicitCodepages(windowsMachineInstallerSourceForTest('C:\\fixture', '1.2.3', 'arm64', files));
 });
 
+test('uses per-machine scope without explicitly authoring the derived ALLUSERS property', () => {
+  const files = [{
+    path: 'C:\\fixture\\propr-desktop.exe',
+    name: 'propr-desktop.exe',
+    size: 1n,
+  }];
+
+  for (const arch of ['x64', 'arm64']) {
+    const source = windowsMachineInstallerSourceForTest('C:\\fixture', '1.2.3', arch, files);
+    assert.match(source, /<Package\b[^>]*\bInstallScope="perMachine"[^>]*\/>/);
+    assert.doesNotMatch(source, /<Property\b[^>]*\bId="ALLUSERS"(?:\s|\/|>)/);
+  }
+});
+
 test('keeps WiX failures and their emitted diagnostics bounded', () => {
   assert.match(installerScript, /const WIX_TIMEOUT_MS = 120_000;/);
   assert.match(installerScript, /const WIX_MAX_BUFFER_BYTES = 64 \* 1024;/);
