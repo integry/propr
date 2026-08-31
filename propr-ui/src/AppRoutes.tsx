@@ -10,6 +10,7 @@ const AiAgentsPage = lazy(() => import('./pages/AiAgentsPage'));
 const AccessManagementPage = lazy(() => import('./pages/AccessManagementPage'));
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const GoalCreatePage = lazy(() => import('./pages/GoalCreatePage'));
+const GoalDetailPage = lazy(() => import('./pages/GoalDetailPage'));
 const GoalsPage = lazy(() => import('./pages/GoalsPage'));
 const LlmLogsPage = lazy(() => import('./pages/LlmLogsPage'));
 const InboxPage = lazy(() => import('./pages/InboxPage'));
@@ -51,6 +52,7 @@ const AppRoutes = () => (
         <Route path="/inbox" element={<PageLayout><InboxPage /></PageLayout>} />
         <Route path="/goals" element={<PageLayout><GoalsPage /></PageLayout>} />
         <Route path="/goals/new" element={<PageLayout><GoalCreatePage /></PageLayout>} />
+        <Route path="/goals/:goalId" element={<PageLayout><GoalDetailPage /></PageLayout>} />
         <Route path="/repositories" element={<PageLayout><RepositoriesPage /></PageLayout>} />
         <Route path="/tasks" element={<PageLayout><TasksPage /></PageLayout>} />
         <Route path="/tasks/:taskId" element={<PageLayout><TasksPage /></PageLayout>} />

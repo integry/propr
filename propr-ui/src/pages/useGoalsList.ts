@@ -9,6 +9,7 @@ import { useSocket } from '../contexts/useSocket';
 import { DEFAULT_GOALS_PAGE_SIZE } from './goalsPageUtils';
 import {
   boundedGoalsSearch,
+  canonicalGoalsPath,
   goalCreatePath,
   GOALS_CURSOR_HISTORY_PARAM,
   MAX_GOALS_CURSOR_HISTORY,
@@ -35,6 +36,7 @@ export function useGoalsList() {
   const searchParamsKey = searchParams.toString();
   const url = useMemo(() => readGoalsUrlState(new URLSearchParams(searchParamsKey)), [searchParamsKey]);
   const newGoalPath = useMemo(() => goalCreatePath(new URLSearchParams(searchParamsKey)), [searchParamsKey]);
+  const detailReturnTarget = useMemo(() => canonicalGoalsPath(new URLSearchParams(searchParamsKey)), [searchParamsKey]);
   const {
     isConnected,
     onGoalSummaryUpdate,
@@ -234,6 +236,7 @@ export function useGoalsList() {
     repositoryFilter: url.repository,
     appliedSearch: url.search,
     newGoalPath,
+    detailReturnTarget,
     currentPage: url.history.length + 1,
     hasPrevious: url.history.length > 0,
     hasNext: nextCursor !== null && url.history.length < MAX_GOALS_CURSOR_HISTORY,

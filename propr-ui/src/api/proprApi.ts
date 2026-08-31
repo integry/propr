@@ -200,8 +200,8 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
   return response.json();
 };
 
-export const getInstanceCatalog = async (): Promise<InstanceCatalogResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/catalog`, { credentials: 'include' });
+export const getInstanceCatalog = async (options: { signal?: AbortSignal } = {}): Promise<InstanceCatalogResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/catalog`, { credentials: 'include', signal: options.signal });
   await handleApiResponse(response);
   return response.json();
 };

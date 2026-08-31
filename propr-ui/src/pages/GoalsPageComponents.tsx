@@ -9,8 +9,10 @@ import {
   Target,
   Zap,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import type { GoalListItem, GoalState } from '../api/goalsApi';
 import { formatDuration, formatTokens, GOAL_STATE_COLORS, GOAL_STATE_LABELS } from './goalsPageUtils';
+import { goalDetailPath } from './goalsUrlState';
 
 export const GoalStateBadge = ({ state }: { state: GoalState }) => (
   <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${GOAL_STATE_COLORS[state]}`}>
@@ -36,7 +38,7 @@ const ProjectedStats = ({ goal }: { goal: GoalListItem }) => {
   const { issues, pullRequests, time, tokens } = goal.projection;
   return (
     <>
-      <span>{issues.processed} processed · {issues.active} active · {issues.failed} failed · {issues.blocked} blocked</span>
+      <span>{issues.total} total · {issues.ready} ready · {issues.active} active · {issues.processed} processed · {issues.failed} failed · {issues.blocked} blocked</span>
       <span>{pullRequests.open} open PRs · {pullRequests.mergeReady} merge-ready · {pullRequests.merged} merged</span>
       <span className="flex items-center gap-1"><Cpu className="h-3 w-3" aria-hidden="true" />{formatTokens(tokens.total)} tokens</span>
       <span className="flex items-center gap-1">
@@ -82,14 +84,14 @@ const ChecklistProgress = ({ goal }: { goal: GoalListItem }) => {
   );
 };
 
-export const GoalRow = ({ goal }: { goal: GoalListItem }) => {
+export const GoalRow = ({ goal, returnTarget = '/goals' }: { goal: GoalListItem; returnTarget?: string }) => {
   const projection = goal.projection.status === 'ready' ? goal.projection : null;
   return (
     <article className="border-b border-slate-100 bg-white last:border-0">
       <div className="px-4 py-4 sm:px-6">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-gray-900">{goal.objective}</p>
+            <Link to={goalDetailPath(goal.goalId, new URL(returnTarget, 'https://propr.invalid').searchParams)} aria-label={`Open goal: ${goal.objective}`} className="block truncate rounded text-sm font-semibold text-gray-900 hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">{goal.objective}</Link>
             <p className="mt-0.5 truncate text-xs text-gray-500">{goal.repository}</p>
           </div>
           <div className="flex flex-shrink-0 items-center gap-2">
@@ -150,8 +152,8 @@ export const EmptyGoalsState = ({ type, searchQuery, onCreateGoal, onClearFilter
   );
 };
 
-export const GoalsList = ({ goals }: { goals: GoalListItem[] }) => (
-  <div className="overflow-hidden rounded-lg border border-gray-200">{goals.map(goal => <GoalRow key={goal.goalId} goal={goal} />)}</div>
+export const GoalsList = ({ goals, returnTarget }: { goals: GoalListItem[]; returnTarget: string }) => (
+  <div className="overflow-hidden rounded-lg border border-gray-200">{goals.map(goal => <GoalRow key={goal.goalId} goal={goal} returnTarget={returnTarget} />)}</div>
 );
 
 interface PaginationControlsProps {

@@ -65,6 +65,7 @@ function renderPage(entries: string[] = ['/goals'], initialIndex = entries.lengt
       <Routes>
         <Route path="/goals" element={<GoalsPage />} />
         <Route path="/goals/new" element={<div>New goal route</div>} />
+        <Route path="/goals/:goalId" element={<div>Goal detail route</div>} />
       </Routes>
       <Location />
       <HistoryControls />
@@ -346,5 +347,25 @@ describe('GoalsPage', () => {
     const createUrl = new URL(screen.getByTestId('location').textContent ?? '', 'https://propr.invalid');
     const returnTarget = createUrl.searchParams.get('returnTo');
     expect(returnTarget).toBe(`/goals?${query.toString()}`);
+  });
+
+  it('preserves the complete validated list state through detail and browser back/forward', async () => {
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
+    const query = new URLSearchParams({
+      state: 'running', repository: 'integry/propr', search: 'durable work',
+      cursor: 'cursor2', cursorHistory: JSON.stringify([null, 'cursor1']),
+    });
+    const listPath = `/goals?${query.toString()}`;
+    renderPage([listPath]);
+    fireEvent.click(await screen.findByRole('link', { name: 'Open goal: Durable orchestration' }));
+    expect(await screen.findByText('Goal detail route')).toBeInTheDocument();
+    const detailUrl = new URL(screen.getByTestId('location').textContent ?? '', 'https://propr.invalid');
+    expect(detailUrl.searchParams.get('returnTo')).toBe(listPath);
+    fireEvent.click(screen.getByText('Browser back'));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(listPath));
+    expect(screen.getByLabelText('Search goals')).toHaveValue('durable work');
+    fireEvent.click(screen.getByText('Browser forward'));
+    expect(await screen.findByText('Goal detail route')).toBeInTheDocument();
+    expect(new URL(screen.getByTestId('location').textContent ?? '', 'https://propr.invalid').searchParams.get('returnTo')).toBe(listPath);
   });
 });

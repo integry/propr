@@ -33,7 +33,7 @@ const GoalsPage = () => {
     if (list.goals.length === 0) {
       return <EmptyGoalsState type="no-filter-results" onCreateGoal={handleNewGoal} onClearFilter={list.clearFilters} />;
     }
-    return <GoalsList goals={list.goals} />;
+    return <GoalsList goals={list.goals} returnTarget={list.detailReturnTarget} />;
   };
 
   return (

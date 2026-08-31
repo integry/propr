@@ -122,6 +122,11 @@ export function goalCreatePath(params: URLSearchParams): string {
   return `/goals/new?${query.toString()}`;
 }
 
+export function goalDetailPath(goalId: string, params: URLSearchParams): string {
+  const query = new URLSearchParams({ [GOALS_RETURN_TO_PARAM]: canonicalGoalsPath(params) });
+  return `/goals/${encodeURIComponent(goalId)}?${query.toString()}`;
+}
+
 export function goalsReturnTarget(rawTarget: string | null): string {
   if (!rawTarget || !rawTarget.startsWith('/') || rawTarget.startsWith('//')) return GOALS_PATH;
   try {
