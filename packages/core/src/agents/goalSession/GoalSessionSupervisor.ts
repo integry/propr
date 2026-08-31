@@ -6,12 +6,15 @@ import type {
     GoalModelChangeRequest,
     GoalPauseAcknowledgement,
     GoalPauseRequest,
+    GoalProviderReconcileResult,
     GoalRepositoryIdentity,
     GoalRepositoryInspection,
     GoalSessionControlFence,
     GoalSessionIdentity,
     GoalSessionState,
+    GoalSessionStatus,
     GoalSteeringRequest,
+    GoalTurnState,
 } from './contract.js';
 import {
     GoalSessionContractError,
@@ -144,6 +147,9 @@ export class GoalSessionSupervisor extends GoalTurnRunner {
 
     async requestModelChange(request: GoalModelChangeRequest): Promise<GoalModelChangeAcknowledgement> {
         let state = await this.requireControlledState(request);
+        if (state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') {
+            throw new GoalSessionContractError(`Cannot change model while the session is ${state.status}`, 'SESSION_NOT_CONTROLLABLE');
+        }
         const previousModel = state.currentModel;
         const acknowledgement = await this.adapter.requestModelChange(request, persistedSnapshot(state));
         if (acknowledgement.requestedModel !== request.model) {
@@ -209,9 +215,10 @@ export class GoalSessionSupervisor extends GoalTurnRunner {
             assertProviderIdentity(state, snapshot);
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
         }
-        const status = result.outcome === 'failed' ? 'failed' : result.outcome === 'resumed' ? 'idle' : state.status;
+        const reconciled = reconcileRecoveredTurn(state, result.outcome);
         const saved = await this.ports.state.compareAndSet(state, nextState(state, {
-            status,
+            status: reconciled.status,
+            activeTurn: reconciled.activeTurn,
             failureReason: result.outcome === 'failed' ? result.reason : undefined,
             providerSessionId: snapshot?.providerSessionId ?? state.providerSessionId,
             recoveryMetadata: snapshot?.recoveryMetadata ?? state.recoveryMetadata,
@@ -300,7 +307,33 @@ function deterministicOpenKey(identity: GoalSessionIdentity & { provider: string
     return createHash('sha256').update(`${identity.provider}\0${identity.goalId}\0${identity.sessionId}`).digest('hex');
 }
 
-/** Verifies the worktree matches expected identity before any resume side effect. */
+/**
+ * Reconciles the recovered session status and its active turn into a coherent
+ * state. A turn that was still running/pause-requested/paused when the container
+ * was lost becomes an explicitly paused, resumable turn so a replacement
+ * supervisor continues the exact execution/attempt rather than letting a new
+ * turn overwrite it. A failed reconcile fails the session; any other outcome
+ * leaves the durable turn untouched.
+ */
+function reconcileRecoveredTurn(
+    state: GoalSessionState,
+    outcome: GoalProviderReconcileResult['outcome'],
+): { status: GoalSessionStatus; activeTurn: GoalTurnState | undefined } {
+    if (outcome === 'failed') return { status: 'failed', activeTurn: state.activeTurn };
+    if (outcome !== 'resumed') return { status: state.status, activeTurn: state.activeTurn };
+    const turn = state.activeTurn;
+    if (turn && (turn.status === 'running' || turn.status === 'pause_requested' || turn.status === 'paused')) {
+        return { status: 'paused', activeTurn: { ...turn, status: 'paused' } };
+    }
+    return { status: 'idle', activeTurn: turn };
+}
+
+/**
+ * Verifies the worktree matches the expected identity before any resume side
+ * effect. It also blocks when the expected branch/head cannot actually be
+ * observed, so a worktree whose state could not be inspected never passes by the
+ * mere absence of an observed value.
+ */
 function verifyReconciliationTarget(
     expected: GoalRepositoryIdentity,
     inspection: GoalRepositoryInspection,
@@ -308,11 +341,19 @@ function verifyReconciliationTarget(
     if (!inspection.exists) {
         return `Worktree ${expected.worktreePath} is unavailable: ${inspection.reason ?? 'not found'}`;
     }
-    if (inspection.observedBranch && inspection.observedBranch !== expected.branch) {
+    if (!inspection.observedBranch) {
+        return `Worktree ${expected.worktreePath} branch could not be observed: ${inspection.reason ?? 'branch unavailable'}`;
+    }
+    if (inspection.observedBranch !== expected.branch) {
         return `Worktree branch mismatch: expected ${expected.branch}, found ${inspection.observedBranch}`;
     }
-    if (expected.headSha && inspection.observedHeadSha && inspection.observedHeadSha !== expected.headSha) {
-        return `Worktree head mismatch: expected ${expected.headSha}, found ${inspection.observedHeadSha}`;
+    if (expected.headSha) {
+        if (!inspection.observedHeadSha) {
+            return `Worktree ${expected.worktreePath} head could not be observed: ${inspection.reason ?? 'head unavailable'}`;
+        }
+        if (inspection.observedHeadSha !== expected.headSha) {
+            return `Worktree head mismatch: expected ${expected.headSha}, found ${inspection.observedHeadSha}`;
+        }
     }
     return null;
 }

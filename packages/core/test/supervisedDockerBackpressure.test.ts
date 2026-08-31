@@ -81,3 +81,47 @@ test('exceeding the queued-byte bound cancels with an actionable overflow error'
 
     await assert.rejects(execution.completion, /backpressure bound/);
 });
+
+test('rejects non-positive, non-finite, or incoherent backpressure limits', () => {
+    const base = { goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 'limits', durableOutput: () => {} };
+    assert.throws(() => executeSupervisedDockerCommand(['run', 'img'], { ...base, maxChunkBytes: 0 }), /maxChunkBytes must be a positive safe integer/);
+    assert.throws(() => executeSupervisedDockerCommand(['run', 'img'], { ...base, maxChunkBytes: -8 }), /maxChunkBytes must be a positive safe integer/);
+    assert.throws(() => executeSupervisedDockerCommand(['run', 'img'], { ...base, maxQueuedBytes: Number.POSITIVE_INFINITY }), /maxQueuedBytes must be a positive safe integer/);
+    assert.throws(() => executeSupervisedDockerCommand(['run', 'img'], { ...base, maxQueuedBytes: 1.5 }), /maxQueuedBytes must be a positive safe integer/);
+    assert.throws(() => executeSupervisedDockerCommand(['run', 'img'], { ...base, maxChunkBytes: 128, maxQueuedBytes: 64 }), /must not exceed maxQueuedBytes/);
+});
+
+test('a single oversized read is stopped during enqueue by the hard cap', async () => {
+    const execution = executeSupervisedDockerCommand(['run', 'img'], {
+        goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 'oversized',
+        maxChunkBytes: 16, maxQueuedBytes: 64,
+        // Never drains, so the whole read can only be bounded by enqueue-time enforcement.
+        durableOutput: () => new Promise<void>(() => {}),
+    });
+
+    child.stdout.emit('data', Buffer.from('z'.repeat(4096)));
+    await tick();
+    child.emit('close', 0);
+
+    await assert.rejects(execution.completion, /backpressure bound/);
+});
+
+test('splitting a large read preserves multi-byte UTF-8 characters across chunk boundaries', async () => {
+    const received: string[] = [];
+    const execution = executeSupervisedDockerCommand(['run', 'img'], {
+        goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 'utf8',
+        maxChunkBytes: 4, maxQueuedBytes: 1_000_000,
+        durableOutput: output => { received.push(output.data); },
+    });
+
+    const text = '你好世界🌍émojî'.repeat(8);
+    child.stdout.emit('data', Buffer.from(text, 'utf8'));
+    await tick();
+    child.exitCode = 0;
+    child.emit('close', 0);
+    await execution.completion;
+
+    assert.ok(received.length > 1, 'the read was split into multiple durable chunks');
+    assert.equal(received.join(''), text);
+    assert.ok(!received.join('').includes('�'), 'no UTF-8 replacement characters were produced');
+});

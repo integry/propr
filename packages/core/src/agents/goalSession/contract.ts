@@ -62,6 +62,16 @@ export interface GoalTurnState extends GoalExecutionIdentity {
 }
 
 /**
+ * Durable record of a finished logical turn's real execution identity. It lets a
+ * late queue redelivery of an older turn recover the exact execution/attempt it
+ * ran under, instead of fabricating a fresh attempt id, even after a subsequent
+ * turn has replaced {@link GoalSessionState.activeTurn}.
+ */
+export interface GoalCompletedTurn extends GoalExecutionIdentity {
+    turnId: string;
+}
+
+/**
  * Durable marker recorded before the very first provider open call. It lets a
  * later controller distinguish an ordinary crash window (recoverable when the
  * provider can deterministically/idempotently re-open) from a session that was
@@ -92,6 +102,8 @@ export interface GoalSessionState extends GoalSessionIdentity {
     requestedModel?: string;
     activeTurn?: GoalTurnState;
     completedTurnIds: string[];
+    /** Execution identity of each completed turn, keyed by turnId order of completion. */
+    completedTurns?: GoalCompletedTurn[];
     /** Present while a first provider open is in-flight; cleared once persisted. */
     initializationIntent?: GoalSessionInitializationIntent;
     failureReason?: string;

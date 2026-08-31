@@ -24,8 +24,13 @@ export interface RunGoalTurnRequest extends Omit<GoalBeginTurnRequest, 'executio
 
 export type RunGoalTurnResult =
     | { disposition: 'started'; state: GoalSessionState; execution: GoalExecutionIdentity }
-    /** A redelivery observed durable state; it neither ran the provider nor claimed completion itself. */
-    | { disposition: 'duplicate'; reattached: true; state: GoalSessionState; execution: GoalExecutionIdentity };
+    /**
+     * A redelivery observed durable state; it neither ran the provider nor
+     * claimed completion itself. `reattached` is only true when the original
+     * execution/attempt identity of that turn was recovered; a truthful `false`
+     * is returned with a fresh fallback identity when it cannot be recovered.
+     */
+    | { disposition: 'duplicate'; reattached: boolean; state: GoalSessionState; execution: GoalExecutionIdentity };
 
 type TurnStreamOutcome = { state: GoalSessionState; completed: boolean; reachedPause: boolean };
 
@@ -66,8 +71,8 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         }
 
         const adapterRequest: GoalBeginTurnRequest = { ...request, ...execution };
-        const stream = this.adapter.beginTurn(adapterRequest, persistedSnapshot(claimed));
-        const outcome = await this.driveTurnStream(request, execution, claimed, stream);
+        const outcome = await this.driveTurnStream(request, execution, claimed,
+            () => this.adapter.beginTurn(adapterRequest, persistedSnapshot(claimed)));
         return { disposition: 'started', state: outcome.state, execution };
     }
 
@@ -98,8 +103,8 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         await this.appendControl(fence, execution, { type: 'session_resumed' });
         await this.append(turnFence, execution, { type: 'turn_resumed', turnId: turnFence.turnId });
 
-        const stream = this.adapter.resumeTurn(turnFence, persistedSnapshot(state));
-        const outcome = await this.driveTurnStream(turnFence, execution, state, stream);
+        const outcome = await this.driveTurnStream(turnFence, execution, state,
+            () => this.adapter.resumeTurn(turnFence, persistedSnapshot(state)));
         return { disposition: 'started', state: outcome.state, execution };
     }
 
@@ -108,23 +113,42 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         turnId: string,
         fallback: GoalExecutionIdentity,
     ): RunGoalTurnResult | undefined {
-        if (!state.completedTurnIds.includes(turnId) && state.activeTurn?.turnId !== turnId) return undefined;
-        const execution = state.activeTurn?.turnId === turnId
-            ? { executionId: state.activeTurn.executionId, attemptId: state.activeTurn.attemptId }
-            : fallback;
-        return { disposition: 'duplicate', reattached: true, state, execution };
+        // The turn is still the active turn: reattach to its real identity.
+        if (state.activeTurn?.turnId === turnId) {
+            const execution = { executionId: state.activeTurn.executionId, attemptId: state.activeTurn.attemptId };
+            return { disposition: 'duplicate', reattached: true, state, execution };
+        }
+        if (!state.completedTurnIds.includes(turnId)) return undefined;
+        // An older turn that a later turn has since replaced: recover its durably
+        // recorded execution identity so the redelivery is honestly reattached.
+        const recorded = state.completedTurns?.find(turn => turn.turnId === turnId);
+        if (recorded) {
+            return {
+                disposition: 'duplicate',
+                reattached: true,
+                state,
+                execution: { executionId: recorded.executionId, attemptId: recorded.attemptId },
+            };
+        }
+        // The original identity was not recorded (e.g. legacy state): do not claim
+        // a reattachment we cannot back with the real attempt identity.
+        return { disposition: 'duplicate', reattached: false, state, execution: fallback };
     }
 
     private async driveTurnStream(
         fence: GoalSessionFence,
         execution: GoalExecutionIdentity,
         initial: GoalSessionState,
-        stream: AsyncIterable<GoalSessionEvent>,
+        openStream: () => AsyncIterable<GoalSessionEvent>,
     ): Promise<TurnStreamOutcome> {
         let current = initial;
         let reachedPause = false;
         let completed = false;
         try {
+            // Invoke the provider inside the fenced try so a synchronous/early
+            // invocation failure is normalized into failed state plus one
+            // completion event, never leaving the session stranded as running.
+            const stream = openStream();
             for await (const event of stream) {
                 if (completed) {
                     throw new GoalSessionContractError('Provider emitted an event after turn completion', 'EVENT_AFTER_COMPLETION');
@@ -198,7 +222,17 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             completedTurnIds: state.completedTurnIds.includes(fence.turnId)
                 ? state.completedTurnIds
                 : [...state.completedTurnIds, fence.turnId],
+            completedTurns: this.recordCompletedTurn(state, fence.turnId),
         }));
+    }
+
+    /** Appends the finishing turn's real execution identity, once, for later recovery. */
+    private recordCompletedTurn(state: GoalSessionState, turnId: string): GoalSessionState['completedTurns'] {
+        const existing = state.completedTurns ?? [];
+        if (!state.activeTurn || state.activeTurn.turnId !== turnId || existing.some(turn => turn.turnId === turnId)) {
+            return existing.length ? existing : undefined;
+        }
+        return [...existing, { turnId, executionId: state.activeTurn.executionId, attemptId: state.activeTurn.attemptId }];
     }
 
     private async finishTurnIfOwned(fence: GoalSessionFence, error: string): Promise<GoalSessionState> {

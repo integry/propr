@@ -56,11 +56,51 @@ export interface SupervisedDockerExecution {
 const DEFAULT_MAX_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_MAX_QUEUED_BYTES = 8 * 1024 * 1024;
 
+function assertPositiveSafeInteger(value: number | undefined, name: string): void {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error(`Supervised Docker ${name} must be a positive safe integer`);
+    }
+}
+
+/**
+ * Resolves the backpressure limits into a coherent, positive, safe-integer
+ * policy. A caller may set only the queued bound; the per-chunk default is then
+ * clamped so it can never exceed it. Explicitly incoherent overrides are rejected.
+ */
+function resolveBackpressureLimits(options: SupervisedDockerOptions): { maxChunkBytes: number; maxQueuedBytes: number } {
+    assertPositiveSafeInteger(options.maxQueuedBytes, 'maxQueuedBytes');
+    assertPositiveSafeInteger(options.maxChunkBytes, 'maxChunkBytes');
+    const maxQueuedBytes = options.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES;
+    const maxChunkBytes = options.maxChunkBytes ?? Math.min(DEFAULT_MAX_CHUNK_BYTES, maxQueuedBytes);
+    if (maxChunkBytes > maxQueuedBytes) {
+        throw new Error('Supervised Docker maxChunkBytes must not exceed maxQueuedBytes');
+    }
+    return { maxChunkBytes, maxQueuedBytes };
+}
+
+function isUtf8ContinuationByte(byte: number): boolean {
+    return (byte & 0xc0) === 0x80;
+}
+
+/**
+ * Splits a buffer into slices no larger than maxChunkBytes, backing each split
+ * off any trailing UTF-8 continuation bytes so a multi-byte character is never
+ * cut across a chunk boundary and every slice decodes to valid text.
+ */
 function splitBuffer(buffer: Buffer, maxChunkBytes: number): Buffer[] {
     if (buffer.length <= maxChunkBytes) return [buffer];
     const slices: Buffer[] = [];
-    for (let offset = 0; offset < buffer.length; offset += maxChunkBytes) {
-        slices.push(buffer.subarray(offset, Math.min(offset + maxChunkBytes, buffer.length)));
+    let offset = 0;
+    while (offset < buffer.length) {
+        let end = Math.min(offset + maxChunkBytes, buffer.length);
+        if (end < buffer.length) {
+            while (end > offset && isUtf8ContinuationByte(buffer[end])) end -= 1;
+            // A run of continuation bytes longer than a chunk (only possible for
+            // malformed input) falls back to a hard split to guarantee progress.
+            if (end === offset) end = Math.min(offset + maxChunkBytes, buffer.length);
+        }
+        slices.push(buffer.subarray(offset, end));
+        offset = end;
     }
     return slices;
 }
@@ -113,11 +153,14 @@ class OrderedBackpressureSink {
         for (const slice of splitBuffer(buffer, this.maxChunkBytes)) {
             this.queue.push({ ...this.base, channel, data: slice.toString() });
             this.queuedBytes += slice.length;
-        }
-        if (this.queuedBytes >= this.highWaterMark) this.setPaused(true);
-        if (this.queuedBytes > this.maxQueuedBytes) {
-            this.fail(new Error(`Supervised Docker output exceeded the ${this.maxQueuedBytes}-byte backpressure bound; the durable sink is too slow to keep up`));
-            return;
+            if (this.queuedBytes >= this.highWaterMark) this.setPaused(true);
+            // Enforce the hard cap while enqueuing each slice so a single
+            // oversized read is stopped mid-split instead of being fully
+            // buffered before the bound is checked.
+            if (this.queuedBytes > this.maxQueuedBytes) {
+                this.fail(new Error(`Supervised Docker output exceeded the ${this.maxQueuedBytes}-byte backpressure bound; the durable sink is too slow to keep up`));
+                return;
+            }
         }
         this.ensureDraining();
     }
@@ -201,6 +244,7 @@ export function executeSupervisedDockerCommand(
     options: SupervisedDockerOptions,
 ): SupervisedDockerExecution {
     validateSupervisedOptions(args, options);
+    const backpressureLimits = resolveBackpressureLimits(options);
     const ownershipContext = getExecutionOwnershipContext();
     const executionSignal = options.signal ?? ownershipContext?.signal;
     const initialAbortError = getExecutionAbortError(executionSignal);
@@ -241,8 +285,8 @@ export function executeSupervisedDockerCommand(
         deliver: options.durableOutput,
         streams: () => [child.stdout, child.stderr],
         onOverflow: error => { outputFailure ??= error; void cancel(error); },
-        maxChunkBytes: options.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES,
-        maxQueuedBytes: options.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES,
+        maxChunkBytes: backpressureLimits.maxChunkBytes,
+        maxQueuedBytes: backpressureLimits.maxQueuedBytes,
     });
     child.stdout?.on('data', (data: Buffer) => sink.enqueue('stdout', data));
     child.stderr?.on('data', (data: Buffer) => sink.enqueue('stderr', data));

@@ -9,6 +9,7 @@ import type {
     GoalExecutionIdentity,
     GoalSessionEventSink,
     GoalSessionFence,
+    GoalSessionIdentity,
 } from './contract.js';
 import { StaleGoalSessionFenceError } from './errors.js';
 
@@ -73,17 +74,36 @@ export const DEFAULT_GOAL_CONTAINER_RETENTION: GoalContainerRetentionPolicy = {
     failedMs: 7 * 24 * 60 * 60 * 1000,
 };
 
+/** An opaque, derived goal scope: 24 hex characters from buildGoalContainerLayout. */
+const GOAL_SCOPE_PATTERN = /^[a-f0-9]{24}$/;
+
 function opaquePart(value: string, length = 16): string {
     return createHash('sha256').update(value).digest('hex').slice(0, length);
+}
+
+function goalScopeFor(request: GoalSessionIdentity): string {
+    return opaquePart(`${request.goalId}\0${request.sessionId}`, 24);
 }
 
 function validateAbsolutePath(value: string, name: string): void {
     if (!path.isAbsolute(value)) throw new Error(`${name} must be an absolute path`);
 }
 
+/**
+ * Validates a host path that is interpolated into a Docker `--mount` CSV value.
+ * A comma, `=`, or control character would be parsed by Docker as an additional
+ * mount field/option, so such paths are rejected outright.
+ */
+function validateBindMountPath(value: string, name: string): void {
+    validateAbsolutePath(value, name);
+    if (/[,=\n\r\0]/.test(value)) {
+        throw new Error(`${name} may not contain a comma, '=', or control character that could inject Docker --mount options`);
+    }
+}
+
 export function buildGoalContainerLayout(baseDirectory: string, request: GoalSessionFence & GoalExecutionIdentity): GoalContainerLayout {
-    validateAbsolutePath(baseDirectory, 'Goal container base directory');
-    const goalScope = opaquePart(`${request.goalId}\0${request.sessionId}`, 24);
+    validateBindMountPath(baseDirectory, 'Goal container base directory');
+    const goalScope = goalScopeFor(request);
     const executionId = [
         goalScope,
         `e${request.controllerEpoch}`,
@@ -91,12 +111,20 @@ export function buildGoalContainerLayout(baseDirectory: string, request: GoalSes
         opaquePart(request.attemptId, 10),
     ].join('-');
     const sessionRoot = path.join(baseDirectory, 'goals', goalScope);
+    const logDir = path.join(sessionRoot, 'logs');
+    // The log file name is built only from the opaque, derived executionId, so
+    // caller-controlled turn/attempt identifiers can never inject a separator or
+    // `..` that would escape the goal's log directory.
+    const logPath = path.join(logDir, `${executionId}.jsonl`);
+    if (path.dirname(logPath) !== logDir) {
+        throw new Error('Derived goal log path escaped the goal log directory');
+    }
     return {
         executionId,
         containerName: `propr-goal-${executionId}`,
         sessionRoot,
         providerHome: path.join(sessionRoot, 'provider-home'),
-        logPath: path.join(sessionRoot, 'logs', `${request.executionId}-${request.attemptId}.jsonl`),
+        logPath,
     };
 }
 
@@ -108,7 +136,7 @@ function validateEnvironment(environment: Record<string, string>): void {
 
 /** Rejects a provider home that would shadow /workspace, /, or another sensitive mount. */
 function validateProviderHomeTarget(target: string): void {
-    validateAbsolutePath(target, 'Provider home target');
+    validateBindMountPath(target, 'Provider home target');
     const normalized = path.posix.normalize(target).replace(/\/+$/, '') || '/';
     if (RESERVED_CONTAINER_PATHS.has(normalized)) {
         throw new Error(`Provider home target may not shadow the reserved container path ${normalized}`);
@@ -124,8 +152,8 @@ function validateProviderHomeTarget(target: string): void {
 function validateCredentialMounts(mounts: ReadonlyArray<GoalCredentialMount>, providerHomeTarget: string): void {
     const home = path.posix.normalize(providerHomeTarget).replace(/\/+$/, '');
     for (const mount of mounts) {
-        validateAbsolutePath(mount.source, 'Credential mount source');
-        validateAbsolutePath(mount.target, 'Credential mount target');
+        validateBindMountPath(mount.source, 'Credential mount source');
+        validateBindMountPath(mount.target, 'Credential mount target');
         const target = path.posix.normalize(mount.target).replace(/\/+$/, '');
         if (target === home || target.startsWith(`${home}/`)) {
             throw new Error('Credentials must be mounted separately from the writable provider home');
@@ -151,7 +179,7 @@ export class GoalContainerSupervisor {
     }
 
     async start(request: StartGoalContainerRequest): Promise<{ layout: GoalContainerLayout; execution: SupervisedDockerExecution }> {
-        validateAbsolutePath(request.worktreePath, 'Goal worktree path');
+        validateBindMountPath(request.worktreePath, 'Goal worktree path');
         validateProviderHomeTarget(request.providerHomeTarget);
         if (!request.image.trim()) throw new Error('Goal container image must be non-empty');
         const environment = request.environment ?? {};
@@ -207,9 +235,10 @@ export class GoalContainerSupervisor {
 
     /**
      * Removes only a previously derived, goal-scoped session directory after its
-     * retention deadline. The path is resolved through realpath so a symlinked
-     * session root (or any symlinked ancestor) that points outside the goal
-     * resource directory is rejected rather than followed.
+     * retention deadline. The target must be a real directory whose lexical path
+     * is exactly its symlink-resolved path: any symlink is rejected, including an
+     * in-tree one pointing at a sibling goal's real directory, so cleanup can
+     * never delete another goal's resources through a redirected session root.
      */
     async cleanTerminalSession(
         layout: GoalContainerLayout,
@@ -221,11 +250,11 @@ export class GoalContainerSupervisor {
         const realGoals = await realpath(path.join(await realpath(this.baseDirectory), 'goals')).catch(() => null);
         if (!realGoals) return false;
 
-        // The lexical target must already be inside the goals directory before we
-        // touch the filesystem, and its real (symlink-resolved) location must land
-        // in exactly the same goals directory.
+        // Derived-layout ownership: the lexical target must be an immediate child
+        // of the real goals directory whose name is an opaque, derived goal scope,
+        // exactly as buildGoalContainerLayout produces it.
         const lexicalRoot = path.resolve(layout.sessionRoot);
-        if (path.dirname(lexicalRoot) !== path.join(await realpath(this.baseDirectory), 'goals')) {
+        if (path.dirname(lexicalRoot) !== realGoals || !GOAL_SCOPE_PATTERN.test(path.basename(lexicalRoot))) {
             throw new Error('Refusing to clean a path outside the goal container resource directory');
         }
         let resolvedRoot: string;
@@ -234,8 +263,11 @@ export class GoalContainerSupervisor {
         } catch {
             return false; // Already removed.
         }
-        if (path.dirname(resolvedRoot) !== realGoals || resolvedRoot === realGoals) {
-            throw new Error('Refusing to clean a symlinked path that escapes the goal container resource directory');
+        // Lexical/resolved identity: a session root that is (or traverses) a
+        // symlink resolves to a different real path than its derived location.
+        // Rejecting the mismatch spares both external and in-tree sibling targets.
+        if (resolvedRoot !== lexicalRoot) {
+            throw new Error('Refusing to clean a symlinked goal session directory');
         }
         await rm(resolvedRoot, { recursive: true, force: true });
         return true;

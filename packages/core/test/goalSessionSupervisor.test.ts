@@ -486,6 +486,169 @@ test('fails an unrecoverable crash before provider-identity persistence when ope
     );
 });
 
+class ThrowingBeginAdapter extends FakeGoalAdapter {
+    beginTurn(): AsyncIterable<GoalSessionEvent> {
+        this.beginCalls += 1;
+        throw new Error('begin invocation exploded');
+    }
+}
+
+class ThrowingResumeAdapter extends FakeGoalAdapter {
+    resumeTurn(): AsyncIterable<GoalSessionEvent> {
+        this.resumeTurnCalls += 1;
+        throw new Error('resume invocation exploded');
+    }
+}
+
+test('a synchronous begin-turn invocation failure fences the session as failed with one completion', async () => {
+    const adapter = new ThrowingBeginAdapter();
+    const { persistence, supervisor } = await openedRuntime(adapter);
+
+    await assert.rejects(
+        supervisor.runTurn({ ...fence, executionId: 'exec-b', attemptId: 'att-b', objective: 'boom', repository, requestedModel: 'model-a' }),
+        /begin invocation exploded/,
+    );
+
+    const state = await persistence.load(identity);
+    assert.equal(state?.status, 'failed');
+    assert.equal(state?.activeTurn?.status, 'failed');
+    const completions = (await persistence.replay(identity)).filter(event => event.event.type === 'completion');
+    assert.equal(completions.length, 1);
+    assert.equal(completions[0].event.type === 'completion' ? completions[0].event.outcome : '', 'failed');
+});
+
+test('a synchronous resume-turn invocation failure fences the session as failed with one completion', async () => {
+    const adapter = new ThrowingResumeAdapter();
+    let releaseTurn!: () => void;
+    adapter.holdTurn = new Promise(resolve => { releaseTurn = resolve; });
+    const started = new Promise<void>(resolve => { adapter.turnStarted = resolve; });
+    adapter.events = [{ type: 'pause_boundary', boundary: 'after_tool', checkpointId: 'cp-pause' }];
+    const { persistence, supervisor } = await openedRuntime(adapter);
+    const running = supervisor.runTurn({ ...fence, executionId: 'exec-r', attemptId: 'att-r', objective: 'pause then resume', repository, requestedModel: 'model-a' });
+    await started;
+    await supervisor.requestPause({ ...fence, reason: 'checkpoint' });
+    releaseTurn();
+    const paused = await running;
+    assert.equal(paused.state.status, 'paused');
+
+    await assert.rejects(supervisor.resumeTurn(fence), /resume invocation exploded/);
+
+    const state = await persistence.load(identity);
+    assert.equal(state?.status, 'failed');
+    assert.equal(state?.activeTurn?.status, 'failed');
+    const completions = (await persistence.replay(identity)).filter(event => event.event.type === 'completion');
+    assert.equal(completions.length, 1);
+});
+
+test('rejects a model change on a terminated session before calling the adapter', async () => {
+    const adapter = new FakeGoalAdapter();
+    adapter.events = [{ type: 'completion', outcome: 'succeeded' }];
+    const { supervisor } = await openedRuntime(adapter);
+    await supervisor.runTurn({ ...fence, executionId: 'exec-one', objective: 'run', repository, requestedModel: 'model-a' });
+    await supervisor.cancel({ ...fence, reason: 'operator requested termination' });
+    const callsBefore = adapter.modelCalls.length;
+
+    await assert.rejects(
+        supervisor.requestModelChange({ ...fence, model: 'model-b' }),
+        (error: unknown) => error instanceof GoalSessionContractError && error.code === 'SESSION_NOT_CONTROLLABLE',
+    );
+    assert.equal(adapter.modelCalls.length, callsBefore, 'the adapter must not be called for a terminated session');
+});
+
+test('reconciles a running turn after container loss into a resumable turn a replacement continues once', async () => {
+    const persistence = new InMemoryGoalSessionPorts();
+    const adapter = new FakeGoalAdapter();
+    adapter.resumeEvents = [
+        { type: 'assistant', messageId: 'a2', content: 'continued after recovery' },
+        { type: 'completion', outcome: 'succeeded', summary: 'finished after container loss' },
+    ];
+    const timestamp = new Date().toISOString();
+    await persistence.create({
+        ...identity, provider: 'fake', controllerEpoch: 1, status: 'running',
+        providerSessionId: 'provider-session-stable',
+        recoveryMetadata: { checkpoint: 'mid-turn' },
+        currentModel: 'model-a', requestedModel: 'model-a',
+        activeTurn: {
+            executionId: 'execution-live', attemptId: 'attempt-live', turnId: 'turn-one',
+            objective: 'long turn', requestedModel: 'model-a', repository, status: 'running',
+        },
+        completedTurnIds: [], createdAt: timestamp, updatedAt: timestamp,
+    });
+    persistence.setContainerInspection(identity, { status: 'missing', reason: 'container lost' });
+    persistence.setRepositoryInspection(repository, {
+        ...repository, exists: true, observedBranch: 'goal-branch', observedHeadSha: 'abc123',
+    });
+    adapter.reconcileResult = {
+        outcome: 'resumed',
+        snapshot: { providerSessionId: 'provider-session-stable', recoveryMetadata: { checkpoint: 'recovered' }, model: 'model-a' },
+        reason: 'provider resumed from checkpoint',
+    };
+
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    const result = await supervisor.reconcile(identity, 2, repository);
+    assert.equal(result.outcome, 'resumed');
+    // The interrupted running turn is reconciled into an explicitly resumable
+    // paused turn, never left idle where a new turn could overwrite it.
+    assert.equal(result.state.status, 'paused');
+    assert.equal(result.state.activeTurn?.status, 'paused');
+    assert.equal(result.state.activeTurn?.executionId, 'execution-live');
+
+    const replacement = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    const resumed = await replacement.resumeTurn({ ...identity, controllerEpoch: 2 });
+    assert.equal(resumed.disposition, 'started');
+    assert.equal(resumed.state.status, 'idle');
+    assert.equal(resumed.execution.executionId, 'execution-live');
+    assert.equal(resumed.execution.attemptId, 'attempt-live');
+    assert.equal(adapter.resumeTurnCalls, 1);
+    assert.equal(adapter.beginCalls, 0, 'no new turn was begun for the recovered execution');
+    const completions = (await persistence.replay(identity)).filter(event => event.event.type === 'completion');
+    assert.equal(completions.length, 1, 'the recovered turn completes exactly once');
+});
+
+test('blocks reconciliation when the worktree branch cannot actually be observed', async () => {
+    const adapter = new FakeGoalAdapter();
+    const { persistence, supervisor } = await openedRuntime(adapter);
+    persistence.setContainerInspection(identity, { status: 'missing', reason: 'daemon restarted' });
+    // The worktree exists but its git state could not be inspected.
+    persistence.setRepositoryInspection(repository, {
+        ...repository, exists: true, reason: 'git rev-parse failed: not a git repository',
+    });
+    adapter.reconcileResult = {
+        outcome: 'resumed',
+        snapshot: { providerSessionId: 'provider-session-stable', recoveryMetadata: { checkpoint: 'x' } },
+        reason: 'should not be reached',
+    };
+
+    const result = await supervisor.reconcile(identity, 2, repository);
+    assert.equal(result.outcome, 'blocked');
+    assert.match(result.reason, /branch could not be observed/);
+    assert.equal(result.state.status, 'idle');
+});
+
+test('redelivery of an older completed turn recovers its original execution identity', async () => {
+    const adapter = new FakeGoalAdapter();
+    adapter.events = [{ type: 'completion', outcome: 'succeeded' }];
+    const { supervisor } = await openedRuntime(adapter);
+    const firstReq = {
+        ...fence, turnId: 'turn-one', executionId: 'exec-one', attemptId: 'attempt-one',
+        objective: 'first', repository, requestedModel: 'model-a',
+    };
+    await supervisor.runTurn(firstReq);
+    // A subsequent turn replaces activeTurn with a different execution identity.
+    await supervisor.runTurn({
+        ...fence, turnId: 'turn-two', executionId: 'exec-two', attemptId: 'attempt-two',
+        objective: 'second', repository, requestedModel: 'model-a',
+    });
+    assert.equal(adapter.beginCalls, 2);
+
+    const redelivered = await supervisor.runTurn(firstReq);
+    assert.equal(redelivered.disposition, 'duplicate');
+    assert.equal(redelivered.disposition === 'duplicate' && redelivered.reattached, true);
+    assert.equal(redelivered.execution.executionId, 'exec-one');
+    assert.equal(redelivered.execution.attemptId, 'attempt-one');
+    assert.equal(adapter.beginCalls, 2, 'the older turn is not re-invoked on the provider');
+});
+
 test('goal-scoped session state cannot be read or reused by another goal', async () => {
     const { persistence } = await openedRuntime();
     await assert.rejects(
