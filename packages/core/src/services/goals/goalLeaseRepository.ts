@@ -22,9 +22,10 @@ export class GoalLeaseRepository {
     const id = boundedText(goalId, 'goalId') as string;
     const leaseOwner = boundedText(owner, 'leaseOwner') as string;
     validateTtl(ttlMs);
-    const now = nowIso();
-    const expiresAt = nowIso(Date.now() + ttlMs);
     return goalTransaction(this.db, async (trx) => {
+      const nowMs = Date.now();
+      const now = nowIso(nowMs);
+      const expiresAt = nowIso(nowMs + ttlMs);
       const affected = await trx('goals').where('goal_id', id)
         .whereNotIn('state', TERMINAL_GOAL_STATES)
         .andWhere((available) => {
@@ -54,9 +55,10 @@ export class GoalLeaseRepository {
     const leaseOwner = boundedText(owner, 'leaseOwner') as string;
     validateFence({ leaseOwner, leaseEpoch: epoch });
     validateTtl(ttlMs);
-    const now = nowIso();
-    const expiresAt = nowIso(Date.now() + ttlMs);
     return goalTransaction(this.db, async (trx) => {
+      const nowMs = Date.now();
+      const now = nowIso(nowMs);
+      const expiresAt = nowIso(nowMs + ttlMs);
       const affected = await trx('goals').where({
         goal_id: id,
         lease_owner: leaseOwner,
@@ -73,8 +75,8 @@ export class GoalLeaseRepository {
     const id = boundedText(goalId, 'goalId') as string;
     const leaseOwner = boundedText(owner, 'leaseOwner') as string;
     validateFence({ leaseOwner, leaseEpoch: epoch });
-    const now = nowIso();
     await goalTransaction(this.db, async (trx) => {
+      const now = nowIso();
       const goal = await requireGoalRecord(trx, id);
       const affected = await trx('goals').where({
         goal_id: id,

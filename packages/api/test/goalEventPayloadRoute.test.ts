@@ -117,9 +117,9 @@ test('event route projects poisoned nested payloads without mutating persistence
     requestedBy: 'private-requesting-actor',
     requestedAt: '2026-08-31T10:00:00.000Z',
     owner: 'exact-private-owner',
-    ownerUserId: 'private-owner-user',
-    leaseOwner: 'private-lease-owner',
+    ownerUserId: 'private-owner-user', leaseOwner: 'private-lease-owner',
     controllerOwner: 'private-controller-owner',
+    xApiKey: 'short-one', 'X-API-Key': 'short-two',
     eventName: 'model-change-requested',
     progress: { current: 2, total: 5, note: `safe context ${githubToken}` },
     safeArray: ['alpha', { message: 'beta', count: 3 }, `array context ${githubToken}`],
@@ -217,7 +217,7 @@ test('event route projects poisoned nested payloads without mutating persistence
   assert.match((payload.progress as { note: string }).note, /\[REDACTED_GITHUB_TOKEN\]/);
   for (const forbiddenKey of [
     'requestedBy', 'owner', 'controller', 'ownerUserId', 'leaseOwner',
-    'controllerOwner', 'leaseEpoch',
+    'controllerOwner', 'xApiKey', 'X-API-Key', 'leaseEpoch',
     'sessionId', 'idempotencyKey',
     'claimToken', 'request', 'response', 'runtime', 'containerId', 'worktreePath',
     'configPath', 'credentialPath', 'env', 'GITHUB_TOKEN', 'SAFE_SETTING', 'mounts',
@@ -228,7 +228,7 @@ test('event route projects poisoned nested payloads without mutating persistence
   for (const forbiddenLiteral of [
     githubToken, 'private-requesting-actor', 'private-nested-requesting-actor',
     'exact-private-owner', 'exact-private-controller', 'private-owner-user',
-    'private-lease-owner', 'private-controller-owner',
+    'private-lease-owner', 'private-controller-owner', 'short-one', 'short-two',
     'provider-session-private', 'private-write-key', 'private-claim-token',
     'private-controller-response', 'private-container', 'not-public-either',
     '/var/run/docker.sock', '/tmp/worktrees/private-goal',

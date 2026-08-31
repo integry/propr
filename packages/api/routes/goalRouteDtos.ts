@@ -124,6 +124,7 @@ const PRIVATE_EVENT_KEY_SUFFIXES = [
   'volumes',
   'credential',
   'credentials',
+  'apikey',
   'token',
   'authorization',
   'cookie',

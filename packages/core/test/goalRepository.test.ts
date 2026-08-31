@@ -5,6 +5,7 @@ import type { BetterSqliteConnection } from '../src/db/connection.js';
 import { down, up } from '../src/db/migrations/20260831000000_create_goal_control_plane.js';
 import { GoalRepository, GoalError } from '../src/services/goals/goalRepository.js';
 import { GoalLifecycleService } from '../src/services/goals/goalLifecycleService.js';
+import { GoalLeaseRepository } from '../src/services/goals/goalLeaseRepository.js';
 
 let database: Knex;
 let repo: GoalRepository;
@@ -469,6 +470,47 @@ describe('GoalRepository', () => {
       assert.ok(renewed.expiresAt);
     });
 
+    test('calculates claim, renew, and release timestamps inside the transaction', async () => {
+      const goal = await seedGoal();
+      const originalNow = Date.now;
+      let clock = Date.parse('2026-08-31T12:00:00.000Z');
+      let transactionStartedAt = clock;
+      const transactionDb = {
+        transaction<T>(effect: (trx: Knex.Transaction) => Promise<T>): Promise<T> {
+          return database.transaction(async (trx) => {
+            clock += 10_000;
+            transactionStartedAt = clock;
+            return effect(trx);
+          });
+        },
+      } as Knex;
+      const leases = new GoalLeaseRepository(transactionDb);
+
+      Date.now = () => clock;
+      try {
+        const claimed = await leases.claimLease(goal.goalId, 'timed-controller', 60_000);
+        assert.equal(Date.parse(claimed.expiresAt), transactionStartedAt + 60_000);
+
+        const renewed = await leases.renewLease(
+          goal.goalId,
+          'timed-controller',
+          claimed.epoch,
+          60_000
+        );
+        assert.equal(Date.parse(renewed.expiresAt), transactionStartedAt + 60_000);
+
+        await database('goals').where('goal_id', goal.goalId).update({
+          lease_expires_at: new Date(clock + 5_000).toISOString(),
+        });
+        await assert.rejects(
+          leases.releaseLease(goal.goalId, 'timed-controller', claimed.epoch),
+          (error: GoalError) => error.code === 'goal_stale_lease'
+        );
+      } finally {
+        Date.now = originalNow;
+      }
+    });
+
     test('rejects forged future, wrong-owner, and null-owner controller writes', async () => {
       const goal = await seedGoal();
       const lease = await repo.claimLease(goal.goalId, 'controller-a', 60_000);
@@ -552,6 +594,12 @@ describe('GoalRepository', () => {
       await expectTerminal(repo.markMessageAcknowledged(goal.goalId, delivered.messageId, fence));
       await expectTerminal(repo.applyModelChange(goal.goalId, fence));
       await expectTerminal(repo.renewLease(goal.goalId, fence.leaseOwner, fence.leaseEpoch, 60_000));
+      assert.deepEqual(await repo.enqueueMessage(goal.goalId, {
+        body: 'deliver after cancel', idempotencyKey: 'terminal-deliver',
+      }), queued);
+      await expectTerminal(repo.enqueueMessage(goal.goalId, {
+        body: 'new work after cancel', idempotencyKey: 'after-cancel-message',
+      }));
       await repo.releaseLease(goal.goalId, fence.leaseOwner, fence.leaseEpoch);
 
       const afterGoal = await repo.requireGoal(goal.goalId);

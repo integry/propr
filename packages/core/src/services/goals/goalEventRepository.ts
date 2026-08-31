@@ -6,6 +6,7 @@ import {
   GOAL_EVENT_KINDS,
   GOAL_EVENT_MAX_LIMIT,
   GOAL_MESSAGE_BODY_MAX_LENGTH,
+  isTerminalGoalState,
 } from '@propr/shared';
 import type {
   AppendEventInput,
@@ -108,7 +109,14 @@ export class GoalEventRepository {
       request,
       goalId,
       effect: async (trx) => {
-        await requireGoalRecord(trx, goalId);
+        const currentGoal = await requireGoalRecord(trx, goalId);
+        if (isTerminalGoalState(currentGoal.state)) {
+          throw new GoalError(
+            GOAL_ERROR_CODES.terminalState,
+            'Terminal goals cannot accept new messages',
+            409
+          );
+        }
         const existing = await trx<GoalMessageRecord>('goal_messages').where({
           goal_id: goalId,
           idempotency_key: normalized.idempotencyKey,
