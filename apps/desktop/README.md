@@ -100,8 +100,8 @@ npm run make -w @propr/desktop -- --arch="$(node -p process.arch)"
 ### CI preflight, signing, and notarization configuration
 
 Repository-ruleset inspection uses a dedicated GitHub App installed only on this repository. Configure the App with
-exactly repository **Administration: read** and **Contents: read** (GitHub adds Metadata: read implicitly), with no
-write permission and no Actions, Deployments, Environments, Releases, or other repository permission. Store its
+exactly repository **Administration: read**, **Contents: read**, and **Environments: read** (GitHub adds Metadata: read
+implicitly), with no write permission and no Actions, Deployments, Releases, or other repository permission. Store its
 private key only in a separate approval-protected `desktop-release-preflight` environment:
 
 - Variable `PROPR_DESKTOP_PREFLIGHT_APP_ID`: the least-privilege preflight App ID.
@@ -109,12 +109,12 @@ private key only in a separate approval-protected `desktop-release-preflight` en
 
 Configure `desktop-release-preflight` with at least one required reviewer, custom deployment policies enabled,
 protected-branch policies disabled, and exactly one deployment policy: the tag pattern `desktop-v*`. The workflow
-uses a SHA-pinned token action to mint a short-lived installation token explicitly requesting only Administration read
-and Contents read; workflow regression tests pin those exact inputs and reject any write or Actions permission. The
-App installation itself must have the same exact least-privilege permission set. Preflight fails closed when the
-ruleset API does not return `bypass_actors`. Pull requests do not schedule this job, and a nonmatching or unreviewed tag
-cannot enter the environment or obtain the App credential. The preflight environment must contain no signing,
-notarization, update-signing, release-publication, or production deployment secret.
+uses a SHA-pinned token action to mint a short-lived installation token explicitly requesting only Administration read,
+Contents read, and Environments read; workflow regression tests pin those exact inputs and reject any write or Actions
+permission. The App installation itself must have the same exact least-privilege permission set. Preflight fails closed
+when the ruleset API does not return `bypass_actors`. Pull requests do not schedule this job, and a nonmatching or
+unreviewed tag cannot enter the environment or obtain the App credential. The preflight environment must contain no
+signing, notarization, update-signing, release-publication, or production deployment secret.
 
 Signing material is read only from the distinct approval-protected `desktop-release` GitHub environment and written
 to runner-temporary files/keychains. Every value below is mandatory for a production `desktop-v*` tag; unsigned and

@@ -51,7 +51,7 @@ const environmentApiPermissionFixtures = [
   {
     endpoint: 'GET /repos/{owner}/{repo}/environments/{environment_name}',
     sources: [/request\(`\/environments\/\$\{environmentName\}`\)/],
-    permission: 'actions:read',
+    permission: 'environments:read',
   },
   {
     endpoint: 'GET /repos/{owner}/{repo}/environments/{environment_name}/deployment-branch-policies',
@@ -59,7 +59,7 @@ const environmentApiPermissionFixtures = [
       /`\/environments\/\$\{environmentName\}\/deployment-branch-policies`/,
       /paginatedDeploymentPolicies\(request, environmentName\)/,
     ],
-    permission: 'actions:read',
+    permission: 'environments:read',
   },
 ] as const;
 
@@ -93,12 +93,12 @@ describe('desktop trusted release workflow', () => {
     assert.match(preflight, /actions\/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1/);
     assert.match(preflight, /app-id: \$\{\{ vars\.PROPR_DESKTOP_PREFLIGHT_APP_ID \}\}/);
     assert.match(preflight, /private-key: \$\{\{ secrets\.PROPR_DESKTOP_PREFLIGHT_APP_PRIVATE_KEY \}\}/);
-    assert.match(preflight, /permission-actions: read/);
     assert.match(preflight, /permission-administration: read/);
     assert.match(preflight, /permission-contents: read/);
+    assert.match(preflight, /permission-environments: read/);
     assert.deepEqual(
       preflightAppTokenPermissions(preflight),
-      ['actions:read', 'administration:read', 'contents:read'],
+      ['administration:read', 'contents:read', 'environments:read'],
     );
     assert.match(preflight, /GITHUB_TOKEN: \$\{\{ steps\.preflight-app-token\.outputs\.token \}\}/);
     assert.equal(workflow.match(/steps\.preflight-app-token\.outputs\.token/g)?.length, 1);
@@ -106,9 +106,9 @@ describe('desktop trusted release workflow', () => {
     assert.ok(!preflight.includes('PROPR_DESKTOP_UPDATE_PRIVATE_KEY'));
     assert.ok(!preflight.includes('PROPR_DESKTOP_MAC_CERTIFICATE'));
     assert.ok(!preflight.includes('PROPR_DESKTOP_WINDOWS_CERTIFICATE'));
-    assert.ok(!preflight.includes('permission-actions: write'));
     assert.ok(!preflight.includes('permission-administration: write'));
     assert.ok(!preflight.includes('permission-contents: write'));
+    assert.ok(!preflight.includes('permission-environments: write'));
     assert.match(production, /needs: preflight/);
     assert.match(production, /environment:\s+name: desktop-release/);
     assert.match(production, /ref: \$\{\{ needs\.preflight\.outputs\.release_sha \}\}/);
@@ -116,7 +116,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(production, /! gh release view/);
   });
 
-  test('grants the preflight token Actions read for both environment API calls without exposing it', () => {
+  test('grants the preflight token Environments read for both environment API calls without exposing it', () => {
     const preflight = job('preflight', 'release-package');
     const permissions = preflightAppTokenPermissions(preflight);
     for (const fixture of environmentApiPermissionFixtures) {
@@ -125,11 +125,11 @@ describe('desktop trusted release workflow', () => {
       }
       assert.ok(permissions.includes(fixture.permission), `${fixture.endpoint} requires ${fixture.permission}`);
     }
-    assert.deepEqual(permissions, ['actions:read', 'administration:read', 'contents:read']);
+    assert.deepEqual(permissions, ['administration:read', 'contents:read', 'environments:read']);
     assert.match(preflight, /persist-credentials: false/);
     assert.equal(preflight.match(/steps\.preflight-app-token\.outputs\.token/g)?.length, 1);
     assert.ok(!/^\s+token:\s+\$\{\{ steps\.preflight-app-token\.outputs\.token \}\}/m.test(preflight));
-    assert.ok(!preflight.includes('permission-environments:'));
+    assert.ok(!preflight.includes('permission-actions:'));
   });
 
   test('keeps every certificate and the update private key inside preflight-dependent environment jobs', () => {
@@ -255,6 +255,8 @@ describe('desktop trusted release workflow', () => {
     assert.match(makeDmg, /for \(let attempt = 0; attempt < 2 && !created; attempt \+= 1\)/);
     assert.match(makeDmg, /\^hdiutil: create failed - Resource busy\\s\*\$/);
     assert.match(makeDmg, /await rename\(temporaryOutput, outputPath\)/);
+    assert.match(makeDmg, /await image\.sync\(\)/);
+    assert.doesNotMatch(makeDmg, /await directory\.sync\(\)/);
     assert.match(makeDmg, /try \{ await rm\(temporaryOutput, \{ force: true \}\); \} finally \{\n\s+await rm\(stagingDirectory/);
     assert.ok(
       releaseArchitecture.indexOf("['attach', '-readonly', '-nobrowse', '-mountpoint', directory, privatePath]")

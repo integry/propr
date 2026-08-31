@@ -329,9 +329,9 @@ jobs:
           private-key: ${{ secrets.PROPR_DESKTOP_PREFLIGHT_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
-          permission-actions: read
           permission-administration: read
           permission-contents: read
+          permission-environments: read
 
       - name: Verify protected-main provenance, immutable new tag, and environment policy
         id: preflight
