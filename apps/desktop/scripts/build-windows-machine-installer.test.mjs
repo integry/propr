@@ -43,8 +43,21 @@ test('uses per-machine scope without explicitly authoring the derived ALLUSERS p
   }
 });
 
-test('keeps WiX failures and their emitted diagnostics bounded', () => {
-  assert.match(installerScript, /const WIX_TIMEOUT_MS = 120_000;/);
+test('uses a ten-minute timeout only for production Light', () => {
+  assert.match(installerScript, /TOOL_VERSION: 120_000,/);
+  assert.match(installerScript, /CANDLE: 120_000,/);
+  assert.match(installerScript, /PROBE_LIGHT: 120_000,/);
+  assert.match(installerScript, /PRODUCTION_LIGHT: 10 \* 60_000,/);
+  assert.match(installerScript, /runWix\('CANDLE', candle, \['-\?'\], cwd, WIX_TIMEOUT_POLICY_MS\.TOOL_VERSION\)/);
+  assert.match(installerScript, /runWix\('LIGHT', light, \['-\?'\], cwd, WIX_TIMEOUT_POLICY_MS\.TOOL_VERSION\)/);
+  assert.match(installerScript, /WIX_TIMEOUT_POLICY_MS\.CANDLE,\s+redactions,/);
+  assert.match(installerScript, /lightTimeout: WIX_TIMEOUT_POLICY_MS\.PROBE_LIGHT,/);
+  assert.match(installerScript, /lightTimeout: WIX_TIMEOUT_POLICY_MS\.PRODUCTION_LIGHT,/);
+});
+
+test('keeps WiX processes and their emitted diagnostics bounded', () => {
+  assert.match(installerScript, /shell: false,/);
+  assert.match(installerScript, /timeout,/);
   assert.match(installerScript, /const WIX_MAX_BUFFER_BYTES = 64 \* 1024;/);
   assert.match(installerScript, /const WIX_DIAGNOSTIC_BYTES = 4 \* 1024;/);
   assert.match(installerScript, /maxBuffer: WIX_MAX_BUFFER_BYTES/);

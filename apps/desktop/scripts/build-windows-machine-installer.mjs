@@ -12,7 +12,12 @@ const WIX_TOOLS = Object.freeze({
   LIGHT: join(WIX_DIRECTORY, 'light.exe'),
 });
 const WIX_VERSION = /\bversion\s+3\.14\.1(?:\.\d+)?\b/i;
-const WIX_TIMEOUT_MS = 120_000;
+const WIX_TIMEOUT_POLICY_MS = Object.freeze({
+  TOOL_VERSION: 120_000,
+  CANDLE: 120_000,
+  PROBE_LIGHT: 120_000,
+  PRODUCTION_LIGHT: 10 * 60_000,
+});
 const WIX_MAX_BUFFER_BYTES = 64 * 1024;
 const WIX_DIAGNOSTIC_BYTES = 4 * 1024;
 const MAX_FILES = 4096;
@@ -80,13 +85,13 @@ const numericWixSignal = signal => {
   return 0;
 };
 
-const runWix = async (stage, executable, args, cwd, redactions = []) => {
+const runWix = async (stage, executable, args, cwd, timeout, redactions = []) => {
   try {
     return await execFileAsync(executable, args, {
       cwd,
       shell: false,
       windowsHide: true,
-      timeout: WIX_TIMEOUT_MS,
+      timeout,
       maxBuffer: WIX_MAX_BUFFER_BYTES,
     });
   } catch (error) {
@@ -107,8 +112,8 @@ const resolveWixToolset = async cwd => {
   const candle = await canonicalWixTool(WIX_TOOLS.CANDLE);
   const light = await canonicalWixTool(WIX_TOOLS.LIGHT);
   const [candleVersion, lightVersion] = await Promise.all([
-    runWix('CANDLE', candle, ['-?'], cwd),
-    runWix('LIGHT', light, ['-?'], cwd),
+    runWix('CANDLE', candle, ['-?'], cwd, WIX_TIMEOUT_POLICY_MS.TOOL_VERSION),
+    runWix('LIGHT', light, ['-?'], cwd, WIX_TIMEOUT_POLICY_MS.TOOL_VERSION),
   ]);
   for (const result of [candleVersion, lightVersion]) {
     if (!WIX_VERSION.test(`${result.stdout}\n${result.stderr}`)) failWixPrerequisite();
@@ -249,9 +254,25 @@ export const wixProbeSourceForTest = arch => `<?xml version="1.0" encoding="UTF-
 </Wix>
 `;
 
-const compileWixSource = async ({ source, object, output, arch, wix, cwd, redactions = [] }) => {
-  await runWix('CANDLE', wix.candle, ['-nologo', '-arch', arch, '-out', object, source], cwd, redactions);
-  await runWix('LIGHT', wix.light, ['-nologo', '-out', output, object], cwd, redactions);
+const compileWixSource = async ({
+  source,
+  object,
+  output,
+  arch,
+  wix,
+  cwd,
+  lightTimeout = WIX_TIMEOUT_POLICY_MS.PROBE_LIGHT,
+  redactions = [],
+}) => {
+  await runWix(
+    'CANDLE',
+    wix.candle,
+    ['-nologo', '-arch', arch, '-out', object, source],
+    cwd,
+    WIX_TIMEOUT_POLICY_MS.CANDLE,
+    redactions,
+  );
+  await runWix('LIGHT', wix.light, ['-nologo', '-out', output, object], cwd, lightTimeout, redactions);
 };
 
 const requireMsi = async path => {
@@ -275,7 +296,15 @@ export const probeWindowsWixToolset = async ({ arch }) => {
     const output = join(temporary, 'probe.msi');
     const wix = await resolveWixToolset(temporary);
     await writeFile(source, wixProbeSourceForTest(arch), { encoding: 'utf8', flag: 'wx' });
-    await compileWixSource({ source, object, output, arch, wix, cwd: temporary });
+    await compileWixSource({
+      source,
+      object,
+      output,
+      arch,
+      wix,
+      cwd: temporary,
+      lightTimeout: WIX_TIMEOUT_POLICY_MS.PROBE_LIGHT,
+    });
     await requireMsi(output);
     return { arch, version: '3.14.1' };
   } catch (error) {
@@ -306,6 +335,7 @@ export const buildWindowsMachineInstaller = async ({ appDirectory, output, versi
       arch,
       wix,
       cwd: temporary,
+      lightTimeout: WIX_TIMEOUT_POLICY_MS.PRODUCTION_LIGHT,
       redactions: files.map(file => file.path),
     });
     await requireMsi(output);
