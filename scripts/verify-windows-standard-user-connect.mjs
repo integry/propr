@@ -56,6 +56,15 @@ function windowsRootEnvironment(systemRootMode, systemRoot, windir, untrustedRoo
   };
 }
 
+const WINDOWS_ROOT_MISSING_MARKER = "PROPR_TEST_WINDOWS_ROOT_MISSING";
+const WINDOWS_ROOT_MISSING_MARKER_VALUE = "windows-root-missing-v1";
+
+function missingWindowsRootFixtureEnvironment(systemRootMode) {
+  return systemRootMode === "missing"
+    ? { [WINDOWS_ROOT_MISSING_MARKER]: WINDOWS_ROOT_MISSING_MARKER_VALUE }
+    : {};
+}
+
 const scenarioAllowlist = Object.freeze([
   "ready", "down", "disabled", "restart-required", "malformed", "oversized", "timeout",
   "identity-mismatch", "secret-sentinel", "api", "path-aba", "authority-malformed", "authority-oversized",
@@ -378,6 +387,7 @@ try {
           process.env.WINDIR,
           fixture,
         ),
+        ...missingWindowsRootFixtureEnvironment(scenario.systemRootMode),
         COMSPEC: process.env.ComSpec,
         USERPROFILE: process.env.USERPROFILE,
         HOMEDRIVE: process.env.HOMEDRIVE,

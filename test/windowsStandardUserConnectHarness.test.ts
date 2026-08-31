@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 import {
@@ -83,6 +83,29 @@ function windowsRootEnvironment(systemRootMode: SystemRootMode): Record<string, 
   ) };
 }
 
+function missingWindowsRootFixtureEnvironment(systemRootMode: SystemRootMode): Record<string, string> {
+  const start = harness.indexOf('const WINDOWS_ROOT_MISSING_MARKER =');
+  const end = harness.indexOf('\n\nconst scenarioAllowlist =', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const definitions = runInNewContext(`${harness.slice(start, end)}\n({ missingWindowsRootFixtureEnvironment })`) as {
+    missingWindowsRootFixtureEnvironment: (mode: SystemRootMode) => Record<string, string>;
+  };
+  return { ...definitions.missingWindowsRootFixtureEnvironment(systemRootMode) };
+}
+
+function consumeWindowsRootFixtureEnvironment(environment: Record<string, string>): Record<string, string> {
+  const start = processMock.indexOf('const WINDOWS_ROOT_MISSING_MARKER =');
+  const end = processMock.indexOf('\n\nconst originalSpawnSync =', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const context = { process: { env: { ...environment } } };
+  return runInNewContext(
+    `${processMock.slice(start, end)}\nprocess.env`,
+    context,
+  ) as Record<string, string>;
+}
+
 function fixtureScenarios(): FixtureScenario[] {
   const start = harness.indexOf('const cases = [');
   const end = harness.indexOf('\n];', start);
@@ -108,7 +131,7 @@ test('the disabled Windows scenario omits its token while enabled scenarios reta
   }
 });
 
-test('the Windows authority fixtures use exact root environment shapes', () => {
+test('the Windows authority fixtures retain exact root shapes and isolate the missing-root marker', () => {
   const missing = windowsRootEnvironment('missing');
   assert.deepEqual(missing, {});
   assert.equal(Object.hasOwn(missing, 'SYSTEMROOT'), false);
@@ -129,6 +152,65 @@ test('the Windows authority fixtures use exact root environment shapes', () => {
     harness,
     /\.\.\.windowsRootEnvironment\(\s*scenario\.systemRootMode,\s*process\.env\.SystemRoot,\s*process\.env\.WINDIR,\s*fixture,\s*\),/,
   );
+  assert.deepEqual(missingWindowsRootFixtureEnvironment('missing'), {
+    PROPR_TEST_WINDOWS_ROOT_MISSING: 'windows-root-missing-v1',
+  });
+  for (const mode of ['mismatched', 'untrusted', undefined] as const) {
+    assert.deepEqual(missingWindowsRootFixtureEnvironment(mode), {}, String(mode));
+  }
+  assert.match(
+    harness,
+    /\.\.\.missingWindowsRootFixtureEnvironment\(scenario\.systemRootMode\),/,
+  );
+
+  const consumed = consumeWindowsRootFixtureEnvironment({
+    PROPR_TEST_WINDOWS_ROOT_MISSING: 'windows-root-missing-v1',
+    SystemRoot: 'C:\\Windows',
+    SYSTEMROOT: 'D:\\Windows',
+    windir: 'C:\\Windows',
+    WiNdIr: 'D:\\Windows',
+    SAFE_FIXTURE_VALUE: 'retained',
+  });
+  assert.deepEqual({ ...consumed }, { SAFE_FIXTURE_VALUE: 'retained' });
+
+  for (const mode of ['mismatched', 'untrusted', undefined] as const) {
+    const untouched = windowsRootEnvironment(mode);
+    assert.deepEqual(
+      { ...consumeWindowsRootFixtureEnvironment(untouched) },
+      untouched,
+      String(mode),
+    );
+  }
+  for (const untouchedMarker of [
+    {
+      PROPR_TEST_WINDOWS_ROOT_MISSING: 'not-the-fixed-marker',
+      SYSTEMROOT: 'C:\\Windows',
+      WINDIR: 'D:\\untrusted-fixture',
+    },
+    {
+      propr_test_windows_root_missing: 'windows-root-missing-v1',
+      SYSTEMROOT: 'D:\\untrusted-fixture',
+      WINDIR: 'D:\\untrusted-fixture',
+    },
+  ]) {
+    assert.deepEqual(
+      { ...consumeWindowsRootFixtureEnvironment(untouchedMarker) },
+      untouchedMarker,
+    );
+  }
+
+  const fixtureConsumer = processMock.indexOf('consumeMissingWindowsRootFixtureMarker();');
+  const fixtureMockInstall = processMock.indexOf('const originalSpawnSync =');
+  const processFixtureImport = harness.indexOf('"--import", processFixture');
+  const fetchFixtureImport = harness.indexOf('"--import", fetchFixture');
+  assert.ok(fixtureConsumer !== -1 && fixtureConsumer < fixtureMockInstall);
+  assert.ok(processFixtureImport !== -1 && processFixtureImport < fetchFixtureImport);
+
+  const productionSource = readdirSync('packages/cli/src', { recursive: true })
+    .filter((entry): entry is string => typeof entry === 'string' && entry.endsWith('.ts'))
+    .map((entry) => readFileSync(`packages/cli/src/${entry}`, 'utf8'))
+    .join('\n');
+  assert.doesNotMatch(productionSource, /PROPR_TEST_WINDOWS_ROOT_MISSING|windows-root-missing-v1/);
 });
 
 test('the ordinary-user Windows proof retains native security paths and bounds result-matrix reuse', () => {

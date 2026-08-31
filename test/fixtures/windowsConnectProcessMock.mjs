@@ -3,6 +3,20 @@ import { fstatSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 
+const WINDOWS_ROOT_MISSING_MARKER = "PROPR_TEST_WINDOWS_ROOT_MISSING";
+const WINDOWS_ROOT_MISSING_MARKER_VALUE = "windows-root-missing-v1";
+
+function consumeMissingWindowsRootFixtureMarker(environment = process.env) {
+  const marker = Object.keys(environment).find((name) => name === WINDOWS_ROOT_MISSING_MARKER);
+  if (marker === undefined || environment[marker] !== WINDOWS_ROOT_MISSING_MARKER_VALUE) return;
+  delete environment[marker];
+  for (const name of Object.keys(environment)) {
+    if (/^(?:systemroot|windir)$/i.test(name)) delete environment[name];
+  }
+}
+
+consumeMissingWindowsRootFixtureMarker();
+
 const originalSpawnSync = childProcess.spawnSync;
 const forbidden = /(?:connect-authority|ProPRConnectAuthority|pwsh|csc|msiexec)(?:\.exe)?$/i;
 let abaPerformed = false;
