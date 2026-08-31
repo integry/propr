@@ -25,6 +25,8 @@ import {
   WINDOWS_NATIVE_TIMING_PROBE_SOURCE,
   WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS,
   WINDOWS_NATIVE_STAGE_CODES,
+  WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE,
+  windowsBrokerFailureStage,
   windowsInspectionTimeoutForElapsed,
   WindowsNativeStageError,
   windowsNativeTimingBucket,
@@ -195,26 +197,69 @@ test("Windows production inspection has one cold-start deadline and a cumulative
   );
 });
 
-test("Windows production duplicates the standard handle and retains distinct fixed redacted stages", () => {
+test("Windows production retains private handle lifetime and isolates unsigned identity decoding", () => {
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:fd-duplicate"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-initial"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:current-user-sid"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-revalidation"));
+  assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-decode"));
   assert.equal((WINDOWS_NATIVE_STAGE_CODES as readonly string[]).includes("broker:index-info"), false);
+  assert.equal(windowsBrokerFailureStage(79), "broker:index-info-revalidation");
+  assert.equal(windowsBrokerFailureStage(81), "broker:index-info-decode");
 
   const duplicate = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=80");
   const initial = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=74");
   const sid = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=78");
   const revalidation = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=79");
-  assert.ok(duplicate >= 0 && duplicate < initial && initial < sid && sid < revalidation);
+  const decode = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=81", revalidation);
+  assert.ok(duplicate >= 0 && duplicate < initial && initial < sid && sid < revalidation && revalidation < decode);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(duplicate, initial),
     /DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{exit \$stage\}/);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(initial, sid),
     /^\$stage=74\n  \$before=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$privateHandle,\$before\)\)\{exit \$stage\}\n  $/s);
   assert.match(WINDOWS_INSPECTION_SOURCE.slice(sid, WINDOWS_INSPECTION_SOURCE.indexOf("$stage=75", sid)),
     /^\$stage=78\n  \$current=.*WindowsIdentity\]::GetCurrent\(\)\.User\n  if\(\$null-eq \$current\)\{exit \$stage\}\n  \$currentSid=\$current\.Value\n  $/s);
-  assert.match(WINDOWS_INSPECTION_SOURCE.slice(revalidation, WINDOWS_INSPECTION_SOURCE.indexOf("$beforeVolume", revalidation)),
+  assert.match(WINDOWS_INSPECTION_SOURCE.slice(revalidation, decode),
     /^\$stage=79\n  \$after=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$privateHandle,\$after\)\)\{exit \$stage\}\n  $/s);
+  const decodedIdentity = WINDOWS_INSPECTION_SOURCE.slice(decode, WINDOWS_INSPECTION_SOURCE.indexOf("$entry=", decode));
+  assert.match(decodedIdentity, /^\$stage=81\n  \$beforeVolume=/);
+  for (const [field, structure, offset] of [
+    ["beforeVolume", "before", 28], ["afterVolume", "after", 28],
+    ["beforeHigh", "before", 44], ["beforeLow", "before", 48],
+    ["afterHigh", "after", 44], ["afterLow", "after", 48],
+  ] as const) {
+    assert.match(decodedIdentity, new RegExp(`\\$${field}=Read-ProprUInt32 \\$${structure} ${offset}`));
+  }
+  assert.equal(WINDOWS_INSPECTION_SOURCE.match(/function Read-ProprUInt32/g)?.length, 1);
+  assert.equal(WINDOWS_INSPECTION_SOURCE.match(/Read-ProprUInt32 \$(?:before|after) (?:28|44|48)/g)?.length, 6);
+  assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE,
+    /\[uint32\]\[Runtime\.InteropServices\.Marshal\]::ReadInt32/);
+  assert.match(WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE,
+    /if\(-not \[BitConverter\]::IsLittleEndian\)\{exit \$stage\}\n  \$signed=\[int32\]\[Runtime\.InteropServices\.Marshal\]::ReadInt32\(\$pointer,\$offset\)\n  \$bytes=\[BitConverter\]::GetBytes\(\$signed\)\n  \[BitConverter\]::ToUInt32\(\$bytes,0\)/);
+  assert.match(decodedIdentity,
+    /\$beforeId=\(\[uint64\]\$beforeHigh\*4294967296\)\+\[uint64\]\$beforeLow/);
+  assert.match(decodedIdentity,
+    /\$afterId=\(\[uint64\]\$afterHigh\*4294967296\)\+\[uint64\]\$afterLow/);
+  assert.match(WINDOWS_INSPECTION_SOURCE,
+    /fileId=\$beforeId\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)/);
+  assert.match(WINDOWS_INSPECTION_SOURCE,
+    /verifiedFileId=\$afterId\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)/);
+
+  const unsignedDecimal = (value: number): string => {
+    const bytes = Buffer.alloc(4);
+    bytes.writeInt32LE(value, 0);
+    return bytes.readUInt32LE(0).toString(10);
+  };
+  const highBit = unsignedDecimal(-2_147_483_648);
+  const allBits = unsignedDecimal(-1);
+  assert.equal(highBit, "2147483648");
+  assert.equal(allBits, "4294967295");
+  const highBitFileId = (BigInt(highBit) * 4_294_967_296n + BigInt(allBits)).toString(10);
+  const allBitsFileId = (BigInt(allBits) * 4_294_967_296n + BigInt(allBits)).toString(10);
+  assert.equal(highBitFileId, "9223372041149743103");
+  assert.equal(allBitsFileId, "18446744073709551615");
+  assert.match(JSON.stringify({ highBit, allBits, highBitFileId, allBitsFileId }),
+    /^\{"highBit":"\d+","allBits":"\d+","highBitFileId":"\d+","allBitsFileId":"\d+"\}$/);
   assert.match(WINDOWS_INSPECTION_SOURCE,
     /GetSecurityInfo\(\$privateHandle,1,5,\[ref\]\$owner,\[ref\]\$group,\[ref\]\$dacl,\[ref\]\$sacl,\[ref\]\$descriptor\)/);
   assert.equal(WINDOWS_INSPECTION_SOURCE.match(/::CloseHandle\(\$privateHandle\)/g)?.length, 1);
@@ -255,6 +300,11 @@ test("Windows timing probe isolates baseline, Reflection.Emit, Win32, and standa
   assert.ok(milestones[2] < WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf("::GetCurrentProcessId()"));
   assert.ok(milestones[3] < WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf("::GetStdHandle(-10)"));
   assert.ok(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf("::GetFileInformationByHandle") < milestones[4]);
+  const populated = WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf("GetFileInformationByHandle($handle,$info)");
+  const probeDecode = WINDOWS_NATIVE_TIMING_PROBE_SOURCE.indexOf("Read-ProprUInt32 $info", populated);
+  assert.ok(populated >= 0 && populated < probeDecode && probeDecode < milestones[4]);
+  assert.equal(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.match(/function Read-ProprUInt32/g)?.length, 1);
+  assert.equal(WINDOWS_NATIVE_TIMING_PROBE_SOURCE.match(/Read-ProprUInt32 \$info (?:28|44|48)/g)?.length, 3);
 });
 
 test("Windows batch results remain bound to descriptor index, kind, identity, and user", async () => {

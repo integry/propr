@@ -33,7 +33,7 @@ export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
-  "broker:index-info-revalidation",
+  "broker:index-info-revalidation", "broker:index-info-decode",
   "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ] as const);
 
@@ -69,12 +69,21 @@ export const WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false;
 export const WINDOWS_INSPECTOR_WRITES_FILESYSTEM = false;
 export const WINDOWS_INSPECTOR_TRANSPORT = "inherited-standard-handle" as const;
 
+export const WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE = String.raw`
+function Read-ProprUInt32([IntPtr]$pointer,[int]$offset){
+  if(-not [BitConverter]::IsLittleEndian){exit $stage}
+  $signed=[int32][Runtime.InteropServices.Marshal]::ReadInt32($pointer,$offset)
+  $bytes=[BitConverter]::GetBytes($signed)
+  [BitConverter]::ToUInt32($bytes,0)
+}`;
+
 // Reflection.Emit keeps the fixed P/Invoke surface in memory. Add-Type and its
 // writable compiler workspace are deliberately absent.
 export const WINDOWS_INSPECTION_SOURCE = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Set-StrictMode -Version 2
+${WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE}
 $stage=71
 $privateHandle=[IntPtr]::Zero
 $privateHandleOwned=$false
@@ -136,8 +145,8 @@ try {
     $stage=76
     $aclInfo=[Runtime.InteropServices.Marshal]::AllocHGlobal(12)
     if(-not [ProprReadOnlyAuthority]::GetAclInformation($dacl,$aclInfo,12,2)){exit $stage}
-    $aceCount=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($aclInfo,0)
-    $aclBytes=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($aclInfo,4)
+    $aceCount=Read-ProprUInt32 $aclInfo 0
+    $aclBytes=Read-ProprUInt32 $aclInfo 4
     if($aceCount-gt 128-or $aclBytes-lt 8-or $aclBytes-gt 65535){exit $stage}
     $aclRevision=[Runtime.InteropServices.Marshal]::ReadByte($dacl,0)
     if(($aclRevision-ne 2-and $aclRevision-ne 4)-or [Runtime.InteropServices.Marshal]::ReadByte($dacl,1)-ne 0){exit $stage}
@@ -148,7 +157,7 @@ try {
       $aceType=[Runtime.InteropServices.Marshal]::ReadByte($ace,0);$flags=[Runtime.InteropServices.Marshal]::ReadByte($ace,1)
       $aceSize=[uint16][Runtime.InteropServices.Marshal]::ReadInt16($ace,2)
       if(($aceType-ne 0-and $aceType-ne 1)-or ($flags-band 0xE0)-ne 0-or $aceSize-lt 16-or $aceSize-gt 4096){exit $stage}
-      $mask=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($ace,4)
+      $mask=Read-ProprUInt32 $ace 4
       $sidPointer=[IntPtr]::Add($ace,8);$sid=New-Object Security.Principal.SecurityIdentifier($sidPointer)
       if($sid.BinaryLength-gt ($aceSize-8)){exit $stage}
       $rules.Add([pscustomobject][ordered]@{
@@ -161,10 +170,11 @@ try {
   $stage=79
   $after=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
   if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$after)){exit $stage}
-  $beforeVolume=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,28)
-  $afterVolume=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($after,28)
-  $beforeHigh=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,44);$beforeLow=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,48)
-  $afterHigh=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($after,44);$afterLow=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($after,48)
+  $stage=81
+  $beforeVolume=Read-ProprUInt32 $before 28
+  $afterVolume=Read-ProprUInt32 $after 28
+  $beforeHigh=Read-ProprUInt32 $before 44;$beforeLow=Read-ProprUInt32 $before 48
+  $afterHigh=Read-ProprUInt32 $after 44;$afterLow=Read-ProprUInt32 $after 48
   $beforeId=([uint64]$beforeHigh*4294967296)+[uint64]$beforeLow
   $afterId=([uint64]$afterHigh*4294967296)+[uint64]$afterLow
   $entry=[pscustomobject][ordered]@{
@@ -205,6 +215,7 @@ export const WINDOWS_NATIVE_TIMING_PROBE_SOURCE = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Set-StrictMode -Version 2
+${WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE}
 $clock=[Diagnostics.Stopwatch]::StartNew()
 function Write-ProprMilestone([string]$name){
   $elapsed=$clock.ElapsedMilliseconds
@@ -247,6 +258,8 @@ try {
   if($handle-eq [IntPtr](-1)-or $handle-eq [IntPtr](-2)-or $handle-eq [IntPtr]::Zero){exit $stage}
   $info=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
   if(-not [ProprNativeTimingProbe]::GetFileInformationByHandle($handle,$info)){exit $stage}
+  $probeVolume=Read-ProprUInt32 $info 28
+  $probeHigh=Read-ProprUInt32 $info 44;$probeLow=Read-ProprUInt32 $info 48
   Write-ProprMilestone 'standard-handle-identity'
   exit 0
 }catch{exit $stage}
@@ -364,11 +377,12 @@ export function parseWindowsInspectionDocument(value: Buffer | string): readonly
   return document.entries as WindowsAuthorityInspection[];
 }
 
-function brokerFailureStage(status: number | null): WindowsNativeStageCode {
+export function windowsBrokerFailureStage(status: number | null): WindowsNativeStageCode {
   const stages: Readonly<Record<number, WindowsNativeStageCode>> = {
     71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info-initial",
     75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
     78: "broker:current-user-sid", 79: "broker:index-info-revalidation", 80: "broker:fd-duplicate",
+    81: "broker:index-info-decode",
   };
   return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
 }
@@ -476,7 +490,7 @@ function assertSpawnSuccess(result: ReturnType<typeof spawnSync>): void {
     throw stageError("spawn:error");
   }
   if (result.signal) throw stageError(result.signal === "SIGKILL" ? "spawn:timeout" : "spawn:status");
-  if (result.status !== 0) throw stageError(brokerFailureStage(result.status));
+  if (result.status !== 0) throw stageError(windowsBrokerFailureStage(result.status));
   const stderrBytes = typeof result.stderr === "string"
     ? Buffer.byteLength(result.stderr, "utf8")
     : (result.stderr?.byteLength ?? 0);

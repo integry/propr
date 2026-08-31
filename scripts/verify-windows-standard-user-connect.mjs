@@ -78,7 +78,7 @@ const nativeStageAllowlist = Object.freeze([
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
-  "broker:index-info-revalidation",
+  "broker:index-info-revalidation", "broker:index-info-decode",
   "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ]);
 const probeMilestoneAllowlist = Object.freeze([
