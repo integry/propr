@@ -60,6 +60,7 @@ const PRIVATE_EVENT_KEY_NAMES = new Set([
   'deploytoken',
   'servicetoken',
   'setcookie',
+  // Camel-case splitting produces "requested"/"by", so deny the joined normalized name.
   'requestedby',
   'userid',
   'providerthreadid',

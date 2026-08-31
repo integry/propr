@@ -318,6 +318,19 @@ test('event payload retains only exact public owner, request, and path overrides
   }
 });
 
+test('event payload denies requestedBy owner identity while preserving requestedModel', () => {
+  const ownerLikeValue = 'user-1:goal-owner';
+  const projected = toPublicGoalEventPayload({
+    requestedBy: ownerLikeValue,
+    requestedModel: 'claude-opus-4-8',
+  });
+
+  assert.deepEqual(projected, {
+    requestedModel: 'claude-opus-4-8',
+  });
+  assert.equal(JSON.stringify(projected).includes(ownerLikeValue), false);
+});
+
 test('event payload redacts credential dotfiles under arbitrary roots', () => {
   const projected = toPublicGoalEventPayload({
     source: '/project/.env',
