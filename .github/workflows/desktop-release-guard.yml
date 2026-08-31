@@ -107,6 +107,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Probe canonical WiX 3.14.1 compiler
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: node apps/desktop/scripts/build-windows-machine-installer.mjs probe '${{ matrix.arch }}'
+
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'
         run: |
@@ -386,6 +391,11 @@ jobs:
 
       - name: Install locked dependencies
         run: npm ci
+
+      - name: Probe canonical WiX 3.14.1 compiler
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: node apps/desktop/scripts/build-windows-machine-installer.mjs probe '${{ matrix.arch }}'
 
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'

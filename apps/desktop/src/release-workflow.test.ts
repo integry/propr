@@ -281,6 +281,11 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /- platform: win32\n\s+arch: x64\n\s+runner: windows-2025/);
       assert.match(section, /- platform: win32\n\s+arch: arm64\n\s+runner: windows-11-arm/);
       assert.match(section, /Assert (?:signed )?Windows MVP package excludes update authority/);
+      assert.match(section, /Probe canonical WiX 3\.14\.1 compiler/);
+      assert.match(
+        section,
+        /build-windows-machine-installer\.mjs probe '\$\{\{ matrix\.arch \}\}'/,
+      );
       assert.match(section, /Install and exercise (?:signed )?ordinary-user Windows application/);
       assert.match(section, /Launch (?:signed )?packaged Windows application and exercise MVP desktop flows/);
       assert.doesNotMatch(section, /READY|broker:build|windows-authority-build|windows-update-authority\.test|probe-packaged-windows-authority/,
@@ -293,6 +298,13 @@ describe('desktop trusted release workflow', () => {
     assert.match(forgeConfig, /buildWindowsMachineInstaller/);
     assert.doesNotMatch(forgeConfig, /MakerSquirrel|noMsi|Setup\.exe|full\.nupkg/);
     assert.match(windowsMachineInstaller, /InstallScope="perMachine"/);
+    assert.match(windowsMachineInstaller, /C:\\Program Files \(x86\)\\WiX Toolset v3\.14\\bin/);
+    assert.match(windowsMachineInstaller, /\['-\?'\]/);
+    assert.match(windowsMachineInstaller, /'CANDLE'/);
+    assert.match(windowsMachineInstaller, /'LIGHT'/);
+    assert.match(windowsMachineInstaller, /'-arch', arch/);
+    assert.match(windowsMachineInstaller, /WIX_DIAGNOSTIC_BYTES = 4 \* 1024/);
+    assert.doesNotMatch(windowsMachineInstaller, /wixVendor|electron-winstaller/);
     assert.match(windowsMachineInstaller, /deferred Windows update authority resource present/);
     assert.doesNotMatch(windowsMachineInstaller, /<CustomAction|<ServiceInstall|RollbackProbe|icacls\.exe/);
     assert.match(installedWindowsAppTest, /-Credential \$credential/);

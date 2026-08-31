@@ -1,15 +1,20 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { constants as osConstants, tmpdir } from 'node:os';
+import { dirname, join, relative, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-const desktopRoot = fileURLToPath(new URL('..', import.meta.url));
-const repositoryRoot = resolve(desktopRoot, '..', '..');
-// This dependency is only the pinned carrier for WiX v3 candle/light. Forge
-// never invokes its per-user Squirrel packaging implementation.
-const wixVendor = join(repositoryRoot, 'node_modules', 'electron-winstaller', 'vendor');
+const WIX_DIRECTORY = String.raw`C:\Program Files (x86)\WiX Toolset v3.14\bin`;
+const WIX_TOOLS = Object.freeze({
+  CANDLE: join(WIX_DIRECTORY, 'candle.exe'),
+  LIGHT: join(WIX_DIRECTORY, 'light.exe'),
+});
+const WIX_VERSION = /\bversion\s+3\.14\.1(?:\.\d+)?\b/i;
+const WIX_TIMEOUT_MS = 120_000;
+const WIX_MAX_BUFFER_BYTES = 64 * 1024;
+const WIX_DIAGNOSTIC_BYTES = 4 * 1024;
 const MAX_FILES = 4096;
 const MAX_PATH_BYTES = 32 * 1024;
 const UPGRADE_CODE = '79D29087-5B38-4D77-93C8-5BC0F7856D59';
@@ -17,6 +22,107 @@ const UPGRADE_CODE = '79D29087-5B38-4D77-93C8-5BC0F7856D59';
 const fail = message => { throw new Error(`Windows machine installer build failed: ${message}`); };
 const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
   .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
+
+const failWixPrerequisite = () => fail(
+  'install official WiX Toolset 3.14.1 at C:\\Program Files (x86)\\WiX Toolset v3.14\\bin',
+);
+
+const windowsPathIdentity = value => win32.normalize(value).replace(/^\\\\\?\\/, '').toLowerCase();
+
+const canonicalWixTool = async expected => {
+  try {
+    const stats = await lstat(expected);
+    if (!stats.isFile() || stats.isSymbolicLink()) failWixPrerequisite();
+    const canonical = await realpath(expected);
+    if (windowsPathIdentity(canonical) !== windowsPathIdentity(expected)) failWixPrerequisite();
+    return canonical;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Windows machine installer build failed:')) throw error;
+    failWixPrerequisite();
+  }
+};
+
+const redactLiteral = (value, literal) => {
+  if (!literal) return value;
+  const escaped = literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return value.replace(new RegExp(escaped, 'gi'), '<path>');
+};
+
+const normalizedWixDiagnostic = (error, redactions) => {
+  const stderr = typeof error?.stderr === 'string' || Buffer.isBuffer(error?.stderr)
+    ? String(error.stderr)
+    : '';
+  const stdout = typeof error?.stdout === 'string' || Buffer.isBuffer(error?.stdout)
+    ? String(error.stdout)
+    : '';
+  const message = error instanceof Error ? error.message : '';
+  let diagnostic = stderr.trim() || stdout.trim() || message.trim() || 'no diagnostic output';
+  diagnostic = diagnostic.replace(/\r\n?/g, '\n').replace(/\u001b\[[0-9;]*m/g, '');
+  for (const path of [...redactions].sort((left, right) => right.length - left.length)) {
+    diagnostic = redactLiteral(diagnostic, path);
+  }
+  diagnostic = diagnostic
+    .split('\n')
+    .map(line => line.replace(/^.*?(?=\(\d+(?:,\d+)?\)\s*:\s*(?:error|warning)\b)/i, '<path>'))
+    .join('\n')
+    .replace(/\b[A-Za-z]:[\\/][^\r\n]*/g, '<path>')
+    .replace(/\\\\[^\r\n]*/g, '<path>')
+    .replace(/[^\t\n\x20-\x7e]/g, '?')
+    .trim();
+  return (diagnostic || 'no diagnostic output').slice(0, WIX_DIAGNOSTIC_BYTES);
+};
+
+const numericWixSignal = signal => {
+  if (Number.isInteger(signal)) return signal;
+  if (typeof signal === 'string' && Number.isInteger(osConstants.signals[signal])) {
+    return osConstants.signals[signal];
+  }
+  return 0;
+};
+
+const runWix = async (stage, executable, args, cwd, redactions = []) => {
+  try {
+    return await execFileAsync(executable, args, {
+      cwd,
+      shell: false,
+      windowsHide: true,
+      timeout: WIX_TIMEOUT_MS,
+      maxBuffer: WIX_MAX_BUFFER_BYTES,
+    });
+  } catch (error) {
+    const exit = Number.isInteger(error?.code) ? error.code : -1;
+    const signal = numericWixSignal(error?.signal);
+    const sensitivePaths = [executable, cwd, ...args, ...redactions]
+      .filter(value => typeof value === 'string' && win32.isAbsolute(value));
+    const diagnostic = normalizedWixDiagnostic(error, sensitivePaths);
+    const wrapped = new Error(
+      `Windows machine installer build failed: ${stage} exit=${exit} signal=${signal}: ${diagnostic}`,
+    );
+    wrapped.stack = wrapped.message;
+    throw wrapped;
+  }
+};
+
+const resolveWixToolset = async cwd => {
+  const candle = await canonicalWixTool(WIX_TOOLS.CANDLE);
+  const light = await canonicalWixTool(WIX_TOOLS.LIGHT);
+  const [candleVersion, lightVersion] = await Promise.all([
+    runWix('CANDLE', candle, ['-?'], cwd),
+    runWix('LIGHT', light, ['-?'], cwd),
+  ]);
+  for (const result of [candleVersion, lightVersion]) {
+    if (!WIX_VERSION.test(`${result.stdout}\n${result.stderr}`)) failWixPrerequisite();
+  }
+  return { candle, light };
+};
+
+const removeTemporary = async (temporary, failed) => {
+  try {
+    await rm(temporary, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  } catch {
+    if (!failed) fail('temporary cleanup failed');
+  }
+};
 
 const collectTree = async root => {
   const files = [];
@@ -98,12 +204,12 @@ export const windowsMachineInstallerSourceForTest = (appDirectory, version, arch
         <Directory Id="INSTALLFOLDER" Name="ProPR Desktop">
 ${tree.content}
           <Component Id="ApplicationRegistration" Guid="*" Win64="yes">
-            <RegistryValue Root="HKLM" Key="Software\\Classes\\propr" Name="" Value="URL:ProPR Protocol" Type="string" KeyPath="yes" />
+            <RegistryValue Root="HKLM" Key="Software\\Classes\\propr" Value="URL:ProPR Protocol" Type="string" KeyPath="yes" />
             <RegistryValue Root="HKLM" Key="Software\\Classes\\propr" Name="URL Protocol" Value="" Type="string" />
-            <RegistryValue Root="HKLM" Key="Software\\Classes\\propr\\shell\\open\\command" Name=""
+            <RegistryValue Root="HKLM" Key="Software\\Classes\\propr\\shell\\open\\command"
               Value="&quot;[INSTALLFOLDER]propr-desktop.exe&quot; &quot;%1&quot;" Type="string" />
             <RegistryValue Root="HKLM" Key="Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\propr-desktop.exe"
-              Name="" Value="[INSTALLFOLDER]propr-desktop.exe" Type="string" />
+              Value="[INSTALLFOLDER]propr-desktop.exe" Type="string" />
             <Shortcut Id="ApplicationStartMenuShortcut" Directory="ApplicationProgramsFolder" Name="ProPR Desktop"
               Description="ProPR Desktop" Target="[INSTALLFOLDER]propr-desktop.exe" WorkingDirectory="INSTALLFOLDER">
               <ShortcutProperty Key="System.AppUserModel.ID" Value="dev.propr.desktop" />
@@ -125,30 +231,97 @@ ${tree.components.map(id => `      <ComponentRef Id="${id}" />`).join('\n')}
 `;
 };
 
+const wixProbeSource = arch => `<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="ProPR WiX Probe" Language="1033" Version="1.0.0"
+      Manufacturer="Unchained Development OÜ" UpgradeCode="1C7701EF-12DE-4C22-9894-D22E1954407D">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="${arch}" />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Component Id="ProbeRegistryComponent" Guid="72D401FB-1E08-4A23-A45E-2551207206D5" Win64="yes">
+        <RegistryValue Root="HKLM" Key="Software\\ProPR\\WixProbe" Value="probe" Type="string" KeyPath="yes" />
+      </Component>
+    </Directory>
+    <Feature Id="ProbeFeature" Title="ProPR WiX Probe" Level="1">
+      <ComponentRef Id="ProbeRegistryComponent" />
+    </Feature>
+  </Product>
+</Wix>
+`;
+
+const compileWixSource = async ({ source, object, output, arch, wix, cwd, redactions = [] }) => {
+  await runWix('CANDLE', wix.candle, ['-nologo', '-arch', arch, '-out', object, source], cwd, redactions);
+  await runWix('LIGHT', wix.light, ['-nologo', '-out', output, object], cwd, redactions);
+};
+
+const requireMsi = async path => {
+  try {
+    const bytes = await readFile(path);
+    if (bytes.length < 4096 || bytes.subarray(0, 8).toString('hex') !== 'd0cf11e0a1b11ae1') fail('invalid MSI output');
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Windows machine installer build failed:')) throw error;
+    fail('invalid MSI output');
+  }
+};
+
+export const probeWindowsWixToolset = async ({ arch }) => {
+  if (process.platform !== 'win32') fail('WiX Toolset 3.14.1 probe requires a Windows builder');
+  if (!['x64', 'arm64'].includes(arch)) fail('arguments');
+  const temporary = await mkdtemp(join(tmpdir(), 'propr-wix-probe-'));
+  let failed = false;
+  try {
+    const source = join(temporary, 'probe.wxs');
+    const object = join(temporary, 'probe.wixobj');
+    const output = join(temporary, 'probe.msi');
+    const wix = await resolveWixToolset(temporary);
+    await writeFile(source, wixProbeSource(arch), { encoding: 'utf8', flag: 'wx' });
+    await compileWixSource({ source, object, output, arch, wix, cwd: temporary });
+    await requireMsi(output);
+    return { arch, version: '3.14.1' };
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    await removeTemporary(temporary, failed);
+  }
+};
+
 export const buildWindowsMachineInstaller = async ({ appDirectory, output, version, arch }) => {
   if (process.platform !== 'win32') return { skipped: true };
   if (!['x64', 'arm64'].includes(arch) || !/^\d+\.\d+\.\d+$/.test(version)) fail('arguments');
   const canonicalApp = resolve(appDirectory);
   const files = await collectTree(canonicalApp);
+  await mkdir(dirname(output), { recursive: true });
   const temporary = await mkdtemp(join(dirname(output), '.machine-installer-'));
+  let failed = false;
   try {
     const source = join(temporary, 'propr-desktop.wxs');
     const object = join(temporary, 'propr-desktop.wixobj');
+    const wix = await resolveWixToolset(temporary);
     await writeFile(source, windowsMachineInstallerSourceForTest(canonicalApp, version, arch, files), { encoding: 'utf8', flag: 'wx' });
-    await execFileAsync(join(wixVendor, 'candle.exe'), ['-nologo', '-arch', arch, '-out', object, source], {
-      cwd: temporary, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024,
+    await compileWixSource({
+      source,
+      object,
+      output,
+      arch,
+      wix,
+      cwd: temporary,
+      redactions: files.map(file => file.path),
     });
-    await mkdir(dirname(output), { recursive: true });
-    await execFileAsync(join(wixVendor, 'light.exe'), ['-nologo', '-out', output, object], {
-      cwd: temporary, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024,
-    });
-    const bytes = await readFile(output);
-    if (bytes.length < 4096 || bytes.subarray(0, 8).toString('hex') !== 'd0cf11e0a1b11ae1') fail('invalid MSI output');
+    await requireMsi(output);
     return { skipped: false, path: output, files: files.length };
-  } finally { await rm(temporary, { recursive: true, force: true }); }
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    await removeTemporary(temporary, failed);
+  }
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv[2] === 'probe') {
+    await probeWindowsWixToolset({ arch: process.argv[3] });
+    process.exit(0);
+  }
   const [, , appDirectory, output, version, arch] = process.argv;
   await buildWindowsMachineInstaller({
     appDirectory,
