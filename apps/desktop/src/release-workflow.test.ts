@@ -551,7 +551,7 @@ describe('desktop trusted release workflow', () => {
     assert.ok(childSource);
 
     const exitCategorySource = installedWindowsAppTest.match(
-      /\$shortcutProbeExitCategories = \[ordered\]@\{([\s\S]*?)\n\}/,
+      /\$shortcutProbeExitCategories = @\{([\s\S]*?)\n\}/,
     );
     assert.ok(exitCategorySource);
     const exitCategories = Object.fromEntries(

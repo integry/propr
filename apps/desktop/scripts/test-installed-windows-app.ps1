@@ -87,7 +87,7 @@ $startMenuShortcutFolderExistedBeforeInstall = Test-Path -LiteralPath $startMenu
 $startMenuShortcutCreatedByRun = $false
 $startMenuShortcutFolderCreatedByRun = $false
 # Fixed encoded-child contract. Keep these codes in exact parity with $probeTemplate.
-$shortcutProbeExitCategories = [ordered]@{
+$shortcutProbeExitCategories = @{
   10 = 'ENV_PATH_MISSING_OR_EMPTY'
   11 = 'PATH_NOT_ROOTED'
   12 = 'PRESENCE_MISMATCH'
