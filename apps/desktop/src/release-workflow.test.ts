@@ -322,7 +322,7 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(windowsMachineInstaller, /wixVendor|electron-winstaller/);
     assert.match(windowsMachineInstaller, /deferred Windows update authority resource present/);
     assert.doesNotMatch(windowsMachineInstaller, /<CustomAction|<ServiceInstall|RollbackProbe|icacls\.exe/);
-    assert.match(installedWindowsAppTest, /-Credential \$credential/);
+    assert.match(installedWindowsAppTest, /Credential = \$credential/);
     assert.match(installedWindowsAppTest, /--propr-smoke-test/);
     assert.match(installedWindowsAppTest, /--user-data-dir=\$smokeUserDataDirectory/);
     assert.match(installedWindowsAppTest, /propr-desktop-smoke-/);
@@ -334,6 +334,54 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /deferred Windows update authority resource/);
     assert.equal(workflow.match(/https:\/\/github\.com\/wixtoolset\/wix3\/releases\/download\/wix3141rtm\/wix314-binaries\.zip/g)?.length, 2);
     assert.equal(workflow.match(/6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31/g)?.length, 2);
+  });
+
+  test('bounds and diagnoses installed Windows process lifecycles on x64 and ARM64', () => {
+    assert.doesNotMatch(installedWindowsAppTest, /(?:^|\s)-Wait(?:\s|$)/);
+    assert.equal(installedWindowsAppTest.match(/Start-Process/g)?.length, 1);
+    assert.match(installedWindowsAppTest, /\$msiTimeoutMilliseconds = 10 \* 60 \* 1000/);
+    assert.match(installedWindowsAppTest, /\$applicationTimeoutMilliseconds = 5 \* 60 \* 1000/);
+    assert.match(installedWindowsAppTest, /\$terminationTimeoutMilliseconds = 30 \* 1000/);
+    assert.match(installedWindowsAppTest, /\$Process\.WaitForExit\(\$TimeoutMilliseconds\)/);
+    assert.match(installedWindowsAppTest, /\$Process\.Kill\(\$true\)/);
+    assert.match(
+      installedWindowsAppTest,
+      /if \(!\$completed\) \{\n\s+Stop-SpawnedProcessTree \$Process \$Operation\n\s+throw "\$Operation timed out"/,
+    );
+    assert.match(installedWindowsAppTest, /LoadUserProfile = \$true/);
+    assert.match(installedWindowsAppTest, /RedirectStandardOutput = \(Join-Path \$smokeUserDataDirectory 'application\.stdout\.log'\)/);
+    assert.match(installedWindowsAppTest, /RedirectStandardError = \(Join-Path \$smokeUserDataDirectory 'application\.stderr\.log'\)/);
+    assert.doesNotMatch(installedWindowsAppTest, /Get-Content|Write-(?:Output|Verbose|Debug|Information)/);
+    assert.match(installedWindowsAppTest, /-AllowedExitCodes @\(0\)/);
+    assert.match(installedWindowsAppTest, /\$exitCode = \$Process\.ExitCode/);
+
+    for (const stage of [
+      'INSTALL',
+      'VALIDATION',
+      'USER_SETUP',
+      'APP_LAUNCH',
+      'APP_EXIT',
+      'UNINSTALL',
+      'CLEANUP',
+    ]) {
+      assert.match(installedWindowsAppTest, new RegExp(`Write-Stage '${stage}' 'BEGIN'`));
+      assert.match(installedWindowsAppTest, new RegExp(`Write-Stage '${stage}' 'COMPLETE'`));
+      assert.match(installedWindowsAppTest, new RegExp(`Write-Stage '${stage}' 'FAILED'`));
+    }
+
+    assert.match(
+      installedWindowsAppTest,
+      /\} finally \{\n\s+\$cleanupFailed = \$false[\s\S]*Invoke-Msi @\('\/x'[\s\S]*Remove-SmokeUserDataDirectory \$smokeUserDataDirectory/,
+    );
+    assert.match(installedWindowsAppTest, /Get-CimInstance -ClassName Win32_UserProfile/);
+    assert.match(installedWindowsAppTest, /Remove-LocalUser -Name \$testUser -ErrorAction Stop/);
+    assert.match(installedWindowsAppTest, /Remove-Item -LiteralPath \$installRoot -Recurse -Force -ErrorAction Stop/);
+
+    for (const section of [job('package', 'finalize'), job('release-package', 'release-finalize')]) {
+      assert.match(section, /- platform: win32\n\s+arch: x64\n/);
+      assert.match(section, /- platform: win32\n\s+arch: arm64\n/);
+      assert.equal(section.match(/test-installed-windows-app\.ps1/g)?.length, 1);
+    }
   });
 
   test('configures signed updates only for macOS and never advertises a Windows update feed', () => {
