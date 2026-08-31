@@ -11,6 +11,11 @@ import {
   validateWindowsSystemRoot,
 } from './packaged-smoke-support.mjs';
 
+const assertPackagedSpawnOptions = (source) => {
+  const normalizedSource = source.replace(/\r\n?/g, '\n');
+  assert.match(normalizedSource, /cwd: smokeProfile\.root,\n\s+env: childEnvironment,\n\s+shell: false,/);
+};
+
 const layoutFixture = ({ windowWidth, windowHeight, workWidth, workHeight }) => {
   const viewport = { width: windowWidth - 16, height: windowHeight - 65 };
   const cardWidth = 560;
@@ -181,7 +186,30 @@ describe('packaged smoke child environment', () => {
     const supportSource = await readFile(new URL('./packaged-smoke-support.mjs', import.meta.url), 'utf8');
     assert.doesNotMatch(smokeSource, /\.\.\.process\.env|Object\.(?:keys|values|entries)\(process\.env\)/);
     assert.doesNotMatch(supportSource, /Object\.(?:keys|values|entries)\(parentEnvironment\)|\bPATH\b/);
-    assert.match(smokeSource, /cwd: smokeProfile\.root,\n\s+env: childEnvironment,\n\s+shell: false,/);
+    assertPackagedSpawnOptions(smokeSource);
     assert.doesNotMatch(smokeSource, /env:\s*\{[\s\S]*process\.env/);
+  });
+
+  test('requires the adjacent packaged spawn options with LF or CRLF source', () => {
+    const options = [
+      '    cwd: smokeProfile.root,',
+      '    env: childEnvironment,',
+      '    shell: false,',
+    ];
+    assert.doesNotThrow(() => assertPackagedSpawnOptions(options.join('\n')));
+    assert.doesNotThrow(() => assertPackagedSpawnOptions(options.join('\r\n')));
+
+    for (const invalidOptions of [
+      options.slice(1),
+      [options[0], options[2]],
+      options.slice(0, 2),
+      [options[1], options[0], options[2]],
+      [options[0], options[2], options[1]],
+      ['    cwd: process.cwd(),', options[1], options[2]],
+      [options[0], '    env: process.env,', options[2]],
+      [options[0], options[1], '    shell: true,'],
+    ]) {
+      assert.throws(() => assertPackagedSpawnOptions(invalidOptions.join('\n')));
+    }
   });
 });
