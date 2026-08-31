@@ -12,14 +12,33 @@ import type {
     GoalResumeKind,
     GoalResumeIntent,
     GoalProviderResumeRequest,
+    GoalProviderOperationGuard,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
-import { sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { safeFailureDiagnostic, sanitizeGoalSessionEvent } from './securityBoundary.js';
 import {
     controlExecutionIdentity,
     nextState,
     validateControlFence,
 } from './support.js';
+
+const providerGuardChecks = new WeakMap<object, () => Promise<void>>();
+
+class DurableProviderOperationGuard implements GoalProviderOperationGuard {
+    constructor(
+        readonly generation: number,
+        readonly leaseExpiresAt: string | undefined,
+        check: () => Promise<void>,
+    ) {
+        providerGuardChecks.set(this, check);
+    }
+
+    assertCurrent(): Promise<void> {
+        const check = providerGuardChecks.get(this);
+        if (!check) throw new StaleGoalSessionFenceError('Provider operation guard is not bound to durable storage');
+        return check();
+    }
+}
 
 function completesAtAfterTurnPause(
     state: GoalSessionState,
@@ -139,7 +158,42 @@ export abstract class GoalSessionCore {
             operationId: intent.operationId, operationGeneration: intent.operationGeneration,
             operationPhase: intent.phase === 'settled' ? 'settled' : 'provider_in_doubt', kind: intent.kind,
             operationLeaseExpiresAt: intent.leaseExpiresAt,
+            operationGuard: this.providerOperationGuard(fence, intent.operationGeneration, current =>
+                !['cancelling', 'terminated', 'failed'].includes(current.status)
+                && current.resumeIntent?.operationId === intent.operationId
+                && current.resumeIntent.operationGeneration === intent.operationGeneration
+                && current.resumeIntent.phase !== 'claimed'),
         };
+    }
+
+    protected providerOperationGuard(
+        identity: GoalSessionIdentity,
+        generation: number,
+        ownsOperation: (state: GoalSessionState) => boolean,
+        leaseExpiresAt?: string,
+    ): GoalProviderOperationGuard {
+        return new DurableProviderOperationGuard(generation, leaseExpiresAt, async () => {
+            if (leaseExpiresAt && Date.parse(leaseExpiresAt) <= Date.now()) {
+                throw new StaleGoalSessionFenceError('Provider operation lease expired before its effect boundary');
+            }
+            const current = await this.ports.state.load(identity);
+            if (!current || (current.providerOperationGeneration ?? 0) !== generation || !ownsOperation(current)) {
+                throw new StaleGoalSessionFenceError('Provider operation generation was cancelled or replaced');
+            }
+        });
+    }
+
+    protected turnProviderOperationGuard(
+        fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
+        generation: number,
+    ): GoalProviderOperationGuard {
+        return this.providerOperationGuard(fence, generation, current =>
+            !['cancelling', 'terminated', 'failed'].includes(current.status)
+            && current.activeTurn?.turnId === fence.turnId
+            && current.activeTurn.executionId === execution.executionId
+            && current.activeTurn.attemptId === execution.attemptId
+            && (current.activeTurn.providerOperationGeneration ?? generation) === generation);
     }
 
     protected async expireResumeOperation(
@@ -253,7 +307,8 @@ export abstract class GoalSessionCore {
                     : outcome === 'failed'
                         ? 'failed'
                         : afterTurnPaused ? 'paused' : 'idle',
-                failureReason: outcome === 'failed' ? error ?? 'Provider reported turn failure' : undefined,
+                failureReason: outcome === 'failed'
+                    ? safeFailureDiagnostic(error ?? '', 'Provider reported turn failure') : undefined,
                 activeTurn: afterTurnPaused
                     ? undefined
                     : { ...activeTurn, status: outcome === 'succeeded' ? 'completed' : outcome === 'cancelled' ? 'cancelled' : 'failed' },

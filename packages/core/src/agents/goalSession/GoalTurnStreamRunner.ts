@@ -4,8 +4,8 @@ import type {
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalSessionCore } from './GoalSessionCore.js';
-import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
-import { safeDiagnostic, sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
+import { safeFailureDiagnostic, sanitizeGoalSessionEvent } from './securityBoundary.js';
 import {
     assertFirstTurnIdentityEvent, assertSuppliedMessagesAcknowledged,
     isAtomicTurnAudit, streamAuditTransitionId,
@@ -18,7 +18,7 @@ interface TurnStreamOptions {
     execution: GoalExecutionIdentity;
     initial: GoalSessionState;
     nextTurnMessages: GoalProviderCorrectiveMessage[];
-    openStream: () => AsyncIterable<GoalSessionEvent>;
+    openStream: () => AsyncIterable<GoalSessionEvent> | Promise<AsyncIterable<GoalSessionEvent>>;
 }
 
 /** Exact-attempt stream consumption and atomic event/state persistence. */
@@ -30,7 +30,7 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
         let reachedPause = false;
         let completed = false;
         try {
-            const stream = options.openStream();
+            const stream = await options.openStream();
             for await (const rawEvent of stream) {
                 const event = sanitizeGoalSessionEvent(rawEvent);
                 if (completed) throw new GoalSessionContractError('Provider emitted an event after turn completion', 'EVENT_AFTER_COMPLETION');
@@ -58,7 +58,7 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
             return { state: current, completed, reachedPause };
         } catch (error) {
             if (error instanceof StaleGoalSessionFenceError) throw error;
-            const message = `Provider turn failed: ${safeDiagnostic((error as Error).message, 'provider operation failed safely')}`;
+            const message = safeFailureDiagnostic((error as Error).message, 'Provider turn failed safely');
             await this.finishTurnIfOwned(fence, execution, message);
             throw error;
         }
@@ -125,7 +125,7 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
         return this.updateActiveTurnState(fence, execution, value => ({
             ...value,
             providerSessionId: event.providerSessionId ?? value.providerSessionId,
-            recoveryMetadata: event.recoveryMetadata,
+            recoveryMetadata: sanitizeRecoveryMetadata(event.recoveryMetadata),
             initializationIntent: event.providerSessionId ? undefined : value.initializationIntent,
             currentModel: event.providerSessionId && !value.providerSessionId
                 ? value.activeTurn?.requestedModel ?? value.currentModel : value.currentModel,

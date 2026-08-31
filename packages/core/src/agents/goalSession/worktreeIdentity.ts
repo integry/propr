@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { realpath } from 'node:fs/promises';
 import type { GoalRepositoryIdentity } from './contract.js';
 
 const SAFE_REMOTE_PROTOCOLS = new Set(['git:', 'http:', 'https:', 'ssh:']);
@@ -47,7 +48,9 @@ export function normalizeGitRepositoryIdentity(value: string): string | undefine
         try {
             const remote = new URL(trimmed);
             if (!SAFE_REMOTE_PROTOCOLS.has(remote.protocol)) return undefined;
-            if (remote.username || remote.password || remote.search || remote.hash) return undefined;
+            const credentialFreeSshUser = remote.protocol === 'ssh:'
+                && remote.username.toLowerCase() === 'git' && !remote.password;
+            if ((remote.username && !credentialFreeSshUser) || remote.password || remote.search || remote.hash) return undefined;
             return normalizedHostPath(remote.hostname, remote.pathname);
         } catch {
             return undefined;
@@ -70,13 +73,25 @@ export function normalizeGoalRepositoryIdentity(
     const worktreePath = path.resolve(repository.worktreePath);
     const branch = repository.branch.trim();
     if (!normalized || SECRET_LIKE.test(normalized) || repository.worktreePath !== worktreePath
-        || SECRET_LIKE.test(worktreePath) || !SAFE_BRANCH.test(branch) || SECRET_LIKE.test(branch)) return undefined;
+        || isSensitiveWorktreePath(worktreePath) || SECRET_LIKE.test(worktreePath)
+        || !SAFE_BRANCH.test(branch) || SECRET_LIKE.test(branch)) return undefined;
     return {
         repository: normalized,
         worktreePath,
         branch,
         headSha: SAFE_SHA.test(repository.headSha ?? '') ? repository.headSha!.toLowerCase() : undefined,
     };
+}
+
+/** Canonical ingress validator shared by turns, durable recovery, and Git inspection. */
+export async function normalizeCanonicalGoalRepositoryIdentity(
+    repository: GoalRepositoryIdentity,
+): Promise<GoalRepositoryIdentity | undefined> {
+    const normalized = normalizeGoalRepositoryIdentity(repository);
+    if (!normalized) return undefined;
+    const resolved = await realpath(normalized.worktreePath).catch(() => normalized.worktreePath);
+    if (resolved !== normalized.worktreePath || isSensitiveWorktreePath(resolved)) return undefined;
+    return normalized;
 }
 
 export function isSensitiveWorktreePath(value: string): boolean {

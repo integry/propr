@@ -7,12 +7,12 @@ import type {
     GoalPendingCancellationContext,
     GoalSessionControlFence,
     GoalSessionState,
-    GoalSteeringRequest,
+    GoalSteeringCommand,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalImmediateModelControls } from './GoalImmediateModelControls.js';
-import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
-import { safeDiagnostic, sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
+import { safeDiagnostic, safeFailureDiagnostic, sanitizeGoalSessionEvent } from './securityBoundary.js';
 import {
     assertProviderIdentity,
     controlExecutionIdentity,
@@ -22,8 +22,13 @@ import {
 
 /** Capability-aware steering, pause, resume, model, and cancellation controls. */
 export abstract class GoalSessionControls extends GoalImmediateModelControls {
-    async deliverMessage(request: GoalSteeringRequest): Promise<GoalMessageDeliveryOutcome> {
-        const state = await this.requireActiveTurnState(request);
+    async deliverMessage(request: GoalSteeringCommand): Promise<GoalMessageDeliveryOutcome> {
+        let state = await this.requireActiveTurnState(request);
+        const execution = this.activeExecution(state);
+        if ((request.executionId && request.executionId !== execution.executionId)
+            || (request.attemptId && request.attemptId !== execution.attemptId)) {
+            throw new StaleGoalSessionFenceError('Steering request does not own the exact current provider attempt');
+        }
         const pending = (await this.ports.messages.listPending(request)).sort((a, b) => a.sequence - b.sequence);
         const message = pending.find(value => value.messageId === request.messageId);
         if (!message) {
@@ -41,10 +46,20 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
         if (!this.adapter.deliverMessage) {
             throw new GoalSessionContractError('Provider declares active-turn steering without implementing it', 'CAPABILITY_METHOD_MISSING');
         }
+        sanitizeGoalSessionEvent({ type: 'message_acknowledged', messageId: request.messageId });
+        state = await this.requireActiveAttemptState(request, execution);
+        const operationGeneration = state.providerOperationGeneration ?? 0;
+        const operationGuard = this.providerOperationGuard(request, operationGeneration, current =>
+            !['cancelling', 'terminated', 'failed'].includes(current.status)
+            && current.activeTurn?.turnId === request.turnId
+            && current.activeTurn.executionId === execution.executionId
+            && current.activeTurn.attemptId === execution.attemptId);
+        await operationGuard.assertCurrent();
         const acknowledgement = await this.adapter.deliverMessage(
             {
                 goalId: request.goalId, sessionId: request.sessionId,
                 controllerEpoch: request.controllerEpoch, turnId: request.turnId,
+                ...execution, operationGeneration, operationGuard,
                 messageId: request.messageId, body: safeDiagnostic(message.body, '[redacted corrective message]'),
             },
             persistedSnapshot(state),
@@ -57,8 +72,6 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             || stillOwned.activeTurn?.attemptId !== state.activeTurn?.attemptId) {
             throw new StaleGoalSessionFenceError('A newer operation superseded message delivery');
         }
-        const execution = this.activeExecution(state);
-        sanitizeGoalSessionEvent({ type: 'message_acknowledged', messageId: request.messageId });
         const result = await this.ports.messages.acknowledgeWithEvent(request, execution, request.messageId);
         if (result === 'stale_fence') throw new StaleGoalSessionFenceError();
         if (result === 'not_found') {
@@ -93,9 +106,15 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
         if (!this.adapter.requestPause) {
             throw new GoalSessionContractError('Provider declares active-turn pause without implementing it', 'CAPABILITY_METHOD_MISSING');
         }
+        const operationGeneration = state.providerOperationGeneration ?? 0;
+        const operationGuard = this.providerOperationGuard(request, operationGeneration, current =>
+            !['cancelling', 'terminated', 'failed'].includes(current.status)
+            && (current.status === 'pause_requested' || current.status === 'paused'));
+        await operationGuard.assertCurrent();
         const acknowledgement = await this.adapter.requestPause({
             goalId: request.goalId, sessionId: request.sessionId, controllerEpoch: request.controllerEpoch,
-            reason: request.reason ? safeDiagnostic(request.reason, 'Operator requested pause') : undefined,
+            reason: request.reason ? safeFailureDiagnostic(request.reason, 'Operator requested pause') : undefined,
+            operationGeneration, operationGuard,
         }, persistedSnapshot(state));
         if (acknowledgement.appliesAt === 'after_turn') {
             throw new GoalSessionContractError('Active-turn provider returned an after-turn pause acknowledgement', 'CAPABILITY_ACK_MISMATCH');
@@ -141,8 +160,10 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
         state = await this.requireLiveResumeOperation(request, intent.operationId, intent.operationGeneration);
         let snapshot;
         try {
+            const providerRequest = this.providerResumeRequest(request, intent);
+            await providerRequest.operationGuard.assertCurrent();
             snapshot = await this.adapter.resumeSession(
-                this.providerResumeRequest(request, intent), persistedSnapshot(state),
+                providerRequest, persistedSnapshot(state),
             );
         } catch (error) {
             await this.expireResumeOperation(request, intent.operationId, intent.operationGeneration);
@@ -156,7 +177,7 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             fence: request,
             changes: {
                 providerSessionId: snapshot.providerSessionId,
-                recoveryMetadata: snapshot.recoveryMetadata,
+                recoveryMetadata: sanitizeRecoveryMetadata(snapshot.recoveryMetadata),
                 currentModel: snapshot.model ?? state.currentModel,
                 status: 'idle',
                 resumeIntent: { ...intent, phase: 'settled' },
@@ -189,13 +210,20 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
         const intent = state.cancellationIntent;
         const request = {
             goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
-            reason: intent.reason,
+            reason: safeFailureDiagnostic(intent.reason, 'Operator cancelled the goal session'),
             cancellationId: intent.cancellationId,
+            operationGeneration: state.providerOperationGeneration ?? 0,
+            operationGuard: this.providerOperationGuard(fence, state.providerOperationGeneration ?? 0, current =>
+                current.status === 'cancelling'
+                && current.cancellationIntent?.cancellationId === intent.cancellationId),
         };
         let signalError: unknown;
         try {
-            if (intent.pendingContext) await this.adapter.cancelPending!(request, intent.pendingContext);
-            else await this.adapter.cancel(request, persistedSnapshot(state));
+            await request.operationGuard.assertCurrent();
+            const signal = intent.pendingContext
+                ? this.adapter.cancelPending!(request, intent.pendingContext)
+                : this.adapter.cancel(request, persistedSnapshot(state));
+            await boundedCancellation(signal);
         } catch (error) {
             signalError = error;
         }
@@ -216,7 +244,7 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
         // Terminal fencing is authoritative even when the adapter reports that
         // its best-effort process signal failed. Surface that failure only after
         // the session can no longer remain permanently stuck in cancelling.
-        if (signalError) throw signalError;
+        if (signalError && !(signalError instanceof CancellationTimedOut)) throw signalError;
         return state;
     }
 
@@ -232,7 +260,7 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
                 );
             }
             const pendingContext = this.pendingCancellationContext(state);
-            const reason = safeDiagnostic(request.reason, 'Operator cancelled the goal session');
+            const reason = safeFailureDiagnostic(request.reason, 'Operator cancelled the goal session');
             const claimed = await this.ports.state.compareAndSet(state, nextState(state, {
                 status: 'cancelling',
                 activeTurn: undefined,
@@ -315,5 +343,22 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
     private activeExecution(state: GoalSessionState): GoalExecutionIdentity {
         if (!state.activeTurn) throw new StaleGoalSessionFenceError('No active turn owns this operation');
         return { executionId: state.activeTurn.executionId, attemptId: state.activeTurn.attemptId };
+    }
+}
+
+const CANCELLATION_TIMEOUT_MS = 1_000;
+
+class CancellationTimedOut extends Error {}
+
+async function boundedCancellation(signal: Promise<void>): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new CancellationTimedOut('Provider cancellation timed out')), CANCELLATION_TIMEOUT_MS);
+    });
+    try {
+        await Promise.race([signal, timeout]);
+    } finally {
+        if (timer) clearTimeout(timer);
+        void signal.catch(() => undefined);
     }
 }

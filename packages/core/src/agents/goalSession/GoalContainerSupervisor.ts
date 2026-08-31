@@ -14,6 +14,7 @@ import type {
 } from './contract.js';
 import { StaleGoalSessionFenceError } from './errors.js';
 import { isSensitiveWorktreePath } from './worktreeIdentity.js';
+import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 
 export interface GoalContainerLayout {
     executionId: string;
@@ -365,15 +366,17 @@ export class GoalContainerSupervisor {
             timeout: request.timeout,
             env: environment,
             durableOutput: async output => {
-                const result = await this.events.append(eventFence, eventExecution, {
+                const safeOutput = sanitizeGoalSessionEvent({
                     type: 'output',
                     channel: output.channel,
                     data: output.data,
                 });
+                if (safeOutput.type !== 'output') throw new Error('Output sanitizer returned an invalid event');
+                const result = await this.events.append(eventFence, eventExecution, safeOutput);
                 if (!result.accepted) {
                     throw new StaleGoalSessionFenceError(`Container output rejected by durable sink: ${result.reason}`);
                 }
-                await appendGoalLog(output);
+                await appendGoalLog({ ...output, channel: safeOutput.channel, data: safeOutput.data });
             },
         });
         return { layout, execution };

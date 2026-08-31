@@ -13,6 +13,7 @@ import {
     fingerprintGoalWorktree,
     normalizeGitRepositoryIdentity,
     normalizeGoalRepositoryIdentity,
+    isSensitiveWorktreePath,
 } from './worktreeIdentity.js';
 
 const execFileAsync = promisify(execFile);
@@ -90,6 +91,12 @@ export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
         try {
             const lexicalPath = path.resolve(safeRepository.worktreePath);
             const resolvedWorktreePath = await realpath(safeRepository.worktreePath);
+            if (isSensitiveWorktreePath(resolvedWorktreePath)) {
+                return {
+                    ...safeRepository, exists: false,
+                    reason: 'Worktree is not an eligible project checkout',
+                };
+            }
             if (resolvedWorktreePath !== lexicalPath) {
                 return {
                     ...safeRepository,

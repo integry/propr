@@ -21,6 +21,8 @@ import type {
     GoalTerminalCommit,
     PersistedGoalSessionEvent,
 } from './contract.js';
+import { InMemoryModelChangeHistory } from './InMemoryModelChangeHistory.js';
+import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 
 export class GoalSessionScopeError extends Error {
     constructor(message = 'A provider session is owned by a different goal') {
@@ -66,11 +68,15 @@ export class InMemoryGoalSessionPorts implements
     private readonly repositoryInspections = new Map<string, GoalRepositoryInspection>();
     private readonly terminalCommits = new Set<string>();
     private readonly transitionCommits = new Set<string>();
+    private readonly modelChangeHistory = new InMemoryModelChangeHistory();
     private terminalFault: 'before_commit' | 'before_commit_always' | 'after_commit' | undefined;
     private transitionFault: 'before_commit' | 'after_commit' | undefined;
 
     asRuntimePorts(): GoalSessionRuntimePorts {
-        return { state: this, transitions: this, events: this, terminal: this, messages: this, recovery: this };
+        return {
+            state: this, transitions: this, events: this, terminal: this,
+            messages: this, recovery: this, modelChanges: this.modelChangeHistory,
+        };
     }
 
     async load(identity: GoalSessionIdentity): Promise<GoalSessionState | null> {
@@ -235,7 +241,7 @@ export class InMemoryGoalSessionPorts implements
             attemptId: entry.execution.attemptId,
             sequence: (log.at(-1)?.sequence ?? 0) + 1,
             recordedAt: new Date().toISOString(),
-            event: clone(entry.event),
+            event: clone(sanitizeGoalSessionEvent(entry.event)),
         };
         log.push(persisted);
         this.events.set(key, log);

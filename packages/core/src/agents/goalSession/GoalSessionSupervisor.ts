@@ -10,10 +10,10 @@ import {
     compactImmediateModelIntents,
     hasUnresolvedImmediateModelIntent,
     immediateModelIntents,
-    retireCompactedModelIds,
 } from './modelChangeProtocol.js';
-import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
-import { safeDiagnostic } from './securityBoundary.js';
+import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
+import { safeFailureDiagnostic } from './securityBoundary.js';
+import { credentialFreeRepositoryIdentity } from './repositorySecurity.js';
 import {
     assertProviderIdentity,
     nextState,
@@ -50,6 +50,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
         const opened = await this.loadOrCreateForOpen(request);
         let state = opened.state;
         if (request.controllerEpoch > state.controllerEpoch) state = await this.takeover(request, request.controllerEpoch);
+        state = await this.scrubDurableSecurityState(state);
         if (state.status === 'terminated') {
             if (state.cancellationIntent) return state;
             throw new GoalSessionContractError('A terminated provider session cannot be resumed', 'SESSION_TERMINATED');
@@ -97,13 +98,52 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
 
     private async compactModelIntentRetention(state: GoalSessionState): Promise<GoalSessionState> {
         const intents = immediateModelIntents(state);
+        for (const intent of intents) {
+            const historical = await this.ports.modelChanges.claim(state, intent.modelChangeId, intent.model);
+            if (historical.model !== intent.model) {
+                throw new GoalSessionContractError(
+                    'Durable model history conflicts with retained session state', 'MODEL_OPERATION_CONFLICT',
+                );
+            }
+            if ((intent.phase === 'committed' || intent.phase === 'superseded') && !intent.applicationToken) {
+                await this.ports.modelChanges.settle(state, intent.modelChangeId, intent.acknowledgement ?? {
+                    requestedModel: intent.model,
+                    appliesAt: this.adapter.capabilities.modelChange === 'next_turn' ? 'next_turn' : 'next_safe_boundary',
+                    effectiveModel: intent.phase === 'committed' ? intent.model : undefined,
+                });
+            }
+        }
         const compacted = compactImmediateModelIntents(intents);
         if (compacted.length === intents.length) return state;
         return this.compareAndSetExact(state, {
             modelChangeIntents: compacted,
             modelChangeIntent: compacted.at(-1),
-            modelChangeRetiredFilter: retireCompactedModelIds(state.modelChangeRetiredFilter, intents, compacted),
         }, 'A newer operation superseded model intent retention during reopen');
+    }
+
+    private async scrubDurableSecurityState(state: GoalSessionState): Promise<GoalSessionState> {
+        const recoveryMetadata = state.recoveryMetadata === undefined
+            ? undefined : sanitizeRecoveryMetadata(state.recoveryMetadata);
+        const repository = state.activeTurn
+            ? await credentialFreeRepositoryIdentity(state.activeTurn.repository) : undefined;
+        const failureReason = state.failureReason === undefined
+            ? undefined : safeFailureDiagnostic(state.failureReason, 'Provider operation failed safely');
+        const cancellationIntent = state.cancellationIntent ? {
+            ...state.cancellationIntent,
+            reason: safeFailureDiagnostic(state.cancellationIntent.reason, 'Operator cancelled the goal session'),
+        } : undefined;
+        if (JSON.stringify(recoveryMetadata) === JSON.stringify(state.recoveryMetadata)
+            && JSON.stringify(failureReason) === JSON.stringify(state.failureReason)
+            && JSON.stringify(cancellationIntent) === JSON.stringify(state.cancellationIntent)
+            && (!state.activeTurn || JSON.stringify(repository) === JSON.stringify(state.activeTurn.repository))) {
+            return state;
+        }
+        return this.compareAndSetExact(state, {
+            recoveryMetadata,
+            failureReason,
+            cancellationIntent,
+            activeTurn: state.activeTurn ? { ...state.activeTurn, repository: repository! } : undefined,
+        }, 'A newer operation superseded durable security scrubbing during reopen');
     }
 
     private canRecoverIncompleteInit(state: GoalSessionState): boolean {
@@ -202,6 +242,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
         const attemptId = state.initializationIntent
             ? this.mintFreshAttemptId(state.initializationIntent.attemptId)
             : this.mintAttemptId();
+        const operationGeneration = (state.providerOperationGeneration ?? 0) + 1;
         return this.compareAndSetExact(state, {
             initializationIntent: {
                 attemptId,
@@ -209,6 +250,8 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 recordedAt: nowIso(),
             },
             providerOpenAttemptId: attemptId,
+            providerOpenOperationGeneration: operationGeneration,
+            providerOperationGeneration: operationGeneration,
         });
     }
 
@@ -216,7 +259,12 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
         const attemptId = state.providerOpenAttemptId
             ? this.mintFreshAttemptId(state.providerOpenAttemptId)
             : this.mintAttemptId();
-        return this.compareAndSetExact(state, { providerOpenAttemptId: attemptId });
+        const operationGeneration = (state.providerOperationGeneration ?? 0) + 1;
+        return this.compareAndSetExact(state, {
+            providerOpenAttemptId: attemptId,
+            providerOpenOperationGeneration: operationGeneration,
+            providerOperationGeneration: operationGeneration,
+        });
     }
 
     private async loadOrCreateForOpen(request: OpenGoalSessionRequest): Promise<{ state: GoalSessionState; created: boolean }> {
@@ -258,6 +306,13 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             if (!state.providerOpenAttemptId) {
                 throw new GoalSessionContractError('Provider open attempt was not durably claimed', 'OPEN_ATTEMPT_MISSING');
             }
+            const operationGeneration = state.providerOpenOperationGeneration
+                ?? state.providerOperationGeneration ?? 0;
+            const operationGuard = this.providerOperationGuard(request, operationGeneration, current =>
+                !['cancelling', 'terminated', 'failed'].includes(current.status)
+                && current.providerOpenAttemptId === state.providerOpenAttemptId
+                && current.providerOpenOperationGeneration === operationGeneration);
+            await operationGuard.assertCurrent();
             const snapshot = await this.adapter.openSession({
                 goalId: request.goalId,
                 sessionId: request.sessionId,
@@ -266,6 +321,8 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 persisted,
                 deterministicOpenKey,
                 attemptId: state.providerOpenAttemptId,
+                operationGeneration,
+                operationGuard,
             });
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
             assertProviderIdentity(state, snapshot);
@@ -273,7 +330,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 && hasUnresolvedImmediateModelIntent(state);
             const saved = await this.ports.state.compareAndSet(state, nextState(state, {
                 providerSessionId: snapshot.providerSessionId,
-                recoveryMetadata: snapshot.recoveryMetadata,
+                recoveryMetadata: sanitizeRecoveryMetadata(snapshot.recoveryMetadata),
                 currentModel: preserveIntentModel ? state.currentModel : snapshot.model ?? state.currentModel,
                 status: state.status === 'initializing' ? 'idle' : state.status,
                 initializationIntent: undefined,
@@ -285,7 +342,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             if (error instanceof StaleGoalSessionFenceError || error instanceof GoalSessionContractError) throw error;
             await this.ports.state.compareAndSet(state, nextState(state, {
                 status: 'failed',
-                failureReason: safeDiagnostic((error as Error).message, 'Unable to create or resume provider session safely'),
+                failureReason: safeFailureDiagnostic((error as Error).message, 'Unable to create or resume provider session safely'),
             }));
             throw error;
         }

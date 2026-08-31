@@ -136,7 +136,7 @@ test('thousands of model switches stay bounded across a crash, takeover, cached 
     await supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
 
     let sizeAtHorizon = 0;
-    for (let generation = 0; generation < 1_200; generation += 1) {
+    for (let generation = 0; generation < 5_001; generation += 1) {
         const model = `model-${generation.toString().padStart(4, '0')}`;
         if (generation === 80) {
             ports.setTransitionFault('before_commit');
@@ -158,25 +158,43 @@ test('thousands of model switches stay bounded across a crash, takeover, cached 
     }
 
     const settled = await ports.load(identity);
-    assert.equal(settled?.currentModel, 'model-1199');
-    assert.equal(settled?.requestedModel, 'model-1199');
-    assert.equal(settled?.modelChangeGeneration, 1_200);
+    assert.equal(settled?.currentModel, 'model-5000');
+    assert.equal(settled?.requestedModel, 'model-5000');
+    assert.equal(settled?.modelChangeGeneration, 5_001);
     assert.equal(settled?.modelChangeIntents?.length, MODEL_CHANGE_SETTLED_RETRY_HORIZON);
-    assert.equal(settled?.modelChangeIntents?.at(0)?.generation, 1_137);
-    assert.equal(settled?.modelChangeIntents?.at(-1)?.generation, 1_200);
+    assert.equal(settled?.modelChangeIntents?.at(0)?.generation, 4_938);
+    assert.equal(settled?.modelChangeIntents?.at(-1)?.generation, 5_001);
     assert.ok(JSON.stringify(settled).length <= sizeAtHorizon + 2_048);
     assert.ok(JSON.stringify(settled).length < 32_000);
 
     const latestId = settled?.modelChangeIntents?.at(-1)?.modelChangeId;
-    await supervisor.requestModelChange({ ...identity, controllerEpoch: 2, model: 'model-1199' });
+    await supervisor.requestModelChange({ ...identity, controllerEpoch: 2, model: 'model-5000' });
     assert.equal(adapter.modelCalls.at(-1)?.modelChangeId, latestId, 'cached retry keeps its provider idempotency identity');
-    assert.equal(adapter.modelCalls.at(-1)?.applicationGeneration, 1_200);
+    assert.equal(adapter.modelCalls.at(-1)?.applicationGeneration, 5_001);
 
     const events = await ports.replay(identity);
-    assert.equal(events.filter(record => record.event.type === 'model_change_acknowledged').length, 1_200);
-    assert.equal(events.filter(record => record.event.type === 'model_changed').length, 1_200);
+    assert.equal(events.filter(record => record.event.type === 'model_change_acknowledged').length, 5_001);
+    assert.equal(events.filter(record => record.event.type === 'model_changed').length, 5_001);
     assert.equal(events.find(record => record.event.type === 'model_changed')?.event.type === 'model_changed'
         ? events.find(record => record.event.type === 'model_changed')!.event.model : undefined, 'model-0000');
+
+    const firstOperationId = adapter.modelCalls[0]?.modelChangeId;
+    assert.ok(firstOperationId);
+    assert.equal((await supervisor.requestModelChange({
+        ...identity, controllerEpoch: 2, model: 'model-0000', operationId: firstOperationId,
+    })).outcome, 'outside_retry_horizon');
+    const retained = settled?.modelChangeIntents?.at(0);
+    assert.ok(retained);
+    assert.equal((await supervisor.requestModelChange({
+        ...identity, controllerEpoch: 2, model: retained.model, operationId: retained.modelChangeId,
+    })).requestedModel, retained.model);
+    const neverIssued = await supervisor.requestModelChange({
+        ...identity, controllerEpoch: 2, model: 'model-never-issued', operationId: 'adversarial-never-issued-after-5001',
+    });
+    assert.notEqual(neverIssued.outcome, 'outside_retry_horizon');
+    await assert.rejects(supervisor.requestModelChange({
+        ...identity, controllerEpoch: 2, model: 'model-conflict', operationId: 'adversarial-never-issued-after-5001',
+    }), /different model/);
     ports.close();
 });
 

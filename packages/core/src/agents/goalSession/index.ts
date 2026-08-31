@@ -38,5 +38,8 @@ export {
     fingerprintGoalWorktree,
     normalizeGitRepositoryIdentity,
     normalizeGoalRepositoryIdentity,
+    normalizeCanonicalGoalRepositoryIdentity,
 } from './worktreeIdentity.js';
 export { MODEL_CHANGE_SETTLED_RETRY_HORIZON } from './modelChangeProtocol.js';
+export { GOAL_RECOVERY_METADATA_CODEC_VERSION, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
+export type { GoalRecoveryMetadataV1 } from './recoveryMetadata.js';

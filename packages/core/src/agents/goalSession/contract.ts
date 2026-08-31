@@ -1,3 +1,7 @@
+import type { GoalProviderOperationGuard } from './providerOperationBoundary.js';
+export type { GoalModelChangeHistoryPort, GoalModelChangeHistoryRecord, GoalProviderOperationGuard } from './providerOperationBoundary.js';
+export type { GoalSessionRecoveryPort, GoalSessionRuntimePorts } from './runtimePorts.js';
+
 /** JSON values are used for recovery data so it can be persisted without provider objects. */
 export type GoalSessionJsonValue =
     | string
@@ -61,6 +65,8 @@ export interface GoalTurnState extends GoalExecutionIdentity {
     objective: string;
     requestedModel: string;
     repository: GoalRepositoryIdentity;
+    /** Cancellation/replacement barrier captured for this provider invocation. */
+    providerOperationGeneration?: number;
     status: 'running' | 'pause_requested' | 'paused' | 'completed' | 'cancelled' | 'failed';
 }
 
@@ -229,6 +235,7 @@ export interface GoalSessionState extends GoalSessionIdentity {
     initializationIntent?: GoalSessionInitializationIntent;
     /** Last durably claimed provider open/resume invocation attempt. */
     providerOpenAttemptId?: string;
+    providerOpenOperationGeneration?: number;
     /** A crashed first-turn invocation that may be retried with a fresh attempt. */
     retryTurn?: { turnId: string; executionId: string; crashedAttemptId: string };
     /** Last durably claimed reconciliation invocation attempt. */
@@ -252,8 +259,6 @@ export interface GoalSessionState extends GoalSessionIdentity {
     modelChangeIntents?: GoalModelChangeIntent[];
     /** Last allocated immediate-model generation. */
     modelChangeGeneration?: number;
-    /** Fixed-size retired-ID membership filter for deterministic outside-horizon retries. */
-    modelChangeRetiredFilter?: string;
     failureReason?: string;
     /** Optimistic concurrency token owned by the state port. */
     version: number;
@@ -405,6 +410,8 @@ export interface GoalProviderOpenRequest extends GoalSessionIdentity {
     provider: string;
     controllerEpoch: number;
     attemptId: string;
+    operationGeneration: number;
+    operationGuard: GoalProviderOperationGuard;
     persisted?: GoalProviderSessionSnapshot;
     /**
      * Stable key a deterministic provider uses to re-open the same underlying
@@ -419,6 +426,8 @@ export interface GoalBeginTurnRequest extends GoalSessionFence, GoalExecutionIde
     context?: GoalSessionJsonValue;
     repository: GoalRepositoryIdentity;
     requestedModel: string;
+    operationGeneration: number;
+    operationGuard: GoalProviderOperationGuard;
     /**
      * FIFO messages reserved for acceptance by a next-turn-only provider. The
      * provider must acknowledge every supplied ID before reporting success.
@@ -434,13 +443,23 @@ export interface GoalProviderCorrectiveMessage {
     body: string;
 }
 
-export interface GoalSteeringRequest extends GoalSessionFence {
+/** Legacy-compatible supervisor command; the provider never receives this weaker shape. */
+export interface GoalSteeringCommand extends GoalSessionFence {
+    executionId?: string;
+    attemptId?: string;
     messageId: string;
     body: string;
 }
 
+export interface GoalSteeringRequest extends GoalSessionFence, GoalExecutionIdentity {
+    messageId: string; body: string;
+    operationGeneration: number; operationGuard: GoalProviderOperationGuard;
+}
+
 export interface GoalPauseRequest extends GoalSessionControlFence {
     reason?: string;
+    operationGeneration?: number;
+    operationGuard?: GoalProviderOperationGuard;
 }
 
 export interface GoalModelChangeRequest extends GoalSessionControlFence {
@@ -457,6 +476,8 @@ export interface GoalProviderModelChangeRequest extends GoalModelChangeRequest {
      * after observing a newer one, including delayed completion of an older call.
      */
     applicationGeneration: number;
+    operationGeneration: number;
+    operationGuard: GoalProviderOperationGuard;
 }
 
 export interface GoalCancelRequest extends GoalSessionControlFence {
@@ -466,8 +487,9 @@ export interface GoalCancelRequest extends GoalSessionControlFence {
 /** Provider request; retries with the same cancellationId must be idempotent. */
 export interface GoalProviderCancelRequest extends GoalCancelRequest {
     cancellationId: string;
+    operationGeneration: number;
+    operationGuard: GoalProviderOperationGuard;
 }
-
 /** Identity available while a lazy-ID provider has not emitted its first checkpoint. */
 export interface GoalPendingCancellationContext {
     initializationIntent: GoalSessionInitializationIntent;
@@ -504,6 +526,7 @@ export interface GoalProviderReconcileRequest extends GoalSessionIdentity, GoalE
     operationGeneration: number;
     operationPhase: 'provider_in_doubt';
     operationLeaseExpiresAt: string;
+    operationGuard: GoalProviderOperationGuard;
     persisted: GoalProviderSessionSnapshot;
     repository: GoalRepositoryInspection;
     container: GoalContainerInspection;
@@ -515,6 +538,7 @@ export interface GoalProviderResumeRequest extends GoalSessionControlFence {
     operationPhase: 'provider_in_doubt' | 'settled';
     operationLeaseExpiresAt: string;
     kind: GoalResumeKind;
+    operationGuard: GoalProviderOperationGuard;
 }
 
 export type GoalProviderReconcileResult =
@@ -601,18 +625,4 @@ export interface GoalRepositoryInspection extends GoalRepositoryIdentity {
     observedWorktreeFingerprint?: string;
     resolvedWorktreePath?: string;
     reason?: string;
-}
-
-export interface GoalSessionRecoveryPort {
-    inspectContainer(identity: GoalSessionIdentity): Promise<GoalContainerInspection>;
-    inspectRepository(repository: GoalRepositoryIdentity): Promise<GoalRepositoryInspection>;
-}
-
-export interface GoalSessionRuntimePorts {
-    state: GoalSessionStatePort;
-    transitions: GoalSessionTransitionPort;
-    events: GoalSessionEventSink;
-    terminal: GoalSessionTerminalPort;
-    messages: GoalSessionMessagePort;
-    recovery: GoalSessionRecoveryPort;
 }

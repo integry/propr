@@ -3,7 +3,7 @@ import type {
     GoalSessionState,
 } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
-import { normalizeGoalRepositoryIdentity } from './worktreeIdentity.js';
+import { normalizeCanonicalGoalRepositoryIdentity } from './worktreeIdentity.js';
 
 export function validateTurnRequestIdentity(request: { turnId: string; executionId: string }): void {
     if (!request.turnId.trim() || !request.executionId.trim()) {
@@ -11,8 +11,8 @@ export function validateTurnRequestIdentity(request: { turnId: string; execution
     }
 }
 
-export function credentialFreeRepositoryIdentity(repositoryInput: GoalRepositoryIdentity): GoalRepositoryIdentity {
-    const repository = normalizeGoalRepositoryIdentity(repositoryInput);
+export async function credentialFreeRepositoryIdentity(repositoryInput: GoalRepositoryIdentity): Promise<GoalRepositoryIdentity> {
+    const repository = await normalizeCanonicalGoalRepositoryIdentity(repositoryInput);
     if (!repository) {
         throw new GoalSessionContractError(
             'Repository identity is not a trustworthy Git repository name or remote',
@@ -22,12 +22,12 @@ export function credentialFreeRepositoryIdentity(repositoryInput: GoalRepository
     return repository;
 }
 
-export function normalizeRecoveryRepositories(
+export async function normalizeRecoveryRepositories(
     state: GoalSessionState,
     requested: GoalRepositoryIdentity,
-): { requested: GoalRepositoryIdentity; durable: GoalRepositoryIdentity } | undefined {
-    const normalizedRequested = normalizeGoalRepositoryIdentity(requested);
-    const normalizedDurable = normalizeGoalRepositoryIdentity(state.activeTurn?.repository ?? requested);
+): Promise<{ requested: GoalRepositoryIdentity; durable: GoalRepositoryIdentity } | undefined> {
+    const normalizedRequested = await normalizeCanonicalGoalRepositoryIdentity(requested);
+    const normalizedDurable = await normalizeCanonicalGoalRepositoryIdentity(state.activeTurn?.repository ?? requested);
     return normalizedRequested && normalizedDurable
         ? { requested: normalizedRequested, durable: normalizedDurable }
         : undefined;

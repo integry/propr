@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import type {
     GoalBeginTurnRequest, GoalProviderModelChangeRequest, GoalProviderReconcileRequest,
     GoalProviderResumeRequest, GoalProviderSessionSnapshot, GoalSessionAdapter,
-    GoalSessionControlFence, GoalSessionEvent, GoalSessionState,
+    GoalSessionControlFence, GoalSessionEvent, GoalSessionState, GoalSteeringRequest,
 } from '../src/agents/goalSession/contract.js';
 import { GoalContainerSupervisor } from '../src/agents/goalSession/GoalContainerSupervisor.js';
 import { GoalSessionSupervisor } from '../src/agents/goalSession/GoalSessionSupervisor.js';
@@ -69,6 +69,20 @@ class MatrixAdapter implements GoalSessionAdapter {
                 : { outcome: 'resumed' as const, reason: 'replaced', snapshot: {
                     providerSessionId: 'matrix-native', recoveryMetadata: {}, model: 'model-0',
                 } };
+    }
+}
+
+class GuardedSteeringAdapter extends MatrixAdapter {
+    readonly entered = deferred();
+    readonly release = deferred();
+    effects = 0;
+
+    override async deliverMessage(request: GoalSteeringRequest) {
+        this.entered.resolve();
+        await this.release.promise;
+        await request.operationGuard!.assertCurrent();
+        this.effects += 1;
+        return { messageId: request.messageId };
     }
 }
 
@@ -164,7 +178,52 @@ test('caller model operation IDs retry retained entries and report a retired ID 
     });
     assert.equal(retained.requestedModel, 'model-9');
     assert.equal(adapter.modelRequests.length, before);
+    const neverIssued = await supervisor.requestModelChange({
+        ...control, model: 'model-adversarial-never-issued', operationId: 'adversarial-never-issued',
+    });
+    assert.notEqual(neverIssued.outcome, 'outside_retry_horizon');
+    assert.equal(adapter.modelRequests.length, before + 1);
+    await assert.rejects(supervisor.requestModelChange({
+        ...control, model: 'model-conflict', operationId: 'adversarial-never-issued',
+    }), /different model/);
     assert.ok(Buffer.byteLength(JSON.stringify(await ports.load(identity))) < 100_000);
+});
+
+test('next-turn model IDs stay exact across 5,001 issues and SQLite reopen', async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'next-turn-model-matrix-'));
+    const filename = path.join(directory, 'state.sqlite');
+    let ports = new SqliteGoalSessionTestPorts(filename);
+    t.after(() => {
+        ports.close();
+        fs.rmSync(directory, { recursive: true, force: true });
+    });
+    const adapter = new MatrixAdapter();
+    Object.defineProperty(adapter, 'capabilities', { value: {
+        nativeSessionId: 'eager', steering: 'next_turn', pause: 'after_turn', modelChange: 'next_turn',
+    } });
+    await ports.create(runningState({ status: 'idle', activeTurn: undefined }));
+    let supervisor = new GoalSessionSupervisor(adapter, ports.asRuntimePorts());
+    for (let index = 0; index < 5_001; index += 1) {
+        await supervisor.requestModelChange({ ...control, model: `next-${index}`, operationId: `next-operation-${index}` });
+    }
+    const bounded = await ports.load(identity);
+    assert.equal(bounded?.modelChangeIntent?.modelChangeId, 'next-operation-5000');
+    assert.ok(Buffer.byteLength(JSON.stringify(bounded)) < 32_000);
+    ports.close();
+    ports = new SqliteGoalSessionTestPorts(filename);
+    supervisor = new GoalSessionSupervisor(adapter, ports.asRuntimePorts());
+    assert.equal((await supervisor.requestModelChange({
+        ...control, model: 'next-0', operationId: 'next-operation-0',
+    })).outcome, 'outside_retry_horizon');
+    assert.equal((await supervisor.requestModelChange({
+        ...control, model: 'next-4937', operationId: 'next-operation-4937',
+    })).requestedModel, 'next-4937');
+    assert.notEqual((await supervisor.requestModelChange({
+        ...control, model: 'never-issued', operationId: 'next-never-issued',
+    })).outcome, 'outside_retry_horizon');
+    await assert.rejects(supervisor.requestModelChange({
+        ...control, model: 'conflict', operationId: 'next-never-issued',
+    }), /different model/);
 });
 
 test('SQLite corrective-message consumption and acknowledgement event commit exactly once', async () => {
@@ -184,6 +243,49 @@ test('SQLite corrective-message consumption and acknowledgement event commit exa
     ports.close();
 });
 
+test('separate SQLite cancellation after the final steering read blocks provider consumption and ack', async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'steering-guard-'));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    const filename = path.join(directory, 'state.sqlite');
+    const deliveryPorts = new SqliteGoalSessionTestPorts(filename);
+    const cancellationPorts = new SqliteGoalSessionTestPorts(filename);
+    t.after(() => { deliveryPorts.close(); cancellationPorts.close(); });
+    await deliveryPorts.create(runningState());
+    deliveryPorts.enqueueMessage({
+        ...identity, messageId: 'guarded-message', sequence: 1,
+        body: 'consume only if current', createdAt: new Date().toISOString(),
+    });
+    const adapter = new GuardedSteeringAdapter();
+    const delivery = new GoalSessionSupervisor(adapter, deliveryPorts.asRuntimePorts()).deliverMessage({
+        ...control, turnId: 'turn-1', executionId: 'execution-1', attemptId: 'attempt-1',
+        messageId: 'guarded-message', body: 'ignored',
+    });
+    await adapter.entered.promise;
+    await new GoalSessionSupervisor(adapter, cancellationPorts.asRuntimePorts()).cancel({
+        ...control, reason: 'cancel after final steering read',
+    });
+    adapter.release.resolve();
+    await assert.rejects(delivery, /cancelled or replaced/);
+    assert.equal(adapter.effects, 0);
+    assert.equal((await deliveryPorts.listPending(identity)).length, 1);
+    assert.equal((await deliveryPorts.replay(identity)).filter(event =>
+        event.event.type === 'message_acknowledged').length, 0);
+});
+
+test('hung provider cancellation is bounded and leaves one durable terminal completion', async () => {
+    const ports = new InMemoryGoalSessionPorts();
+    await ports.create(runningState());
+    const adapter = new MatrixAdapter();
+    adapter.cancel = async () => new Promise<void>(() => undefined);
+    const started = Date.now();
+    const terminal = await new GoalSessionSupervisor(adapter, ports.asRuntimePorts()).cancel({
+        ...control, reason: 'bounded cancellation',
+    });
+    assert.equal(terminal.status, 'terminated');
+    assert.ok(Date.now() - started < 2_000);
+    assert.equal((await ports.replay(identity)).filter(event => event.event.type === 'completion').length, 1);
+});
+
 test('credential poison is rejected before provider/state/event boundaries and sensitive allowlisted mounts still fail', async () => {
     const ports = new InMemoryGoalSessionPorts();
     const adapter = new MatrixAdapter();
@@ -195,6 +297,18 @@ test('credential poison is rejected before provider/state/event boundaries and s
         repository: { ...repository, repository: `https://${secret}@github.com/integry/propr.git` },
         requestedModel: 'model-0',
     }), /trustworthy Git repository/);
+    await assert.rejects(supervisor.runTurn({
+        ...control, turnId: 'sensitive-turn', executionId: 'sensitive-execution', objective: 'poison',
+        repository: { ...repository, worktreePath: '/etc' }, requestedModel: 'model-0',
+    }), /trustworthy Git repository/);
+    const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sensitive-alias-'));
+    const alias = path.join(aliasRoot, 'project');
+    fs.symlinkSync('/etc', alias);
+    await assert.rejects(supervisor.runTurn({
+        ...control, turnId: 'alias-turn', executionId: 'alias-execution', objective: 'poison',
+        repository: { ...repository, worktreePath: alias }, requestedModel: 'model-0',
+    }), /trustworthy Git repository/);
+    fs.rmSync(aliasRoot, { recursive: true, force: true });
     assert.equal(adapter.reconcileRequests.length, 0);
     assert.doesNotMatch(JSON.stringify(await ports.load(identity)), new RegExp(secret));
     assert.doesNotMatch(JSON.stringify(await ports.replay(identity)), new RegExp(secret));

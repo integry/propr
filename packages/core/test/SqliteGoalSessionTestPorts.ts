@@ -11,11 +11,14 @@ import type {
     GoalSessionEvent,
     GoalSessionFence,
     GoalSessionIdentity,
+    GoalModelChangeAcknowledgement,
+    GoalModelChangeHistoryRecord,
     GoalSessionRuntimePorts,
     GoalSessionState,
     GoalTerminalCommit,
     PersistedGoalSessionEvent,
 } from '../src/agents/goalSession/contract.js';
+import { sanitizeGoalSessionEvent } from '../src/agents/goalSession/securityBoundary.js';
 
 function scope(identity: GoalSessionIdentity): string {
     return `${identity.goalId}\0${identity.sessionId}`;
@@ -45,11 +48,53 @@ export class SqliteGoalSessionTestPorts {
             );
             CREATE TABLE IF NOT EXISTS goal_fixtures (kind TEXT NOT NULL, identity TEXT NOT NULL, payload TEXT NOT NULL,
                 PRIMARY KEY (kind, identity));
+            CREATE TABLE IF NOT EXISTS goal_model_changes (
+                scope TEXT NOT NULL, operation_id TEXT NOT NULL, sequence INTEGER NOT NULL,
+                model TEXT NOT NULL, status TEXT NOT NULL, acknowledgement TEXT,
+                PRIMARY KEY (scope, operation_id)
+            );
         `);
     }
 
     asRuntimePorts(): GoalSessionRuntimePorts {
-        return { state: this, transitions: this, events: this, terminal: this, messages: this, recovery: this };
+        return { state: this, transitions: this, events: this, terminal: this, messages: this, recovery: this, modelChanges: this };
+    }
+
+    async claim(
+        identity: GoalSessionIdentity,
+        operationId: string,
+        model: string,
+    ): Promise<GoalModelChangeHistoryRecord> {
+        return this.database.transaction(() => {
+            const existing = this.readModelChange(identity, operationId);
+            if (existing) return existing;
+            const row = this.database.prepare(
+                'SELECT COALESCE(MAX(sequence), 0) AS sequence FROM goal_model_changes WHERE scope = ?',
+            ).get(scope(identity)) as { sequence: number };
+            this.database.prepare(
+                'INSERT INTO goal_model_changes(scope, operation_id, sequence, model, status) VALUES (?, ?, ?, ?, ?)',
+            ).run(scope(identity), operationId, row.sequence + 1, model, 'pending');
+            return { operationId, model, status: 'pending' as const };
+        })();
+    }
+
+    async settle(
+        identity: GoalSessionIdentity,
+        operationId: string,
+        acknowledgement: GoalModelChangeAcknowledgement,
+    ): Promise<void> {
+        this.database.transaction(() => {
+            this.database.prepare(
+                'UPDATE goal_model_changes SET status = ?, acknowledgement = ? WHERE scope = ? AND operation_id = ?',
+            ).run('settled', JSON.stringify(acknowledgement), scope(identity), operationId);
+            this.database.prepare(`
+                UPDATE goal_model_changes SET status = 'retired', acknowledgement = NULL
+                WHERE scope = ? AND status = 'settled' AND operation_id NOT IN (
+                    SELECT operation_id FROM goal_model_changes
+                    WHERE scope = ? AND status = 'settled' ORDER BY sequence DESC LIMIT 64
+                )
+            `).run(scope(identity), scope(identity));
+        })();
     }
 
     close(): void { this.database.close(); }
@@ -200,6 +245,22 @@ export class SqliteGoalSessionTestPorts {
         return row ? JSON.parse(row.payload) as GoalSessionState : null;
     }
 
+    private readModelChange(
+        identity: GoalSessionIdentity,
+        operationId: string,
+    ): GoalModelChangeHistoryRecord | undefined {
+        const row = this.database.prepare(
+            'SELECT model, status, acknowledgement FROM goal_model_changes WHERE scope = ? AND operation_id = ?',
+        ).get(scope(identity), operationId) as {
+            model: string; status: GoalModelChangeHistoryRecord['status']; acknowledgement: string | null;
+        } | undefined;
+        return row ? {
+            operationId, model: row.model, status: row.status,
+            acknowledgement: row.acknowledgement
+                ? JSON.parse(row.acknowledgement) as GoalModelChangeAcknowledgement : undefined,
+        } : undefined;
+    }
+
     private acknowledgeMessage(
         fence: GoalSessionFence,
         execution: GoalExecutionIdentity,
@@ -286,7 +347,7 @@ export class SqliteGoalSessionTestPorts {
             .get(scope(fence)) as { sequence: number };
         const persisted: PersistedGoalSessionEvent = {
             ...fence, turnId, ...execution, sequence: row.sequence + 1,
-            recordedAt: new Date().toISOString(), event: clone(event),
+            recordedAt: new Date().toISOString(), event: clone(sanitizeGoalSessionEvent(event)),
         };
         this.database.prepare('INSERT INTO goal_events(scope, sequence, payload) VALUES (?, ?, ?)')
             .run(scope(fence), persisted.sequence, JSON.stringify(persisted));

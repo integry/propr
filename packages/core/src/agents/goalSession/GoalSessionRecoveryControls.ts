@@ -10,7 +10,7 @@ import type {
 import { StaleGoalSessionFenceError } from './errors.js';
 import { GoalSessionControls } from './GoalSessionControls.js';
 import { hasUnresolvedImmediateModelIntent } from './modelChangeProtocol.js';
-import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
+import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 import {
     assertLiveRecoveryLease, assertRecoverableExactState, completedRecoveryResult, expireRecoveryLeaseIfOwned,
     isRecoverableStatus, RECOVERY_LEASE_MS, sameRecoverySubject, stoppedReconciliationResult,
@@ -28,7 +28,7 @@ import {
     validateIdentity,
 } from './support.js';
 import { fingerprintGoalWorktree } from './worktreeIdentity.js';
-import { safeDiagnostic } from './securityBoundary.js';
+import { safeFailureDiagnostic } from './securityBoundary.js';
 
 export type ReconcileGoalSessionResult = {
     outcome: 'alive' | 'resumed' | 'failed' | 'blocked';
@@ -54,7 +54,10 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                 if (controllerEpoch === state.controllerEpoch) return state;
                 throw new StaleGoalSessionFenceError();
             }
-            const saved = await this.ports.state.compareAndSet(state, nextState(state, { controllerEpoch }));
+            const saved = await this.ports.state.compareAndSet(state, nextState(state, {
+                controllerEpoch,
+                providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
+            }));
             if (saved) return saved;
         }
         throw new StaleGoalSessionFenceError('Another controller repeatedly changed the session during takeover');
@@ -102,6 +105,11 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         state = await this.requireLiveRecoveryLease(prepared.fence, recovery.execution, state.recoveryAttempt!.operationToken);
         let result: Awaited<ReturnType<typeof this.adapter.reconcile>>;
         try {
+            const operation = state.recoveryAttempt!;
+            const operationGuard = this.providerOperationGuard(prepared.fence, operation.operationGeneration, current =>
+                current.recoveryAttempt?.operationToken === operation.operationToken
+                && current.recoveryAttempt.phase === 'provider_in_doubt', operation.leaseExpiresAt);
+            await operationGuard.assertCurrent();
             result = await this.adapter.reconcile({
                 goalId: identity.goalId,
                 sessionId: identity.sessionId,
@@ -111,6 +119,7 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                 operationGeneration: state.recoveryAttempt!.operationGeneration,
                 operationPhase: 'provider_in_doubt',
                 operationLeaseExpiresAt: state.recoveryAttempt!.leaseExpiresAt,
+                operationGuard,
                 persisted: persistedSnapshot(state),
                 container: prepared.container,
                 repository: prepared.repository,
@@ -148,13 +157,21 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
             if (state.status !== 'cancelling') return stopped;
             return (await this.guardReconciliationState(state, fence))!;
         }
-        const repositories = normalizeRecoveryRepositories(state, repository);
+        const repositories = await normalizeRecoveryRepositories(state, repository);
         if (!repositories) return this.blockRecovery(fence, state,
             'Recovery repository does not contain a trustworthy credential-free identity');
         const { requested: requestedRepository, durable: durableRepository } = repositories;
-        if (state.activeTurn && state.activeTurn.repository.repository !== durableRepository.repository) {
-            state = await this.compareAndSetExact(state, { activeTurn: { ...state.activeTurn, repository: durableRepository } },
-                'A newer operation superseded repository credential scrubbing');
+        const scrubbedMetadata = state.recoveryMetadata === undefined
+            ? undefined : sanitizeRecoveryMetadata(state.recoveryMetadata);
+        const repositoryNeedsScrub = Boolean(state.activeTurn
+            && JSON.stringify(state.activeTurn.repository) !== JSON.stringify(durableRepository));
+        const metadataNeedsScrub = JSON.stringify(state.recoveryMetadata) !== JSON.stringify(scrubbedMetadata);
+        if (repositoryNeedsScrub || metadataNeedsScrub) {
+            state = await this.compareAndSetExact(state, {
+                activeTurn: repositoryNeedsScrub
+                    ? { ...state.activeTurn!, repository: durableRepository } : state.activeTurn,
+                recoveryMetadata: scrubbedMetadata,
+            }, 'A newer operation superseded durable security scrubbing');
         }
         const durableFingerprint = fingerprintGoalWorktree(durableRepository);
         if (fingerprintGoalWorktree(requestedRepository) !== durableFingerprint) return this.blockRecovery(fence, state,
@@ -215,7 +232,7 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         result: Awaited<ReturnType<typeof this.adapter.reconcile>>,
     ): Promise<ReconcileGoalSessionResult> {
         const snapshot = 'snapshot' in result ? result.snapshot : undefined;
-        const reason = safeDiagnostic(result.reason, 'Provider reconciliation failed safely');
+        const reason = safeFailureDiagnostic(result.reason, 'Provider reconciliation completed safely');
         if (snapshot) {
             assertProviderIdentity(state, snapshot);
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
@@ -260,7 +277,9 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                     },
                     failureReason: undefined,
                     providerSessionId: snapshot?.providerSessionId ?? state.providerSessionId,
-                    recoveryMetadata: snapshot?.recoveryMetadata ?? state.recoveryMetadata,
+                    recoveryMetadata: snapshot
+                        ? sanitizeRecoveryMetadata(snapshot.recoveryMetadata)
+                        : state.recoveryMetadata === undefined ? undefined : sanitizeRecoveryMetadata(state.recoveryMetadata),
                     currentModel: preserveIntentModel ? state.currentModel : snapshot?.model ?? state.currentModel,
                 },
                 auditEvents: [{ type: 'reconciliation', outcome: result.outcome, reason }],
