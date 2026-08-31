@@ -29,9 +29,11 @@ import {
   toEvent,
   toMessage,
 } from './goalRepositorySupport.js';
-import { canonicalizeRuntimeJson, canonicalizeStoredJson } from './strictCanonicalJson.js';
-
-const MAX_EVENT_PAYLOAD_BYTES = 65_536;
+import {
+  CANONICAL_JSON_MAX_BYTES,
+  canonicalizeRuntimeJson,
+  canonicalizeStoredJson,
+} from './strictCanonicalJson.js';
 
 export class GoalEventRepository {
   constructor(private readonly db: Knex) {}
@@ -205,8 +207,8 @@ function normalizeEvent(input: AppendEventInput): NormalizedEvent {
       throw new GoalError(GOAL_ERROR_CODES.validation, 'Event payload must be lossless JSON', 400);
     }
   }
-  if (payloadJson !== null && Buffer.byteLength(payloadJson, 'utf8') > MAX_EVENT_PAYLOAD_BYTES) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, 'Event payload exceeds 65536 bytes', 400);
+  if (payloadJson !== null && Buffer.byteLength(payloadJson, 'utf8') > CANONICAL_JSON_MAX_BYTES) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, `Event payload exceeds ${CANONICAL_JSON_MAX_BYTES} bytes`, 400);
   }
   return {
     ...input,
@@ -220,7 +222,7 @@ function normalizeEvent(input: AppendEventInput): NormalizedEvent {
 function canonicalizeStoredPayload(payloadJson: string | null): string | null {
   if (payloadJson === null) return null;
   try {
-    if (Buffer.byteLength(payloadJson, 'utf8') > MAX_EVENT_PAYLOAD_BYTES) throw new Error('oversized');
+    if (Buffer.byteLength(payloadJson, 'utf8') > CANONICAL_JSON_MAX_BYTES) throw new Error('oversized');
     return canonicalizeStoredJson(payloadJson);
   } catch {
     throw new GoalError(

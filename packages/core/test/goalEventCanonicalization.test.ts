@@ -4,6 +4,13 @@ import knex, { type Knex } from 'knex';
 import type { BetterSqliteConnection } from '../src/db/connection.js';
 import { up } from '../src/db/migrations/20260831000000_create_goal_control_plane.js';
 import { GoalError, GoalRepository } from '../src/services/goals/goalRepository.js';
+import {
+  CANONICAL_JSON_MAX_BYTES,
+  CANONICAL_JSON_MAX_DEPTH,
+  CANONICAL_JSON_MAX_NODES,
+  canonicalizeRuntimeJson,
+  canonicalizeStoredJson,
+} from '../src/services/goals/strictCanonicalJson.js';
 
 let database: Knex;
 let repository: GoalRepository;
@@ -56,6 +63,21 @@ async function installLegacyRow(idempotencyKey: string, payloadJson: string, seq
     lease_epoch: fence.leaseEpoch,
     created_at: '2026-08-31T00:00:00.000Z',
   });
+}
+
+function nestedValue(kind: 'array' | 'object', depth: number): unknown {
+  let value: unknown = null;
+  for (let index = 0; index < depth; index += 1) {
+    value = kind === 'array' ? [value] : { value };
+  }
+  return value;
+}
+
+function wideObject(memberCount: number): Record<string, null> {
+  return Object.fromEntries(Array.from(
+    { length: memberCount },
+    (_, index) => [`k${String(index).padStart(4, '0')}`, null]
+  ));
 }
 
 beforeEach(async () => {
@@ -225,5 +247,93 @@ describe('strict event payload canonicalization', () => {
     assert.equal(Number((await database('goal_idempotency_keys').count({ count: '*' }).first())?.count), 0);
     const next = await append({ safe: true }, 'post-corruption');
     assert.equal(next.sequence, legacyRows.length + 1);
+  });
+
+  test('applies the same exact depth boundary to runtime and stored arrays and objects', () => {
+    for (const kind of ['array', 'object'] as const) {
+      const exact = nestedValue(kind, CANONICAL_JSON_MAX_DEPTH);
+      const over = nestedValue(kind, CANONICAL_JSON_MAX_DEPTH + 1);
+      const exactStored = JSON.stringify(exact);
+      const overStored = JSON.stringify(over);
+
+      assert.equal(canonicalizeRuntimeJson(exact), exactStored, `${kind} runtime exact boundary`);
+      assert.equal(canonicalizeStoredJson(exactStored), exactStored, `${kind} stored exact boundary`);
+      assert.throws(() => canonicalizeRuntimeJson(over), /depth limit/, `${kind} runtime over boundary`);
+      assert.throws(() => canonicalizeStoredJson(overStored), /depth limit/, `${kind} stored over boundary`);
+    }
+  });
+
+  test('counts every array element and object member occurrence at the exact node boundary', () => {
+    const matrix = [
+      {
+        kind: 'array',
+        exact: new Array(CANONICAL_JSON_MAX_NODES - 1).fill(null),
+        over: new Array(CANONICAL_JSON_MAX_NODES).fill(null),
+      },
+      {
+        kind: 'object',
+        exact: wideObject(CANONICAL_JSON_MAX_NODES - 1),
+        over: wideObject(CANONICAL_JSON_MAX_NODES),
+      },
+    ] as const;
+
+    for (const { kind, exact, over } of matrix) {
+      const exactStored = JSON.stringify(exact);
+      const overStored = JSON.stringify(over);
+      assert.doesNotThrow(() => canonicalizeRuntimeJson(exact), `${kind} runtime exact boundary`);
+      assert.doesNotThrow(() => canonicalizeStoredJson(exactStored), `${kind} stored exact boundary`);
+      assert.throws(() => canonicalizeRuntimeJson(over), /node limit/, `${kind} runtime over boundary`);
+      assert.throws(() => canonicalizeStoredJson(overStored), /node limit/, `${kind} stored over boundary`);
+    }
+  });
+
+  test('accounts for every canonical UTF-8 token at the exact byte boundary', () => {
+    const escapedKey = '"\n😀';
+    const base = { [escapedKey]: '', array: [null, true, false, 1e-7] };
+    const fillerLength = CANONICAL_JSON_MAX_BYTES - Buffer.byteLength(JSON.stringify(base), 'utf8');
+    const exact = { [escapedKey]: 'x'.repeat(fillerLength), array: [null, true, false, 1e-7] };
+    const over = { [escapedKey]: `${'x'.repeat(fillerLength)}x`, array: [null, true, false, 1e-7] };
+    const exactStored = JSON.stringify(exact);
+    const overStored = JSON.stringify(over);
+
+    assert.equal(Buffer.byteLength(exactStored, 'utf8'), CANONICAL_JSON_MAX_BYTES);
+    assert.equal(canonicalizeRuntimeJson(exact), exactStored);
+    assert.equal(canonicalizeStoredJson(exactStored), exactStored);
+    assert.throws(() => canonicalizeRuntimeJson(over), /byte limit/);
+    assert.throws(() => canonicalizeStoredJson(overStored), /byte limit/);
+
+    const unpairedSurrogates = '\ud800'.repeat(Math.floor(CANONICAL_JSON_MAX_BYTES / 6) + 1);
+    const canonicallyOversizedStored = `"${unpairedSurrogates}"`;
+    assert.ok(Buffer.byteLength(canonicallyOversizedStored, 'utf8') < CANONICAL_JSON_MAX_BYTES);
+    assert.throws(() => canonicalizeStoredJson(canonicallyOversizedStored), /byte limit/);
+  });
+
+  test('promptly rejects exponential shared-DAG expansion without persistence side effects', {
+    timeout: 3_000,
+  }, async () => {
+    const sharedLeaf = { value: true };
+    let expanded: Record<string, unknown> = sharedLeaf;
+    let fullyExpandedBytes = Buffer.byteLength(JSON.stringify(sharedLeaf), 'utf8');
+    for (let depth = 0; depth < 22; depth += 1) {
+      expanded = { a: expanded, b: expanded };
+      fullyExpandedBytes = 11 + (2 * fullyExpandedBytes);
+    }
+    assert.ok(fullyExpandedBytes > 90_000_000);
+
+    const startedAt = performance.now();
+    assert.throws(() => canonicalizeRuntimeJson(expanded), /node limit/);
+    await expectValidation(expanded, 'shared-dag-expansion');
+    assert.ok(performance.now() - startedAt < 2_000, 'shared DAG rejection exceeded two seconds');
+
+    assert.equal(await repository.getLatestSequence(goalId), 0);
+    assert.equal(Number((await database('goal_events').count({ count: '*' }).first())?.count), 0);
+    assert.equal(Number((await database('goal_idempotency_keys').count({ count: '*' }).first())?.count), 0);
+
+    const accepted = await append({ left: sharedLeaf, right: sharedLeaf }, 'bounded-shared-reference');
+    assert.equal(accepted.sequence, 1);
+    assert.deepEqual(accepted.payload, {
+      left: { value: true },
+      right: { value: true },
+    });
   });
 });

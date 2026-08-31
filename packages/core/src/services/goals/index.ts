@@ -8,3 +8,8 @@ export {
   type ControllerGoalMutationOptions,
 } from './goalLifecycleService.js';
 export * from './goalTypes.js';
+export {
+  CANONICAL_JSON_MAX_BYTES,
+  CANONICAL_JSON_MAX_DEPTH,
+  CANONICAL_JSON_MAX_NODES,
+} from './strictCanonicalJson.js';
