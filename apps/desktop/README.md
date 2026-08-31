@@ -30,11 +30,14 @@ Development renderer URLs are accepted only when Electron Forge supplies an HTTP
 the generated renderer from the application ASAR through an app-owned protocol.
 
 The packaged-binary smoke test verifies the hardened fuse states and launches artifacts without a sandbox-disabling
-flag. Its preferred window is 1280x820 with an 880x620 minimum; native evidence requires the actual window to equal
-that preferred size clamped to the renderer-reported available work area, and derives the viewport from the actual
-native content bounds. It retains the real title-bar logo, connection-card, control containment, sizing, spacing, and
-footer checks on smaller responsive work areas. The child receives only fixed smoke triggers, private profile/temp
-paths, and strictly validated platform launch inputs; it never inherits the parent CI environment or `PATH`. The smoke
+flag. Its preferred window is 1280x820 with an 880x620 minimum, sourced from one runtime/smoke sizing manifest. The
+runtime selects the cursor-relevant display with a primary-display fallback and clamps both sizes to that display's
+work area before native construction. Native evidence requires the actual window to equal that clamped size and
+derives the viewport from the actual native content bounds. The packaged smoke also constructs a hidden 800x560
+reduced-work-area window and verifies its real native bounds and clamped minimums. It retains the real title-bar logo,
+connection-card, control containment, sizing, spacing, and footer checks on smaller responsive work areas. The child
+receives only fixed smoke triggers, private profile/temp paths, and strictly validated platform launch inputs; it never
+inherits the parent CI environment or `PATH`. The smoke
 also rejects main-process uncaught exceptions and requires proof that `window.proprDesktop` is exposed before a clean
 exit. `desktop:smoke:inspect` performs executable and fuse inspection without launching a window. Release CI launches
 both Linux architectures under Xvfb, inspects macOS and Windows packages on their native runners, validates

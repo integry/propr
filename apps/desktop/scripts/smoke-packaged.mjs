@@ -12,6 +12,7 @@ import {
 } from '@electron/fuses';
 import {
   assertPackagedLayout,
+  assertPackagedNativeWindowSizing,
   createPrivateSmokeProfile,
   createSmokeChildEnvironment,
   removePrivateSmokeProfile,
@@ -22,6 +23,7 @@ const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
 const PROFILE_API_PROOF = 'desktop.renderer.profile_api.ready';
 const MVP_FLOWS_PROOF = 'desktop.renderer.mvp_flows.ready';
 const LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
+const REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_window.ready';
 const MAIN_PROCESS_ERROR_MARKERS = [
   'desktop.main_process.uncaught_exception',
   'A JavaScript error occurred in the main process',
@@ -45,12 +47,12 @@ if (process.platform === 'win32') {
   }
 }
 
-const parseLayout = smokeOutput => {
+const parseEventLayout = (smokeOutput, expectedEvent) => {
   for (const line of smokeOutput.split(/\r?\n/)) {
-    if (!line.includes(LAYOUT_READY_EVENT)) continue;
+    if (!line.includes(expectedEvent)) continue;
     try {
       const record = JSON.parse(line.slice(line.indexOf('{')));
-      if (record.event === LAYOUT_READY_EVENT) return record.layout;
+      if (record.event === expectedEvent) return record.layout;
     } catch {
       // Ignore non-JSON Chromium output that happens to mention the event name.
     }
@@ -186,9 +188,13 @@ try {
   if (!output.includes(MVP_FLOWS_PROOF)) {
     throw new Error('Packaged desktop did not complete local/remote/API profile and Connect discovery flows');
   }
-  assertPackagedLayout(parseLayout(output));
+  assertPackagedLayout(parseEventLayout(output, LAYOUT_READY_EVENT));
+  assertPackagedNativeWindowSizing(
+    parseEventLayout(output, REDUCED_NATIVE_WINDOW_READY_EVENT),
+    { requireReducedWorkArea: true },
+  );
 
-  console.log(`Packaged ${process.platform}-${process.arch} desktop reached renderer-ready with compiled layout, sandboxing, and profile API proof.`);
+  console.log(`Packaged ${process.platform}-${process.arch} desktop reached renderer-ready with compiled layout, sandboxing, profile API proof, and reduced native window bounds.`);
 } finally {
   try {
     if (profileApiServer.listening) {

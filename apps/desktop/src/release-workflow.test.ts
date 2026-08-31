@@ -463,6 +463,7 @@ describe('desktop trusted release workflow', () => {
       'desktop.app.ready',
       'desktop.renderer.mvp_flows.ready',
       'desktop.renderer.layout.ready',
+      'desktop.native.reduced_window.ready',
       'desktop.renderer.ready',
       'desktop.app.shutdown',
       'desktop.app.start_failed',
@@ -481,7 +482,7 @@ describe('desktop trusted release workflow', () => {
       /PROPR_WINDOWS_INSTALLED_SMOKE:EVIDENCE:\{0\}['"] -f \(\$summary -join ','\)/,
     );
     assert.doesNotMatch(installedWindowsAppTest, /Write-Host[^\n]*(?:\$line|\$text|\$record|\$filePath|\$eventProperty)/);
-    assert.match(installedWindowsAppTest, /\$requiredSmokeEvents = @\([\s\S]*desktop\.smoke\.authorized[\s\S]*desktop\.app\.ready[\s\S]*desktop\.renderer\.mvp_flows\.ready[\s\S]*desktop\.renderer\.layout\.ready[\s\S]*desktop\.renderer\.ready[\s\S]*desktop\.app\.shutdown/);
+    assert.match(installedWindowsAppTest, /\$requiredSmokeEvents = @\([\s\S]*desktop\.smoke\.authorized[\s\S]*desktop\.app\.ready[\s\S]*desktop\.renderer\.mvp_flows\.ready[\s\S]*desktop\.renderer\.layout\.ready[\s\S]*desktop\.native\.reduced_window\.ready[\s\S]*desktop\.renderer\.ready[\s\S]*desktop\.app\.shutdown/);
     assert.match(installedWindowsAppTest, /Get-SmokeEventEvidence \$smokeUserDataDirectory \$testUserSid/);
     assert.match(installedWindowsAppTest, /if \(\$null -ne \$waitFailure\) \{ throw \$waitFailure \}/);
     assert.match(installedWindowsAppTest, /SMOKE_REQUIRED_EVENTS_MISSING/);

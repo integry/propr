@@ -15,6 +15,7 @@ export const PACKAGED_SMOKE_EVIDENCE_EVENTS = [
   'desktop.app.ready',
   'desktop.renderer.mvp_flows.ready',
   'desktop.renderer.layout.ready',
+  'desktop.native.reduced_window.ready',
   'desktop.renderer.ready',
   'desktop.app.shutdown',
   'desktop.app.start_failed',

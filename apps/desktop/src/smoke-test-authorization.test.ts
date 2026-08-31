@@ -123,6 +123,7 @@ describe('packaged smoke profile authorization', () => {
     const createWindow = main.indexOf('mainWindow = await createMainWindow()');
     const mvpReady = main.indexOf("log('info', 'desktop.renderer.mvp_flows.ready'");
     const layoutReady = main.indexOf("log('info', PACKAGED_LAYOUT_READY_EVENT");
+    const reducedWindowReady = main.indexOf("log('info', PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT");
     const rendererReady = main.indexOf("log('info', 'desktop.renderer.ready'");
     const shutdownGuard = main.indexOf('if (shutdownStarted) return;', beforeQuit);
     const preventQuit = main.indexOf('event.preventDefault();', beforeQuit);
@@ -136,7 +137,7 @@ describe('packaged smoke profile authorization', () => {
 
     assert.ok(isolation < sink && sink < authorized);
     assert.ok(authorized < appReady && appReady < beforeQuit && beforeQuit < createWindow);
-    assert.ok(mvpReady < layoutReady && layoutReady < rendererReady);
+    assert.ok(mvpReady < layoutReady && layoutReady < reducedWindowReady && reducedWindowReady < rendererReady);
     assert.ok(beforeQuit < shutdownGuard && shutdownGuard < preventQuit && preventQuit < startShutdown);
     assert.ok(startShutdown < lifecycleShutdown && lifecycleShutdown < shutdown && shutdown < finalQuit);
     assert.ok(finalQuit < willQuit && willQuit < sinkClose);
@@ -146,6 +147,7 @@ describe('packaged smoke profile authorization', () => {
       'desktop.app.ready',
       'desktop.renderer.mvp_flows.ready',
       'desktop.renderer.layout.ready',
+      'desktop.native.reduced_window.ready',
       'desktop.renderer.ready',
       'desktop.app.shutdown',
     ]);
