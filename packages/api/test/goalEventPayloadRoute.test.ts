@@ -262,3 +262,69 @@ test('unknown payload projection contains hostile toJSON failures', () => {
   assert.equal(toPublicGoalEventPayload(payload), '[Unserializable]');
   assert.throws(() => JSON.stringify(payload), /hostile serializer/);
 });
+
+test('event payload redacts a GitHub token across the per-string UTF-8 cutoff', () => {
+  const stringByteLimit = 16_384;
+  const githubToken = `ghp_${'A'.repeat(36)}`;
+  const tokenBytesBeforeCutoff = 20;
+  const leakedPrefix = githubToken.slice(0, 9);
+  const boundary = '界:';
+  const prefix = `${'p'.repeat(
+    stringByteLimit - Buffer.byteLength(boundary) - tokenBytesBeforeCutoff
+  )}${boundary}`;
+  const projected = toPublicGoalEventPayload({
+    message: `${prefix}${githubToken}${'z'.repeat(256)}`,
+  }) as { message: string };
+  const serialized = JSON.stringify(projected);
+
+  assert.equal(Buffer.byteLength(projected.message), stringByteLimit);
+  assert.equal(serialized.includes(githubToken), false);
+  assert.equal(serialized.includes(leakedPrefix), false);
+});
+
+test('event payload redacts a minimum AWS key across the aggregate UTF-8 cutoff', () => {
+  const stringByteLimit = 16_384;
+  const totalStringByteLimit = 65_536;
+  const aggregateRemainingBytes = 30;
+  const aggregatePrefixBytes = totalStringByteLimit - aggregateRemainingBytes;
+  const awsAccessKey = `AKIA${'0'.repeat(16)}`;
+  const boundary = '界:';
+  const payload = {
+    first: 'a'.repeat(stringByteLimit),
+    second: 'b'.repeat(stringByteLimit),
+    third: 'c'.repeat(stringByteLimit),
+    fourth: 'd'.repeat(aggregatePrefixBytes - (stringByteLimit * 3)),
+    last: `${boundary}${awsAccessKey}${'z'.repeat(256)}`,
+  };
+  const projected = toPublicGoalEventPayload(payload) as Record<string, string>;
+  const serialized = JSON.stringify(projected);
+  const projectedStringBytes = Object.values(projected)
+    .reduce((total, value) => total + Buffer.byteLength(value), 0);
+
+  assert.equal(Buffer.byteLength(projected.last), aggregateRemainingBytes);
+  assert.equal(projectedStringBytes, totalStringByteLimit);
+  assert.equal(serialized.includes(awsAccessKey), false);
+  assert.equal(serialized.includes(awsAccessKey.slice(0, 10)), false);
+});
+
+test('event payload fails closed for sensitive values beyond the bounded lookahead', () => {
+  const stringByteLimit = 16_384;
+  const boundary = '界:';
+  const prefix = `${'p'.repeat(
+    stringByteLimit - Buffer.byteLength(boundary) - 20
+  )}${boundary}`;
+  const socketPrefix = `tcp://${'h'.repeat(500)}`;
+  const pathPrefix = `/project/${'x'.repeat(500)}`;
+  const projected = toPublicGoalEventPayload({
+    socketDescription: `${prefix}${socketPrefix}:2375/private`,
+    pathDescription: `${prefix}${pathPrefix}/.ssh/id_rsa`,
+    relativePath: 'src/safe/file.ts',
+  }) as Record<string, string>;
+  const serialized = JSON.stringify(projected);
+
+  assert.equal(Buffer.byteLength(projected.socketDescription), stringByteLimit);
+  assert.equal(Buffer.byteLength(projected.pathDescription), stringByteLimit);
+  assert.equal(serialized.includes(socketPrefix.slice(0, 30)), false);
+  assert.equal(serialized.includes(pathPrefix.slice(0, 30)), false);
+  assert.equal(projected.relativePath, 'src/safe/file.ts');
+});

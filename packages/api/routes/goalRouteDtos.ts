@@ -162,6 +162,11 @@ const PRIVATE_EVENT_KEY_SUFFIXES = [
 
 const UNSERIALIZABLE_PAYLOAD_MARKER = '[Unserializable]';
 const SENSITIVE_PATH_MARKER = '[REDACTED_SENSITIVE_PATH]';
+// The longest minimum provider token recognized by redactSecrets is currently
+// 73 ASCII bytes. Keep a generous fixed window so a token beginning immediately
+// before either public byte cutoff can still be classified without scanning an
+// attacker-sized string.
+const PUBLIC_EVENT_REDACTION_LOOKAHEAD_BYTES = 256;
 const SENSITIVE_EVENT_VALUE_PATTERNS = [
   /(^|[\s"'`=(,:])(?:unix|npipe):\/\/[^\s"'`<>]+/gimu,
   /(^|[\s"'`=(,:])tcp:\/\/[^\s"'`<>]+(?::2375|:2376)(?:\/[^\s"'`<>]*)?/gimu,
@@ -169,6 +174,8 @@ const SENSITIVE_EVENT_VALUE_PATTERNS = [
   /(^|[\s"'`=(,:])\/(?:[^\s"'`<>/]+\/)*(?:\.ssh|\.aws|\.azure|\.config|\.docker|\.kube|\.gnupg|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)(?:\/[^\s"'`<>]*)?/gimu,
   /(^|[\s"'`=(,:])[A-Z]:[\\/](?:Users|Windows|ProgramData|workspaces?|worktrees?)[^\s"'`<>]*/gimu,
 ] as const;
+const INCOMPLETE_SENSITIVE_EVENT_VALUE_PATTERN =
+  /(^|[\s"'`=(,:])(?:tcp:\/\/[^\s"'`<>]*|\/(?!\/)[^\s"'`<>]*|[A-Z]:[\\/][^\s"'`<>]*)$/gimu;
 
 interface PublicPayloadProjectionState {
   nodes: number;
@@ -178,6 +185,24 @@ interface PublicPayloadProjectionState {
 
 function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, 'utf8');
+}
+
+function takeUtf8Prefix(value: string, maxBytes: number): {
+  value: string;
+  truncated: boolean;
+} {
+  if (maxBytes <= 0) return { value: '', truncated: value.length > 0 };
+  const characters: string[] = [];
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = utf8Bytes(character);
+    if (bytes + characterBytes > maxBytes) {
+      return { value: characters.join(''), truncated: true };
+    }
+    characters.push(character);
+    bytes += characterBytes;
+  }
+  return { value: characters.join(''), truncated: false };
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {
@@ -190,7 +215,15 @@ function truncateUtf8(value: string, maxBytes: number): string {
     const characterBytes = utf8Bytes(character);
     if (bytes + characterBytes > maxBytes) {
       const contentLimit = Math.max(0, maxBytes - suffix.length);
-      while (bytes > contentLimit) bytes -= utf8Bytes(characters.pop()!);
+      let lastRemoved: string | undefined;
+      while (bytes > contentLimit) {
+        lastRemoved = characters.pop()!;
+        bytes -= utf8Bytes(lastRemoved);
+      }
+      if (maxBytes - bytes > suffix.length && lastRemoved !== undefined) {
+        characters.push(lastRemoved);
+        bytes += utf8Bytes(lastRemoved);
+      }
       return `${characters.join('')}${suffix.slice(0, maxBytes - bytes)}`;
     }
     characters.push(character);
@@ -200,10 +233,19 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return result;
 }
 
-function redactSensitiveEventValues(value: string): string {
+function redactSensitiveEventValues(value: string, inputTruncated: boolean): string {
   let sanitized = redactSecrets(value);
   for (const pattern of SENSITIVE_EVENT_VALUE_PATTERNS) {
     sanitized = sanitized.replace(pattern, `$1${SENSITIVE_PATH_MARKER}`);
+  }
+  if (inputTruncated) {
+    // A very long Docker TCP host or absolute path may hide its sensitive
+    // component beyond the fixed inspection window. Fail closed only for the
+    // unterminated suffix; ordinary complete and relative paths stay intact.
+    sanitized = sanitized.replace(
+      INCOMPLETE_SENSITIVE_EVENT_VALUE_PATTERN,
+      `$1${SENSITIVE_PATH_MARKER}`
+    );
   }
   return sanitized;
 }
@@ -248,8 +290,15 @@ function projectPublicPayloadValue(
       PUBLIC_EVENT_PAYLOAD_LIMITS.stringBytes,
       state.remainingStringBytes
     );
-    const boundedInput = truncateUtf8(value, allowedBytes);
-    const bounded = truncateUtf8(redactSensitiveEventValues(boundedInput), allowedBytes);
+    if (allowedBytes <= 0) return '';
+    const inspected = takeUtf8Prefix(
+      value,
+      allowedBytes + PUBLIC_EVENT_REDACTION_LOOKAHEAD_BYTES
+    );
+    const bounded = truncateUtf8(
+      redactSensitiveEventValues(inspected.value, inspected.truncated),
+      allowedBytes
+    );
     state.remainingStringBytes -= utf8Bytes(bounded);
     return bounded;
   }
