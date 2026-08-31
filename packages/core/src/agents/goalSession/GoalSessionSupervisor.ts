@@ -1,7 +1,5 @@
 import type {
-    GoalContainerInspection,
     GoalRepositoryIdentity,
-    GoalRepositoryInspection,
     GoalSessionControlFence,
     GoalSessionIdentity,
     GoalSessionState,
@@ -15,6 +13,7 @@ import { createFirstTurnInitializationIntent, deterministicOpenKey, firstTurnIde
 import { GoalSessionControls } from './GoalSessionControls.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
 import { reconcileRecoveredTurn } from './reconcileRecoveredTurn.js';
+import { verifyReconciliationTarget, verifyRecoveredContainer } from './reconciliationIdentity.js';
 import {
     assertProviderIdentity,
     controlExecutionIdentity,
@@ -58,7 +57,23 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         let state = opened.state;
         if (request.controllerEpoch > state.controllerEpoch) state = await this.takeover(request, request.controllerEpoch);
         if (state.status === 'terminated') {
+            if (state.cancellationIntent) return state;
             throw new GoalSessionContractError('A terminated provider session cannot be resumed', 'SESSION_TERMINATED');
+        }
+        if (state.status === 'cancelling') {
+            if (!state.cancellationIntent) {
+                return this.cancel({
+                    goalId: request.goalId,
+                    sessionId: request.sessionId,
+                    controllerEpoch: state.controllerEpoch,
+                    reason: state.failureReason ?? 'Resume pending cancellation after process replacement',
+                });
+            }
+            return this.resumeClaimedCancellation({
+                goalId: request.goalId,
+                sessionId: request.sessionId,
+                controllerEpoch: state.controllerEpoch,
+            }, state);
         }
 
         let deterministicOpenKey: string | undefined;
@@ -84,14 +99,16 @@ export class GoalSessionSupervisor extends GoalSessionControls {
     async takeover(identity: GoalSessionIdentity, controllerEpoch: number): Promise<GoalSessionState> {
         validateIdentity(identity);
         validateEpoch(controllerEpoch);
-        const state = await this.requireState(identity);
-        if (controllerEpoch <= state.controllerEpoch) {
-            if (controllerEpoch === state.controllerEpoch) return state;
-            throw new StaleGoalSessionFenceError();
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            const state = await this.requireState(identity);
+            if (controllerEpoch <= state.controllerEpoch) {
+                if (controllerEpoch === state.controllerEpoch) return state;
+                throw new StaleGoalSessionFenceError();
+            }
+            const saved = await this.ports.state.compareAndSet(state, nextState(state, { controllerEpoch }));
+            if (saved) return saved;
         }
-        const saved = await this.ports.state.compareAndSet(state, nextState(state, { controllerEpoch }));
-        if (!saved) throw new StaleGoalSessionFenceError('Another controller acquired the session concurrently');
-        return saved;
+        throw new StaleGoalSessionFenceError('Another controller repeatedly changed the session during takeover');
     }
 
     async reconcile(
@@ -353,64 +370,6 @@ export class GoalSessionSupervisor extends GoalSessionControls {
             throw error;
         }
     }
-}
-
-function verifyRecoveredContainer(
-    state: GoalSessionState,
-    inspection: GoalContainerInspection,
-    worktreeFingerprint: string,
-): string | null {
-    if (inspection.status === 'missing') return null;
-    if (inspection.status === 'daemon_unavailable') {
-        return `Container identity could not be inspected: ${inspection.reason ?? 'Docker unavailable'}`;
-    }
-    const turn = state.activeTurn;
-    if (!turn) return 'A recovered container exists without an authoritative active turn';
-    const observed = inspection.recoveryIdentity;
-    if (!observed) return 'Recovered container is missing authoritative recovery metadata';
-    const expected = {
-        goalId: state.goalId,
-        sessionId: state.sessionId,
-        executionEpoch: turn.executionEpoch,
-        turnId: turn.turnId,
-        attemptId: turn.attemptId,
-        worktreeFingerprint,
-    };
-    for (const key of Object.keys(expected) as Array<keyof typeof expected>) {
-        if (observed[key] !== expected[key]) {
-            return `Recovered container ${key} mismatch: expected ${expected[key]}, found ${observed[key]}`;
-        }
-    }
-    return null;
-}
-
-/**
- * Verifies the worktree matches the expected identity before any resume side
- * effect. The fingerprint covers immutable logical checkout identity; mutable
- * HEAD is observed for provider checkpoint recovery but is not compared with
- * the turn's starting HEAD because the turn may legitimately have committed.
- */
-function verifyReconciliationTarget(
-    expected: GoalRepositoryIdentity,
-    inspection: GoalRepositoryInspection,
-): string | null {
-    if (!inspection.exists) {
-        return `Worktree ${expected.worktreePath} is unavailable: ${inspection.reason ?? 'not found'}`;
-    }
-    if (!inspection.observedBranch) {
-        return `Worktree ${expected.worktreePath} branch could not be observed: ${inspection.reason ?? 'branch unavailable'}`;
-    }
-    const expectedFingerprint = fingerprintGoalWorktree(expected);
-    if (!inspection.observedWorktreeFingerprint) {
-        return `Worktree ${expected.worktreePath} fingerprint could not be observed: ${inspection.reason ?? 'metadata unavailable'}`;
-    }
-    if (inspection.observedWorktreeFingerprint !== expectedFingerprint) {
-        return `Worktree fingerprint mismatch: expected ${expectedFingerprint}, found ${inspection.observedWorktreeFingerprint}`;
-    }
-    if (inspection.observedBranch !== expected.branch) {
-        return `Worktree branch mismatch: expected ${expected.branch}, found ${inspection.observedBranch}`;
-    }
-    return null;
 }
 
 export {

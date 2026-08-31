@@ -319,6 +319,19 @@ export class GoalContainerSupervisor {
             mkdir(path.dirname(layout.logPath), { recursive: true, mode: 0o700 }),
         ]);
         const appendGoalLog = createGoalLogSink(layout.logPath);
+        // Explicit public DTOs: the start request also carries commands,
+        // environment values, mounts, host paths, task IDs, and arbitrary excess
+        // properties. None of those may cross the durable event boundary.
+        const eventFence: GoalSessionFence = {
+            goalId: request.goalId,
+            sessionId: request.sessionId,
+            controllerEpoch: request.controllerEpoch,
+            turnId: request.turnId,
+        };
+        const eventExecution: GoalExecutionIdentity = {
+            executionId: request.executionId,
+            attemptId: request.attemptId,
+        };
 
         const dockerArgs = [
             'run', '--rm', '--name', layout.containerName,
@@ -345,7 +358,7 @@ export class GoalContainerSupervisor {
             timeout: request.timeout,
             env: environment,
             durableOutput: async output => {
-                const result = await this.events.append(request, request, {
+                const result = await this.events.append(eventFence, eventExecution, {
                     type: 'output',
                     channel: output.channel,
                     data: output.data,

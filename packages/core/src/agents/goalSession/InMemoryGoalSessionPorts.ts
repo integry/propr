@@ -6,6 +6,7 @@ import type {
     GoalRepositoryIdentity,
     GoalRepositoryInspection,
     GoalSessionControlFence,
+    GoalSessionControlTransition,
     GoalSessionEvent,
     GoalSessionEventSink,
     GoalSessionFence,
@@ -16,6 +17,7 @@ import type {
     GoalSessionState,
     GoalSessionStatePort,
     GoalSessionTerminalPort,
+    GoalSessionTransitionPort,
     GoalTerminalCommit,
     PersistedGoalSessionEvent,
 } from './contract.js';
@@ -51,7 +53,8 @@ export class InMemoryGoalSessionPorts implements
     GoalSessionEventSink,
     GoalSessionMessagePort,
     GoalSessionRecoveryPort,
-    GoalSessionTerminalPort {
+    GoalSessionTerminalPort,
+    GoalSessionTransitionPort {
     /** Marks this implementation as an ephemeral test/embedding double, never durable storage. */
     readonly isEphemeralTestDouble = true;
 
@@ -62,10 +65,12 @@ export class InMemoryGoalSessionPorts implements
     private readonly containerInspections = new Map<string, GoalContainerInspection>();
     private readonly repositoryInspections = new Map<string, GoalRepositoryInspection>();
     private readonly terminalCommits = new Set<string>();
+    private readonly transitionCommits = new Set<string>();
     private terminalFault: 'before_commit' | 'before_commit_always' | 'after_commit' | undefined;
+    private transitionFault: 'before_commit' | 'after_commit' | undefined;
 
     asRuntimePorts(): GoalSessionRuntimePorts {
-        return { state: this, events: this, terminal: this, messages: this, recovery: this };
+        return { state: this, transitions: this, events: this, terminal: this, messages: this, recovery: this };
     }
 
     async load(identity: GoalSessionIdentity): Promise<GoalSessionState | null> {
@@ -104,8 +109,17 @@ export class InMemoryGoalSessionPorts implements
     async commit(
         expected: GoalSessionState,
         next: Omit<GoalSessionState, 'version'>,
-        completion: GoalTerminalCommit,
+        operation: GoalTerminalCommit | GoalSessionControlTransition,
     ): Promise<GoalSessionState | null> {
+        if (!('scope' in operation)) return this.commitTransition(expected, next, operation);
+        return this.commitTerminal(expected, next, operation);
+    }
+
+    private commitTerminal(
+        expected: GoalSessionState,
+        next: Omit<GoalSessionState, 'version'>,
+        completion: GoalTerminalCommit,
+    ): GoalSessionState | null {
         this.assertGoalScope(expected);
         this.assertGoalScope(next);
         if (expected.goalId !== next.goalId || expected.sessionId !== next.sessionId) {
@@ -147,6 +161,11 @@ export class InMemoryGoalSessionPorts implements
         this.terminalFault = fault;
     }
 
+    /** Test-only crash injection around an atomic nonterminal state/audit transaction. */
+    setTransitionFault(fault: 'before_commit' | 'after_commit' | undefined): void {
+        this.transitionFault = fault;
+    }
+
     async append(
         fence: GoalSessionFence,
         execution: GoalExecutionIdentity,
@@ -159,14 +178,15 @@ export class InMemoryGoalSessionPorts implements
         if (!state || state.controllerEpoch !== fence.controllerEpoch) {
             return { accepted: false, reason: 'stale_fence' };
         }
-        if (state.activeTurn?.turnId !== fence.turnId
-            || state.activeTurn.executionId !== execution.executionId
-            || state.activeTurn.attemptId !== execution.attemptId) {
+        if (state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') {
             return { accepted: false, reason: 'turn_not_active' };
         }
-        const turnIsTerminal = state.activeTurn
-            && ['completed', 'cancelled', 'failed'].includes(state.activeTurn.status);
-        if (turnIsTerminal && event.type !== 'completion') {
+        if (state.activeTurn?.turnId !== fence.turnId
+            || state.activeTurn.executionId !== execution.executionId
+            || state.activeTurn.attemptId !== execution.attemptId
+            || state.activeTurn.status === 'completed'
+            || state.activeTurn.status === 'cancelled'
+            || state.activeTurn.status === 'failed') {
             return { accepted: false, reason: 'turn_not_active' };
         }
         return { accepted: true, persisted: this.record(key, { turnId: fence.turnId, fence, execution, event }) };
@@ -182,6 +202,10 @@ export class InMemoryGoalSessionPorts implements
         const key = keyOf(fence);
         const state = this.states.get(key);
         if (!state || state.controllerEpoch !== fence.controllerEpoch) {
+            return { accepted: false, reason: 'stale_fence' };
+        }
+        if (isOrderedControlAudit(event)
+            && (state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed')) {
             return { accepted: false, reason: 'stale_fence' };
         }
         // Control events are session/epoch fenced only, so they remain auditable
@@ -204,9 +228,12 @@ export class InMemoryGoalSessionPorts implements
     ): PersistedGoalSessionEvent {
         const log = this.events.get(key) ?? [];
         const persisted: PersistedGoalSessionEvent = {
-            ...entry.fence,
+            goalId: entry.fence.goalId,
+            sessionId: entry.fence.sessionId,
+            controllerEpoch: entry.fence.controllerEpoch,
             turnId: entry.turnId,
-            ...entry.execution,
+            executionId: entry.execution.executionId,
+            attemptId: entry.execution.attemptId,
             sequence: (log.at(-1)?.sequence ?? 0) + 1,
             recordedAt: new Date().toISOString(),
             event: clone(entry.event),
@@ -233,9 +260,14 @@ export class InMemoryGoalSessionPorts implements
     ): Promise<'acknowledged' | 'already_acknowledged' | 'stale_fence' | 'not_found'> {
         this.assertGoalScope(fence);
         const state = this.states.get(keyOf(fence));
-        if (!state || state.controllerEpoch !== fence.controllerEpoch || state.activeTurn?.turnId !== fence.turnId
+        if (!state || state.controllerEpoch !== fence.controllerEpoch
+            || state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed'
+            || state.activeTurn?.turnId !== fence.turnId
             || state.activeTurn.executionId !== execution.executionId
-            || state.activeTurn.attemptId !== execution.attemptId) {
+            || state.activeTurn.attemptId !== execution.attemptId
+            || state.activeTurn.status === 'completed'
+            || state.activeTurn.status === 'cancelled'
+            || state.activeTurn.status === 'failed') {
             return 'stale_fence';
         }
         const records = this.messages.get(keyOf(fence)) ?? [];
@@ -294,6 +326,45 @@ export class InMemoryGoalSessionPorts implements
         const owner = this.sessionOwners.get(identity.sessionId);
         if (owner !== undefined && owner !== identity.goalId) throw new GoalSessionScopeError();
     }
+
+    private commitTransition(
+        expected: GoalSessionState,
+        next: Omit<GoalSessionState, 'version'>,
+        transition: GoalSessionControlTransition,
+    ): GoalSessionState | null {
+        this.assertGoalScope(expected);
+        this.assertGoalScope(next);
+        if (expected.goalId !== next.goalId || expected.sessionId !== next.sessionId) {
+            throw new GoalSessionScopeError('A state/audit transaction cannot move a session to another goal or identity');
+        }
+        const key = keyOf(expected);
+        const current = this.states.get(key);
+        const commitKey = transitionCommitKey(transition);
+        if (this.transitionCommits.has(commitKey)) return current ? clone(current) : null;
+        if (!current || current.version !== expected.version
+            || current.controllerEpoch !== transition.fence.controllerEpoch
+            || current.status === 'cancelling' || current.status === 'terminated' || current.status === 'failed') return null;
+        if (this.transitionFault === 'before_commit') {
+            this.transitionFault = undefined;
+            throw new Error('Injected crash before state/audit transaction commit');
+        }
+        const saved = { ...clone(next), version: current.version + 1 };
+        this.states.set(key, saved);
+        for (const event of transition.auditEvents) {
+            this.record(key, {
+                turnId: `#control-e${transition.fence.controllerEpoch}`,
+                fence: transition.fence,
+                execution: transition.execution,
+                event,
+            });
+        }
+        this.transitionCommits.add(commitKey);
+        if (this.transitionFault === 'after_commit') {
+            this.transitionFault = undefined;
+            throw new Error('Injected crash after state/audit transaction commit');
+        }
+        return clone(saved);
+    }
 }
 
 function terminalCommitKey(completion: GoalTerminalCommit): string {
@@ -306,4 +377,20 @@ function terminalCommitKey(completion: GoalTerminalCommit): string {
         completion.execution.executionId,
         completion.execution.attemptId,
     ]);
+}
+
+function transitionCommitKey(transition: GoalSessionControlTransition): string {
+    return JSON.stringify([
+        transition.fence.goalId,
+        transition.fence.sessionId,
+        transition.fence.controllerEpoch,
+        transition.transitionId,
+    ]);
+}
+
+function isOrderedControlAudit(event: GoalSessionEvent): boolean {
+    return event.type === 'model_change_acknowledged'
+        || event.type === 'model_changed'
+        || event.type === 'pause_requested'
+        || event.type === 'pause_boundary';
 }

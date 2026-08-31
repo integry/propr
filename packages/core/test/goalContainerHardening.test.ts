@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { mock, test } from 'node:test';
+import { InMemoryGoalSessionPorts } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
 
 const spawnCalls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
 const outputStream = () => Object.assign(new EventEmitter(), {
@@ -130,6 +131,77 @@ test('goal JSONL persists only public output fields from a secret-poisoned start
     assert.equal(record.executionId, idBits.executionId);
     assert.equal(record.attemptId, idBits.attemptId);
     assert.equal(record.data, 'public diagnostic\n');
+});
+
+test('raw durable event DTOs and replay bytes exclude every poisoned start-request field', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-event-secret-'));
+    const persistence = new InMemoryGoalSessionPorts();
+    const ids = {
+        goalId: 'raw-goal', sessionId: 'raw-session', controllerEpoch: 7,
+        turnId: 'raw-turn', executionId: 'raw-execution', attemptId: 'raw-attempt',
+    };
+    const timestamp = new Date().toISOString();
+    await persistence.create({
+        goalId: ids.goalId,
+        sessionId: ids.sessionId,
+        provider: 'raw-provider',
+        providerSessionId: 'raw-provider-session',
+        recoveryMetadata: { checkpoint: 'public' },
+        controllerEpoch: ids.controllerEpoch,
+        status: 'running',
+        activeTurn: {
+            executionId: ids.executionId,
+            attemptId: ids.attemptId,
+            turnId: ids.turnId,
+            executionEpoch: ids.controllerEpoch,
+            objective: 'public objective',
+            requestedModel: 'public-model',
+            repository: { repository: 'integry/propr', worktreePath: approvedWorktree, branch: 'test' },
+            status: 'running',
+        },
+        completedTurnIds: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+    });
+    let delivered: unknown;
+    const runtime = persistence.asRuntimePorts();
+    const capturingEvents: EventSink = {
+        append: async (publicFence, publicExecution, event) => {
+            delivered = structuredClone({ publicFence, publicExecution, event });
+            return runtime.events.append(publicFence, publicExecution, event);
+        },
+        appendControl: (publicFence, publicExecution, event) =>
+            runtime.events.appendControl(publicFence, publicExecution, event),
+        replay: (eventIdentity, afterSequence) => runtime.events.replay(eventIdentity, afterSequence),
+    };
+    const supervisor = new GoalContainerSupervisor(base, capturingEvents, undefined, isolation);
+    const secrets = [
+        'poison-environment-secret', 'poison-command-secret', 'poison-task-secret',
+        'poison-excess-secret', approvedCredential, approvedWorktree,
+    ];
+    await supervisor.start({
+        ...baseRequest(),
+        ...ids,
+        command: ['provider', '--secret', secrets[1]],
+        environment: { OPENAI_API_KEY: secrets[0] },
+        credentialMounts: [{ source: approvedCredential, target: '/home/node/.creds' }],
+        taskId: secrets[2],
+        arbitraryExcess: secrets[3],
+    } as ReturnType<typeof baseRequest> & typeof ids & { arbitraryExcess: string; taskId: string });
+    child.stdout.emit('data', Buffer.from('public raw output'));
+    for (let attempt = 0; attempt < 100 && (await persistence.replay(ids)).length === 0; attempt += 1) {
+        await new Promise<void>(resolve => setTimeout(resolve, 5));
+    }
+
+    const replayed = await persistence.replay(ids);
+    assert.equal(replayed.length, 1);
+    assert.deepEqual(Object.keys(replayed[0]).sort(), [
+        'attemptId', 'controllerEpoch', 'event', 'executionId', 'goalId', 'recordedAt',
+        'sequence', 'sessionId', 'turnId',
+    ]);
+    assert.deepEqual(Object.keys(replayed[0].event).sort(), ['channel', 'data', 'type']);
+    const rawBytes = JSON.stringify({ delivered, replayed });
+    for (const secret of secrets) assert.ok(!rawBytes.includes(secret), `raw event persistence leaked ${secret}`);
 });
 
 test('layout log sink truncates deterministically at its auditable byte bound', async () => {

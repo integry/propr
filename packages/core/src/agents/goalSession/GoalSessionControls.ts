@@ -8,6 +8,7 @@ import type {
     GoalPauseRequest,
     GoalPendingCancellationContext,
     GoalSessionControlFence,
+    GoalSessionEvent,
     GoalSessionState,
     GoalSteeringRequest,
 } from './contract.js';
@@ -129,21 +130,37 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             throw new GoalSessionContractError(`Cannot change model while the session is ${state.status}`, 'SESSION_NOT_CONTROLLABLE');
         }
         if (this.adapter.capabilities.modelChange === 'next_turn') {
-            state = await this.compareAndSetExact(state, {
-                requestedModel: request.model, pendingModelChange: request.model,
-            }, 'A newer model intent superseded this request');
             const acknowledgement = { requestedModel: request.model, appliesAt: 'next_turn' as const };
-            await this.appendControl(request, controlExecutionIdentity(state), {
-                type: 'model_change_acknowledged', ...acknowledgement,
+            if (state.pendingModelChange === request.model && state.modelChangeIntent?.model === request.model) {
+                return acknowledgement;
+            }
+            const modelChangeId = this.controlOperationId('model', state);
+            state = await this.commitControlTransition({
+                state,
+                fence: request,
+                changes: {
+                    requestedModel: request.model,
+                    pendingModelChange: request.model,
+                    modelChangeIntent: { modelChangeId, model: request.model, requestedAt: new Date().toISOString() },
+                },
+                auditEvents: [{ type: 'model_change_acknowledged', ...acknowledgement }],
+                transitionId: `model-requested:${modelChangeId}`,
             });
             return acknowledgement;
         }
         const previousModel = state.currentModel;
         const previousRequestedModel = state.requestedModel;
-        state = await this.compareAndSetExact(state, { requestedModel: request.model }, 'A newer model intent superseded this request');
+        const modelChangeId = this.controlOperationId('model', state);
+        state = await this.compareAndSetExact(state, {
+            requestedModel: request.model,
+            modelChangeIntent: { modelChangeId, model: request.model, requestedAt: new Date().toISOString() },
+        }, 'A newer model intent superseded this request');
         let acknowledgement: GoalModelChangeAcknowledgement;
         try {
-            acknowledgement = await this.adapter.requestModelChange(request, persistedSnapshot(state));
+            acknowledgement = await this.adapter.requestModelChange(
+                { ...request, modelChangeId },
+                persistedSnapshot(state),
+            );
             if (acknowledgement.requestedModel !== request.model) {
                 throw new GoalSessionContractError('Provider acknowledged a different requested model', 'MODEL_ACK_MISMATCH');
             }
@@ -154,32 +171,61 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
                 && (state.status === 'running' || state.status === 'pause_requested')) {
                 throw new GoalSessionContractError('Provider applied a model change before an active-turn safe boundary', 'CAPABILITY_ACK_MISMATCH');
             }
-            state = await this.compareAndSetExact(state, {
-                currentModel: acknowledgement.effectiveModel ?? state.currentModel,
-            }, 'A newer model intent superseded the provider acknowledgement');
+            const auditEvents: Array<Exclude<GoalSessionEvent, { type: 'completion' }>> = [{
+                type: 'model_change_acknowledged', requestedModel: request.model, appliesAt: acknowledgement.appliesAt,
+            }];
+            if (acknowledgement.effectiveModel) {
+                auditEvents.push({
+                    type: 'model_changed', previousModel, model: acknowledgement.effectiveModel,
+                });
+            }
+            state = await this.commitControlTransition({
+                state,
+                fence: request,
+                changes: {
+                    currentModel: acknowledgement.effectiveModel ?? state.currentModel,
+                    modelChangeIntent: undefined,
+                },
+                auditEvents,
+                transitionId: `model-applied:${modelChangeId}`,
+            });
         } catch (error) {
-            try { await this.compareAndSetExact(state, { requestedModel: previousRequestedModel }); }
+            try {
+                await this.compareAndSetExact(state, {
+                    requestedModel: previousRequestedModel,
+                    modelChangeIntent: undefined,
+                });
+            }
             catch { /* A newer intent owns the field; do not roll it back. */ }
             throw error;
-        }
-        await this.appendControl(request, controlExecutionIdentity(state), {
-            type: 'model_change_acknowledged', requestedModel: request.model, appliesAt: acknowledgement.appliesAt,
-        });
-        if (acknowledgement.effectiveModel) {
-            await this.appendControl(request, controlExecutionIdentity(state), {
-                type: 'model_changed', previousModel, model: acknowledgement.effectiveModel,
-            });
         }
         return acknowledgement;
     }
 
     async cancel(request: GoalCancelRequest): Promise<GoalSessionState> {
-        let state = await this.claimCancellation(request);
+        const state = await this.claimCancellation(request);
         if (state.status === 'terminated') return state;
-        const pending = this.pendingCancellationContext(state);
+        return this.resumeClaimedCancellation(request, state);
+    }
+
+    /** Replays a durable cancelling claim during open/recovery without starting provider work. */
+    protected async resumeClaimedCancellation(
+        fence: GoalSessionControlFence,
+        state: GoalSessionState,
+    ): Promise<GoalSessionState> {
+        if (state.status === 'terminated') return state;
+        if (state.status !== 'cancelling' || !state.cancellationIntent) {
+            throw new GoalSessionContractError('Cancelling state is missing its durable cancellation intent', 'CANCELLATION_INTENT_MISSING');
+        }
+        const intent = state.cancellationIntent;
+        const request = {
+            ...fence,
+            reason: intent.reason,
+            cancellationId: intent.cancellationId,
+        };
         let signalError: unknown;
         try {
-            if (pending) await this.adapter.cancelPending!(request, pending);
+            if (intent.pendingContext) await this.adapter.cancelPending!(request, intent.pendingContext);
             else await this.adapter.cancel(request, persistedSnapshot(state));
         } catch (error) {
             signalError = error;
@@ -191,7 +237,8 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             retryTurn: undefined,
             recoveryAttempt: undefined,
             pendingAfterTurnPause: undefined,
-        }, { type: 'completion', outcome: 'cancelled', error: request.reason });
+            modelChangeIntent: undefined,
+        }, { type: 'completion', outcome: 'cancelled', error: intent.reason });
         // Terminal fencing is authoritative even when the adapter reports that
         // its best-effort process signal failed. Surface that failure only after
         // the session can no longer remain permanently stuck in cancelling.
@@ -202,14 +249,25 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
     private async claimCancellation(request: GoalCancelRequest): Promise<GoalSessionState> {
         for (let attempt = 0; attempt < 4; attempt += 1) {
             const state = await this.requireControlledState(request);
-            if (state.status === 'terminated' || state.status === 'cancelling') return state;
+            if (state.status === 'terminated') return state;
+            if (state.status === 'cancelling' && state.cancellationIntent) return state;
             if (!state.providerSessionId && (!state.initializationIntent || !this.adapter.cancelPending)) {
                 throw new GoalSessionContractError(
                     'A lazy-ID provider must implement pending cancellation before it can be cancelled safely',
                     'CAPABILITY_METHOD_MISSING',
                 );
             }
-            const claimed = await this.ports.state.compareAndSet(state, nextState(state, { status: 'cancelling' }));
+            const pendingContext = this.pendingCancellationContext(state);
+            const claimed = await this.ports.state.compareAndSet(state, nextState(state, {
+                status: 'cancelling',
+                activeTurn: undefined,
+                cancellationIntent: {
+                    cancellationId: this.controlOperationId('cancel', state),
+                    reason: request.reason,
+                    claimedAt: new Date().toISOString(),
+                    pendingContext,
+                },
+            }));
             if (claimed) return claimed;
         }
         throw new StaleGoalSessionFenceError('A newer operation repeatedly superseded cancellation');
@@ -240,18 +298,32 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             throw new GoalSessionContractError(`Cannot pause a session while it is ${state.status}`, 'SESSION_NOT_CONTROLLABLE');
         }
         if (state.status === 'idle') {
-            state = await this.compareAndSetExact(state, { status: 'paused' });
-            await this.appendControl(request, controlExecutionIdentity(state), {
-                type: 'pause_requested', appliesAt: 'after_turn',
-            });
             const boundaryReached = { boundary: 'after_turn' };
-            await this.appendControl(request, controlExecutionIdentity(state), { type: 'pause_boundary', ...boundaryReached });
+            state = await this.commitControlTransition({
+                state,
+                fence: request,
+                changes: { status: 'paused' },
+                auditEvents: [
+                    { type: 'pause_requested', appliesAt: 'after_turn' },
+                    { type: 'pause_boundary', ...boundaryReached },
+                ],
+                transitionId: this.controlOperationId('pause-after-turn', state),
+            });
             return { appliesAt: 'after_turn', boundaryReached };
         }
-        if (state.status === 'running') state = await this.markPauseRequested(state, true);
-        await this.appendControl(request, controlExecutionIdentity(state), {
-            type: 'pause_requested', appliesAt: 'after_turn',
-        });
+        if (state.status === 'running') {
+            state = await this.commitControlTransition({
+                state,
+                fence: request,
+                changes: {
+                    status: 'pause_requested',
+                    activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'pause_requested' } : state.activeTurn,
+                    pendingAfterTurnPause: true,
+                },
+                auditEvents: [{ type: 'pause_requested', appliesAt: 'after_turn' }],
+                transitionId: this.controlOperationId('pause-after-turn', state),
+            });
+        }
         return { appliesAt: 'after_turn' };
     }
 

@@ -100,6 +100,24 @@ export interface GoalRecoveryAttempt {
     claimedAt: string;
 }
 
+/** Durable cancellation claim recorded before the provider cancellation side effect. */
+export interface GoalCancellationIntent {
+    /** Stable provider idempotency identity, retained through terminal recovery. */
+    cancellationId: string;
+    reason: string;
+    claimedAt: string;
+    /** Captured before activeTurn is cleared so lazy-ID cancellation can target the old invocation. */
+    pendingContext?: GoalPendingCancellationContext;
+}
+
+/** Durable model side-effect intent recorded before calling the provider. */
+export interface GoalModelChangeIntent {
+    /** Stable provider idempotency identity used for every recovery retry. */
+    modelChangeId: string;
+    model: string;
+    requestedAt: string;
+}
+
 export type GoalNativeSessionIdTiming = 'eager' | 'first_turn';
 export type GoalSteeringBoundary = 'active_turn' | 'next_turn';
 export type GoalPauseBoundary = 'active_turn' | 'after_turn';
@@ -162,6 +180,10 @@ export interface GoalSessionState extends GoalSessionIdentity {
     recoveryAttemptId?: string;
     /** In-flight reconciliation claim, retained across a thrown call or crash. */
     recoveryAttempt?: GoalRecoveryAttempt;
+    /** In-flight or completed cancellation identity. Active turn ownership is cleared when this is claimed. */
+    cancellationIntent?: GoalCancellationIntent;
+    /** In-flight next-turn provider model application, retained across crashes. */
+    modelChangeIntent?: GoalModelChangeIntent;
     failureReason?: string;
     /** Optimistic concurrency token owned by the state port. */
     version: number;
@@ -206,6 +228,23 @@ export interface GoalSessionStatePort {
     load(identity: GoalSessionIdentity): Promise<GoalSessionState | null>;
     create(state: Omit<GoalSessionState, 'version'>): Promise<GoalSessionState | null>;
     compareAndSet(expected: GoalSessionState, next: Omit<GoalSessionState, 'version'>): Promise<GoalSessionState | null>;
+}
+
+export interface GoalSessionControlTransition {
+    /** Stable idempotency identity for ambiguous post-commit recovery. */
+    transitionId: string;
+    fence: GoalSessionControlFence;
+    execution: GoalExecutionIdentity;
+    auditEvents: ReadonlyArray<Exclude<GoalSessionEvent, { type: 'completion' }>>;
+}
+
+/** Atomically commits nonterminal state and its canonical ordered audit events. */
+export interface GoalSessionTransitionPort {
+    commit(
+        expected: GoalSessionState,
+        next: Omit<GoalSessionState, 'version'>,
+        transition: GoalSessionControlTransition,
+    ): Promise<GoalSessionState | null>;
 }
 
 export type GoalTerminalCommit =
@@ -324,8 +363,18 @@ export interface GoalModelChangeRequest extends GoalSessionControlFence {
     model: string;
 }
 
+/** Provider request; retries with the same modelChangeId must not repeat the external side effect. */
+export interface GoalProviderModelChangeRequest extends GoalModelChangeRequest {
+    modelChangeId: string;
+}
+
 export interface GoalCancelRequest extends GoalSessionControlFence {
     reason: string;
+}
+
+/** Provider request; retries with the same cancellationId must be idempotent. */
+export interface GoalProviderCancelRequest extends GoalCancelRequest {
+    cancellationId: string;
 }
 
 /** Identity available while a lazy-ID provider has not emitted its first checkpoint. */
@@ -373,9 +422,11 @@ export type GoalProviderReconcileResult =
  * Pause/model-change requests are immediate control calls, but their effects may
  * be deferred as explicitly reported by the acknowledgement and later events.
  * deliverMessage must be idempotent by messageId so crash retries do not steer twice.
- * cancelPending, when implemented for a first-turn-ID provider, must likewise be
- * idempotent because a crash can occur after signalling the provider but before
- * the terminal transaction is observed by the caller.
+ * requestModelChange must be idempotent by modelChangeId so recovery after a
+ * provider-success/persistence-crash window never applies one intent twice.
+ * cancel and cancelPending must likewise be idempotent by cancellationId because
+ * a crash can occur after signalling the provider but before the terminal
+ * transaction is observed by the caller.
  */
 export interface GoalSessionAdapter {
     readonly provider: string;
@@ -399,10 +450,10 @@ export interface GoalSessionAdapter {
     deliverMessage?(request: GoalSteeringRequest, snapshot: GoalProviderSessionSnapshot): Promise<{ messageId: string }>;
     requestPause?(request: GoalPauseRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalPauseAcknowledgement>;
     resumeSession(request: GoalSessionControlFence, snapshot: GoalProviderSessionSnapshot): Promise<GoalProviderSessionSnapshot>;
-    requestModelChange(request: GoalModelChangeRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalModelChangeAcknowledgement>;
-    cancel(request: GoalCancelRequest, snapshot: GoalProviderSessionSnapshot): Promise<void>;
+    requestModelChange(request: GoalProviderModelChangeRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalModelChangeAcknowledgement>;
+    cancel(request: GoalProviderCancelRequest, snapshot: GoalProviderSessionSnapshot): Promise<void>;
     /** Cancels an invocation/container before a native provider session ID exists. */
-    cancelPending?(request: GoalCancelRequest, pending: GoalPendingCancellationContext): Promise<void>;
+    cancelPending?(request: GoalProviderCancelRequest, pending: GoalPendingCancellationContext): Promise<void>;
     reconcile(request: GoalProviderReconcileRequest): Promise<GoalProviderReconcileResult>;
 }
 
@@ -443,6 +494,7 @@ export interface GoalSessionRecoveryPort {
 
 export interface GoalSessionRuntimePorts {
     state: GoalSessionStatePort;
+    transitions: GoalSessionTransitionPort;
     events: GoalSessionEventSink;
     terminal: GoalSessionTerminalPort;
     messages: GoalSessionMessagePort;

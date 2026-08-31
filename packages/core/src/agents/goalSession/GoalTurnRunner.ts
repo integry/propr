@@ -13,27 +13,19 @@ import { GoalSessionCore } from './GoalSessionCore.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
 import {
     assertProviderIdentity,
-    controlExecutionIdentity,
     nextState,
     persistedSnapshot,
     providerTurnContext,
     validateControlFence,
 } from './support.js';
+import { duplicateTurnResult, type RunGoalTurnResult } from './turnDelivery.js';
 
 export interface RunGoalTurnRequest extends Omit<GoalBeginTurnRequest, 'executionId' | 'attemptId' | 'correctiveMessages'> {
     executionId: string;
     attemptId?: string;
 }
 
-export type RunGoalTurnResult =
-    | { disposition: 'started'; state: GoalSessionState; execution: GoalExecutionIdentity }
-    /**
-     * A redelivery observed durable state; it neither ran the provider nor
-     * claimed completion itself. `reattached` is only true when the original
-     * execution/attempt identity of that turn was recovered; a truthful `false`
-     * is returned with a fresh fallback identity when it cannot be recovered.
-     */
-    | { disposition: 'duplicate'; reattached: boolean; state: GoalSessionState; execution: GoalExecutionIdentity };
+export type { RunGoalTurnResult } from './turnDelivery.js';
 
 type TurnStreamOutcome = { state: GoalSessionState; completed: boolean; reachedPause: boolean };
 
@@ -62,13 +54,13 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 : request.attemptId ?? this.mintAttemptId(),
         };
 
-        const duplicate = this.duplicateResult(state, request.turnId, execution);
+        const duplicate = duplicateTurnResult(state, request.turnId, execution);
         if (duplicate) return duplicate;
         if (state.status !== 'idle') {
             throw new GoalSessionContractError(`Cannot begin a turn while session is ${state.status}`, 'SESSION_NOT_IDLE');
         }
 
-        const requestedModel = state.pendingModelChange ?? request.requestedModel;
+        const requestedModel = state.pendingModelChange ?? state.modelChangeIntent?.model ?? request.requestedModel;
         state = await this.applyModelAtTurnBoundary(request, state, requestedModel);
         const correctiveMessages = await this.nextTurnCorrectiveMessages(request);
         const activeTurn = {
@@ -85,10 +77,11 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             requestedModel,
             status: 'running',
             retryTurn: undefined,
+            modelChangeIntent: undefined,
         }));
         if (!claimed) {
             state = await this.requireControlledState(request);
-            const redelivery = this.duplicateResult(state, request.turnId, execution);
+            const redelivery = duplicateTurnResult(state, request.turnId, execution);
             if (redelivery) return redelivery;
             throw new StaleGoalSessionFenceError('Another delivery claimed the session turn');
         }
@@ -123,21 +116,36 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             }, 'A newer model intent superseded the turn-boundary model acknowledgement');
         }
         if (!state.providerSessionId) return state;
+        let intent = state.modelChangeIntent?.model === requestedModel ? state.modelChangeIntent : undefined;
+        if (!intent) {
+            intent = {
+                modelChangeId: this.controlOperationId('model', state),
+                model: requestedModel,
+                requestedAt: new Date().toISOString(),
+            };
+            state = await this.compareAndSetExact(state, {
+                requestedModel,
+                modelChangeIntent: intent,
+            }, 'A newer model intent superseded the turn-boundary provider claim');
+        }
         const acknowledgement = await this.adapter.requestModelChange(
-            { ...request, model: requestedModel },
+            { ...request, model: requestedModel, modelChangeId: intent.modelChangeId },
             persistedSnapshot(state),
         );
         if (acknowledgement.requestedModel !== requestedModel
             || acknowledgement.effectiveModel !== requestedModel) {
             throw new GoalSessionContractError('Provider did not apply the requested model at the turn boundary', 'MODEL_ACK_MISMATCH');
         }
-        const changed = await this.compareAndSetExact(state, {
-            requestedModel,
-            currentModel: requestedModel,
-            pendingModelChange: undefined,
-        }, 'A newer model intent superseded the turn-boundary model application');
-        await this.appendControl(request, controlExecutionIdentity(changed), {
-            type: 'model_changed', previousModel: state.currentModel, model: requestedModel,
+        const changed = await this.commitControlTransition({
+            state,
+            fence: request,
+            changes: {
+                requestedModel,
+                currentModel: requestedModel,
+                pendingModelChange: undefined,
+            },
+            auditEvents: [{ type: 'model_changed', previousModel: state.currentModel, model: requestedModel }],
+            transitionId: `model-applied:${intent.modelChangeId}`,
         });
         return changed;
     }
@@ -233,7 +241,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             || state.activeTurn.attemptId !== originalTurn.attemptId) {
             throw new StaleGoalSessionFenceError('A newer operation superseded the recovered turn boundary');
         }
-        const requestedModel = state.pendingModelChange ?? state.activeTurn.requestedModel;
+        const requestedModel = state.pendingModelChange ?? state.modelChangeIntent?.model ?? state.activeTurn.requestedModel;
         state = await this.applyModelAtTurnBoundary(fence, state, requestedModel);
         const turn = state.activeTurn!;
         const execution = { executionId: turn.executionId, attemptId: this.mintFreshAttemptId(turn.attemptId) };
@@ -250,6 +258,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         const claimed = await this.compareAndSetExact(state, {
             status: recoveringPause ? 'pause_requested' : 'running',
             activeTurn: recoveringPause ? { ...activeTurn, status: 'pause_requested' } : activeTurn,
+            modelChangeIntent: undefined,
         },
             'A newer operation claimed the reconciled turn before recovery');
         const adapterRequest: GoalBeginTurnRequest = {
@@ -270,33 +279,6 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             openStream: () => this.adapter.beginTurn(adapterRequest, providerTurnContext(claimed)),
         });
         return { disposition: 'started', state: outcome.state, execution };
-    }
-
-    private duplicateResult(
-        state: GoalSessionState,
-        turnId: string,
-        fallback: GoalExecutionIdentity,
-    ): RunGoalTurnResult | undefined {
-        // The turn is still the active turn: reattach to its real identity.
-        if (state.activeTurn?.turnId === turnId) {
-            const execution = { executionId: state.activeTurn.executionId, attemptId: state.activeTurn.attemptId };
-            return { disposition: 'duplicate', reattached: true, state, execution };
-        }
-        if (!state.completedTurnIds.includes(turnId)) return undefined;
-        // An older turn that a later turn has since replaced: recover its durably
-        // recorded execution identity so the redelivery is honestly reattached.
-        const recorded = state.completedTurns?.find(turn => turn.turnId === turnId);
-        if (recorded) {
-            return {
-                disposition: 'duplicate',
-                reattached: true,
-                state,
-                execution: { executionId: recorded.executionId, attemptId: recorded.attemptId },
-            };
-        }
-        // The original identity was not recorded (e.g. legacy state): do not claim
-        // a reattachment we cannot back with the real attempt identity.
-        return { disposition: 'duplicate', reattached: false, state, execution: fallback };
     }
 
     private async driveTurnStream(options: TurnStreamOptions): Promise<TurnStreamOutcome> {
