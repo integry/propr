@@ -293,14 +293,15 @@ test("Windows production isolates entry fields and retains private handle lifeti
   const entryRuleValidation = WINDOWS_INSPECTION_SOURCE.slice(entryRules, entryBuild);
   assert.equal(entryRuleValidation, [
     "$stage=86",
-    "  $rulesArray=@($rules)",
+    "  [object[]]$rulesArray=$rules.ToArray()",
     "  if($rulesArray-isnot [object[]]-or $rulesArray.Count-ne $rules.Count-or $rulesArray.Count-gt 128){exit $stage}",
     "  for($ruleIndex=0;$ruleIndex-lt $rulesArray.Count;$ruleIndex++){",
     "    if(-not [object]::ReferenceEquals($rulesArray[$ruleIndex],$rules[$ruleIndex])){exit $stage}",
     "  }",
     "  ",
   ].join("\n"));
-  assert.equal(WINDOWS_INSPECTION_SOURCE.match(/\$rulesArray=@\(\$rules\)/g)?.length, 1);
+  assert.equal(WINDOWS_INSPECTION_SOURCE.match(/\[object\[\]\]\$rulesArray=\$rules\.ToArray\(\)/g)?.length, 1);
+  assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE, /@\(\s*\$rules\s*\)/);
   assert.doesNotMatch(entryRuleValidation, /ConvertTo-Json|\.ToString|Console|Write-|Out\./);
   const entryConstruction = WINDOWS_INSPECTION_SOURCE.slice(entryBuild, json);
   assert.equal(entryConstruction, [

@@ -206,7 +206,7 @@ try {
   $reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
   if($daclProtected-isnot [bool]-or $reparsePoint-isnot [bool]){exit $stage}
   $stage=86
-  $rulesArray=@($rules)
+  [object[]]$rulesArray=$rules.ToArray()
   if($rulesArray-isnot [object[]]-or $rulesArray.Count-ne $rules.Count-or $rulesArray.Count-gt 128){exit $stage}
   for($ruleIndex=0;$ruleIndex-lt $rulesArray.Count;$ruleIndex++){
     if(-not [object]::ReferenceEquals($rulesArray[$ruleIndex],$rules[$ruleIndex])){exit $stage}
