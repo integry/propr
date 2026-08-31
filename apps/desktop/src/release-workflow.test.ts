@@ -256,7 +256,9 @@ describe('desktop trusted release workflow', () => {
     assert.match(makeDmg, /\^hdiutil: create failed - Resource busy\\s\*\$/);
     assert.match(makeDmg, /await rename\(temporaryOutput, outputPath\)/);
     assert.match(makeDmg, /await image\.sync\(\)/);
-    assert.doesNotMatch(makeDmg, /await directory\.sync\(\)/);
+    assert.match(makeDmg, /const directory = await open\(outputDirectory, 'r'\)/);
+    assert.match(makeDmg, /try \{ await directory\.sync\(\); \} finally \{ await directory\.close\(\); \}/);
+    assert.ok(makeDmg.indexOf('await image.sync()') < makeDmg.indexOf('await directory.sync()'));
     assert.match(makeDmg, /try \{ await rm\(temporaryOutput, \{ force: true \}\); \} finally \{\n\s+await rm\(stagingDirectory/);
     assert.ok(
       releaseArchitecture.indexOf("['attach', '-readonly', '-nobrowse', '-mountpoint', directory, privatePath]")
@@ -356,6 +358,59 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(installedWindowsAppTest, /Get-Content|Write-(?:Output|Verbose|Debug|Information)/);
     assert.match(installedWindowsAppTest, /-AllowedExitCodes @\(0\)/);
     assert.match(installedWindowsAppTest, /\$exitCode = \$Process\.ExitCode/);
+    assert.match(
+      installedWindowsAppTest,
+      /GetEnvironmentVariable\(\n\s+'PROPR_DESKTOP_SMOKE_TEST',\n\s+\[EnvironmentVariableTarget\]::Process/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /SetEnvironmentVariable\(\n\s+'PROPR_DESKTOP_SMOKE_TEST',\n\s+'1',\n\s+\[EnvironmentVariableTarget\]::Process/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /try \{[\s\S]*Start-DirectProcess \$applicationStart[\s\S]*\} finally \{[\s\S]*\$null -eq \$previousSmokeTrigger[\s\S]*\$previousSmokeTrigger/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppTest,
+      /PROPR_DESKTOP_SMOKE_TEST'[\s\S]{0,100}\[EnvironmentVariableTarget\]::(?:User|Machine)/,
+    );
+
+    assert.match(installedWindowsAppTest, /\$smokeEvidenceFileByteCap = 64 \* 1024/);
+    assert.match(installedWindowsAppTest, /foreach \(\$fileName in @\('application\.stdout\.log', 'application\.stderr\.log'\)\)/);
+    assert.match(installedWindowsAppTest, /\[Math\]::Min\(\[int64\]\$item\.Length, \[int64\]\$smokeEvidenceFileByteCap\)/);
+    assert.match(installedWindowsAppTest, /!\(\$item -is \[IO\.FileInfo\]\)/);
+    assert.match(installedWindowsAppTest, /\$item\.PSIsContainer/);
+    assert.match(installedWindowsAppTest, /\$item\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint/);
+    assert.match(installedWindowsAppTest, /New-Object IO\.FileStream\(/);
+    assert.doesNotMatch(installedWindowsAppTest, /Get-ChildItem[^\n]*smoke|ReadAll|ReadToEnd/);
+    const smokeEventAllowlist = installedWindowsAppTest.match(
+      /\$smokeEventCodes = \[ordered\]@\{([\s\S]*?)\n\}/,
+    );
+    assert.ok(smokeEventAllowlist);
+    assert.deepEqual([...smokeEventAllowlist[1].matchAll(/^\s+'([^']+)' = '[A-Z_]+'$/gm)].map(match => match[1]), [
+      'desktop.app.ready',
+      'desktop.renderer.mvp_flows.ready',
+      'desktop.renderer.layout.ready',
+      'desktop.renderer.ready',
+      'desktop.app.start_failed',
+      'desktop.main_process.uncaught_exception',
+      'desktop.log.write_failed',
+    ]);
+    assert.match(installedWindowsAppTest, /ConvertFrom-Json -InputObject \$line -ErrorAction Stop/);
+    assert.match(installedWindowsAppTest, /\$smokeEventCodes\.Contains\(\$eventProperty\.Value\)/);
+    assert.match(
+      installedWindowsAppTest,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:EVIDENCE:\{0\}['"] -f \(\$summary -join ','\)/,
+    );
+    assert.doesNotMatch(installedWindowsAppTest, /Write-Host[^\n]*(?:\$line|\$text|\$record|\$filePath|\$eventProperty)/);
+    assert.match(installedWindowsAppTest, /\$requiredSmokeEvents = @\([\s\S]*desktop\.renderer\.mvp_flows\.ready[\s\S]*desktop\.renderer\.layout\.ready[\s\S]*desktop\.renderer\.ready/);
+    assert.match(installedWindowsAppTest, /Get-SmokeEventEvidence \$smokeUserDataDirectory \$testUserSid/);
+    assert.match(installedWindowsAppTest, /if \(\$null -ne \$waitFailure\) \{ throw \$waitFailure \}/);
+    assert.match(installedWindowsAppTest, /SMOKE_REQUIRED_EVENTS_MISSING/);
+    assert.ok(
+      installedWindowsAppTest.indexOf('Wait-BoundedProcess `', installedWindowsAppTest.indexOf("Write-Stage 'APP_EXIT' 'BEGIN'"))
+        < installedWindowsAppTest.indexOf('Get-SmokeEventEvidence $smokeUserDataDirectory $testUserSid'),
+    );
 
     for (const stage of [
       'INSTALL',

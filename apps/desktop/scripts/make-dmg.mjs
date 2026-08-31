@@ -38,10 +38,12 @@ for (let attempt = 0; attempt < 2 && !created; attempt += 1) {
       temporaryOutput,
     ]);
     await rename(temporaryOutput, outputPath);
-    // Flush the completed image and close its handle before a verifier opens it.
-    // macOS does not support fsync on an open directory descriptor.
+    // Publish only after both the image and containing directory have reached
+    // stable storage, and close every maker handle before a verifier opens it.
     const image = await open(outputPath, 'r');
     try { await image.sync(); } finally { await image.close(); }
+    const directory = await open(outputDirectory, 'r');
+    try { await directory.sync(); } finally { await directory.close(); }
     created = true;
   } catch (error) {
     const resourceBusy = typeof error === 'object' && error !== null

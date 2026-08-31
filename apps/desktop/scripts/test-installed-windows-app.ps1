@@ -20,6 +20,21 @@ $smokeUserDataDirectory = $null
 $msiTimeoutMilliseconds = 10 * 60 * 1000
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
+$smokeEvidenceFileByteCap = 64 * 1024
+$smokeEventCodes = [ordered]@{
+  'desktop.app.ready' = 'APP_READY'
+  'desktop.renderer.mvp_flows.ready' = 'MVP_FLOWS_READY'
+  'desktop.renderer.layout.ready' = 'LAYOUT_READY'
+  'desktop.renderer.ready' = 'RENDERER_READY'
+  'desktop.app.start_failed' = 'START_FAILED'
+  'desktop.main_process.uncaught_exception' = 'UNCAUGHT_EXCEPTION'
+  'desktop.log.write_failed' = 'LOG_WRITE_FAILURE'
+}
+$requiredSmokeEvents = @(
+  'desktop.renderer.mvp_flows.ready',
+  'desktop.renderer.layout.ready',
+  'desktop.renderer.ready'
+)
 $machineTempValue = [Environment]::GetEnvironmentVariable('TEMP', [EnvironmentVariableTarget]::Machine)
 if (!$machineTempValue) { throw 'machine temporary directory is unavailable' }
 $machineTemp = [Environment]::ExpandEnvironmentVariables($machineTempValue)
@@ -178,6 +193,104 @@ function Remove-SmokeUserDataDirectory([string]$Path) {
   if (Test-Path -LiteralPath $fullPath) { throw 'smoke user-data directory cleanup did not complete' }
 }
 
+function Get-SmokeEventEvidence(
+  [string]$Path,
+  [Security.Principal.SecurityIdentifier]$UserSid
+) {
+  try {
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if ((Split-Path -Leaf $fullPath) -notmatch '^propr-desktop-smoke-[a-f0-9]{32}$' -or
+        ![string]::Equals((Split-Path -Parent $fullPath), $machineTemp, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'invalid smoke evidence directory'
+    }
+    $directory = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    if (!$directory.PSIsContainer -or
+        ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'invalid smoke evidence directory'
+    }
+
+    $administratorsSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
+    $systemSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
+    $expectedSids = @($UserSid.Value, $systemSid.Value, $administratorsSid.Value) | Sort-Object -Unique
+    $appliedAcl = Get-Acl -LiteralPath $fullPath
+    $actualRules = @($appliedAcl.Access)
+    $actualSids = @($actualRules | ForEach-Object {
+      ($_.IdentityReference.Translate([Security.Principal.SecurityIdentifier])).Value
+    }) | Sort-Object -Unique
+    $invalidRules = @($actualRules | Where-Object {
+      $_.IsInherited -or $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+      ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+        [Security.AccessControl.FileSystemRights]::FullControl
+    })
+    if (!$appliedAcl.AreAccessRulesProtected -or $actualRules.Count -ne 3 -or
+        $invalidRules.Count -ne 0 -or (Compare-Object $expectedSids $actualSids)) {
+      throw 'invalid smoke evidence directory'
+    }
+
+    $events = @{}
+    foreach ($eventName in $smokeEventCodes.Keys) { $events[$eventName] = $false }
+    $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+    foreach ($fileName in @('application.stdout.log', 'application.stderr.log')) {
+      $filePath = Join-Path $fullPath $fileName
+      $item = Get-Item -LiteralPath $filePath -Force -ErrorAction SilentlyContinue
+      if ($null -eq $item -or !($item -is [IO.FileInfo]) -or $item.PSIsContainer -or
+          ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        continue
+      }
+
+      $bytesToRead = [Math]::Min([int64]$item.Length, [int64]$smokeEvidenceFileByteCap)
+      $bytes = New-Object byte[] ([int]$bytesToRead)
+      $stream = New-Object IO.FileStream(
+        $filePath,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read,
+        4096,
+        [IO.FileOptions]::SequentialScan
+      )
+      try {
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+          $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+          if ($read -eq 0) { break }
+          $offset += $read
+        }
+      } finally {
+        $stream.Dispose()
+      }
+      if ($offset -eq 0) { continue }
+
+      try {
+        $text = $strictUtf8.GetString($bytes, 0, $offset)
+      } catch {
+        continue
+      }
+      foreach ($line in ($text -split "`r?`n")) {
+        try {
+          $record = ConvertFrom-Json -InputObject $line -ErrorAction Stop
+        } catch {
+          continue
+        }
+        $eventProperty = $record.PSObject.Properties['event']
+        if ($null -ne $eventProperty -and $eventProperty.Value -is [string] -and
+            $smokeEventCodes.Contains($eventProperty.Value)) {
+          $events[$eventProperty.Value] = $true
+        }
+      }
+    }
+
+    $summary = @()
+    foreach ($eventName in $smokeEventCodes.Keys) {
+      $state = if ($events[$eventName]) { 'PRESENT' } else { 'ABSENT' }
+      $summary += ('{0}={1}' -f $smokeEventCodes[$eventName], $state)
+    }
+    Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:EVIDENCE:{0}' -f ($summary -join ','))
+    return $events
+  } catch {
+    throw 'smoke evidence inspection failed'
+  }
+}
+
 try {
   Write-Stage 'INSTALL' 'BEGIN'
   try {
@@ -250,8 +363,33 @@ try {
       RedirectStandardError = (Join-Path $smokeUserDataDirectory 'application.stderr.log')
       WorkingDirectory = $env:ProgramFiles
     }
-    $applicationProcess = Start-DirectProcess $applicationStart `
-      'ordinary-user installed application launch/render/profile smoke'
+    $previousSmokeTrigger = [Environment]::GetEnvironmentVariable(
+      'PROPR_DESKTOP_SMOKE_TEST',
+      [EnvironmentVariableTarget]::Process
+    )
+    try {
+      [Environment]::SetEnvironmentVariable(
+        'PROPR_DESKTOP_SMOKE_TEST',
+        '1',
+        [EnvironmentVariableTarget]::Process
+      )
+      $applicationProcess = Start-DirectProcess $applicationStart `
+        'ordinary-user installed application launch/render/profile smoke'
+    } finally {
+      if ($null -eq $previousSmokeTrigger) {
+        [Environment]::SetEnvironmentVariable(
+          'PROPR_DESKTOP_SMOKE_TEST',
+          $null,
+          [EnvironmentVariableTarget]::Process
+        )
+      } else {
+        [Environment]::SetEnvironmentVariable(
+          'PROPR_DESKTOP_SMOKE_TEST',
+          $previousSmokeTrigger,
+          [EnvironmentVariableTarget]::Process
+        )
+      }
+    }
     Write-Stage 'APP_LAUNCH' 'COMPLETE'
   } catch {
     Write-Stage 'APP_LAUNCH' 'FAILED'
@@ -259,11 +397,21 @@ try {
   }
   Write-Stage 'APP_EXIT' 'BEGIN'
   try {
-    [void](Wait-BoundedProcess `
-      -Process $applicationProcess `
-      -TimeoutMilliseconds $applicationTimeoutMilliseconds `
-      -AllowedExitCodes @(0) `
-      -Operation 'ordinary-user installed application launch/render/profile smoke')
+    $waitFailure = $null
+    try {
+      [void](Wait-BoundedProcess `
+        -Process $applicationProcess `
+        -TimeoutMilliseconds $applicationTimeoutMilliseconds `
+        -AllowedExitCodes @(0) `
+        -Operation 'ordinary-user installed application launch/render/profile smoke')
+    } catch {
+      $waitFailure = $_
+    }
+    $smokeEvidence = Get-SmokeEventEvidence $smokeUserDataDirectory $testUserSid
+    if ($null -ne $waitFailure) { throw $waitFailure }
+    if (@($requiredSmokeEvents | Where-Object { !$smokeEvidence[$_] }).Count -ne 0) {
+      throw 'SMOKE_REQUIRED_EVENTS_MISSING'
+    }
     Write-Stage 'APP_EXIT' 'COMPLETE'
   } catch {
     Write-Stage 'APP_EXIT' 'FAILED'
