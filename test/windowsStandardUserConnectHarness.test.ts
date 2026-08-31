@@ -49,6 +49,7 @@ function diagnosticDefinitions(): {
 }
 
 type FixtureScenario = { name: string; enabled: boolean; authorityMode?: string };
+type SystemRootMode = 'missing' | 'mismatched' | 'untrusted' | undefined;
 
 function tunnelFixtureEnvLines(scenario: FixtureScenario): string[] {
   const start = harness.indexOf('function tunnelFixtureEnvLines(');
@@ -59,6 +60,27 @@ function tunnelFixtureEnvLines(scenario: FixtureScenario): string[] {
     tunnelFixtureEnvLines: (value: FixtureScenario) => string[];
   };
   return [...definitions.tunnelFixtureEnvLines(scenario)];
+}
+
+function windowsRootEnvironment(systemRootMode: SystemRootMode): Record<string, string> {
+  const start = harness.indexOf('function windowsRootEnvironment(');
+  const end = harness.indexOf('\n\nconst scenarioAllowlist =', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const definitions = runInNewContext(`${harness.slice(start, end)}\n({ windowsRootEnvironment })`) as {
+    windowsRootEnvironment: (
+      mode: SystemRootMode,
+      systemRoot: string,
+      windir: string,
+      untrustedRoot: string,
+    ) => Record<string, string>;
+  };
+  return { ...definitions.windowsRootEnvironment(
+    systemRootMode,
+    'C:\\canonical-system-root',
+    'C:\\canonical-windir',
+    'D:\\untrusted-fixture',
+  ) };
 }
 
 function fixtureScenarios(): FixtureScenario[] {
@@ -84,6 +106,29 @@ test('the disabled Windows scenario omits its token while enabled scenarios reta
       'PROPR_UI_TUNNEL_TOKEN=root-token-SENTINEL',
     ], scenario.name);
   }
+});
+
+test('the Windows authority fixtures use exact root environment shapes', () => {
+  const missing = windowsRootEnvironment('missing');
+  assert.deepEqual(missing, {});
+  assert.equal(Object.hasOwn(missing, 'SYSTEMROOT'), false);
+  assert.equal(Object.hasOwn(missing, 'WINDIR'), false);
+  assert.deepEqual(windowsRootEnvironment('mismatched'), {
+    SYSTEMROOT: 'C:\\canonical-system-root',
+    WINDIR: 'D:\\untrusted-fixture',
+  });
+  assert.deepEqual(windowsRootEnvironment('untrusted'), {
+    SYSTEMROOT: 'D:\\untrusted-fixture',
+    WINDIR: 'D:\\untrusted-fixture',
+  });
+  assert.deepEqual(windowsRootEnvironment(undefined), {
+    SYSTEMROOT: 'C:\\canonical-system-root',
+    WINDIR: 'C:\\canonical-windir',
+  });
+  assert.match(
+    harness,
+    /\.\.\.windowsRootEnvironment\(\s*scenario\.systemRootMode,\s*process\.env\.SystemRoot,\s*process\.env\.WINDIR,\s*fixture,\s*\),/,
+  );
 });
 
 test('the ordinary-user Windows proof retains native security paths and bounds result-matrix reuse', () => {

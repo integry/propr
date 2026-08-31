@@ -45,6 +45,17 @@ function tunnelFixtureEnvLines({ enabled }) {
   ];
 }
 
+function windowsRootEnvironment(systemRootMode, systemRoot, windir, untrustedRoot) {
+  if (systemRootMode === "missing") return {};
+  if (systemRootMode === "untrusted") {
+    return { SYSTEMROOT: untrustedRoot, WINDIR: untrustedRoot };
+  }
+  return {
+    SYSTEMROOT: systemRoot,
+    WINDIR: systemRootMode === "mismatched" ? untrustedRoot : windir,
+  };
+}
+
 const scenarioAllowlist = Object.freeze([
   "ready", "down", "disabled", "restart-required", "malformed", "oversized", "timeout",
   "identity-mismatch", "secret-sentinel", "api", "path-aba", "authority-malformed", "authority-oversized",
@@ -361,12 +372,12 @@ try {
       env: {
         PATH: dirname(process.execPath),
         PATHEXT: process.env.PATHEXT,
-        ...(scenario.systemRootMode === "missing" ? {} : {
-          SYSTEMROOT: scenario.systemRootMode === "untrusted" ? fixture : process.env.SystemRoot,
-          WINDIR: scenario.systemRootMode === "untrusted" || scenario.systemRootMode === "mismatched"
-            ? fixture
-            : process.env.WINDIR,
-        }),
+        ...windowsRootEnvironment(
+          scenario.systemRootMode,
+          process.env.SystemRoot,
+          process.env.WINDIR,
+          fixture,
+        ),
         COMSPEC: process.env.ComSpec,
         USERPROFILE: process.env.USERPROFILE,
         HOMEDRIVE: process.env.HOMEDRIVE,
