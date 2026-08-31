@@ -228,8 +228,11 @@ function redactSensitiveEventValues(value: string, inputTruncated: boolean): str
 }
 
 function isPrivateEventKey(key: string): boolean {
+  if (PUBLIC_EVENT_KEY_NAMES.has(key)) return false;
   const normalizedKey = key.normalize('NFKC');
-  if (PUBLIC_EVENT_KEY_NAMES.has(normalizedKey)) return false;
+  // Compatibility-equivalent aliases are not public API spellings. Normalize
+  // only after exact matching so they fail closed as private keys.
+  if (PUBLIC_EVENT_KEY_NAMES.has(normalizedKey)) return true;
   const words = normalizedKey
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()

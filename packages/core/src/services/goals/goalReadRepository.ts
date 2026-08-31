@@ -221,14 +221,18 @@ interface NormalizedCreateInput {
 }
 
 function normalizeCreateInput(input: CreateGoalInput): NormalizedCreateInput {
-  const maxActiveTasks = input.maxActiveTasks ?? GOAL_DEFAULT_MAX_ACTIVE_TASKS;
-  if (!Number.isSafeInteger(maxActiveTasks) || maxActiveTasks < GOAL_MIN_MAX_ACTIVE_TASKS
+  const maxActiveTasks: unknown = input.maxActiveTasks === undefined
+    ? GOAL_DEFAULT_MAX_ACTIVE_TASKS
+    : input.maxActiveTasks;
+  if (typeof maxActiveTasks !== 'number'
+    || !Number.isSafeInteger(maxActiveTasks) || maxActiveTasks < GOAL_MIN_MAX_ACTIVE_TASKS
     || maxActiveTasks > GOAL_MAX_MAX_ACTIVE_TASKS) {
     throw new GoalError(GOAL_ERROR_CODES.concurrencyBound, 'maxActiveTasks is outside the supported range', 400);
   }
   const { ultrafixEnabled, ultrafixGoal, ultrafixMaxCycles } = validateUltrafixInput(input);
-  const mergePolicy = input.mergePolicy ?? 'manual';
-  if (!GOAL_MERGE_POLICIES.includes(mergePolicy)) {
+  const mergePolicy: unknown = input.mergePolicy === undefined ? 'manual' : input.mergePolicy;
+  if (typeof mergePolicy !== 'string'
+    || !GOAL_MERGE_POLICIES.includes(mergePolicy as NonNullable<CreateGoalInput['mergePolicy']>)) {
     throw new GoalError(GOAL_ERROR_CODES.validation, 'mergePolicy is invalid', 400);
   }
   return {
@@ -239,7 +243,11 @@ function normalizeCreateInput(input: CreateGoalInput): NormalizedCreateInput {
     agent: boundedText(input.agent, 'agent') as string,
     requestedModel: boundedText(input.requestedModel, 'requestedModel') as string,
     effectiveModel: boundedText(input.effectiveModel ?? input.requestedModel, 'effectiveModel') as string,
-    maxActiveTasks, ultrafixEnabled, ultrafixGoal, ultrafixMaxCycles, mergePolicy,
+    maxActiveTasks,
+    ultrafixEnabled,
+    ultrafixGoal,
+    ultrafixMaxCycles,
+    mergePolicy: mergePolicy as NonNullable<CreateGoalInput['mergePolicy']>,
   };
 }
 

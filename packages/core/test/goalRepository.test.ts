@@ -689,6 +689,39 @@ describe('GoalRepository', () => {
     );
   });
 
+  test('createGoal rejects null defaults before durable or idempotency mutation', async () => {
+    const baseInput = {
+      ownerUserId: 'user-1',
+      repository: 'octo/repo',
+      objective: 'Reject invalid runtime input',
+      agent: 'claude',
+      requestedModel: 'claude-opus-4-8',
+    };
+    const invalidInputs = [
+      {
+        input: { ...baseInput, maxActiveTasks: null, idempotencyKey: 'null-max-active-tasks' },
+        code: 'goal_concurrency_bound_exceeded',
+      },
+      {
+        input: { ...baseInput, mergePolicy: null, idempotencyKey: 'null-merge-policy' },
+        code: 'goal_validation_error',
+      },
+    ];
+
+    for (const { input, code } of invalidInputs) {
+      await assert.rejects(
+        repo.createGoal(input as unknown as Parameters<GoalRepository['createGoal']>[0]),
+        (error: GoalError) => error.status === 400 && error.code === code
+      );
+    }
+
+    assert.equal(Number((await database('goals').count({ count: '*' }).first())?.count), 0);
+    assert.equal(
+      Number((await database('goal_idempotency_keys').count({ count: '*' }).first())?.count),
+      0
+    );
+  });
+
   test('concurrent create retries return one original response', async () => {
     const [first, retry] = await Promise.all([
       seedGoal({ idempotencyKey: 'concurrent-create' }),

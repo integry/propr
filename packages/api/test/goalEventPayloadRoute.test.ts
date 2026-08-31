@@ -100,10 +100,8 @@ after(async () => {
 test('event route projects poisoned nested payloads without mutating persistence', async () => {
   const repo = new GoalRepository(database);
   const goal = await repo.createGoal({
-    ownerUserId: 'user-1',
-    repository: 'octo/repo',
-    objective: 'Ship safely',
-    agent: 'claude',
+    ownerUserId: 'user-1', repository: 'octo/repo',
+    objective: 'Ship safely', agent: 'claude',
     requestedModel: 'claude-opus-4-8',
   });
   const lease = await repo.claimLease(goal.goalId, 'api-test-controller', 60_000);
@@ -113,9 +111,9 @@ test('event route projects poisoned nested payloads without mutating persistence
     requestedModel: 'claude-opus-4-8',
     repositoryOwner: 'integry',
     prNumber: 2018,
-    filePath: 'src/app.ts',
-    requestedBy: 'private-requesting-actor',
+    filePath: 'src/app.ts', requestedBy: 'private-requesting-actor',
     requestedAt: '2026-08-31T10:00:00.000Z',
+    'ｒｅｐｏｓｉｔｏｒｙＯｗｎｅｒ': 'top-u1', 'ｒｅｑｕｅｓｔｅｄＭｏｄｅｌ': 'top-u2', 'ｒｅｑｕｅｓｔｅｄＡｔ': 'top-u3', 'ｆｉｌｅＰａｔｈ': 'top-u4',
     owner: 'exact-private-owner',
     ownerUserId: 'private-owner-user', leaseOwner: 'private-lease-owner',
     controllerOwner: 'private-controller-owner',
@@ -153,9 +151,9 @@ test('event route projects poisoned nested payloads without mutating persistence
       workerId: 'private-nested-worker',
       rawTurnId: 'private-nested-turn',
       requestedModel: 'claude-opus-4-8',
-      filePath: 'src/nested.ts',
-      requestedBy: 'private-nested-requesting-actor',
+      filePath: 'src/nested.ts', requestedBy: 'private-nested-requesting-actor',
       requestedAt: '2026-08-31T10:01:00.000Z',
+      'ｒｅｐｏｓｉｔｏｒｙＯｗｎｅｒ': 'nested-u1', 'ｒｅｑｕｅｓｔｅｄＭｏｄｅｌ': 'nested-u2', 'ｒｅｑｕｅｓｔｅｄＡｔ': 'nested-u3', 'ｆｉｌｅＰａｔｈ': 'nested-u4',
       eventLabel: 'safe nested event',
     }],
     auditTrail: Array.from({ length: 120 }, (_, index) => ({ index, label: `safe-${index}` })),
@@ -222,6 +220,7 @@ test('event route projects poisoned nested payloads without mutating persistence
     'claimToken', 'request', 'response', 'runtime', 'containerId', 'worktreePath',
     'configPath', 'credentialPath', 'env', 'GITHUB_TOKEN', 'SAFE_SETTING', 'mounts',
     'cwd', 'hostPath', 'dockerHost', 'workspacePath', 'workerId', 'turnId', 'rawTurnId',
+    'ｒｅｐｏｓｉｔｏｒｙＯｗｎｅｒ', 'ｒｅｑｕｅｓｔｅｄＭｏｄｅｌ', 'ｒｅｑｕｅｓｔｅｄＡｔ', 'ｆｉｌｅＰａｔｈ',
   ]) {
     assert.equal(serialized.includes(`"${forbiddenKey}"`), false, forbiddenKey);
   }
@@ -240,6 +239,7 @@ test('event route projects poisoned nested payloads without mutating persistence
     '/srv/propr/private-nested-cwd', '/var/lib/propr/private-nested-host-path',
     'tcp://private-nested-host:2375', '/workspaces/private-nested-workspace',
     'private-nested-worker', 'private-nested-turn',
+    'top-u1', 'top-u2', 'top-u3', 'top-u4', 'nested-u1', 'nested-u2', 'nested-u3', 'nested-u4',
   ]) {
     assert.equal(serialized.includes(forbiddenLiteral), false, forbiddenLiteral);
   }
