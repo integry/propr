@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
+import {
+  interpretWindowsHostedAssumptionResults,
+  WindowsNativeStageError,
+} from '../packages/cli/src/connectWindowsAuthority.js';
 
 const harness = readFileSync('scripts/verify-windows-standard-user-connect.mjs', 'utf8');
 const processMock = readFileSync('test/fixtures/windowsConnectProcessMock.mjs', 'utf8');
@@ -18,7 +22,11 @@ function diagnosticDefinitions(): {
     stage: string,
     failureStatus: { status?: unknown; reasonCodes?: unknown } | null,
     nativeStage: string | null,
-    assumptions: { extraStdio: string | null; alreadyContained: boolean | null; nestedJob: string | null },
+    assumptions: {
+      extraStdio: string | null;
+      alreadyContained: boolean | 'failed' | 'timeout' | null;
+      nestedJob: string | null;
+    },
   ) => Record<string, unknown>;
 } {
   const start = harness.indexOf('const scenarioAllowlist =');
@@ -152,6 +160,20 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
   });
   assert.equal(JSON.stringify(diagnostic).includes('SENTINEL'), false);
 
+  assert.deepEqual(JSON.parse(JSON.stringify(definitions.createFailureDiagnostic(
+    'ready', 'native-assumptions', null, null,
+    { extraStdio: 'timeout', alreadyContained: 'failed', nestedJob: 'timeout' },
+  ))), {
+    scenario: 'ready',
+    stage: 'native-assumptions',
+    nativeStage: null,
+    status: null,
+    reasonCodes: [],
+    extraStdio: 'timeout',
+    alreadyContained: 'failed',
+    nestedJob: 'timeout',
+  });
+
   const rejected = definitions.createFailureDiagnostic(
     'private-scenario-SENTINEL',
     'raw-output-SENTINEL',
@@ -185,14 +207,79 @@ test('the hosted proof measures both rejected assumptions and production uses a 
   assert.match(harness, /runWindowsHostedAssumptionProbe\(assumptionFd\)/);
   assert.match(harness, /extra-stdio=\$\{hostedAssumptions\.extraStdio\}/);
   assert.match(harness, /nested-job=\$\{hostedAssumptions\.nestedJob\}/);
+  assert.match(harness, /ready=standard-handle-passed/);
 
   const productionSourceStart = windowsAuthority.indexOf('export const WINDOWS_INSPECTION_SOURCE');
-  const productionSourceEnd = windowsAuthority.indexOf('const WINDOWS_HOSTED_ASSUMPTION_SOURCE', productionSourceStart);
+  const productionSourceEnd = windowsAuthority.indexOf('const WINDOWS_EXTRA_STDIO_ASSUMPTION_SOURCE', productionSourceStart);
   const productionSource = windowsAuthority.slice(productionSourceStart, productionSourceEnd);
   assert.match(productionSource, /GetStdHandle\(-10\)/);
   assert.doesNotMatch(productionSource, /_get_osfhandle|AssignProcessToJobObject|CreateJobObject|Start-Process|CreateProcess/);
   assert.match(windowsAuthority, /stdio: extraFd === undefined \? \[stdin, "pipe", "pipe"\]/);
   assert.match(windowsAuthority, /WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false/);
+});
+
+test('hosted assumptions isolate fd3, containment, and sacrificial nested-job outcomes', () => {
+  const result = (
+    status: number | null,
+    stdout = '',
+    error?: NodeJS.ErrnoException,
+  ) => ({ status, signal: null, error, stdout: Buffer.from(stdout), stderr: Buffer.alloc(0) });
+  const timeout = () => result(null, '', Object.assign(new Error('redacted'), { code: 'ETIMEDOUT' }));
+
+  assert.deepEqual(interpretWindowsHostedAssumptionResults(
+    timeout(),
+    result(0, '{"version":1,"alreadyContained":false}'),
+    result(0),
+  ), { version: 1, extraStdio: 'timeout', alreadyContained: false, nestedJob: 'succeeded' });
+  assert.deepEqual(interpretWindowsHostedAssumptionResults(
+    result(81),
+    timeout(),
+    result(83),
+  ), { version: 1, extraStdio: 'unusable', alreadyContained: 'timeout', nestedJob: 'failed' });
+  assert.deepEqual(interpretWindowsHostedAssumptionResults(
+    result(0, '{"version":1,"extraStdio":"usable"}'),
+    result(82),
+    timeout(),
+  ), { version: 1, extraStdio: 'usable', alreadyContained: 'failed', nestedJob: 'timeout' });
+
+  assert.match(windowsAuthority, /WINDOWS_HOSTED_ASSUMPTION_TIMEOUT_MS = 15_000/);
+  assert.match(windowsAuthority, /timeout = WINDOWS_INSPECTION_TIMEOUT_MS/);
+  assert.match(windowsAuthority, /WINDOWS_EXTRA_STDIO_ASSUMPTION_SOURCE/);
+  assert.match(windowsAuthority, /WINDOWS_JOB_CONTAINMENT_ASSUMPTION_SOURCE/);
+  assert.match(windowsAuthority, /WINDOWS_NESTED_JOB_ASSUMPTION_SOURCE/);
+  const nestedSourceStart = windowsAuthority.indexOf('const WINDOWS_NESTED_JOB_ASSUMPTION_SOURCE');
+  const nestedSourceEnd = windowsAuthority.indexOf('\n`;\n', nestedSourceStart);
+  const nestedSource = windowsAuthority.slice(nestedSourceStart, nestedSourceEnd);
+  assert.match(nestedSource, /AssignProcessToJobObject/);
+  assert.doesNotMatch(nestedSource, /ConvertTo-Json|Console\]::Out/);
+});
+
+test('legacy probe outcomes continue to the production standard-handle proof while infrastructure fails closed', () => {
+  const result = (error?: NodeJS.ErrnoException) => ({
+    status: error ? null : 0,
+    signal: null,
+    error,
+    stdout: Buffer.from('{"version":1,"extraStdio":"unusable"}'),
+    stderr: Buffer.alloc(0),
+  });
+  assert.throws(
+    () => interpretWindowsHostedAssumptionResults(
+      result(Object.assign(new Error('redacted'), { code: 'ENOENT' })),
+      { ...result(), stdout: Buffer.from('{"version":1,"alreadyContained":true}') },
+      { ...result(), stdout: Buffer.alloc(0) },
+    ),
+    (error) => error instanceof WindowsNativeStageError && error.stage === 'spawn:error',
+  );
+
+  const assumptionCall = harness.indexOf('runWindowsHostedAssumptionProbe(assumptionFd)');
+  const productionMatrix = harness.indexOf('for (const scenario of cases)', assumptionCall);
+  const productionSpawn = harness.indexOf('const result = spawnSync(process.execPath', productionMatrix);
+  assert.ok(assumptionCall < productionMatrix && productionMatrix < productionSpawn);
+  const probeStart = windowsAuthority.indexOf('export function runWindowsHostedAssumptionProbe');
+  const probeEnd = windowsAuthority.indexOf('\n}\n\nexport function windowsInspectionEntryKind', probeStart);
+  const probe = windowsAuthority.slice(probeStart, probeEnd);
+  assert.match(probe, /const executable = resolveWindowsPowerShell\(\);/);
+  assert.doesNotMatch(probe, /catch\s*\{/);
 });
 
 test('the hostile path ABA remains replaced through validation and is rejected as INVALID_ROOT', () => {

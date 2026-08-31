@@ -107,9 +107,12 @@ function createFailureDiagnostic(scenario, stage, failureStatus, nativeStage, as
   const codes = failureStatus?.reasonCodes ?? [];
   if (!scenarioNames.has(scenario) || !assertionStages.has(stage) || !diagnosticStatuses.has(status)
     || (nativeStage !== null && !nativeStages.has(nativeStage))
-    || (assumptions.extraStdio !== null && assumptions.extraStdio !== "usable" && assumptions.extraStdio !== "unusable")
-    || (assumptions.nestedJob !== null && assumptions.nestedJob !== "succeeded" && assumptions.nestedJob !== "failed")
-    || (assumptions.alreadyContained !== null && typeof assumptions.alreadyContained !== "boolean")
+    || (assumptions.extraStdio !== null && assumptions.extraStdio !== "usable"
+      && assumptions.extraStdio !== "unusable" && assumptions.extraStdio !== "timeout")
+    || (assumptions.nestedJob !== null && assumptions.nestedJob !== "succeeded"
+      && assumptions.nestedJob !== "failed" && assumptions.nestedJob !== "timeout")
+    || (assumptions.alreadyContained !== null && typeof assumptions.alreadyContained !== "boolean"
+      && assumptions.alreadyContained !== "failed" && assumptions.alreadyContained !== "timeout")
     || !Array.isArray(codes) || codes.length > reasonCodes.size
     || new Set(codes).size !== codes.length || codes.some((code) => !reasonCodes.has(code))) {
     return {
@@ -394,7 +397,7 @@ try {
   const fail = [...api.stdout.matchAll(/^# fail (\d+)$/gm)].at(-1);
   assert.ok(pass && Number(pass[1]) > 0, "API discovery tests did not report passes");
   assert.equal(Number(fail?.[1]), 0, "API discovery tests reported failures");
-  process.stdout.write(`Windows ordinary-user discovery proof: cli=${cases.length} api=${pass[1]} authority=${authorityFailures.length} extra-stdio=${hostedAssumptions.extraStdio} contained=${hostedAssumptions.alreadyContained} nested-job=${hostedAssumptions.nestedJob} user=${actualUser}\n`);
+  process.stdout.write(`Windows ordinary-user discovery proof: ready=standard-handle-passed cli=${cases.length} api=${pass[1]} authority=${authorityFailures.length} extra-stdio=${hostedAssumptions.extraStdio} contained=${hostedAssumptions.alreadyContained} nested-job=${hostedAssumptions.nestedJob} user=${actualUser}\n`);
 } catch {
   const diagnostic = createFailureDiagnostic(
     currentScenario, currentStage, failureStatus, currentNativeStage, hostedAssumptions,

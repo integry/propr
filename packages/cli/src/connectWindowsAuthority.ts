@@ -15,6 +15,9 @@ import type {
 } from "./connectRootAuthority.js";
 
 const WINDOWS_INSPECTION_TIMEOUT_MS = 5_000;
+// These diagnostic-only probes pay the hosted Windows PowerShell cold-start
+// cost independently. This does not alter the production inspection bound.
+const WINDOWS_HOSTED_ASSUMPTION_TIMEOUT_MS = 15_000;
 const WINDOWS_INSPECTION_MAX_BYTES = 128 * 1024;
 const WINDOWS_INSPECTION_MAX_ENTRIES = 32;
 const GLOBAL_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
@@ -162,33 +165,61 @@ try {
 }catch{exit $stage}
 `;
 
-const WINDOWS_HOSTED_ASSUMPTION_SOURCE = String.raw`
+const WINDOWS_EXTRA_STDIO_ASSUMPTION_SOURCE = String.raw`
 $ErrorActionPreference='Stop';Set-StrictMode -Version 2
 try {
-  $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName('ProprHostedAssumptionAssembly')),[Reflection.Emit.AssemblyBuilderAccess]::Run)
-  $module=$assembly.DefineDynamicModule('ProprHostedAssumptionModule');$builder=$module.DefineType('ProprHostedAssumption',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
+  $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName('ProprExtraStdioAssumptionAssembly')),[Reflection.Emit.AssemblyBuilderAccess]::Run)
+  $module=$assembly.DefineDynamicModule('ProprExtraStdioAssumptionModule');$builder=$module.DefineType('ProprExtraStdioAssumption',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
   function Add-NativeMethod($name,$library,$returnType,[Type[]]$parameters,$convention){$method=$builder.DefinePInvokeMethod($name,$library,[Reflection.MethodAttributes]'Public,Static,PinvokeImpl',[Reflection.CallingConventions]::Standard,$returnType,$parameters,$convention,[Runtime.InteropServices.CharSet]::Unicode);$method.SetImplementationFlags($method.GetMethodImplementationFlags()-bor [Reflection.MethodImplAttributes]::PreserveSig)}
-  $winapi=[Runtime.InteropServices.CallingConvention]::Winapi;$cdecl=[Runtime.InteropServices.CallingConvention]::Cdecl;$intptr=[IntPtr];$boolRef=([bool]).MakeByRefType()
+  $winapi=[Runtime.InteropServices.CallingConvention]::Winapi;$cdecl=[Runtime.InteropServices.CallingConvention]::Cdecl;$intptr=[IntPtr]
   Add-NativeMethod '_get_osfhandle' 'msvcrt.dll' $intptr @([int]) $cdecl
   Add-NativeMethod 'GetFileInformationByHandle' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
-  Add-NativeMethod 'CreateJobObject' 'kernel32.dll' $intptr @($intptr,[string]) $winapi
-  Add-NativeMethod 'SetInformationJobObject' 'kernel32.dll' ([bool]) @($intptr,[int],$intptr,[uint32]) $winapi
-  Add-NativeMethod 'AssignProcessToJobObject' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
+  $null=$builder.CreateType()
+  $fdHandle=[ProprExtraStdioAssumption]::_get_osfhandle(3);$info=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
+  $extraStdio=if($fdHandle-ne [IntPtr](-1)-and $fdHandle-ne [IntPtr](-2)-and $fdHandle-ne [IntPtr]::Zero-and [ProprExtraStdioAssumption]::GetFileInformationByHandle($fdHandle,$info)){'usable'}else{'unusable'}
+  $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;extraStdio=$extraStdio}) -Compress
+  [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false,$true);[Console]::Out.Write($json);exit 0
+}catch{exit 81}
+`;
+
+const WINDOWS_JOB_CONTAINMENT_ASSUMPTION_SOURCE = String.raw`
+$ErrorActionPreference='Stop';Set-StrictMode -Version 2
+try {
+  $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName('ProprJobContainmentAssumptionAssembly')),[Reflection.Emit.AssemblyBuilderAccess]::Run)
+  $module=$assembly.DefineDynamicModule('ProprJobContainmentAssumptionModule');$builder=$module.DefineType('ProprJobContainmentAssumption',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
+  function Add-NativeMethod($name,$library,$returnType,[Type[]]$parameters,$convention){$method=$builder.DefinePInvokeMethod($name,$library,[Reflection.MethodAttributes]'Public,Static,PinvokeImpl',[Reflection.CallingConventions]::Standard,$returnType,$parameters,$convention,[Runtime.InteropServices.CharSet]::Unicode);$method.SetImplementationFlags($method.GetMethodImplementationFlags()-bor [Reflection.MethodImplAttributes]::PreserveSig)}
+  $winapi=[Runtime.InteropServices.CallingConvention]::Winapi;$intptr=[IntPtr];$boolRef=([bool]).MakeByRefType()
   Add-NativeMethod 'IsProcessInJob' 'kernel32.dll' ([bool]) @($intptr,$intptr,$boolRef) $winapi
   Add-NativeMethod 'GetCurrentProcess' 'kernel32.dll' $intptr @() $winapi
   $null=$builder.CreateType()
-  $fdHandle=[ProprHostedAssumption]::_get_osfhandle(3);$info=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-  $extraStdio=if($fdHandle-ne [IntPtr](-1)-and $fdHandle-ne [IntPtr](-2)-and $fdHandle-ne [IntPtr]::Zero-and [ProprHostedAssumption]::GetFileInformationByHandle($fdHandle,$info)){'usable'}else{'unusable'}
   $contained=$false
-  if(-not [ProprHostedAssumption]::IsProcessInJob([ProprHostedAssumption]::GetCurrentProcess(),[IntPtr]::Zero,[ref]$contained)){exit 81}
-  $job=[ProprHostedAssumption]::CreateJobObject([IntPtr]::Zero,$null);if($job-eq [IntPtr]::Zero){exit 81}
+  if(-not [ProprJobContainmentAssumption]::IsProcessInJob([ProprJobContainmentAssumption]::GetCurrentProcess(),[IntPtr]::Zero,[ref]$contained)){exit 82}
+  $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;alreadyContained=[bool]$contained}) -Compress
+  [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false,$true);[Console]::Out.Write($json);exit 0
+}catch{exit 82}
+`;
+
+// This process is intentionally sacrificial: no other observation depends on
+// it producing JSON after assigning itself to a kill-on-close job.
+const WINDOWS_NESTED_JOB_ASSUMPTION_SOURCE = String.raw`
+$ErrorActionPreference='Stop';Set-StrictMode -Version 2
+try {
+  $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName('ProprNestedJobAssumptionAssembly')),[Reflection.Emit.AssemblyBuilderAccess]::Run)
+  $module=$assembly.DefineDynamicModule('ProprNestedJobAssumptionModule');$builder=$module.DefineType('ProprNestedJobAssumption',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
+  function Add-NativeMethod($name,$library,$returnType,[Type[]]$parameters,$convention){$method=$builder.DefinePInvokeMethod($name,$library,[Reflection.MethodAttributes]'Public,Static,PinvokeImpl',[Reflection.CallingConventions]::Standard,$returnType,$parameters,$convention,[Runtime.InteropServices.CharSet]::Unicode);$method.SetImplementationFlags($method.GetMethodImplementationFlags()-bor [Reflection.MethodImplAttributes]::PreserveSig)}
+  $winapi=[Runtime.InteropServices.CallingConvention]::Winapi;$intptr=[IntPtr]
+  Add-NativeMethod 'CreateJobObject' 'kernel32.dll' $intptr @($intptr,[string]) $winapi
+  Add-NativeMethod 'SetInformationJobObject' 'kernel32.dll' ([bool]) @($intptr,[int],$intptr,[uint32]) $winapi
+  Add-NativeMethod 'AssignProcessToJobObject' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
+  Add-NativeMethod 'GetCurrentProcess' 'kernel32.dll' $intptr @() $winapi
+  $null=$builder.CreateType()
+  $job=[ProprNestedJobAssumption]::CreateJobObject([IntPtr]::Zero,$null);if($job-eq [IntPtr]::Zero){exit 83}
   $jobInfo=[Runtime.InteropServices.Marshal]::AllocHGlobal(144);for($offset=0;$offset-lt 144;$offset++){[Runtime.InteropServices.Marshal]::WriteByte($jobInfo,$offset,0)}
   [Runtime.InteropServices.Marshal]::WriteInt32($jobInfo,16,0x2000)
-  if(-not [ProprHostedAssumption]::SetInformationJobObject($job,9,$jobInfo,144)){exit 81}
-  $nested=if([ProprHostedAssumption]::AssignProcessToJobObject($job,[ProprHostedAssumption]::GetCurrentProcess())){'succeeded'}else{'failed'}
-  $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;extraStdio=$extraStdio;alreadyContained=[bool]$contained;nestedJob=$nested}) -Compress
-  [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false,$true);[Console]::Out.Write($json);exit 0
-}catch{exit 81}
+  if(-not [ProprNestedJobAssumption]::SetInformationJobObject($job,9,$jobInfo,144)){exit 83}
+  if(-not [ProprNestedJobAssumption]::AssignProcessToJobObject($job,[ProprNestedJobAssumption]::GetCurrentProcess())){exit 83}
+  exit 0
+}catch{exit 83}
 `;
 
 interface HeldExecutable {
@@ -201,9 +232,9 @@ interface HeldExecutable {
 
 export interface WindowsHostedAssumptionProof {
   readonly version: 1;
-  readonly extraStdio: "usable" | "unusable";
-  readonly alreadyContained: boolean;
-  readonly nestedJob: "succeeded" | "failed";
+  readonly extraStdio: "usable" | "unusable" | "timeout";
+  readonly alreadyContained: boolean | "failed" | "timeout";
+  readonly nestedJob: "succeeded" | "failed" | "timeout";
 }
 
 function sameWindowsPath(left: string, right: string): boolean {
@@ -326,7 +357,13 @@ function inspectionSource(target: WindowsAuthorityTarget, index: number): string
     .replace("__PROPR_AUTHORITY_KIND__", target.kind);
 }
 
-function spawnPowerShell(executable: HeldExecutable, source: string, stdin: "ignore" | number, extraFd?: number) {
+function spawnPowerShell(
+  executable: HeldExecutable,
+  source: string,
+  stdin: "ignore" | number,
+  extraFd?: number,
+  timeout = WINDOWS_INSPECTION_TIMEOUT_MS,
+) {
   const encoded = Buffer.from(source, "utf16le").toString("base64");
   if (encoded.length > 28_000) throw stageError("spawn:create");
   try {
@@ -338,12 +375,81 @@ function spawnPowerShell(executable: HeldExecutable, source: string, stdin: "ign
       encoding: "buffer",
       cwd: win32.dirname(executable.path),
       env: { SystemRoot: executable.systemRoot, WINDIR: executable.systemRoot },
-      timeout: WINDOWS_INSPECTION_TIMEOUT_MS,
+      timeout,
       killSignal: "SIGKILL",
       maxBuffer: WINDOWS_INSPECTION_MAX_BYTES,
       stdio: extraFd === undefined ? [stdin, "pipe", "pipe"] : [stdin, "pipe", "pipe", extraFd],
     });
   } catch { throw stageError("spawn:create"); }
+}
+
+interface HostedProbeProcessResult {
+  readonly error?: Error;
+  readonly signal: NodeJS.Signals | null;
+  readonly status: number | null;
+  readonly stdout?: Buffer | string | null;
+  readonly stderr?: Buffer | string | null;
+}
+
+function byteLength(value: Buffer | string | null | undefined): number {
+  return typeof value === "string" ? Buffer.byteLength(value, "utf8") : (value?.byteLength ?? 0);
+}
+
+function hostedProbeDisposition(result: HostedProbeProcessResult): "complete" | "failed" | "timeout" {
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    if (code === "ETIMEDOUT") return "timeout";
+    if (code === "ENOBUFS") return "failed";
+    throw stageError("spawn:error");
+  }
+  if (result.signal || result.status !== 0 || byteLength(result.stderr) !== 0) return "failed";
+  return "complete";
+}
+
+function hostedProbeDocument(result: HostedProbeProcessResult): Record<string, unknown> | null {
+  const bytes = typeof result.stdout === "string"
+    ? Buffer.from(result.stdout, "utf8")
+    : (result.stdout ?? Buffer.alloc(0));
+  if (bytes.byteLength === 0 || bytes.byteLength > WINDOWS_INSPECTION_MAX_BYTES) return null;
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return null; }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (JSON.stringify(parsed) !== text || !parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch { return null; }
+}
+
+export function interpretWindowsHostedAssumptionResults(
+  extraStdioResult: HostedProbeProcessResult,
+  containmentResult: HostedProbeProcessResult,
+  nestedJobResult: HostedProbeProcessResult,
+): WindowsHostedAssumptionProof {
+  const extraDisposition = hostedProbeDisposition(extraStdioResult);
+  const containmentDisposition = hostedProbeDisposition(containmentResult);
+  const nestedDisposition = hostedProbeDisposition(nestedJobResult);
+  const extraDocument = extraDisposition === "complete" ? hostedProbeDocument(extraStdioResult) : null;
+  const containmentDocument = containmentDisposition === "complete" ? hostedProbeDocument(containmentResult) : null;
+  const extraStdio = extraDisposition === "timeout"
+    ? "timeout"
+    : (extraDocument
+      && Object.keys(extraDocument).sort().join(",") === "extraStdio,version"
+      && extraDocument.version === 1
+      && (extraDocument.extraStdio === "usable" || extraDocument.extraStdio === "unusable")
+      ? extraDocument.extraStdio
+      : "unusable");
+  const alreadyContained = containmentDisposition === "timeout"
+    ? "timeout"
+    : (containmentDocument
+      && Object.keys(containmentDocument).sort().join(",") === "alreadyContained,version"
+      && containmentDocument.version === 1
+      && typeof containmentDocument.alreadyContained === "boolean"
+      ? containmentDocument.alreadyContained
+      : "failed");
+  const nestedJob = nestedDisposition === "timeout"
+    ? "timeout"
+    : (nestedDisposition === "complete" && byteLength(nestedJobResult.stdout) === 0 ? "succeeded" : "failed");
+  return { version: 1, extraStdio, alreadyContained, nestedJob };
 }
 
 function assertSpawnSuccess(result: ReturnType<typeof spawnSync>): void {
@@ -407,24 +513,21 @@ export function runWindowsReadOnlyInspection(
 export function runWindowsHostedAssumptionProbe(targetFd: number): WindowsHostedAssumptionProof {
   const executable = resolveWindowsPowerShell();
   try {
-    const result = spawnPowerShell(executable, WINDOWS_HOSTED_ASSUMPTION_SOURCE, "ignore", targetFd);
-    assertSpawnSuccess(result);
-    const text = strictUtf8(result.stdout ?? Buffer.alloc(0));
-    let parsed: unknown;
-    try { parsed = JSON.parse(text); } catch { throw stageError("parent:json-shape"); }
-    if (JSON.stringify(parsed) !== text || !parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw stageError("parent:json-shape");
-    }
-    const proof = parsed as Record<string, unknown>;
-    if (Object.keys(proof).sort().join(",") !== "alreadyContained,extraStdio,nestedJob,version"
-      || proof.version !== 1
-      || (proof.extraStdio !== "usable" && proof.extraStdio !== "unusable")
-      || typeof proof.alreadyContained !== "boolean"
-      || (proof.nestedJob !== "succeeded" && proof.nestedJob !== "failed")) {
-      throw stageError("parent:json-shape");
-    }
+    const extraStdioResult = spawnPowerShell(
+      executable, WINDOWS_EXTRA_STDIO_ASSUMPTION_SOURCE, "ignore", targetFd,
+      WINDOWS_HOSTED_ASSUMPTION_TIMEOUT_MS,
+    );
+    const containmentResult = spawnPowerShell(
+      executable, WINDOWS_JOB_CONTAINMENT_ASSUMPTION_SOURCE, "ignore", undefined,
+      WINDOWS_HOSTED_ASSUMPTION_TIMEOUT_MS,
+    );
+    const nestedJobResult = spawnPowerShell(
+      executable, WINDOWS_NESTED_JOB_ASSUMPTION_SOURCE, "ignore", undefined,
+      WINDOWS_HOSTED_ASSUMPTION_TIMEOUT_MS,
+    );
+    const proof = interpretWindowsHostedAssumptionResults(extraStdioResult, containmentResult, nestedJobResult);
     revalidateWindowsPowerShell(executable);
-    return proof as unknown as WindowsHostedAssumptionProof;
+    return proof;
   } finally {
     closeSync(executable.fd);
   }
