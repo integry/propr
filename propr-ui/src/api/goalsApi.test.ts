@@ -242,15 +242,26 @@ describe('goalsApi', () => {
 
   it('strictly reads detail and sends keyed, versioned lifecycle mutations', async () => {
     fetchMock
-      .mockResolvedValueOnce(jsonResponse(wireDetail))
+      .mockResolvedValueOnce(jsonResponse({ ...wireDetail, goal: { ...wireDetail.goal, goalId: 'goal/special' } }))
       .mockResolvedValueOnce(jsonResponse({ goal: { ...wireGoal, goalId: 'goal/special', state: 'pausing', version: 4 } }));
-    await expect(goalsApi.getGoal('goal/special')).resolves.toEqual(wireDetail);
+    await expect(goalsApi.getGoal('goal/special')).resolves.toEqual({
+      ...wireDetail,
+      goal: { ...wireDetail.goal, goalId: 'goal/special' },
+    });
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/goals/goal%2Fspecial', { credentials: 'include', signal: undefined });
     await expect(goalsApi.pauseGoal('goal/special', 3, 'pause-key')).resolves.toMatchObject({ state: 'pausing', version: 4 });
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/goals/goal%2Fspecial/pause', expect.objectContaining({
       method: 'POST', body: JSON.stringify({ expectedVersion: 3 }),
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'pause-key' },
     }));
+  });
+
+  it('rejects a detail response for another goal before exposing it to the UI', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...wireDetail, goal: { ...wireDetail.goal, goalId: 'goal-2' } }));
+
+    const error = await goalsApi.getGoal('goal-1').catch(caught => caught);
+    expect(error).toBeInstanceOf(goalsApi.GoalContractError);
+    expect(error).toHaveProperty('message', expect.stringContaining('response.goal.goalId'));
   });
 
   it('rejects a lifecycle mutation response for another goal before it can be committed', async () => {

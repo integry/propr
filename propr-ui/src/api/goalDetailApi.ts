@@ -15,7 +15,9 @@ export const getGoal = async (goalId: string, options: GoalRequestOptions = {}):
     credentials: 'include', signal: options.signal,
   });
   await handleGoalResponse(response);
-  return decodeGoalDetail(await response.json() as unknown);
+  const detail = decodeGoalDetail(await response.json() as unknown);
+  if (detail.goal.goalId !== goalId) throw new GoalContractError('response.goal.goalId', `the requested goal ${goalId}`);
+  return detail;
 };
 
 export interface GetGoalEventsOptions extends GoalRequestOptions {
