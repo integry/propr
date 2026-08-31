@@ -1,21 +1,19 @@
 import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, open, mkdtemp, readdir, readlink, rm } from 'node:fs/promises';
+import { lstat, open, mkdtemp, readdir, readlink, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 
 const execFile = promisify(execFileCallback);
-const desktopRoot = fileURLToPath(new URL('..', import.meta.url));
-const sevenZip = process.platform === 'win32'
-  ? join(desktopRoot, '..', '..', 'node_modules', 'electron-winstaller', 'vendor',
-      process.arch === 'arm64' ? '7z-arm64.exe' : '7z-x64.exe')
-  : '7z';
 const heldDmgArtifacts = new WeakMap();
 const HDIUTIL = '/usr/bin/hdiutil';
+const MSIEXTRACT = '/usr/bin/msiextract';
+const KERNEL_MSIEXEC = String.raw`\\?\GLOBALROOT\SystemRoot\System32\msiexec.exe`;
+const KERNEL_TASKKILL = String.raw`\\?\GLOBALROOT\SystemRoot\System32\taskkill.exe`;
 const EXECUTABLE_NAME = 'propr-desktop';
 const WINDOWS_AUTHORITY_EXECUTABLE = 'lib/net45/resources/windows-authority/propr-windows-authority.exe';
 const WINDOWS_AUTHORITY_MANIFEST = 'lib/net45/resources/windows-authority/propr-windows-authority.manifest.json';
@@ -84,6 +82,14 @@ const MAX_ZIP_ENTRY_METADATA_BYTES = 1024 * 1024;
 const MAX_ZIP_ENTRIES = 100_000;
 const MAX_ZIP_SYMLINK_BYTES = 1024;
 const MAX_ZIP_SYMLINKS = 32;
+const MAX_MSI_FILES = 20_000;
+const MAX_MSI_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_MSI_DEPTH = 32;
+const MAX_MSI_PATH_BYTES = 32 * 1024;
+const MSI_EXTRACT_TIMEOUT_MS = 10 * 60_000;
+const MSI_EXTRACT_OUTPUT_BYTES = 8 * 1024 * 1024;
+const MSI_CANONICAL_APPLICATION = `ProPR Desktop/${EXECUTABLE_NAME}.exe`;
+const MSI_ADMIN_ROOT_PREFIX = 'Program Files 64';
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 const EXPECTED_PACKAGE_ARCHITECTURE = {
   deb: { x64: 'amd64', arm64: 'arm64' },
@@ -182,45 +188,314 @@ const assertSupportedSquirrelBootstrap = (inspection, artifact) => {
   }
 };
 
-const inspectMachineMsi = async (path, platform, arch) => {
-  if (platform !== 'win32') throw new Error(`${path} machine installer is only valid for Windows targets`);
-  const header = await readPrefix(path);
-  if (header.length < 512 || header.subarray(0, 8).toString('hex') !== 'd0cf11e0a1b11ae1') {
-    throw new Error(`${path} is not a compound-file Windows Installer package`);
+const msiInspectionFailure = (code, count) => new Error(
+  `MSI_INSPECTION_FAILED:${code}${count === undefined ? '' : ` count=${Math.min(count, MAX_MSI_FILES + 1)}`}`,
+);
+
+const sameFileIdentity = (left, right) => left.dev === right.dev && left.ino === right.ino
+  && left.size === right.size && left.mode === right.mode && left.nlink === right.nlink;
+
+const normalWindowsSystemTool = (path, name) => {
+  const candidate = /^\\\\\?\\[A-Za-z]:\\/.test(path) ? path.slice(4) : path;
+  if (!/^[A-Za-z]:\\[^\0]+$/.test(candidate) || candidate.startsWith('\\\\')
+    || !win32.isAbsolute(candidate) || candidate.indexOf(':', 2) >= 0
+    || !candidate.toLocaleLowerCase('en-US').endsWith(`\\system32\\${name}`)) {
+    throw msiInspectionFailure('EXTRACTOR_TOOL');
   }
-  const extraction = await mkdtemp(join(tmpdir(), 'propr-msi-inspect-'));
+  return candidate;
+};
+
+const resolveWindowsSystemTool = async (kernelPath, name) => {
+  let held;
   try {
-    await execFile(sevenZip, ['x', '-y', '-bso0', '-bsp0', `-o${extraction}`, path], {
-      timeout: 120_000,
-      maxBuffer: 64 * 1024,
-    });
-    const files = [];
-    const visit = async directory => {
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
-        const entryPath = join(directory, entry.name);
-        const stats = await lstat(entryPath);
-        if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile())) {
-          throw new Error(`${path} machine installer extracts a link or special file`);
-        }
-        if (stats.isDirectory()) await visit(entryPath);
-        else if (files.push(entryPath) > 10_000) throw new Error(`${path} machine installer has too many files`);
-      }
-    };
-    await visit(extraction);
-    const named = name => files.filter(file => basename(file).toLocaleLowerCase('en-US') === name);
-    const applications = named('propr-desktop.exe');
-    const authorityResources = files.filter(file => /propr-windows-(?:authority|launcher|bootstrap)/i.test(basename(file))
-      || relative(extraction, file).split(sep).some(part => /^(?:windows-update-authority|windows-authority)$/i.test(part)));
-    if (applications.length !== 1 || authorityResources.length !== 0) {
-      throw new Error(`${path} machine installer has an invalid MVP application layout or deferred authority resource`);
+    const pathStats = await lstat(kernelPath, { bigint: true });
+    if (!pathStats.isFile() || pathStats.isSymbolicLink() || pathStats.nlink < 1n || pathStats.size <= 0n) {
+      throw msiInspectionFailure('EXTRACTOR_TOOL');
     }
-    const executable = inspectExecutableBytes(await readPrefix(applications[0]));
-    assertExecutableArchitecture(executable, platform, arch, path);
-    return { format: 'windows-machine-msi', scope: 'per-machine', executable };
+    held = await open(kernelPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const before = await held.stat({ bigint: true });
+    if (!sameFileIdentity(before, pathStats)) throw msiInspectionFailure('EXTRACTOR_TOOL');
+    const canonical = normalWindowsSystemTool(await realpath(kernelPath), name);
+    const canonicalStats = await lstat(canonical, { bigint: true });
+    const after = await held.stat({ bigint: true });
+    if (!canonicalStats.isFile() || canonicalStats.isSymbolicLink()
+      || !sameFileIdentity(before, canonicalStats) || !sameFileIdentity(before, after)) {
+      throw msiInspectionFailure('EXTRACTOR_TOOL');
+    }
+    return canonical;
+  } catch (error) {
+    if (error instanceof Error && error.message === 'MSI_INSPECTION_FAILED:EXTRACTOR_TOOL') throw error;
+    throw msiInspectionFailure('EXTRACTOR_TOOL');
   } finally {
-    await rm(extraction, { recursive: true, force: true });
+    await held?.close().catch(() => undefined);
   }
 };
+
+const resolveLinuxMsiExtractor = async () => {
+  try {
+    const stats = await lstat(MSIEXTRACT, { bigint: true });
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.uid !== 0n || stats.nlink < 1n
+      || (stats.mode & 0o022n) !== 0n || (stats.mode & 0o111n) === 0n
+      || await realpath(MSIEXTRACT) !== MSIEXTRACT) {
+      throw msiInspectionFailure('EXTRACTOR_TOOL');
+    }
+    return MSIEXTRACT;
+  } catch (error) {
+    if (error instanceof Error && error.message === 'MSI_INSPECTION_FAILED:EXTRACTOR_TOOL') throw error;
+    throw msiInspectionFailure('EXTRACTOR_TOOL');
+  }
+};
+
+export const runBoundedMsiExtractorForTest = async ({
+  file,
+  args,
+  cwd,
+  env,
+  hostPlatform,
+  treeKiller,
+  timeoutMs = MSI_EXTRACT_TIMEOUT_MS,
+  outputLimit = MSI_EXTRACT_OUTPUT_BYTES,
+  captureStdout = false,
+}) => new Promise((resolveRun, rejectRun) => {
+  let child;
+  let outputBytes = 0;
+  const stdout = [];
+  let failed = false;
+  let terminating = false;
+  const fail = () => {
+    failed = true;
+    if (terminating || !child?.pid) return;
+    terminating = true;
+    if (hostPlatform === 'win32') {
+      const killer = spawn(treeKiller, ['/pid', String(child.pid), '/t', '/f'], {
+        cwd,
+        env,
+        shell: false,
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      const killerTimer = setTimeout(() => {
+        killer.kill('SIGKILL');
+        child.kill('SIGKILL');
+      }, 30_000);
+      killer.once('error', () => {
+        clearTimeout(killerTimer);
+        child.kill('SIGKILL');
+      });
+      killer.once('close', () => {
+        clearTimeout(killerTimer);
+        child.kill('SIGKILL');
+      });
+    } else {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+    }
+  };
+  try {
+    child = spawn(file, args, {
+      cwd,
+      env,
+      detached: hostPlatform !== 'win32',
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch {
+    rejectRun(msiInspectionFailure('EXTRACTOR_TOOL'));
+    return;
+  }
+  const timer = setTimeout(fail, timeoutMs);
+  child.stdout.on('data', chunk => {
+    outputBytes += chunk.length;
+    if (outputBytes > outputLimit) fail();
+    else if (captureStdout) stdout.push(chunk);
+  });
+  child.stderr.on('data', () => fail());
+  child.once('error', () => {
+    clearTimeout(timer);
+    rejectRun(msiInspectionFailure('EXTRACTOR_TOOL'));
+  });
+  child.once('close', (code, signal) => {
+    clearTimeout(timer);
+    if (failed || code !== 0 || signal !== null) rejectRun(msiInspectionFailure('EXTRACTOR_TOOL'));
+    else resolveRun(captureStdout ? Buffer.concat(stdout, outputBytes) : undefined);
+  });
+});
+
+export const msiExtractorInvocationForTest = (hostPlatform, path, extraction, tools) => {
+  if (hostPlatform === 'win32') {
+    return {
+      file: tools.msiexec,
+      args: ['/a', path, '/qn', '/norestart', 'REBOOT=ReallySuppress', `TARGETDIR=${extraction}`],
+      env: { SystemRoot: win32.dirname(win32.dirname(tools.msiexec)), TEMP: extraction, TMP: extraction },
+      treeKiller: tools.taskkill,
+    };
+  }
+  if (hostPlatform === 'linux') {
+    return {
+      file: tools.msiextract,
+      args: ['--directory', extraction, path],
+      env: { LANG: 'C', LC_ALL: 'C' },
+    };
+  }
+  throw msiInspectionFailure('UNSUPPORTED_HOST');
+};
+
+export const validateMsiListingForTest = output => {
+  let text;
+  try { text = UTF8_DECODER.decode(output); }
+  catch { throw msiInspectionFailure('UNSAFE_TREE'); }
+  if (text.includes('\0')) throw msiInspectionFailure('UNSAFE_TREE');
+  const paths = text.replace(/\r\n?/g, '\n').split('\n').filter(Boolean);
+  if (paths.length === 0 || paths.length > MAX_MSI_FILES) throw msiInspectionFailure('UNSAFE_TREE');
+  const identities = new Set();
+  for (const path of paths) {
+    const parts = path.split('/');
+    if (path.startsWith('/') || path.includes('\\') || /^[A-Za-z]:/.test(path)
+      || parts.length > MAX_MSI_DEPTH || parts.some(part => !part || part === '.' || part === '..')
+      || Buffer.byteLength(path, 'utf8') > MAX_MSI_PATH_BYTES) {
+      throw msiInspectionFailure('UNSAFE_TREE');
+    }
+    const identity = parts.map(part => part.toLocaleLowerCase('en-US')).join('/');
+    if (identities.has(identity)) throw msiInspectionFailure('UNSAFE_TREE');
+    identities.add(identity);
+  }
+};
+
+const extractAdministrativeMsi = async (path, extraction, hostPlatform = process.platform) => {
+  let tools;
+  if (hostPlatform === 'win32') {
+    const [msiexec, taskkill] = await Promise.all([
+      resolveWindowsSystemTool(KERNEL_MSIEXEC, 'msiexec.exe'),
+      resolveWindowsSystemTool(KERNEL_TASKKILL, 'taskkill.exe'),
+    ]);
+    tools = { msiexec, taskkill };
+  } else if (hostPlatform === 'linux') {
+    tools = { msiextract: await resolveLinuxMsiExtractor() };
+  } else {
+    throw msiInspectionFailure('UNSUPPORTED_HOST');
+  }
+  const invocation = msiExtractorInvocationForTest(hostPlatform, path, extraction, tools);
+  if (hostPlatform === 'linux') {
+    const listing = await runBoundedMsiExtractorForTest({
+      ...invocation,
+      args: ['--list', path],
+      cwd: extraction,
+      hostPlatform,
+      captureStdout: true,
+    });
+    validateMsiListingForTest(listing);
+  }
+  await runBoundedMsiExtractorForTest({ ...invocation, cwd: extraction, hostPlatform });
+};
+
+export const inspectExtractedMsiLayout = async ({ root, platform, arch }) => {
+  const files = [];
+  const identities = new Set();
+  let totalBytes = 0;
+  const visit = async (directory, depth) => {
+    if (depth > MAX_MSI_DEPTH) throw msiInspectionFailure('UNSAFE_TREE');
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); }
+    catch { throw msiInspectionFailure('UNSAFE_TREE'); }
+    for (const entry of entries) {
+      const entryPath = join(directory, entry.name);
+      const relativePath = relative(root, entryPath);
+      const parts = relativePath.split(sep);
+      if (!relativePath || isAbsolute(relativePath) || relativePath === '..' || relativePath.startsWith(`..${sep}`)
+        || parts.some(part => !part || part === '.' || part === '..' || part.includes('\0'))
+        || Buffer.byteLength(relativePath, 'utf8') > MAX_MSI_PATH_BYTES) {
+        throw msiInspectionFailure('UNSAFE_TREE');
+      }
+      const identity = parts.map(part => part.toLocaleLowerCase('en-US')).join('/');
+      if (identities.has(identity)) throw msiInspectionFailure('UNSAFE_TREE');
+      identities.add(identity);
+      let stats;
+      try { stats = await lstat(entryPath, { bigint: true }); }
+      catch { throw msiInspectionFailure('UNSAFE_TREE'); }
+      if (stats.isSymbolicLink() || stats.isFile() && stats.nlink !== 1n
+        || (!stats.isDirectory() && !stats.isFile())) {
+        throw msiInspectionFailure('UNSAFE_TREE');
+      }
+      if (stats.isDirectory()) {
+        await visit(entryPath, depth + 1);
+      } else {
+        if (stats.size < 0n || stats.size > BigInt(MAX_MSI_TOTAL_BYTES)) throw msiInspectionFailure('UNSAFE_TREE');
+        let held;
+        try {
+          held = await open(entryPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+          if (!sameFileIdentity(stats, await held.stat({ bigint: true }))) throw msiInspectionFailure('UNSAFE_TREE');
+        } catch (error) {
+          if (error instanceof Error && error.message === 'MSI_INSPECTION_FAILED:UNSAFE_TREE') throw error;
+          throw msiInspectionFailure('UNSAFE_TREE');
+        } finally {
+          await held?.close().catch(() => undefined);
+        }
+        totalBytes += Number(stats.size);
+        if (totalBytes > MAX_MSI_TOTAL_BYTES || files.push({ path: entryPath, relativePath: parts.join('/') }) > MAX_MSI_FILES) {
+          throw msiInspectionFailure('UNSAFE_TREE');
+        }
+      }
+    }
+  };
+  await visit(root, 0);
+  const authorityCount = files.filter(file => (
+    /propr-windows-(?:authority|launcher|bootstrap)/i.test(basename(file.relativePath))
+    || file.relativePath.split('/').some(part => /^(?:windows-update-authority|windows-authority)$/i.test(part))
+  )).length;
+  if (authorityCount !== 0) throw msiInspectionFailure('AUTHORITY_RESOURCE', authorityCount);
+  const sameNameApplications = files.filter(file => (
+    basename(file.relativePath).toLocaleLowerCase('en-US') === `${EXECUTABLE_NAME}.exe`
+  ));
+  const acceptedPaths = new Set([
+    MSI_CANONICAL_APPLICATION,
+    `${MSI_ADMIN_ROOT_PREFIX}/${MSI_CANONICAL_APPLICATION}`,
+  ]);
+  const canonicalApplications = sameNameApplications.filter(file => acceptedPaths.has(file.relativePath));
+  if (sameNameApplications.length !== 1 || canonicalApplications.length !== 1) {
+    throw msiInspectionFailure('CANONICAL_APP', canonicalApplications.length === 1 ? sameNameApplications.length : 0);
+  }
+  let executable;
+  try {
+    executable = inspectExecutableBytes(await readPrefix(canonicalApplications[0].path));
+    assertExecutableArchitecture(executable, platform, arch, 'canonical MSI application');
+  } catch {
+    throw msiInspectionFailure('ARCHITECTURE_MISMATCH');
+  }
+  return executable;
+};
+
+const inspectMachineMsi = async (path, platform, arch, extract = extractAdministrativeMsi) => {
+  if (platform !== 'win32') throw msiInspectionFailure('TARGET_PLATFORM');
+  let header;
+  try { header = await readPrefix(path); }
+  catch { throw msiInspectionFailure('MSI_HEADER'); }
+  if (header.length < 512 || header.subarray(0, 8).toString('hex') !== 'd0cf11e0a1b11ae1') {
+    throw msiInspectionFailure('MSI_HEADER');
+  }
+  let extraction;
+  try { extraction = await mkdtemp(join(tmpdir(), 'propr-msi-inspect-')); }
+  catch { throw msiInspectionFailure('UNSAFE_TREE'); }
+  try {
+    const extractionStats = await lstat(extraction, { bigint: true });
+    if (!extractionStats.isDirectory() || extractionStats.isSymbolicLink()
+      || process.platform !== 'win32' && (typeof process.getuid !== 'function'
+        || extractionStats.uid !== BigInt(process.getuid()) || (extractionStats.mode & 0o777n) !== 0o700n)) {
+      throw msiInspectionFailure('UNSAFE_TREE');
+    }
+    try { await extract(resolve(path), extraction); }
+    catch (error) {
+      if (error instanceof Error && error.message.startsWith('MSI_INSPECTION_FAILED:')) throw error;
+      throw msiInspectionFailure('EXTRACTOR_TOOL');
+    }
+    const executable = await inspectExtractedMsiLayout({ root: extraction, platform, arch });
+    return { format: 'windows-machine-msi', scope: 'per-machine', executable };
+  } finally {
+    try { await rm(extraction, { recursive: true, force: true }); }
+    catch { throw msiInspectionFailure('UNSAFE_TREE'); }
+  }
+};
+
+export const inspectMachineMsiForTest = inspectMachineMsi;
 
 const pathInside = (root, path) => {
   const child = relative(root, path);

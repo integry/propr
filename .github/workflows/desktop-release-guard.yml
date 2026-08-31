@@ -273,7 +273,8 @@ jobs:
       - name: Install cross-format inspection tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio p7zip-full rpm
+          sudo apt-get install --yes cpio msitools p7zip-full rpm
+          test -x /usr/bin/msiextract
 
       - name: Download all unsigned native artifacts
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
@@ -777,7 +778,8 @@ jobs:
       - name: Install cross-format inspection tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio p7zip-full rpm
+          sudo apt-get install --yes cpio msitools p7zip-full rpm
+          test -x /usr/bin/msiextract
 
       - name: Download all trusted native artifacts
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6

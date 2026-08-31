@@ -199,7 +199,8 @@ describe('desktop trusted release workflow', () => {
     assert.equal(workflow.match(/release-artifacts\.mjs finalize/g)?.length, 2);
     assert.match(job('finalize', 'preflight'), /needs: \[validation-version, package\]/);
     assert.match(job('release-finalize', 'sign'), /needs: \[preflight, release-package\]/);
-    assert.match(workflow, /p7zip-full rpm/);
+    assert.equal(workflow.match(/sudo apt-get install --yes cpio msitools p7zip-full rpm/g)?.length, 2);
+    assert.equal(workflow.match(/test -x \/usr\/bin\/msiextract/g)?.length, 2);
     const publish = job('publish');
     assert.match(publish, /test -s desktop-release-final\/desktop-release\.json\.sig/);
     assert.match(publish, /ref: \$\{\{ needs\.preflight\.outputs\.release_sha \}\}/);
@@ -339,6 +340,25 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /deferred Windows update authority resource/);
     assert.equal(workflow.match(/https:\/\/github\.com\/wixtoolset\/wix3\/releases\/download\/wix3141rtm\/wix314-binaries\.zip/g)?.length, 2);
     assert.equal(workflow.match(/6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31/g)?.length, 2);
+  });
+
+  test('revalidates each real WiX MSI first on native Windows and then from the same staged bytes on Linux', () => {
+    for (const [nativeJob, aggregateJob] of [
+      [job('package', 'finalize'), job('finalize', 'preflight')],
+      [job('release-package', 'release-finalize'), job('release-finalize', 'sign')],
+    ] as const) {
+      const make = nativeJob.search(/Make (?:signed )?Windows/);
+      const installed = nativeJob.indexOf('ordinary-user Windows application');
+      const stage = nativeJob.indexOf('release-artifacts.mjs stage');
+      const upload = nativeJob.indexOf('Upload');
+      assert.ok(make >= 0 && installed > make && stage > installed && upload > stage);
+      assert.match(aggregateJob, /sudo apt-get install --yes cpio msitools p7zip-full rpm/);
+      assert.match(aggregateJob, /test -x \/usr\/bin\/msiextract/);
+      assert.ok(aggregateJob.indexOf('Download all') < aggregateJob.indexOf('release-artifacts.mjs finalize'));
+    }
+    assert.match(releaseArchitecture, /const MSIEXTRACT = '\/usr\/bin\/msiextract'/);
+    assert.match(releaseArchitecture, /KERNEL_MSIEXEC = String\.raw`\\\\\?\\GLOBALROOT\\SystemRoot\\System32\\msiexec\.exe`/);
+    assert.doesNotMatch(releaseArchitecture, /electron-winstaller|7z-(?:x64|arm64)\.exe/);
   });
 
   test('bounds and diagnoses installed Windows process lifecycles on x64 and ARM64', () => {

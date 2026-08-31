@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdtemp, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   inspectDmgLayout,
   inspectExtractedDmgArchitecture,
+  inspectExtractedMsiLayout,
   inspectArtifactArchitecture,
   inspectLinuxPackageLayout,
+  inspectMachineMsiForTest,
+  msiExtractorInvocationForTest,
+  runBoundedMsiExtractorForTest,
+  validateMsiListingForTest,
 } from './release-architecture.mjs';
 
 test('machine-wide Windows artifacts require a real MSI compound file', async context => {
@@ -18,8 +23,187 @@ test('machine-wide Windows artifacts require a real MSI compound file', async co
   await writeFile(fake, Buffer.alloc(4096));
   await assert.rejects(
     inspectArtifactArchitecture({ path: fake, kind: 'msi', platform: 'win32', arch: 'x64' }),
-    /not a compound-file Windows Installer package/,
+    error => error?.message === 'MSI_INSPECTION_FAILED:MSI_HEADER',
   );
+});
+
+const peFixture = machine => {
+  const bytes = Buffer.alloc(512);
+  bytes[0] = 0x4d;
+  bytes[1] = 0x5a;
+  bytes.writeUInt32LE(0x80, 0x3c);
+  bytes.writeUInt32LE(0x00004550, 0x80);
+  bytes.writeUInt16LE(machine, 0x84);
+  return bytes;
+};
+
+const msiTree = async (context, machine = 0x8664, prefixed = true) => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-msi-admin-image-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const application = join(root, ...(prefixed ? ['Program Files 64'] : []), 'ProPR Desktop');
+  await mkdir(application, { recursive: true });
+  await writeFile(join(application, 'propr-desktop.exe'), peFixture(machine));
+  return root;
+};
+
+describe('administrative MSI payload inspection', () => {
+  test('uses exact fixed native extractor argv and minimal environments', () => {
+    assert.deepEqual(
+      msiExtractorInvocationForTest('win32', String.raw`D:\input\app.msi`, String.raw`D:\private`, {
+        msiexec: String.raw`C:\Windows\System32\msiexec.exe`,
+        taskkill: String.raw`C:\Windows\System32\taskkill.exe`,
+      }),
+      {
+        file: String.raw`C:\Windows\System32\msiexec.exe`,
+        args: ['/a', String.raw`D:\input\app.msi`, '/qn', '/norestart', 'REBOOT=ReallySuppress', String.raw`TARGETDIR=D:\private`],
+        env: { SystemRoot: String.raw`C:\Windows`, TEMP: String.raw`D:\private`, TMP: String.raw`D:\private` },
+        treeKiller: String.raw`C:\Windows\System32\taskkill.exe`,
+      },
+    );
+    assert.deepEqual(
+      msiExtractorInvocationForTest('linux', '/input/app.msi', '/private', { msiextract: '/usr/bin/msiextract' }),
+      {
+        file: '/usr/bin/msiextract',
+        args: ['--directory', '/private', '/input/app.msi'],
+        env: { LANG: 'C', LC_ALL: 'C' },
+      },
+    );
+    assert.throws(
+      () => msiExtractorInvocationForTest('darwin', '/input/app.msi', '/private', {}),
+      error => error?.message === 'MSI_INSPECTION_FAILED:UNSUPPORTED_HOST',
+    );
+  });
+
+  test('accepts only the canonical application with the one administrative root prefix', async context => {
+    for (const prefixed of [false, true]) {
+      const root = await msiTree(context, 0x8664, prefixed);
+      assert.deepEqual(
+        await inspectExtractedMsiLayout({ root, platform: 'win32', arch: 'x64' }),
+        { format: 'pe', architectures: ['x64'] },
+      );
+    }
+  });
+
+  test('rejects path escapes and case collisions from the Linux listing before extraction', () => {
+    assert.doesNotThrow(() => validateMsiListingForTest(Buffer.from(
+      'Program Files 64/ProPR Desktop/propr-desktop.exe\n',
+    )));
+    for (const listing of [
+      '../escape.exe\n',
+      '/absolute.exe\n',
+      'C:/absolute.exe\n',
+      'safe\\alternate.exe\n',
+      'Folder/file\nfolder/FILE\n',
+      Buffer.from([0xff]),
+    ]) {
+      assert.throws(
+        () => validateMsiListingForTest(Buffer.isBuffer(listing) ? listing : Buffer.from(listing)),
+        error => error?.message === 'MSI_INSPECTION_FAILED:UNSAFE_TREE',
+      );
+    }
+  });
+
+  test('uses fixed missing and duplicate canonical-app codes with bounded counts', async context => {
+    const missing = await mkdtemp(join(tmpdir(), 'propr-msi-admin-missing-'));
+    context.after(() => rm(missing, { recursive: true, force: true }));
+    await assert.rejects(
+      inspectExtractedMsiLayout({ root: missing, platform: 'win32', arch: 'x64' }),
+      error => error?.message === 'MSI_INSPECTION_FAILED:CANONICAL_APP count=0',
+    );
+
+    const duplicate = await msiTree(context);
+    const alternate = join(duplicate, 'Elsewhere');
+    await mkdir(alternate);
+    await writeFile(join(alternate, 'propr-desktop.exe'), peFixture(0x8664));
+    await assert.rejects(
+      inspectExtractedMsiLayout({ root: duplicate, platform: 'win32', arch: 'x64' }),
+      error => error?.message === 'MSI_INSPECTION_FAILED:CANONICAL_APP count=2',
+    );
+  });
+
+  test('distinguishes authority resources, unsafe trees, and architecture mismatch without path data', async context => {
+    const authority = await msiTree(context);
+    await writeFile(join(authority, 'Program Files 64', 'ProPR Desktop', 'propr-windows-launcher.node'), 'deferred');
+    await assert.rejects(
+      inspectExtractedMsiLayout({ root: authority, platform: 'win32', arch: 'x64' }),
+      error => error?.message === 'MSI_INSPECTION_FAILED:AUTHORITY_RESOURCE count=1',
+    );
+
+    const unsafe = await msiTree(context);
+    const canonical = join(unsafe, 'Program Files 64', 'ProPR Desktop', 'propr-desktop.exe');
+    await link(canonical, join(unsafe, 'Program Files 64', 'ProPR Desktop', 'held-copy'));
+    await assert.rejects(
+      inspectExtractedMsiLayout({ root: unsafe, platform: 'win32', arch: 'x64' }),
+      error => error?.message === 'MSI_INSPECTION_FAILED:UNSAFE_TREE',
+    );
+
+    const wrongArchitecture = await msiTree(context, 0xaa64);
+    await assert.rejects(
+      inspectExtractedMsiLayout({ root: wrongArchitecture, platform: 'win32', arch: 'x64' }),
+      error => error?.message === 'MSI_INSPECTION_FAILED:ARCHITECTURE_MISMATCH',
+    );
+  });
+
+  test('maps extractor failures to one redacted tool code', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-msi-extractor-failure-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const msi = join(root, 'fixture.msi');
+    const bytes = Buffer.alloc(4096);
+    Buffer.from('d0cf11e0a1b11ae1', 'hex').copy(bytes);
+    await writeFile(msi, bytes);
+    await assert.rejects(
+      inspectMachineMsiForTest(msi, 'win32', 'x64', async () => {
+        throw new Error(`raw failure at ${root}`);
+      }),
+      error => error?.message === 'MSI_INSPECTION_FAILED:EXTRACTOR_TOOL',
+    );
+  });
+
+  test('retains compound-file, per-machine scope, and canonical PE evidence across extraction', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-msi-evidence-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const msi = join(root, 'fixture.msi');
+    const bytes = Buffer.alloc(4096);
+    Buffer.from('d0cf11e0a1b11ae1', 'hex').copy(bytes);
+    await writeFile(msi, bytes);
+    const inspection = await inspectMachineMsiForTest(msi, 'win32', 'x64', async (msiPath, extraction) => {
+      assert.equal(msiPath, msi);
+      const application = join(extraction, 'Program Files 64', 'ProPR Desktop');
+      await mkdir(application, { recursive: true });
+      await writeFile(join(application, 'propr-desktop.exe'), peFixture(0x8664));
+    });
+    assert.deepEqual(inspection, {
+      format: 'windows-machine-msi',
+      scope: 'per-machine',
+      executable: { format: 'pe', architectures: ['x64'] },
+    });
+  });
+
+  test('fails closed on extractor nonzero, stderr, output overflow, and timeout', {
+    skip: process.platform === 'win32',
+  }, async context => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-msi-process-boundary-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    for (const source of [
+      'process.exit(7)',
+      'process.stderr.write("diagnostic")',
+      'process.stdout.write("x".repeat(65))',
+      'setInterval(() => {}, 1000)',
+    ]) {
+      await assert.rejects(
+        runBoundedMsiExtractorForTest({
+          file: process.execPath,
+          args: ['-e', source],
+          cwd: root,
+          env: {},
+          hostPlatform: 'linux',
+          timeoutMs: 50,
+          outputLimit: 64,
+        }),
+        error => error?.message === 'MSI_INSPECTION_FAILED:EXTRACTOR_TOOL',
+      );
+    }
+  });
 });
 
 const elfFixture = machine => {
