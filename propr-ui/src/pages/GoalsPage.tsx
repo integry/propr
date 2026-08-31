@@ -48,7 +48,6 @@ const GoalsPage = () => {
                 type="search"
                 value={list.searchQuery}
                 onChange={event => list.setSearchQuery(event.target.value)}
-                maxLength={200}
                 placeholder="Search goals…"
                 aria-label="Search goals"
                 className="w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-8 text-sm text-gray-700 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500 sm:w-64"

@@ -26,7 +26,7 @@ export interface GoalProjectionReadyV1 {
   issues: { total: number; active: number; processed: number; failed: number; blocked: number };
   pullRequests: { open: number; reviewPending: number; ultrafixPending: number; mergeReady: number; merged: number };
   tokens: { total: number };
-  time: { elapsedSeconds: number; pausedSeconds: number };
+  time: { elapsedSeconds: number; activeSeconds: number; pausedSeconds: number };
   latestEvent: string | null;
   connectionState: 'connected' | 'recovering' | 'disconnected';
   epicPrUrl: string | null;
@@ -78,4 +78,3 @@ export interface CreateGoalRequestV1 {
   ultrafixGoal: number | null;
   ultrafixMaxCycles: number | null;
 }
-

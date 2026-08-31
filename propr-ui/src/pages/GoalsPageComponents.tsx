@@ -40,7 +40,10 @@ const ProjectedStats = ({ goal }: { goal: GoalListItem }) => {
       <span>{issues.processed} processed · {issues.active} active · {issues.failed} failed · {issues.blocked} blocked</span>
       <span>{pullRequests.open} open PRs · {pullRequests.mergeReady} merge-ready · {pullRequests.merged} merged</span>
       <span className="flex items-center gap-1"><Cpu className="h-3 w-3" aria-hidden="true" />{formatTokens(tokens.total)} tokens</span>
-      <span className="flex items-center gap-1"><Clock className="h-3 w-3" aria-hidden="true" />{formatDuration(time.elapsedSeconds)}{time.pausedSeconds > 0 && ` (${formatDuration(time.pausedSeconds)} paused)`}</span>
+      <span className="flex items-center gap-1">
+        <Clock className="h-3 w-3" aria-hidden="true" />
+        {formatDuration(time.elapsedSeconds)} elapsed · {formatDuration(time.activeSeconds)} active · {formatDuration(time.pausedSeconds)} paused
+      </span>
     </>
   );
 };

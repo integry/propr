@@ -67,12 +67,35 @@ describe('goalsApi', () => {
   it.each([
     [{ limit: 0 }, 'query.limit'],
     [{ limit: 101 }, 'query.limit'],
-    [{ search: 'x'.repeat(201) }, 'query.search'],
+    [{ search: '🚀'.repeat(201) }, 'query.search'],
     [{ cursor: 'not+a+base64url' }, 'query.cursor'],
   ])('rejects an invalid bounded query before sending it: %j', async (options, path) => {
     await expect(goalsApi.getGoals(options)).rejects.toThrow(path);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('normalizes search like the backend and bounds it by Unicode code points', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ goals: [], nextCursor: null }))
+      .mockResolvedValueOnce(jsonResponse({ goals: [], nextCursor: null }));
+
+    await goalsApi.getGoals({ search: `  ${'🚀'.repeat(200)}  ` });
+    const [unicodeUrl] = fetchMock.mock.calls[0];
+    expect(new URL(unicodeUrl as string, 'http://localhost').searchParams.get('search')).toBe('🚀'.repeat(200));
+
+    await goalsApi.getGoals({ search: '   \t  ' });
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/goals');
+  });
+
+  it.each(['bad+cursor', 'bad/cursor', 'bad=cursor', '', 'x'.repeat(1025)])(
+    'rejects malformed response nextCursor %j at the response boundary',
+    async nextCursor => {
+      fetchMock.mockResolvedValue(jsonResponse({ goals: [wireSummary], nextCursor }));
+      const error = await goalsApi.getGoals().catch(caught => caught);
+      expect(error).toBeInstanceOf(goalsApi.GoalContractError);
+      expect(error).toHaveProperty('message', expect.stringContaining('response.nextCursor'));
+    }
+  );
 
   it.each([
     ['goalId', undefined, 'response.goals[0].goalId'],
@@ -91,6 +114,31 @@ describe('goalsApi', () => {
       nextCursor: null,
     }));
     await expect(goalsApi.getGoals()).rejects.toThrow('projection.issues');
+  });
+
+  it('strictly decodes authoritative active time in a ready projection', async () => {
+    const projection = {
+      status: 'ready',
+      checklist: { total: 4, completed: 1 },
+      issues: { total: 5, active: 1, processed: 3, failed: 0, blocked: 1 },
+      pullRequests: { open: 1, reviewPending: 0, ultrafixPending: 0, mergeReady: 1, merged: 2 },
+      tokens: { total: 100 },
+      time: { elapsedSeconds: 900, activeSeconds: 610, pausedSeconds: 200 },
+      latestEvent: null,
+      connectionState: 'connected',
+      epicPrUrl: null,
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ goals: [{ ...wireSummary, projection }], nextCursor: null }));
+    await expect(goalsApi.getGoals()).resolves.toMatchObject({
+      goals: [{ projection: { time: { elapsedSeconds: 900, activeSeconds: 610, pausedSeconds: 200 } } }],
+    });
+
+    const { activeSeconds: _activeSeconds, ...missingActiveTime } = projection.time;
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      goals: [{ ...wireSummary, projection: { ...projection, time: missingActiveTime } }],
+      nextCursor: null,
+    }));
+    await expect(goalsApi.getGoals()).rejects.toThrow('projection.time.activeSeconds');
   });
 
   it('requires the typed list envelope including nextCursor', async () => {

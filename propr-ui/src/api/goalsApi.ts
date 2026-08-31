@@ -27,6 +27,7 @@ export const GOALS_SEARCH_MAX_LENGTH = 200;
 export const GOALS_CURSOR_MAX_LENGTH = 1024;
 const GOAL_IDENTIFIER_MAX_LENGTH = 255;
 const GOAL_IDEMPOTENCY_KEY_MAX_LENGTH = 255;
+const BASE64URL_CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 export interface GetGoalsOptions {
   limit?: number;
@@ -141,6 +142,13 @@ function boundedInteger(value: unknown, path: string, minimum: number, maximum: 
 const projectionCount = (container: Record<string, unknown>, key: string, path: string): number =>
   integer(container[key], `${path}.${key}`);
 
+const codePointLength = (value: string): number => Array.from(value).length;
+
+const isBoundedCursor = (value: string): boolean =>
+  value.length > 0
+  && value.length <= GOALS_CURSOR_MAX_LENGTH
+  && BASE64URL_CURSOR_PATTERN.test(value);
+
 const decodeReadyProjection = (value: Record<string, unknown>, path: string): GoalProjectionReadyV1 => {
   const checklist = record(value.checklist, `${path}.checklist`);
   const issues = record(value.issues, `${path}.issues`);
@@ -173,6 +181,7 @@ const decodeReadyProjection = (value: Record<string, unknown>, path: string): Go
     tokens: { total: projectionCount(tokens, 'total', `${path}.tokens`) },
     time: {
       elapsedSeconds: projectionCount(time, 'elapsedSeconds', `${path}.time`),
+      activeSeconds: projectionCount(time, 'activeSeconds', `${path}.time`),
       pausedSeconds: projectionCount(time, 'pausedSeconds', `${path}.time`),
     },
     latestEvent: value.latestEvent as string | null,
@@ -203,11 +212,9 @@ const decodeGoalSummary = (value: unknown, path: string): GoalSummaryV1 => {
 const decodeListResponse = (value: unknown): GoalsListResponseV1 => {
   const body = record(value, 'response');
   if (!Array.isArray(body.goals)) throw new GoalContractError('response.goals', 'an array');
-  if (body.nextCursor !== null && typeof body.nextCursor !== 'string') {
-    throw new GoalContractError('response.nextCursor', 'a string or null');
-  }
-  if (typeof body.nextCursor === 'string' && (body.nextCursor.length === 0 || body.nextCursor.length > GOALS_CURSOR_MAX_LENGTH)) {
-    throw new GoalContractError('response.nextCursor', `a cursor no longer than ${GOALS_CURSOR_MAX_LENGTH} characters`);
+  if (body.nextCursor !== null
+    && (typeof body.nextCursor !== 'string' || !isBoundedCursor(body.nextCursor))) {
+    throw new GoalContractError('response.nextCursor', 'null or a bounded base64url cursor');
   }
   return {
     goals: body.goals.map((goal, index) => decodeGoalSummary(goal, `response.goals[${index}]`)),
@@ -221,13 +228,20 @@ const validateQuery = (options: GetGoalsOptions): GetGoalsOptions => {
   if (options.repository !== undefined && (options.repository.length === 0 || options.repository.length > GOAL_IDENTIFIER_MAX_LENGTH)) {
     throw new GoalContractError('query.repository', `a non-empty string no longer than ${GOAL_IDENTIFIER_MAX_LENGTH} characters`);
   }
-  if (options.search !== undefined && (options.search.length === 0 || options.search.length > GOALS_SEARCH_MAX_LENGTH)) {
-    throw new GoalContractError('query.search', `a non-empty string no longer than ${GOALS_SEARCH_MAX_LENGTH} characters`);
+  let search: string | undefined;
+  if (options.search !== undefined) {
+    if (typeof options.search !== 'string') {
+      throw new GoalContractError('query.search', 'a string');
+    }
+    search = options.search.trim() || undefined;
+    if (search !== undefined && codePointLength(search) > GOALS_SEARCH_MAX_LENGTH) {
+      throw new GoalContractError('query.search', `a string no longer than ${GOALS_SEARCH_MAX_LENGTH} Unicode characters`);
+    }
   }
-  if (options.cursor !== undefined && (options.cursor.length === 0 || options.cursor.length > GOALS_CURSOR_MAX_LENGTH || !/^[A-Za-z0-9_-]+$/.test(options.cursor))) {
+  if (options.cursor !== undefined && !isBoundedCursor(options.cursor)) {
     throw new GoalContractError('query.cursor', 'a bounded base64url cursor');
   }
-  return options;
+  return { ...options, search };
 };
 
 const handleGoalResponse = async (response: Response): Promise<Response> => {

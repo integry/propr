@@ -21,6 +21,14 @@ const validCursor = (value: string): boolean =>
   && value.length <= GOALS_CURSOR_MAX_LENGTH
   && /^[A-Za-z0-9_-]+$/.test(value);
 
+const boundedSearch = (value: string): string =>
+  Array.from(value.trim()).slice(0, GOALS_SEARCH_MAX_LENGTH).join('');
+
+const setOptionalParam = (params: URLSearchParams, key: string, value: string): void => {
+  if (value) params.set(key, value);
+  else params.delete(key);
+};
+
 interface GoalsUrlState {
   state: GoalState | 'all';
   repository: string;
@@ -62,9 +70,9 @@ function readUrlState(params: URLSearchParams): GoalsUrlState {
   }
 
   const rawSearch = params.get('search') ?? '';
-  const search = rawSearch.slice(0, GOALS_SEARCH_MAX_LENGTH);
+  const search = boundedSearch(rawSearch);
   if (search !== rawSearch) {
-    cleaned.set('search', search);
+    setOptionalParam(cleaned, 'search', search);
     changed = true;
   }
 
@@ -138,8 +146,8 @@ export function useGoalsList() {
     if (searchQuery === url.search) return;
     const timer = setTimeout(() => {
       updateParams(next => {
-        const boundedSearch = searchQuery.slice(0, GOALS_SEARCH_MAX_LENGTH);
-        if (boundedSearch) next.set('search', boundedSearch);
+        const normalizedSearch = boundedSearch(searchQuery);
+        if (normalizedSearch) next.set('search', normalizedSearch);
         else next.delete('search');
         resetCursor(next);
       }, true);
@@ -227,6 +235,10 @@ export function useGoalsList() {
     });
   }, [updateParams]);
 
+  const updateSearchQuery = useCallback((value: string) => {
+    setSearchQuery(Array.from(value).length > GOALS_SEARCH_MAX_LENGTH ? boundedSearch(value) : value);
+  }, []);
+
   const clearFilters = useCallback(() => {
     updateParams(next => {
       next.delete('state');
@@ -270,7 +282,7 @@ export function useGoalsList() {
     currentPage: url.history.length + 1,
     hasPrevious: url.history.length > 0,
     hasNext: nextCursor !== null,
-    setSearchQuery,
+    setSearchQuery: updateSearchQuery,
     setStateFilter,
     clearSearch,
     clearFilters,

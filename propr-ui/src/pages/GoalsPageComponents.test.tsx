@@ -29,7 +29,7 @@ const goal: GoalListItem = {
     issues: { total: 9, active: 2, processed: 6, failed: 1, blocked: 1 },
     pullRequests: { open: 2, reviewPending: 1, ultrafixPending: 0, mergeReady: 1, merged: 4 },
     tokens: { total: 12_500 },
-    time: { elapsedSeconds: 7_500, pausedSeconds: 300 },
+    time: { elapsedSeconds: 7_500, activeSeconds: 6_900, pausedSeconds: 300 },
     latestEvent: 'Implementation PR opened',
     epicPrUrl: 'https://github.com/integry/propr/pull/2002',
     connectionState: 'connected',
@@ -55,7 +55,7 @@ describe('GoalsPageComponents', () => {
     expect(screen.getByText('2 active work items · 8 total')).toBeInTheDocument();
     expect(screen.getByText(/6 processed · 2 active · 1 failed · 1 blocked/)).toBeInTheDocument();
     expect(screen.getByText('12.5K tokens')).toBeInTheDocument();
-    expect(screen.getByText('2h 5m (5m paused)')).toBeInTheDocument();
+    expect(screen.getByText('2h 5m elapsed · 1h 55m active · 5m paused')).toBeInTheDocument();
     expect(screen.getByText('Concurrency: 4')).toBeInTheDocument();
     expect(screen.getByText('Ultrafix · goal 8/10 · max 10')).toBeInTheDocument();
     expect(screen.getByRole('progressbar', { name: '3 of 8 checklist items completed' })).toHaveAttribute('aria-valuenow', '3');

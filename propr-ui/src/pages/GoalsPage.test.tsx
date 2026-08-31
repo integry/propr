@@ -125,12 +125,39 @@ describe('GoalsPage', () => {
     await act(async () => { await Promise.resolve(); });
     const search = screen.getByLabelText('Search goals');
     expect(search.closest('.hidden')).toBeNull();
-    fireEvent.change(search, { target: { value: 'operator' } });
+    fireEvent.change(search, { target: { value: '  operator  ' } });
     await act(async () => { vi.advanceTimersByTime(300); });
     await act(async () => { await Promise.resolve(); });
     expect(screen.getByTestId('location')).toHaveTextContent('search=operator');
     expect(screen.getByTestId('location')).not.toHaveTextContent('cursor=');
+    expect(search).toHaveValue('operator');
     expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'operator', cursor: undefined }), expect.any(Object));
+  });
+
+  it('canonically trims search and bounds astral input by Unicode code points', async () => {
+    vi.useFakeTimers();
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
+    renderPage(['/goals?search=%20%20deep-link%20%20']);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByTestId('location')).toHaveTextContent('search=deep-link');
+    expect(screen.getByLabelText('Search goals')).toHaveValue('deep-link');
+    expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'deep-link' }), expect.any(Object));
+
+    const search = screen.getByLabelText('Search goals');
+    fireEvent.change(search, { target: { value: `  ${'🚀'.repeat(201)}  ` } });
+    expect(Array.from((search as HTMLInputElement).value)).toHaveLength(200);
+    await act(async () => { vi.advanceTimersByTime(300); });
+    await act(async () => { await Promise.resolve(); });
+    expect(getGoals).toHaveBeenLastCalledWith(expect.objectContaining({ search: '🚀'.repeat(200) }), expect.any(Object));
+  });
+
+  it('cleans whitespace-only deep-link search as omitted', async () => {
+    vi.mocked(getGoals).mockResolvedValue({ goals: [goal], nextCursor: null });
+    renderPage(['/goals?search=%20%20%09%20']);
+    await screen.findByText('Durable orchestration');
+    expect(screen.getByTestId('location')).not.toHaveTextContent('search=');
+    expect(screen.getByLabelText('Search goals')).toHaveValue('');
+    expect(getGoals).toHaveBeenCalledWith(expect.objectContaining({ search: undefined }), expect.any(Object));
   });
 
   it('sanitizes invalid legacy page/cursor URL state before requesting', async () => {
