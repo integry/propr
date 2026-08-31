@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { test } from 'node:test';
-import { applySignedUpdate, checkForSignedUpdates, type SignedUpdateManifest } from './signed-updates';
+import {
+  applySignedUpdate,
+  checkForSignedUpdates,
+  parseSignedUpdateManifest,
+  type SignedUpdateManifest,
+} from './signed-updates';
 
 const keys = generateKeyPairSync('ed25519');
 const publicKey = keys.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
@@ -42,12 +47,68 @@ test('Windows signed-update public boundary is fixed unsupported with zero exter
   assert.deepEqual(calls, { request: 0, signer: 0, authority: 0, install: 0 });
 });
 
+test('signed macOS feeds accept only the canonical ZIP extension and matching artifact URL', () => {
+  const fileName = 'ProPR-Desktop-1.2.4-macos-x64.zip';
+  const artifactUrl = `https://updates.example.test/darwin/x64/${fileName}`;
+  const manifest = {
+    schemaVersion: 2,
+    channel: 'stable',
+    manifestUrl: config.manifestUrl,
+    windowsSignerPins: [],
+    version: '1.2.4',
+    tag: 'desktop-v1.2.4',
+    publishedAt: '2026-08-30T00:00:00.000Z',
+    feeds: {
+      'darwin-x64': {
+        target: 'darwin-x64',
+        version: '1.2.4',
+        feed: { url: 'https://updates.example.test/darwin/x64/RELEASES.json', size: 100, sha256: '1'.repeat(64) },
+        artifact: { url: artifactUrl, fileName, kind: 'zip', size: 200, sha256: '2'.repeat(64) },
+        signer: {
+          type: 'apple-team-id',
+          identity: 'TEAM123456',
+          designatedRequirement: 'designated => identifier "dev.propr.desktop" and anchor apple generic',
+        },
+      },
+    },
+  };
+  assert.equal(
+    parseSignedUpdateManifest(Buffer.from(JSON.stringify(manifest))).feeds['darwin-x64'].artifact.fileName,
+    fileName,
+  );
+
+  const invalidNames = [
+    'ProPR-Desktop-1.2.4-macos-x64-zip',
+    'ProPR-Desktop-1.2.4-macos-x64.zip.zip',
+    'ProPR-Desktop-1.2.4-macos-x64.ZIP',
+    'ProPR-Desktop-1.2.4-macos-x64.dmg',
+    'ProPR-Desktop-1.2.3-macos-x64.zip',
+    'ProPR-Desktop-1.2.4-macos-arm64.zip',
+  ];
+  for (const invalidName of invalidNames) {
+    const candidate = structuredClone(manifest);
+    candidate.feeds['darwin-x64'].artifact.fileName = invalidName;
+    candidate.feeds['darwin-x64'].artifact.url = `https://updates.example.test/darwin/x64/${invalidName}`;
+    assert.throws(
+      () => parseSignedUpdateManifest(Buffer.from(JSON.stringify(candidate))),
+      /artifact does not match its target or URL/,
+      invalidName,
+    );
+  }
+  const wrongKind = structuredClone(manifest);
+  wrongKind.feeds['darwin-x64'].artifact.kind = 'msi';
+  assert.throws(
+    () => parseSignedUpdateManifest(Buffer.from(JSON.stringify(wrongKind))),
+    /artifact does not match its target or URL/,
+  );
+});
+
 test('macOS signed-update check remains check-only and verifies its exact feed and artifact', {
   skip: process.platform !== 'darwin',
 }, async () => {
   assert.equal(process.platform, 'darwin', 'the native macOS update filesystem adapter must run on Darwin');
   const artifact = Buffer.from('signed macOS application ZIP');
-  const artifactUrl = 'https://updates.example.test/darwin/x64/ProPR-Desktop-1.2.4-macos-x64-zip';
+  const artifactUrl = 'https://updates.example.test/darwin/x64/ProPR-Desktop-1.2.4-macos-x64.zip';
   const feed = Buffer.from(`${JSON.stringify({ url: artifactUrl, name: '1.2.4' })}\n`);
   const bytes = (url: string, value: Buffer) => ({
     url,
@@ -67,7 +128,7 @@ test('macOS signed-update check remains check-only and verifies its exact feed a
         target: 'darwin-x64',
         version: '1.2.4',
         feed: bytes('https://updates.example.test/darwin/x64/RELEASES.json', feed),
-        artifact: { ...bytes(artifactUrl, artifact), fileName: 'ProPR-Desktop-1.2.4-macos-x64-zip', kind: 'zip' },
+        artifact: { ...bytes(artifactUrl, artifact), fileName: 'ProPR-Desktop-1.2.4-macos-x64.zip', kind: 'zip' },
         signer: {
           type: 'apple-team-id',
           identity: 'TEAM123456',

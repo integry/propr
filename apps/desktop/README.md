@@ -38,7 +38,7 @@ paths, and strictly validated platform launch inputs; it never inherits the pare
 also rejects main-process uncaught exceptions and requires proof that `window.proprDesktop` is exposed before a clean
 exit. `desktop:smoke:inspect` performs executable and fuse inspection without launching a window. Release CI launches
 both Linux architectures under Xvfb, inspects macOS and Windows packages on their native runners, validates
-DMG/ZIP/DEB/RPM/NuGet containers, and validates configured OS signatures.
+DMG/ZIP/DEB/RPM/MSI packages, and validates configured OS signatures.
 
 The first-release Windows MVP packages only the normal desktop application. Native self-update installation authority
 is deferred to issue #2000: no broker, bootstrap, launcher, service, or authority custom action is built, copied into
@@ -79,7 +79,8 @@ The native GitHub Actions matrix produces these assets for both x64 and arm64:
 | macOS | `macos-15-intel`, `macos-15` | DMG, ZIP |
 | Windows | `windows-2025`, `windows-11-arm` | signed per-machine Program Files MSI |
 
-Every matrix job stages names in the form `ProPR-Desktop-<version>-<platform>-<arch>-<kind>`. The final job rejects
+Every matrix job stages DEB/RPM/ZIP/DMG names as `ProPR-Desktop-<version>-<platform>-<arch>.<format>` and retains
+`ProPR-Desktop-<version>-windows-<arch>-Machine-Setup.msi` for Windows. The final job rejects
 missing targets or changed fragment checksums, emits `SHA256SUMS` and `desktop-release.json`, and attaches the complete
 set to the matching GitHub release. Production publication is triggered only by a new, non-forced
 `desktop-v<major>.<minor>.<patch>` tag push; there is no manual dispatch path. A secretless preflight must succeed before

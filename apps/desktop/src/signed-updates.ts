@@ -227,7 +227,7 @@ const parseFeed = (value: unknown, target: string, version: string): SignedUpdat
   const expectedKind = target.startsWith('darwin-') ? 'zip' : 'msi';
   const [, arch] = target.split('-');
   const expectedFileName = target.startsWith('darwin-')
-    ? `ProPR-Desktop-${version}-macos-${arch}-zip`
+    ? `ProPR-Desktop-${version}-macos-${arch}.zip`
     : `ProPR-Desktop-${version}-windows-${arch}-Machine-Setup.msi`;
   if (value.artifact.kind !== expectedKind
     || value.artifact.fileName !== expectedFileName

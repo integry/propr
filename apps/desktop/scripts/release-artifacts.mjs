@@ -445,8 +445,45 @@ const artifactKind = (path, platform) => {
 
 const releaseFileName = (version, platform, arch, kind) => {
   const platformName = platform === 'darwin' ? 'macos' : platform === 'win32' ? 'windows' : 'linux';
-  const suffix = kind === 'msi' ? 'Machine-Setup.msi' : kind;
-  return `ProPR-Desktop-${version}-${platformName}-${arch}-${suffix}`;
+  return kind === 'msi'
+    ? `ProPR-Desktop-${version}-${platformName}-${arch}-Machine-Setup.msi`
+    : `ProPR-Desktop-${version}-${platformName}-${arch}.${kind}`;
+};
+
+const validateCanonicalArtifactMatrix = (artifacts, version, label) => {
+  const expected = new Map();
+  for (const [target, targetKinds] of TARGETS) {
+    const [platform, arch] = target.split('-');
+    for (const kind of targetKinds) {
+      expected.set(releaseFileName(version, platform, arch, kind), { platform, arch, kind });
+    }
+  }
+  if (!Array.isArray(artifacts) || artifacts.length !== expected.size) {
+    throw new Error(`${label} must contain the exact ${expected.size}-artifact matrix`);
+  }
+  const seen = new Set();
+  const seenCaseFolded = new Set();
+  for (const artifact of artifacts) {
+    const canonical = artifact && typeof artifact === 'object' && artifact !== null
+      ? releaseFileName(version, artifact.platform, artifact.arch, artifact.kind)
+      : undefined;
+    const expectedArtifact = typeof artifact?.fileName === 'string' ? expected.get(artifact.fileName) : undefined;
+    const folded = typeof artifact?.fileName === 'string' ? artifact.fileName.toLowerCase() : undefined;
+    if (!expectedArtifact
+      || artifact.fileName !== canonical
+      || expectedArtifact.platform !== artifact.platform
+      || expectedArtifact.arch !== artifact.arch
+      || expectedArtifact.kind !== artifact.kind
+      || seen.has(artifact.fileName)
+      || seenCaseFolded.has(folded)) {
+      throw new Error(`${label} contains an invalid, duplicate, or noncanonical artifact name`);
+    }
+    seen.add(artifact.fileName);
+    seenCaseFolded.add(folded);
+  }
+  if (seen.size !== expected.size || [...expected.keys()].some(fileName => !seen.has(fileName))) {
+    throw new Error(`${label} must contain the exact ${expected.size}-artifact matrix`);
+  }
 };
 
 const readNativeSigner = (platform, env) => {
@@ -792,6 +829,7 @@ export const finalizeArtifacts = async ({
   if (windowsSigners.length === 2 && JSON.stringify(windowsSigners[0]) !== JSON.stringify(windowsSigners[1])) {
     throw new Error('Windows release targets contain mixed native signer evidence');
   }
+  validateCanonicalArtifactMatrix(artifacts, version, 'Final desktop release');
 
   artifacts.sort((left, right) => left.fileName.localeCompare(right.fileName));
   const publishedAt = process.env.SOURCE_DATE_EPOCH
@@ -881,6 +919,7 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
   ) {
     throw new Error('Unsigned release metadata is invalid');
   }
+  validateCanonicalArtifactMatrix(unsignedManifest.artifacts, version, 'Unsigned release metadata');
   for (const artifact of unsignedManifest.artifacts) {
     const path = join(inputDirectory, artifact.fileName);
     if (basename(artifact.fileName) !== artifact.fileName

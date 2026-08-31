@@ -28,6 +28,21 @@ const kinds = {
   'win32-arm64': ['msi'],
 };
 
+const expectedDistributableNames = [
+  'ProPR-Desktop-1.2.3-linux-x64.deb',
+  'ProPR-Desktop-1.2.3-linux-x64.rpm',
+  'ProPR-Desktop-1.2.3-linux-x64.zip',
+  'ProPR-Desktop-1.2.3-linux-arm64.deb',
+  'ProPR-Desktop-1.2.3-linux-arm64.rpm',
+  'ProPR-Desktop-1.2.3-linux-arm64.zip',
+  'ProPR-Desktop-1.2.3-macos-x64.dmg',
+  'ProPR-Desktop-1.2.3-macos-x64.zip',
+  'ProPR-Desktop-1.2.3-macos-arm64.dmg',
+  'ProPR-Desktop-1.2.3-macos-arm64.zip',
+  'ProPR-Desktop-1.2.3-windows-x64-Machine-Setup.msi',
+  'ProPR-Desktop-1.2.3-windows-arm64-Machine-Setup.msi',
+];
+
 const sourceName = kind => kind === 'msi' ? 'Desktop-Machine-Setup.msi' : `desktop.${kind}`;
 const certificateSha256 = '1'.repeat(64);
 const spkiSha256 = '2'.repeat(64);
@@ -306,6 +321,12 @@ describe('desktop release artifacts', () => {
   test('stages named artifacts and finalizes unsigned validation metadata', async () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-release-test-'));
     const fragments = await createFragments(root);
+    const fragmentNames = [];
+    for (const target of Object.keys(kinds)) {
+      const fragment = JSON.parse(await readFile(join(fragments, target, 'release-fragment.json'), 'utf8'));
+      fragmentNames.push(...fragment.artifacts.map(artifact => artifact.fileName));
+    }
+    assert.deepEqual([...fragmentNames].sort(), [...expectedDistributableNames].sort());
     const output = join(root, 'final');
     const manifest = await finalizeArtifacts({ inputDirectory: fragments, outputDirectory: output, version: '1.2.3', inspectArchitecture: architectureInspector });
     assert.equal(manifest.schemaVersion, 2);
@@ -314,9 +335,15 @@ describe('desktop release artifacts', () => {
     assert.equal(Object.keys(manifest.feeds).length, 0);
     assert.equal(Object.keys(manifest.nativeSigners).length, 0);
     await assert.rejects(access(join(output, 'desktop-release.json.sig')));
+    const names = manifest.artifacts.map(artifact => artifact.fileName);
+    assert.equal(new Set(names).size, 12);
+    assert.deepEqual([...names].sort(), [...expectedDistributableNames].sort());
     const checksumLines = (await readFile(join(output, 'SHA256SUMS'), 'utf8')).trim().split('\n');
     assert.equal(checksumLines.length, 12);
-    assert.ok(checksumLines.some(line => line.endsWith('ProPR-Desktop-1.2.3-windows-x64-Machine-Setup.msi')));
+    assert.deepEqual(
+      checksumLines.map(line => line.slice(line.indexOf('  ') + 2)).sort(),
+      [...expectedDistributableNames].sort(),
+    );
     for (const line of checksumLines) {
       const match = /^([a-f0-9]{64})  ([^/\\]+)$/.exec(line);
       assert.ok(match, `invalid SHA256SUMS line: ${line}`);
@@ -334,6 +361,39 @@ describe('desktop release artifacts', () => {
       type: 'symbolic-link',
       target: '/Applications',
     });
+  });
+
+  test('rejects extensionless, doubled-extension, case-conflicting, duplicate, wrong-kind, stale, and mixed-target names', async () => {
+    const cases = [
+      ['extensionless', artifact => { artifact.fileName = 'ProPR-Desktop-1.2.3-linux-x64-zip'; }],
+      ['doubled-extension', artifact => { artifact.fileName = 'ProPR-Desktop-1.2.3-linux-x64.zip.zip'; }],
+      ['case-conflicting', artifact => { artifact.fileName = 'ProPR-Desktop-1.2.3-linux-x64.ZIP'; }],
+      ['duplicate', artifact => {
+        artifact.kind = 'rpm';
+        artifact.fileName = 'ProPR-Desktop-1.2.3-linux-x64.rpm';
+      }],
+      ['wrong-kind', artifact => { artifact.fileName = 'ProPR-Desktop-1.2.3-linux-x64.rpm'; }],
+      ['stale', artifact => { artifact.fileName = 'ProPR-Desktop-1.2.2-linux-x64.zip'; }],
+      ['mixed-target', artifact => { artifact.fileName = 'ProPR-Desktop-1.2.3-linux-arm64.zip'; }],
+    ];
+    for (const [name, mutate] of cases) {
+      const root = await mkdtemp(join(tmpdir(), `propr-release-name-${name}-`));
+      const fragments = await createFragments(root);
+      const fragmentPath = join(fragments, 'linux-x64', 'release-fragment.json');
+      const fragment = JSON.parse(await readFile(fragmentPath, 'utf8'));
+      mutate(fragment.artifacts.find(artifact => artifact.kind === 'zip'));
+      await writeFile(fragmentPath, `${JSON.stringify(fragment, null, 2)}\n`);
+      await assert.rejects(
+        finalizeArtifacts({
+          inputDirectory: fragments,
+          outputDirectory: join(root, 'final'),
+          version: '1.2.3',
+          inspectArchitecture: architectureInspector,
+        }),
+        /invalid or duplicate artifact|invalid, duplicate, or noncanonical artifact name/,
+        name,
+      );
+    }
   });
 
   test('rejects altered DMG bytes even when fragment artifact metadata is rewritten', async () => {
@@ -407,7 +467,7 @@ describe('desktop release artifacts', () => {
     const outputDirectory = join(root, 'stage');
     await mkdir(makeDirectory);
     const originalPath = join(makeDirectory, 'desktop.dmg');
-    const destination = join(outputDirectory, 'ProPR-Desktop-1.2.3-macos-arm64-dmg');
+    const destination = join(outputDirectory, 'ProPR-Desktop-1.2.3-macos-arm64.dmg');
     await writeFile(originalPath, 'darwin-arm64-dmg-A');
     await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
     const expectedBytes = Buffer.from('darwin-arm64-dmg-A');
@@ -746,9 +806,49 @@ describe('desktop release artifacts', () => {
     assert.deepEqual(Object.keys(manifest.feeds).sort(), ['darwin-arm64', 'darwin-x64']);
     assert.equal(manifest.feeds['darwin-arm64'].signer.identity, 'TEAM123456');
     assert.equal(manifest.feeds['win32-x64'], undefined);
+    for (const arch of ['x64', 'arm64']) {
+      const feed = manifest.feeds[`darwin-${arch}`];
+      const fileName = `ProPR-Desktop-1.2.3-macos-${arch}.zip`;
+      assert.equal(feed.artifact.fileName, fileName);
+      assert.equal(feed.artifact.url, `https://updates.example.test/darwin/${arch}/${fileName}`);
+      const feedBytes = JSON.parse(await readFile(
+        join(output, `ProPR-Desktop-1.2.3-macos-${arch}-RELEASES.json`),
+        'utf8',
+      ));
+      assert.equal(feedBytes.url, feed.artifact.url);
+    }
+    const checksumNames = (await readFile(join(output, 'SHA256SUMS'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map(line => line.slice(line.indexOf('  ') + 2));
+    assert.deepEqual(
+      checksumNames.filter(name => expectedDistributableNames.includes(name)).sort(),
+      [...expectedDistributableNames].sort(),
+    );
     const payload = await readFile(join(output, 'desktop-release.json'));
     const signature = Buffer.from((await readFile(join(output, 'desktop-release.json.sig'), 'utf8')).trim(), 'base64');
     assert.equal(verify(null, payload, keys.publicKey, signature), true);
+  });
+
+  test('refuses to sign a renamed extensionless distributable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-sign-name-'));
+    const fragments = await createFragments(root, { signed: true });
+    const unsigned = join(root, 'unsigned');
+    await finalizeArtifacts({ inputDirectory: fragments, outputDirectory: unsigned, version: '1.2.3', inspectArchitecture: architectureInspector });
+    const manifestPath = join(unsigned, 'desktop-release.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.artifacts.find(artifact => artifact.fileName === 'ProPR-Desktop-1.2.3-macos-x64.zip').fileName =
+      'ProPR-Desktop-1.2.3-macos-x64-zip';
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    await assert.rejects(
+      signReleaseMetadata({
+        inputDirectory: unsigned,
+        outputDirectory: join(root, 'signed'),
+        version: '1.2.3',
+        env: signingEnvironment(generateKeyPairSync('ed25519')),
+      }),
+      /invalid, duplicate, or noncanonical artifact name/,
+    );
   });
 
   test('refuses to sign when artifact bytes changed after unsigned finalization', async () => {
