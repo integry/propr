@@ -6,11 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-const WIX_DIRECTORY = String.raw`C:\Program Files (x86)\WiX Toolset v3.14\bin`;
-const WIX_TOOLS = Object.freeze({
-  CANDLE: join(WIX_DIRECTORY, 'candle.exe'),
-  LIGHT: join(WIX_DIRECTORY, 'light.exe'),
-});
+const INSTALLED_WIX_DIRECTORY = String.raw`C:\Program Files (x86)\WiX Toolset v3.14\bin`;
 const WIX_VERSION = /\bversion\s+3\.14\.1(?:\.\d+)?\b/i;
 const WIX_TIMEOUT_POLICY_MS = Object.freeze({
   TOOL_VERSION: 120_000,
@@ -28,11 +24,25 @@ const fail = message => { throw new Error(`Windows machine installer build faile
 const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
   .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
 
-const failWixPrerequisite = () => fail(
-  'install official WiX Toolset 3.14.1 at C:\\Program Files (x86)\\WiX Toolset v3.14\\bin',
-);
+const failWixPrerequisite = () => fail('provide the official WiX Toolset 3.14.1 build directory');
 
 const windowsPathIdentity = value => win32.normalize(value).replace(/^\\\\\?\\/, '').toLowerCase();
+
+const selectedWixDirectory = (arch, wixDirectory) => {
+  if (arch === 'x64') {
+    if (wixDirectory && windowsPathIdentity(wixDirectory) !== windowsPathIdentity(INSTALLED_WIX_DIRECTORY)) {
+      failWixPrerequisite();
+    }
+    return INSTALLED_WIX_DIRECTORY;
+  }
+  if (arch !== 'arm64' || typeof wixDirectory !== 'string' || !win32.isAbsolute(wixDirectory)
+    || Buffer.byteLength(wixDirectory, 'utf8') > MAX_PATH_BYTES) {
+    failWixPrerequisite();
+  }
+  return wixDirectory;
+};
+
+export const windowsWixDirectoryForTest = selectedWixDirectory;
 
 const canonicalWixTool = async expected => {
   try {
@@ -108,9 +118,10 @@ const runWix = async (stage, executable, args, cwd, timeout, redactions = []) =>
   }
 };
 
-const resolveWixToolset = async cwd => {
-  const candle = await canonicalWixTool(WIX_TOOLS.CANDLE);
-  const light = await canonicalWixTool(WIX_TOOLS.LIGHT);
+const resolveWixToolset = async (cwd, arch, wixDirectory) => {
+  const directory = selectedWixDirectory(arch, wixDirectory);
+  const candle = await canonicalWixTool(join(directory, 'candle.exe'));
+  const light = await canonicalWixTool(join(directory, 'light.exe'));
   const [candleVersion, lightVersion] = await Promise.all([
     runWix('CANDLE', candle, ['-?'], cwd, WIX_TIMEOUT_POLICY_MS.TOOL_VERSION),
     runWix('LIGHT', light, ['-?'], cwd, WIX_TIMEOUT_POLICY_MS.TOOL_VERSION),
@@ -215,21 +226,27 @@ ${tree.content}
               Value="&quot;[INSTALLFOLDER]propr-desktop.exe&quot; &quot;%1&quot;" Type="string" />
             <RegistryValue Root="HKLM" Key="Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\propr-desktop.exe"
               Value="[INSTALLFOLDER]propr-desktop.exe" Type="string" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="ProPR Desktop">
+          <Component Id="ApplicationStartMenuShortcutComponent" Guid="*">
             <Shortcut Id="ApplicationStartMenuShortcut" Directory="ApplicationProgramsFolder" Name="ProPR Desktop"
               Description="ProPR Desktop" Target="[INSTALLFOLDER]propr-desktop.exe" WorkingDirectory="INSTALLFOLDER">
               <ShortcutProperty Key="System.AppUserModel.ID" Value="dev.propr.desktop" />
             </Shortcut>
             <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+            <RegistryValue Root="HKCU" Key="Software\\ProPR\\Desktop" Name="installed"
+              Value="1" Type="integer" KeyPath="yes" />
           </Component>
         </Directory>
-      </Directory>
-      <Directory Id="CommonProgramMenuFolder">
-        <Directory Id="ApplicationProgramsFolder" Name="ProPR Desktop" />
       </Directory>
     </Directory>
     <Feature Id="MainApplication" Title="ProPR Desktop" Level="1">
 ${tree.components.map(id => `      <ComponentRef Id="${id}" />`).join('\n')}
       <ComponentRef Id="ApplicationRegistration" />
+      <ComponentRef Id="ApplicationStartMenuShortcutComponent" />
     </Feature>
   </Product>
 </Wix>
@@ -285,7 +302,7 @@ const requireMsi = async path => {
   }
 };
 
-export const probeWindowsWixToolset = async ({ arch }) => {
+export const probeWindowsWixToolset = async ({ arch, wixDirectory }) => {
   if (process.platform !== 'win32') fail('WiX Toolset 3.14.1 probe requires a Windows builder');
   if (!['x64', 'arm64'].includes(arch)) fail('arguments');
   const temporary = await mkdtemp(join(tmpdir(), 'propr-wix-probe-'));
@@ -294,7 +311,7 @@ export const probeWindowsWixToolset = async ({ arch }) => {
     const source = join(temporary, 'probe.wxs');
     const object = join(temporary, 'probe.wixobj');
     const output = join(temporary, 'probe.msi');
-    const wix = await resolveWixToolset(temporary);
+    const wix = await resolveWixToolset(temporary, arch, wixDirectory);
     await writeFile(source, wixProbeSourceForTest(arch), { encoding: 'utf8', flag: 'wx' });
     await compileWixSource({
       source,
@@ -315,7 +332,7 @@ export const probeWindowsWixToolset = async ({ arch }) => {
   }
 };
 
-export const buildWindowsMachineInstaller = async ({ appDirectory, output, version, arch }) => {
+export const buildWindowsMachineInstaller = async ({ appDirectory, output, version, arch, wixDirectory }) => {
   if (process.platform !== 'win32') return { skipped: true };
   if (!['x64', 'arm64'].includes(arch) || !/^\d+\.\d+\.\d+$/.test(version)) fail('arguments');
   const canonicalApp = resolve(appDirectory);
@@ -326,7 +343,7 @@ export const buildWindowsMachineInstaller = async ({ appDirectory, output, versi
   try {
     const source = join(temporary, 'propr-desktop.wxs');
     const object = join(temporary, 'propr-desktop.wixobj');
-    const wix = await resolveWixToolset(temporary);
+    const wix = await resolveWixToolset(temporary, arch, wixDirectory);
     await writeFile(source, windowsMachineInstallerSourceForTest(canonicalApp, version, arch, files), { encoding: 'utf8', flag: 'wx' });
     await compileWixSource({
       source,
@@ -350,14 +367,15 @@ export const buildWindowsMachineInstaller = async ({ appDirectory, output, versi
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (process.argv[2] === 'probe') {
-    await probeWindowsWixToolset({ arch: process.argv[3] });
+    await probeWindowsWixToolset({ arch: process.argv[3], wixDirectory: process.argv[4] });
     process.exit(0);
   }
-  const [, , appDirectory, output, version, arch] = process.argv;
+  const [, , appDirectory, output, version, arch, wixDirectory] = process.argv;
   await buildWindowsMachineInstaller({
     appDirectory,
     output,
     version,
     arch,
+    wixDirectory,
   });
 }

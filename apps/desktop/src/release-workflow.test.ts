@@ -187,7 +187,8 @@ describe('desktop trusted release workflow', () => {
     assert.match(production, /Windows artifacts have mixed Authenticode signers/);
     assert.match(production, /certificate\|spki\)-sha256:\[a-f0-9\]\{64\}/);
     assert.match(production, /release-architecture\.mjs inspect[\s\S]*--kind msi/);
-    assert.doesNotMatch(production, /--kind nupkg|Expand-Archive|full\.nupkg|\*Setup\.exe/);
+    assert.doesNotMatch(production, /--kind nupkg|full\.nupkg|\*Setup\.exe/);
+    assert.equal(production.match(/Expand-Archive -LiteralPath \$archive -DestinationPath \$wixDirectory/g)?.length, 1);
     assert.match(production, /PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS: '1'/);
   });
 
@@ -284,8 +285,18 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /Probe canonical WiX 3\.14\.1 compiler/);
       assert.match(
         section,
-        /build-windows-machine-installer\.mjs probe '\$\{\{ matrix\.arch \}\}'/,
+        /build-windows-machine-installer\.mjs probe '\$\{\{ matrix\.arch \}\}' \$env:PROPR_DESKTOP_WIX_DIRECTORY/,
       );
+      assert.match(section, /Provision pinned WiX 3\.14\.1 binaries for Windows ARM64\n\s+if: matrix\.platform == 'win32' && matrix\.arch == 'arm64'/);
+      assert.match(section, /https:\/\/github\.com\/wixtoolset\/wix3\/releases\/download\/wix3141rtm\/wix314-binaries\.zip/);
+      assert.match(section, /6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31/);
+      assert.match(section, /Get-FileHash -LiteralPath \$archive -Algorithm SHA256/);
+      assert.match(section, /Invoke-WebRequest[^\n]+-MaximumRedirection 5 -TimeoutSec 120/);
+      assert.match(section, /\$archiveItem\.Length -le 0 -or \$archiveItem\.Length -gt 64MB/);
+      assert.match(section, /Expand-Archive -LiteralPath \$archive -DestinationPath \$wixDirectory/);
+      assert.match(section, /PROPR_DESKTOP_WIX_DIRECTORY=\$wixDirectory/);
+      assert.match(section, /Clean pinned Windows ARM64 WiX binaries\n\s+if: always\(\) && matrix\.platform == 'win32' && matrix\.arch == 'arm64'/);
+      assert.doesNotMatch(section, /choco|Chocolatey|wixVendor|electron-winstaller/);
       assert.match(section, /Install and exercise (?:signed )?ordinary-user Windows application/);
       assert.match(section, /Launch (?:signed )?packaged Windows application and exercise MVP desktop flows/);
       assert.doesNotMatch(section, /READY|broker:build|windows-authority-build|windows-update-authority\.test|probe-packaged-windows-authority/,
@@ -296,9 +307,13 @@ describe('desktop trusted release workflow', () => {
     assert.equal(workflow.match(/PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1/g)?.length, 2);
     assert.doesNotMatch(forgeConfig, /extraResource|windows-authority|postPackage/);
     assert.match(forgeConfig, /buildWindowsMachineInstaller/);
+    assert.match(forgeConfig, /wixDirectory: process\.env\.PROPR_DESKTOP_WIX_DIRECTORY/);
     assert.doesNotMatch(forgeConfig, /MakerSquirrel|noMsi|Setup\.exe|full\.nupkg/);
     assert.match(windowsMachineInstaller, /InstallScope="perMachine"/);
-    assert.match(windowsMachineInstaller, /C:\\Program Files \(x86\)\\WiX Toolset v3\.14\\bin/);
+    assert.match(windowsMachineInstaller, /INSTALLED_WIX_DIRECTORY = String\.raw`C:\\Program Files \(x86\)\\WiX Toolset v3\.14\\bin`/);
+    assert.match(windowsMachineInstaller, /if \(arch === 'x64'\)/);
+    assert.match(windowsMachineInstaller, /arch !== 'arm64'/);
+    assert.match(windowsMachineInstaller, /!win32\.isAbsolute\(wixDirectory\)/);
     assert.match(windowsMachineInstaller, /\['-\?'\]/);
     assert.match(windowsMachineInstaller, /'CANDLE'/);
     assert.match(windowsMachineInstaller, /'LIGHT'/);
@@ -317,6 +332,8 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /Remove-SmokeUserDataDirectory \$smokeUserDataDirectory/);
     assert.match(installedWindowsAppTest, /propr:\/\/connect/);
     assert.match(installedWindowsAppTest, /deferred Windows update authority resource/);
+    assert.equal(workflow.match(/https:\/\/github\.com\/wixtoolset\/wix3\/releases\/download\/wix3141rtm\/wix314-binaries\.zip/g)?.length, 2);
+    assert.equal(workflow.match(/6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31/g)?.length, 2);
   });
 
   test('configures signed updates only for macOS and never advertises a Windows update feed', () => {

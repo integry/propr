@@ -136,6 +136,7 @@ const config: ForgeConfig = {
           output: machineInstaller,
           version: releaseVersion,
           arch: result.arch,
+          wixDirectory: process.env.PROPR_DESKTOP_WIX_DIRECTORY,
         });
         if (built.skipped) throw new Error('Machine-wide Windows installer was not built');
         if (windowsSign) {

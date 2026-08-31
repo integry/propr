@@ -107,10 +107,36 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Provision pinned WiX 3.14.1 binaries for Windows ARM64
+        if: matrix.platform == 'win32' && matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloadUrl = 'https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip'
+          $expectedSha256 = '6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31'
+          $archive = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64.zip'
+          $wixDirectory = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64'
+          if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $wixDirectory)) {
+            throw 'Pinned ARM64 WiX runner-temp paths are not fresh'
+          }
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archive -MaximumRedirection 5 -TimeoutSec 120
+          $archiveItem = Get-Item -LiteralPath $archive -Force
+          if ($archiveItem.PSIsContainer -or ($archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) `
+              -or $archiveItem.Length -le 0 -or $archiveItem.Length -gt 64MB) {
+            throw 'Pinned ARM64 WiX archive is not a regular file'
+          }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedSha256) {
+            throw 'Pinned ARM64 WiX archive digest mismatch'
+          }
+          New-Item -ItemType Directory -Path $wixDirectory | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $wixDirectory
+          Remove-Item -LiteralPath $archive -Force
+          "PROPR_DESKTOP_WIX_DIRECTORY=$wixDirectory" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Probe canonical WiX 3.14.1 compiler
         if: matrix.platform == 'win32'
         shell: pwsh
-        run: node apps/desktop/scripts/build-windows-machine-installer.mjs probe '${{ matrix.arch }}'
+        run: node apps/desktop/scripts/build-windows-machine-installer.mjs probe '${{ matrix.arch }}' $env:PROPR_DESKTOP_WIX_DIRECTORY
 
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'
@@ -221,6 +247,18 @@ jobs:
           path: desktop-release-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Clean pinned Windows ARM64 WiX binaries
+        if: always() && matrix.platform == 'win32' && matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64.zip'
+          $wixDirectory = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64'
+          Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $wixDirectory -Recurse -Force -ErrorAction SilentlyContinue
+          if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $wixDirectory)) {
+            throw 'Pinned ARM64 WiX cleanup failed'
+          }
 
   finalize:
     name: Finalize unsigned validation checksums
@@ -392,10 +430,36 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Provision pinned WiX 3.14.1 binaries for Windows ARM64
+        if: matrix.platform == 'win32' && matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloadUrl = 'https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip'
+          $expectedSha256 = '6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31'
+          $archive = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64.zip'
+          $wixDirectory = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64'
+          if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $wixDirectory)) {
+            throw 'Pinned ARM64 WiX runner-temp paths are not fresh'
+          }
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archive -MaximumRedirection 5 -TimeoutSec 120
+          $archiveItem = Get-Item -LiteralPath $archive -Force
+          if ($archiveItem.PSIsContainer -or ($archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) `
+              -or $archiveItem.Length -le 0 -or $archiveItem.Length -gt 64MB) {
+            throw 'Pinned ARM64 WiX archive is not a regular file'
+          }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedSha256) {
+            throw 'Pinned ARM64 WiX archive digest mismatch'
+          }
+          New-Item -ItemType Directory -Path $wixDirectory | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $wixDirectory
+          Remove-Item -LiteralPath $archive -Force
+          "PROPR_DESKTOP_WIX_DIRECTORY=$wixDirectory" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Probe canonical WiX 3.14.1 compiler
         if: matrix.platform == 'win32'
         shell: pwsh
-        run: node apps/desktop/scripts/build-windows-machine-installer.mjs probe '${{ matrix.arch }}'
+        run: node apps/desktop/scripts/build-windows-machine-installer.mjs probe '${{ matrix.arch }}' $env:PROPR_DESKTOP_WIX_DIRECTORY
 
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'
@@ -684,6 +748,18 @@ jobs:
           path: desktop-release-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Clean pinned Windows ARM64 WiX binaries
+        if: always() && matrix.platform == 'win32' && matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64.zip'
+          $wixDirectory = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64'
+          Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $wixDirectory -Recurse -Force -ErrorAction SilentlyContinue
+          if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $wixDirectory)) {
+            throw 'Pinned ARM64 WiX cleanup failed'
+          }
 
   release-finalize:
     name: Revalidate production architectures and finalize checksums
