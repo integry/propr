@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- Terminal retention, clipboard, and anchoring cases share DOM fixtures. */
 import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -6,7 +7,7 @@ import GoalControls from './GoalControls';
 import GoalHierarchy from './GoalHierarchy';
 import GoalStats from './GoalStats';
 import GoalTerminal from './GoalTerminal';
-import { hierarchyChildren, mergeGoalEvents, sanitizeTerminalText, scopedGoalKey } from './goalDetailUtils';
+import { GOAL_EVENT_RETENTION_LIMIT, hierarchyChildren, mergeGoalEvents, sanitizeTerminalText, scopedGoalKey } from './goalDetailUtils';
 
 const timestamp = '2026-08-31T10:00:00.000Z';
 const event = (sequence: number, type: GoalEvent['type'] = 'stdout', content = `line ${sequence}`): GoalEvent => ({
@@ -53,6 +54,24 @@ describe('goal detail utilities', () => {
     expect(scopedGoalKey('owner-a', 'integry/propr', 'goal-1')).not.toBe(scopedGoalKey('owner-b', 'integry/propr', 'goal-1'));
   });
 
+  it('bounds retained tail and older-history windows while keeping dedupe and the authoritative tail', () => {
+    const overBound = Array.from({ length: GOAL_EVENT_RETENTION_LIMIT + 500 }, (_, index) => event(index + 1));
+    const tail = mergeGoalEvents([], overBound, 'goal-1');
+    expect(tail).toHaveLength(GOAL_EVENT_RETENTION_LIMIT);
+    expect(tail[0].sequence).toBe(501);
+    expect(tail.at(-1)?.sequence).toBe(1_500);
+
+    const withDuplicate = mergeGoalEvents(tail, [event(1_500, 'stderr'), event(1_501)], 'goal-1');
+    expect(withDuplicate).toHaveLength(GOAL_EVENT_RETENTION_LIMIT);
+    expect(withDuplicate.find(item => item.sequence === 1_500)?.type).toBe('stderr');
+    expect(withDuplicate.at(-1)?.sequence).toBe(1_501);
+
+    const older = mergeGoalEvents(withDuplicate, Array.from({ length: 700 }, (_, index) => event(index - 699)), 'goal-1', 'older');
+    expect(older).toHaveLength(GOAL_EVENT_RETENTION_LIMIT);
+    expect(older[0].sequence).toBe(-699);
+    expect(older.at(-1)?.sequence).toBe(1_501);
+  });
+
   it('builds nested hierarchy buckets without flattening sub-epics', () => {
     const base = { kind: 'root_epic', title: 'Root', state: 'active', orderIndex: 0, externalRef: null, externalUrl: null, blockedReason: null, ci: 'running', review: 'pending', ultrafix: 'pending', merge: 'pending' } as const;
     const nodes: GoalDetail['hierarchy']['nodes'] = [
@@ -78,6 +97,41 @@ describe('GoalTerminal', () => {
     expect(screen.getByText('<script>alert(1)</script>')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Copy visible terminal output' }));
     await waitFor(() => expect(clipboard.writeText).toHaveBeenCalledWith(expect.not.stringContaining('\u001b')));
+    expect(screen.getByText('Visible terminal output copied')).toBeInTheDocument();
+  });
+
+  it('sanitizes malicious source and turn metadata into single-line inert clipboard labels', async () => {
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
+    const malicious = {
+      ...event(1, 'stdout', '<img src=x onerror=alert(1)>'),
+      source: '\u001b[31mcodex\n[forged source]\u0007',
+      turnId: 'turn-1\r\n[forged turn]\u009B31m',
+    };
+    render(<GoalTerminal events={[malicious]} connectionState="connected" hasMoreBefore={false} loadingOlder={false} onLoadOlder={vi.fn()} />);
+    expect(document.querySelector('img')).toBeNull();
+    expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy visible terminal output' }));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenCalledOnce());
+    const copied = clipboard.writeText.mock.calls[0][0];
+    expect(copied).not.toMatch(/[\u0000-\u001F\u007F-\u009F]/);
+    expect(copied).not.toContain('\n[forged');
+    expect(copied).toContain('codex [forged source]');
+    expect(copied).toContain('turn turn-1 [forged turn]');
+  });
+
+  it('announces clipboard unavailability and rejection without leaking an unhandled promise', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    const view = render(<GoalTerminal events={[event(1)]} connectionState="connected" hasMoreBefore={false} loadingOlder={false} onLoadOlder={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy visible terminal output' }));
+    expect(await screen.findByText('Unable to copy visible terminal output')).toBeInTheDocument();
+
+    const clipboard = { writeText: vi.fn().mockRejectedValue(new Error('permission denied')) };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
+    view.rerender(<GoalTerminal events={[event(1)]} connectionState="connected" hasMoreBefore={false} loadingOlder={false} onLoadOlder={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy visible terminal output' }));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenCalledOnce());
+    expect(screen.getByText('Unable to copy visible terminal output')).toBeInTheDocument();
   });
 
   it('navigates through every loaded middle window and reapplies windowing after search', () => {
@@ -116,7 +170,7 @@ describe('GoalTerminal', () => {
     let view: ReturnType<typeof render>;
     const onLoadOlder = vi.fn(async () => {
       height = 700;
-      view.rerender(<GoalTerminal events={[event(0), event(1)]} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
+      view.rerender(<GoalTerminal events={[event(0), event(1), event(2)]} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
     });
     view = render(<GoalTerminal events={[event(1)]} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={onLoadOlder} />);
     const viewport = screen.getByLabelText('Goal terminal transcript');
@@ -124,6 +178,7 @@ describe('GoalTerminal', () => {
     viewport.scrollTop = 30;
     fireEvent.click(screen.getByRole('button', { name: 'Load older output' }));
     await waitFor(() => expect(viewport.scrollTop).toBe(230));
+    expect(screen.getByText('line 2')).toBeInTheDocument();
     delete (HTMLElement.prototype as { offsetTop?: number }).offsetTop;
     delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
   });

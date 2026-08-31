@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  getGoals,
+  getGoals, GoalApiError,
   GOALS_SEARCH_MAX_LENGTH,
   type GoalListItem,
 } from '../api/goalsApi';
+import { useCurrentUser } from '../contexts/AuthContext';
 import { useSocket } from '../contexts/useSocket';
 import { DEFAULT_GOALS_PAGE_SIZE } from './goalsPageUtils';
 import {
@@ -32,6 +33,7 @@ interface GoalsRequestState {
 }
 
 export function useGoalsList() {
+  const user = useCurrentUser();
   const [searchParams, setSearchParams] = useSearchParams();
   const searchParamsKey = searchParams.toString();
   const url = useMemo(() => readGoalsUrlState(new URLSearchParams(searchParamsKey)), [searchParamsKey]);
@@ -44,13 +46,20 @@ export function useGoalsList() {
     unsubscribeFromGoalUpdates,
   } = useSocket();
   const [searchQuery, setSearchQuery] = useState(url.search);
+  const authorizationFingerprint = user ? JSON.stringify([
+    user.id,
+    user.role,
+    [...user.permissions].sort(),
+    user.authorizationSource,
+  ]) : 'anonymous';
   const queryFingerprint = useMemo(() => JSON.stringify([
+    authorizationFingerprint,
     DEFAULT_GOALS_PAGE_SIZE,
     url.state,
     url.repository,
     url.search,
     url.cursor ?? null,
-  ]), [url.cursor, url.repository, url.search, url.state]);
+  ]), [authorizationFingerprint, url.cursor, url.repository, url.search, url.state]);
   const [result, setResult] = useState<GoalsResult | null>(null);
   const activeResult = result?.fingerprint === queryFingerprint ? result : null;
   const goals = activeResult?.goals ?? EMPTY_GOALS;
@@ -64,8 +73,11 @@ export function useGoalsList() {
   const loading = requestState.fingerprint !== queryFingerprint || requestState.loading;
   const error = requestState.fingerprint === queryFingerprint ? requestState.error : null;
   const [refreshSequence, setRefreshSequence] = useState(0);
+  const handledRefreshSequenceRef = useRef(0);
   const requestSequenceRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
+  const requestFingerprintRef = useRef<string | null>(null);
+  const trailingRefreshRef = useRef(false);
   const invalidationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousConnectedRef = useRef(isConnected);
   const connectionMountedRef = useRef(false);
@@ -105,12 +117,12 @@ export function useGoalsList() {
     return () => clearTimeout(timer);
   }, [searchQuery, updateParams, url.search]);
 
-  useEffect(() => {
-    if (url.cleanedParams) return;
+  const startRequest = useCallback(() => {
+    if (url.cleanedParams || requestAbortRef.current) return;
     const sequence = ++requestSequenceRef.current;
-    requestAbortRef.current?.abort();
     const controller = new AbortController();
     requestAbortRef.current = controller;
+    requestFingerprintRef.current = queryFingerprint;
     setRequestState({ fingerprint: queryFingerprint, loading: true, error: null });
     void getGoals({
       limit: DEFAULT_GOALS_PAGE_SIZE,
@@ -125,6 +137,9 @@ export function useGoalsList() {
       })
       .catch(caught => {
         if (sequence !== requestSequenceRef.current || controller.signal.aborted) return;
+        if (caught instanceof GoalApiError && (caught.status === 403 || caught.status === 404)) {
+          setResult(null);
+        }
         setRequestState({
           fingerprint: queryFingerprint,
           loading: false,
@@ -137,9 +152,37 @@ export function useGoalsList() {
             ? { ...current, loading: false }
             : current);
         }
+        if (requestAbortRef.current === controller) {
+          requestAbortRef.current = null;
+          requestFingerprintRef.current = null;
+          if (trailingRefreshRef.current) {
+            trailingRefreshRef.current = false;
+            setRefreshSequence(value => value + 1);
+          }
+        }
       });
-    return () => controller.abort();
-  }, [queryFingerprint, refreshSequence, url.cleanedParams, url.cursor, url.repository, url.search, url.state]);
+  }, [queryFingerprint, url.cleanedParams, url.cursor, url.repository, url.search, url.state]);
+
+  useEffect(() => {
+    setResult(null);
+    trailingRefreshRef.current = false;
+    if (requestAbortRef.current && requestFingerprintRef.current !== queryFingerprint) {
+      requestAbortRef.current.abort();
+      requestAbortRef.current = null;
+      requestFingerprintRef.current = null;
+    }
+    startRequest();
+  }, [queryFingerprint, startRequest]);
+
+  useEffect(() => {
+    if (refreshSequence === handledRefreshSequenceRef.current) return;
+    handledRefreshSequenceRef.current = refreshSequence;
+    if (requestAbortRef.current) {
+      trailingRefreshRef.current = true;
+      return;
+    }
+    startRequest();
+  }, [refreshSequence, startRequest]);
 
   const scheduleInvalidation = useCallback(() => {
     if (invalidationTimerRef.current) return;
@@ -171,6 +214,7 @@ export function useGoalsList() {
   }, [isConnected, scheduleInvalidation]);
 
   useEffect(() => () => {
+    requestSequenceRef.current += 1;
     requestAbortRef.current?.abort();
     if (invalidationTimerRef.current) clearTimeout(invalidationTimerRef.current);
   }, []);

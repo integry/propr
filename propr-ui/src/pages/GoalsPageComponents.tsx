@@ -14,6 +14,16 @@ import type { GoalListItem, GoalState } from '../api/goalsApi';
 import { formatDuration, formatTokens, GOAL_STATE_COLORS, GOAL_STATE_LABELS } from './goalsPageUtils';
 import { goalDetailPath } from './goalsUrlState';
 
+const absoluteHttpsUrl = (value: string | null): string | null => {
+  if (!value || !/^https:\/\//i.test(value)) return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' && parsed.origin !== 'null' ? parsed.href : null;
+  } catch {
+    return null;
+  }
+};
+
 export const GoalStateBadge = ({ state }: { state: GoalState }) => (
   <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${GOAL_STATE_COLORS[state]}`}>
     {GOAL_STATE_LABELS[state]}
@@ -86,6 +96,7 @@ const ChecklistProgress = ({ goal }: { goal: GoalListItem }) => {
 
 export const GoalRow = ({ goal, returnTarget = '/goals' }: { goal: GoalListItem; returnTarget?: string }) => {
   const projection = goal.projection.status === 'ready' ? goal.projection : null;
+  const epicPrUrl = absoluteHttpsUrl(projection?.epicPrUrl ?? null);
   return (
     <article className="border-b border-slate-100 bg-white last:border-0">
       <div className="px-4 py-4 sm:px-6">
@@ -96,8 +107,8 @@ export const GoalRow = ({ goal, returnTarget = '/goals' }: { goal: GoalListItem;
           </div>
           <div className="flex flex-shrink-0 items-center gap-2">
             <GoalStateBadge state={goal.state} />
-            {projection?.epicPrUrl && (
-              <a href={projection.epicPrUrl} target="_blank" rel="noopener noreferrer" className="rounded p-1 text-gray-400 hover:text-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500" aria-label={`Open epic pull request for ${goal.objective}`}>
+            {epicPrUrl && (
+              <a href={epicPrUrl} target="_blank" rel="noopener noreferrer" className="rounded p-1 text-gray-400 hover:text-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500" aria-label={`Open epic pull request for ${goal.objective}`}>
                 <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
               </a>
             )}

@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- Replay, authorization, and retention races share one hook harness. */
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CurrentUser } from '../../api/proprTypes';
@@ -131,6 +132,78 @@ describe('useGoalDetail replay and authorization', () => {
     expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 5 }));
     expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 205 }));
     expect(screen.getByTestId('connection')).toHaveTextContent('connected');
+  });
+
+  it('bounds far-over-limit replay and live ingestion while recovering duplicates and a post-eviction gap', async () => {
+    const latestSequence = 1_205;
+    mocks.getGoal.mockResolvedValue({ ...detail, latestSequence });
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number }) => {
+      if (options.afterSequence === undefined) return Promise.resolve(page([event(4), event(5)], true));
+      if (options.afterSequence >= latestSequence) return Promise.resolve(page([]));
+      const start = options.afterSequence + 1;
+      const end = Math.min(latestSequence, start + 199);
+      return Promise.resolve(page(Array.from({ length: end - start + 1 }, (_, index) => event(start + index))));
+    });
+    render(<Harness />);
+    await waitFor(() => expect(screen.getByTestId('events')).toHaveTextContent(/1205$/));
+    let retained = (screen.getByTestId('events').textContent ?? '').split(',').filter(Boolean).map(Number);
+    expect(retained).toHaveLength(1_000);
+    expect(retained[0]).toBe(206);
+
+    const deliver = (sequence: number) => mocks.listeners.get('goal:event')?.forEach(callback => callback({
+      ownerId: 'owner-a', repository: 'integry/propr', goalId: 'goal-1', event: event(sequence),
+    }));
+    act(() => {
+      for (let sequence = 1_206; sequence <= 2_405; sequence += 1) deliver(sequence);
+      deliver(2_405);
+    });
+    retained = (screen.getByTestId('events').textContent ?? '').split(',').filter(Boolean).map(Number);
+    expect(retained).toHaveLength(1_000);
+    expect(retained[0]).toBe(1_406);
+    expect(retained.at(-1)).toBe(2_405);
+
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number }) => {
+      if (options.afterSequence === 2_405) return Promise.resolve(page([event(2_406), event(2_407)]));
+      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+      return Promise.resolve(page([event(4), event(5)], true));
+    });
+    act(() => deliver(2_407));
+    await waitFor(() => expect(screen.getByTestId('events')).toHaveTextContent(/2407$/));
+    retained = (screen.getByTestId('events').textContent ?? '').split(',').filter(Boolean).map(Number);
+    expect(retained).toHaveLength(1_000);
+    expect(retained[0]).toBe(1_408);
+  });
+
+  it('bounds repeated older pages without losing a live tail delivered during the load', async () => {
+    const firstOlder = (() => {
+      let resolve!: (value: GoalEventsPage) => void;
+      return { promise: new Promise<GoalEventsPage>(done => { resolve = done; }), resolve: (value: GoalEventsPage) => resolve(value) };
+    })();
+    mocks.getGoal.mockResolvedValue({ ...detail, latestSequence: 1_400 });
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
+      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+      if (options.beforeSequence === undefined) return Promise.resolve(page(Array.from({ length: 200 }, (_, index) => event(1_201 + index)), true, 1_201));
+      if (options.beforeSequence === 1_201) return firstOlder.promise;
+      const start = options.beforeSequence - 200;
+      return Promise.resolve(page(Array.from({ length: 200 }, (_, index) => event(start + index)), true, start));
+    });
+    render(<Harness />);
+    await waitFor(() => expect(screen.getByTestId('events')).toHaveTextContent(/^1201/));
+    fireEvent.click(screen.getByRole('button', { name: 'older' }));
+    const deliver = (sequence: number) => mocks.listeners.get('goal:event')?.forEach(callback => callback({
+      ownerId: 'owner-a', repository: 'integry/propr', goalId: 'goal-1', event: event(sequence),
+    }));
+    act(() => deliver(1_401));
+    await act(async () => firstOlder.resolve(page(Array.from({ length: 200 }, (_, index) => event(1_001 + index)), true, 1_001)));
+    for (let load = 0; load < 4; load += 1) {
+      fireEvent.click(screen.getByRole('button', { name: 'older' }));
+      await waitFor(() => expect(mocks.getGoalEvents.mock.calls.filter(([, options]) => options.beforeSequence !== undefined)).toHaveLength(load + 2));
+    }
+    const retained = (screen.getByTestId('events').textContent ?? '').split(',').filter(Boolean).map(Number);
+    expect(retained).toHaveLength(1_000);
+    expect(retained.at(-1)).toBe(1_401);
+    expect(retained).toContain(201);
+    expect(retained).toContain(1_201);
   });
 
   it('immediately reconciles detail when initial history is newer than its snapshot', async () => {

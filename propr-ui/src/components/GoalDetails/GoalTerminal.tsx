@@ -1,14 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, Copy, Search } from 'lucide-react';
 import type { GoalEvent, GoalEventType } from '../../api/goalsApi';
-import { eventSearchText, sanitizeTerminalText } from './goalDetailUtils';
+import { eventSearchText, sanitizeTerminalLabel, sanitizeTerminalText } from './goalDetailUtils';
 
 const EVENT_TYPES: GoalEventType[] = ['stdout', 'stderr', 'assistant', 'tool', 'checkpoint', 'usage', 'message', 'lifecycle'];
 const MOUNT_LIMIT = 250;
 
 const eventLabel = (event: GoalEvent): string => {
   const time = new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  return `${time} · ${event.source}${event.turnId ? ` · turn ${event.turnId}` : ''}`;
+  const source = sanitizeTerminalLabel(event.source) || 'unknown source';
+  const turnId = event.turnId ? sanitizeTerminalLabel(event.turnId) : '';
+  return `${time} · ${source}${turnId ? ` · turn ${turnId}` : ''}`;
 };
 
 interface GoalTerminalProps {
@@ -38,7 +40,8 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
   const [enabledTypes, setEnabledTypes] = useState<Set<GoalEventType>>(new Set(EVENT_TYPES));
   const [followTail, setFollowTail] = useState(true);
   const [windowAnchor, setWindowAnchor] = useState<number | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'success' | 'failure'>('idle');
+  const copyStatusTimerRef = useRef<number | null>(null);
   const [completedOlderLoads, setCompletedOlderLoads] = useState(0);
 
   const filtered = useMemo(() => {
@@ -159,11 +162,28 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
     }
   };
 
+  useEffect(() => () => {
+    if (copyStatusTimerRef.current !== null) window.clearTimeout(copyStatusTimerRef.current);
+  }, []);
+
+  const setTemporaryCopyStatus = (status: 'success' | 'failure') => {
+    if (copyStatusTimerRef.current !== null) window.clearTimeout(copyStatusTimerRef.current);
+    setCopyStatus(status);
+    copyStatusTimerRef.current = window.setTimeout(() => {
+      setCopyStatus('idle');
+      copyStatusTimerRef.current = null;
+    }, 1500);
+  };
+
   const copyVisible = async () => {
     const text = mounted.map(event => `[${eventLabel(event)}] ${event.type}: ${sanitizeTerminalText(event.content)}`).join('\n');
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
+    try {
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(text);
+      setTemporaryCopyStatus('success');
+    } catch {
+      setTemporaryCopyStatus('failure');
+    }
   };
 
   return (
@@ -175,7 +195,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
             {connectionState === 'connected' ? 'Live' : connectionState === 'recovering' ? 'Recovering · REST fallback active' : 'Offline · retrying'}
           </span>
           <button type="button" onClick={() => void copyVisible()} disabled={mounted.length === 0} aria-label="Copy visible terminal output" className="rounded p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white disabled:opacity-40">
-            {copied ? <Check className="h-4 w-4" aria-hidden="true" /> : <Copy className="h-4 w-4" aria-hidden="true" />}
+            {copyStatus === 'success' ? <Check className="h-4 w-4" aria-hidden="true" /> : <Copy className="h-4 w-4" aria-hidden="true" />}
           </button>
         </div>
         <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Filter terminal event types">
@@ -236,7 +256,9 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
           Follow latest
         </button>
       )}
-      <span className="sr-only" aria-live="polite">{copied ? 'Visible terminal output copied' : ''}</span>
+      <span className="sr-only" role="status" aria-live="polite">
+        {copyStatus === 'success' ? 'Visible terminal output copied' : copyStatus === 'failure' ? 'Unable to copy visible terminal output' : ''}
+      </span>
     </section>
   );
 }

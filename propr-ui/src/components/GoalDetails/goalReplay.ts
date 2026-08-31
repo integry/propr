@@ -1,4 +1,5 @@
 import { getGoalEvents, GoalContractError, type GoalEvent } from '../../api/goalsApi';
+import { mergeGoalEvents } from './goalDetailUtils';
 
 const PAGE_SIZE = 200;
 const MAX_REPLAY_PAGES = 1_000;
@@ -40,16 +41,13 @@ export async function drainGoalEventGap(
 ): Promise<GoalReplayResult> {
   let cursor = afterSequence;
   let noProgress = 0;
-  const replayed: GoalEvent[] = [];
-  const seen = new Set<number>();
+  let replayed: GoalEvent[] = [];
 
   let complete = false;
   for (let pageNumber = 0; !complete && pageNumber < MAX_REPLAY_PAGES; pageNumber += 1) {
     const page = await getGoalEvents(goalId, { afterSequence: cursor, limit: PAGE_SIZE, signal });
     const canonicalPage = pageEventsAfter(goalId, cursor, page.events);
-    for (const event of canonicalPage.events) {
-      if (!seen.has(event.sequence)) { replayed.push(event); seen.add(event.sequence); }
-    }
+    replayed = mergeGoalEvents(replayed, canonicalPage.events, goalId);
     const responseCursor = pageResponseCursor(page.nextCursor, canonicalPage.cursor);
     if (responseCursor <= cursor) {
       if (page.events.length === 0 && page.nextCursor === null && (targetSequence === null || cursor >= targetSequence)) {

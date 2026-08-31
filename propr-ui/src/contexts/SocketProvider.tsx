@@ -7,9 +7,10 @@ import { getApiBaseUrl } from '../config/runtimeConfig';
 interface SocketProviderProps {
   children: React.ReactNode;
   disabled?: boolean;
+  authenticationKey?: string;
 }
 
-export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabled = false }) => {
+export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabled = false, authenticationKey = 'anonymous' }) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const taskUpdateCallbacksRef = useRef<Set<(payload: TaskUpdatePayload) => void>>(new Set());
@@ -87,9 +88,12 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
 
     return () => {
       console.log('[SocketContext] Cleaning up socket connection');
+      newSocket.removeAllListeners();
       newSocket.disconnect();
+      setSocket(current => current === newSocket ? null : current);
+      setIsConnected(false);
     };
-  }, [disabled]);
+  }, [authenticationKey, disabled]);
 
   const subscribeToTask = useCallback((taskId: string) => {
     if (socket && isConnected) {

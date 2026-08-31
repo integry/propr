@@ -1,7 +1,10 @@
+/* eslint-disable max-lines -- List ownership and invalidation races share one stateful harness. */
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getGoals, type GoalListItem } from '../api/goalsApi';
+import { GoalApiError } from '../api/goalsApi';
+import type { CurrentUser } from '../api/proprTypes';
 import GoalsPage from './GoalsPage';
 
 const mocks = vi.hoisted(() => ({
@@ -11,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   onGoalSummaryUpdate: vi.fn(),
   subscribeToGoalUpdates: vi.fn(),
   unsubscribeFromGoalUpdates: vi.fn(),
+  user: null as CurrentUser | null,
 }));
 
 vi.mock('../api/goalsApi', async importOriginal => ({
@@ -18,6 +22,7 @@ vi.mock('../api/goalsApi', async importOriginal => ({
   getGoals: vi.fn(),
 }));
 vi.mock('../contexts/DemoModeContext', () => ({ useDemoMode: () => ({ isDemoMode: mocks.demoMode }) }));
+vi.mock('../contexts/AuthContext', () => ({ useCurrentUser: () => mocks.user }));
 vi.mock('../contexts/useSocket', () => ({
   useSocket: () => ({
     isConnected: mocks.connected,
@@ -48,6 +53,11 @@ const goal: GoalListItem = {
   createdAt: '2026-08-31T00:00:00Z',
   updatedAt: '2026-08-31T01:00:00Z',
 };
+
+const user = (id: string, role: CurrentUser['role'] = 'member'): CurrentUser => ({
+  id, login: id, username: id, displayName: id, email: null, avatarUrl: null,
+  role, permissions: [], authorizationSource: 'local',
+});
 
 const Location = () => {
   const location = useLocation();
@@ -88,6 +98,7 @@ describe('GoalsPage', () => {
   beforeEach(() => {
     vi.useRealTimers();
     mocks.demoMode = false;
+    mocks.user = user('owner-a');
     mocks.connected = true;
     mocks.goalUpdate = undefined;
     mocks.onGoalSummaryUpdate.mockReset().mockImplementation(callback => {
@@ -281,6 +292,86 @@ describe('GoalsPage', () => {
     await act(async () => { resolveFirst({ goals: [{ ...goal, objective: 'Stale result' }], nextCursor: 'c3RhbGU' }); });
     expect(screen.queryByText('Stale result')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Next page' })).not.toBeInTheDocument();
+  });
+
+  it('clears prior-owner rows immediately and fences an in-flight completion across A to B', async () => {
+    let resolveRefreshA!: (value: { goals: GoalListItem[]; nextCursor: string | null }) => void;
+    let resolveB!: (value: { goals: GoalListItem[]; nextCursor: string | null }) => void;
+    vi.mocked(getGoals)
+      .mockResolvedValueOnce({ goals: [{ ...goal, objective: 'Owner A row' }], nextCursor: 'YQ' })
+      .mockReturnValueOnce(new Promise(resolve => { resolveRefreshA = resolve; }))
+      .mockReturnValueOnce(new Promise(resolve => { resolveB = resolve; }));
+    const view = renderPage();
+    await screen.findByText('Owner A row');
+
+    vi.useFakeTimers();
+    act(() => {
+      mocks.goalUpdate?.(updatePayload(3));
+      vi.advanceTimersByTime(100);
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(getGoals).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+
+    mocks.user = user('owner-b', 'admin');
+    view.rerenderPage();
+    expect(screen.queryByText('Owner A row')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Next page' })).not.toBeInTheDocument();
+    await act(async () => {
+      resolveRefreshA({ goals: [{ ...goal, objective: 'Stale owner A completion' }], nextCursor: 'c3RhbGU' });
+      resolveB({ goals: [{ ...goal, objective: 'Owner B row' }], nextCursor: null });
+    });
+    expect(await screen.findByText('Owner B row')).toBeInTheDocument();
+    expect(screen.queryByText('Stale owner A completion')).not.toBeInTheDocument();
+  });
+
+  it.each([403, 404])('clears same-query rows and cursors after HTTP %s access loss', async status => {
+    vi.mocked(getGoals)
+      .mockResolvedValueOnce({ goals: [goal], nextCursor: 'YQ' })
+      .mockRejectedValueOnce(new GoalApiError(status === 403 ? 'goal_access_denied' : 'goal_not_found', status, 'Goal unavailable'));
+    renderPage();
+    await screen.findByText('Durable orchestration');
+    vi.useFakeTimers();
+    act(() => {
+      mocks.goalUpdate?.(updatePayload(3));
+      vi.advanceTimersByTime(100);
+    });
+    await act(async () => { await Promise.resolve(); });
+    vi.useRealTimers();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Goal unavailable');
+    expect(screen.queryByText('Durable orchestration')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Next page' })).not.toBeInTheDocument();
+  });
+
+  it('keeps one invalidation request in flight, coalesces one trailing refresh, and commits the newest result', async () => {
+    let resolveInFlight!: (value: { goals: GoalListItem[]; nextCursor: string | null }) => void;
+    let resolveTrailing!: (value: { goals: GoalListItem[]; nextCursor: string | null }) => void;
+    vi.mocked(getGoals)
+      .mockResolvedValueOnce({ goals: [goal], nextCursor: null })
+      .mockReturnValueOnce(new Promise(resolve => { resolveInFlight = resolve; }))
+      .mockReturnValueOnce(new Promise(resolve => { resolveTrailing = resolve; }));
+    renderPage();
+    await screen.findByText('Durable orchestration');
+    vi.useFakeTimers();
+
+    for (let interval = 0; interval < 5; interval += 1) {
+      act(() => {
+        mocks.goalUpdate?.({ ...updatePayload(interval + 3), goalId: interval % 2 === 0 ? 'goal-1' : 'off-page-goal' });
+        vi.advanceTimersByTime(100);
+      });
+      await act(async () => { await Promise.resolve(); });
+    }
+    expect(getGoals).toHaveBeenCalledTimes(2);
+    const inFlightSignal = vi.mocked(getGoals).mock.calls[1][1]?.signal;
+    expect(inFlightSignal?.aborted).toBe(false);
+    vi.useRealTimers();
+
+    await act(async () => resolveInFlight({ goals: [{ ...goal, objective: 'Intermediate result' }], nextCursor: null }));
+    await waitFor(() => expect(getGoals).toHaveBeenCalledTimes(3));
+    expect(inFlightSignal?.aborted).toBe(false);
+    await act(async () => resolveTrailing({ goals: [{ ...goal, objective: 'Newest result' }], nextCursor: null }));
+    expect(await screen.findByText('Newest result')).toBeInTheDocument();
+    expect(screen.queryByText('Intermediate result')).not.toBeInTheDocument();
   });
 
   it('does not display or paginate prior-query data when a changed filter request fails', async () => {

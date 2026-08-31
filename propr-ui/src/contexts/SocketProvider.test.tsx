@@ -1,6 +1,8 @@
-import { cleanup, render } from '@testing-library/react';
+import React from 'react';
+import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SocketProvider } from './SocketProvider';
+import { useSocket } from './useSocket';
 
 const runtimeConfigMock = vi.hoisted(() => ({
   getApiBaseUrl: vi.fn(() => ''),
@@ -10,6 +12,7 @@ const socketMock = vi.hoisted(() => ({
   disconnect: vi.fn(),
   emit: vi.fn(),
   on: vi.fn(),
+  removeAllListeners: vi.fn(),
 }));
 
 const ioMock = vi.hoisted(() => vi.fn(() => socketMock));
@@ -27,7 +30,39 @@ describe('SocketProvider', () => {
     socketMock.disconnect.mockClear();
     socketMock.emit.mockClear();
     socketMock.on.mockClear();
+    socketMock.removeAllListeners.mockClear();
     runtimeConfigMock.getApiBaseUrl.mockReturnValue('');
+  });
+
+  it('disconnects authenticated identity A before identity B connects and resubscribes', () => {
+    const sockets = Array.from({ length: 2 }, () => ({
+      disconnect: vi.fn(), emit: vi.fn(), removeAllListeners: vi.fn(),
+      on: vi.fn(),
+    }));
+    ioMock.mockImplementationOnce(() => sockets[0]).mockImplementationOnce(() => sockets[1]);
+    const GoalSubscriber = () => {
+      const { isConnected, subscribeToGoalUpdates, unsubscribeFromGoalUpdates } = useSocket();
+      React.useEffect(() => {
+        if (!isConnected) return;
+        subscribeToGoalUpdates();
+        return unsubscribeFromGoalUpdates;
+      }, [isConnected, subscribeToGoalUpdates, unsubscribeFromGoalUpdates]);
+      return null;
+    };
+    const connection = (index: number) => sockets[index].on.mock.calls.find(([name]) => name === 'connect')?.[1] as (() => void);
+    const view = render(<SocketProvider key="owner-a" authenticationKey="owner-a"><GoalSubscriber /></SocketProvider>);
+    act(() => connection(0)());
+    expect(sockets[0].emit).toHaveBeenCalledWith('subscribe:goals');
+
+    view.rerender(<SocketProvider key="owner-b" authenticationKey="owner-b"><GoalSubscriber /></SocketProvider>);
+    expect(sockets[0].emit).toHaveBeenCalledWith('unsubscribe:goals');
+    expect(sockets[0].removeAllListeners).toHaveBeenCalledOnce();
+    expect(sockets[0].disconnect).toHaveBeenCalledOnce();
+    expect(ioMock).toHaveBeenCalledTimes(2);
+    expect(sockets[0].removeAllListeners.mock.invocationCallOrder[0]).toBeLessThan(ioMock.mock.invocationCallOrder[1]);
+    expect(sockets[0].disconnect.mock.invocationCallOrder[0]).toBeLessThan(ioMock.mock.invocationCallOrder[1]);
+    act(() => connection(1)());
+    expect(sockets[1].emit).toHaveBeenCalledWith('subscribe:goals');
   });
 
   it('does not connect when disabled for demo mode', () => {

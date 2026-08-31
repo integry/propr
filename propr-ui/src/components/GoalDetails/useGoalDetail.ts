@@ -307,7 +307,7 @@ export function useGoalDetail(goalId: string) {
       if (!current(request, olderController)) return;
       const cursorMadeProgress = page.previousCursor !== null && page.previousCursor !== beforeSequence;
       previousCursorRef.current = page.previousCursor;
-      commitEvents(mergeGoalEvents(eventsRef.current, page.events, goalId));
+      commitEvents(mergeGoalEvents(eventsRef.current, page.events, goalId, 'older'));
       setHasMoreBefore(page.hasMoreBefore && cursorMadeProgress);
       if (page.hasMoreBefore && !cursorMadeProgress) {
         setActionError('Older goal history stopped because the server repeated or omitted its pagination cursor.');

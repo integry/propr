@@ -79,6 +79,27 @@ describe('GoalsPageComponents', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/goals/goal-1');
   });
 
+  it.each([
+    ['javascript:alert(1)', false],
+    ['data:text/html,unsafe', false],
+    ['//github.com/integry/propr/pull/2002', false],
+    ['not a url', false],
+    ['https://', false],
+    ['http://github.com/integry/propr/pull/2002', false],
+    ['https://github.com/integry/propr/pull/2002', true],
+  ])('renders list epicPrUrl %s only when it is absolute HTTPS', (epicPrUrl, allowed) => {
+    if (goal.projection.status !== 'ready') throw new Error('ready projection fixture required');
+    render(<MemoryRouter><GoalRow goal={{ ...goal, projection: { ...goal.projection, epicPrUrl } }} /></MemoryRouter>);
+    const link = screen.queryByRole('link', { name: `Open epic pull request for ${goal.objective}` });
+    if (!allowed) {
+      expect(link).not.toBeInTheDocument();
+      return;
+    }
+    expect(link).toHaveAttribute('href', epicPrUrl);
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
   it('provides focused empty-state actions', () => {
     const create = vi.fn();
     const clear = vi.fn();

@@ -30,6 +30,10 @@ type CompatibilityState =
 
 const AUTHORIZATION_REFRESH_INTERVAL_MS = 60_000;
 
+const socketAuthenticationKey = (user: CurrentUser | null, isDemoMode: boolean): string => user
+  ? JSON.stringify([user.id, user.role, [...user.permissions].sort(), user.authorizationSource])
+  : isDemoMode ? 'demo' : 'anonymous';
+
 const LoadingSpinner: React.FC = () => (
   <div className="flex h-screen w-full items-center justify-center bg-gray-50">
     <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
@@ -166,29 +170,34 @@ const AppContent: React.FC = () => {
 
   // Render spinner while checking auth
   if (isDemoModeLoading || isLoading) return <LoadingSpinner />;
+  const authenticationKey = socketAuthenticationKey(currentUser, isDemoMode);
 
   return (
-    <SocketProvider disabled={isDemoMode}>
-      <ToastProvider>
-        <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
-          <DemoModeBanner />
-          <div className="min-h-0 flex-1">
-            <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
+    <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
+      <SocketProvider
+        key={authenticationKey}
+        authenticationKey={authenticationKey}
+        disabled={isDemoMode}
+      >
+        <ToastProvider>
+          <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
+            <DemoModeBanner />
+            <div className="min-h-0 flex-1">
               <BrowserPushProvider>
                 <NotificationCenterProvider key={currentUser?.id ?? (isDemoMode ? 'demo' : 'anonymous')}>
                   <Router>
-                <HostedFlowRouteSync />
-                <ConnectAccountProvider disabled={isDemoMode || currentUser === null}>
-                  <AppRoutes />
-                </ConnectAccountProvider>
+                    <HostedFlowRouteSync />
+                    <ConnectAccountProvider disabled={isDemoMode || currentUser === null}>
+                      <AppRoutes />
+                    </ConnectAccountProvider>
                   </Router>
                 </NotificationCenterProvider>
               </BrowserPushProvider>
-            </AuthProvider>
+            </div>
           </div>
-        </div>
-      </ToastProvider>
-    </SocketProvider>
+        </ToastProvider>
+      </SocketProvider>
+    </AuthProvider>
   );
 };
 

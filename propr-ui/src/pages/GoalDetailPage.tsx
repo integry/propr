@@ -35,7 +35,7 @@ export default function GoalDetailPage() {
   const { detail } = goal;
   const finalPr = epicUrl(detail.epicPrUrl);
   return (
-    <main className="h-full overflow-y-auto bg-slate-50 px-3 py-3 sm:px-5 sm:py-4">
+    <div className="h-full overflow-y-auto bg-slate-50 px-3 py-3 sm:px-5 sm:py-4">
       <div className="mx-auto max-w-[1800px]">
         <Link to={returnTarget} className="mb-2 inline-flex items-center rounded text-xs font-medium text-slate-500 hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"><ChevronLeft className="h-4 w-4" aria-hidden="true" />Goals</Link>
         <header className="rounded-lg border border-slate-200 bg-white p-4">
@@ -63,6 +63,6 @@ export default function GoalDetailPage() {
           </aside>
         </div>
       </div>
-    </main>
+    </div>
   );
 }
