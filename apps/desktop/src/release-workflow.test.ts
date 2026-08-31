@@ -675,11 +675,28 @@ describe('desktop trusted release workflow', () => {
       2: 'FILE_NOT_FOUND',
       3: 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID',
       5: 'ACCESS_DENIED',
+      6: 'INVALID_HANDLE',
+      50: 'NOT_SUPPORTED',
       87: 'INVALID_PARAMETER',
+      193: 'BAD_EXE_FORMAT',
+      206: 'NAME_TOO_LONG',
       267: 'PATH_NOT_FOUND_OR_DIRECTORY_INVALID',
+      740: 'ELEVATION_REQUIRED',
+      1058: 'SERVICE_DISABLED',
+      1060: 'SERVICE_NOT_FOUND',
+      1062: 'SERVICE_NOT_ACTIVE',
+      1314: 'PRIVILEGE_NOT_HELD',
       1326: 'LOGON_FAILURE',
+      1327: 'ACCOUNT_RESTRICTION',
+      1328: 'INVALID_LOGON_HOURS',
+      1329: 'INVALID_WORKSTATION',
+      1330: 'PASSWORD_EXPIRED',
+      1331: 'ACCOUNT_DISABLED',
       1385: 'LOGON_TYPE_NOT_GRANTED',
+      1789: 'TRUST_RELATIONSHIP_FAILURE',
+      1909: 'ACCOUNT_LOCKED_OUT',
     });
+    assert.equal(Object.keys(mappings).length, 23);
 
     type SimulatedSpawnException = {
       exactType: 'Win32Exception' | 'MethodInvocationException' | 'DerivedMethodInvocationException' | 'OtherException';
@@ -688,6 +705,11 @@ describe('desktop trusted release workflow', () => {
       path?: string;
       user?: string;
       message?: string;
+      exception?: string;
+      account?: string;
+      service?: string;
+      environment?: string;
+      childOutput?: string;
     };
     const renderSpawnFailure = (
       expectation: 'PRESENT' | 'ABSENT',
@@ -718,6 +740,11 @@ describe('desktop trusted release workflow', () => {
       path: String.raw`C:\sentinel-secret\shortcut.lnk`,
       user: 'sentinel-user',
       message: 'sentinel exception message',
+      exception: 'sentinel-exception',
+      account: 'sentinel-account',
+      service: 'sentinel-service',
+      environment: 'sentinel-environment',
+      childOutput: 'sentinel-child-output',
     };
     const sentinelWrapper: SimulatedSpawnException = {
       exactType: 'MethodInvocationException',
@@ -781,22 +808,38 @@ describe('desktop trusted release workflow', () => {
         path: 'sentinel-other-path',
         user: 'sentinel-other-user',
         message: 'sentinel other message',
+        exception: 'sentinel-other-exception',
+        account: 'sentinel-other-account',
+        service: 'sentinel-other-service',
+        environment: 'sentinel-other-environment',
+        childOutput: 'sentinel-other-child-output',
       }),
     ].join('\n');
     for (const sentinel of [
       String.raw`C:\sentinel-secret\shortcut.lnk`,
       'sentinel-user',
       'sentinel exception message',
+      'sentinel-exception',
+      'sentinel-account',
+      'sentinel-service',
+      'sentinel-environment',
+      'sentinel-child-output',
       'sentinel-wrapper-path',
       'sentinel-wrapper-user',
       'sentinel wrapper message',
       'sentinel-other-path',
       'sentinel-other-user',
       'sentinel other message',
+      'sentinel-other-exception',
+      'sentinel-other-account',
+      'sentinel-other-service',
+      'sentinel-other-environment',
+      'sentinel-other-child-output',
       '424242',
     ]) {
       assert.ok(!diagnosticOutputs.includes(sentinel));
     }
+    assert.doesNotMatch(diagnosticOutputs, /\d/);
     assert.doesNotMatch(
       spawnCatch[1],
       /(?:Write-Host|throw)|\.Message|\.ToString\(|\.InnerException\.InnerException|\$ShortcutPath|\$UserName|\$Credential|\$probeChildEnvironment|StandardOutput|StandardError/,
@@ -871,6 +914,10 @@ $results = [ordered]@{
   wrappedOther = Invoke-SpawnCatch { $fixture.ThrowOther() }
   deeper = Invoke-SpawnCatch { throw $outerWrapper }
   invalidParameter = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(87) }
+  invalidHandle = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(6) }
+  serviceDisabled = Invoke-SpawnCatch { $fixture.ThrowWin32(1058) }
+  privilegeNotHeld = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(1314) }
+  accountDisabled = Invoke-SpawnCatch { $fixture.ThrowWin32(1331) }
   ordinary = Invoke-SpawnCatch { throw [InvalidOperationException]::new('sentinel ordinary message') }
   unknown = Invoke-SpawnCatch { throw [System.ComponentModel.Win32Exception]::new(424242) }
 }
@@ -892,6 +939,10 @@ $results | ConvertTo-Json -Compress
       wrappedOther: 'SPAWN_FAILED',
       deeper: 'SPAWN_FAILED',
       invalidParameter: 'SPAWN_FAILED:INVALID_PARAMETER',
+      invalidHandle: 'SPAWN_FAILED:INVALID_HANDLE',
+      serviceDisabled: 'SPAWN_FAILED:SERVICE_DISABLED',
+      privilegeNotHeld: 'SPAWN_FAILED:PRIVILEGE_NOT_HELD',
+      accountDisabled: 'SPAWN_FAILED:ACCOUNT_DISABLED',
       ordinary: 'SPAWN_FAILED',
       unknown: 'SPAWN_FAILED:UNKNOWN',
     });
