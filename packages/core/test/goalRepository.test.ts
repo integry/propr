@@ -324,6 +324,41 @@ describe('GoalRepository', () => {
     );
   });
 
+  test('fences generic transitions and constrains operator intent sources', async () => {
+    const goal = await seedGoal();
+    assert.equal(
+      (repo as unknown as Record<string, unknown>).transitionOperatorIntent,
+      undefined
+    );
+    await assert.rejects(
+      repo.transition(goal.goalId, { toState: 'running' } as never),
+      (error: GoalError) => error.code === 'goal_validation_error'
+    );
+    await assert.rejects(
+      repo.requestResume(goal.goalId),
+      (error: GoalError) => error.code === 'goal_invalid_transition'
+    );
+
+    const fence = await claimFence(goal.goalId);
+    await repo.transition(goal.goalId, { toState: 'planning', ...fence });
+    await assert.rejects(
+      repo.requestResume(goal.goalId),
+      (error: GoalError) => error.code === 'goal_invalid_transition'
+    );
+    await repo.transition(goal.goalId, { toState: 'running', ...fence });
+    await repo.transition(goal.goalId, { toState: 'recovering', ...fence });
+    await assert.rejects(
+      repo.requestResume(goal.goalId),
+      (error: GoalError) => error.code === 'goal_invalid_transition'
+    );
+
+    const pausing = await repo.requestPause(goal.goalId);
+    assert.equal(pausing.state, 'pausing');
+    await repo.transition(goal.goalId, { toState: 'paused', ...fence });
+    const resumed = await repo.requestResume(goal.goalId);
+    assert.equal(resumed.state, 'running');
+  });
+
   test('rejects a terminal transition without a reason but records it with one', async () => {
     const goal = await seedGoal();
     const fence = await claimFence(goal.goalId);
@@ -556,8 +591,8 @@ describe('GoalRepository', () => {
       });
       await repo.markMessageDelivered(goal.goalId, delivered.messageId, fence);
       await repo.requestModelChange(goal.goalId, 'claude-sonnet-5');
-      const cancelled = await repo.transitionOperatorIntent(goal.goalId, {
-        toState: 'cancelled', terminalReason: 'user_cancelled',
+      const cancelled = await repo.requestCancel(goal.goalId, {
+        terminalReason: 'user_cancelled',
       });
       const before = {
         goal: cancelled,

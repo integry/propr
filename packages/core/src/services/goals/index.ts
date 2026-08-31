@@ -5,5 +5,6 @@ export {
   isGoalTerminal,
   type GoalDetail,
   type GoalMutationOptions,
+  type ControllerGoalMutationOptions,
 } from './goalLifecycleService.js';
 export * from './goalTypes.js';

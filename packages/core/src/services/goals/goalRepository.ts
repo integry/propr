@@ -6,6 +6,7 @@
 import type { Knex } from 'knex';
 import type {
   AppendEventInput,
+  CancelIntentInput,
   CreateGoalInput,
   CreateNodeInput,
   EnqueueMessageInput,
@@ -15,6 +16,7 @@ import type {
   GoalLeaseFence,
   GoalMessage,
   GoalNode,
+  OperatorIntentInput,
   GoalProviderSessionRecord,
   ListGoalsQuery,
   ListGoalsResult,
@@ -144,8 +146,19 @@ export class GoalRepository {
     return this.mutations.transition(goalId, input);
   }
 
-  transitionOperatorIntent(goalId: string, input: TransitionInput): Promise<Goal> {
-    return this.mutations.transitionOperatorIntent(goalId, input);
+  requestPause(goalId: string, input: OperatorIntentInput = {}): Promise<Goal> {
+    return this.mutations.requestPause(goalId, input);
+  }
+
+  requestResume(goalId: string, input: OperatorIntentInput = {}): Promise<Goal> {
+    return this.mutations.requestResume(goalId, input);
+  }
+
+  requestCancel(
+    goalId: string,
+    input: CancelIntentInput = {}
+  ): Promise<Goal> {
+    return this.mutations.requestCancel(goalId, input);
   }
 
   requestModelChange(

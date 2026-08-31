@@ -4,11 +4,15 @@ import {
   GOAL_TERMINAL_REASONS,
   isTerminalGoalState,
   isValidGoalTransition,
+  type GoalState,
+  type GoalTerminalReason,
 } from '@propr/shared';
 import type {
+  CancelIntentInput,
   Goal,
   GoalLeaseFence,
   GoalRecord,
+  OperatorIntentInput,
   TransitionInput,
 } from './goalTypes.js';
 import {
@@ -30,24 +34,86 @@ interface ModelChangeOptions {
   idempotencyKey?: string;
 }
 
+interface InternalTransitionInput {
+  toState: GoalState;
+  expectedVersion?: number;
+  leaseOwner?: string;
+  leaseEpoch?: number;
+  reason?: string;
+  terminalReason?: GoalTerminalReason;
+  idempotencyKey?: string;
+  idempotencyOperation?: string;
+}
+
+interface TransitionPolicy {
+  controllerAuthoritative: boolean;
+  allowedSourceStates?: readonly GoalState[];
+}
+
+const PAUSE_SOURCE_STATES: readonly GoalState[] = [
+  'queued', 'planning', 'running', 'recovering',
+];
+const RESUME_SOURCE_STATES: readonly GoalState[] = ['paused'];
+const CANCEL_SOURCE_STATES: readonly GoalState[] = [
+  'queued', 'planning', 'running', 'pausing', 'paused', 'recovering', 'completing',
+];
+
 export class GoalMutationRepository {
   constructor(private readonly db: Knex) {}
 
   async transition(goalId: string, input: TransitionInput): Promise<Goal> {
-    return this.transitionInternal(goalId, normalizeTransition(input), true);
+    return this.transitionInternal(goalId, normalizeTransition(input), {
+      controllerAuthoritative: true,
+    });
   }
 
-  async transitionOperatorIntent(goalId: string, input: TransitionInput): Promise<Goal> {
-    if (input.leaseOwner !== undefined || input.leaseEpoch !== undefined) {
-      throw new GoalError(GOAL_ERROR_CODES.validation, 'Operator intents must not include a lease fence', 400);
-    }
-    return this.transitionInternal(goalId, normalizeTransition(input), false);
+  async requestPause(goalId: string, input: OperatorIntentInput = {}): Promise<Goal> {
+    return this.transitionOperatorIntent(goalId, {
+      toState: 'pausing',
+      expectedVersion: input.expectedVersion,
+      reason: input.reason,
+      idempotencyKey: input.idempotencyKey,
+      idempotencyOperation: `pause:${goalId}`,
+    }, PAUSE_SOURCE_STATES);
+  }
+
+  async requestResume(goalId: string, input: OperatorIntentInput = {}): Promise<Goal> {
+    return this.transitionOperatorIntent(goalId, {
+      toState: 'running',
+      expectedVersion: input.expectedVersion,
+      reason: input.reason,
+      idempotencyKey: input.idempotencyKey,
+      idempotencyOperation: `resume:${goalId}`,
+    }, RESUME_SOURCE_STATES);
+  }
+
+  async requestCancel(goalId: string, input: CancelIntentInput = {}): Promise<Goal> {
+    return this.transitionOperatorIntent(goalId, {
+      toState: 'cancelled',
+      expectedVersion: input.expectedVersion,
+      reason: input.reason,
+      terminalReason: input.terminalReason,
+      idempotencyKey: input.idempotencyKey,
+      idempotencyOperation: `cancel:${goalId}`,
+    }, CANCEL_SOURCE_STATES);
+  }
+
+  private transitionOperatorIntent(
+    goalId: string,
+    input: InternalTransitionInput,
+    allowedSourceStates: readonly GoalState[]
+  ): Promise<Goal> {
+    return this.transitionInternal(
+      goalId,
+      normalizeTransition(input),
+      { controllerAuthoritative: false, allowedSourceStates }
+    );
   }
 
   private async transitionInternal(
     goalId: string,
-    input: TransitionInput,
-    controllerAuthoritative: boolean
+    input: InternalTransitionInput,
+    policy: TransitionPolicy
   ): Promise<Goal> {
     const initial = await requireGoalRecord(this.db, goalId);
     const operation = input.idempotencyOperation ?? `transition:${input.toState}:${goalId}`;
@@ -56,10 +122,15 @@ export class GoalMutationRepository {
       expectedVersion: input.expectedVersion ?? null,
       reason: input.reason ?? null,
       terminalReason: input.terminalReason ?? null,
-      leaseOwner: controllerAuthoritative ? input.leaseOwner ?? null : null,
-      leaseEpoch: controllerAuthoritative ? input.leaseEpoch ?? null : null,
+      leaseOwner: policy.controllerAuthoritative ? input.leaseOwner ?? null : null,
+      leaseEpoch: policy.controllerAuthoritative ? input.leaseEpoch ?? null : null,
     };
-    const effect = (trx: Knex.Transaction) => this.performTransition(trx, goalId, input, controllerAuthoritative);
+    const effect = (trx: Knex.Transaction) => this.performTransition(
+      trx,
+      goalId,
+      input,
+      policy
+    );
     if (input.idempotencyKey === undefined) return goalTransaction(this.db, effect);
     return runIdempotent({
       db: this.db,
@@ -75,12 +146,16 @@ export class GoalMutationRepository {
   private async performTransition(
     trx: Knex.Transaction,
     goalId: string,
-    input: TransitionInput,
-    controllerAuthoritative: boolean
+    input: InternalTransitionInput,
+    policy: TransitionPolicy
   ): Promise<Goal> {
     const goal = await requireGoalRecord(trx, goalId);
     if (input.expectedVersion !== undefined && input.expectedVersion !== goal.version) {
       throw new GoalError(GOAL_ERROR_CODES.versionConflict, `Goal version conflict: expected ${input.expectedVersion}, found ${goal.version}`, 409);
+    }
+    if (policy.allowedSourceStates !== undefined
+      && !policy.allowedSourceStates.includes(goal.state)) {
+      throw new GoalError(GOAL_ERROR_CODES.invalidTransition, `Invalid transition from ${goal.state} to ${input.toState}`, 409);
     }
     if (!isValidGoalTransition(goal.state, input.toState)) {
       throw new GoalError(GOAL_ERROR_CODES.invalidTransition, `Invalid transition from ${goal.state} to ${input.toState}`, 409);
@@ -90,7 +165,7 @@ export class GoalMutationRepository {
     }
     const now = nowIso();
     let update = trx('goals').where({ goal_id: goalId, version: goal.version });
-    if (controllerAuthoritative) {
+    if (policy.controllerAuthoritative) {
       const fence = { leaseOwner: input.leaseOwner!, leaseEpoch: input.leaseEpoch! };
       validateFence(fence);
       update = update.where({ lease_owner: fence.leaseOwner, lease_epoch: fence.leaseEpoch })
@@ -104,8 +179,8 @@ export class GoalMutationRepository {
     });
     if (affected !== 1) {
       throw new GoalError(
-        controllerAuthoritative ? GOAL_ERROR_CODES.staleLease : GOAL_ERROR_CODES.versionConflict,
-        controllerAuthoritative ? 'Controller lease is stale or expired' : 'Goal changed concurrently',
+        policy.controllerAuthoritative ? GOAL_ERROR_CODES.staleLease : GOAL_ERROR_CODES.versionConflict,
+        policy.controllerAuthoritative ? 'Controller lease is stale or expired' : 'Goal changed concurrently',
         409
       );
     }
@@ -285,7 +360,7 @@ export class GoalMutationRepository {
   }
 }
 
-function normalizeTransition(input: TransitionInput): TransitionInput {
+function normalizeTransition(input: InternalTransitionInput): InternalTransitionInput {
   if (input.terminalReason !== undefined && !GOAL_TERMINAL_REASONS.includes(input.terminalReason)) {
     throw new GoalError(GOAL_ERROR_CODES.validation, 'terminalReason is invalid', 400);
   }

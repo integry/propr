@@ -81,6 +81,13 @@ const PRIVATE_EVENT_KEY_NAMES = new Set([
   'credentialpath',
 ]);
 
+const PRIVATE_EVENT_CREDENTIAL_KEY_QUALIFIERS = new Set([
+  'access',
+  'auth',
+  'authentication',
+  'signing',
+]);
+
 const PRIVATE_EVENT_KEY_SUFFIXES = [
   // Deliberately use specific ownership/request identities, not generic owner/request suffixes.
   // repositoryOwner, requestedModel, and pullRequestNumber are public event context.
@@ -236,7 +243,11 @@ function isPrivateEventKey(key: string): boolean {
     .split(/[^a-z0-9]+/)
     .filter(Boolean);
   const normalizedName = words.join('');
+  const isCredentialKey = words.some((word) => word === 'key' || word === 'keys')
+    && words.some((word) => PRIVATE_EVENT_CREDENTIAL_KEY_QUALIFIERS.has(word));
   return PRIVATE_EVENT_KEY_NAMES.has(normalizedName)
+    || isCredentialKey
+    || /^[a-z0-9]*(?:access|auth|authentication|signing)keys?(?:id|value|material|metadata)?$/.test(normalizedName)
     || words.some((word) => PRIVATE_EVENT_KEY_FAMILIES.has(word))
     || PRIVATE_EVENT_KEY_SUFFIXES.some((suffix) => normalizedName.endsWith(suffix));
 }

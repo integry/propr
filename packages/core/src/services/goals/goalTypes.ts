@@ -222,15 +222,23 @@ export interface EnqueueMessageInput {
   idempotencyKey: string;
 }
 
-export interface TransitionInput {
+export interface TransitionInput extends GoalLeaseFence {
   toState: GoalState;
   expectedVersion?: number;
-  leaseOwner?: string;
-  leaseEpoch?: number;
   reason?: string;
   terminalReason?: GoalTerminalReason;
   idempotencyKey?: string;
   idempotencyOperation?: string;
+}
+
+export interface OperatorIntentInput {
+  expectedVersion?: number;
+  reason?: string;
+  idempotencyKey?: string;
+}
+
+export interface CancelIntentInput extends OperatorIntentInput {
+  terminalReason?: GoalTerminalReason;
 }
 
 export interface GoalLeaseFence {

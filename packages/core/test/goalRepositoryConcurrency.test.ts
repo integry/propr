@@ -442,8 +442,8 @@ describe('GoalRepository WAL contention', () => {
       (error: GoalError) => error.code === 'goal_validation_error'
     );
     await assert.rejects(
-      first.transitionOperatorIntent(goal.goalId, {
-        toState: 'pausing', reason: 'x'.repeat(1001), idempotencyKey: 'bounded-reason',
+      first.requestPause(goal.goalId, {
+        reason: 'x'.repeat(1001), idempotencyKey: 'bounded-reason',
       }),
       (error: GoalError) => error.code === 'goal_validation_error'
     );

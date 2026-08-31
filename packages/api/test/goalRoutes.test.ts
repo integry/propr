@@ -263,11 +263,9 @@ describe('goal routes', () => {
     const created = await createGoalViaApi();
     const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
     const routes = makeRoutes();
-    // queued -> resume(running) is valid, then resume again is invalid.
-    await routes.resumeGoal(makeRequest({ params: { goalId }, headers: { 'Idempotency-Key': 'resume-first' } }), makeResponse().res);
     const { res, state } = makeResponse();
-    // running -> resume(running) is not a valid transition.
-    await routes.resumeGoal(makeRequest({ params: { goalId }, headers: { 'Idempotency-Key': 'resume-second' } }), res);
+    // Resume is an operator intent that only applies to a fully paused goal.
+    await routes.resumeGoal(makeRequest({ params: { goalId }, headers: { 'Idempotency-Key': 'resume-queued' } }), res);
     assert.equal(state.statusCode, 409);
     assert.equal(
       (state.body as { code: string }).code,
@@ -428,7 +426,7 @@ describe('goal routes', () => {
   test('rejects model changes once a goal is terminal', async () => {
     const created = await createGoalViaApi();
     const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
-    await new GoalRepository(database).transitionOperatorIntent(goalId, { toState: 'cancelled', terminalReason: 'user_cancelled' });
+    await new GoalRepository(database).requestCancel(goalId, { terminalReason: 'user_cancelled' });
     const response = makeResponse();
     await makeRoutes().requestModelChange(
       makeRequest({ params: { goalId }, body: { model: 'claude-sonnet-5' }, headers: { 'Idempotency-Key': 'model-terminal' } }),

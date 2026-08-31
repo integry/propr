@@ -83,10 +83,13 @@ describe('goal route review blockers', () => {
   test('validates body and If-Match independently and rejects disagreement', async () => {
     const goal = await seedGoal('user-1', 'version contract');
     const routes = createGoalRoutes({ db: database });
-    await routes.resumeGoal(request({
-      params: { goalId: goal.goalId },
-      headers: { 'Idempotency-Key': 'version-running' },
-    }), response().res);
+    const repository = new GoalRepository(database);
+    const lease = await repository.claimLease(goal.goalId, 'version-controller', 60_000);
+    await repository.transition(goal.goalId, {
+      toState: 'running',
+      leaseOwner: 'version-controller',
+      leaseEpoch: lease.epoch,
+    });
     const malformed = [
       { body: { expectedVersion: 2 }, ifMatch: 'W/"2"' },
       { body: { expectedVersion: '2' }, ifMatch: '"2"' },

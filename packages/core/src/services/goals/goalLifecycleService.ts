@@ -27,9 +27,12 @@ import type {
 export interface GoalMutationOptions {
   expectedVersion?: number;
   reason?: string;
-  leaseOwner?: string;
-  leaseEpoch?: number;
   idempotencyKey?: string;
+}
+
+export interface ControllerGoalMutationOptions extends GoalMutationOptions {
+  leaseOwner: string;
+  leaseEpoch: number;
 }
 
 export interface GoalDetail {
@@ -52,21 +55,17 @@ export class GoalLifecycleService {
   }
 
   async pause(goalId: string, options: GoalMutationOptions = {}): Promise<Goal> {
-    return this.repository.transitionOperatorIntent(goalId, {
-      toState: 'pausing',
+    return this.repository.requestPause(goalId, {
       expectedVersion: options.expectedVersion,
       reason: options.reason ?? 'user_requested_pause',
-      leaseOwner: options.leaseOwner,
-      leaseEpoch: options.leaseEpoch,
       idempotencyKey: options.idempotencyKey,
-      idempotencyOperation: `pause:${goalId}`,
     });
   }
 
   /** Controller confirmation that the goal is fully paused. */
   async confirmPaused(
     goalId: string,
-    options: GoalMutationOptions = {}
+    options: ControllerGoalMutationOptions
   ): Promise<Goal> {
     return this.repository.transition(goalId, {
       toState: 'paused',
@@ -81,16 +80,12 @@ export class GoalLifecycleService {
 
   async resume(
     goalId: string,
-    options: GoalMutationOptions & { toState?: 'running' | 'planning' } = {}
+    options: GoalMutationOptions = {}
   ): Promise<Goal> {
-    return this.repository.transitionOperatorIntent(goalId, {
-      toState: options.toState ?? 'running',
+    return this.repository.requestResume(goalId, {
       expectedVersion: options.expectedVersion,
       reason: options.reason ?? 'user_requested_resume',
-      leaseOwner: options.leaseOwner,
-      leaseEpoch: options.leaseEpoch,
       idempotencyKey: options.idempotencyKey,
-      idempotencyOperation: `resume:${goalId}`,
     });
   }
 
@@ -98,15 +93,11 @@ export class GoalLifecycleService {
     goalId: string,
     options: GoalMutationOptions & { terminalReason?: GoalTerminalReason } = {}
   ): Promise<Goal> {
-    return this.repository.transitionOperatorIntent(goalId, {
-      toState: 'cancelled',
+    return this.repository.requestCancel(goalId, {
       expectedVersion: options.expectedVersion,
       reason: options.reason ?? 'user_requested_cancel',
       terminalReason: options.terminalReason ?? 'user_cancelled',
-      leaseOwner: options.leaseOwner,
-      leaseEpoch: options.leaseEpoch,
       idempotencyKey: options.idempotencyKey,
-      idempotencyOperation: `cancel:${goalId}`,
     });
   }
 
