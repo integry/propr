@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, constants, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -76,8 +76,9 @@ const nativeStageAllowlist = Object.freeze([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
   "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
-  "broker:ps-version", "broker:job", "broker:fd", "broker:index-info",
-  "broker:security-info", "broker:acl", "broker:json",
+  "broker:ps-version", "broker:job", "broker:fd", "broker:index-info-initial",
+  "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
+  "broker:index-info-revalidation",
   "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ]);
 const probeMilestoneAllowlist = Object.freeze([
@@ -188,7 +189,10 @@ try {
   assert.ok(expectedUser && actualUser.toLowerCase() === expectedUser.toLowerCase(), "proof did not run as the limited user");
   currentStage = "native-timing";
   const nativeAuthority = await import(windowsAuthorityModule);
-  const probeFd = openSync(root, "r");
+  const probeFd = openSync(
+    fixture,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
   try {
     try {
       const proof = nativeAuthority.runWindowsNativeTimingProbe(probeFd);

@@ -126,8 +126,9 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'resolver:env', 'resolver:canonical', 'resolver:global-open', 'resolver:global-id',
     'spawn:create', 'spawn:error', 'spawn:timeout', 'spawn:cumulative-timeout', 'spawn:status', 'spawn:stderr',
     'probe:entry', 'probe:baseline', 'probe:reflection-emit', 'probe:win32', 'probe:standard-handle', 'probe:output',
-    'broker:ps-version', 'broker:job', 'broker:fd', 'broker:index-info',
-    'broker:security-info', 'broker:acl', 'broker:json',
+    'broker:ps-version', 'broker:job', 'broker:fd', 'broker:index-info-initial',
+    'broker:security-info', 'broker:acl', 'broker:json', 'broker:current-user-sid',
+    'broker:index-info-revalidation',
     'parent:utf8', 'parent:json-shape', 'parent:descriptor-bind', 'parent:post-bind',
   ]);
   assert.deepEqual([...definitions.probeMilestoneAllowlist], [
@@ -213,6 +214,7 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
 test('the staged hosted probe and production inspector both use the inherited standard handle', () => {
   assert.doesNotMatch(windowsAuthority, /_get_osfhandle|AssignProcessToJobObject|CreateJobObject/);
   assert.match(harness, /runWindowsNativeTimingProbe\(probeFd\)/);
+  assert.match(harness, /openSync\(\s*fixture,\s*constants\.O_RDONLY \| constants\.O_DIRECTORY \| constants\.O_NOFOLLOW,\s*\)/);
   assert.match(harness, /native-timing=\$\{nativeProbe\.evidence\}/);
   assert.match(harness, /;total:\$\{nativeProbe\.timing\}/);
   assert.match(harness, /ready=standard-handle-passed/);
@@ -225,6 +227,18 @@ test('the staged hosted probe and production inspector both use the inherited st
   assert.match(windowsAuthority, /stdio: \[stdin, "pipe", "pipe"\]/);
   assert.match(windowsAuthority, /WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false/);
   assert.match(windowsAuthority, /WINDOWS_INSPECTOR_WRITES_FILESYSTEM = false/);
+});
+
+test('the production stage 74 ambiguity is split at the exact native operations', () => {
+  const productionSourceStart = windowsAuthority.indexOf('export const WINDOWS_INSPECTION_SOURCE');
+  const productionSourceEnd = windowsAuthority.indexOf('export const WINDOWS_NATIVE_PROBE_MILESTONES', productionSourceStart);
+  const productionSource = windowsAuthority.slice(productionSourceStart, productionSourceEnd);
+  assert.match(productionSource, /\$stage=74\s+\$before=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$handle,\$before\)\)\{exit \$stage\}/);
+  assert.match(productionSource, /\$stage=78\s+\$current=\[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)\.User\s+if\(\$null-eq \$current\)\{exit \$stage\}\s+\$currentSid=\$current\.Value/);
+  assert.match(productionSource, /\$stage=79\s+\$after=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$handle,\$after\)\)\{exit \$stage\}/);
+  assert.doesNotMatch(windowsAuthority, /"broker:index-info"/);
+  assert.match(windowsAuthority, /74: "broker:index-info-initial"/);
+  assert.match(windowsAuthority, /78: "broker:current-user-sid", 79: "broker:index-info-revalidation"/);
 });
 
 test('the staged probe accepts only ordered milestone tokens and coarse timing buckets', () => {

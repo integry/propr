@@ -31,8 +31,9 @@ export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
   "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
-  "broker:ps-version", "broker:job", "broker:fd", "broker:index-info",
-  "broker:security-info", "broker:acl", "broker:json",
+  "broker:ps-version", "broker:job", "broker:fd", "broker:index-info-initial",
+  "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
+  "broker:index-info-revalidation",
   "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ] as const);
 
@@ -110,6 +111,7 @@ try {
   $stage=74
   $before=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
   if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($handle,$before)){exit $stage}
+  $stage=78
   $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
   if($null-eq $current){exit $stage}
   $currentSid=$current.Value
@@ -146,7 +148,7 @@ try {
       })
     }
   } finally {if($descriptor-ne [IntPtr]::Zero){$null=[ProprReadOnlyAuthority]::LocalFree($descriptor)}}
-  $stage=74
+  $stage=79
   $after=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
   if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($handle,$after)){exit $stage}
   $beforeVolume=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($before,28)
@@ -353,8 +355,9 @@ export function parseWindowsInspectionDocument(value: Buffer | string): readonly
 
 function brokerFailureStage(status: number | null): WindowsNativeStageCode {
   const stages: Readonly<Record<number, WindowsNativeStageCode>> = {
-    71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info",
+    71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info-initial",
     75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
+    78: "broker:current-user-sid", 79: "broker:index-info-revalidation",
   };
   return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
 }

@@ -10,8 +10,9 @@ const nativeStages = new Set([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
   "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
-  "broker:ps-version", "broker:job", "broker:fd", "broker:index-info",
-  "broker:security-info", "broker:acl", "broker:json",
+  "broker:ps-version", "broker:job", "broker:fd", "broker:index-info-initial",
+  "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
+  "broker:index-info-revalidation",
   "parent:utf8", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ]);
 globalThis[Symbol.for("propr.test.windowsNativeDiagnostic")] = (stage) => {

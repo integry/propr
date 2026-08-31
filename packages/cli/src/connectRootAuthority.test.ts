@@ -24,6 +24,7 @@ import {
   WINDOWS_INSPECTOR_WRITES_FILESYSTEM,
   WINDOWS_NATIVE_TIMING_PROBE_SOURCE,
   WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS,
+  WINDOWS_NATIVE_STAGE_CODES,
   windowsInspectionTimeoutForElapsed,
   WindowsNativeStageError,
   windowsNativeTimingBucket,
@@ -192,6 +193,24 @@ test("Windows production inspection has one cold-start deadline and a cumulative
     () => windowsInspectionTimeoutForElapsed(60_000),
     (error) => error instanceof WindowsNativeStageError && error.stage === "spawn:cumulative-timeout",
   );
+});
+
+test("Windows production index and SID failures have distinct fixed redacted stages", () => {
+  assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-initial"));
+  assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:current-user-sid"));
+  assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-revalidation"));
+  assert.equal((WINDOWS_NATIVE_STAGE_CODES as readonly string[]).includes("broker:index-info"), false);
+
+  const initial = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=74");
+  const sid = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=78");
+  const revalidation = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=79");
+  assert.ok(initial >= 0 && initial < sid && sid < revalidation);
+  assert.match(WINDOWS_INSPECTION_SOURCE.slice(initial, sid),
+    /^\$stage=74\n  \$before=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$handle,\$before\)\)\{exit \$stage\}\n  $/s);
+  assert.match(WINDOWS_INSPECTION_SOURCE.slice(sid, WINDOWS_INSPECTION_SOURCE.indexOf("$stage=75", sid)),
+    /^\$stage=78\n  \$current=.*WindowsIdentity\]::GetCurrent\(\)\.User\n  if\(\$null-eq \$current\)\{exit \$stage\}\n  \$currentSid=\$current\.Value\n  $/s);
+  assert.match(WINDOWS_INSPECTION_SOURCE.slice(revalidation, WINDOWS_INSPECTION_SOURCE.indexOf("$beforeVolume", revalidation)),
+    /^\$stage=79\n  \$after=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$handle,\$after\)\)\{exit \$stage\}\n  $/s);
 });
 
 test("Windows PowerShell boundary retains a derived minimal environment and no filesystem writes", () => {
