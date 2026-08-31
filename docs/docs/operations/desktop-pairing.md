@@ -2,15 +2,18 @@
 
 Packaged desktop clients authenticate to one ProPR instance with an opaque
 instance token. They never receive or persist a GitHub access or refresh token.
-Protocol version 1 is designed for the Electron main process (or another trusted
-native process); renderer code must communicate with it through a narrow IPC
-bridge and must not read the device secret or instance token.
+Desktop authentication protocol version 2 is designed for the Electron main
+process (or another trusted native process); renderer code must communicate with
+it through a narrow IPC bridge and must not read the device secret or instance
+token.
 
 ## Discovery
 
-Before login, call `GET /api/desktop/discovery`. The v1 response is deliberately
-limited to the exact product, release/API/UI compatibility, canonical managed
-endpoint, random public installation identity, and authentication capabilities:
+Before login, call `GET /api/desktop/discovery`. The discovery document retains
+schema version 1 and advertises desktop authentication protocol version 2. It is
+deliberately limited to the exact product, release/API/UI compatibility,
+canonical managed endpoint, random public installation identity, and
+authentication capabilities:
 
 ```json
 {
@@ -22,7 +25,7 @@ endpoint, random public installation identity, and authentication capabilities:
   "canonicalEndpoint": "https://t-abc123.propr.dev",
   "publicInstanceIdentity": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "desktopAuthentication": {
-    "protocolVersion": 1,
+    "protocolVersion": 2,
     "browserPairing": true,
     "instanceBearerTokens": true,
     "socketIoBearerAuthentication": true
@@ -30,10 +33,11 @@ endpoint, random public installation identity, and authentication capabilities:
 }
 ```
 
-Consumers must parse the entire document as the exact v1 contract before using
-any field. The version is canonical SemVer; both compatibility values are
-canonical `YYYY-MM-DD` versions; the identity is an exact lowercase UUIDv4; and
-the endpoint is either `null` during restart/configuration or the bare canonical
+Consumers must parse the entire schema-v1 document and require desktop
+authentication protocol version 2 before using any field. The version is
+canonical SemVer; both compatibility values are canonical `YYYY-MM-DD` versions;
+the identity is an exact lowercase UUIDv4; and the endpoint is either `null`
+during restart/configuration or the bare canonical
 `https://t-<id>.propr.dev` origin. Every capability key is required and every
 capability value is a JSON boolean. Missing, extra, coerced, malformed, or
 non-canonical fields are incompatible discovery, never partial readiness.
@@ -50,8 +54,8 @@ replacing the durable data directory creates a new identity.
 
 Discovery is rate limited per trusted network address. A `false` capability
 means the deployment (for example, public demo mode) must not be paired. The
-legacy `GET /api/compatibility` metadata is not a substitute for the v1 endpoint
-and identity contract.
+legacy `GET /api/compatibility` metadata is not a substitute for the schema-v1
+discovery and identity contract.
 
 ## Pairing sequence
 

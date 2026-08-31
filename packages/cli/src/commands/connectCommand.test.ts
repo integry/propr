@@ -31,7 +31,7 @@ function discovery(overrides: Record<string, unknown> = {}): Record<string, unkn
     apiCompatibility: "2026-06-27",
     uiCompatibility: "2026-06-27",
     desktopAuthentication: {
-      protocolVersion: 1,
+      protocolVersion: 2,
       browserPairing: true,
       instanceBearerTokens: true,
       socketIoBearerAuthentication: true,
@@ -145,7 +145,7 @@ test("ready requires every desktop authentication capability", async () => {
       publicInstanceIdentity: IDENTITY,
       fetchImpl: jsonFetch(discovery({
         desktopAuthentication: {
-          protocolVersion: 1,
+          protocolVersion: 2,
           browserPairing: capability !== "browserPairing",
           instanceBearerTokens: capability !== "instanceBearerTokens",
           socketIoBearerAuthentication: capability !== "socketIoBearerAuthentication",
@@ -177,8 +177,10 @@ test("probe distinguishes timeout, non-JSON, and capped output", async () => {
   assert.deepEqual(await probeConnectDiscovery(ENDPOINT, oversized, 100), { kind: "tooLarge" });
 });
 
-test("the shared v1 parser requires every exact canonical field and capability", () => {
-  assert.ok(parseProprDesktopDiscovery(discovery()));
+test("the shared discovery parser requires every exact canonical field and capability", () => {
+  const parsed = parseProprDesktopDiscovery(discovery());
+  assert.ok(parsed);
+  assert.equal(parsed.desktopAuthentication.protocolVersion, 2);
   const topLevelKeys = Object.keys(discovery());
   for (const key of topLevelKeys) {
     const candidate = discovery();
@@ -210,24 +212,25 @@ test("the shared v1 parser requires every exact canonical field and capability",
     discovery({ publicInstanceIdentity: IDENTITY.toUpperCase() }),
     discovery({ desktopAuthentication: {
       protocolVersion: 2,
-      browserPairing: true,
-      instanceBearerTokens: true,
-      socketIoBearerAuthentication: true,
-    } }),
-    discovery({ desktopAuthentication: {
-      protocolVersion: 1,
       browserPairing: 1,
       instanceBearerTokens: true,
       socketIoBearerAuthentication: true,
     } }),
     discovery({ desktopAuthentication: {
-      protocolVersion: 1,
+      protocolVersion: 2,
       browserPairing: true,
       instanceBearerTokens: true,
       socketIoBearerAuthentication: true,
       omittedCapabilityReplacement: true,
     } }),
   ]) assert.equal(parseProprDesktopDiscovery(invalid), null);
+
+  assert.equal(parseProprDesktopDiscovery(discovery({ desktopAuthentication: {
+    protocolVersion: 1,
+    browserPairing: true,
+    instanceBearerTokens: true,
+    socketIoBearerAuthentication: true,
+  } })), null, "legacy desktop authentication protocol v1 must fail closed");
 });
 
 function neverEndingResponse(

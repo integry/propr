@@ -19,7 +19,7 @@ const discovery = {
   apiCompatibility: '2026-06-27',
   uiCompatibility: '2026-06-27',
   desktopAuthentication: {
-    protocolVersion: 1,
+    protocolVersion: 2,
     browserPairing: true,
     instanceBearerTokens: true,
     socketIoBearerAuthentication: true,

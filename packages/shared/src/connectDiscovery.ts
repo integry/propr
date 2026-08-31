@@ -74,7 +74,7 @@ function isCanonicalCompatibility(value: unknown): value is string {
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }
 
-/** Strictly parse the complete v1 trust-boundary document without coercion. */
+/** Strictly parse the schema-v1 discovery document with desktop-auth protocol v2. */
 export function parseProprDesktopDiscovery(value: unknown): ProprDesktopDiscovery | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
@@ -100,7 +100,7 @@ export function parseProprDesktopDiscovery(value: unknown): ProprDesktopDiscover
       typeof endpoint !== 'string'
       || canonicalProprProxyUrl(endpoint) !== endpoint
     ))
-    || capabilities.protocolVersion !== 1
+    || capabilities.protocolVersion !== 2
     || typeof capabilities.browserPairing !== 'boolean'
     || typeof capabilities.instanceBearerTokens !== 'boolean'
     || typeof capabilities.socketIoBearerAuthentication !== 'boolean'
@@ -115,7 +115,7 @@ export function parseProprDesktopDiscovery(value: unknown): ProprDesktopDiscover
     canonicalEndpoint: endpoint as string | null,
     publicInstanceIdentity: candidate.publicInstanceIdentity,
     desktopAuthentication: {
-      protocolVersion: 1,
+      protocolVersion: 2,
       browserPairing: capabilities.browserPairing,
       instanceBearerTokens: capabilities.instanceBearerTokens,
       socketIoBearerAuthentication: capabilities.socketIoBearerAuthentication,
