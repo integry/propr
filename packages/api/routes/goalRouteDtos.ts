@@ -14,6 +14,7 @@ import type {
   PublicGoalMessageDto,
   PublicGoalNodeDto,
 } from '@propr/shared';
+import { redactFileUriTokens } from './goalRouteFileUriSanitizer.js';
 
 const PUBLIC_EVENT_PAYLOAD_LIMITS = {
   depth: 16,
@@ -73,12 +74,12 @@ const PUBLIC_EVENT_REDACTION_LOOKAHEAD_BYTES = 256;
 const SENSITIVE_EVENT_VALUE_PATTERNS = [
   /(^|[\s"'`=(,:])(?:unix|npipe):\/\/[^\s"'`<>]+/gimu,
   /(^|[\s"'`=(,:])tcp:\/\/[^\s"'`<>]+(?::2375|:2376)(?:\/[^\s"'`<>]*)?/gimu,
-  /(^|[\s"'`=(,:])(?:file:(?:\/\/)?)?\/(?:app|builds?|data|github|home|root|users|private|var|run|tmp|srv|workspaces?|worktrees?|mnt|etc|opt)(?:\/[^\s"'`<>]*)?/gimu,
-  /(^|[\s"'`=(,:])(?:file:(?:\/\/)?)?\/(?:[^\s"'`<>/]+\/)*(?:\.env|\.npmrc|\.netrc|\.git-credentials|\.ssh|\.aws|\.azure|\.config|\.docker|\.kube|\.gnupg|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)(?=\/|[\s"'`<>]|$)(?:\/[^\s"'`<>]*)?/gimu,
+  /(^|[\s"'`=(,:])\/(?:app|builds?|data|github|home|root|users|private|var|run|tmp|srv|workspaces?|worktrees?|mnt|etc|opt)(?:\/[^\s"'`<>]*)?/gimu,
+  /(^|[\s"'`=(,:])\/(?:[^\s"'`<>/]+\/)*(?:\.env|\.npmrc|\.netrc|\.git-credentials|\.ssh|\.aws|\.azure|\.config|\.docker|\.kube|\.gnupg|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)(?=\/|[\s"'`<>]|$)(?:\/[^\s"'`<>]*)?/gimu,
   /(^|[\s"'`=(,:])[A-Z]:[\\/](?:Users|Windows|ProgramData|workspaces?|worktrees?)[^\s"'`<>]*/gimu,
 ] as const;
 const INCOMPLETE_SENSITIVE_EVENT_VALUE_PATTERN =
-  /(^|[\s"'`=(,:])(?:tcp:\/\/[^\s"'`<>]*|file:(?:\/\/)?\/[^\s"'`<>]*|\/(?!\/)[^\s"'`<>]*|[A-Z]:[\\/][^\s"'`<>]*)$/gimu;
+  /(^|[\s"'`=(,:])(?:tcp:\/\/[^\s"'`<>]*|\/(?!\/)[^\s"'`<>]*|[A-Z]:[\\/][^\s"'`<>]*)$/gimu;
 
 interface PublicPayloadProjectionState {
   nodes: number;
@@ -137,7 +138,8 @@ function truncateUtf8(value: string, maxBytes: number): string {
 }
 
 function redactSensitiveEventValues(value: string, inputTruncated: boolean): string {
-  let sanitized = redactSecrets(value);
+  let sanitized = redactFileUriTokens(value, inputTruncated);
+  sanitized = redactSecrets(sanitized);
   for (const pattern of SENSITIVE_EVENT_VALUE_PATTERNS) {
     sanitized = sanitized.replace(pattern, `$1${SENSITIVE_PATH_MARKER}`);
   }
