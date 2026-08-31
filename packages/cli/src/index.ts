@@ -161,6 +161,8 @@ export function hasExactlyOneExplicitConnectStatusRoot(argv: readonly string[]):
 // duplicate root options. Every Connect status invocation (and therefore every
 // --json failure shape) must avoid pre-reading a replaceable cwd/.env.
 const connectStatusInvocation = isExplicitConnectStatusInvocation(process.argv);
+const connectStatusHelpRequested = connectStatusInvocation
+  && process.argv.slice(2).some((arg) => arg === "--help" || arg === "-h");
 const malformedConnectStatusRoot = connectStatusInvocation
   && !hasExactlyOneExplicitConnectStatusRoot(process.argv);
 if (!connectStatusInvocation) config();
@@ -446,6 +448,10 @@ if (isCliEntryPoint() && !process.argv.slice(2).length) {
       process.exit(1);
     }
   })();
+} else if (isCliEntryPoint() && connectStatusHelpRequested) {
+  // Parse a canonical help shape so a malformed `--root` cannot consume the
+  // help flag as its required value. Commander remains the help authority.
+  program.parse([...process.argv.slice(0, 2), "connect", "status", "--help"]);
 } else if (isCliEntryPoint() && malformedConnectStatusRoot) {
   const document = invalidConnectRootStatus();
   process.stdout.write(`${JSON.stringify(document)}\n`);
