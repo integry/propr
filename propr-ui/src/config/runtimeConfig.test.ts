@@ -120,10 +120,10 @@ describe('getApiBaseUrl', () => {
     expect(getApiBaseUrl()).toBe('https://t-abc123.propr.dev');
   });
 
-  it('strips multiple trailing slashes', async () => {
+  it('rejects multiple trailing slashes as a non-default origin path', async () => {
     window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://t-abc123.propr.dev///' };
     const getApiBaseUrl = await loadGetApiBaseUrl();
-    expect(getApiBaseUrl()).toBe('https://t-abc123.propr.dev');
+    expect(() => getApiBaseUrl()).toThrow(/canonical HTTPS origin/i);
   });
 
   it('strips a trailing slash from the build-time env var', async () => {
@@ -253,6 +253,7 @@ describe('hosted tunnel query API base', () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
     for (const bad of [
       '?tunnel=https%3A%2F%2Ft-abc123.propr.dev',
+      '?tunnel=https%3A%2F%2Ft-abc123.propr.dev%2F%2F',
       '?tunnel=t-abc123.propr.dev%2F',
       '?tunnel=abc123',
       '?tunnel=t-abc123.propr.dev.',

@@ -424,7 +424,22 @@ export const resolveApiBaseUrl = (
     (buildTimeApiBaseUrl?.trim() ? buildTimeApiBaseUrl : undefined) ||
     ''
   );
-  const normalized = normalizeApiBaseUrl(selectedApiBaseUrl);
+  let normalized: string;
+  try {
+    normalized = normalizeApiBaseUrl(selectedApiBaseUrl);
+  } catch (error) {
+    // The transport client now rejects noncanonical origins before the hosted
+    // authority guard below can inspect them. Preserve the hosted UI behavior:
+    // managed-host aliases are ignored, while unrelated invalid config throws.
+    try {
+      const candidate = new URL(selectedApiBaseUrl.trim());
+      if (
+        isHostedUiOrigin(hostname)
+        && canonicalProprProxySelector(candidate.hostname.toLowerCase())
+      ) return '';
+    } catch { /* retain the original configuration error */ }
+    throw error;
+  }
   // The generic client normalizer intentionally accepts equivalent HTTP URL
   // spellings. A hosted managed origin is an authority selector, though: if
   // normalization made it canonical, its raw input was not canonical and must

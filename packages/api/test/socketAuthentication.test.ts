@@ -172,7 +172,7 @@ describe('Socket.IO authentication', () => {
     );
   });
 
-  test('runs Engine.IO middleware before the mandatory identity gate', async () => {
+  test('runs Engine.IO middleware and maps browser Socket.IO auth into the shared bearer gate', async () => {
     const httpServer = createServer();
     const io = new SocketIOServer(httpServer, { transports: ['websocket'] });
     const markerMiddleware: RequestHandler = (req, _res, next) => {
@@ -196,13 +196,119 @@ describe('Socket.IO authentication', () => {
     const port = (httpServer.address() as AddressInfo).port;
     const client = createSocketClient(`http://127.0.0.1:${port}`, {
       transports: ['websocket'],
-      extraHeaders: { Authorization: 'Bearer test-token' },
+      auth: { token: 'test-token' },
       reconnection: false,
     });
 
     try {
       await waitForConnect(client);
       assert.equal(connectedPrincipal?.user.username, 'octocat');
+    } finally {
+      client.disconnect();
+      await io.close();
+      await new Promise<void>(resolve => httpServer.close(() => resolve()));
+    }
+  });
+
+  test('refreshes synthesized bearer auth on namespace reconnects over the same Engine.IO connection', async () => {
+    const httpServer = createServer();
+    const io = new SocketIOServer(httpServer, { transports: ['websocket'] });
+    const seenAuthorization: Array<string | undefined> = [];
+    configureSocketAuthentication(io, {
+      engineMiddleware: [],
+      authenticate: async req => {
+        const authorization = req.headers.authorization;
+        seenAuthorization.push(authorization);
+        if (authorization === 'Bearer initial-token') return principal(user({ id: '1' }));
+        if (authorization === 'Bearer replacement-token') return principal(user({ id: '2' }));
+        throw new SocketAuthenticationError('AUTHENTICATION_REQUIRED', 'missing bearer');
+      },
+    });
+    let serverSocket: ServerSocket | undefined;
+    io.on('connection', socket => {
+      serverSocket = socket;
+    });
+    io.of('/anchor').on('connection', () => undefined);
+    await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+    const client = createSocketClient(`http://127.0.0.1:${port}`, {
+      transports: ['websocket'],
+      auth: { token: 'initial-token' },
+      autoConnect: false,
+      reconnection: false,
+    });
+    const anchor = client.io.socket('/anchor');
+
+    try {
+      client.connect();
+      anchor.connect();
+      await waitFor(
+        () => client.connected && anchor.connected,
+        'Initial namespaces did not connect',
+      );
+      const engineId = client.io.engine?.id;
+      assert(engineId);
+
+      const initialServerSocket = serverSocket;
+      assert(initialServerSocket);
+      const initiallyDisconnected = new Promise<void>(resolve => {
+        initialServerSocket.once('disconnect', () => resolve());
+      });
+      client.disconnect();
+      await initiallyDisconnected;
+      client.auth = { token: 'replacement-token' };
+      const reconnected = waitForConnect(client);
+      client.connect();
+      await reconnected;
+      assert.equal(client.io.engine?.id, engineId);
+
+      const replacementServerSocket = serverSocket;
+      assert(replacementServerSocket);
+      const replacementDisconnected = new Promise<void>(resolve => {
+        replacementServerSocket.once('disconnect', () => resolve());
+      });
+      client.disconnect();
+      await replacementDisconnected;
+      client.auth = {};
+      const rejected = waitForConnectError(client);
+      client.connect();
+      const error = await rejected;
+      assert.equal(error.data?.code, 'AUTHENTICATION_REQUIRED');
+      assert.equal(client.io.engine?.id, engineId);
+      assert.deepEqual(seenAuthorization, [
+        'Bearer initial-token',
+        'Bearer replacement-token',
+        undefined,
+      ]);
+    } finally {
+      client.disconnect();
+      anchor.disconnect();
+      await io.close();
+      await new Promise<void>(resolve => httpServer.close(() => resolve()));
+    }
+  });
+
+  test('preserves transport-level Authorization instead of Socket.IO auth', async () => {
+    const httpServer = createServer();
+    const io = new SocketIOServer(httpServer, { transports: ['websocket'] });
+    configureSocketAuthentication(io, {
+      engineMiddleware: [],
+      authenticate: async req => {
+        assert.equal(req.headers.authorization, 'Bearer transport-token');
+        return principal();
+      },
+    });
+    await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+    const client = createSocketClient(`http://127.0.0.1:${port}`, {
+      transports: ['websocket'],
+      extraHeaders: { Authorization: 'Bearer transport-token' },
+      auth: { token: 'socket-token' },
+      reconnection: false,
+    });
+
+    try {
+      await waitForConnect(client);
     } finally {
       client.disconnect();
       await io.close();

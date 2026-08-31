@@ -41,6 +41,12 @@ export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
  */
 export const DESKTOP_RENDERER_ORIGIN = 'propr-app://renderer';
 
+/** Opaque activation binding carried by packaged renderer REST requests. */
+export const DESKTOP_TRANSPORT_SCOPE_HEADER = 'X-ProPR-Desktop-Transport-Scope';
+
+/** Opaque activation binding carried by packaged renderer Socket.IO upgrades. */
+export const DESKTOP_TRANSPORT_SCOPE_QUERY = 'proprDesktopTransportScope';
+
 /**
  * DNS suffix and label prefix for per-instance UI/API tunnel hostnames. Each
  * local stack with an instance id is reachable at

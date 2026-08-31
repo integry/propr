@@ -17,12 +17,29 @@ import {
   type ProprSocketOptions,
   type Socket,
 } from './socket.js';
+import {
+  completeDesktopPairing,
+  parseDesktopDiscovery,
+  parseDesktopPairingStart,
+  parseDesktopPairingActivationReceipt,
+  type ProprDesktopDiscovery,
+  type ProprDesktopPairingComplete,
+  type ProprDesktopPairingActivationReceipt,
+  type ProprDesktopPairingOptions,
+  type ProprDesktopPairingStart,
+} from './desktopPairing.js';
+import {
+  requestPairingProtocol,
+  type PairingProtocolRequestOptions,
+} from './pairingProtocol.js';
 
 export interface ProprClientOptions extends NormalizeApiBaseUrlOptions {
   baseUrl?: string | null;
   authentication?: ProprAuthentication;
   defaultTimeoutMs?: number;
   fetch?: typeof globalThis.fetch;
+  /** @internal Deterministic response-lifecycle proof; production uses fixed protocol defaults. */
+  pairingProtocol?: PairingProtocolRequestOptions;
 }
 
 export interface ProprFetchOptions {
@@ -75,6 +92,7 @@ export class ProprClient {
   readonly defaultTimeoutMs: number;
 
   private readonly fetchImplementation: typeof globalThis.fetch;
+  private readonly pairingProtocolOptions: PairingProtocolRequestOptions;
 
   constructor(options: ProprClientOptions = {}) {
     this.baseUrl = normalizeApiBaseUrl(options.baseUrl, options);
@@ -82,6 +100,7 @@ export class ProprClient {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 0;
     assertTimeout(this.defaultTimeoutMs);
     this.fetchImplementation = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    this.pairingProtocolOptions = options.pairingProtocol ?? {};
   }
 
   url(path: string): string {
@@ -213,6 +232,124 @@ export class ProprClient {
     return result;
   }
 
+  async discoverDesktop(timeoutMs = 8000, signal?: AbortSignal): Promise<ProprDesktopDiscovery> {
+    const metadata = await this.request<unknown>('/api/desktop/discovery', {
+      cache: 'no-store',
+      signal,
+    }, { timeoutMs });
+    const compatibility = evaluateProprApiCompatibility(
+      metadata && typeof metadata === 'object'
+        ? metadata as Partial<ProprCompatibilityMetadata>
+        : {},
+    );
+    return parseDesktopDiscovery(metadata, compatibility);
+  }
+
+  async startDesktopPairing(
+    clientName: string,
+    options: Pick<ProprDesktopPairingOptions, 'signal' | 'now' | 'binding'>,
+  ): Promise<ProprDesktopPairingStart> {
+    const path = '/api/desktop/pairings';
+    const expectedOrigin = this.resolveRequestOrigin(this.url(path));
+    return parseDesktopPairingStart(await this.requestDesktopPairing(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientName, ...options.binding }),
+      redirect: 'manual',
+      signal: options.signal,
+    }), expectedOrigin, options.now);
+  }
+
+  async pairDesktop(
+    clientName: string,
+    options: ProprDesktopPairingOptions,
+  ): Promise<ProprDesktopPairingComplete> {
+    const start = await this.startDesktopPairing(clientName, options);
+    return completeDesktopPairing(this, start, options);
+  }
+
+  async activateDesktopPairing(
+    pairing: ProprDesktopPairingComplete,
+    signal?: AbortSignal,
+  ): Promise<ProprDesktopPairingActivationReceipt> {
+    return parseDesktopPairingActivationReceipt(await this.requestDesktopPairing(
+      `/api/desktop/pairings/${encodeURIComponent(pairing.pairingId)}/activate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceSecret: pairing.deviceSecret,
+          activationTicket: pairing.activationTicket,
+          instanceId: pairing.instanceId,
+          origin: pairing.origin,
+          scope: pairing.scope,
+          credentialGeneration: pairing.credentialGeneration,
+        }),
+        redirect: 'manual',
+        signal,
+      },
+    ));
+  }
+
+  async cancelDesktopPairing(
+    pairing: ProprDesktopPairingComplete,
+    signal?: AbortSignal,
+  ): Promise<{ status: 'cancelled'; cancelledAt: string }> {
+    const value = await this.requestDesktopPairing(
+      `/api/desktop/pairings/${encodeURIComponent(pairing.pairingId)}/cancel`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceSecret: pairing.deviceSecret,
+          activationTicket: pairing.activationTicket,
+          instanceId: pairing.instanceId,
+          origin: pairing.origin,
+          scope: pairing.scope,
+          credentialGeneration: pairing.credentialGeneration,
+        }),
+        redirect: 'manual',
+        signal,
+      },
+    );
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new ProprClientError('The ProPR instance returned an invalid pairing cancellation receipt.', {
+        kind: 'invalid_response',
+      });
+    }
+    const receipt = value as Record<string, unknown>;
+    if (receipt.status !== 'cancelled' || typeof receipt.cancelledAt !== 'string'
+      || !Number.isFinite(Date.parse(receipt.cancelledAt))
+      || Object.keys(receipt).some(key => !['status', 'cancelledAt'].includes(key))) {
+      throw new ProprClientError('The ProPR instance returned an invalid pairing cancellation receipt.', {
+        kind: 'invalid_response',
+      });
+    }
+    return receipt as unknown as { status: 'cancelled'; cancelledAt: string };
+  }
+
+  /** @internal Pairing keeps transport ownership through the complete body. */
+  async requestDesktopPairing(
+    path: string,
+    init: RequestInit,
+    overallTimeoutMs?: number,
+  ): Promise<unknown> {
+    const target = this.resolveRequestTarget(this.url(path));
+    const authentication = this.authenticate(init);
+    const authenticatedInit = authentication instanceof Promise
+      ? await authentication
+      : authentication;
+    return requestPairingProtocol(
+      this.fetchImplementation,
+      target,
+      authenticatedInit ?? {},
+      {
+        ...this.pairingProtocolOptions,
+        overallTimeoutMs: overallTimeoutMs ?? this.pairingProtocolOptions.overallTimeoutMs,
+      },
+    );
+  }
+
   connectSocket(options: ProprSocketOptions = {}): Socket {
     return connectProprSocket(buildSocketConnection(this.baseUrl, this.authentication, options));
   }
@@ -246,6 +383,22 @@ export class ProprClient {
     return input;
   }
 
+  private resolveRequestOrigin(input: RequestInfo | URL): string {
+    const raw = input instanceof Request ? input.url : input.toString();
+    const browserOrigin = typeof globalThis.location !== 'undefined'
+      ? globalThis.location.origin
+      : undefined;
+    try {
+      const origin = new URL(raw, browserOrigin).origin;
+      if (origin === 'null') throw new Error();
+      return origin;
+    } catch {
+      throw new ProprClientError('The ProPR instance origin could not be established.', {
+        kind: 'configuration',
+      });
+    }
+  }
+
   private authenticate(init?: RequestInit): RequestInit | undefined | Promise<RequestInit> {
     if (this.authentication.type === 'none') return init;
     if (this.authentication.type === 'session') {
@@ -276,6 +429,8 @@ export class ProprClient {
       }
       headers.set('Authorization', `Bearer ${token}`);
     }
-    return { ...init, headers };
+    // Bearer profiles must never accidentally inherit a browser/Electron cookie
+    // identity from another named profile on the same origin.
+    return { ...init, credentials: 'omit', headers };
   }
 }

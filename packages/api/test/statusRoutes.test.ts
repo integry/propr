@@ -228,7 +228,7 @@ test('/api/compatibility returns public version contract metadata', async () => 
     apiCompatibility: PROPR_API_COMPATIBILITY,
     uiCompatibility: PROPR_UI_COMPATIBILITY,
     desktopAuthentication: {
-      protocolVersion: 1,
+      protocolVersion: 2,
       browserPairing: true,
       instanceBearerTokens: true,
       socketIoBearerAuthentication: true,
@@ -256,7 +256,7 @@ test('/api/desktop/discovery returns the bounded public identity and runtime ori
     apiCompatibility: PROPR_API_COMPATIBILITY,
     uiCompatibility: PROPR_UI_COMPATIBILITY,
     desktopAuthentication: {
-      protocolVersion: 1,
+      protocolVersion: 2,
       browserPairing: true,
       instanceBearerTokens: true,
       socketIoBearerAuthentication: true,
