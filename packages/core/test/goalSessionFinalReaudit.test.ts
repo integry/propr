@@ -203,8 +203,10 @@ test('eager pause and streamed model/pause transitions lose atomically to cancel
             } else {
                 adapter.stream = async function* () {
                     yield kind === 'model_changed'
-                        ? { type: 'model_changed', previousModel: 'model-a', model: 'model-b' }
-                        : { type: 'pause_boundary', boundary: 'provider-safe' };
+                        ? {
+                            type: 'model_changed', previousModel: 'model-a', model: 'model-b', providerEventId: 'stream-model-1',
+                        }
+                        : { type: 'pause_boundary', boundary: 'provider-safe', providerEventId: 'stream-pause-1' };
                 };
                 pending = supervisor.runTurn(turnRequest());
             }
@@ -229,8 +231,10 @@ test('streamed model and pause events survive transition crash windows without s
                 const adapter = new FinalReauditAdapter();
                 adapter.stream = async function* () {
                     yield eventType === 'model_changed'
-                        ? { type: 'model_changed', previousModel: 'model-a', model: 'model-b' }
-                        : { type: 'pause_boundary', boundary: 'provider-safe' };
+                        ? {
+                            type: 'model_changed', previousModel: 'model-a', model: 'model-b', providerEventId: 'stream-model-2',
+                        }
+                        : { type: 'pause_boundary', boundary: 'provider-safe', providerEventId: 'stream-pause-2' };
                 };
                 const { ports, supervisor } = await openRuntime(adapter);
                 ports.setTransitionFault(fault);

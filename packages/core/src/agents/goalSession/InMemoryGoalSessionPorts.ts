@@ -204,8 +204,7 @@ export class InMemoryGoalSessionPorts implements
         if (!state || state.controllerEpoch !== fence.controllerEpoch) {
             return { accepted: false, reason: 'stale_fence' };
         }
-        if (isOrderedControlAudit(event)
-            && (state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed')) {
+        if (state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') {
             return { accepted: false, reason: 'stale_fence' };
         }
         // Control events are session/epoch fenced only, so they remain auditable
@@ -406,11 +405,4 @@ function transitionCommitKey(transition: GoalSessionControlTransition): string {
         transition.execution.attemptId,
         transition.transitionId,
     ]);
-}
-
-function isOrderedControlAudit(event: GoalSessionEvent): boolean {
-    return event.type === 'model_change_acknowledged'
-        || event.type === 'model_changed'
-        || event.type === 'pause_requested'
-        || event.type === 'pause_boundary';
 }

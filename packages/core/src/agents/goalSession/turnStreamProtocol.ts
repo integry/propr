@@ -41,21 +41,41 @@ export function streamAuditTransitionId(
     fence: GoalSessionFence,
     execution: GoalExecutionIdentity,
     event: Extract<GoalSessionEvent, { type: 'model_changed' | 'pause_boundary' }>,
-    streamOrdinal: number,
 ): string {
-    const semanticEvent = event.type === 'model_changed'
-        ? [event.type, event.model]
-        : [event.type, event.boundary, event.checkpointId ?? null];
+    const occurrence = streamTransitionOccurrence(event);
     const digest = createHash('sha256')
         .update(JSON.stringify([
+            fence.goalId,
+            fence.sessionId,
+            fence.controllerEpoch,
             fence.turnId,
             execution.executionId,
             execution.attemptId,
-            event.providerEventId ?? null,
-            event.providerEventOrdinal ?? streamOrdinal,
-            semanticEvent,
+            occurrence,
         ]))
         .digest('hex')
         .slice(0, 32);
     return `stream-audit-${digest}`;
+}
+
+/** Validates and selects the provider-stable occurrence identity. IDs win over ordinals. */
+export function streamTransitionOccurrence(
+    event: Extract<GoalSessionEvent, { type: 'model_changed' | 'pause_boundary' }>,
+): readonly ['provider_event_id', string] | readonly ['provider_event_ordinal', number] {
+    if (event.providerEventId !== undefined) {
+        if (typeof event.providerEventId !== 'string' || !event.providerEventId.trim()) {
+            throw new GoalSessionContractError(
+                'Streamed model/pause transition providerEventId must be non-empty',
+                'STREAM_TRANSITION_ID_INVALID',
+            );
+        }
+        return ['provider_event_id', event.providerEventId];
+    }
+    if (Number.isSafeInteger(event.providerEventOrdinal) && (event.providerEventOrdinal ?? -1) >= 0) {
+        return ['provider_event_ordinal', event.providerEventOrdinal as number];
+    }
+    throw new GoalSessionContractError(
+        'Streamed model/pause transition requires a stable providerEventId or providerEventOrdinal',
+        'STREAM_TRANSITION_ID_MISSING',
+    );
 }

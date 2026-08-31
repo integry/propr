@@ -151,12 +151,14 @@ test('actual stale streams cannot mutate checkpoint, model, or pause after recov
         },
         {
             name: 'current model',
-            event: { type: 'model_changed', previousModel: 'model-a', model: 'stale-model' },
+            event: {
+                type: 'model_changed', previousModel: 'model-a', model: 'stale-model', providerEventId: 'stale-model-event',
+            },
             verify: state => assert.equal(state.currentModel, 'model-recovered'),
         },
         {
             name: 'pause boundary',
-            event: { type: 'pause_boundary', boundary: 'stale-boundary' },
+            event: { type: 'pause_boundary', boundary: 'stale-boundary', providerEventId: 'stale-pause-event' },
             verify: state => {
                 assert.equal(state.status, 'running');
                 assert.equal(state.activeTurn?.status, 'running');
@@ -524,8 +526,9 @@ test('a crash before replacement promotion preserves old authority and retry pro
         ['recovery-before-crash', 'recovery-after-crash'],
         persistence,
     );
+    persistence.setTransitionFault('before_commit');
 
-    await assert.rejects(seeded.supervisor.reconcile(identity, 2, repository), /before replacement promotion/);
+    await assert.rejects(seeded.supervisor.reconcile(identity, 2, repository), /before state\/audit transaction commit/);
     const crashed = await persistence.load(identity);
     assert.equal(crashed?.activeTurn?.attemptId, 'attempt-live');
     assert.equal(crashed?.recoveryAttempt?.attemptId, 'recovery-before-crash');

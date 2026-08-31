@@ -67,8 +67,14 @@ export function providerTurnContext(state: GoalSessionState): GoalProviderTurnCo
 
 export function nextState(state: GoalSessionState, changes: Partial<GoalSessionState>): Omit<GoalSessionState, 'version'> {
     const withoutVersion: Partial<GoalSessionState> = { ...state };
+    const effectiveChanges = { ...changes };
     delete withoutVersion.version;
-    return { ...withoutVersion, ...changes, updatedAt: nowIso() } as Omit<GoalSessionState, 'version'>;
+    // A committed recovery receipt is valid only until the next durable state
+    // mutation. Spread-based updates may echo the same object; only an explicit
+    // new receipt (the atomic recovery transaction) is retained.
+    delete withoutVersion.completedRecovery;
+    if (effectiveChanges.completedRecovery === state.completedRecovery) delete effectiveChanges.completedRecovery;
+    return { ...withoutVersion, ...effectiveChanges, updatedAt: nowIso() } as Omit<GoalSessionState, 'version'>;
 }
 
 export function assertProviderIdentity(state: GoalSessionState, snapshot: GoalProviderSessionSnapshot): void {

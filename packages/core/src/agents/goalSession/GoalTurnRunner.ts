@@ -38,10 +38,8 @@ interface TurnStreamOptions {
     openStream: () => AsyncIterable<GoalSessionEvent>;
 }
 
-type TurnEventOptions = {
-    fence: GoalSessionFence; current: GoalSessionState; execution: GoalExecutionIdentity;
-    event: GoalSessionEvent; streamOrdinal: number;
-};
+type TurnEventOptions = { fence: GoalSessionFence; current: GoalSessionState;
+    execution: GoalExecutionIdentity; event: GoalSessionEvent };
 
 export abstract class GoalTurnRunner extends GoalSessionCore {
     async runTurn(request: RunGoalTurnRequest): Promise<RunGoalTurnResult> {
@@ -136,7 +134,12 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             }, 'A newer model intent superseded the turn-boundary provider claim');
         }
         const acknowledgement = await this.adapter.requestModelChange(
-            { ...request, model: requestedModel, modelChangeId: intent.modelChangeId },
+            {
+                ...request,
+                model: requestedModel,
+                modelChangeId: intent.modelChangeId,
+                applicationGeneration: intent.generation ?? state.modelChangeGeneration ?? 1,
+            },
             persistedSnapshot(state),
         );
         if (acknowledgement.requestedModel !== requestedModel
@@ -291,7 +294,6 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         const awaitingMessageIds = options.nextTurnMessages.map(message => message.messageId);
         let reachedPause = false;
         let completed = false;
-        let streamOrdinal = 0;
         try {
             // Invoke the provider inside the fenced try so a synchronous/early
             // invocation failure is normalized into failed state plus one
@@ -311,8 +313,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 if (event.type === 'completion' && this.adapter.capabilities.pause === 'after_turn') {
                     current = await this.requireActiveAttemptState(fence, execution);
                 }
-                current = await this.applyTurnEvent({ fence, current, execution, event, streamOrdinal });
-                streamOrdinal += 1;
+                current = await this.applyTurnEvent({ fence, current, execution, event });
                 if (event.type === 'pause_boundary') reachedPause = true;
                 if (event.type === 'completion') completed = true;
                 if (event.type !== 'completion' && !isAtomicTurnAudit(event)) {
@@ -357,7 +358,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
     }
 
     private async applyTurnEvent(options: TurnEventOptions): Promise<GoalSessionState> {
-        const { fence, current, execution, event, streamOrdinal } = options;
+        const { fence, current, execution, event } = options;
         if (event.type === 'checkpoint') return this.persistCheckpoint(fence, current, execution, event);
         if (event.type === 'model_changed') {
             return this.commitTurnTransition({
@@ -369,7 +370,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                     pendingModelChange: value.pendingModelChange === event.model ? undefined : value.pendingModelChange,
                 }),
                 auditEvents: [event],
-                transitionId: streamAuditTransitionId(fence, execution, event, streamOrdinal),
+                transitionId: streamAuditTransitionId(fence, execution, event),
             });
         }
         if (event.type === 'pause_boundary') {
@@ -382,7 +383,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                     activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
                 }),
                 auditEvents: [event],
-                transitionId: streamAuditTransitionId(fence, execution, event, streamOrdinal),
+                transitionId: streamAuditTransitionId(fence, execution, event),
             });
         }
         if (event.type === 'completion') return this.commitTurnCompletion(fence, execution, event);

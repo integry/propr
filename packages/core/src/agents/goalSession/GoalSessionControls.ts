@@ -11,7 +11,6 @@ import type {
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalImmediateModelControls } from './GoalImmediateModelControls.js';
-import { hasProviderOperations, waitForProviderOperations } from './providerOperationCoordinator.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
 import {
     assertProviderIdentity,
@@ -130,20 +129,24 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
         const snapshot = await this.adapter.resumeSession(request, persistedSnapshot(state));
         assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
         assertProviderIdentity(state, snapshot);
-        const resumed = await this.compareAndSetExact(state, {
-            providerSessionId: snapshot.providerSessionId,
-            recoveryMetadata: snapshot.recoveryMetadata,
-            currentModel: snapshot.model ?? state.currentModel,
-            status: 'idle',
-        }, 'A newer operation superseded the resumed provider snapshot');
-        await this.appendControl(request, controlExecutionIdentity(resumed), { type: 'session_resumed' });
-        return resumed;
+        return this.commitControlTransition({
+            state,
+            fence: request,
+            changes: {
+                providerSessionId: snapshot.providerSessionId,
+                recoveryMetadata: snapshot.recoveryMetadata,
+                currentModel: snapshot.model ?? state.currentModel,
+                status: 'idle',
+            },
+            auditEvents: [{ type: 'session_resumed' }],
+            transitionId: this.controlOperationId('session-resumed', state),
+            execution: controlExecutionIdentity(state),
+        });
     }
 
     async cancel(request: GoalCancelRequest): Promise<GoalSessionState> {
-        await waitForProviderOperations(this.ports.state, request, 'reconcile');
         const state = await this.claimCancellation(request);
-        if (state.status === 'terminated') return state;
+        if (state.status === 'terminated' || state.status === 'failed') return state;
         return this.resumeClaimedCancellation(request, state);
     }
 
@@ -175,6 +178,7 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             initializationIntent: undefined,
             retryTurn: undefined,
             recoveryAttempt: undefined,
+            completedRecovery: undefined,
             pendingAfterTurnPause: undefined,
             modelChangeIntent: undefined,
             modelChangeIntents: undefined,
@@ -189,14 +193,8 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
     private async claimCancellation(request: GoalCancelRequest): Promise<GoalSessionState> {
         for (;;) {
             const state = await this.requireControlledState(request);
-            if (state.status === 'terminated') return state;
+            if (state.status === 'terminated' || state.status === 'failed') return state;
             if (state.status === 'cancelling' && state.cancellationIntent) return state;
-            if (state.recoveryAttempt?.phase === 'provider_in_doubt'
-                && state.recoveryAttempt.controllerEpoch === request.controllerEpoch
-                && hasProviderOperations(this.ports.state, request, 'reconcile')) {
-                await new Promise<void>(resolve => setImmediate(resolve));
-                continue;
-            }
             if (!state.providerSessionId && (!state.initializationIntent || !this.adapter.cancelPending)) {
                 throw new GoalSessionContractError(
                     'A lazy-ID provider must implement pending cancellation before it can be cancelled safely',
@@ -208,6 +206,7 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
                 status: 'cancelling',
                 activeTurn: undefined,
                 recoveryAttempt: undefined,
+                completedRecovery: undefined,
                 cancellationIntent: {
                     cancellationId: this.controlOperationId('cancel', state),
                     reason: request.reason,

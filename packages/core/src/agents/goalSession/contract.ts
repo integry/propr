@@ -93,13 +93,29 @@ export interface GoalSessionInitializationIntent {
  * replacement, the pre-crash attempt remains the authoritative live identity.
  */
 export interface GoalRecoveryAttempt {
+    /** Stable idempotency/fencing identity for this recovery provider operation. */
+    operationToken: string;
     executionId: string;
     attemptId: string;
     controllerEpoch: number;
     authoritativeAttemptId?: string;
+    authoritativeExecutionId?: string;
+    /** Exact live status captured by the durable claim. */
+    sessionStatus?: GoalSessionStatus;
+    authoritativeTurnStatus?: GoalTurnState['status'];
     claimedAt: string;
+    /** A replacement may reclaim an abandoned operation only after this durable lease expires. */
+    leaseExpiresAt: string;
     /** Claimed work is cancellation-preemptible until the provider call is durably marked in doubt. */
     phase?: 'claimed' | 'provider_in_doubt';
+}
+
+/** Atomic recovery-result receipt used to replay an ambiguous committed transaction. */
+export interface GoalCompletedRecovery {
+    operationToken: string;
+    controllerEpoch: number;
+    outcome: 'alive' | 'resumed' | 'failed';
+    reason: string;
 }
 
 /** Durable cancellation claim recorded before the provider cancellation side effect. */
@@ -124,6 +140,12 @@ export interface GoalModelChangeIntent {
     previousModel?: string;
     /** Durable provider-call phase; missing is treated as pending for older records. */
     phase?: 'pending' | 'provider_in_doubt' | 'committed' | 'superseded_in_doubt' | 'superseded';
+    /** Unique lease owner for one generation-scoped provider application attempt. */
+    applicationToken?: string;
+    /** Controller generation that owns applicationToken. */
+    applicationControllerEpoch?: number;
+    /** Durable recovery deadline for a process that disappears during provider application. */
+    leaseExpiresAt?: string;
     /** Retained after commit so an ambiguous retry can return the original acknowledgement. */
     acknowledgement?: GoalModelChangeAcknowledgement;
 }
@@ -190,6 +212,8 @@ export interface GoalSessionState extends GoalSessionIdentity {
     recoveryAttemptId?: string;
     /** In-flight reconciliation claim, retained across a thrown call or crash. */
     recoveryAttempt?: GoalRecoveryAttempt;
+    /** Last atomically committed reconciliation receipt for same-epoch replay. */
+    completedRecovery?: GoalCompletedRecovery;
     /** In-flight or completed cancellation identity. Active turn ownership is cleared when this is claimed. */
     cancellationIntent?: GoalCancellationIntent;
     /** Provider model application/reconciliation identity retained across crashes. */
@@ -223,6 +247,15 @@ export type GoalSessionEvent =
     | { type: 'turn_resumed'; turnId: string }
     | { type: 'reconciliation'; outcome: 'alive' | 'resumed' | 'failed' | 'blocked'; reason: string }
     | { type: 'completion'; outcome: 'succeeded' | 'failed' | 'cancelled'; summary?: string; error?: string };
+
+/** Required occurrence identity contract for provider-streamed atomic transitions. */
+export type GoalProviderStreamTransitionEvent = Extract<
+    GoalSessionEvent,
+    { type: 'model_changed' | 'pause_boundary' }
+> & (
+    | { providerEventId: string; providerEventOrdinal?: number }
+    | { providerEventId?: undefined; providerEventOrdinal: number }
+);
 
 export interface PersistedGoalSessionEvent extends GoalSessionFence, GoalExecutionIdentity {
     sequence: number;
@@ -383,6 +416,11 @@ export interface GoalModelChangeRequest extends GoalSessionControlFence {
 /** Provider request; retries with the same modelChangeId must not repeat the external side effect. */
 export interface GoalProviderModelChangeRequest extends GoalModelChangeRequest {
     modelChangeId: string;
+    /**
+     * Durable monotonic application order. Providers must fence older generations
+     * after observing a newer one, including delayed completion of an older call.
+     */
+    applicationGeneration: number;
 }
 
 export interface GoalCancelRequest extends GoalSessionControlFence {
@@ -424,6 +462,8 @@ export interface GoalModelChangeAcknowledgement {
 
 export interface GoalProviderReconcileRequest extends GoalSessionIdentity, GoalExecutionIdentity {
     controllerEpoch: number;
+    /** Durable recovery operation identity; retries/replacements must be fenced by the provider primitive. */
+    operationToken: string;
     persisted: GoalProviderSessionSnapshot;
     repository: GoalRepositoryInspection;
     container: GoalContainerInspection;
@@ -439,11 +479,15 @@ export type GoalProviderReconcileResult =
  * Pause/model-change requests are immediate control calls, but their effects may
  * be deferred as explicitly reported by the acknowledgement and later events.
  * deliverMessage must be idempotent by messageId so crash retries do not steer twice.
- * requestModelChange must be idempotent by modelChangeId so recovery after a
- * provider-success/persistence-crash window never applies one intent twice.
+ * requestModelChange must be idempotent by modelChangeId and monotonically
+ * fenced by applicationGeneration so recovery after a provider-success/
+ * persistence-crash window never applies one intent twice and a delayed older
+ * generation cannot overwrite a newer provider effect.
  * cancel and cancelPending must likewise be idempotent by cancellationId because
  * a crash can occur after signalling the provider but before the terminal
  * transaction is observed by the caller.
+ * reconcile must fence by controllerEpoch plus operationToken/attemptId so a
+ * delayed expired lease cannot create authoritative work after its replacement.
  */
 export interface GoalSessionAdapter {
     readonly provider: string;
@@ -456,6 +500,11 @@ export interface GoalSessionAdapter {
      */
     readonly supportsDeterministicOpen?: boolean;
     openSession(request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot>;
+    /**
+     * Every model_changed and pause_boundary occurrence must carry a non-empty
+     * providerEventId or a stable non-negative providerEventOrdinal. If both are
+     * present, providerEventId is the canonical occurrence identity.
+     */
     beginTurn(request: GoalBeginTurnRequest, context: GoalProviderTurnContext): AsyncIterable<GoalSessionEvent>;
     /**
      * Continues the exact active turn identified by the fence after a pause or a

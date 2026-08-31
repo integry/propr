@@ -276,7 +276,7 @@ test('reports pause boundary, model effectiveness, same-turn resume, and termina
     adapter.holdTurn = new Promise(resolve => { releaseTurn = resolve; });
     const started = new Promise<void>(resolve => { adapter.turnStarted = resolve; });
     adapter.events = [
-        { type: 'pause_boundary', boundary: 'after_tool', checkpointId: 'cp-pause' },
+        { type: 'pause_boundary', boundary: 'after_tool', checkpointId: 'cp-pause', providerEventId: 'pause-after-tool-1' },
     ];
     adapter.resumeEvents = [
         { type: 'assistant', messageId: 'assistant-continued', content: 'resumed work' },
@@ -475,7 +475,7 @@ test('resumes the exact paused turn on a replacement supervisor and completes on
     adapter.events = [
         { type: 'assistant', messageId: 'a1', content: 'step one' },
         { type: 'checkpoint', checkpointId: 'cp-1', recoveryMetadata: { checkpoint: 'cp-1' } },
-        { type: 'pause_boundary', boundary: 'after_tool', checkpointId: 'cp-1' },
+        { type: 'pause_boundary', boundary: 'after_tool', checkpointId: 'cp-1', providerEventId: 'pause-after-tool-2' },
     ];
     adapter.resumeEvents = [
         { type: 'assistant', messageId: 'a2', content: 'step two' },
@@ -606,7 +606,9 @@ test('a synchronous resume-turn invocation failure fences the session as failed 
     let releaseTurn!: () => void;
     adapter.holdTurn = new Promise(resolve => { releaseTurn = resolve; });
     const started = new Promise<void>(resolve => { adapter.turnStarted = resolve; });
-    adapter.events = [{ type: 'pause_boundary', boundary: 'after_tool', checkpointId: 'cp-pause' }];
+    adapter.events = [{
+        type: 'pause_boundary', boundary: 'after_tool', checkpointId: 'cp-pause', providerEventId: 'pause-after-tool-3',
+    }];
     const { persistence, supervisor } = await openedRuntime(adapter);
     const running = supervisor.runTurn({ ...fence, executionId: 'exec-r', attemptId: 'att-r', objective: 'pause then resume', repository, requestedModel: 'model-a' });
     await started;
@@ -786,7 +788,7 @@ test('each failed recovery retry durably advances to another fresh attempt', asy
         }
     }
     const adapter = new RetryResumeAdapter();
-    adapter.events = [{ type: 'pause_boundary', boundary: 'checkpoint' }];
+    adapter.events = [{ type: 'pause_boundary', boundary: 'checkpoint', providerEventId: 'pause-checkpoint-1' }];
     adapter.resumeEvents = [{ type: 'completion', outcome: 'succeeded' }];
     const persistence = new InMemoryGoalSessionPorts();
     const ids = ['provider-open-attempt', 'attempt-recovery-one', 'attempt-recovery-two'];
@@ -821,7 +823,7 @@ test('a delayed same-epoch resume cannot resurrect a terminal session', async ()
         }
     }
     const adapter = new RacingResumeAdapter();
-    adapter.events = [{ type: 'pause_boundary', boundary: 'checkpoint' }];
+    adapter.events = [{ type: 'pause_boundary', boundary: 'checkpoint', providerEventId: 'pause-checkpoint-2' }];
     const { persistence, supervisor } = await openedRuntime(adapter);
     await supervisor.runTurn({
         ...fence, executionId: 'execution-race', attemptId: 'attempt-crashed',
