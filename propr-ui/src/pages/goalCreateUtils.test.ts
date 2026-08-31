@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildCreateGoalParams, type GoalFormValues, validateGoalForm } from './goalCreateUtils';
 
 const values = (overrides: Partial<GoalFormValues> = {}): GoalFormValues => ({
-  objective: 'x',
+  objective: 'a'.repeat(10),
   repository: 'integry/propr',
   agent: 'codex',
   model: 'gpt-5.6-sol',
@@ -21,6 +21,7 @@ describe('goalCreateUtils shared bounds', () => {
   });
 
   it('rejects objective and integer values just outside their bounds', () => {
+    expect(validateGoalForm(values({ objective: '  123456789  ' })).objective).toMatch(/at least 10.*after trimming/);
     expect(validateGoalForm(values({ objective: 'a'.repeat(4001) })).objective).toMatch(/at most 4000/);
     expect(validateGoalForm(values({ maxActiveTasks: 21 })).maxActiveTasks).toBeDefined();
     expect(validateGoalForm(values({ ultrafixGoal: '0' })).ultrafixGoal).toBeDefined();

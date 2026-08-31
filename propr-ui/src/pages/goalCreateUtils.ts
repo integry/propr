@@ -2,6 +2,7 @@ import type { GoalMergePolicy, CreateGoalParams } from '../api/goalsApi';
 
 export const MAX_CONCURRENT_TASKS_MIN = 1;
 export const MAX_CONCURRENT_TASKS_MAX = 20;
+export const OBJECTIVE_MIN_LENGTH = 10;
 export const OBJECTIVE_MAX_LENGTH = 4000;
 export const ULTRAFIX_GOAL_MIN = 1;
 export const ULTRAFIX_GOAL_MAX = 10;
@@ -45,8 +46,10 @@ const optionalInteger = (value: string): number | undefined => value.trim() === 
 
 export function validateGoalForm(values: GoalFormValues): GoalFormErrors {
   const errors: GoalFormErrors = {};
-  if (!values.objective.trim()) errors.objective = 'Objective is required.';
-  else if ([...values.objective.trim()].length > OBJECTIVE_MAX_LENGTH) errors.objective = `Objective must be at most ${OBJECTIVE_MAX_LENGTH} characters.`;
+  const objectiveLength = [...values.objective.trim()].length;
+  if (objectiveLength === 0) errors.objective = 'Objective is required.';
+  else if (objectiveLength < OBJECTIVE_MIN_LENGTH) errors.objective = `Objective must be at least ${OBJECTIVE_MIN_LENGTH} characters after trimming.`;
+  else if (objectiveLength > OBJECTIVE_MAX_LENGTH) errors.objective = `Objective must be at most ${OBJECTIVE_MAX_LENGTH} characters.`;
   if (!values.repository) errors.repository = 'Repository is required.';
   if (!values.agent) errors.agent = 'Agent is required.';
   if (!values.model) errors.model = 'Model is required.';

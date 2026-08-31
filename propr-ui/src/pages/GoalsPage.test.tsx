@@ -215,8 +215,25 @@ describe('GoalsPage', () => {
     renderPage();
     fireEvent.change(screen.getByLabelText('Filter by state'), { target: { value: 'running' } });
     expect(await screen.findByText('Newest result')).toBeInTheDocument();
-    await act(async () => { resolveFirst({ goals: [{ ...goal, objective: 'Stale result' }], nextCursor: null }); });
+    await act(async () => { resolveFirst({ goals: [{ ...goal, objective: 'Stale result' }], nextCursor: 'c3RhbGU' }); });
     expect(screen.queryByText('Stale result')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Next page' })).not.toBeInTheDocument();
+  });
+
+  it('does not display or paginate prior-query data when a changed filter request fails', async () => {
+    vi.mocked(getGoals)
+      .mockResolvedValueOnce({ goals: [goal], nextCursor: 'c3RhbGU' })
+      .mockRejectedValueOnce(new Error('Filtered goals unavailable'));
+    renderPage();
+    await screen.findByText('Durable orchestration');
+    expect(screen.getByRole('button', { name: 'Next page' })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Filter by state'), { target: { value: 'failed' } });
+    expect(screen.queryByText('Durable orchestration')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Next page' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Filtered goals unavailable');
+    expect(screen.queryByText('Durable orchestration')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Next page' })).not.toBeInTheDocument();
   });
 
   it('surfaces disconnect state and performs one coalesced resync after reconnect', async () => {

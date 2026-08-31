@@ -69,15 +69,14 @@ describe('GoalsPageComponents', () => {
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
 
-  it('uses sibling links so the epic PR does not navigate to the goal', () => {
+  it('does not navigate goal rows to the unavailable operator page', () => {
     render(<MemoryRouter initialEntries={['/goals']}><GoalRow goal={goal} /><Location /></MemoryRouter>);
-    const goalLink = screen.getByRole('link', { name: `Open goal: ${goal.objective}` });
     const epicLink = screen.getByRole('link', { name: `Open epic pull request for ${goal.objective}` });
-    expect(goalLink.contains(epicLink)).toBe(false);
+    expect(screen.queryByRole('link', { name: `Open goal: ${goal.objective}` })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText(goal.objective));
+    expect(screen.getByTestId('location')).toHaveTextContent('/goals');
     fireEvent.click(epicLink);
     expect(screen.getByTestId('location')).toHaveTextContent('/goals');
-    fireEvent.click(goalLink);
-    expect(screen.getByTestId('location')).toHaveTextContent('/goals/goal-1');
   });
 
   it('provides focused empty-state actions', () => {

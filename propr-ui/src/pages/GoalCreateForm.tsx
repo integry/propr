@@ -7,6 +7,7 @@ import {
   MAX_CONCURRENT_TASKS_MAX,
   MAX_CONCURRENT_TASKS_MIN,
   OBJECTIVE_MAX_LENGTH,
+  OBJECTIVE_MIN_LENGTH,
   ULTRAFIX_CYCLES_MAX,
   ULTRAFIX_CYCLES_MIN,
   ULTRAFIX_GOAL_MAX,
@@ -148,6 +149,7 @@ export const GoalCreateForm = ({
             value={values.objective}
             onChange={event => setField('objective', event.target.value)}
             rows={4}
+            minLength={OBJECTIVE_MIN_LENGTH}
             maxLength={OBJECTIVE_MAX_LENGTH}
             placeholder="Describe what the goal-capable agent should accomplish."
             disabled={submitting}
@@ -156,7 +158,7 @@ export const GoalCreateForm = ({
             aria-describedby={errors.objective ? 'goal-objective-error' : 'goal-objective-hint'}
             className="w-full resize-y rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 disabled:bg-gray-50"
           />
-          <p id="goal-objective-hint" className="mt-1 text-xs text-gray-500">Required · up to {OBJECTIVE_MAX_LENGTH} characters</p>
+          <p id="goal-objective-hint" className="mt-1 text-xs text-gray-500">Required · {OBJECTIVE_MIN_LENGTH}–{OBJECTIVE_MAX_LENGTH} characters after trimming</p>
           {errors.objective && <FieldError id="goal-objective-error" message={errors.objective} />}
         </div>
 

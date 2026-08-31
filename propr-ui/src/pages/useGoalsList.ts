@@ -15,6 +15,7 @@ const CURSOR_HISTORY_PARAM = 'cursorHistory';
 const REPOSITORY_MAX_LENGTH = 255;
 const MAX_CURSOR_HISTORY = 100;
 const INVALIDATION_DELAY_MS = 100;
+const EMPTY_GOALS: GoalListItem[] = [];
 
 const validCursor = (value: string): boolean =>
   value.length > 0
@@ -36,6 +37,18 @@ interface GoalsUrlState {
   cursor?: string;
   history: Array<string | null>;
   cleanedParams: URLSearchParams | null;
+}
+
+interface GoalsResult {
+  fingerprint: string;
+  goals: GoalListItem[];
+  nextCursor: string | null;
+}
+
+interface GoalsRequestState {
+  fingerprint: string;
+  loading: boolean;
+  error: string | null;
 }
 
 function parseCursorHistory(raw: string | null): Array<string | null> | null {
@@ -108,11 +121,25 @@ export function useGoalsList() {
     unsubscribeFromGoalUpdates,
   } = useSocket();
   const [searchQuery, setSearchQuery] = useState(url.search);
-  const [goals, setGoals] = useState<GoalListItem[]>([]);
+  const queryFingerprint = useMemo(() => JSON.stringify([
+    DEFAULT_GOALS_PAGE_SIZE,
+    url.state,
+    url.repository,
+    url.search,
+    url.cursor ?? null,
+  ]), [url.cursor, url.repository, url.search, url.state]);
+  const [result, setResult] = useState<GoalsResult | null>(null);
+  const activeResult = result?.fingerprint === queryFingerprint ? result : null;
+  const goals = activeResult?.goals ?? EMPTY_GOALS;
+  const nextCursor = activeResult?.nextCursor ?? null;
   const goalsRef = useRef(goals);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [requestState, setRequestState] = useState<GoalsRequestState>({
+    fingerprint: queryFingerprint,
+    loading: true,
+    error: null,
+  });
+  const loading = requestState.fingerprint !== queryFingerprint || requestState.loading;
+  const error = requestState.fingerprint === queryFingerprint ? requestState.error : null;
   const [refreshSequence, setRefreshSequence] = useState(0);
   const requestSequenceRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
@@ -161,8 +188,7 @@ export function useGoalsList() {
     requestAbortRef.current?.abort();
     const controller = new AbortController();
     requestAbortRef.current = controller;
-    setLoading(true);
-    setError(null);
+    setRequestState({ fingerprint: queryFingerprint, loading: true, error: null });
     void getGoals({
       limit: DEFAULT_GOALS_PAGE_SIZE,
       state: url.state === 'all' ? undefined : url.state,
@@ -172,18 +198,25 @@ export function useGoalsList() {
     }, { signal: controller.signal })
       .then(data => {
         if (sequence !== requestSequenceRef.current || controller.signal.aborted) return;
-        setGoals(data.goals);
-        setNextCursor(data.nextCursor);
+        setResult({ fingerprint: queryFingerprint, goals: data.goals, nextCursor: data.nextCursor });
       })
       .catch(caught => {
         if (sequence !== requestSequenceRef.current || controller.signal.aborted) return;
-        setError((caught as Error).message || 'Failed to load goals');
+        setRequestState({
+          fingerprint: queryFingerprint,
+          loading: false,
+          error: (caught as Error).message || 'Failed to load goals',
+        });
       })
       .finally(() => {
-        if (sequence === requestSequenceRef.current && !controller.signal.aborted) setLoading(false);
+        if (sequence === requestSequenceRef.current && !controller.signal.aborted) {
+          setRequestState(current => current.fingerprint === queryFingerprint
+            ? { ...current, loading: false }
+            : current);
+        }
       });
     return () => controller.abort();
-  }, [refreshSequence, url.cleanedParams, url.cursor, url.repository, url.search, url.state]);
+  }, [queryFingerprint, refreshSequence, url.cleanedParams, url.cursor, url.repository, url.search, url.state]);
 
   const scheduleInvalidation = useCallback(() => {
     if (invalidationTimerRef.current) return;

@@ -96,7 +96,7 @@ describe('GoalCreatePage', () => {
   it('treats cleared required numeric inputs as invalid and uses the shared 1–20 cycle bound', async () => {
     renderPage();
     await screen.findByRole('form', { name: 'Create goal' });
-    setValidObjective('x');
+    setValidObjective('1234567890');
     fireEvent.change(screen.getByLabelText(/^Maximum concurrent tasks/), { target: { value: '' } });
     fireEvent.click(screen.getByLabelText('Run Ultrafix after each pull request'));
     fireEvent.change(screen.getByLabelText(/Review goal/), { target: { value: '' } });
@@ -113,15 +113,36 @@ describe('GoalCreatePage', () => {
     vi.mocked(createGoal).mockResolvedValue(createdGoal);
     renderPage();
     await screen.findByRole('form', { name: 'Create goal' });
-    setValidObjective('x');
+    setValidObjective('1234567890');
     fireEvent.change(screen.getByLabelText(/^Maximum concurrent tasks/), { target: { value: '1' } });
     fireEvent.click(screen.getByLabelText('Run Ultrafix after each pull request'));
     fireEvent.change(screen.getByLabelText(/Review goal/), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText(/Maximum cycles/), { target: { value: '20' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
     await waitFor(() => expect(createGoal).toHaveBeenCalledWith(expect.objectContaining({
-      objective: 'x', maxActiveTasks: 1, ultrafixGoal: 1, ultrafixMaxCycles: 20,
+      objective: '1234567890', maxActiveTasks: 1, ultrafixGoal: 1, ultrafixMaxCycles: 20,
     }), expect.any(String)));
+  });
+
+  it('exposes and enforces the trimmed 10-character objective boundary', async () => {
+    vi.mocked(createGoal).mockResolvedValue(createdGoal);
+    renderPage();
+    await screen.findByRole('form', { name: 'Create goal' });
+    const objective = screen.getByLabelText(/^Objective/);
+    expect(objective).toHaveAttribute('minlength', '10');
+    expect(screen.getByText('Required · 10–4000 characters after trimming')).toBeInTheDocument();
+
+    setValidObjective('  123456789  ');
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    expect(await screen.findByText('Objective must be at least 10 characters after trimming.')).toBeInTheDocument();
+    expect(createGoal).not.toHaveBeenCalled();
+
+    setValidObjective('  1234567890  ');
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+    await waitFor(() => expect(createGoal).toHaveBeenCalledWith(
+      expect.objectContaining({ objective: '1234567890' }),
+      expect.any(String)
+    ));
   });
 
   it('reuses the same idempotency key for an exact uncertain retry', async () => {
