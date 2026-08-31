@@ -56,6 +56,14 @@ function createSupervisor(base: string, policy = isolation): InstanceType<typeof
     return new GoalContainerSupervisor(base, events, undefined, policy);
 }
 
+async function waitForFile(filePath: string): Promise<void> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) return;
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    throw new Error(`Timed out waiting for ${filePath}`);
+}
+
 test('start passes env names only and never leaks secret values into argv', async () => {
     spawnCalls.length = 0;
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-hard-'));
@@ -71,6 +79,20 @@ test('start passes env names only and never leaks secret values into argv', asyn
     assert.ok(!args.some(arg => arg.includes('super-secret-value')), 'secret value must not appear in argv');
     assert.ok(args.includes(`type=bind,src=${approvedCredential},dst=/home/node/.creds,readonly`));
     assert.deepEqual(spawnCalls[0].env, { OPENAI_API_KEY: 'super-secret-value' });
+});
+
+test('layout logPath is an actually used goal-scoped durable output sink', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-log-'));
+    const supervisor = createSupervisor(base);
+    const { layout } = await supervisor.start(baseRequest());
+    child.stdout.emit('data', Buffer.from('auditable output\n'));
+    await waitForFile(layout.logPath);
+
+    const records = fs.readFileSync(layout.logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(records.some(record => record.channel === 'stdout'
+        && record.attemptId === idBits.attemptId
+        && record.data === 'auditable output\n'));
+    assert.ok(fs.statSync(layout.logPath).size <= 8 * 1024 * 1024);
 });
 
 test('start rejects provider homes that shadow reserved or non-provider paths', async () => {
@@ -91,6 +113,21 @@ test('start refuses credentials mounted inside the writable provider home', asyn
         supervisor.start({ ...baseRequest(), credentialMounts: [{ source: approvedCredential, target: '/home/node/.codex/creds' }] }),
         /separately from the writable provider home/,
     );
+});
+
+test('credential targets reject descendants of proc, sys, and dev even when allow-listed', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-pseudo-fs-'));
+    const targets = ['/proc/self/fd/9', '/sys/kernel/credential', '/dev/shm/credential'];
+    const supervisor = createSupervisor(base, {
+        ...isolation,
+        credentialMounts: targets.map(target => ({ source: approvedCredential, target })),
+    });
+    for (const target of targets) {
+        await assert.rejects(
+            supervisor.start({ ...baseRequest(), credentialMounts: [{ source: approvedCredential, target }] }),
+            /broad or sensitive container path/,
+        );
+    }
 });
 
 test('cleanTerminalSession removes a real goal directory but refuses a symlink escape', async () => {

@@ -87,6 +87,19 @@ export interface GoalSessionInitializationIntent {
     recordedAt: string;
 }
 
+/**
+ * Durable claim for one adapter reconciliation call. It is intentionally
+ * separate from activeTurn: until the adapter reports that it enacted a
+ * replacement, the pre-crash attempt remains the authoritative live identity.
+ */
+export interface GoalRecoveryAttempt {
+    executionId: string;
+    attemptId: string;
+    controllerEpoch: number;
+    authoritativeAttemptId?: string;
+    claimedAt: string;
+}
+
 export type GoalNativeSessionIdTiming = 'eager' | 'first_turn';
 export type GoalSteeringBoundary = 'active_turn' | 'next_turn';
 export type GoalPauseBoundary = 'active_turn' | 'after_turn';
@@ -145,6 +158,8 @@ export interface GoalSessionState extends GoalSessionIdentity {
     retryTurn?: { turnId: string; executionId: string; crashedAttemptId: string };
     /** Last durably claimed reconciliation invocation attempt. */
     recoveryAttemptId?: string;
+    /** In-flight reconciliation claim, retained across a thrown call or crash. */
+    recoveryAttempt?: GoalRecoveryAttempt;
     failureReason?: string;
     /** Optimistic concurrency token owned by the state port. */
     version: number;

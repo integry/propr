@@ -67,8 +67,21 @@ export abstract class GoalSessionCore {
             throw new StaleGoalSessionFenceError('Turn fence does not own the active session turn');
         }
         if (['completed', 'cancelled', 'failed'].includes(state.activeTurn.status)
-            || ['terminated', 'failed'].includes(state.status)) {
+            || ['cancelling', 'terminated', 'failed'].includes(state.status)) {
             throw new StaleGoalSessionFenceError('Turn fence no longer owns a live session turn');
+        }
+        return state;
+    }
+
+    /** Loads the exact provider invocation, not merely the logical turn. */
+    protected async requireActiveAttemptState(
+        fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
+    ): Promise<GoalSessionState> {
+        const state = await this.requireActiveTurnState(fence);
+        if (state.activeTurn?.executionId !== execution.executionId
+            || state.activeTurn.attemptId !== execution.attemptId) {
+            throw new StaleGoalSessionFenceError('A newer recovery attempt owns this turn');
         }
         return state;
     }
@@ -82,9 +95,10 @@ export abstract class GoalSessionCore {
 
     protected async updateActiveTurnState(
         fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
         update: (state: GoalSessionState) => Partial<GoalSessionState>,
     ): Promise<GoalSessionState> {
-        return this.compareAndSetLoop(() => this.requireActiveTurnState(fence), update);
+        return this.compareAndSetLoop(() => this.requireActiveAttemptState(fence, execution), update);
     }
 
     /** One-shot CAS for an operation that must not retry over a newer intent. */
@@ -104,11 +118,9 @@ export abstract class GoalSessionCore {
         event: Extract<GoalSessionEvent, { type: 'completion' }>,
     ): Promise<GoalSessionState> {
         const { outcome, error } = event;
-        const state = await this.requireActiveTurnState(fence);
-        if (state.activeTurn?.executionId !== execution.executionId
-            || state.activeTurn.attemptId !== execution.attemptId) {
-            throw new StaleGoalSessionFenceError('A newer recovery attempt owns this turn');
-        }
+        const state = await this.requireActiveAttemptState(fence, execution);
+        const activeTurn = state.activeTurn;
+        if (!activeTurn) throw new StaleGoalSessionFenceError('Turn fence no longer owns an active turn');
         const existing = state.completedTurns ?? [];
         const completedTurns = existing.some(turn => turn.turnId === fence.turnId)
             ? existing
@@ -125,7 +137,7 @@ export abstract class GoalSessionCore {
             failureReason: outcome === 'failed' ? error ?? 'Provider reported turn failure' : undefined,
             activeTurn: afterTurnPaused
                 ? undefined
-                : { ...state.activeTurn, status: outcome === 'succeeded' ? 'completed' : outcome === 'cancelled' ? 'cancelled' : 'failed' },
+                : { ...activeTurn, status: outcome === 'succeeded' ? 'completed' : outcome === 'cancelled' ? 'cancelled' : 'failed' },
             completedTurnIds: state.completedTurnIds.includes(fence.turnId)
                 ? state.completedTurnIds
                 : [...state.completedTurnIds, fence.turnId],

@@ -298,7 +298,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 }
                 this.assertSuppliedMessagesAcknowledged(event, awaitingMessageIds);
                 if (event.type === 'completion' && this.adapter.capabilities.pause === 'after_turn') {
-                    current = await this.requireActiveTurnState(fence);
+                    current = await this.requireActiveAttemptState(fence, execution);
                 }
                 if (event.type === 'completion' && this.shouldPauseAfterTurn(current, event)) {
                     current = await this.recordAfterTurnPauseBoundary(fence, current, execution);
@@ -376,7 +376,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         state: GoalSessionState,
         execution: GoalExecutionIdentity,
     ): Promise<GoalSessionState> {
-        const paused = await this.updateActiveTurnState(fence, value => ({
+        const paused = await this.updateActiveTurnState(fence, execution, value => ({
             ...value,
             status: 'paused',
             activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
@@ -391,16 +391,16 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         execution: GoalExecutionIdentity,
         event: GoalSessionEvent,
     ): Promise<GoalSessionState> {
-        if (event.type === 'checkpoint') return this.persistCheckpoint(fence, current, event);
+        if (event.type === 'checkpoint') return this.persistCheckpoint(fence, current, execution, event);
         if (event.type === 'model_changed') {
-            return this.updateActiveTurnState(fence, value => ({
+            return this.updateActiveTurnState(fence, execution, value => ({
                 ...value,
                 currentModel: event.model,
                 pendingModelChange: value.pendingModelChange === event.model ? undefined : value.pendingModelChange,
             }));
         }
         if (event.type === 'pause_boundary') {
-            return this.updateActiveTurnState(fence, value => ({
+            return this.updateActiveTurnState(fence, execution, value => ({
                 ...value,
                 status: 'paused',
                 activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
@@ -413,13 +413,14 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
     private async persistCheckpoint(
         fence: GoalSessionFence,
         state: GoalSessionState,
+        execution: GoalExecutionIdentity,
         event: Extract<GoalSessionEvent, { type: 'checkpoint' }>,
     ): Promise<GoalSessionState> {
         if (event.providerSessionId && state.providerSessionId && event.providerSessionId !== state.providerSessionId) {
             throw new GoalSessionContractError('Checkpoint attempted to replace the provider session identity', 'PROVIDER_SESSION_CHANGED');
         }
         assertCredentialFreeRecoveryMetadata(event.recoveryMetadata);
-        return this.updateActiveTurnState(fence, value => ({
+        return this.updateActiveTurnState(fence, execution, value => ({
             ...value,
             providerSessionId: event.providerSessionId ?? value.providerSessionId,
             recoveryMetadata: event.recoveryMetadata,

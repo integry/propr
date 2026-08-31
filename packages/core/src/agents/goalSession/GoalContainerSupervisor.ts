@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdir, realpath, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdir, realpath, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
     executeSupervisedDockerCommand,
     type SupervisedDockerExecution,
+    type SupervisedDockerOutput,
 } from '../../claude/docker/dockerExecutor.js';
 import type {
     GoalExecutionIdentity,
@@ -58,6 +59,8 @@ export interface StartGoalContainerRequest extends GoalSessionFence, GoalExecuti
 const RESERVED_CONTAINER_PATHS = new Set(['/', '/workspace', '/etc', '/root', '/home', '/usr', '/bin', '/var', '/tmp', '/proc', '/sys', '/dev']);
 /** Provider homes must live under one of these provider-owned roots. */
 const PROVIDER_HOME_ROOTS = ['/home/', '/root/', '/opt/'];
+const CREDENTIAL_TARGET_DENY_TREES = ['/proc', '/sys', '/dev'];
+const MAX_GOAL_LOG_BYTES = 8 * 1024 * 1024;
 
 export interface GoalContainerRetentionPolicy {
     succeededMs: number;
@@ -74,9 +77,9 @@ export interface GoalContainerIsolationPolicy {
 }
 
 /**
- * Terminal homes are retained briefly for diagnostics, then removed. Failed
- * sessions receive a longer window. Worktrees and event logs are owned by their
- * injected persistence ports and are never deleted by this supervisor.
+ * Terminal homes and their bounded diagnostic logs are retained briefly, then
+ * removed. Failed sessions receive a longer window. Worktrees and authoritative
+ * events owned by the injected persistence ports are never deleted here.
  */
 export const DEFAULT_GOAL_CONTAINER_RETENTION: GoalContainerRetentionPolicy = {
     succeededMs: 24 * 60 * 60 * 1000,
@@ -199,10 +202,41 @@ function canonicalCredentialTarget(target: string): string {
     const normalized = path.posix.normalize(target).replace(/\/+$/, '');
     if (target !== normalized) throw new Error('Credential mount target must be canonical and may not contain traversal aliases');
     if (RESERVED_CONTAINER_PATHS.has(normalized) || CONTAINER_SOCKET_PATHS.has(normalized)
+        || CREDENTIAL_TARGET_DENY_TREES.some(root => normalized.startsWith(`${root}/`))
         || normalized.startsWith('/etc/') || SENSITIVE_SOURCE_SEGMENT.test(normalized)) {
         throw new Error('Credential mount target is a broad or sensitive container path');
     }
     return normalized;
+}
+
+function utf8Prefix(value: string, maxBytes: number): string {
+    if (Buffer.byteLength(value) <= maxBytes) return value;
+    let low = 0;
+    let high = value.length;
+    while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (Buffer.byteLength(value.slice(0, middle)) <= maxBytes) low = middle;
+        else high = middle - 1;
+    }
+    return value.slice(0, low);
+}
+
+function createGoalLogSink(logPath: string): (output: SupervisedDockerOutput) => Promise<void> {
+    let usedBytes: number | undefined;
+    return async output => {
+        usedBytes ??= await stat(logPath).then(value => value.size).catch(() => 0);
+        const remaining = MAX_GOAL_LOG_BYTES - usedBytes;
+        if (remaining <= 0) return;
+        const { data: outputData, ...fence } = output;
+        const base = { recordedAt: new Date().toISOString(), ...fence };
+        const overhead = Buffer.byteLength(`${JSON.stringify({ ...base, data: '', truncated: true })}\n`);
+        const data = utf8Prefix(outputData, Math.max(0, remaining - overhead));
+        const line = `${JSON.stringify({ ...base, data, truncated: data !== outputData })}\n`;
+        const lineBytes = Buffer.byteLength(line);
+        if (lineBytes > remaining) return;
+        await appendFile(logPath, line, { encoding: 'utf8', mode: 0o600 });
+        usedBytes += lineBytes;
+    };
 }
 
 async function validateCredentialMounts(
@@ -270,6 +304,7 @@ export class GoalContainerSupervisor {
             mkdir(layout.providerHome, { recursive: true, mode: 0o700 }),
             mkdir(path.dirname(layout.logPath), { recursive: true, mode: 0o700 }),
         ]);
+        const appendGoalLog = createGoalLogSink(layout.logPath);
 
         const dockerArgs = [
             'run', '--rm', '--name', layout.containerName,
@@ -295,6 +330,7 @@ export class GoalContainerSupervisor {
                 if (!result.accepted) {
                     throw new StaleGoalSessionFenceError(`Container output rejected by durable sink: ${result.reason}`);
                 }
+                await appendGoalLog(output);
             },
         });
         return { layout, execution };

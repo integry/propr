@@ -1,13 +1,10 @@
 import type {
     GoalContainerInspection,
-    GoalProviderReconcileResult,
     GoalRepositoryIdentity,
     GoalRepositoryInspection,
     GoalSessionControlFence,
     GoalSessionIdentity,
     GoalSessionState,
-    GoalSessionStatus,
-    GoalTurnState,
 } from './contract.js';
 import {
     GoalSessionContractError,
@@ -17,6 +14,7 @@ import {
 import { createFirstTurnInitializationIntent, deterministicOpenKey, firstTurnIdentityFailure } from './firstTurnIdentity.js';
 import { GoalSessionControls } from './GoalSessionControls.js';
 import { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
+import { reconcileRecoveredTurn } from './reconcileRecoveredTurn.js';
 import {
     assertProviderIdentity,
     controlExecutionIdentity,
@@ -140,10 +138,11 @@ export class GoalSessionSupervisor extends GoalSessionControls {
             assertProviderIdentity(state, snapshot);
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
         }
-        const reconciled = reconcileRecoveredTurn(state, result.outcome);
+        const reconciled = reconcileRecoveredTurn(state, recovery.execution, result.outcome);
         const saved = await this.ports.state.compareAndSet(state, nextState(state, {
             status: reconciled.status,
             activeTurn: reconciled.activeTurn,
+            recoveryAttempt: undefined,
             failureReason: result.outcome === 'failed' ? result.reason : undefined,
             providerSessionId: snapshot?.providerSessionId ?? state.providerSessionId,
             recoveryMetadata: snapshot?.recoveryMetadata ?? state.recoveryMetadata,
@@ -158,8 +157,9 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         state: GoalSessionState,
         controllerEpoch: number,
     ): Promise<{ state: GoalSessionState; execution: { executionId: string; attemptId: string } }> {
-        const previousAttempt = state.activeTurn?.attemptId
+        const previousAttempt = state.recoveryAttempt?.attemptId
             ?? state.recoveryAttemptId
+            ?? state.activeTurn?.attemptId
             ?? state.providerOpenAttemptId;
         const attemptId = previousAttempt
             ? this.mintFreshAttemptId(previousAttempt)
@@ -170,11 +170,12 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         };
         const saved = await this.compareAndSetExact(state, {
             recoveryAttemptId: attemptId,
-            activeTurn: state.activeTurn ? {
-                ...state.activeTurn,
+            recoveryAttempt: {
                 ...execution,
-                executionEpoch: controllerEpoch,
-            } : state.activeTurn,
+                controllerEpoch,
+                authoritativeAttemptId: state.activeTurn?.attemptId,
+                claimedAt: nowIso(),
+            },
         }, 'A newer operation superseded crash reconciliation');
         return { state: saved, execution };
     }
@@ -379,28 +380,6 @@ function verifyRecoveredContainer(
         }
     }
     return null;
-}
-
-/**
- * Reconciles the recovered session status and its active turn into a coherent
- * state. A turn that was still running/pause-requested/paused when the container
- * was lost becomes an explicitly paused, resumable turn so a replacement
- * supervisor continues the exact logical execution rather than letting a new
- * turn overwrite it. The later provider resume durably replaces the crashed
- * attempt ID with a fresh one. A failed reconcile fails the session; any other
- * outcome leaves the durable turn untouched.
- */
-function reconcileRecoveredTurn(
-    state: GoalSessionState,
-    outcome: GoalProviderReconcileResult['outcome'],
-): { status: GoalSessionStatus; activeTurn: GoalTurnState | undefined } {
-    if (outcome === 'failed') return { status: 'failed', activeTurn: state.activeTurn };
-    if (outcome !== 'resumed') return { status: state.status, activeTurn: state.activeTurn };
-    const turn = state.activeTurn;
-    if (turn && (turn.status === 'running' || turn.status === 'pause_requested' || turn.status === 'paused')) {
-        return { status: 'paused', activeTurn: { ...turn, status: 'paused' } };
-    }
-    return { status: 'idle', activeTurn: turn };
 }
 
 /**
