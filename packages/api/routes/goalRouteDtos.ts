@@ -34,7 +34,7 @@ const PUBLIC_EVENT_KEY_NAMES = new Set([
 ]);
 
 const PRIVATE_EVENT_KEY_FAMILIES = new Set((
-  'controller session lease epoch idempotency claim request response runtime container worker turn '
+  'controller session lease epoch idempotency claim request response runtime container worker turn owner '
   + 'worktree workspace directory dir cwd host docker config configuration env environment mount mounts '
   + 'volume volumes credential credentials fence secret secrets password passwd passphrase private internal '
   + 'token authorization cookie'

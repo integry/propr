@@ -265,6 +265,8 @@ test('unknown payload projection contains hostile toJSON failures', () => {
 
 test('event payload omits normalized private key families without substring over-redaction', () => {
   const cases = [
+    { family: 'owner', camel: 'ownerMetadata', safe: 'ownershipSummary',
+      aliases: ['owner_name', 'owner-name', 'ownerName', 'buildOwner'] },
     { family: 'controller', camel: 'controllerMetadata', safe: 'microcontrollerMetadata' },
     { family: 'session', camel: 'sessionState', safe: 'sessionalState' },
     { family: 'runtime', camel: 'runtimeInfo', safe: 'runtimeishInfo' },
@@ -274,23 +276,26 @@ test('event payload omits normalized private key families without substring over
     { family: 'environment', camel: 'environmentVariables', safe: 'environmentalVariables' },
     { family: 'mount', camel: 'mountSources', safe: 'mountainSources' },
     { family: 'credential', camel: 'credentialFile', safe: 'credentialedFile' },
-  ] as const;
-  const input: Record<string, string> = {};
+  ] satisfies readonly { family: string; camel: string; safe: string;
+    aliases?: readonly string[] }[];
+  const input: Record<string, string> = { repositoryOwner: 'integry' };
 
-  for (const { family, camel, safe } of cases) {
+  for (const { family, camel, safe, aliases = [] } of cases) {
     const snake = camel.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-    input[camel] = `private-${family}-camel`;
-    input[snake] = `private-${family}-snake`;
-    input[snake.replaceAll('_', '-')] = `private-${family}-kebab`;
+    const privateKeys = [camel, snake, snake.replaceAll('_', '-'), ...aliases];
+    for (const key of privateKeys) input[key] = `private-${family}-${key}`;
     input[safe] = `safe-${family}`;
   }
 
   const projected = toPublicGoalEventPayload(input) as Record<string, string>;
   const serialized = JSON.stringify(projected);
-  for (const { family, camel, safe } of cases) {
-    assert.equal(projected[camel], undefined, camel);
-    assert.equal(serialized.includes(`private-${family}-snake`), false, `${family} snake`);
-    assert.equal(serialized.includes(`private-${family}-kebab`), false, `${family} kebab`);
+  assert.equal(projected.repositoryOwner, 'integry');
+  for (const { family, camel, safe, aliases = [] } of cases) {
+    const snake = camel.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+    for (const key of [camel, snake, snake.replaceAll('_', '-'), ...aliases]) {
+      assert.equal(projected[key], undefined, key);
+      assert.equal(serialized.includes(`private-${family}-${key}`), false, key);
+    }
     assert.equal(projected[safe], `safe-${family}`, safe);
   }
 });
