@@ -15,6 +15,7 @@ import type {
   PublicGoalNodeDto,
 } from '@propr/shared';
 import { redactFileUriTokens } from './goalRouteFileUriSanitizer.js';
+import { redactRawPathTokens } from './goalRouteRawPathSanitizer.js';
 
 const PUBLIC_EVENT_PAYLOAD_LIMITS = {
   depth: 16,
@@ -174,6 +175,7 @@ function truncateUtf8(value: string, maxBytes: number): string {
 
 function redactSensitiveEventValues(value: string, inputTruncated: boolean): string {
   let sanitized = redactFileUriTokens(value, inputTruncated);
+  sanitized = redactRawPathTokens(sanitized, inputTruncated);
   sanitized = redactSecrets(sanitized);
   for (const pattern of SENSITIVE_EVENT_VALUE_PATTERNS) {
     sanitized = sanitized.replace(pattern, `$1${SENSITIVE_PATH_MARKER}`);

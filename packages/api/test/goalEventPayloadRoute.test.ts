@@ -122,8 +122,14 @@ test('event route projects poisoned nested payloads without mutating persistence
     eventName: 'model-change-requested',
     progress: { current: 2, total: 5, note: `safe context ${githubToken}` },
     safeArray: ['alpha', { message: 'beta', count: 3 }, `array context ${githubToken}`],
-    relativeCopy: { source: 'src/app.ts', target: 'dist/app.js' },
-    sensitiveCopy: { source: '/home/propr/.ssh', target: '/root/.ssh' },
+    relativeCopy: {
+      source: '/project/../home-project/readme',
+      target: String.raw`C:\Temp\..\UsersGuide\readme`,
+    },
+    sensitiveCopy: {
+      source: '/project/../home/propr/.ssh',
+      target: String.raw`C:\Temp\..\Users\alice\private.txt`,
+    },
     message: 'using unix:///var/run/docker.sock',
     cwd: '/srv/propr/private-top-level-cwd',
     hostPath: '/var/lib/propr/private-host-path',
@@ -199,7 +205,10 @@ test('event route projects poisoned nested payloads without mutating persistence
     { message: 'beta', count: 3 },
   ]);
   assert.match((payload.safeArray as string[])[2], /\[REDACTED_GITHUB_TOKEN\]/);
-  assert.deepEqual(payload.relativeCopy, { source: 'src/app.ts', target: 'dist/app.js' });
+  assert.deepEqual(payload.relativeCopy, {
+    source: '/project/../home-project/readme',
+    target: String.raw`C:\Temp\..\UsersGuide\readme`,
+  });
   assert.deepEqual(payload.sensitiveCopy, {
     source: '[REDACTED_SENSITIVE_PATH]',
     target: '[REDACTED_SENSITIVE_PATH]',
