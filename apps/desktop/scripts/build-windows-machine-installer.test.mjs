@@ -2,10 +2,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
+  buildWindowsMachineInstaller,
   windowsMachineInstallerSourceForTest,
   windowsWixDirectoryForTest,
   wixProbeSourceForTest,
 } from './build-windows-machine-installer.mjs';
+import {
+  assertWindowsInstallerProductVersion,
+  WINDOWS_INSTALLER_PRODUCT_VERSION_ERROR,
+} from './windows-installer-version.mjs';
 
 const installerScript = readFileSync(new URL('./build-windows-machine-installer.mjs', import.meta.url), 'utf8');
 
@@ -28,6 +33,61 @@ test('sets explicit Windows-1252 MSI and summary code pages in probe and product
   assertExplicitCodepages(wixProbeSourceForTest('arm64'));
   assertExplicitCodepages(windowsMachineInstallerSourceForTest('C:\\fixture', '1.2.3', 'x64', files));
   assertExplicitCodepages(windowsMachineInstallerSourceForTest('C:\\fixture', '1.2.3', 'arm64', files));
+});
+
+test('accepts the exact MSI ProductVersion boundary and retains version and upgrade identity in WXS', () => {
+  const version = assertWindowsInstallerProductVersion('255.255.65535');
+  const files = [{
+    path: 'C:\\fixture\\propr-desktop.exe',
+    name: 'propr-desktop.exe',
+    size: 1n,
+  }];
+  const boundarySource = windowsMachineInstallerSourceForTest('C:\\fixture', version, 'x64', files);
+  const ordinarySource = windowsMachineInstallerSourceForTest('C:\\fixture', '1.2.3', 'x64', files);
+
+  assert.match(
+    boundarySource,
+    /<Product Id="\*" Name="ProPR Desktop" Language="1033" Codepage="1252" Version="255\.255\.65535"/,
+  );
+  assert.equal(boundarySource.match(/Version="255\.255\.65535"/g)?.length, 1);
+  for (const source of [boundarySource, ordinarySource]) {
+    assert.match(source, /Manufacturer="Unchained Development OÜ" UpgradeCode="79D29087-5B38-4D77-93C8-5BC0F7856D59">/);
+    assert.match(source, /<MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"/);
+    assert.equal(source.match(/<Product Id="\*"/g)?.length, 1);
+    assert.equal(source.match(/UpgradeCode="79D29087-5B38-4D77-93C8-5BC0F7856D59"/g)?.length, 1);
+  }
+});
+
+test('rejects every unsupported ProductVersion at the direct installer builder entry point', async () => {
+  for (const version of [
+    '256.0.0',
+    '0.256.0',
+    '0.0.65536',
+    `${'9'.repeat(10_000)}.0.0`,
+    '01.2.3',
+    '1.02.3',
+    '1.2.03',
+    'v1.2.3',
+    '+1.2.3',
+    '-1.2.3',
+    '1.-2.3',
+    '1.2.+3',
+    '1.2.3.4',
+    '1.2.3.',
+    '1.2',
+    '1.2.3-rc.1',
+    '255.255.65535-rc.1',
+  ]) {
+    await assert.rejects(
+      buildWindowsMachineInstaller({
+        appDirectory: 'unused',
+        output: 'unused',
+        version,
+        arch: 'x64',
+      }),
+      { message: WINDOWS_INSTALLER_PRODUCT_VERSION_ERROR },
+    );
+  }
 });
 
 test('uses per-machine scope without explicitly authoring the derived ALLUSERS property', () => {

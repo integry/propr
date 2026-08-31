@@ -1,4 +1,10 @@
 import { createPublicKey } from 'node:crypto';
+import {
+  assertWindowsInstallerProductVersion,
+  WINDOWS_INSTALLER_PRODUCT_VERSION_ERROR,
+} from '../scripts/windows-installer-version.mjs';
+
+export { WINDOWS_INSTALLER_PRODUCT_VERSION_ERROR };
 
 export type Environment = Readonly<Record<string, string | undefined>>;
 
@@ -31,8 +37,13 @@ export const parseWindowsSignerPins = (
   return pins;
 };
 
-export const resolveDesktopVersion = (packageVersion: string, env: Environment = process.env): string => {
+export const resolveDesktopVersion = (
+  packageVersion: string,
+  env: Environment = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string => {
   const version = env.PROPR_DESKTOP_VERSION?.trim() || packageVersion;
+  if (platform === 'win32') assertWindowsInstallerProductVersion(version);
   if (!RELEASE_VERSION_PATTERN.test(version)) {
     throw new Error(`ProPR Desktop version must be canonical stable semver (received ${JSON.stringify(version)})`);
   }

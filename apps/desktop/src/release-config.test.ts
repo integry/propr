@@ -7,6 +7,7 @@ import {
   requireProductionReleaseConfiguration,
   resolveDesktopVersion,
   resolveTrustedUpdateBuildConfig,
+  WINDOWS_INSTALLER_PRODUCT_VERSION_ERROR,
 } from './release-config';
 
 const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
@@ -54,6 +55,53 @@ describe('desktop release configuration', () => {
     assert.equal(resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: '2.3.4' }), '2.3.4');
     assert.throws(() => resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: 'v2.3.4' }), /stable semver/);
     assert.throws(() => resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: '2.3.4-beta.1' }), /stable semver/);
+  });
+
+  test('accepts the exact MSI ProductVersion numeric boundary for Windows releases', () => {
+    assert.equal(
+      resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: '255.255.65535' }, 'win32'),
+      '255.255.65535',
+    );
+  });
+
+  test('rejects unsupported Windows MSI ProductVersions with one fixed actionable diagnostic', () => {
+    for (const version of [
+      '256.0.0',
+      '0.256.0',
+      '0.0.65536',
+      `${'9'.repeat(10_000)}.0.0`,
+      '01.2.3',
+      '1.02.3',
+      '1.2.03',
+      'v1.2.3',
+      '+1.2.3',
+      '-1.2.3',
+      '1.-2.3',
+      '1.2.+3',
+      '1.2.3.4',
+      '1.2.3.',
+      '1.2',
+      '1.2.3-rc.1',
+      '255.255.65535-rc.1',
+    ]) {
+      assert.throws(
+        () => resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: version }, 'win32'),
+        { message: WINDOWS_INSTALLER_PRODUCT_VERSION_ERROR },
+      );
+    }
+  });
+
+  test('preserves stable SemVer policy outside the Windows MSI path', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      assert.equal(
+        resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: '256.256.65536' }, platform),
+        '256.256.65536',
+      );
+      assert.throws(
+        () => resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: '256.256.65536-rc.1' }, platform),
+        /canonical stable semver/,
+      );
+    }
   });
 
   test('keeps updates disabled unless they are explicitly enabled', () => {
