@@ -216,7 +216,7 @@ describe('goalsApi', () => {
   it('strictly reads detail and sends keyed, versioned lifecycle mutations', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(wireDetail))
-      .mockResolvedValueOnce(jsonResponse({ goal: { ...wireGoal, state: 'pausing', version: 4 } }));
+      .mockResolvedValueOnce(jsonResponse({ goal: { ...wireGoal, goalId: 'goal/special', state: 'pausing', version: 4 } }));
     await expect(goalsApi.getGoal('goal/special')).resolves.toEqual(wireDetail);
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/goals/goal%2Fspecial', { credentials: 'include', signal: undefined });
     await expect(goalsApi.pauseGoal('goal/special', 3, 'pause-key')).resolves.toMatchObject({ state: 'pausing', version: 4 });
@@ -224,6 +224,14 @@ describe('goalsApi', () => {
       method: 'POST', body: JSON.stringify({ expectedVersion: 3 }),
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'pause-key' },
     }));
+  });
+
+  it('rejects a lifecycle mutation response for another goal before it can be committed', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ goal: { ...wireGoal, goalId: 'goal-2', state: 'pausing', version: 4 } }));
+
+    const error = await goalsApi.pauseGoal('goal-1', 3, 'pause-key').catch(caught => caught);
+    expect(error).toBeInstanceOf(goalsApi.GoalContractError);
+    expect(error).toHaveProperty('message', expect.stringContaining('response.goal.goalId'));
   });
 
   it.each([

@@ -62,7 +62,9 @@ const goalMutation = async (
   }, { replayMutationAfterTokenRefresh: true });
   await handleGoalResponse(response);
   const envelope = await response.json() as { goal?: unknown };
-  return decodeGoalRecord(envelope.goal, 'response.goal');
+  const goal = decodeGoalRecord(envelope.goal, 'response.goal');
+  if (goal.goalId !== goalId) throw new GoalContractError('response.goal.goalId', `the requested goal ${goalId}`);
+  return goal;
 };
 
 export const pauseGoal = (goalId: string, expectedVersion: number, idempotencyKey: string) =>
