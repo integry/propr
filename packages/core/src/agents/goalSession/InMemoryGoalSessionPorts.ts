@@ -5,6 +5,7 @@ import type {
     GoalExecutionIdentity,
     GoalRepositoryIdentity,
     GoalRepositoryInspection,
+    GoalSessionControlFence,
     GoalSessionEvent,
     GoalSessionEventSink,
     GoalSessionFence,
@@ -33,15 +34,24 @@ function keyOf(identity: GoalSessionIdentity): string {
 }
 
 /**
- * Deterministic durable-port fake used by contract tests and embedders. All
- * state/event/message mutations are synchronous inside each async method, which
- * gives the same atomic fence semantics expected from a database transaction.
+ * Deterministic in-memory durable-port fake used by contract tests and by
+ * embedders that want the runtime without a database. All state/event/message
+ * mutations are synchronous inside each async method, which gives the same
+ * atomic fence semantics expected from a database transaction.
+ *
+ * This is explicitly NOT a production durability fallback: everything lives in
+ * process memory and is lost on restart, so it must never back a real goal that
+ * needs to survive a worker/daemon crash. Production deployments provide a
+ * transactional {@link GoalSessionRuntimePorts} implementation instead.
  */
 export class InMemoryGoalSessionPorts implements
     GoalSessionStatePort,
     GoalSessionEventSink,
     GoalSessionMessagePort,
     GoalSessionRecoveryPort {
+    /** Marks this implementation as an ephemeral test/embedding double, never durable storage. */
+    readonly isEphemeralTestDouble = true;
+
     private readonly states = new Map<string, GoalSessionState>();
     private readonly sessionOwners = new Map<string, string>();
     private readonly events = new Map<string, PersistedGoalSessionEvent[]>();
@@ -91,37 +101,66 @@ export class InMemoryGoalSessionPorts implements
         execution: GoalExecutionIdentity,
         event: GoalSessionEvent,
     ): Promise<GoalEventAppendResult> {
-        try { this.assertGoalScope(fence); }
-        catch (error) {
-            if (error instanceof GoalSessionScopeError) return { accepted: false, reason: 'wrong_goal' };
-            throw error;
-        }
+        const scopeError = this.scopeRejection(fence);
+        if (scopeError) return scopeError;
         const key = keyOf(fence);
         const state = this.states.get(key);
         if (!state || state.controllerEpoch !== fence.controllerEpoch) {
             return { accepted: false, reason: 'stale_fence' };
         }
-        const isReconciliation = event.type === 'reconciliation'
-            && fence.turnId === `reconciliation-${state.controllerEpoch}`;
-        if (!isReconciliation && state.activeTurn?.turnId !== fence.turnId) {
+        if (state.activeTurn?.turnId !== fence.turnId) {
             return { accepted: false, reason: 'turn_not_active' };
         }
         const turnIsTerminal = state.activeTurn
             && ['completed', 'cancelled', 'failed'].includes(state.activeTurn.status);
-        if (!isReconciliation && turnIsTerminal && event.type !== 'completion') {
+        if (turnIsTerminal && event.type !== 'completion') {
             return { accepted: false, reason: 'turn_not_active' };
         }
+        return { accepted: true, persisted: this.record(key, { turnId: fence.turnId, fence, execution, event }) };
+    }
+
+    async appendControl(
+        fence: GoalSessionControlFence,
+        execution: GoalExecutionIdentity,
+        event: GoalSessionEvent,
+    ): Promise<GoalEventAppendResult> {
+        const scopeError = this.scopeRejection(fence);
+        if (scopeError) return scopeError;
+        const key = keyOf(fence);
+        const state = this.states.get(key);
+        if (!state || state.controllerEpoch !== fence.controllerEpoch) {
+            return { accepted: false, reason: 'stale_fence' };
+        }
+        // Control events are session/epoch fenced only, so they remain auditable
+        // in idle state and are never attributed to a specific (possibly
+        // completed) turn.
+        return { accepted: true, persisted: this.record(key, { turnId: `#control-e${fence.controllerEpoch}`, fence, execution, event }) };
+    }
+
+    private scopeRejection(identity: GoalSessionIdentity): { accepted: false; reason: 'wrong_goal' } | null {
+        try { this.assertGoalScope(identity); return null; }
+        catch (error) {
+            if (error instanceof GoalSessionScopeError) return { accepted: false, reason: 'wrong_goal' };
+            throw error;
+        }
+    }
+
+    private record(
+        key: string,
+        entry: { turnId: string; fence: GoalSessionControlFence; execution: GoalExecutionIdentity; event: GoalSessionEvent },
+    ): PersistedGoalSessionEvent {
         const log = this.events.get(key) ?? [];
         const persisted: PersistedGoalSessionEvent = {
-            ...fence,
-            ...execution,
+            ...entry.fence,
+            turnId: entry.turnId,
+            ...entry.execution,
             sequence: (log.at(-1)?.sequence ?? 0) + 1,
             recordedAt: new Date().toISOString(),
-            event: clone(event),
+            event: clone(entry.event),
         };
         log.push(persisted);
         this.events.set(key, log);
-        return { accepted: true, persisted: clone(persisted) };
+        return clone(persisted);
     }
 
     async replay(identity: GoalSessionIdentity, afterSequence = 0): Promise<PersistedGoalSessionEvent[]> {

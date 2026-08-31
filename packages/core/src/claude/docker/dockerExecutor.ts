@@ -1,4 +1,3 @@
-/* eslint-disable max-lines -- legacy and supervised Docker execution share ownership and abort primitives */
 import { spawn, execFileSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
 import { Redis } from 'ioredis';
@@ -17,8 +16,19 @@ import {
     scheduleForceKill,
     setupAbortChecker,
 } from './dockerAbortController.js';
+import { resolveDockerPath, stripAnsiCodes } from './dockerProcessUtils.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
+export {
+    executeSupervisedDockerCommand,
+    addGoalFenceLabels,
+} from './supervisedDockerExecutor.js';
+export type {
+    SupervisedDockerExecution,
+    SupervisedDockerFence,
+    SupervisedDockerOptions,
+    SupervisedDockerOutput,
+} from './supervisedDockerExecutor.js';
 export {
     addTaskAttemptLabelsToDockerArgs,
     ExecutionAbortedError,
@@ -47,6 +57,7 @@ export interface ExecutionResult {
 export interface RunningTaskContainer { id: string; name: string; }
 export type LegacyTaskContainerLiveness = 'running' | 'not_found' | 'unavailable';
 
+
 export interface DockerCommandOptions {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
     /** Resolve with buffered output on timeout so implementation jobs can publish partial work. */
@@ -57,54 +68,7 @@ export interface DockerCommandOptions {
     signal?: AbortSignal;
 }
 
-export interface SupervisedDockerFence {
-    goalId: string;
-    sessionId: string;
-    controllerEpoch: number;
-    turnId: string;
-}
-
-export interface SupervisedDockerOutput extends SupervisedDockerFence {
-    channel: 'stdout' | 'stderr';
-    data: string;
-}
-
-export interface SupervisedDockerOptions extends SupervisedDockerFence {
-    taskId?: string;
-    cwd?: string;
-    signal?: AbortSignal;
-    timeout?: number;
-    /** Called once per arriving stream chunk. The promise is serialized with every other chunk. */
-    durableOutput: (output: SupervisedDockerOutput) => void | Promise<void>;
-}
-
-export interface SupervisedDockerExecution {
-    containerName: string | null;
-    writeInput(data: string): Promise<void>;
-    closeInput(): void;
-    /** Terminal cancellation is immediate and deliberately separate from provider pause. */
-    cancel(reason?: Error): Promise<void>;
-    completion: Promise<Pick<ExecutionResult, 'exitCode'>>;
-}
-
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
-
-// ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
-const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
-
-function stripAnsiCodes(text: string): string {
-    return text.replace(ANSI_REGEX, '');
-}
-
-function resolveDockerPath(command: string): string {
-    if (command !== 'docker') return command;
-    const paths = ['/usr/bin/docker', '/usr/local/bin/docker', '/bin/docker'];
-    for (const p of paths) {
-        try { if (fs.existsSync(p)) { fs.accessSync(p, fs.constants.X_OK); logger.debug({ dockerPath: p }, 'Found docker executable'); return p; } } catch { /* continue */ }
-    }
-    logger.debug('Using docker from PATH');
-    return 'docker';
-}
 
 /**
  * Finds an agent container in any lifecycle state by its exact task label and,
@@ -188,125 +152,6 @@ function spawnCommandProcess(
         logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');
     }
     return child;
-}
-
-function addGoalFenceLabels(args: string[], fence: SupervisedDockerFence): string[] {
-    if (args[0] !== 'run') return args;
-    return [
-        'run',
-        '--label', `propr.goal.id=${fence.goalId}`,
-        '--label', `propr.goal.session=${fence.sessionId}`,
-        '--label', `propr.goal.controller-epoch=${fence.controllerEpoch}`,
-        '--label', `propr.goal.turn=${fence.turnId}`,
-        ...args.slice(1),
-    ];
-}
-
-/**
- * Starts a controlled duplex Docker invocation for a goal turn. Unlike the
- * legacy one-shot executor, stdin remains open and output deltas are awaited by
- * an injected durable sink. No expiring full-output snapshot is maintained.
- */
-export function executeSupervisedDockerCommand(
-    args: string[],
-    options: SupervisedDockerOptions,
-): SupervisedDockerExecution {
-    if (args[0] !== 'run') throw new Error('Supervised Docker execution only supports docker run');
-    if (!options.goalId || !options.sessionId || !options.turnId || !Number.isSafeInteger(options.controllerEpoch)) {
-        throw new Error('A valid goal/session/controller epoch/turn fence is required');
-    }
-    if (options.timeout !== undefined && (!Number.isSafeInteger(options.timeout) || options.timeout <= 0)) {
-        throw new Error('Supervised Docker timeout must be a positive safe integer');
-    }
-    const ownershipContext = getExecutionOwnershipContext();
-    const executionSignal = options.signal ?? ownershipContext?.signal;
-    const initialAbortError = getExecutionAbortError(executionSignal);
-    if (initialAbortError) throw initialAbortError;
-    const fencedArgs = addGoalFenceLabels(
-        resolveExecutionArgs('docker', args, options.taskId, ownershipContext?.attemptGeneration),
-        options,
-    );
-    const containerName = getDockerRunContainerName(fencedArgs);
-    const child = spawn(resolveDockerPath('docker'), fencedArgs, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        cwd: options.cwd && fs.existsSync(options.cwd) ? options.cwd : undefined,
-        env: process.env,
-    });
-    const state = createDockerExecutionState();
-    let outputChain = Promise.resolve();
-    let outputFailure: unknown;
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    let cancelReason: Error | undefined;
-    let settled = false;
-    let settleCompletion: ((result: Pick<ExecutionResult, 'exitCode'>) => void) | undefined;
-    let rejectCompletion: ((error: unknown) => void) | undefined;
-    const completion = new Promise<Pick<ExecutionResult, 'exitCode'>>((resolve, reject) => {
-        settleCompletion = resolve;
-        rejectCompletion = reject;
-    });
-    const cancel = async (reason = new ExecutionAbortedError()): Promise<void> => {
-        if (settled) return;
-        cancelReason ??= reason;
-        await abortSpawnedExecution(child, state, {
-            namedContainer: containerName,
-            scheduleForceKill,
-            taskId: options.taskId,
-            attemptGeneration: ownershipContext?.attemptGeneration,
-        });
-    };
-    const queueOutput = (channel: 'stdout' | 'stderr', data: Buffer): void => {
-        const fencedOutput: SupervisedDockerOutput = {
-            goalId: options.goalId,
-            sessionId: options.sessionId,
-            controllerEpoch: options.controllerEpoch,
-            turnId: options.turnId,
-            channel,
-            data: data.toString(),
-        };
-        outputChain = outputChain.then(() => outputFailure ? undefined : options.durableOutput(fencedOutput)).catch(error => {
-            outputFailure ??= error;
-            void cancel(error instanceof Error ? error : new Error(String(error)));
-        });
-    };
-    child.stdout?.on('data', (data: Buffer) => queueOutput('stdout', data));
-    child.stderr?.on('data', (data: Buffer) => queueOutput('stderr', data));
-    const abortListener = (): void => { void cancel(getExecutionAbortError(executionSignal) ?? undefined); };
-    executionSignal?.addEventListener('abort', abortListener, { once: true });
-    if (options.timeout !== undefined) {
-        timeoutHandle = setTimeout(() => { void cancel(new Error(`Supervised Docker command timed out after ${options.timeout}ms`)); }, options.timeout);
-    }
-    child.once('close', (exitCode: number | null) => {
-        settled = true;
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-        executionSignal?.removeEventListener('abort', abortListener);
-        void outputChain.then(async () => {
-            if (state.teardownPromise) await state.teardownPromise;
-            if (outputFailure) rejectCompletion?.(outputFailure);
-            else if (cancelReason) rejectCompletion?.(cancelReason);
-            else settleCompletion?.({ exitCode });
-        });
-    });
-    child.once('error', error => {
-        settled = true;
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-        executionSignal?.removeEventListener('abort', abortListener);
-        rejectCompletion?.(error);
-    });
-
-    return {
-        containerName,
-        writeInput(data: string): Promise<void> {
-            if (!child.stdin || child.stdin.destroyed || child.stdin.writableEnded) {
-                return Promise.reject(new Error('Supervised Docker stdin is closed'));
-            }
-            return new Promise((resolve, reject) => {
-                child.stdin!.write(data, error => error ? reject(error) : resolve());
-            });
-        },
-        closeInput(): void { child.stdin?.end(); },
-        cancel,
-        completion,
-    };
 }
 
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {

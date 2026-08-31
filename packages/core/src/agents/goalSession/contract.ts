@@ -13,9 +13,19 @@ export interface GoalSessionIdentity {
     sessionId: string;
 }
 
-export interface GoalSessionFence extends GoalSessionIdentity {
+/**
+ * Session-scoped ownership fence. Control operations (pause, resume, model
+ * change, cancel, reconcile) are authorized by goal/session/epoch alone and do
+ * not require an active turn. This is deliberately separate from the turn fence
+ * so control/audit events can be appended even when no turn is running.
+ */
+export interface GoalSessionControlFence extends GoalSessionIdentity {
     /** Monotonically increasing ownership generation. */
     controllerEpoch: number;
+}
+
+/** Turn-scoped fence. Adds the specific logical turn a caller claims to own. */
+export interface GoalSessionFence extends GoalSessionControlFence {
     turnId: string;
 }
 
@@ -51,6 +61,19 @@ export interface GoalTurnState extends GoalExecutionIdentity {
     status: 'running' | 'pause_requested' | 'paused' | 'completed' | 'cancelled' | 'failed';
 }
 
+/**
+ * Durable marker recorded before the very first provider open call. It lets a
+ * later controller distinguish an ordinary crash window (recoverable when the
+ * provider can deterministically/idempotently re-open) from a session that was
+ * never intended to be initialized.
+ */
+export interface GoalSessionInitializationIntent {
+    attemptId: string;
+    /** Stable key a deterministic provider uses to re-open the same session. */
+    deterministicOpenKey: string;
+    recordedAt: string;
+}
+
 export interface GoalProviderSessionSnapshot {
     /** Stable, provider-issued identity. It must never be replaced during resume. */
     providerSessionId: string;
@@ -69,6 +92,8 @@ export interface GoalSessionState extends GoalSessionIdentity {
     requestedModel?: string;
     activeTurn?: GoalTurnState;
     completedTurnIds: string[];
+    /** Present while a first provider open is in-flight; cleared once persisted. */
+    initializationIntent?: GoalSessionInitializationIntent;
     failureReason?: string;
     /** Optimistic concurrency token owned by the state port. */
     version: number;
@@ -91,7 +116,8 @@ export type GoalSessionEvent =
     | { type: 'session_resumed' }
     | { type: 'model_change_acknowledged'; requestedModel: string; appliesAt: 'immediate' | 'next_safe_boundary' | 'next_turn' }
     | { type: 'model_changed'; previousModel?: string; model: string }
-    | { type: 'reconciliation'; outcome: 'alive' | 'resumed' | 'failed'; reason: string }
+    | { type: 'turn_resumed'; turnId: string }
+    | { type: 'reconciliation'; outcome: 'alive' | 'resumed' | 'failed' | 'blocked'; reason: string }
     | { type: 'completion'; outcome: 'succeeded' | 'failed' | 'cancelled'; summary?: string; error?: string };
 
 export interface PersistedGoalSessionEvent extends GoalSessionFence, GoalExecutionIdentity {
@@ -120,7 +146,19 @@ export interface GoalSessionStatePort {
  * delta (rather than replacing a snapshot) preserves replay across restarts.
  */
 export interface GoalSessionEventSink {
+    /**
+     * Turn-scoped append. Authoritative only when goal/session/epoch match AND
+     * the fence owns the currently active turn. Rejects output attributed to a
+     * turn that is not active (including terminal turns).
+     */
     append(fence: GoalSessionFence, execution: GoalExecutionIdentity, event: GoalSessionEvent): Promise<GoalEventAppendResult>;
+    /**
+     * Session-scoped control/audit append. Authoritative when goal/session/epoch
+     * match; it does not require an active turn, so model-change, cancel, resume
+     * and reconciliation remain auditable in idle state. It must never be
+     * attributed to an unrelated completed turn.
+     */
+    appendControl(fence: GoalSessionControlFence, execution: GoalExecutionIdentity, event: GoalSessionEvent): Promise<GoalEventAppendResult>;
     replay(identity: GoalSessionIdentity, afterSequence?: number): Promise<PersistedGoalSessionEvent[]>;
 }
 
@@ -142,6 +180,12 @@ export interface GoalProviderOpenRequest extends GoalSessionIdentity {
     provider: string;
     controllerEpoch: number;
     persisted?: GoalProviderSessionSnapshot;
+    /**
+     * Stable key a deterministic provider uses to re-open the same underlying
+     * session after a crash that happened before the provider identity was
+     * persisted. Only meaningful when the adapter reports supportsDeterministicOpen.
+     */
+    deterministicOpenKey?: string;
 }
 
 export interface GoalBeginTurnRequest extends GoalSessionFence, GoalExecutionIdentity {
@@ -156,15 +200,15 @@ export interface GoalSteeringRequest extends GoalSessionFence {
     body: string;
 }
 
-export interface GoalPauseRequest extends GoalSessionFence {
+export interface GoalPauseRequest extends GoalSessionControlFence {
     reason?: string;
 }
 
-export interface GoalModelChangeRequest extends GoalSessionFence {
+export interface GoalModelChangeRequest extends GoalSessionControlFence {
     model: string;
 }
 
-export interface GoalCancelRequest extends GoalSessionFence {
+export interface GoalCancelRequest extends GoalSessionControlFence {
     reason: string;
 }
 
@@ -200,11 +244,25 @@ export type GoalProviderReconcileResult =
  */
 export interface GoalSessionAdapter {
     readonly provider: string;
+    /**
+     * When true, openSession is idempotent for a given deterministicOpenKey: a
+     * repeated call re-opens the same provider session instead of creating a new
+     * one. This is what makes a crash before provider-identity persistence
+     * recoverable rather than permanently failed.
+     */
+    readonly supportsDeterministicOpen?: boolean;
     openSession(request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot>;
     beginTurn(request: GoalBeginTurnRequest, snapshot: GoalProviderSessionSnapshot): AsyncIterable<GoalSessionEvent>;
+    /**
+     * Continues the exact active turn identified by the fence after a pause or a
+     * container/supervisor restart. The provider resumes from the durable
+     * checkpoint and streams further ordered events through to a single
+     * completion; it must not start a new logical turn.
+     */
+    resumeTurn(request: GoalSessionFence, snapshot: GoalProviderSessionSnapshot): AsyncIterable<GoalSessionEvent>;
     deliverMessage(request: GoalSteeringRequest, snapshot: GoalProviderSessionSnapshot): Promise<{ messageId: string }>;
     requestPause(request: GoalPauseRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalPauseAcknowledgement>;
-    resumeSession(request: GoalSessionFence, snapshot: GoalProviderSessionSnapshot): Promise<GoalProviderSessionSnapshot>;
+    resumeSession(request: GoalSessionControlFence, snapshot: GoalProviderSessionSnapshot): Promise<GoalProviderSessionSnapshot>;
     requestModelChange(request: GoalModelChangeRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalModelChangeAcknowledgement>;
     cancel(request: GoalCancelRequest, snapshot: GoalProviderSessionSnapshot): Promise<void>;
     reconcile(request: GoalProviderReconcileRequest): Promise<GoalProviderReconcileResult>;

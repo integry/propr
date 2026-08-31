@@ -25,6 +25,7 @@ export {
 export type {
     GoalContainerLayout,
     GoalContainerRetentionPolicy,
+    GoalCredentialMount,
     StartGoalContainerRequest,
 } from './GoalContainerSupervisor.js';
 export { DockerGoalSessionRecovery } from './DockerGoalSessionRecovery.js';
