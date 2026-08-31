@@ -23,7 +23,7 @@ export type GoalMergePolicy = (typeof GOAL_MERGE_POLICIES)[number];
 export interface GoalProjectionReadyV1 {
   status: 'ready';
   checklist: { total: number; completed: number };
-  issues: { total: number; active: number; processed: number; failed: number; blocked: number };
+  issues: { total: number; ready: number; active: number; processed: number; failed: number; blocked: number };
   pullRequests: { open: number; reviewPending: number; ultrafixPending: number; mergeReady: number; merged: number };
   tokens: { total: number };
   time: { elapsedSeconds: number; activeSeconds: number; pausedSeconds: number };
@@ -145,7 +145,7 @@ export interface GoalTokenBreakdownV1 {
 }
 
 export interface GoalDetailStatsV1 {
-  issues: { total: number; active: number; processed: number; failed: number; blocked: number };
+  issues: { total: number; ready: number; active: number; processed: number; failed: number; blocked: number };
   pullRequests: { open: number; reviewPending: number; ultrafixPending: number; mergeReady: number; merged: number };
   tokens: { total: number; byModel: GoalTokenBreakdownV1[] };
   time: { elapsedSeconds: number; activeSeconds: number; pausedSeconds: number; recoverySeconds: number };

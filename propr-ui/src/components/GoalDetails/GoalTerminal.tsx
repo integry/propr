@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, Search } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronLeft, ChevronRight, Copy, Search } from 'lucide-react';
 import type { GoalEvent, GoalEventType } from '../../api/goalsApi';
 import { eventSearchText, sanitizeTerminalText } from './goalDetailUtils';
 
@@ -19,12 +19,18 @@ interface GoalTerminalProps {
   onLoadOlder: () => Promise<void>;
 }
 
+interface PendingScrollAnchor {
+  sequence: number;
+  viewportOffset: number;
+}
+
 export default function GoalTerminal({ events, connectionState, hasMoreBefore, loadingOlder, onLoadOlder }: GoalTerminalProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
+  const pendingScrollAnchorRef = useRef<PendingScrollAnchor | null>(null);
   const [query, setQuery] = useState('');
   const [enabledTypes, setEnabledTypes] = useState<Set<GoalEventType>>(new Set(EVENT_TYPES));
   const [followTail, setFollowTail] = useState(true);
-  const [viewOldest, setViewOldest] = useState(false);
+  const [windowAnchor, setWindowAnchor] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
 
   const filtered = useMemo(() => {
@@ -32,14 +38,32 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
     return events.filter(event => enabledTypes.has(event.type)
       && (!normalizedQuery || eventSearchText(event).includes(normalizedQuery)));
   }, [enabledTypes, events, query]);
-  const mounted = filtered.length > MOUNT_LIMIT
-    ? viewOldest ? filtered.slice(0, MOUNT_LIMIT) : filtered.slice(-MOUNT_LIMIT)
-    : filtered;
+  const latestStart = Math.max(0, filtered.length - MOUNT_LIMIT);
+  const anchorIndex = windowAnchor === null ? -1 : filtered.findIndex(event => event.sequence === windowAnchor);
+  const windowStart = followTail ? latestStart : anchorIndex >= 0 ? Math.min(anchorIndex, latestStart) : latestStart;
+  const mounted = filtered.slice(windowStart, windowStart + MOUNT_LIMIT);
+  const hasEarlierWindow = windowStart > 0;
+  const hasLaterWindow = windowStart + MOUNT_LIMIT < filtered.length;
 
   useEffect(() => {
     const viewport = viewportRef.current;
     if (viewport && followTail) viewport.scrollTop = viewport.scrollHeight;
-  }, [events, followTail]);
+  }, [events, filtered.length, followTail]);
+
+  useLayoutEffect(() => {
+    const pending = pendingScrollAnchorRef.current;
+    const viewport = viewportRef.current;
+    if (!pending || !viewport) return;
+    const anchor = viewport.querySelector<HTMLElement>(`[data-event-sequence="${pending.sequence}"]`);
+    if (!anchor) return;
+    viewport.scrollTop = anchor.offsetTop - pending.viewportOffset;
+    pendingScrollAnchorRef.current = null;
+  }, [events, mounted]);
+
+  const resetFilteredWindow = () => {
+    setWindowAnchor(null);
+    setFollowTail(true);
+  };
 
   const toggleType = (type: GoalEventType) => {
     setEnabledTypes(current => {
@@ -47,17 +71,32 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
       if (next.has(type)) next.delete(type); else next.add(type);
       return next;
     });
+    resetFilteredWindow();
+  };
+
+  const moveWindow = (direction: -1 | 1) => {
+    const nextStart = direction < 0
+      ? Math.max(0, windowStart - MOUNT_LIMIT)
+      : Math.min(latestStart, windowStart + MOUNT_LIMIT);
+    setFollowTail(false);
+    setWindowAnchor(filtered[nextStart]?.sequence ?? null);
+    const viewport = viewportRef.current;
+    if (viewport) viewport.scrollTop = 0;
   };
 
   const loadOlder = async () => {
     const viewport = viewportRef.current;
-    const previousHeight = viewport?.scrollHeight ?? 0;
+    const rows = viewport ? [...viewport.querySelectorAll<HTMLElement>('[data-event-sequence]')] : [];
+    const visible = rows.find(row => row.offsetTop + row.offsetHeight >= (viewport?.scrollTop ?? 0)) ?? rows[0];
+    if (visible && viewport) {
+      pendingScrollAnchorRef.current = {
+        sequence: Number(visible.dataset.eventSequence),
+        viewportOffset: visible.offsetTop - viewport.scrollTop,
+      };
+    }
     setFollowTail(false);
-    setViewOldest(true);
+    setWindowAnchor(mounted[0]?.sequence ?? null);
     await onLoadOlder();
-    requestAnimationFrame(() => {
-      if (viewport) viewport.scrollTop += viewport.scrollHeight - previousHeight;
-    });
   };
 
   const copyVisible = async () => {
@@ -89,34 +128,38 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
         <label className="relative mt-2 block">
           <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" aria-hidden="true" />
           <span className="sr-only">Search terminal output</span>
-          <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search output, source, or turn…" className="w-full rounded border border-zinc-700 bg-zinc-950 py-1.5 pl-8 pr-3 font-mono text-xs text-white placeholder:text-zinc-600 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500" />
+          <input type="search" value={query} onChange={event => { setQuery(event.target.value); resetFilteredWindow(); }} placeholder="Search output, source, or turn…" className="w-full rounded border border-zinc-700 bg-zinc-950 py-1.5 pl-8 pr-3 font-mono text-xs text-white placeholder:text-zinc-600 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500" />
         </label>
       </header>
       <div
         ref={viewportRef}
         onScroll={event => {
           const target = event.currentTarget;
-          setFollowTail(target.scrollHeight - target.scrollTop - target.clientHeight < 48);
+          const atTail = target.scrollHeight - target.scrollTop - target.clientHeight < 48;
+          if (!atTail && followTail) setWindowAnchor(mounted[0]?.sequence ?? null);
+          setFollowTail(atTail && !hasLaterWindow);
         }}
         tabIndex={0}
         aria-label="Goal terminal transcript"
         className="scrollbar-stealth-dark min-h-0 flex-1 overflow-auto overscroll-contain font-mono text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 motion-reduce:scroll-auto"
       >
-        {hasMoreBefore && (
-          <div className="sticky top-0 z-10 flex justify-center bg-zinc-950/95 p-2">
-            <button type="button" onClick={() => void loadOlder()} disabled={loadingOlder} className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">
-              {loadingOlder ? 'Loading older output…' : 'Load older output'}
-            </button>
-          </div>
-        )}
-        {filtered.length > MOUNT_LIMIT && <p className="px-3 py-2 text-center text-[10px] text-zinc-500">Showing the {viewOldest ? 'oldest' : 'newest'} {MOUNT_LIMIT} matching events to keep this transcript responsive.</p>}
+        <div className="sticky top-0 z-10 flex flex-wrap items-center justify-center gap-2 bg-zinc-950/95 p-2">
+          {hasMoreBefore && <button type="button" onClick={() => void loadOlder()} disabled={loadingOlder} className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">{loadingOlder ? 'Loading older output…' : 'Load older output'}</button>}
+          {filtered.length > MOUNT_LIMIT && (
+            <nav aria-label="Terminal event windows" className="flex items-center gap-2">
+              <button type="button" onClick={() => moveWindow(-1)} disabled={!hasEarlierWindow} aria-label="Earlier event window" className="rounded border border-zinc-700 p-1 disabled:opacity-40"><ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" /></button>
+              <span className="text-[10px] text-zinc-500">Events {windowStart + 1}–{windowStart + mounted.length} of {filtered.length}</span>
+              <button type="button" onClick={() => moveWindow(1)} disabled={!hasLaterWindow} aria-label="Later event window" className="rounded border border-zinc-700 p-1 disabled:opacity-40"><ChevronRight className="h-3.5 w-3.5" aria-hidden="true" /></button>
+            </nav>
+          )}
+        </div>
         {mounted.length === 0 && <p className="p-6 text-center text-zinc-500">No terminal events match these filters.</p>}
         <ol className="divide-y divide-zinc-900">
           {mounted.map((event, index) => {
             const previous = mounted[index - 1];
             const newTurn = index > 0 && previous.turnId !== event.turnId;
             return (
-              <li key={event.sequence} className={`${newTurn ? 'border-t border-zinc-700' : ''} px-3 py-2`}>
+              <li key={event.sequence} data-event-sequence={event.sequence} className={`${newTurn ? 'border-t border-zinc-700' : ''} px-3 py-2`}>
                 <div className="mb-1 flex flex-wrap items-center gap-x-2 text-[10px] text-zinc-500">
                   <span className={`uppercase ${event.type === 'stderr' ? 'text-red-400' : event.type === 'assistant' ? 'text-cyan-400' : 'text-zinc-400'}`}>{event.type}</span>
                   <span>#{event.sequence}</span><span>{eventLabel(event)}</span>
@@ -128,7 +171,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
         </ol>
       </div>
       {!followTail && (
-        <button type="button" onClick={() => { setViewOldest(false); setFollowTail(true); const viewport = viewportRef.current; if (viewport) viewport.scrollTop = viewport.scrollHeight; requestAnimationFrame(() => { if (viewport) viewport.scrollTop = viewport.scrollHeight; }); }} className="absolute bottom-4 right-4 rounded-full bg-teal-600 px-3 py-1.5 text-xs font-medium text-white shadow motion-reduce:transition-none">
+        <button type="button" onClick={() => { setWindowAnchor(null); setFollowTail(true); const viewport = viewportRef.current; if (viewport) viewport.scrollTop = viewport.scrollHeight; requestAnimationFrame(() => { if (viewport) viewport.scrollTop = viewport.scrollHeight; }); }} className="absolute bottom-4 right-4 rounded-full bg-teal-600 px-3 py-1.5 text-xs font-medium text-white shadow motion-reduce:transition-none">
           Follow latest
         </button>
       )}

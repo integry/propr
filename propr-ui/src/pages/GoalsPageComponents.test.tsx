@@ -26,7 +26,7 @@ const goal: GoalListItem = {
   projection: {
     status: 'ready',
     checklist: { total: 8, completed: 3 },
-    issues: { total: 9, active: 2, processed: 6, failed: 1, blocked: 1 },
+    issues: { total: 9, ready: 3, active: 2, processed: 6, failed: 1, blocked: 1 },
     pullRequests: { open: 2, reviewPending: 1, ultrafixPending: 0, mergeReady: 1, merged: 4 },
     tokens: { total: 12_500 },
     time: { elapsedSeconds: 7_500, activeSeconds: 6_900, pausedSeconds: 300 },
@@ -53,7 +53,7 @@ describe('GoalsPageComponents', () => {
     expect(screen.getByText('Requested: gpt-requested')).toBeInTheDocument();
     expect(screen.getByText('Effective: gpt-effective')).toBeInTheDocument();
     expect(screen.getByText('2 active work items · 8 total')).toBeInTheDocument();
-    expect(screen.getByText(/6 processed · 2 active · 1 failed · 1 blocked/)).toBeInTheDocument();
+    expect(screen.getByText(/9 total · 3 ready · 2 active · 6 processed · 1 failed · 1 blocked/)).toBeInTheDocument();
     expect(screen.getByText('12.5K tokens')).toBeInTheDocument();
     expect(screen.getByText('2h 5m elapsed · 1h 55m active · 5m paused')).toBeInTheDocument();
     expect(screen.getByText('Concurrency: 4')).toBeInTheDocument();

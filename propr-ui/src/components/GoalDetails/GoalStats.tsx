@@ -3,7 +3,7 @@ import { formatDuration, formatTokens } from '../../pages/goalsPageUtils';
 
 export default function GoalStats({ stats }: { stats: GoalDetailStatsV1 }) {
   const items = [
-    ['Issues', `${stats.issues.processed} processed · ${stats.issues.active} active · ${stats.issues.failed} failed · ${stats.issues.blocked} blocked`],
+    ['Issues', `${stats.issues.total} total · ${stats.issues.ready} ready · ${stats.issues.active} active · ${stats.issues.processed} processed · ${stats.issues.failed} failed · ${stats.issues.blocked} blocked`],
     ['PR readiness', `${stats.pullRequests.open} open · ${stats.pullRequests.reviewPending} review · ${stats.pullRequests.ultrafixPending} Ultrafix · ${stats.pullRequests.mergeReady} ready · ${stats.pullRequests.merged} merged`],
     ['Tokens', formatTokens(stats.tokens.total)],
     ['Time', `${formatDuration(stats.time.elapsedSeconds)} elapsed · ${formatDuration(stats.time.activeSeconds)} active · ${formatDuration(stats.time.pausedSeconds)} paused · ${formatDuration(stats.time.recoverySeconds)} recovery`],

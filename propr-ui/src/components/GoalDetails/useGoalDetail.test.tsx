@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
       off: vi.fn((name: string, callback: (payload: unknown) => void) => listeners.get(name)?.delete(callback)),
     },
     getGoal: vi.fn(), getGoalEvents: vi.fn(), getInstanceCatalog: vi.fn(), pauseGoal: vi.fn(),
+    sendGoalMessage: vi.fn(), cancelGoalMessage: vi.fn(),
   };
 });
 
@@ -29,7 +30,8 @@ vi.mock('../../api/goalsApi', async importOriginal => ({
   ...await importOriginal<typeof import('../../api/goalsApi')>(),
   getGoal: mocks.getGoal,
   getGoalEvents: mocks.getGoalEvents,
-  pauseGoal: mocks.pauseGoal, resumeGoal: vi.fn(), cancelGoal: vi.fn(), requestGoalModel: vi.fn(), sendGoalMessage: vi.fn(), cancelGoalMessage: vi.fn(),
+  pauseGoal: mocks.pauseGoal, resumeGoal: vi.fn(), cancelGoal: vi.fn(), requestGoalModel: vi.fn(),
+  sendGoalMessage: mocks.sendGoalMessage, cancelGoalMessage: mocks.cancelGoalMessage,
 }));
 
 import { useGoalDetail } from './useGoalDetail';
@@ -39,16 +41,21 @@ const timestamp = '2026-08-31T10:00:00.000Z';
 const user = (id: string): CurrentUser => ({ id, login: id, username: id, displayName: id, email: null, avatarUrl: null, role: 'member', permissions: [], authorizationSource: 'local' });
 const event = (sequence: number): GoalEvent => ({ goalId: 'goal-1', sequence, type: 'stdout', source: 'codex', timestamp, turnId: 'turn-1', content: `line ${sequence}`, payload: null });
 const page = (events: GoalEvent[], hasMoreBefore = false): GoalEventsPage => ({ events, hasMoreBefore, previousCursor: events[0]?.sequence ?? null, nextCursor: events.at(-1)?.sequence ?? null });
+const message = (body = 'alpha', messageId = 'message-1') => ({
+  messageId, sequence: 10, body, predefinedKind: null, state: 'delivered' as const, responseSource: null,
+  response: null, error: null, createdAt: timestamp, updatedAt: timestamp,
+});
 const detail: GoalDetail = {
   goal: { goalId: 'goal-1', objective: 'Operator goal', repository: 'integry/propr', state: 'running', agent: 'codex', requestedModel: 'gpt', effectiveModel: 'gpt', maxActiveTasks: 2, mergePolicy: 'manual', ultrafixEnabled: false, ultrafixGoal: null, ultrafixMaxCycles: null, version: 1, terminalReason: null, createdAt: timestamp, updatedAt: timestamp },
   hierarchy: { nodes: [], dependencies: [] }, providerTodos: [], messages: [],
-  stats: { issues: { total: 0, active: 0, processed: 0, failed: 0, blocked: 0 }, pullRequests: { open: 0, reviewPending: 0, ultrafixPending: 0, mergeReady: 0, merged: 0 }, tokens: { total: 0, byModel: [] }, time: { elapsedSeconds: 0, activeSeconds: 0, pausedSeconds: 0, recoverySeconds: 0 } },
+  stats: { issues: { total: 0, ready: 0, active: 0, processed: 0, failed: 0, blocked: 0 }, pullRequests: { open: 0, reviewPending: 0, ultrafixPending: 0, mergeReady: 0, merged: 0 }, tokens: { total: 0, byModel: [] }, time: { elapsedSeconds: 0, activeSeconds: 0, pausedSeconds: 0, recoverySeconds: 0 } },
   recovery: { state: 'healthy', attempt: 0, reason: null }, epicPrUrl: null, completionBlockers: [], latestSequence: 5,
 };
 
 const Harness = () => {
   const goal = useGoalDetail('goal-1');
-  return <><div data-testid="detail">{goal.detail?.goal.repository ?? 'empty'}</div><div data-testid="version">{goal.detail?.goal.version ?? 'none'}</div><div data-testid="events">{goal.events.map(item => item.sequence).join(',')}</div><div data-testid="connection">{goal.connectionState}</div><div role="alert">{goal.actionError}</div><button type="button" onClick={() => void goal.loadOlder()}>older</button><button type="button" onClick={() => void goal.pause()}>pause</button></>;
+  const retry = { ...message('retry me', 'failed-1'), state: 'failed' as const };
+  return <><div data-testid="detail">{goal.detail?.goal.repository ?? 'empty'}</div><div data-testid="version">{goal.detail?.goal.version ?? 'none'}</div><div data-testid="events">{goal.events.map(item => item.sequence).join(',')}</div><div data-testid="connection">{goal.connectionState}</div><div role="alert">{goal.actionError}</div><button type="button" onClick={() => void goal.loadOlder()}>older</button><button type="button" onClick={() => void goal.pause()}>pause</button><button type="button" onClick={() => void goal.sendMessage({ body: 'alpha' })}>message alpha</button><button type="button" onClick={() => void goal.sendMessage({ body: 'beta' })}>message beta</button><button type="button" onClick={() => void goal.sendMessage({ body: "Summarize what's done.", predefinedKind: 'whats_done' })}>message canned</button><button type="button" onClick={() => void goal.retryMessage(retry)}>retry failed</button></>;
 };
 
 describe('useGoalDetail replay and authorization', () => {
@@ -57,6 +64,8 @@ describe('useGoalDetail replay and authorization', () => {
     mocks.socket.emit.mockClear(); mocks.socket.on.mockClear(); mocks.socket.off.mockClear(); mocks.listeners.clear();
     mocks.getGoal.mockReset().mockResolvedValue(detail);
     mocks.pauseGoal.mockReset().mockResolvedValue({ ...detail.goal, state: 'pausing', version: 2 });
+    mocks.sendGoalMessage.mockReset().mockImplementation((_goalId, params) => Promise.resolve(message(params.body)));
+    mocks.cancelGoalMessage.mockReset();
     mocks.getInstanceCatalog.mockReset().mockResolvedValue({ agents: [], repositories: [], defaultAgentAlias: null });
     mocks.getGoalEvents.mockReset().mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
       if (options.beforeSequence === 4) return Promise.resolve(page([event(3)], false));
@@ -104,5 +113,117 @@ describe('useGoalDetail replay and authorization', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/changed in another operator session/));
     expect(screen.getByTestId('version')).toHaveTextContent('2');
     expect(mocks.pauseGoal).toHaveBeenCalledWith('goal-1', 1, expect.any(String));
+  });
+
+  it('drains more than 200 replay events using each response cursor before reporting connected', async () => {
+    const latest = { ...detail, latestSequence: 405 };
+    mocks.getGoal.mockResolvedValue(latest);
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number }) => {
+      if (options.afterSequence === 5) return Promise.resolve(page(Array.from({ length: 200 }, (_, index) => event(index + 6))));
+      if (options.afterSequence === 205) return Promise.resolve(page(Array.from({ length: 200 }, (_, index) => event(index + 206))));
+      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+      return Promise.resolve(page([event(4), event(5)], true));
+    });
+    render(<Harness />);
+    await waitFor(() => expect(screen.getByTestId('events')).toHaveTextContent(/405$/));
+    expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 5 }));
+    expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 205 }));
+    expect(screen.getByTestId('connection')).toHaveTextContent('connected');
+  });
+
+  it('keeps REST fallback active after connected-transport catch-up failure until replay recovers', async () => {
+    let attempts = 0;
+    mocks.getGoal.mockResolvedValue({ ...detail, latestSequence: 6 });
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number }) => {
+      if (options.afterSequence === undefined) return Promise.resolve(page([event(4), event(5)], true));
+      attempts += 1;
+      if (attempts <= 3) return Promise.resolve({ ...page([]), nextCursor: 5 });
+      return Promise.resolve(page([event(6)]));
+    });
+    render(<Harness />);
+    await waitFor(() => expect(screen.getByTestId('events')).toHaveTextContent('4,5,6'));
+    expect(attempts).toBeGreaterThanOrEqual(4);
+    expect(mocks.connected).toBe(true);
+    expect(screen.getByTestId('connection')).toHaveTextContent('connected');
+  });
+
+  it('invalidates synchronously on a socket-triggered 403 and unsubscribes controls/data', async () => {
+    render(<Harness />);
+    await waitFor(() => expect(screen.getByTestId('connection')).toHaveTextContent('connected'));
+    mocks.getGoal.mockRejectedValueOnce(new GoalApiError('goal_access_denied', 403, 'Forbidden'));
+    act(() => mocks.listeners.get('goal:event')?.forEach(callback => callback({ ownerId: 'owner-a', repository: 'integry/propr', goalId: 'goal-1', event: { ...event(6), type: 'lifecycle' } })));
+    await waitFor(() => expect(screen.getByTestId('detail')).toHaveTextContent('empty'));
+    expect(screen.getByTestId('events')).toBeEmptyDOMElement();
+    expect(mocks.socket.emit).toHaveBeenCalledWith('unsubscribe:goal', expect.objectContaining({ goalId: 'goal-1' }));
+  });
+
+  it('never commits a deferred load-older response after the authorization identity changes', async () => {
+    let resolveOlder!: (value: GoalEventsPage) => void;
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
+      if (options.beforeSequence === 4) return new Promise(resolve => { resolveOlder = resolve; });
+      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+      return Promise.resolve(page([event(4), event(5)], true));
+    });
+    const view = render(<Harness />);
+    await screen.findByText('integry/propr');
+    fireEvent.click(screen.getByRole('button', { name: 'older' }));
+    mocks.user = user('owner-b'); view.rerender(<Harness />);
+    await waitFor(() => expect(screen.getByTestId('events')).toBeEmptyDOMElement());
+    await act(async () => resolveOlder(page([event(3)])));
+    expect(screen.getByTestId('events')).not.toHaveTextContent('3');
+  });
+
+  it('reuses uncertain message keys, rotates for edits and definitive outcomes, and sends stable retry intent', async () => {
+    mocks.sendGoalMessage.mockRejectedValueOnce(new TypeError('response lost')).mockResolvedValue(message('alpha'));
+    render(<Harness />); await screen.findByText('integry/propr');
+    fireEvent.click(screen.getByRole('button', { name: 'message alpha' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('response lost'));
+    const firstKey = mocks.sendGoalMessage.mock.calls[0][2];
+    fireEvent.click(screen.getByRole('button', { name: 'message alpha' }));
+    await waitFor(() => expect(mocks.sendGoalMessage).toHaveBeenCalledTimes(2));
+    expect(mocks.sendGoalMessage.mock.calls[1][2]).toBe(firstKey);
+    fireEvent.click(screen.getByRole('button', { name: 'message alpha' }));
+    await waitFor(() => expect(mocks.sendGoalMessage).toHaveBeenCalledTimes(3));
+    expect(mocks.sendGoalMessage.mock.calls[2][2]).not.toBe(firstKey);
+
+    mocks.sendGoalMessage.mockRejectedValueOnce(new TypeError('uncertain edit'));
+    fireEvent.click(screen.getByRole('button', { name: 'message alpha' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('uncertain edit'));
+    const editKey = mocks.sendGoalMessage.mock.calls[3][2];
+    fireEvent.click(screen.getByRole('button', { name: 'message beta' }));
+    await waitFor(() => expect(mocks.sendGoalMessage).toHaveBeenCalledTimes(5));
+    expect(mocks.sendGoalMessage.mock.calls[4][2]).not.toBe(editKey);
+
+    mocks.sendGoalMessage.mockRejectedValueOnce(new TypeError('uncertain retry'));
+    fireEvent.click(screen.getByRole('button', { name: 'retry failed' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('uncertain retry'));
+    const retryCall = mocks.sendGoalMessage.mock.calls[5];
+    expect(retryCall[1]).toMatchObject({ retryOfMessageId: 'failed-1' });
+    fireEvent.click(screen.getByRole('button', { name: 'retry failed' }));
+    await waitFor(() => expect(mocks.sendGoalMessage).toHaveBeenCalledTimes(7));
+    expect(mocks.sendGoalMessage.mock.calls[6][2]).toBe(retryCall[2]);
+  });
+
+  it('coalesces double-clicks and rotates keys after conflict while retaining canned uncertain intent', async () => {
+    let resolveSend!: (value: ReturnType<typeof message>) => void;
+    mocks.sendGoalMessage.mockReturnValueOnce(new Promise(resolve => { resolveSend = resolve; }));
+    render(<Harness />); await screen.findByText('integry/propr');
+    const alpha = screen.getByRole('button', { name: 'message alpha' });
+    fireEvent.click(alpha); fireEvent.click(alpha);
+    expect(mocks.sendGoalMessage).toHaveBeenCalledOnce();
+    await act(async () => resolveSend(message('alpha')));
+
+    mocks.sendGoalMessage.mockRejectedValueOnce(new GoalApiError('goal_idempotency_conflict', 409, 'Conflict'));
+    fireEvent.click(alpha); await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Conflict'));
+    const conflictKey = mocks.sendGoalMessage.mock.calls[1][2];
+    fireEvent.click(alpha); await waitFor(() => expect(mocks.sendGoalMessage).toHaveBeenCalledTimes(3));
+    expect(mocks.sendGoalMessage.mock.calls[2][2]).not.toBe(conflictKey);
+
+    mocks.sendGoalMessage.mockRejectedValueOnce(new TypeError('canned response lost'));
+    const canned = screen.getByRole('button', { name: 'message canned' });
+    fireEvent.click(canned); await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('canned response lost'));
+    const cannedKey = mocks.sendGoalMessage.mock.calls[3][2];
+    fireEvent.click(canned); await waitFor(() => expect(mocks.sendGoalMessage).toHaveBeenCalledTimes(5));
+    expect(mocks.sendGoalMessage.mock.calls[4][2]).toBe(cannedKey);
   });
 });

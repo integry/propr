@@ -27,7 +27,7 @@ const detail: GoalDetail = {
   },
   hierarchy: { nodes: [], dependencies: [] }, providerTodos: [], messages: [],
   stats: {
-    issues: { total: 5, active: 1, processed: 3, failed: 1, blocked: 1 },
+    issues: { total: 5, ready: 2, active: 1, processed: 3, failed: 1, blocked: 1 },
     pullRequests: { open: 2, reviewPending: 1, ultrafixPending: 1, mergeReady: 1, merged: 1 },
     tokens: { total: 175, byModel: [{ provider: 'openai', model: 'gpt-old', input: 100, output: 40, cacheRead: 20, cacheWrite: 5, reasoning: 10, total: 175 }] },
     time: { elapsedSeconds: 100, activeSeconds: 70, pausedSeconds: 20, recoverySeconds: 10 },
@@ -59,7 +59,7 @@ describe('GoalTerminal', () => {
     const events = Array.from({ length: 300 }, (_, index) => event(index + 1));
     events[299] = event(300, 'stderr', '\u001b[31m<script>alert(1)</script>\u001b[0m');
     render(<GoalTerminal events={events} connectionState="connected" hasMoreBefore loadingOlder={false} onLoadOlder={vi.fn()} />);
-    expect(screen.getByText('Showing the newest 250 matching events to keep this transcript responsive.')).toBeInTheDocument();
+    expect(screen.getByText('Events 51–300 of 300')).toBeInTheDocument();
     expect(document.querySelector('script')).toBeNull();
     expect(screen.getByText('<script>alert(1)</script>')).toBeInTheDocument();
     expect(sanitizeTerminalText('\u001b[31mred\u001b[0m')).toBe('red');
@@ -67,6 +67,20 @@ describe('GoalTerminal', () => {
     expect(screen.getByText('<script>alert(1)</script>')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Copy visible terminal output' }));
     await waitFor(() => expect(clipboard.writeText).toHaveBeenCalledWith(expect.not.stringContaining('\u001b')));
+  });
+
+  it('navigates through every loaded middle window and reapplies windowing after search', () => {
+    const events = Array.from({ length: 800 }, (_, index) => event(index + 1));
+    render(<GoalTerminal events={events} connectionState="connected" hasMoreBefore={false} loadingOlder={false} onLoadOlder={vi.fn()} />);
+    expect(screen.getByText('Events 551–800 of 800')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Earlier event window' }));
+    expect(screen.getByText('Events 301–550 of 800')).toBeInTheDocument();
+    expect(screen.getByText('line 420')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Earlier event window' }));
+    expect(screen.getByText('Events 51–300 of 800')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search terminal output' }), { target: { value: 'line 420' } });
+    expect(screen.getByText('line 420')).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Terminal event windows' })).not.toBeInTheDocument();
   });
 
   it('stops following when the operator scrolls away and exposes explicit follow-tail recovery', () => {
@@ -84,6 +98,10 @@ describe('GoalTerminal', () => {
 
   it('preserves the visible position when an older page is prepended', async () => {
     let height = 500;
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', { configurable: true, get() {
+      return (this as HTMLElement).dataset.eventSequence === '1' ? (height === 500 ? 100 : 300) : 0;
+    } });
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 20 });
     let view: ReturnType<typeof render>;
     const onLoadOlder = vi.fn(async () => {
       height = 700;
@@ -95,6 +113,8 @@ describe('GoalTerminal', () => {
     viewport.scrollTop = 30;
     fireEvent.click(screen.getByRole('button', { name: 'Load older output' }));
     await waitFor(() => expect(viewport.scrollTop).toBe(230));
+    delete (HTMLElement.prototype as { offsetTop?: number }).offsetTop;
+    delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
   });
 });
 
@@ -112,7 +132,7 @@ describe('goal hierarchy and statistics', () => {
 
   it('shows authoritative token dimensions and active, paused, and recovery timing', () => {
     render(<GoalStats stats={detail.stats} />);
-    expect(screen.getByText('3 processed · 1 active · 1 failed · 1 blocked')).toBeInTheDocument();
+    expect(screen.getByText('5 total · 2 ready · 1 active · 3 processed · 1 failed · 1 blocked')).toBeInTheDocument();
     expect(screen.getByText('1m elapsed · 1m active · 20s paused · 10s recovery')).toBeInTheDocument();
     expect(screen.getByRole('table')).toHaveTextContent('openai / gpt-old');
     expect(screen.getByRole('table')).toHaveTextContent('175');
@@ -149,6 +169,30 @@ describe('GoalControls', () => {
     expect(screen.getByRole('button', { name: 'Keep running' })).toHaveFocus();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel goal' }));
     await waitFor(() => expect(handlers.onCancel).toHaveBeenCalledWith('Cancelled by operator'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel goal…' })).toHaveFocus());
+  });
+
+  it('traps modal focus, closes with Escape only while idle, and restores the trigger', () => {
+    const handlers = props();
+    const { rerender } = render(<GoalControls {...handlers} />);
+    const trigger = screen.getByRole('button', { name: 'Cancel goal…' });
+    trigger.focus(); fireEvent.click(trigger);
+    const confirm = screen.getByRole('button', { name: 'Cancel goal' });
+    const reason = screen.getByLabelText('Cancellation reason');
+    reason.focus(); fireEvent.keyDown(reason, { key: 'Tab', shiftKey: true });
+    expect(confirm).toHaveFocus();
+    fireEvent.keyDown(confirm, { key: 'Tab' });
+    expect(reason).toHaveFocus();
+    rerender(<GoalControls {...handlers} pendingAction="cancel" />);
+    expect(screen.getByLabelText('Cancellation reason')).toHaveFocus();
+    fireEvent.keyDown(screen.getByLabelText('Cancellation reason'), { key: 'Tab' });
+    expect(screen.getByLabelText('Cancellation reason')).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape' });
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    rerender(<GoalControls {...handlers} />);
+    fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape' });
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 
   it('renders every message state and supports failed retry and pending cancellation', () => {

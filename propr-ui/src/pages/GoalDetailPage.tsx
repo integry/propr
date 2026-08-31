@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { ChevronLeft, ExternalLink } from 'lucide-react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import GoalControls from '../components/GoalDetails/GoalControls';
 import GoalHierarchy from '../components/GoalDetails/GoalHierarchy';
 import GoalStats from '../components/GoalDetails/GoalStats';
@@ -8,6 +8,7 @@ import GoalTerminal from '../components/GoalDetails/GoalTerminal';
 import { useGoalDetail } from '../components/GoalDetails/useGoalDetail';
 import { GoalStateBadge } from './GoalsPageComponents';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { GOALS_RETURN_TO_PARAM, goalsReturnTarget } from './goalsUrlState';
 
 const epicUrl = (value: string | null): string | null => {
   if (!value) return null;
@@ -16,6 +17,8 @@ const epicUrl = (value: string | null): string | null => {
 
 export default function GoalDetailPage() {
   const { goalId = '' } = useParams();
+  const [searchParams] = useSearchParams();
+  const returnTarget = goalsReturnTarget(searchParams.get(GOALS_RETURN_TO_PARAM));
   const goal = useGoalDetail(goalId);
   const statusRef = useRef<HTMLDivElement>(null);
   useDocumentTitle(goal.detail ? `Goal · ${goal.detail.goal.repository}` : 'Goal');
@@ -25,7 +28,7 @@ export default function GoalDetailPage() {
   if (goal.loading) return <div role="status" aria-label="Loading goal details" className="flex h-full items-center justify-center text-sm text-slate-500">Loading goal details…</div>;
   if (!goal.detail) return (
     <div ref={statusRef} tabIndex={-1} role="alert" className="mx-auto mt-12 max-w-lg rounded-lg border border-red-200 bg-red-50 p-5 text-sm text-red-800 focus:outline-none">
-      <h1 className="font-semibold">Goal unavailable</h1><p className="mt-1">{goal.error ?? 'The goal could not be loaded.'}</p><Link to="/goals" className="mt-4 inline-flex items-center text-sm font-medium text-teal-700"><ChevronLeft className="h-4 w-4" aria-hidden="true" />Back to goals</Link>
+      <h1 className="font-semibold">Goal unavailable</h1><p className="mt-1">{goal.error ?? 'The goal could not be loaded.'}</p><Link to={returnTarget} className="mt-4 inline-flex items-center text-sm font-medium text-teal-700"><ChevronLeft className="h-4 w-4" aria-hidden="true" />Back to goals</Link>
     </div>
   );
 
@@ -34,7 +37,7 @@ export default function GoalDetailPage() {
   return (
     <main className="h-full overflow-y-auto bg-slate-50 px-3 py-3 sm:px-5 sm:py-4">
       <div className="mx-auto max-w-[1800px]">
-        <Link to="/goals" className="mb-2 inline-flex items-center rounded text-xs font-medium text-slate-500 hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"><ChevronLeft className="h-4 w-4" aria-hidden="true" />Goals</Link>
+        <Link to={returnTarget} className="mb-2 inline-flex items-center rounded text-xs font-medium text-slate-500 hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"><ChevronLeft className="h-4 w-4" aria-hidden="true" />Goals</Link>
         <header className="rounded-lg border border-slate-200 bg-white p-4">
           <div className="flex flex-wrap items-start gap-3">
             <div className="min-w-0 flex-1"><h1 className="text-lg font-semibold leading-6 text-slate-900 sm:text-xl">{detail.goal.objective}</h1><p className="mt-1 text-xs text-slate-500">{detail.goal.repository}</p></div>
