@@ -27,19 +27,11 @@ const LOCAL_RUNTIME_ROOTS = new Set([
   'worktrees',
 ]);
 
-const WINDOWS_RUNTIME_ROOTS = new Set([
-  'programdata',
-  'users',
-  'windows',
-  'workspace',
-  'workspaces',
-  'worktree',
-  'worktrees',
-]);
-
 const CREDENTIAL_PATH_SEGMENT = /^(?:\.aws|\.azure|\.config|\.docker|\.env(?:\..*)?|\.git-credentials|\.gnupg|\.kube|\.netrc|\.npmrc|\.ssh|configs?|configuration|credentials?|docker\.sock|secrets?)$/iu;
 const SENSITIVE_URI_METADATA = /(?:api[_-]?key|auth(?:orization)?|bearer|credential|password|passwd|private[_-]?key|secret|token|\.aws|\.env|\.netrc|\.ssh)/iu;
 const ENCODED_OCTET = /%[0-9a-f]{2}/iu;
+const WINDOWS_DRIVE_DESIGNATOR = /^[a-z][:|]$/iu;
+const WINDOWS_DRIVE_IN_METADATA = /(?:^|[/?#&=;])[a-z][:|](?=\/)/iu;
 
 interface FileUriCandidate {
   end: number;
@@ -162,13 +154,14 @@ function hasSensitiveLocalPath(segments: string[]): boolean {
   if (segments.some((segment) => CREDENTIAL_PATH_SEGMENT.test(segment))) return true;
   if (segments.length === 0) return false;
   if (LOCAL_RUNTIME_ROOTS.has(segments[0]!)) return true;
-  return /^[a-z]:$/u.test(segments[0]!)
-    && segments.length > 1
-    && WINDOWS_RUNTIME_ROOTS.has(segments[1]!);
+  return WINDOWS_DRIVE_DESIGNATOR.test(segments[0]!);
 }
 
 function hasSensitiveMetadata(metadata: string): boolean {
-  if (SENSITIVE_URI_METADATA.test(metadata) || redactSecrets(metadata) !== metadata) return true;
+  const normalizedMetadata = metadata.replace(/\\/gu, '/');
+  if (WINDOWS_DRIVE_IN_METADATA.test(normalizedMetadata)
+    || SENSITIVE_URI_METADATA.test(metadata)
+    || redactSecrets(metadata) !== metadata) return true;
   const segments = metadata
     .replace(/\\/gu, '/')
     .split(/[/?#&=;:]+/u)
@@ -176,7 +169,7 @@ function hasSensitiveMetadata(metadata: string): boolean {
     .map((segment) => segment.toLowerCase());
   if (segments.some((segment) => CREDENTIAL_PATH_SEGMENT.test(segment))) return true;
   return /(?:^|[=&#])\/(?:app|builds?|data|etc|github|home|mnt|opt|private|root|run|srv|tmp|users|var|workspaces?|worktrees?)(?:\/|[?&#;]|$)/iu
-    .test(metadata.replace(/\\/gu, '/'));
+    .test(normalizedMetadata);
 }
 
 function shouldRedactFileUri(candidate: FileUriCandidate): boolean {
@@ -190,17 +183,18 @@ function shouldRedactFileUri(candidate: FileUriCandidate): boolean {
 
   const decoded = strictlyDecodeUriComponent(candidate.token);
   if (!decoded.valid) return true;
-  // Encoded file URI spellings are intentionally fail-closed. Decoding above
-  // still validates their UTF-8/control/double-encoding form before rejection.
-  if (decoded.encoded) return true;
 
   const local = splitLocalFileUri(decoded.decoded);
   if (!local.valid) return true;
   if (hasSensitiveMetadata(local.metadata)) return true;
 
   const normalized = normalizeAbsolutePath(local.path);
-  return !normalized.valid || normalized.segments.length === 0
-    || hasSensitiveLocalPath(normalized.segments);
+  if (!normalized.valid || normalized.segments.length === 0
+    || hasSensitiveLocalPath(normalized.segments)) return true;
+  // Encoded file URI spellings remain intentionally fail-closed, but are
+  // classified above in decoded/normalized form so encoded drive designators
+  // follow the same path and metadata rules as their raw equivalents.
+  return decoded.encoded;
 }
 
 /**

@@ -331,6 +331,8 @@ test('event payload redacts absolute and file-URI sensitive paths', () => {
     paths: [
       '/arbitrary/root/.netrc',
       { target: '/another/root/.git-credentials' },
+      '/project/.env',
+      '/custom/team/.npmrc',
     ],
   });
 
@@ -343,6 +345,8 @@ test('event payload redacts absolute and file-URI sensitive paths', () => {
     paths: [
       '[REDACTED_SENSITIVE_PATH]',
       { target: '[REDACTED_SENSITIVE_PATH]' },
+      '[REDACTED_SENSITIVE_PATH]',
+      '[REDACTED_SENSITIVE_PATH]',
     ],
   });
 });

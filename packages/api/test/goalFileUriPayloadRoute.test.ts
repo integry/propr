@@ -36,6 +36,11 @@ test('file URI parser redacts the exact F15 probes as whole tokens', () => {
     'file:///C:%5CUsers%5Cpropr%5C.ssh%5Cid_rsa',
     'file:////home/propr/.ssh/id_rsa',
     'file:///home%2Fpropr%2F.ssh%2Fid_rsa',
+    'file:///C|/Users/alice/Desktop/readme.txt',
+    String.raw`file:///C|\Users\alice\Desktop\readme.txt`,
+    'file:///C|/Windows/System32/drivers/etc/hosts',
+    'file:///project/readme?next=C|/Users/alice/Desktop/readme.txt',
+    String.raw`file:///project/readme#next=C|\Users\alice\Desktop\readme.txt`,
   ];
 
   for (const probe of probes) assertFullyRedacted(probe);
@@ -76,16 +81,42 @@ test('file URI parser fails closed for encoded, malformed, ambiguous, and nonloc
   for (const candidate of unsafeCandidates) assertFullyRedacted(candidate);
 });
 
+test('file URI parser redacts colon and legacy pipe drives in paths and URI metadata', () => {
+  const driveCandidates = [
+    // Path: raw/encoded colon and pipe, with forward/backslash/mixed separators.
+    'file:///C:/Users/alice/Desktop/readme.txt',
+    String.raw`file:///c|\Users\alice/Desktop/readme.txt`,
+    'file:///D%3A/Projects/readme.txt',
+    'file:///e%7C%5CWindows/System32/drivers/etc/hosts',
+    // Query: raw/encoded colon and pipe.
+    'file:///project/readme.txt?next=f:/Users/alice/Desktop/readme.txt',
+    String.raw`file:///project/readme.txt?next=G|\Users/alice\Desktop/readme.txt`,
+    'file:///project/readme.txt?next=h%3A%5CProjects/readme.txt',
+    'file:///project/readme.txt?next=I%7C/Windows%5CSystem32/hosts',
+    // Fragment: raw/encoded colon and pipe.
+    String.raw`file:///project/readme.txt#next=J:\Users/alice\Desktop/readme.txt`,
+    'file:///project/readme.txt#next=k|/Windows/System32/drivers/etc/hosts',
+    'file:///project/readme.txt#next=L%3A/Projects%5Creadme.txt',
+    'file:///project/readme.txt#next=m%7C%5CUsers/alice/Desktop/readme.txt',
+  ];
+
+  for (const candidate of driveCandidates) assertFullyRedacted(candidate);
+});
+
 test('file URI parser preserves ordinary text, HTTP URLs, and explicitly safe local URIs', () => {
   const safeValues = [
     'ordinary file: handling text',
     'profile:///project/readme.txt',
     'https://example.test/home/propr/.ssh/id_rsa',
     'http://localhost/project/readme.txt',
+    'ordinary C|/Users/alice/Desktop/readme.txt text',
     'file:///project/docs/readme.txt',
+    'file:///project/readme.txt?note=topicC|/Users',
     'FiLe://LOCALHOST/project/docs/readme.txt?view=1#introduction',
     'file:/project/docs/readme.txt',
-    'file:///D:/Projects/readme.txt',
+    'file:///homecoming/readme.txt',
+    'file:///runtime/report.txt',
+    'file:///optical/manual.txt',
   ];
 
   for (const safe of safeValues) assert.equal(projectString(safe), safe);
@@ -116,14 +147,33 @@ test('file URI parser handles multiple tokens and a token spanning the public cu
   assert.equal(projected.includes('file://localhost'), false);
   assert.equal(projected.includes('/home/propr/.ssh'), false);
   assert.equal(projected.includes(REDACTED), true);
+
+  const driveUris = [
+    `file:///C|/Users/alice/Desktop/${'x'.repeat(600)}`,
+    `file:///project/readme.txt?next=d:/Projects/${'x'.repeat(600)}`,
+    String.raw`file:///project/readme.txt#next=e|\Users\alice\Desktop\${'x'.repeat(600)}`,
+  ];
+  for (const driveUri of driveUris) {
+    const driveProjected = projectString(`${prefix}${driveUri}`);
+    assert.ok(Buffer.byteLength(driveProjected, 'utf8') <= 16_384, driveUri);
+    assert.equal(driveProjected.includes('file:'), false, driveUri);
+    assert.equal(driveProjected.includes(REDACTED), true, driveUri);
+  }
 });
 
 test('file URI sanitization reaches nested strings in every public payload field', () => {
-  const raw = 'file://localhost/home/propr/.ssh/id_rsa';
-  const encoded = 'file:///%72un/%73ecrets/token';
+  const driveCandidates = [
+    'file:///C|/Users/alice/Desktop/readme.txt',
+    String.raw`file:///project/readme.txt?next=d:\Users\alice\Desktop\readme.txt`,
+    'file:///e%7C%5CWindows/System32/drivers/etc/hosts',
+    'file:///project/readme.txt#next=F%3A/Projects/readme.txt',
+  ];
   const payload = Object.fromEntries(PUBLIC_STRING_FIELDS.map((field, index) => [
     field,
-    [index % 2 === 0 ? raw : encoded, { value: index % 2 === 0 ? encoded : raw }],
+    [
+      driveCandidates[index % driveCandidates.length],
+      { value: driveCandidates[(index + 1) % driveCandidates.length] },
+    ],
   ]));
   const projected = toPublicGoalEventPayload(payload) as Record<
     string,
@@ -135,7 +185,7 @@ test('file URI sanitization reaches nested strings in every public payload field
     assert.deepEqual(projected[field], [REDACTED, { value: REDACTED }], field);
   }
   for (const forbidden of [
-    raw, encoded, 'localhost', '/home/propr/.ssh', '%72un', '%73ecrets', 'id_rsa',
+    ...driveCandidates, 'C|', 'd:', '%7C', '%3A', 'Users', 'Windows',
   ]) {
     assert.equal(serialized.includes(forbidden), false, forbidden);
   }
@@ -144,7 +194,9 @@ test('file URI sanitization reaches nested strings in every public payload field
 test('file URI normalization property matrix never emits raw or encoded credentials', () => {
   const schemes = ['file:', 'FILE:', 'FiLe:'];
   const authorities = ['///', '//localhost/', '//LOCALHOST/'];
-  const sensitiveSegments = ['.ssh', '.env.production', '.netrc', 'credentials', 'secrets'];
+  const sensitiveSegments = [
+    '.ssh', '.env', '.env.production', '.npmrc', '.netrc', 'credentials', 'secrets',
+  ];
   const separators = ['/', '\\'];
   const encodeEveryByte = (value: string): string => [...Buffer.from(value)]
     .map((byte) => `%${byte.toString(16).padStart(2, '0')}`)
