@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- the package barrel intentionally exposes the complete public API */
 export { default as logger, generateCorrelationId, createCorrelatedLogger } from './utils/logger.js';
 export { handleError, withErrorHandling, safeAsync, makeIdempotent, categorizeError, ErrorCategories } from './utils/errorHandler.js';
 export type { ErrorCategory, ErrorDetails, ErrorHandlerOptions, IssueRef as ErrorIssueRef } from './utils/errorHandler.js';
@@ -324,35 +325,7 @@ export { shortHash, buildDynamicLlmLabel, buildAgentModelLlmLabel, MAX_GITHUB_LA
 export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
 export { toAntigravityCliModelId } from './agents/impl/antigravityModelIds.js';
 
-// Provider-neutral, resumable goal-session runtime. Provider CLI adapters are
-// intentionally separate from this foundation.
-export * from './agents/goalSession/contract.js';
-export {
-    GoalSessionContractError,
-    GoalSessionSupervisor,
-    StaleGoalSessionFenceError,
-    UnsupportedGoalSessionTransitionError,
-    assertCredentialFreeRecoveryMetadata,
-    firstPendingCorrectiveMessage,
-} from './agents/goalSession/GoalSessionSupervisor.js';
-export type {
-    OpenGoalSessionRequest,
-    ReconcileGoalSessionResult,
-    RunGoalTurnRequest,
-    RunGoalTurnResult,
-} from './agents/goalSession/GoalSessionSupervisor.js';
-export { GoalSessionScopeError, InMemoryGoalSessionPorts } from './agents/goalSession/InMemoryGoalSessionPorts.js';
-export {
-    DEFAULT_GOAL_CONTAINER_RETENTION,
-    GoalContainerSupervisor,
-    buildGoalContainerLayout,
-} from './agents/goalSession/GoalContainerSupervisor.js';
-export type {
-    GoalContainerLayout,
-    GoalContainerRetentionPolicy,
-    StartGoalContainerRequest,
-} from './agents/goalSession/GoalContainerSupervisor.js';
-export { DockerGoalSessionRecovery } from './agents/goalSession/DockerGoalSessionRecovery.js';
+export * from './agents/goalSession/index.js';
 
 export {
     toAgentTankAgent,

@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- legacy and supervised Docker execution share ownership and abort primitives */
 import { spawn, execFileSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
 import { Redis } from 'ioredis';

@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- turn lifecycle and recovery share one fenced state machine */
 import { randomUUID } from 'node:crypto';
 import type {
     DurableCorrectiveMessage,
@@ -230,6 +231,8 @@ export class GoalSessionSupervisor {
         return saved;
     }
 
+    // The branches mirror the durable turn-state transitions kept in this method.
+    // eslint-disable-next-line complexity
     async runTurn(request: RunGoalTurnRequest): Promise<RunGoalTurnResult> {
         this.validateFence(request);
         if (!request.turnId.trim() || !request.executionId.trim()) {

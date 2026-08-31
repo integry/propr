@@ -2887,6 +2887,19 @@ describe('durable notification schema', { concurrency: false }, () => {
         subscriptionId: subscription.subscription_id,
       });
 
+      await assert.rejects(
+        firstConnection('push_delivery_jobs')
+          .where({ job_id: 'three-state-claim-job' })
+          .update({
+            status: 'processing',
+            claim_token: 'future-time-worker',
+            claimed_at: '2099-08-02T08:01:00.000Z',
+            lease_expires_at: leaseExpiresAt,
+            next_retry_at: null,
+          }),
+        /invalid push delivery job transition/,
+      );
+
       const pendingClaim = await claimJobUsingDatabaseTime(
         firstConnection,
         'three-state-claim-job',
@@ -2915,21 +2928,6 @@ describe('durable notification schema', { concurrency: false }, () => {
           'pending-worker'
         )
       `);
-      const scheduled = await firstConnection('push_delivery_jobs')
-        .where({ job_id: 'three-state-claim-job' })
-        .first();
-      await assert.rejects(
-        firstConnection('push_delivery_jobs')
-          .where({ job_id: 'three-state-claim-job' })
-          .update({
-            status: 'processing',
-            claim_token: 'future-time-worker',
-            claimed_at: scheduled.next_retry_at,
-            lease_expires_at: leaseExpiresAt,
-            next_retry_at: null,
-          }),
-        /invalid push delivery job transition/,
-      );
       await new Promise((resolve) => setTimeout(resolve, 250));
 
       const retryableClaim = await claimJobUsingDatabaseTime(
