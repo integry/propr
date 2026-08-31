@@ -180,13 +180,32 @@ export class GoalMutationRepository {
     validateFence(fence);
     return goalTransaction(this.db, async (trx) => {
       const goal = await requireGoalRecord(trx, goalId);
-      if (goal.requested_model === goal.effective_model) return this.assertCurrentFence(trx, goal, fence);
-      const transition = await trx('goal_model_transitions').where({
-        goal_id: goalId,
-        requested_model: goal.requested_model,
-        applied: 0,
-      }).orderBy('id', 'desc').first('id');
-      if (!transition) throw new GoalError(GOAL_ERROR_CODES.versionConflict, 'Current model transition is missing', 409);
+      const transition = await trx('goal_model_transitions')
+        .where('goal_id', goalId)
+        .orderBy('id', 'desc')
+        .first('id', 'requested_model', 'applied') as {
+          id: number;
+          requested_model: string;
+          applied: number;
+        } | undefined;
+      if (goal.requested_model === goal.effective_model) {
+        const current = await this.assertCurrentFence(trx, goal, fence);
+        if (!transition || transition.requested_model !== goal.requested_model
+          || Boolean(transition.applied)) return current;
+        await this.markModelTransitionApplied(
+          trx,
+          {
+            transitionId: transition.id,
+            goalId,
+            effectiveModel: goal.effective_model,
+          }
+        );
+        return current;
+      }
+      if (!transition || transition.requested_model !== goal.requested_model
+        || Boolean(transition.applied)) {
+        throw new GoalError(GOAL_ERROR_CODES.versionConflict, 'Current model transition is missing', 409);
+      }
       const now = nowIso();
       const affected = await trx('goals').where({
         goal_id: goalId,
@@ -199,14 +218,44 @@ export class GoalMutationRepository {
         updated_at: now,
       });
       if (affected !== 1) throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Controller lease is stale or expired', 409);
-      const audited = await trx('goal_model_transitions').where({ id: transition.id, goal_id: goalId, applied: 0 }).update({
-        effective_model: goal.requested_model,
-        applied: 1,
-        applied_at: now,
-      });
-      if (audited !== 1) throw new GoalError(GOAL_ERROR_CODES.versionConflict, 'Model transition changed concurrently', 409);
+      await this.markModelTransitionApplied(
+        trx,
+        {
+          transitionId: transition.id,
+          goalId,
+          effectiveModel: goal.requested_model,
+          appliedAt: now,
+        }
+      );
       return toGoal(await requireGoalRecord(trx, goalId));
     });
+  }
+
+  private async markModelTransitionApplied(
+    trx: Knex.Transaction,
+    options: {
+      transitionId: number;
+      goalId: string;
+      effectiveModel: string;
+      appliedAt?: string;
+    }
+  ): Promise<void> {
+    const audited = await trx('goal_model_transitions').where({
+      id: options.transitionId,
+      goal_id: options.goalId,
+      applied: 0,
+    }).update({
+      effective_model: options.effectiveModel,
+      applied: 1,
+      applied_at: options.appliedAt ?? nowIso(),
+    });
+    if (audited !== 1) {
+      throw new GoalError(
+        GOAL_ERROR_CODES.versionConflict,
+        'Model transition changed concurrently',
+        409
+      );
+    }
   }
 
   private async assertCurrentFence(
@@ -215,14 +264,21 @@ export class GoalMutationRepository {
     fence: GoalLeaseFence
   ): Promise<Goal> {
     const now = nowIso();
-    const current = await trx<GoalRecord>('goals').where({
+    const affected = await trx('goals').where({
       goal_id: goal.goal_id,
       version: goal.version,
       lease_owner: fence.leaseOwner,
       lease_epoch: fence.leaseEpoch,
-    }).whereNotNull('lease_expires_at').andWhere('lease_expires_at', '>', now).first();
-    if (!current) throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Controller lease is stale or expired', 409);
-    return toGoal(current);
+    }).whereNotNull('lease_expires_at').andWhere('lease_expires_at', '>', now)
+      .update({ updated_at: trx.ref('updated_at') });
+    if (affected !== 1) {
+      throw new GoalError(
+        GOAL_ERROR_CODES.staleLease,
+        'Controller lease is stale or expired',
+        409
+      );
+    }
+    return toGoal(await requireGoalRecord(trx, goal.goal_id));
   }
 }
 

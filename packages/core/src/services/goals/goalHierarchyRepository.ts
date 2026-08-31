@@ -49,6 +49,7 @@ export class GoalHierarchyRepository {
       const now = nowIso();
       const record: GoalNodeRecord = {
         node_id: normalized.nodeId ?? crypto.randomUUID(),
+        requested_node_id: normalized.nodeId,
         goal_id: goalId,
         parent_node_id: normalized.parentNodeId,
         kind: normalized.kind,
@@ -191,7 +192,7 @@ function normalizeNode(input: CreateNodeInput): NormalizedNode {
 }
 
 function sameNodeRequest(row: GoalNodeRecord, input: NormalizedNode): boolean {
-  return row.node_id === (input.nodeId ?? row.node_id)
+  return row.requested_node_id === input.nodeId
     && row.parent_node_id === input.parentNodeId
     && row.kind === input.kind
     && row.external_ref === input.externalRef

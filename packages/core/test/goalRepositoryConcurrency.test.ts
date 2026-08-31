@@ -268,13 +268,21 @@ describe('GoalRepository WAL contention', () => {
     await first.addNode(goal.goalId, base);
     for (const changed of [
       { externalRef: '43' }, { externalKind: 'pull_request' },
-      { status: 'in_progress' as const }, { orderIndex: 4 }, { nodeId: 'other-node' },
+      { status: 'in_progress' as const }, { orderIndex: 4 },
+      { nodeId: 'other-node' }, { nodeId: undefined },
     ]) {
       await assert.rejects(
         first.addNode(goal.goalId, { ...base, ...changed }),
         (error: GoalError) => error.code === 'goal_idempotency_conflict'
       );
     }
+
+    const generated = { ...base, nodeId: undefined, idempotencyKey: 'generated-node-key' };
+    const created = await first.addNode(goal.goalId, generated);
+    await assert.rejects(
+      first.addNode(goal.goalId, { ...generated, nodeId: created.nodeId }),
+      (error: GoalError) => error.code === 'goal_idempotency_conflict'
+    );
   });
 
   test('model application audits only the deterministic current request', async () => {
@@ -288,6 +296,22 @@ describe('GoalRepository WAL contention', () => {
     assert.deepEqual(audits.map(row => ({ requested: row.requested_model, applied: row.applied })), [
       { requested: 'model-a', applied: 0 },
       { requested: 'model-b', applied: 1 },
+    ]);
+  });
+
+  test('model application audits a current no-op without applying superseded requests', async () => {
+    const goal = await createGoal('model-no-op-audit-goal');
+    await first.requestModelChange(goal.goalId, 'model-a', { idempotencyKey: 'no-op-model-a' });
+    await first.requestModelChange(goal.goalId, goal.effectiveModel, { idempotencyKey: 'no-op-current-model' });
+    const lease = await first.claimLease(goal.goalId, 'no-op-model-controller', 60_000);
+    const fence = { leaseOwner: 'no-op-model-controller', leaseEpoch: lease.epoch };
+    const applied = await first.applyModelChange(goal.goalId, fence);
+    assert.equal(applied.effectiveModel, goal.effectiveModel);
+    await first.applyModelChange(goal.goalId, fence);
+    const audits = await firstDb('goal_model_transitions').where('goal_id', goal.goalId).orderBy('id');
+    assert.deepEqual(audits.map(row => ({ requested: row.requested_model, applied: row.applied })), [
+      { requested: 'model-a', applied: 0 },
+      { requested: goal.effectiveModel, applied: 1 },
     ]);
   });
 

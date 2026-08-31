@@ -128,6 +128,10 @@ export async function up(knex) {
 
   await knex.schema.createTable('goal_nodes', (table) => {
     table.text('node_id').notNullable().primary();
+    // Preserve whether the caller explicitly selected an identifier. The
+    // generated node_id alone cannot distinguish an omitted ID from a retry
+    // that supplies the generated response ID, which are different requests.
+    table.text('requested_node_id').nullable();
     table.text('goal_id').notNullable();
     table.text('parent_node_id').nullable();
     table.text('kind').notNullable().checkIn(NODE_KINDS);
@@ -154,7 +158,7 @@ export async function up(knex) {
       'goal_nodes_order_index_check'
     );
     table.check(
-      'length(node_id) BETWEEN 1 AND 255 AND length(idempotency_key) BETWEEN 1 AND 255 AND (parent_node_id IS NULL OR length(parent_node_id) BETWEEN 1 AND 255) AND (external_ref IS NULL OR length(external_ref) <= 255) AND (external_kind IS NULL OR length(external_kind) <= 255)',
+      'length(node_id) BETWEEN 1 AND 255 AND (requested_node_id IS NULL OR length(requested_node_id) BETWEEN 1 AND 255) AND length(idempotency_key) BETWEEN 1 AND 255 AND (parent_node_id IS NULL OR length(parent_node_id) BETWEEN 1 AND 255) AND (external_ref IS NULL OR length(external_ref) <= 255) AND (external_kind IS NULL OR length(external_kind) <= 255)',
       {},
       'goal_nodes_text_bounds_check'
     );

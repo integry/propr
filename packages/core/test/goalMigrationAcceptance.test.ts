@@ -45,6 +45,15 @@ test('pre-goal database upgrades, restarts from SQL, and rolls down without data
     await up(database);
     assert.deepEqual(await database('legacy_acceptance_records'), [{ id: 1, value: 'preserve-me' }]);
     assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), []);
+    const eventForeignKeys = await database.raw("PRAGMA foreign_key_list('goal_events')") as Array<{
+      table: string;
+      from: string;
+      to: string;
+      on_delete: string;
+    }>;
+    assert.ok(eventForeignKeys.some((foreignKey) => foreignKey.table === 'goals'
+      && foreignKey.from === 'goal_id' && foreignKey.to === 'goal_id'
+      && foreignKey.on_delete === 'CASCADE'));
     const indexes = await database('sqlite_master').where({ type: 'index' }).whereIn('name', [
       'goals_owner_state_idx',
       'goal_events_goal_sequence_idx',

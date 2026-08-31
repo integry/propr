@@ -42,6 +42,7 @@ export interface GoalRecord {
 
 export interface GoalNodeRecord {
   node_id: string;
+  requested_node_id: string | null;
   goal_id: string;
   parent_node_id: string | null;
   kind: GoalNodeKind;
