@@ -125,6 +125,9 @@ export abstract class GoalSessionCore {
         const completedTurns = existing.some(turn => turn.turnId === fence.turnId)
             ? existing
             : [...existing, { turnId: fence.turnId, ...execution }];
+        const recordsAfterTurnPause = outcome === 'succeeded'
+            && state.status === 'pause_requested'
+            && this.adapter.capabilities.pause === 'after_turn';
         const afterTurnPaused = outcome === 'succeeded'
             && (state.status === 'pause_requested' || state.status === 'paused')
             && this.adapter.capabilities.pause === 'after_turn';
@@ -144,7 +147,13 @@ export abstract class GoalSessionCore {
             completedTurns,
         });
         const completion: GoalTerminalCommit = {
-            scope: 'turn', fence, execution, event,
+            scope: 'turn',
+            fence,
+            execution,
+            auditEvents: recordsAfterTurnPause
+                ? [{ type: 'pause_boundary', boundary: 'after_turn' }]
+                : [],
+            event,
         };
         const saved = await this.ports.terminal.commit(state, next, completion);
         if (!saved) throw new StaleGoalSessionFenceError('A newer operation completed or replaced this turn');
@@ -159,7 +168,7 @@ export abstract class GoalSessionCore {
     ): Promise<GoalSessionState> {
         const execution = controlExecutionIdentity(state);
         const saved = await this.ports.terminal.commit(state, nextState(state, changes), {
-            scope: 'control', fence, execution, event,
+            scope: 'control', fence, execution, auditEvents: [], event,
         });
         if (!saved) throw new StaleGoalSessionFenceError('A newer operation superseded terminal completion');
         return saved;

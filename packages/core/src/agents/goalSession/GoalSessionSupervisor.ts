@@ -236,6 +236,7 @@ export class GoalSessionSupervisor extends GoalSessionControls {
                 }), {
                     scope: 'turn', fence: { ...request, turnId: turn.turnId },
                     execution: { executionId: turn.executionId, attemptId: turn.attemptId },
+                    auditEvents: [],
                     event: { type: 'completion', outcome: 'failed', error: failure.message },
                 });
                 if (!saved) throw new StaleGoalSessionFenceError('A newer operation superseded first-turn crash failure');

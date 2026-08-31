@@ -110,13 +110,19 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
     }
 
     private async applyModelAtTurnBoundary(
-        request: RunGoalTurnRequest,
+        request: GoalSessionControlFence,
         state: GoalSessionState,
         requestedModel: string,
     ): Promise<GoalSessionState> {
-        if (this.adapter.capabilities.modelChange !== 'next_turn'
-            || state.currentModel === requestedModel
-            || !state.providerSessionId) return state;
+        if (this.adapter.capabilities.modelChange !== 'next_turn') return state;
+        if (state.currentModel === requestedModel) {
+            if (state.pendingModelChange !== requestedModel) return state;
+            return this.compareAndSetExact(state, {
+                requestedModel,
+                pendingModelChange: undefined,
+            }, 'A newer model intent superseded the turn-boundary model acknowledgement');
+        }
+        if (!state.providerSessionId) return state;
         const acknowledgement = await this.adapter.requestModelChange(
             { ...request, model: requestedModel },
             persistedSnapshot(state),
@@ -218,14 +224,28 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
      * turn through a fresh discrete invocation on the already-bound native session.
      */
     private async retryRecoveredAfterTurn(fence: GoalSessionControlFence, state: GoalSessionState): Promise<RunGoalTurnResult> {
-        const turn = state.activeTurn!;
+        const originalTurn = state.activeTurn!;
         if (!state.providerSessionId) {
             throw new GoalSessionContractError('A crashed after-turn invocation cannot continue before its native session ID is bound', 'FIRST_TURN_ID_NOT_BOUND');
         }
+        state = await this.requireControlledState(fence);
+        if (state.status !== 'paused' || state.activeTurn?.turnId !== originalTurn.turnId
+            || state.activeTurn.attemptId !== originalTurn.attemptId) {
+            throw new StaleGoalSessionFenceError('A newer operation superseded the recovered turn boundary');
+        }
+        const requestedModel = state.pendingModelChange ?? state.activeTurn.requestedModel;
+        state = await this.applyModelAtTurnBoundary(fence, state, requestedModel);
+        const turn = state.activeTurn!;
         const execution = { executionId: turn.executionId, attemptId: this.mintFreshAttemptId(turn.attemptId) };
         const turnFence = { ...fence, turnId: turn.turnId };
         const correctiveMessages = await this.nextTurnCorrectiveMessages(turnFence);
-        const activeTurn = { ...turn, ...execution, executionEpoch: fence.controllerEpoch, status: 'running' as const };
+        const activeTurn = {
+            ...turn,
+            ...execution,
+            executionEpoch: fence.controllerEpoch,
+            requestedModel,
+            status: 'running' as const,
+        };
         const claimed = await this.compareAndSetExact(state, { status: 'running', activeTurn },
             'A newer operation claimed the reconciled turn before recovery');
         const adapterRequest: GoalBeginTurnRequest = {
@@ -233,7 +253,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             ...execution,
             objective: turn.objective,
             repository: turn.repository,
-            requestedModel: turn.requestedModel,
+            requestedModel,
             correctiveMessages: correctiveMessages.length ? correctiveMessages : undefined,
         };
         await this.appendControl(fence, execution, { type: 'session_resumed' });
@@ -300,9 +320,6 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 if (event.type === 'completion' && this.adapter.capabilities.pause === 'after_turn') {
                     current = await this.requireActiveAttemptState(fence, execution);
                 }
-                if (event.type === 'completion' && this.shouldPauseAfterTurn(current, event)) {
-                    current = await this.recordAfterTurnPauseBoundary(fence, current, execution);
-                }
                 current = await this.applyTurnEvent(fence, current, execution, event);
                 if (event.type === 'pause_boundary') reachedPause = true;
                 if (event.type === 'completion') completed = true;
@@ -360,29 +377,6 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             throw new GoalSessionContractError('Corrective message disappeared before acknowledgement', 'MESSAGE_NOT_FOUND');
         }
         awaitingMessageIds.shift();
-    }
-
-    private shouldPauseAfterTurn(
-        state: GoalSessionState,
-        event: Extract<GoalSessionEvent, { type: 'completion' }>,
-    ): boolean {
-        return this.adapter.capabilities.pause === 'after_turn'
-            && state.status === 'pause_requested'
-            && event.outcome === 'succeeded';
-    }
-
-    private async recordAfterTurnPauseBoundary(
-        fence: GoalSessionFence,
-        state: GoalSessionState,
-        execution: GoalExecutionIdentity,
-    ): Promise<GoalSessionState> {
-        const paused = await this.updateActiveTurnState(fence, execution, value => ({
-            ...value,
-            status: 'paused',
-            activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
-        }));
-        await this.append(fence, execution, { type: 'pause_boundary', boundary: 'after_turn' });
-        return paused;
     }
 
     private async applyTurnEvent(

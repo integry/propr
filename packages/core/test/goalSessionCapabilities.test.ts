@@ -310,6 +310,56 @@ test('after-turn completion honors a pause acknowledged after its pre-completion
     assert.equal(finished.state.status, 'paused');
     assert.equal(finished.state.activeTurn, undefined);
     assert.equal((await persistence.load(identity))?.status, 'paused');
+    const terminalEvents = (await persistence.replay(identity)).filter(record =>
+        record.turnId === firstFence.turnId
+        && (record.event.type === 'pause_boundary' || record.event.type === 'completion'));
+    assert.deepEqual(terminalEvents.map(record => record.event.type), ['pause_boundary', 'completion']);
+    assert.equal(terminalEvents[0]?.event.type === 'pause_boundary'
+        ? terminalEvents[0].event.boundary : '', 'after_turn');
+});
+
+test('late after-turn pause state and canonical audit boundary survive an ambiguous commit crash exactly once', async () => {
+    const adapter = new FirstTurnBoundaryAdapter();
+    const persistence = new GatedCompletionLoadPorts();
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    const providerRelease = deferred();
+    const providerStarted = deferred();
+    adapter.holdTurn = providerRelease.promise;
+    adapter.turnStarted = providerStarted.resolve;
+    const request = {
+        ...firstFence,
+        executionId: 'execution-pause-crash',
+        attemptId: 'attempt-pause-crash',
+        objective: 'commit late pause and completion atomically',
+        repository,
+        requestedModel: 'model-a',
+    };
+    const running = supervisor.runTurn(request);
+    await providerStarted.promise;
+
+    const completionLoad = persistence.gateNextRunningLoad();
+    providerRelease.resolve();
+    await completionLoad.loaded;
+    await supervisor.requestPause({ ...firstFence, reason: 'pause in terminal crash window' });
+    persistence.setTerminalFault('after_commit');
+    completionLoad.release();
+    await assert.rejects(running, /Injected crash after terminal transaction commit/);
+
+    const saved = await persistence.load(identity);
+    assert.equal(saved?.status, 'paused');
+    assert.equal(saved?.activeTurn, undefined);
+    const terminalEvents = (await persistence.replay(identity)).filter(record =>
+        record.turnId === firstFence.turnId
+        && (record.event.type === 'pause_boundary' || record.event.type === 'completion'));
+    assert.deepEqual(terminalEvents.map(record => record.event.type), ['pause_boundary', 'completion']);
+
+    const restarted = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    assert.equal((await restarted.runTurn(request)).disposition, 'duplicate');
+    const replayed = (await persistence.replay(identity)).filter(record =>
+        record.turnId === firstFence.turnId
+        && (record.event.type === 'pause_boundary' || record.event.type === 'completion'));
+    assert.deepEqual(replayed.map(record => record.event.type), ['pause_boundary', 'completion']);
 });
 
 test('first-turn providers reject authoritative output before a real native ID is bound', async () => {
@@ -568,6 +618,9 @@ test('first-turn after-turn profile reconciles a post-ID container loss through 
     assert.equal(reconciled.state.activeTurn?.attemptId, 'attempt-reconciliation');
     assert.equal(adapter.reconcileRequests[0]?.attemptId, 'attempt-reconciliation');
 
+    await replacement.requestModelChange({ ...identity, controllerEpoch: 2, model: 'model-recovered' });
+    assert.equal((await persistence.load(identity))?.pendingModelChange, 'model-recovered');
+
     const continuationStarted = deferred();
     const continuationRelease = deferred();
     adapter.turnStarted = continuationStarted.resolve;
@@ -591,10 +644,19 @@ test('first-turn after-turn profile reconciles a post-ID container loss through 
     assert.equal(adapter.resumeTurnCalls, 0, 'crash retry uses a fresh discrete invocation, not operator same-turn resume');
     assert.equal(adapter.requests.at(-1)?.turnId, 'turn-crashed-after-binding');
     assert.equal(adapter.requests.at(-1)?.attemptId, 'attempt-continuation');
+    assert.equal(adapter.requests.at(-1)?.requestedModel, 'model-recovered');
+    assert.deepEqual(adapter.actions.slice(-2), ['model:model-recovered', 'begin:turn-crashed-after-binding']);
+    assert.deepEqual(adapter.modelCalls, ['model-recovered']);
     assert.equal(adapter.contexts.at(-1)?.binding, 'bound');
+    assert.equal((await persistence.load(identity))?.currentModel, 'model-recovered');
+    assert.equal((await persistence.load(identity))?.pendingModelChange, undefined);
 
     const recoveredCompletions = (await persistence.replay(identity)).filter(record =>
         record.turnId === 'turn-crashed-after-binding' && record.event.type === 'completion');
     assert.equal(recoveredCompletions.length, 1);
     assert.equal(recoveredCompletions[0]?.attemptId, 'attempt-continuation');
+    const recoveredModelAcknowledgements = (await persistence.replay(identity)).filter(record =>
+        record.event.type === 'model_change_acknowledged'
+        && record.event.requestedModel === 'model-recovered');
+    assert.equal(recoveredModelAcknowledgements.length, 1);
 });

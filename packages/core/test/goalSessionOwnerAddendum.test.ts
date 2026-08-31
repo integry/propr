@@ -7,6 +7,7 @@ import type {
     GoalProviderOpenRequest,
     GoalProviderReconcileRequest,
     GoalProviderReconcileResult,
+    GoalProviderCapabilities,
     GoalProviderSessionSnapshot,
     GoalSessionAdapter,
     GoalSessionControlFence,
@@ -38,13 +39,16 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 class AddendumAdapter implements GoalSessionAdapter {
     readonly provider = 'owner-test';
-    readonly capabilities = {
+    readonly capabilities: GoalProviderCapabilities = {
         nativeSessionId: 'eager',
         steering: 'active_turn',
         pause: 'active_turn',
         modelChange: 'next_safe_boundary',
     } as const;
     turn: (request: GoalBeginTurnRequest) => AsyncIterable<GoalSessionEvent> = async function* () {
+        yield { type: 'completion', outcome: 'succeeded' };
+    };
+    resumedTurn: () => AsyncIterable<GoalSessionEvent> = async function* () {
         yield { type: 'completion', outcome: 'succeeded' };
     };
     cancelTurn: (_request: GoalCancelRequest) => Promise<void> = async () => undefined;
@@ -58,6 +62,10 @@ class AddendumAdapter implements GoalSessionAdapter {
 
     beginTurn(request: GoalBeginTurnRequest): AsyncIterable<GoalSessionEvent> {
         return this.turn(request);
+    }
+
+    resumeTurn(): AsyncIterable<GoalSessionEvent> {
+        return this.resumedTurn();
     }
 
     async resumeSession(
@@ -86,17 +94,6 @@ async function openRuntime(adapter: AddendumAdapter, ids?: string[]) {
     const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), ids ? () => ids.shift()! : undefined);
     await supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
     return { persistence, supervisor };
-}
-
-async function replaceAttempt(persistence: InMemoryGoalSessionPorts): Promise<void> {
-    const state = await persistence.load(identity);
-    assert.ok(state?.activeTurn);
-    const { version: _version, ...next } = state;
-    const saved = await persistence.compareAndSet(state, {
-        ...next,
-        activeTurn: { ...state.activeTurn, attemptId: 'attempt-new' },
-    });
-    assert.ok(saved);
 }
 
 test('durable cancellation prevents a completion racing provider cancellation from resurrecting the session', async () => {
@@ -135,12 +132,13 @@ test('durable cancellation prevents a completion racing provider cancellation fr
     releaseCancel.resolve();
     const terminal = await cancelling;
     assert.equal(terminal.status, 'terminated');
+    assert.equal(terminal.activeTurn?.status, 'cancelled');
     const completions = (await persistence.replay(identity)).filter(record => record.event.type === 'completion');
     assert.equal(completions.length, 1);
     assert.equal(completions[0].event.type === 'completion' ? completions[0].event.outcome : '', 'cancelled');
 });
 
-test('stale same-turn stream attempts cannot mutate checkpoint, model, or pause state', async t => {
+test('actual stale streams cannot mutate checkpoint, model, or pause after recovery starts a fresh attempt', async t => {
     const cases: Array<{
         name: string;
         event: GoalSessionEvent;
@@ -149,12 +147,12 @@ test('stale same-turn stream attempts cannot mutate checkpoint, model, or pause 
         {
             name: 'checkpoint recovery metadata',
             event: { type: 'checkpoint', checkpointId: 'stale', recoveryMetadata: { checkpoint: 'stale' } },
-            verify: state => assert.deepEqual(state.recoveryMetadata, { checkpoint: 'opened' }),
+            verify: state => assert.deepEqual(state.recoveryMetadata, { checkpoint: 'recovered' }),
         },
         {
             name: 'current model',
             event: { type: 'model_changed', previousModel: 'model-a', model: 'stale-model' },
-            verify: state => assert.equal(state.currentModel, 'model-a'),
+            verify: state => assert.equal(state.currentModel, 'model-recovered'),
         },
         {
             name: 'pause boundary',
@@ -169,13 +167,29 @@ test('stale same-turn stream attempts cannot mutate checkpoint, model, or pause 
     for (const testCase of cases) {
         await t.test(testCase.name, async () => {
             const adapter = new AddendumAdapter();
-            const turnStarted = deferred();
-            const releaseEvent = deferred();
+            const oldTurnStarted = deferred();
+            const releaseOldEvent = deferred();
+            const currentTurnStarted = deferred();
+            const releaseCurrentTurn = deferred();
             adapter.turn = async function* () {
-                turnStarted.resolve();
-                await releaseEvent.promise;
+                oldTurnStarted.resolve();
+                await releaseOldEvent.promise;
                 yield testCase.event;
             };
+            adapter.resumedTurn = async function* () {
+                currentTurnStarted.resolve();
+                await releaseCurrentTurn.promise;
+                yield { type: 'completion', outcome: 'succeeded' };
+            };
+            adapter.reconcileTurn = async () => ({
+                outcome: 'resumed',
+                reason: 'fresh recovery attempt enacted',
+                snapshot: {
+                    providerSessionId: 'owner-provider-session',
+                    recoveryMetadata: { checkpoint: 'recovered' },
+                    model: 'model-recovered',
+                },
+            });
             const { persistence, supervisor } = await openRuntime(adapter);
             const running = supervisor.runTurn({
                 ...fence,
@@ -185,17 +199,36 @@ test('stale same-turn stream attempts cannot mutate checkpoint, model, or pause 
                 repository,
                 requestedModel: 'model-a',
             });
-            await turnStarted.promise;
-            await replaceAttempt(persistence);
-            releaseEvent.resolve();
+            await oldTurnStarted.promise;
+            persistence.setContainerInspection(identity, { status: 'missing', reason: 'old invocation disappeared' });
+            persistence.setRepositoryInspection(repository, {
+                ...repository,
+                exists: true,
+                observedRepository: repository.repository,
+                observedBranch: repository.branch,
+                observedHeadSha: repository.headSha,
+                observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
+                resolvedWorktreePath: repository.worktreePath,
+            });
+            const recovered = await supervisor.reconcile(identity, 1, repository);
+            assert.equal(recovered.outcome, 'resumed');
+            const resumed = supervisor.resumeTurn({ ...identity, controllerEpoch: 1 });
+            await currentTurnStarted.promise;
+            const currentAttempt = (await persistence.load(identity))?.activeTurn?.attemptId;
+            assert.ok(currentAttempt);
+            assert.notEqual(currentAttempt, 'attempt-old');
+
+            releaseOldEvent.resolve();
             await assert.rejects(running, StaleGoalSessionFenceError);
 
             const state = await persistence.load(identity);
             assert.ok(state);
-            assert.equal(state.activeTurn?.attemptId, 'attempt-new');
+            assert.equal(state.activeTurn?.attemptId, currentAttempt);
             testCase.verify(state);
             assert.equal((await persistence.replay(identity)).some(record =>
                 JSON.stringify(record.event) === JSON.stringify(testCase.event)), false);
+            releaseCurrentTurn.resolve();
+            await resumed;
         });
     }
 });
@@ -238,6 +271,59 @@ async function seededRecovery(adapter: AddendumAdapter, ids: string[]) {
     });
     const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => ids.shift()!);
     return { persistence, supervisor };
+}
+
+class PromotionCrashPorts extends InMemoryGoalSessionPorts {
+    private crashPromotion = true;
+
+    override async compareAndSet(
+        expected: GoalSessionState,
+        next: Omit<GoalSessionState, 'version'>,
+    ): Promise<GoalSessionState | null> {
+        if (this.crashPromotion && expected.recoveryAttempt
+            && next.recoveryAttempt === undefined
+            && next.activeTurn?.attemptId === expected.recoveryAttempt.attemptId) {
+            this.crashPromotion = false;
+            throw new Error('Injected crash before replacement promotion');
+        }
+        return super.compareAndSet(expected, next);
+    }
+}
+
+async function seededRecoveryWithPorts(adapter: AddendumAdapter, ids: string[], persistence: InMemoryGoalSessionPorts) {
+    const timestamp = new Date().toISOString();
+    await persistence.create({
+        ...identity,
+        provider: adapter.provider,
+        providerSessionId: 'owner-provider-session',
+        recoveryMetadata: { checkpoint: 'durable' },
+        controllerEpoch: 1,
+        status: 'running',
+        currentModel: 'model-a',
+        requestedModel: 'model-a',
+        activeTurn: {
+            executionId: 'execution-live', attemptId: 'attempt-live', turnId: fence.turnId,
+            executionEpoch: 1, objective: 'recover live turn', requestedModel: 'model-a',
+            repository, status: 'running',
+        },
+        completedTurnIds: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+    });
+    persistence.setContainerInspection(identity, { status: 'missing', reason: 'container unavailable' });
+    persistence.setRepositoryInspection(repository, {
+        ...repository,
+        exists: true,
+        observedRepository: repository.repository,
+        observedBranch: repository.branch,
+        observedHeadSha: repository.headSha,
+        observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
+        resolvedWorktreePath: repository.worktreePath,
+    });
+    return {
+        persistence,
+        supervisor: new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => ids.shift()!),
+    };
 }
 
 test('alive reconciliation preserves the authoritative live attempt while its fresh claim is in flight and after success', async () => {
@@ -305,6 +391,9 @@ test('blocked reconciliation does not claim or replace an attempt', async () => 
     assert.equal(result.state.activeTurn?.attemptId, 'attempt-live');
     assert.equal((await persistence.load(identity))?.recoveryAttempt, undefined);
     assert.equal(adapter.reconcileRequests.length, 0);
+    assert.equal((await persistence.append({ ...fence, controllerEpoch: 2 }, {
+        executionId: 'execution-live', attemptId: 'attempt-live',
+    }, { type: 'output', channel: 'stdout', data: 'live after blocked reconcile' })).accepted, true);
 });
 
 test('replacement reconciliation changes attempt identity only after the adapter proves replacement', async () => {
@@ -335,4 +424,135 @@ test('replacement reconciliation changes attempt identity only after the adapter
     assert.equal(result.state.status, 'paused');
     assert.equal(result.state.activeTurn?.attemptId, 'recovery-replacement');
     assert.equal(result.state.recoveryAttempt, undefined);
+    assert.deepEqual(await persistence.append({ ...fence, controllerEpoch: 2 }, {
+        executionId: 'execution-live', attemptId: 'attempt-live',
+    }, { type: 'output', channel: 'stdout', data: 'stale after replacement' }), {
+        accepted: false, reason: 'turn_not_active',
+    });
+    assert.equal((await persistence.append({ ...fence, controllerEpoch: 2 }, {
+        executionId: 'execution-live', attemptId: 'recovery-replacement',
+    }, { type: 'output', channel: 'stdout', data: 'replacement output' })).accepted, true);
+});
+
+test('a crash before replacement promotion preserves old authority and retry promotes only its fresh attempt', async () => {
+    const adapter = new AddendumAdapter();
+    adapter.reconcileTurn = async request => ({
+        outcome: 'resumed',
+        reason: `replacement ${request.attemptId} enacted`,
+        snapshot: {
+            providerSessionId: 'owner-provider-session',
+            recoveryMetadata: { checkpoint: request.attemptId },
+            model: 'model-a',
+        },
+    });
+    const persistence = new PromotionCrashPorts();
+    const seeded = await seededRecoveryWithPorts(
+        adapter,
+        ['recovery-before-crash', 'recovery-after-crash'],
+        persistence,
+    );
+
+    await assert.rejects(seeded.supervisor.reconcile(identity, 2, repository), /before replacement promotion/);
+    const crashed = await persistence.load(identity);
+    assert.equal(crashed?.activeTurn?.attemptId, 'attempt-live');
+    assert.equal(crashed?.recoveryAttempt?.attemptId, 'recovery-before-crash');
+    assert.equal((await persistence.append({ ...fence, controllerEpoch: 2 }, {
+        executionId: 'execution-live', attemptId: 'attempt-live',
+    }, { type: 'output', channel: 'stdout', data: 'old output in crash window' })).accepted, true);
+    assert.deepEqual(await persistence.append({ ...fence, controllerEpoch: 2 }, {
+        executionId: 'execution-live', attemptId: 'recovery-before-crash',
+    }, { type: 'output', channel: 'stdout', data: 'uncommitted replacement output' }), {
+        accepted: false, reason: 'turn_not_active',
+    });
+
+    const retried = await seeded.supervisor.reconcile(identity, 2, repository);
+    assert.equal(retried.outcome, 'resumed');
+    assert.equal(retried.state.activeTurn?.attemptId, 'recovery-after-crash');
+    assert.deepEqual(adapter.reconcileRequests.map(request => request.attemptId), [
+        'recovery-before-crash', 'recovery-after-crash',
+    ]);
+    assert.deepEqual(await persistence.append({ ...fence, controllerEpoch: 2 }, {
+        executionId: 'execution-live', attemptId: 'attempt-live',
+    }, { type: 'output', channel: 'stdout', data: 'old output after promotion' }), {
+        accepted: false, reason: 'turn_not_active',
+    });
+    assert.equal((await persistence.append({ ...fence, controllerEpoch: 2 }, {
+        executionId: 'execution-live', attemptId: 'recovery-after-crash',
+    }, { type: 'output', channel: 'stdout', data: 'retry replacement output' })).accepted, true);
+});
+
+test('recovered after-turn retry preserves a concurrent newer model intent and applies it on retry', async () => {
+    class BoundaryAdapter extends AddendumAdapter {
+        override readonly capabilities = {
+            nativeSessionId: 'eager',
+            steering: 'next_turn',
+            pause: 'after_turn',
+            modelChange: 'next_turn',
+        } as const;
+        readonly modelRequests: string[] = [];
+        modelStarted: (() => void) | undefined;
+        holdModel: Promise<void> | undefined;
+
+        override async requestModelChange(request: GoalModelChangeRequest) {
+            this.modelRequests.push(request.model);
+            this.modelStarted?.();
+            if (this.holdModel) await this.holdModel;
+            return { requestedModel: request.model, appliesAt: 'immediate' as const, effectiveModel: request.model };
+        }
+    }
+    const adapter = new BoundaryAdapter();
+    const persistence = new InMemoryGoalSessionPorts();
+    const timestamp = new Date().toISOString();
+    await persistence.create({
+        ...identity,
+        provider: adapter.provider,
+        providerSessionId: 'owner-provider-session',
+        recoveryMetadata: { checkpoint: 'reconciled' },
+        controllerEpoch: 1,
+        status: 'paused',
+        currentModel: 'model-a',
+        requestedModel: 'model-a',
+        recoveryAttemptId: 'attempt-reconciled',
+        activeTurn: {
+            executionId: 'execution-model-recovery', attemptId: 'attempt-reconciled', turnId: fence.turnId,
+            executionEpoch: 1, objective: 'continue with latest model', requestedModel: 'model-a',
+            repository, status: 'paused',
+        },
+        completedTurnIds: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+    });
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    await supervisor.requestModelChange({ ...identity, controllerEpoch: 1, model: 'model-old' });
+    const modelStarted = deferred();
+    const releaseOldModel = deferred();
+    adapter.modelStarted = modelStarted.resolve;
+    adapter.holdModel = releaseOldModel.promise;
+    const staleResume = supervisor.resumeTurn({ ...identity, controllerEpoch: 1 });
+    await modelStarted.promise;
+
+    await supervisor.requestModelChange({ ...identity, controllerEpoch: 1, model: 'model-new' });
+    releaseOldModel.resolve();
+    await assert.rejects(staleResume, StaleGoalSessionFenceError);
+    const newerIntent = await persistence.load(identity);
+    assert.equal(newerIntent?.status, 'paused');
+    assert.equal(newerIntent?.currentModel, 'model-a');
+    assert.equal(newerIntent?.pendingModelChange, 'model-new');
+
+    adapter.modelStarted = undefined;
+    adapter.holdModel = undefined;
+    const recovered = await supervisor.resumeTurn({ ...identity, controllerEpoch: 1 });
+    assert.equal(recovered.disposition, 'started');
+    assert.equal(recovered.state.status, 'idle');
+    assert.equal(recovered.state.currentModel, 'model-new');
+    assert.equal(recovered.state.pendingModelChange, undefined);
+    assert.deepEqual(adapter.modelRequests, ['model-old', 'model-new']);
+    const replay = await persistence.replay(identity);
+    const acknowledgements = replay.filter(record => record.event.type === 'model_change_acknowledged');
+    assert.deepEqual(acknowledgements.map(record =>
+        record.event.type === 'model_change_acknowledged' ? record.event.requestedModel : ''), [
+        'model-old', 'model-new',
+    ]);
+    assert.deepEqual(replay.filter(record => record.event.type === 'model_changed').map(record =>
+        record.event.type === 'model_changed' ? record.event.model : ''), ['model-new']);
 });

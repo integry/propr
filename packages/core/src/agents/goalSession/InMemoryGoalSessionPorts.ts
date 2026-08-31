@@ -130,6 +130,9 @@ export class InMemoryGoalSessionPorts implements
         }
         const saved = { ...clone(next), version: current.version + 1 };
         this.states.set(key, saved);
+        for (const event of completion.auditEvents ?? []) {
+            this.record(key, { turnId, fence: completion.fence, execution: completion.execution, event });
+        }
         this.record(key, { turnId, fence: completion.fence, execution: completion.execution, event: completion.event });
         this.terminalCommits.add(commitKey);
         if (this.terminalFault === 'after_commit') {

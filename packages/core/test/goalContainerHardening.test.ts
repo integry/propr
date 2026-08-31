@@ -7,9 +7,13 @@ import path from 'node:path';
 import { mock, test } from 'node:test';
 
 const spawnCalls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+const outputStream = () => Object.assign(new EventEmitter(), {
+    pause: mock.fn(),
+    resume: mock.fn(),
+});
 const child = Object.assign(new EventEmitter(), {
-    stdout: new EventEmitter(),
-    stderr: new EventEmitter(),
+    stdout: outputStream(),
+    stderr: outputStream(),
     stdin: { destroyed: false, writableEnded: false, write(_d: string, cb: (e?: Error | null) => void) { cb(); return true; }, end() { this.writableEnded = true; } },
     exitCode: null as number | null,
     kill: mock.fn(() => true),
@@ -57,9 +61,9 @@ function createSupervisor(base: string, policy = isolation): InstanceType<typeof
 }
 
 async function waitForFile(filePath: string): Promise<void> {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
         if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) return;
-        await new Promise<void>(resolve => setImmediate(resolve));
+        await new Promise<void>(resolve => setTimeout(resolve, 5));
     }
     throw new Error(`Timed out waiting for ${filePath}`);
 }
@@ -95,6 +99,28 @@ test('layout logPath is an actually used goal-scoped durable output sink', async
     assert.ok(fs.statSync(layout.logPath).size <= 8 * 1024 * 1024);
 });
 
+test('layout log sink truncates deterministically at its auditable byte bound', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-log-bound-'));
+    const supervisor = createSupervisor(base);
+    const { layout, execution } = await supervisor.start({
+        ...baseRequest(),
+        goalId: 'bounded-log-goal',
+        sessionId: 'bounded-log-session',
+    });
+    child.stdout.emit('data', Buffer.alloc(8 * 1024 * 1024, 'x'));
+    child.emit('close', 0);
+    await execution.completion;
+
+    const size = fs.statSync(layout.logPath).size;
+    assert.ok(size > 0);
+    assert.ok(size <= 8 * 1024 * 1024);
+    const records = fs.readFileSync(layout.logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(records.at(-1)?.truncated, true);
+    assert.ok(records.every(record => record.goalId === 'bounded-log-goal'
+        && record.sessionId === 'bounded-log-session'
+        && record.attemptId === idBits.attemptId));
+});
+
 test('start rejects provider homes that shadow reserved or non-provider paths', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-hard-'));
     const supervisor = createSupervisor(base);
@@ -126,6 +152,27 @@ test('credential targets reject descendants of proc, sys, and dev even when allo
         await assert.rejects(
             supervisor.start({ ...baseRequest(), credentialMounts: [{ source: approvedCredential, target }] }),
             /broad or sensitive container path/,
+        );
+    }
+});
+
+test('credential targets reject pseudo-filesystem traversal and symlink-equivalent aliases', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-pseudo-alias-'));
+    const targets = [
+        '/safe/../proc/self/fd/9',
+        '/sys//kernel/credential',
+        '/dev/./shm/credential',
+        '/dev/fd/9',
+        '/proc/self/root/dev/null',
+    ];
+    const supervisor = createSupervisor(base, {
+        ...isolation,
+        credentialMounts: targets.map(target => ({ source: approvedCredential, target })),
+    });
+    for (const target of targets) {
+        await assert.rejects(
+            supervisor.start({ ...baseRequest(), credentialMounts: [{ source: approvedCredential, target }] }),
+            /canonical|broad or sensitive container path/,
         );
     }
 });

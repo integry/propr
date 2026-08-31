@@ -211,17 +211,21 @@ export type GoalTerminalCommit =
         scope: 'turn';
         fence: GoalSessionFence;
         execution: GoalExecutionIdentity;
+        /** Ordered audit events committed immediately before terminal completion. */
+        auditEvents: ReadonlyArray<Exclude<GoalSessionEvent, { type: 'completion' }>>;
         event: Extract<GoalSessionEvent, { type: 'completion' }>;
     }
     | {
         scope: 'control';
         fence: GoalSessionControlFence;
         execution: GoalExecutionIdentity;
+        /** Ordered audit events committed immediately before terminal completion. */
+        auditEvents: ReadonlyArray<Exclude<GoalSessionEvent, { type: 'completion' }>>;
         event: Extract<GoalSessionEvent, { type: 'completion' }>;
     };
 
 /**
- * Commits terminal state and its completion event in one durable transaction.
+ * Commits terminal state and its ordered audit/completion events in one durable transaction.
  * Implementations must be idempotent by scope/fence/execution, so an ambiguous
  * post-commit transport failure can be retried without a duplicate event.
  */
