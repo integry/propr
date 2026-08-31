@@ -22,6 +22,8 @@ interface GoalTerminalProps {
 interface PendingScrollAnchor {
   sequence: number;
   viewportOffset: number;
+  earliestSequence: number;
+  loadComplete: boolean;
 }
 
 export default function GoalTerminal({ events, connectionState, hasMoreBefore, loadingOlder, onLoadOlder }: GoalTerminalProps) {
@@ -32,6 +34,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
   const [followTail, setFollowTail] = useState(true);
   const [windowAnchor, setWindowAnchor] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
+  const [completedOlderLoads, setCompletedOlderLoads] = useState(0);
 
   const filtered = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -52,13 +55,25 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
 
   useLayoutEffect(() => {
     const pending = pendingScrollAnchorRef.current;
+    if (!pending) return;
+    const hasPrependedEvents = events.some(event => event.sequence < pending.earliestSequence);
+    if (!hasPrependedEvents) {
+      if (pending.loadComplete) pendingScrollAnchorRef.current = null;
+      return;
+    }
     const viewport = viewportRef.current;
-    if (!pending || !viewport) return;
+    if (!viewport) {
+      if (pending.loadComplete) pendingScrollAnchorRef.current = null;
+      return;
+    }
     const anchor = viewport.querySelector<HTMLElement>(`[data-event-sequence="${pending.sequence}"]`);
-    if (!anchor) return;
+    if (!anchor) {
+      if (pending.loadComplete) pendingScrollAnchorRef.current = null;
+      return;
+    }
     viewport.scrollTop = anchor.offsetTop - pending.viewportOffset;
     pendingScrollAnchorRef.current = null;
-  }, [events, mounted]);
+  }, [completedOlderLoads, events]);
 
   const resetFilteredWindow = () => {
     setWindowAnchor(null);
@@ -92,11 +107,21 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
       pendingScrollAnchorRef.current = {
         sequence: Number(visible.dataset.eventSequence),
         viewportOffset: visible.offsetTop - viewport.scrollTop,
+        earliestSequence: events[0]?.sequence ?? Number.POSITIVE_INFINITY,
+        loadComplete: false,
       };
     }
     setFollowTail(false);
     setWindowAnchor(mounted[0]?.sequence ?? null);
-    await onLoadOlder();
+    const pending = pendingScrollAnchorRef.current;
+    try {
+      await onLoadOlder();
+    } finally {
+      if (pending && pendingScrollAnchorRef.current === pending) {
+        pending.loadComplete = true;
+        setCompletedOlderLoads(count => count + 1);
+      }
+    }
   };
 
   const copyVisible = async () => {
