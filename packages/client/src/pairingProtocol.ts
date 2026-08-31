@@ -11,6 +11,8 @@ type TimeoutPhase = 'connect-header' | 'body' | 'overall';
 
 export interface PairingProtocolRequestOptions {
   overallTimeoutMs?: number;
+  /** @internal Reclassifies only the overall boundary owned by a caller. */
+  overallTimeoutError?: (cause?: unknown) => ProprClientError;
   /** @internal Deterministic protocol-test deadlines may only shorten production limits. */
   deadlines?: Partial<{
     headerMs: number;
@@ -295,7 +297,12 @@ export const requestPairingProtocol = async (
   } catch (cause) {
     if (cause instanceof ProprClientError) throw cause;
     if (callerSignal?.aborted) throw cancelledError(cause);
-    if (timeoutPhase) throw timeoutError(cause);
+    if (timeoutPhase) {
+      if (timeoutPhase === 'overall' && options.overallTimeoutError) {
+        throw options.overallTimeoutError(cause);
+      }
+      throw timeoutError(cause);
+    }
     if (cause instanceof Error && cause.name === 'AbortError') throw cancelledError(cause);
     throw networkError(cause);
   } finally {
