@@ -114,6 +114,23 @@ export const isValidHttpUrl = (value: string): boolean => {
 
 /** Whether a raw URL places a managed-looking tunnel label under propr.dev. */
 const claimsManagedTunnelNamespace = (value: string): boolean => {
+  // Inspect the literal authority before URL applies IDNA conversion. This is
+  // deliberately the same raw-authority classification used by the API: the
+  // first label starts with t- and the terminal labels are exactly propr.dev.
+  const rawAuthority = value
+    .slice(value.indexOf('://') + 3)
+    .split(/[/?#]/, 1)[0]
+    ?.split('@')
+    .pop()
+    ?.toLowerCase() ?? '';
+  const rawHostname = rawAuthority.replace(/:\d+$/, '').replace(/\.$/, '');
+  const rawLabels = rawHostname.split('.');
+  if (
+    rawLabels[0]?.startsWith(PROPR_UI_PROXY_LABEL_PREFIX) === true
+    && rawLabels.at(-2) === 'propr'
+    && rawLabels.at(-1) === 'dev'
+  ) return true;
+
   try {
     const hostname = new URL(value.trim()).hostname.toLowerCase().replace(/\.$/, '');
     const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;

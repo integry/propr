@@ -150,6 +150,11 @@ describe('getApiBaseUrl', () => {
       'https://user:password@t-abc123.propr.dev',
       'https://t-abc123.propr.dev/api',
       'https://extra.t-abc123.propr.dev',
+      'https://t-é.propr.dev',
+      'https://t-é.propr.dev:443',
+      'https://t-é.propr.dev:444',
+      'https://user:password@t-é.propr.dev/api',
+      'https://t-é.nested.propr.dev',
     ]) {
       expect(resolveApiBaseUrl(
         'app.propr.dev',
@@ -157,6 +162,18 @@ describe('getApiBaseUrl', () => {
         { apiBaseUrl },
         undefined,
       )).toBe('');
+    }
+
+    for (const unrelated of [
+      'https://t-x.propr.dev.example.com',
+      'https://nested.t-x.propr.dev.example.com',
+    ]) {
+      expect(resolveApiBaseUrl(
+        'app.propr.dev',
+        '',
+        { apiBaseUrl: unrelated },
+        undefined,
+      )).toBe(unrelated);
     }
   });
 

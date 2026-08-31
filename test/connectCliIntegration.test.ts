@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  closeSync,
+  constants,
   cpSync,
   existsSync,
+  fstatSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readlinkSync,
   rmSync,
-  rmdirSync,
-  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -20,11 +25,81 @@ import { getOrCreatePublicInstanceIdentity } from '../packages/cli/src/connectId
 
 const CLI = join(process.cwd(), 'packages', 'cli', 'dist', 'index.js');
 const FETCH_FIXTURE = join(process.cwd(), 'test', 'fixtures', 'connectFetchMock.mjs');
+const OS_HOME_FIXTURE = join(process.cwd(), 'test', 'fixtures', 'connectOsHomeMock.mjs');
 const IDENTITY = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ENDPOINT = 'https://t-abc123.propr.dev';
-const FIXTURE_NODE_ARGS = Object.freeze(['--no-warnings', '--import', FETCH_FIXTURE]);
+const FIXTURE_NODE_ARGS = Object.freeze([
+  '--no-warnings',
+  '--import',
+  OS_HOME_FIXTURE,
+  '--import',
+  FETCH_FIXTURE,
+]);
 
-assert.deepEqual(FIXTURE_NODE_ARGS, ['--no-warnings', '--import', FETCH_FIXTURE]);
+assert.deepEqual(FIXTURE_NODE_ARGS, [
+  '--no-warnings',
+  '--import',
+  OS_HOME_FIXTURE,
+  '--import',
+  FETCH_FIXTURE,
+]);
+
+interface PathSnapshot {
+  kind: 'absent' | 'directory' | 'file' | 'other' | 'symlink';
+  metadata?: {
+    birthtimeMs: number;
+    ctimeMs: number;
+    dev: number;
+    gid: number;
+    ino: number;
+    mode: number;
+    mtimeMs: number;
+    nlink: number;
+    size: number;
+    uid: number;
+  };
+  sha256?: string;
+  target?: string;
+}
+
+function snapshotPath(path: string): PathSnapshot {
+  let named: ReturnType<typeof lstatSync>;
+  try {
+    named = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'absent' };
+    throw error;
+  }
+  const metadata = {
+    birthtimeMs: named.birthtimeMs,
+    ctimeMs: named.ctimeMs,
+    dev: named.dev,
+    gid: named.gid,
+    ino: named.ino,
+    mode: named.mode,
+    mtimeMs: named.mtimeMs,
+    nlink: named.nlink,
+    size: named.size,
+    uid: named.uid,
+  };
+  if (named.isSymbolicLink()) return { kind: 'symlink', metadata, target: readlinkSync(path) };
+  if (named.isDirectory()) return { kind: 'directory', metadata };
+  if (!named.isFile()) return { kind: 'other', metadata };
+
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const held = fstatSync(fd);
+    assert.equal(held.dev, named.dev, 'OS config changed while its bytes were snapshotted');
+    assert.equal(held.ino, named.ino, 'OS config changed while its bytes were snapshotted');
+    return {
+      kind: 'file',
+      metadata,
+      sha256: createHash('sha256').update(readFileSync(fd)).digest('hex'),
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
 
 function makeRoot(
   parent: string,
@@ -146,6 +221,7 @@ function invoke(
       ...process.env,
       PATH: bin,
       HOME: join(privateParent, 'home-private-SENTINEL'),
+      PROPR_TEST_OS_HOME: join(privateParent, 'isolated-os-home'),
       PROPR_TEST_DISCOVERY_MODE: mode,
       PROPR_TEST_PUBLIC_IDENTITY: IDENTITY,
       PROPR_TEST_PLATFORM: options.windowsSemantics ? 'win32' : '',
@@ -218,17 +294,16 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
   const parent = mkdtempSync(join(tmpdir(), 'propr-built-connect-cli-'));
   chmodSync(parent, 0o700);
   const bin = installFakeDocker(parent);
+  const isolatedOsHome = join(parent, 'isolated-os-home');
+  mkdirSync(isolatedOsHome, { mode: 0o700 });
   mkdirSync(join(parent, 'home-private-SENTINEL'), { mode: 0o700 });
   mkdirSync(join(parent, 'hostile-cwd'), { mode: 0o700 });
-  // Production deliberately trusts the OS account home, not ambient HOME.
-  // Establish only its parent config directory so exact config.json absence is
-  // the authenticated fallback exercised by this built-CLI matrix.
   const osConfigDir = join(userInfo().homedir, '.propr');
-  const removeOsConfigDir = !existsSync(osConfigDir);
-  if (removeOsConfigDir) mkdirSync(osConfigDir, { mode: 0o700 });
   const osConfigPath = join(osConfigDir, 'config.json');
-  const osConfigBackup = existsSync(osConfigPath) ? readFileSync(osConfigPath) : undefined;
-  const osConfigMode = osConfigBackup ? statSync(osConfigPath).mode & 0o777 : undefined;
+  const osConfigDirBefore = snapshotPath(osConfigDir);
+  const osConfigBefore = osConfigDirBefore.kind === 'directory'
+    ? snapshotPath(osConfigPath)
+    : undefined;
   writeFileSync(join(parent, 'hostile-cwd', '.env'), [
     'PROPR_STACK=cwd-stack-SENTINEL',
     'PROPR_UI_PUBLIC_API_URL=https://t-cwd-SENTINEL.propr.dev',
@@ -241,8 +316,13 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(ready.status, 0, JSON.stringify(ready.document));
     assert.equal(ready.document.status, 'ready');
     assert.equal(ready.document.canonicalEndpoint, ENDPOINT);
+    assert.equal(
+      existsSync(join(isolatedOsHome, '.propr')),
+      false,
+      'an absent isolated OS config directory must not be created',
+    );
 
-    persistTunnelOverride(userInfo().homedir, readyRoot, false);
+    persistTunnelOverride(isolatedOsHome, readyRoot, false);
     const persistedOff = invoke(readyRoot, 'ready', bin, parent);
     assert.equal(persistedOff.status, 0);
     assert.equal(persistedOff.document.enabled, false);
@@ -250,7 +330,7 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
 
     const envDisabledRoot = makeRoot(parent, 'env-disabled-root', ENDPOINT, { enabled: 'false' });
     assert.equal(await getOrCreatePublicInstanceIdentity(join(envDisabledRoot, 'data'), () => IDENTITY), IDENTITY);
-    persistTunnelOverride(userInfo().homedir, envDisabledRoot, true);
+    persistTunnelOverride(isolatedOsHome, envDisabledRoot, true);
     const persistedOn = invoke(envDisabledRoot, 'ready', bin, parent);
     assert.equal(persistedOn.status, 0, JSON.stringify(persistedOn.document));
     assert.equal(persistedOn.document.status, 'ready');
@@ -396,14 +476,14 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(internal.status, 1);
     assert.equal(internal.document.status, 'internalFailure');
   } finally {
-    if (osConfigBackup) {
-      writeFileSync(osConfigPath, osConfigBackup, { mode: osConfigMode });
-      chmodSync(osConfigPath, osConfigMode!);
-    } else {
-      rmSync(osConfigPath, { force: true });
+    try {
+      assert.deepEqual(snapshotPath(osConfigDir), osConfigDirBefore, 'the actual OS config directory changed');
+      if (osConfigBefore) {
+        assert.deepEqual(snapshotPath(osConfigPath), osConfigBefore, 'the actual OS config bytes or metadata changed');
+      }
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
     }
-    if (removeOsConfigDir) rmdirSync(osConfigDir);
-    rmSync(parent, { recursive: true, force: true });
   }
 });
 
@@ -411,6 +491,7 @@ test('the built CLI rejects malformed Unix roots and reports unavailable Windows
   const parent = mkdtempSync(join(tmpdir(), 'propr-built-connect-root-'));
   chmodSync(parent, 0o700);
   const bin = installFakeDocker(parent);
+  mkdirSync(join(parent, 'isolated-os-home'), { mode: 0o700 });
   mkdirSync(join(parent, 'home-private-SENTINEL'), { mode: 0o700 });
   mkdirSync(join(parent, 'hostile-cwd'), { mode: 0o700 });
   writeFileSync(join(parent, 'hostile-cwd', '.env'), 'PROPR_STACK=cwd-stack-SENTINEL\n', { mode: 0o600 });

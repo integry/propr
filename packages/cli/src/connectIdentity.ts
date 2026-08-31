@@ -377,19 +377,49 @@ export async function readTrustedConnectTunnelOverride(
     };
 
     verifyNamedHome();
-    const namedConfigDirectoryBefore = lstatSync(join(homePath, ".propr"));
-    if (namedConfigDirectoryBefore.isSymbolicLink()) {
-      throw new TrustedConnectConfigError("CONFIG_DIRECTORY_REPARSE");
+    let namedConfigDirectoryBefore: ReturnType<typeof lstatSync> | undefined;
+    try {
+      namedConfigDirectoryBefore = lstatSync(join(homePath, ".propr"));
+      if (namedConfigDirectoryBefore.isSymbolicLink()) {
+        throw new TrustedConnectConfigError("CONFIG_DIRECTORY_REPARSE");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      // The pathname precheck is not authoritative. Authenticate absence only
+      // through the child open anchored at the already-held home descriptor.
+      verifyNamedHome();
     }
     await options.onBoundary?.("config-directory-before-open");
-    const configDirectoryFd = home.root.openChild(
-      ".propr",
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
+    let configDirectoryFd: number;
+    try {
+      configDirectoryFd = home.root.openChild(
+        ".propr",
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      verifyNamedHome();
+      if (namedConfigDirectoryBefore !== undefined) throw new TrustedConnectConfigError();
+      if (platform === "win32") {
+        await authorityEntries(inspector, [
+          ...home.ancestry.slice(0, -1).map((entry) => ({
+            path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
+          })),
+          { path: home.root.visiblePath, kind: "home", pinnedFd: home.root.fd },
+        ]);
+        verifyNamedHome();
+        closeAcquiredAncestors(home);
+        homeAncestorsClosed = true;
+      }
+      return undefined;
+    }
     configDir = heldDirectory(configDirectoryFd, ioPlatform, join(homePath, ".propr"));
     await options.onBoundary?.("config-directory-opened");
     verifyNamedHome();
-    if (!sameIdentity(namedConfigDirectoryBefore, fstatSync(configDir.fd))) throw new TrustedConnectConfigError();
+    if (
+      namedConfigDirectoryBefore === undefined
+      || !sameIdentity(namedConfigDirectoryBefore, fstatSync(configDir.fd))
+    ) throw new TrustedConnectConfigError();
     const directoryStat = fstatSync(configDir.fd);
     assertPrivateData(directoryStat, callerUid, platform);
     assertNamedEntry(homePath, ".propr", directoryStat);

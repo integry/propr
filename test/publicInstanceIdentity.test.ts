@@ -5,6 +5,7 @@ import {
   chmodSync,
   closeSync,
   constants,
+  existsSync,
   linkSync,
   lstatSync,
   mkdtempSync,
@@ -729,14 +730,72 @@ test('trusted config authenticates absence only at the exact config child open',
   const home = join(parent, 'home');
   const configDir = join(home, '.propr');
   try {
+    privateDirectory(home);
+    assert.equal(lstatSync(home).isDirectory(), true);
+    assert.equal(existsSync(configDir), false);
+    assert.equal(await readTrustedConnectTunnelOverride(root, { trustedHome: home }), undefined);
+    assert.equal(existsSync(configDir), false, 'an absent .propr directory is never created');
+
     privateDirectory(configDir);
     assert.equal(await readTrustedConnectTunnelOverride(root, { trustedHome: home }), undefined);
     rmSync(configDir, { recursive: true });
-    await assert.rejects(
-      readTrustedConnectTunnelOverride(root, { trustedHome: home }),
-      TrustedConnectConfigError,
-    );
+    assert.equal(await readTrustedConnectTunnelOverride(root, { trustedHome: home }), undefined);
+    assert.equal(existsSync(configDir), false);
   } finally {
     rmSync(parent, { recursive: true, force: true });
+  }
+
+  const windowsParent = temporaryRoot('propr-config-absence-windows-');
+  const windowsHome = join(windowsParent, 'home');
+  privateDirectory(windowsHome);
+  const inspectedKinds: string[] = [];
+  const windowsInspector: ConnectRootAuthorityInspector = {
+    inspectDarwinAcl: (_path, _fd, identity) => ({ version: 1, ...identity, acl: '!#acl 1\n' }),
+    inspectWindowsAcl: async (_path, identity, _fd, kind = 'env') => {
+      inspectedKinds.push(kind);
+      return safeWindowsAuthority(identity, kind);
+    },
+  };
+  try {
+    assert.equal(await readTrustedConnectTunnelOverride(root, {
+      platform: 'win32',
+      trustedHome: windowsHome,
+      authorityInspector: windowsInspector,
+    }), undefined);
+    assert.ok(inspectedKinds.includes('home'));
+    assert.equal(existsSync(join(windowsHome, '.propr')), false);
+  } finally {
+    rmSync(windowsParent, { recursive: true, force: true });
+  }
+
+  for (const race of ['home-aba', 'config-directory-aba', 'config-directory-symlink'] as const) {
+    const raceParent = temporaryRoot(`propr-config-absence-${race}-`);
+    const raceHome = join(raceParent, 'home');
+    const raceConfigDir = join(raceHome, '.propr');
+    const detachedHome = join(raceParent, 'home-detached');
+    const detachedConfigDir = join(raceHome, '.propr-detached');
+    privateDirectory(raceHome);
+    if (race !== 'home-aba') privateDirectory(raceConfigDir);
+    let raced = false;
+    try {
+      await assert.rejects(readTrustedConnectTunnelOverride(root, {
+        trustedHome: raceHome,
+        onBoundary: (current) => {
+          if (current !== 'config-directory-before-open' || raced) return;
+          raced = true;
+          if (race === 'home-aba') {
+            renameSync(raceHome, detachedHome);
+            privateDirectory(raceHome);
+          } else {
+            renameSync(raceConfigDir, detachedConfigDir);
+            if (race === 'config-directory-aba') privateDirectory(raceConfigDir);
+            else symlinkSync(detachedConfigDir, raceConfigDir, 'dir');
+          }
+        },
+      }), TrustedConnectConfigError, race);
+      assert.equal(raced, true, race);
+    } finally {
+      rmSync(raceParent, { recursive: true, force: true });
+    }
   }
 });
