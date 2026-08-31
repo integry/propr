@@ -42,6 +42,7 @@ const agents: AgentConfig[] = [
     dockerImage: 'img',
     configPath: '~/.claude',
     supportedModels: ['claude-opus-4-8', 'claude-sonnet-5'],
+    goalCapable: true,
     defaultModel: 'claude-opus-4-8',
   },
 ];
@@ -156,6 +157,18 @@ describe('goal routes', () => {
     );
   });
 
+  test('requires explicit goal capability on both agent and model catalog entries', async () => {
+    const originalCapability = agents[0].goalCapable;
+    agents[0].goalCapable = undefined;
+    const unmarkedAgent = await createGoalViaApi();
+    assert.equal((unmarkedAgent.body as { code: string }).code, 'goal_invalid_catalog_selection');
+    agents[0].goalCapable = originalCapability;
+    agents[0].supportedModels.push('custom-unmarked-model');
+    const unmarkedModel = await createGoalViaApi({ model: 'custom-unmarked-model' });
+    assert.equal((unmarkedModel.body as { code: string }).code, 'goal_invalid_catalog_selection');
+    agents[0].supportedModels.pop();
+  });
+
   test('rejects out-of-bounds concurrency', async () => {
     const state = await createGoalViaApi({ maxActiveTasks: 999 });
     assert.equal(state.statusCode, 400);
@@ -163,6 +176,24 @@ describe('goal routes', () => {
       (state.body as { code: string }).code,
       'goal_concurrency_bound_exceeded'
     );
+  });
+
+  test('validates and persists the shared Ultrafix contract', async () => {
+    const invalidGoal = await createGoalViaApi({ ultrafixEnabled: true, ultrafixGoal: 11, ultrafixMaxCycles: 2 });
+    assert.equal((invalidGoal.body as { code: string }).code, 'goal_validation_error');
+    const invalidCycles = await createGoalViaApi({ ultrafixEnabled: true, ultrafixGoal: 8, ultrafixMaxCycles: 21 });
+    assert.equal((invalidCycles.body as { code: string }).code, 'goal_validation_error');
+    const created = await createGoalViaApi({
+      maxActiveTasks: 4,
+      mergePolicy: 'auto_squash',
+      ultrafixEnabled: true,
+      ultrafixGoal: 8,
+      ultrafixMaxCycles: 4,
+    });
+    const goal = (created.body as { goal: { ultrafixGoal: number; ultrafixMaxCycles: number; mergePolicy: string } }).goal;
+    assert.equal(goal.ultrafixGoal, 8);
+    assert.equal(goal.ultrafixMaxCycles, 4);
+    assert.equal(goal.mergePolicy, 'auto_squash');
   });
 
   test('requires authentication', async () => {
@@ -276,11 +307,14 @@ describe('goal routes', () => {
     const created = await createGoalViaApi();
     const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
     const repo = new GoalRepository(database);
+    const lease = await repo.claimLease(goalId, 'api-test-controller', 60_000);
     for (let i = 1; i <= 3; i += 1) {
       await repo.appendEvent(goalId, {
         kind: 'output',
         eventType: 'log',
         idempotencyKey: `e${i}`,
+        leaseOwner: 'api-test-controller',
+        leaseEpoch: lease.epoch,
       });
     }
     const routes = makeRoutes();
@@ -294,6 +328,18 @@ describe('goal routes', () => {
       body.events.map((e) => e.sequence),
       [2, 3]
     );
+  });
+
+  test('rejects negative cursors and unknown event kinds with stable codes', async () => {
+    const created = await createGoalViaApi();
+    const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
+    const routes = makeRoutes();
+    const cursor = makeResponse();
+    await routes.readEvents(makeRequest({ params: { goalId }, query: { afterSequence: '-1' } }), cursor.res);
+    assert.equal((cursor.state.body as { code: string }).code, 'goal_invalid_cursor');
+    const kind = makeResponse();
+    await routes.readEvents(makeRequest({ params: { goalId }, query: { kind: 'credential_dump' } }), kind.res);
+    assert.equal((kind.state.body as { code: string }).code, 'goal_invalid_event_kind');
   });
 
   test('demo mode shares goals across users read-only', async () => {
@@ -347,7 +393,46 @@ describe('goal routes', () => {
     const firstId = (first.state.body as { goal: { goalId: string } }).goal.goalId;
     const secondId = (second.state.body as { goal: { goalId: string } }).goal.goalId;
     assert.equal(firstId, secondId);
+    assert.notEqual(firstId, 'create-1');
     const count = await database('goals').count({ c: '*' }).first();
     assert.equal(Number(count?.c), 1);
+  });
+
+  test('idempotent create rejects payload mismatch and is scoped to the owner', async () => {
+    const routes = makeRoutes();
+    const first = makeResponse();
+    await routes.createGoal(makeRequest({ body: { objective: 'one', repository: 'octo/repo', agent: 'claude', model: 'claude-opus-4-8' }, headers: { 'Idempotency-Key': 'owner-key' } }), first.res);
+    const mismatch = makeResponse();
+    await routes.createGoal(makeRequest({ body: { objective: 'two', repository: 'octo/repo', agent: 'claude', model: 'claude-opus-4-8' }, headers: { 'Idempotency-Key': 'owner-key' } }), mismatch.res);
+    assert.equal((mismatch.state.body as { code: string }).code, 'goal_idempotency_conflict');
+    const otherOwner = makeResponse();
+    await routes.createGoal(makeRequest({ user: { id: 'user-2' }, body: { objective: 'two', repository: 'octo/repo', agent: 'claude', model: 'claude-opus-4-8' }, headers: { 'Idempotency-Key': 'owner-key' } }), otherOwner.res);
+    assert.equal(otherOwner.state.statusCode, 201);
+  });
+
+  test('all operator mutations replay their original response and reject mismatches', async () => {
+    const created = await createGoalViaApi();
+    const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
+    const routes = makeRoutes();
+    const first = makeResponse();
+    await routes.pauseGoal(makeRequest({ params: { goalId }, body: { reason: 'pause' }, headers: { 'Idempotency-Key': 'pause-key' } }), first.res);
+    const retry = makeResponse();
+    await routes.pauseGoal(makeRequest({ params: { goalId }, body: { reason: 'pause' }, headers: { 'Idempotency-Key': 'pause-key' } }), retry.res);
+    assert.deepEqual(retry.state.body, first.state.body);
+    const mismatch = makeResponse();
+    await routes.pauseGoal(makeRequest({ params: { goalId }, body: { reason: 'changed' }, headers: { 'Idempotency-Key': 'pause-key' } }), mismatch.res);
+    assert.equal((mismatch.state.body as { code: string }).code, 'goal_idempotency_conflict');
+  });
+
+  test('rejects model changes once a goal is terminal', async () => {
+    const created = await createGoalViaApi();
+    const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
+    await new GoalRepository(database).transitionOperatorIntent(goalId, { toState: 'cancelled', terminalReason: 'user_cancelled' });
+    const response = makeResponse();
+    await makeRoutes().requestModelChange(
+      makeRequest({ params: { goalId }, body: { model: 'claude-sonnet-5' }, headers: { 'Idempotency-Key': 'model-terminal' } }),
+      response.res
+    );
+    assert.equal((response.state.body as { code: string }).code, 'goal_terminal_state');
   });
 });

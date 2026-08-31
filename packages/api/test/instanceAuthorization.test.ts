@@ -255,6 +255,7 @@ describe('instance catalog', () => {
                     dockerImage: 'private.registry/agent:secret',
                     configPath: '/home/operator/.codex',
                     supportedModels: ['gpt-5.4'],
+                    goalCapable: true,
                     defaultModel: 'gpt-5.4',
                     envVars: { SECRET_TOKEN: 'secret' }
                 }],
@@ -278,6 +279,8 @@ describe('instance catalog', () => {
                 alias: 'default',
                 enabled: true,
                 supportedModels: ['gpt-5.4'],
+                goalCapable: true,
+                goalCapableModels: ['gpt-5.4'],
                 defaultModel: 'gpt-5.4'
             }],
             repositories: [{

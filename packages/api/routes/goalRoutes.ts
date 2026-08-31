@@ -25,16 +25,15 @@ import {
 import {
   GOAL_ERROR_CODES,
   GOAL_STATES,
-  GOAL_MERGE_POLICIES,
-  GOAL_MIN_MAX_ACTIVE_TASKS,
-  GOAL_MAX_MAX_ACTIVE_TASKS,
-  GOAL_DEFAULT_MAX_ACTIVE_TASKS,
-  isGoalCapableEntry,
+  GOAL_EVENT_KINDS,
   type GoalState,
-  type GoalMergePolicy,
 } from '@propr/shared';
 import type { Knex } from 'knex';
 import { isDemoMode } from '../demoMode.js';
+import {
+  validateCreateGoalInput,
+  validateGoalAgentModel,
+} from './goalRouteValidation.js';
 
 interface GoalRoutesDeps {
   db?: Knex;
@@ -42,14 +41,6 @@ interface GoalRoutesDeps {
     loadAgents?: () => Promise<AgentConfig[]>;
     loadRepositories?: () => Promise<RepoToMonitor[]>;
   };
-}
-
-function reject(
-  status: number,
-  code: string,
-  error: string
-): { ok: false; status: number; code: string; error: string } {
-  return { ok: false, status, code, error };
 }
 
 function requireUserId(req: Request, res: Response): string | null {
@@ -91,6 +82,9 @@ function parseExpectedVersion(req: Request): number | undefined {
     const parsed = Number(header.replace(/"/g, '').trim());
     if (Number.isInteger(parsed)) return parsed;
   }
+  if (body?.expectedVersion !== undefined || header !== undefined) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, 'expectedVersion must be an integer', 400);
+  }
   return undefined;
 }
 
@@ -117,84 +111,14 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     }
   }
 
-  /** Validate and authorize a create request; returns a validated input or a rejection. */
-  async function validateCreateGoal(
-    body: Record<string, unknown>,
-    ownerUserId: string
-  ): Promise<
-    | { ok: true; input: Parameters<typeof repository.createGoal>[0] }
-    | { ok: false; status: number; code: string; error: string }
-  > {
-    const objective = typeof body.objective === 'string' ? body.objective.trim() : '';
-    const repositoryName =
-      typeof body.repository === 'string' ? body.repository.trim() : '';
-    const agent = typeof body.agent === 'string' ? body.agent.trim() : '';
-    const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
-    if (!objective || !repositoryName || !agent || !requestedModel) {
-      return reject(400, GOAL_ERROR_CODES.validation, 'objective, repository, agent, and model are required');
-    }
-
-    const maxActiveTasks =
-      body.maxActiveTasks === undefined
-        ? GOAL_DEFAULT_MAX_ACTIVE_TASKS
-        : Number(body.maxActiveTasks);
-    if (
-      !Number.isInteger(maxActiveTasks) ||
-      maxActiveTasks < GOAL_MIN_MAX_ACTIVE_TASKS ||
-      maxActiveTasks > GOAL_MAX_MAX_ACTIVE_TASKS
-    ) {
-      return reject(
-        400,
-        GOAL_ERROR_CODES.concurrencyBound,
-        `maxActiveTasks must be between ${GOAL_MIN_MAX_ACTIVE_TASKS} and ${GOAL_MAX_MAX_ACTIVE_TASKS}`
-      );
-    }
-
-    const mergePolicy = (body.mergePolicy ?? 'manual') as GoalMergePolicy;
-    if (!GOAL_MERGE_POLICIES.includes(mergePolicy)) {
-      return reject(
-        400,
-        GOAL_ERROR_CODES.validation,
-        `mergePolicy must be one of: ${GOAL_MERGE_POLICIES.join(', ')}`
-      );
-    }
-
-    // Repository authorization: only configured, enabled repositories.
-    const repositories = await loadRepositoriesFn();
-    if (!repositories.some((entry) => entry.name === repositoryName && entry.enabled)) {
-      return reject(
-        403,
-        GOAL_ERROR_CODES.repositoryForbidden,
-        'Repository is not accessible'
-      );
-    }
-
-    // Catalog authorization: goal-capable, enabled agent supporting the model.
-    const catalogError = await validateAgentModel(agent, requestedModel);
-    if (catalogError) return catalogError;
-
-    return {
-      ok: true,
-      input: {
-        ownerUserId,
-        repository: repositoryName,
-        objective,
-        agent,
-        requestedModel,
-        maxActiveTasks,
-        ultrafixEnabled: body.ultrafixEnabled === true,
-        mergePolicy,
-      },
-    };
-  }
-
   async function createGoal(req: Request, res: Response): Promise<void> {
     const userId = requireUserId(req, res);
     if (!userId) return;
     try {
-      const result = await validateCreateGoal(
+      const result = await validateCreateGoalInput(
         (req.body ?? {}) as Record<string, unknown>,
-        userId
+        userId,
+        { loadAgents: loadAgentsFn, loadRepositories: loadRepositoriesFn }
       );
       if (!result.ok) {
         res.status(result.status).json({ code: result.code, error: result.error });
@@ -208,30 +132,6 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     } catch (error) {
       sendGoalError(res, error);
     }
-  }
-
-  /** Confirm the agent is a goal-capable catalog entry that supports the model. */
-  async function validateAgentModel(
-    agent: string,
-    model: string
-  ): Promise<{ ok: false; status: number; code: string; error: string } | null> {
-    const agents = await loadAgentsFn();
-    const agentEntry = agents.find((entry) => entry.alias === agent && entry.enabled);
-    if (!agentEntry || !isGoalCapableEntry(agentEntry as { goalCapable?: boolean })) {
-      return reject(
-        400,
-        GOAL_ERROR_CODES.invalidCatalogSelection,
-        'Agent is not a goal-capable catalog entry'
-      );
-    }
-    if (!agentEntry.supportedModels.includes(model)) {
-      return reject(
-        400,
-        GOAL_ERROR_CODES.invalidCatalogSelection,
-        'Model is not supported by the selected agent'
-      );
-    }
-    return null;
   }
 
   async function listGoals(req: Request, res: Response): Promise<void> {
@@ -285,7 +185,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
   function mutation(
     handler: (
       goalId: string,
-      options: { expectedVersion?: number; reason?: string }
+      options: { expectedVersion?: number; reason?: string; idempotencyKey?: string }
     ) => Promise<unknown>
   ) {
     return async (req: FlatRequest, res: Response): Promise<void> => {
@@ -297,6 +197,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         const goal = await handler(req.params.goalId, {
           expectedVersion: parseExpectedVersion(req),
           reason: typeof body.reason === 'string' ? body.reason : undefined,
+          idempotencyKey: resolveIdempotencyKey(req),
         });
         res.json({ goal });
       } catch (error) {
@@ -326,7 +227,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
       }
       // Validate against the goal's agent catalog so an unusable model cannot
       // be requested.
-      const catalogError = await validateAgentModel(goal.agent, requestedModel);
+      const catalogError = await validateGoalAgentModel(goal.agent, requestedModel, loadAgentsFn);
       if (catalogError) {
         res.status(catalogError.status).json({
           code: catalogError.code,
@@ -340,6 +241,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         {
           expectedVersion: parseExpectedVersion(req),
           reason: typeof body.reason === 'string' ? body.reason : undefined,
+          idempotencyKey: resolveIdempotencyKey(req),
         }
       );
       res.json({ goal: updated });
@@ -396,16 +298,23 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         typeof afterRaw === 'string' && afterRaw.length > 0
           ? Number(afterRaw)
           : undefined;
-      if (afterSequence !== undefined && !Number.isInteger(afterSequence)) {
+      if (afterSequence !== undefined && (!Number.isInteger(afterSequence) || afterSequence < 0)) {
         res.status(400).json({
-          code: GOAL_ERROR_CODES.validation,
-          error: 'afterSequence must be an integer',
+          code: GOAL_ERROR_CODES.invalidCursor,
+          error: 'afterSequence must be a non-negative integer',
         });
         return;
       }
       const limit =
         typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
       const kind = typeof req.query.kind === 'string' ? req.query.kind : undefined;
+      if (kind !== undefined && !GOAL_EVENT_KINDS.includes(kind as (typeof GOAL_EVENT_KINDS)[number])) {
+        res.status(400).json({
+          code: GOAL_ERROR_CODES.invalidEventKind,
+          error: `kind must be one of: ${GOAL_EVENT_KINDS.join(', ')}`,
+        });
+        return;
+      }
       const result = await repository.readEvents(req.params.goalId, {
         afterSequence,
         limit: limit !== undefined && Number.isFinite(limit) ? limit : undefined,

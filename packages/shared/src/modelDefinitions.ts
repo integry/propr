@@ -14,7 +14,18 @@ export interface ModelInfo {
   contextWindow: string;  // Display badge value (e.g., "200K", "1M")
   maxTokens: number;      // Numeric limit for calculations
   openRouterId: string;   // OpenRouter model ID for pricing lookups (e.g., "anthropic/claude-opus-4.5")
+  /** Explicit opt-in for use by the durable goal controller. */
+  goalCapable: boolean;
   minAgentVersion?: string; // Minimum agent CLI version that supports this model (e.g., "2.1.45")
+}
+
+type ModelDefinition = Omit<ModelInfo, 'goalCapable'>;
+
+function withGoalCapability(
+  models: ModelDefinition[],
+  goalCapable: boolean
+): ModelInfo[] {
+  return models.map(model => ({ ...model, goalCapable }));
 }
 
 export interface AgentDisplayInfo {
@@ -24,7 +35,7 @@ export interface AgentDisplayInfo {
 
 // Claude models (newest first within each tier, then by capability: Opus > Sonnet > Haiku)
 // Claude 5 and 4.8/4.7/4.6 models require newer Claude Code versions; 4.5 models work with older versions
-export const CLAUDE_MODELS: ModelInfo[] = [
+export const CLAUDE_MODELS = withGoalCapability([
   // Claude Fable 5 (top tier, above Opus)
   { id: 'claude-fable-5', name: 'Claude Fable 5', shortName: 'Claude Fable 5', shortAlias: 'fable', githubLabel: 'llm-claude-fable', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-fable-5', minAgentVersion: '2.1.170' },
   // Claude 5 series
@@ -41,11 +52,11 @@ export const CLAUDE_MODELS: ModelInfo[] = [
   { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', shortName: 'Claude Opus 4.5', shortAlias: 'opus45', githubLabel: 'llm-claude-opus45', contextWindow: '200K', maxTokens: 200000, openRouterId: 'anthropic/claude-opus-4.5' },
   { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', shortName: 'Claude Sonnet 4.5', shortAlias: 'sonnet45', githubLabel: 'llm-claude-sonnet45', contextWindow: '200K', maxTokens: 200000, openRouterId: 'anthropic/claude-sonnet-4.5' },
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortName: 'Claude Haiku', shortAlias: 'haiku', githubLabel: 'llm-claude-haiku', contextWindow: '200K', maxTokens: 200000, openRouterId: 'anthropic/claude-haiku-4.5' },
-];
+], true);
 
 // Codex (OpenAI) models - availability depends on account type (ChatGPT login vs API key)
 // Recommended: gpt-5.6-sol (default), gpt-5.6-terra (balanced), gpt-5.6-luna (fast/low-cost)
-export const CODEX_MODELS: ModelInfo[] = [
+export const CODEX_MODELS = withGoalCapability([
   { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', shortName: 'GPT-5.6 Sol', shortAlias: 'gpt56-sol', githubLabel: 'llm-codex-gpt56-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-sol', minAgentVersion: '0.144.0' },
   { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', shortName: 'GPT-5.6 Terra', shortAlias: 'gpt56-terra', githubLabel: 'llm-codex-gpt56-terra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-terra', minAgentVersion: '0.144.0' },
   { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', shortName: 'GPT-5.6 Luna', shortAlias: 'gpt56-luna', githubLabel: 'llm-codex-gpt56-luna', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-luna', minAgentVersion: '0.144.0' },
@@ -60,12 +71,12 @@ export const CODEX_MODELS: ModelInfo[] = [
   { id: 'gpt-5.2', name: 'GPT-5.2', shortName: 'GPT-5.2', shortAlias: 'gpt52', githubLabel: 'llm-codex-gpt52', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.2' },
   { id: 'gpt-5-mini', name: 'GPT-5 Mini', shortName: 'GPT-5 Mini', shortAlias: 'gpt5-mini', githubLabel: 'llm-codex-gpt5-mini', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5-mini' },
   { id: 'gpt-5-nano', name: 'GPT-5 Nano', shortName: 'GPT-5 Nano', shortAlias: 'gpt5-nano', githubLabel: 'llm-codex-gpt5-nano', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5-nano' },
-];
+], true);
 
 // Antigravity models. Antigravity can route to multiple model families, so
 // these IDs are intentionally namespaced instead of treating every model as a
 // Google/Gemini model.
-export const ANTIGRAVITY_MODELS: ModelInfo[] = [
+export const ANTIGRAVITY_MODELS = withGoalCapability([
   { id: 'antigravity-gemini-3.7-flash-medium', name: 'Antigravity Gemini 3.7 Flash Medium', shortName: 'Gemini 3.7 Flash Medium', shortAlias: 'flash37-medium', githubLabel: 'llm-antigravity-flash37-medium', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.7-flash', minAgentVersion: '1.1.12' },
   { id: 'antigravity-gemini-3.7-flash-high', name: 'Antigravity Gemini 3.7 Flash High', shortName: 'Gemini 3.7 Flash High', shortAlias: 'flash37-high', githubLabel: 'llm-antigravity-flash37-high', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.7-flash', minAgentVersion: '1.1.12' },
   { id: 'antigravity-gemini-3.7-flash-low', name: 'Antigravity Gemini 3.7 Flash Low', shortName: 'Gemini 3.7 Flash Low', shortAlias: 'flash37-low', githubLabel: 'llm-antigravity-flash37-low', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.7-flash', minAgentVersion: '1.1.12' },
@@ -80,13 +91,13 @@ export const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'antigravity-claude-sonnet-4.6-thinking', name: 'Antigravity Claude Sonnet 4.6 Thinking', shortName: 'Claude Sonnet 4.6 Thinking', shortAlias: 'sonnet46-thinking', githubLabel: 'llm-antigravity-sonnet46-thinking', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-4.6' },
   { id: 'antigravity-claude-opus-4.6-thinking', name: 'Antigravity Claude Opus 4.6 Thinking', shortName: 'Claude Opus 4.6 Thinking', shortAlias: 'opus46-thinking', githubLabel: 'llm-antigravity-opus46-thinking', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.6' },
   { id: 'antigravity-gpt-oss-120b-medium', name: 'Antigravity GPT-OSS 120B Medium', shortName: 'GPT-OSS 120B Medium', shortAlias: 'gpt-oss-120b', githubLabel: 'llm-antigravity-gpt-oss-120b', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'openai/gpt-oss-120b' },
-];
+], true);
 
 
 // OpenCode built-in free models. IDs are namespaced for ProPR and converted
 // back to OpenCode's provider/model syntax at CLI execution time.
 // These are available from `opencode models` without provider login.
-export const OPENCODE_MODELS: ModelInfo[] = [
+export const OPENCODE_MODELS = withGoalCapability([
   { id: 'opencode-deepseek-v4-flash-free', name: 'DeepSeek V4 Flash Free', shortName: 'DeepSeek V4 Flash Free', shortAlias: 'deepseek-v4-flash-free', githubLabel: 'llm-opencode-deepseek-v4-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4-flash' },
   { id: 'opencode-mimo-v2.5-free', name: 'MiMo V2.5 Free', shortName: 'MiMo V2.5 Free', shortAlias: 'mimo-v25-free', githubLabel: 'llm-opencode-mimo-v25-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.5' },
   { id: 'opencode-laguna-s-2.1-free', name: 'Laguna S 2.1 Free', shortName: 'Laguna S 2.1 Free', shortAlias: 'laguna-s21-free', githubLabel: 'llm-opencode-laguna-s21-free', contextWindow: '256K', maxTokens: 256000, openRouterId: 'poolside/laguna-s-2.1:free' },
@@ -94,14 +105,14 @@ export const OPENCODE_MODELS: ModelInfo[] = [
   { id: 'opencode-north-mini-code-free', name: 'North Mini Code Free', shortName: 'North Mini Code Free', shortAlias: 'north-mini-code-free', githubLabel: 'llm-opencode-north-mini-code-free', contextWindow: '256K', maxTokens: 256000, openRouterId: 'cohere/north-mini-code:free' },
   { id: 'opencode-nemotron-3-ultra-free', name: 'Nemotron 3 Ultra Free', shortName: 'Nemotron 3 Ultra Free', shortAlias: 'nemotron-3-ultra-free', githubLabel: 'llm-opencode-nemotron-3-ultra-free', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'nvidia/nemotron-3-ultra-550b-a55b' },
   { id: 'opencode-big-pickle', name: 'Big Pickle', shortName: 'Big Pickle', shortAlias: 'big-pickle', githubLabel: 'llm-opencode-big-pickle', contextWindow: '200K', maxTokens: 200000, openRouterId: 'opencode/big-pickle' },
-];
+], false);
 
 // Mistral Vibe coding models
 // Available models from `vibe /model`: mistral-medium-3.5, devstral-small, local
-export const VIBE_MODELS: ModelInfo[] = [
+export const VIBE_MODELS = withGoalCapability([
   { id: 'mistral-medium-3.5', name: 'Mistral Medium 3.5', shortName: 'Mistral Medium', shortAlias: 'mistral', githubLabel: 'llm-vibe-mistral', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/mistral-medium-3-5' },
   { id: 'devstral-small', name: 'Devstral Small', shortName: 'Devstral Small', shortAlias: 'devstral', githubLabel: 'llm-vibe-devstral', contextWindow: '256K', maxTokens: 256000, openRouterId: 'mistralai/devstral-2512' },
-];
+], false);
 
 // All models combined
 export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...ANTIGRAVITY_MODELS, ...OPENCODE_MODELS, ...VIBE_MODELS];

@@ -12,6 +12,7 @@ import type {
   GoalMessageState,
   GoalMergePolicy,
   GoalTerminalReason,
+  GoalRecoveryMetadata,
 } from '@propr/shared';
 
 export interface GoalRecord {
@@ -25,6 +26,8 @@ export interface GoalRecord {
   effective_model: string;
   max_active_tasks: number;
   ultrafix_enabled: number;
+  ultrafix_goal: number | null;
+  ultrafix_max_cycles: number | null;
   merge_policy: GoalMergePolicy;
   version: number;
   lease_owner: string | null;
@@ -72,6 +75,8 @@ export interface GoalMessageRecord {
   state: GoalMessageState;
   delivered_at: string | null;
   acknowledged_at: string | null;
+  delivery_attempts: number;
+  last_error: string | null;
   idempotency_key: string;
   created_at: string;
 }
@@ -91,6 +96,16 @@ export interface GoalProviderSessionRecord {
   updated_at: string;
 }
 
+export interface GoalIdempotencyRecord {
+  owner_user_id: string;
+  operation: string;
+  idempotency_key: string;
+  request_hash: string;
+  goal_id: string;
+  response_json: string;
+  created_at: string;
+}
+
 export interface Goal {
   goalId: string;
   ownerUserId: string;
@@ -102,6 +117,8 @@ export interface Goal {
   effectiveModel: string;
   maxActiveTasks: number;
   ultrafixEnabled: boolean;
+  ultrafixGoal: number | null;
+  ultrafixMaxCycles: number | null;
   mergePolicy: GoalMergePolicy;
   version: number;
   leaseOwner: string | null;
@@ -149,6 +166,8 @@ export interface GoalMessage {
   state: GoalMessageState;
   deliveredAt: string | null;
   acknowledgedAt: string | null;
+  deliveryAttempts: number;
+  lastError: string | null;
   idempotencyKey: string;
   createdAt: string;
 }
@@ -163,6 +182,8 @@ export interface CreateGoalInput {
   effectiveModel?: string;
   maxActiveTasks?: number;
   ultrafixEnabled?: boolean;
+  ultrafixGoal?: number | null;
+  ultrafixMaxCycles?: number | null;
   mergePolicy?: GoalMergePolicy;
   idempotencyKey?: string;
 }
@@ -177,6 +198,8 @@ export interface CreateNodeInput {
   title?: string | null;
   status?: GoalNodeStatus;
   orderIndex?: number;
+  leaseOwner: string;
+  leaseEpoch: number;
 }
 
 export interface AppendEventInput {
@@ -184,8 +207,8 @@ export interface AppendEventInput {
   eventType: string;
   payload?: unknown;
   idempotencyKey: string;
-  leaseOwner?: string;
-  leaseEpoch?: number;
+  leaseOwner: string;
+  leaseEpoch: number;
 }
 
 export interface EnqueueMessageInput {
@@ -202,6 +225,22 @@ export interface TransitionInput {
   leaseEpoch?: number;
   reason?: string;
   terminalReason?: GoalTerminalReason;
+  idempotencyKey?: string;
+  idempotencyOperation?: string;
+}
+
+export interface GoalLeaseFence {
+  leaseOwner: string;
+  leaseEpoch: number;
+}
+
+export interface ProviderSessionUpdate extends GoalLeaseFence {
+  providerThreadId?: string | null;
+  runtimeId?: string | null;
+  worktreeId?: string | null;
+  lastCheckpoint?: string | null;
+  effectiveModel?: string;
+  recoveryMetadata?: GoalRecoveryMetadata | null;
 }
 
 export interface ListGoalsQuery {

@@ -31,6 +31,8 @@ export interface AgentConfig {
     dockerImage: string;
     configPath: string;
     supportedModels: string[];
+    /** Explicit opt-in for durable goal execution. */
+    goalCapable?: boolean;
     defaultModel?: string;
     envVars?: Record<string, string>;
     modelCustomLabels?: Record<string, string>;
@@ -177,6 +179,12 @@ function applyDefaultAgentFields(agent: AgentConfig): boolean {
         agent.defaultModel = agent.supportedModels[0];
         migrated = true;
         logger.info({ agentAlias: agent.alias, defaultModel: agent.defaultModel }, 'Added default agent model');
+    }
+
+    if (agent.goalCapable === undefined) {
+        agent.goalCapable = ['claude', 'codex', 'antigravity'].includes(agent.type);
+        migrated = true;
+        logger.info({ agentAlias: agent.alias, goalCapable: agent.goalCapable }, 'Added explicit goal capability');
     }
 
     return migrated;

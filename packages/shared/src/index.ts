@@ -348,6 +348,10 @@ export {
   GOAL_DEFAULT_MAX_ACTIVE_TASKS,
   GOAL_MIN_MAX_ACTIVE_TASKS,
   GOAL_MAX_MAX_ACTIVE_TASKS,
+  GOAL_ULTRAFIX_GOAL_MIN,
+  GOAL_ULTRAFIX_GOAL_MAX,
+  GOAL_ULTRAFIX_MAX_CYCLES_MIN,
+  GOAL_ULTRAFIX_MAX_CYCLES_MAX,
   GOAL_ERROR_CODES,
   GOAL_TERMINAL_REASONS,
   isGoalCapableEntry,
@@ -360,5 +364,7 @@ export {
   type GoalErrorCode,
   type GoalTerminalReason,
   type GoalCapability,
+  type CreateGoalRequest,
+  type GoalRecoveryMetadata,
   type GoalSummaryView,
 } from './goals.js';

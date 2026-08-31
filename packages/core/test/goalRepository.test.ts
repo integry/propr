@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import type { BetterSqliteConnection } from '../src/db/connection.js';
-import { up } from '../src/db/migrations/20260831000000_create_goal_control_plane.js';
+import { down, up } from '../src/db/migrations/20260831000000_create_goal_control_plane.js';
 import { GoalRepository, GoalError } from '../src/services/goals/goalRepository.js';
 import { GoalLifecycleService } from '../src/services/goals/goalLifecycleService.js';
 
@@ -37,6 +37,11 @@ async function seedGoal(overrides: Partial<Parameters<GoalRepository['createGoal
     requestedModel: 'claude-opus-4-8',
     ...overrides,
   });
+}
+
+async function claimFence(goalId: string, owner = 'controller') {
+  const lease = await repo.claimLease(goalId, owner, 60_000);
+  return { leaseOwner: owner, leaseEpoch: lease.epoch };
 }
 
 beforeEach(async () => {
@@ -82,10 +87,12 @@ describe('GoalRepository', () => {
 
   test('persists hierarchy with dependencies', async () => {
     const goal = await seedGoal();
+    const fence = await claimFence(goal.goalId);
     const root = await repo.addNode(goal.goalId, {
       kind: 'root_epic',
       idempotencyKey: 'root',
       title: 'Epic',
+      ...fence,
     });
     const issue = await repo.addNode(goal.goalId, {
       parentNodeId: root.nodeId,
@@ -94,16 +101,18 @@ describe('GoalRepository', () => {
       externalRef: '42',
       externalKind: 'issue',
       orderIndex: 1,
+      ...fence,
     });
     const dependent = await repo.addNode(goal.goalId, {
       parentNodeId: root.nodeId,
       kind: 'implementation_issue',
       idempotencyKey: 'issue-2',
       orderIndex: 2,
+      ...fence,
     });
-    await repo.addDependency(goal.goalId, dependent.nodeId, issue.nodeId);
+    await repo.addDependency(goal.goalId, dependent.nodeId, issue.nodeId, fence);
     // Duplicate dependency is a no-op.
-    await repo.addDependency(goal.goalId, dependent.nodeId, issue.nodeId);
+    await repo.addDependency(goal.goalId, dependent.nodeId, issue.nodeId, fence);
 
     const nodes = await repo.getNodes(goal.goalId);
     assert.equal(nodes.length, 3);
@@ -113,15 +122,60 @@ describe('GoalRepository', () => {
     ]);
   });
 
+  test('rejects cross-goal parents, dependencies, and dependency cycles', async () => {
+    const first = await seedGoal();
+    const second = await seedGoal({ objective: 'Other goal' });
+    const firstFence = await claimFence(first.goalId);
+    const secondFence = await claimFence(second.goalId, 'second-controller');
+    const firstRoot = await repo.addNode(first.goalId, { kind: 'root_epic', idempotencyKey: 'first-root', ...firstFence });
+    const firstChild = await repo.addNode(first.goalId, { kind: 'implementation_issue', idempotencyKey: 'first-child', ...firstFence });
+    const secondRoot = await repo.addNode(second.goalId, { kind: 'root_epic', idempotencyKey: 'second-root', ...secondFence });
+
+    await assert.rejects(
+      repo.addNode(first.goalId, { parentNodeId: secondRoot.nodeId, kind: 'sub_epic', idempotencyKey: 'bad-parent', ...firstFence }),
+      (error: GoalError) => error.code === 'goal_hierarchy_conflict'
+    );
+    await assert.rejects(
+      repo.addDependency(first.goalId, firstRoot.nodeId, secondRoot.nodeId, firstFence),
+      (error: GoalError) => error.code === 'goal_hierarchy_conflict'
+    );
+    await assert.rejects(database('goal_nodes').insert({
+      node_id: 'forged-cross-goal-child',
+      goal_id: first.goalId,
+      parent_node_id: secondRoot.nodeId,
+      kind: 'sub_epic',
+      idempotency_key: 'forged-parent',
+      status: 'pending',
+      attempt_count: 0,
+      order_index: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }));
+    await assert.rejects(database('goal_node_dependencies').insert({
+      goal_id: first.goalId,
+      node_id: firstRoot.nodeId,
+      depends_on_node_id: secondRoot.nodeId,
+      created_at: new Date().toISOString(),
+    }));
+    await repo.addDependency(first.goalId, firstChild.nodeId, firstRoot.nodeId, firstFence);
+    await assert.rejects(
+      repo.addDependency(first.goalId, firstRoot.nodeId, firstChild.nodeId, firstFence),
+      (error: GoalError) => error.code === 'goal_hierarchy_conflict'
+    );
+  });
+
   test('node creation is idempotent per goal + key', async () => {
     const goal = await seedGoal();
+    const fence = await claimFence(goal.goalId);
     const first = await repo.addNode(goal.goalId, {
       kind: 'root_epic',
       idempotencyKey: 'root',
+      ...fence,
     });
     const second = await repo.addNode(goal.goalId, {
       kind: 'root_epic',
       idempotencyKey: 'root',
+      ...fence,
     });
     assert.equal(first.nodeId, second.nodeId);
     assert.equal((await repo.getNodes(goal.goalId)).length, 1);
@@ -130,22 +184,27 @@ describe('GoalRepository', () => {
   test('allocates a monotonic per-goal event sequence', async () => {
     const goal = await seedGoal();
     const other = await seedGoal({ objective: 'Second goal' });
+    const fence = await claimFence(goal.goalId);
+    const otherFence = await claimFence(other.goalId, 'other-controller');
     const e1 = await repo.appendEvent(goal.goalId, {
       kind: 'lifecycle',
       eventType: 'created',
       idempotencyKey: 'evt-1',
+      ...fence,
     });
     const e2 = await repo.appendEvent(goal.goalId, {
       kind: 'output',
       eventType: 'log',
       payload: { line: 'hello' },
       idempotencyKey: 'evt-2',
+      ...fence,
     });
     // A different goal has its own independent sequence.
     const otherEvent = await repo.appendEvent(other.goalId, {
       kind: 'lifecycle',
       eventType: 'created',
       idempotencyKey: 'evt-1',
+      ...otherFence,
     });
     assert.equal(e1.sequence, 1);
     assert.equal(e2.sequence, 2);
@@ -155,15 +214,18 @@ describe('GoalRepository', () => {
 
   test('retried event append with same key has one effect', async () => {
     const goal = await seedGoal();
+    const fence = await claimFence(goal.goalId);
     const first = await repo.appendEvent(goal.goalId, {
       kind: 'lifecycle',
       eventType: 'created',
       idempotencyKey: 'dup',
+      ...fence,
     });
     const retry = await repo.appendEvent(goal.goalId, {
       kind: 'lifecycle',
       eventType: 'created',
       idempotencyKey: 'dup',
+      ...fence,
     });
     assert.equal(first.id, retry.id);
     assert.equal(first.sequence, retry.sequence);
@@ -173,11 +235,13 @@ describe('GoalRepository', () => {
 
   test('reads events from an exclusive cursor (replay)', async () => {
     const goal = await seedGoal();
+    const fence = await claimFence(goal.goalId);
     for (let i = 1; i <= 5; i += 1) {
       await repo.appendEvent(goal.goalId, {
         kind: 'output',
         eventType: 'log',
         idempotencyKey: `e${i}`,
+        ...fence,
       });
     }
     const firstPage = await repo.readEvents(goal.goalId, { limit: 2 });
@@ -198,6 +262,7 @@ describe('GoalRepository', () => {
 
   test('orders corrective messages and tracks delivery state', async () => {
     const goal = await seedGoal();
+    const fence = await claimFence(goal.goalId);
     const m1 = await repo.enqueueMessage(goal.goalId, {
       body: 'first',
       idempotencyKey: 'm1',
@@ -215,8 +280,8 @@ describe('GoalRepository', () => {
     assert.equal(m2.sequence, 2);
     assert.equal(m2.messageId, m2Retry.messageId);
 
-    await repo.markMessageDelivered(m1.messageId);
-    await repo.markMessageAcknowledged(m1.messageId);
+    await repo.markMessageDelivered(goal.goalId, m1.messageId, fence);
+    await repo.markMessageAcknowledged(goal.goalId, m1.messageId, fence);
     const messages = await repo.getMessages(goal.goalId);
     assert.deepEqual(
       messages.map((m) => [m.sequence, m.state]),
@@ -227,30 +292,51 @@ describe('GoalRepository', () => {
     );
   });
 
+  test('fences message delivery, scopes it to a goal, and preserves FIFO', async () => {
+    const goal = await seedGoal();
+    const other = await seedGoal({ objective: 'Other' });
+    const fence = await claimFence(goal.goalId);
+    const first = await repo.enqueueMessage(goal.goalId, { body: 'first', idempotencyKey: 'fifo-1' });
+    const second = await repo.enqueueMessage(goal.goalId, { body: 'second', idempotencyKey: 'fifo-2' });
+    await assert.rejects(
+      repo.markMessageDelivered(goal.goalId, second.messageId, fence),
+      (error: GoalError) => error.code === 'goal_message_order_conflict'
+    );
+    await assert.rejects(
+      repo.markMessageDelivered(other.goalId, first.messageId, fence),
+      (error: GoalError) => error.code === 'goal_stale_lease' || error.code === 'goal_not_found'
+    );
+    await repo.markMessageDelivered(goal.goalId, first.messageId, fence);
+    await repo.markMessageDelivered(goal.goalId, second.messageId, fence);
+  });
+
   test('validates lifecycle transitions', async () => {
     const goal = await seedGoal();
-    const running = await repo.transition(goal.goalId, { toState: 'running' });
+    const fence = await claimFence(goal.goalId);
+    const running = await repo.transition(goal.goalId, { toState: 'running', ...fence });
     assert.equal(running.state, 'running');
     assert.equal(running.version, 2);
 
     await assert.rejects(
-      repo.transition(goal.goalId, { toState: 'completed' }),
+      repo.transition(goal.goalId, { toState: 'completed', ...fence }),
       (error: GoalError) => error.code === 'goal_invalid_transition'
     );
   });
 
   test('rejects a terminal transition without a reason but records it with one', async () => {
     const goal = await seedGoal();
-    await repo.transition(goal.goalId, { toState: 'running' });
+    const fence = await claimFence(goal.goalId);
+    await repo.transition(goal.goalId, { toState: 'running', ...fence });
     await assert.rejects(
-      repo.transition(goal.goalId, { toState: 'completing' }).then(() =>
-        repo.transition(goal.goalId, { toState: 'completed' })
+      repo.transition(goal.goalId, { toState: 'completing', ...fence }).then(() =>
+        repo.transition(goal.goalId, { toState: 'completed', ...fence })
       ),
       (error: GoalError) => error.code === 'goal_validation_error'
     );
     const completed = await repo.transition(goal.goalId, {
       toState: 'completed',
       terminalReason: 'objective_met',
+      ...fence,
     });
     assert.equal(completed.state, 'completed');
     assert.equal(completed.terminalReason, 'objective_met');
@@ -258,27 +344,30 @@ describe('GoalRepository', () => {
 
   test('enforces optimistic version preconditions', async () => {
     const goal = await seedGoal();
+    const fence = await claimFence(goal.goalId);
     await assert.rejects(
-      repo.transition(goal.goalId, { toState: 'running', expectedVersion: 99 }),
+      repo.transition(goal.goalId, { toState: 'running', expectedVersion: 99, ...fence }),
       (error: GoalError) => error.code === 'goal_version_conflict'
     );
     const ok = await repo.transition(goal.goalId, {
       toState: 'running',
       expectedVersion: 1,
+      ...fence,
     });
     assert.equal(ok.version, 2);
   });
 
   test('pause intervals let active time be derived', async () => {
     const goal = await seedGoal();
-    await repo.transition(goal.goalId, { toState: 'running' });
-    await repo.transition(goal.goalId, { toState: 'pausing' });
-    await repo.transition(goal.goalId, { toState: 'paused' });
+    const fence = await claimFence(goal.goalId);
+    await repo.transition(goal.goalId, { toState: 'running', ...fence });
+    await repo.transition(goal.goalId, { toState: 'pausing', ...fence });
+    await repo.transition(goal.goalId, { toState: 'paused', ...fence });
     const openIntervals = await database('goal_pause_intervals')
       .where('goal_id', goal.goalId)
       .whereNull('resumed_at');
     assert.equal(openIntervals.length, 1);
-    await repo.transition(goal.goalId, { toState: 'running' });
+    await repo.transition(goal.goalId, { toState: 'running', ...fence });
     const closedIntervals = await database('goal_pause_intervals')
       .where('goal_id', goal.goalId)
       .whereNotNull('resumed_at');
@@ -292,6 +381,7 @@ describe('GoalRepository', () => {
 
   test('stores requested model separately until applied', async () => {
     const goal = await seedGoal();
+    const fence = await claimFence(goal.goalId);
     const requested = await repo.requestModelChange(goal.goalId, 'claude-sonnet-5');
     assert.equal(requested.requestedModel, 'claude-sonnet-5');
     assert.equal(requested.effectiveModel, 'claude-opus-4-8');
@@ -300,7 +390,7 @@ describe('GoalRepository', () => {
       .first();
     assert.ok(pending);
 
-    const applied = await repo.applyModelChange(goal.goalId);
+    const applied = await repo.applyModelChange(goal.goalId, fence);
     assert.equal(applied.effectiveModel, 'claude-sonnet-5');
     const appliedRow = await database('goal_model_transitions')
       .where({ goal_id: goal.goalId, applied: 1 })
@@ -378,16 +468,95 @@ describe('GoalRepository', () => {
       );
       assert.ok(renewed.expiresAt);
     });
+
+    test('rejects forged future, wrong-owner, and null-owner controller writes', async () => {
+      const goal = await seedGoal();
+      const lease = await repo.claimLease(goal.goalId, 'controller-a', 60_000);
+      for (const fence of [
+        { leaseOwner: 'controller-a', leaseEpoch: lease.epoch + 1 },
+        { leaseOwner: 'controller-b', leaseEpoch: lease.epoch },
+      ]) {
+        await assert.rejects(
+          repo.appendEvent(goal.goalId, { kind: 'domain', eventType: 'forged', idempotencyKey: `${fence.leaseOwner}-${fence.leaseEpoch}`, ...fence }),
+          (error: GoalError) => error.code === 'goal_stale_lease'
+        );
+      }
+      await repo.releaseLease(goal.goalId, 'controller-a', lease.epoch);
+      await assert.rejects(
+        repo.appendEvent(goal.goalId, { kind: 'domain', eventType: 'released', idempotencyKey: 'released', leaseOwner: 'controller-a', leaseEpoch: lease.epoch }),
+        (error: GoalError) => error.code === 'goal_stale_lease'
+      );
+    });
+  });
+
+  test('fences provider sessions and validates bounded credential-free recovery metadata', async () => {
+    const goal = await seedGoal();
+    const fence = await claimFence(goal.goalId);
+    await repo.upsertProviderSession(goal.goalId, 'claude', {
+      ...fence,
+      effectiveModel: 'claude-opus-4-8',
+      recoveryMetadata: { schemaVersion: 1, attempt: 1, providerState: 'active' },
+    });
+    await assert.rejects(
+      repo.upsertProviderSession(goal.goalId, 'claude', {
+        leaseOwner: fence.leaseOwner,
+        leaseEpoch: fence.leaseEpoch + 1,
+        recoveryMetadata: { schemaVersion: 1 },
+      }),
+      (error: GoalError) => error.code === 'goal_stale_lease'
+    );
+    await assert.rejects(
+      repo.upsertProviderSession(goal.goalId, 'claude', {
+        ...fence,
+        recoveryMetadata: { schemaVersion: 1, token: 'secret' } as never,
+      }),
+      (error: GoalError) => error.code === 'goal_recovery_metadata_invalid'
+    );
   });
 
   test('createGoal is idempotent and detects key reuse', async () => {
     const first = await seedGoal({ idempotencyKey: 'idem-1' });
     const retry = await seedGoal({ idempotencyKey: 'idem-1' });
     assert.equal(first.goalId, retry.goalId);
+    assert.notEqual(first.goalId, 'idem-1');
     await assert.rejects(
       seedGoal({ idempotencyKey: 'idem-1', objective: 'different' }),
       (error: GoalError) => error.code === 'goal_idempotency_conflict'
     );
+  });
+
+  test('concurrent create retries return one original response', async () => {
+    const [first, retry] = await Promise.all([
+      seedGoal({ idempotencyKey: 'concurrent-create' }),
+      seedGoal({ idempotencyKey: 'concurrent-create' }),
+    ]);
+    assert.deepEqual(retry, first);
+    assert.equal(Number((await database('goals').count({ count: '*' }).first())?.count), 1);
+  });
+
+  test('operator lifecycle retries return the original response and reject mismatches', async () => {
+    const service = new GoalLifecycleService(database);
+    const goal = await seedGoal();
+    const first = await service.pause(goal.goalId, { idempotencyKey: 'pause-1', reason: 'operator' });
+    const retry = await service.pause(goal.goalId, { idempotencyKey: 'pause-1', reason: 'operator' });
+    assert.deepEqual(retry, first);
+    await assert.rejects(
+      service.pause(goal.goalId, { idempotencyKey: 'pause-1', reason: 'different' }),
+      (error: GoalError) => error.code === 'goal_idempotency_conflict'
+    );
+    assert.equal((await database('goal_state_transitions').where('goal_id', goal.goalId)).length, 1);
+  });
+
+  test('migration down removes all goal control-plane tables', async () => {
+    const isolated = createDatabase();
+    try {
+      await up(isolated);
+      await down(isolated);
+      const rows = await isolated.raw("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'goal%'");
+      assert.deepEqual(rows, []);
+    } finally {
+      await isolated.destroy();
+    }
   });
 
   test('list pagination is stable with a keyset cursor', async () => {
@@ -415,15 +584,18 @@ describe('GoalRepository', () => {
   test('lifecycle service reconstructs a summary from SQL alone', async () => {
     const service = new GoalLifecycleService(database);
     const goal = await seedGoal();
+    const fence = await claimFence(goal.goalId);
     await repo.addNode(goal.goalId, {
       kind: 'root_epic',
       idempotencyKey: 'root',
       status: 'in_progress',
+      ...fence,
     });
     await repo.appendEvent(goal.goalId, {
       kind: 'lifecycle',
       eventType: 'created',
       idempotencyKey: 'e1',
+      ...fence,
     });
     const detail = await service.getDetail(goal.goalId);
     assert.equal(detail.summary.nodeCount, 1);

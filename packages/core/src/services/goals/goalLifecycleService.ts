@@ -29,6 +29,7 @@ export interface GoalMutationOptions {
   reason?: string;
   leaseOwner?: string;
   leaseEpoch?: number;
+  idempotencyKey?: string;
 }
 
 export interface GoalDetail {
@@ -51,12 +52,14 @@ export class GoalLifecycleService {
   }
 
   async pause(goalId: string, options: GoalMutationOptions = {}): Promise<Goal> {
-    return this.repository.transition(goalId, {
+    return this.repository.transitionOperatorIntent(goalId, {
       toState: 'pausing',
       expectedVersion: options.expectedVersion,
       reason: options.reason ?? 'user_requested_pause',
       leaseOwner: options.leaseOwner,
       leaseEpoch: options.leaseEpoch,
+      idempotencyKey: options.idempotencyKey,
+      idempotencyOperation: `pause:${goalId}`,
     });
   }
 
@@ -78,12 +81,14 @@ export class GoalLifecycleService {
     goalId: string,
     options: GoalMutationOptions & { toState?: 'running' | 'planning' } = {}
   ): Promise<Goal> {
-    return this.repository.transition(goalId, {
+    return this.repository.transitionOperatorIntent(goalId, {
       toState: options.toState ?? 'running',
       expectedVersion: options.expectedVersion,
       reason: options.reason ?? 'user_requested_resume',
       leaseOwner: options.leaseOwner,
       leaseEpoch: options.leaseEpoch,
+      idempotencyKey: options.idempotencyKey,
+      idempotencyOperation: `resume:${goalId}`,
     });
   }
 
@@ -91,13 +96,15 @@ export class GoalLifecycleService {
     goalId: string,
     options: GoalMutationOptions & { terminalReason?: GoalTerminalReason } = {}
   ): Promise<Goal> {
-    return this.repository.transition(goalId, {
+    return this.repository.transitionOperatorIntent(goalId, {
       toState: 'cancelled',
       expectedVersion: options.expectedVersion,
       reason: options.reason ?? 'user_requested_cancel',
       terminalReason: options.terminalReason ?? 'user_cancelled',
       leaseOwner: options.leaseOwner,
       leaseEpoch: options.leaseEpoch,
+      idempotencyKey: options.idempotencyKey,
+      idempotencyOperation: `cancel:${goalId}`,
     });
   }
 
@@ -140,6 +147,10 @@ export function buildSummary(
     requestedModel: goal.requestedModel,
     effectiveModel: goal.effectiveModel,
     maxActiveTasks: goal.maxActiveTasks,
+    mergePolicy: goal.mergePolicy,
+    ultrafixEnabled: goal.ultrafixEnabled,
+    ultrafixGoal: goal.ultrafixGoal,
+    ultrafixMaxCycles: goal.ultrafixMaxCycles,
     version: goal.version,
     nodeCount: nodes.length,
     activeNodeCount,

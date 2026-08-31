@@ -1,10 +1,10 @@
-/* eslint-disable max-lines -- one atomic migration for the goal control plane */
 /**
  * Durable goal control plane (issue #2006, part of epic #2003).
  *
  * Long-running goals require an owned, durable source of truth instead of the
  * expiring Redis records and one-shot agent jobs used by tasks. This migration
- * introduces the goal domain: goal identity/lifecycle, the hierarchical node
+ * introduces ten goal-domain tables: goal identity/lifecycle and request
+ * idempotency, the hierarchical node
  * tree with dependencies, provider sessions, an append-only per-goal event log,
  * ordered corrective messages, and the auditable state/model transition and
  * pause-interval history from which elapsed/active/paused time is derived.
@@ -52,7 +52,6 @@ const NODE_STATUSES = [
   'cancelled',
 ];
 const EVENT_KINDS = ['lifecycle', 'output', 'domain'];
-const MESSAGE_STATES = ['queued', 'delivered', 'acknowledged'];
 const MERGE_POLICIES = ['manual', 'auto', 'auto_squash'];
 
 export async function up(knex) {
@@ -67,6 +66,8 @@ export async function up(knex) {
     table.text('effective_model').notNullable();
     table.integer('max_active_tasks').notNullable().defaultTo(3);
     table.boolean('ultrafix_enabled').notNullable().defaultTo(false);
+    table.integer('ultrafix_goal').nullable();
+    table.integer('ultrafix_max_cycles').nullable();
     table
       .text('merge_policy')
       .notNullable()
@@ -103,6 +104,11 @@ export async function up(knex) {
       'goals_ultrafix_boolean_check'
     );
     table.check(
+      '(ultrafix_enabled = 0 AND ultrafix_goal IS NULL AND ultrafix_max_cycles IS NULL) OR (ultrafix_enabled = 1 AND typeof(ultrafix_goal) = \'integer\' AND ultrafix_goal BETWEEN 1 AND 10 AND typeof(ultrafix_max_cycles) = \'integer\' AND ultrafix_max_cycles BETWEEN 1 AND 20)',
+      {},
+      'goals_ultrafix_settings_check'
+    );
+    table.check(
       "length(trim(goal_id)) > 0 AND length(trim(owner_user_id)) > 0 AND length(trim(repository)) > 0 AND length(trim(objective)) > 0",
       {},
       'goals_required_text_check'
@@ -112,6 +118,19 @@ export async function up(knex) {
     table.index('repository', 'goals_repository_idx');
     table.index(['owner_user_id', 'repository'], 'goals_owner_repository_idx');
     table.index(['owner_user_id', 'state'], 'goals_owner_state_idx');
+  });
+
+  await knex.schema.createTable('goal_idempotency_keys', (table) => {
+    table.text('owner_user_id').notNullable();
+    table.text('operation').notNullable();
+    table.text('idempotency_key').notNullable();
+    table.text('request_hash').notNullable();
+    table.text('goal_id').notNullable();
+    table.text('response_json').notNullable();
+    table.text('created_at').notNullable().defaultTo(isoNow(knex));
+    table.primary(['owner_user_id', 'operation', 'idempotency_key']);
+    table.foreign('goal_id').references('goal_id').inTable('goals').onDelete('CASCADE');
+    table.index(['goal_id', 'operation'], 'goal_idempotency_goal_operation_idx');
   });
 
   await knex.schema.createTable('goal_nodes', (table) => {
@@ -148,9 +167,12 @@ export async function up(knex) {
       .inTable('goals')
       .onUpdate('RESTRICT')
       .onDelete('CASCADE');
+    table.unique(['goal_id', 'node_id'], {
+      indexName: 'goal_nodes_goal_node_idx',
+    });
     table
-      .foreign('parent_node_id')
-      .references('node_id')
+      .foreign(['goal_id', 'parent_node_id'])
+      .references(['goal_id', 'node_id'])
       .inTable('goal_nodes')
       .onUpdate('RESTRICT')
       .onDelete('CASCADE');
@@ -168,7 +190,7 @@ export async function up(knex) {
     table.text('depends_on_node_id').notNullable();
     table.text('created_at').notNullable().defaultTo(isoNow(knex));
 
-    table.primary(['node_id', 'depends_on_node_id']);
+    table.primary(['goal_id', 'node_id', 'depends_on_node_id']);
     table.check(
       'node_id <> depends_on_node_id',
       {},
@@ -182,14 +204,14 @@ export async function up(knex) {
       .onUpdate('RESTRICT')
       .onDelete('CASCADE');
     table
-      .foreign('node_id')
-      .references('node_id')
+      .foreign(['goal_id', 'node_id'])
+      .references(['goal_id', 'node_id'])
       .inTable('goal_nodes')
       .onUpdate('RESTRICT')
       .onDelete('CASCADE');
     table
-      .foreign('depends_on_node_id')
-      .references('node_id')
+      .foreign(['goal_id', 'depends_on_node_id'])
+      .references(['goal_id', 'node_id'])
       .inTable('goal_nodes')
       .onUpdate('RESTRICT')
       .onDelete('CASCADE');
@@ -218,6 +240,11 @@ export async function up(knex) {
       'typeof(lease_generation) = \'integer\' AND lease_generation >= 0',
       {},
       'goal_provider_sessions_lease_generation_check'
+    );
+    table.check(
+      'recovery_metadata_json IS NULL OR (json_valid(recovery_metadata_json) AND length(recovery_metadata_json) <= 4096)',
+      {},
+      'goal_provider_sessions_recovery_metadata_check'
     );
 
     table
@@ -274,9 +301,13 @@ export async function up(knex) {
     table.integer('sequence').notNullable();
     table.text('body').notNullable();
     table.text('predefined_kind').nullable();
-    table.text('state').notNullable().defaultTo('queued').checkIn(MESSAGE_STATES);
+    // Kept as validated text rather than a database enum so the events follow-up
+    // can add delivery states without rebuilding this table.
+    table.text('state').notNullable().defaultTo('queued');
     table.text('delivered_at').nullable();
     table.text('acknowledged_at').nullable();
+    table.integer('delivery_attempts').notNullable().defaultTo(0);
+    table.text('last_error').nullable();
     table.text('idempotency_key').notNullable();
     table.text('created_at').notNullable().defaultTo(isoNow(knex));
 
@@ -291,11 +322,14 @@ export async function up(knex) {
       'goal_messages_body_check'
     );
     table.check(
-      `(state = 'queued' AND delivered_at IS NULL AND acknowledged_at IS NULL)
-        OR (state = 'delivered' AND delivered_at IS NOT NULL AND acknowledged_at IS NULL)
-        OR (state = 'acknowledged' AND delivered_at IS NOT NULL AND acknowledged_at IS NOT NULL)`,
+      "length(trim(state)) > 0 AND (acknowledged_at IS NULL OR delivered_at IS NOT NULL)",
       {},
       'goal_messages_state_consistency_check'
+    );
+    table.check(
+      "typeof(delivery_attempts) = 'integer' AND delivery_attempts >= 0",
+      {},
+      'goal_messages_delivery_attempts_check'
     );
 
     table
@@ -399,5 +433,6 @@ export async function down(knex) {
   await knex.schema.dropTableIfExists('goal_provider_sessions');
   await knex.schema.dropTableIfExists('goal_node_dependencies');
   await knex.schema.dropTableIfExists('goal_nodes');
+  await knex.schema.dropTableIfExists('goal_idempotency_keys');
   await knex.schema.dropTableIfExists('goals');
 }

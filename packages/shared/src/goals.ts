@@ -100,6 +100,10 @@ export type GoalMergePolicy = (typeof GOAL_MERGE_POLICIES)[number];
 export const GOAL_DEFAULT_MAX_ACTIVE_TASKS = 3;
 export const GOAL_MIN_MAX_ACTIVE_TASKS = 1;
 export const GOAL_MAX_MAX_ACTIVE_TASKS = 20;
+export const GOAL_ULTRAFIX_GOAL_MIN = 1;
+export const GOAL_ULTRAFIX_GOAL_MAX = 10;
+export const GOAL_ULTRAFIX_MAX_CYCLES_MIN = 1;
+export const GOAL_ULTRAFIX_MAX_CYCLES_MAX = 20;
 
 /** Stable machine-readable error codes for actionable API responses. */
 export const GOAL_ERROR_CODES = {
@@ -114,6 +118,12 @@ export const GOAL_ERROR_CODES = {
   invalidCatalogSelection: 'goal_invalid_catalog_selection',
   concurrencyBound: 'goal_concurrency_bound_exceeded',
   idempotencyConflict: 'goal_idempotency_conflict',
+  hierarchyConflict: 'goal_hierarchy_conflict',
+  invalidCursor: 'goal_invalid_cursor',
+  invalidEventKind: 'goal_invalid_event_kind',
+  terminalState: 'goal_terminal_state',
+  messageOrderConflict: 'goal_message_order_conflict',
+  recoveryMetadataInvalid: 'goal_recovery_metadata_invalid',
 } as const;
 
 export type GoalErrorCode =
@@ -129,12 +139,7 @@ export const GOAL_TERMINAL_REASONS = [
 ] as const;
 export type GoalTerminalReason = (typeof GOAL_TERMINAL_REASONS)[number];
 
-/**
- * Optional goal-capability discriminator layered onto the model catalog. Older
- * consumers that do not know this field simply ignore it; goal creation only
- * accepts models flagged capable (or, when unset, falls back to the default
- * allowlist so existing catalogs keep working).
- */
+/** Explicit goal-capability discriminator used by agent and model catalogs. */
 export interface GoalCapability {
   /** Whether the agent/model may drive a long-running goal. */
   goalCapable: boolean;
@@ -143,8 +148,30 @@ export interface GoalCapability {
 export function isGoalCapableEntry(
   entry: Partial<GoalCapability> | null | undefined
 ): boolean {
-  // Undefined is tolerated for compatibility: absence is not a hard "no".
-  return entry?.goalCapable !== false;
+  return entry?.goalCapable === true;
+}
+
+/** Shared create contract consumed by the API and goal UI. */
+export interface CreateGoalRequest {
+  objective: string;
+  repository: string;
+  agent: string;
+  model: string;
+  maxActiveTasks: number;
+  mergePolicy: GoalMergePolicy;
+  ultrafixEnabled: boolean;
+  ultrafixGoal: number | null;
+  ultrafixMaxCycles: number | null;
+  idempotencyKey?: string;
+}
+
+/** Credential-free, bounded recovery checkpoint persisted for a provider session. */
+export interface GoalRecoveryMetadata {
+  schemaVersion: 1;
+  reason?: string;
+  attempt?: number;
+  lastEventSequence?: number;
+  providerState?: 'starting' | 'active' | 'interrupted' | 'recoverable';
 }
 
 export interface GoalSummaryView {
@@ -156,6 +183,10 @@ export interface GoalSummaryView {
   requestedModel: string;
   effectiveModel: string;
   maxActiveTasks: number;
+  mergePolicy: GoalMergePolicy;
+  ultrafixEnabled: boolean;
+  ultrafixGoal: number | null;
+  ultrafixMaxCycles: number | null;
   version: number;
   nodeCount: number;
   activeNodeCount: number;

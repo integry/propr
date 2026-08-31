@@ -21,6 +21,8 @@ export interface AgentConfig {
 
     // Model configuration
     supportedModels: string[]; // List of models this agent supports
+    /** Explicit opt-in for durable goal execution. */
+    goalCapable?: boolean;
     defaultModel?: string;     // Default model if none specified
 
     // Environment variables to inject into container

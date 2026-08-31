@@ -375,64 +375,11 @@ export type {
     EventPayload
 } from '@propr/shared';
 
-// Repository to-do management
-export {
-    getCategoriesForRepository,
-    createCategory,
-    updateCategory,
-    deleteCategory,
-    batchReorderCategories,
-    getTodosForRepository,
-    getTodo,
-    createTodo,
-    updateTodo,
-    deleteTodo,
-    batchReorderTodos,
-    linkTodosToDraft,
-    completeTodosForDraft,
-    getTodosForDraft
-} from './services/repoTodosService.js';
-export type {
-    RepoTodoCategoryRecord,
-    RepoTodoRecord,
-    RepoTodoCategory,
-    RepoTodo,
-    CreateCategoryParams,
-    UpdateCategoryParams,
-    CreateTodoParams,
-    UpdateTodoParams,
-    BatchReorderItem
-} from './services/repoTodosService.js';
-
-// Authenticated Inbox persistence and keyset pagination
-export {
-    NotificationService, NotificationEventNotFoundError,
-    NotificationValidationError, PushSubscriptionConflictError,
-    PushSubscriptionQuotaError, PushSubscriptionRateLimitError,
-    MAX_ACTIVE_PUSH_SUBSCRIPTIONS_PER_USER, MAX_STORED_PUSH_SUBSCRIPTIONS_PER_USER,
-    MAX_PUSH_SUBSCRIPTION_ENROLLMENTS_PER_WINDOW, PUSH_SUBSCRIPTION_ENROLLMENT_WINDOW_MS,
-    PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS, PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
-    notificationService, createNotificationEvent, assignNotificationRecipients,
-    listNotifications, getUnreadNotificationCount, markNotificationRead, dismissNotification,
-    getNotificationPreferences, updateNotificationPreferences, updateNotificationPreference,
-    upsertPushSubscription, listPushSubscriptions, revokePushSubscription, revokePushSubscriptionById,
-    garbageCollectPushSubscriptions
-} from './services/notificationService.js';
-export type { NotificationRecipientInput, NotificationRecipient, CreateNotificationEventInput, NotificationListOptions, NotificationServiceOptions } from './services/notificationService.js';
-export { DEFAULT_NOTIFICATION_LIST_LIMIT, MAX_NOTIFICATION_LIST_LIMIT, NotificationQueryValidationError, parseNotificationListLimit, encodeNotificationCursor, decodeNotificationCursor } from './services/notificationPagination.js';
-export type { NotificationCursor } from './services/notificationPagination.js';
+// Repository to-do and authenticated Inbox persistence.
+export * from './services/persistence/index.js';
 
 // Goal control plane (durable long-running goals, hierarchy, lifecycle, leases).
-export {
-    GoalRepository, GoalError, GoalLifecycleService, buildGoalSummary, isGoalTerminal
-} from './services/goals/index.js';
-export type {
-    GoalDetail, GoalMutationOptions,
-    Goal, GoalNode, GoalEvent, GoalMessage,
-    GoalRecord, GoalNodeRecord, GoalEventRecord, GoalMessageRecord, GoalProviderSessionRecord,
-    CreateGoalInput, CreateNodeInput, AppendEventInput, EnqueueMessageInput, TransitionInput,
-    ListGoalsQuery, ListGoalsResult, GoalActiveTimeStats
-} from './services/goals/index.js';
+export * from './services/goals/index.js';
 
 // Repository migration (rename/move detection)
 export {

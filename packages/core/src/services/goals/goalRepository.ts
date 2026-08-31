@@ -23,6 +23,7 @@ import type { Knex } from 'knex';
 import {
   GOAL_ERROR_CODES,
   GOAL_DEFAULT_MAX_ACTIVE_TASKS,
+  GOAL_EVENT_KINDS,
   isValidGoalTransition,
   isTerminalGoalState,
   type GoalErrorCode,
@@ -37,6 +38,7 @@ import type {
   GoalMessage,
   GoalMessageRecord,
   GoalProviderSessionRecord,
+  GoalIdempotencyRecord,
   CreateGoalInput,
   CreateNodeInput,
   AppendEventInput,
@@ -45,12 +47,23 @@ import type {
   ListGoalsQuery,
   ListGoalsResult,
   GoalActiveTimeStats,
+  GoalLeaseFence,
+  ProviderSessionUpdate,
 } from './goalTypes.js';
 
 const MAX_LIST_LIMIT = 100;
 const DEFAULT_LIST_LIMIT = 25;
 const MAX_EVENT_READ_LIMIT = 500;
 const DEFAULT_EVENT_READ_LIMIT = 100;
+const MAX_RECOVERY_METADATA_BYTES = 4096;
+
+interface IdempotencyContext {
+  trx: Knex.Transaction;
+  ownerUserId: string;
+  operation: string;
+  key: string | undefined;
+  request: unknown;
+}
 
 export class GoalError extends Error {
   readonly code: GoalErrorCode;
@@ -80,6 +93,8 @@ function toGoal(row: GoalRecord): Goal {
     effectiveModel: row.effective_model,
     maxActiveTasks: row.max_active_tasks,
     ultrafixEnabled: Boolean(row.ultrafix_enabled),
+    ultrafixGoal: row.ultrafix_goal,
+    ultrafixMaxCycles: row.ultrafix_max_cycles,
     mergePolicy: row.merge_policy,
     version: row.version,
     leaseOwner: row.lease_owner,
@@ -133,6 +148,8 @@ function toMessage(row: GoalMessageRecord): GoalMessage {
     state: row.state,
     deliveredAt: row.delivered_at,
     acknowledgedAt: row.acknowledged_at,
+    deliveryAttempts: row.delivery_attempts,
+    lastError: row.last_error,
     idempotencyKey: row.idempotency_key,
     createdAt: row.created_at,
   };
@@ -143,27 +160,36 @@ export class GoalRepository {
 
   async createGoal(input: CreateGoalInput): Promise<Goal> {
     const maxActiveTasks = input.maxActiveTasks ?? GOAL_DEFAULT_MAX_ACTIVE_TASKS;
-    // The idempotency key is the deterministic goal id: a retried create with
-    // the same key resolves to the already-committed row instead of a new goal.
-    const goalId = input.goalId ?? input.idempotencyKey ?? crypto.randomUUID();
+    const goalId = input.goalId ?? crypto.randomUUID();
+    const request = {
+      goalId: input.goalId ?? null,
+      repository: input.repository,
+      objective: input.objective,
+      agent: input.agent,
+      requestedModel: input.requestedModel,
+      effectiveModel: input.effectiveModel ?? input.requestedModel,
+      maxActiveTasks,
+      ultrafixEnabled: input.ultrafixEnabled ?? false,
+      ultrafixGoal: input.ultrafixGoal ?? null,
+      ultrafixMaxCycles: input.ultrafixMaxCycles ?? null,
+      mergePolicy: input.mergePolicy ?? 'manual',
+    };
 
     return this.db.transaction(async (trx) => {
+      const replay = await this.readIdempotency<Goal>({
+        trx, ownerUserId: input.ownerUserId, operation: 'create',
+        key: input.idempotencyKey, request,
+      });
+      if (replay) return replay;
       const existing = await trx<GoalRecord>('goals')
         .where('goal_id', goalId)
         .first();
       if (existing) {
-        if (
-          existing.owner_user_id !== input.ownerUserId ||
-          existing.repository !== input.repository ||
-          existing.objective !== input.objective
-        ) {
-          throw new GoalError(
-            GOAL_ERROR_CODES.idempotencyConflict,
-            'Idempotency key was reused with different goal parameters',
-            409
-          );
-        }
-        return toGoal(existing);
+        throw new GoalError(
+          GOAL_ERROR_CODES.idempotencyConflict,
+          'The requested goal identifier already exists',
+          409
+        );
       }
 
       const now = nowIso();
@@ -178,6 +204,8 @@ export class GoalRepository {
         effective_model: input.effectiveModel ?? input.requestedModel,
         max_active_tasks: maxActiveTasks,
         ultrafix_enabled: input.ultrafixEnabled ? 1 : 0,
+        ultrafix_goal: input.ultrafixGoal ?? null,
+        ultrafix_max_cycles: input.ultrafixMaxCycles ?? null,
         merge_policy: input.mergePolicy ?? 'manual',
         version: 1,
         lease_owner: null,
@@ -188,7 +216,12 @@ export class GoalRepository {
         updated_at: now,
       };
       await trx('goals').insert(record);
-      return toGoal(record);
+      const goal = toGoal(record);
+      await this.writeIdempotency({
+        trx, ownerUserId: input.ownerUserId, operation: 'create',
+        key: input.idempotencyKey, request, goalId, response: goal,
+      });
+      return goal;
     });
   }
 
@@ -250,10 +283,37 @@ export class GoalRepository {
 
   async addNode(goalId: string, input: CreateNodeInput): Promise<GoalNode> {
     return this.db.transaction(async (trx) => {
+      const goal = await this.requireGoalRecord(trx, goalId);
+      this.assertLease(goal, input.leaseOwner, input.leaseEpoch);
       const existing = await trx<GoalNodeRecord>('goal_nodes')
         .where({ goal_id: goalId, idempotency_key: input.idempotencyKey })
         .first();
-      if (existing) return toNode(existing);
+      if (existing) {
+        if (
+          existing.parent_node_id !== (input.parentNodeId ?? null) ||
+          existing.kind !== input.kind ||
+          existing.title !== (input.title ?? null)
+        ) {
+          throw new GoalError(
+            GOAL_ERROR_CODES.idempotencyConflict,
+            'Node idempotency key was reused with a different payload',
+            409
+          );
+        }
+        return toNode(existing);
+      }
+      if (input.parentNodeId) {
+        const parent = await trx<GoalNodeRecord>('goal_nodes')
+          .where({ goal_id: goalId, node_id: input.parentNodeId })
+          .first();
+        if (!parent) {
+          throw new GoalError(
+            GOAL_ERROR_CODES.hierarchyConflict,
+            'Parent node must belong to the same goal',
+            409
+          );
+        }
+      }
 
       const now = nowIso();
       const record: GoalNodeRecord = {
@@ -279,17 +339,55 @@ export class GoalRepository {
   async addDependency(
     goalId: string,
     nodeId: string,
-    dependsOnNodeId: string
+    dependsOnNodeId: string,
+    fence: GoalLeaseFence
   ): Promise<void> {
-    await this.db('goal_node_dependencies')
-      .insert({
+    await this.db.transaction(async (trx) => {
+      const goal = await this.requireGoalRecord(trx, goalId);
+      this.assertLease(goal, fence.leaseOwner, fence.leaseEpoch);
+      const nodes = await trx<GoalNodeRecord>('goal_nodes')
+        .where('goal_id', goalId)
+        .whereIn('node_id', [nodeId, dependsOnNodeId]);
+      if (nodes.length !== 2) {
+        throw new GoalError(
+          GOAL_ERROR_CODES.hierarchyConflict,
+          'Both dependency nodes must belong to the same goal',
+          409
+        );
+      }
+      const dependencies = await trx('goal_node_dependencies')
+        .where('goal_id', goalId)
+        .select('node_id', 'depends_on_node_id');
+      const edges = new Map<string, string[]>();
+      for (const dependency of dependencies) {
+        const targets = edges.get(dependency.node_id) ?? [];
+        targets.push(dependency.depends_on_node_id);
+        edges.set(dependency.node_id, targets);
+      }
+      const pending = [dependsOnNodeId];
+      const visited = new Set<string>();
+      while (pending.length > 0) {
+        const current = pending.pop()!;
+        if (current === nodeId) {
+          throw new GoalError(
+            GOAL_ERROR_CODES.hierarchyConflict,
+            'Dependency would create a cycle',
+            409
+          );
+        }
+        if (visited.has(current)) continue;
+        visited.add(current);
+        pending.push(...(edges.get(current) ?? []));
+      }
+      await trx('goal_node_dependencies').insert({
         goal_id: goalId,
         node_id: nodeId,
         depends_on_node_id: dependsOnNodeId,
         created_at: nowIso(),
       })
-      .onConflict(['node_id', 'depends_on_node_id'])
-      .ignore();
+        .onConflict(['goal_id', 'node_id', 'depends_on_node_id'])
+        .ignore();
+    });
   }
 
   async getNodes(goalId: string): Promise<GoalNode[]> {
@@ -317,45 +415,34 @@ export class GoalRepository {
   async upsertProviderSession(
     goalId: string,
     agent: string,
-    fields: Partial<
-      Pick<
-        GoalProviderSessionRecord,
-        | 'provider_thread_id'
-        | 'runtime_id'
-        | 'worktree_id'
-        | 'last_checkpoint'
-        | 'effective_model'
-        | 'lease_generation'
-      >
-    > & { effectiveModel?: string; recoveryMetadata?: unknown }
+    fields: ProviderSessionUpdate
   ): Promise<void> {
     const now = nowIso();
-    const effectiveModel =
-      fields.effectiveModel ?? fields.effective_model ?? '';
     await this.db.transaction(async (trx) => {
+      const goal = await this.requireGoalRecord(trx, goalId);
+      this.assertLease(goal, fields.leaseOwner, fields.leaseEpoch);
       const existing = await trx<GoalProviderSessionRecord>(
         'goal_provider_sessions'
       )
         .where({ goal_id: goalId, agent })
         .first();
-      const recoveryJson =
-        fields.recoveryMetadata === undefined
-          ? existing?.recovery_metadata_json ?? null
-          : JSON.stringify(fields.recoveryMetadata);
+      const recoveryJson = fields.recoveryMetadata === undefined
+        ? existing?.recovery_metadata_json ?? null
+        : validateRecoveryMetadata(fields.recoveryMetadata);
       if (existing) {
         await trx('goal_provider_sessions')
-          .where({ session_id: existing.session_id })
+          .where({
+            session_id: existing.session_id,
+            goal_id: goalId,
+          })
           .update({
-            provider_thread_id:
-              fields.provider_thread_id ?? existing.provider_thread_id,
-            runtime_id: fields.runtime_id ?? existing.runtime_id,
-            worktree_id: fields.worktree_id ?? existing.worktree_id,
-            last_checkpoint:
-              fields.last_checkpoint ?? existing.last_checkpoint,
-            effective_model: effectiveModel || existing.effective_model,
+            provider_thread_id: fields.providerThreadId ?? existing.provider_thread_id,
+            runtime_id: fields.runtimeId ?? existing.runtime_id,
+            worktree_id: fields.worktreeId ?? existing.worktree_id,
+            last_checkpoint: fields.lastCheckpoint ?? existing.last_checkpoint,
+            effective_model: fields.effectiveModel ?? existing.effective_model,
             recovery_metadata_json: recoveryJson,
-            lease_generation:
-              fields.lease_generation ?? existing.lease_generation,
+            lease_generation: fields.leaseEpoch,
             updated_at: now,
           });
         return;
@@ -364,13 +451,13 @@ export class GoalRepository {
         session_id: crypto.randomUUID(),
         goal_id: goalId,
         agent,
-        provider_thread_id: fields.provider_thread_id ?? null,
-        runtime_id: fields.runtime_id ?? null,
-        worktree_id: fields.worktree_id ?? null,
-        last_checkpoint: fields.last_checkpoint ?? null,
-        effective_model: effectiveModel,
+        provider_thread_id: fields.providerThreadId ?? null,
+        runtime_id: fields.runtimeId ?? null,
+        worktree_id: fields.worktreeId ?? null,
+        last_checkpoint: fields.lastCheckpoint ?? null,
+        effective_model: fields.effectiveModel ?? goal.effective_model,
         recovery_metadata_json: recoveryJson,
-        lease_generation: fields.lease_generation ?? 0,
+        lease_generation: fields.leaseEpoch,
         created_at: now,
         updated_at: now,
       });
@@ -400,11 +487,32 @@ export class GoalRepository {
         throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
       }
       this.assertLease(goal, input.leaseOwner, input.leaseEpoch);
+      if (!GOAL_EVENT_KINDS.includes(input.kind)) {
+        throw new GoalError(
+          GOAL_ERROR_CODES.invalidEventKind,
+          'Event kind is not recognized',
+          400
+        );
+      }
 
       const existing = await trx<GoalEventRecord>('goal_events')
         .where({ goal_id: goalId, idempotency_key: input.idempotencyKey })
         .first();
-      if (existing) return toEvent(existing);
+      if (existing) {
+        const payloadJson = input.payload === undefined ? null : JSON.stringify(input.payload);
+        if (
+          existing.kind !== input.kind ||
+          existing.event_type !== input.eventType ||
+          existing.payload_json !== payloadJson
+        ) {
+          throw new GoalError(
+            GOAL_ERROR_CODES.idempotencyConflict,
+            'Event idempotency key was reused with a different payload',
+            409
+          );
+        }
+        return toEvent(existing);
+      }
 
       const maxRow = (await trx('goal_events')
         .where('goal_id', goalId)
@@ -433,6 +541,12 @@ export class GoalRepository {
     goalId: string,
     options: { afterSequence?: number; limit?: number; kind?: string } = {}
   ): Promise<{ events: GoalEvent[]; nextCursor: number | null }> {
+    if (options.afterSequence !== undefined && (!Number.isInteger(options.afterSequence) || options.afterSequence < 0)) {
+      throw new GoalError(GOAL_ERROR_CODES.invalidCursor, 'Event cursor must be a non-negative integer', 400);
+    }
+    if (options.kind !== undefined && !GOAL_EVENT_KINDS.includes(options.kind as typeof GOAL_EVENT_KINDS[number])) {
+      throw new GoalError(GOAL_ERROR_CODES.invalidEventKind, 'Event kind is not recognized', 400);
+    }
     const limit = Math.min(
       Math.max(1, options.limit ?? DEFAULT_EVENT_READ_LIMIT),
       MAX_EVENT_READ_LIMIT
@@ -475,10 +589,21 @@ export class GoalRepository {
       if (!goal) {
         throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
       }
+      const request = { body: input.body, predefinedKind: input.predefinedKind ?? null };
+      const replay = await this.readIdempotency<GoalMessage>({
+        trx, ownerUserId: goal.owner_user_id, operation: `message:${goalId}`,
+        key: input.idempotencyKey, request,
+      });
+      if (replay) return replay;
       const existing = await trx<GoalMessageRecord>('goal_messages')
         .where({ goal_id: goalId, idempotency_key: input.idempotencyKey })
         .first();
-      if (existing) return toMessage(existing);
+      if (existing) {
+        if (existing.body !== input.body || existing.predefined_kind !== (input.predefinedKind ?? null)) {
+          throw new GoalError(GOAL_ERROR_CODES.idempotencyConflict, 'Message idempotency key was reused with a different payload', 409);
+        }
+        return toMessage(existing);
+      }
 
       const maxRow = (await trx('goal_messages')
         .where('goal_id', goalId)
@@ -495,11 +620,18 @@ export class GoalRepository {
         state: 'queued',
         delivered_at: null,
         acknowledged_at: null,
+        delivery_attempts: 0,
+        last_error: null,
         idempotency_key: input.idempotencyKey,
         created_at: nowIso(),
       };
       await trx('goal_messages').insert(record);
-      return toMessage(record);
+      const message = toMessage(record);
+      await this.writeIdempotency({
+        trx, ownerUserId: goal.owner_user_id, operation: `message:${goalId}`,
+        key: input.idempotencyKey, request, goalId, response: message,
+      });
+      return message;
     });
   }
 
@@ -510,16 +642,46 @@ export class GoalRepository {
     return rows.map(toMessage);
   }
 
-  async markMessageDelivered(messageId: string): Promise<void> {
-    await this.db('goal_messages')
-      .where({ message_id: messageId, state: 'queued' })
-      .update({ state: 'delivered', delivered_at: nowIso() });
+  async markMessageDelivered(
+    goalId: string,
+    messageId: string,
+    fence: GoalLeaseFence
+  ): Promise<void> {
+    await this.db.transaction(async (trx) => {
+      const goal = await this.requireGoalRecord(trx, goalId);
+      this.assertLease(goal, fence.leaseOwner, fence.leaseEpoch);
+      const message = await trx<GoalMessageRecord>('goal_messages').where({ goal_id: goalId, message_id: messageId }).first();
+      if (!message) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal message not found', 404);
+      const earlierQueued = await trx<GoalMessageRecord>('goal_messages')
+        .where({ goal_id: goalId, state: 'queued' })
+        .andWhere('sequence', '<', message.sequence)
+        .first();
+      if (earlierQueued) throw new GoalError(GOAL_ERROR_CODES.messageOrderConflict, 'An earlier message must be delivered first', 409);
+      await trx('goal_messages')
+        .where({ goal_id: goalId, message_id: messageId, state: 'queued' })
+        .update({ state: 'delivered', delivered_at: nowIso(), delivery_attempts: message.delivery_attempts + 1, last_error: null });
+    });
   }
 
-  async markMessageAcknowledged(messageId: string): Promise<void> {
-    await this.db('goal_messages')
-      .where({ message_id: messageId, state: 'delivered' })
-      .update({ state: 'acknowledged', acknowledged_at: nowIso() });
+  async markMessageAcknowledged(
+    goalId: string,
+    messageId: string,
+    fence: GoalLeaseFence
+  ): Promise<void> {
+    await this.db.transaction(async (trx) => {
+      const goal = await this.requireGoalRecord(trx, goalId);
+      this.assertLease(goal, fence.leaseOwner, fence.leaseEpoch);
+      const message = await trx<GoalMessageRecord>('goal_messages').where({ goal_id: goalId, message_id: messageId }).first();
+      if (!message) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal message not found', 404);
+      const earlierDelivered = await trx<GoalMessageRecord>('goal_messages')
+        .where({ goal_id: goalId, state: 'delivered' })
+        .andWhere('sequence', '<', message.sequence)
+        .first();
+      if (earlierDelivered) throw new GoalError(GOAL_ERROR_CODES.messageOrderConflict, 'An earlier message must be acknowledged first', 409);
+      await trx('goal_messages')
+        .where({ goal_id: goalId, message_id: messageId, state: 'delivered' })
+        .update({ state: 'acknowledged', acknowledged_at: nowIso() });
+    });
   }
 
   // ---- Fenced controller lease ------------------------------------------
@@ -534,6 +696,9 @@ export class GoalRepository {
     owner: string,
     ttlMs: number
   ): Promise<{ epoch: number; expiresAt: string }> {
+    if (!owner.trim() || !Number.isFinite(ttlMs) || ttlMs <= 0) {
+      throw new GoalError(GOAL_ERROR_CODES.validation, 'Lease owner and positive TTL are required', 400);
+    }
     return this.db.transaction(async (trx) => {
       const goal = await trx<GoalRecord>('goals')
         .where('goal_id', goalId)
@@ -542,12 +707,10 @@ export class GoalRepository {
         throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
       }
       const now = nowIso();
-      const heldByOther =
-        goal.lease_owner !== null &&
-        goal.lease_owner !== owner &&
-        goal.lease_expires_at !== null &&
-        goal.lease_expires_at > now;
-      if (heldByOther) {
+      const available = goal.lease_owner === null || (
+        goal.lease_expires_at !== null && goal.lease_expires_at <= now
+      );
+      if (!available) {
         throw new GoalError(
           GOAL_ERROR_CODES.leaseConflict,
           'Controller lease is held by another owner',
@@ -558,14 +721,20 @@ export class GoalRepository {
       const expiresAt = new Date(Date.now() + ttlMs)
         .toISOString()
         .replace(/(\.\d{3})\d*Z$/, '$1Z');
-      await trx('goals')
-        .where('goal_id', goalId)
+      const updated = await trx('goals')
+        .where({ goal_id: goalId, lease_epoch: goal.lease_epoch })
+        .andWhere((builder) => {
+          void builder.whereNull('lease_owner').orWhere('lease_expires_at', '<=', now);
+        })
         .update({
           lease_owner: owner,
           lease_epoch: epoch,
           lease_expires_at: expiresAt,
           updated_at: now,
         });
+      if (updated !== 1) {
+        throw new GoalError(GOAL_ERROR_CODES.leaseConflict, 'Controller lease was claimed by another owner', 409);
+      }
       return { epoch, expiresAt };
     });
   }
@@ -583,19 +752,14 @@ export class GoalRepository {
       if (!goal) {
         throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
       }
-      if (goal.lease_owner !== owner || goal.lease_epoch !== epoch) {
-        throw new GoalError(
-          GOAL_ERROR_CODES.staleLease,
-          'Controller lease epoch is stale',
-          409
-        );
-      }
+      this.assertLease(goal, owner, epoch);
       const expiresAt = new Date(Date.now() + ttlMs)
         .toISOString()
         .replace(/(\.\d{3})\d*Z$/, '$1Z');
-      await trx('goals')
-        .where('goal_id', goalId)
+      const updated = await trx('goals')
+        .where({ goal_id: goalId, lease_owner: owner, lease_epoch: epoch })
         .update({ lease_expires_at: expiresAt, updated_at: nowIso() });
+      if (updated !== 1) throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Controller lease changed while renewing', 409);
       return { expiresAt };
     });
   }
@@ -610,20 +774,15 @@ export class GoalRepository {
         .where('goal_id', goalId)
         .first();
       if (!goal) return;
-      if (goal.lease_owner !== owner || goal.lease_epoch !== epoch) {
-        throw new GoalError(
-          GOAL_ERROR_CODES.staleLease,
-          'Controller lease epoch is stale',
-          409
-        );
-      }
-      await trx('goals')
-        .where('goal_id', goalId)
+      this.assertLease(goal, owner, epoch);
+      const updated = await trx('goals')
+        .where({ goal_id: goalId, lease_owner: owner, lease_epoch: epoch })
         .update({
           lease_owner: null,
           lease_expires_at: null,
           updated_at: nowIso(),
         });
+      if (updated !== 1) throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Controller lease changed while releasing', 409);
     });
   }
 
@@ -632,24 +791,16 @@ export class GoalRepository {
     leaseOwner?: string,
     leaseEpoch?: number
   ): void {
-    if (leaseEpoch === undefined && leaseOwner === undefined) return;
-    // A stale epoch (lower than the goal's current epoch) has been fenced by a
-    // takeover and must not append authoritative state.
-    if (leaseEpoch !== undefined && leaseEpoch < goal.lease_epoch) {
-      throw new GoalError(
-        GOAL_ERROR_CODES.staleLease,
-        'Controller lease epoch is stale; a takeover has occurred',
-        409
-      );
-    }
     if (
-      leaseOwner !== undefined &&
-      goal.lease_owner !== null &&
-      goal.lease_owner !== leaseOwner
+      goal.lease_owner === null ||
+      leaseOwner === undefined ||
+      leaseEpoch === undefined ||
+      goal.lease_owner !== leaseOwner ||
+      goal.lease_epoch !== leaseEpoch
     ) {
       throw new GoalError(
         GOAL_ERROR_CODES.staleLease,
-        'Controller lease is owned by another controller',
+        'Controller write requires the current non-null owner and exact lease epoch',
         409
       );
     }
@@ -658,6 +809,25 @@ export class GoalRepository {
   // ---- Lifecycle transitions --------------------------------------------
 
   async transition(goalId: string, input: TransitionInput): Promise<Goal> {
+    return this.transitionInternal(goalId, input, true);
+  }
+
+  /** Explicit operator-intent path; it cannot be used for controller writes. */
+  async transitionOperatorIntent(
+    goalId: string,
+    input: TransitionInput
+  ): Promise<Goal> {
+    if (input.leaseOwner !== undefined || input.leaseEpoch !== undefined) {
+      throw new GoalError(GOAL_ERROR_CODES.validation, 'Operator intents must not include a lease fence', 400);
+    }
+    return this.transitionInternal(goalId, input, false);
+  }
+
+  private async transitionInternal(
+    goalId: string,
+    input: TransitionInput,
+    controllerAuthoritative: boolean
+  ): Promise<Goal> {
     return this.db.transaction(async (trx) => {
       const goal = await trx<GoalRecord>('goals')
         .where('goal_id', goalId)
@@ -665,7 +835,21 @@ export class GoalRepository {
       if (!goal) {
         throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
       }
-      this.assertLease(goal, input.leaseOwner, input.leaseEpoch);
+      if (controllerAuthoritative) {
+        this.assertLease(goal, input.leaseOwner, input.leaseEpoch);
+      }
+      const operation = input.idempotencyOperation ?? `transition:${input.toState}:${goalId}`;
+      const request = {
+        toState: input.toState,
+        expectedVersion: input.expectedVersion ?? null,
+        reason: input.reason ?? null,
+        terminalReason: input.terminalReason ?? null,
+      };
+      const replay = await this.readIdempotency<Goal>({
+        trx, ownerUserId: goal.owner_user_id, operation,
+        key: input.idempotencyKey, request,
+      });
+      if (replay) return replay;
 
       if (
         input.expectedVersion !== undefined &&
@@ -735,7 +919,12 @@ export class GoalRepository {
       const updated = await trx<GoalRecord>('goals')
         .where('goal_id', goalId)
         .first();
-      return toGoal(updated!);
+      const result = toGoal(updated!);
+      await this.writeIdempotency({
+        trx, ownerUserId: goal.owner_user_id, operation,
+        key: input.idempotencyKey, request, goalId, response: result,
+      });
+      return result;
     });
   }
 
@@ -749,7 +938,11 @@ export class GoalRepository {
   async requestModelChange(
     goalId: string,
     requestedModel: string,
-    options: { expectedVersion?: number; reason?: string } = {}
+    options: {
+      expectedVersion?: number;
+      reason?: string;
+      idempotencyKey?: string;
+    } = {}
   ): Promise<Goal> {
     return this.db.transaction(async (trx) => {
       const goal = await trx<GoalRecord>('goals')
@@ -757,6 +950,24 @@ export class GoalRepository {
         .first();
       if (!goal) {
         throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+      }
+      const operation = `model-change:${goalId}`;
+      const request = {
+        requestedModel,
+        expectedVersion: options.expectedVersion ?? null,
+        reason: options.reason ?? null,
+      };
+      const replay = await this.readIdempotency<Goal>({
+        trx, ownerUserId: goal.owner_user_id, operation,
+        key: options.idempotencyKey, request,
+      });
+      if (replay) return replay;
+      if (isTerminalGoalState(goal.state)) {
+        throw new GoalError(
+          GOAL_ERROR_CODES.terminalState,
+          'Requested model cannot change after the goal is terminal',
+          409
+        );
       }
       if (
         options.expectedVersion !== undefined &&
@@ -787,14 +998,19 @@ export class GoalRepository {
       const updated = await trx<GoalRecord>('goals')
         .where('goal_id', goalId)
         .first();
-      return toGoal(updated!);
+      const result = toGoal(updated!);
+      await this.writeIdempotency({
+        trx, ownerUserId: goal.owner_user_id, operation,
+        key: options.idempotencyKey, request, goalId, response: result,
+      });
+      return result;
     });
   }
 
   /** Advance the effective model to the requested model at a safe boundary. */
   async applyModelChange(
     goalId: string,
-    options: { leaseOwner?: string; leaseEpoch?: number } = {}
+    options: GoalLeaseFence
   ): Promise<Goal> {
     return this.db.transaction(async (trx) => {
       const goal = await trx<GoalRecord>('goals')
@@ -822,6 +1038,49 @@ export class GoalRepository {
         .where('goal_id', goalId)
         .first();
       return toGoal(updated!);
+    });
+  }
+
+  private async requireGoalRecord(
+    trx: Knex.Transaction,
+    goalId: string
+  ): Promise<GoalRecord> {
+    const goal = await trx<GoalRecord>('goals').where('goal_id', goalId).first();
+    if (!goal) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+    return goal;
+  }
+
+  private async readIdempotency<T>(context: IdempotencyContext): Promise<T | null> {
+    const { trx, ownerUserId, operation, key, request } = context;
+    if (!key) return null;
+    const row = await trx<GoalIdempotencyRecord>('goal_idempotency_keys')
+      .where({ owner_user_id: ownerUserId, operation, idempotency_key: key })
+      .first();
+    if (!row) return null;
+    if (row.request_hash !== hashRequest(request)) {
+      throw new GoalError(
+        GOAL_ERROR_CODES.idempotencyConflict,
+        'Idempotency key was reused with a different payload',
+        409
+      );
+    }
+    return JSON.parse(row.response_json) as T;
+  }
+
+  private async writeIdempotency(context: IdempotencyContext & {
+    goalId: string;
+    response: unknown;
+  }): Promise<void> {
+    const { trx, ownerUserId, operation, key, request, goalId, response } = context;
+    if (!key) return;
+    await trx('goal_idempotency_keys').insert({
+      owner_user_id: ownerUserId,
+      operation,
+      idempotency_key: key,
+      request_hash: hashRequest(request),
+      goal_id: goalId,
+      response_json: JSON.stringify(response),
+      created_at: nowIso(),
     });
   }
 
@@ -855,6 +1114,49 @@ export class GoalRepository {
       currentlyPaused,
     };
   }
+}
+
+function hashRequest(value: unknown): string {
+  return crypto.createHash('sha256').update(stableJson(value)).digest('hex');
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function validateRecoveryMetadata(value: ProviderSessionUpdate['recoveryMetadata']): string | null {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new GoalError(GOAL_ERROR_CODES.recoveryMetadataInvalid, 'Recovery metadata must be an object', 400);
+  }
+  const metadata = value as unknown as Record<string, unknown>;
+  const allowed = new Set(['schemaVersion', 'reason', 'attempt', 'lastEventSequence', 'providerState']);
+  if (Object.keys(metadata).some(key => !allowed.has(key)) || metadata.schemaVersion !== 1) {
+    throw new GoalError(GOAL_ERROR_CODES.recoveryMetadataInvalid, 'Recovery metadata schema is invalid', 400);
+  }
+  if (metadata.reason !== undefined && (typeof metadata.reason !== 'string' || metadata.reason.length > 256)) {
+    throw new GoalError(GOAL_ERROR_CODES.recoveryMetadataInvalid, 'Recovery reason is invalid', 400);
+  }
+  for (const field of ['attempt', 'lastEventSequence'] as const) {
+    const candidate = metadata[field];
+    if (candidate !== undefined && (!Number.isSafeInteger(candidate) || (candidate as number) < 0)) {
+      throw new GoalError(GOAL_ERROR_CODES.recoveryMetadataInvalid, `${field} must be a non-negative safe integer`, 400);
+    }
+  }
+  const states = ['starting', 'active', 'interrupted', 'recoverable'];
+  if (metadata.providerState !== undefined && !states.includes(metadata.providerState as string)) {
+    throw new GoalError(GOAL_ERROR_CODES.recoveryMetadataInvalid, 'Provider recovery state is invalid', 400);
+  }
+  const json = JSON.stringify(value);
+  if (Buffer.byteLength(json, 'utf8') > MAX_RECOVERY_METADATA_BYTES) {
+    throw new GoalError(GOAL_ERROR_CODES.recoveryMetadataInvalid, 'Recovery metadata exceeds 4096 bytes', 400);
+  }
+  return json;
 }
 
 interface Cursor {
