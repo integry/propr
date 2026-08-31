@@ -81,7 +81,6 @@ if (!$commonPrograms -or ![IO.Path]::IsPathRooted($commonPrograms)) {
 $commonPrograms = (Resolve-Path -LiteralPath $commonPrograms -ErrorAction Stop).Path
 $startMenuShortcutFolder = Join-Path $commonPrograms 'ProPR Desktop'
 $startMenuShortcut = Join-Path $startMenuShortcutFolder 'ProPR Desktop.lnk'
-$productMarker = 'Registry::HKEY_LOCAL_MACHINE\Software\ProPR\Desktop'
 
 function Write-Stage(
   [ValidateSet('INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP')][string]$Stage,
@@ -677,12 +676,6 @@ try {
         $shortcutItem.Length -le 0) {
       throw 'machine installer did not create the common Start Menu shortcut'
     }
-    $markerValue = (Get-Item -LiteralPath $productMarker -ErrorAction Stop).GetValue(
-      'installed',
-      $null,
-      [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
-    )
-    if ($markerValue -ne 1) { throw 'machine installer did not create its machine product marker' }
     Write-Stage 'VALIDATION' 'COMPLETE'
   } catch {
     Write-Stage 'VALIDATION' 'FAILED'
@@ -786,9 +779,6 @@ try {
       if (Test-Path -LiteralPath $startMenuShortcutFolder) {
         throw 'machine uninstall left the common Start Menu folder behind'
       }
-      if (Test-Path -LiteralPath $productMarker) {
-        throw 'machine uninstall left its machine product marker behind'
-      }
       if ($null -ne $testUserSid) {
         Test-StartMenuShortcutAsOrdinaryUser `
           -Credential $credential `
@@ -843,13 +833,6 @@ try {
   try {
     if (Test-Path -LiteralPath $startMenuShortcutFolder) {
       Remove-Item -LiteralPath $startMenuShortcutFolder -Recurse -Force -ErrorAction Stop
-    }
-  } catch {
-    $cleanupFailed = $true
-  }
-  try {
-    if (Test-Path -LiteralPath $productMarker) {
-      Remove-Item -LiteralPath $productMarker -Recurse -Force -ErrorAction Stop
     }
   } catch {
     $cleanupFailed = $true

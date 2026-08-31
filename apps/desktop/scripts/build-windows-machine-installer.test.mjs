@@ -61,22 +61,22 @@ test('authors the complete per-machine Start Menu contract for x64 and ARM64', (
     assert.equal(registration.match(/Root="HKLM"/g)?.length, 4);
     assert.equal(registration.match(/KeyPath="yes"/g)?.length, 1);
     assert.doesNotMatch(registration, /Root="HKCU"|<Shortcut|<RemoveFolder/);
-    assert.match(shortcut, /<Component Id="ApplicationStartMenuShortcutComponent" Guid="\*" Win64="yes">/);
+    assert.match(shortcut, /<Component Id="ApplicationStartMenuShortcutComponent" Guid="\*">/);
     assert.match(shortcut, /<Shortcut Id="ApplicationStartMenuShortcut"[\s\S]*?<\/Shortcut>/);
     assert.match(shortcut, /<RemoveFolder Id="RemoveApplicationProgramsFolder"[^>]*On="uninstall" \/>/);
     assert.match(
       shortcut,
-      /<RegistryValue Root="HKLM" Key="Software\\ProPR\\Desktop" Name="installed"\s+Value="1" Type="integer" KeyPath="yes" \/>/,
+      /<RegistryValue Root="HKCU" Key="Software\\ProPR\\Desktop" Name="installed"\s+Value="1" Type="integer" KeyPath="yes" \/>/,
     );
     assert.equal(shortcut.match(/KeyPath="yes"/g)?.length, 1);
-    assert.equal(shortcut.match(/Root="HKLM"/g)?.length, 1);
+    assert.equal(shortcut.match(/Root="HKCU"/g)?.length, 1);
+    assert.doesNotMatch(shortcut, /\bWin64=|Root="HKLM"/);
     assert.match(source, /<Directory Id="ProgramMenuFolder">\s*<Directory Id="ApplicationProgramsFolder" Name="ProPR Desktop">/);
     assert.match(
       source,
       /<Directory Id="INSTALLFOLDER" Name="ProPR Desktop">[\s\S]*<Component Id="ApplicationRegistration"[\s\S]*?<\/Component>\s*<\/Directory>\s*<\/Directory>\s*<Directory Id="ProgramMenuFolder">/,
     );
     assert.doesNotMatch(source, /\bCommonProgramMenuFolder\b/);
-    assert.doesNotMatch(source, /<RegistryValue\b[^>]*\bRoot="HKCU"/);
     assert.match(source, /<ComponentRef Id="ApplicationRegistration" \/>/);
     assert.match(source, /<ComponentRef Id="ApplicationStartMenuShortcutComponent" \/>/);
   }

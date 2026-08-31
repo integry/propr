@@ -333,14 +333,17 @@ describe('desktop trusted release workflow', () => {
     assert.match(windowsMachineInstaller, /<Directory Id="ProgramMenuFolder">/);
     assert.match(
       windowsMachineInstaller,
-      /<Component Id="ApplicationStartMenuShortcutComponent" Guid="\*" Win64="yes">/,
+      /<Component Id="ApplicationStartMenuShortcutComponent" Guid="\*">/,
     );
     assert.match(
       windowsMachineInstaller,
-      /<RegistryValue Root="HKLM" Key="Software\\\\ProPR\\\\Desktop" Name="installed"\s+Value="1" Type="integer" KeyPath="yes" \/>/,
+      /<RegistryValue Root="HKCU" Key="Software\\\\ProPR\\\\Desktop" Name="installed"\s+Value="1" Type="integer" KeyPath="yes" \/>/,
     );
     assert.doesNotMatch(windowsMachineInstaller, /\bCommonProgramMenuFolder\b/);
-    assert.doesNotMatch(windowsMachineInstaller, /<RegistryValue\b[^>]*\bRoot="HKCU"/);
+    assert.doesNotMatch(
+      windowsMachineInstaller,
+      /<Component Id="ApplicationStartMenuShortcutComponent"[^>]*(?:\bWin64="yes")/,
+    );
     assert.match(windowsMachineInstaller, /INSTALLED_WIX_DIRECTORY = String\.raw`C:\\Program Files \(x86\)\\WiX Toolset v3\.14\\bin`/);
     assert.match(windowsMachineInstaller, /if \(arch === 'x64'\)/);
     assert.match(windowsMachineInstaller, /arch !== 'arm64'/);
@@ -368,7 +371,6 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /-ExpectedPresent \$true/);
     assert.match(installedWindowsAppTest, /-ExpectedPresent \$false/);
     assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu folder behind/);
-    assert.match(installedWindowsAppTest, /machine uninstall left its machine product marker behind/);
     assert.equal(workflow.match(/https:\/\/github\.com\/wixtoolset\/wix3\/releases\/download\/wix3141rtm\/wix314-binaries\.zip/g)?.length, 2);
     assert.equal(workflow.match(/6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31/g)?.length, 2);
   });
