@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import { access, realpath } from 'node:fs/promises';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import type {
     GoalContainerInspection,
@@ -8,6 +9,7 @@ import type {
     GoalSessionIdentity,
     GoalSessionRecoveryPort,
 } from './contract.js';
+import { fingerprintGoalWorktree } from './worktreeIdentity.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -41,7 +43,31 @@ export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
             }
             const [containerId, containerName, rawState] = records[0].split('\t');
             const status = rawState === 'running' || rawState === 'restarting' ? 'running' : 'exited';
-            return { status, containerId, containerName, reason: `Docker reports container state ${rawState || 'unknown'}` };
+            const { stdout: labelOutput } = await execFileAsync(this.dockerPath, [
+                'inspect', '--format', '{{json .Config.Labels}}', containerId,
+            ], { timeout: 10_000 });
+            const labels = JSON.parse(labelOutput) as Record<string, string>;
+            const executionEpoch = Number(labels['propr.goal.controller-epoch']);
+            const hasIdentity = labels['propr.goal.id'] && labels['propr.goal.session']
+                && labels['propr.goal.turn'] && labels['propr.goal.attempt']
+                && labels['propr.goal.worktree-fingerprint']
+                && Number.isSafeInteger(executionEpoch) && executionEpoch >= 0;
+            return {
+                status,
+                containerId,
+                containerName,
+                recoveryIdentity: hasIdentity ? {
+                    goalId: labels['propr.goal.id'],
+                    sessionId: labels['propr.goal.session'],
+                    executionEpoch,
+                    turnId: labels['propr.goal.turn'],
+                    attemptId: labels['propr.goal.attempt'],
+                    worktreeFingerprint: labels['propr.goal.worktree-fingerprint'],
+                } : undefined,
+                reason: hasIdentity
+                    ? `Docker reports container state ${rawState || 'unknown'}`
+                    : 'Recovered container is missing one or more authoritative identity labels',
+            };
         } catch (error) {
             return { status: 'daemon_unavailable', reason: `Docker inspection failed: ${errorText(error)}` };
         }
@@ -54,6 +80,16 @@ export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
             return { ...repository, exists: false, reason: `Worktree is unavailable: ${errorText(error)}` };
         }
         try {
+            const lexicalPath = path.resolve(repository.worktreePath);
+            const resolvedWorktreePath = await realpath(repository.worktreePath);
+            if (resolvedWorktreePath !== lexicalPath) {
+                return {
+                    ...repository,
+                    exists: true,
+                    resolvedWorktreePath,
+                    reason: 'Worktree path resolves through a symlink or alias',
+                };
+            }
             const [{ stdout: head }, { stdout: status }, { stdout: branch }] = await Promise.all([
                 execFileAsync(this.gitPath, ['rev-parse', 'HEAD'], { cwd: repository.worktreePath, timeout: 10_000 }),
                 execFileAsync(this.gitPath, ['status', '--porcelain'], { cwd: repository.worktreePath, timeout: 10_000 }),
@@ -65,6 +101,8 @@ export class DockerGoalSessionRecovery implements GoalSessionRecoveryPort {
                 dirty: Boolean(status.trim()),
                 observedHeadSha: head.trim(),
                 observedBranch: branch.trim(),
+                observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
+                resolvedWorktreePath,
             };
         } catch (error) {
             return { ...repository, exists: true, reason: `External worktree state could not be inspected: ${errorText(error)}` };

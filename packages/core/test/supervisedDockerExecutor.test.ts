@@ -45,6 +45,8 @@ test('duplex Docker execution fences labels, keeps stdin open, and durably order
             sessionId: 'session-one',
             controllerEpoch: 7,
             turnId: 'turn-one',
+            attemptId: 'attempt-one',
+            worktreeFingerprint: 'worktree-one',
             durableOutput: async event => {
                 await Promise.resolve();
                 output.push({ channel: event.channel, data: event.data });
@@ -70,5 +72,7 @@ test('duplex Docker execution fences labels, keeps stdin open, and durably order
     assert.ok(args.includes('propr.goal.session=session-one'));
     assert.ok(args.includes('propr.goal.controller-epoch=7'));
     assert.ok(args.includes('propr.goal.turn=turn-one'));
+    assert.ok(args.includes('propr.goal.attempt=attempt-one'));
+    assert.ok(args.includes('propr.goal.worktree-fingerprint=worktree-one'));
     assert.equal(execution.containerName, 'goal-container');
 });

@@ -25,6 +25,7 @@ import {
     GoalSessionScopeError,
     InMemoryGoalSessionPorts,
 } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
+import { fingerprintGoalWorktree } from '../src/agents/goalSession/worktreeIdentity.js';
 
 const identity = { goalId: 'goal-2007', sessionId: 'session-one' };
 const repository = {
@@ -49,18 +50,23 @@ class FakeGoalAdapter implements GoalSessionAdapter {
     pauseCalls = 0;
     resumeCalls = 0;
     resumeTurnCalls = 0;
+    resumeTurnAttempts: string[] = [];
     modelCalls: string[] = [];
     rejectedModel: string | undefined;
     cancelCalls = 0;
     events: GoalSessionEvent[] = [];
     resumeEvents: GoalSessionEvent[] = [];
     reconcileResult: GoalProviderReconcileResult = { outcome: 'failed', reason: 'not configured' };
+    reconcileCalls = 0;
+    reconcileRequests: GoalProviderReconcileRequest[] = [];
     openedWith: Array<GoalProviderSessionSnapshot | undefined> = [];
+    openAttempts: string[] = [];
     turnStarted: (() => void) | undefined;
     holdTurn: Promise<void> | undefined;
 
     async openSession(request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot> {
         this.openCalls += 1;
+        this.openAttempts.push(request.attemptId);
         this.openedWith.push(request.persisted);
         return request.persisted ?? {
             providerSessionId: 'provider-session-stable',
@@ -91,8 +97,9 @@ class FakeGoalAdapter implements GoalSessionAdapter {
         return snapshot;
     }
 
-    async *resumeTurn(_request: GoalSessionFence): AsyncIterable<GoalSessionEvent> {
+    async *resumeTurn(request: GoalSessionFence & { executionId: string; attemptId: string }): AsyncIterable<GoalSessionEvent> {
         this.resumeTurnCalls += 1;
+        this.resumeTurnAttempts.push(request.attemptId);
         for (const event of this.resumeEvents) yield event;
     }
 
@@ -112,6 +119,8 @@ class FakeGoalAdapter implements GoalSessionAdapter {
     }
 
     async reconcile(_request: GoalProviderReconcileRequest): Promise<GoalProviderReconcileResult> {
+        this.reconcileCalls += 1;
+        this.reconcileRequests.push(structuredClone(_request));
         return this.reconcileResult;
     }
 }
@@ -121,6 +130,12 @@ async function openedRuntime(adapter = new FakeGoalAdapter()) {
     const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
     const state = await supervisor.openSession({ ...identity, provider: 'fake', controllerEpoch: 1 });
     return { adapter, persistence, supervisor, state };
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    return { promise, resolve };
 }
 
 test('starts a recoverable turn and replays ordered normalized output and usage', async () => {
@@ -164,7 +179,7 @@ test('starts a recoverable turn and replays ordered normalized output and usage'
 test('opens a new controller epoch by resuming the same persisted provider session', async () => {
     const adapter = new FakeGoalAdapter();
     const { persistence } = await openedRuntime(adapter);
-    const restartedSupervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    const restartedSupervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => 'open-recovery-attempt');
 
     const resumed = await restartedSupervisor.openSession({ ...identity, provider: 'fake', controllerEpoch: 2 });
 
@@ -173,6 +188,8 @@ test('opens a new controller epoch by resuming the same persisted provider sessi
     assert.equal(adapter.openCalls, 2);
     assert.equal(adapter.openedWith[1]?.providerSessionId, 'provider-session-stable');
     assert.deepEqual(adapter.openedWith[1]?.recoveryMetadata, { checkpoint: 'created' });
+    assert.equal(adapter.openAttempts[1], 'open-recovery-attempt');
+    assert.notEqual(adapter.openAttempts[1], adapter.openAttempts[0]);
 });
 
 test('duplicate queue delivery cannot invoke a second provider turn', async () => {
@@ -331,6 +348,7 @@ test('reconciles a missing container from durable provider and worktree state', 
         exists: true,
         observedBranch: 'goal-branch',
         observedHeadSha: 'abc123',
+        observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
         dirty: true,
     });
     adapter.reconcileResult = {
@@ -350,7 +368,7 @@ test('reconciles a missing container from durable provider and worktree state', 
     assert.equal((await persistence.replay(identity)).at(-1)?.event.type, 'reconciliation');
 });
 
-test('persists an actionable failure when crash reconciliation cannot resume', async () => {
+test('blocks reconciliation when authoritative container metadata is unavailable', async () => {
     const adapter = new FakeGoalAdapter();
     const { persistence, supervisor } = await openedRuntime(adapter);
     persistence.setContainerInspection(identity, { status: 'daemon_unavailable', reason: 'socket unavailable' });
@@ -359,6 +377,7 @@ test('persists an actionable failure when crash reconciliation cannot resume', a
         exists: true,
         observedBranch: 'goal-branch',
         observedHeadSha: 'abc123',
+        observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
     });
     adapter.reconcileResult = {
         outcome: 'failed',
@@ -367,8 +386,9 @@ test('persists an actionable failure when crash reconciliation cannot resume', a
 
     const result = await supervisor.reconcile(identity, 2, repository);
 
-    assert.equal(result.state.status, 'failed');
-    assert.equal(result.state.failureReason, 'Provider checkpoint is corrupt and cannot be resumed');
+    assert.equal(result.outcome, 'blocked');
+    assert.equal(result.state.status, 'idle');
+    assert.equal(adapter.reconcileCalls, 0);
 });
 
 test('blocks reconciliation with an actionable result when the worktree does not match', async () => {
@@ -380,6 +400,7 @@ test('blocks reconciliation with an actionable result when the worktree does not
         exists: true,
         observedBranch: 'unexpected-branch',
         observedHeadSha: 'zzz999',
+        observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
     });
     adapter.reconcileResult = { outcome: 'resumed', snapshot: {
         providerSessionId: 'provider-session-stable', recoveryMetadata: { checkpoint: 'recovered' },
@@ -417,7 +438,7 @@ test('resumes the exact paused turn on a replacement supervisor and completes on
     assert.equal(first.state.status, 'paused');
 
     // Simulate a worker/container restart: a brand-new supervisor takes over.
-    const replacement = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    const replacement = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => 'attempt-recovery');
     await replacement.takeover(identity, 2);
     const resumeFence: GoalSessionControlFence = { ...identity, controllerEpoch: 2 };
     const resumed = await replacement.resumeTurn(resumeFence);
@@ -427,7 +448,7 @@ test('resumes the exact paused turn on a replacement supervisor and completes on
     assert.equal(adapter.beginCalls, 1, 'the provider turn is invoked exactly once');
     assert.equal(adapter.resumeTurnCalls, 1);
     assert.equal(resumed.execution.executionId, 'execution-one');
-    assert.equal(resumed.execution.attemptId, 'attempt-one');
+    assert.equal(resumed.execution.attemptId, 'attempt-recovery');
 
     const replay = await persistence.replay(identity);
     const types = replay.map(event => event.event.type);
@@ -441,10 +462,12 @@ test('resumes the exact paused turn on a replacement supervisor and completes on
 class DeterministicAdapter extends FakeGoalAdapter {
     readonly supportsDeterministicOpen = true;
     lastOpenKey: string | undefined;
+    lastAttemptId: string | undefined;
 
     async openSession(request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot> {
         this.openCalls += 1;
         this.lastOpenKey = request.deterministicOpenKey;
+        this.lastAttemptId = request.attemptId;
         this.openedWith.push(request.persisted);
         return request.persisted ?? {
             providerSessionId: 'provider-deterministic',
@@ -457,7 +480,7 @@ class DeterministicAdapter extends FakeGoalAdapter {
 test('recovers a crash before provider-identity persistence when the provider is deterministic', async () => {
     const persistence = new InMemoryGoalSessionPorts();
     const adapter = new DeterministicAdapter();
-    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => 'attempt-fresh');
     const timestamp = new Date().toISOString();
     // A previous controller recorded initialization intent, then crashed before
     // persisting the provider session identity.
@@ -474,6 +497,8 @@ test('recovers a crash before provider-identity persistence when the provider is
     assert.equal(recovered.providerSessionId, 'provider-deterministic');
     assert.equal(recovered.initializationIntent, undefined);
     assert.equal(adapter.lastOpenKey, 'key-x');
+    assert.equal(adapter.lastAttemptId, 'attempt-fresh');
+    assert.notEqual(adapter.lastAttemptId, 'attempt-x');
 });
 
 test('fails an unrecoverable crash before provider-identity persistence when open is not deterministic', async () => {
@@ -575,7 +600,7 @@ test('reconciles a running turn after container loss into a resumable turn a rep
         recoveryMetadata: { checkpoint: 'mid-turn' },
         currentModel: 'model-a', requestedModel: 'model-a',
         activeTurn: {
-            executionId: 'execution-live', attemptId: 'attempt-live', turnId: 'turn-one',
+            executionId: 'execution-live', attemptId: 'attempt-live', turnId: 'turn-one', executionEpoch: 1,
             objective: 'long turn', requestedModel: 'model-a', repository, status: 'running',
         },
         completedTurnIds: [], createdAt: timestamp, updatedAt: timestamp,
@@ -583,6 +608,7 @@ test('reconciles a running turn after container loss into a resumable turn a rep
     persistence.setContainerInspection(identity, { status: 'missing', reason: 'container lost' });
     persistence.setRepositoryInspection(repository, {
         ...repository, exists: true, observedBranch: 'goal-branch', observedHeadSha: 'abc123',
+        observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
     });
     adapter.reconcileResult = {
         outcome: 'resumed',
@@ -598,13 +624,16 @@ test('reconciles a running turn after container loss into a resumable turn a rep
     assert.equal(result.state.status, 'paused');
     assert.equal(result.state.activeTurn?.status, 'paused');
     assert.equal(result.state.activeTurn?.executionId, 'execution-live');
+    assert.notEqual(result.state.activeTurn?.attemptId, 'attempt-live');
+    assert.equal(result.state.activeTurn?.attemptId, adapter.reconcileRequests[0].attemptId);
 
-    const replacement = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    const replacement = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => 'attempt-recovered');
     const resumed = await replacement.resumeTurn({ ...identity, controllerEpoch: 2 });
     assert.equal(resumed.disposition, 'started');
     assert.equal(resumed.state.status, 'idle');
     assert.equal(resumed.execution.executionId, 'execution-live');
-    assert.equal(resumed.execution.attemptId, 'attempt-live');
+    assert.equal(resumed.execution.attemptId, 'attempt-recovered');
+    assert.notEqual(resumed.execution.attemptId, adapter.reconcileRequests[0].attemptId);
     assert.equal(adapter.resumeTurnCalls, 1);
     assert.equal(adapter.beginCalls, 0, 'no new turn was begun for the recovered execution');
     const completions = (await persistence.replay(identity)).filter(event => event.event.type === 'completion');
@@ -661,4 +690,204 @@ test('goal-scoped session state cannot be read or reused by another goal', async
         persistence.load({ goalId: 'different-goal', sessionId: identity.sessionId }),
         GoalSessionScopeError,
     );
+});
+
+test('a delayed same-epoch model acknowledgement cannot overwrite a newer intent', async () => {
+    const gate = deferred();
+    const started = deferred();
+    class RacingModelAdapter extends FakeGoalAdapter {
+        override async requestModelChange(request: GoalModelChangeRequest) {
+            this.modelCalls.push(request.model);
+            if (request.model === 'model-old') {
+                started.resolve();
+                await gate.promise;
+            }
+            return { requestedModel: request.model, appliesAt: 'immediate' as const, effectiveModel: request.model };
+        }
+    }
+    const adapter = new RacingModelAdapter();
+    const { persistence, supervisor } = await openedRuntime(adapter);
+    const oldRequest = supervisor.requestModelChange({ ...fence, model: 'model-old' });
+    await started.promise;
+    await supervisor.requestModelChange({ ...fence, model: 'model-new' });
+    gate.resolve();
+    await assert.rejects(oldRequest, StaleGoalSessionFenceError);
+
+    const state = await persistence.load(identity);
+    assert.equal(state?.requestedModel, 'model-new');
+    assert.equal(state?.currentModel, 'model-new');
+    const changedModels = (await persistence.replay(identity)).flatMap(record =>
+        record.event.type === 'model_changed' ? [record.event.model] : []);
+    assert.deepEqual(changedModels, ['model-new']);
+});
+
+test('each failed recovery retry durably advances to another fresh attempt', async () => {
+    class RetryResumeAdapter extends FakeGoalAdapter {
+        failResume = true;
+        override async resumeSession(request: GoalSessionControlFence, snapshot: GoalProviderSessionSnapshot) {
+            if (this.failResume) {
+                this.failResume = false;
+                throw new Error('recovery transport failed');
+            }
+            return super.resumeSession(request, snapshot);
+        }
+    }
+    const adapter = new RetryResumeAdapter();
+    adapter.events = [{ type: 'pause_boundary', boundary: 'checkpoint' }];
+    adapter.resumeEvents = [{ type: 'completion', outcome: 'succeeded' }];
+    const persistence = new InMemoryGoalSessionPorts();
+    const ids = ['provider-open-attempt', 'attempt-recovery-one', 'attempt-recovery-two'];
+    const supervisor = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => ids.shift()!);
+    await supervisor.openSession({ ...identity, provider: 'fake', controllerEpoch: 1 });
+    await supervisor.runTurn({
+        ...fence, executionId: 'execution-retry', attemptId: 'attempt-crashed',
+        objective: 'retry recovery', repository, requestedModel: 'model-a',
+    });
+
+    await assert.rejects(supervisor.resumeTurn(fence), /recovery transport failed/);
+    assert.equal((await persistence.load(identity))?.activeTurn?.attemptId, 'attempt-recovery-one');
+    assert.equal((await persistence.load(identity))?.status, 'paused');
+    assert.deepEqual(await persistence.append(fence, {
+        executionId: 'execution-retry', attemptId: 'attempt-crashed',
+    }, { type: 'output', channel: 'stdout', data: 'late crashed output' }), {
+        accepted: false, reason: 'turn_not_active',
+    });
+    const recovered = await supervisor.resumeTurn(fence);
+    assert.equal(recovered.execution.attemptId, 'attempt-recovery-two');
+    assert.deepEqual(adapter.resumeTurnAttempts, ['attempt-recovery-two']);
+});
+
+test('a delayed same-epoch resume cannot resurrect a terminal session', async () => {
+    const gate = deferred();
+    const started = deferred();
+    class RacingResumeAdapter extends FakeGoalAdapter {
+        override async resumeSession(_request: GoalSessionControlFence, snapshot: GoalProviderSessionSnapshot) {
+            started.resolve();
+            await gate.promise;
+            return snapshot;
+        }
+    }
+    const adapter = new RacingResumeAdapter();
+    adapter.events = [{ type: 'pause_boundary', boundary: 'checkpoint' }];
+    const { persistence, supervisor } = await openedRuntime(adapter);
+    await supervisor.runTurn({
+        ...fence, executionId: 'execution-race', attemptId: 'attempt-crashed',
+        objective: 'pause', repository, requestedModel: 'model-a',
+    });
+    const resume = supervisor.resumeTurn(fence);
+    await started.promise;
+    await supervisor.cancel({ ...fence, reason: 'terminal wins' });
+    gate.resolve();
+    await assert.rejects(resume, StaleGoalSessionFenceError);
+
+    const state = await persistence.load(identity);
+    assert.equal(state?.status, 'terminated');
+    assert.equal(state?.activeTurn?.status, 'cancelled');
+    const completions = (await persistence.replay(identity)).filter(record => record.event.type === 'completion');
+    assert.equal(completions.length, 1);
+    assert.equal(completions[0].event.type === 'completion' ? completions[0].event.outcome : '', 'cancelled');
+});
+
+test('terminal transaction survives an ambiguous post-commit crash without duplicate completion', async () => {
+    const adapter = new FakeGoalAdapter();
+    adapter.events = [{ type: 'completion', outcome: 'succeeded' }];
+    const { persistence, supervisor } = await openedRuntime(adapter);
+    const request = {
+        ...fence, executionId: 'execution-atomic', attemptId: 'attempt-atomic',
+        objective: 'atomic completion', repository, requestedModel: 'model-a',
+    };
+    persistence.setTerminalFault('after_commit');
+    await assert.rejects(supervisor.runTurn(request), /Injected crash after terminal transaction commit/);
+    assert.equal((await persistence.load(identity))?.status, 'idle');
+    assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'completion').length, 1);
+
+    const restarted = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+    const duplicate = await restarted.runTurn(request);
+    assert.equal(duplicate.disposition, 'duplicate');
+    assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'completion').length, 1);
+});
+
+test('a pre-commit crash leaves neither terminal state nor event and recovery completes atomically', async () => {
+    const adapter = new FakeGoalAdapter();
+    adapter.events = [{ type: 'completion', outcome: 'succeeded' }];
+    adapter.resumeEvents = [{ type: 'completion', outcome: 'succeeded' }];
+    const { persistence, supervisor } = await openedRuntime(adapter);
+    persistence.setTerminalFault('before_commit_always');
+    await assert.rejects(supervisor.runTurn({
+        ...fence, executionId: 'execution-window', attemptId: 'attempt-crashed',
+        objective: 'crash window', repository, requestedModel: 'model-a',
+    }), /Injected crash before terminal transaction commit/);
+    assert.equal((await persistence.load(identity))?.status, 'running');
+    assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'completion').length, 0);
+
+    persistence.setTerminalFault(undefined);
+    persistence.setContainerInspection(identity, { status: 'missing', reason: 'worker crashed' });
+    persistence.setRepositoryInspection(repository, {
+        ...repository,
+        exists: true,
+        observedBranch: repository.branch,
+        observedHeadSha: repository.headSha,
+        observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
+    });
+    adapter.reconcileResult = {
+        outcome: 'resumed',
+        reason: 'checkpoint recovered',
+        snapshot: { providerSessionId: 'provider-session-stable', recoveryMetadata: { checkpoint: 'recovered' } },
+    };
+    await supervisor.reconcile(identity, 2, repository);
+    const restarted = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => 'attempt-recovered');
+    const recovered = await restarted.resumeTurn({ ...identity, controllerEpoch: 2 });
+    assert.equal(recovered.execution.attemptId, 'attempt-recovered');
+    assert.equal((await persistence.load(identity))?.status, 'idle');
+    assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'completion').length, 1);
+});
+
+test('reconciliation requires every authoritative container identity field', async () => {
+    const expectedIdentity = {
+        ...identity,
+        executionEpoch: 1,
+        turnId: fence.turnId,
+        attemptId: 'attempt-live',
+        worktreeFingerprint: fingerprintGoalWorktree(repository),
+    };
+    const variants: Array<[string, Partial<typeof expectedIdentity> | null, boolean]> = [
+        ['exact identity', {}, true],
+        ['missing metadata', null, false],
+        ['foreign goal', { goalId: 'other-goal' }, false],
+        ['stale epoch', { executionEpoch: 0 }, false],
+        ['foreign turn', { turnId: 'other-turn' }, false],
+        ['stale attempt', { attemptId: 'old-attempt' }, false],
+        ['foreign worktree', { worktreeFingerprint: 'wrong-fingerprint' }, false],
+    ];
+    for (const [label, replacement, accepted] of variants) {
+        const persistence = new InMemoryGoalSessionPorts();
+        const adapter = new FakeGoalAdapter();
+        const timestamp = new Date().toISOString();
+        await persistence.create({
+            ...identity,
+            provider: 'fake', controllerEpoch: 1, status: 'running',
+            providerSessionId: 'provider-session-stable', recoveryMetadata: { checkpoint: 'live' },
+            activeTurn: {
+                executionId: 'execution-live', attemptId: 'attempt-live', executionEpoch: 1,
+                turnId: fence.turnId, objective: 'live', requestedModel: 'model-a', repository, status: 'running',
+            },
+            completedTurnIds: [], createdAt: timestamp, updatedAt: timestamp,
+        });
+        persistence.setContainerInspection(identity, {
+            status: 'running',
+            recoveryIdentity: replacement ? { ...expectedIdentity, ...replacement } : undefined,
+        });
+        persistence.setRepositoryInspection(repository, {
+            ...repository,
+            exists: true,
+            observedBranch: repository.branch,
+            observedHeadSha: repository.headSha,
+            observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
+        });
+        adapter.reconcileResult = { outcome: 'alive', reason: 'identity accepted' };
+        const result = await new GoalSessionSupervisor(adapter, persistence.asRuntimePorts())
+            .reconcile(identity, 2, repository);
+        assert.equal(result.outcome, accepted ? 'alive' : 'blocked', label);
+        assert.equal(adapter.reconcileCalls, accepted ? 1 : 0, label);
+    }
 });

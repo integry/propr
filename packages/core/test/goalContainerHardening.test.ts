@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { mock, test } from 'node:test';
 
-const spawnCalls: Array<{ args: string[] }> = [];
+const spawnCalls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
 const child = Object.assign(new EventEmitter(), {
     stdout: new EventEmitter(),
     stderr: new EventEmitter(),
@@ -18,7 +18,10 @@ const child = Object.assign(new EventEmitter(), {
 await mock.module('child_process', {
     namedExports: {
         ...actualChildProcess,
-        spawn: mock.fn((_command: string, args: string[]) => { spawnCalls.push({ args }); return child; }),
+        spawn: mock.fn((_command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+            spawnCalls.push({ args, env: options?.env });
+            return child;
+        }),
         execFileSync: mock.fn(),
     },
 });
@@ -28,36 +31,51 @@ type EventSink = ConstructorParameters<typeof GoalContainerSupervisor>[1];
 
 const events = { append: async () => ({ accepted: true }), appendControl: async () => ({ accepted: true }), replay: async () => [] } as unknown as EventSink;
 const idBits = { goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 't', executionId: 'e', attemptId: 'a' };
+const approvedWorktree = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-worktree-'));
+const approvedCredential = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'goal-credential-')), 'token');
+fs.writeFileSync(approvedCredential, 'secret');
+const isolation = {
+    environmentKeys: ['OPENAI_API_KEY'],
+    worktreePaths: [approvedWorktree],
+    providerHomeTargets: ['/home/node/.codex'],
+    credentialMounts: [{ source: approvedCredential, target: '/home/node/.creds' }],
+};
 
 function baseRequest() {
     return {
         ...idBits,
         image: 'propr/agent:test',
         command: ['agent-command'],
-        worktreePath: '/tmp/goal-worktree',
+        worktreePath: approvedWorktree,
+        worktreeFingerprint: 'fingerprint-one',
         providerHomeTarget: '/home/node/.codex',
     };
+}
+
+function createSupervisor(base: string, policy = isolation): InstanceType<typeof GoalContainerSupervisor> {
+    return new GoalContainerSupervisor(base, events, undefined, policy);
 }
 
 test('start passes env names only and never leaks secret values into argv', async () => {
     spawnCalls.length = 0;
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-hard-'));
-    const supervisor = new GoalContainerSupervisor(base, events);
+    const supervisor = createSupervisor(base);
     await supervisor.start({
         ...baseRequest(),
-        environment: { SECRET_TOKEN: 'super-secret-value' },
-        credentialMounts: [{ source: '/host/creds', target: '/home/node/.creds' }],
+        environment: { OPENAI_API_KEY: 'super-secret-value' },
+        credentialMounts: [{ source: approvedCredential, target: '/home/node/.creds' }],
     });
     const args = spawnCalls[0].args;
     const envIndex = args.indexOf('--env');
-    assert.equal(args[envIndex + 1], 'SECRET_TOKEN');
+    assert.equal(args[envIndex + 1], 'OPENAI_API_KEY');
     assert.ok(!args.some(arg => arg.includes('super-secret-value')), 'secret value must not appear in argv');
-    assert.ok(args.includes('type=bind,src=/host/creds,dst=/home/node/.creds,readonly'));
+    assert.ok(args.includes(`type=bind,src=${approvedCredential},dst=/home/node/.creds,readonly`));
+    assert.deepEqual(spawnCalls[0].env, { OPENAI_API_KEY: 'super-secret-value' });
 });
 
 test('start rejects provider homes that shadow reserved or non-provider paths', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-hard-'));
-    const supervisor = new GoalContainerSupervisor(base, events);
+    const supervisor = createSupervisor(base);
     await assert.rejects(supervisor.start({ ...baseRequest(), providerHomeTarget: '/workspace' }), /workspace/);
     await assert.rejects(supervisor.start({ ...baseRequest(), providerHomeTarget: '/' }), /reserved/);
     await assert.rejects(supervisor.start({ ...baseRequest(), providerHomeTarget: '/etc/agent' }), /provider-owned/);
@@ -65,16 +83,19 @@ test('start rejects provider homes that shadow reserved or non-provider paths', 
 
 test('start refuses credentials mounted inside the writable provider home', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-hard-'));
-    const supervisor = new GoalContainerSupervisor(base, events);
+    const supervisor = createSupervisor(base, {
+        ...isolation,
+        credentialMounts: [{ source: approvedCredential, target: '/home/node/.codex/creds' }],
+    });
     await assert.rejects(
-        supervisor.start({ ...baseRequest(), credentialMounts: [{ source: '/host/creds', target: '/home/node/.codex/creds' }] }),
+        supervisor.start({ ...baseRequest(), credentialMounts: [{ source: approvedCredential, target: '/home/node/.codex/creds' }] }),
         /separately from the writable provider home/,
     );
 });
 
 test('cleanTerminalSession removes a real goal directory but refuses a symlink escape', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-clean-'));
-    const supervisor = new GoalContainerSupervisor(base, events);
+    const supervisor = createSupervisor(base);
     fs.mkdirSync(path.join(base, 'goals'), { recursive: true });
     const past = new Date(0);
     const future = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
@@ -138,7 +159,7 @@ test('buildGoalContainerLayout keeps the log path inside the goal log directory'
 
 test('start rejects bind-mount fields that could inject Docker --mount options', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-inject-'));
-    const supervisor = new GoalContainerSupervisor(base, events);
+    const supervisor = createSupervisor(base);
     await assert.rejects(
         supervisor.start({ ...baseRequest(), worktreePath: '/tmp/wt,readonly,bind-propagation=rshared' }),
         /inject Docker --mount options/,
@@ -148,11 +169,76 @@ test('start rejects bind-mount fields that could inject Docker --mount options',
         /inject Docker --mount options/,
     );
     await assert.rejects(
-        supervisor.start({ ...baseRequest(), credentialMounts: [{ source: '/host/creds', target: '/home/node/.creds,dst=/etc' }] }),
+        supervisor.start({ ...baseRequest(), credentialMounts: [{ source: approvedCredential, target: '/home/node/.creds,dst=/etc' }] }),
         /inject Docker --mount options/,
     );
     await assert.rejects(
         supervisor.start({ ...baseRequest(), providerHomeTarget: '/home/node/.codex,type=volume' }),
         /inject Docker --mount options/,
+    );
+});
+
+test('start blocks host-controlled environment aliases even when configured', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-env-'));
+    const supervisor = createSupervisor(base, {
+        ...isolation,
+        environmentKeys: ['DOCKER_HOST', 'docker_host', 'LD_PRELOAD'],
+    });
+    await assert.rejects(supervisor.start({ ...baseRequest(), environment: { DOCKER_HOST: 'tcp://attacker' } }), /host-controlled/);
+    await assert.rejects(supervisor.start({ ...baseRequest(), environment: { docker_host: 'tcp://attacker' } }), /host-controlled/);
+    await assert.rejects(supervisor.start({ ...baseRequest(), environment: { LD_PRELOAD: '/tmp/evil.so' } }), /host-controlled/);
+});
+
+test('start rejects unapproved, broad, sensitive, and symlink-aliased mount sources', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-mounts-'));
+    const outsideWorktree = fs.mkdtempSync(path.join(os.tmpdir(), 'other-worktree-'));
+    const worktreeAlias = path.join(os.tmpdir(), `worktree-alias-${process.pid}`);
+    fs.symlinkSync(approvedWorktree, worktreeAlias);
+    const sensitiveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mount-owner-'));
+    const sshDir = path.join(sensitiveDir, '.ssh');
+    fs.mkdirSync(sshDir);
+    const sshKey = path.join(sshDir, 'id_rsa');
+    fs.writeFileSync(sshKey, 'private');
+    const supervisor = createSupervisor(base, {
+        ...isolation,
+        credentialMounts: [
+            { source: '/', target: '/home/node/key' },
+            { source: sshKey, target: '/home/node/key' },
+            { source: approvedCredential, target: '/run/docker.sock' },
+        ],
+        worktreePaths: [approvedWorktree, worktreeAlias],
+    });
+
+    await assert.rejects(supervisor.start({ ...baseRequest(), worktreePath: outsideWorktree }), /not explicitly allow-listed/);
+    await assert.rejects(supervisor.start({ ...baseRequest(), worktreePath: worktreeAlias }), /symlink alias/);
+    await assert.rejects(
+        supervisor.start({
+            ...baseRequest(),
+            worktreePath: `${path.dirname(approvedWorktree)}/alias/../${path.basename(approvedWorktree)}`,
+        }),
+        /traversal aliases/,
+    );
+    await assert.rejects(
+        supervisor.start({ ...baseRequest(), providerHomeTarget: '/home/node/alias/../.codex' }),
+        /traversal aliases/,
+    );
+    await assert.rejects(
+        supervisor.start({
+            ...baseRequest(),
+            credentialMounts: [{ source: approvedCredential, target: '/home/node/alias/../.creds' }],
+        }),
+        /traversal aliases/,
+    );
+    await assert.rejects(
+        supervisor.start({ ...baseRequest(), credentialMounts: [{ source: '/', target: '/home/node/key' }] }),
+        /broad or sensitive/,
+    );
+    await assert.rejects(
+        supervisor.start({ ...baseRequest(), credentialMounts: [{ source: sshKey, target: '/home/node/key' }] }),
+        /broad or sensitive/,
+    );
+    await assert.rejects(
+        supervisor.start({ ...baseRequest(), credentialMounts: [{ source: approvedCredential, target: '/run/docker.sock' }] }),
+        /broad or sensitive/,
     );
 });

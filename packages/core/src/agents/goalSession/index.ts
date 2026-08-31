@@ -28,8 +28,10 @@ export {
 } from './GoalContainerSupervisor.js';
 export type {
     GoalContainerLayout,
+    GoalContainerIsolationPolicy,
     GoalContainerRetentionPolicy,
     GoalCredentialMount,
     StartGoalContainerRequest,
 } from './GoalContainerSupervisor.js';
 export { DockerGoalSessionRecovery } from './DockerGoalSessionRecovery.js';
+export { fingerprintGoalWorktree } from './worktreeIdentity.js';

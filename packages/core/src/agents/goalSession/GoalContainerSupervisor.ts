@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, realpath, rm } from 'node:fs/promises';
+import { mkdir, realpath, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
     executeSupervisedDockerCommand,
@@ -37,6 +37,8 @@ export interface StartGoalContainerRequest extends GoalSessionFence, GoalExecuti
     image: string;
     command: string[];
     worktreePath: string;
+    /** Durable fingerprint of the exact worktree recorded on the active turn. */
+    worktreeFingerprint: string;
     /** Provider-specific home location, for example /home/node/.codex. Must be provider-owned. */
     providerHomeTarget: string;
     /**
@@ -61,6 +63,14 @@ export interface GoalContainerRetentionPolicy {
     succeededMs: number;
     cancelledMs: number;
     failedMs: number;
+}
+
+/** Host resources explicitly approved for this supervisor instance. */
+export interface GoalContainerIsolationPolicy {
+    environmentKeys: ReadonlyArray<string>;
+    worktreePaths: ReadonlyArray<string>;
+    providerHomeTargets: ReadonlyArray<string>;
+    credentialMounts?: ReadonlyArray<GoalCredentialMount>;
 }
 
 /**
@@ -128,16 +138,23 @@ export function buildGoalContainerLayout(baseDirectory: string, request: GoalSes
     };
 }
 
-function validateEnvironment(environment: Record<string, string>): void {
+const BLOCKED_ENVIRONMENT_KEYS = /^(?:DOCKER(?:_|$)|LD_PRELOAD$|LD_LIBRARY_PATH$|SSH(?:_|$)|HOME$|NODE_OPTIONS$|GIT_ASKPASS$|GIT_SSH(?:_|$)|AWS_(?:CONFIG|SHARED_CREDENTIALS)_FILE$|GOOGLE_APPLICATION_CREDENTIALS$)/;
+
+function validateEnvironment(environment: Record<string, string>, allowedKeys: ReadonlySet<string>): void {
     for (const name of Object.keys(environment)) {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid container environment name: ${name}`);
+        if (BLOCKED_ENVIRONMENT_KEYS.test(name.toUpperCase())) {
+            throw new Error(`Container environment key ${name} is host-controlled or sensitive and may not be forwarded`);
+        }
+        if (!allowedKeys.has(name)) throw new Error(`Container environment key ${name} is not explicitly allow-listed`);
     }
 }
 
 /** Rejects a provider home that would shadow /workspace, /, or another sensitive mount. */
-function validateProviderHomeTarget(target: string): void {
+function validateProviderHomeTarget(target: string, allowedTargets: ReadonlySet<string>): void {
     validateBindMountPath(target, 'Provider home target');
     const normalized = path.posix.normalize(target).replace(/\/+$/, '') || '/';
+    if (target !== normalized) throw new Error('Provider home target must be canonical and may not contain traversal aliases');
     if (RESERVED_CONTAINER_PATHS.has(normalized)) {
         throw new Error(`Provider home target may not shadow the reserved container path ${normalized}`);
     }
@@ -147,14 +164,59 @@ function validateProviderHomeTarget(target: string): void {
     if (!PROVIDER_HOME_ROOTS.some(root => normalized.startsWith(root))) {
         throw new Error(`Provider home target must be under a provider-owned root (${PROVIDER_HOME_ROOTS.join(', ')})`);
     }
+    if (!allowedTargets.has(normalized)) throw new Error(`Provider home target ${normalized} is not explicitly allow-listed`);
 }
 
-function validateCredentialMounts(mounts: ReadonlyArray<GoalCredentialMount>, providerHomeTarget: string): void {
+const SENSITIVE_SOURCE_SEGMENT = /(?:^|\/)(?:\.ssh|\.aws|\.docker|\.config|credentials?|id_rsa|id_ed25519)(?:\/|$)/i;
+const CONTAINER_SOCKET_PATHS = new Set(['/var/run/docker.sock', '/run/docker.sock', '/run/podman/podman.sock']);
+const BROAD_HOST_PATHS = new Set(['/', '/root', '/home', '/etc', '/var/run/docker.sock']);
+
+async function resolveApprovedSource(source: string, allowedSources: ReadonlySet<string>, name: string): Promise<string> {
+    validateBindMountPath(source, name);
+    const lexical = path.resolve(source);
+    if (source !== lexical) throw new Error(`${name} must be canonical and may not contain traversal aliases`);
+    const resolved = await realpath(lexical).catch(() => null);
+    if (!resolved || resolved !== lexical) throw new Error(`${name} must exist and may not use a symlink alias`);
+    if (!allowedSources.has(resolved)) throw new Error(`${name} is not explicitly allow-listed`);
+    return resolved;
+}
+
+async function canonicalCredentialSource(source: string): Promise<string> {
+    validateBindMountPath(source, 'Credential mount source');
+    const lexical = path.resolve(source);
+    if (source !== lexical) throw new Error('Credential mount source must be canonical and may not contain traversal aliases');
+    const resolved = await realpath(lexical).catch(() => null);
+    if (!resolved || resolved !== lexical) throw new Error('Credential mount source must exist and may not use a symlink alias');
+    if (BROAD_HOST_PATHS.has(resolved) || SENSITIVE_SOURCE_SEGMENT.test(resolved)) {
+        throw new Error('Credential mount source is a broad or sensitive host path');
+    }
+    if (!(await stat(resolved)).isFile()) throw new Error('Credential mount source must be an explicitly approved file');
+    return resolved;
+}
+
+function canonicalCredentialTarget(target: string): string {
+    validateBindMountPath(target, 'Credential mount target');
+    const normalized = path.posix.normalize(target).replace(/\/+$/, '');
+    if (target !== normalized) throw new Error('Credential mount target must be canonical and may not contain traversal aliases');
+    if (RESERVED_CONTAINER_PATHS.has(normalized) || CONTAINER_SOCKET_PATHS.has(normalized)
+        || normalized.startsWith('/etc/') || SENSITIVE_SOURCE_SEGMENT.test(normalized)) {
+        throw new Error('Credential mount target is a broad or sensitive container path');
+    }
+    return normalized;
+}
+
+async function validateCredentialMounts(
+    mounts: ReadonlyArray<GoalCredentialMount>,
+    providerHomeTarget: string,
+    allowedMounts: ReadonlySet<string>,
+): Promise<void> {
     const home = path.posix.normalize(providerHomeTarget).replace(/\/+$/, '');
     for (const mount of mounts) {
-        validateBindMountPath(mount.source, 'Credential mount source');
-        validateBindMountPath(mount.target, 'Credential mount target');
-        const target = path.posix.normalize(mount.target).replace(/\/+$/, '');
+        const source = await canonicalCredentialSource(mount.source);
+        const target = canonicalCredentialTarget(mount.target);
+        if (!allowedMounts.has(`${source}\0${target}`)) {
+            throw new Error('Credential mount source and target pair is not explicitly allow-listed');
+        }
         if (target === home || target.startsWith(`${home}/`)) {
             throw new Error('Credentials must be mounted separately from the writable provider home');
         }
@@ -174,18 +236,35 @@ export class GoalContainerSupervisor {
         private readonly baseDirectory: string,
         private readonly events: GoalSessionEventSink,
         private readonly retention: GoalContainerRetentionPolicy = DEFAULT_GOAL_CONTAINER_RETENTION,
+        private readonly isolation: GoalContainerIsolationPolicy = {
+            environmentKeys: [], worktreePaths: [], providerHomeTargets: [], credentialMounts: [],
+        },
     ) {
         validateAbsolutePath(baseDirectory, 'Goal container base directory');
     }
 
     async start(request: StartGoalContainerRequest): Promise<{ layout: GoalContainerLayout; execution: SupervisedDockerExecution }> {
-        validateBindMountPath(request.worktreePath, 'Goal worktree path');
-        validateProviderHomeTarget(request.providerHomeTarget);
+        const worktreePath = await resolveApprovedSource(
+            request.worktreePath,
+            new Set(this.isolation.worktreePaths.map(value => path.resolve(value))),
+            'Goal worktree path',
+        );
+        if (!(await stat(worktreePath)).isDirectory()) throw new Error('Goal worktree path must be a directory');
+        validateProviderHomeTarget(
+            request.providerHomeTarget,
+            new Set(this.isolation.providerHomeTargets.map(value => path.posix.normalize(value).replace(/\/+$/, ''))),
+        );
         if (!request.image.trim()) throw new Error('Goal container image must be non-empty');
+        if (!request.worktreeFingerprint.trim()) throw new Error('Goal worktree fingerprint must be non-empty');
         const environment = request.environment ?? {};
-        validateEnvironment(environment);
+        validateEnvironment(environment, new Set(this.isolation.environmentKeys));
         const credentialMounts = request.credentialMounts ?? [];
-        validateCredentialMounts(credentialMounts, request.providerHomeTarget);
+        await validateCredentialMounts(
+            credentialMounts,
+            request.providerHomeTarget,
+            new Set((this.isolation.credentialMounts ?? []).map(mount =>
+                `${path.resolve(mount.source)}\0${path.posix.normalize(mount.target).replace(/\/+$/, '')}`)),
+        );
         const layout = buildGoalContainerLayout(this.baseDirectory, request);
         await Promise.all([
             mkdir(layout.providerHome, { recursive: true, mode: 0o700 }),
@@ -195,7 +274,7 @@ export class GoalContainerSupervisor {
         const dockerArgs = [
             'run', '--rm', '--name', layout.containerName,
             '--mount', `type=bind,src=${layout.providerHome},dst=${request.providerHomeTarget}`,
-            '--mount', `type=bind,src=${request.worktreePath},dst=/workspace`,
+            '--mount', `type=bind,src=${worktreePath},dst=/workspace`,
             ...credentialMounts.flatMap(mount => ['--mount', `type=bind,src=${mount.source},dst=${mount.target},readonly`]),
             '--workdir', '/workspace',
             // Names only: values are forwarded through the docker client's own

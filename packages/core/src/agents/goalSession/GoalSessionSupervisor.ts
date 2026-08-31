@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type {
+    GoalContainerInspection,
     GoalProviderReconcileResult,
     GoalRepositoryIdentity,
     GoalRepositoryInspection,
@@ -25,6 +26,7 @@ import {
     validateEpoch,
     validateIdentity,
 } from './support.js';
+import { fingerprintGoalWorktree } from './worktreeIdentity.js';
 
 export interface OpenGoalSessionRequest extends GoalSessionIdentity {
     provider: string;
@@ -72,8 +74,10 @@ export class GoalSessionSupervisor extends GoalSessionControls {
                     'INCOMPLETE_INITIALIZATION',
                 );
             }
-            state = await this.recordInitializationIntent(request, state);
+            state = await this.recordInitializationIntent(request, state, !opened.created);
             deterministicOpenKey = state.initializationIntent?.deterministicOpenKey;
+        } else {
+            state = await this.recordProviderOpenAttempt(state);
         }
 
         return this.callProviderOpen(request, state, deterministicOpenKey);
@@ -101,18 +105,36 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         if (controllerEpoch < state.controllerEpoch) throw new StaleGoalSessionFenceError();
         if (controllerEpoch > state.controllerEpoch) state = await this.takeover(identity, controllerEpoch);
         const controlFence: GoalSessionControlFence = { ...identity, controllerEpoch };
+        const durableRepository = state.activeTurn?.repository ?? repository;
+        const requestedFingerprint = fingerprintGoalWorktree(repository);
+        const durableFingerprint = fingerprintGoalWorktree(durableRepository);
+        if (requestedFingerprint !== durableFingerprint) {
+            const reason = 'Requested worktree does not match the active turn\'s authoritative repository identity';
+            await this.appendControl(controlFence, controlExecutionIdentity(state), { type: 'reconciliation', outcome: 'blocked', reason });
+            return { outcome: 'blocked', reason, state };
+        }
         const [container, repositoryInspection] = await Promise.all([
             this.ports.recovery.inspectContainer(identity),
-            this.ports.recovery.inspectRepository(repository),
+            this.ports.recovery.inspectRepository(durableRepository),
         ]);
 
-        const mismatch = verifyReconciliationTarget(repository, repositoryInspection);
+        const mismatch = verifyReconciliationTarget(durableRepository, repositoryInspection)
+            ?? verifyRecoveredContainer(state, container, durableFingerprint);
         if (mismatch) {
             await this.appendControl(controlFence, controlExecutionIdentity(state), { type: 'reconciliation', outcome: 'blocked', reason: mismatch });
             return { outcome: 'blocked', reason: mismatch, state };
         }
 
-        const result = await this.adapter.reconcile({ ...identity, controllerEpoch, persisted: persistedSnapshot(state), container, repository: repositoryInspection });
+        const recovery = await this.claimRecoveryAttempt(state, controllerEpoch);
+        state = recovery.state;
+        const result = await this.adapter.reconcile({
+            ...identity,
+            ...recovery.execution,
+            controllerEpoch,
+            persisted: persistedSnapshot(state),
+            container,
+            repository: repositoryInspection,
+        });
         const snapshot = 'snapshot' in result ? result.snapshot : undefined;
         if (snapshot) {
             assertProviderIdentity(state, snapshot);
@@ -128,8 +150,33 @@ export class GoalSessionSupervisor extends GoalSessionControls {
             currentModel: snapshot?.model ?? state.currentModel,
         }));
         if (!saved) throw new StaleGoalSessionFenceError('Ownership changed during crash reconciliation');
-        await this.appendControl(controlFence, controlExecutionIdentity(saved), { type: 'reconciliation', outcome: result.outcome, reason: result.reason });
+        await this.appendControl(controlFence, recovery.execution, { type: 'reconciliation', outcome: result.outcome, reason: result.reason });
         return { ...result, state: saved };
+    }
+
+    private async claimRecoveryAttempt(
+        state: GoalSessionState,
+        controllerEpoch: number,
+    ): Promise<{ state: GoalSessionState; execution: { executionId: string; attemptId: string } }> {
+        const previousAttempt = state.activeTurn?.attemptId
+            ?? state.recoveryAttemptId
+            ?? state.providerOpenAttemptId;
+        const attemptId = previousAttempt
+            ? this.mintFreshAttemptId(previousAttempt)
+            : this.mintAttemptId();
+        const execution = {
+            executionId: state.activeTurn?.executionId ?? `reconcile-${state.sessionId}`,
+            attemptId,
+        };
+        const saved = await this.compareAndSetExact(state, {
+            recoveryAttemptId: attemptId,
+            activeTurn: state.activeTurn ? {
+                ...state.activeTurn,
+                ...execution,
+                executionEpoch: controllerEpoch,
+            } : state.activeTurn,
+        }, 'A newer operation superseded crash reconciliation');
+        return { state: saved, execution };
     }
 
     private canRecoverIncompleteInit(state: GoalSessionState): boolean {
@@ -150,8 +197,24 @@ export class GoalSessionSupervisor extends GoalSessionControls {
             ? this.adapter.capabilities.firstTurnIdCrashPolicy
             : 'fail';
         if (state.activeTurn && policy === 'retry_deterministically') {
+            const crashedTurn = state.activeTurn;
             return this.updateControlledState(request, value => ({
-                ...value, status: 'idle', activeTurn: undefined, failureReason: undefined,
+                ...value,
+                status: 'idle',
+                retryTurn: value.activeTurn ? {
+                    turnId: value.activeTurn.turnId,
+                    executionId: value.activeTurn.executionId,
+                    crashedAttemptId: value.activeTurn.attemptId,
+                } : undefined,
+                activeTurn: undefined,
+                completedTurnIds: value.completedTurnIds.filter(turnId => turnId !== crashedTurn.turnId),
+                completedTurns: value.completedTurns?.filter(turn => turn.turnId !== crashedTurn.turnId),
+                initializationIntent: value.initializationIntent ? {
+                    ...value.initializationIntent,
+                    attemptId: this.mintFreshAttemptId(value.initializationIntent.attemptId),
+                    recordedAt: nowIso(),
+                } : value.initializationIntent,
+                failureReason: undefined,
             }));
         }
         if (state.activeTurn || (state.status !== 'initializing' && state.status !== 'idle')) {
@@ -167,16 +230,27 @@ export class GoalSessionSupervisor extends GoalSessionControls {
     private async recordInitializationIntent(
         request: OpenGoalSessionRequest,
         state: GoalSessionState,
+        recovery: boolean,
     ): Promise<GoalSessionState> {
-        if (this.adapter.supportsDeterministicOpen !== true || state.initializationIntent) return state;
-        return this.updateControlledState(request, value => ({
-            ...value,
+        if (state.initializationIntent && !recovery) return state;
+        const attemptId = state.initializationIntent
+            ? this.mintFreshAttemptId(state.initializationIntent.attemptId)
+            : this.mintAttemptId();
+        return this.compareAndSetExact(state, {
             initializationIntent: {
-                attemptId: randomUUID(),
-                deterministicOpenKey: deterministicOpenKey(request),
+                attemptId,
+                deterministicOpenKey: state.initializationIntent?.deterministicOpenKey ?? deterministicOpenKey(request),
                 recordedAt: nowIso(),
             },
-        }));
+            providerOpenAttemptId: attemptId,
+        });
+    }
+
+    private recordProviderOpenAttempt(state: GoalSessionState): Promise<GoalSessionState> {
+        const attemptId = state.providerOpenAttemptId
+            ? this.mintFreshAttemptId(state.providerOpenAttemptId)
+            : this.mintAttemptId();
+        return this.compareAndSetExact(state, { providerOpenAttemptId: attemptId });
     }
 
     private async loadOrCreateForOpen(request: OpenGoalSessionRequest): Promise<{ state: GoalSessionState; created: boolean }> {
@@ -185,7 +259,7 @@ export class GoalSessionSupervisor extends GoalSessionControls {
         if (!state) {
             const timestamp = nowIso();
             const initializationIntent = this.adapter.capabilities.nativeSessionId === 'first_turn'
-                ? createInitializationIntent(request)
+                ? createInitializationIntent(request, this.mintAttemptId())
                 : undefined;
             const initial = await this.ports.state.create({
                 ...request,
@@ -212,7 +286,15 @@ export class GoalSessionSupervisor extends GoalSessionControls {
     ): Promise<GoalSessionState> {
         const persisted = state.providerSessionId ? persistedSnapshot(state) : undefined;
         try {
-            const snapshot = await this.adapter.openSession({ ...request, persisted, deterministicOpenKey });
+            if (!state.providerOpenAttemptId) {
+                throw new GoalSessionContractError('Provider open attempt was not durably claimed', 'OPEN_ATTEMPT_MISSING');
+            }
+            const snapshot = await this.adapter.openSession({
+                ...request,
+                persisted,
+                deterministicOpenKey,
+                attemptId: state.providerOpenAttemptId,
+            });
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
             assertProviderIdentity(state, snapshot);
             const saved = await this.ports.state.compareAndSet(state, nextState(state, {
@@ -239,21 +321,52 @@ function deterministicOpenKey(identity: GoalSessionIdentity & { provider: string
 
 function createInitializationIntent(
     identity: GoalSessionIdentity & { provider: string },
+    attemptId: string,
 ): NonNullable<GoalSessionState['initializationIntent']> {
     return {
-        attemptId: randomUUID(),
+        attemptId,
         deterministicOpenKey: deterministicOpenKey(identity),
         recordedAt: nowIso(),
     };
+}
+
+function verifyRecoveredContainer(
+    state: GoalSessionState,
+    inspection: GoalContainerInspection,
+    worktreeFingerprint: string,
+): string | null {
+    if (inspection.status === 'missing') return null;
+    if (inspection.status === 'daemon_unavailable') {
+        return `Container identity could not be inspected: ${inspection.reason ?? 'Docker unavailable'}`;
+    }
+    const turn = state.activeTurn;
+    if (!turn) return 'A recovered container exists without an authoritative active turn';
+    const observed = inspection.recoveryIdentity;
+    if (!observed) return 'Recovered container is missing authoritative recovery metadata';
+    const expected = {
+        goalId: state.goalId,
+        sessionId: state.sessionId,
+        executionEpoch: turn.executionEpoch,
+        turnId: turn.turnId,
+        attemptId: turn.attemptId,
+        worktreeFingerprint,
+    };
+    for (const key of Object.keys(expected) as Array<keyof typeof expected>) {
+        if (observed[key] !== expected[key]) {
+            return `Recovered container ${key} mismatch: expected ${expected[key]}, found ${observed[key]}`;
+        }
+    }
+    return null;
 }
 
 /**
  * Reconciles the recovered session status and its active turn into a coherent
  * state. A turn that was still running/pause-requested/paused when the container
  * was lost becomes an explicitly paused, resumable turn so a replacement
- * supervisor continues the exact execution/attempt rather than letting a new
- * turn overwrite it. A failed reconcile fails the session; any other outcome
- * leaves the durable turn untouched.
+ * supervisor continues the exact logical execution rather than letting a new
+ * turn overwrite it. The later provider resume durably replaces the crashed
+ * attempt ID with a fresh one. A failed reconcile fails the session; any other
+ * outcome leaves the durable turn untouched.
  */
 function reconcileRecoveredTurn(
     state: GoalSessionState,
@@ -283,6 +396,13 @@ function verifyReconciliationTarget(
     }
     if (!inspection.observedBranch) {
         return `Worktree ${expected.worktreePath} branch could not be observed: ${inspection.reason ?? 'branch unavailable'}`;
+    }
+    const expectedFingerprint = fingerprintGoalWorktree(expected);
+    if (!inspection.observedWorktreeFingerprint) {
+        return `Worktree ${expected.worktreePath} fingerprint could not be observed: ${inspection.reason ?? 'metadata unavailable'}`;
+    }
+    if (inspection.observedWorktreeFingerprint !== expectedFingerprint) {
+        return `Worktree fingerprint mismatch: expected ${expectedFingerprint}, found ${inspection.observedWorktreeFingerprint}`;
     }
     if (inspection.observedBranch !== expected.branch) {
         return `Worktree branch mismatch: expected ${expected.branch}, found ${inspection.observedBranch}`;

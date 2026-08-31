@@ -18,6 +18,8 @@ export interface SupervisedDockerFence {
     sessionId: string;
     controllerEpoch: number;
     turnId: string;
+    attemptId: string;
+    worktreeFingerprint: string;
 }
 
 export interface SupervisedDockerOutput extends SupervisedDockerFence {
@@ -219,13 +221,16 @@ export function addGoalFenceLabels(args: string[], fence: SupervisedDockerFence)
         '--label', `propr.goal.session=${fence.sessionId}`,
         '--label', `propr.goal.controller-epoch=${fence.controllerEpoch}`,
         '--label', `propr.goal.turn=${fence.turnId}`,
+        '--label', `propr.goal.attempt=${fence.attemptId}`,
+        '--label', `propr.goal.worktree-fingerprint=${fence.worktreeFingerprint}`,
         ...args.slice(1),
     ];
 }
 
 function validateSupervisedOptions(args: string[], options: SupervisedDockerOptions): void {
     if (args[0] !== 'run') throw new Error('Supervised Docker execution only supports docker run');
-    if (!options.goalId || !options.sessionId || !options.turnId || !Number.isSafeInteger(options.controllerEpoch)) {
+    if (!options.goalId || !options.sessionId || !options.turnId || !options.attemptId
+        || !options.worktreeFingerprint || !Number.isSafeInteger(options.controllerEpoch)) {
         throw new Error('A valid goal/session/controller epoch/turn fence is required');
     }
     if (options.timeout !== undefined && (!Number.isSafeInteger(options.timeout) || options.timeout <= 0)) {
@@ -257,7 +262,9 @@ export function executeSupervisedDockerCommand(
     const child = spawn(resolveDockerPath('docker'), fencedArgs, {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: options.cwd && fs.existsSync(options.cwd) ? options.cwd : undefined,
-        env: options.env ? { ...process.env, ...options.env } : process.env,
+        // Exact allowlist: never inherit host-controlled Docker, loader, SSH, or
+        // credential variables into this security boundary.
+        env: options.env ?? {},
     });
     const state = createDockerExecutionState();
     let outputFailure: unknown;

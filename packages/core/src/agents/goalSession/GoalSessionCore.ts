@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
     GoalExecutionIdentity,
     GoalSessionAdapter,
@@ -7,9 +8,11 @@ import type {
     GoalSessionIdentity,
     GoalSessionRuntimePorts,
     GoalSessionState,
+    GoalTerminalCommit,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import {
+    controlExecutionIdentity,
     nextState,
     validateControlFence,
 } from './support.js';
@@ -27,7 +30,20 @@ export abstract class GoalSessionCore {
     constructor(
         protected readonly adapter: GoalSessionAdapter,
         protected readonly ports: GoalSessionRuntimePorts,
+        private readonly createAttemptId: () => string = randomUUID,
     ) {}
+
+    protected mintAttemptId(): string {
+        return this.createAttemptId();
+    }
+
+    protected mintFreshAttemptId(previousAttemptId: string): string {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            const candidate = this.mintAttemptId();
+            if (candidate && candidate !== previousAttemptId) return candidate;
+        }
+        throw new GoalSessionContractError('Could not mint a fresh recovery attempt identity', 'RECOVERY_ATTEMPT_REUSED');
+    }
 
     protected async requireState(identity: GoalSessionIdentity): Promise<GoalSessionState> {
         const state = await this.ports.state.load(identity);
@@ -50,6 +66,10 @@ export abstract class GoalSessionCore {
         if (!state.activeTurn || state.activeTurn.turnId !== fence.turnId) {
             throw new StaleGoalSessionFenceError('Turn fence does not own the active session turn');
         }
+        if (['completed', 'cancelled', 'failed'].includes(state.activeTurn.status)
+            || ['terminated', 'failed'].includes(state.status)) {
+            throw new StaleGoalSessionFenceError('Turn fence no longer owns a live session turn');
+        }
         return state;
     }
 
@@ -65,6 +85,72 @@ export abstract class GoalSessionCore {
         update: (state: GoalSessionState) => Partial<GoalSessionState>,
     ): Promise<GoalSessionState> {
         return this.compareAndSetLoop(() => this.requireActiveTurnState(fence), update);
+    }
+
+    /** One-shot CAS for an operation that must not retry over a newer intent. */
+    protected async compareAndSetExact(
+        expected: GoalSessionState,
+        changes: Partial<GoalSessionState>,
+        message = 'A newer same-epoch operation superseded this update',
+    ): Promise<GoalSessionState> {
+        const saved = await this.ports.state.compareAndSet(expected, nextState(expected, changes));
+        if (!saved) throw new StaleGoalSessionFenceError(message);
+        return saved;
+    }
+
+    protected async commitTurnCompletion(
+        fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
+        event: Extract<GoalSessionEvent, { type: 'completion' }>,
+    ): Promise<GoalSessionState> {
+        const { outcome, error } = event;
+        const state = await this.requireActiveTurnState(fence);
+        if (state.activeTurn?.executionId !== execution.executionId
+            || state.activeTurn.attemptId !== execution.attemptId) {
+            throw new StaleGoalSessionFenceError('A newer recovery attempt owns this turn');
+        }
+        const existing = state.completedTurns ?? [];
+        const completedTurns = existing.some(turn => turn.turnId === fence.turnId)
+            ? existing
+            : [...existing, { turnId: fence.turnId, ...execution }];
+        const afterTurnPaused = outcome === 'succeeded'
+            && state.status === 'paused'
+            && this.adapter.capabilities.pause === 'after_turn';
+        const next = nextState(state, {
+            status: outcome === 'cancelled'
+                ? 'terminated'
+                : outcome === 'failed'
+                    ? 'failed'
+                    : afterTurnPaused ? 'paused' : 'idle',
+            failureReason: outcome === 'failed' ? error ?? 'Provider reported turn failure' : undefined,
+            activeTurn: afterTurnPaused
+                ? undefined
+                : { ...state.activeTurn, status: outcome === 'succeeded' ? 'completed' : outcome === 'cancelled' ? 'cancelled' : 'failed' },
+            completedTurnIds: state.completedTurnIds.includes(fence.turnId)
+                ? state.completedTurnIds
+                : [...state.completedTurnIds, fence.turnId],
+            completedTurns,
+        });
+        const completion: GoalTerminalCommit = {
+            scope: 'turn', fence, execution, event,
+        };
+        const saved = await this.ports.terminal.commit(state, next, completion);
+        if (!saved) throw new StaleGoalSessionFenceError('A newer operation completed or replaced this turn');
+        return saved;
+    }
+
+    protected async commitControlCompletion(
+        state: GoalSessionState,
+        fence: GoalSessionControlFence,
+        changes: Partial<GoalSessionState>,
+        event: Extract<GoalSessionEvent, { type: 'completion' }>,
+    ): Promise<GoalSessionState> {
+        const execution = controlExecutionIdentity(state);
+        const saved = await this.ports.terminal.commit(state, nextState(state, changes), {
+            scope: 'control', fence, execution, event,
+        });
+        if (!saved) throw new StaleGoalSessionFenceError('A newer operation superseded terminal completion');
+        return saved;
     }
 
     private async compareAndSetLoop(

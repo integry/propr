@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type {
     GoalBeginTurnRequest,
     GoalExecutionIdentity,
@@ -53,8 +52,15 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         if (!request.turnId.trim() || !request.executionId.trim()) {
             throw new GoalSessionContractError('turnId and executionId must be non-empty', 'INVALID_TURN');
         }
-        const execution: GoalExecutionIdentity = { executionId: request.executionId, attemptId: request.attemptId ?? randomUUID() };
         let state = await this.requireControlledState(request);
+        const recoveringRetry = state.retryTurn?.turnId === request.turnId
+            && state.retryTurn.executionId === request.executionId;
+        const execution: GoalExecutionIdentity = {
+            executionId: request.executionId,
+            attemptId: recoveringRetry
+                ? this.mintFreshAttemptId(state.retryTurn!.crashedAttemptId)
+                : request.attemptId ?? this.mintAttemptId(),
+        };
 
         const duplicate = this.duplicateResult(state, request.turnId, execution);
         if (duplicate) return duplicate;
@@ -68,6 +74,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         const activeTurn = {
             ...execution,
             turnId: request.turnId,
+            executionEpoch: request.controllerEpoch,
             objective: request.objective,
             requestedModel,
             repository: request.repository,
@@ -77,6 +84,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             activeTurn,
             requestedModel,
             status: 'running',
+            retryTurn: undefined,
         }));
         if (!claimed) {
             state = await this.requireControlledState(request);
@@ -117,12 +125,11 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             || acknowledgement.effectiveModel !== requestedModel) {
             throw new GoalSessionContractError('Provider did not apply the requested model at the turn boundary', 'MODEL_ACK_MISMATCH');
         }
-        const changed = await this.updateControlledState(request, value => ({
-            ...value,
+        const changed = await this.compareAndSetExact(state, {
             requestedModel,
             currentModel: requestedModel,
             pendingModelChange: undefined,
-        }));
+        }, 'A newer model intent superseded the turn-boundary model application');
         await this.appendControl(request, controlExecutionIdentity(changed), {
             type: 'model_changed', previousModel: state.currentModel, model: requestedModel,
         });
@@ -152,20 +159,37 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         if (state.status !== 'paused' || !state.activeTurn || state.activeTurn.status !== 'paused') {
             throw new GoalSessionContractError(`Cannot resume a turn while the session is ${state.status}`, 'SESSION_NOT_PAUSED');
         }
-        const execution: GoalExecutionIdentity = { executionId: state.activeTurn.executionId, attemptId: state.activeTurn.attemptId };
+        const previousAttemptId = state.activeTurn.attemptId;
+        const execution: GoalExecutionIdentity = {
+            executionId: state.activeTurn.executionId,
+            attemptId: this.mintFreshAttemptId(previousAttemptId),
+        };
         const turnFence: GoalSessionFence = { ...fence, turnId: state.activeTurn.turnId };
 
-        const snapshot = await this.adapter.resumeSession(fence, persistedSnapshot(state));
+        state = await this.compareAndSetExact(state, {
+            status: 'running',
+            activeTurn: { ...state.activeTurn, ...execution, executionEpoch: fence.controllerEpoch, status: 'running' },
+        }, 'A newer operation claimed the paused turn before recovery');
+
+        let snapshot;
+        try {
+            snapshot = await this.adapter.resumeSession(fence, persistedSnapshot(state));
+        } catch (error) {
+            try {
+                await this.compareAndSetExact(state, {
+                    status: 'paused',
+                    activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'paused' } : state.activeTurn,
+                });
+            } catch { /* A newer operation owns the session; do not roll it back. */ }
+            throw error;
+        }
         assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
         assertProviderIdentity(state, snapshot);
-        state = await this.updateControlledState(fence, value => ({
-            ...value,
+        state = await this.compareAndSetExact(state, {
             providerSessionId: snapshot.providerSessionId,
             recoveryMetadata: snapshot.recoveryMetadata,
-            currentModel: snapshot.model ?? value.currentModel,
-            status: 'running',
-            activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'running' } : value.activeTurn,
-        }));
+            currentModel: snapshot.model ?? state.currentModel,
+        }, 'A newer operation superseded the recovered provider snapshot');
         await this.appendControl(fence, execution, { type: 'session_resumed' });
         await this.append(turnFence, execution, { type: 'turn_resumed', turnId: turnFence.turnId });
 
@@ -178,7 +202,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
             execution,
             initial: state,
             nextTurnMessages: [],
-            openStream: () => resumeTurn(turnFence, persistedSnapshot(state)),
+            openStream: () => resumeTurn({ ...turnFence, ...execution }, persistedSnapshot(state)),
         });
         return { disposition: 'started', state: outcome.state, execution };
     }
@@ -237,28 +261,23 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 if (event.type === 'completion' && this.shouldPauseAfterTurn(current, event)) {
                     current = await this.recordAfterTurnPauseBoundary(fence, current, execution);
                 }
-                current = await this.applyTurnEvent(fence, current, event);
+                current = await this.applyTurnEvent(fence, current, execution, event);
                 if (event.type === 'pause_boundary') reachedPause = true;
                 if (event.type === 'completion') completed = true;
-                await this.append(fence, execution, event);
+                if (event.type !== 'completion') await this.append(fence, execution, event);
                 if (event.type === 'pause_boundary' && this.adapter.capabilities.pause === 'active_turn') break;
-                if (event.type === 'completion' && current.status === 'paused') {
-                    current = await this.clearCompletedAfterTurn(fence);
-                    reachedPause = true;
-                }
+                if (event.type === 'completion' && current.status === 'paused') reachedPause = true;
             }
             if (!completed && !reachedPause) {
                 const error = 'Provider stream ended without a completion or safe pause boundary';
-                current = await this.finishTurn(fence, 'failed', error);
-                await this.append(fence, execution, { type: 'completion', outcome: 'failed', error });
+                current = await this.commitTurnCompletion(fence, execution, { type: 'completion', outcome: 'failed', error });
                 completed = true;
             }
             return { state: current, completed, reachedPause };
         } catch (error) {
             if (error instanceof StaleGoalSessionFenceError) throw error;
             const message = `Provider turn failed: ${(error as Error).message}`;
-            current = await this.finishTurnIfOwned(fence, message);
-            await this.appendIfOwned(fence, execution, { type: 'completion', outcome: 'failed', error: message });
+            current = await this.finishTurnIfOwned(fence, execution, message);
             throw error;
         }
     }
@@ -316,13 +335,10 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         return paused;
     }
 
-    private clearCompletedAfterTurn(fence: GoalSessionFence): Promise<GoalSessionState> {
-        return this.updateActiveTurnState(fence, value => ({ ...value, activeTurn: undefined }));
-    }
-
     private async applyTurnEvent(
         fence: GoalSessionFence,
         current: GoalSessionState,
+        execution: GoalExecutionIdentity,
         event: GoalSessionEvent,
     ): Promise<GoalSessionState> {
         if (event.type === 'checkpoint') return this.persistCheckpoint(fence, current, event);
@@ -340,7 +356,7 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
                 activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
             }));
         }
-        if (event.type === 'completion') return this.finishTurn(fence, event.outcome, event.error);
+        if (event.type === 'completion') return this.commitTurnCompletion(fence, execution, event);
         return current;
     }
 
@@ -361,46 +377,14 @@ export abstract class GoalTurnRunner extends GoalSessionCore {
         }));
     }
 
-    protected async finishTurn(
+    private async finishTurnIfOwned(
         fence: GoalSessionFence,
-        outcome: 'succeeded' | 'failed' | 'cancelled',
-        error?: string,
+        execution: GoalExecutionIdentity,
+        error: string,
     ): Promise<GoalSessionState> {
-        return this.updateActiveTurnState(fence, state => ({
-            ...state,
-            status: outcome === 'cancelled'
-                ? 'terminated'
-                : outcome === 'failed'
-                    ? 'failed'
-                    : state.status === 'paused' && this.adapter.capabilities.pause === 'after_turn'
-                        ? 'paused'
-                        : 'idle',
-            failureReason: outcome === 'failed' ? error ?? 'Provider reported turn failure' : undefined,
-            activeTurn: state.activeTurn ? {
-                ...state.activeTurn,
-                status: outcome === 'succeeded' ? 'completed' : outcome === 'cancelled' ? 'cancelled' : 'failed',
-            } : state.activeTurn,
-            completedTurnIds: state.completedTurnIds.includes(fence.turnId)
-                ? state.completedTurnIds
-                : [...state.completedTurnIds, fence.turnId],
-            completedTurns: this.recordCompletedTurn(state, fence.turnId),
-        }));
-    }
-
-    /** Appends the finishing turn's real execution identity, once, for later recovery. */
-    private recordCompletedTurn(state: GoalSessionState, turnId: string): GoalSessionState['completedTurns'] {
-        const existing = state.completedTurns ?? [];
-        if (!state.activeTurn || state.activeTurn.turnId !== turnId || existing.some(turn => turn.turnId === turnId)) {
-            return existing.length ? existing : undefined;
+        try {
+            return await this.commitTurnCompletion(fence, execution, { type: 'completion', outcome: 'failed', error });
         }
-        return [...existing, { turnId, executionId: state.activeTurn.executionId, attemptId: state.activeTurn.attemptId }];
-    }
-
-    private async finishTurnIfOwned(fence: GoalSessionFence, error: string): Promise<GoalSessionState> {
-        try { return await this.finishTurn(fence, 'failed', error); }
-        catch (cause) {
-            if (cause instanceof StaleGoalSessionFenceError) throw cause;
-            return this.requireState(fence);
-        }
+        catch { return this.requireState(fence); }
     }
 }

@@ -55,6 +55,8 @@ export type GoalSessionStatus =
 
 export interface GoalTurnState extends GoalExecutionIdentity {
     turnId: string;
+    /** Controller epoch that started this concrete provider invocation. */
+    executionEpoch: number;
     objective: string;
     requestedModel: string;
     repository: GoalRepositoryIdentity;
@@ -136,6 +138,12 @@ export interface GoalSessionState extends GoalSessionIdentity {
     completedTurns?: GoalCompletedTurn[];
     /** Present while a first provider open is in-flight; cleared once persisted. */
     initializationIntent?: GoalSessionInitializationIntent;
+    /** Last durably claimed provider open/resume invocation attempt. */
+    providerOpenAttemptId?: string;
+    /** A crashed first-turn invocation that may be retried with a fresh attempt. */
+    retryTurn?: { turnId: string; executionId: string; crashedAttemptId: string };
+    /** Last durably claimed reconciliation invocation attempt. */
+    recoveryAttemptId?: string;
     failureReason?: string;
     /** Optimistic concurrency token owned by the state port. */
     version: number;
@@ -182,6 +190,33 @@ export interface GoalSessionStatePort {
     compareAndSet(expected: GoalSessionState, next: Omit<GoalSessionState, 'version'>): Promise<GoalSessionState | null>;
 }
 
+export type GoalTerminalCommit =
+    | {
+        scope: 'turn';
+        fence: GoalSessionFence;
+        execution: GoalExecutionIdentity;
+        event: Extract<GoalSessionEvent, { type: 'completion' }>;
+    }
+    | {
+        scope: 'control';
+        fence: GoalSessionControlFence;
+        execution: GoalExecutionIdentity;
+        event: Extract<GoalSessionEvent, { type: 'completion' }>;
+    };
+
+/**
+ * Commits terminal state and its completion event in one durable transaction.
+ * Implementations must be idempotent by scope/fence/execution, so an ambiguous
+ * post-commit transport failure can be retried without a duplicate event.
+ */
+export interface GoalSessionTerminalPort {
+    commit(
+        expected: GoalSessionState,
+        next: Omit<GoalSessionState, 'version'>,
+        completion: GoalTerminalCommit,
+    ): Promise<GoalSessionState | null>;
+}
+
 /**
  * An append is authoritative only when goal/session/epoch/turn still match.
  * The fence check and append must be one atomic durable operation. Appending a
@@ -221,6 +256,7 @@ export interface GoalSessionMessagePort {
 export interface GoalProviderOpenRequest extends GoalSessionIdentity {
     provider: string;
     controllerEpoch: number;
+    attemptId: string;
     persisted?: GoalProviderSessionSnapshot;
     /**
      * Stable key a deterministic provider uses to re-open the same underlying
@@ -283,7 +319,7 @@ export interface GoalModelChangeAcknowledgement {
     effectiveModel?: string;
 }
 
-export interface GoalProviderReconcileRequest extends GoalSessionIdentity {
+export interface GoalProviderReconcileRequest extends GoalSessionIdentity, GoalExecutionIdentity {
     controllerEpoch: number;
     persisted: GoalProviderSessionSnapshot;
     repository: GoalRepositoryInspection;
@@ -319,7 +355,7 @@ export interface GoalSessionAdapter {
      * checkpoint and streams further ordered events through to a single
      * completion; it must not start a new logical turn.
      */
-    resumeTurn?(request: GoalSessionFence, snapshot: GoalProviderSessionSnapshot): AsyncIterable<GoalSessionEvent>;
+    resumeTurn?(request: GoalSessionFence & GoalExecutionIdentity, snapshot: GoalProviderSessionSnapshot): AsyncIterable<GoalSessionEvent>;
     deliverMessage?(request: GoalSteeringRequest, snapshot: GoalProviderSessionSnapshot): Promise<{ messageId: string }>;
     requestPause?(request: GoalPauseRequest, snapshot: GoalProviderSessionSnapshot): Promise<GoalPauseAcknowledgement>;
     resumeSession(request: GoalSessionControlFence, snapshot: GoalProviderSessionSnapshot): Promise<GoalProviderSessionSnapshot>;
@@ -334,7 +370,16 @@ export interface GoalContainerInspection {
     status: GoalContainerStatus;
     containerId?: string;
     containerName?: string;
+    /** Authoritative labels read from the recovered container itself. */
+    recoveryIdentity?: GoalRecoveryIdentity;
     reason?: string;
+}
+
+export interface GoalRecoveryIdentity extends GoalSessionIdentity {
+    executionEpoch: number;
+    turnId: string;
+    attemptId: string;
+    worktreeFingerprint: string;
 }
 
 export interface GoalRepositoryInspection extends GoalRepositoryIdentity {
@@ -342,6 +387,8 @@ export interface GoalRepositoryInspection extends GoalRepositoryIdentity {
     dirty?: boolean;
     observedHeadSha?: string;
     observedBranch?: string;
+    observedWorktreeFingerprint?: string;
+    resolvedWorktreePath?: string;
     reason?: string;
 }
 
@@ -353,6 +400,7 @@ export interface GoalSessionRecoveryPort {
 export interface GoalSessionRuntimePorts {
     state: GoalSessionStatePort;
     events: GoalSessionEventSink;
+    terminal: GoalSessionTerminalPort;
     messages: GoalSessionMessagePort;
     recovery: GoalSessionRecoveryPort;
 }

@@ -47,6 +47,11 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
         if (acknowledgement.messageId !== request.messageId) {
             throw new GoalSessionContractError('Provider acknowledged a different corrective message', 'MESSAGE_ACK_MISMATCH');
         }
+        const stillOwned = await this.requireActiveTurnState(request);
+        if (stillOwned.version !== state.version
+            || stillOwned.activeTurn?.attemptId !== state.activeTurn?.attemptId) {
+            throw new StaleGoalSessionFenceError('A newer operation superseded message delivery');
+        }
         const result = await this.ports.messages.acknowledge(request, request.messageId);
         if (result === 'stale_fence') throw new StaleGoalSessionFenceError();
         if (result === 'not_found') {
@@ -66,7 +71,7 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
         if (state.status !== 'running' && state.status !== 'pause_requested') {
             throw new GoalSessionContractError(`Cannot pause a session while it is ${state.status}`, 'SESSION_NOT_RUNNING');
         }
-        if (state.status === 'running') state = await this.markPauseRequested(request);
+        if (state.status === 'running') state = await this.markPauseRequested(state);
         if (!this.adapter.requestPause) {
             throw new GoalSessionContractError('Provider declares active-turn pause without implementing it', 'CAPABILITY_METHOD_MISSING');
         }
@@ -74,11 +79,15 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
         if (acknowledgement.appliesAt === 'after_turn') {
             throw new GoalSessionContractError('Active-turn provider returned an after-turn pause acknowledgement', 'CAPABILITY_ACK_MISMATCH');
         }
+        const stillOwned = await this.requireControlledState(request);
+        if (stillOwned.version !== state.version || stillOwned.status === 'terminated' || stillOwned.status === 'failed') {
+            throw new StaleGoalSessionFenceError('A newer operation superseded the pause acknowledgement');
+        }
         await this.appendControl(request, controlExecutionIdentity(state), {
             type: 'pause_requested', appliesAt: acknowledgement.appliesAt,
         });
         if (acknowledgement.boundaryReached) {
-            state = await this.markPaused(request);
+            state = await this.markPaused(state);
             await this.appendControl(request, controlExecutionIdentity(state), {
                 type: 'pause_boundary', ...acknowledgement.boundaryReached,
             });
@@ -93,20 +102,20 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
                 'UNSUPPORTED_AFTER_TURN_RESUME',
             );
         }
-        const state = await this.requireControlledState(request);
+        let state = await this.requireControlledState(request);
         if (state.status !== 'paused' || state.activeTurn) {
             throw new GoalSessionContractError(`Cannot resume a session while it is ${state.status}`, 'SESSION_NOT_PAUSED');
         }
+        state = await this.compareAndSetExact(state, {}, 'A newer operation superseded the resume intent');
         const snapshot = await this.adapter.resumeSession(request, persistedSnapshot(state));
         assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
         assertProviderIdentity(state, snapshot);
-        const resumed = await this.updateControlledState(request, value => ({
-            ...value,
+        const resumed = await this.compareAndSetExact(state, {
             providerSessionId: snapshot.providerSessionId,
             recoveryMetadata: snapshot.recoveryMetadata,
-            currentModel: snapshot.model ?? value.currentModel,
+            currentModel: snapshot.model ?? state.currentModel,
             status: 'idle',
-        }));
+        }, 'A newer operation superseded the resumed provider snapshot');
         await this.appendControl(request, controlExecutionIdentity(resumed), { type: 'session_resumed' });
         return resumed;
     }
@@ -117,9 +126,9 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             throw new GoalSessionContractError(`Cannot change model while the session is ${state.status}`, 'SESSION_NOT_CONTROLLABLE');
         }
         if (this.adapter.capabilities.modelChange === 'next_turn') {
-            state = await this.updateControlledState(request, value => ({
-                ...value, requestedModel: request.model, pendingModelChange: request.model,
-            }));
+            state = await this.compareAndSetExact(state, {
+                requestedModel: request.model, pendingModelChange: request.model,
+            }, 'A newer model intent superseded this request');
             const acknowledgement = { requestedModel: request.model, appliesAt: 'next_turn' as const };
             await this.appendControl(request, controlExecutionIdentity(state), {
                 type: 'model_change_acknowledged', ...acknowledgement,
@@ -127,22 +136,29 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             return acknowledgement;
         }
         const previousModel = state.currentModel;
-        const acknowledgement = await this.adapter.requestModelChange(request, persistedSnapshot(state));
-        if (acknowledgement.requestedModel !== request.model) {
-            throw new GoalSessionContractError('Provider acknowledged a different requested model', 'MODEL_ACK_MISMATCH');
+        const previousRequestedModel = state.requestedModel;
+        state = await this.compareAndSetExact(state, { requestedModel: request.model }, 'A newer model intent superseded this request');
+        let acknowledgement: GoalModelChangeAcknowledgement;
+        try {
+            acknowledgement = await this.adapter.requestModelChange(request, persistedSnapshot(state));
+            if (acknowledgement.requestedModel !== request.model) {
+                throw new GoalSessionContractError('Provider acknowledged a different requested model', 'MODEL_ACK_MISMATCH');
+            }
+            if (acknowledgement.appliesAt === 'next_turn') {
+                throw new GoalSessionContractError('Provider deferred beyond its declared model boundary', 'CAPABILITY_ACK_MISMATCH');
+            }
+            if (acknowledgement.appliesAt === 'immediate'
+                && (state.status === 'running' || state.status === 'pause_requested')) {
+                throw new GoalSessionContractError('Provider applied a model change before an active-turn safe boundary', 'CAPABILITY_ACK_MISMATCH');
+            }
+            state = await this.compareAndSetExact(state, {
+                currentModel: acknowledgement.effectiveModel ?? state.currentModel,
+            }, 'A newer model intent superseded the provider acknowledgement');
+        } catch (error) {
+            try { await this.compareAndSetExact(state, { requestedModel: previousRequestedModel }); }
+            catch { /* A newer intent owns the field; do not roll it back. */ }
+            throw error;
         }
-        if (acknowledgement.appliesAt === 'next_turn') {
-            throw new GoalSessionContractError('Provider deferred beyond its declared model boundary', 'CAPABILITY_ACK_MISMATCH');
-        }
-        if (acknowledgement.appliesAt === 'immediate'
-            && (state.status === 'running' || state.status === 'pause_requested')) {
-            throw new GoalSessionContractError('Provider applied a model change before an active-turn safe boundary', 'CAPABILITY_ACK_MISMATCH');
-        }
-        state = await this.updateControlledState(request, value => ({
-            ...value,
-            requestedModel: request.model,
-            currentModel: acknowledgement.effectiveModel ?? value.currentModel,
-        }));
         await this.appendControl(request, controlExecutionIdentity(state), {
             type: 'model_change_acknowledged', requestedModel: request.model, appliesAt: acknowledgement.appliesAt,
         });
@@ -157,16 +173,12 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
     async cancel(request: GoalCancelRequest): Promise<GoalSessionState> {
         let state = await this.requireControlledState(request);
         if (state.status === 'terminated') return state;
-        state = await this.updateControlledState(request, value => ({ ...value, status: 'cancelling' }));
+        state = await this.compareAndSetExact(state, { status: 'cancelling' }, 'A newer operation superseded cancellation');
         await this.adapter.cancel(request, persistedSnapshot(state));
-        state = await this.updateControlledState(request, value => ({
-            ...value,
+        state = await this.commitControlCompletion(state, request, {
             status: 'terminated',
-            activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'cancelled' } : value.activeTurn,
-        }));
-        await this.appendControl(request, controlExecutionIdentity(state), {
-            type: 'completion', outcome: 'cancelled', error: request.reason,
-        });
+            activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'cancelled' } : state.activeTurn,
+        }, { type: 'completion', outcome: 'cancelled', error: request.reason });
         return state;
     }
 
@@ -177,7 +189,7 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             throw new GoalSessionContractError(`Cannot pause a session while it is ${state.status}`, 'SESSION_NOT_CONTROLLABLE');
         }
         if (state.status === 'idle') {
-            state = await this.updateControlledState(request, value => ({ ...value, status: 'paused' }));
+            state = await this.compareAndSetExact(state, { status: 'paused' });
             await this.appendControl(request, controlExecutionIdentity(state), {
                 type: 'pause_requested', appliesAt: 'after_turn',
             });
@@ -185,27 +197,25 @@ export abstract class GoalSessionControls extends GoalTurnRunner {
             await this.appendControl(request, controlExecutionIdentity(state), { type: 'pause_boundary', ...boundaryReached });
             return { appliesAt: 'after_turn', boundaryReached };
         }
-        if (state.status === 'running') state = await this.markPauseRequested(request);
+        if (state.status === 'running') state = await this.markPauseRequested(state);
         await this.appendControl(request, controlExecutionIdentity(state), {
             type: 'pause_requested', appliesAt: 'after_turn',
         });
         return { appliesAt: 'after_turn' };
     }
 
-    private markPauseRequested(request: GoalPauseRequest): Promise<GoalSessionState> {
-        return this.updateControlledState(request, value => ({
-            ...value,
+    private markPauseRequested(state: GoalSessionState): Promise<GoalSessionState> {
+        return this.compareAndSetExact(state, {
             status: 'pause_requested',
-            activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'pause_requested' } : value.activeTurn,
-        }));
+            activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'pause_requested' } : state.activeTurn,
+        });
     }
 
-    private markPaused(request: GoalPauseRequest): Promise<GoalSessionState> {
-        return this.updateControlledState(request, value => ({
-            ...value,
+    private markPaused(state: GoalSessionState): Promise<GoalSessionState> {
+        return this.compareAndSetExact(state, {
             status: 'paused',
-            activeTurn: value.activeTurn ? { ...value.activeTurn, status: 'paused' } : value.activeTurn,
-        }));
+            activeTurn: state.activeTurn ? { ...state.activeTurn, status: 'paused' } : state.activeTurn,
+        });
     }
 
     private activeExecution(state: GoalSessionState): GoalExecutionIdentity {

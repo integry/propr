@@ -15,6 +15,8 @@ import type {
     GoalSessionRuntimePorts,
     GoalSessionState,
     GoalSessionStatePort,
+    GoalSessionTerminalPort,
+    GoalTerminalCommit,
     PersistedGoalSessionEvent,
 } from './contract.js';
 
@@ -48,7 +50,8 @@ export class InMemoryGoalSessionPorts implements
     GoalSessionStatePort,
     GoalSessionEventSink,
     GoalSessionMessagePort,
-    GoalSessionRecoveryPort {
+    GoalSessionRecoveryPort,
+    GoalSessionTerminalPort {
     /** Marks this implementation as an ephemeral test/embedding double, never durable storage. */
     readonly isEphemeralTestDouble = true;
 
@@ -58,9 +61,10 @@ export class InMemoryGoalSessionPorts implements
     private readonly messages = new Map<string, DurableCorrectiveMessage[]>();
     private readonly containerInspections = new Map<string, GoalContainerInspection>();
     private readonly repositoryInspections = new Map<string, GoalRepositoryInspection>();
+    private terminalFault: 'before_commit' | 'before_commit_always' | 'after_commit' | undefined;
 
     asRuntimePorts(): GoalSessionRuntimePorts {
-        return { state: this, events: this, messages: this, recovery: this };
+        return { state: this, events: this, terminal: this, messages: this, recovery: this };
     }
 
     async load(identity: GoalSessionIdentity): Promise<GoalSessionState | null> {
@@ -96,6 +100,52 @@ export class InMemoryGoalSessionPorts implements
         return clone(saved);
     }
 
+    async commit(
+        expected: GoalSessionState,
+        next: Omit<GoalSessionState, 'version'>,
+        completion: GoalTerminalCommit,
+    ): Promise<GoalSessionState | null> {
+        this.assertGoalScope(expected);
+        this.assertGoalScope(next);
+        if (expected.goalId !== next.goalId || expected.sessionId !== next.sessionId) {
+            throw new GoalSessionScopeError('A terminal transaction cannot move a session to another goal or identity');
+        }
+        const key = keyOf(expected);
+        const current = this.states.get(key);
+        const turnId = completion.scope === 'turn'
+            ? completion.fence.turnId
+            : `#control-e${completion.fence.controllerEpoch}`;
+        const alreadyCommitted = (this.events.get(key) ?? []).some(record =>
+            record.turnId === turnId
+            && record.executionId === completion.execution.executionId
+            && record.attemptId === completion.execution.attemptId
+            && record.event.type === 'completion');
+        if (alreadyCommitted) return current ? clone(current) : null;
+        if (!current || current.version !== expected.version
+            || current.controllerEpoch !== completion.fence.controllerEpoch) return null;
+        if (completion.scope === 'turn'
+            && (current.activeTurn?.turnId !== completion.fence.turnId
+                || current.activeTurn.executionId !== completion.execution.executionId
+                || current.activeTurn.attemptId !== completion.execution.attemptId)) return null;
+        if (this.terminalFault === 'before_commit' || this.terminalFault === 'before_commit_always') {
+            if (this.terminalFault === 'before_commit') this.terminalFault = undefined;
+            throw new Error('Injected crash before terminal transaction commit');
+        }
+        const saved = { ...clone(next), version: current.version + 1 };
+        this.states.set(key, saved);
+        this.record(key, { turnId, fence: completion.fence, execution: completion.execution, event: completion.event });
+        if (this.terminalFault === 'after_commit') {
+            this.terminalFault = undefined;
+            throw new Error('Injected crash after terminal transaction commit');
+        }
+        return clone(saved);
+    }
+
+    /** Test-only crash injection around the atomic terminal transaction. */
+    setTerminalFault(fault: 'before_commit' | 'before_commit_always' | 'after_commit' | undefined): void {
+        this.terminalFault = fault;
+    }
+
     async append(
         fence: GoalSessionFence,
         execution: GoalExecutionIdentity,
@@ -108,7 +158,9 @@ export class InMemoryGoalSessionPorts implements
         if (!state || state.controllerEpoch !== fence.controllerEpoch) {
             return { accepted: false, reason: 'stale_fence' };
         }
-        if (state.activeTurn?.turnId !== fence.turnId) {
+        if (state.activeTurn?.turnId !== fence.turnId
+            || state.activeTurn.executionId !== execution.executionId
+            || state.activeTurn.attemptId !== execution.attemptId) {
             return { accepted: false, reason: 'turn_not_active' };
         }
         const turnIsTerminal = state.activeTurn

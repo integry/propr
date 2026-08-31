@@ -30,12 +30,13 @@ await mock.module('child_process', {
 const { executeSupervisedDockerCommand } = await import('../src/claude/docker/supervisedDockerExecutor.js');
 
 const tick = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+const recoveryIdentity = { attemptId: 'attempt', worktreeFingerprint: 'worktree' };
 
 test('a slow sink pauses the source streams and preserves ordering without unbounded buffering', async () => {
     const received: string[] = [];
     const gates: Array<() => void> = [];
     const execution = executeSupervisedDockerCommand(['run', 'img'], {
-        goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 't',
+        goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 't', ...recoveryIdentity,
         maxQueuedBytes: 200,
         durableOutput: output => {
             received.push(output.data);
@@ -69,7 +70,7 @@ test('a slow sink pauses the source streams and preserves ordering without unbou
 
 test('exceeding the queued-byte bound cancels with an actionable overflow error', async () => {
     const execution = executeSupervisedDockerCommand(['run', 'img'], {
-        goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 't2',
+        goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 't2', ...recoveryIdentity,
         maxQueuedBytes: 16,
         // Never resolves: simulates a sink that is permanently too slow.
         durableOutput: () => new Promise<void>(() => {}),
@@ -83,7 +84,7 @@ test('exceeding the queued-byte bound cancels with an actionable overflow error'
 });
 
 test('rejects non-positive, non-finite, or incoherent backpressure limits', () => {
-    const base = { goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 'limits', durableOutput: () => {} };
+    const base = { goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 'limits', ...recoveryIdentity, durableOutput: () => {} };
     assert.throws(() => executeSupervisedDockerCommand(['run', 'img'], { ...base, maxChunkBytes: 0 }), /maxChunkBytes must be a positive safe integer/);
     assert.throws(() => executeSupervisedDockerCommand(['run', 'img'], { ...base, maxChunkBytes: -8 }), /maxChunkBytes must be a positive safe integer/);
     assert.throws(() => executeSupervisedDockerCommand(['run', 'img'], { ...base, maxQueuedBytes: Number.POSITIVE_INFINITY }), /maxQueuedBytes must be a positive safe integer/);
@@ -93,7 +94,7 @@ test('rejects non-positive, non-finite, or incoherent backpressure limits', () =
 
 test('a single oversized read is stopped during enqueue by the hard cap', async () => {
     const execution = executeSupervisedDockerCommand(['run', 'img'], {
-        goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 'oversized',
+        goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 'oversized', ...recoveryIdentity,
         maxChunkBytes: 16, maxQueuedBytes: 64,
         // Never drains, so the whole read can only be bounded by enqueue-time enforcement.
         durableOutput: () => new Promise<void>(() => {}),
@@ -109,7 +110,7 @@ test('a single oversized read is stopped during enqueue by the hard cap', async 
 test('splitting a large read preserves multi-byte UTF-8 characters across chunk boundaries', async () => {
     const received: string[] = [];
     const execution = executeSupervisedDockerCommand(['run', 'img'], {
-        goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 'utf8',
+        goalId: 'g', sessionId: 's', controllerEpoch: 1, turnId: 'utf8', ...recoveryIdentity,
         maxChunkBytes: 4, maxQueuedBytes: 1_000_000,
         durableOutput: output => { received.push(output.data); },
     });

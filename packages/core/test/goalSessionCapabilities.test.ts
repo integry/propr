@@ -237,3 +237,44 @@ test('first-turn providers reject authoritative output before a real native ID i
     assert.equal(replay.some(record => record.event.type === 'output'), false);
     assert.equal((await persistence.load(identity))?.providerSessionId, undefined);
 });
+
+test('deterministic first-turn retry mints a fresh attempt instead of reusing the crashed invocation', async () => {
+    class RetryingFirstTurnAdapter extends FirstTurnBoundaryAdapter {
+        override readonly capabilities = {
+            ...FIRST_TURN_BOUNDARY_PROVIDER_CAPABILITIES,
+            firstTurnIdCrashPolicy: 'retry_deterministically',
+        } as const;
+    }
+    const adapter = new RetryingFirstTurnAdapter();
+    adapter.emitIdentity = false;
+    const persistence = new InMemoryGoalSessionPorts();
+    const initial = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => 'initialization-attempt');
+    await initial.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    await assert.rejects(initial.runTurn({
+        ...firstFence,
+        executionId: 'execution-retry',
+        attemptId: 'crashed-attempt',
+        objective: 'first invocation crashes',
+        repository,
+        requestedModel: 'model-a',
+    }), /native session ID/);
+
+    const ids = ['recovered-initialization-attempt', 'fresh-provider-attempt'];
+    const replacement = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts(), () => ids.shift()!);
+    await replacement.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 2 });
+    adapter.emitIdentity = true;
+    const recovered = await replacement.runTurn({
+        ...firstFence,
+        controllerEpoch: 2,
+        executionId: 'execution-retry',
+        attemptId: 'crashed-attempt',
+        objective: 'retry the same logical turn',
+        repository,
+        requestedModel: 'model-a',
+    });
+
+    assert.equal(recovered.execution.executionId, 'execution-retry');
+    assert.equal(recovered.execution.attemptId, 'fresh-provider-attempt');
+    assert.notEqual(recovered.execution.attemptId, 'crashed-attempt');
+    assert.equal(adapter.requests.at(-1)?.attemptId, 'fresh-provider-attempt');
+});
