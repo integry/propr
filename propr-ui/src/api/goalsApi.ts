@@ -2,6 +2,7 @@ import { API_BASE_URL, apiFetch } from './apiClient';
 import { GOAL_STATES, type CreateGoalRequestV1, type GoalRecordV1, type GoalState, type GoalsListResponseV1 } from './goalContracts';
 import { GoalContractError, handleGoalResponse } from './goalApiErrors';
 import { boundedInteger, decodeGoalRecord, decodeListResponse, isBoundedCursor } from './goalDecoders';
+import { canonicalGoalText, GOAL_TEXT_MAX_CODE_POINTS } from '../utils/canonicalGoalText';
 
 export { GOAL_STATES } from './goalContracts';
 export { GoalApiError, GoalContractError, GoalMutationUncertainError, isGoalApiErrorCode } from './goalApiErrors';
@@ -97,9 +98,14 @@ export const createGoal = async (params: CreateGoalRequestV1, idempotencyKey: st
   if (!idempotencyKey || idempotencyKey.length > GOAL_IDEMPOTENCY_KEY_MAX_LENGTH) {
     throw new GoalContractError('Idempotency-Key', `a non-empty key no longer than ${GOAL_IDEMPOTENCY_KEY_MAX_LENGTH} characters`);
   }
+  const canonicalObjective = canonicalGoalText(params.objective);
+  if (canonicalObjective.codePointLength > GOAL_TEXT_MAX_CODE_POINTS) {
+    throw new GoalContractError('objective', `a string no longer than ${GOAL_TEXT_MAX_CODE_POINTS} characters after trimming`);
+  }
+  const canonicalParams = { ...params, objective: canonicalObjective.value };
   const response = await apiFetch(`${API_BASE_URL}/api/goals`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-    body: JSON.stringify(params), credentials: 'include',
+    body: JSON.stringify(canonicalParams), credentials: 'include',
   }, { replayMutationAfterTokenRefresh: true });
   await handleGoalResponse(response);
   const body = await response.json() as { goal?: unknown };

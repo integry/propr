@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import type { GoalDetail, GoalMessage, SendGoalMessageParams } from '../../api/goalsApi';
+import { canonicalGoalText, GOAL_TEXT_MAX_CODE_POINTS } from '../../utils/canonicalGoalText';
 import { GOAL_TERMINAL_STATES } from './goalDetailUtils';
 
 interface GoalControlsProps {
@@ -21,7 +22,7 @@ const stateTone: Record<GoalMessage['state'], string> = {
   failed: 'bg-red-100 text-red-800', cancelled: 'bg-gray-100 text-gray-600',
 };
 
-const GOAL_MESSAGE_MAX_LENGTH = 4000;
+const GOAL_MESSAGE_MAX_LENGTH = GOAL_TEXT_MAX_CODE_POINTS;
 
 function CancelConfirmation({ busy, returnFocus, fallbackFocus, onClose, onConfirm }: { busy: boolean; returnFocus: RefObject<HTMLButtonElement | null>; fallbackFocus: RefObject<HTMLElement | null>; onClose: () => void; onConfirm: (reason: string) => void }) {
   const [reason, setReason] = useState('Cancelled by operator');
@@ -72,9 +73,12 @@ function GoalMessages({ messages, disabled, busy, onSend, onRetry, onCancel }: {
   onCancel: (messageId: string) => Promise<void>;
 }) {
   const [body, setBody] = useState('');
+  const canonicalBody = canonicalGoalText(body);
+  const bodyOverLimit = canonicalBody.codePointLength > GOAL_MESSAGE_MAX_LENGTH;
   const submitDraft = async () => {
     const draft = body;
-    if (await onSend({ body: draft.trim() })) setBody(current => current === draft ? '' : current);
+    if (!canonicalBody.value || bodyOverLimit) return;
+    if (await onSend({ body: canonicalBody.value })) setBody(current => current === draft ? '' : current);
   };
   return (
     <section aria-labelledby="goal-messages-title" className="mt-4 border-t border-slate-200 pt-4">
@@ -85,8 +89,9 @@ function GoalMessages({ messages, disabled, busy, onSend, onRetry, onCancel }: {
       </div>
       <form className="mt-2" onSubmit={event => { event.preventDefault(); void submitDraft(); }}>
         <label htmlFor="goal-message" className="sr-only">Message to the goal controller</label>
-        <textarea id="goal-message" value={body} onChange={event => setBody(Array.from(event.target.value).slice(0, GOAL_MESSAGE_MAX_LENGTH).join(''))} disabled={disabled || busy} rows={3} placeholder="Send guidance at the next safe boundary…" className="w-full resize-y rounded border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:bg-slate-100" />
-        <div className="mt-1 flex items-center justify-between"><span className="text-[10px] text-slate-400">{Array.from(body).length}/{GOAL_MESSAGE_MAX_LENGTH}</span><button type="submit" disabled={disabled || busy || !body.trim()} className="rounded bg-teal-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{busy ? 'Sending…' : 'Send message'}</button></div>
+        <textarea id="goal-message" value={body} onChange={event => setBody(event.target.value)} disabled={disabled || busy} rows={3} placeholder="Send guidance at the next safe boundary…" aria-invalid={bodyOverLimit} aria-describedby={bodyOverLimit ? 'goal-message-error goal-message-count' : 'goal-message-count'} className="w-full resize-y rounded border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:bg-slate-100" />
+        <div className="mt-1 flex items-start justify-between gap-3"><span id="goal-message-count" className={`text-[10px] ${bodyOverLimit ? 'font-medium text-red-600' : 'text-slate-400'}`}>{canonicalBody.codePointLength}/{GOAL_MESSAGE_MAX_LENGTH}</span><button type="submit" disabled={disabled || busy || !canonicalBody.value || bodyOverLimit} className="rounded bg-teal-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{busy ? 'Sending…' : 'Send message'}</button></div>
+        {bodyOverLimit && <p id="goal-message-error" role="alert" className="mt-1 text-xs text-red-600">Message must be at most {GOAL_MESSAGE_MAX_LENGTH} characters after trimming. Remove at least {canonicalBody.codePointLength - GOAL_MESSAGE_MAX_LENGTH} {canonicalBody.codePointLength - GOAL_MESSAGE_MAX_LENGTH === 1 ? 'character' : 'characters'}.</p>}
       </form>
       <ol aria-label="Goal messages" className="mt-3 max-h-72 space-y-2 overflow-y-auto">
         {messages.map(message => <li key={message.messageId} className="rounded border border-slate-200 p-2 text-xs">

@@ -2,6 +2,7 @@ import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertCircle, ChevronLeft, HelpCircle, Loader2, Target } from 'lucide-react';
 import { getGoalCapableModels, type InstanceCatalogAgent, type InstanceCatalogRepository } from '@propr/shared';
+import { canonicalGoalText } from '../utils/canonicalGoalText';
 import {
   AUTO_MERGE_OPTIONS,
   MAX_CONCURRENT_TASKS_MAX,
@@ -123,6 +124,43 @@ interface GoalCreateFormProps {
   cancel: () => void;
 }
 
+const ObjectiveField = ({ objective, error, submitting, onChange }: {
+  objective: string;
+  error?: string;
+  submitting: boolean;
+  onChange: (value: string) => void;
+}) => {
+  const objectiveText = canonicalGoalText(objective);
+  const overLimit = objectiveText.codePointLength > OBJECTIVE_MAX_LENGTH;
+  const excess = objectiveText.codePointLength - OBJECTIVE_MAX_LENGTH;
+  const visibleError = overLimit
+    ? `Objective must be at most ${OBJECTIVE_MAX_LENGTH} characters after trimming. Remove at least ${excess} ${excess === 1 ? 'character' : 'characters'}.`
+    : error;
+  return (
+    <div>
+      <FieldLabel htmlFor="goal-objective" label="Objective" required />
+      <textarea
+        id="goal-objective"
+        value={objective}
+        onChange={event => onChange(event.target.value)}
+        rows={4}
+        minLength={OBJECTIVE_MIN_LENGTH}
+        placeholder="Describe what the goal-capable agent should accomplish."
+        disabled={submitting}
+        required
+        aria-invalid={Boolean(visibleError)}
+        aria-describedby={visibleError ? 'goal-objective-error goal-objective-count' : 'goal-objective-hint goal-objective-count'}
+        className="w-full resize-y rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 disabled:bg-gray-50"
+      />
+      <div className="mt-1 flex items-start justify-between gap-3 text-xs text-gray-500">
+        <p id="goal-objective-hint">Required · {OBJECTIVE_MIN_LENGTH}–{OBJECTIVE_MAX_LENGTH} characters after trimming</p>
+        <span id="goal-objective-count" className={overLimit ? 'font-medium text-red-600' : undefined}>{objectiveText.codePointLength}/{OBJECTIVE_MAX_LENGTH}</span>
+      </div>
+      {visibleError && <FieldError id="goal-objective-error" message={visibleError} />}
+    </div>
+  );
+};
+
 export const GoalCreateForm = ({
   agents,
   repositories,
@@ -135,6 +173,7 @@ export const GoalCreateForm = ({
   submit,
   cancel,
 }: GoalCreateFormProps) => {
+  const objectiveOverLimit = canonicalGoalText(values.objective).codePointLength > OBJECTIVE_MAX_LENGTH;
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     void submit();
@@ -142,27 +181,7 @@ export const GoalCreateForm = ({
   return (
     <form onSubmit={handleSubmit} noValidate aria-label="Create goal">
       <div className="space-y-6">
-        <div>
-          <FieldLabel htmlFor="goal-objective" label="Objective" required />
-          <textarea
-            id="goal-objective"
-            value={values.objective}
-            onChange={event => setField(
-              'objective',
-              Array.from(event.target.value).slice(0, OBJECTIVE_MAX_LENGTH).join('')
-            )}
-            rows={4}
-            minLength={OBJECTIVE_MIN_LENGTH}
-            placeholder="Describe what the goal-capable agent should accomplish."
-            disabled={submitting}
-            required
-            aria-invalid={Boolean(errors.objective)}
-            aria-describedby={errors.objective ? 'goal-objective-error' : 'goal-objective-hint'}
-            className="w-full resize-y rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 disabled:bg-gray-50"
-          />
-          <p id="goal-objective-hint" className="mt-1 text-xs text-gray-500">Required · {OBJECTIVE_MIN_LENGTH}–{OBJECTIVE_MAX_LENGTH} characters after trimming</p>
-          {errors.objective && <FieldError id="goal-objective-error" message={errors.objective} />}
-        </div>
+        <ObjectiveField objective={values.objective} error={errors.objective} submitting={submitting} onChange={value => setField('objective', value)} />
 
         <div>
           <FieldLabel htmlFor="goal-repository" label="Repository" required />
@@ -253,7 +272,7 @@ export const GoalCreateForm = ({
 
         {errors.submit && <div role="alert" className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700"><AlertCircle className="h-4 w-4" aria-hidden="true" />{errors.submit}</div>}
         <div className="flex items-center gap-3 border-t border-gray-100 pt-4">
-          <button type="submit" disabled={submitting || isDemoMode} className="inline-flex items-center gap-2 rounded-md bg-teal-600 px-5 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">
+          <button type="submit" disabled={submitting || isDemoMode || objectiveOverLimit} className="inline-flex items-center gap-2 rounded-md bg-teal-600 px-5 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">
             {submitting ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />Creating…</> : <><Target className="h-4 w-4" aria-hidden="true" />Create Goal</>}
           </button>
           <button type="button" onClick={cancel} disabled={submitting} className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 disabled:opacity-50">Cancel</button>

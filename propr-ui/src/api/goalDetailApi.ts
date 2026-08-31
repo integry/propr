@@ -2,6 +2,7 @@ import { API_BASE_URL, apiFetch } from './apiClient';
 import type { GoalDetailV1, GoalEventsPageV1, GoalMessageV1, GoalRecordV1 } from './goalContracts';
 import { GoalContractError, GoalMutationUncertainError, handleGoalResponse } from './goalApiErrors';
 import { boundedInteger, decodeEventsPage, decodeGoalDetail, decodeGoalMessage, decodeGoalRecord, integer } from './goalDecoders';
+import { canonicalGoalText, GOAL_TEXT_MAX_CODE_POINTS } from '../utils/canonicalGoalText';
 
 const GOAL_IDEMPOTENCY_KEY_MAX_LENGTH = 255;
 
@@ -88,12 +89,14 @@ export const sendGoalMessage = async (
   idempotencyKey: string
 ): Promise<GoalMessageV1> => {
   validateIdempotencyKey(idempotencyKey);
-  if (Array.from(params.body.trim()).length > 4000 || (!params.body.trim() && !params.predefinedKind)) {
-    throw new GoalContractError('message.body', 'a non-empty message no longer than 4000 characters');
+  const canonicalBody = canonicalGoalText(params.body);
+  if (canonicalBody.codePointLength > GOAL_TEXT_MAX_CODE_POINTS || (!canonicalBody.value && !params.predefinedKind)) {
+    throw new GoalContractError('message.body', `a non-empty message no longer than ${GOAL_TEXT_MAX_CODE_POINTS} characters`);
   }
+  const canonicalParams = { ...params, body: canonicalBody.value };
   const response = await apiFetch(`${API_BASE_URL}/api/goals/${encodeURIComponent(goalId)}/messages`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-    credentials: 'include', body: JSON.stringify(params),
+    credentials: 'include', body: JSON.stringify(canonicalParams),
   }, { replayMutationAfterTokenRefresh: true });
   await handleGoalResponse(response);
   try {

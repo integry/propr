@@ -188,6 +188,33 @@ describe('goalsApi', () => {
     }
   });
 
+  it('validates and sends the same canonical trimmed Unicode objective', async () => {
+    const canonicalObjective = `${'🚀'.repeat(3998)}e\u0301`;
+    const params: goalsApi.CreateGoalParams = {
+      objective: ` \n${canonicalObjective}\t `,
+      repository: wireGoal.repository,
+      agent: 'codex',
+      model: 'gpt-requested',
+      maxActiveTasks: 4,
+      mergePolicy: 'manual',
+      ultrafixEnabled: false,
+      ultrafixGoal: null,
+      ultrafixMaxCycles: null,
+    };
+    expect(Array.from(canonicalObjective)).toHaveLength(4000);
+    fetchMock.mockResolvedValue(jsonResponse({ goal: { ...wireGoal, objective: canonicalObjective } }, 201));
+
+    await goalsApi.createGoal(params, 'goal-create-key');
+    expect(fetchMock).toHaveBeenCalledWith('/api/goals', expect.objectContaining({
+      body: JSON.stringify({ ...params, objective: canonicalObjective }),
+    }));
+
+    fetchMock.mockClear();
+    await expect(goalsApi.createGoal({ ...params, objective: ` ${canonicalObjective}x ` }, 'goal-create-key'))
+      .rejects.toBeInstanceOf(goalsApi.GoalContractError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('preserves the idempotency-conflict code for an actionable UI path', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ code: 'goal_idempotency_conflict', error: 'Key payload differs' }, 409));
     const params: goalsApi.CreateGoalParams = {
@@ -292,6 +319,23 @@ describe('goalsApi', () => {
     fetchMock.mockResolvedValue(jsonResponse({ message: { body: 'missing canonical fields' } }, 200));
     await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?' }, 'message-key')).rejects.toBeInstanceOf(goalsApi.GoalMutationUncertainError);
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('validates and sends the same canonical trimmed Unicode message', async () => {
+    const canonicalBody = `${'🚀'.repeat(3998)}e\u0301`;
+    const rawBody = ` \n${canonicalBody}\t `;
+    const wireMessage = { messageId: 'message-1', sequence: 9, body: canonicalBody, predefinedKind: null, state: 'delivered', responseSource: null, response: null, error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
+    expect(Array.from(canonicalBody)).toHaveLength(4000);
+    fetchMock.mockResolvedValue(jsonResponse({ message: wireMessage }, 201));
+
+    await expect(goalsApi.sendGoalMessage('goal-1', { body: rawBody }, 'message-key')).resolves.toEqual(wireMessage);
+    expect(fetchMock).toHaveBeenCalledWith('/api/goals/goal-1/messages', expect.objectContaining({
+      body: JSON.stringify({ body: canonicalBody }),
+    }));
+
+    fetchMock.mockClear();
+    await expect(goalsApi.sendGoalMessage('goal-1', { body: ` ${canonicalBody}x ` }, 'message-key')).rejects.toBeInstanceOf(goalsApi.GoalContractError);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('requires an idempotency key for steering and exposes all durable message states', async () => {

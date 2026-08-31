@@ -149,16 +149,77 @@ describe('GoalControls', () => {
     expect(handlers.onCancelMessage).toHaveBeenCalledWith('message-1');
   });
 
-  it('bounds message drafts by Unicode code points instead of UTF-16 code units', () => {
+  it('preserves full message drafts through prepend, middle, append, and composition edits', () => {
     render(<GoalControls {...props()} />);
     const draft = screen.getByRole('textbox', { name: 'Message to the goal controller' });
     expect(draft).not.toHaveAttribute('maxlength');
+    const full = `${'a'.repeat(3998)}YZ`;
+    const insertions = [
+      `P${full}`,
+      `${full.slice(0, 2000)}M${full.slice(2000)}`,
+      `${full}A`,
+    ];
 
-    fireEvent.change(draft, { target: { value: '🚀'.repeat(4001) } });
+    for (const rawDraft of insertions) {
+      fireEvent.change(draft, { target: { value: rawDraft } });
+      expect(draft).toHaveValue(rawDraft);
+      expect((draft as HTMLTextAreaElement).value.endsWith('YZ') || rawDraft.endsWith('A')).toBe(true);
+      expect(screen.getByText('4001/4000')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+    }
 
-    expect(Array.from((draft as HTMLTextAreaElement).value)).toHaveLength(4000);
-    expect(draft).toHaveValue('🚀'.repeat(4000));
+    const composingDraft = `${full.slice(0, 2000)}あ${full.slice(2000)}`;
+    fireEvent.compositionStart(draft);
+    fireEvent.change(draft, { target: { value: composingDraft } });
+    fireEvent.compositionEnd(draft, { data: 'あ' });
+    expect(draft).toHaveValue(composingDraft);
+    expect((draft as HTMLTextAreaElement).value.endsWith('YZ')).toBe(true);
+    expect(screen.getByRole('alert')).toHaveTextContent('Remove at least 1 character');
+  });
+
+  it('preserves an over-limit message paste and recovers after editing under the limit', async () => {
+    const handlers = props();
+    render(<GoalControls {...handlers} />);
+    const draft = screen.getByRole('textbox', { name: 'Message to the goal controller' });
+    const pastedDraft = 'x'.repeat(4001);
+
+    fireEvent.paste(draft, { clipboardData: { getData: () => pastedDraft } });
+    fireEvent.change(draft, { target: { value: pastedDraft } });
+    expect(draft).toHaveValue(pastedDraft);
+    expect(screen.getByRole('alert')).toHaveTextContent('at most 4000 characters after trimming');
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+    expect(handlers.onSend).not.toHaveBeenCalled();
+
+    fireEvent.change(draft, { target: { value: pastedDraft.slice(0, -1) } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByText('4000/4000')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(handlers.onSend).toHaveBeenCalledWith({ body: 'x'.repeat(4000) }));
+  });
+
+  it('aligns the message counter, validation, and payload for trimmed Unicode code points', async () => {
+    const handlers = props();
+    handlers.onSend.mockResolvedValue(false);
+    render(<GoalControls {...handlers} />);
+    const draft = screen.getByRole('textbox', { name: 'Message to the goal controller' });
+
+    const astralDraft = `  ${'🚀'.repeat(4000)}  `;
+    fireEvent.change(draft, { target: { value: astralDraft } });
+    expect(draft).toHaveValue(astralDraft);
+    expect(screen.getByText('4000/4000')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
+
+    const canonicalMessage = `${'🚀'.repeat(3998)}e\u0301`;
+    const rawDraft = ` \n${canonicalMessage}\t `;
+    expect(Array.from(canonicalMessage)).toHaveLength(4000);
+    fireEvent.change(draft, { target: { value: rawDraft } });
+    expect(draft).toHaveValue(rawDraft);
+    expect(screen.getByText('4000/4000')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => expect(handlers.onSend).toHaveBeenCalledWith({ body: canonicalMessage }));
+    expect(draft).toHaveValue(rawDraft);
   });
 
   it('disables every mutation for each pending action without unmounting the draft', () => {

@@ -1,9 +1,10 @@
 import type { GoalMergePolicy, CreateGoalParams } from '../api/goalsApi';
+import { canonicalGoalText, GOAL_TEXT_MAX_CODE_POINTS } from '../utils/canonicalGoalText';
 
 export const MAX_CONCURRENT_TASKS_MIN = 1;
 export const MAX_CONCURRENT_TASKS_MAX = 20;
 export const OBJECTIVE_MIN_LENGTH = 10;
-export const OBJECTIVE_MAX_LENGTH = 4000;
+export const OBJECTIVE_MAX_LENGTH = GOAL_TEXT_MAX_CODE_POINTS;
 export const ULTRAFIX_GOAL_MIN = 1;
 export const ULTRAFIX_GOAL_MAX = 10;
 export const ULTRAFIX_CYCLES_MIN = 1;
@@ -46,10 +47,13 @@ const optionalInteger = (value: string): number | undefined => value.trim() === 
 
 export function validateGoalForm(values: GoalFormValues): GoalFormErrors {
   const errors: GoalFormErrors = {};
-  const objectiveLength = [...values.objective.trim()].length;
+  const { codePointLength: objectiveLength } = canonicalGoalText(values.objective);
   if (objectiveLength === 0) errors.objective = 'Objective is required.';
   else if (objectiveLength < OBJECTIVE_MIN_LENGTH) errors.objective = `Objective must be at least ${OBJECTIVE_MIN_LENGTH} characters after trimming.`;
-  else if (objectiveLength > OBJECTIVE_MAX_LENGTH) errors.objective = `Objective must be at most ${OBJECTIVE_MAX_LENGTH} characters.`;
+  else if (objectiveLength > OBJECTIVE_MAX_LENGTH) {
+    const excess = objectiveLength - OBJECTIVE_MAX_LENGTH;
+    errors.objective = `Objective must be at most ${OBJECTIVE_MAX_LENGTH} characters after trimming. Remove at least ${excess} ${excess === 1 ? 'character' : 'characters'}.`;
+  }
   if (!values.repository) errors.repository = 'Repository is required.';
   if (!values.agent) errors.agent = 'Agent is required.';
   if (!values.model) errors.model = 'Model is required.';
@@ -73,7 +77,7 @@ export function validateGoalForm(values: GoalFormValues): GoalFormErrors {
 
 export function buildCreateGoalParams(values: GoalFormValues): CreateGoalParams {
   return {
-    objective: values.objective.trim(),
+    objective: canonicalGoalText(values.objective).value,
     repository: values.repository,
     agent: values.agent,
     model: values.model,

@@ -153,16 +153,77 @@ describe('GoalCreatePage', () => {
     ));
   });
 
-  it('bounds objectives by Unicode code points instead of UTF-16 code units', async () => {
+  it('preserves full objective drafts through prepend, middle, append, and composition edits', async () => {
     renderPage();
     await screen.findByRole('form', { name: 'Create goal' });
     const objective = screen.getByLabelText(/^Objective/);
     expect(objective).not.toHaveAttribute('maxlength');
+    const full = `${'a'.repeat(3998)}YZ`;
+    const insertions = [
+      `P${full}`,
+      `${full.slice(0, 2000)}M${full.slice(2000)}`,
+      `${full}A`,
+    ];
 
-    fireEvent.change(objective, { target: { value: '🚀'.repeat(4001) } });
+    for (const rawDraft of insertions) {
+      fireEvent.change(objective, { target: { value: rawDraft } });
+      expect(objective).toHaveValue(rawDraft);
+      expect((objective as HTMLTextAreaElement).value.endsWith('YZ') || rawDraft.endsWith('A')).toBe(true);
+      expect(screen.getByText('4001/4000')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Create Goal' })).toBeDisabled();
+    }
 
-    expect(Array.from((objective as HTMLTextAreaElement).value)).toHaveLength(4000);
-    expect(objective).toHaveValue('🚀'.repeat(4000));
+    const composingDraft = `${full.slice(0, 2000)}あ${full.slice(2000)}`;
+    fireEvent.compositionStart(objective);
+    fireEvent.change(objective, { target: { value: composingDraft } });
+    fireEvent.compositionEnd(objective, { data: 'あ' });
+    expect(objective).toHaveValue(composingDraft);
+    expect((objective as HTMLTextAreaElement).value.endsWith('YZ')).toBe(true);
+    expect(screen.getByRole('alert')).toHaveTextContent('Remove at least 1 character');
+  });
+
+  it('preserves an over-limit objective paste and recovers after editing under the limit', async () => {
+    renderPage();
+    await screen.findByRole('form', { name: 'Create goal' });
+    const objective = screen.getByLabelText(/^Objective/);
+    const pastedDraft = 'x'.repeat(4001);
+
+    fireEvent.paste(objective, { clipboardData: { getData: () => pastedDraft } });
+    fireEvent.change(objective, { target: { value: pastedDraft } });
+    expect(objective).toHaveValue(pastedDraft);
+    expect(screen.getByRole('alert')).toHaveTextContent('at most 4000 characters after trimming');
+    expect(screen.getByRole('button', { name: 'Create Goal' })).toBeDisabled();
+    expect(createGoal).not.toHaveBeenCalled();
+
+    fireEvent.change(objective, { target: { value: pastedDraft.slice(0, -1) } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByText('4000/4000')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create Goal' })).toBeEnabled();
+  });
+
+  it('aligns the objective counter, validation, and payload for trimmed Unicode code points', async () => {
+    vi.mocked(createGoal).mockResolvedValue(createdGoal);
+    renderPage();
+    await screen.findByRole('form', { name: 'Create goal' });
+    const objective = screen.getByLabelText(/^Objective/);
+
+    fireEvent.change(objective, { target: { value: `  ${'🚀'.repeat(4000)}  ` } });
+    expect(objective).toHaveValue(`  ${'🚀'.repeat(4000)}  `);
+    expect(screen.getByText('4000/4000')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create Goal' })).toBeEnabled();
+
+    const canonicalObjective = `${'🚀'.repeat(3998)}e\u0301`;
+    const rawDraft = ` \n${canonicalObjective}\t `;
+    expect(Array.from(canonicalObjective)).toHaveLength(4000);
+    fireEvent.change(objective, { target: { value: rawDraft } });
+    expect(objective).toHaveValue(rawDraft);
+    expect(screen.getByText('4000/4000')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
+
+    await waitFor(() => expect(createGoal).toHaveBeenCalledWith(
+      expect.objectContaining({ objective: canonicalObjective }),
+      expect.any(String)
+    ));
   });
 
   it('reuses the same idempotency key for an exact uncertain retry', async () => {
