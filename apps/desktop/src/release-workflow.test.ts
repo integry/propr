@@ -695,7 +695,7 @@ describe('desktop trusted release workflow', () => {
     );
   });
 
-  test('hands the canonical common shortcut to a profile-loading ordinary-user probe and cleans only owned paths', () => {
+  test('hands the canonical common shortcut to an isolated profile-loading ordinary-user probe and cleans only owned paths', () => {
     const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
     const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
     assert.ok(probeStart >= 0 && probeEnd > probeStart);
@@ -704,6 +704,7 @@ describe('desktop trusted release workflow', () => {
     assert.ok(childSource);
 
     assert.match(shortcutProbe, /\[string\]\$ShortcutPath/);
+    assert.match(shortcutProbe, /\[string\]\$SmokeDirectory/);
     assert.match(childSource[1], /\$shortcut = \$env:PROPR_DESKTOP_START_MENU_SHORTCUT/);
     assert.match(childSource[1], /\[string\]::IsNullOrWhiteSpace\(\$shortcut\)/);
     assert.match(childSource[1], /!\[IO\.Path\]::IsPathRooted\(\$shortcut\)/);
@@ -717,11 +718,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(shortcutProbe, /\$startInfo\.Environment\.Clear\(\)/);
     assert.match(
       shortcutProbe,
-      /\$startInfo\.Environment\.Add\('PROPR_DESKTOP_START_MENU_SHORTCUT', \$ShortcutPath\)/,
-    );
-    assert.deepEqual(
-      [...shortcutProbe.matchAll(/\$startInfo\.Environment\.Add\('([^']+)'/g)].map(([, name]) => name),
-      ['SystemRoot', 'PROPR_DESKTOP_START_MENU_SHORTCUT'],
+      /foreach \(\$entry in \$probeChildEnvironment\.GetEnumerator\(\)\) \{\n\s+\$startInfo\.Environment\.Add\(\[string\]\$entry\.Key, \[string\]\$entry\.Value\)/,
     );
     assert.equal(shortcutProbe.match(/PROPR_DESKTOP_START_MENU_SHORTCUT/g)?.length, 2);
     assert.match(shortcutProbe, /\$startInfo\.LoadUserProfile = \$true/);
@@ -731,6 +728,13 @@ describe('desktop trusted release workflow', () => {
     assert.match(shortcutProbe, /\$startInfo\.Password = \$Credential\.Password/);
     assert.match(shortcutProbe, /\$process\.WaitForExit\(\$terminationTimeoutMilliseconds\)/);
     assert.equal(installedWindowsAppTest.match(/-ShortcutPath \$startMenuShortcut/g)?.length, 2);
+    const shortcutCalls = [...installedWindowsAppTest.matchAll(
+      /Test-StartMenuShortcutAsOrdinaryUser `([\s\S]*?)\n\s+-ExpectedPresent \$(true|false)/g,
+    )];
+    assert.deepEqual(shortcutCalls.map(call => call[2]), ['true', 'false']);
+    for (const call of shortcutCalls) {
+      assert.match(call[1], /-SmokeDirectory \$smokeUserDataDirectory `/);
+    }
 
     const installStart = installedWindowsAppTest.indexOf("Write-Stage 'INSTALL' 'BEGIN'");
     assert.ok(
@@ -773,6 +777,101 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu shortcut behind/);
     assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu folder behind/);
+  });
+
+  test('builds and reuses a strictly contained probe-only profile with an exact seven-key environment', () => {
+    const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
+    const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart);
+    const shortcutProbe = installedWindowsAppTest.slice(probeStart, probeEnd);
+    const profileSetup = shortcutProbe.slice(0, shortcutProbe.indexOf('$expectedLiteral'));
+
+    assert.match(
+      shortcutProbe,
+      /\$fullSmokeDirectory = \[IO\.Path\]::GetFullPath\(\$SmokeDirectory\)/,
+    );
+    assert.match(shortcutProbe, /\^propr-desktop-smoke-\[a-f0-9\]\{32\}\$/);
+    assert.match(
+      shortcutProbe,
+      /\(Split-Path -Parent \$fullSmokeDirectory\),\n\s+\$machineTemp,\n\s+\[StringComparison\]::OrdinalIgnoreCase/,
+    );
+    assert.match(
+      shortcutProbe,
+      /\$smokeDirectoryPrefix = \$fullSmokeDirectory \+ \[IO\.Path\]::DirectorySeparatorChar/,
+    );
+    assert.match(
+      shortcutProbe,
+      /!\$fullDirectory\.StartsWith\(\$smokeDirectoryPrefix, \[StringComparison\]::OrdinalIgnoreCase\)/,
+    );
+
+    assert.match(shortcutProbe, /Join-Path \$fullSmokeDirectory 'shortcut-probe'/);
+    assert.match(shortcutProbe, /Join-Path \$probeRootDirectory 'USERPROFILE'/);
+    assert.match(shortcutProbe, /Join-Path \$probeUserProfileDirectory 'AppData'/);
+    assert.match(shortcutProbe, /Join-Path \$probeAppDataDirectory 'Roaming'/);
+    assert.match(shortcutProbe, /Join-Path \$probeAppDataDirectory 'Local'/);
+    assert.match(shortcutProbe, /Join-Path \$probeRootDirectory 'TEMP'/);
+    assert.match(shortcutProbe, /Join-Path \$probeRootDirectory 'TMP'/);
+    assert.doesNotMatch(shortcutProbe, /Join-Path \$fullSmokeDirectory '(?:profile|temp)'/);
+    assert.doesNotMatch(shortcutProbe, /SpecialFolder\]::UserProfile|Win32_UserProfile/);
+
+    assert.equal(profileSetup.match(/\[IO\.Directory\]::CreateDirectory\(\$fullDirectory\)/g)?.length, 1);
+    assert.doesNotMatch(profileSetup, /New-Item|Remove-Item/);
+    assert.equal(profileSetup.match(/\[IO\.FileAttributes\]::ReparsePoint/g)?.length, 2);
+    assert.match(
+      shortcutProbe,
+      /!\$smokeDirectoryAcl\.AreAccessRulesProtected -or \$smokeDirectoryRules\.Count -ne 3/,
+    );
+    assert.match(shortcutProbe, /!\$_.IsInherited/);
+    assert.match(
+      shortcutProbe,
+      /\$_.AccessControlType -ne \[Security\.AccessControl\.AccessControlType\]::Allow/,
+    );
+    assert.match(
+      shortcutProbe,
+      /\$_.FileSystemRights -band \[Security\.AccessControl\.FileSystemRights\]::FullControl/,
+    );
+    assert.match(
+      shortcutProbe,
+      /\$directoryAcl\.AreAccessRulesProtected -or \$directoryRules\.Count -ne 3[\s\S]*Compare-Object \$smokeDirectorySids \$directorySids/,
+    );
+
+    const probeEnvironment = shortcutProbe.match(
+      /\$probeChildEnvironment = \[ordered\]@\{([\s\S]*?)\n\s+\}/,
+    );
+    assert.ok(probeEnvironment);
+    const entries = [...probeEnvironment[1].matchAll(
+      /^\s+'([^']+)' = (\$[A-Za-z][A-Za-z0-9]*)$/gm,
+    )].map(([, key, expression]) => ({ key, expression }));
+    assert.deepEqual(entries, [
+      { key: 'APPDATA', expression: '$probeRoamingAppDataDirectory' },
+      { key: 'LOCALAPPDATA', expression: '$probeLocalAppDataDirectory' },
+      { key: 'USERPROFILE', expression: '$probeUserProfileDirectory' },
+      { key: 'TEMP', expression: '$probeTemporaryDirectory' },
+      { key: 'TMP', expression: '$probeTmpDirectory' },
+      { key: 'SystemRoot', expression: '$windowsDirectory' },
+      { key: 'PROPR_DESKTOP_START_MENU_SHORTCUT', expression: '$ShortcutPath' },
+    ]);
+    assert.doesNotMatch(
+      probeEnvironment[0],
+      /\$env:|GetEnvironmentVariables|EnvironmentVariables|\bPATH\b|\bCI\b|TOKEN|SECRET|PASSWORD|CERTIFICATE|SSH/,
+    );
+
+    const clear = shortcutProbe.indexOf('$startInfo.Environment.Clear()');
+    const add = shortcutProbe.indexOf(
+      '$startInfo.Environment.Add([string]$entry.Key, [string]$entry.Value)',
+    );
+    const start = shortcutProbe.indexOf('$started = $process.Start()');
+    assert.ok(clear >= 0 && clear < add && add < start);
+    assert.equal(shortcutProbe.match(/\$startInfo\.Environment/g)?.length, 2);
+    assert.doesNotMatch(shortcutProbe, /GetEnvironmentVariables|EnvironmentVariables|\.Environment\s*=|\.Environment\.Remove\(/);
+
+    const applicationLauncher = installedWindowsAppTest.slice(
+      installedWindowsAppTest.indexOf('function Start-AlternateCredentialApplication('),
+      probeStart,
+    );
+    assert.match(applicationLauncher, /Join-Path \$fullSmokeDirectory 'profile'/);
+    assert.match(applicationLauncher, /Join-Path \$fullSmokeDirectory 'temp'/);
+    assert.doesNotMatch(applicationLauncher, /shortcut-probe|probeUserProfileDirectory/);
   });
 
   test('replaces a hostile privileged parent environment with the exact smoke child allowlist', () => {

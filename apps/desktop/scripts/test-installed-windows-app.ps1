@@ -393,8 +393,88 @@ function Test-StartMenuShortcutAsOrdinaryUser(
   [string]$Domain,
   [string]$UserName,
   [string]$ShortcutPath,
+  [string]$SmokeDirectory,
   [bool]$ExpectedPresent
 ) {
+  $fullSmokeDirectory = [IO.Path]::GetFullPath($SmokeDirectory)
+  if ((Split-Path -Leaf $fullSmokeDirectory) -notmatch '^propr-desktop-smoke-[a-f0-9]{32}$' -or
+      ![string]::Equals(
+        (Split-Path -Parent $fullSmokeDirectory),
+        $machineTemp,
+        [StringComparison]::OrdinalIgnoreCase
+      )) {
+    throw 'ordinary-user shortcut probe requires the verified smoke directory'
+  }
+  $smokeDirectoryItem = Get-Item -LiteralPath $fullSmokeDirectory -Force -ErrorAction Stop
+  if (!$smokeDirectoryItem.PSIsContainer -or
+      ($smokeDirectoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'ordinary-user shortcut probe requires the verified smoke directory'
+  }
+  $smokeDirectoryAcl = Get-Acl -LiteralPath $fullSmokeDirectory
+  $smokeDirectoryRules = @($smokeDirectoryAcl.Access)
+  $smokeDirectorySids = @($smokeDirectoryRules | ForEach-Object {
+    ($_.IdentityReference.Translate([Security.Principal.SecurityIdentifier])).Value
+  }) | Sort-Object -Unique
+  if (!$smokeDirectoryAcl.AreAccessRulesProtected -or $smokeDirectoryRules.Count -ne 3) {
+    throw 'ordinary-user shortcut probe requires the verified smoke directory'
+  }
+
+  $probeRootDirectory = Join-Path $fullSmokeDirectory 'shortcut-probe'
+  $probeUserProfileDirectory = Join-Path $probeRootDirectory 'USERPROFILE'
+  $probeAppDataDirectory = Join-Path $probeUserProfileDirectory 'AppData'
+  $probeRoamingAppDataDirectory = Join-Path $probeAppDataDirectory 'Roaming'
+  $probeLocalAppDataDirectory = Join-Path $probeAppDataDirectory 'Local'
+  $probeTemporaryDirectory = Join-Path $probeRootDirectory 'TEMP'
+  $probeTmpDirectory = Join-Path $probeRootDirectory 'TMP'
+  $smokeDirectoryPrefix = $fullSmokeDirectory + [IO.Path]::DirectorySeparatorChar
+  foreach ($directory in @(
+    $probeRootDirectory,
+    $probeUserProfileDirectory,
+    $probeAppDataDirectory,
+    $probeRoamingAppDataDirectory,
+    $probeLocalAppDataDirectory,
+    $probeTemporaryDirectory,
+    $probeTmpDirectory
+  )) {
+    $fullDirectory = [IO.Path]::GetFullPath($directory)
+    if (!$fullDirectory.StartsWith($smokeDirectoryPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'ordinary-user shortcut probe child profile escaped the smoke directory'
+    }
+    [void][IO.Directory]::CreateDirectory($fullDirectory)
+    $directoryItem = Get-Item -LiteralPath $fullDirectory -Force -ErrorAction Stop
+    if (!$directoryItem.PSIsContainer -or
+        ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'ordinary-user shortcut probe child profile layout is invalid'
+    }
+    $directoryAcl = Get-Acl -LiteralPath $fullDirectory
+    $directoryRules = @($directoryAcl.Access)
+    $directorySids = @($directoryRules | ForEach-Object {
+      ($_.IdentityReference.Translate([Security.Principal.SecurityIdentifier])).Value
+    }) | Sort-Object -Unique
+    $invalidDirectoryRules = @($directoryRules | Where-Object {
+      !$_.IsInherited -or
+      $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+      ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+        [Security.AccessControl.FileSystemRights]::FullControl
+    })
+    if ($directoryAcl.AreAccessRulesProtected -or $directoryRules.Count -ne 3 -or
+        $invalidDirectoryRules.Count -ne 0 -or
+        (Compare-Object $smokeDirectorySids $directorySids)) {
+      throw 'ordinary-user shortcut probe child profile ACL is not inherited from the smoke directory'
+    }
+  }
+
+  # This is the complete probe child environment. Never add parent/CI variables here.
+  $probeChildEnvironment = [ordered]@{
+    'APPDATA' = $probeRoamingAppDataDirectory
+    'LOCALAPPDATA' = $probeLocalAppDataDirectory
+    'USERPROFILE' = $probeUserProfileDirectory
+    'TEMP' = $probeTemporaryDirectory
+    'TMP' = $probeTmpDirectory
+    'SystemRoot' = $windowsDirectory
+    'PROPR_DESKTOP_START_MENU_SHORTCUT' = $ShortcutPath
+  }
+
   $expectedLiteral = if ($ExpectedPresent) { '$true' } else { '$false' }
   $probeTemplate = @'
 $ErrorActionPreference = 'Stop'
@@ -441,8 +521,9 @@ exit 0
 
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.Environment.Clear()
-  $startInfo.Environment.Add('SystemRoot', $windowsDirectory)
-  $startInfo.Environment.Add('PROPR_DESKTOP_START_MENU_SHORTCUT', $ShortcutPath)
+  foreach ($entry in $probeChildEnvironment.GetEnumerator()) {
+    $startInfo.Environment.Add([string]$entry.Key, [string]$entry.Value)
+  }
   $startInfo.FileName = $powershell
   $startInfo.UseShellExecute = $false
   $startInfo.CreateNoWindow = $true
@@ -803,6 +884,7 @@ try {
       -Domain $env:COMPUTERNAME `
       -UserName $testUser `
       -ShortcutPath $startMenuShortcut `
+      -SmokeDirectory $smokeUserDataDirectory `
       -ExpectedPresent $true
     Write-Stage 'USER_SETUP' 'COMPLETE'
   } catch {
@@ -943,6 +1025,7 @@ try {
           -Domain $env:COMPUTERNAME `
           -UserName $testUser `
           -ShortcutPath $startMenuShortcut `
+          -SmokeDirectory $smokeUserDataDirectory `
           -ExpectedPresent $false
         Write-CleanupSubstage 'UNINSTALL' 'ORDINARY_USER_ABSENCE_PROBE' 'COMPLETE'
       } catch {
