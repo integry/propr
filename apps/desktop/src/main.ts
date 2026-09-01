@@ -867,7 +867,6 @@ if (!hasSingleInstanceLock) {
       if (BrowserWindow.getAllWindows().length === 0) {
         void createMainWindow(null).then(window => {
           mainWindow = window;
-          deepLinkDelivery.setWindow(window);
         });
       }
     });
