@@ -12,6 +12,14 @@ import {
 
 const windowsIt = process.platform === 'win32' ? it : it.skip;
 
+const assertPowerShellStreamEmpty = (stream, category) => {
+  if (!Buffer.isBuffer(stream) || stream.length !== 0) {
+    const error = new Error(`Windows fixture ACL helper stream contract failed [category=${category}]`);
+    error.stack = error.message;
+    throw error;
+  }
+};
+
 windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and byte-empty', t => {
   const powershell = windowsPowerShell51Path();
   const version = spawnSync(powershell, [
@@ -99,9 +107,9 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
 
       assert.ifError(result.error);
       assert.equal(result.signal, null);
+      assertPowerShellStreamEmpty(result.stdout, 'powershell-stdout');
+      assertPowerShellStreamEmpty(result.stderr, 'powershell-stderr');
       assert.equal(result.status, entry.status, `${entry.label} returned the wrong redacted phase code`);
-      assert.equal(result.stdout.length, 0, `${entry.label} helper stdout must contain zero bytes`);
-      assert.equal(result.stderr.length, 0, `${entry.label} helper stderr must contain zero bytes`);
     }
   } finally {
     rmSync(fixture, { recursive: true, force: true });

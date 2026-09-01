@@ -5,6 +5,7 @@ import { TextDecoder } from 'node:util';
 
 export const windowsFixtureAclSource = String.raw`
 $ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
 function Set-ProprFixtureAcl {
   [CmdletBinding()]
   param(
