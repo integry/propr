@@ -14,6 +14,55 @@ $cleanupFailed = $false
 $manifestValidated = $false
 $authorizedRunId = $null
 
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class ProPRDirectoryIdentity
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string path, uint access, uint share, IntPtr security, uint creation,
+        uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
+
+    public static string Read(string path)
+    {
+        using (SafeFileHandle handle = CreateFile(
+            path, 0x80, 0x7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero))
+        {
+            if (handle == null || handle.IsInvalid)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "directory identity open failed");
+            BY_HANDLE_FILE_INFORMATION information;
+            if (!GetFileInformationByHandle(handle, out information))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "directory identity read failed");
+            return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
+                information.FileIndexHigh, information.FileIndexLow);
+        }
+    }
+}
+'@
+
 try {
   if ($ExpectedRunId -notmatch '^[a-f0-9]{32}$') { exit 1 }
   if ($OwnershipReadyEvent -notmatch '^Local\\ProPRInstalledAppCleanup-[a-f0-9]{32}$') {
@@ -52,6 +101,35 @@ function Test-OwnerFile([string]$Directory, [string]$Token) {
     return $false
   }
   return ([IO.File]::ReadAllText($marker, [Text.Encoding]::ASCII) -ceq $Token)
+}
+
+function Get-FileIdentity([string]$Path) {
+  if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      $item.Length -gt 65536) {
+    return $null
+  }
+  $stream = [IO.File]::Open(
+    $Path,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read
+  )
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+  }
+}
+
+function Get-DirectoryIdentity([string]$Path) {
+  if (!(Test-Path -LiteralPath $Path -PathType Container)) { return $null }
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $null }
+  return [ProPRDirectoryIdentity]::Read($item.FullName)
 }
 
 function Get-RegistryTreeIdentity([string]$Path) {
@@ -172,6 +250,16 @@ function Test-MsiInstalledValue([string]$Path, [string]$Name) {
     $snapshot.Data -ceq [Convert]::ToBase64String([BitConverter]::GetBytes([int32]1))
 }
 
+function Test-RegistryValueIdentity($Record, $Snapshot) {
+  return $Snapshot.Exists -and
+    [string]$Record.IdentityValueKind -in @(
+      'DWord','QWord','String','ExpandString','MultiString','Binary','None'
+    ) -and
+    [string]$Record.IdentityValueData -match '^[A-Za-z0-9+/]*={0,2}$' -and
+    $Snapshot.Kind -ceq [string]$Record.IdentityValueKind -and
+    $Snapshot.Data -ceq [string]$Record.IdentityValueData
+}
+
 function Test-AllowedFileSystemPath([string]$Kind, [string]$Path) {
   if ($FixtureRoot) { return Test-PathWithin $Path $FixtureRoot }
   $installRoot = Join-Path $env:ProgramFiles 'ProPR Desktop'
@@ -192,7 +280,7 @@ function Test-AllowedFileSystemPath([string]$Kind, [string]$Path) {
   return $false
 }
 
-function Remove-OwnedDirectory($Record, [bool]$AllowProvisionalProductOwnership) {
+function Remove-OwnedDirectory($Record) {
   if (!$Record.Owned) { return }
   $path = [string]$Record.Path
   $kind = [string]$Record.Kind
@@ -203,16 +291,20 @@ function Remove-OwnedDirectory($Record, [bool]$AllowProvisionalProductOwnership)
       ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw 'owned directory identity is invalid'
   }
-  $provisional = [bool]$Record.Provisional -or
-    ($AllowProvisionalProductOwnership -and $kind -in @('INSTALL_ROOT','SHORTCUT_FOLDER'))
-  if (!$provisional -and !(Test-OwnerFile $path ([string]$Record.Token))) {
-    throw 'owned directory token does not match'
+  if ([bool]$Record.Provisional) {
+    throw 'provisional directory evidence cannot authorize manual cleanup'
+  }
+  $tokenMatches = Test-OwnerFile $path ([string]$Record.Token)
+  $identityMatches = [string]$Record.Identity -match '^[a-f0-9]{24}$' -and
+    (Get-DirectoryIdentity $path) -ceq [string]$Record.Identity
+  if (!$tokenMatches -and !$identityMatches) {
+    throw 'owned directory identity does not match'
   }
   Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
   if (Test-Path -LiteralPath $path) { throw 'owned directory cleanup did not complete' }
 }
 
-function Remove-OwnedFile($Record, [bool]$AllowProvisionalProductOwnership) {
+function Remove-OwnedFile($Record) {
   if (!$Record.Owned) { return }
   $path = [string]$Record.Path
   $kind = [string]$Record.Kind
@@ -223,15 +315,18 @@ function Remove-OwnedFile($Record, [bool]$AllowProvisionalProductOwnership) {
       ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw 'owned file identity is invalid'
   }
-  $provisional = $AllowProvisionalProductOwnership -and $kind -eq 'SHORTCUT_FILE'
-  if (!$provisional -and !(Test-OwnerFile (Split-Path -Parent $path) ([string]$Record.Token))) {
-    throw 'owned file token does not match'
+  if ([bool]$Record.Provisional) {
+    throw 'provisional file evidence cannot authorize manual cleanup'
+  }
+  if ([string]$Record.Identity -notmatch '^[a-f0-9]{64}$' -or
+      (Get-FileIdentity $path) -cne [string]$Record.Identity) {
+    throw 'owned file identity does not match'
   }
   Remove-Item -LiteralPath $path -Force -ErrorAction Stop
   if (Test-Path -LiteralPath $path) { throw 'owned file cleanup did not complete' }
 }
 
-function Remove-OwnedRegistryKey($Record, [bool]$AllowProvisionalProductOwnership) {
+function Remove-OwnedRegistryKey($Record) {
   if (!$Record.Owned) { return }
   $path = [string]$Record.Path
   $kind = [string]$Record.Kind
@@ -249,17 +344,15 @@ function Remove-OwnedRegistryKey($Record, [bool]$AllowProvisionalProductOwnershi
     throw 'registry cleanup scope is invalid'
   }
   if (!(Test-Path -LiteralPath $path)) { return }
-  $provisional = $AllowProvisionalProductOwnership -and [bool]$Record.Provisional
-  if (!$provisional) {
-    if ($FixtureRoot) {
-      $token = Get-ItemPropertyValue -LiteralPath $path -Name $ownerRegistryValue -ErrorAction Stop
-      if ([string]$token -cne [string]$Record.Token) { throw 'owned registry token does not match' }
-    } elseif ([string]$Record.Identity -notmatch '^[a-f0-9]{64}$' -or
-        (Get-RegistryTreeIdentity $path) -cne [string]$Record.Identity) {
-      throw 'owned registry identity does not match'
-    }
-  } elseif (!(Test-ProvisionalRegistryIdentity $kind $path $script:authorizedApplication)) {
-    throw 'provisional registry identity does not match'
+  if ([bool]$Record.Provisional) {
+    throw 'provisional registry evidence cannot authorize manual cleanup'
+  }
+  if ($FixtureRoot) {
+    $token = Get-ItemPropertyValue -LiteralPath $path -Name $ownerRegistryValue -ErrorAction Stop
+    if ([string]$token -cne [string]$Record.Token) { throw 'owned registry token does not match' }
+  } elseif ([string]$Record.Identity -notmatch '^[a-f0-9]{64}$' -or
+      (Get-RegistryTreeIdentity $path) -cne [string]$Record.Identity) {
+    throw 'owned registry identity does not match'
   }
   Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
   if (Test-Path -LiteralPath $path) { throw 'owned registry cleanup did not complete' }
@@ -291,7 +384,11 @@ function Restore-OwnedRegistryValue($Record) {
   $baselineData = [string]$Record.BaselineValueData
   $matchesBaseline = $baselineValueExists -and $current.Exists -and
     $current.Kind -ceq $baselineKind -and $current.Data -ceq $baselineData
-  if ($current.Exists -and !$matchesBaseline -and !(Test-MsiInstalledValue $path $name)) {
+  if ([bool]$Record.Provisional -and $current.Exists -and !$matchesBaseline) {
+    throw 'provisional registry evidence cannot authorize manual cleanup'
+  }
+  if ($current.Exists -and !$matchesBaseline -and
+      !(Test-RegistryValueIdentity $Record $current)) {
     throw 'registry value ownership changed'
   }
 
@@ -558,7 +655,7 @@ try {
     }
   }
 
-  $allowProvisionalProductOwnership = !$manifest.Fixture -and
+  $allowProvisionalMsiUninstall = !$manifest.Fixture -and
     [bool]$manifest.BaselineClean -and [bool]$manifest.InstallAttempted
   foreach ($record in @($manifest.RegistryKeys)) {
     if (!$record.Owned) { continue }
@@ -585,7 +682,7 @@ try {
         throw 'registry manifest scope is invalid'
       }
       if (!(Test-Path -LiteralPath $path)) { continue }
-      if ($allowProvisionalProductOwnership -and [bool]$record.Provisional) {
+      if ($allowProvisionalMsiUninstall -and [bool]$record.Provisional) {
         if (!(Test-ProvisionalRegistryIdentity $kind $path $script:authorizedApplication)) {
           throw 'registry manifest provisional identity is invalid'
         }
@@ -599,7 +696,8 @@ try {
     $recordKeys = @($record.PSObject.Properties | ForEach-Object { $_.Name })
     $expectedRecordKeys = @(
       'Kind','Path','Name','Owned','Provisional','BaselineKeyExisted',
-      'BaselineValueExisted','BaselineValueKind','BaselineValueData','KeyCreatedByRun'
+      'BaselineValueExisted','BaselineValueKind','BaselineValueData',
+      'IdentityValueKind','IdentityValueData','KeyCreatedByRun'
     )
     if ($recordKeys.Count -ne $expectedRecordKeys.Count -or
         @($expectedRecordKeys | Where-Object { $recordKeys -cnotcontains $_ }).Count -ne 0 -or
@@ -649,6 +747,15 @@ try {
         $null -ne $record.BaselineValueData) {
       throw 'registry value empty baseline is invalid'
     }
+    if ($record.Owned -and !$record.Provisional) {
+      if ([string]$record.IdentityValueKind -notin @(
+          'DWord','QWord','String','ExpandString','MultiString','Binary','None'
+        ) -or [string]$record.IdentityValueData -notmatch '^[A-Za-z0-9+/]*={0,2}$') {
+        throw 'registry value ownership identity is invalid'
+      }
+    } elseif ($null -ne $record.IdentityValueKind -or $null -ne $record.IdentityValueData) {
+      throw 'provisional registry value identity is invalid'
+    }
   }
   if (@($manifest.RegistryValues).Count -gt 1 -or
       (!$manifest.Fixture -and $manifest.InstallAttempted -and
@@ -667,11 +774,13 @@ try {
     if ($matchesBaseline) {
       $skipMsiUninstall = $true
     } elseif ($current.Exists -and
-        !(Test-MsiInstalledValue ([string]$record.Path) ([string]$record.Name))) {
+        (([bool]$record.Provisional -and
+            !(Test-MsiInstalledValue ([string]$record.Path) ([string]$record.Name))) -or
+          (![bool]$record.Provisional -and !(Test-RegistryValueIdentity $record $current)))) {
       $cleanupFailed = $true
     }
   }
-  if ($allowProvisionalProductOwnership -and !$skipMsiUninstall -and !$cleanupFailed) {
+  if ($allowProvisionalMsiUninstall -and !$skipMsiUninstall -and !$cleanupFailed) {
     $msiExitCode = 1618
     for ($attempt = 0; $attempt -lt 12 -and $msiExitCode -eq 1618; $attempt += 1) {
       if ($attempt -ne 0) { Start-Sleep -Seconds 2 }
@@ -689,10 +798,10 @@ try {
   }
 
   foreach ($record in @($manifest.Files)) {
-    try { Remove-OwnedFile $record $allowProvisionalProductOwnership } catch { $cleanupFailed = $true }
+    try { Remove-OwnedFile $record } catch { $cleanupFailed = $true }
   }
   foreach ($record in @($manifest.RegistryKeys)) {
-    try { Remove-OwnedRegistryKey $record $allowProvisionalProductOwnership } catch { $cleanupFailed = $true }
+    try { Remove-OwnedRegistryKey $record } catch { $cleanupFailed = $true }
   }
   foreach ($record in @($manifest.RegistryValues)) {
     try { Restore-OwnedRegistryValue $record } catch { $cleanupFailed = $true }
@@ -710,7 +819,7 @@ try {
     ([string]$_.Path).Length
   } -Descending
   foreach ($record in $directories) {
-    try { Remove-OwnedDirectory $record $allowProvisionalProductOwnership } catch {
+    try { Remove-OwnedDirectory $record } catch {
       $cleanupFailed = $true
     }
   }

@@ -91,6 +91,7 @@ $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
 $passwordText = $null
 $credential = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$testUser", $password)
 $installAttempted = $false
+$msiInstallCompleted = $false
 $testUserCreatedByRun = $false
 $testUserSid = $null
 $smokeUserDataDirectory = $null
@@ -106,6 +107,11 @@ $protocolCreatedByRun = $false
 $appPathsCreatedByRun = $false
 $protocolOwnedIdentity = $null
 $appPathsOwnedIdentity = $null
+$installRootOwnedIdentity = $null
+$shortcutFolderOwnedIdentity = $null
+$hkcuInstalledOwnedKind = $null
+$hkcuInstalledOwnedData = $null
+$shortcutOwnedIdentity = $null
 $hkcuDesktopKeyCreatedByRun = $false
 $msiTimeoutMilliseconds = 10 * 60 * 1000
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
@@ -281,6 +287,84 @@ function Write-DurableOwnershipToken([string]$Path, [string]$Token) {
   }
 }
 
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class ProPRDirectoryIdentity
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string path, uint access, uint share, IntPtr security, uint creation,
+        uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
+
+    public static string Read(string path)
+    {
+        using (SafeFileHandle handle = CreateFile(
+            path, 0x80, 0x7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero))
+        {
+            if (handle == null || handle.IsInvalid)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "directory identity open failed");
+            BY_HANDLE_FILE_INFORMATION information;
+            if (!GetFileInformationByHandle(handle, out information))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "directory identity read failed");
+            return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
+                information.FileIndexHigh, information.FileIndexLow);
+        }
+    }
+}
+'@
+
+function Get-FileIdentity([string]$Path) {
+  if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      $item.Length -gt $shortcutFileByteCap) {
+    return $null
+  }
+  $stream = [IO.File]::Open(
+    $Path,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read
+  )
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+  }
+}
+
+function Get-DirectoryIdentity([string]$Path) {
+  if (!(Test-Path -LiteralPath $Path -PathType Container)) { return $null }
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $null }
+  return [ProPRDirectoryIdentity]::Read($item.FullName)
+}
+
 function Get-RegistryTreeIdentity([string]$Path) {
   if (!(Test-Path -LiteralPath $Path)) { return $null }
   $root = Get-Item -LiteralPath $Path -ErrorAction Stop
@@ -379,8 +463,10 @@ function Restore-HkcuInstalledBaseline {
   $matchesBaseline = $hkcuInstalledValueExistedBeforeInstall -and $current.Exists -and
     $current.Kind -ceq $hkcuInstalledBaselineKind -and
     $current.Data -ceq $hkcuInstalledBaselineData
-  if ($current.Exists -and !$matchesBaseline -and
-      !(Test-MsiInstalledValue $hkcuDesktopRegistryPath $hkcuInstalledValueName)) {
+  $matchesOwnedIdentity = $current.Exists -and $hkcuInstalledOwnedKind -and
+    $hkcuInstalledOwnedData -and $current.Kind -ceq $hkcuInstalledOwnedKind -and
+    $current.Data -ceq $hkcuInstalledOwnedData
+  if ($current.Exists -and !$matchesBaseline -and !$matchesOwnedIdentity) {
     throw 'refusing to replace a conflicting current-user installed value'
   }
 
@@ -436,6 +522,8 @@ $ownershipState.RegistryValues = @([ordered]@{
   BaselineValueExisted = $hkcuInstalledValueExistedBeforeInstall
   BaselineValueKind = $hkcuInstalledBaselineKind
   BaselineValueData = $hkcuInstalledBaselineData
+  IdentityValueKind = $null
+  IdentityValueData = $null
   KeyCreatedByRun = $false
 })
 
@@ -1193,19 +1281,21 @@ try {
   try {
     $installAttempted = $true
     $ownershipState.InstallAttempted = $true
-    # The clean baseline plus the durable install-attempt transition owns any
-    # canonical product resource that appears before MSI returns or hangs.
+    # The clean baseline plus install-attempt transition is only provisional
+    # evidence for a bounded MSI uninstall until exact ownership is captured.
     $ownershipState.Directories = @(
       [ordered]@{
-        Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true; Token = $null
+        Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true
+        Token = $null; Identity = $null; Provisional = $true
       },
       [ordered]@{
         Kind = 'SHORTCUT_FOLDER'; Path = $startMenuShortcutFolder
-        Owned = $true; Token = $null
+        Owned = $true; Token = $null; Identity = $null; Provisional = $true
       }
     )
     $ownershipState.Files = @([ordered]@{
-      Kind = 'SHORTCUT_FILE'; Path = $startMenuShortcut; Owned = $true; Token = $null
+      Kind = 'SHORTCUT_FILE'; Path = $startMenuShortcut; Owned = $true
+      Token = $null; Identity = $null; Provisional = $true
     })
     $ownershipState.RegistryKeys = @(
       [ordered]@{
@@ -1227,6 +1317,8 @@ try {
       BaselineValueExisted = $hkcuInstalledValueExistedBeforeInstall
       BaselineValueKind = $hkcuInstalledBaselineKind
       BaselineValueData = $hkcuInstalledBaselineData
+      IdentityValueKind = $null
+      IdentityValueData = $null
       KeyCreatedByRun = $false
     })
     Write-OwnershipManifest
@@ -1237,6 +1329,7 @@ try {
         -TimeoutMilliseconds ($msiTimeoutMilliseconds + $terminationTimeoutMilliseconds + 5000) `
         -Operation {
           Invoke-Msi @('/i', "`"$installerPath`"", '/qn', '/norestart') 'machine install'
+          $script:msiInstallCompleted = $true
         }
     } finally {
       Invoke-BoundedExternalOperation `
@@ -1244,6 +1337,7 @@ try {
         -Substage 'OWNERSHIP_CAPTURE' `
         -TimeoutMilliseconds $externalOperationTimeoutMilliseconds `
         -Operation {
+          if (!$script:msiInstallCompleted) { return }
           $script:installRootCreatedByRun =
             !$installRootExistedBeforeInstall -and (Test-Path -LiteralPath $installRoot)
           $script:protocolCreatedByRun =
@@ -1261,20 +1355,37 @@ try {
               (Test-Path -LiteralPath $startMenuShortcutFolder)
           $ownedDirectories = @()
           if ($script:installRootCreatedByRun) {
+            $script:installRootOwnedIdentity = Get-DirectoryIdentity $installRoot
+            if (!$script:installRootOwnedIdentity) {
+              throw 'installed tree identity could not be captured'
+            }
             $ownedDirectories += [ordered]@{
-              Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true; Token = $null
+              Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true
+              Token = $null; Identity = $script:installRootOwnedIdentity
+              Provisional = $false
             }
           }
           if ($script:startMenuShortcutFolderCreatedByRun) {
+            $script:shortcutFolderOwnedIdentity = Get-DirectoryIdentity $startMenuShortcutFolder
+            if (!$script:shortcutFolderOwnedIdentity) {
+              throw 'installed shortcut folder identity could not be captured'
+            }
             $ownedDirectories += [ordered]@{
               Kind = 'SHORTCUT_FOLDER'; Path = $startMenuShortcutFolder
-              Owned = $true; Token = $null
+              Owned = $true; Token = $null; Identity = $script:shortcutFolderOwnedIdentity
+              Provisional = $false
             }
           }
           $ownershipState.Directories = $ownedDirectories
           $ownershipState.Files = if ($script:startMenuShortcutCreatedByRun) {
+            $script:shortcutOwnedIdentity = Get-FileIdentity $startMenuShortcut
+            if (!$script:shortcutOwnedIdentity) {
+              throw 'installed shortcut identity could not be captured'
+            }
             @([ordered]@{
-              Kind = 'SHORTCUT_FILE'; Path = $startMenuShortcut; Owned = $true; Token = $null
+              Kind = 'SHORTCUT_FILE'; Path = $startMenuShortcut; Owned = $true
+              Token = $null; Identity = $script:shortcutOwnedIdentity
+              Provisional = $false
             })
           } else { @() }
           $ownedRegistryKeys = @()
@@ -1295,6 +1406,13 @@ try {
             }
           }
           $ownershipState.RegistryKeys = $ownedRegistryKeys
+          $ownedHkcuInstalled = Get-RegistryValueSnapshot `
+            $hkcuDesktopRegistryPath $hkcuInstalledValueName
+          if (!$ownedHkcuInstalled.Exists) {
+            throw 'installed current-user value identity could not be captured'
+          }
+          $script:hkcuInstalledOwnedKind = $ownedHkcuInstalled.Kind
+          $script:hkcuInstalledOwnedData = $ownedHkcuInstalled.Data
           $ownershipState.RegistryValues = @([ordered]@{
             Kind = 'HKCU_INSTALLED'
             Path = $hkcuDesktopRegistryPath
@@ -1305,6 +1423,8 @@ try {
             BaselineValueExisted = $hkcuInstalledValueExistedBeforeInstall
             BaselineValueKind = $hkcuInstalledBaselineKind
             BaselineValueData = $hkcuInstalledBaselineData
+            IdentityValueKind = $script:hkcuInstalledOwnedKind
+            IdentityValueData = $script:hkcuInstalledOwnedData
             KeyCreatedByRun = $script:hkcuDesktopKeyCreatedByRun
           })
           Write-OwnershipManifest
@@ -1757,6 +1877,10 @@ try {
               ($ownedInstallRoot.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw 'refusing to remove an invalid owned install tree'
           }
+          if (!$installRootOwnedIdentity -or
+              (Get-DirectoryIdentity $installRoot) -cne $installRootOwnedIdentity) {
+            throw 'refusing to remove an install tree with a mismatched ownership identity'
+          }
           Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction Stop
         }
       }
@@ -1820,6 +1944,10 @@ try {
     Invoke-BoundedExternalOperation `
       'CLEANUP' 'SHORTCUT_FALLBACK' $externalOperationTimeoutMilliseconds {
         if ($startMenuShortcutCreatedByRun -and (Test-Path -LiteralPath $startMenuShortcut)) {
+          if (!$shortcutOwnedIdentity -or
+              (Get-FileIdentity $startMenuShortcut) -cne $shortcutOwnedIdentity) {
+            throw 'refusing to remove a shortcut with a mismatched ownership identity'
+          }
           Remove-Item -LiteralPath $startMenuShortcut -Force -ErrorAction Stop
         }
         if ($startMenuShortcutFolderCreatedByRun -and
@@ -1830,12 +1958,11 @@ try {
               ($ownedShortcutFolder.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw 'owned common Start Menu folder is invalid'
           }
-          $ownedShortcutFolderContents = @(
-            Get-ChildItem -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop
-          )
-          if ($ownedShortcutFolderContents.Count -eq 0) {
-            Remove-Item -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop
+          if (!$shortcutFolderOwnedIdentity -or
+              (Get-DirectoryIdentity $startMenuShortcutFolder) -cne $shortcutFolderOwnedIdentity) {
+            throw 'refusing to remove a shortcut folder with a mismatched ownership identity'
           }
+          Remove-Item -LiteralPath $startMenuShortcutFolder -Recurse -Force -ErrorAction Stop
         }
       }
   } catch {

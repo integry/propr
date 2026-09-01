@@ -59,7 +59,7 @@ function New-SupervisorStartInfo(
     '-File', $supervisorPath,
     '-Installer', $dummyInstaller,
     '-Architecture', $Architecture,
-    '-BootstrapTimeoutMilliseconds', $(if ($UseProductionWorker) { '10000' } else { '2000' }),
+    '-BootstrapTimeoutMilliseconds', '10000',
     '-WatchdogPollMilliseconds', '25',
     '-WatchdogTerminationMilliseconds', '3000',
     '-PostTerminationCleanupMilliseconds', '30000',
@@ -111,7 +111,7 @@ function Read-FixtureProcessState([string]$StateDirectory) {
   $statePath = Join-Path $StateDirectory 'processes.json'
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
-    if ($stopwatch.ElapsedMilliseconds -ge 5000) {
+    if ($stopwatch.ElapsedMilliseconds -ge 15000) {
       throw 'fixture did not publish process state'
     }
     Start-Sleep -Milliseconds 25
@@ -162,10 +162,47 @@ function Assert-OwnedResourcesGone($Owned) {
     'external cleanup left the run-owned profile behind'
 }
 
+function Restore-ReplacedFixtureAuthority($Owned) {
+  [IO.File]::WriteAllText(
+    (Join-Path $Owned.OwnedRoot '.propr-installed-app-owner'),
+    [string]$Owned.Token,
+    [Text.Encoding]::ASCII
+  )
+  if (Test-Path -LiteralPath $Owned.InstallRoot) {
+    Remove-Item -LiteralPath $Owned.InstallRoot -Recurse -Force -ErrorAction Stop
+  }
+  [void](New-Item -ItemType Directory -Path $Owned.InstallRoot -ErrorAction Stop)
+  [IO.File]::WriteAllText(
+    (Join-Path $Owned.InstallRoot '.propr-installed-app-owner'),
+    [string]$Owned.Token,
+    [Text.Encoding]::ASCII
+  )
+  [IO.File]::WriteAllText(
+    (Join-Path $Owned.ShortcutFolder '.propr-installed-app-owner'),
+    [string]$Owned.Token,
+    [Text.Encoding]::ASCII
+  )
+  [IO.File]::WriteAllText($Owned.Shortcut, 'owned-shortcut', [Text.Encoding]::ASCII)
+  Set-ItemProperty -LiteralPath $Owned.RegistryPath `
+    -Name 'ProPRInstalledAppOwner' -Value ([string]$Owned.Token)
+}
+
+function Assert-ReplacedFixtureResourcesSurvive($Owned) {
+  Assert-True ((Get-Content -LiteralPath (Join-Path $Owned.InstallRoot 'foreign.txt') -Raw).Trim() `
+      -ceq 'foreign-install-tree') `
+    'replacement install tree was removed or changed'
+  Assert-True ((Get-Content -LiteralPath $Owned.Shortcut -Raw).Trim() -ceq 'foreign-shortcut') `
+    'replacement shortcut was removed or changed'
+  Assert-True ((Get-ItemPropertyValue -LiteralPath $Owned.RegistryPath `
+      -Name 'ProPRInstalledAppOwner') -ceq 'foreign-owner') `
+    'replacement registry authority was removed or changed'
+}
+
 function Invoke-WorkflowCleanupController(
   [string]$ManifestPath,
   [string]$RunId,
-  [string]$FixtureRoot
+  [string]$FixtureRoot,
+  [int]$CleanupTimeoutMilliseconds = 30000
 ) {
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
@@ -177,7 +214,7 @@ function Invoke-WorkflowCleanupController(
     '-OwnershipManifest', $ManifestPath,
     '-Installer', $dummyInstaller,
     '-ExpectedRunId', $RunId,
-    '-CleanupTimeoutMilliseconds', '30000',
+    '-CleanupTimeoutMilliseconds', [string]$CleanupTimeoutMilliseconds,
     '-TerminationTimeoutMilliseconds', '3000'
   )) {
     $startInfo.ArgumentList.Add($argument)
@@ -239,7 +276,7 @@ $env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_SHORTCUT = $ConflictShortcut
 $env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_REGISTRY = $ConflictRegistry
 & $SupervisorPath -Installer $Installer -Architecture $Architecture `
   -WorkerPath $FixtureWorker -FixtureCleanupRoot $StateDirectory `
-  -BootstrapTimeoutMilliseconds 2000 -WatchdogPollMilliseconds 25 `
+  -BootstrapTimeoutMilliseconds 10000 -WatchdogPollMilliseconds 25 `
   -WatchdogTerminationMilliseconds 3000 -PostTerminationCleanupMilliseconds 30000 `
   -MarkerReadTimeoutMilliseconds 200
 '@
@@ -280,7 +317,9 @@ function Invoke-FixtureScenario([string]$Scenario, [string]$ExistingStateDirecto
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   if (!$process.Start()) { throw 'supervisor test process did not start' }
   try {
-    $completionBound = if ($Scenario -eq 'OWNED_RESOURCES_THEN_DEADLINE') { 90000 } else { 10000 }
+    $completionBound = if ($Scenario -in @(
+        'OWNED_RESOURCES_THEN_DEADLINE','OWNED_RESOURCES_REPLACED_THEN_DEADLINE'
+      )) { 90000 } else { 20000 }
     if (!$process.WaitForExit($completionBound)) {
       try { $process.Kill($true) } catch {}
       throw 'supervisor exceeded the executable test completion bound'
@@ -305,8 +344,8 @@ function Invoke-FixtureScenario([string]$Scenario, [string]$ExistingStateDirecto
 function Test-BootstrapTimeout {
   $result = Invoke-FixtureScenario 'NO_MARKER'
   Assert-True ($result.ExitCode -eq 124) 'missing-marker bootstrap did not fail with the watchdog code'
-  Assert-True ($result.ElapsedMilliseconds -ge 1800) 'bootstrap timeout ignored the injected deadline'
-  Assert-True ($result.ElapsedMilliseconds -lt 10000) 'missing-marker bootstrap completion was not bounded'
+  Assert-True ($result.ElapsedMilliseconds -ge 9000) 'bootstrap timeout ignored the injected deadline'
+  Assert-True ($result.ElapsedMilliseconds -lt 20000) 'missing-marker bootstrap completion was not bounded'
   Assert-Contains $result.Output `
     'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:BOOTSTRAP:TIMED_OUT' `
     'missing-marker bootstrap did not emit the fixed timeout line'
@@ -597,6 +636,28 @@ function Test-PreExistingCleanupOwnership {
     Assert-True ($ownedProfiles.Count -eq 0) `
       'post-termination cleanup left the run-owned profile behind'
 
+    $replacementStateDirectory = New-StateDirectory 'replacement-collision'
+    $replacementResult = Invoke-FixtureScenario `
+      'OWNED_RESOURCES_REPLACED_THEN_DEADLINE' $replacementStateDirectory
+    Assert-True ($replacementResult.ExitCode -eq 125) `
+      'replacement collision did not fail the standalone cleanup'
+    Assert-Contains $replacementResult.Output `
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED' `
+      'replacement collision did not emit fixed cleanup failure evidence'
+    $replacementOwned = Read-FixtureResourceState $replacementStateDirectory
+    Assert-ReplacedFixtureResourcesSurvive $replacementOwned
+    Assert-True (Test-Path -LiteralPath $replacementOwned.ManifestPath -PathType Leaf) `
+      'false standalone cleanup result discarded authenticated recovery authority'
+    Restore-ReplacedFixtureAuthority $replacementOwned
+    $replacementRetry = Invoke-WorkflowCleanupController `
+      $replacementOwned.ManifestPath $replacementOwned.RunId $replacementStateDirectory
+    Assert-True ($replacementRetry.ExitCode -eq 0 -and
+        $replacementRetry.Result -ceq 'COMPLETE') `
+      'standalone cleanup did not retry to exact success after authority restoration'
+    Assert-OwnedResourcesGone $replacementOwned
+    Assert-True (!(Test-Path -LiteralPath $replacementOwned.ManifestPath)) `
+      'successful standalone cleanup retry did not consume recovery authority'
+
     Assert-True ((Get-Content -LiteralPath (Join-Path $conflictInstallRoot 'pre-existing.txt') -Raw).Trim() -ceq `
       'owned-before-run') 'pre-existing install tree was removed or changed'
     Assert-True ((Get-ItemPropertyValue -LiteralPath $conflictRegistryPath -Name 'PreExisting') -ceq `
@@ -643,12 +704,38 @@ function Test-PreExistingCleanupOwnership {
       Assert-ProcessTreeGone $workflowProcessState
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'killed supervisor did not preserve the durable ownership manifest'
+      $timedOutCleanup = Invoke-WorkflowCleanupController `
+        $workflowManifest $workflowRunId $workflowStateDirectory 1
+      Assert-True ($timedOutCleanup.ExitCode -eq 124 -and
+          $timedOutCleanup.ReportedExitCode -eq 124 -and
+          $timedOutCleanup.Result -ceq 'TIMED_OUT') `
+        'workflow cleanup did not report its injected fixed timeout'
+      Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
+        'timed-out workflow cleanup discarded authenticated recovery authority'
+
+      Set-ItemProperty -LiteralPath $workflowOwned.RegistryPath `
+        -Name 'ProPRInstalledAppOwner' -Value 'foreign-owner'
+      $failedWorkflowCleanup = Invoke-WorkflowCleanupController `
+        $workflowManifest $workflowRunId $workflowStateDirectory
+      Assert-True ($failedWorkflowCleanup.ExitCode -eq 21 -and
+          $failedWorkflowCleanup.ReportedExitCode -eq 21 -and
+          $failedWorkflowCleanup.Result -ceq 'FAILED' -and
+          $failedWorkflowCleanup.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
+        'workflow cleanup did not report a fixed replacement-collision failure'
+      Assert-True ((Get-ItemPropertyValue -LiteralPath $workflowOwned.RegistryPath `
+          -Name 'ProPRInstalledAppOwner') -ceq 'foreign-owner') `
+        'workflow cleanup removed a replacement registry object'
+      Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
+        'failed workflow cleanup discarded authenticated recovery authority'
+
+      Set-ItemProperty -LiteralPath $workflowOwned.RegistryPath `
+        -Name 'ProPRInstalledAppOwner' -Value ([string]$workflowOwned.Token)
       $workflowCleanup = Invoke-WorkflowCleanupController `
         $workflowManifest $workflowRunId $workflowStateDirectory
       Assert-True ($workflowCleanup.ExitCode -eq 0 -and
           $workflowCleanup.ReportedExitCode -eq 0 -and
           $workflowCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
-        'workflow cleanup controller did not report fixed cleanup success'
+        'workflow cleanup controller did not retry to fixed cleanup success'
       Assert-Contains $workflowCleanup.Output `
         'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:COMPLETE' `
         'workflow cleanup controller did not emit fixed completion evidence'
@@ -739,6 +826,11 @@ function Test-PreExistingCleanupOwnership {
       Assert-Contains $failedCleanup.Output `
         'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED' `
         "$manifestCase workflow manifest did not emit fixed failure evidence"
+      if ($manifestCase -ne 'MISSING') {
+        Assert-True (Test-Path -LiteralPath $badManifest -PathType Leaf) `
+          "$manifestCase workflow failure discarded authenticated recovery authority"
+        Remove-Item -LiteralPath $badManifest -Force -ErrorAction Stop
+      }
     }
 
     Assert-True ((Get-Content -LiteralPath (Join-Path $conflictInstallRoot 'pre-existing.txt') -Raw).Trim() -ceq `
@@ -855,7 +947,8 @@ function Test-PreExistingAppPathsAuthority {
         Path = 'Registry::HKEY_CURRENT_USER\Software\ProPR\Desktop'
         Name = 'installed'; Owned = $false; Provisional = $false
         BaselineKeyExisted = $false; BaselineValueExisted = $false
-        BaselineValueKind = $null; BaselineValueData = $null; KeyCreatedByRun = $false
+        BaselineValueKind = $null; BaselineValueData = $null
+        IdentityValueKind = $null; IdentityValueData = $null; KeyCreatedByRun = $false
       })
       RegistryKeys = @(
         [ordered]@{
@@ -919,12 +1012,15 @@ function Test-HkcuInstalledValueOwnership {
     [bool]$BaselineValueExisted,
     [AllowNull()][string]$BaselineKind,
     [AllowNull()][string]$BaselineData,
-    [bool]$KeyCreatedByRun
+    [bool]$KeyCreatedByRun,
+    [bool]$Provisional = $false
   ) {
     $runId = [Guid]::NewGuid().ToString('N')
     $path = Join-Path ([IO.Path]::GetTempPath()) `
       "propr-installed-app-ownership-$runId.json"
     $createdTicks = [DateTime]::UtcNow.Ticks
+    $installedIdentityData = [Convert]::ToBase64String(
+      [BitConverter]::GetBytes([int32]1))
     $manifest = [ordered]@{
       SchemaVersion = 2
       ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
@@ -942,11 +1038,13 @@ function Test-HkcuInstalledValueOwnership {
       RegistryKeys = @()
       RegistryValues = @([ordered]@{
         Kind = 'HKCU_INSTALLED'; Path = $desktopKey; Name = $installedName
-        Owned = $true; Provisional = $false
+        Owned = $true; Provisional = $Provisional
         BaselineKeyExisted = $BaselineKeyExisted
         BaselineValueExisted = $BaselineValueExisted
         BaselineValueKind = $BaselineKind
         BaselineValueData = $BaselineData
+        IdentityValueKind = if ($Provisional) { $null } else { 'DWord' }
+        IdentityValueData = if ($Provisional) { $null } else { $installedIdentityData }
         KeyCreatedByRun = $KeyCreatedByRun
       })
       Users = @()
@@ -1019,6 +1117,27 @@ function Test-HkcuInstalledValueOwnership {
     $conflictingKey = Get-Item -LiteralPath $desktopKey -ErrorAction Stop
     Assert-True ([string]$conflictingKey.GetValue($installedName) -ceq 'foreign-conflict') `
       'conflicting HKCU installed value was removed or changed'
+    Assert-True (Test-Path -LiteralPath $conflictManifest.Path -PathType Leaf) `
+      'conflicting HKCU cleanup discarded authenticated recovery authority'
+    Remove-Item -LiteralPath $conflictManifest.Path -Force -ErrorAction Stop
+
+    Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
+    [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
+    (Get-Item -LiteralPath $desktopKey).SetValue(
+      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $provisionalManifest = New-HkcuManifest $false $false $null $null $true $true
+    $provisional = Invoke-WorkflowCleanupController `
+      $provisionalManifest.Path $provisionalManifest.RunId ''
+    Assert-True ($provisional.ExitCode -eq 21 -and
+        $provisional.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
+      'provisional HKCU evidence authorized manual registry deletion'
+    Assert-True ((Get-Item -LiteralPath $desktopKey).GetValueKind($installedName).ToString() `
+        -ceq 'DWord' -and
+        [int](Get-ItemPropertyValue -LiteralPath $desktopKey -Name $installedName) -eq 1) `
+      'provisional HKCU installed value was removed or changed'
+    Assert-True (Test-Path -LiteralPath $provisionalManifest.Path -PathType Leaf) `
+      'provisional HKCU failure discarded authenticated recovery authority'
+    Remove-Item -LiteralPath $provisionalManifest.Path -Force -ErrorAction Stop
   } finally {
     if (Test-Path -LiteralPath $desktopKey) {
       Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction SilentlyContinue

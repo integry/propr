@@ -624,6 +624,21 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppCleanup, /Restore-OwnedRegistryValue/);
     assert.match(installedWindowsAppCleanup, /Write-EmptyOwnershipReceipt/);
     assert.match(installedWindowsAppCleanup, /Get-RegistryTreeIdentity/);
+    assert.match(installedWindowsAppCleanup, /Get-FileIdentity/);
+    assert.match(installedWindowsAppCleanup, /Get-DirectoryIdentity/);
+    assert.doesNotMatch(installedWindowsAppCleanup, /AllowProvisionalProductOwnership/);
+    assert.match(
+      installedWindowsAppCleanup,
+      /\$allowProvisionalMsiUninstall[\s\S]*Start-Process msiexec\.exe/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /provisional registry evidence cannot authorize manual cleanup/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /if \(!\$script:msiInstallCompleted\) \{ return \}[\s\S]*Get-DirectoryIdentity \$installRoot/,
+    );
     assert.match(
       installedWindowsAppTest,
       /Registry::HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\propr-desktop\.exe/,
@@ -645,6 +660,28 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppWorkflowCleanup, /ProPRWorkflowCleanupJob/);
     assert.match(installedWindowsAppWorkflowCleanup, /MANIFEST_VALIDATION_FAILURE/);
     assert.match(installedWindowsAppWorkflowCleanup, /OWNED_RESOURCE_CLEANUP_FAILURE/);
+    assert.match(installedWindowsAppWorkflowCleanup, /ProPRWorkflowCleanupOutputDrain/);
+    assert.doesNotMatch(
+      installedWindowsAppWorkflowCleanup,
+      /add_(?:Output|Error)DataReceived\(\{\}\)/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanup,
+      /if \(\$fixedResult -ceq 'COMPLETE' -and \$validatedManifestPath\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /if \(\$fixedCleanupResult -eq \$true -and !\$workflowManagedManifest\)/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /OWNED_RESOURCES_REPLACED_THEN_DEADLINE/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /replacement install tree was removed or changed/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /timed-out workflow cleanup discarded authenticated recovery authority[\s\S]*failed workflow cleanup discarded authenticated recovery authority[\s\S]*retry to fixed cleanup success/,
+    );
     assert.ok(
       installedWindowsAppWorkflowCleanup.indexOf('Write-FixedResult $fixedResult')
         < installedWindowsAppWorkflowCleanup.indexOf(
@@ -799,9 +836,9 @@ describe('desktop trusted release workflow', () => {
   });
 
   test('uses bounded network logon impersonation with secure native credential cleanup', () => {
-    const nativeLogon = installedWindowsAppTest.match(
-      /Add-Type -TypeDefinition @'\n([\s\S]*?)\n'@/,
-    );
+    const nativeLogon = [...installedWindowsAppTest.matchAll(
+      /Add-Type -TypeDefinition @'\n([\s\S]*?)\n'@/g,
+    )].find((match) => match[1].includes('public static class ProPRWindowsLogon'));
     assert.ok(nativeLogon);
     assert.match(nativeLogon[1], /using Microsoft\.Win32\.SafeHandles;/);
     assert.match(nativeLogon[1], /public const int LOGON32_LOGON_NETWORK = 3;/);
@@ -1010,7 +1047,7 @@ describe('desktop trusted release workflow', () => {
     );
   });
 
-  test('keeps the canonical common shortcut and ownership-aware nonrecursive cleanup', () => {
+  test('keeps the canonical common shortcut and exact-identity cleanup', () => {
     const probeStart = installedWindowsAppTest.indexOf('function Test-StartMenuShortcutAsOrdinaryUser(');
     const probeEnd = installedWindowsAppTest.indexOf('function New-SmokeUserDataDirectory(', probeStart);
     assert.ok(probeStart >= 0 && probeEnd > probeStart);
@@ -1044,19 +1081,15 @@ describe('desktop trusted release workflow', () => {
     const cleanup = installedWindowsAppTest.slice(cleanupStart);
     assert.match(
       cleanup,
-      /if \(\$startMenuShortcutCreatedByRun -and \(Test-Path -LiteralPath \$startMenuShortcut\)\) \{\n\s+Remove-Item -LiteralPath \$startMenuShortcut -Force -ErrorAction Stop/,
+      /if \(\$startMenuShortcutCreatedByRun -and \(Test-Path -LiteralPath \$startMenuShortcut\)\)[\s\S]*Get-FileIdentity \$startMenuShortcut[\s\S]*Remove-Item -LiteralPath \$startMenuShortcut -Force -ErrorAction Stop/,
     );
     assert.match(
       cleanup,
-      /if \(\$startMenuShortcutFolderCreatedByRun[\s\S]*\$ownedShortcutFolderContents\.Count -eq 0\) \{\n\s+Remove-Item -LiteralPath \$startMenuShortcutFolder -Force -ErrorAction Stop/,
-    );
-    assert.doesNotMatch(
-      cleanup,
-      /Remove-Item -LiteralPath \$startMenuShortcut(?:Folder)?[^\n]*-Recurse/,
+      /if \(\$startMenuShortcutFolderCreatedByRun[\s\S]*Get-DirectoryIdentity \$startMenuShortcutFolder[\s\S]*Remove-Item -LiteralPath \$startMenuShortcutFolder -Recurse -Force -ErrorAction Stop/,
     );
     assert.doesNotMatch(
       installedWindowsAppTest,
-      /Remove-Item[^\n]*(?:\$commonPrograms|\$startMenuShortcut(?:Folder)?)[^\n]*-Recurse|Remove-Item[^\n]*-Recurse[^\n]*(?:\$commonPrograms|\$startMenuShortcut(?:Folder)?)/,
+      /Remove-Item[^\n]*\$commonPrograms[^\n]*-Recurse|Remove-Item[^\n]*-Recurse[^\n]*\$commonPrograms/,
     );
     assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu shortcut behind/);
     assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu folder behind/);

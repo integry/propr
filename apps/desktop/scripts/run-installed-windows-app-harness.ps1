@@ -645,7 +645,7 @@ try {
   try {
     if ([IO.File]::Exists($markerPath)) { [IO.File]::Delete($markerPath) }
   } catch {}
-  if ($null -ne $fixedCleanupResult -and !$workflowManagedManifest) {
+  if ($fixedCleanupResult -eq $true -and !$workflowManagedManifest) {
     foreach ($path in @($ownershipManifestPath, "$ownershipManifestPath.new")) {
       try { if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } } catch {}
     }

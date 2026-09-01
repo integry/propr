@@ -19,6 +19,7 @@ if ($scenario -notin @(
     'CANCELLATION',
     'OWNED_RESOURCES_NORMAL_SUCCESS',
     'OWNED_RESOURCES_FOR_INTERRUPTION',
+    'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
     'OWNED_RESOURCES_THEN_DEADLINE'
   )) {
   throw 'fixture scenario is invalid'
@@ -85,6 +86,17 @@ function Write-FixtureOwnershipToken([string]$Path, [string]$Token) {
   }
 }
 
+function Get-FixtureFileIdentity([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+  }
+}
+
 function New-OwnedFixtureResources {
   $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
     ConvertFrom-Json -ErrorAction Stop
@@ -140,7 +152,10 @@ function New-OwnedFixtureResources {
   }
   $manifest.Directories = @($ownedDirectories) + @($conflictingDirectories)
   $manifest.Files = @(
-    [ordered]@{ Kind = 'SHORTCUT_FILE'; Path = $shortcut; Owned = $true; Token = $token }
+    [ordered]@{
+      Kind = 'SHORTCUT_FILE'; Path = $shortcut; Owned = $true; Token = $token
+      Identity = (Get-FixtureFileIdentity $shortcut); Provisional = $false
+    }
   )
   if ($env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_SHORTCUT) {
     $manifest.Files += [ordered]@{
@@ -226,9 +241,34 @@ function New-OwnedFixtureResources {
     UserName = $userName
     UserSid = $userSid
     ProfilePath = [string]$profiles[0].LocalPath
+    ManifestPath = $OwnershipManifest
+    RunId = [string]$manifest.RunId
+    Token = $token
   }
   $resourceState | ConvertTo-Json -Compress | Set-Content -LiteralPath `
     (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
+}
+
+function Replace-FixtureOwnedResources {
+  $state = Get-Content -LiteralPath (Join-Path $stateDirectory 'resources.json') `
+    -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
+  foreach ($directory in @($state.OwnedRoot, $state.ShortcutFolder)) {
+    [IO.File]::WriteAllText(
+      (Join-Path $directory '.propr-installed-app-owner'),
+      'foreign-owner',
+      [Text.Encoding]::ASCII
+    )
+  }
+  Remove-Item -LiteralPath $state.InstallRoot -Recurse -Force -ErrorAction Stop
+  [void](New-Item -ItemType Directory -Path $state.InstallRoot -ErrorAction Stop)
+  [IO.File]::WriteAllText(
+    (Join-Path $state.InstallRoot 'foreign.txt'),
+    'foreign-install-tree',
+    [Text.Encoding]::ASCII
+  )
+  [IO.File]::WriteAllText($state.Shortcut, 'foreign-shortcut', [Text.Encoding]::ASCII)
+  Set-ItemProperty -LiteralPath $state.RegistryPath `
+    -Name 'ProPRInstalledAppOwner' -Value 'foreign-owner'
 }
 
 function Start-FixtureDescendant {
@@ -260,8 +300,24 @@ try {
 
 $descendant = Start-FixtureDescendant
 $state = [ordered]@{ WorkerPid = $PID; DescendantPid = $descendant.Id }
-$state | ConvertTo-Json -Compress | Set-Content -LiteralPath `
-  (Join-Path $stateDirectory 'processes.json') -Encoding ASCII
+$processStatePath = Join-Path $stateDirectory 'processes.json'
+$processStateTemporaryPath = "$processStatePath.$PID.new"
+$processStateBytes = [Text.Encoding]::ASCII.GetBytes(($state | ConvertTo-Json -Compress))
+$processStateStream = [IO.FileStream]::new(
+  $processStateTemporaryPath,
+  [IO.FileMode]::CreateNew,
+  [IO.FileAccess]::Write,
+  [IO.FileShare]::Read,
+  4096,
+  [IO.FileOptions]::WriteThrough
+)
+try {
+  $processStateStream.Write($processStateBytes, 0, $processStateBytes.Length)
+  $processStateStream.Flush($true)
+} finally {
+  $processStateStream.Dispose()
+}
+[IO.File]::Move($processStateTemporaryPath, $processStatePath)
 
 switch ($scenario) {
   'NO_MARKER' {
@@ -323,6 +379,14 @@ switch ($scenario) {
     New-OwnedFixtureResources
     Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
       [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'OWNED_RESOURCES_REPLACED_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-OwnedFixtureResources
+    Replace-FixtureOwnedResources
+    Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
     Start-Sleep -Seconds 300
   }
   'OWNED_RESOURCES_NORMAL_SUCCESS' {

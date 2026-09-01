@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory=$true)][string]$OwnershipManifest,
   [Parameter(Mandatory=$true)][string]$Installer,
   [Parameter(Mandatory=$true)][string]$ExpectedRunId,
-  [ValidateRange(1000,600000)][int]$CleanupTimeoutMilliseconds = 4 * 60 * 1000,
+  [ValidateRange(1,600000)][int]$CleanupTimeoutMilliseconds = 4 * 60 * 1000,
   [ValidateRange(1,30000)][int]$TerminationTimeoutMilliseconds = 30 * 1000,
   [string]$FixtureRoot
 )
@@ -109,6 +109,15 @@ public sealed class ProPRWorkflowCleanupJob : IDisposable
 
     public void Dispose() { if (handle != null) handle.Dispose(); }
 }
+
+public static class ProPRWorkflowCleanupOutputDrain
+{
+    public static void Attach(System.Diagnostics.Process process)
+    {
+        process.OutputDataReceived += delegate(object sender, System.Diagnostics.DataReceivedEventArgs args) { };
+        process.ErrorDataReceived += delegate(object sender, System.Diagnostics.DataReceivedEventArgs args) { };
+    }
+}
 '@
 
 function Write-FixedResult([ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result) {
@@ -169,8 +178,7 @@ try {
   $cleanupProcess = [Diagnostics.Process]::new()
   $cleanupProcess.StartInfo = $startInfo
   if (!$cleanupProcess.Start()) { throw 'workflow cleanup did not start' }
-  $cleanupProcess.add_OutputDataReceived({})
-  $cleanupProcess.add_ErrorDataReceived({})
+  [ProPRWorkflowCleanupOutputDrain]::Attach($cleanupProcess)
   $cleanupProcess.BeginOutputReadLine()
   $cleanupProcess.BeginErrorReadLine()
   try {
@@ -206,7 +214,7 @@ try {
   if ($null -ne $cleanupJob) { $cleanupJob.Dispose() }
   if ($null -ne $cleanupProcess) { $cleanupProcess.Dispose() }
   if ($null -ne $cleanupReadyEvent) { $cleanupReadyEvent.Dispose() }
-  if ($validatedManifestPath) {
+  if ($fixedResult -ceq 'COMPLETE' -and $validatedManifestPath) {
     foreach ($path in @($validatedManifestPath, "$validatedManifestPath.new")) {
       try { if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } } catch {}
     }
