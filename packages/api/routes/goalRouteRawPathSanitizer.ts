@@ -42,6 +42,7 @@ interface NormalizedPath {
   invalid: boolean;
   mixedRoot: boolean;
   pipeDrive: boolean;
+  posixRoot: boolean;
   root: string | undefined;
   traversal: boolean;
   windowsRoot: boolean;
@@ -220,6 +221,11 @@ function normalizedPath(decoded: string): NormalizedPath {
   const mixedRoot = !drive && leadingSeparators.length === 2 && !homogeneousPair;
   const windows = decoded.includes('\\') || drive || leadingSeparators.startsWith('\\');
   const windowsRoot = decoded.startsWith('\\') || drive;
+  // A single leading backslash is both a Windows rooted-current-drive path
+  // and, after the separator normalization below, a POSIX-root alias. Apply
+  // both root classifications while retaining drive-only Windows semantics
+  // and the explicit homogeneous two-separator authority handling above.
+  const posixRoot = !drive && !authority && leadingSeparators.length !== 0;
   const invalidRoot = !drive && leadingSeparators.length === 0;
   const slashNormalized = decoded.replace(/\\/gu, '/');
   const remainder = drive ? slashNormalized.slice(driveMatch![0].length) : slashNormalized;
@@ -232,6 +238,7 @@ function normalizedPath(decoded: string): NormalizedPath {
     invalid: invalidRoot || hasControlCharacter(decoded),
     mixedRoot,
     pipeDrive: driveMatch?.[0].endsWith('|') ?? false,
+    posixRoot,
     root: segments.root,
     traversal: segments.traversal,
     windowsRoot,
@@ -253,9 +260,10 @@ function shouldRedactRawPath(candidate: RawPathCandidate): boolean {
   if (normalized.credential) return true;
   const root = normalized.root;
   if (normalized.pipeDrive && !normalized.traversal) return false;
-  return root !== undefined && (normalized.windowsRoot
-    ? WINDOWS_SENSITIVE_ROOTS.has(root)
-    : POSIX_SENSITIVE_ROOTS.has(root));
+  return root !== undefined && (
+    (normalized.windowsRoot && WINDOWS_SENSITIVE_ROOTS.has(root))
+    || (normalized.posixRoot && POSIX_SENSITIVE_ROOTS.has(root))
+  );
 }
 
 /** Derive ordered raw spans for sensitive paths from the shared decoded view. */
