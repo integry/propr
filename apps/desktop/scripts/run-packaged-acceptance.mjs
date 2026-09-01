@@ -20,13 +20,18 @@ import {
   FIXED_TIME,
   defaultAcceptanceOutputDirectory,
   prepareAcceptanceArtifactDirectory,
+  readPngDimensions,
   safeRemoveAcceptanceLeaf,
   scanAcceptancePaths,
   screenshotName,
   verifyAcceptanceArtifacts,
   writeAcceptanceManifest,
 } from './acceptance-artifacts.mjs';
-import { waitForUsableElectronRenderer } from './packaged-acceptance-renderer.mjs';
+import {
+  captureElectronRendererScreenshot,
+  forEachElectronRendererVariant,
+  waitForUsableElectronRenderer,
+} from './packaged-acceptance-renderer.mjs';
 
 if (process.platform !== 'linux' || process.arch !== 'x64') {
   throw new Error('Packaged desktop visual acceptance must run on Linux x64');
@@ -294,7 +299,7 @@ const launchApplication = async (scenario, initialDeepLink) => {
     }, { fixedTime: FIXED_TIME, fixedMillis: FIXED_MILLIS });
     await page.waitForFunction(() => Boolean(document.querySelector('.desktop-entry, .desktop-app')), null, { timeout: 15_000 });
     await page.addStyleTag({ content: `
-      *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+      *, *::before, *::after { animation: none !important; caret-color: transparent !important; transition: none !important; scroll-behavior: auto !important; }
       html body, html body button, html body input, html body select, html body textarea { font-family: "Liberation Sans", sans-serif !important; }
     ` });
     const initialization = await page.evaluate(fixedTime => ({
@@ -418,21 +423,7 @@ const collectRendererSurface = async (page, journey, name) => {
   surfaces.push(renderer);
 };
 
-const configureVariant = async (page, cdp, windowId, config) => {
-  await page.emulateMedia({ reducedMotion: config.reducedMotion ? 'reduce' : 'no-preference', colorScheme: DETERMINISTIC_INPUTS.colorScheme });
-  await cdp.send('Browser.setWindowBounds', {
-    windowId,
-    bounds: { width: config.viewport.width, height: config.viewport.height, windowState: 'normal' },
-  });
-  await cdp.send('Emulation.setDeviceMetricsOverride', {
-    width: config.viewport.width, height: config.viewport.height,
-    deviceScaleFactor: config.deviceScaleFactor, mobile: false,
-  });
-  await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: config.zoom });
-  await sleep(75);
-};
-
-const inspectAccessibility = async (page, journey, variant, config, name) => {
+const inspectAccessibility = async (page, journey, variant, config, metrics, name) => {
   const result = await new AxeBuilder({ page }).analyze();
   const seriousFindings = result.violations.filter(violation => violation.impact === 'serious' || violation.impact === 'critical');
   for (const violation of seriousFindings) {
@@ -475,9 +466,9 @@ const inspectAccessibility = async (page, journey, variant, config, name) => {
     timezone: deterministic.timezone,
     fontLoaded: deterministic.fontLoaded,
     reducedMotion: deterministic.reducedMotion,
-    viewport: { width: config.viewport.width, height: config.viewport.height },
-    deviceScaleFactor: config.deviceScaleFactor,
-    zoom: config.zoom,
+    viewport: metrics.viewport,
+    deviceScaleFactor: metrics.deviceScaleFactor,
+    zoom: metrics.zoom,
     animationsDisabled: deterministic.animationsDisabled,
     rendererTime: deterministic.rendererTime,
   });
@@ -486,25 +477,30 @@ const inspectAccessibility = async (page, journey, variant, config, name) => {
 const captureVariants = async (page, journey) => {
   const cdp = await page.context().newCDPSession(page);
   try {
-    const { windowId } = await cdp.send('Browser.getWindowForTarget');
-    for (const [variant, config] of Object.entries(ACCEPTANCE_VARIANTS)) {
-      await configureVariant(page, cdp, windowId, config);
+    await forEachElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS, async ({ variant, config, metrics }) => {
       const name = screenshotName(journey, variant);
-      await inspectAccessibility(page, journey, variant, config, name);
+      await inspectAccessibility(page, journey, variant, config, metrics, name);
       await collectRendererSurface(page, journey, name);
-      const screenshotOptions = { animations: 'disabled', caret: 'hide', scale: 'device' };
-      const first = await page.screenshot(screenshotOptions);
-      const second = await page.screenshot(screenshotOptions);
+      const first = await captureElectronRendererScreenshot(cdp);
+      const second = await captureElectronRendererScreenshot(cdp);
       const firstDigest = digest(first);
       if (!first.equals(second)) throw new Error(`Acceptance screenshot was not repeatable for ${name}`);
+      const dimensions = readPngDimensions(first);
+      const expectedDimensions = {
+        width: metrics.viewport.width * metrics.deviceScaleFactor,
+        height: metrics.viewport.height * metrics.deviceScaleFactor,
+      };
+      if (dimensions.width !== expectedDimensions.width || dimensions.height !== expectedDimensions.height) {
+        throw new Error(`Acceptance screenshot dimensions changed for ${name}: ${JSON.stringify(dimensions)}`);
+      }
       await writeFile(join(outputDirectory, 'screenshots', name), first, { mode: 0o600 });
       screenshotMetadata.push({
         name, journey, variant,
-        width: config.viewport.width * config.deviceScaleFactor,
-        height: config.viewport.height * config.deviceScaleFactor,
-        deviceScaleFactor: config.deviceScaleFactor,
-        zoom: config.zoom,
-        reducedMotion: config.reducedMotion,
+        width: dimensions.width,
+        height: dimensions.height,
+        deviceScaleFactor: metrics.deviceScaleFactor,
+        zoom: metrics.zoom,
+        reducedMotion: metrics.reducedMotion,
         locale: DETERMINISTIC_INPUTS.locale,
         timezone: DETERMINISTIC_INPUTS.timezone,
         font: DETERMINISTIC_INPUTS.font,
@@ -515,7 +511,7 @@ const captureVariants = async (page, journey) => {
         animations: DETERMINISTIC_INPUTS.animations,
         repeatabilitySha256: firstDigest,
       });
-    }
+    }, { colorScheme: DETERMINISTIC_INPUTS.colorScheme });
   } finally {
     await cdp.detach();
   }

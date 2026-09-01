@@ -1,5 +1,129 @@
 const defaultSleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
+const closeEnough = (actual, expected) => Number.isFinite(actual) && Math.abs(actual - expected) < 0.01;
+
+const assertRendererMetrics = (actual, expected, description) => {
+  if (!closeEnough(actual, expected)) {
+    throw new Error(`Packaged Electron ${description} changed: expected ${expected}, received ${actual}`);
+  }
+};
+
+/**
+ * Configure the visible Electron renderer without relying on Browser-domain
+ * commands on a target-scoped CDP session. Playwright owns the viewport/window
+ * resize, while CDP Emulation owns the target's DPR and page scale.
+ */
+export const configureElectronRendererVariant = async (
+  page,
+  cdp,
+  config,
+  {
+    colorScheme = 'light',
+    settle = defaultSleep,
+    settleMs = 75,
+  } = {},
+) => {
+  const { viewport, deviceScaleFactor, zoom, reducedMotion } = config || {};
+  if (!Number.isInteger(viewport?.width) || viewport.width <= 0
+    || !Number.isInteger(viewport?.height) || viewport.height <= 0
+    || !Number.isFinite(deviceScaleFactor) || deviceScaleFactor <= 0
+    || !Number.isFinite(zoom) || zoom <= 0 || typeof reducedMotion !== 'boolean') {
+    throw new Error('Packaged Electron renderer variant configuration is invalid');
+  }
+
+  await page.emulateMedia({
+    reducedMotion: reducedMotion ? 'reduce' : 'no-preference',
+    colorScheme,
+  });
+  await page.setViewportSize({ width: viewport.width, height: viewport.height });
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: viewport.width,
+    height: viewport.height,
+    deviceScaleFactor,
+    mobile: false,
+    screenWidth: viewport.width,
+    screenHeight: viewport.height,
+  });
+  await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: zoom });
+  await settle(settleMs);
+
+  const playwrightViewport = page.viewportSize();
+  const layout = await cdp.send('Page.getLayoutMetrics');
+  const renderer = await page.evaluate(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+    deviceScaleFactor: window.devicePixelRatio,
+    reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    screenWidth: window.screen.width,
+    screenHeight: window.screen.height,
+    visualViewport: window.visualViewport && {
+      width: window.visualViewport.width,
+      height: window.visualViewport.height,
+      scale: window.visualViewport.scale,
+    },
+  }));
+
+  const expectedVisualWidth = viewport.width / zoom;
+  const expectedVisualHeight = viewport.height / zoom;
+  assertRendererMetrics(playwrightViewport?.width, viewport.width, 'Playwright viewport width');
+  assertRendererMetrics(playwrightViewport?.height, viewport.height, 'Playwright viewport height');
+  assertRendererMetrics(layout?.cssLayoutViewport?.clientWidth, viewport.width, 'layout viewport width');
+  assertRendererMetrics(layout?.cssLayoutViewport?.clientHeight, viewport.height, 'layout viewport height');
+  assertRendererMetrics(layout?.cssVisualViewport?.clientWidth, expectedVisualWidth, 'visual viewport width');
+  assertRendererMetrics(layout?.cssVisualViewport?.clientHeight, expectedVisualHeight, 'visual viewport height');
+  assertRendererMetrics(layout?.cssVisualViewport?.scale, zoom, 'page scale');
+  assertRendererMetrics(renderer?.width, viewport.width, 'renderer viewport width');
+  assertRendererMetrics(renderer?.height, viewport.height, 'renderer viewport height');
+  assertRendererMetrics(renderer?.deviceScaleFactor, deviceScaleFactor, 'device scale factor');
+  assertRendererMetrics(renderer?.screenWidth, viewport.width, 'renderer screen width');
+  assertRendererMetrics(renderer?.screenHeight, viewport.height, 'renderer screen height');
+  assertRendererMetrics(renderer?.visualViewport?.width, expectedVisualWidth, 'renderer visual viewport width');
+  assertRendererMetrics(renderer?.visualViewport?.height, expectedVisualHeight, 'renderer visual viewport height');
+  assertRendererMetrics(renderer?.visualViewport?.scale, zoom, 'renderer page scale');
+  if (renderer?.reducedMotion !== reducedMotion) {
+    throw new Error(`Packaged Electron reduced-motion emulation changed: expected ${reducedMotion}, received ${renderer?.reducedMotion}`);
+  }
+
+  return {
+    viewport: { width: renderer.width, height: renderer.height },
+    visualViewport: {
+      width: renderer.visualViewport.width,
+      height: renderer.visualViewport.height,
+    },
+    deviceScaleFactor: renderer.deviceScaleFactor,
+    zoom: renderer.visualViewport.scale,
+    reducedMotion: renderer.reducedMotion,
+  };
+};
+
+export const forEachElectronRendererVariant = async (
+  page,
+  cdp,
+  variants,
+  capture,
+  options,
+) => {
+  if (!variants || typeof variants !== 'object' || typeof capture !== 'function') {
+    throw new Error('Packaged Electron renderer variant capture configuration is invalid');
+  }
+  for (const [variant, config] of Object.entries(variants)) {
+    const metrics = await configureElectronRendererVariant(page, cdp, config, options);
+    await capture({ variant, config, metrics });
+  }
+};
+
+export const captureElectronRendererScreenshot = async cdp => {
+  const result = await cdp.send('Page.captureScreenshot', {
+    format: 'png',
+    fromSurface: true,
+    captureBeyondViewport: false,
+  });
+  if (typeof result?.data !== 'string' || result.data.length === 0) {
+    throw new Error('Packaged Electron renderer screenshot capture returned invalid data');
+  }
+  return Buffer.from(result.data, 'base64');
+};
+
 const processExitError = (code, signal) => new Error(
   `Packaged Electron exited before its renderer target was usable (${code ?? signal ?? 'unknown'})`,
 );
