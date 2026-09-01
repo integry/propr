@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, test } from 'node:test';
 import {
+  CHILD_CAPTURE_MAX_BYTES,
   CONNECT_READY_EVENT,
   isExactReadyRecord,
   preservePrimaryWithCleanup,
@@ -279,6 +280,58 @@ describe('packaged Connect bounded child lifecycle', () => {
     });
     assert.equal(result.ok, false);
     assert.equal(result.category, 'output-rejected');
+    assert.deepEqual(result.records, [{ event: CONNECT_READY_EVENT }]);
+    assert.doesNotMatch(JSON.stringify(result), /private-user|private-path-SENTINEL/u);
+  });
+
+  test('revokes success when a JSON-escaped Windows path follows the record-count cap', async () => {
+    const encodedSensitiveRecord = JSON.stringify({
+      event: 'untrusted.event', detail: { path: privateWindowsPath },
+    });
+    assert.equal(encodedSensitiveRecord.includes(privateWindowsPath), false);
+    const { result } = await run({
+      onApp: app => {
+        app.write(readyRecord());
+        queueMicrotask(() => {
+          for (let index = 1; index < 128; index += 1) {
+            app.write({ event: 'untrusted.event', index });
+          }
+          app.write(`${encodedSensitiveRecord}\n`);
+          app.close(0, null);
+        });
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.category, 'output-rejected');
+    assert.equal(result.capture, 'truncated');
+    assert.deepEqual(result.records, [{ event: CONNECT_READY_EVENT }]);
+    assert.doesNotMatch(JSON.stringify(result), /private-user|private-path-SENTINEL/u);
+  });
+
+  test('revokes success when a JSON-escaped Windows path follows the byte cap', async () => {
+    const encodedSensitiveRecord = JSON.stringify({
+      event: 'untrusted.event', detail: { path: privateWindowsPath },
+    });
+    assert.equal(encodedSensitiveRecord.includes(privateWindowsPath), false);
+    const benignRecord = `${JSON.stringify({
+      event: 'untrusted.event', detail: 'x'.repeat(7 * 1024),
+    })}\n`;
+    const recordsToExceedBudget = Math.ceil(
+      CHILD_CAPTURE_MAX_BYTES / Buffer.byteLength(benignRecord),
+    ) + 1;
+    const { result } = await run({
+      onApp: app => {
+        app.write(readyRecord());
+        queueMicrotask(() => {
+          app.write(benignRecord.repeat(recordsToExceedBudget));
+          app.write(`${encodedSensitiveRecord}\n`);
+          app.close(0, null);
+        });
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.category, 'output-rejected');
+    assert.equal(result.capture, 'truncated');
     assert.deepEqual(result.records, [{ event: CONNECT_READY_EVENT }]);
     assert.doesNotMatch(JSON.stringify(result), /private-user|private-path-SENTINEL/u);
   });

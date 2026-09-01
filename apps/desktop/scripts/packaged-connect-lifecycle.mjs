@@ -455,8 +455,9 @@ export const runPackagedConnectLifecycle = async ({
   capture.finish();
   const captureResult = capture.result();
   if (primary === 'ready-clean-exit' || primary === 'ready-forced-exit') {
-    if (captureResult.sensitiveOutput) primary = 'output-rejected';
-    else if (invalidReadyObserved) primary = 'ready-validation';
+    if (captureResult.sensitiveOutput || captureResult.capture === 'truncated') {
+      primary = 'output-rejected';
+    } else if (invalidReadyObserved) primary = 'ready-validation';
   }
   const secondary = [];
   if (terminationAttempted && !terminationSucceeded && primary !== 'ready-clean-exit') {
