@@ -23,6 +23,7 @@ import {
   directoryDescriptorAccess,
   mkdirAt,
   lstatAt,
+  openAuthorityDirectoryNoFollow,
   openAt,
   renameAt,
   unlinkAt,
@@ -213,18 +214,21 @@ function assertPrivateEnv(stat: Stats, callerUid: number | undefined, platform: 
 
 function openRootNoFollow(rootDir: string, platform: NodeJS.Platform): AcquiredRoot {
   if (platform !== "win32") directoryDescriptorAccess(platform);
-  const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   const parsed = parse(rootDir);
-  let fd = openSync(parsed.root, flags);
+  let fd = openAuthorityDirectoryNoFollow(parsed.root);
   const ancestry: Array<{ path: string; stat: Stats; fd: number }> = [];
   let visible = parsed.root;
   try {
     for (const component of rootDir.slice(parsed.root.length).split(sep).filter(Boolean)) {
       const current = heldDirectory(fd, platform, visible);
-      const next = current.openChild(component, flags);
+      const nextVisible = join(visible, component);
+      const next = openAuthorityDirectoryNoFollow(
+        nextVisible,
+        flags => current.openChild(component, flags),
+      );
       if (visible === parsed.root) closeSync(fd);
       fd = next;
-      visible = join(visible, component);
+      visible = nextVisible;
       const named = lstatSync(visible);
       const pinned = fstatSync(fd);
       if (named.isSymbolicLink() || !sameIdentity(named, pinned)) throw new ConnectRootError();

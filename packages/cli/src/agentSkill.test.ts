@@ -220,7 +220,7 @@ test("Linux EINVAL directory open fallback rejects named-directory replacement",
 
   assert.throws(
     () => assertNativeDirectoryEntry(root, "config.json", "file"),
-    /root changed during descriptor fallback/,
+    /entry changed during descriptor fallback/,
   );
 });
 
@@ -246,7 +246,7 @@ test("Linux EINVAL directory open fallback rejects a symlink substituted after o
 
   assert.throws(
     () => assertNativeDirectoryEntry(root, "config.json", "file"),
-    /root changed during descriptor fallback/,
+    /entry changed during descriptor fallback/,
   );
 });
 

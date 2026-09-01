@@ -184,8 +184,8 @@ function errorCode(error: unknown): unknown {
 }
 
 function sameDirectoryIdentity(
-  left: Readonly<{ dev: number; ino: number }>,
-  right: Readonly<{ dev: number; ino: number }>,
+  left: Readonly<{ dev: number | bigint; ino: number | bigint }>,
+  right: Readonly<{ dev: number | bigint; ino: number | bigint }>,
 ): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
@@ -196,28 +196,31 @@ function sameDirectoryIdentity(
  * Linux ARM64 may use the compatibility open, and the held descriptor must
  * identify the exact same non-link directory before and after it is opened.
  */
-function openNativeAuthorityDirectory(directory: string): number {
+export function openAuthorityDirectoryNoFollow(
+  directory: string,
+  openDirectory: (flags: number) => number = flags => openSync(directory, flags),
+): number {
   try {
     nativeDirectoryOpenTestHook?.("before-primary-open", directory);
-    return openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    return openDirectory(constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   } catch (error) {
     const isLinuxArm64 = process.platform === "linux" && process.arch === "arm64";
     if ((!isLinuxArm64 && !nativeDirectoryOpenFallbackTestEnabled) || errorCode(error) !== "EINVAL") throw error;
   }
 
   nativeDirectoryOpenTestHook?.("after-fallback-before-lstat", directory);
-  const before = lstatSync(directory);
+  const before = lstatSync(directory, { bigint: true });
   if (!before.isDirectory() || before.isSymbolicLink()) {
-    throw new Error("native directory authority root was not a non-link directory before open");
+    throw new Error("directory authority entry was not a non-link directory before open");
   }
 
   let directoryFd: number | undefined;
   try {
-    directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY);
+    directoryFd = openDirectory(constants.O_RDONLY | constants.O_DIRECTORY);
     nativeDirectoryOpenTestHook?.("after-fallback-open", directory);
-    const opened = fstatSync(directoryFd);
+    const opened = fstatSync(directoryFd, { bigint: true });
     nativeDirectoryOpenTestHook?.("after-fallback-fstat", directory);
-    const after = lstatSync(directory);
+    const after = lstatSync(directory, { bigint: true });
     nativeDirectoryOpenTestHook?.("after-fallback-after-lstat", directory);
     if (!opened.isDirectory()
       || !after.isDirectory()
@@ -225,7 +228,7 @@ function openNativeAuthorityDirectory(directory: string): number {
       || !sameDirectoryIdentity(before, opened)
       || !sameDirectoryIdentity(before, after)
       || !sameDirectoryIdentity(opened, after)) {
-      throw new Error("native directory authority root changed during descriptor fallback");
+      throw new Error("directory authority entry changed during descriptor fallback");
     }
     const result = directoryFd;
     directoryFd = undefined;
@@ -257,7 +260,7 @@ export function assertNativeDirectoryEntry(
   let substep: NativeDirectorySmokeSubstep = "directory-open";
   let failureReported = false;
   try {
-    directoryFd = openNativeAuthorityDirectory(directory);
+    directoryFd = openAuthorityDirectoryNoFollow(directory);
     // Pin through the addon's descriptor-relative open, then let the host
     // runtime inspect that descriptor. This avoids architecture-specific C
     // stat ABI wrappers while retaining no-follow and exact-type authority.

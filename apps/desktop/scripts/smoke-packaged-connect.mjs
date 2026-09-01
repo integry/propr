@@ -199,18 +199,31 @@ function Set-ProprFixtureAcl {
     [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$EntryPath
   )
   try {
-    if(-not [IO.Path]::IsPathFullyQualified($EntryPath)){exit 40}
-    $item=Get-Item -LiteralPath $EntryPath
+    if(-not [IO.Path]::IsPathRooted($EntryPath)){exit 40}
+    $canonicalPath=[IO.Path]::GetFullPath($EntryPath)
+    if(-not [String]::Equals($canonicalPath,$EntryPath,[StringComparison]::OrdinalIgnoreCase)){exit 40}
+  } catch { exit 40 }
+  try {
+    $item=Get-Item -LiteralPath $canonicalPath
     $directory=$EntryKind -eq 'directory'
-    if($directory -ne $item.PSIsContainer){exit 40}
+    if($directory -ne $item.PSIsContainer){exit 41}
+  } catch { exit 41 }
+  try {
     $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
+    if($null -eq $current){exit 42}
+  } catch { exit 42 }
+  try {
     $system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
     $admins=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
-    $acl=Get-Acl -LiteralPath $EntryPath
-  } catch { exit 40 }
+  } catch { exit 43 }
+  try {
+    $acl=Get-Acl -LiteralPath $canonicalPath
+  } catch { exit 44 }
   try {
     $acl.SetAccessRuleProtection($true,$false)
     foreach($existing in @($acl.Access)){$acl.RemoveAccessRuleSpecific($existing)}
+  } catch { exit 45 }
+  try {
     foreach($identity in @($current,$system,$admins)){
       $rights=[Security.AccessControl.FileSystemRights]::FullControl
       $accessType=[Security.AccessControl.AccessControlType]::Allow
@@ -221,10 +234,10 @@ function Set-ProprFixtureAcl {
       }else{[Security.AccessControl.FileSystemAccessRule]::new($identity,$rights,$accessType)}
       $null=$acl.AddAccessRule($rule)
     }
-  } catch { exit 41 }
+  } catch { exit 46 }
   try {
-    Set-Acl -LiteralPath $EntryPath -AclObject $acl
-  } catch { exit 42 }
+    Set-Acl -LiteralPath $canonicalPath -AclObject $acl
+  } catch { exit 47 }
 }
 try {
   Set-ProprFixtureAcl -EntryKind $env:PROPR_FIXTURE_ACL_KIND -EntryPath $env:PROPR_FIXTURE_ACL_PATH
@@ -246,12 +259,20 @@ try {
         PROPR_FIXTURE_ACL_PATH: entry.path,
       },
     });
-    if (result.error || result.signal) windowsFixtureFailure('owner-verify', 'process-failed');
-    if (result.stdout || result.stderr) windowsFixtureFailure('owner-verify', 'unexpected-output');
-    if (result.status === 40) windowsFixtureFailure('owner-verify', 'operation-failed');
-    if (result.status === 41) windowsFixtureFailure('rule-create', 'operation-failed');
-    if (result.status === 42) windowsFixtureFailure('rule-apply', 'operation-failed');
-    if (result.status !== 0) windowsFixtureFailure('rule-apply', 'unexpected-exit');
+    if (result.error || result.signal) windowsFixtureFailure('powershell-invocation', 'process-failed');
+    if (result.stdout || result.stderr) windowsFixtureFailure('powershell-invocation', 'unexpected-output');
+    const failurePhase = new Map([
+      [40, 'path-qualification'],
+      [41, 'item-type'],
+      [42, 'current-sid-lookup'],
+      [43, 'sid-construction'],
+      [44, 'get-acl'],
+      [45, 'dacl-protection'],
+      [46, 'rule-create'],
+      [47, 'rule-apply'],
+    ]).get(result.status);
+    if (failurePhase) windowsFixtureFailure(failurePhase, 'operation-failed');
+    if (result.status !== 0) windowsFixtureFailure('powershell-invocation', 'unexpected-exit');
   }
 };
 

@@ -20,7 +20,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import {
   ConnectRootError,
   getOrCreatePublicInstanceIdentity as getCliIdentity,
@@ -48,6 +48,9 @@ import {
   type ConnectRootAuthorityInspector,
   type WindowsAuthorityInspection,
 } from '../packages/cli/src/connectRootAuthority.js';
+import { setNativeDirectoryOpenTestHook } from '../packages/cli/src/utils/directoryDescriptor.js';
+
+afterEach(() => setNativeDirectoryOpenTestHook());
 
 const IDS = {
   first: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -372,6 +375,109 @@ test('Connect root replacement never redirects env/data reads and fails closed',
     }), ConnectRootError);
     assert.equal(parsedBytes, 'ORIGINAL=value\n');
     assert.equal(parsedBytes.includes('REPLACEMENT_SENTINEL'), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('Linux authority walk accepts only a pinned EINVAL directory-open fallback', {
+  skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
+}, async () => {
+  const parent = temporaryRoot('propr-connect-authority-fallback-');
+  const root = connectRoot(parent);
+  let fallbackOpens = 0;
+  try {
+    setNativeDirectoryOpenTestHook((phase, directory) => {
+      if (directory !== root) return;
+      if (phase === 'before-primary-open') {
+        throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'after-fallback-open') fallbackOpens += 1;
+    }, true);
+    await withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile: () => ({}) });
+    assert.equal(fallbackOpens, 2, 'initial and final authority walks both use the pinned fallback');
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('Linux authority walk fallback rejects named-directory replacement', {
+  skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
+}, async () => {
+  const parent = temporaryRoot('propr-connect-authority-replacement-');
+  const root = connectRoot(parent);
+  const detached = join(parent, 'detached');
+  let replaced = false;
+  try {
+    setNativeDirectoryOpenTestHook((phase, directory) => {
+      if (directory !== root) return;
+      if (phase === 'before-primary-open') {
+        throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'after-fallback-open' && !replaced) {
+        replaced = true;
+        renameSync(root, detached);
+        connectRoot(parent, 'REPLACEMENT_SENTINEL=never-read\n');
+      }
+    }, true);
+    await assert.rejects(
+      withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile: () => ({}) }),
+      ConnectRootError,
+    );
+    assert.equal(replaced, true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('Linux authority walk fallback rejects a symlink substituted after open', {
+  skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
+}, async () => {
+  const parent = temporaryRoot('propr-connect-authority-symlink-');
+  const root = connectRoot(parent);
+  const detached = join(parent, 'detached');
+  let replaced = false;
+  try {
+    setNativeDirectoryOpenTestHook((phase, directory) => {
+      if (directory !== root) return;
+      if (phase === 'before-primary-open') {
+        throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'after-fallback-open' && !replaced) {
+        replaced = true;
+        renameSync(root, detached);
+        symlinkSync(detached, root, 'dir');
+      }
+    }, true);
+    await assert.rejects(
+      withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile: () => ({}) }),
+      ConnectRootError,
+    );
+    assert.equal(replaced, true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('Linux authority walk never accepts non-EINVAL directory-open failures', {
+  skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
+}, async () => {
+  const parent = temporaryRoot('propr-connect-authority-non-einval-');
+  const root = connectRoot(parent);
+  let fallbackObserved = false;
+  try {
+    setNativeDirectoryOpenTestHook((phase, directory) => {
+      if (directory !== root) return;
+      if (phase === 'before-primary-open') {
+        throw Object.assign(new Error('injected denied open'), { code: 'EACCES' });
+      }
+      fallbackObserved = true;
+    }, true);
+    await assert.rejects(
+      withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile: () => ({}) }),
+      ConnectRootError,
+    );
+    assert.equal(fallbackObserved, false);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
