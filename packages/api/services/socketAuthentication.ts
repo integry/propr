@@ -102,8 +102,6 @@ export function configureSocketAuthentication(
   io: SocketIOServer,
   options: SocketAuthenticationOptions,
 ): void {
-  const synthesizedAuthorizationRequests = new WeakSet<IncomingMessage>();
-
   for (const middleware of options.engineMiddleware) {
     io.engine.use((
       request: IncomingMessage,
@@ -118,17 +116,34 @@ export function configureSocketAuthentication(
     });
   }
 
-  io.use(async (socket, next) => {
-    const request = socket.request as unknown as Request;
-    if (synthesizedAuthorizationRequests.delete(request)) {
-      delete request.headers.authorization;
-    }
+  const authenticateSocket = async (socket: Socket, next: (error?: Error) => void) => {
+    const transportRequest = socket.request as unknown as Request;
     const handshakeToken = (socket.handshake.auth as { token?: unknown } | undefined)?.token;
-    if (!request.headers.authorization && typeof handshakeToken === 'string'
-      && handshakeToken.trim() && !/[\r\n]/.test(handshakeToken)) {
-      request.headers.authorization = `Bearer ${handshakeToken.trim()}`;
-      synthesizedAuthorizationRequests.add(request);
-    }
+    const synthesizedAuthorization = !transportRequest.headers.authorization
+      && typeof handshakeToken === 'string'
+      && handshakeToken.trim()
+      && !/[\r\n]/.test(handshakeToken)
+      ? `Bearer ${handshakeToken.trim()}`
+      : undefined;
+    const immutableHeaders = Object.freeze(Object.fromEntries(
+      Object.entries(transportRequest.headers).map(([name, value]) => [
+        name,
+        Array.isArray(value) ? Object.freeze([...value]) : value,
+      ]),
+    ));
+    // Socket.IO namespaces on one transport share socket.request. Keep the
+    // credential on a socket-specific facade so authentication and later
+    // revalidation can never rewrite another namespace's request context.
+    const request = Object.create(transportRequest) as Request;
+    Object.defineProperty(request, 'headers', {
+      configurable: false,
+      enumerable: true,
+      value: Object.freeze({
+        ...immutableHeaders,
+        ...(synthesizedAuthorization ? { authorization: synthesizedAuthorization } : {}),
+      }),
+      writable: false,
+    });
     const usesPassportSession = Boolean(request.isAuthenticated?.() && request.user);
     try {
       const initialPrincipal = await options.authenticate(request);
@@ -184,5 +199,10 @@ export function configureSocketAuthentication(
     } catch (error) {
       next(socketAuthenticationFailure(error));
     }
+  };
+
+  io.use(authenticateSocket);
+  io.on('new_namespace', namespace => {
+    namespace.use(authenticateSocket);
   });
 }

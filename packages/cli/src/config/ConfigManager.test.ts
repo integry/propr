@@ -162,6 +162,33 @@ test("setGithubToken preserves unrelated active profile values", async () => {
   }
 });
 
+test("an abort at successful profile-save resolution keeps memory and disk committed", async () => {
+  const tempDir = createTempDir();
+  const controller = new AbortController();
+  class AbortAtSaveResolutionConfigManager extends ConfigManager {
+    override async save(signal?: AbortSignal): Promise<void> {
+      await super.save(signal);
+      controller.abort(new Error("abort after atomic save"));
+    }
+  }
+
+  try {
+    writeProfileConfig(tempDir);
+    const manager = new AbortAtSaveResolutionConfigManager(tempDir);
+    await manager.init();
+
+    await manager.setGithubToken("committed-token", controller.signal);
+
+    assert.equal(controller.signal.aborted, true);
+    assert.equal(manager.getGithubToken(), "committed-token");
+    const persisted = JSON.parse(readFileSync(join(tempDir, "config.json"), "utf8"));
+    assert.equal(persisted.profiles.default.githubToken, "committed-token");
+    assert.deepEqual(manager.getRemoteProfiles(), persisted.profiles);
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
 test("setRemoteUrl preserves unrelated active profile values", async () => {
   const tempDir = createTempDir();
   try {

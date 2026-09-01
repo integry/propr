@@ -220,6 +220,7 @@ describe('Socket.IO authentication', () => {
         const authorization = req.headers.authorization;
         seenAuthorization.push(authorization);
         if (authorization === 'Bearer initial-token') return principal(user({ id: '1' }));
+        if (authorization === 'Bearer anchor-token') return principal(user({ id: 'anchor' }));
         if (authorization === 'Bearer replacement-token') return principal(user({ id: '2' }));
         throw new SocketAuthenticationError('AUTHENTICATION_REQUIRED', 'missing bearer');
       },
@@ -238,6 +239,7 @@ describe('Socket.IO authentication', () => {
       reconnection: false,
     });
     const anchor = client.io.socket('/anchor');
+    anchor.auth = { token: 'anchor-token' };
 
     try {
       client.connect();
@@ -277,6 +279,7 @@ describe('Socket.IO authentication', () => {
       assert.equal(client.io.engine?.id, engineId);
       assert.deepEqual(seenAuthorization, [
         'Bearer initial-token',
+        'Bearer anchor-token',
         'Bearer replacement-token',
         undefined,
       ]);

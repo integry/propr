@@ -269,7 +269,8 @@ export class ConfigManager {
     this.config.profiles = profiles;
     try {
       await this.save(signal);
-      signal?.throwIfAborted();
+      // A resolved atomic save is the commit point. Do not observe cancellation
+      // again here: disk and memory must remain on the same committed profile.
     } catch (error) {
       this.config.profiles = previousProfiles;
       throw error;
@@ -295,8 +296,9 @@ export class ConfigManager {
     }
 
     const content = JSON.stringify(dataToWrite, null, 2);
+    // writePrivateFileAtomic observes cancellation immediately before rename.
+    // Once it returns successfully, the new configuration is committed.
     writePrivateFileAtomic(this.configFilePath, content, { signal });
-    signal?.throwIfAborted();
   }
 
   /**
@@ -354,7 +356,6 @@ export class ConfigManager {
   async setGithubToken(token: string, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     await this.updateActiveProfile({ githubToken: token }, signal);
-    signal?.throwIfAborted();
   }
 
   /**
