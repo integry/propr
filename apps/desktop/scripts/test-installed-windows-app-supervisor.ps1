@@ -235,7 +235,8 @@ function Invoke-WorkflowCleanupController(
   [string]$ManifestPath,
   [string]$RunId,
   [string]$FixtureRoot,
-  [object]$CleanupTimeoutMilliseconds = 30000
+  [object]$CleanupTimeoutMilliseconds = 30000,
+  [bool]$FixtureEarlyInitializationChild = $false
 ) {
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
@@ -255,6 +256,9 @@ function Invoke-WorkflowCleanupController(
   if ($FixtureRoot) {
     $startInfo.ArgumentList.Add('-FixtureRoot')
     $startInfo.ArgumentList.Add($FixtureRoot)
+  }
+  if ($FixtureEarlyInitializationChild) {
+    $startInfo.ArgumentList.Add('-FixtureEarlyInitializationChild')
   }
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
@@ -501,10 +505,10 @@ function Test-OperationDeadlineAndTreeTermination {
   Assert-True ($result.ElapsedMilliseconds -lt 10000) `
     'operation deadline completion was not bounded'
   Assert-Contains $result.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:ACCEPTED:INSTALL:MSI_INSTALL:BEGIN' `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:ACCEPTED:VALIDATION:INSTALL_TREE_SCAN:BEGIN' `
     'operation transition was not accepted and flushed by the supervisor'
   Assert-Contains $result.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:INSTALL:MSI_INSTALL:BEGIN:TIMED_OUT' `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:VALIDATION:INSTALL_TREE_SCAN:BEGIN:TIMED_OUT' `
     'operation deadline did not emit the fixed redacted timeout line'
 }
 
@@ -981,6 +985,18 @@ function Test-PreExistingCleanupOwnership {
           )) 'controller parameter failure was not caught and phase-classified'
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'controller parameter failure discarded authenticated recovery authority'
+      $earlyInitializationTimeout = Invoke-WorkflowCleanupController `
+        $workflowManifest $workflowRunId $workflowStateDirectory 5000 $true
+      Assert-True ($earlyInitializationTimeout.ExitCode -eq 124 -and
+          $earlyInitializationTimeout.ReportedExitCode -eq 124 -and
+          $earlyInitializationTimeout.Result -ceq 'TIMED_OUT') `
+        'early-initialization child cleanup did not report its fixed timeout'
+      $earlyInitializationState = Get-Content -LiteralPath `
+        (Join-Path $workflowStateDirectory 'workflow-cleanup-early-processes.json') `
+        -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
+      Assert-ProcessTreeGone $earlyInitializationState
+      Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
+        'early-initialization timeout discarded authenticated recovery authority'
       $timedOutCleanup = Invoke-WorkflowCleanupController `
         $workflowManifest $workflowRunId $workflowStateDirectory 1
       Assert-True ($timedOutCleanup.ExitCode -eq 124 -and

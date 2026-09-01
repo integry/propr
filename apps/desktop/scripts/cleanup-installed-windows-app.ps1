@@ -3,7 +3,8 @@ param(
   [Parameter(Mandatory=$true)][string]$Installer,
   [Parameter(Mandatory=$true)][string]$ExpectedRunId,
   [Parameter(Mandatory=$true)][string]$OwnershipReadyEvent,
-  [string]$FixtureRoot
+  [string]$FixtureRoot,
+  [switch]$FixtureEarlyInitializationChild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,69 @@ $ownerRegistryValue = 'ProPRInstalledAppOwner'
 $cleanupFailed = $false
 $manifestValidated = $false
 $authorizedRunId = $null
+
+try {
+  if ($ExpectedRunId -notmatch '^[a-f0-9]{32}$') { exit 1 }
+  if ($OwnershipReadyEvent -notmatch '^Local\\ProPRInstalledAppCleanup-[a-f0-9]{32}$') {
+    exit 1
+  }
+  $ownershipReady = [Threading.EventWaitHandle]::OpenExisting($OwnershipReadyEvent)
+  try {
+    if (!$ownershipReady.WaitOne(5000)) { exit 1 }
+  } finally {
+    $ownershipReady.Dispose()
+  }
+} catch {
+  exit 1
+}
+
+# This fixture runs after the ownership release but before cold type loading so
+# the controller test covers descendants created at the earliest worker phase.
+if ($FixtureEarlyInitializationChild) {
+  try {
+    if (!$FixtureRoot) { exit 1 }
+    $fixtureEarlyRoot = (Resolve-Path -LiteralPath $FixtureRoot -ErrorAction Stop).Path
+    $fixtureHostPath = (Get-Process -Id $PID -ErrorAction Stop).Path
+    if ([IO.Path]::GetFileName($fixtureHostPath) -notin @('pwsh.exe', 'powershell.exe')) {
+      exit 1
+    }
+    $fixtureChildStartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $fixtureChildStartInfo.FileName = $fixtureHostPath
+    $fixtureChildStartInfo.UseShellExecute = $false
+    foreach ($argument in @(
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 300'
+    )) {
+      $fixtureChildStartInfo.ArgumentList.Add($argument)
+    }
+    $fixtureChild = [Diagnostics.Process]::new()
+    $fixtureChild.StartInfo = $fixtureChildStartInfo
+    if (!$fixtureChild.Start()) { exit 1 }
+    $fixtureStatePath = Join-Path $fixtureEarlyRoot 'workflow-cleanup-early-processes.json'
+    $fixtureStateTemporaryPath = "$fixtureStatePath.$PID.new"
+    $fixtureStateBytes = [Text.Encoding]::ASCII.GetBytes((
+      [ordered]@{ WorkerPid = $PID; DescendantPid = $fixtureChild.Id } |
+        ConvertTo-Json -Compress
+    ))
+    $fixtureStateStream = [IO.FileStream]::new(
+      $fixtureStateTemporaryPath,
+      [IO.FileMode]::CreateNew,
+      [IO.FileAccess]::Write,
+      [IO.FileShare]::Read,
+      4096,
+      [IO.FileOptions]::WriteThrough
+    )
+    try {
+      $fixtureStateStream.Write($fixtureStateBytes, 0, $fixtureStateBytes.Length)
+      $fixtureStateStream.Flush($true)
+    } finally {
+      $fixtureStateStream.Dispose()
+    }
+    [IO.File]::Move($fixtureStateTemporaryPath, $fixtureStatePath)
+    Start-Sleep -Seconds 300
+  } catch {
+    exit 1
+  }
+}
 
 Add-Type -TypeDefinition @'
 using System;
@@ -67,21 +131,6 @@ public static class ProPRDirectoryIdentity
     public static string Read(string path) { return ReadEntry(path, true); }
 }
 '@
-
-try {
-  if ($ExpectedRunId -notmatch '^[a-f0-9]{32}$') { exit 1 }
-  if ($OwnershipReadyEvent -notmatch '^Local\\ProPRInstalledAppCleanup-[a-f0-9]{32}$') {
-    exit 1
-  }
-  $ownershipReady = [Threading.EventWaitHandle]::OpenExisting($OwnershipReadyEvent)
-  try {
-    if (!$ownershipReady.WaitOne(5000)) { exit 1 }
-  } finally {
-    $ownershipReady.Dispose()
-  }
-} catch {
-  exit 1
-}
 
 function Test-SamePath([string]$Left, [string]$Right) {
   return [string]::Equals(

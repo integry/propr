@@ -760,7 +760,7 @@ switch ($scenario) {
   'VALID_THEN_DEADLINE' {
     Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(10).Ticks)
     Start-Sleep -Milliseconds 500
-    Write-FixtureMarker ('{0}|INSTALL|MSI_INSTALL|BEGIN' -f [DateTime]::UtcNow.AddMilliseconds(2500).Ticks)
+    Write-FixtureMarker ('{0}|VALIDATION|INSTALL_TREE_SCAN|BEGIN' -f [DateTime]::UtcNow.AddMilliseconds(2500).Ticks)
     Start-Sleep -Seconds 300
   }
   'MALFORMED_MARKER' {

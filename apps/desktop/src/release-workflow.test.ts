@@ -698,6 +698,26 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /EntryIdentity = \$script:shortcutOwnedEntryIdentity/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /mismatched App Paths ownership identity did not fail closed/);
     assert.match(installedWindowsAppWorkflowCleanup, /ProPRWorkflowCleanupJob/);
+    assert.match(installedWindowsAppWorkflowCleanup, /QueryInformationJobObject/);
+    assert.match(installedWindowsAppWorkflowCleanup, /WaitForNoActiveProcesses/);
+    assert.match(installedWindowsAppWorkflowCleanup, /TerminateAndWait/);
+    assert.ok(
+      installedWindowsAppWorkflowCleanup.indexOf('$cleanupJob.AddProcess($cleanupProcess.Handle)')
+        < installedWindowsAppWorkflowCleanup.indexOf('$outputDrain.Start($cleanupProcess)'),
+      'cleanup root must enter the Job Object before redirected output drains begin',
+    );
+    assert.ok(
+      installedWindowsAppWorkflowCleanup.indexOf('$cleanupJob.AddProcess($cleanupProcess.Handle)')
+        < installedWindowsAppWorkflowCleanup.indexOf('[void]$cleanupReadyEvent.Set()'),
+      'cleanup root must enter the Job Object before worker ownership is released',
+    );
+    assert.ok(
+      installedWindowsAppCleanup.indexOf('$ownershipReady.WaitOne(5000)')
+        < installedWindowsAppCleanup.indexOf("Add-Type -TypeDefinition @'"),
+      'cleanup worker ownership handshake must precede cold type loading',
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /early-initialization child cleanup/);
+    assert.match(installedWindowsAppCleanup, /workflow-cleanup-early-processes\.json/);
     assert.match(installedWindowsAppWorkflowCleanup, /MANIFEST_VALIDATION_FAILURE/);
     assert.match(installedWindowsAppWorkflowCleanup, /OWNED_RESOURCE_CLEANUP_FAILURE/);
     assert.match(installedWindowsAppWorkflowCleanup, /ProPRWorkflowCleanupOutputDrain/);
@@ -728,7 +748,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppWorkflowCleanup,
-      /if \(\$fixedResult -ceq 'COMPLETE' -and \$validatedManifestPath\)/,
+      /if \(\$fixedResult -ceq 'COMPLETE' -and \$cleanupTreeZeroVerified -and/,
     );
     assert.match(
       installedWindowsAppSupervisor,

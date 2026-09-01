@@ -4,7 +4,8 @@ param(
   [object]$ExpectedRunId,
   [object]$CleanupTimeoutMilliseconds = 4 * 60 * 1000,
   [object]$TerminationTimeoutMilliseconds = 30 * 1000,
-  [object]$FixtureRoot
+  [object]$FixtureRoot,
+  [switch]$FixtureEarlyInitializationChild
 )
 
 enum WorkflowCleanupControllerPhase {
@@ -45,6 +46,7 @@ $validatedManifestPath = $null
 [WorkflowCleanupControllerPhase]$controllerPhase = 'INITIALIZATION'
 [WorkflowCleanupControllerLine]$controllerLine = 'TYPE_LOAD'
 $controllerBodyActive = $false
+$cleanupTreeZeroVerified = $false
 
 function Write-FixedResult([ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result) {
   [Console]::Out.WriteLine("PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:$Result")
@@ -182,6 +184,25 @@ public sealed class ProPRWorkflowCleanupJob : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(
+        SafeFileHandle job, int informationClass,
+        out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION information,
+        uint informationLength, IntPtr returnLength);
+
     public ProPRWorkflowCleanupJob()
     {
         handle = CreateJobObject(IntPtr.Zero, null);
@@ -206,10 +227,41 @@ public sealed class ProPRWorkflowCleanupJob : IDisposable
             throw new Win32Exception(Marshal.GetLastWin32Error(), "cleanup ownership failed");
     }
 
-    public void Terminate(uint exitCode)
+    private uint ReadActiveProcessCount()
     {
-        if (!handle.IsInvalid && !TerminateJobObject(handle, exitCode))
+        if (handle == null || handle.IsInvalid)
+            throw new InvalidOperationException("job handle is unavailable");
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION information;
+        uint size = (uint)Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));
+        if (!QueryInformationJobObject(handle, 1, out information, size, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "cleanup accounting failed");
+        return information.ActiveProcesses;
+    }
+
+    public bool WaitForNoActiveProcesses(int timeoutMilliseconds)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        do
+        {
+            if (ReadActiveProcessCount() == 0) return true;
+            Thread.Sleep(25);
+        }
+        while (stopwatch.ElapsedMilliseconds < timeoutMilliseconds);
+        return ReadActiveProcessCount() == 0;
+    }
+
+    public bool HasNoActiveProcesses()
+    {
+        return ReadActiveProcessCount() == 0;
+    }
+
+    public bool TerminateAndWait(uint exitCode, int timeoutMilliseconds)
+    {
+        if (handle == null || handle.IsInvalid)
+            throw new InvalidOperationException("job handle is unavailable");
+        if (!TerminateJobObject(handle, exitCode))
             throw new Win32Exception(Marshal.GetLastWin32Error(), "cleanup termination failed");
+        return WaitForNoActiveProcesses(timeoutMilliseconds);
     }
 
     public void Dispose() { if (handle != null) handle.Dispose(); }
@@ -363,19 +415,32 @@ try {
     $startInfo.ArgumentList.Add('-FixtureRoot')
     $startInfo.ArgumentList.Add((Resolve-Path -LiteralPath $FixtureRoot -ErrorAction Stop).Path)
   }
+  if ($FixtureEarlyInitializationChild) {
+    if (!$FixtureRoot) { throw 'early initialization fixture requires a fixture scope' }
+    $startInfo.ArgumentList.Add('-FixtureEarlyInitializationChild')
+  }
   $cleanupJob = [ProPRWorkflowCleanupJob]::new()
   $controllerPhase = 'PROCESS_START'
   $controllerLine = 'START'
   $cleanupProcess = [Diagnostics.Process]::new()
   $cleanupProcess.StartInfo = $startInfo
   if (!$cleanupProcess.Start()) { throw 'workflow cleanup did not start' }
-  $outputDrain = [ProPRWorkflowCleanupOutputDrain]::new()
-  $outputDrain.Start($cleanupProcess)
   try {
     $cleanupJob.AddProcess($cleanupProcess.Handle)
+    $outputDrain = [ProPRWorkflowCleanupOutputDrain]::new()
+    $outputDrain.Start($cleanupProcess)
     [void]$cleanupReadyEvent.Set()
   } catch {
-    try { $cleanupProcess.Kill($true) } catch {}
+    try {
+      $cleanupTreeZeroVerified = $cleanupJob.TerminateAndWait(
+        125, $TerminationTimeoutMilliseconds)
+    } catch {}
+    try {
+      if (!$cleanupProcess.HasExited) {
+        $cleanupProcess.Kill($true)
+        [void]$cleanupProcess.WaitForExit($TerminationTimeoutMilliseconds)
+      }
+    } catch {}
     throw 'workflow cleanup ownership failed'
   }
   $controllerPhase = 'PROCESS_WAIT'
@@ -384,11 +449,11 @@ try {
     $controllerLine = 'TERMINATE'
     $terminationVerified = $false
     try {
-      $cleanupJob.Terminate(125)
-      $terminationVerified = $cleanupProcess.WaitForExit($TerminationTimeoutMilliseconds) -and
-        $cleanupProcess.HasExited
+      $terminationVerified = $cleanupJob.TerminateAndWait(
+        125, $TerminationTimeoutMilliseconds)
     } catch {}
     if ($terminationVerified) {
+      $cleanupTreeZeroVerified = $true
       $fixedResult = 'TIMED_OUT'
       $fixedStatus = 'TIMEOUT'
       $fixedExitCode = 124
@@ -397,16 +462,27 @@ try {
       $fixedStatus = 'TERMINATION_FAILURE'
       $fixedExitCode = 125
     }
-  } elseif ($cleanupProcess.ExitCode -eq 0) {
-    $fixedResult = 'COMPLETE'
-    $fixedStatus = 'EMPTY_OR_CLEANED'
-    $fixedExitCode = 0
-  } elseif ($cleanupProcess.ExitCode -eq 20) {
-    $fixedStatus = 'MANIFEST_VALIDATION_FAILURE'
-    $fixedExitCode = 20
-  } elseif ($cleanupProcess.ExitCode -eq 21) {
-    $fixedStatus = 'OWNED_RESOURCE_CLEANUP_FAILURE'
-    $fixedExitCode = 21
+  } else {
+    $cleanupTreeZeroVerified = $cleanupJob.HasNoActiveProcesses()
+    if (!$cleanupTreeZeroVerified) {
+      try {
+        $cleanupTreeZeroVerified = $cleanupJob.TerminateAndWait(
+          125, $TerminationTimeoutMilliseconds)
+      } catch {}
+      $fixedResult = 'FAILED'
+      $fixedStatus = 'ACTIVE_PROCESS_AFTER_ROOT_EXIT'
+      $fixedExitCode = 125
+    } elseif ($cleanupProcess.ExitCode -eq 0) {
+      $fixedResult = 'COMPLETE'
+      $fixedStatus = 'EMPTY_OR_CLEANED'
+      $fixedExitCode = 0
+    } elseif ($cleanupProcess.ExitCode -eq 20) {
+      $fixedStatus = 'MANIFEST_VALIDATION_FAILURE'
+      $fixedExitCode = 20
+    } elseif ($cleanupProcess.ExitCode -eq 21) {
+      $fixedStatus = 'OWNED_RESOURCE_CLEANUP_FAILURE'
+      $fixedExitCode = 21
+    }
   }
 } catch {
   Set-CaughtControllerFailure $_
@@ -418,13 +494,10 @@ $controllerBodyActive = $false
 try {
   $controllerPhase = 'PROCESS_FINALIZATION'
   $controllerLine = 'TERMINATE'
-  if ($null -ne $cleanupProcess -and !$cleanupProcess.HasExited) {
-    if ($null -ne $cleanupJob) {
-      $cleanupJob.Dispose()
-      $cleanupJob = $null
-    }
-    if (!$cleanupProcess.WaitForExit($TerminationTimeoutMilliseconds) -or
-        !$cleanupProcess.HasExited) {
+  if ($null -ne $cleanupJob -and !$cleanupTreeZeroVerified) {
+    $cleanupTreeZeroVerified = $cleanupJob.TerminateAndWait(
+      125, $TerminationTimeoutMilliseconds)
+    if (!$cleanupTreeZeroVerified) {
       $fixedResult = 'FAILED'
       $fixedStatus = 'PROCESS_FINALIZATION_TIMEOUT'
       $fixedExitCode = 125
@@ -477,7 +550,8 @@ foreach ($resource in @($outputDrain, $cleanupJob, $cleanupProcess, $cleanupRead
   }
 }
 
-if ($fixedResult -ceq 'COMPLETE' -and $validatedManifestPath) {
+if ($fixedResult -ceq 'COMPLETE' -and $cleanupTreeZeroVerified -and
+    $validatedManifestPath) {
   try {
     $controllerPhase = 'AUTHORITY_FINALIZATION'
     $controllerLine = 'AUTHORITY'
