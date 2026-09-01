@@ -975,8 +975,12 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisorFixture,
       /'OWNED_RESOURCES_THEN_DEADLINE' \{[\s\S]*Write-FixtureMarker[\s\S]*New-OwnedFixtureResources/,
     );
+    const controllerStatusParser = installedWindowsAppSupervisorBehaviorTest.indexOf(
+      '$statusMatch = Get-WorkflowCleanupControllerStatusMatch',
+    );
+    assert.notEqual(controllerStatusParser, -1);
     assert.ok(
-      installedWindowsAppSupervisorBehaviorTest.indexOf('$statusMatch = [regex]::Match(')
+      controllerStatusParser
         < installedWindowsAppSupervisorBehaviorTest.indexOf('if ($errorOutput.Length -ne 0)'),
       'controller fixed stdout must be parsed before bounded stderr classification',
     );
@@ -1042,9 +1046,30 @@ describe('desktop trusted release workflow', () => {
     assert.match(laterNativeDiagnostics, /'PROVISIONAL'[\s\S]*'NONPROVISIONAL'/);
     assert.match(
       laterNativeDiagnostics,
-      /EXIT_CODE:\{0\}:RESULT:\{1\}:CONTROLLER_STATUS:\{2\}:' \+\s*'REPORTED_EXIT_CODE:\{3\}/,
+      /EXIT_CODE:\{0\}:RESULT:\{1\}:CONTROLLER_STATUS:\{2\}:' \+\s*'REPORTED_EXIT_CODE:\{3\}\{4\}/,
     );
     assert.match(laterNativeDiagnostics, /ASCII\.GetByteCount\(\$diagnostic\) -gt 256/);
+    assert.match(laterNativeDiagnostics, /if \(\$controllerStatus -ceq 'STARTUP_FAILURE'\)/);
+    assert.match(
+      laterNativeDiagnostics,
+      /\$startupClass -cnotin @\('PARSER','PARAMETER_BINDING','TYPE_LOAD','OTHER'\)/,
+    );
+    assert.match(laterNativeDiagnostics, /\$startupProcessExit = 'INVALID'/);
+    assert.match(laterNativeDiagnostics, /\$startupLine = 'INVALID'/);
+    assert.match(laterNativeDiagnostics, /\^\[1-9\]\[0-9\]\{0,5\}\$/);
+    assert.match(laterNativeDiagnostics, /\$parsedStartupLine -le 999999/);
+    assert.match(
+      laterNativeDiagnostics,
+      /STARTUP_CLASS:\{0\}:STARTUP_PROCESS_EXIT:\{1\}:' \+\s*'STARTUP_LINE:\{2\}/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Get-WorkflowCleanupControllerStatusMatch[\s\S]*workflow cleanup parser accepted malformed startup metadata/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /valid bounded startup metadata was not preserved[\s\S]*invalid startup metadata did not fail closed to fixed sentinels[\s\S]*non-startup cleanup diagnostic included startup-only metadata/,
+    );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /did not publish durable nonprovisional authority:\$duringCaptureDiagnostic/,

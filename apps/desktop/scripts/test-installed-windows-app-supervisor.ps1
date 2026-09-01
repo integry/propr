@@ -493,11 +493,50 @@ function Get-SanitizedWorkflowCleanupResultDiagnostic($Result) {
         'PERMISSION|READ|BUSY|UNAVAILABLE|SECURITY|WRITE|UNCLASSIFIED)$')) {
     $controllerStatus = 'INVALID'
   }
+  $startupDiagnostic = ''
+  if ($controllerStatus -ceq 'STARTUP_FAILURE') {
+    $startupClass = [string]$Result.StartupClass
+    if ($startupClass -cnotin @('PARSER','PARAMETER_BINDING','TYPE_LOAD','OTHER')) {
+      $startupClass = 'INVALID'
+    }
+
+    $startupProcessExit = 'INVALID'
+    $startupProcessExitCandidate = [string]$Result.StartupProcessExit
+    $parsedStartupProcessExit = 0
+    if ($startupProcessExitCandidate -cmatch '^(?:0|-?[1-9][0-9]*)$' -and
+        [int]::TryParse(
+          $startupProcessExitCandidate,
+          [Globalization.NumberStyles]::AllowLeadingSign,
+          [Globalization.CultureInfo]::InvariantCulture,
+          [ref]$parsedStartupProcessExit
+        )) {
+      $startupProcessExit =
+        $parsedStartupProcessExit.ToString([Globalization.CultureInfo]::InvariantCulture)
+    }
+
+    $startupLine = 'INVALID'
+    $startupLineCandidate = [string]$Result.StartupLine
+    $parsedStartupLine = 0
+    if ($startupLineCandidate -cmatch '^[1-9][0-9]{0,5}$' -and
+        [int]::TryParse(
+          $startupLineCandidate,
+          [Globalization.NumberStyles]::None,
+          [Globalization.CultureInfo]::InvariantCulture,
+          [ref]$parsedStartupLine
+        ) -and $parsedStartupLine -le 999999) {
+      $startupLine =
+        $parsedStartupLine.ToString([Globalization.CultureInfo]::InvariantCulture)
+    }
+
+    $startupDiagnostic = (':STARTUP_CLASS:{0}:STARTUP_PROCESS_EXIT:{1}:' +
+      'STARTUP_LINE:{2}') -f $startupClass, $startupProcessExit, $startupLine
+  }
   $diagnostic = ('EXIT_CODE:{0}:RESULT:{1}:CONTROLLER_STATUS:{2}:' +
-    'REPORTED_EXIT_CODE:{3}') -f `
+    'REPORTED_EXIT_CODE:{3}{4}') -f `
     $processExit.ToString([Globalization.CultureInfo]::InvariantCulture),
     $resultName, $controllerStatus,
-    $reportedExitCode.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $reportedExitCode.ToString([Globalization.CultureInfo]::InvariantCulture),
+    $startupDiagnostic
   if ($diagnostic.IndexOf("`r", [StringComparison]::Ordinal) -ge 0 -or
       $diagnostic.IndexOf("`n", [StringComparison]::Ordinal) -ge 0 -or
       [Text.Encoding]::ASCII.GetByteCount($diagnostic) -gt 256) {
@@ -506,6 +545,16 @@ function Get-SanitizedWorkflowCleanupResultDiagnostic($Result) {
       $processExit.ToString([Globalization.CultureInfo]::InvariantCulture)
   }
   return $diagnostic
+}
+
+function Get-WorkflowCleanupControllerStatusMatch([string]$StatusLine) {
+  return [regex]::Match(
+    $StatusLine,
+    ('^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):' +
+      'EXIT_CODE:([0-9]+)(?::STARTUP_CLASS:' +
+      '(PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):PROCESS_EXIT:(-?[0-9]+):' +
+      'LINE:([0-9]+))?$')
+  )
 }
 
 function Assert-OwnedResourcesGone($Owned) {
@@ -692,13 +741,7 @@ function Invoke-WorkflowCleanupController(
         $lineCount, $stderrCount, $startupDiagnostic)
     }
     $resultName = $resultMatch.Groups[1].Value
-    $statusMatch = [regex]::Match(
-      $outputLines[1],
-      ('^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):' +
-        'EXIT_CODE:([0-9]+)(?::STARTUP_CLASS:' +
-        '(PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):PROCESS_EXIT:(-?[0-9]+):' +
-        'LINE:([0-9]+))?$')
-    )
+    $statusMatch = Get-WorkflowCleanupControllerStatusMatch $outputLines[1]
     if (!$statusMatch.Success) {
       $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
         $errorOutput ([int]$process.ExitCode)
@@ -742,9 +785,80 @@ function Test-WorkflowCleanupStartupProtocol {
         $result.ControllerStatus -ceq 'STARTUP_FAILURE' -and
         $result.StartupClass -ceq $failureClass -and
         $result.StartupProcessExit -match '^-?[0-9]+$' -and
-        $result.StartupLine -match '^[0-9]+$') `
+        $result.StartupLine -match '^[1-9][0-9]{0,5}$') `
       "native $failureClass startup fixture did not emit the fixed two-line protocol"
+    $startupDiagnostic = Get-SanitizedWorkflowCleanupResultDiagnostic $result
+    $expectedStartupDiagnostic = ((
+        'EXIT_CODE:125:RESULT:FAILED:CONTROLLER_STATUS:STARTUP_FAILURE:' +
+        'REPORTED_EXIT_CODE:125:STARTUP_CLASS:{0}:STARTUP_PROCESS_EXIT:{1}:' +
+        'STARTUP_LINE:{2}') -f `
+      $failureClass, $result.StartupProcessExit, $result.StartupLine)
+    Assert-True ($startupDiagnostic -ceq $expectedStartupDiagnostic) `
+      "native $failureClass startup metadata was not preserved by the bounded diagnostic"
   }
+
+  foreach ($invalidStatusLine in @(
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:EXIT_CODE:125:STARTUP_CLASS:INVALID:PROCESS_EXIT:125:LINE:12',
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:EXIT_CODE:125:STARTUP_CLASS:PARSER:PROCESS_EXIT:+125:LINE:12',
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:EXIT_CODE:125:STARTUP_CLASS:PARSER:PROCESS_EXIT:125:LINE:-1'
+    )) {
+    Assert-True (!(Get-WorkflowCleanupControllerStatusMatch $invalidStatusLine).Success) `
+      'workflow cleanup parser accepted malformed startup metadata'
+  }
+
+  $validStartupMetadata = [PSCustomObject]@{
+    ExitCode = 125
+    Result = 'FAILED'
+    ControllerStatus = 'STARTUP_FAILURE'
+    ReportedExitCode = 125
+    StartupClass = 'PARSER'
+    StartupProcessExit = '-2147483648'
+    StartupLine = '999999'
+  }
+  Assert-True ((Get-SanitizedWorkflowCleanupResultDiagnostic $validStartupMetadata) -ceq (
+      'EXIT_CODE:125:RESULT:FAILED:CONTROLLER_STATUS:STARTUP_FAILURE:' +
+      'REPORTED_EXIT_CODE:125:STARTUP_CLASS:PARSER:' +
+      'STARTUP_PROCESS_EXIT:-2147483648:STARTUP_LINE:999999'
+    )) 'valid bounded startup metadata was not preserved'
+
+  foreach ($invalidStartupMetadata in @(
+      [PSCustomObject]@{},
+      [PSCustomObject]@{
+        StartupClass = 'parser'
+        StartupProcessExit = '+125'
+        StartupLine = '0'
+      },
+      [PSCustomObject]@{
+        StartupClass = "PARSER`nDISCLOSURE"
+        StartupProcessExit = '2147483648'
+        StartupLine = '1000000'
+      }
+    )) {
+    $invalidStartupMetadata | Add-Member -NotePropertyName ExitCode -NotePropertyValue 125
+    $invalidStartupMetadata | Add-Member -NotePropertyName Result -NotePropertyValue 'FAILED'
+    $invalidStartupMetadata | Add-Member `
+      -NotePropertyName ControllerStatus -NotePropertyValue 'STARTUP_FAILURE'
+    $invalidStartupMetadata | Add-Member -NotePropertyName ReportedExitCode -NotePropertyValue 125
+    Assert-True ((Get-SanitizedWorkflowCleanupResultDiagnostic $invalidStartupMetadata) -ceq (
+        'EXIT_CODE:125:RESULT:FAILED:CONTROLLER_STATUS:STARTUP_FAILURE:' +
+        'REPORTED_EXIT_CODE:125:STARTUP_CLASS:INVALID:' +
+        'STARTUP_PROCESS_EXIT:INVALID:STARTUP_LINE:INVALID'
+      )) 'invalid startup metadata did not fail closed to fixed sentinels'
+  }
+
+  $nonStartupMetadata = [PSCustomObject]@{
+    ExitCode = 21
+    Result = 'FAILED'
+    ControllerStatus = 'OWNED_RESOURCE_CLEANUP_FAILURE'
+    ReportedExitCode = 21
+    StartupClass = "PARSER`nDISCLOSURE"
+    StartupProcessExit = 'not-an-exit'
+    StartupLine = 'not-a-line'
+  }
+  Assert-True ((Get-SanitizedWorkflowCleanupResultDiagnostic $nonStartupMetadata) -ceq (
+      'EXIT_CODE:21:RESULT:FAILED:' +
+      'CONTROLLER_STATUS:OWNED_RESOURCE_CLEANUP_FAILURE:REPORTED_EXIT_CODE:21'
+    )) 'non-startup cleanup diagnostic included startup-only metadata'
   Write-Host 'PROPR_WINDOWS_SUPERVISOR_CONTROLLER_STARTUP:FIXED_PROTOCOL:PASSED'
   [Console]::Out.Flush()
 }
