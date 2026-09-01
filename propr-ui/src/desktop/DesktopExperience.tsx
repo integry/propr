@@ -234,8 +234,14 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     setOperationError(null);
     try {
       const discovered = await adapters.discovery.discover();
-      setProfiles(current => mergeProfiles(current, discovered));
-      if (!discovered.length) setOperationError('No new ProPR instances were found on this network.');
+      const candidate = discovered[0];
+      if (candidate) {
+        // Discovery is evidence for a proposed endpoint, never permission to
+        // persist, pair, or activate it. The editor owns explicit confirmation.
+        setEditing(candidate);
+      } else {
+        setOperationError('No new ProPR instances were found on this network.');
+      }
     } catch {
       setOperationError('Network discovery is unavailable. Try again.');
     } finally {

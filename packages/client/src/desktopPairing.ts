@@ -53,7 +53,7 @@ export interface ProprDesktopPairingActivationReceipt {
 export interface ProprDesktopPairingOptions {
   signal?: AbortSignal;
   binding: ProprDesktopPairingBinding;
-  onApprovalRequired?(approvalUrl: string, expiresAt: string): void | Promise<void>;
+  onApprovalRequired?(approvalUrl: string, expiresAt: string, pairingId: string): void | Promise<void>;
   /** Injectable only to make protocol tests deterministic. */
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   /** Injectable only to make expiry tests deterministic. */
@@ -280,7 +280,7 @@ export const completeDesktopPairing = async (
     let intervalSeconds = start.interval;
     if (options.onApprovalRequired) {
       const approval = Promise.resolve().then(() =>
-        options.onApprovalRequired?.(start.approvalUrl, start.expiresAt));
+        options.onApprovalRequired?.(start.approvalUrl, start.expiresAt, start.pairingId));
       await raceLifetime(approval);
       requireRemainingLifetime();
     }

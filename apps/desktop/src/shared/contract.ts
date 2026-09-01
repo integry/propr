@@ -15,6 +15,8 @@ export const IPC_CHANNELS = Object.freeze({
   connectionActivate: 'desktop:connection-activate',
   connectionDiscard: 'desktop:connection-discard',
   connectionInvalidate: 'desktop:connection-invalidate',
+  connectDiscover: 'desktop:connect-discover',
+  connectRediscover: 'desktop:connect-rediscover',
   lifecycleStatus: 'desktop:lifecycle-status',
   lifecycleStart: 'desktop:lifecycle-start',
   lifecycleStop: 'desktop:lifecycle-stop',
@@ -43,6 +45,13 @@ export interface DesktopProfile {
 
 export interface DesktopProfileInput {
   id?: string;
+  label: string;
+  apiBaseUrl: string;
+}
+
+/** Secret-free candidate projected by the trusted main-process discovery service. */
+export interface DesktopDiscoveryCandidate {
+  id: string;
   label: string;
   apiBaseUrl: string;
 }
@@ -121,6 +130,11 @@ export interface DesktopBridge {
     activate(activationTicket: string): Promise<DesktopActivatedConnection>;
     discard(value: DesktopConnectionScope): Promise<{ discarded: boolean }>;
     invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }>;
+  };
+  discovery: {
+    supported: boolean;
+    discover(): Promise<DesktopDiscoveryCandidate[]>;
+    rediscover(profileId: string): Promise<DesktopDiscoveryCandidate | null>;
   };
   lifecycle: {
     status(): Promise<LocalLifecycleStatus>;

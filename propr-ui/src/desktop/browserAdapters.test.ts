@@ -20,6 +20,7 @@ describe('desktop browser fixtures', () => {
     const adapters = resolveDesktopAdapters();
     expect(adapters).not.toBeNull();
     await expect(adapters?.profiles.list()).resolves.toHaveLength(2);
+    expect(adapters?.discovery.supported).toBe(false);
   });
 
   it('does not enable query-driven fixtures in production mode', () => {

@@ -1,6 +1,6 @@
 import { normalizeApiBaseUrl } from '@propr/client';
-import { isProprLoopbackHostname } from '@propr/shared';
-import type { DesktopBridge, DesktopProfile as StoredDesktopProfile } from '../../../apps/desktop/src/shared/contract';
+import { isProprLoopbackHostname, parseProprConnectEndpoint } from '@propr/shared';
+import type { DesktopBridge, DesktopDiscoveryCandidate, DesktopProfile as StoredDesktopProfile } from '../../../apps/desktop/src/shared/contract';
 import { getDesktopConnectionScope, setDesktopConnectionScope } from '../api/apiClient';
 import type { DesktopAdapters, DesktopPlatform, DesktopProfile } from './types';
 
@@ -28,6 +28,22 @@ const toStoredProfile = (profile: DesktopProfile) => ({
   label: profile.name,
   apiBaseUrl: normalizeApiBaseUrl(profile.baseUrl),
 });
+
+const fromDiscoveryCandidate = (candidate: DesktopDiscoveryCandidate): DesktopProfile | null => {
+  const endpoint = parseProprConnectEndpoint(candidate.apiBaseUrl);
+  if (
+    !endpoint
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(candidate.id)
+    || candidate.label.length === 0
+    || candidate.label.length > 80
+  ) return null;
+  return {
+    id: candidate.id,
+    name: candidate.label,
+    baseUrl: endpoint.origin,
+    kind: 'remote',
+  };
+};
 
 const snapshotStorage = (storage: Storage): [string, string][] => {
   const snapshot: [string, string][] = [];
@@ -91,11 +107,18 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
     },
   },
   discovery: {
-    supported: false,
+    supported: bridge.discovery.supported,
     async discover() {
-      // URL discovery is performed by the main-process probe. Network-wide mDNS
-      // remains an optional host concern; never scan arbitrary LAN addresses here.
-      return [];
+      return (await bridge.discovery.discover())
+        .map(fromDiscoveryCandidate)
+        .filter((profile): profile is DesktopProfile => profile !== null);
+    },
+  },
+  managedTunnelRecovery: {
+    async rediscover(profileId) {
+      const candidate = await bridge.discovery.rediscover(profileId);
+      if (!candidate || candidate.id !== profileId) return null;
+      return fromDiscoveryCandidate(candidate);
     },
   },
   authentication: {

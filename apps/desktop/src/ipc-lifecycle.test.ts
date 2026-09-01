@@ -15,6 +15,11 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
+const connectDiscovery = {
+  discover: async () => [],
+  rediscover: async () => null,
+};
+
 describe('desktop IPC shutdown gate', () => {
   it('clears old and new origin storage through the real save IPC before a same-ID URL commit', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
@@ -38,6 +43,7 @@ describe('desktop IPC shutdown gate', () => {
       } as unknown as IpcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession: {
@@ -104,6 +110,7 @@ describe('desktop IPC shutdown gate', () => {
       ipcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession,
@@ -180,6 +187,7 @@ describe('desktop IPC shutdown gate', () => {
       ipcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession,
@@ -231,6 +239,7 @@ describe('desktop IPC shutdown gate', () => {
       ipcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession,
@@ -273,6 +282,7 @@ describe('desktop IPC shutdown gate', () => {
       ipcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession,
@@ -312,6 +322,7 @@ describe('desktop IPC shutdown gate', () => {
       ipcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession: {} as Session,
@@ -374,6 +385,7 @@ describe('desktop IPC shutdown gate', () => {
         ipcMain,
         profiles: {} as ProfileStore,
         credentials,
+        connectDiscovery,
         lifecycle: {} as LocalLifecycleController,
         logger: { log: () => undefined } as unknown as DesktopLogger,
         desktopSession,

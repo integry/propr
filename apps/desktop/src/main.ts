@@ -6,6 +6,11 @@ import {
   DESKTOP_RENDERER_ORIGIN,
   DESKTOP_TRANSPORT_SCOPE_HEADER,
 } from '@propr/shared';
+import {
+  DESKTOP_CONNECT_DISCOVERY_PLATFORMS,
+  discoverConfiguredConnect,
+} from '@propr/cli/desktop-discovery';
+import { DesktopConnectDiscoveryService } from './connect-discovery';
 import { DeepLinkDelivery } from './deep-link-delivery';
 import { clearDesktopInstanceCookies } from './desktop-session';
 import { DesktopCredentialService } from './credential-service';
@@ -13,6 +18,7 @@ import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
+import { openApprovedDesktopPairingUrl } from './pairing-browser';
 import { createDesktopShutdownCoordinator } from './shutdown';
 import {
   deepLinkFromArguments,
@@ -483,10 +489,16 @@ if (!hasSingleInstanceLock) {
       decrypt: value => safeStorage.decryptString(value),
     };
     const profiles = new ProfileStore(app.getPath('userData'), productionEncryption);
+    const connectDiscovery = new DesktopConnectDiscoveryService(profiles, {
+      supported: DESKTOP_CONNECT_DISCOVERY_PLATFORMS.has(process.platform),
+      discover: () => discoverConfiguredConnect({
+        configRoot: join(app.getPath('home'), '.propr'),
+      }),
+    });
     const credentials = new DesktopCredentialService({
       profiles,
       fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
-      openExternal: async url => { await shell.openExternal(url); },
+      openPairingBrowser: request => openApprovedDesktopPairingUrl(request, shell),
       clientName: `ProPR Desktop (${process.platform})`,
       reportRevocationFailure: diagnostic => {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
@@ -505,12 +517,13 @@ if (!hasSingleInstanceLock) {
       ipcMain,
       profiles,
       credentials,
+      connectDiscovery,
       lifecycle,
       logger,
       desktopSession: session.defaultSession,
       devServerUrl,
       packagedRendererUrl,
-      openExternal: async url => { await shell.openExternal(url); },
+      openExternal: openAllowedExternalUrl,
     });
     mainWindow = await createMainWindow(transportSmoke);
     deepLinkDelivery.setWindow(mainWindow);

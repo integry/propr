@@ -24,7 +24,7 @@ class FakeIpc implements PreloadIpc {
 describe('desktop preload bridge', () => {
   it('exposes only the narrow frozen namespaces', () => {
     const bridge = createDesktopBridge(new FakeIpc());
-    assert.deepEqual(Object.keys(bridge).sort(), ['app', 'auth', 'authentication', 'connection', 'external', 'lifecycle', 'profiles', 'storage']);
+    assert.deepEqual(Object.keys(bridge).sort(), ['app', 'auth', 'authentication', 'connection', 'discovery', 'external', 'lifecycle', 'profiles', 'storage']);
     assert.equal(Object.isFrozen(bridge), true);
     assert.equal(Object.values(bridge).every(Object.isFrozen), true);
     assert.equal('fs' in bridge, false);
@@ -39,6 +39,8 @@ describe('desktop preload bridge', () => {
     await bridge.authentication.pair({ id: 'profile-1', label: 'Local', apiBaseUrl: 'http://localhost:4000' });
     await bridge.connection.activate('activation-ticket');
     await bridge.connection.discard({ profileId: 'profile-1', transportScope: 'transport-scope' });
+    await bridge.discovery.discover();
+    await bridge.discovery.rediscover('profile-1');
     await bridge.lifecycle.start();
     assert.deepEqual(ipc.invocations, [
       { channel: IPC_CHANNELS.authLogout, args: ['http://localhost:4000'] },
@@ -55,8 +57,17 @@ describe('desktop preload bridge', () => {
         channel: IPC_CHANNELS.connectionDiscard,
         args: [{ profileId: 'profile-1', transportScope: 'transport-scope' }],
       },
+      { channel: IPC_CHANNELS.connectDiscover, args: [] },
+      { channel: IPC_CHANNELS.connectRediscover, args: ['profile-1'] },
       { channel: IPC_CHANNELS.lifecycleStart, args: [] },
     ]);
+    assert.equal(bridge.discovery.supported, true);
+  });
+
+  it('can advertise an unsupported host without exposing a renderer-selected root', () => {
+    const bridge = createDesktopBridge(new FakeIpc(), false);
+    assert.equal(bridge.discovery.supported, false);
+    assert.deepEqual(Object.keys(bridge.discovery).sort(), ['discover', 'rediscover', 'supported']);
   });
 
   it('does not expose Electron event objects to deep-link listeners', () => {

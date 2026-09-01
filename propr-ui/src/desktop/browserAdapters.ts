@@ -167,7 +167,7 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
       else window.localStorage.removeItem(ACTIVE_PROFILE_KEY);
     },
   },
-  discovery: { supported: true, async discover() { return fixture ? [fixtureProfile] : []; } },
+  discovery: { supported: false, async discover() { return fixture ? [fixtureProfile] : []; } },
   externalBrowser: { async open(url) { window.open(url, '_blank', 'noopener,noreferrer'); } },
   authentication: {
     authenticate: authenticateBrowserFixture,

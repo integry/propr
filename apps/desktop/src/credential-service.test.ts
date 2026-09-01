@@ -131,7 +131,7 @@ describe('main-process desktop credential service', () => {
     service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         const requestHeaders: Record<string, string> = {};
@@ -214,7 +214,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async input => input.toString().endsWith('/api/desktop/discovery')
         ? json(discovery)
         : json({ username: 'octocat' }),
@@ -243,7 +243,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         requests.push({ url, authorization: new Headers(init?.headers).get('Authorization') });
@@ -276,7 +276,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         const authorization = new Headers(init?.headers).get('Authorization');
@@ -331,7 +331,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: delayedProfiles,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         requests.push({ url, authorization: new Headers(init?.headers).get('Authorization') });
@@ -367,7 +367,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         if (url.endsWith('/api/desktop/discovery')) return json(discovery);
@@ -414,7 +414,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async input => input.toString().endsWith('/api/desktop/discovery')
         ? json(discovery)
         : json({ username: 'octocat' }),
@@ -450,7 +450,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async input => input.toString().endsWith('/api/desktop/discovery')
         ? json(discovery)
         : json({ username: 'octocat' }),
@@ -479,7 +479,7 @@ describe('main-process desktop credential service', () => {
       const service = createCredentialService({
         profiles: store,
         clientName: 'Test desktop',
-        openExternal: async () => undefined,
+        openPairingBrowser: async () => undefined,
         fetch: async input => input.toString().endsWith('/api/desktop/discovery')
           ? json(discovery)
           : json({ username: 'octocat' }),
@@ -514,7 +514,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async input => input.toString().endsWith('/api/desktop/discovery')
         ? json(discovery)
         : json({ username: 'octocat' }),
@@ -575,7 +575,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: { awaitIdle: async () => undefined } as unknown as ProfileStore,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async () => { throw new Error('Network is not expected'); },
     });
 
@@ -601,7 +601,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async input => input.toString().endsWith('/api/desktop/discovery')
         ? json(discovery)
         : json({ username: 'octocat' }),
@@ -640,7 +640,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         requests.push({ url, authorization: new Headers(init?.headers).get('Authorization') });
@@ -676,7 +676,7 @@ describe('main-process desktop credential service', () => {
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         const authorization = new Headers(init?.headers).get('Authorization');
@@ -731,7 +731,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         const authorization = new Headers(init?.headers).get('Authorization');
@@ -800,7 +800,7 @@ describe('main-process desktop credential service', () => {
         profiles: store,
         clientName: 'Test desktop',
         pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-        openExternal: async () => {
+        openPairingBrowser: async () => {
           if (failure === 'browser-launch') throw new Error('Browser launch failed.');
           if (failure === 'cancellation') service.cancelPairing(profile.id);
         },
@@ -871,7 +871,7 @@ describe('main-process desktop credential service', () => {
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         if (url === 'https://b.example.test/api/desktop/pairings') return pairingStartResponse(url, init, {
@@ -918,7 +918,7 @@ describe('main-process desktop credential service', () => {
       profiles: store,
       clientName: 'Delivery ordering test',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
@@ -968,7 +968,7 @@ describe('main-process desktop credential service', () => {
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       reportRevocationFailure: value => diagnostics.push(value),
       fetch: async (input, init) => {
         const url = input.toString();
@@ -1019,7 +1019,7 @@ describe('main-process desktop credential service', () => {
     const offlineRestart = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       reportRevocationFailure: value => offlineDiagnostics.push(value),
       fetch: async () => { throw new Error('offline'); },
     });
@@ -1045,7 +1045,7 @@ describe('main-process desktop credential service', () => {
     const remoteSucceeded = createCredentialService({
       profiles: cleanupFailingProfiles,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       reportRevocationFailure: value => cleanupDiagnostics.push(value),
       fetch: async () => new Response(null, { status: 204 }),
     });
@@ -1057,7 +1057,7 @@ describe('main-process desktop credential service', () => {
     const onlineRestart = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (_input, init) => {
         terminalRetries += 1;
         return terminalRevocation(init);
@@ -1092,7 +1092,7 @@ describe('main-process desktop credential service', () => {
       profiles: uncertainStore,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
@@ -1167,7 +1167,7 @@ describe('main-process desktop credential service', () => {
       const retryingService = createCredentialService({
         profiles: restarted,
         clientName: 'Restarted desktop',
-        openExternal: async () => undefined,
+        openPairingBrowser: async () => undefined,
         fetch: async (_input, init) => {
           retries += 1;
           assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${credentialA.token}`);
@@ -1200,7 +1200,7 @@ describe('main-process desktop credential service', () => {
       const service = createCredentialService({
         profiles: store,
         clientName: 'Terminal contract test',
-        openExternal: async () => undefined,
+        openPairingBrowser: async () => undefined,
         fetch: async (input, init) => {
           assert.equal(input.toString(), `${old.origin}${DESKTOP_TOKEN_REVOCATION_ENDPOINT}`);
           assert.equal(new Headers(init?.headers).get(DESKTOP_REVOCATION_BINDING_HEADER), pending[0].credentialGeneration);
@@ -1253,7 +1253,7 @@ describe('main-process desktop credential service', () => {
       const service = createCredentialService({
         profiles: store,
         clientName: 'Retryable contract test',
-        openExternal: async () => undefined,
+        openPairingBrowser: async () => undefined,
         reportRevocationFailure: diagnostic => diagnostics.push(diagnostic),
         fetch: async (_input, init) => response(init),
       });
@@ -1346,7 +1346,7 @@ describe('main-process desktop credential service', () => {
       const service = createCredentialService({
         profiles: store,
         clientName: 'Streaming terminal contract test',
-        openExternal: async () => undefined,
+        openPairingBrowser: async () => undefined,
         fetch: async (_input, init) => response(init),
       });
 
@@ -1366,7 +1366,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Slowloris terminal contract test',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       revocationDeadlines: { headerMs: 50, bodyMs: 25, recordMs: 75, aggregateMs: 100 },
       fetch: async () => new Response(new ReadableStream<Uint8Array>({
         start(controller) { controller.enqueue(new TextEncoder().encode('{')); },
@@ -1392,7 +1392,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Dispose fetch barrier test',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
         fetchCalls += 1;
         fetchStarted.resolve();
@@ -1437,7 +1437,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Dispose body barrier test',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async () => {
         networkCalls += 1;
         return new Response(new ReadableStream<Uint8Array>({
@@ -1489,7 +1489,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Dispose journal barrier test',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async () => {
         networkCalls += 1;
         return new Response(null, { status: 204 });
@@ -1525,7 +1525,7 @@ describe('main-process desktop credential service', () => {
     const offline = createCredentialService({
       profiles: store,
       clientName: 'Bounded startup test',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       revocationDeadlines: { headerMs: 100, bodyMs: 50, recordMs: 125, aggregateMs: 500 },
       fetch: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
         stalledCalls += 1;
@@ -1550,7 +1550,7 @@ describe('main-process desktop credential service', () => {
     const online = createCredentialService({
       profiles: store,
       clientName: 'Later online recovery test',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async () => {
         recoveryCalls += 1;
         return new Response(null, { status: 204 });
@@ -1574,7 +1574,7 @@ describe('main-process desktop credential service', () => {
     const restarted = createCredentialService({
       profiles: store,
       clientName: 'Restarted after provisional crash',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (_input, init) => {
         calls += 1;
         assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${token('C')}`);
@@ -1597,7 +1597,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async input => input.toString().endsWith('/api/desktop/discovery')
         ? json(discovery)
         : json({ username: 'octocat' }),
@@ -1666,7 +1666,7 @@ describe('main-process desktop credential service', () => {
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         if (url.endsWith('/api/desktop/pairings')) {
@@ -1724,7 +1724,7 @@ describe('main-process desktop credential service', () => {
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
@@ -1765,7 +1765,7 @@ describe('main-process desktop credential service', () => {
     const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         if (url.endsWith('/api/desktop/discovery')) return json(discovery);
@@ -1863,7 +1863,7 @@ describe('main-process desktop credential service', () => {
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         if (url === 'https://a.example.test/api/desktop/tokens/current') {
@@ -1922,7 +1922,7 @@ describe('main-process desktop credential service', () => {
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-      openExternal: async () => undefined,
+      openPairingBrowser: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
         if (url.endsWith('/api/desktop/discovery')) return json(discovery);
@@ -2018,7 +2018,7 @@ describe('main-process desktop credential service', () => {
           now: () => pairingNow,
           sleep: async () => undefined,
         },
-        openExternal: async () => undefined,
+        openPairingBrowser: async () => undefined,
         fetch: async (input, init) => {
           const url = input.toString();
           if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
@@ -2085,7 +2085,7 @@ describe('main-process desktop credential service', () => {
           profiles: store,
           clientName: 'Test desktop',
           pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
-          openExternal: async () => undefined,
+          openPairingBrowser: async () => undefined,
           fetch: async (input, init) => {
             const url = input.toString();
             if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {

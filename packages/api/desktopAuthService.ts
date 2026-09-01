@@ -257,50 +257,51 @@ interface PublicApiBase {
   managedSelector: string | null;
 }
 
-// The validation branches below intentionally keep every reserved-namespace
-// rejection at this single trust boundary.
-// eslint-disable-next-line complexity
-function publicApiBase(configured?: string): PublicApiBase | null {
-  const raw = configured ?? process.env.API_PUBLIC_URL;
-  if (!raw) return null;
-  if (raw.length > MAX_PROPR_API_BASE_URL_LENGTH) {
-    throw new DesktopAuthError(
-      'PAIRING_CONFIGURATION_INVALID',
-      503,
-      'Desktop pairing is unavailable because the public API URL is invalid',
-    );
-  }
-  const canonicalConnectEndpoint = parseProprConnectEndpoint(raw);
-  if (isProprConnectReservedHostAttempt(raw) && !canonicalConnectEndpoint) {
-    throw new DesktopAuthError(
-      'PAIRING_CONFIGURATION_INVALID',
-      503,
-      'Desktop pairing is unavailable because the public API URL is invalid',
-    );
-  }
-  const url = new URL(raw);
+function invalidPublicApiConfiguration(): DesktopAuthError {
+  return new DesktopAuthError(
+    'PAIRING_CONFIGURATION_INVALID',
+    503,
+    'Desktop pairing is unavailable because the public API URL is invalid',
+  );
+}
+
+function rawPublicApiHostname(raw: string): string {
+  const authority = raw.slice(raw.indexOf('://') + 3).split(/[/?#]/, 1)[0]?.split('@').pop()?.toLowerCase() ?? '';
+  return authority.replace(/:\d+$/, '').replace(/\.$/, '');
+}
+
+function claimsManagedPublicApiNamespace(raw: string, url: URL): boolean {
+  const normalizedHostname = url.hostname.toLowerCase().replace(/\.$/, '');
+  const managedLabelInProprNamespace = normalizedHostname.endsWith('.propr.dev')
+    && normalizedHostname.split('.').slice(0, -2).some(label => label.startsWith('t-'));
+  const rawHostnameLabels = rawPublicApiHostname(raw).split('.');
+  const rawManagedLabelInProprNamespace = rawHostnameLabels[0]?.startsWith('t-') === true
+    && rawHostnameLabels.at(-2) === 'propr'
+    && rawHostnameLabels.at(-1) === 'dev';
+  return managedLabelInProprNamespace || rawManagedLabelInProprNamespace;
+}
+
+function validatePublicApiOrigin(raw: string, url: URL): void {
   if (normalizeProprApiOrigin(raw) !== url.origin) {
     throw new Error('Desktop pairing browser entry requires HTTPS except on loopback hosts');
   }
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
     throw new Error('API_PUBLIC_URL must be an origin without credentials, a path, query, or fragment');
   }
+}
+
+function publicApiBase(configured?: string): PublicApiBase | null {
+  const raw = configured ?? process.env.API_PUBLIC_URL;
+  if (!raw) return null;
+  if (raw.length > MAX_PROPR_API_BASE_URL_LENGTH) throw invalidPublicApiConfiguration();
+  const canonicalConnectEndpoint = parseProprConnectEndpoint(raw);
+  if (isProprConnectReservedHostAttempt(raw) && !canonicalConnectEndpoint) {
+    throw invalidPublicApiConfiguration();
+  }
+  const url = new URL(raw);
+  validatePublicApiOrigin(raw, url);
   const canonicalManagedUrl = canonicalProprProxyUrl(raw);
-  const normalizedHostname = url.hostname.toLowerCase().replace(/\.$/, '');
-  const managedLabelInProprNamespace = normalizedHostname.endsWith('.propr.dev')
-    && normalizedHostname.split('.').slice(0, -2).some(label => label.startsWith('t-'));
-  const rawAuthority = raw.slice(raw.indexOf('://') + 3).split(/[/?#]/, 1)[0]?.split('@').pop()?.toLowerCase() ?? '';
-  const rawHostname = rawAuthority.replace(/:\d+$/, '').replace(/\.$/, '');
-  const rawHostnameLabels = rawHostname.split('.');
-  const rawManagedLabelInProprNamespace = rawHostnameLabels[0]?.startsWith('t-') === true
-    && rawHostnameLabels.at(-2) === 'propr'
-    && rawHostnameLabels.at(-1) === 'dev';
-  const claimsManagedNamespace = (
-    managedLabelInProprNamespace
-  ) || (
-    rawManagedLabelInProprNamespace
-  );
-  if (claimsManagedNamespace && !canonicalManagedUrl) {
+  if (claimsManagedPublicApiNamespace(raw, url) && !canonicalManagedUrl) {
     throw new Error('API_PUBLIC_URL uses a noncanonical reserved ProPR tunnel host');
   }
   return {

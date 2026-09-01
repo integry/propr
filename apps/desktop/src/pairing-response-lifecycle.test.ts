@@ -265,7 +265,7 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
         service = new DesktopCredentialService({
           profiles: store,
           clientName: `Native ${scenario.name}`,
-          openExternal: async () => undefined,
+          openPairingBrowser: async () => undefined,
           fetch: fetchImplementation,
           pairingTiming: { now: () => protocolNow, sleep: async () => undefined },
           pairingProtocol: {
@@ -291,6 +291,10 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
           } as unknown as IpcMain,
           profiles: store,
           credentials: service,
+          connectDiscovery: {
+            discover: async () => [],
+            rediscover: async () => null,
+          },
           lifecycle: {} as LocalLifecycleController,
           logger: { log: () => undefined } as unknown as DesktopLogger,
           desktopSession,

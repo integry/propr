@@ -38,6 +38,16 @@ const bridgeFixture = () => {
     identityEpoch: 'AAAAAAAAAAAAAAAAAAAAAA',
   }));
   const discard = vi.fn(async () => ({ discarded: true }));
+  const discover = vi.fn(async () => [{
+    id: 'connect-candidate',
+    label: 'ProPR Connect',
+    apiBaseUrl: 'https://t-discovered123.propr.dev',
+  }]);
+  const rediscover = vi.fn(async (profileId: string) => ({
+    id: profileId,
+    label: 'Team server',
+    apiBaseUrl: 'https://t-recovered456.propr.dev',
+  }));
   const bridge: DesktopBridge = {
     app: {
       getMetadata: async () => ({
@@ -60,6 +70,7 @@ const bridgeFixture = () => {
     },
     authentication: { pair, cancel: vi.fn(async () => undefined) },
     connection: { probe, activate, discard, invalidate: vi.fn(async () => ({ invalidated: false })) },
+    discovery: { supported: true, discover, rediscover },
     lifecycle: {
       status: async () => ({ state: 'disconnected' }),
       start: async () => ({ ok: false, code: 'not-implemented', status: { state: 'disconnected' } }),
@@ -67,7 +78,7 @@ const bridgeFixture = () => {
       restart: async () => ({ ok: false, code: 'not-implemented', status: { state: 'disconnected' } }),
     },
   };
-  return { bridge, pair, probe, activate, discard, profiles: () => profiles };
+  return { bridge, pair, probe, activate, discard, discover, rediscover, profiles: () => profiles };
 };
 
 describe('Electron remote instance adapters', () => {
@@ -81,7 +92,27 @@ describe('Electron remote instance adapters', () => {
     const adapters = createElectronDesktopAdapters(bridgeFixture().bridge);
 
     expect(adapters.localSetup.supported).toBe(false);
-    expect(adapters.discovery.supported).toBe(false);
+    expect(adapters.discovery.supported).toBe(true);
+  });
+
+  it('projects typed main discovery and managed recovery without renderer authority inputs', async () => {
+    const fixture = bridgeFixture();
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+
+    await expect(adapters.discovery.discover()).resolves.toEqual([{
+      id: 'connect-candidate',
+      name: 'ProPR Connect',
+      baseUrl: 'https://t-discovered123.propr.dev',
+      kind: 'remote',
+    }]);
+    await expect(adapters.managedTunnelRecovery?.rediscover('profile-1')).resolves.toEqual({
+      id: 'profile-1',
+      name: 'Team server',
+      baseUrl: 'https://t-recovered456.propr.dev',
+      kind: 'remote',
+    });
+    expect(fixture.discover).toHaveBeenCalledWith();
+    expect(fixture.rediscover).toHaveBeenCalledWith('profile-1');
   });
 
   it('returns authentication cancellation rejection to the explicit UI settlement path', async () => {

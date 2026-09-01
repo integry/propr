@@ -5,17 +5,24 @@ import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { flipFuses, FuseV1Options, FuseVersion } from '@electron/fuses';
+import { cpSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const connectNativePrebuilds = fileURLToPath(new URL('../../packages/cli/native/prebuilds', import.meta.url));
 
 const config: ForgeConfig = {
   packagerConfig: {
-    asar: true,
+    asar: { unpack: '**/.vite/native/prebuilds/**' },
     name: 'propr-desktop',
     executableName: 'propr-desktop',
   },
   rebuildConfig: {},
   hooks: {
     packageAfterCopy: async (_forgeConfig, resourcesPath, _electronVersion, platform, arch) => {
+      const packagedConnectPrebuilds = resolve(resourcesPath, '.vite/native/prebuilds');
+      mkdirSync(packagedConnectPrebuilds, { recursive: true });
+      cpSync(connectNativePrebuilds, packagedConnectPrebuilds, { recursive: true });
       const applePlatform = platform === 'darwin' || platform === 'mas';
       const executableName = applePlatform ? 'Electron' : `electron${platform === 'win32' ? '.exe' : ''}`;
       await flipFuses(resolve(resourcesPath, '..', '..', applePlatform ? 'MacOS' : '', executableName), {
