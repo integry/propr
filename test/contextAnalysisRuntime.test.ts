@@ -73,7 +73,7 @@ describe('context analysis runtime safeguards', () => {
     assert.notStrictEqual(firstName, secondName);
   });
 
-  test('uses an SSE provider with a thirty-minute idle timeout by default', () => {
+  test('uses a WebSocket-capable provider with a thirty-minute idle timeout by default', () => {
     assert.deepEqual(resolveCodexStreamConfig({}), {
       transport: DEFAULT_CODEX_STREAM_TRANSPORT,
       idleTimeoutMs: DEFAULT_CODEX_STREAM_IDLE_TIMEOUT_MS,
@@ -83,7 +83,7 @@ describe('context analysis runtime safeguards', () => {
     const args = buildCodexDockerArgs({
       ...codexConfig,
       envVars: {
-        CODEX_STREAM_TRANSPORT: 'sse',
+        CODEX_STREAM_TRANSPORT: DEFAULT_CODEX_STREAM_TRANSPORT,
         CODEX_STREAM_IDLE_TIMEOUT_MS: String(DEFAULT_CODEX_STREAM_IDLE_TIMEOUT_MS),
         CODEX_STREAM_MAX_RETRIES: String(DEFAULT_CODEX_STREAM_MAX_RETRIES),
       },
@@ -92,7 +92,7 @@ describe('context analysis runtime safeguards', () => {
 
     assert.ok(overrides.includes('model_provider="propr_openai"'));
     assert.ok(overrides.includes('model_providers.propr_openai.requires_openai_auth=true'));
-    assert.ok(overrides.includes('model_providers.propr_openai.supports_websockets=false'));
+    assert.ok(overrides.includes('model_providers.propr_openai.supports_websockets=true'));
     assert.ok(overrides.includes('model_providers.propr_openai.stream_idle_timeout_ms=1800000'));
     assert.ok(overrides.includes('model_providers.propr_openai.stream_max_retries=5'));
   });
@@ -120,6 +120,16 @@ describe('context analysis runtime safeguards', () => {
     assert.ok(overrides.includes('model_providers.propr_openai.stream_max_retries=9'));
   });
 
+  test('allows SSE when the environment cannot carry WebSockets', () => {
+    const args = buildCodexDockerArgs({
+      ...codexConfig,
+      envVars: { CODEX_STREAM_TRANSPORT: 'sse' },
+    }, codexParams);
+    const overrides = codexConfigOverrides(args);
+
+    assert.ok(overrides.includes('model_providers.propr_openai.supports_websockets=false'));
+  });
+
   test('can inherit a user-managed Codex provider without injecting ProPR overrides', () => {
     const args = buildCodexDockerArgs({
       ...codexConfig,
@@ -143,9 +153,9 @@ describe('context analysis runtime safeguards', () => {
     });
   });
 
-  test('defaults context analysis to thirty minutes', () => {
-    assert.strictEqual(DEFAULT_CONTEXT_ANALYSIS_TIMEOUT_MS, 1_800_000);
-    assert.strictEqual(resolveContextAnalysisTimeoutMs(undefined), 1_800_000);
+  test('defaults context analysis to sixty minutes', () => {
+    assert.strictEqual(DEFAULT_CONTEXT_ANALYSIS_TIMEOUT_MS, 3_600_000);
+    assert.strictEqual(resolveContextAnalysisTimeoutMs(undefined), 3_600_000);
   });
 
   test('accepts a positive timeout override and rejects invalid values', () => {

@@ -254,6 +254,29 @@ describe('parseCodexStreamOutput', () => {
             assert.ok(result.logs.includes('[Error] API rate limit exceeded'));
         });
 
+        test('keeps reconnect notices non-terminal when a retried turn completes', () => {
+            const events = [
+                { type: 'turn.started' },
+                {
+                    type: 'error',
+                    message: 'Reconnecting... 1/5 (stream disconnected before completion: Transport error)'
+                },
+                {
+                    type: 'item.completed',
+                    item: { type: 'agent_message', text: 'Recovered result' }
+                },
+                { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }
+            ];
+            const stdout = events.map(event => JSON.stringify(event)).join('\n');
+
+            const result = parseCodexStreamOutput(stdout);
+
+            assert.strictEqual(result.success, true);
+            assert.strictEqual(result.error, undefined);
+            assert.strictEqual(result.result, 'Recovered result');
+            assert.ok(result.logs.includes('[Error] Reconnecting... 1/5'));
+        });
+
         test('parses result event with error status', () => {
             const event = {
                 type: 'result',

@@ -13,7 +13,7 @@ const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 const PROPR_OPENAI_PROVIDER_ID = 'propr_openai';
 
-export const DEFAULT_CODEX_STREAM_TRANSPORT = 'sse' as const;
+export const DEFAULT_CODEX_STREAM_TRANSPORT = 'websocket' as const;
 export const DEFAULT_CODEX_STREAM_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 export const DEFAULT_CODEX_STREAM_MAX_RETRIES = 5;
 
@@ -37,7 +37,9 @@ export function resolveCodexStreamConfig(
     environment: Record<string, string | undefined> = process.env
 ): CodexStreamConfig {
     const configuredTransport = environment.CODEX_STREAM_TRANSPORT?.trim().toLowerCase();
-    const transport: CodexStreamTransport = configuredTransport === 'websocket' || configuredTransport === 'inherit'
+    const transport: CodexStreamTransport = configuredTransport === 'sse'
+        || configuredTransport === 'websocket'
+        || configuredTransport === 'inherit'
         ? configuredTransport
         : DEFAULT_CODEX_STREAM_TRANSPORT;
 

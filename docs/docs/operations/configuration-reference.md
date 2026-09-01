@@ -88,10 +88,10 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 | `CLAUDE_MAX_TURNS` | Shipped `10` / code falls back to `1000` if unset | Maximum agent turns per Claude run. | Optional. |
 | `CLAUDE_TIMEOUT_MS` | `86400000` (24 hours) | Claude task run timeout. | Optional. |
 | `CODEX_TIMEOUT_MS` | `86400000` (24 hours) | Codex task run timeout. | Optional. |
-| `CODEX_STREAM_TRANSPORT` | `sse` | Codex response transport. `sse` avoids WebSocket idle disconnects, `websocket` retains WebSockets with ProPR's stream timeout, and `inherit` leaves the mounted Codex provider configuration unchanged. | Optional; use `inherit` with a custom provider. |
+| `CODEX_STREAM_TRANSPORT` | `websocket` | Codex response transport. `websocket` avoids long-lived HTTP response deadlines, `sse` supports environments that cannot carry WebSockets, and `inherit` leaves the mounted Codex provider configuration unchanged. | Optional; use `inherit` with a custom provider. |
 | `CODEX_STREAM_IDLE_TIMEOUT_MS` | `1800000` (30 minutes) | Maximum quiet period on a Codex response stream before reconnecting. This is separate from the whole-task `CODEX_TIMEOUT_MS`. | Optional tuning. |
 | `CODEX_STREAM_MAX_RETRIES` | `5` | Number of Codex response-stream reconnect attempts. Zero disables retries. | Optional tuning. |
-| `CONTEXT_ANALYSIS_TIMEOUT_MS` | `1800000` (30 minutes) | Timeout for planner keyword extraction and semantic relevance scoring calls. | Optional. |
+| `CONTEXT_ANALYSIS_TIMEOUT_MS` | `3600000` (60 minutes) | Timeout for planner keyword extraction and semantic relevance scoring calls. | Optional. |
 | `ANTIGRAVITY_TIMEOUT_MS` | `86400000` (24 hours) | Antigravity task run timeout. | Optional. |
 | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | OpenCode task run timeout. | Optional. |
 | `VIBE_MAX_TURNS` | `1000` | Maximum agent turns per Vibe run. | Optional. |
