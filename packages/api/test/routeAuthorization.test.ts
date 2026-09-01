@@ -26,7 +26,9 @@ function handlerCollection(): never {
 function createAuthorizationTestApp() {
   const app = express();
   app.use((req, _res, next) => {
-    const admin = req.header('x-test-role') === 'admin';
+    const role = req.header('x-test-role');
+    const admin = role === 'admin';
+    const demo = role === 'demo';
     req.authorization = {
       role: admin ? 'admin' : 'member',
       permissions: admin
@@ -37,7 +39,7 @@ function createAuthorizationTestApp() {
             'instance.manage_settings',
           ]
         : [],
-      source: admin ? 'local' : 'implicit',
+      source: admin ? 'local' : demo ? 'demo' : 'implicit',
     };
     next();
   });
@@ -78,6 +80,7 @@ const managementRequests = [
   ['GET', '/api/config/agents'],
   ['GET', '/api/config/synthetic-agents'],
   ['POST', '/api/config/synthetic-agents'],
+  ['GET', '/api/config/agent-tank/usage'],
   ['GET', '/api/admin/members'],
   ['GET', '/api/agent-runtime/packages'],
   ['POST', '/api/agent-runtime/packages/verify'],
@@ -126,6 +129,19 @@ describe('assembled instance permission routes', () => {
           headers: { 'x-test-role': 'admin' },
         });
         assert.equal(response.status, 200, `${method} ${path}`);
+      }
+    });
+  });
+
+  test('demo users can read only the synthetic Agent Tank usage feed', async () => {
+    await withServer(async origin => {
+      const headers = { 'x-test-role': 'demo' };
+      const usageResponse = await fetch(`${origin}/api/config/agent-tank/usage`, { headers });
+      assert.equal(usageResponse.status, 200);
+
+      for (const path of ['/api/config/agent-tank', '/api/config/agent-tank/status']) {
+        const response = await fetch(`${origin}${path}`, { headers });
+        assert.equal(response.status, 403, path);
       }
     });
   });
