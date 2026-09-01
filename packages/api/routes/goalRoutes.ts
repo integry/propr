@@ -26,15 +26,20 @@ import {
 import {
   GOAL_ERROR_CODES,
   GOAL_EVENT_MAX_LIMIT,
+  GOAL_EVENT_MAX_BYTES,
   GOAL_IDEMPOTENCY_KEY_MAX_LENGTH,
   GOAL_IDENTIFIER_MAX_LENGTH,
   GOAL_LIST_MAX_LIMIT,
   GOAL_MESSAGE_BODY_MAX_LENGTH,
+  GOAL_MESSAGE_MAX_LIMIT,
+  GOAL_CANNED_ACTIONS,
+  GOAL_CHECKLIST_MAX_LIMIT,
   GOAL_REASON_MAX_LENGTH,
   GOAL_SEARCH_MAX_LENGTH,
   GOAL_STATES,
   GOAL_EVENT_KINDS,
   type GoalState,
+  type GoalCannedAction,
 } from '@propr/shared';
 import type { Knex } from 'knex';
 import { isDemoMode } from '../demoMode.js';
@@ -336,17 +341,22 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
       const body = (req.body ?? {}) as {
         body?: unknown;
         predefinedKind?: unknown;
+        cannedAction?: unknown;
       };
-      const messageBody = boundedOptionalText(body.body, 'body', GOAL_MESSAGE_BODY_MAX_LENGTH) ?? '';
-      const predefinedKind = boundedOptionalText(
-        body.predefinedKind,
-        'predefinedKind',
-        GOAL_IDENTIFIER_MAX_LENGTH
-      ) ?? null;
+      const messageBody = boundedOptionalText(body.body, 'body', GOAL_MESSAGE_BODY_MAX_LENGTH);
+      const rawAction = body.cannedAction ?? body.predefinedKind;
+      const cannedAction = rawAction === undefined || rawAction === null ? null
+        : typeof rawAction === 'string' && GOAL_CANNED_ACTIONS.includes(rawAction as GoalCannedAction)
+          ? rawAction as GoalCannedAction
+          : (() => { throw new GoalError(GOAL_ERROR_CODES.validation, 'cannedAction is not recognized', 400); })();
+      if (!messageBody && !cannedAction) {
+        throw new GoalError(GOAL_ERROR_CODES.validation, 'body or cannedAction is required', 400);
+      }
       const idempotencyKey = resolveIdempotencyKey(req);
       const message = await repository.enqueueMessage(req.params.goalId, {
-        body: messageBody,
-        predefinedKind,
+        body: messageBody ?? '',
+        cannedAction,
+        authorUserId: userId,
         idempotencyKey,
       });
       res.status(201).json({ message: toPublicGoalMessage(message) });
@@ -360,7 +370,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     if (!userId) return;
     try {
       await ensureOwnedGoal(req.params.goalId, userId);
-      const afterRaw = req.query.afterSequence ?? req.query.cursor;
+      const afterRaw = req.query.afterSequence;
       const afterSequence = afterRaw === undefined ? undefined
         : typeof afterRaw === 'string' && /^\d+$/.test(afterRaw) ? Number(afterRaw) : Number.NaN;
       if (afterSequence !== undefined && (!Number.isSafeInteger(afterSequence) || afterSequence < 0)) {
@@ -371,6 +381,10 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         return;
       }
       const limit = parseLimit(req.query.limit, GOAL_EVENT_MAX_LIMIT);
+      const maxBytes = parseLimit(req.query.maxBytes, GOAL_EVENT_MAX_BYTES);
+      const cursor = req.query.cursor === undefined ? null
+        : typeof req.query.cursor === 'string' ? req.query.cursor
+          : (() => { throw new GoalError(GOAL_ERROR_CODES.invalidCursor, 'Goal cursor is invalid', 400); })();
       const kind = typeof req.query.kind === 'string' ? req.query.kind : undefined;
       if (kind !== undefined && !GOAL_EVENT_KINDS.includes(kind as (typeof GOAL_EVENT_KINDS)[number])) {
         res.status(400).json({
@@ -379,14 +393,87 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         });
         return;
       }
-      const result = await repository.readEvents(req.params.goalId, {
+      const result = await repository.readEventPage(req.params.goalId, {
+        cursor,
         afterSequence,
         limit,
+        maxBytes,
         kind,
       });
       res.json({
+        schemaVersion: 1,
         events: result.events.map(toPublicGoalEvent),
         nextCursor: result.nextCursor,
+        asOfSequence: result.asOfSequence,
+      });
+    } catch (error) {
+      sendGoalError(res, error);
+    }
+  }
+
+  async function readMessages(req: FlatRequest, res: Response): Promise<void> {
+    const userId = requireUserId(req, res);
+    if (!userId) return;
+    try {
+      await ensureOwnedGoal(req.params.goalId, userId);
+      const cursor = req.query.cursor === undefined ? null
+        : typeof req.query.cursor === 'string' ? req.query.cursor
+          : (() => { throw new GoalError(GOAL_ERROR_CODES.invalidCursor, 'Goal cursor is invalid', 400); })();
+      const limit = parseLimit(req.query.limit, GOAL_MESSAGE_MAX_LIMIT);
+      const state = typeof req.query.state === 'string' ? req.query.state : undefined;
+      const result = await repository.readMessagePage(req.params.goalId, { cursor, limit, state });
+      res.json({
+        schemaVersion: 1,
+        messages: result.messages.map(toPublicGoalMessage),
+        nextCursor: result.nextCursor,
+        asOfSequence: result.asOfSequence,
+      });
+    } catch (error) {
+      sendGoalError(res, error);
+    }
+  }
+
+  async function cancelMessage(req: FlatRequest, res: Response): Promise<void> {
+    const userId = requireUserId(req, res);
+    if (!userId) return;
+    try {
+      await ensureOwnedGoal(req.params.goalId, userId);
+      // Cancellation has its own stable message identity; the header is still
+      // required so every public mutation follows the same retry contract.
+      resolveIdempotencyKey(req);
+      const messageId = boundedOptionalText(req.params.messageId, 'messageId', GOAL_IDENTIFIER_MAX_LENGTH);
+      if (!messageId) throw new GoalError(GOAL_ERROR_CODES.validation, 'messageId is required', 400);
+      const message = await repository.cancelMessage(req.params.goalId, messageId, userId);
+      res.json({ message: toPublicGoalMessage(message) });
+    } catch (error) {
+      sendGoalError(res, error);
+    }
+  }
+
+  async function readChecklist(req: FlatRequest, res: Response): Promise<void> {
+    const userId = requireUserId(req, res);
+    if (!userId) return;
+    try {
+      await ensureOwnedGoal(req.params.goalId, userId);
+      const cursor = req.query.cursor === undefined ? null
+        : typeof req.query.cursor === 'string' ? req.query.cursor
+          : (() => { throw new GoalError(GOAL_ERROR_CODES.invalidCursor, 'Goal cursor is invalid', 400); })();
+      const limit = parseLimit(req.query.limit, GOAL_CHECKLIST_MAX_LIMIT);
+      const page = await repository.withReadSnapshot(async snapshot => {
+        const nodes = await snapshot.readNodePage(req.params.goalId, { cursor, limit });
+        const asOfSequence = await snapshot.getLatestSequence(req.params.goalId);
+        return { ...nodes, asOfSequence };
+      });
+      res.json({
+        schemaVersion: 1,
+        nodes: page.nodes.map(node => ({
+          nodeId: node.nodeId, goalId: node.goalId, parentNodeId: node.parentNodeId,
+          kind: node.kind, externalRef: node.externalRef, externalKind: node.externalKind,
+          title: node.title, status: node.status, orderIndex: node.orderIndex,
+          createdAt: node.createdAt, updatedAt: node.updatedAt,
+        })),
+        nextCursor: page.nextCursor,
+        asOfSequence: page.asOfSequence,
       });
     } catch (error) {
       sendGoalError(res, error);
@@ -402,6 +489,9 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     cancelGoal,
     requestModelChange,
     enqueueMessage,
+    readMessages,
+    cancelMessage,
+    readChecklist,
     readEvents,
   };
 }

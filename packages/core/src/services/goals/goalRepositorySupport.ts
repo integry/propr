@@ -120,6 +120,7 @@ export function toEvent(row: GoalEventRecord): GoalEvent {
     payload: row.payload_json === null ? null : JSON.parse(row.payload_json),
     idempotencyKey: row.idempotency_key, leaseEpoch: row.lease_epoch,
     createdAt: row.created_at,
+    schemaVersion: row.schema_version ?? 1,
   };
 }
 
@@ -130,6 +131,18 @@ export function toMessage(row: GoalMessageRecord): GoalMessage {
     deliveredAt: row.delivered_at, acknowledgedAt: row.acknowledged_at,
     deliveryAttempts: row.delivery_attempts, lastError: row.last_error,
     idempotencyKey: row.idempotency_key, createdAt: row.created_at,
+    queueOrdinal: row.queue_ordinal ?? row.sequence,
+    cannedAction: row.canned_action ?? null,
+    authorUserId: row.author_user_id ?? null,
+    claimedBy: row.claimed_by ?? null,
+    claimedTurnId: row.claimed_turn_id ?? null,
+    claimedLeaseGeneration: row.claimed_lease_generation ?? null,
+    deliveryKey: row.delivery_key ?? null,
+    cancelledAt: row.cancelled_at ?? null,
+    failedAt: row.failed_at ?? null,
+    retryCount: row.retry_count ?? 0,
+    enqueueEventSequence: row.enqueue_event_sequence ?? null,
+    stateEventSequence: row.state_event_sequence ?? null,
   };
 }
 
@@ -329,20 +342,62 @@ function stableJson(value: unknown): string {
 }
 
 interface Cursor { createdAt: string; goalId: string }
-
-export function encodeCursor(createdAt: string, goalId: string): string {
-  return Buffer.from(JSON.stringify({ c: createdAt, g: goalId })).toString('base64url');
+export interface GoalListCursorBinding {
+  ownerUserId: string | null;
+  repository?: string;
+  state?: string;
+  search?: string;
 }
 
-export function decodeCursor(value: string | null | undefined): Cursor | null {
+function canonicalInstant(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+    && new Date(value).toISOString() === value;
+}
+
+function cursorJson(createdAt: string, goalId: string, binding: GoalListCursorBinding): string {
+  return JSON.stringify({
+    v: 1,
+    t: 'goal-list',
+    o: binding.ownerUserId,
+    r: binding.repository ?? null,
+    st: binding.state ?? null,
+    q: binding.search ?? null,
+    a: createdAt,
+    g: goalId,
+  });
+}
+
+export function encodeCursor(
+  createdAt: string,
+  goalId: string,
+  binding: GoalListCursorBinding
+): string {
+  if (!canonicalInstant(createdAt)) invalidCursor();
+  return Buffer.from(cursorJson(createdAt, goalId, binding), 'utf8').toString('base64url');
+}
+
+export function decodeCursor(
+  value: string | null | undefined,
+  binding: GoalListCursorBinding
+): Cursor | null {
   if (value === null || value === undefined) return null;
-  if (!value || characterLength(value) > GOAL_CURSOR_MAX_LENGTH) invalidCursor();
+  if (!value || characterLength(value) > GOAL_CURSOR_MAX_LENGTH
+    || !/^[A-Za-z0-9_-]+$/.test(value)) invalidCursor();
   try {
-    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Record<string, unknown>;
-    if (Object.keys(parsed).length !== 2 || typeof parsed.c !== 'string'
-      || Number.isNaN(Date.parse(parsed.c)) || typeof parsed.g !== 'string'
-      || !parsed.g || characterLength(parsed.g) > GOAL_IDENTIFIER_MAX_LENGTH) invalidCursor();
-    return { createdAt: parsed.c, goalId: parsed.g };
+    const decoded = Buffer.from(value, 'base64url').toString('utf8');
+    if (Buffer.from(decoded, 'utf8').toString('base64url') !== value) invalidCursor();
+    const parsed = JSON.parse(decoded) as Record<string, unknown>;
+    if (Object.keys(parsed).join(',') !== 'v,t,o,r,st,q,a,g'
+      || parsed.v !== 1 || parsed.t !== 'goal-list'
+      || parsed.o !== binding.ownerUserId
+      || parsed.r !== (binding.repository ?? null)
+      || parsed.st !== (binding.state ?? null)
+      || parsed.q !== (binding.search ?? null)
+      || !canonicalInstant(parsed.a) || typeof parsed.g !== 'string'
+      || !parsed.g || characterLength(parsed.g) > GOAL_IDENTIFIER_MAX_LENGTH
+      || cursorJson(parsed.a, parsed.g, binding) !== decoded) invalidCursor();
+    return { createdAt: parsed.a, goalId: parsed.g };
   } catch (error) {
     if (error instanceof GoalError) throw error;
     return invalidCursor();

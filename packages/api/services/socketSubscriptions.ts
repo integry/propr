@@ -4,12 +4,14 @@ import type { QueueBroadcaster } from './queueBroadcaster.js';
 import { revalidateSocketAuthentication } from './socketAuthentication.js';
 import type { QueueDependencies } from './socketService.js';
 import type { TaskWatcherManager } from './taskWatcher.js';
+import { GoalRepository } from '@propr/core';
+import { toPublicGoalEvent } from '../routes/goalRouteDtos.js';
 
 export const INSTANCE_OPERATIONAL_ROOM = 'instance:operational';
 const USER_ROOM_PREFIX = 'user:';
 const MAX_RESOURCE_ID_LENGTH = 512;
 const MAX_RESOURCE_ROOMS_PER_SOCKET = 100;
-const RESOURCE_ROOM_PREFIXES = ['task:', 'task:live:', 'draft:', 'indexing:'];
+const RESOURCE_ROOM_PREFIXES = ['task:', 'task:live:', 'draft:', 'indexing:', 'goal:'];
 export const SOCKET_SUBSCRIPTION_ERROR = 'subscription:error';
 
 export interface SocketSubscriptionErrorPayload {
@@ -60,8 +62,13 @@ export function taskRoom(taskId: string): string {
   return `task:${encodeURIComponent(taskId)}`;
 }
 
+export function goalRoom(goalId: string): string {
+  return `goal:${encodeURIComponent(goalId)}`;
+}
+
 export class SocketSubscriptionManager {
   private readonly pendingSubscriptions = new WeakMap<Socket, Map<string, PendingSubscriptionState>>();
+  private readonly goalTails = new WeakMap<Socket, Map<string, ReturnType<typeof setInterval>>>();
 
   constructor(private readonly dependencies: SocketSubscriptionDependencies) {}
 
@@ -73,6 +80,7 @@ export class SocketSubscriptionManager {
     this.setupDraftHandlers(socket);
     this.setupIndexingHandlers(socket);
     this.setupQueueStatsHandlers(socket);
+    this.setupGoalHandlers(socket);
     this.setupDisconnectHandler(socket);
   }
 
@@ -334,6 +342,133 @@ export class SocketSubscriptionManager {
     });
   }
 
+  private async ownsGoal(socket: Socket, goalId: string): Promise<boolean> {
+    const database = this.dependencies.getQueueDependencies()?.db;
+    if (!database) return false;
+    const goal = await database('goals').where('goal_id', goalId)
+      .first('owner_user_id') as { owner_user_id?: string } | undefined;
+    return goal?.owner_user_id === this.getPrincipal(socket).user.id;
+  }
+
+  private setupGoalHandlers(socket: Socket): void {
+    socket.on('subscribe:goal', async (raw: unknown) => {
+      const request = typeof raw === 'string' ? { goalId: raw, cursor: null }
+        : raw && typeof raw === 'object' ? raw as { goalId?: unknown; cursor?: unknown }
+          : { goalId: null, cursor: null };
+      const goalId = normalizeSocketResourceId(request.goalId);
+      const cursor = request.cursor === undefined || request.cursor === null
+        ? null : typeof request.cursor === 'string' ? request.cursor : undefined;
+      if (!goalId || cursor === undefined) return this.reject(socket, 'subscribe:goal', 'INVALID_RESOURCE');
+      const room = goalRoom(goalId);
+      try {
+        await this.join(socket, {
+          event: 'subscribe:goal', room,
+          authorize: () => this.ownsGoal(socket, goalId),
+          onJoined: async () => {
+            const database = this.dependencies.getQueueDependencies()?.db;
+            if (!database) return;
+            const repository = new GoalRepository(database);
+            let replayCursor = cursor;
+            let pages = 0;
+            // Joining precedes the SQL high-watermark read. New writes are
+            // therefore either in this replay or in the subsequent SQL tail;
+            // Socket.IO delivery is never treated as a durability ack.
+            while (pages < 10) {
+              const page = await repository.readEventPage(goalId, {
+                cursor: replayCursor, limit: 100, maxBytes: 256 * 1024,
+              });
+              if (page.events.length > 0) {
+                socket.emit('goal:events', {
+                  schemaVersion: 1, goalId,
+                  events: page.events.map(toPublicGoalEvent),
+                  cursor: page.lastCursor,
+                  asOfSequence: page.asOfSequence,
+                });
+              }
+              replayCursor = page.lastCursor;
+              pages += 1;
+              if (!page.nextCursor) break;
+            }
+            if (pages === 10) {
+              socket.emit(SOCKET_SUBSCRIPTION_ERROR, {
+                event: 'subscribe:goal', code: 'SUBSCRIPTION_LIMIT',
+              } satisfies SocketSubscriptionErrorPayload);
+              await socket.leave(room);
+              return;
+            }
+            socket.emit('goal:subscribed', {
+              schemaVersion: 1, goalId, cursor: replayCursor,
+            });
+            this.startGoalTail(socket, goalId, replayCursor);
+          },
+        });
+      } catch (error) {
+        console.error(`[SocketService] Failed goal subscription for ${goalId}:`, error);
+        this.reject(socket, 'subscribe:goal', 'FORBIDDEN');
+      }
+    });
+
+    socket.on('unsubscribe:goal', async (rawGoalId: unknown) => {
+      const goalId = normalizeSocketResourceId(rawGoalId);
+      if (!goalId) return;
+      const room = goalRoom(goalId);
+      this.cancelPendingSubscription(socket, room);
+      this.stopGoalTail(socket, goalId);
+      await socket.leave(room);
+    });
+  }
+
+  private startGoalTail(socket: Socket, goalId: string, initialCursor: string | null): void {
+    this.stopGoalTail(socket, goalId);
+    let tails = this.goalTails.get(socket);
+    if (!tails) {
+      tails = new Map();
+      this.goalTails.set(socket, tails);
+    }
+    let cursor = initialCursor;
+    let running = false;
+    const timer = setInterval(() => {
+      if (running) return;
+      running = true;
+      void (async () => {
+        const room = goalRoom(goalId);
+        if (!socket.connected || !socket.rooms.has(room)) return this.stopGoalTail(socket, goalId);
+        if (!await revalidateSocketAuthentication(socket) || !await this.ownsGoal(socket, goalId)) {
+          this.stopGoalTail(socket, goalId);
+          await socket.leave(room);
+          this.reject(socket, 'subscribe:goal', 'FORBIDDEN');
+          return;
+        }
+        const database = this.dependencies.getQueueDependencies()?.db;
+        if (!database) return;
+        const page = await new GoalRepository(database).readEventPage(goalId, {
+          cursor, limit: 100, maxBytes: 256 * 1024,
+        });
+        if (page.events.length > 0) {
+          socket.emit('goal:events', {
+            schemaVersion: 1, goalId, events: page.events.map(toPublicGoalEvent),
+            cursor: page.lastCursor, asOfSequence: page.asOfSequence,
+          });
+          cursor = page.lastCursor;
+        }
+      })().catch(async error => {
+        console.error(`[SocketService] Goal tail failed for ${goalId}:`, error);
+        this.stopGoalTail(socket, goalId);
+        await socket.leave(goalRoom(goalId));
+      }).finally(() => { running = false; });
+    }, 500);
+    timer.unref?.();
+    tails.set(goalId, timer);
+  }
+
+  private stopGoalTail(socket: Socket, goalId: string): void {
+    const tails = this.goalTails.get(socket);
+    const timer = tails?.get(goalId);
+    if (timer) clearInterval(timer);
+    tails?.delete(goalId);
+    if (tails?.size === 0) this.goalTails.delete(socket);
+  }
+
   private setupDisconnectHandler(socket: Socket): void {
     let liveTaskIds: string[] = [];
     socket.on('disconnecting', () => {
@@ -348,6 +483,9 @@ export class SocketSubscriptionManager {
           console.error(`[SocketService] Failed to stop disconnected live task watcher ${taskId}:`, error);
         });
       }
+      const tails = this.goalTails.get(socket);
+      if (tails) for (const timer of tails.values()) clearInterval(timer);
+      this.goalTails.delete(socket);
     });
   }
 }

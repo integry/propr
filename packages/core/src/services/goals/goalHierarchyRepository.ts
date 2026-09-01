@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import type { Knex } from 'knex';
-import { GOAL_ERROR_CODES } from '@propr/shared';
+import { GOAL_CHECKLIST_DEFAULT_LIMIT, GOAL_CHECKLIST_MAX_LIMIT, GOAL_ERROR_CODES } from '@propr/shared';
 import type {
   CreateNodeInput,
   GoalLeaseFence,
@@ -8,7 +8,9 @@ import type {
   GoalNodeRecord,
   GoalProviderSessionRecord,
   ProviderSessionUpdate,
+  GoalNodePageResult,
 } from './goalTypes.js';
+import { decodeChecklistCursor, encodeChecklistCursor } from './goalChecklistCursor.js';
 import {
   GoalError,
   boundedText,
@@ -16,6 +18,7 @@ import {
   goalTransaction,
   idempotencyKey,
   nowIso,
+  requireGoalRecord,
   toNode,
 } from './goalRepositorySupport.js';
 
@@ -105,6 +108,44 @@ export class GoalHierarchyRepository {
     return rows.map(toNode);
   }
 
+  async readNodePage(
+    goalId: string,
+    options: { cursor?: string | null; limit?: number } = {}
+  ): Promise<GoalNodePageResult> {
+    const limit = options.limit ?? GOAL_CHECKLIST_DEFAULT_LIMIT;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > GOAL_CHECKLIST_MAX_LIMIT) {
+      throw new GoalError(GOAL_ERROR_CODES.validation, `limit must be from 1 to ${GOAL_CHECKLIST_MAX_LIMIT}`, 400);
+    }
+    const goal = await requireGoalRecord(this.db, goalId);
+    const binding = { goalId, ownerUserId: goal.owner_user_id, repository: goal.repository };
+    const cursor = decodeChecklistCursor(options.cursor, binding);
+    let query = this.db<GoalNodeRecord>('goal_nodes').where('goal_id', goalId);
+    if (cursor) {
+      query = query.andWhere(nested => {
+        void nested.where('order_index', '>', cursor.orderIndex).orWhere(same => {
+          void same.where('order_index', cursor.orderIndex).andWhere('node_id', '>', cursor.nodeId);
+        });
+      });
+    }
+    const rows = await query.orderBy('order_index', 'asc').orderBy('node_id', 'asc').limit(limit + 1);
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      nodes: page.map(toNode),
+      nextCursor: rows.length > limit && last ? encodeChecklistCursor(binding, {
+        orderIndex: last.order_index, nodeId: last.node_id, createdAt: last.created_at,
+      }) : null,
+    };
+  }
+
+  async getNodeCounts(goalId: string): Promise<{ total: number; active: number }> {
+    const row = await this.db('goal_nodes').where('goal_id', goalId).first(
+      this.db.raw('COUNT(*) AS total'),
+      this.db.raw("SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS active")
+    ) as { total?: number; active?: number } | undefined;
+    return { total: Number(row?.total ?? 0), active: Number(row?.active ?? 0) };
+  }
+
   async getDependencies(goalId: string): Promise<Array<{ nodeId: string; dependsOnNodeId: string }>> {
     const rows = await this.db('goal_node_dependencies').where('goal_id', goalId)
       .select('node_id', 'depends_on_node_id');
@@ -118,6 +159,7 @@ export class GoalHierarchyRepository {
   ): Promise<void> {
     const normalizedAgent = boundedText(agent, 'agent') as string;
     validateProviderFields(fields);
+    const hasExecutionIdentity = await this.db.schema.hasColumn('goal_provider_sessions', 'current_turn_id');
     await goalTransaction(this.db, async (trx) => {
       const goal = await guardLease(trx, goalId, fields);
       const existing = await trx<GoalProviderSessionRecord>('goal_provider_sessions')
@@ -127,11 +169,7 @@ export class GoalHierarchyRepository {
         : validateRecoveryMetadata(fields.recoveryMetadata);
       const now = nowIso();
       if (existing) {
-        const affected = await trx('goal_provider_sessions').where({
-          session_id: existing.session_id,
-          goal_id: goalId,
-          lease_generation: existing.lease_generation,
-        }).update({
+        const update = {
           provider_thread_id: preserveUndefined(fields.providerThreadId, existing.provider_thread_id),
           runtime_id: preserveUndefined(fields.runtimeId, existing.runtime_id),
           worktree_id: preserveUndefined(fields.worktreeId, existing.worktree_id),
@@ -140,7 +178,17 @@ export class GoalHierarchyRepository {
           recovery_metadata_json: recoveryJson,
           lease_generation: fields.leaseEpoch,
           updated_at: now,
-        });
+          ...(hasExecutionIdentity ? {
+            current_turn_id: preserveUndefined(fields.turnId, existing.current_turn_id ?? null),
+            current_execution_id: preserveUndefined(fields.executionId, existing.current_execution_id ?? null),
+            current_attempt_id: preserveUndefined(fields.attemptId, existing.current_attempt_id ?? null),
+          } : {}),
+        };
+        const affected = await trx('goal_provider_sessions').where({
+          session_id: existing.session_id,
+          goal_id: goalId,
+          lease_generation: existing.lease_generation,
+        }).update(update);
         if (affected !== 1) throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Provider session changed concurrently', 409);
         return;
       }
@@ -152,6 +200,11 @@ export class GoalHierarchyRepository {
         effective_model: fields.effectiveModel ?? goal.effective_model,
         recovery_metadata_json: recoveryJson, lease_generation: fields.leaseEpoch,
         created_at: now, updated_at: now,
+        ...(hasExecutionIdentity ? {
+          current_turn_id: fields.turnId ?? null,
+          current_execution_id: fields.executionId ?? null,
+          current_attempt_id: fields.attemptId ?? null,
+        } : {}),
       });
     });
   }
@@ -220,6 +273,9 @@ function validateProviderFields(fields: ProviderSessionUpdate): void {
     runtimeId: fields.runtimeId,
     worktreeId: fields.worktreeId,
     effectiveModel: fields.effectiveModel,
+    turnId: fields.turnId,
+    executionId: fields.executionId,
+    attemptId: fields.attemptId,
   })) {
     if (value !== undefined) boundedText(value, name, undefined, true);
   }

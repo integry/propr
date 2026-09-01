@@ -15,6 +15,9 @@ import type {
   GoalRecoveryMetadata,
   GoalListRequest,
   GoalListResponse,
+  GoalCannedAction,
+  DurableGoalEventInput,
+  DurableGoalEventType,
 } from '@propr/shared';
 
 export interface GoalRecord {
@@ -67,6 +70,15 @@ export interface GoalEventRecord {
   idempotency_key: string;
   lease_epoch: number;
   created_at: string;
+  schema_version?: number;
+  source_session_id?: string | null;
+  source_turn_id?: string | null;
+  source_execution_id?: string | null;
+  source_attempt_id?: string | null;
+  source_provider_sequence?: number | null;
+  source_chunk_index?: number | null;
+  lease_generation?: number | null;
+  payload_bytes?: number;
 }
 
 export interface GoalMessageRecord {
@@ -82,6 +94,18 @@ export interface GoalMessageRecord {
   last_error: string | null;
   idempotency_key: string;
   created_at: string;
+  queue_ordinal?: number;
+  canned_action?: GoalCannedAction | null;
+  author_user_id?: string | null;
+  claimed_by?: string | null;
+  claimed_turn_id?: string | null;
+  claimed_lease_generation?: number | null;
+  delivery_key?: string | null;
+  cancelled_at?: string | null;
+  failed_at?: string | null;
+  retry_count?: number;
+  enqueue_event_sequence?: number | null;
+  state_event_sequence?: number | null;
 }
 
 export interface GoalProviderSessionRecord {
@@ -97,6 +121,9 @@ export interface GoalProviderSessionRecord {
   lease_generation: number;
   created_at: string;
   updated_at: string;
+  current_turn_id?: string | null;
+  current_execution_id?: string | null;
+  current_attempt_id?: string | null;
 }
 
 export interface GoalIdempotencyRecord {
@@ -154,11 +181,12 @@ export interface GoalEvent {
   goalId: string;
   sequence: number;
   kind: GoalEventKind;
-  eventType: string;
+  eventType: string | DurableGoalEventType;
   payload: unknown;
   idempotencyKey: string;
   leaseEpoch: number;
   createdAt: string;
+  schemaVersion: number;
 }
 
 export interface GoalMessage {
@@ -174,6 +202,18 @@ export interface GoalMessage {
   lastError: string | null;
   idempotencyKey: string;
   createdAt: string;
+  queueOrdinal: number;
+  cannedAction: GoalCannedAction | null;
+  authorUserId: string | null;
+  claimedBy: string | null;
+  claimedTurnId: string | null;
+  claimedLeaseGeneration: number | null;
+  deliveryKey: string | null;
+  cancelledAt: string | null;
+  failedAt: string | null;
+  retryCount: number;
+  enqueueEventSequence: number | null;
+  stateEventSequence: number | null;
 }
 
 export interface CreateGoalInput {
@@ -220,6 +260,34 @@ export interface EnqueueMessageInput {
   body: string;
   predefinedKind?: string | null;
   idempotencyKey: string;
+  cannedAction?: GoalCannedAction | null;
+  authorUserId?: string;
+}
+
+export type AppendTypedGoalEventInput = DurableGoalEventInput;
+
+export interface GoalEventPageResult {
+  events: GoalEvent[];
+  nextCursor: string | null;
+  lastCursor: string | null;
+  asOfSequence: number;
+}
+
+export interface GoalMessagePageResult {
+  messages: GoalMessage[];
+  nextCursor: string | null;
+  asOfSequence: number;
+}
+
+export interface GoalNodePageResult {
+  nodes: GoalNode[];
+  nextCursor: string | null;
+}
+
+export interface ClaimMessageInput extends GoalLeaseFence {
+  sessionId: string;
+  turnId: string;
+  deliveryKey: string;
 }
 
 export interface TransitionInput extends GoalLeaseFence {
@@ -253,6 +321,9 @@ export interface ProviderSessionUpdate extends GoalLeaseFence {
   lastCheckpoint?: string | null;
   effectiveModel?: string;
   recoveryMetadata?: GoalRecoveryMetadata | null;
+  turnId?: string | null;
+  executionId?: string | null;
+  attemptId?: string | null;
 }
 
 export type ListGoalsQuery = GoalListRequest & (
@@ -267,4 +338,20 @@ export interface GoalActiveTimeStats {
   pausedMs: number;
   activeMs: number;
   currentlyPaused: boolean;
+  recoveryMs: number;
+}
+
+export interface GoalStatistics extends GoalActiveTimeStats {
+  issues: { total: number; ready: number; active: number; processed: number; failed: number; blocked: number };
+  pullRequests: { open: number; reviewPending: number; ultrafixPending: number; mergeReady: number; merged: number };
+  tokens: {
+    input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; total: number;
+    byProviderModel: Array<{
+      provider: string; model: string; input: number; output: number;
+      cacheRead: number; cacheWrite: number; reasoning: number; total: number;
+    }>;
+  };
+  activeProviders: string[];
+  activeModels: string[];
+  controllerState: GoalState;
 }

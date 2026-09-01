@@ -305,7 +305,7 @@ function setupRoutes(): void {
     ['get', '/api/notifications/preferences', notificationRoutes.getPreferences], ['patch', '/api/notifications/preferences', notificationRoutes.updatePreferences], ['get', '/api/notifications/push-subscriptions', notificationRoutes.listPushSubscriptions], ['post', '/api/notifications/push-subscriptions', notificationRoutes.createPushSubscription], ['delete', '/api/notifications/push-subscriptions', notificationRoutes.revokePushSubscription], ['delete', '/api/notifications/push-subscriptions/:subscriptionId', notificationRoutes.revokePushSubscriptionById], ['post', '/api/notifications/:id/read', notificationRoutes.markRead], ['post', '/api/notifications/:id/dismiss', notificationRoutes.dismiss],
     ['post', '/api/goals', goalRoutes.createGoal], ['get', '/api/goals', goalRoutes.listGoals], ['get', '/api/goals/:goalId', goalRoutes.getGoal],
     ['post', '/api/goals/:goalId/pause', goalRoutes.pauseGoal], ['post', '/api/goals/:goalId/resume', goalRoutes.resumeGoal], ['post', '/api/goals/:goalId/cancel', goalRoutes.cancelGoal],
-    ['post', '/api/goals/:goalId/model', goalRoutes.requestModelChange], ['post', '/api/goals/:goalId/messages', goalRoutes.enqueueMessage], ['get', '/api/goals/:goalId/events', goalRoutes.readEvents],
+    ['post', '/api/goals/:goalId/model', goalRoutes.requestModelChange], ['post', '/api/goals/:goalId/messages', goalRoutes.enqueueMessage], ['get', '/api/goals/:goalId/messages', goalRoutes.readMessages], ['post', '/api/goals/:goalId/messages/:messageId/cancel', goalRoutes.cancelMessage], ['get', '/api/goals/:goalId/checklist', goalRoutes.readChecklist], ['get', '/api/goals/:goalId/events', goalRoutes.readEvents],
   ];
   const routes = [
     ...operationalRoutes,

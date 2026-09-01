@@ -21,7 +21,7 @@ import type {
   Goal,
   GoalNode,
   GoalMessage,
-  GoalActiveTimeStats,
+  GoalStatistics,
 } from './goalTypes.js';
 
 export interface GoalMutationOptions {
@@ -41,7 +41,11 @@ export interface GoalDetail {
   dependencies: Array<{ nodeId: string; dependsOnNodeId: string }>;
   messages: GoalMessage[];
   summary: GoalSummaryView;
-  stats: GoalActiveTimeStats;
+  stats: GoalStatistics;
+  messagesNextCursor: string | null;
+  checklistNextCursor: string | null;
+  asOfVersion: number;
+  asOfSequence: number;
 }
 
 export class GoalLifecycleService {
@@ -102,31 +106,39 @@ export class GoalLifecycleService {
   }
 
   async getDetail(goalId: string): Promise<GoalDetail> {
-    const goal = await this.repository.requireGoal(goalId);
-    const [nodes, dependencies, messages, latestSequence, stats] =
-      await Promise.all([
-        this.repository.getNodes(goalId),
-        this.repository.getDependencies(goalId),
-        this.repository.getMessages(goalId),
-        this.repository.getLatestSequence(goalId),
-        this.repository.getActiveTimeStats(goalId),
-      ]);
-
-    return {
-      goal,
-      nodes,
-      dependencies,
-      messages,
-      summary: buildSummary(goal, nodes, latestSequence),
-      stats,
-    };
+    return this.repository.withReadSnapshot(async repository => {
+      // The first read establishes the WAL snapshot used by every projection.
+      const goal = await repository.requireGoal(goalId);
+      const [nodes, nodeCounts, dependencies, messagePage, latestSequence, stats] =
+        await Promise.all([
+          repository.readNodePage(goalId),
+          repository.getNodeCounts(goalId),
+          repository.getDependencies(goalId),
+          repository.readMessagePage(goalId),
+          repository.getLatestSequence(goalId),
+          repository.getStatistics(goalId),
+        ]);
+      return {
+        goal,
+        nodes: nodes.nodes,
+        dependencies,
+        messages: messagePage.messages,
+        messagesNextCursor: messagePage.nextCursor,
+        checklistNextCursor: nodes.nextCursor,
+        summary: buildSummary(goal, nodes.nodes, latestSequence, nodeCounts),
+        stats,
+        asOfVersion: goal.version,
+        asOfSequence: latestSequence,
+      };
+    });
   }
 }
 
 export function buildSummary(
   goal: Goal,
   nodes: GoalNode[],
-  latestSequence: number
+  latestSequence: number,
+  counts?: { total: number; active: number }
 ): GoalSummaryView {
   const activeNodeCount = nodes.filter(
     (node) => node.status === 'in_progress'
@@ -145,8 +157,8 @@ export function buildSummary(
     ultrafixGoal: goal.ultrafixGoal,
     ultrafixMaxCycles: goal.ultrafixMaxCycles,
     version: goal.version,
-    nodeCount: nodes.length,
-    activeNodeCount,
+    nodeCount: counts?.total ?? nodes.length,
+    activeNodeCount: counts?.active ?? activeNodeCount,
     latestSequence,
     createdAt: goal.createdAt,
     updatedAt: goal.updatedAt,

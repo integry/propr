@@ -90,10 +90,21 @@ export type GoalEventKind = (typeof GOAL_EVENT_KINDS)[number];
 /** Corrective-message delivery lifecycle. */
 export const GOAL_MESSAGE_STATES = [
   'queued',
+  'delivering',
   'delivered',
   'acknowledged',
+  'failed',
+  'cancelled',
 ] as const;
 export type GoalMessageState = (typeof GOAL_MESSAGE_STATES)[number];
+
+/** Stable operator shortcuts. Their resolved text is persisted at enqueue. */
+export const GOAL_CANNED_ACTIONS = ['whats_done', 'whats_left'] as const;
+export type GoalCannedAction = (typeof GOAL_CANNED_ACTIONS)[number];
+export const GOAL_CANNED_ACTION_TEXT: Readonly<Record<GoalCannedAction, string>> = {
+  whats_done: "What's done?",
+  whats_left: "What's left?",
+};
 
 /** How a completed goal's pull requests are merged. */
 export const GOAL_MERGE_POLICIES = ['manual', 'auto', 'auto_squash'] as const;
@@ -116,6 +127,13 @@ export const GOAL_LIST_DEFAULT_LIMIT = 25;
 export const GOAL_LIST_MAX_LIMIT = 100;
 export const GOAL_EVENT_DEFAULT_LIMIT = 100;
 export const GOAL_EVENT_MAX_LIMIT = 500;
+export const GOAL_MESSAGE_DEFAULT_LIMIT = 25;
+export const GOAL_MESSAGE_MAX_LIMIT = 100;
+export const GOAL_CHECKLIST_DEFAULT_LIMIT = 200;
+export const GOAL_CHECKLIST_MAX_LIMIT = 500;
+export const GOAL_EVENT_DEFAULT_MAX_BYTES = 256 * 1024;
+export const GOAL_EVENT_MAX_BYTES = 1024 * 1024;
+export const GOAL_OUTPUT_CHUNK_MAX_BYTES = 64 * 1024;
 export const GOAL_CURSOR_MAX_LENGTH = 1024;
 export const GOAL_LEASE_TTL_MAX_MS = 86_400_000;
 
@@ -135,6 +153,7 @@ export const GOAL_ERROR_CODES = {
   idempotencyConflict: 'goal_idempotency_conflict',
   hierarchyConflict: 'goal_hierarchy_conflict',
   invalidCursor: 'goal_invalid_cursor',
+  cursorExpired: 'goal_cursor_expired',
   invalidEventKind: 'goal_invalid_event_kind',
   terminalState: 'goal_terminal_state',
   messageOrderConflict: 'goal_message_order_conflict',
@@ -194,8 +213,8 @@ export interface GoalModelChangeRequest extends GoalMutationRequest {
 
 export interface GoalMessageRequest {
   idempotencyKey: string;
-  body: string;
-  predefinedKind?: string;
+  body?: string;
+  cannedAction?: GoalCannedAction;
 }
 
 /** Credential-free, bounded recovery checkpoint persisted for a provider session. */
@@ -272,10 +291,13 @@ export interface PublicGoalMessageDto {
   goalId: string;
   sequence: number;
   body: string;
+  authorUserId: string | null;
+  cannedAction: GoalCannedAction | null;
   predefinedKind: string | null;
   state: GoalMessageState;
   deliveredAt: string | null;
   acknowledgedAt: string | null;
+  cancelledAt: string | null;
   createdAt: string;
 }
 
@@ -294,6 +316,19 @@ export interface PublicGoalStatsDto {
   pausedMs: number;
   activeMs: number;
   currentlyPaused: boolean;
+  recoveryMs: number;
+  issues: { total: number; ready: number; active: number; processed: number; failed: number; blocked: number };
+  pullRequests: { open: number; reviewPending: number; ultrafixPending: number; mergeReady: number; merged: number };
+  tokens: {
+    input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; total: number;
+    byProviderModel: Array<{
+      provider: string; model: string; input: number; output: number;
+      cacheRead: number; cacheWrite: number; reasoning: number; total: number;
+    }>;
+  };
+  activeProviders: string[];
+  activeModels: string[];
+  controllerState: GoalState;
 }
 
 /** Canonical public detail read model shared by the API and UI. */
@@ -302,8 +337,30 @@ export interface PublicGoalDetailDto {
   nodes: PublicGoalNodeDto[];
   dependencies: Array<{ nodeId: string; dependsOnNodeId: string }>;
   messages: PublicGoalMessageDto[];
+  messagesNextCursor: string | null;
+  checklistNextCursor: string | null;
   summary: GoalSummaryView;
   stats: PublicGoalStatsDto;
+  asOfVersion: number;
+  asOfSequence: number;
+}
+
+export interface GoalEventPage {
+  events: PublicGoalEventDto[];
+  nextCursor: string | null;
+  asOfSequence: number;
+}
+
+export interface GoalMessagePage {
+  messages: PublicGoalMessageDto[];
+  nextCursor: string | null;
+  asOfSequence: number;
+}
+
+export interface GoalChecklistPage {
+  nodes: PublicGoalNodeDto[];
+  nextCursor: string | null;
+  asOfSequence: number;
 }
 
 /** Canonical keyset-paginated list contract shared by API and UI. */

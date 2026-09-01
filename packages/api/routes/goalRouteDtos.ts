@@ -15,6 +15,7 @@ import type {
   PublicGoalNodeDto,
 } from '@propr/shared';
 import { redactPublicPathTokens } from './goalRoutePublicStringSanitizer.js';
+import { isDurableGoalEventType, validateDurableGoalEvent } from '@propr/shared';
 
 const PUBLIC_EVENT_PAYLOAD_LIMITS = {
   depth: 16,
@@ -62,6 +63,42 @@ const PUBLIC_EVENT_KEY_NAMES = new Set([
   'target',
   'total',
   'value',
+]);
+
+const TYPED_EVENT_KEY_NAMES = new Set([
+  'from',
+  'to',
+  'reason',
+  'nodeId',
+  'attemptId',
+  'blockedReason',
+  'stream',
+  'outputType',
+  'chunk',
+  'items',
+  'id',
+  'text',
+  'provider',
+  'model',
+  'occurrenceId',
+  'inputTokens',
+  'outputTokens',
+  'cacheReadTokens',
+  'cacheWriteTokens',
+  'reasoningTokens',
+  'cumulative',
+  'checkpointId',
+  'messageId',
+  'queueOrdinal',
+  'authorUserId',
+  'turnId',
+  'retryable',
+  'error',
+  'entity',
+  'number',
+  'pullRequestNumber',
+  'cycle',
+  'status',
 ]);
 
 const UNSERIALIZABLE_PAYLOAD_MARKER = '[Unserializable]';
@@ -120,6 +157,7 @@ interface PublicPayloadProjectionState {
   nodes: number;
   remainingStringBytes: number;
   seen: WeakSet<object>;
+  allowedKeys: ReadonlySet<string>;
 }
 
 function utf8Bytes(value: string): number {
@@ -251,7 +289,7 @@ function projectPublicPayloadValue(
   for (const key of Object.keys(value)) {
     if (retainedEntries >= PUBLIC_EVENT_PAYLOAD_LIMITS.collectionEntries) break;
     if (utf8Bytes(key) > PUBLIC_EVENT_PAYLOAD_LIMITS.keyBytes
-      || !PUBLIC_EVENT_KEY_NAMES.has(key)) continue;
+      || !state.allowedKeys.has(key)) continue;
     const child = projectPublicPayloadValue(
       (value as Record<string, unknown>)[key],
       state,
@@ -267,11 +305,16 @@ function projectPublicPayloadValue(
 
 /** Canonical, conservative projection for all event payloads crossing the API. */
 export function toPublicGoalEventPayload(payload: unknown): JsonValue {
+  return projectEventPayload(payload, PUBLIC_EVENT_KEY_NAMES);
+}
+
+function projectEventPayload(payload: unknown, allowedKeys: ReadonlySet<string>): JsonValue {
   try {
     return projectPublicPayloadValue(payload, {
       nodes: 0,
       remainingStringBytes: PUBLIC_EVENT_PAYLOAD_LIMITS.totalStringBytes,
       seen: new WeakSet(),
+      allowedKeys,
     }, 0) ?? null;
   } catch {
     return UNSERIALIZABLE_PAYLOAD_MARKER;
@@ -322,21 +365,38 @@ export function toPublicGoalMessage(message: GoalMessage): PublicGoalMessageDto 
     goalId: message.goalId,
     sequence: message.sequence,
     body: message.body,
+    authorUserId: message.authorUserId,
+    cannedAction: message.cannedAction,
     predefinedKind: message.predefinedKind,
     state: message.state,
     deliveredAt: message.deliveredAt,
     acknowledgedAt: message.acknowledgedAt,
+    cancelledAt: message.cancelledAt,
     createdAt: message.createdAt,
   };
 }
 
 export function toPublicGoalEvent(event: GoalEvent): PublicGoalEventDto {
+  let payload = toPublicGoalEventPayload(event.payload);
+  if (isDurableGoalEventType(event.eventType)) {
+    const validation = validateDurableGoalEvent({
+      schemaVersion: event.schemaVersion,
+      type: event.eventType,
+      payload: event.payload,
+      source: {
+        sessionId: 'public', turnId: 'public', executionId: 'public', attemptId: 'public',
+        providerSequence: 0, chunkIndex: 0, leaseGeneration: 1,
+      },
+      idempotencyKey: 'public', leaseOwner: 'public', leaseEpoch: 1,
+    });
+    payload = validation.ok ? projectEventPayload(event.payload, TYPED_EVENT_KEY_NAMES) : null;
+  }
   return {
     goalId: event.goalId,
     sequence: event.sequence,
     kind: event.kind,
     eventType: event.eventType,
-    payload: toPublicGoalEventPayload(event.payload),
+    payload,
     createdAt: event.createdAt,
   };
 }
@@ -350,7 +410,11 @@ export function toPublicGoalDetail(detail: GoalDetail): PublicGoalDetailDto {
       dependsOnNodeId: dependency.dependsOnNodeId,
     })),
     messages: detail.messages.map(toPublicGoalMessage),
+    messagesNextCursor: detail.messagesNextCursor,
+    checklistNextCursor: detail.checklistNextCursor,
     summary: detail.summary,
     stats: detail.stats,
+    asOfVersion: detail.asOfVersion,
+    asOfSequence: detail.asOfSequence,
   };
 }

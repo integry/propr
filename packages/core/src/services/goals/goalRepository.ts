@@ -6,6 +6,8 @@
 import type { Knex } from 'knex';
 import type {
   AppendEventInput,
+  AppendTypedGoalEventInput,
+  ClaimMessageInput,
   CancelIntentInput,
   CreateGoalInput,
   CreateNodeInput,
@@ -13,8 +15,12 @@ import type {
   Goal,
   GoalActiveTimeStats,
   GoalEvent,
+  GoalEventPageResult,
   GoalLeaseFence,
   GoalMessage,
+  GoalMessagePageResult,
+  GoalNodePageResult,
+  GoalStatistics,
   GoalNode,
   OperatorIntentInput,
   GoalProviderSessionRecord,
@@ -28,6 +34,7 @@ import { GoalHierarchyRepository } from './goalHierarchyRepository.js';
 import { GoalEventRepository } from './goalEventRepository.js';
 import { GoalLeaseRepository } from './goalLeaseRepository.js';
 import { GoalMutationRepository } from './goalMutationRepository.js';
+import { GoalStatisticsRepository } from './goalStatisticsRepository.js';
 
 export { GoalError } from './goalRepositorySupport.js';
 
@@ -37,13 +44,15 @@ export class GoalRepository {
   private readonly events: GoalEventRepository;
   private readonly leases: GoalLeaseRepository;
   private readonly mutations: GoalMutationRepository;
+  private readonly statistics: GoalStatisticsRepository;
 
-  constructor(db: Knex) {
+  constructor(private readonly db: Knex) {
     this.reads = new GoalReadRepository(db);
     this.hierarchy = new GoalHierarchyRepository(db);
     this.events = new GoalEventRepository(db);
     this.leases = new GoalLeaseRepository(db);
     this.mutations = new GoalMutationRepository(db);
+    this.statistics = new GoalStatisticsRepository(db);
   }
 
   createGoal(input: CreateGoalInput): Promise<Goal> {
@@ -70,6 +79,15 @@ export class GoalRepository {
     return this.reads.getActiveTimeStats(goalId);
   }
 
+  getStatistics(goalId: string): Promise<GoalStatistics> {
+    return this.statistics.get(goalId);
+  }
+
+  /** Every callback query observes one SQLite read snapshot. */
+  withReadSnapshot<T>(reader: (repository: GoalRepository) => Promise<T>): Promise<T> {
+    return this.db.transaction(trx => reader(new GoalRepository(trx)));
+  }
+
   addNode(goalId: string, input: CreateNodeInput): Promise<GoalNode> {
     return this.hierarchy.addNode(goalId, input);
   }
@@ -85,6 +103,14 @@ export class GoalRepository {
 
   getNodes(goalId: string): Promise<GoalNode[]> {
     return this.hierarchy.getNodes(goalId);
+  }
+
+  readNodePage(goalId: string, options: { cursor?: string | null; limit?: number } = {}): Promise<GoalNodePageResult> {
+    return this.hierarchy.readNodePage(goalId, options);
+  }
+
+  getNodeCounts(goalId: string): Promise<{ total: number; active: number }> {
+    return this.hierarchy.getNodeCounts(goalId);
   }
 
   getDependencies(goalId: string): Promise<Array<{ nodeId: string; dependsOnNodeId: string }>> {
@@ -107,6 +133,17 @@ export class GoalRepository {
     return this.events.appendEvent(goalId, input);
   }
 
+  appendTypedEvent(goalId: string, input: AppendTypedGoalEventInput | unknown): Promise<GoalEvent> {
+    return this.events.appendTypedEvent(goalId, input);
+  }
+
+  readEventPage(
+    goalId: string,
+    options: { cursor?: string | null; afterSequence?: number; limit?: number; maxBytes?: number; kind?: string } = {}
+  ): Promise<GoalEventPageResult> {
+    return this.events.readEventPage(goalId, options);
+  }
+
   readEvents(
     goalId: string,
     options: { afterSequence?: number; limit?: number; kind?: string } = {}
@@ -126,12 +163,35 @@ export class GoalRepository {
     return this.events.getMessages(goalId);
   }
 
+  readMessagePage(
+    goalId: string,
+    options: { cursor?: string | null; limit?: number; state?: string } = {}
+  ): Promise<GoalMessagePageResult> {
+    return this.events.readMessagePage(goalId, options);
+  }
+
+  claimNextMessage(goalId: string, input: ClaimMessageInput): Promise<GoalMessage | null> {
+    return this.events.claimNextMessage(goalId, input);
+  }
+
   markMessageDelivered(goalId: string, messageId: string, fence: GoalLeaseFence): Promise<void> {
     return this.events.markMessageDelivered(goalId, messageId, fence);
   }
 
   markMessageAcknowledged(goalId: string, messageId: string, fence: GoalLeaseFence): Promise<void> {
     return this.events.markMessageAcknowledged(goalId, messageId, fence);
+  }
+
+  failMessage(goalId: string, messageId: string, fence: GoalLeaseFence, error: string, retryable = false): Promise<void> {
+    return this.events.failMessage(goalId, messageId, fence, error, retryable);
+  }
+
+  cancelMessage(goalId: string, messageId: string, authorUserId: string): Promise<GoalMessage> {
+    return this.events.cancelMessage(goalId, messageId, authorUserId);
+  }
+
+  compactOutput(goalId: string, throughSequence: number, fence: GoalLeaseFence): Promise<void> {
+    return this.events.compactOutput(goalId, throughSequence, fence);
   }
 
   claimLease(goalId: string, owner: string, ttlMs: number): Promise<{ epoch: number; expiresAt: string }> {

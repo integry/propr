@@ -146,7 +146,13 @@ export class GoalReadRepository {
       ? undefined
       : boundedText(query.repository, 'repository') as string;
     const search = normalizeSearch(query.search);
-    const cursor = decodeCursor(query.cursor);
+    const cursorBinding = {
+      ownerUserId,
+      repository,
+      state: query.state,
+      search,
+    };
+    const cursor = decodeCursor(query.cursor, cursorBinding);
     let builder = this.db<GoalSummaryRecord>('goals')
       .select('goals.*')
       .select(this.db.raw('(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id) AS node_count'))
@@ -174,7 +180,9 @@ export class GoalReadRepository {
     const last = page.at(-1);
     return {
       goals: page.map(toSummary),
-      nextCursor: rows.length > limit && last ? encodeCursor(last.created_at, last.goal_id) : null,
+      nextCursor: rows.length > limit && last
+        ? encodeCursor(last.created_at, last.goal_id, cursorBinding)
+        : null,
     };
   }
 
@@ -201,7 +209,20 @@ export class GoalReadRepository {
       if (!interval.resumed_at) currentlyPaused = true;
       pausedMs += Math.max(0, resumedAt - Date.parse(interval.paused_at));
     }
-    return { elapsedMs, pausedMs, activeMs: Math.max(0, elapsedMs - pausedMs), currentlyPaused };
+    const transitions = await this.db('goal_state_transitions').where('goal_id', goalId)
+      .orderBy('id', 'asc').select('to_state', 'created_at');
+    let recoveryStarted: number | null = null;
+    let recoveryMs = 0;
+    for (const transition of transitions) {
+      const at = Date.parse(transition.created_at);
+      if (transition.to_state === 'recovering') recoveryStarted = at;
+      else if (recoveryStarted !== null) {
+        recoveryMs += Math.max(0, at - recoveryStarted);
+        recoveryStarted = null;
+      }
+    }
+    if (recoveryStarted !== null) recoveryMs += Math.max(0, end - recoveryStarted);
+    return { elapsedMs, pausedMs, activeMs: Math.max(0, elapsedMs - pausedMs), currentlyPaused, recoveryMs };
   }
 }
 

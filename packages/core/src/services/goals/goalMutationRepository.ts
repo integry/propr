@@ -248,16 +248,23 @@ export class GoalMutationRepository {
       throw new GoalError(GOAL_ERROR_CODES.versionConflict, `Goal version conflict: expected ${options.expectedVersion}, found ${goal.version}`, 409);
     }
     const now = nowIso();
+    const hasOutcome = await trx.schema.hasColumn('goal_model_transitions', 'outcome');
     const affected = await trx('goals').where({ goal_id: goalId, version: goal.version }).update({
       requested_model: requestedModel,
       version: goal.version + 1,
       updated_at: now,
     });
     if (affected !== 1) throw new GoalError(GOAL_ERROR_CODES.versionConflict, 'Goal changed concurrently', 409);
+    if (hasOutcome) {
+      await trx('goal_model_transitions').where({ goal_id: goalId, applied: 0, outcome: 'pending' }).update({
+        outcome: 'superseded', superseded_at: now,
+      });
+    }
     await trx('goal_model_transitions').insert({
       goal_id: goalId, previous_model: goal.effective_model,
       requested_model: requestedModel, effective_model: goal.effective_model,
       applied: 0, reason: options.reason ?? null, created_at: now, applied_at: null,
+      ...(hasOutcome ? { outcome: 'pending', superseded_at: null } : {}),
     });
     return toGoal(await requireGoalRecord(trx, goalId));
   }
@@ -329,6 +336,7 @@ export class GoalMutationRepository {
       appliedAt?: string;
     }
   ): Promise<void> {
+    const hasOutcome = await trx.schema.hasColumn('goal_model_transitions', 'outcome');
     const audited = await trx('goal_model_transitions').where({
       id: options.transitionId,
       goal_id: options.goalId,
@@ -337,6 +345,7 @@ export class GoalMutationRepository {
       effective_model: options.effectiveModel,
       applied: 1,
       applied_at: options.appliedAt ?? nowIso(),
+      ...(hasOutcome ? { outcome: 'applied' } : {}),
     });
     if (audited !== 1) {
       throw new GoalError(
