@@ -380,7 +380,7 @@ test('Connect root replacement never redirects env/data reads and fails closed',
   }
 });
 
-test('Linux authority walk accepts only a pinned EINVAL directory-open fallback', {
+test('Linux authority walk accepts the pinned read-only fallback after consecutive EINVAL opens', {
   skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
 }, async () => {
   const parent = temporaryRoot('propr-connect-authority-fallback-');
@@ -391,6 +391,9 @@ test('Linux authority walk accepts only a pinned EINVAL directory-open fallback'
       if (directory !== root) return;
       if (phase === 'before-primary-open') {
         throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'before-directory-fallback-open') {
+        throw Object.assign(new Error('injected directory-open failure'), { code: 'EINVAL' });
       }
       if (phase === 'after-fallback-open') fallbackOpens += 1;
     }, true);
@@ -413,6 +416,9 @@ test('Linux authority walk fallback rejects named-directory replacement', {
       if (directory !== root) return;
       if (phase === 'before-primary-open') {
         throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'before-directory-fallback-open') {
+        throw Object.assign(new Error('injected directory-open failure'), { code: 'EINVAL' });
       }
       if (phase === 'after-fallback-open' && !replaced) {
         replaced = true;
@@ -443,6 +449,9 @@ test('Linux authority walk fallback rejects a symlink substituted after open', {
       if (phase === 'before-primary-open') {
         throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
       }
+      if (phase === 'before-directory-fallback-open') {
+        throw Object.assign(new Error('injected directory-open failure'), { code: 'EINVAL' });
+      }
       if (phase === 'after-fallback-open' && !replaced) {
         replaced = true;
         renameSync(root, detached);
@@ -459,7 +468,7 @@ test('Linux authority walk fallback rejects a symlink substituted after open', {
   }
 });
 
-test('Linux authority walk never accepts non-EINVAL directory-open failures', {
+test('Linux authority walk never reaches the read-only fallback after a non-EINVAL directory-open failure', {
   skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
 }, async () => {
   const parent = temporaryRoot('propr-connect-authority-non-einval-');
@@ -469,9 +478,12 @@ test('Linux authority walk never accepts non-EINVAL directory-open failures', {
     setNativeDirectoryOpenTestHook((phase, directory) => {
       if (directory !== root) return;
       if (phase === 'before-primary-open') {
-        throw Object.assign(new Error('injected denied open'), { code: 'EACCES' });
+        throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
       }
-      fallbackObserved = true;
+      if (phase === 'before-directory-fallback-open') {
+        throw Object.assign(new Error('injected denied directory open'), { code: 'EACCES' });
+      }
+      if (phase === 'before-readonly-fallback-open') fallbackObserved = true;
     }, true);
     await assert.rejects(
       withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile: () => ({}) }),

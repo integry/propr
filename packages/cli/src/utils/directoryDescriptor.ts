@@ -63,6 +63,8 @@ type NativeDirectoryOperationTestHook = (event: NativeDirectoryOperationTestEven
 export type NativeDirectoryOpenTestPhase =
   | "before-primary-open"
   | "after-fallback-before-lstat"
+  | "before-directory-fallback-open"
+  | "before-readonly-fallback-open"
   | "after-fallback-open"
   | "after-fallback-fstat"
   | "after-fallback-after-lstat";
@@ -192,9 +194,11 @@ function sameDirectoryIdentity(
 
 /**
  * Open and pin the authority directory. Some Linux ARM64 hosts reject the
- * strict directory/no-follow flag combination with EINVAL. Only that errno on
- * Linux ARM64 may use the compatibility open, and the held descriptor must
- * identify the exact same non-link directory before and after it is opened.
+ * strict directory/no-follow flag combination with EINVAL, and some also
+ * reject O_DIRECTORY before inspecting the authority. Only those consecutive
+ * EINVAL failures on Linux ARM64 may progressively drop O_NOFOLLOW and then
+ * O_DIRECTORY. Every compatibility descriptor must identify the exact same
+ * non-link directory before and after it is opened.
  */
 export function openAuthorityDirectoryNoFollow(
   directory: string,
@@ -216,7 +220,14 @@ export function openAuthorityDirectoryNoFollow(
 
   let directoryFd: number | undefined;
   try {
-    directoryFd = openDirectory(constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      nativeDirectoryOpenTestHook?.("before-directory-fallback-open", directory);
+      directoryFd = openDirectory(constants.O_RDONLY | constants.O_DIRECTORY);
+    } catch (error) {
+      if (errorCode(error) !== "EINVAL") throw error;
+      nativeDirectoryOpenTestHook?.("before-readonly-fallback-open", directory);
+      directoryFd = openDirectory(constants.O_RDONLY);
+    }
     nativeDirectoryOpenTestHook?.("after-fallback-open", directory);
     const opened = fstatSync(directoryFd, { bigint: true });
     nativeDirectoryOpenTestHook?.("after-fallback-fstat", directory);

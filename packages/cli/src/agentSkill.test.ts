@@ -39,6 +39,7 @@ import {
   LINUX_DIRECTORY_OPERATION_SHA256,
   assertNativeDirectoryEntry,
   directoryDescriptorAccess,
+  openAuthorityDirectoryNoFollow,
   setNativeDirectoryOpenTestHook,
   verifyDirectoryOperationArtifact,
 } from "./utils/directoryDescriptor.js";
@@ -197,6 +198,28 @@ test("Linux EINVAL directory open fallback retains the native descriptor-relativ
   assert.doesNotThrow(() => assertNativeDirectoryEntry(root, "config.json", "file"));
 });
 
+test("Linux consecutive EINVAL directory opens reach the read-only pinned fallback", {
+  skip: process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64")
+    ? "requires a real Linux kernel and packaged Linux addon"
+    : false,
+}, () => {
+  const root = temporaryRoot();
+  writeFileSync(join(root, "config.json"), "{}\n");
+  let readOnlyFallbacks = 0;
+  setNativeDirectoryOpenTestHook(phase => {
+    if (phase === "before-primary-open") {
+      throw Object.assign(new Error("injected strict-open failure"), { code: "EINVAL" });
+    }
+    if (phase === "before-directory-fallback-open") {
+      throw Object.assign(new Error("injected directory-open failure"), { code: "EINVAL" });
+    }
+    if (phase === "before-readonly-fallback-open") readOnlyFallbacks += 1;
+  }, true);
+
+  assert.doesNotThrow(() => assertNativeDirectoryEntry(root, "config.json", "file"));
+  assert.equal(readOnlyFallbacks, 1);
+});
+
 test("Linux EINVAL directory open fallback rejects named-directory replacement", {
   skip: process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64")
     ? "requires a real Linux kernel and packaged Linux addon"
@@ -210,6 +233,9 @@ test("Linux EINVAL directory open fallback rejects named-directory replacement",
   setNativeDirectoryOpenTestHook(phase => {
     if (phase === "before-primary-open") {
       throw Object.assign(new Error("injected strict-open failure"), { code: "EINVAL" });
+    }
+    if (phase === "before-directory-fallback-open") {
+      throw Object.assign(new Error("injected directory-open failure"), { code: "EINVAL" });
     }
     if (phase === "after-fallback-open") {
       renameSync(root, detached);
@@ -237,6 +263,9 @@ test("Linux EINVAL directory open fallback rejects a symlink substituted after o
   setNativeDirectoryOpenTestHook(phase => {
     if (phase === "before-primary-open") {
       throw Object.assign(new Error("injected strict-open failure"), { code: "EINVAL" });
+    }
+    if (phase === "before-directory-fallback-open") {
+      throw Object.assign(new Error("injected directory-open failure"), { code: "EINVAL" });
     }
     if (phase === "after-fallback-open") {
       renameSync(root, detached);
@@ -267,6 +296,50 @@ test("native directory open does not accept non-EINVAL errors through the fallba
 
   assert.throws(() => assertNativeDirectoryEntry(root, "config.json", "file"), /injected denied open/);
   assert.equal(phases, 1);
+});
+
+test("non-EINVAL directory fallback failures never reach the read-only fallback", {
+  skip: process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64")
+    ? "requires a real Linux kernel and packaged Linux addon"
+    : false,
+}, () => {
+  const root = temporaryRoot();
+  writeFileSync(join(root, "config.json"), "{}\n");
+  let readOnlyFallbackObserved = false;
+  setNativeDirectoryOpenTestHook(phase => {
+    if (phase === "before-primary-open") {
+      throw Object.assign(new Error("injected strict-open failure"), { code: "EINVAL" });
+    }
+    if (phase === "before-directory-fallback-open") {
+      throw Object.assign(new Error("injected denied directory open"), { code: "EACCES" });
+    }
+    if (phase === "before-readonly-fallback-open") readOnlyFallbackObserved = true;
+  }, true);
+
+  assert.throws(
+    () => assertNativeDirectoryEntry(root, "config.json", "file"),
+    /injected denied directory open/,
+  );
+  assert.equal(readOnlyFallbackObserved, false);
+});
+
+test("read-only fallback rejects a non-directory descriptor", {
+  skip: process.platform !== "linux" ? "requires Linux directory open flags" : false,
+}, () => {
+  const root = temporaryRoot();
+  const file = join(root, "config.json");
+  writeFileSync(file, "{}\n");
+  setNativeDirectoryOpenTestHook(() => undefined, true);
+
+  assert.throws(() => openAuthorityDirectoryNoFollow(root, flags => {
+    if (flags === (constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)) {
+      throw Object.assign(new Error("injected strict-open failure"), { code: "EINVAL" });
+    }
+    if (flags === (constants.O_RDONLY | constants.O_DIRECTORY)) {
+      throw Object.assign(new Error("injected directory-open failure"), { code: "EINVAL" });
+    }
+    return openSync(file, flags);
+  }), /entry changed during descriptor fallback/);
 });
 
 test("native Darwin child uses inherited fd 3 without changing either cwd", {
