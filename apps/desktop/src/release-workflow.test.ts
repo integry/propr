@@ -42,6 +42,10 @@ const installedWindowsAppTest = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/test-installed-windows-app.ps1', import.meta.url)),
   'utf8',
 ));
+const installedWindowsAppSupervisor = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/run-installed-windows-app-harness.ps1', import.meta.url)),
+  'utf8',
+));
 
 const preflightAppTokenPermissions = (preflight: string): string[] => (
   [...preflight.matchAll(/^\s+permission-([a-z-]+): (read|write)$/gm)]
@@ -323,7 +327,7 @@ describe('desktop trusted release workflow', () => {
         `${jobName} retained a deferred Windows authority gate`);
     }
     assert.equal(workflow.match(/\*Machine-Setup\.msi/g)?.length, 3);
-    assert.equal(workflow.match(/test-installed-windows-app\.ps1/g)?.length, 2);
+    assert.equal(workflow.match(/run-installed-windows-app-harness\.ps1/g)?.length, 2);
     assert.equal(workflow.match(/PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1/g)?.length, 2);
     assert.doesNotMatch(forgeConfig, /extraResource|windows-authority|postPackage/);
     assert.match(forgeConfig, /buildWindowsMachineInstaller/);
@@ -496,7 +500,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       applicationExitSection,
-      /catch \{\n\s+\$waitFailure = \$_\n\s+\} finally \{\n\s+try \{\n\s+Close-RedirectedApplicationStreams \$applicationLaunch[\s\S]*?\} finally \{\n\s+\$applicationLaunch\.Process\.Dispose\(\)\n\s+\$applicationLaunch = \$null/,
+      /catch \{\n\s+\$waitFailure = \$_\n\s+\} finally \{\n\s+try \{[\s\S]*?Close-RedirectedApplicationStreams \$applicationLaunch[\s\S]*?\} finally \{\n\s+\$applicationLaunch\.Process\.Dispose\(\)\n\s+\$applicationLaunch = \$null/,
     );
     assert.ok(
       applicationExitSection.indexOf('Wait-BoundedProcess `')
@@ -538,8 +542,141 @@ describe('desktop trusted release workflow', () => {
     for (const section of [job('package', 'finalize'), job('release-package', 'release-finalize')]) {
       assert.match(section, /- platform: win32\n\s+arch: x64\n/);
       assert.match(section, /- platform: win32\n\s+arch: arm64\n/);
-      assert.equal(section.match(/test-installed-windows-app\.ps1/g)?.length, 1);
+      assert.equal(section.match(/run-installed-windows-app-harness\.ps1/g)?.length, 1);
     }
+  });
+
+  test('supervises every installed-app external operation and preserves cancellation evidence', () => {
+    assert.match(installedWindowsAppSupervisor, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000/);
+    assert.match(installedWindowsAppSupervisor, /AssignProcessToJobObject\(handle, processHandle\)/);
+    assert.match(installedWindowsAppSupervisor, /TerminateJobObject\(handle, exitCode\)/);
+    assert.match(installedWindowsAppSupervisor, /\$job\.AddProcess\(\$worker\.Handle\)/);
+    assert.match(installedWindowsAppSupervisor, /\[void\]\$ownershipReadyEvent\.Set\(\)/);
+    assert.ok(
+      installedWindowsAppSupervisor.indexOf('$job.AddProcess($worker.Handle)')
+        < installedWindowsAppSupervisor.indexOf('[void]$ownershipReadyEvent.Set()'),
+    );
+    assert.match(installedWindowsAppTest, /\$ownershipHandshakeTimeoutMilliseconds = 5 \* 1000/);
+    assert.match(installedWindowsAppTest, /\$ownershipReady\.WaitOne\(\$ownershipHandshakeTimeoutMilliseconds\)/);
+    assert.match(installedWindowsAppSupervisor, /\$worker\.WaitForExit\(\$watchdogPollMilliseconds\)/);
+    assert.match(installedWindowsAppSupervisor, /\[DateTime\]::UtcNow\.Ticks -gt \$marker\.Deadline/);
+    assert.match(installedWindowsAppSupervisor, /\$job\.Terminate\(124\)/);
+    assert.match(installedWindowsAppSupervisor, /exit 124/);
+    assert.match(installedWindowsAppSupervisor, /if \(\$null -ne \$job\) \{ \$job\.Dispose\(\) \}/);
+
+    assert.match(installedWindowsAppTest, /\[IO\.FileOptions\]::WriteThrough/);
+    assert.equal(installedWindowsAppTest.match(/\.Flush\(\$true\)/g)?.length, 2);
+    assert.match(
+      installedWindowsAppTest,
+      /\$record = '\{0\}\|\{1\}\|\{2\}\|\{3\}' -f \$deadline, \$Stage, \$Substage, \$Status/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /\(\?<Status>BEGIN\|COMPLETE\|FAILED\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:\{0\}:\{1\}:\{2\}:TIMED_OUT/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:\{0\}:\{1\}:\{2\}:ABORTED/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:OPERATION:\{0\}:\{1\}:\{2\}' -f `[\s\S]{0,100}\[Console\]::Out\.Flush\(\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:\{0\}:\{1\}:\{2\}:TIMED_OUT'[\s\S]{0,150}\[Console\]::Out\.Flush\(\)[\s\S]{0,100}\$job\.Terminate\(124\)/,
+    );
+
+    const markerWriter = installedWindowsAppTest.match(
+      /function Write-WatchdogMarker\(([\s\S]*?)\n\}/,
+    );
+    assert.ok(markerWriter);
+    const operationAllowlist = markerWriter[1].match(
+      /\[ValidateSet\(\n([\s\S]*?)\n\s+\)\]\[string\]\$Substage/,
+    );
+    assert.ok(operationAllowlist);
+    const operations = [...operationAllowlist[1].matchAll(/'([A-Z_]+)'/g)]
+      .map(match => match[1]);
+    assert.deepEqual(operations, [
+      'PATHS',
+      'BASELINE',
+      'MSI_INSTALL',
+      'OWNERSHIP_CAPTURE',
+      'INSTALL_TREE_SCAN',
+      'APPLICATION_IMAGE',
+      'PROTOCOL_ASSERTION',
+      'SHORTCUT_ASSERTION',
+      'USER_CREATE',
+      'USER_SID',
+      'SMOKE_DATA_CREATE',
+      'SHORTCUT_PRESENT_PROBE',
+      'ALTERNATE_USER_START',
+      'APPLICATION_WAIT',
+      'STREAM_DRAIN',
+      'EVIDENCE_INSPECTION',
+      'MSI_UNINSTALL',
+      'INSTALL_TREE_ASSERTION',
+      'PROTOCOL_ABSENCE_ASSERTION',
+      'SHORTCUT_FILE_ASSERTION',
+      'SHORTCUT_FOLDER_ASSERTION',
+      'SHORTCUT_ABSENCE_PROBE',
+      'SMOKE_DATA_REMOVE',
+      'PROFILE_LOOKUP',
+      'PROFILE_REMOVE',
+      'USER_LOOKUP',
+      'USER_REMOVE',
+      'INSTALL_ROOT_FALLBACK',
+      'PROTOCOL_FALLBACK',
+      'SHORTCUT_FALLBACK',
+    ]);
+    for (const operation of operations) {
+      assert.ok(
+        installedWindowsAppTest.match(new RegExp(`'${operation}'`, 'g'))!.length >= 2,
+        `${operation} must be allowlisted and reached by a bounded marker path`,
+      );
+    }
+    assert.match(
+      installedWindowsAppTest,
+      /Write-WatchdogMarker \$Stage \$Substage \$TimeoutMilliseconds 'BEGIN'[\s\S]*Write-WatchdogMarker \$Stage \$Substage \$TimeoutMilliseconds 'COMPLETE'[\s\S]*Write-WatchdogMarker \$Stage \$Substage \$TimeoutMilliseconds 'FAILED'/,
+    );
+
+    const diagnosticSources = `${installedWindowsAppSupervisor}\n${installedWindowsAppTest}`;
+    assert.doesNotMatch(
+      diagnosticSources,
+      /Write-(?:Host|Warning|Error|Verbose|Debug|Information)[^\n]*(?:\$password|\$credential|\$Installer|\$installerPath|\$testUser|\$UserName|\$Domain|\$Arguments|\$record|\$bytes)/i,
+    );
+  });
+
+  test('keeps all destructive installed-app cleanup fail-closed to run-owned resources', () => {
+    assert.match(
+      installedWindowsAppTest,
+      /if \(\$installRootExistedBeforeInstall -or \$protocolExistedBeforeInstall -or[\s\S]*\$startMenuShortcutFolderExistedBeforeInstall\) \{\n\s+throw 'installed-app harness requires an unowned clean machine baseline'/,
+    );
+    assert.match(installedWindowsAppTest, /\$script:testUserCreatedByRun = \$true/);
+    assert.match(
+      installedWindowsAppTest,
+      /if \(\$testUserCreatedByRun -and \$null -ne \$testUserSid\)[\s\S]*!\$ownedUser\.SID\.Equals\(\$testUserSid\)[\s\S]*Remove-LocalUser/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /if \(\$profile\.SID -ne \$testUserSid\.Value\)[\s\S]*Remove-CimInstance -InputObject \$profile/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /if \(\$installRootCreatedByRun -and \(Test-Path -LiteralPath \$installRoot\)\)[\s\S]*Remove-Item -LiteralPath \$installRoot -Recurse/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /if \(\$protocolCreatedByRun -and[\s\S]*Remove-Item -LiteralPath `[\s\S]*Registry::HKEY_LOCAL_MACHINE\\Software\\Classes\\propr/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /if \(\$createdByRun\) \{\n\s+Remove-Item -LiteralPath \$path -Recurse/,
+    );
   });
 
   test('uses bounded network logon impersonation with secure native credential cleanup', () => {
@@ -762,11 +899,11 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppTest,
-      /\$startMenuShortcutCreatedByRun =\n\s+!\$startMenuShortcutExistedBeforeInstall -and \(Test-Path -LiteralPath \$startMenuShortcut\)/,
+      /\$script:startMenuShortcutCreatedByRun =\n\s+!\$startMenuShortcutExistedBeforeInstall -and \(Test-Path -LiteralPath \$startMenuShortcut\)/,
     );
     assert.match(
       installedWindowsAppTest,
-      /\$startMenuShortcutFolderCreatedByRun =\n\s+!\$startMenuShortcutFolderExistedBeforeInstall -and \(Test-Path -LiteralPath \$startMenuShortcutFolder\)/,
+      /\$script:startMenuShortcutFolderCreatedByRun =\n\s+!\$startMenuShortcutFolderExistedBeforeInstall -and[\s\S]{0,40}\(Test-Path -LiteralPath \$startMenuShortcutFolder\)/,
     );
 
     const cleanupStart = installedWindowsAppTest.indexOf("Write-Stage 'CLEANUP' 'BEGIN'");

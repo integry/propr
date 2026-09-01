@@ -1,6 +1,8 @@
 param(
   [Parameter(Mandatory=$true)][string]$Installer,
-  [Parameter(Mandatory=$true)][ValidateSet('x64','arm64')][string]$Architecture
+  [Parameter(Mandatory=$true)][ValidateSet('x64','arm64')][string]$Architecture,
+  [Parameter(Mandatory=$true)][string]$WatchdogMarker,
+  [Parameter(Mandatory=$true)][string]$OwnershipReadyEvent
 )
 
 enum SmokeEvidenceInspectionPhase {
@@ -14,6 +16,51 @@ enum SmokeEvidenceInspectionPhase {
 }
 
 $ErrorActionPreference = 'Stop'
+$bootstrapWatchdogTimeoutMilliseconds = 60 * 1000
+$markerTransitionTimeoutMilliseconds = 30 * 1000
+$ownershipHandshakeTimeoutMilliseconds = 5 * 1000
+if ($OwnershipReadyEvent -notmatch '^Local\\ProPRInstalledApp-[a-f0-9]{32}$') {
+  throw 'worker ownership event name is invalid'
+}
+$ownershipReady = [Threading.EventWaitHandle]::OpenExisting($OwnershipReadyEvent)
+try {
+  if (!$ownershipReady.WaitOne($ownershipHandshakeTimeoutMilliseconds)) {
+    throw 'worker ownership was not established'
+  }
+} finally {
+  $ownershipReady.Dispose()
+}
+$watchdogMarkerPath = [IO.Path]::GetFullPath($WatchdogMarker)
+$watchdogMarkerParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+if ((Split-Path -Leaf $watchdogMarkerPath) -notmatch
+      '^propr-installed-app-watchdog-[a-f0-9]{32}\.marker$' -or
+    ![string]::Equals(
+      (Split-Path -Parent $watchdogMarkerPath).TrimEnd('\'),
+      $watchdogMarkerParent,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+  throw 'watchdog marker path is invalid'
+}
+$bootstrapDeadline = [DateTime]::UtcNow.AddMilliseconds($bootstrapWatchdogTimeoutMilliseconds).Ticks
+$bootstrapRecord = '{0}|INITIALIZATION|PATHS|BEGIN' -f $bootstrapDeadline
+$bootstrapBytes = [Text.Encoding]::ASCII.GetBytes($bootstrapRecord)
+$bootstrapStream = [IO.FileStream]::new(
+  $watchdogMarkerPath,
+  [IO.FileMode]::CreateNew,
+  [IO.FileAccess]::Write,
+  [IO.FileShare]::Read,
+  4096,
+  [IO.FileOptions]::WriteThrough
+)
+try {
+  $bootstrapStream.Write($bootstrapBytes, 0, $bootstrapBytes.Length)
+  $bootstrapStream.Flush($true)
+} finally {
+  $bootstrapStream.Dispose()
+}
+Write-Host 'PROPR_WINDOWS_INSTALLED_SMOKE:OPERATION:INITIALIZATION:PATHS:BEGIN'
+[Console]::Out.Flush()
+
 $primaryFailure = $null
 try {
   $installerPath = (Resolve-Path -LiteralPath $Installer -ErrorAction Stop).Path
@@ -25,14 +72,23 @@ $application = Join-Path $installRoot 'propr-desktop.exe'
 $testUser = "propr-ci-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 $passwordText = "P!$([Guid]::NewGuid().ToString('N'))a7"
 $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
+$passwordText = $null
 $credential = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$testUser", $password)
 $installAttempted = $false
+$testUserCreatedByRun = $false
 $testUserSid = $null
 $smokeUserDataDirectory = $null
+$installRootExistedBeforeInstall = $false
+$protocolExistedBeforeInstall = $false
+$installRootCreatedByRun = $false
+$protocolCreatedByRun = $false
 $msiTimeoutMilliseconds = 10 * 60 * 1000
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
 $redirectedStreamDrainTimeoutMilliseconds = 30 * 1000
+$externalOperationTimeoutMilliseconds = 60 * 1000
+$recursiveOperationTimeoutMilliseconds = 90 * 1000
+$alternateUserLaunchTimeoutMilliseconds = 90 * 1000
 $smokeEvidenceFileByteCap = 64 * 1024
 $smokeEvidenceOpenRetryDeadlineMilliseconds = 2 * 1000
 $smokeEvidenceOpenRetryDelayMilliseconds = 50
@@ -84,11 +140,98 @@ if (!$commonPrograms -or ![IO.Path]::IsPathRooted($commonPrograms)) {
 $commonPrograms = (Resolve-Path -LiteralPath $commonPrograms -ErrorAction Stop).Path
 $startMenuShortcutFolder = Join-Path $commonPrograms 'ProPR Desktop'
 $startMenuShortcut = Join-Path $startMenuShortcutFolder 'ProPR Desktop.lnk'
+$installRootExistedBeforeInstall = Test-Path -LiteralPath $installRoot
+$protocolExistedBeforeInstall =
+  Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
 $startMenuShortcutExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcut
 $startMenuShortcutFolderExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcutFolder
 $startMenuShortcutCreatedByRun = $false
 $startMenuShortcutFolderCreatedByRun = $false
 $shortcutFileByteCap = 64 * 1024
+
+function Write-WatchdogMarker(
+  [ValidateSet('INITIALIZATION','INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP')]
+    [string]$Stage,
+  [ValidateSet(
+    'PATHS',
+    'BASELINE',
+    'MSI_INSTALL',
+    'OWNERSHIP_CAPTURE',
+    'INSTALL_TREE_SCAN',
+    'APPLICATION_IMAGE',
+    'PROTOCOL_ASSERTION',
+    'SHORTCUT_ASSERTION',
+    'USER_CREATE',
+    'USER_SID',
+    'SMOKE_DATA_CREATE',
+    'SHORTCUT_PRESENT_PROBE',
+    'ALTERNATE_USER_START',
+    'APPLICATION_WAIT',
+    'STREAM_DRAIN',
+    'EVIDENCE_INSPECTION',
+    'MSI_UNINSTALL',
+    'INSTALL_TREE_ASSERTION',
+    'PROTOCOL_ABSENCE_ASSERTION',
+    'SHORTCUT_FILE_ASSERTION',
+    'SHORTCUT_FOLDER_ASSERTION',
+    'SHORTCUT_ABSENCE_PROBE',
+    'SMOKE_DATA_REMOVE',
+    'PROFILE_LOOKUP',
+    'PROFILE_REMOVE',
+    'USER_LOOKUP',
+    'USER_REMOVE',
+    'INSTALL_ROOT_FALLBACK',
+    'PROTOCOL_FALLBACK',
+    'SHORTCUT_FALLBACK'
+  )][string]$Substage,
+  [int]$TimeoutMilliseconds,
+  [ValidateSet('BEGIN','COMPLETE','FAILED')][string]$Status
+) {
+  $deadline = if ($Status -eq 'BEGIN') {
+    [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds).Ticks
+  } else {
+    [DateTime]::UtcNow.AddMilliseconds($markerTransitionTimeoutMilliseconds).Ticks
+  }
+  $record = '{0}|{1}|{2}|{3}' -f $deadline, $Stage, $Substage, $Status
+  $temporaryMarker = "$watchdogMarkerPath.$PID.new"
+  $bytes = [Text.Encoding]::ASCII.GetBytes($record)
+  $stream = $null
+  try {
+    $stream = [IO.FileStream]::new(
+      $temporaryMarker,
+      [IO.FileMode]::Create,
+      [IO.FileAccess]::Write,
+      [IO.FileShare]::None,
+      4096,
+      [IO.FileOptions]::WriteThrough
+    )
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    if ($null -ne $stream) { $stream.Dispose() }
+  }
+  [IO.File]::Move($temporaryMarker, $watchdogMarkerPath, $true)
+  Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:OPERATION:{0}:{1}:{2}' -f `
+    $Stage, $Substage, $Status)
+  [Console]::Out.Flush()
+}
+
+function Invoke-BoundedExternalOperation(
+  [string]$Stage,
+  [string]$Substage,
+  [int]$TimeoutMilliseconds,
+  [scriptblock]$Operation
+) {
+  Write-WatchdogMarker $Stage $Substage $TimeoutMilliseconds 'BEGIN'
+  try {
+    $result = & $Operation
+    Write-WatchdogMarker $Stage $Substage $TimeoutMilliseconds 'COMPLETE'
+    return $result
+  } catch {
+    Write-WatchdogMarker $Stage $Substage $TimeoutMilliseconds 'FAILED'
+    throw
+  }
+}
 
 Add-Type -TypeDefinition @'
 using System;
@@ -113,11 +256,25 @@ public static class ProPRWindowsLogon
 }
 '@
 
+Write-WatchdogMarker 'INITIALIZATION' 'PATHS' $bootstrapWatchdogTimeoutMilliseconds 'COMPLETE'
+Write-WatchdogMarker 'INITIALIZATION' 'BASELINE' $externalOperationTimeoutMilliseconds 'BEGIN'
+try {
+  if ($installRootExistedBeforeInstall -or $protocolExistedBeforeInstall -or
+      $startMenuShortcutExistedBeforeInstall -or $startMenuShortcutFolderExistedBeforeInstall) {
+    throw 'installed-app harness requires an unowned clean machine baseline'
+  }
+  Write-WatchdogMarker 'INITIALIZATION' 'BASELINE' $externalOperationTimeoutMilliseconds 'COMPLETE'
+} catch {
+  Write-WatchdogMarker 'INITIALIZATION' 'BASELINE' $externalOperationTimeoutMilliseconds 'FAILED'
+  throw
+}
+
 function Write-Stage(
   [ValidateSet('INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP')][string]$Stage,
   [ValidateSet('BEGIN','COMPLETE','FAILED')][string]$Status
 ) {
   Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:{0}:{1}' -f $Stage, $Status)
+  [Console]::Out.Flush()
 }
 
 function Write-CleanupSubstage(
@@ -140,6 +297,7 @@ function Write-CleanupSubstage(
   [ValidateSet('BEGIN','COMPLETE','FAILED','SKIPPED')][string]$Status
 ) {
   Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:{0}:{1}:{2}' -f $Scope, $Substage, $Status)
+  [Console]::Out.Flush()
 }
 
 function Stop-SpawnedProcessTree(
@@ -496,8 +654,13 @@ function Test-StartMenuShortcutAsOrdinaryUser(
 
 function New-SmokeUserDataDirectory([Security.Principal.SecurityIdentifier]$UserSid) {
   $path = Join-Path $machineTemp "propr-desktop-smoke-$([Guid]::NewGuid().ToString('N'))"
-  New-Item -ItemType Directory -Path $path | Out-Null
+  $createdByRun = $false
   try {
+    if (Test-Path -LiteralPath $path) {
+      throw 'refusing to replace a pre-existing smoke user-data directory'
+    }
+    New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+    $createdByRun = $true
     $administratorsSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
     $systemSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
     $acl = New-Object Security.AccessControl.DirectorySecurity
@@ -534,7 +697,9 @@ function New-SmokeUserDataDirectory([Security.Principal.SecurityIdentifier]$User
     }
     return $path
   } catch {
-    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    if ($createdByRun) {
+      Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    }
     throw
   }
 }
@@ -545,6 +710,13 @@ function Remove-SmokeUserDataDirectory([string]$Path) {
   if ((Split-Path -Leaf $fullPath) -notmatch '^propr-desktop-smoke-[a-f0-9]{32}$' -or
       ![string]::Equals((Split-Path -Parent $fullPath), $machineTemp, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'refusing to clean a directory outside the bounded smoke user-data scope'
+  }
+  if (Test-Path -LiteralPath $fullPath) {
+    $ownedDirectory = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    if (!$ownedDirectory.PSIsContainer -or
+        ($ownedDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'refusing to clean an invalid smoke user-data directory'
+    }
   }
   for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
     if (!(Test-Path -LiteralPath $fullPath)) { return }
@@ -708,12 +880,30 @@ try {
   try {
     $installAttempted = $true
     try {
-      Invoke-Msi @('/i', "`"$installerPath`"", '/qn', '/norestart') 'machine install'
+      Invoke-BoundedExternalOperation `
+        -Stage 'INSTALL' `
+        -Substage 'MSI_INSTALL' `
+        -TimeoutMilliseconds ($msiTimeoutMilliseconds + $terminationTimeoutMilliseconds + 5000) `
+        -Operation {
+          Invoke-Msi @('/i', "`"$installerPath`"", '/qn', '/norestart') 'machine install'
+        }
     } finally {
-      $startMenuShortcutCreatedByRun =
-        !$startMenuShortcutExistedBeforeInstall -and (Test-Path -LiteralPath $startMenuShortcut)
-      $startMenuShortcutFolderCreatedByRun =
-        !$startMenuShortcutFolderExistedBeforeInstall -and (Test-Path -LiteralPath $startMenuShortcutFolder)
+      Invoke-BoundedExternalOperation `
+        -Stage 'INSTALL' `
+        -Substage 'OWNERSHIP_CAPTURE' `
+        -TimeoutMilliseconds $externalOperationTimeoutMilliseconds `
+        -Operation {
+          $script:installRootCreatedByRun =
+            !$installRootExistedBeforeInstall -and (Test-Path -LiteralPath $installRoot)
+          $script:protocolCreatedByRun =
+            !$protocolExistedBeforeInstall -and
+              (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr')
+          $script:startMenuShortcutCreatedByRun =
+            !$startMenuShortcutExistedBeforeInstall -and (Test-Path -LiteralPath $startMenuShortcut)
+          $script:startMenuShortcutFolderCreatedByRun =
+            !$startMenuShortcutFolderExistedBeforeInstall -and
+              (Test-Path -LiteralPath $startMenuShortcutFolder)
+        }
     }
     Write-Stage 'INSTALL' 'COMPLETE'
   } catch {
@@ -723,36 +913,53 @@ try {
 
   Write-Stage 'VALIDATION' 'BEGIN'
   try {
-    if (!(Test-Path -LiteralPath $application -PathType Leaf)) {
-      throw 'machine installer did not install the canonical application'
-    }
-    $forbidden = @(Get-ChildItem -LiteralPath $installRoot -Recurse -Force | Where-Object {
-      $_.Name -match '^propr-windows-(authority|launcher|bootstrap)' -or
-      $_.Name -in @('windows-authority', 'windows-update-authority')
-    })
-    if ($forbidden.Count -ne 0) { throw 'installed MVP contains a deferred Windows update authority resource' }
+    Invoke-BoundedExternalOperation 'VALIDATION' 'INSTALL_TREE_SCAN' `
+      $recursiveOperationTimeoutMilliseconds {
+        if (!(Test-Path -LiteralPath $application -PathType Leaf)) {
+          throw 'machine installer did not install the canonical application'
+        }
+        $forbidden = @(Get-ChildItem -LiteralPath $installRoot -Recurse -Force | Where-Object {
+          $_.Name -match '^propr-windows-(authority|launcher|bootstrap)' -or
+          $_.Name -in @('windows-authority', 'windows-update-authority')
+        })
+        if ($forbidden.Count -ne 0) {
+          throw 'installed MVP contains a deferred Windows update authority resource'
+        }
+      }
 
-    $image = New-Object byte[] 4096
-    $stream = [IO.File]::OpenRead($application)
-    try { $imageLength = $stream.Read($image, 0, $image.Length) } finally { $stream.Dispose() }
-    $pe = if ($imageLength -ge 64) { [BitConverter]::ToUInt32($image, 0x3c) } else { 0 }
-    $expectedMachine = if ($Architecture -eq 'arm64') { 0xaa64 } else { 0x8664 }
-    if ($imageLength -lt 512 -or [BitConverter]::ToUInt16($image, 0) -ne 0x5a4d -or
-        $pe + 6 -gt $imageLength -or [Text.Encoding]::ASCII.GetString($image, [int]$pe, 4) -cne "PE`0`0" -or
-        [BitConverter]::ToUInt16($image, [int]$pe + 4) -ne $expectedMachine) {
-      throw 'installed application architecture does not match the matrix target'
-    }
+    Invoke-BoundedExternalOperation 'VALIDATION' 'APPLICATION_IMAGE' `
+      $externalOperationTimeoutMilliseconds {
+        $image = New-Object byte[] 4096
+        $stream = [IO.File]::OpenRead($application)
+        try { $imageLength = $stream.Read($image, 0, $image.Length) } finally { $stream.Dispose() }
+        $pe = if ($imageLength -ge 64) { [BitConverter]::ToUInt32($image, 0x3c) } else { 0 }
+        $expectedMachine = if ($Architecture -eq 'arm64') { 0xaa64 } else { 0x8664 }
+        if ($imageLength -lt 512 -or [BitConverter]::ToUInt16($image, 0) -ne 0x5a4d -or
+            $pe + 6 -gt $imageLength -or
+            [Text.Encoding]::ASCII.GetString($image, [int]$pe, 4) -cne "PE`0`0" -or
+            [BitConverter]::ToUInt16($image, [int]$pe + 4) -ne $expectedMachine) {
+          throw 'installed application architecture does not match the matrix target'
+        }
+      }
 
-    $protocolCommand = (Get-Item -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr\shell\open\command').GetValue('')
-    if ($protocolCommand -cne "`"$application`" `"%1`"") {
-      throw 'machine installer did not register canonical ProPR Connect protocol discovery'
-    }
-    $shortcutItem = Get-Item -LiteralPath $startMenuShortcut -Force -ErrorAction Stop
-    if (!($shortcutItem -is [IO.FileInfo]) -or
-        ($shortcutItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-        $shortcutItem.Length -le 0) {
-      throw 'machine installer did not create the common Start Menu shortcut'
-    }
+    Invoke-BoundedExternalOperation 'VALIDATION' 'PROTOCOL_ASSERTION' `
+      $externalOperationTimeoutMilliseconds {
+        $protocolCommand = (Get-Item -LiteralPath `
+          'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr\shell\open\command').GetValue('')
+        if ($protocolCommand -cne "`"$application`" `"%1`"") {
+          throw 'machine installer did not register canonical ProPR Connect protocol discovery'
+        }
+      }
+
+    Invoke-BoundedExternalOperation 'VALIDATION' 'SHORTCUT_ASSERTION' `
+      $externalOperationTimeoutMilliseconds {
+        $shortcutItem = Get-Item -LiteralPath $startMenuShortcut -Force -ErrorAction Stop
+        if (!($shortcutItem -is [IO.FileInfo]) -or
+            ($shortcutItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $shortcutItem.Length -le 0) {
+          throw 'machine installer did not create the common Start Menu shortcut'
+        }
+      }
     Write-Stage 'VALIDATION' 'COMPLETE'
   } catch {
     Write-Stage 'VALIDATION' 'FAILED'
@@ -761,16 +968,33 @@ try {
 
   Write-Stage 'USER_SETUP' 'BEGIN'
   try {
-    New-LocalUser -Name $testUser -Password $password -AccountNeverExpires -PasswordNeverExpires | Out-Null
-    $testUserSid = (Get-LocalUser -Name $testUser).SID
-    $smokeUserDataDirectory = New-SmokeUserDataDirectory $testUserSid
-    Test-StartMenuShortcutAsOrdinaryUser `
-      -Credential $credential `
-      -Domain $env:COMPUTERNAME `
-      -UserName $testUser `
-      -UserSid $testUserSid `
-      -ShortcutPath $startMenuShortcut `
-      -ExpectedPresent $true
+    Invoke-BoundedExternalOperation 'USER_SETUP' 'USER_CREATE' `
+      $externalOperationTimeoutMilliseconds {
+        if (Get-LocalUser -Name $testUser -ErrorAction SilentlyContinue) {
+          throw 'refusing to replace a pre-existing local user'
+        }
+        New-LocalUser -Name $testUser -Password $password `
+          -AccountNeverExpires -PasswordNeverExpires | Out-Null
+        $script:testUserCreatedByRun = $true
+      }
+    $testUserSid = Invoke-BoundedExternalOperation 'USER_SETUP' 'USER_SID' `
+      $externalOperationTimeoutMilliseconds {
+        (Get-LocalUser -Name $testUser -ErrorAction Stop).SID
+      }
+    $smokeUserDataDirectory = Invoke-BoundedExternalOperation `
+      'USER_SETUP' 'SMOKE_DATA_CREATE' $recursiveOperationTimeoutMilliseconds {
+        New-SmokeUserDataDirectory $testUserSid
+      }
+    Invoke-BoundedExternalOperation `
+      'USER_SETUP' 'SHORTCUT_PRESENT_PROBE' $externalOperationTimeoutMilliseconds {
+        Test-StartMenuShortcutAsOrdinaryUser `
+          -Credential $credential `
+          -Domain $env:COMPUTERNAME `
+          -UserName $testUser `
+          -UserSid $testUserSid `
+          -ShortcutPath $startMenuShortcut `
+          -ExpectedPresent $true
+      }
     Write-Stage 'USER_SETUP' 'COMPLETE'
   } catch {
     Write-Stage 'USER_SETUP' 'FAILED'
@@ -786,18 +1010,21 @@ try {
   Write-Stage 'APP_LAUNCH' 'BEGIN'
   $applicationLaunch = $null
   try {
-    $applicationLaunch = Start-AlternateCredentialApplication `
-      -FilePath $application `
-      -Arguments $arguments `
-      -Credential $credential `
-      -Domain $env:COMPUTERNAME `
-      -UserName $testUser `
-      -WorkingDirectory $env:ProgramFiles `
-      -SmokeDirectory $smokeUserDataDirectory `
-      -WindowsDirectory $windowsDirectory `
-      -StandardOutputPath (Join-Path $smokeUserDataDirectory 'application.stdout.log') `
-      -StandardErrorPath (Join-Path $smokeUserDataDirectory 'application.stderr.log') `
-      -Operation 'ordinary-user installed application launch/render/profile smoke'
+    $applicationLaunch = Invoke-BoundedExternalOperation `
+      'APP_LAUNCH' 'ALTERNATE_USER_START' $alternateUserLaunchTimeoutMilliseconds {
+        Start-AlternateCredentialApplication `
+          -FilePath $application `
+          -Arguments $arguments `
+          -Credential $credential `
+          -Domain $env:COMPUTERNAME `
+          -UserName $testUser `
+          -WorkingDirectory $env:ProgramFiles `
+          -SmokeDirectory $smokeUserDataDirectory `
+          -WindowsDirectory $windowsDirectory `
+          -StandardOutputPath (Join-Path $smokeUserDataDirectory 'application.stdout.log') `
+          -StandardErrorPath (Join-Path $smokeUserDataDirectory 'application.stderr.log') `
+          -Operation 'ordinary-user installed application launch/render/profile smoke'
+      }
     Write-Stage 'APP_LAUNCH' 'COMPLETE'
   } catch {
     Write-Stage 'APP_LAUNCH' 'FAILED'
@@ -807,17 +1034,24 @@ try {
   try {
     $waitFailure = $null
     try {
-      [void](Wait-BoundedProcess `
-        -Process $applicationLaunch.Process `
-        -TimeoutMilliseconds $applicationTimeoutMilliseconds `
-        -AllowedExitCodes @(0) `
-        -Operation 'ordinary-user installed application launch/render/profile smoke')
+      Invoke-BoundedExternalOperation `
+        'APP_EXIT' 'APPLICATION_WAIT' `
+        ($applicationTimeoutMilliseconds + $terminationTimeoutMilliseconds + 5000) {
+          [void](Wait-BoundedProcess `
+            -Process $applicationLaunch.Process `
+            -TimeoutMilliseconds $applicationTimeoutMilliseconds `
+            -AllowedExitCodes @(0) `
+            -Operation 'ordinary-user installed application launch/render/profile smoke')
+        }
     } catch {
       $waitFailure = $_
     } finally {
       try {
-        Close-RedirectedApplicationStreams $applicationLaunch `
-          'ordinary-user installed application launch/render/profile smoke'
+        Invoke-BoundedExternalOperation `
+          'APP_EXIT' 'STREAM_DRAIN' ($redirectedStreamDrainTimeoutMilliseconds + 5000) {
+            Close-RedirectedApplicationStreams $applicationLaunch `
+              'ordinary-user installed application launch/render/profile smoke'
+          }
       } catch {
         if ($null -eq $waitFailure) { $waitFailure = $_ }
       } finally {
@@ -825,7 +1059,10 @@ try {
         $applicationLaunch = $null
       }
     }
-    $smokeEvidence = Get-SmokeEventEvidence $smokeUserDataDirectory $testUserSid
+    $smokeEvidence = Invoke-BoundedExternalOperation `
+      'APP_EXIT' 'EVIDENCE_INSPECTION' $externalOperationTimeoutMilliseconds {
+        Get-SmokeEventEvidence $smokeUserDataDirectory $testUserSid
+      }
     if ($null -ne $waitFailure) { throw $waitFailure }
     if (@($requiredSmokeEvents | Where-Object { !$smokeEvidence[$_] }).Count -ne 0) {
       throw 'SMOKE_REQUIRED_EVENTS_MISSING'
@@ -836,8 +1073,13 @@ try {
     throw
   } finally {
     if ($null -ne $applicationLaunch) {
-      try { Close-RedirectedApplicationStreams $applicationLaunch `
-        'ordinary-user installed application launch/render/profile smoke' } finally {
+      try {
+        Invoke-BoundedExternalOperation `
+          'APP_EXIT' 'STREAM_DRAIN' ($redirectedStreamDrainTimeoutMilliseconds + 5000) {
+            Close-RedirectedApplicationStreams $applicationLaunch `
+              'ordinary-user installed application launch/render/profile smoke'
+          }
+      } finally {
         $applicationLaunch.Process.Dispose()
       }
     }
@@ -853,7 +1095,11 @@ try {
 
     Write-CleanupSubstage 'UNINSTALL' 'MSI_UNINSTALL' 'BEGIN'
     try {
-      Invoke-Msi @('/x', "`"$installerPath`"", '/qn', '/norestart') 'machine uninstall'
+      Invoke-BoundedExternalOperation `
+        'UNINSTALL' 'MSI_UNINSTALL' `
+        ($msiTimeoutMilliseconds + $terminationTimeoutMilliseconds + 5000) {
+          Invoke-Msi @('/x', "`"$installerPath`"", '/qn', '/norestart') 'machine uninstall'
+        }
       Write-CleanupSubstage 'UNINSTALL' 'MSI_UNINSTALL' 'COMPLETE'
     } catch {
       Write-CleanupSubstage 'UNINSTALL' 'MSI_UNINSTALL' 'FAILED'
@@ -862,7 +1108,12 @@ try {
 
     Write-CleanupSubstage 'UNINSTALL' 'INSTALL_TREE' 'BEGIN'
     try {
-      if (Test-Path -LiteralPath $installRoot) { throw 'machine uninstall left the canonical install tree behind' }
+      Invoke-BoundedExternalOperation `
+        'UNINSTALL' 'INSTALL_TREE_ASSERTION' $externalOperationTimeoutMilliseconds {
+          if (Test-Path -LiteralPath $installRoot) {
+            throw 'machine uninstall left the canonical install tree behind'
+          }
+        }
       Write-CleanupSubstage 'UNINSTALL' 'INSTALL_TREE' 'COMPLETE'
     } catch {
       Write-CleanupSubstage 'UNINSTALL' 'INSTALL_TREE' 'FAILED'
@@ -871,9 +1122,12 @@ try {
 
     Write-CleanupSubstage 'UNINSTALL' 'PROTOCOL' 'BEGIN'
     try {
-      if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr') {
-        throw 'machine uninstall left protocol discovery metadata behind'
-      }
+      Invoke-BoundedExternalOperation `
+        'UNINSTALL' 'PROTOCOL_ABSENCE_ASSERTION' $externalOperationTimeoutMilliseconds {
+          if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr') {
+            throw 'machine uninstall left protocol discovery metadata behind'
+          }
+        }
       Write-CleanupSubstage 'UNINSTALL' 'PROTOCOL' 'COMPLETE'
     } catch {
       Write-CleanupSubstage 'UNINSTALL' 'PROTOCOL' 'FAILED'
@@ -882,9 +1136,12 @@ try {
 
     Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FILE' 'BEGIN'
     try {
-      if (Test-Path -LiteralPath $startMenuShortcut) {
-        throw 'machine uninstall left the common Start Menu shortcut behind'
-      }
+      Invoke-BoundedExternalOperation `
+        'UNINSTALL' 'SHORTCUT_FILE_ASSERTION' $externalOperationTimeoutMilliseconds {
+          if (Test-Path -LiteralPath $startMenuShortcut) {
+            throw 'machine uninstall left the common Start Menu shortcut behind'
+          }
+        }
       Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FILE' 'COMPLETE'
     } catch {
       Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FILE' 'FAILED'
@@ -893,9 +1150,12 @@ try {
 
     Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FOLDER' 'BEGIN'
     try {
-      if (Test-Path -LiteralPath $startMenuShortcutFolder) {
-        throw 'machine uninstall left the common Start Menu folder behind'
-      }
+      Invoke-BoundedExternalOperation `
+        'UNINSTALL' 'SHORTCUT_FOLDER_ASSERTION' $externalOperationTimeoutMilliseconds {
+          if (Test-Path -LiteralPath $startMenuShortcutFolder) {
+            throw 'machine uninstall left the common Start Menu folder behind'
+          }
+        }
       Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FOLDER' 'COMPLETE'
     } catch {
       Write-CleanupSubstage 'UNINSTALL' 'SHORTCUT_FOLDER' 'FAILED'
@@ -905,13 +1165,16 @@ try {
     if ($null -ne $testUserSid) {
       Write-CleanupSubstage 'UNINSTALL' 'ORDINARY_USER_ABSENCE_PROBE' 'BEGIN'
       try {
-        Test-StartMenuShortcutAsOrdinaryUser `
-          -Credential $credential `
-          -Domain $env:COMPUTERNAME `
-          -UserName $testUser `
-          -UserSid $testUserSid `
-          -ShortcutPath $startMenuShortcut `
-          -ExpectedPresent $false
+        Invoke-BoundedExternalOperation `
+          'UNINSTALL' 'SHORTCUT_ABSENCE_PROBE' $externalOperationTimeoutMilliseconds {
+            Test-StartMenuShortcutAsOrdinaryUser `
+              -Credential $credential `
+              -Domain $env:COMPUTERNAME `
+              -UserName $testUser `
+              -UserSid $testUserSid `
+              -ShortcutPath $startMenuShortcut `
+              -ExpectedPresent $false
+          }
         Write-CleanupSubstage 'UNINSTALL' 'ORDINARY_USER_ABSENCE_PROBE' 'COMPLETE'
       } catch {
         Write-CleanupSubstage 'UNINSTALL' 'ORDINARY_USER_ABSENCE_PROBE' 'FAILED'
@@ -932,7 +1195,10 @@ try {
   Write-Stage 'CLEANUP' 'BEGIN'
   Write-CleanupSubstage 'CLEANUP' 'SMOKE_DATA' 'BEGIN'
   try {
-    Remove-SmokeUserDataDirectory $smokeUserDataDirectory
+    Invoke-BoundedExternalOperation `
+      'CLEANUP' 'SMOKE_DATA_REMOVE' $recursiveOperationTimeoutMilliseconds {
+        Remove-SmokeUserDataDirectory $smokeUserDataDirectory
+      }
     Write-CleanupSubstage 'CLEANUP' 'SMOKE_DATA' 'COMPLETE'
   } catch {
     Write-CleanupSubstage 'CLEANUP' 'SMOKE_DATA' 'FAILED'
@@ -941,11 +1207,22 @@ try {
 
   Write-CleanupSubstage 'CLEANUP' 'PROFILE' 'BEGIN'
   try {
-    if ($null -ne $testUserSid) {
-      $profiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
-        $_.SID -eq $testUserSid.Value
-      })
-      foreach ($profile in $profiles) { Remove-CimInstance -InputObject $profile -ErrorAction Stop }
+    if ($testUserCreatedByRun -and $null -ne $testUserSid) {
+      $profiles = @(Invoke-BoundedExternalOperation `
+        'CLEANUP' 'PROFILE_LOOKUP' $externalOperationTimeoutMilliseconds {
+          @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
+            $_.SID -eq $testUserSid.Value
+          })
+        })
+      Invoke-BoundedExternalOperation `
+        'CLEANUP' 'PROFILE_REMOVE' $recursiveOperationTimeoutMilliseconds {
+          foreach ($profile in $profiles) {
+            if ($profile.SID -ne $testUserSid.Value) {
+              throw 'refusing to remove a profile not owned by the test user'
+            }
+            Remove-CimInstance -InputObject $profile -ErrorAction Stop
+          }
+        }
     }
     Write-CleanupSubstage 'CLEANUP' 'PROFILE' 'COMPLETE'
   } catch {
@@ -955,8 +1232,23 @@ try {
 
   Write-CleanupSubstage 'CLEANUP' 'USER' 'BEGIN'
   try {
-    if (Get-LocalUser -Name $testUser -ErrorAction SilentlyContinue) {
-      Remove-LocalUser -Name $testUser -ErrorAction Stop
+    if ($testUserCreatedByRun -and $null -ne $testUserSid) {
+      $ownedUser = Invoke-BoundedExternalOperation `
+        'CLEANUP' 'USER_LOOKUP' $externalOperationTimeoutMilliseconds {
+          Get-LocalUser -Name $testUser -ErrorAction SilentlyContinue
+        }
+      if ($null -ne $ownedUser) {
+        if (!$ownedUser.SID.Equals($testUserSid)) {
+          throw 'refusing to remove a local user with a mismatched SID'
+        }
+        Invoke-BoundedExternalOperation `
+          'CLEANUP' 'USER_REMOVE' $externalOperationTimeoutMilliseconds {
+            Remove-LocalUser -Name $testUser -ErrorAction Stop
+            if (Get-LocalUser -Name $testUser -ErrorAction SilentlyContinue) {
+              throw 'test local user cleanup did not complete'
+            }
+          }
+      }
     }
     Write-CleanupSubstage 'CLEANUP' 'USER' 'COMPLETE'
   } catch {
@@ -966,9 +1258,17 @@ try {
 
   Write-CleanupSubstage 'CLEANUP' 'INSTALL_ROOT_FALLBACK' 'BEGIN'
   try {
-    if (Test-Path -LiteralPath $installRoot) {
-      Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction Stop
-    }
+    Invoke-BoundedExternalOperation `
+      'CLEANUP' 'INSTALL_ROOT_FALLBACK' $recursiveOperationTimeoutMilliseconds {
+        if ($installRootCreatedByRun -and (Test-Path -LiteralPath $installRoot)) {
+          $ownedInstallRoot = Get-Item -LiteralPath $installRoot -Force -ErrorAction Stop
+          if (!$ownedInstallRoot.PSIsContainer -or
+              ($ownedInstallRoot.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'refusing to remove an invalid owned install tree'
+          }
+          Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction Stop
+        }
+      }
     Write-CleanupSubstage 'CLEANUP' 'INSTALL_ROOT_FALLBACK' 'COMPLETE'
   } catch {
     Write-CleanupSubstage 'CLEANUP' 'INSTALL_ROOT_FALLBACK' 'FAILED'
@@ -977,9 +1277,15 @@ try {
 
   Write-CleanupSubstage 'CLEANUP' 'PROTOCOL_FALLBACK' 'BEGIN'
   try {
-    if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr') {
-      Remove-Item -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr' -Recurse -Force -ErrorAction Stop
-    }
+    Invoke-BoundedExternalOperation `
+      'CLEANUP' 'PROTOCOL_FALLBACK' $externalOperationTimeoutMilliseconds {
+        if ($protocolCreatedByRun -and
+            (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr')) {
+          Remove-Item -LiteralPath `
+            'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr' `
+            -Recurse -Force -ErrorAction Stop
+        }
+      }
     Write-CleanupSubstage 'CLEANUP' 'PROTOCOL_FALLBACK' 'COMPLETE'
   } catch {
     Write-CleanupSubstage 'CLEANUP' 'PROTOCOL_FALLBACK' 'FAILED'
@@ -989,24 +1295,27 @@ try {
   Write-CleanupSubstage 'CLEANUP' 'SHORTCUT_FALLBACK' 'BEGIN'
   $shortcutFallbackFailed = $false
   try {
-    if ($startMenuShortcutCreatedByRun -and (Test-Path -LiteralPath $startMenuShortcut)) {
-      Remove-Item -LiteralPath $startMenuShortcut -Force -ErrorAction Stop
-    }
-  } catch {
-    $shortcutFallbackFailed = $true
-  }
-  try {
-    if ($startMenuShortcutFolderCreatedByRun -and (Test-Path -LiteralPath $startMenuShortcutFolder)) {
-      $ownedShortcutFolder = Get-Item -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop
-      if (!$ownedShortcutFolder.PSIsContainer -or
-          ($ownedShortcutFolder.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'owned common Start Menu folder is invalid'
+    Invoke-BoundedExternalOperation `
+      'CLEANUP' 'SHORTCUT_FALLBACK' $externalOperationTimeoutMilliseconds {
+        if ($startMenuShortcutCreatedByRun -and (Test-Path -LiteralPath $startMenuShortcut)) {
+          Remove-Item -LiteralPath $startMenuShortcut -Force -ErrorAction Stop
+        }
+        if ($startMenuShortcutFolderCreatedByRun -and
+            (Test-Path -LiteralPath $startMenuShortcutFolder)) {
+          $ownedShortcutFolder = Get-Item `
+            -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop
+          if (!$ownedShortcutFolder.PSIsContainer -or
+              ($ownedShortcutFolder.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'owned common Start Menu folder is invalid'
+          }
+          $ownedShortcutFolderContents = @(
+            Get-ChildItem -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop
+          )
+          if ($ownedShortcutFolderContents.Count -eq 0) {
+            Remove-Item -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop
+          }
+        }
       }
-      $ownedShortcutFolderContents = @(Get-ChildItem -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop)
-      if ($ownedShortcutFolderContents.Count -eq 0) {
-        Remove-Item -LiteralPath $startMenuShortcutFolder -Force -ErrorAction Stop
-      }
-    }
   } catch {
     $shortcutFallbackFailed = $true
   }

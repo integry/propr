@@ -186,7 +186,7 @@ jobs:
         run: |
           $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
           if ($installers.Count -ne 1) { throw 'Machine-wide Windows installer is missing or ambiguous' }
-          & apps/desktop/scripts/test-installed-windows-app.ps1 `
+          & apps/desktop/scripts/run-installed-windows-app-harness.ps1 `
             -Installer $installers[0].FullName `
             -Architecture '${{ matrix.arch }}'
           "PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -624,7 +624,7 @@ jobs:
         run: |
           $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
           if ($installers.Count -ne 1) { throw 'Signed machine-wide Windows installer is missing or ambiguous' }
-          & apps/desktop/scripts/test-installed-windows-app.ps1 `
+          & apps/desktop/scripts/run-installed-windows-app-harness.ps1 `
             -Installer $installers[0].FullName `
             -Architecture '${{ matrix.arch }}'
           "PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1" | Out-File -FilePath $env:GITHUB_ENV -Append
