@@ -419,6 +419,11 @@ public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
         }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
     }
 
+    public bool WaitForStartup(int timeoutMilliseconds)
+    {
+        return startupObserved.Wait(timeoutMilliseconds);
+    }
+
     public bool IsProtocolValid(int processExitCode)
     {
         return !defect && startupSeen && terminalSeen && LineCount == 2 &&
@@ -1136,6 +1141,7 @@ function Invoke-WorkflowCleanupController(
   [object]$InvocationTimeoutMilliseconds = 40000,
   [Threading.WaitHandle]$CancellationWaitHandle = $null,
   [bool]$SignalCancellationAfterStartup = $false,
+  [bool]$BeginTimeoutAfterStartup = $false,
   [bool]$InjectTreeTerminationFailure = $false,
   [string]$ProtocolFixture = ''
 ) {
@@ -1208,9 +1214,15 @@ function Invoke-WorkflowCleanupController(
       $cancellationSignalTask = $capture.SignalCancellationAfterStartup(
         [Threading.EventWaitHandle]$CancellationWaitHandle, $invocationTimeout)
     }
+    $startupWindowTimedOut = $false
+    if ($BeginTimeoutAfterStartup) {
+      # The capture signals only after parsing one complete startup record.
+      $startupWindowTimedOut = !$capture.WaitForStartup(5000)
+    }
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $cancelled = $false
-    while (!$process.HasExited -and $watch.ElapsedMilliseconds -lt $invocationTimeout) {
+    while (!$startupWindowTimedOut -and !$process.HasExited -and
+        $watch.ElapsedMilliseconds -lt $invocationTimeout) {
       if ($null -ne $CancellationWaitHandle -and $CancellationWaitHandle.WaitOne(0)) {
         $cancelled = $true
         break
@@ -1494,11 +1506,17 @@ function Test-WorkflowCleanupProtocolStateMachine {
     [PSCustomObject]@{ Fixture='MISMATCHED_MANIFEST_EXIT_125'; Observed='MALFORMED'; Lifecycle='EXITED' },
     [PSCustomObject]@{ Fixture='MISMATCHED_CHILD_STDOUT_EXIT_21'; Observed='MALFORMED'; Lifecycle='EXITED' },
     [PSCustomObject]@{ Fixture='TIMEOUT_BEFORE_STARTUP'; Observed='NONE'; Lifecycle='TIMEOUT_BEFORE_STARTUP' },
-    [PSCustomObject]@{ Fixture='TIMEOUT_AFTER_STARTUP'; Observed='STARTUP'; Lifecycle='TIMEOUT_AFTER_STARTUP' },
+    [PSCustomObject]@{
+      Fixture='TIMEOUT_AFTER_STARTUP'; Observed='STARTUP'; LineCount=1; ProcessExit=125
+      Lifecycle='TIMEOUT_AFTER_STARTUP'; TreeTermination='COMPLETE'
+      StartupClass='READY'; LineNumber=1; BeginTimeoutAfterStartup=$true
+    },
     [PSCustomObject]@{ Fixture='STREAM_DRAIN_RACE'; Observed='TERMINAL'; Lifecycle='ACTIVE_TREE_AFTER_EXIT' }
   )
   foreach ($case in $cases) {
     $diagnostic = ''
+    # TIMEOUT_AFTER_STARTUP gets its separate five-second startup phase above;
+    # its 250 ms countdown begins only after the complete record is captured.
     $caseInvocationTimeout = if ($case.Fixture -in @(
         'TIMEOUT_BEFORE_STARTUP','TIMEOUT_AFTER_STARTUP','STREAM_DRAIN_RACE'
       )) { 250 } else { 1000 }
@@ -1509,6 +1527,9 @@ function Test-WorkflowCleanupProtocolStateMachine {
         -RunId ([Guid]::NewGuid().ToString('N')) `
         -FixtureRoot $testRoot `
         -InvocationTimeoutMilliseconds $caseInvocationTimeout `
+        -BeginTimeoutAfterStartup (
+          $case.PSObject.Properties['BeginTimeoutAfterStartup'] -and
+          $case.BeginTimeoutAfterStartup) `
         -ProtocolFixture $case.Fixture)
     } catch { $diagnostic = $_.Exception.Message }
     $fixture = [string]$case.Fixture
@@ -1620,6 +1641,7 @@ function Test-WorkflowCleanupProtocolStateMachine {
       -RunId ([Guid]::NewGuid().ToString('N')) `
       -FixtureRoot $testRoot `
       -InvocationTimeoutMilliseconds 250 `
+      -BeginTimeoutAfterStartup $true `
       -InjectTreeTerminationFailure $true `
       -ProtocolFixture 'TIMEOUT_AFTER_STARTUP')
   } catch { $treeFailureDiagnostic = $_.Exception.Message }
@@ -1630,6 +1652,14 @@ function Test-WorkflowCleanupProtocolStateMachine {
   Assert-Contains $treeFailureDiagnostic ':TREE_TERMINATION:FAILED:' `
     (Get-WorkflowCleanupStateMachineAssertionMessage `
       'tree-termination failure was not represented by its fixed category' `
+      $treeFailureDiagnostic 'TREE_TERMINATION_FAILURE')
+  Assert-Contains $treeFailureDiagnostic ':OBSERVED:STARTUP:LINE_COUNT:1:' `
+    (Get-WorkflowCleanupStateMachineAssertionMessage `
+      'tree-termination failure timeout began before complete startup capture' `
+      $treeFailureDiagnostic 'TREE_TERMINATION_FAILURE')
+  Assert-Contains $treeFailureDiagnostic ':STARTUP_CLASS:READY:LINE_NUMBER:1' `
+    (Get-WorkflowCleanupStateMachineAssertionMessage `
+      'tree-termination failure lost its exact startup proof' `
       $treeFailureDiagnostic 'TREE_TERMINATION_FAILURE')
 
   Write-Host 'PROPR_WINDOWS_SUPERVISOR_CONTROLLER_STATE_MACHINE:BOUNDED:PASSED'
