@@ -106,6 +106,49 @@ describe('DesktopExperience', () => {
     expect(runtimeMock.setDesktopApiBaseUrl).toHaveBeenCalledWith(remoteProfile.baseUrl);
   });
 
+  it('keeps local activation selected without publishing a remote bearer scope', async () => {
+    const adapters = adaptersFor([localProfile]);
+    adapters.connection.activate = vi.fn(async (profile, result) => {
+      await adapters.profiles.setActiveId(profile.id);
+      return result;
+    });
+    adapters.connection.publishActivation = vi.fn();
+    adapters.connection.deactivate = vi.fn();
+    render(<DesktopExperience adapters={adapters}><div>Local dashboard</div></DesktopExperience>);
+
+    fireEvent.click((await screen.findByText('This computer')).closest('button')!);
+
+    expect(await screen.findByText('Local dashboard')).toBeInTheDocument();
+    expect(adapters.profiles.save).toHaveBeenCalledWith(expect.objectContaining({ id: localProfile.id }));
+    expect(adapters.profiles.setActiveId).toHaveBeenCalledWith(localProfile.id);
+    expect(adapters.connection.publishActivation).not.toHaveBeenCalled();
+    expect(adapters.connection.deactivate).toHaveBeenCalledOnce();
+    expect(apiMock.setApiBaseUrl).toHaveBeenCalledWith(localProfile.baseUrl);
+  });
+
+  it('publishes only the ticketed remote activation result', async () => {
+    const adapters = adaptersFor([remoteProfile], remoteProfile.id);
+    const activated: Extract<DesktopConnectionResult, { status: 'ready' }> = {
+      status: 'ready',
+      version: '0.8.15',
+      profileId: remoteProfile.id,
+      transportScope: 'remote-scope',
+      identityEpoch: 'R'.repeat(22),
+    };
+    adapters.connection.activate = vi.fn(async () => activated);
+    adapters.connection.publishActivation = vi.fn();
+    adapters.connection.deactivate = vi.fn();
+    render(<DesktopExperience adapters={adapters}><div>Scoped dashboard</div></DesktopExperience>);
+
+    expect(await screen.findByText('Scoped dashboard')).toBeInTheDocument();
+    expect(adapters.connection.publishActivation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: remoteProfile.id }),
+      activated,
+    );
+    expect(adapters.connection.deactivate).not.toHaveBeenCalled();
+    expect(apiMock.setApiBaseUrl).not.toHaveBeenCalled();
+  });
+
   it('shows a retryable offline state and recovers without reloading', async () => {
     const probe = vi.fn()
       .mockResolvedValueOnce({ status: 'offline', message: 'The instance is offline.' })

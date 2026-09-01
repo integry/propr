@@ -99,31 +99,41 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     newSocket.on('connect_error', connectionError);
     newSocket.on('authentication:error', authenticationError);
 
-    // Set up global event listeners
-    newSocket.on(TASK_UPDATE, (payload: TaskUpdatePayload) => {
+    const taskUpdated = (payload: TaskUpdatePayload) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Received task update:', payload);
       taskUpdateCallbacksRef.current.forEach((callback) => callback(payload));
-    });
+    };
 
-    newSocket.on(DRAFT_UPDATE, (payload: DraftUpdatePayload) => {
+    const draftUpdated = (payload: DraftUpdatePayload) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Received draft update:', payload);
       draftUpdateCallbacksRef.current.forEach((callback) => callback(payload));
-    });
+    };
 
-    newSocket.on(INDEXING_UPDATE, (payload: IndexingUpdatePayload) => {
+    const indexingUpdated = (payload: IndexingUpdatePayload) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Received indexing update:', payload);
       indexingUpdateCallbacksRef.current.forEach((callback) => callback(payload));
-    });
+    };
 
-    newSocket.on(QUEUE_STATS_UPDATE, (payload: QueueStatsUpdatePayload) => {
+    const queueStatsUpdated = (payload: QueueStatsUpdatePayload) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Received queue stats update:', payload);
       queueStatsUpdateCallbacksRef.current.forEach((callback) => callback(payload));
-    });
+    };
 
-    newSocket.on(TASK_LIVE_UPDATE, (payload: TaskLiveUpdatePayload) => {
+    const taskLiveUpdated = (payload: TaskLiveUpdatePayload) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Received task live update:', payload);
       taskLiveUpdateCallbacksRef.current.forEach((callback) => callback(payload));
-    });
+    };
+
+    newSocket.on(TASK_UPDATE, taskUpdated);
+    newSocket.on(DRAFT_UPDATE, draftUpdated);
+    newSocket.on(INDEXING_UPDATE, indexingUpdated);
+    newSocket.on(QUEUE_STATS_UPDATE, queueStatsUpdated);
+    newSocket.on(TASK_LIVE_UPDATE, taskLiveUpdated);
 
     setSocket(newSocket);
 
@@ -135,11 +145,11 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       newSocket.off('disconnect', disconnected);
       newSocket.off('connect_error', connectionError);
       newSocket.off('authentication:error', authenticationError);
-      newSocket.off(TASK_UPDATE);
-      newSocket.off(DRAFT_UPDATE);
-      newSocket.off(INDEXING_UPDATE);
-      newSocket.off(QUEUE_STATS_UPDATE);
-      newSocket.off(TASK_LIVE_UPDATE);
+      newSocket.off(TASK_UPDATE, taskUpdated);
+      newSocket.off(DRAFT_UPDATE, draftUpdated);
+      newSocket.off(INDEXING_UPDATE, indexingUpdated);
+      newSocket.off(QUEUE_STATS_UPDATE, queueStatsUpdated);
+      newSocket.off(TASK_LIVE_UPDATE, taskLiveUpdated);
       newSocket.disconnect();
     };
   }, [disabled, socketConfigurationKey]);

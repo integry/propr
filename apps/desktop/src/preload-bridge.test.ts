@@ -29,7 +29,7 @@ const setupRequest = {
 
 describe('desktop preload bridge', () => {
   it('exposes only the narrow frozen namespaces', () => {
-    const bridge = createDesktopBridge(new FakeIpc());
+    const bridge = createDesktopBridge(new FakeIpc(), 'linux');
     assert.deepEqual(Object.keys(bridge).sort(), [
       'app', 'auth', 'authentication', 'connection', 'external', 'lifecycle', 'profiles', 'storage',
     ]);
@@ -51,7 +51,7 @@ describe('desktop preload bridge', () => {
 
   it('maps profile operations to fixed channels without a credential namespace', async () => {
     const ipc = new FakeIpc();
-    const bridge = createDesktopBridge(ipc);
+    const bridge = createDesktopBridge(ipc, 'linux');
     await bridge.auth.logout('http://localhost:4000');
     await bridge.profiles.save({ label: 'Local', apiBaseUrl: 'http://localhost:4000' });
     assert.ok(bridge.lifecycle);

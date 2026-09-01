@@ -176,6 +176,11 @@ const emptyState = (): PersistedState => ({
   pendingRevocations: {},
 });
 
+const hasCredentialMaterial = (state: PersistedState): boolean =>
+  Object.keys(state.credentialSlots).length > 0
+  || Object.keys(state.credentialEpochs).length > 0
+  || Object.keys(state.pendingRevocations).length > 0;
+
 const SLOT_PATTERN = /^([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})\.[0-9a-f-]{36}\.bin$/i;
 const IDENTITY_EPOCH_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const MAX_PENDING_REVOCATIONS = 64;
@@ -399,6 +404,22 @@ export class ProfileStore {
   }
 
   list(): Promise<DesktopProfileList> {
+    if (!this.security().available) {
+      return this.#metadata(async () => {
+        try {
+          const state = parseState(await readFile(this.#statePath, 'utf8'));
+          return {
+            profiles: state.profiles.map(profile => ({ ...profile })),
+            activeProfileId: state.activeProfileId,
+          };
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            return { profiles: [], activeProfileId: null };
+          }
+          throw new Error(RECOVERY_ERROR);
+        }
+      });
+    }
     return this.#mutate(async () => {
       const state = await this.#readState();
       return {
@@ -905,6 +926,10 @@ export class ProfileStore {
     onPublished?: () => void,
   ): Promise<true | null> {
     await this.#ensureDirectories();
+    if (!this.security().available) {
+      if (hasCredentialMaterial(state)) throw new Error(RECOVERY_ERROR);
+      return this.#writeMetadataState(state, isCurrent, beginPublish, onPublished);
+    }
     const previousGeneration = state.generation;
     state.generation = (BigInt(state.generation) + 1n).toString();
     const temporary = `${this.#statePath}.${process.pid}.${randomUUID()}.tmp`;
@@ -946,6 +971,53 @@ export class ProfileStore {
         // The journal is authoritative and #recover repairs this mirror before
         // the next read or mutation.
       }
+      await chmod(this.#statePath, 0o600).catch(() => undefined);
+      return true;
+    } finally {
+      releasePublish?.();
+      await unlink(temporary).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Profiles and selection are non-sensitive. When the OS secret backend is
+   * unavailable they remain usable through the private atomic mirror, but no
+   * credential slot or authenticated secret journal may enter this lane.
+   */
+  async #writeMetadataState(
+    state: PersistedState,
+    isCurrent?: () => boolean,
+    beginPublish?: () => (() => void) | null,
+    onPublished?: () => void,
+  ): Promise<true | null> {
+    const previousGeneration = state.generation;
+    state.generation = (BigInt(state.generation) + 1n).toString();
+    const temporary = `${this.#statePath}.${process.pid}.${randomUUID()}.tmp`;
+    let releasePublish: (() => void) | undefined;
+    try {
+      await this.#io('mirror-write');
+      await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      await this.#step('state-written');
+      await this.#io('mirror-flush');
+      await this.#fsyncFile(temporary);
+      await this.#step('state-fsynced');
+      if (beginPublish) {
+        const release = beginPublish();
+        if (!release) {
+          state.generation = previousGeneration;
+          return null;
+        }
+        releasePublish = release;
+      } else if (isCurrent && !isCurrent()) {
+        state.generation = previousGeneration;
+        return null;
+      }
+      await this.#io('mirror-replace');
+      await rename(temporary, this.#statePath);
+      onPublished?.();
+      await this.#step('state-renamed').catch(() => undefined);
+      const directoryDurable = await this.#flushDirectoryIfSupported(this.#directory);
+      if (directoryDurable) await this.#step('state-directory-fsynced').catch(() => undefined);
       await chmod(this.#statePath, 0o600).catch(() => undefined);
       return true;
     } finally {
@@ -1209,6 +1281,10 @@ export class ProfileStore {
 
   async #recover(): Promise<void> {
     await this.#ensureDirectories();
+    if (!this.security().available) {
+      await this.#recoverMetadataOnly();
+      return;
+    }
     const journalRecords: AuthenticatedJournal[] = [];
     const legacyJournalRecords: LegacyJournalRecord[] = [];
     const preparedJournalRecords: AuthenticatedJournal[] = [];
@@ -1418,6 +1494,44 @@ export class ProfileStore {
     await this.#flushDirectoryIfSupported(this.#directory);
   }
 
+  async #recoverMetadataOnly(): Promise<void> {
+    for (const path of this.#journalPaths) {
+      try {
+        await lstat(path);
+        throw new Error(RECOVERY_ERROR);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    const credentialEntries = await readdir(this.#credentialsDirectory, { withFileTypes: true });
+    if (credentialEntries.some(entry => entry.isFile() && !entry.name.endsWith('.tmp'))) {
+      throw new Error(RECOVERY_ERROR);
+    }
+    let parsed: PersistedState | VersionTwoPersistedState | LegacyPersistedState;
+    try {
+      parsed = parseState(await readFile(this.#statePath, 'utf8'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw new Error(RECOVERY_ERROR);
+    }
+    if ((parsed.version === 2 && Object.keys(parsed.credentialSlots).length > 0)
+      || (parsed.version === 3 && hasCredentialMaterial(parsed))) {
+      throw new Error(RECOVERY_ERROR);
+    }
+    if (parsed.version !== 3) {
+      const state: PersistedState = {
+        version: 3,
+        generation: '0',
+        activeProfileId: parsed.activeProfileId,
+        profiles: parsed.profiles.map(profile => ({ ...profile })),
+        credentialSlots: {},
+        credentialEpochs: {},
+        pendingRevocations: {},
+      };
+      await this.#writeMetadataState(state);
+    }
+  }
+
   async #writeStateMirror(state: PersistedState): Promise<void> {
     const temporary = `${this.#statePath}.${process.pid}.${randomUUID()}.recovery.tmp`;
     try {
@@ -1498,6 +1612,13 @@ export class ProfileStore {
       return operation();
     };
     const result = this.#mutation.then(recoveredOperation, recoveredOperation);
+    this.#mutation = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  #metadata<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.#closed) return Promise.reject(new Error('Desktop profile store is closed'));
+    const result = this.#mutation.then(operation, operation);
     this.#mutation = result.then(() => undefined, () => undefined);
     return result;
   }

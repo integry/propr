@@ -1,5 +1,7 @@
 import { act, cleanup, render } from '@testing-library/react';
+import { useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TASK_UPDATE } from '@propr/shared';
 import { SocketProvider } from './SocketProvider';
 import { useSocket } from './useSocket';
 
@@ -210,6 +212,53 @@ describe('SocketProvider', () => {
     expect(socketA.handlers.size).toBe(0);
     expect(socketB.disconnect).not.toHaveBeenCalled();
     expect(socketB.connect).not.toHaveBeenCalled();
+  });
+
+  it('drops every application event dispatched by a stale socket scope', () => {
+    const received = {
+      task: vi.fn(),
+      draft: vi.fn(),
+      indexing: vi.fn(),
+      queue: vi.fn(),
+      live: vi.fn(),
+    };
+    const Subscriber = () => {
+      const value = useSocket();
+      useEffect(() => {
+        const unsubscribe = [
+          value.onTaskUpdate(received.task),
+          value.onDraftUpdate(received.draft),
+          value.onIndexingUpdate(received.indexing),
+          value.onQueueStatsUpdate(received.queue),
+          value.onTaskLiveUpdate(received.live),
+        ];
+        return () => unsubscribe.forEach(remove => remove());
+      }, [value]);
+      return null;
+    };
+    state.scope = scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA');
+    render(<SocketProvider><Subscriber /></SocketProvider>);
+    const staleHandlers = new Map(sockets[0].handlers);
+
+    publish(scope('profile-b', 'BBBBBBBBBBBBBBBBBBBBBB'));
+    act(() => {
+      staleHandlers.get(TASK_UPDATE)?.({ id: 'stale-task' });
+      staleHandlers.get(DRAFT_UPDATE)?.({ id: 'stale-draft' });
+      staleHandlers.get(INDEXING_UPDATE)?.({ id: 'stale-indexing' });
+      staleHandlers.get(QUEUE_STATS_UPDATE)?.({ id: 'stale-queue' });
+      staleHandlers.get(TASK_LIVE_UPDATE)?.({ id: 'stale-live' });
+    });
+
+    Object.values(received).forEach(callback => expect(callback).not.toHaveBeenCalled());
+
+    act(() => {
+      sockets[1].handlers.get(TASK_UPDATE)?.({ id: 'current-task' });
+      sockets[1].handlers.get(DRAFT_UPDATE)?.({ id: 'current-draft' });
+      sockets[1].handlers.get(INDEXING_UPDATE)?.({ id: 'current-indexing' });
+      sockets[1].handlers.get(QUEUE_STATS_UPDATE)?.({ id: 'current-queue' });
+      sockets[1].handlers.get(TASK_LIVE_UPDATE)?.({ id: 'current-live' });
+    });
+    Object.values(received).forEach(callback => expect(callback).toHaveBeenCalledOnce());
   });
 
   it('fully detaches listeners and disconnects on unmount', () => {

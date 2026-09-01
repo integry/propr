@@ -16,6 +16,7 @@ import { ProfileStore, type EncryptionProvider } from './profile-store';
 import { DesktopSetupController } from './setup-controller';
 import { promptForWebhookSecret } from './secure-secret-prompt';
 import { redactDesktopValue } from './secret-redaction';
+import { createDesktopShutdownCoordinator } from './shutdown';
 import {
   deepLinkFromArguments,
   isSafeExternalUrl,
@@ -122,7 +123,10 @@ const deliverDeepLink = (value: string): void => {
   deepLinkDelivery.deliver(value);
 };
 
-const configureSessionSecurity = (credentials: DesktopCredentialService): void => {
+const configureSessionSecurity = (credentials: DesktopCredentialService): {
+  close(): void;
+  dispose(): void;
+} => {
   const desktopSession = session.defaultSession;
   desktopSession.setPermissionCheckHandler(() => false);
   desktopSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
@@ -140,9 +144,21 @@ const configureSessionSecurity = (credentials: DesktopCredentialService): void =
       },
     });
   });
+  return {
+    close() {
+      desktopSession.webRequest.onBeforeSendHeaders((_details, callback) => callback({ cancel: true }));
+      desktopSession.webRequest.onHeadersReceived((_details, callback) => callback({ cancel: true }));
+    },
+    dispose() {
+      desktopSession.setPermissionCheckHandler(null);
+      desktopSession.setPermissionRequestHandler(null);
+      desktopSession.webRequest.onBeforeSendHeaders(null);
+      desktopSession.webRequest.onHeadersReceived(null);
+    },
+  };
 };
 
-const configurePackagedRendererProtocol = (): void => {
+const configurePackagedRendererProtocol = (): (() => void) => {
   protocol.handle(PACKAGED_RENDERER_SCHEME, request => {
     const requestUrl = new URL(request.url);
     if (requestUrl.hostname !== PACKAGED_RENDERER_HOST) {
@@ -162,9 +178,11 @@ const configurePackagedRendererProtocol = (): void => {
     }
     return net.fetch(pathToFileURL(filePath).href);
   });
+  return () => { void protocol.unhandle(PACKAGED_RENDERER_SCHEME); };
 };
 
 const openAllowedExternalUrl = async (url: string): Promise<void> => {
+  if (shutdownStarted) return;
   if (!isSafeExternalUrl(url)) {
     log('warn', 'desktop.external_url.rejected');
     return;
@@ -373,16 +391,13 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
     });
   }
   log('info', 'desktop.renderer.ready', { preloadBridgeExposed: true });
-  if (packagedSmokeTest) {
-    app.quit();
-  } else {
-    window.show();
-  }
+  if (!packagedSmokeTest) window.show();
   return window;
 };
 
 app.on('open-url', (event, url) => {
   event.preventDefault();
+  if (shutdownStarted) return;
   const normalized = normalizeDeepLink(url);
   if (normalized) deliverDeepLink(normalized);
 });
@@ -392,6 +407,7 @@ if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
+    if (shutdownStarted) return;
     const deepLink = deepLinkFromArguments(argv);
     if (deepLink) deliverDeepLink(deepLink);
     if (mainWindow) {
@@ -408,7 +424,7 @@ if (!hasSingleInstanceLock) {
       () => packagedSmokeEvidence?.write('desktop.log.write_failed'),
     );
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
-    configurePackagedRendererProtocol();
+    const disposeRendererProtocol = configurePackagedRendererProtocol();
 
     const encryption: EncryptionProvider = {
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -433,7 +449,7 @@ if (!hasSingleInstanceLock) {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
       },
     });
-    configureSessionSecurity(credentials);
+    const sessionSecurity = configureSessionSecurity(credentials);
     const credentialInitialization = await credentials.initialize();
     if (credentialInitialization.status === 'degraded') {
       log('warn', 'desktop.credential_revocation.startup_degraded', {
@@ -486,7 +502,7 @@ if (!hasSingleInstanceLock) {
       },
       diagnose(event, fields) { log('error', event, fields); },
     });
-    registerIpcHandlers({
+    const registeredIpc = registerIpcHandlers({
       app,
       ipcMain,
       profiles,
@@ -498,22 +514,27 @@ if (!hasSingleInstanceLock) {
       devServerUrl,
       packagedRendererUrl,
       coordinator: operationCoordinator,
+      openExternal: async url => { await shell.openExternal(url); },
     });
 
-    app.on('before-quit', event => {
-      if (shutdownStarted) return;
-      event.preventDefault();
-      shutdownStarted = true;
-      void operationCoordinator.shutdown(async () => {
-        await Promise.all([lifecycle.shutdown(), setupController?.shutdown(), credentials.dispose()]);
-        await profiles.close();
-      }).finally(() => {
-        log('info', 'desktop.app.shutdown');
-        app.quit();
-      });
+    const shutdown = createDesktopShutdownCoordinator({
+      credentials,
+      lifecycle,
+      setup: setupController,
+      operations: operationCoordinator,
+      ipc: registeredIpc,
+      profiles,
+      sessionSecurity,
+      disposeRendererProtocol,
+      getWindow: () => mainWindow,
+      quit: () => app.quit(),
+      onStarted: () => { shutdownStarted = true; },
+      log,
     });
+    app.on('before-quit', event => shutdown.beforeQuit(event));
 
     mainWindow = await createMainWindow();
+    if (packagedSmokeTest) app.quit();
 
     const updateConfig = __PROPR_DESKTOP_UPDATE_MANIFEST_URL__
       ? {
@@ -539,6 +560,7 @@ if (!hasSingleInstanceLock) {
     }
 
     app.on('activate', () => {
+      if (shutdownStarted) return;
       if (BrowserWindow.getAllWindows().length === 0) {
         void createMainWindow().then(window => {
           mainWindow = window;

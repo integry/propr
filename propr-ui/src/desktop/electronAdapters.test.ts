@@ -73,6 +73,25 @@ describe('Electron desktop renderer adapter', () => {
     expect(JSON.stringify(activated)).not.toMatch(/bearer|deviceSecret|credentialPath|nativeEvidence|propr_it_/i);
   });
 
+  it('selects a local profile without publishing a bearer transport scope', async () => {
+    const local = { id: 'local-1', name: 'This computer', baseUrl: 'http://127.0.0.1:4000', kind: 'local' as const };
+    const bridge = bridgeFixture();
+    bridge.profiles.setActiveId = vi.fn(async () => undefined);
+    bridge.connection.probe = vi.fn(async () => ({ status: 'ready' as const, version: '0.8.15' }));
+    bridge.connection.activate = vi.fn(bridge.connection.activate);
+    const adapters = createElectronDesktopAdapters(bridge);
+    const probe = await adapters.connection.probe(local);
+    expect(probe.status).toBe('ready');
+    if (probe.status !== 'ready') return;
+
+    const activated = await adapters.connection.activate!(local, probe);
+
+    expect(activated).toEqual({ status: 'ready', version: '0.8.15' });
+    expect(bridge.profiles.setActiveId).toHaveBeenCalledWith(local.id);
+    expect(bridge.connection.activate).not.toHaveBeenCalled();
+    expect(getDesktopConnectionScope()).toBeNull();
+  });
+
   it('discards activation when the connection attempt is no longer current', async () => {
     const bridge = bridgeFixture();
     bridge.connection.discard = vi.fn(bridge.connection.discard);

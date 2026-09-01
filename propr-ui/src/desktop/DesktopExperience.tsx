@@ -157,8 +157,15 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
         return;
       }
       runtimeConfig.setDesktopApiBaseUrl(connectedProfile.baseUrl);
-      if (adapters.connection.publishActivation) adapters.connection.publishActivation(connectedProfile, result);
-      else setApiBaseUrl(connectedProfile.baseUrl);
+      const remoteActivation = result.profileId === connectedProfile.id
+        && typeof result.transportScope === 'string'
+        && typeof result.identityEpoch === 'string';
+      if (remoteActivation && adapters.connection.publishActivation) {
+        adapters.connection.publishActivation(connectedProfile, result);
+      } else {
+        adapters.connection.deactivate?.();
+        setApiBaseUrl(connectedProfile.baseUrl);
+      }
       setState({ phase: 'connected', profile: connectedProfile, result });
     } catch (error) {
       if (!isCurrentAttempt()) return;

@@ -120,10 +120,10 @@ describe('getApiBaseUrl', () => {
     expect(getApiBaseUrl()).toBe('https://t-abc123.propr.dev');
   });
 
-  it('strips multiple trailing slashes', async () => {
+  it('rejects a remote runtime origin with a non-canonical multi-slash path', async () => {
     window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://t-abc123.propr.dev///' };
     const getApiBaseUrl = await loadGetApiBaseUrl();
-    expect(getApiBaseUrl()).toBe('https://t-abc123.propr.dev');
+    expect(() => getApiBaseUrl()).toThrow(/canonical HTTPS origin/);
   });
 
   it('strips a trailing slash from the build-time env var', async () => {

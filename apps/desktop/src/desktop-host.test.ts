@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { realpathSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -20,8 +20,14 @@ describe('packaged desktop setup resources', () => {
     const root = await createResources();
     try {
       const resources = await resolvePackagedSetupResources(root);
-      assert.equal(resources.orchestratorPath, join(root, 'orchestrator', 'orchestrator.mjs'));
-      assert.equal(resources.stackTemplatePath, join(root, 'assets', 'env.example.txt'));
+      assert.equal(
+        await realpath(resources.orchestratorPath),
+        await realpath(join(root, 'orchestrator', 'orchestrator.mjs')),
+      );
+      assert.equal(
+        await realpath(resources.stackTemplatePath),
+        await realpath(join(root, 'assets', 'env.example.txt')),
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

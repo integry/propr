@@ -161,6 +161,7 @@ jobs:
         shell: bash
         run: |
           npm run desktop:typecheck
+          npm run test:native-durability -w @propr/desktop
           npm run desktop:test
 
       - name: Make Linux validation packages
@@ -590,6 +591,7 @@ jobs:
         shell: bash
         run: |
           npm run desktop:typecheck
+          npm run test:native-durability -w @propr/desktop
           npm run desktop:test
 
       - name: Make Linux production packages

@@ -69,7 +69,12 @@ export const createElectronDesktopAdapters = (bridge: DesktopRendererBridge): De
     connection: {
       probe: profile => bridge.connection.probe(profile),
       async activate(profile, result, isCurrent = () => true) {
-        if (profile.kind === 'local' && result.activationTicket === undefined) return result;
+        if (profile.kind === 'local' && result.activationTicket === undefined) {
+          if (!isCurrent()) return { status: 'offline', message: 'This connection changed before activation completed.' };
+          await bridge.profiles.setActiveId(profile.id);
+          if (!isCurrent()) return { status: 'offline', message: 'This connection changed before activation completed.' };
+          return result;
+        }
         if (result.activationTicket === undefined) throw new Error('Desktop activation ticket is missing.');
         const previousProfileId = await bridge.profiles.getActiveId();
         const activated = await bridge.connection.activate(result.activationTicket);

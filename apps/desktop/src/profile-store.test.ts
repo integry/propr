@@ -340,6 +340,75 @@ describe('desktop profile store', () => {
     }
   });
 
+  it('keeps metadata usable without an OS secret backend while every secret write fails closed', async () => {
+    for (const backend of ['unavailable', 'basic_text']) {
+      const directory = await createDirectory();
+      const secret = credential('profile-1');
+      let encryptionCalls = 0;
+      const provider: EncryptionProvider = {
+        isEncryptionAvailable: () => backend === 'basic_text',
+        backend: () => backend,
+        encrypt: () => { encryptionCalls += 1; throw new Error('must not encrypt through an unavailable backend'); },
+        decrypt: () => { encryptionCalls += 1; throw new Error('must not decrypt through an unavailable backend'); },
+      };
+      const store = new ProfileStore(directory, provider);
+
+      assert.deepEqual(await store.list(), { profiles: [], activeProfileId: null });
+      const profile = await store.save({
+        id: secret.profileId,
+        label: 'Headless local profile',
+        apiBaseUrl: 'http://127.0.0.1:4000',
+      });
+      await store.setActive(profile.id);
+      assert.deepEqual(await store.list(), { profiles: [profile], activeProfileId: profile.id });
+      assert.deepEqual(await store.writeCredential(secret), {
+        stored: false,
+        reason: 'encryption-unavailable',
+      });
+      assert.deepEqual(await store.journalPendingRevocation(secret), {
+        stored: false,
+        reason: 'encryption-unavailable',
+      });
+      assert.equal(await store.readCredential(profile.id), null);
+      assert.equal(encryptionCalls, 0);
+
+      const desktop = join(directory, 'desktop');
+      const names = await readdir(desktop);
+      assert.equal(names.some(name => name.startsWith('profiles.journal.')), false);
+      assert.doesNotMatch(await readFile(join(desktop, 'profiles.json'), 'utf8'), /propr_it_|basic_text/);
+    }
+  });
+
+  it('lists non-sensitive metadata without decrypting existing credential material', async () => {
+    const directory = await createDirectory();
+    const setup = new ProfileStore(directory, encryption());
+    const profile = await setup.save({
+      id: 'profile-1', label: 'Remote metadata', apiBaseUrl: 'https://propr.example.com',
+    });
+    await setup.writeCredential(credential(profile.id));
+    await setup.close();
+    let secretBackendCalls = 0;
+    const unavailable: EncryptionProvider = {
+      isEncryptionAvailable: () => false,
+      backend: () => 'unavailable',
+      encrypt: () => { secretBackendCalls += 1; throw new Error('unavailable'); },
+      decrypt: () => { secretBackendCalls += 1; throw new Error('unavailable'); },
+    };
+    const headless = new ProfileStore(directory, unavailable);
+
+    assert.deepEqual(await headless.list(), { profiles: [profile], activeProfileId: null });
+    assert.equal(secretBackendCalls, 0);
+    assert.deepEqual(await headless.writeCredential(credential(profile.id, 'B')), {
+      stored: false,
+      reason: 'encryption-unavailable',
+    });
+    await assert.rejects(
+      headless.save({ id: profile.id, label: 'Changed', apiBaseUrl: profile.apiBaseUrl }),
+      /recovery state is unavailable/,
+    );
+    assert.equal(secretBackendCalls, 0);
+  });
+
   it('rejects unsafe endpoints and path-like profile identifiers', async () => {
     const directory = await createDirectory();
     const store = new ProfileStore(directory, encryption());
