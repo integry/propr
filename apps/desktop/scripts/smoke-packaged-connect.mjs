@@ -221,7 +221,7 @@ function Set-ProprFixtureAcl {
   } catch { exit 44 }
   try {
     $acl.SetAccessRuleProtection($true,$false)
-    foreach($existing in @($acl.Access)){$acl.RemoveAccessRuleSpecific($existing)}
+    foreach($existing in @($acl.Access)){$null=$acl.RemoveAccessRuleSpecific($existing)}
   } catch { exit 45 }
   try {
     foreach($identity in @($current,$system,$admins)){
