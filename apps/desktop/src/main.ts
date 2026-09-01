@@ -1,7 +1,8 @@
 import { lstatSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, screen, session, shell } from 'electron';
+import type { Rectangle } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import { DeepLinkDelivery } from './deep-link-delivery';
 import { registerIpcHandlers } from './ipc';
@@ -21,7 +22,11 @@ import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
-import { createBrowserWindowOptions } from './window-options';
+import {
+  createBrowserWindowOptions,
+  MINIMUM_BROWSER_WINDOW_SIZE,
+  selectInitialWindowWorkArea,
+} from './window-options';
 
 const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
   ? MAIN_WINDOW_VITE_DEV_SERVER_URL
@@ -29,6 +34,7 @@ const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
 const PACKAGED_RENDERER_SCHEME = 'propr-app';
 const PACKAGED_RENDERER_HOST = 'renderer';
 const PACKAGED_LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
+const PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_window.ready';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 let packagedSmokeUserDataDirectory: string | null = null;
@@ -188,15 +194,50 @@ const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<stri
       ...Object.fromEntries(Object.entries(elements).map(([name, element]) => [name, bounds(element)])),
     };
   })()`);
+  const [minimumWidth, minimumHeight] = window.getMinimumSize();
   return {
     windowBounds: window.getBounds(),
     contentBounds: window.getContentBounds(),
+    minimumSize: { width: minimumWidth, height: minimumHeight },
     ...rendererLayout,
   };
 };
 
+const createReducedSmokeWorkArea = (displayWorkArea: Rectangle): Rectangle => {
+  const width = Math.min(displayWorkArea.width, MINIMUM_BROWSER_WINDOW_SIZE.width - 80);
+  const height = Math.min(displayWorkArea.height, MINIMUM_BROWSER_WINDOW_SIZE.height - 60);
+  return {
+    x: displayWorkArea.x + Math.floor((displayWorkArea.width - width) / 2),
+    y: displayWorkArea.y + Math.floor((displayWorkArea.height - height) / 2),
+    width,
+    height,
+  };
+};
+
+const inspectPackagedReducedNativeWindow = (): Record<string, unknown> => {
+  const displayWorkArea = selectInitialWindowWorkArea(screen);
+  const workArea = createReducedSmokeWorkArea(displayWorkArea);
+  const probeWindow = new BrowserWindow(
+    createBrowserWindowOptions(join(__dirname, 'preload.cjs'), false, workArea),
+  );
+  try {
+    const [minimumWidth, minimumHeight] = probeWindow.getMinimumSize();
+    return {
+      displayWorkArea,
+      workArea,
+      windowBounds: probeWindow.getBounds(),
+      minimumSize: { width: minimumWidth, height: minimumHeight },
+    };
+  } finally {
+    probeWindow.destroy();
+  }
+};
+
 const createMainWindow = async (): Promise<BrowserWindow> => {
-  const window = new BrowserWindow(createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged));
+  const workArea = selectInitialWindowWorkArea(screen);
+  const window = new BrowserWindow(
+    createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged, workArea),
+  );
   const readyToShow = new Promise<void>(resolveReady => window.once('ready-to-show', resolveReady));
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -293,6 +334,9 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
     }
     log('info', 'desktop.renderer.mvp_flows.ready', { connectDiscovery: true });
     log('info', PACKAGED_LAYOUT_READY_EVENT, { layout: await inspectPackagedLayout(window) });
+    log('info', PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT, {
+      layout: inspectPackagedReducedNativeWindow(),
+    });
   }
   log('info', 'desktop.renderer.ready', { preloadBridgeExposed: true });
   if (packagedSmokeTest) {

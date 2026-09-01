@@ -1,9 +1,10 @@
 import { chmod, lstat, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, win32 } from 'node:path';
+import windowSizing from '../window-sizing.json' with { type: 'json' };
 
-export const PREFERRED_WINDOW_SIZE = Object.freeze({ width: 1280, height: 820 });
-export const MINIMUM_WINDOW_SIZE = Object.freeze({ width: 880, height: 620 });
+export const PREFERRED_WINDOW_SIZE = Object.freeze({ ...windowSizing.preferred });
+export const MINIMUM_WINDOW_SIZE = Object.freeze({ ...windowSizing.minimum });
 
 const MAX_DISPLAY_DIMENSION = 32_768;
 const MAX_XAUTHORITY_BYTES = 64 * 1024;
@@ -24,10 +25,68 @@ const assertDimensions = (value, description) => {
   assertDimension(value.height, `${description} height`);
 };
 
+const assertRectangle = (value, description) => {
+  assertDimensions(value, description);
+  if (!Number.isInteger(value.x) || !Number.isInteger(value.y)) {
+    throw new Error(`Packaged layout reported invalid ${description} position`);
+  }
+};
+
 const assertGap = (before, after, minimum, description) => {
   const gap = after.top - before.bottom;
   if (gap < minimum) {
     throw new Error(`Packaged layout ${description} gap was ${gap}px; expected at least ${minimum}px`);
+  }
+};
+
+export const assertPackagedNativeWindowSizing = (layout, { requireReducedWorkArea = false } = {}) => {
+  if (!layout) throw new Error('Packaged desktop did not report native window sizing');
+  assertDimensions(layout.windowBounds, 'native window bounds');
+  assertDimensions(layout.minimumSize, 'native minimum window size');
+  assertDimensions(layout.workArea, 'window sizing work area');
+
+  if (
+    requireReducedWorkArea
+    && (layout.workArea.width >= MINIMUM_WINDOW_SIZE.width || layout.workArea.height >= MINIMUM_WINDOW_SIZE.height)
+  ) {
+    throw new Error('Packaged reduced native window work area did not exercise both clamped minimum dimensions');
+  }
+  if (requireReducedWorkArea) {
+    assertRectangle(layout.displayWorkArea, 'native display work area');
+    assertRectangle(layout.workArea, 'reduced window sizing work area');
+    assertRectangle(layout.windowBounds, 'reduced native window bounds');
+    if (
+      layout.workArea.x < layout.displayWorkArea.x
+      || layout.workArea.y < layout.displayWorkArea.y
+      || layout.workArea.x + layout.workArea.width > layout.displayWorkArea.x + layout.displayWorkArea.width
+      || layout.workArea.y + layout.workArea.height > layout.displayWorkArea.y + layout.displayWorkArea.height
+    ) {
+      throw new Error('Packaged reduced native window work area extends beyond its selected display');
+    }
+  }
+
+  const expectedWindow = {
+    width: Math.min(PREFERRED_WINDOW_SIZE.width, layout.workArea.width),
+    height: Math.min(PREFERRED_WINDOW_SIZE.height, layout.workArea.height),
+  };
+  const expectedMinimum = {
+    width: Math.min(MINIMUM_WINDOW_SIZE.width, layout.workArea.width),
+    height: Math.min(MINIMUM_WINDOW_SIZE.height, layout.workArea.height),
+  };
+  if (layout.windowBounds.width !== expectedWindow.width || layout.windowBounds.height !== expectedWindow.height) {
+    throw new Error('Packaged window does not equal its preferred size clamped to the available work area');
+  }
+  if (layout.minimumSize.width !== expectedMinimum.width || layout.minimumSize.height !== expectedMinimum.height) {
+    throw new Error('Packaged window minimum size is not clamped to the available work area');
+  }
+  if (layout.windowBounds.width > layout.workArea.width || layout.windowBounds.height > layout.workArea.height) {
+    throw new Error('Packaged window extends beyond the available work area');
+  }
+  if (
+    requireReducedWorkArea
+    && (layout.windowBounds.x !== layout.workArea.x || layout.windowBounds.y !== layout.workArea.y)
+  ) {
+    throw new Error('Packaged reduced native window was not constructed inside its selected work area');
   }
 };
 
@@ -37,33 +96,13 @@ export const assertPackagedLayout = layout => {
     throw new Error(`Packaged renderer layout was missing: ${layout.missing.join(', ')}`);
   }
 
-  assertDimensions(layout.windowBounds, 'native window bounds');
+  assertPackagedNativeWindowSizing(layout);
   assertDimensions(layout.contentBounds, 'native content bounds');
   assertDimensions(layout.viewport, 'renderer viewport');
   assertDimensions(layout.screen, 'renderer screen dimensions');
-  assertDimensions(layout.workArea, 'renderer available work area');
 
   if (layout.workArea.width > layout.screen.width || layout.workArea.height > layout.screen.height) {
     throw new Error('Packaged renderer available work area exceeds its screen dimensions');
-  }
-
-  const expectedWindow = {
-    width: Math.min(PREFERRED_WINDOW_SIZE.width, layout.workArea.width),
-    height: Math.min(PREFERRED_WINDOW_SIZE.height, layout.workArea.height),
-  };
-  if (layout.windowBounds.width !== expectedWindow.width || layout.windowBounds.height !== expectedWindow.height) {
-    throw new Error('Packaged window does not equal its preferred size clamped to the available work area');
-  }
-  if (layout.windowBounds.width > layout.workArea.width || layout.windowBounds.height > layout.workArea.height) {
-    throw new Error('Packaged window extends beyond the available work area');
-  }
-  for (const dimension of ['width', 'height']) {
-    if (
-      layout.workArea[dimension] >= MINIMUM_WINDOW_SIZE[dimension]
-      && layout.windowBounds[dimension] < MINIMUM_WINDOW_SIZE[dimension]
-    ) {
-      throw new Error(`Packaged window is below its configured minimum ${dimension}`);
-    }
   }
 
   if (

@@ -41,6 +41,7 @@ $smokeEventCodes = [ordered]@{
   'desktop.app.ready' = 'APP_READY'
   'desktop.renderer.mvp_flows.ready' = 'MVP_FLOWS_READY'
   'desktop.renderer.layout.ready' = 'LAYOUT_READY'
+  'desktop.native.reduced_window.ready' = 'REDUCED_NATIVE_WINDOW_READY'
   'desktop.renderer.ready' = 'RENDERER_READY'
   'desktop.app.shutdown' = 'APP_SHUTDOWN'
   'desktop.app.start_failed' = 'START_FAILED'
@@ -52,6 +53,7 @@ $requiredSmokeEvents = @(
   'desktop.app.ready',
   'desktop.renderer.mvp_flows.ready',
   'desktop.renderer.layout.ready',
+  'desktop.native.reduced_window.ready',
   'desktop.renderer.ready',
   'desktop.app.shutdown'
 )

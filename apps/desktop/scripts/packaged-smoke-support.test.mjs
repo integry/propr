@@ -5,8 +5,10 @@ import { basename, join, relative } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   assertPackagedLayout,
+  assertPackagedNativeWindowSizing,
   createPrivateSmokeProfile,
   createSmokeChildEnvironment,
+  MINIMUM_WINDOW_SIZE,
   removePrivateSmokeProfile,
   validateWindowsSystemRoot,
 } from './packaged-smoke-support.mjs';
@@ -29,6 +31,10 @@ const layoutFixture = ({ windowWidth, windowHeight, workWidth, workHeight }) => 
   });
   return {
     windowBounds: { width: windowWidth, height: windowHeight },
+    minimumSize: {
+      width: Math.min(MINIMUM_WINDOW_SIZE.width, workWidth),
+      height: Math.min(MINIMUM_WINDOW_SIZE.height, workHeight),
+    },
     contentBounds: viewport,
     viewport,
     screen: { width: Math.max(workWidth, windowWidth), height: Math.max(workHeight, windowHeight) },
@@ -78,6 +84,21 @@ describe('packaged smoke native window layout', () => {
     });
     inconsistentViewport.viewport = { width: 1007, height: 655 };
     assert.throws(() => assertPackagedLayout(inconsistentViewport), /actual native content bounds/);
+  });
+
+  test('accepts actual reduced native sizing only when both minimum constraints are exercised', () => {
+    assert.doesNotThrow(() => assertPackagedNativeWindowSizing({
+      displayWorkArea: { x: -1600, y: 0, width: 1600, height: 900 },
+      workArea: { x: -1200, y: 170, width: 800, height: 560 },
+      windowBounds: { x: -1200, y: 170, width: 800, height: 560 },
+      minimumSize: { width: 800, height: 560 },
+    }, { requireReducedWorkArea: true }));
+    assert.throws(() => assertPackagedNativeWindowSizing({
+      displayWorkArea: { x: 0, y: 0, width: 1920, height: 1040 },
+      workArea: { x: 520, y: 240, width: 880, height: 560 },
+      windowBounds: { x: 520, y: 240, width: 880, height: 560 },
+      minimumSize: { width: 880, height: 560 },
+    }, { requireReducedWorkArea: true }), /both clamped minimum dimensions/);
   });
 });
 

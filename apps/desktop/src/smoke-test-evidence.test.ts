@@ -56,6 +56,7 @@ describe('packaged smoke evidence', () => {
         'desktop.app.ready',
         'desktop.renderer.mvp_flows.ready',
         'desktop.renderer.layout.ready',
+        'desktop.native.reduced_window.ready',
         'desktop.renderer.ready',
         'desktop.app.shutdown',
       ];
