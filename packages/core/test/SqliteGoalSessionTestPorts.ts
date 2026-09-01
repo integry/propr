@@ -13,6 +13,7 @@ import type {
     GoalSessionIdentity,
     GoalModelChangeAcknowledgement,
     GoalModelChangeHistoryRecord,
+    GoalProviderOperationFence,
     GoalSessionRuntimePorts,
     GoalSessionState,
     GoalTerminalCommit,
@@ -57,6 +58,10 @@ export class SqliteGoalSessionTestPorts {
                 ON goal_model_changes(scope, sequence);
             CREATE TABLE IF NOT EXISTS goal_model_sequences (
                 scope TEXT PRIMARY KEY, next_sequence INTEGER NOT NULL CHECK(next_sequence > 0)
+            );
+            CREATE TABLE IF NOT EXISTS goal_provider_effects (
+                scope TEXT NOT NULL, operation_id TEXT NOT NULL, kind TEXT NOT NULL,
+                PRIMARY KEY (scope, operation_id)
             );
             INSERT OR IGNORE INTO goal_model_sequences(scope, next_sequence)
             SELECT scope, sequence + 1 FROM (
@@ -111,6 +116,24 @@ export class SqliteGoalSessionTestPorts {
     }
 
     close(): void { this.database.close(); }
+
+    /** Process-like adapter boundary: durable compare and first effect are one transaction. */
+    tryProviderEffect(fence: GoalProviderOperationFence): boolean {
+        return this.database.transaction(() => {
+            const state = this.readState(fence);
+            if (!state || state.providerBarrierIntent?.phase === 'pending'
+                || state.providerOperationGeneration !== fence.generation
+                || (fence.leaseExpiresAt !== undefined && Date.parse(fence.leaseExpiresAt) <= Date.now())) return false;
+            const result = this.database.prepare(
+                'INSERT OR IGNORE INTO goal_provider_effects(scope, operation_id, kind) VALUES (?, ?, ?)',
+            ).run(scope(fence), fence.operationId, fence.kind);
+            return result.changes === 1;
+        }).immediate();
+    }
+
+    providerEffectCount(): number {
+        return (this.database.prepare('SELECT COUNT(*) AS count FROM goal_provider_effects').get() as { count: number }).count;
+    }
 
     setTransitionFault(fault: 'before_commit' | 'after_commit' | undefined): void {
         this.transitionFault = fault;
@@ -179,6 +202,7 @@ export class SqliteGoalSessionTestPorts {
         return this.database.transaction(() => {
             const state = this.readState(fence);
             if (!state || state.controllerEpoch !== fence.controllerEpoch
+                || state.providerBarrierIntent?.phase === 'pending'
                 || ['cancelling', 'terminated', 'failed'].includes(state.status)) {
                 return { accepted: false as const, reason: 'stale_fence' as const };
             }
@@ -395,6 +419,7 @@ function matchesTurn(
     execution: GoalExecutionIdentity,
 ): state is GoalSessionState {
     return Boolean(state && state.controllerEpoch === fence.controllerEpoch
+        && state.providerBarrierIntent?.phase !== 'pending'
         && !['cancelling', 'terminated', 'failed'].includes(state.status)
         && state.activeTurn?.turnId === fence.turnId
         && state.activeTurn.executionId === execution.executionId
@@ -407,6 +432,7 @@ function matchesTransition(
     transition: GoalSessionControlTransition,
 ): state is GoalSessionState {
     if (!state || state.controllerEpoch !== transition.fence.controllerEpoch
+        || state.providerBarrierIntent?.phase === 'pending'
         || ['cancelling', 'terminated', 'failed'].includes(state.status)) return false;
     return transition.turnScoped !== true
         || ('turnId' in transition.fence && matchesTurn(state, transition.fence, transition.execution));

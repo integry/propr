@@ -5,6 +5,7 @@ import { compactImmediateModelIntents, assertModelControllable, hasUnresolvedImm
 import { resolveModelChangeHistory } from './modelChangeHistory.js';
 import { nextState, persistedSnapshot } from './support.js';
 import { assertSafeProviderIdentifier } from './securityBoundary.js';
+import { rebuildModelAcknowledgement } from './providerResultBoundary.js';
 
 const MODEL_APPLICATION_LEASE_MS = 30_000;
 
@@ -139,8 +140,9 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         ({ state, intent } = await this.claimModelApplication(fence, state, intent));
         const operationGeneration = state.providerOperationGeneration ?? 0;
         await this.publishProviderOperationBarrier(fence, operationGeneration);
+        await this.requireProviderGeneration(fence, operationGeneration);
         const operationFence = this.modelOperationFence(fence, operationGeneration, intent);
-        const acknowledgement = await this.providerEffect(() => this.adapter.requestModelChange(
+        const acknowledgement = await this.providerResult(() => this.adapter.requestModelChange(
             {
                 goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
                 model: intent.model,
@@ -150,7 +152,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
                 operationFence,
             },
             persistedSnapshot(state),
-        ));
+        ), rebuildModelAcknowledgement);
         validateImmediateModelAcknowledgement({ ...fence, model: intent.model }, state, acknowledgement);
         return this.finishImmediateModelGeneration(fence, intent, acknowledgement);
     }
@@ -233,8 +235,9 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             ({ state, intent: target } = await this.claimModelApplication(fence, state, durable));
             const operationGeneration = state.providerOperationGeneration ?? 0;
             await this.publishProviderOperationBarrier(fence, operationGeneration);
+            await this.requireProviderGeneration(fence, operationGeneration);
             const operationFence = this.modelOperationFence(fence, operationGeneration, target);
-            const acknowledgement = await this.providerEffect(() => this.adapter.requestModelChange(
+            const acknowledgement = await this.providerResult(() => this.adapter.requestModelChange(
                 {
                     goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
                     model: target.model,
@@ -244,7 +247,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
                     operationFence,
                 },
                 persistedSnapshot(state),
-            ));
+            ), rebuildModelAcknowledgement);
             validateImmediateModelAcknowledgement({ ...fence, model: target.model }, state, acknowledgement);
             state = await this.requireControlledState(fence);
             assertModelControllable(state);

@@ -119,13 +119,15 @@ test('failed reconciliation atomically terminates every obligation and never rep
     const ports = new InMemoryGoalSessionPorts();
     const adapter = new MatrixAdapter();
     adapter.reconcileOutcome = 'failed';
+    const pendingModel = {
+        modelChangeId: 'pending-model', model: 'model-1', requestedAt: new Date().toISOString(),
+        generation: 1, phase: 'provider_in_doubt' as const, applicationToken: 'model-lease',
+        applicationControllerEpoch: 1, leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
     await ports.create(runningState({
         modelChangeGeneration: 1,
-        modelChangeIntents: [{
-            modelChangeId: 'pending-model', model: 'model-1', requestedAt: new Date().toISOString(),
-            generation: 1, phase: 'provider_in_doubt', applicationToken: 'model-lease',
-            applicationControllerEpoch: 1, leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-        }],
+        modelChangeIntent: pendingModel,
+        modelChangeIntents: [pendingModel],
     }));
     configureRecovery(ports);
     const result = await new GoalSessionSupervisor(adapter, ports.asRuntimePorts()).reconcile(identity, 1, repository);

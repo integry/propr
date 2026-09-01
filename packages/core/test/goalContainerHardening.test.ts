@@ -319,6 +319,52 @@ test('adapter output observes the exact durable mixed-channel queue with backpre
     assert.deepEqual(durable.map(output => output.data), ['first', 'second', 'durable-only']);
 });
 
+test('protocol observer receives parseable secret bytes while every durable surface is redacted', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-protocol-secret-'));
+    const durable: string[] = [];
+    const observed: string[] = [];
+    const sink = {
+        ...events,
+        append: async (_fence: unknown, _execution: unknown, event: { data: string }) => {
+            durable.push(event.data);
+            return { accepted: true as const };
+        },
+    } as unknown as EventSink;
+    const supervisor = new GoalContainerSupervisor(base, sink, undefined, isolation);
+    const { layout } = await supervisor.start({
+        ...baseRequest(),
+        outputObserver: { next: output => { observed.push(output.data); } },
+    });
+    const protocol = '{"method":"initialize","token":"HOSTILE-PROTOCOL-SECRET"}\n';
+    child.stdout.emit('data', Buffer.from(protocol));
+    for (let attempt = 0; attempt < 100 && observed.length === 0; attempt += 1) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.deepEqual(JSON.parse(observed.join('').trim()), {
+        method: 'initialize', token: 'HOSTILE-PROTOCOL-SECRET',
+    });
+    assert.deepEqual(durable, ['[redacted output]']);
+    const serialized = `${JSON.stringify(durable)}\n${fs.readFileSync(layout.logPath, 'utf8')}`;
+    assert.doesNotMatch(serialized, /HOSTILE-PROTOCOL-SECRET/);
+});
+
+test('control-scoped eager open container has exact open labels and no invented turn label', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-open-container-'));
+    const supervisor = new GoalContainerSupervisor(base, events, undefined, isolation);
+    await supervisor.startOpen({
+        goalId: 'open-goal', sessionId: 'open-session', controllerEpoch: 4,
+        executionId: 'open-execution', attemptId: 'open-attempt', deterministicOpenKey: 'open-key-4',
+        image: 'provider-image', command: ['codex', 'app-server', '--stdio'],
+        worktreePath: approvedWorktree, worktreeFingerprint: 'open-fingerprint',
+        providerHomeTarget: '/home/node/.codex',
+    });
+    const args = spawnCalls.at(-1)!.args;
+    assert.ok(args.includes('propr.goal.scope=open'));
+    assert.ok(args.includes('propr.goal.open-key=open-key-4'));
+    assert.equal(args.some(argument => argument.startsWith('propr.goal.turn=')), false);
+    assert.ok(args.includes('/workspace'));
+});
+
 test('credential targets reject descendants of proc, sys, and dev even when allow-listed', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-pseudo-fs-'));
     const targets = ['/proc/self/fd/9', '/sys/kernel/credential', '/dev/shm/credential'];

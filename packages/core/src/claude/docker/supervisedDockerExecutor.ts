@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
 import type { Readable } from 'stream';
+import { StringDecoder } from 'node:string_decoder';
 import {
     abortSpawnedExecution,
     createDockerExecutionState,
@@ -17,7 +18,10 @@ export interface SupervisedDockerFence {
     goalId: string;
     sessionId: string;
     controllerEpoch: number;
-    turnId: string;
+    turnId?: string;
+    /** Control-scoped eager open deliberately has no turnId. */
+    scope?: 'turn' | 'open';
+    openKey?: string;
     executionId: string;
     attemptId: string;
     worktreeFingerprint: string;
@@ -238,7 +242,9 @@ export function addGoalFenceLabels(args: string[], fence: SupervisedDockerFence)
         '--label', `propr.goal.id=${fence.goalId}`,
         '--label', `propr.goal.session=${fence.sessionId}`,
         '--label', `propr.goal.controller-epoch=${fence.controllerEpoch}`,
-        '--label', `propr.goal.turn=${fence.turnId}`,
+        '--label', `propr.goal.scope=${fence.scope ?? 'turn'}`,
+        ...(fence.turnId ? ['--label', `propr.goal.turn=${fence.turnId}`] : []),
+        ...(fence.openKey ? ['--label', `propr.goal.open-key=${fence.openKey}`] : []),
         '--label', `propr.goal.execution=${fence.executionId}`,
         '--label', `propr.goal.attempt=${fence.attemptId}`,
         '--label', `propr.goal.worktree-fingerprint=${fence.worktreeFingerprint}`,
@@ -248,9 +254,15 @@ export function addGoalFenceLabels(args: string[], fence: SupervisedDockerFence)
 
 function validateSupervisedOptions(args: string[], options: SupervisedDockerOptions): void {
     if (args[0] !== 'run') throw new Error('Supervised Docker execution only supports docker run');
-    if (!options.goalId || !options.sessionId || !options.turnId || !options.executionId || !options.attemptId
+    if (!options.goalId || !options.sessionId || !options.executionId || !options.attemptId
         || !options.worktreeFingerprint || !Number.isSafeInteger(options.controllerEpoch)) {
         throw new Error('A valid goal/session/controller epoch/turn fence is required');
+    }
+    if ((options.scope ?? 'turn') === 'turn' && !options.turnId) {
+        throw new Error('A turn-scoped supervised Docker execution requires turnId');
+    }
+    if (options.scope === 'open' && (options.turnId !== undefined || !options.openKey)) {
+        throw new Error('A control-scoped supervised Docker open requires openKey and forbids turnId');
     }
     if (options.timeout !== undefined && (!Number.isSafeInteger(options.timeout) || options.timeout <= 0)) {
         throw new Error('Supervised Docker timeout must be a positive safe integer');
@@ -325,14 +337,26 @@ export function executeSupervisedDockerCommand(
         maxChunkBytes: backpressureLimits.maxChunkBytes,
         maxQueuedBytes: backpressureLimits.maxQueuedBytes,
     });
-    child.stdout?.on('data', (data: Buffer) => sink.enqueue('stdout', data));
-    child.stderr?.on('data', (data: Buffer) => sink.enqueue('stderr', data));
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    child.stdout?.on('data', (data: Buffer) => {
+        const decoded = stdoutDecoder.write(data);
+        if (decoded) sink.enqueue('stdout', Buffer.from(decoded));
+    });
+    child.stderr?.on('data', (data: Buffer) => {
+        const decoded = stderrDecoder.write(data);
+        if (decoded) sink.enqueue('stderr', Buffer.from(decoded));
+    });
     const abortListener = (): void => { void cancel(getExecutionAbortError(executionSignal) ?? undefined); };
     executionSignal?.addEventListener('abort', abortListener, { once: true });
     if (options.timeout !== undefined) {
         timeoutHandle = setTimeout(() => { void cancel(new Error(`Supervised Docker command timed out after ${options.timeout}ms`)); }, options.timeout);
     }
     child.once('close', (exitCode: number | null) => {
+        const finalStdout = stdoutDecoder.end();
+        const finalStderr = stderrDecoder.end();
+        if (finalStdout) sink.enqueue('stdout', Buffer.from(finalStdout));
+        if (finalStderr) sink.enqueue('stderr', Buffer.from(finalStderr));
         settled = true;
         if (timeoutHandle) clearTimeout(timeoutHandle);
         executionSignal?.removeEventListener('abort', abortListener);

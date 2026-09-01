@@ -15,7 +15,11 @@ export interface GoalProviderBarrierIntent {
 }
 
 export interface GoalModelInvocationEvidence extends GoalExecutionIdentity {
+    modelChangeId: string;
+    generation: number;
     occurrenceId: string;
+    requestedModel: string;
+    effectiveModel: string;
     acceptedAt: string;
 }
 
@@ -38,6 +42,8 @@ export interface GoalProviderOpenContext extends GoalExecutionIdentity {
     requestedModel: string;
     providerHomeTarget: string;
     credentialTargets: string[];
+    /** Supervisor-minted durable key binding response-loss adoption. */
+    deterministicOpenKey?: string;
     transport: GoalProviderDuplexTransport;
 }
 

@@ -15,9 +15,10 @@ import type {
     GoalProviderOperationFence,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
-import { safeFailureDiagnostic, safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { decodeDurableGoalSessionState } from './durableStateSecurity.js';
 import { boundedProviderBoundary, expireResumeLease } from './providerBarrierProtocol.js';
+import { untrustedProviderResult } from './providerResultBoundary.js';
 import {
     controlExecutionIdentity,
     nextState,
@@ -190,6 +191,13 @@ export abstract class GoalSessionCore {
         }
     }
 
+    protected async providerResult<T, R>(
+        effect: () => T | Promise<T>,
+        rebuild: (value: Awaited<T>) => R,
+    ): Promise<R> {
+        return untrustedProviderResult(effect, rebuild);
+    }
+
     protected turnProviderOperationFence(
         fence: GoalSessionFence,
         execution: GoalExecutionIdentity,
@@ -267,6 +275,30 @@ export abstract class GoalSessionCore {
         return state;
     }
 
+    protected async requireProviderGeneration(
+        fence: GoalSessionControlFence,
+        generation: number,
+    ): Promise<GoalSessionState> {
+        const state = await this.requireControlledState(fence);
+        if ((state.providerOperationGeneration ?? 0) !== generation) {
+            throw new StaleGoalSessionFenceError('Provider operation generation was durably invalidated');
+        }
+        return state;
+    }
+
+    protected async requireTurnProviderGeneration(
+        fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
+        generation: number,
+    ): Promise<GoalSessionState> {
+        const state = await this.requireActiveAttemptState(fence, execution);
+        if ((state.providerOperationGeneration ?? 0) !== generation
+            || (state.activeTurn?.providerOperationGeneration ?? 0) !== generation) {
+            throw new StaleGoalSessionFenceError('Turn provider operation generation was durably invalidated');
+        }
+        return state;
+    }
+
     protected async updateControlledState(
         fence: GoalSessionControlFence,
         update: (state: GoalSessionState) => Partial<GoalSessionState>,
@@ -298,7 +330,7 @@ export abstract class GoalSessionCore {
         execution: GoalExecutionIdentity,
         event: Extract<GoalSessionEvent, { type: 'completion' }>,
     ): Promise<GoalSessionState> {
-        const { outcome, error } = event;
+        const { outcome } = event;
         // A pause request can win after the final exact-attempt load but before
         // the terminal transaction. Reload and retry under the same attempt so
         // the transaction canonically records pause_boundary then completion.
@@ -318,8 +350,7 @@ export abstract class GoalSessionCore {
                     : outcome === 'failed'
                         ? 'failed'
                         : afterTurnPaused ? 'paused' : 'idle',
-                failureReason: outcome === 'failed'
-                    ? safeFailureDiagnostic(error ?? '', 'Provider reported turn failure') : undefined,
+                failureReason: outcome === 'failed' ? 'Provider reported turn failure safely' : undefined,
                 activeTurn: afterTurnPaused
                     ? undefined
                     : { ...activeTurn, status: outcome === 'succeeded' ? 'completed' : outcome === 'cancelled' ? 'cancelled' : 'failed' },

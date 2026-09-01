@@ -125,7 +125,14 @@ export function obsoleteModelIntents(
         if (intent.modelChangeId === latestModelChangeId
             || intent.phase === 'committed' || intent.phase === 'superseded') return intent;
         changed = true;
-        return { ...intent, phase: reconciled ? 'superseded' as const : 'superseded_in_doubt' as const };
+        return {
+            ...intent,
+            phase: reconciled ? 'superseded' as const : 'superseded_in_doubt' as const,
+            acknowledgement: reconciled ? intent.acknowledgement ?? {
+                requestedModel: intent.model,
+                appliesAt: 'next_safe_boundary' as const,
+            } : intent.acknowledgement,
+        };
     }));
     return { changed, intents };
 }

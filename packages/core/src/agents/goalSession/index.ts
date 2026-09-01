@@ -12,6 +12,8 @@ export {
     firstPendingCorrectiveMessage,
 } from './GoalSessionSupervisor.js';
 export type {
+    GoalSupervisedOpenClaim,
+    GoalSupervisedOpenPlan,
     OpenGoalSessionRequest,
     ReconcileGoalSessionResult,
     RunGoalTurnRequest,
@@ -25,6 +27,7 @@ export {
     DEFAULT_GOAL_CONTAINER_RETENTION,
     GoalContainerSupervisor,
     buildGoalContainerLayout,
+    buildGoalOpenContainerLayout,
 } from './GoalContainerSupervisor.js';
 export type {
     GoalContainerLayout,
@@ -33,6 +36,7 @@ export type {
     GoalContainerOutputObserver,
     GoalCredentialMount,
     StartGoalContainerRequest,
+    StartGoalOpenContainerRequest,
 } from './GoalContainerSupervisor.js';
 export { DockerGoalSessionRecovery } from './DockerGoalSessionRecovery.js';
 export {
@@ -44,5 +48,6 @@ export {
 export { MODEL_CHANGE_SETTLED_RETRY_HORIZON } from './modelChangeProtocol.js';
 export { GOAL_RECOVERY_METADATA_CODEC_VERSION, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 export { openSupervisedCodexAppServer, SUPERVISED_CODEX_MODEL } from './CodexAppServerOpen.js';
+export { createProviderProtocolDuplex } from './providerProtocolDuplex.js';
 export type { GoalRecoveryMetadataV1 } from './recoveryMetadata.js';
 export { decodeDurableGoalSessionState } from './durableStateSecurity.js';

@@ -82,8 +82,8 @@ class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
         }
         if (request.modelChange && context.binding === 'bound') {
             yield {
-                type: 'checkpoint', checkpointId: `model-${request.modelChange.generation}`,
-                recoveryMetadata: { conversation: 'native-first-turn-id', checkpoint: `model-${request.modelChange.generation}` },
+                type: 'model_changed', model: request.requestedModel,
+                providerEventId: `model-${request.modelChange.modelChangeId}-${request.modelChange.generation}`,
             };
         }
         this.turnStarted?.();

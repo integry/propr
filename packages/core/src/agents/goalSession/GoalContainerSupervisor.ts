@@ -38,7 +38,7 @@ export interface GoalCredentialMount {
     provider?: 'claude' | 'codex' | 'antigravity';
 }
 
-/** Adapter-facing view of the exact supervised persistence stream. */
+/** Adapter-facing view of exact in-memory protocol chunks (never persistence). */
 export interface GoalContainerOutputObserver {
     next(output: Readonly<SupervisedDockerOutput>): void | 'unsubscribe' | Promise<void | 'unsubscribe'>;
     complete?(): void | Promise<void>;
@@ -62,6 +62,23 @@ export interface StartGoalContainerRequest extends GoalSessionFence, GoalExecuti
     /** Read-only credential mounts, kept separate from the writable provider home. */
     credentialMounts?: ReadonlyArray<GoalCredentialMount>;
     /** Ordered and backpressured in the same queue as durable output persistence. */
+    outputObserver?: GoalContainerOutputObserver;
+    signal?: AbortSignal;
+    timeout?: number;
+    taskId?: string;
+}
+
+/** Eager provider process construction is control-scoped and never invents a turn. */
+export interface StartGoalOpenContainerRequest extends GoalSessionIdentity, GoalExecutionIdentity {
+    controllerEpoch: number;
+    deterministicOpenKey: string;
+    image: string;
+    command: string[];
+    worktreePath: string;
+    worktreeFingerprint: string;
+    providerHomeTarget: string;
+    environment?: Record<string, string>;
+    credentialMounts?: ReadonlyArray<GoalCredentialMount>;
     outputObserver?: GoalContainerOutputObserver;
     signal?: AbortSignal;
     timeout?: number;
@@ -128,12 +145,27 @@ function validateBindMountPath(value: string, name: string): void {
 }
 
 export function buildGoalContainerLayout(baseDirectory: string, request: GoalSessionFence & GoalExecutionIdentity): GoalContainerLayout {
+    return buildScopedGoalContainerLayout(baseDirectory, request, request.turnId);
+}
+
+export function buildGoalOpenContainerLayout(
+    baseDirectory: string,
+    request: StartGoalOpenContainerRequest,
+): GoalContainerLayout {
+    return buildScopedGoalContainerLayout(baseDirectory, request, `open:${request.deterministicOpenKey}`);
+}
+
+function buildScopedGoalContainerLayout(
+    baseDirectory: string,
+    request: GoalSessionIdentity & GoalExecutionIdentity & { controllerEpoch: number },
+    operationIdentity: string,
+): GoalContainerLayout {
     validateBindMountPath(baseDirectory, 'Goal container base directory');
     const goalScope = goalScopeFor(request);
     const executionId = [
         goalScope,
         `e${request.controllerEpoch}`,
-        opaquePart(request.turnId, 10),
+        opaquePart(operationIdentity, 10),
         opaquePart(request.attemptId, 10),
     ].join('-');
     const sessionRoot = path.join(baseDirectory, 'goals', goalScope);
@@ -334,6 +366,19 @@ export class GoalContainerSupervisor {
     }
 
     async start(request: StartGoalContainerRequest): Promise<{ layout: GoalContainerLayout; execution: SupervisedDockerExecution }> {
+        return this.startScoped(request, 'turn');
+    }
+
+    async startOpen(
+        request: StartGoalOpenContainerRequest,
+    ): Promise<{ layout: GoalContainerLayout; execution: SupervisedDockerExecution }> {
+        return this.startScoped(request, 'open');
+    }
+
+    private async startScoped(
+        request: StartGoalContainerRequest | StartGoalOpenContainerRequest,
+        scope: 'turn' | 'open',
+    ): Promise<{ layout: GoalContainerLayout; execution: SupervisedDockerExecution }> {
         const worktreePath = await resolveApprovedSource(
             request.worktreePath,
             new Set(this.isolation.worktreePaths.map(value => path.resolve(value))),
@@ -355,7 +400,9 @@ export class GoalContainerSupervisor {
             new Set((this.isolation.credentialMounts ?? []).map(mount =>
                 `${mount.provider ?? credentialProviderForTarget(path.posix.normalize(mount.target).replace(/\/+$/, '')) ?? credentialProviderForHome(path.posix.normalize(request.providerHomeTarget).replace(/\/+$/, '')) ?? ''}\0${path.resolve(mount.source)}\0${path.posix.normalize(mount.target).replace(/\/+$/, '')}`)),
         );
-        const layout = buildGoalContainerLayout(this.baseDirectory, request);
+        const layout = scope === 'turn'
+            ? buildGoalContainerLayout(this.baseDirectory, request as StartGoalContainerRequest)
+            : buildGoalOpenContainerLayout(this.baseDirectory, request as StartGoalOpenContainerRequest);
         await Promise.all([
             mkdir(layout.providerHome, { recursive: true, mode: 0o700 }),
             mkdir(path.dirname(layout.logPath), { recursive: true, mode: 0o700 }),
@@ -365,11 +412,11 @@ export class GoalContainerSupervisor {
         // Explicit public DTOs: the start request also carries commands,
         // environment values, mounts, host paths, task IDs, and arbitrary excess
         // properties. None of those may cross the durable event boundary.
-        const eventFence: GoalSessionFence = {
+        const eventFence = {
             goalId: request.goalId,
             sessionId: request.sessionId,
             controllerEpoch: request.controllerEpoch,
-            turnId: request.turnId,
+            ...(scope === 'turn' ? { turnId: (request as StartGoalContainerRequest).turnId } : {}),
         };
         const eventExecution: GoalExecutionIdentity = {
             executionId: request.executionId,
@@ -392,7 +439,10 @@ export class GoalContainerSupervisor {
             goalId: request.goalId,
             sessionId: request.sessionId,
             controllerEpoch: request.controllerEpoch,
-            turnId: request.turnId,
+            turnId: scope === 'turn' ? (request as StartGoalContainerRequest).turnId : undefined,
+            scope,
+            openKey: scope === 'open'
+                ? (request as StartGoalOpenContainerRequest).deterministicOpenKey : undefined,
             executionId: request.executionId,
             attemptId: request.attemptId,
             worktreeFingerprint: request.worktreeFingerprint,
@@ -407,7 +457,9 @@ export class GoalContainerSupervisor {
                     data: output.data,
                 });
                 if (safeOutput.type !== 'output') throw new Error('Output sanitizer returned an invalid event');
-                const result = await this.events.append(eventFence, eventExecution, safeOutput);
+                const result = scope === 'turn'
+                    ? await this.events.append(eventFence as GoalSessionFence, eventExecution, safeOutput)
+                    : await this.events.appendControl(eventFence, eventExecution, safeOutput);
                 if (!result.accepted) {
                     throw new StaleGoalSessionFenceError(`Container output rejected by durable sink: ${result.reason}`);
                 }
@@ -420,7 +472,7 @@ export class GoalContainerSupervisor {
                             controllerEpoch: output.controllerEpoch, turnId: output.turnId,
                             executionId: output.executionId, attemptId: output.attemptId,
                             worktreeFingerprint: output.worktreeFingerprint, sequence: output.sequence,
-                            recordedAt: output.recordedAt, channel: safeOutput.channel, data: safeOutput.data,
+                            recordedAt: output.recordedAt, channel: output.channel, data: output.data,
                         }));
                     } catch {
                         throw new GoalSessionContractError(

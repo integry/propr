@@ -9,8 +9,13 @@ import { nextState, persistedSnapshot } from './support.js';
 /** Durable two-phase provider invalidation and idempotent cancellation replay. */
 export abstract class GoalCancellationControls extends GoalImmediateModelControls {
     async cancel(request: GoalCancelRequest): Promise<GoalSessionState> {
-        const state = await this.claimCancellation(request);
-        if (state.status === 'terminated' || state.status === 'failed') return state;
+        let state = await this.claimCancellation(request);
+        if (state.status === 'terminated' || state.status === 'failed') {
+            if (state.providerBarrierIntent?.phase === 'pending') {
+                state = await this.repairPendingProviderBarrier(request, state);
+            }
+            return state;
+        }
         return this.resumeClaimedCancellation(request, state);
     }
 
@@ -37,6 +42,13 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
         let completionWon = true;
         try {
             await this.publishProviderOperationBarrier(fence, request.operationGeneration, intent.cancellationId);
+            const authoritative = await this.requireControlledStateForBarrier(fence);
+            if (authoritative.status !== 'cancelling'
+                || authoritative.providerOperationGeneration !== request.operationGeneration
+                || authoritative.cancellationIntent?.cancellationId !== intent.cancellationId
+                || authoritative.providerBarrierIntent?.phase !== 'published') {
+                throw new StaleGoalSessionFenceError('Provider cancellation was durably replaced');
+            }
             const signal = this.providerEffect(() => intent.pendingContext
                 ? this.adapter.cancelPending!(request, intent.pendingContext)
                 : this.adapter.cancel(request, persistedSnapshot(state)));
@@ -115,6 +127,16 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
             const claimed = await this.ports.state.compareAndSet(state, nextState(state, {
                 providerOperationGeneration: generation,
                 cancellationIntent: { cancellationId, reason, claimedAt: new Date().toISOString(), pendingContext },
+                // The invalidation claim itself removes every local mutation
+                // authority.  Publication may block forever; output, message
+                // acknowledgement, completion, resume, recovery and control
+                // transitions are already impossible in the durable record.
+                status: 'cancelling',
+                activeTurn: undefined,
+                recoveryAttempt: undefined,
+                completedRecovery: undefined,
+                resumeIntent: undefined,
+                completedResume: undefined,
                 providerBarrierIntent: {
                     generation, operationId: cancellationId, kind: 'cancellation', phase: 'pending',
                     claimedAt: new Date().toISOString(), pendingCancellationId: cancellationId,
@@ -140,8 +162,6 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
             throw new StaleGoalSessionFenceError('Cancellation barrier was replaced during publication');
         }
         return this.compareAndSetExact(current, {
-            status: 'cancelling', activeTurn: undefined, recoveryAttempt: undefined, completedRecovery: undefined,
-            resumeIntent: undefined, completedResume: undefined,
             providerBarrierIntent: { ...barrier, phase: 'published' },
         }, 'A newer operation superseded cancellation publication');
     }

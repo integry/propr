@@ -184,7 +184,8 @@ export class InMemoryGoalSessionPorts implements
         if (!state || state.controllerEpoch !== fence.controllerEpoch) {
             return { accepted: false, reason: 'stale_fence' };
         }
-        if (state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') {
+        if (state.providerBarrierIntent?.phase === 'pending'
+            || state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') {
             return { accepted: false, reason: 'turn_not_active' };
         }
         if (state.activeTurn?.turnId !== fence.turnId
@@ -210,7 +211,8 @@ export class InMemoryGoalSessionPorts implements
         if (!state || state.controllerEpoch !== fence.controllerEpoch) {
             return { accepted: false, reason: 'stale_fence' };
         }
-        if (state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') {
+        if (state.providerBarrierIntent?.phase === 'pending'
+            || state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') {
             return { accepted: false, reason: 'stale_fence' };
         }
         // Control events are session/epoch fenced only, so they remain auditable
@@ -266,6 +268,7 @@ export class InMemoryGoalSessionPorts implements
         this.assertGoalScope(fence);
         const state = this.states.get(keyOf(fence));
         if (!state || state.controllerEpoch !== fence.controllerEpoch
+            || state.providerBarrierIntent?.phase === 'pending'
             || state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed'
             || state.activeTurn?.turnId !== fence.turnId
             || state.activeTurn.executionId !== execution.executionId
@@ -398,6 +401,7 @@ function matchesLiveMessageFence(
     execution: GoalExecutionIdentity,
 ): state is GoalSessionState {
     return Boolean(state && state.controllerEpoch === fence.controllerEpoch
+        && state.providerBarrierIntent?.phase !== 'pending'
         && !['cancelling', 'terminated', 'failed'].includes(state.status)
         && state.activeTurn?.turnId === fence.turnId
         && state.activeTurn.executionId === execution.executionId
@@ -410,6 +414,7 @@ function matchesTransitionLiveFence(
     transition: GoalSessionControlTransition,
 ): current is GoalSessionState {
     if (!current || current.controllerEpoch !== transition.fence.controllerEpoch
+        || current.providerBarrierIntent?.phase === 'pending'
         || current.status === 'cancelling' || current.status === 'terminated' || current.status === 'failed') return false;
     if (transition.turnScoped !== true) return true;
     if (!('turnId' in transition.fence)) return false;

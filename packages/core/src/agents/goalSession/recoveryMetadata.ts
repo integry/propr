@@ -28,7 +28,7 @@ const PROVIDER_CODECS: Readonly<Record<RecoveryProvider, Codec>> = {
     codex: {
         protocolVersion: 'app-server-0.146.0',
         required: ['threadId', 'initialized'],
-        optional: ['sessionId', 'turnId', 'checkpoint'],
+        optional: ['sessionId', 'turnId', 'checkpoint', 'openKey', 'repository', 'model', 'providerHomeIdentity'],
     },
     claude: {
         protocolVersion: 'cli-2.1.220',
@@ -67,6 +67,31 @@ export function sanitizeRecoveryMetadata(
     return decodeLegacyV1(value);
 }
 
+/**
+ * New provider ingress is v2-only for the three pinned providers.  Unknown
+ * embedding adapters retain their closed legacy codec for source compatibility;
+ * an existing v1 durable record may be read, but can never be returned by a
+ * successful Codex/Claude/Antigravity interaction.
+ */
+export function sanitizeNewRecoveryMetadata(
+    value: GoalSessionJsonValue,
+    expectedProvider: string,
+): GoalSessionJsonValue {
+    const decoded = sanitizeRecoveryMetadata(value, expectedProvider);
+    if (expectedProvider === 'codex' || expectedProvider === 'claude' || expectedProvider === 'antigravity') {
+        if (!isPlainObject(decoded) || decoded.version !== GOAL_RECOVERY_METADATA_CODEC_VERSION
+            || !isPlainObject(decoded.payload)) invalid('New provider recovery metadata must use the pinned v2 codec');
+        const payload = decoded.payload as Record<string, GoalSessionJsonValue>;
+        const required = expectedProvider === 'codex'
+            ? ['threadId', 'sessionId', 'initialized', 'openKey', 'repository', 'model', 'providerHomeIdentity']
+            : PROVIDER_CODECS[expectedProvider].required;
+        if (required.some(field => payload[field] === undefined)) {
+            invalid('New provider recovery metadata is missing an exact identity');
+        }
+    }
+    return decoded;
+}
+
 function decodeV2(value: Record<string, GoalSessionJsonValue>, expectedProvider?: string): GoalSessionJsonValue {
     exactFields(value, ['version', 'provider', 'protocolVersion', 'payload', 'usage']);
     const provider = providerName(value.provider);
@@ -86,7 +111,11 @@ function decodeV2(value: Record<string, GoalSessionJsonValue>, expectedProvider?
             ? safeBoolean(candidate, field)
             : field === 'manifestVersion' || field === 'transcriptCursor'
                 ? safeNonNegativeInteger(candidate, field)
-                : safeIdentifier(candidate, field);
+                : field === 'repository'
+                    ? safeRepositoryIdentity(candidate)
+                    : field === 'providerHomeIdentity'
+                        ? safeProviderHomeIdentity(candidate)
+                        : safeIdentifier(candidate, field);
     }
     return {
         version: GOAL_RECOVERY_METADATA_CODEC_VERSION,
@@ -162,6 +191,19 @@ function safeNonNegativeInteger(value: GoalSessionJsonValue | undefined, field: 
 
 function safeBoolean(value: GoalSessionJsonValue, field: string): boolean {
     if (typeof value !== 'boolean') invalid(`Recovery metadata contains an invalid ${field}`);
+    return value;
+}
+
+function safeRepositoryIdentity(value: GoalSessionJsonValue | undefined): string {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value)
+        || Buffer.byteLength(value) > 512 || SECRET_VALUE.test(value)) invalid('Recovery repository identity is invalid');
+    return value;
+}
+
+function safeProviderHomeIdentity(value: GoalSessionJsonValue | undefined): string {
+    if (value !== '/home/node/.codex' && value !== '/home/node/.claude' && value !== '/home/node/.gemini') {
+        invalid('Recovery provider-home identity is invalid');
+    }
     return value;
 }
 

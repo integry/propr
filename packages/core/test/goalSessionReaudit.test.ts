@@ -70,7 +70,15 @@ class ReauditAdapter implements GoalSessionAdapter {
     beginTurn(request: GoalBeginTurnRequest): AsyncIterable<GoalSessionEvent> {
         this.turnCalls.push(structuredClone(request));
         if (request.modelChange) this.turnModelEffects.add(request.modelChange.modelChangeId);
-        return this.stream(request);
+        const stream = this.stream(request);
+        return (async function* () {
+            if (request.modelChange) yield {
+                type: 'model_changed' as const,
+                model: request.requestedModel,
+                providerEventId: `accepted-${request.modelChange.modelChangeId}-${request.modelChange.generation}`,
+            };
+            yield* stream;
+        })();
     }
 
     async resumeSession(

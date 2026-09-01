@@ -1,4 +1,7 @@
-import type { GoalProviderOpenContext, GoalSessionIdentity, GoalSessionState } from './contract.js';
+import type {
+    GoalProviderDuplexTransport, GoalProviderOpenContext, GoalProviderOperationFence, GoalRepositoryIdentity,
+    GoalSessionIdentity, GoalSessionState,
+} from './contract.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
     GoalSessionContractError,
@@ -12,10 +15,12 @@ import {
     compactImmediateModelIntents,
     hasUnresolvedImmediateModelIntent,
     immediateModelIntents,
+    latestImmediateModelIntent,
 } from './modelChangeProtocol.js';
 import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 import { assertSafeProviderIdentifier, safeFailureDiagnostic } from './securityBoundary.js';
 import { SUPERVISED_CODEX_MODEL } from './CodexAppServerOpen.js';
+import { rebuildProviderSnapshot } from './providerResultBoundary.js';
 import { credentialFreeRepositoryIdentity } from './repositorySecurity.js';
 import {
     assertProviderIdentity,
@@ -30,6 +35,25 @@ export interface OpenGoalSessionRequest extends GoalSessionIdentity {
     provider: string;
     controllerEpoch: number;
     openContext?: GoalProviderOpenContext;
+    /** Preferred eager-open API: transport construction occurs after the exact durable claim. */
+    supervisedOpen?: GoalSupervisedOpenPlan;
+}
+
+export interface GoalSupervisedOpenClaim {
+    executionId: string;
+    attemptId: string;
+    deterministicOpenKey: string;
+    operationGeneration: number;
+    /** Serializable provider-visible fence checked before process construction. */
+    operationFence: GoalProviderOperationFence;
+}
+
+export interface GoalSupervisedOpenPlan {
+    repository: GoalRepositoryIdentity;
+    requestedModel: string;
+    providerHomeTarget: string;
+    credentialTargets: string[];
+    createTransport(claim: Readonly<GoalSupervisedOpenClaim>): Promise<GoalProviderDuplexTransport>;
 }
 
 export type { ReconcileGoalSessionResult } from './GoalSessionRecoveryControls.js';
@@ -50,10 +74,15 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 'UNSUPPORTED_PROVIDER',
             );
         }
-        const openContext = await this.validateEagerOpenContext(request);
+        if (request.openContext && request.supervisedOpen) throw new GoalSessionContractError(
+            'Eager open accepts one supervised transport source', 'UNSAFE_PROVIDER_VALUE',
+        );
+        const openContext = request.openContext === undefined
+            ? undefined : await this.validateEagerOpenContext(request);
+        if (request.supervisedOpen) await this.validateSupervisedOpenPlan(request.supervisedOpen);
         request = {
             goalId: request.goalId, sessionId: request.sessionId, provider: request.provider,
-            controllerEpoch: request.controllerEpoch, openContext,
+            controllerEpoch: request.controllerEpoch, openContext, supervisedOpen: request.supervisedOpen,
         };
 
         const opened = await this.loadOrCreateForOpen(request);
@@ -180,7 +209,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             throw new GoalSessionContractError('Codex credential targets are unsafe', 'UNSAFE_PROVIDER_VALUE');
         }
         const repository = await credentialFreeRepositoryIdentity(context.repository);
-        if (!isDeepStrictEqual(repository, context.repository)
+        if (!isExactRepositoryIdentity(repository, context.repository)
             || context.providerHomeTarget !== '/home/node/.codex'
             || typeof context.transport.write !== 'function'
             || typeof context.transport.closeInput !== 'function'
@@ -193,8 +222,28 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             executionId: context.executionId, attemptId: context.attemptId,
             repository, requestedModel: context.requestedModel,
             providerHomeTarget: context.providerHomeTarget,
-            credentialTargets: [...context.credentialTargets], transport: context.transport,
+            credentialTargets: [...context.credentialTargets],
+            deterministicOpenKey: context.deterministicOpenKey,
+            transport: context.transport,
         };
+    }
+
+    private async validateSupervisedOpenPlan(plan: GoalSupervisedOpenPlan): Promise<void> {
+        if (this.adapter.provider !== 'codex' || this.adapter.capabilities.nativeSessionId !== 'eager') {
+            throw new GoalSessionContractError('Supervised eager open is Codex-only', 'UNSAFE_PROVIDER_VALUE');
+        }
+        if (plan.requestedModel !== SUPERVISED_CODEX_MODEL || plan.providerHomeTarget !== '/home/node/.codex'
+            || typeof plan.createTransport !== 'function') throw new GoalSessionContractError(
+            'Supervised Codex open plan is not canonical', 'UNSAFE_PROVIDER_VALUE',
+        );
+        const repository = await credentialFreeRepositoryIdentity(plan.repository);
+        if (!isExactRepositoryIdentity(repository, plan.repository)
+            || !Array.isArray(plan.credentialTargets) || plan.credentialTargets.length > 16
+            || plan.credentialTargets.some(target => typeof target !== 'string'
+                || !target.startsWith('/home/node/.codex/') || target.includes('\0'))
+            || new Set(plan.credentialTargets).size !== plan.credentialTargets.length) {
+            throw new GoalSessionContractError('Supervised Codex open plan is unsafe', 'UNSAFE_PROVIDER_VALUE');
+        }
     }
 
     private async openFirstTurnIdentitySession(
@@ -361,22 +410,34 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             const operationFence = this.providerOperationFence(
                 request, operationGeneration, { kind: 'open', operationId: providerOpenAttemptId },
             );
-            const snapshot = await this.providerEffect(() => this.adapter.openSession({
+            const openContext = await this.resolveClaimedOpenContext(
+                request, state, deterministicOpenKey, operationGeneration,
+            );
+            const authoritative = await this.requireProviderGeneration(request, operationGeneration);
+            if (authoritative.providerOpenAttemptId !== providerOpenAttemptId) {
+                throw new StaleGoalSessionFenceError('Provider open claim was durably replaced');
+            }
+            const effectiveOpenKey = deterministicOpenKey ?? openContext?.deterministicOpenKey;
+            const snapshot = await this.providerResult(() => this.adapter.openSession({
                 goalId: request.goalId,
                 sessionId: request.sessionId,
                 provider: request.provider,
                 controllerEpoch: request.controllerEpoch,
                 persisted,
-                deterministicOpenKey,
+                deterministicOpenKey: effectiveOpenKey,
                 attemptId: providerOpenAttemptId,
                 operationGeneration,
                 operationFence,
-                openContext: request.openContext,
-            }));
+                openContext: openContext ? {
+                    ...openContext,
+                    deterministicOpenKey: effectiveOpenKey,
+                } : undefined,
+            }), value => rebuildProviderSnapshot(value, this.adapter.provider));
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata, this.adapter.provider);
             assertProviderIdentity(state, snapshot);
             const preserveIntentModel = this.adapter.capabilities.modelChange === 'next_safe_boundary'
-                && hasUnresolvedImmediateModelIntent(state);
+                ? hasUnresolvedImmediateModelIntent(state)
+                : latestImmediateModelIntent(state)?.invocationEvidence !== undefined;
             const saved = await this.ports.state.compareAndSet(state, nextState(state, {
                 providerSessionId: snapshot.providerSessionId,
                 recoveryMetadata: sanitizeRecoveryMetadata(snapshot.recoveryMetadata, this.adapter.provider),
@@ -396,6 +457,64 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             throw error;
         }
     }
+
+    private async resolveClaimedOpenContext(
+        request: OpenGoalSessionRequest,
+        state: GoalSessionState,
+        deterministicKey: string | undefined,
+        operationGeneration: number,
+    ): Promise<GoalProviderOpenContext | undefined> {
+        if (!request.supervisedOpen) return request.openContext;
+        const openKey = deterministicKey ?? durableCodexOpenKey(state);
+        if (!openKey || !state.providerOpenAttemptId) throw new GoalSessionContractError(
+            'Supervised open claim is missing its durable identity', 'OPEN_ATTEMPT_MISSING',
+        );
+        const claim: GoalSupervisedOpenClaim = {
+            executionId: this.controlOperationId('open-execution', state),
+            attemptId: state.providerOpenAttemptId,
+            deterministicOpenKey: openKey,
+            operationGeneration,
+            operationFence: this.providerOperationFence(
+                request, operationGeneration, { kind: 'open', operationId: state.providerOpenAttemptId },
+            ),
+        };
+        const authoritative = await this.requireProviderGeneration(request, operationGeneration);
+        if (authoritative.providerOpenAttemptId !== claim.attemptId) {
+            throw new StaleGoalSessionFenceError('Supervised provider transport claim was durably replaced');
+        }
+        const transport = await this.providerEffect(() => request.supervisedOpen!.createTransport(Object.freeze({ ...claim })));
+        return this.validateEagerOpenContext({
+            ...request,
+            openContext: {
+                ...claim,
+                repository: request.supervisedOpen.repository,
+                requestedModel: request.supervisedOpen.requestedModel,
+                providerHomeTarget: request.supervisedOpen.providerHomeTarget,
+                credentialTargets: [...request.supervisedOpen.credentialTargets],
+                transport,
+            },
+        });
+    }
+}
+
+function durableCodexOpenKey(state: GoalSessionState): string | undefined {
+    const metadata = state.recoveryMetadata;
+    if (!metadata || Array.isArray(metadata) || typeof metadata !== 'object') return undefined;
+    const payload = metadata.payload;
+    if (!payload || Array.isArray(payload) || typeof payload !== 'object') return undefined;
+    return typeof payload.openKey === 'string' ? payload.openKey : undefined;
+}
+
+function isExactRepositoryIdentity(
+    canonical: GoalRepositoryIdentity,
+    candidate: GoalRepositoryIdentity,
+): boolean {
+    const keys = Object.keys(candidate);
+    return keys.every(key => ['repository', 'worktreePath', 'branch', 'headSha'].includes(key))
+        && canonical.repository === candidate.repository
+        && canonical.worktreePath === candidate.worktreePath
+        && canonical.branch === candidate.branch
+        && canonical.headSha === candidate.headSha;
 }
 
 export {

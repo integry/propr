@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import Database from 'better-sqlite3';
 import type {
     GoalBeginTurnRequest, GoalProviderBarrierPublication, GoalProviderModelChangeRequest, GoalProviderOpenRequest,
-    GoalProviderOperationFence, GoalProviderSessionSnapshot, GoalSessionAdapter, GoalSessionEvent,
+    GoalProviderSessionSnapshot, GoalSessionAdapter, GoalSessionEvent,
 } from '../src/agents/goalSession/contract.js';
 import { GoalSessionSupervisor } from '../src/agents/goalSession/GoalSessionSupervisor.js';
 import { GoalSessionContractError } from '../src/agents/goalSession/errors.js';
@@ -136,26 +136,61 @@ test('host source policy blocks system, credential, and engine state while prese
     assert.equal(isSensitiveHostSourcePath('/usr/src/project'), false);
 });
 
-test('provider barrier compare and first effect are atomic for every primitive kind', async t => {
+test('supervisor cancellation claim wins at the process-like adapter first-effect transaction', async t => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-barrier-audit-'));
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
     const filename = path.join(directory, 'provider.sqlite');
-    const publisher = new ProviderBarrierDatabase(filename);
-    const effect = new ProviderBarrierDatabase(filename);
-    t.after(() => { publisher.close(); effect.close(); });
-    const kinds: GoalProviderOperationFence['kind'][] = [
-        'open', 'turn', 'resume', 'reconcile', 'steer', 'model', 'pause', 'cancel',
-    ];
-    for (const [index, kind] of kinds.entries()) {
-        const oldGeneration = index * 2 + 1;
-        publisher.publish(oldGeneration);
-        const fence: GoalProviderOperationFence = {
-            ...identity, generation: oldGeneration, operationId: `${kind}-${index}`, kind,
-        };
-        publisher.publish(oldGeneration + 1);
-        assert.equal(effect.tryEffect(fence), false, kind);
+    const supervisorPorts = new SqliteGoalSessionTestPorts(filename);
+    const adapterPorts = new SqliteGoalSessionTestPorts(filename);
+    t.after(() => { supervisorPorts.close(); adapterPorts.close(); });
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    let releaseCancellation!: () => void;
+    const turnGate = new Promise<void>(resolve => { releaseTurn = resolve; });
+    const started = new Promise<void>(resolve => { turnStarted = resolve; });
+    const cancellationGate = new Promise<void>(resolve => { releaseCancellation = resolve; });
+    class ProcessLikeAdapter extends IdentityAuditAdapter {
+        override async publishOperationBarrier(publication: GoalProviderBarrierPublication): Promise<void> {
+            if (publication.pendingCancellationId) await cancellationGate;
+        }
+        override async *beginTurn(request: GoalBeginTurnRequest): AsyncIterable<GoalSessionEvent> {
+            turnStarted();
+            await turnGate;
+            if (!adapterPorts.tryProviderEffect(request.operationFence)) throw new Error('stale effect rejected');
+            yield { type: 'completion', outcome: 'succeeded' };
+        }
     }
-    assert.equal(effect.effectCount(), 0);
+    const adapter = new ProcessLikeAdapter('next_turn');
+    const first = new GoalSessionSupervisor(adapter, supervisorPorts.asRuntimePorts());
+    await first.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    const running = first.runTurn({
+        ...identity, controllerEpoch: 1, turnId: 'barrier-turn', executionId: 'barrier-execution',
+        attemptId: 'barrier-attempt', objective: 'prove exact provider boundary',
+        repository: { repository: 'integry/propr', worktreePath: '/tmp/provider-boundary', branch: 'audit' },
+        requestedModel: 'model-0',
+    });
+    await started;
+    const cancelling = new GoalSessionSupervisor(adapter, adapterPorts.asRuntimePorts()).cancel({
+        ...identity, controllerEpoch: 1, reason: 'invalidate before first effect',
+    });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((await supervisorPorts.load(identity))?.providerBarrierIntent?.phase === 'pending') break;
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const invalidated = (await supervisorPorts.load(identity))!;
+    for (const kind of ['open', 'turn', 'resume', 'reconcile', 'steer', 'model', 'pause', 'cancel'] as const) {
+        assert.equal(adapterPorts.tryProviderEffect({
+            ...identity,
+            generation: (invalidated.providerOperationGeneration ?? 1) - 1,
+            operationId: `stale-${kind}`,
+            kind,
+        }), false, kind);
+    }
+    releaseTurn();
+    await assert.rejects(running, /Provider operation failed safely/);
+    assert.equal(adapterPorts.providerEffectCount(), 0);
+    releaseCancellation();
+    assert.equal((await cancelling).status, 'terminated');
 });
 
 test('independent processes allocate unique exact model order and deterministically retain newest 64', async t => {
@@ -201,38 +236,6 @@ test('independent processes allocate unique exact model order and deterministica
     assert.equal(rows.filter(row => row.status === 'settled').length, 64);
     assert.equal(rows.filter(row => row.status === 'retired').length, 37);
 });
-
-class ProviderBarrierDatabase {
-    private readonly database: Database.Database;
-    constructor(filename: string) {
-        this.database = new Database(filename);
-        this.database.pragma('journal_mode = WAL');
-        this.database.pragma('busy_timeout = 5000');
-        this.database.exec(`
-            CREATE TABLE IF NOT EXISTS provider_barrier(scope TEXT PRIMARY KEY, generation INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS provider_effects(operation_id TEXT PRIMARY KEY);
-        `);
-    }
-    publish(generation: number): void {
-        this.database.prepare(`
-            INSERT INTO provider_barrier(scope, generation) VALUES (?, ?)
-            ON CONFLICT(scope) DO UPDATE SET generation = MAX(generation, excluded.generation)
-        `).run(`${identity.goalId}\0${identity.sessionId}`, generation);
-    }
-    tryEffect(fence: GoalProviderOperationFence): boolean {
-        return this.database.transaction(() => {
-            const current = this.database.prepare('SELECT generation FROM provider_barrier WHERE scope = ?')
-                .get(`${fence.goalId}\0${fence.sessionId}`) as { generation: number } | undefined;
-            if (!current || fence.generation < current.generation) return false;
-            this.database.prepare('INSERT INTO provider_effects(operation_id) VALUES (?)').run(fence.operationId);
-            return true;
-        }).immediate();
-    }
-    effectCount(): number {
-        return (this.database.prepare('SELECT COUNT(*) AS count FROM provider_effects').get() as { count: number }).count;
-    }
-    close(): void { this.database.close(); }
-}
 
 function runChildProcess(source: string): Promise<void> {
     return new Promise((resolve, reject) => {

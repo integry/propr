@@ -576,6 +576,10 @@ test('recovered after-turn retry preserves a concurrent newer model intent and a
                 adapter.modelRequests.push(request.requestedModel);
                 adapter.modelStarted?.();
                 if (adapter.holdModel) await adapter.holdModel;
+                if (request.modelChange) yield {
+                    type: 'model_changed', model: request.requestedModel,
+                    providerEventId: `accepted-${request.modelChange.modelChangeId}-${request.modelChange.generation}`,
+                } as const;
                 yield { type: 'completion', outcome: 'succeeded' } as const;
             })();
         }

@@ -240,8 +240,20 @@ function decodeModelIntent(value: unknown): GoalModelChangeIntent {
     if (input.leaseExpiresAt !== undefined) result.leaseExpiresAt = timestamp(input.leaseExpiresAt, 'modelChangeIntent.leaseExpiresAt');
     if (input.acknowledgement !== undefined) result.acknowledgement = decodeAcknowledgement(input.acknowledgement);
     if (input.invocationEvidence !== undefined) {
-        const evidence = record(input.invocationEvidence, ['executionId', 'attemptId', 'occurrenceId', 'acceptedAt'], 'modelChangeIntent.invocationEvidence');
-        result.invocationEvidence = { executionId: id(evidence.executionId, 'invocationEvidence.executionId'), attemptId: id(evidence.attemptId, 'invocationEvidence.attemptId'), occurrenceId: id(evidence.occurrenceId, 'invocationEvidence.occurrenceId'), acceptedAt: timestamp(evidence.acceptedAt, 'invocationEvidence.acceptedAt') };
+        const evidence = record(input.invocationEvidence, [
+            'executionId', 'attemptId', 'modelChangeId', 'generation', 'occurrenceId',
+            'requestedModel', 'effectiveModel', 'acceptedAt',
+        ], 'modelChangeIntent.invocationEvidence');
+        result.invocationEvidence = {
+            executionId: id(evidence.executionId, 'invocationEvidence.executionId'),
+            attemptId: id(evidence.attemptId, 'invocationEvidence.attemptId'),
+            modelChangeId: id(evidence.modelChangeId, 'invocationEvidence.modelChangeId'),
+            generation: integer(evidence.generation, 'invocationEvidence.generation'),
+            occurrenceId: id(evidence.occurrenceId, 'invocationEvidence.occurrenceId'),
+            requestedModel: id(evidence.requestedModel, 'invocationEvidence.requestedModel'),
+            effectiveModel: id(evidence.effectiveModel, 'invocationEvidence.effectiveModel'),
+            acceptedAt: timestamp(evidence.acceptedAt, 'invocationEvidence.acceptedAt'),
+        };
     }
     return result;
 }
@@ -261,10 +273,34 @@ function decodeUsageAccounting(value: unknown): GoalUsageAccounting {
 }
 
 function validateStateRelationships(state: GoalSessionState): void {
+    validateStatusRelationships(state);
     validateBarrierRelationships(state);
     validateOperationGenerations(state);
     validateStateCollections(state);
     validateModelGenerations(state);
+}
+
+function validateStatusRelationships(state: GoalSessionState): void {
+    const turn = state.activeTurn;
+    const live = turn && !['completed', 'cancelled', 'failed'].includes(turn.status);
+    if ((state.status === 'running' && turn?.status !== 'running')
+        || (state.status === 'pause_requested' && turn?.status !== 'pause_requested')
+        || (state.status === 'paused' && turn !== undefined && turn.status !== 'paused')
+        || (state.status === 'idle' && live)
+        || (state.status === 'initializing' && turn !== undefined)
+        || ((state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') && live)) {
+        invalid('status/activeTurn relationship');
+    }
+    if (turn && turn.executionEpoch > state.controllerEpoch) invalid('activeTurn.executionEpoch');
+    if (state.status === 'cancelling' && (!state.cancellationIntent || turn !== undefined)) invalid('cancelling state');
+    if (state.cancellationIntent && state.status !== 'cancelling' && state.status !== 'terminated' && state.status !== 'failed') {
+        invalid('cancellationIntent status');
+    }
+    if (state.pendingAfterTurnPause
+        && state.status !== 'running' && state.status !== 'pause_requested' && state.status !== 'paused') {
+        invalid('pendingAfterTurnPause');
+    }
+    if (state.retryTurn && (state.activeTurn || state.status !== 'idle')) invalid('retryTurn');
 }
 
 function validateBarrierRelationships(state: GoalSessionState): void {
@@ -276,12 +312,28 @@ function validateBarrierRelationships(state: GoalSessionState): void {
     }
     if (state.cancellationIntent?.pendingContext && state.providerSessionId) invalid('cancellationIntent.pendingContext');
     if (state.status === 'cancelling' && !state.cancellationIntent) invalid('cancellationIntent');
+    if (state.status === 'cancelling'
+        && (state.providerBarrierIntent?.kind !== 'cancellation'
+            || state.providerBarrierIntent.generation !== state.providerOperationGeneration)) {
+        invalid('cancelling barrier');
+    }
     if (state.providerBarrierIntent?.kind === 'cancellation'
         && (!state.cancellationIntent
             || state.providerBarrierIntent.pendingCancellationId !== state.cancellationIntent.cancellationId)) {
         invalid('providerBarrierIntent.pendingCancellationId');
     }
-    if (state.activeTurn && state.activeTurn.executionEpoch > state.controllerEpoch) invalid('activeTurn.executionEpoch');
+    if (state.providerBarrierIntent?.kind === 'cancellation' && state.status !== 'cancelling') invalid('cancellation barrier status');
+    if (state.providerBarrierIntent?.kind === 'terminal'
+        && state.status !== 'terminated' && state.status !== 'failed') invalid('terminal barrier status');
+    if (state.providerBarrierIntent?.pendingCancellationId !== undefined
+        && state.providerBarrierIntent.kind !== 'cancellation' && state.providerBarrierIntent.kind !== 'terminal') {
+        invalid('providerBarrierIntent.pendingCancellationId');
+    }
+    if (state.providerBarrierIntent?.kind === 'terminal'
+        && (!state.cancellationIntent
+            || state.providerBarrierIntent.pendingCancellationId !== state.cancellationIntent.cancellationId)) {
+        invalid('terminal pendingCancellationId');
+    }
     if (state.initializationIntent && state.providerSessionId) invalid('initializationIntent');
 }
 
@@ -292,14 +344,50 @@ function validateOperationGenerations(state: GoalSessionState): void {
     }
     if (state.resumeIntent && (state.resumeIntent.controllerEpoch > state.controllerEpoch
         || state.resumeIntent.operationGeneration > (state.providerOperationGeneration ?? -1))) invalid('resumeIntent');
+    if (state.resumeIntent && state.recoveryAttempt) invalid('resume/recovery overlap');
+    if (state.recoveryAttempt && state.completedRecovery) invalid('recovery/completedRecovery overlap');
+    if (state.recoveryAttempt) {
+        const recovery = state.recoveryAttempt;
+        if (state.recoveryAttemptId !== recovery.attemptId) invalid('recoveryAttemptId');
+        if ((recovery.authoritativeAttemptId === undefined) !== (recovery.authoritativeExecutionId === undefined)) {
+            invalid('recovery authoritative identity');
+        }
+        if (recovery.authoritativeAttemptId !== undefined
+            && (recovery.authoritativeAttemptId !== state.activeTurn?.attemptId
+                || recovery.authoritativeExecutionId !== state.activeTurn?.executionId)) {
+            invalid('recovery authoritative identity');
+        }
+        if (recovery.sessionStatus !== undefined && recovery.sessionStatus !== state.status) {
+            invalid('recovery sessionStatus');
+        }
+        if (recovery.authoritativeTurnStatus !== undefined
+            && recovery.authoritativeTurnStatus !== state.activeTurn?.status) invalid('recovery turnStatus');
+    }
+    if (state.resumeIntent && state.completedResume
+        && (state.resumeIntent.operationId !== state.completedResume.operationId
+            || state.resumeIntent.operationGeneration !== state.completedResume.operationGeneration
+            || state.resumeIntent.kind !== state.completedResume.kind
+            || state.resumeIntent.controllerEpoch !== state.completedResume.controllerEpoch
+            || state.resumeIntent.phase !== 'settled')) invalid('completedResume');
+    if (state.resumeIntent?.kind === 'active_turn' || state.resumeIntent?.kind === 'recovered_after_turn') {
+        if (!state.resumeIntent.turnId || state.resumeIntent.turnId !== state.activeTurn?.turnId) invalid('resumeIntent.turnId');
+    } else if (state.resumeIntent?.turnId !== undefined) invalid('resumeIntent.turnId');
     if (state.providerOpenOperationGeneration !== undefined
         && state.providerOpenOperationGeneration > (state.providerOperationGeneration ?? -1)) {
         invalid('providerOpenOperationGeneration');
     }
+    if ((state.providerOpenAttemptId === undefined) !== (state.providerOpenOperationGeneration === undefined)) {
+        invalid('provider open identity');
+    }
+    if (state.activeTurn?.providerOperationGeneration !== undefined
+        && state.activeTurn.providerOperationGeneration > (state.providerOperationGeneration ?? -1)) {
+        invalid('activeTurn.providerOperationGeneration');
+    }
 }
 
 function validateStateCollections(state: GoalSessionState): void {
-    if (state.completedTurns && state.completedTurns.some(turn => !state.completedTurnIds.includes(turn.turnId))) invalid('completedTurns');
+    if (state.completedTurns && (state.completedTurns.some(turn => !state.completedTurnIds.includes(turn.turnId))
+        || state.completedTurns.length !== state.completedTurnIds.length)) invalid('completedTurns');
     if (new Set(state.completedTurnIds).size !== state.completedTurnIds.length
         || state.completedTurns && new Set(state.completedTurns.map(turn => turn.turnId)).size !== state.completedTurns.length) {
         invalid('completedTurns');
@@ -307,11 +395,74 @@ function validateStateCollections(state: GoalSessionState): void {
     if (state.usageAccounting && new Set(state.usageAccounting.occurrences).size !== state.usageAccounting.occurrences.length) {
         invalid('usageAccounting.occurrences');
     }
+    if (state.completedTurns) {
+        for (const completed of state.completedTurns) {
+            if (state.activeTurn?.turnId === completed.turnId
+                && (state.activeTurn.executionId !== completed.executionId
+                    || state.activeTurn.attemptId !== completed.attemptId
+                    || !['completed', 'cancelled', 'failed'].includes(state.activeTurn.status))) {
+                invalid('completed/current turn identity');
+            }
+        }
+    }
 }
 
 function validateModelGenerations(state: GoalSessionState): void {
-    const generations = state.modelChangeIntents?.map(intent => intent.generation ?? 0) ?? [];
+    const intents = state.modelChangeIntents ?? [];
+    if (new Set(intents.map(intent => intent.modelChangeId)).size !== intents.length) invalid('duplicate modelChangeIds');
+    const generations = intents.map(intent => intent.generation ?? 0);
     if (generations.some((generation, index) => index > 0 && generation <= generations[index - 1])) invalid('modelChangeIntents.generation');
+    const tail = intents.at(-1);
+    if (state.modelChangeIntents !== undefined && state.modelChangeIntent
+        && (!tail || JSON.stringify(state.modelChangeIntent) !== JSON.stringify(tail))) {
+        invalid('modelChangeIntent tail');
+    }
+    if (state.modelChangeIntents !== undefined && !state.modelChangeIntent && tail) invalid('modelChangeIntent tail');
+    if ((state.modelChangeGeneration ?? 0) < (tail?.generation ?? 0)) invalid('modelChangeGeneration');
+    if (state.pendingModelChange !== undefined
+        && (!tail || tail.model !== state.pendingModelChange
+            || tail.phase === 'committed' || tail.phase === 'superseded')) invalid('pendingModelChange');
+    for (const intent of intents.length ? intents : state.modelChangeIntent ? [state.modelChangeIntent] : []) {
+        validateModelIntentRelationships(intent);
+    }
+    if (tail?.phase === 'committed' && tail.acknowledgement?.effectiveModel !== undefined
+        && state.pendingModelChange === undefined && state.currentModel !== tail.acknowledgement.effectiveModel) {
+        invalid('currentModel/model acknowledgement');
+    }
+    if (state.activeTurn?.modelChange) {
+        const active = state.activeTurn.modelChange;
+        const intent = (intents.length ? intents : state.modelChangeIntent ? [state.modelChangeIntent] : [])
+            .find(candidate => candidate.modelChangeId === active.modelChangeId);
+        if (!intent || intent.generation !== active.generation || intent.model !== state.activeTurn.requestedModel) {
+            invalid('activeTurn.modelChange');
+        }
+    }
+}
+
+function validateModelIntentRelationships(intent: GoalModelChangeIntent): void {
+    const hasLease = intent.applicationToken !== undefined
+        || intent.applicationControllerEpoch !== undefined || intent.leaseExpiresAt !== undefined;
+    if (hasLease && (!intent.applicationToken || intent.applicationControllerEpoch === undefined || !intent.leaseExpiresAt)) {
+        invalid('model application lease');
+    }
+    if ((intent.phase === 'pending' || intent.phase === undefined)
+        && (hasLease || intent.acknowledgement || intent.invocationEvidence)) invalid('pending model phase');
+    if (intent.phase === 'provider_in_doubt' && (!hasLease || intent.acknowledgement || intent.invocationEvidence)) {
+        invalid('provider_in_doubt model phase');
+    }
+    if ((intent.phase === 'committed' || intent.phase === 'superseded') && !intent.acknowledgement) {
+        invalid('settled model acknowledgement');
+    }
+    if (intent.acknowledgement?.requestedModel !== undefined
+        && intent.acknowledgement.requestedModel !== intent.model) invalid('acknowledgement model mismatch');
+    if (intent.invocationEvidence) {
+        const evidence = intent.invocationEvidence;
+        if (intent.phase !== 'committed' || hasLease
+            || evidence.modelChangeId !== intent.modelChangeId
+            || evidence.generation !== intent.generation
+            || evidence.requestedModel !== intent.model
+            || evidence.effectiveModel !== intent.acknowledgement?.effectiveModel) invalid('model invocation evidence');
+    }
 }
 
 function record<const T extends readonly string[]>(value: unknown, fields: T, name: string): Record<T[number], unknown> {

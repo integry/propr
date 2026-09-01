@@ -17,7 +17,7 @@ export function safeDiagnostic(value: string, fallback: string): string {
 
 export function safeFailureDiagnostic(value: string, fallback: string): string {
     const normalized = safeDiagnostic(value, fallback);
-    return /(?:^|\s)(?:\/|\.\.\/)|[A-Za-z]:\\|(?:https?|ssh|git):\/\/|\S+@\S+:|\b(?:argv|command|mount|remote|endpoint|environment|config)\b/i.test(normalized)
+    return /(?:^|\s)(?:\/|\.\.?[\\/])|[A-Za-z]:[\\/]|(?:file|https?|ssh|git|docker|podman|tcp|unix):\/\/|\S+@\S+:|\b(?:argv|command|mount|remote|endpoint|environment|config|docker|podman|npm|npx|yarn|pnpm)\b/i.test(normalized)
         ? fallback : normalized.slice(0, 512);
 }
 
@@ -46,8 +46,8 @@ export function sanitizeGoalSessionEvent(event: GoalSessionEvent): GoalSessionEv
         case 'model_change_acknowledged': return { type: 'model_change_acknowledged', requestedModel: safeId(event.requestedModel), appliesAt: closed(event.appliesAt, ['immediate', 'next_safe_boundary', 'next_turn'], 'model boundary') };
         case 'model_changed': return clean({ type: 'model_changed', previousModel: safeOptionalId(event.previousModel), model: safeId(event.model), providerEventId: safeOptionalId(event.providerEventId), providerEventOrdinal: nonNegativeInteger(event.providerEventOrdinal, 'providerEventOrdinal') });
         case 'turn_resumed': return { type: 'turn_resumed', turnId: safeId(event.turnId) };
-        case 'reconciliation': return { type: 'reconciliation', outcome: closed(event.outcome, ['alive', 'resumed', 'failed', 'blocked'], 'reconciliation outcome'), reason: safeFailureDiagnostic(event.reason, 'Provider reconciliation completed safely') };
-        case 'completion': return clean({ type: 'completion', outcome: closed(event.outcome, ['succeeded', 'failed', 'cancelled'], 'completion outcome'), summary: event.summary ? safeFailureDiagnostic(event.summary, '[redacted]') : undefined, error: event.error ? safeFailureDiagnostic(event.error, 'Provider operation failed') : undefined });
+        case 'reconciliation': return { type: 'reconciliation', outcome: closed(event.outcome, ['alive', 'resumed', 'failed', 'blocked'], 'reconciliation outcome'), reason: 'Provider reconciliation completed safely' };
+        case 'completion': return clean({ type: 'completion', outcome: closed(event.outcome, ['succeeded', 'failed', 'cancelled'], 'completion outcome'), summary: event.summary ? '[redacted]' : undefined, error: event.error ? 'Provider operation failed safely' : undefined });
     }
     throw new GoalSessionContractError('Provider emitted an unknown event type', 'INVALID_PROVIDER_EVENT');
 }

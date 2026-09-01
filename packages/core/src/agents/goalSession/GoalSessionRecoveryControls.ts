@@ -4,7 +4,7 @@ import type {
 } from './contract.js';
 import { StaleGoalSessionFenceError } from './errors.js';
 import { GoalSessionControls } from './GoalSessionControls.js';
-import { hasUnresolvedImmediateModelIntent } from './modelChangeProtocol.js';
+import { hasUnresolvedImmediateModelIntent, latestImmediateModelIntent } from './modelChangeProtocol.js';
 import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata, scrubDurableRecoveryMetadata } from './recoveryMetadata.js';
 import {
     assertLiveRecoveryLease, assertRecoverableExactState, completedRecoveryResult,
@@ -20,6 +20,7 @@ import {
 import { fingerprintGoalWorktree } from './worktreeIdentity.js';
 import { safeFailureDiagnostic } from './securityBoundary.js';
 import { expireRecoveryLease } from './providerBarrierProtocol.js';
+import { rebuildReconcileResult } from './providerResultBoundary.js';
 
 export type ReconcileGoalSessionResult = {
     outcome: 'alive' | 'resumed' | 'failed' | 'blocked';
@@ -46,6 +47,9 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
             const generation = (state.providerOperationGeneration ?? 0) + 1;
             const operationId = `replacement-e${controllerEpoch}-g${generation}`;
             const staged = await this.ports.state.compareAndSet(state, nextState(state, {
+                // Ownership changes in the same durable claim as invalidation.
+                // Old-controller appends are fenced even if publication hangs.
+                controllerEpoch,
                 providerOperationGeneration: generation,
                 providerBarrierIntent: {
                     generation, operationId, kind: 'replacement', phase: 'pending', claimedAt: nowIso(),
@@ -53,10 +57,9 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
             }));
             if (!staged) continue;
             await this.publishProviderOperationBarrier(staged, generation);
-            const current = await this.requireControlledStateForBarrier(oldFence);
+            const current = await this.requireControlledStateForBarrier({ ...identity, controllerEpoch });
             if (current.providerBarrierIntent?.operationId !== operationId) continue;
             const saved = await this.ports.state.compareAndSet(current, nextState(current, {
-                controllerEpoch,
                 providerBarrierIntent: { ...current.providerBarrierIntent, phase: 'published' },
             }));
             if (saved) return saved;
@@ -108,13 +111,14 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
         try {
             const operation = state.recoveryAttempt!;
             await this.publishProviderOperationBarrier(prepared.fence, operation.operationGeneration);
+            await this.requireProviderGeneration(prepared.fence, operation.operationGeneration);
             const operationFence = this.providerOperationFence(
                 prepared.fence, operation.operationGeneration, {
                     kind: 'reconcile', operationId: operation.operationToken,
                     leaseExpiresAt: operation.leaseExpiresAt,
                 },
             );
-            result = await this.providerEffect(() => this.adapter.reconcile({
+            result = await this.providerResult(() => this.adapter.reconcile({
                 goalId: identity.goalId,
                 sessionId: identity.sessionId,
                 ...recovery.execution,
@@ -127,7 +131,7 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                 persisted: persistedSnapshot(state),
                 container: prepared.container,
                 repository: prepared.repository,
-            }));
+            }), value => rebuildReconcileResult(value, this.adapter.provider));
         } catch (error) {
             await this.requireLiveRecoveryLease(
                 prepared.fence, recovery.execution, state.recoveryAttempt!.operationToken,
@@ -260,7 +264,8 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
             return { outcome: 'failed', reason, state: saved };
         }
         const preserveIntentModel = this.adapter.capabilities.modelChange === 'next_safe_boundary'
-            && hasUnresolvedImmediateModelIntent(state);
+            ? hasUnresolvedImmediateModelIntent(state)
+            : latestImmediateModelIntent(state)?.invocationEvidence !== undefined;
         let saved: GoalSessionState;
         try {
             saved = await this.commitControlTransition({

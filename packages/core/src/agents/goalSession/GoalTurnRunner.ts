@@ -7,6 +7,7 @@ import { assertProviderIdentity, nextState, persistedSnapshot, providerTurnConte
 import { duplicateTurnResult, type RunGoalTurnResult } from './turnDelivery.js';
 import { assertSafeProviderIdentifier, safeDiagnostic } from './securityBoundary.js';
 import { compactImmediateModelIntents, immediateModelIntents, nextModelGeneration } from './modelChangeProtocol.js';
+import { rebuildProviderSnapshot } from './providerResultBoundary.js';
 
 export interface RunGoalTurnRequest extends Omit<GoalBeginTurnRequest, 'executionId' | 'attemptId' |
     'correctiveMessages' | 'operationGeneration' | 'operationFence'> {
@@ -92,6 +93,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             nextTurnMessages: correctiveMessages,
             openStream: async () => {
                 await this.publishProviderOperationBarrier(safeRequest, operationGeneration);
+                await this.requireTurnProviderGeneration(safeRequest, execution, operationGeneration);
                 return this.providerEffect(() => this.adapter.beginTurn(adapterRequest, providerTurnContext(claimed)));
             },
         });
@@ -197,7 +199,11 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
         let snapshot;
         try {
             await this.publishProviderOperationBarrier(fence, intent.operationGeneration);
-            snapshot = await this.providerEffect(() => this.adapter.resumeSession(providerRequest, persistedSnapshot(state)));
+            await this.requireProviderGeneration(fence, intent.operationGeneration);
+            snapshot = await this.providerResult(
+                () => this.adapter.resumeSession(providerRequest, persistedSnapshot(state)),
+                value => rebuildProviderSnapshot(value, this.adapter.provider),
+            );
         } catch (error) {
             await this.expireResumeOperation(fence, intent.operationId, intent.operationGeneration);
             throw error;
@@ -236,6 +242,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             nextTurnMessages: [],
             openStream: async () => {
                 await this.publishProviderOperationBarrier(fence, intent.operationGeneration);
+                await this.requireTurnProviderGeneration(turnFence, execution, intent.operationGeneration);
                 return this.providerEffect(() => resumeTurn({ ...turnFence, ...execution, ...providerRequest }, persistedSnapshot(state)));
             },
         });
@@ -259,6 +266,9 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             fence: turnFence, execution, initial: state, nextTurnMessages: [],
             openStream: async () => {
                 await this.publishProviderOperationBarrier(fence, state.resumeIntent!.operationGeneration);
+                await this.requireTurnProviderGeneration(
+                    turnFence, execution, state.resumeIntent!.operationGeneration,
+                );
                 return this.providerEffect(() => resumeTurn({ ...turnFence, ...execution, ...providerRequest }, persistedSnapshot(state)));
             },
         });
@@ -287,6 +297,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             fence: turnFence, execution, initial: state, nextTurnMessages: correctiveMessages,
             openStream: async () => {
                 await this.publishProviderOperationBarrier(fence, intent.operationGeneration);
+                await this.requireTurnProviderGeneration(turnFence, execution, intent.operationGeneration);
                 return this.providerEffect(() => this.adapter.beginTurn(adapterRequest, providerTurnContext(state)));
             },
         });
@@ -368,6 +379,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             nextTurnMessages: correctiveMessages,
             openStream: async () => {
                 await this.publishProviderOperationBarrier(fence, intent.operationGeneration);
+                await this.requireTurnProviderGeneration(turnFence, execution, intent.operationGeneration);
                 return this.providerEffect(() => this.adapter.beginTurn(adapterRequest, providerTurnContext(claimed)));
             },
         });
