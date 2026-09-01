@@ -791,6 +791,302 @@ function Invoke-WorkflowCleanupController(
   }
 }
 
+function Get-ExpectedEmptyReceipt($Manifest) {
+  $receipt = $Manifest.PSObject.Copy()
+  $receipt.State = 'EMPTY'
+  $receipt.Generation = [int64]$Manifest.Generation + 1
+  $receipt.AuthorityState = 'NONPROVISIONAL'
+  $receipt.BaselineClean = $false
+  $receipt.InstallAttempted = $false
+  $receipt.MsiTransactionState = 'NONE'
+  $receipt.Directories = @()
+  $receipt.Files = @()
+  $receipt.RegistryKeys = @()
+  $receipt.RegistryValues = @()
+  $receipt.Users = @()
+  $receipt.Profiles = @()
+  $json = $receipt | ConvertTo-Json -Depth 6 -Compress
+  return [PSCustomObject]@{
+    Record = $receipt
+    Json = $json
+    Bytes = [Text.Encoding]::UTF8.GetBytes($json)
+  }
+}
+
+function Test-ByteIdentical([byte[]]$Left, [byte[]]$Right) {
+  return $Left.Length -eq $Right.Length -and
+    [Convert]::ToBase64String($Left) -ceq [Convert]::ToBase64String($Right)
+}
+
+function Write-DurableTestCandidate([string]$Path, [byte[]]$Bytes) {
+  $stream = [IO.FileStream]::new(
+    $Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+    [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+  try {
+    $stream.Write($Bytes, 0, $Bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    $stream.Dispose()
+  }
+}
+
+function Start-WorkflowCleanupPublicationDeathFixture(
+  [ValidateSet('BEFORE','DURING','AFTER')][string]$Checkpoint,
+  [string]$ManifestPath,
+  [string]$RunId,
+  [string]$FixtureRoot
+) {
+  $eventName = "Local\ProPRInstalledAppPublication-$([Guid]::NewGuid().ToString('N'))"
+  $publicationEvent = [Threading.EventWaitHandle]::new(
+    $false, [Threading.EventResetMode]::ManualReset, $eventName)
+  $ownershipReadyEventName =
+    "Local\ProPRInstalledAppCleanup-$([Guid]::NewGuid().ToString('N'))"
+  $ownershipReadyEvent = [Threading.EventWaitHandle]::new(
+    $false, [Threading.EventResetMode]::ManualReset, $ownershipReadyEventName)
+  $cleanupWorkerPath = Join-Path $PSScriptRoot 'cleanup-installed-windows-app.ps1'
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $hostPath
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  foreach ($argument in @(
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $cleanupWorkerPath,
+    '-OwnershipManifest', $ManifestPath,
+    '-Installer', $dummyInstaller,
+    '-ExpectedRunId', $RunId,
+    '-OwnershipReadyEvent', $ownershipReadyEventName,
+    '-FixtureRoot', $FixtureRoot
+  )) {
+    $startInfo.ArgumentList.Add([string]$argument)
+  }
+  $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_PUBLICATION_CHECKPOINT'] = $Checkpoint
+  $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_PUBLICATION_EVENT'] = $eventName
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  try {
+    if (!$process.Start()) { throw 'durable publication cleanup helper did not start' }
+    [void]$ownershipReadyEvent.Set()
+    Assert-True ($publicationEvent.WaitOne(90000)) `
+      "$Checkpoint durable publication cleanup helper did not reach its death gate"
+    Assert-True (!$process.HasExited) `
+      "$Checkpoint durable publication cleanup helper exited before process death"
+    return [PSCustomObject]@{
+      Process = $process
+      Event = $publicationEvent
+      OwnershipReadyEvent = $ownershipReadyEvent
+    }
+  } catch {
+    if (!$process.HasExited) {
+      try { $process.Kill($true) } catch {}
+      try { [void]$process.WaitForExit(5000) } catch {}
+    }
+    $process.Dispose()
+    $publicationEvent.Dispose()
+    $ownershipReadyEvent.Dispose()
+    throw
+  }
+}
+
+function Stop-WorkflowCleanupPublicationDeathFixture($Fixture, [string]$Checkpoint) {
+  try {
+    Assert-True (!$Fixture.Process.HasExited) `
+      "$Checkpoint cleanup helper was not alive at its process-death gate"
+    $Fixture.Process.Kill($true)
+    Assert-True ($Fixture.Process.WaitForExit(5000)) `
+      "$Checkpoint cleanup helper process tree did not die within the bound"
+  } finally {
+    $Fixture.Process.Dispose()
+    $Fixture.Event.Dispose()
+    $Fixture.OwnershipReadyEvent.Dispose()
+  }
+}
+
+function New-InterruptedOwnedWorkflowFixture([string]$Name) {
+  $stateDirectory = New-StateDirectory $Name
+  $runId = [Guid]::NewGuid().ToString('N')
+  $manifestPath = Join-Path ([IO.Path]::GetTempPath()) `
+    "propr-installed-app-ownership-$runId.json"
+  $supervisor = [Diagnostics.Process]::new()
+  $supervisor.StartInfo = New-SupervisorStartInfo `
+    'OWNED_RESOURCES_FOR_INTERRUPTION' $stateDirectory '' $false `
+    $manifestPath $runId
+  try {
+    if (!$supervisor.Start()) { throw 'publication matrix supervisor did not start' }
+    $processState = Read-FixtureProcessState $stateDirectory
+    $owned = Read-FixtureResourceState $stateDirectory
+    $supervisor.Kill($false)
+    Assert-True ($supervisor.WaitForExit(5000)) `
+      'publication matrix supervisor did not die within the bound'
+    Assert-ProcessTreeGone $processState
+    Assert-True (Test-Path -LiteralPath $manifestPath -PathType Leaf) `
+      'publication matrix process death lost canonical authority'
+    return [PSCustomObject]@{
+      StateDirectory = $stateDirectory
+      RunId = $runId
+      ManifestPath = $manifestPath
+      Owned = $owned
+    }
+  } finally {
+    if (!$supervisor.HasExited) { try { $supervisor.Kill($true) } catch {} }
+    $supervisor.Dispose()
+  }
+}
+
+function New-InitialFixtureAuthority(
+  [string]$RunId,
+  [string]$FixtureRoot
+) {
+  $createdTicks = [DateTime]::UtcNow.Ticks
+  return [ordered]@{
+    SchemaVersion = 3
+    ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
+    State = 'ACTIVE'
+    Generation = [int64]0
+    AuthorityState = 'PROVISIONAL'
+    RunId = $RunId
+    CreatedUtcTicks = $createdTicks
+    ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
+    InstallerPath = $dummyInstaller
+    InstallerEntryIdentity = $dummyInstallerEntryIdentity
+    InstallerSha256 = $dummyInstallerSha256
+    InstallerProductCode = $dummyInstallerProductCode
+    Fixture = $true
+    FixtureRoot = $FixtureRoot
+    BaselineClean = $false
+    InstallAttempted = $false
+    MsiTransactionState = 'NONE'
+    Directories = @()
+    Files = @()
+    RegistryKeys = @()
+    RegistryValues = @()
+    Users = @()
+    Profiles = @()
+  }
+}
+
+function Test-DurablePublicationProcessDeathMatrix {
+  foreach ($checkpoint in @('BEFORE','DURING','AFTER')) {
+    $fixture = New-InterruptedOwnedWorkflowFixture `
+      "durable-publication-$($checkpoint.ToLowerInvariant())"
+    $canonicalBytes = [IO.File]::ReadAllBytes($fixture.ManifestPath)
+    $canonical = [Text.UTF8Encoding]::new($false, $true).GetString($canonicalBytes) |
+      ConvertFrom-Json -ErrorAction Stop
+    $expected = Get-ExpectedEmptyReceipt $canonical
+    $deathFixture = Start-WorkflowCleanupPublicationDeathFixture `
+      $checkpoint $fixture.ManifestPath $fixture.RunId $fixture.StateDirectory
+    try {
+      # Every checkpoint is reached only after the real cleanup worker has
+      # removed the exact authenticated tree and preserved all non-owned records.
+      Assert-OwnedResourcesGone $fixture.Owned
+      switch ($checkpoint) {
+        'BEFORE' {
+          Assert-True (!(Test-Path -LiteralPath "$($fixture.ManifestPath).new")) `
+            'BEFORE death unexpectedly created a replacement authority record'
+          Assert-True (Test-ByteIdentical `
+              $canonicalBytes ([IO.File]::ReadAllBytes($fixture.ManifestPath)) `
+            ) 'BEFORE death changed canonical authority'
+        }
+        'DURING' {
+          $candidatePath = "$($fixture.ManifestPath).new"
+          Assert-True (Test-Path -LiteralPath $candidatePath -PathType Leaf) `
+            'DURING death did not leave the flushed replacement authority record'
+          Assert-True (Test-ByteIdentical `
+              $canonicalBytes ([IO.File]::ReadAllBytes($fixture.ManifestPath)) `
+            ) 'DURING death changed canonical authority before atomic replacement'
+          Assert-True (Test-ByteIdentical `
+              $expected.Bytes ([IO.File]::ReadAllBytes($candidatePath)) `
+            ) 'DURING death candidate was not the byte-identical exact next generation'
+        }
+        'AFTER' {
+          Assert-True (!(Test-Path -LiteralPath "$($fixture.ManifestPath).new")) `
+            'AFTER death retained a replacement pathname after committed publication'
+          Assert-True (Test-ByteIdentical `
+              $expected.Bytes ([IO.File]::ReadAllBytes($fixture.ManifestPath)) `
+            ) 'AFTER death canonical authority was not the committed exact next generation'
+        }
+      }
+    } finally {
+      Stop-WorkflowCleanupPublicationDeathFixture $deathFixture $checkpoint
+    }
+
+    $retry = Invoke-WorkflowCleanupController `
+      $fixture.ManifestPath $fixture.RunId $fixture.StateDirectory
+    Assert-True ($retry.ExitCode -eq 0 -and $retry.ReportedExitCode -eq 0 -and
+        $retry.Result -ceq 'COMPLETE' -and
+        $retry.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
+      "$checkpoint process death did not resume through the real cleanup controller"
+    Assert-True (!(Test-Path -LiteralPath $fixture.ManifestPath) -and
+        !(Test-Path -LiteralPath "$($fixture.ManifestPath).new")) `
+      "$checkpoint retry retained consumed publication authority"
+    Assert-OwnedResourcesGone $fixture.Owned
+  }
+}
+
+function Test-InvalidDurablePublicationCandidates([string]$FixtureRoot) {
+  foreach ($candidateCase in @('PARTIAL','FOREIGN','STALE','GENERATION_MISMATCH')) {
+    $runId = [Guid]::NewGuid().ToString('N')
+    $manifestPath = Join-Path ([IO.Path]::GetTempPath()) `
+      "propr-installed-app-ownership-$runId.json"
+    $authority = New-InitialFixtureAuthority $runId $FixtureRoot
+    Write-TestOwnershipManifest $manifestPath $authority
+    $canonicalBytes = [IO.File]::ReadAllBytes($manifestPath)
+    $canonical = [Text.UTF8Encoding]::new($false, $true).GetString($canonicalBytes) |
+      ConvertFrom-Json -ErrorAction Stop
+    $expected = Get-ExpectedEmptyReceipt $canonical
+    $candidateBytes = switch ($candidateCase) {
+      'PARTIAL' {
+        [byte[]]$expected.Bytes[0..([Math]::Min(16, $expected.Bytes.Length - 1))]
+        break
+      }
+      'FOREIGN' {
+        $foreign = $expected.Record.PSObject.Copy()
+        $foreign.RunId = [Guid]::NewGuid().ToString('N')
+        [Text.Encoding]::UTF8.GetBytes(
+          ($foreign | ConvertTo-Json -Depth 6 -Compress))
+        break
+      }
+      'STALE' {
+        $stale = $expected.Record.PSObject.Copy()
+        $stale.CreatedUtcTicks = [DateTime]::UtcNow.AddHours(-4).Ticks
+        $stale.ExpiresUtcTicks = $stale.CreatedUtcTicks +
+          ([TimeSpan]::TicksPerHour * 3)
+        [Text.Encoding]::UTF8.GetBytes(
+          ($stale | ConvertTo-Json -Depth 6 -Compress))
+        break
+      }
+      'GENERATION_MISMATCH' {
+        $mismatched = $expected.Record.PSObject.Copy()
+        $mismatched.Generation = [int64]$expected.Record.Generation + 1
+        [Text.Encoding]::UTF8.GetBytes(
+          ($mismatched | ConvertTo-Json -Depth 6 -Compress))
+        break
+      }
+    }
+    $candidatePath = "$manifestPath.new"
+    Write-DurableTestCandidate $candidatePath $candidateBytes
+    $failed = Invoke-WorkflowCleanupController $manifestPath $runId $FixtureRoot
+    Assert-True ($failed.ExitCode -eq 21 -and $failed.ReportedExitCode -eq 21 -and
+        $failed.Result -ceq 'FAILED' -and
+        $failed.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
+      "$candidateCase .new authority was not rejected"
+    Assert-True (Test-ByteIdentical `
+        $canonicalBytes ([IO.File]::ReadAllBytes($manifestPath)) `
+      ) "$candidateCase .new authority changed canonical authority"
+    Assert-True (Test-ByteIdentical `
+        $candidateBytes ([IO.File]::ReadAllBytes($candidatePath)) `
+      ) "$candidateCase .new authority was not retained byte-identically"
+
+    Remove-Item -LiteralPath $candidatePath -Force -ErrorAction Stop
+    $retry = Invoke-WorkflowCleanupController $manifestPath $runId $FixtureRoot
+    Assert-True ($retry.ExitCode -eq 0 -and $retry.ReportedExitCode -eq 0 -and
+        $retry.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
+      "$candidateCase .new rejection did not preserve retry authority"
+    Assert-True (!(Test-Path -LiteralPath $manifestPath) -and
+        !(Test-Path -LiteralPath $candidatePath)) `
+      "$candidateCase .new retry retained consumed authority"
+  }
+}
+
 function Test-WorkflowCleanupStartupProtocol {
   foreach ($failureClass in @('PARSER','PARAMETER_BINDING','TYPE_LOAD','OTHER')) {
     $result = Invoke-WorkflowCleanupController `
@@ -1854,86 +2150,10 @@ function Test-PreExistingCleanupOwnership {
       }
     }
 
-    # A same-directory replacement collision must retain the authenticated
-    # generation. Once the untrusted/partial candidate is removed, the exact
-    # same cleanup request must be retryable to a durable EMPTY receipt.
-    $collisionRunId = [Guid]::NewGuid().ToString('N')
-    $collisionManifest = Join-Path ([IO.Path]::GetTempPath()) `
-      "propr-installed-app-ownership-$collisionRunId.json"
-    $collisionCreatedTicks = [DateTime]::UtcNow.Ticks
-    $collisionAuthority = [ordered]@{
-      SchemaVersion = 3
-      ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'; State = 'ACTIVE'
-      Generation = [int64]0; AuthorityState = 'PROVISIONAL'
-      RunId = $collisionRunId
-      CreatedUtcTicks = $collisionCreatedTicks
-      ExpiresUtcTicks = $collisionCreatedTicks + ([TimeSpan]::TicksPerHour * 3)
-      InstallerPath = $dummyInstaller
-      InstallerEntryIdentity = $dummyInstallerEntryIdentity
-      InstallerSha256 = $dummyInstallerSha256
-      InstallerProductCode = $dummyInstallerProductCode
-      Fixture = $true; FixtureRoot = $workflowStateDirectory
-      BaselineClean = $false; InstallAttempted = $false; MsiTransactionState = 'NONE'
-      Directories = @(); Files = @(); RegistryKeys = @(); RegistryValues = @()
-      Users = @(); Profiles = @()
-    }
-    Write-TestOwnershipManifest $collisionManifest $collisionAuthority
-    [IO.File]::WriteAllText(
-      "$collisionManifest.new", '{"partial":', [Text.Encoding]::UTF8)
-    $collisionCleanup = Invoke-WorkflowCleanupController `
-      $collisionManifest $collisionRunId $workflowStateDirectory
-    Assert-True ($collisionCleanup.ExitCode -eq 21 -and
-        $collisionCleanup.ReportedExitCode -eq 21 -and
-        $collisionCleanup.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
-      'replacement collision did not fail closed after manifest validation'
-    $retainedCollisionAuthority = Get-Content -LiteralPath $collisionManifest `
-      -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-    Assert-True ($retainedCollisionAuthority.Generation -eq 0 -and
-        $retainedCollisionAuthority.State -ceq 'ACTIVE') `
-      'replacement collision changed the authenticated generation'
-    Remove-Item -LiteralPath "$collisionManifest.new" -Force -ErrorAction Stop
-    $collisionRetry = Invoke-WorkflowCleanupController `
-      $collisionManifest $collisionRunId $workflowStateDirectory
-    Assert-True ($collisionRetry.ExitCode -eq 0 -and
-        $collisionRetry.ReportedExitCode -eq 0 -and
-        $collisionRetry.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
-      'cleanup retry did not complete after the invalid collision was cleared'
-    Assert-True (!(Test-Path -LiteralPath $collisionManifest)) `
-      'cleanup retry retained its consumed empty receipt'
-
-    $resumeRunId = [Guid]::NewGuid().ToString('N')
-    $resumeManifest = Join-Path ([IO.Path]::GetTempPath()) `
-      "propr-installed-app-ownership-$resumeRunId.json"
-    $resumeAuthority = $collisionAuthority.Clone()
-    $resumeAuthority.RunId = $resumeRunId
-    $resumeAuthority.CreatedUtcTicks = [DateTime]::UtcNow.Ticks
-    $resumeAuthority.ExpiresUtcTicks = $resumeAuthority.CreatedUtcTicks + `
-      ([TimeSpan]::TicksPerHour * 3)
-    Write-TestOwnershipManifest $resumeManifest $resumeAuthority
-    $flushedReceipt = $resumeAuthority.Clone()
-    $flushedReceipt.State = 'EMPTY'
-    $flushedReceipt.Generation = [int64]1
-    $flushedReceipt.AuthorityState = 'NONPROVISIONAL'
-    $flushedReceipt.BaselineClean = $false
-    $flushedReceipt.InstallAttempted = $false
-    $flushedReceipt.MsiTransactionState = 'NONE'
-    $flushedReceipt.Directories = @(); $flushedReceipt.Files = @()
-    $flushedReceipt.RegistryKeys = @(); $flushedReceipt.RegistryValues = @()
-    $flushedReceipt.Users = @(); $flushedReceipt.Profiles = @()
-    [IO.File]::WriteAllText(
-      "$resumeManifest.new",
-      ($flushedReceipt | ConvertTo-Json -Depth 6 -Compress),
-      [Text.Encoding]::UTF8
-    )
-    $resumeCleanup = Invoke-WorkflowCleanupController `
-      $resumeManifest $resumeRunId $workflowStateDirectory
-    Assert-True ($resumeCleanup.ExitCode -eq 0 -and
-        $resumeCleanup.ReportedExitCode -eq 0 -and
-        $resumeCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
-      'cleanup did not resume a byte-identical flushed next-generation receipt'
-    Assert-True (!(Test-Path -LiteralPath $resumeManifest) -and
-        !(Test-Path -LiteralPath "$resumeManifest.new")) `
-      'resumed cleanup retained receipt publication files'
+    # Exercise real helper-process death around the cleanup worker's durable
+    # publication boundary, then prove every non-exact .new candidate fails closed.
+    Test-DurablePublicationProcessDeathMatrix
+    Test-InvalidDurablePublicationCandidates $workflowStateDirectory
 
     Assert-True ((Get-Content -LiteralPath (Join-Path $conflictInstallRoot 'pre-existing.txt') -Raw).Trim() -ceq `
       'owned-before-run') 'external cleanup changed the pre-existing install tree'

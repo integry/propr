@@ -1047,6 +1047,34 @@ function Restore-OwnedRegistryValue($Record) {
   }
 }
 
+function Wait-FixtureDurablePublicationDeathGate(
+  [ValidateSet('BEFORE','DURING','AFTER')][string]$Checkpoint
+) {
+  $requestedCheckpoint = [string]$env:PROPR_SUPERVISOR_FIXTURE_PUBLICATION_CHECKPOINT
+  $eventName = [string]$env:PROPR_SUPERVISOR_FIXTURE_PUBLICATION_EVENT
+  if ([string]::IsNullOrEmpty($requestedCheckpoint) -and
+      [string]::IsNullOrEmpty($eventName)) {
+    return
+  }
+  if (!$FixtureRoot -or $requestedCheckpoint -cnotin @('BEFORE','DURING','AFTER') -or
+      $eventName -notmatch
+        '^Local\\ProPRInstalledAppPublication-[a-f0-9]{32}$') {
+    throw 'fixture durable publication death gate is invalid'
+  }
+  if ($Checkpoint -cne $requestedCheckpoint) { return }
+
+  $publicationEvent = [Threading.EventWaitHandle]::OpenExisting($eventName)
+  try {
+    [void]$publicationEvent.Set()
+    # The parent terminates this real cleanup process tree. Reaching this bound
+    # means the deterministic process-death fixture did not take ownership.
+    Start-Sleep -Seconds 300
+    throw 'fixture durable publication death gate was not terminated'
+  } finally {
+    $publicationEvent.Dispose()
+  }
+}
+
 function Write-DurableOwnershipManifest([string]$Path, $Manifest) {
   $temporaryPath = "$Path.new"
   $previousGeneration = [int64]$Manifest.Generation
@@ -1064,6 +1092,7 @@ function Write-DurableOwnershipManifest([string]$Path, $Manifest) {
       throw 'ownership receipt generation round trip failed'
     }
     $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    Wait-FixtureDurablePublicationDeathGate 'BEFORE'
     if (Test-Path -LiteralPath $temporaryPath) {
       # A prior cleanup may have died after FlushFileBuffers but before rename.
       # Resume only the byte-identical next-generation candidate; a partial,
@@ -1090,6 +1119,11 @@ function Write-DurableOwnershipManifest([string]$Path, $Manifest) {
       } finally {
         $stream.Dispose()
       }
+      # The DURING fixture gate is deliberately after the write-through stream's
+      # durable flush and close, but before either the generation recheck or the
+      # atomic replacement. A test parent can therefore prove recovery from real
+      # process death at the only resumable publication boundary.
+      Wait-FixtureDurablePublicationDeathGate 'DURING'
     }
     $currentJson = [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8)
     $current = ConvertFrom-Json -InputObject $currentJson -ErrorAction Stop
@@ -1107,6 +1141,7 @@ function Write-DurableOwnershipManifest([string]$Path, $Manifest) {
         [int64]$published.Generation -ne [int64]$Manifest.Generation) {
       throw 'ownership receipt durable publication re-read failed'
     }
+    Wait-FixtureDurablePublicationDeathGate 'AFTER'
   } catch {
     $Manifest.Generation = $previousGeneration
     throw
