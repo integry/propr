@@ -4,6 +4,7 @@ import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { assertWindowsInstallerProductVersion } from './windows-installer-version.mjs';
 
 const execFileAsync = promisify(execFile);
 const INSTALLED_WIX_DIRECTORY = String.raw`C:\Program Files (x86)\WiX Toolset v3.14\bin`;
@@ -333,8 +334,9 @@ export const probeWindowsWixToolset = async ({ arch, wixDirectory }) => {
 };
 
 export const buildWindowsMachineInstaller = async ({ appDirectory, output, version, arch, wixDirectory }) => {
+  assertWindowsInstallerProductVersion(version);
   if (process.platform !== 'win32') return { skipped: true };
-  if (!['x64', 'arm64'].includes(arch) || !/^\d+\.\d+\.\d+$/.test(version)) fail('arguments');
+  if (!['x64', 'arm64'].includes(arch)) fail('arguments');
   const canonicalApp = resolve(appDirectory);
   const files = await collectTree(canonicalApp);
   await mkdir(dirname(output), { recursive: true });
