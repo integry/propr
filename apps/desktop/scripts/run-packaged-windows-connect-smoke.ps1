@@ -1,7 +1,11 @@
 param(
   [Parameter(Mandatory=$true)]
   [ValidateSet('x64','arm64')]
-  [string]$Architecture
+  [string]$Architecture,
+  [ValidateSet('none','terminate-tree','cleanup-timeout')]
+  [string]$LifecycleTestMode = 'none',
+  [ValidateRange(0,2147483647)]
+  [int]$LifecycleTestProcessId = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +38,8 @@ $failurePhases = @(
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
 $cleanupTimeoutMilliseconds = 60 * 1000
+$streamCloseTimeoutMilliseconds = 30 * 1000
+$taskkillExecutable = 'C:\Windows\System32\taskkill.exe'
 $primaryFailure = $null
 $primaryPhase = $null
 $failurePhase = 'source-layout'
@@ -75,11 +81,59 @@ function Set-FailurePhase {
 
 function Stop-SpawnedProcess {
   param([Parameter(Mandatory=$true)][Diagnostics.Process]$Process)
-  if (!$Process.HasExited) {
-    $Process.Kill()
-    if (!$Process.WaitForExit($terminationTimeoutMilliseconds)) {
+  try {
+    if ($Process.HasExited) { return }
+    $processId = $Process.Id
+    $processIdText = $processId.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $validatedProcessId = 0
+    if ($processIdText -cnotmatch '^[1-9][0-9]{0,9}$' -or
+        ![Int32]::TryParse(
+          $processIdText,
+          [Globalization.NumberStyles]::None,
+          [Globalization.CultureInfo]::InvariantCulture,
+          [ref]$validatedProcessId
+        ) -or $validatedProcessId -ne $processId) {
       Stop-PackagedConnect 'spawn-failed'
     }
+
+    $taskkillStart = [Diagnostics.ProcessStartInfo]::new()
+    $taskkillStart.FileName = $taskkillExecutable
+    $taskkillStart.Arguments = [String]::Join(' ', [string[]]@('/PID', $processIdText, '/T', '/F'))
+    $taskkillStart.UseShellExecute = $false
+    $taskkillStart.CreateNoWindow = $true
+    $taskkillStart.RedirectStandardOutput = $true
+    $taskkillStart.RedirectStandardError = $true
+    $taskkillProcess = [Diagnostics.Process]::new()
+    $taskkillProcess.StartInfo = $taskkillStart
+    try {
+      if (!$taskkillProcess.Start()) { Stop-PackagedConnect 'spawn-failed' }
+      $taskkillOutputClose = $taskkillProcess.StandardOutput.BaseStream.CopyToAsync([IO.Stream]::Null)
+      $taskkillErrorClose = $taskkillProcess.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null)
+      if (!$taskkillProcess.WaitForExit($terminationTimeoutMilliseconds)) {
+        try { $taskkillProcess.Kill() } catch {}
+        try { $null = $taskkillProcess.WaitForExit($terminationTimeoutMilliseconds) } catch {}
+        try {
+          $null = [Threading.Tasks.Task]::WaitAll(
+            [Threading.Tasks.Task[]]@($taskkillOutputClose, $taskkillErrorClose),
+            $streamCloseTimeoutMilliseconds
+          )
+        } catch {}
+        Stop-PackagedConnect 'spawn-failed'
+      }
+      if (![Threading.Tasks.Task]::WaitAll(
+          [Threading.Tasks.Task[]]@($taskkillOutputClose, $taskkillErrorClose),
+          $streamCloseTimeoutMilliseconds
+        ) -or $taskkillOutputClose.IsFaulted -or $taskkillErrorClose.IsFaulted -or
+        $taskkillProcess.ExitCode -ne 0 -or !$Process.WaitForExit($terminationTimeoutMilliseconds) -or
+        !$Process.HasExited) {
+        Stop-PackagedConnect 'spawn-failed'
+      }
+    } finally {
+      $taskkillProcess.Dispose()
+    }
+  } catch {
+    if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
+    Stop-PackagedConnect 'spawn-failed'
   }
 }
 
@@ -349,7 +403,11 @@ try {
 '@
 
 function Invoke-BoundedCleanup {
-  $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($boundedCleanupSource))
+  param(
+    [string]$CleanupSource = $boundedCleanupSource,
+    [ref]$ObservedProcessId
+  )
+  $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($CleanupSource))
   $start=[Diagnostics.ProcessStartInfo]::new()
   $start.FileName=Join-Path $PSHOME 'powershell.exe'
   $start.Arguments="-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
@@ -369,26 +427,92 @@ function Invoke-BoundedCleanup {
   $start.EnvironmentVariables['PROPR_CLEANUP_USER_SID']=if($null -eq $testUserSid){''}else{$testUserSid.Value}
   $cleanupProcess=[Diagnostics.Process]::new()
   $cleanupProcess.StartInfo=$start
+  $cleanupOutputBuffer=[IO.MemoryStream]::new()
+  $cleanupErrorBuffer=[IO.MemoryStream]::new()
   try {
     if(!$cleanupProcess.Start()){return 'failed'}
+    if($null -ne $ObservedProcessId){$ObservedProcessId.Value=$cleanupProcess.Id}
+    $cleanupOutputClose=$cleanupProcess.StandardOutput.BaseStream.CopyToAsync($cleanupOutputBuffer)
+    $cleanupErrorClose=$cleanupProcess.StandardError.BaseStream.CopyToAsync($cleanupErrorBuffer)
     if(!$cleanupProcess.WaitForExit($cleanupTimeoutMilliseconds)){
-      try{$cleanupProcess.Kill();$null=$cleanupProcess.WaitForExit($terminationTimeoutMilliseconds)}catch{}
+      try{$cleanupProcess.Kill()}catch{return 'failed'}
+      try{if(!$cleanupProcess.WaitForExit($terminationTimeoutMilliseconds)){return 'failed'}}catch{return 'failed'}
+      try {
+        if(![Threading.Tasks.Task]::WaitAll(
+            [Threading.Tasks.Task[]]@($cleanupOutputClose,$cleanupErrorClose),
+            $streamCloseTimeoutMilliseconds
+          ) -or $cleanupOutputClose.IsFaulted -or $cleanupErrorClose.IsFaulted){return 'failed'}
+      } catch { return 'failed' }
       return 'timeout'
     }
-    $cleanupOutput=$cleanupProcess.StandardOutput.ReadToEnd()
-    $cleanupError=$cleanupProcess.StandardError.ReadToEnd()
-    if($cleanupProcess.ExitCode -ne 0 -or $cleanupOutput.Length -ne 0 -or $cleanupError.Length -ne 0){return 'failed'}
+    if(![Threading.Tasks.Task]::WaitAll(
+        [Threading.Tasks.Task[]]@($cleanupOutputClose,$cleanupErrorClose),
+        $streamCloseTimeoutMilliseconds
+      ) -or $cleanupOutputClose.IsFaulted -or $cleanupErrorClose.IsFaulted -or
+      $cleanupProcess.ExitCode -ne 0 -or $cleanupOutputBuffer.Length -ne 0 -or
+      $cleanupErrorBuffer.Length -ne 0){return 'failed'}
     return 'none'
   } catch {
-    try{if(!$cleanupProcess.HasExited){$cleanupProcess.Kill()}}catch{}
+    try{
+      if(!$cleanupProcess.HasExited){
+        $cleanupProcess.Kill()
+        $null=$cleanupProcess.WaitForExit($terminationTimeoutMilliseconds)
+      }
+    }catch{}
     return 'failed'
   } finally {
     $cleanupProcess.Dispose()
+    $cleanupOutputBuffer.Dispose()
+    $cleanupErrorBuffer.Dispose()
   }
 }
 
 $authenticatedRunnerTemp = $null
 $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+
+if ($LifecycleTestMode -eq 'terminate-tree') {
+  $lifecycleTarget = $null
+  try {
+    if ($LifecycleTestProcessId -lt 1) { Stop-PackagedConnect 'spawn-failed' }
+    $lifecycleTarget = [Diagnostics.Process]::GetProcessById($LifecycleTestProcessId)
+    if ($lifecycleTarget.HasExited) { Stop-PackagedConnect 'spawn-failed' }
+    if ($lifecycleTarget.WaitForExit(250)) { Stop-PackagedConnect 'spawn-failed' }
+    Stop-SpawnedProcess $lifecycleTarget
+    if (!$lifecycleTarget.HasExited) { Stop-PackagedConnect 'spawn-failed' }
+    [Console]::Out.WriteLine('PROPR_WINDOWS_PACKAGED_CONNECT_LIFECYCLE_TEST:tree-terminated')
+    exit 0
+  } catch {
+    [Console]::Error.WriteLine('PROPR_WINDOWS_PACKAGED_CONNECT_LIFECYCLE_TEST:failed:category=spawn-failed')
+    exit 1
+  } finally {
+    if ($null -ne $lifecycleTarget) { $lifecycleTarget.Dispose() }
+  }
+}
+
+if ($LifecycleTestMode -eq 'cleanup-timeout') {
+  $cleanupTimeoutMilliseconds = 750
+  $terminationTimeoutMilliseconds = 3000
+  $streamCloseTimeoutMilliseconds = 3000
+  $primaryFailure = 'artifact-type'
+  $primaryPhase = 'staged-tree'
+  $neverSettlingCleanupSource = 'while($true){Start-Sleep -Seconds 1}'
+  $observedCleanupProcessId = 0
+  $cleanupResult = Invoke-BoundedCleanup `
+    -CleanupSource $neverSettlingCleanupSource `
+    -ObservedProcessId ([ref]$observedCleanupProcessId)
+  $cleanupProcessStillRunning = $false
+  if ($observedCleanupProcessId -gt 0) {
+    try {
+      $observedCleanupProcess = [Diagnostics.Process]::GetProcessById($observedCleanupProcessId)
+      try { $cleanupProcessStillRunning = !$observedCleanupProcess.HasExited } finally { $observedCleanupProcess.Dispose() }
+    } catch {}
+  }
+  if ($cleanupResult -eq 'timeout' -and !$cleanupProcessStillRunning) {
+    $cleanupSecondary = 'cleanup-timeout'
+  } else {
+    $cleanupSecondary = 'cleanup-failed'
+  }
+} else {
 try {
   try {
     Set-FailurePhase 'source-layout'
@@ -579,6 +703,7 @@ try {
       $cleanupSecondary = 'cleanup-failed'
     }
   }
+}
 }
 
 if ($null -eq $primaryFailure -and $cleanupSecondary -ne 'none') {

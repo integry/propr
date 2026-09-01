@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { win32 } from 'node:path';
 import { describe, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   assertPackagedWindowsPeArchitecture,
   classifyWindowsArtifactFailure,
@@ -13,6 +15,11 @@ import {
   WINDOWS_ARTIFACT_FAILURE_PHASES,
   WindowsArtifactFailure,
 } from './windows-packaged-connect-staging.mjs';
+import { windowsPowerShell51Path } from './windows-fixture-acl.mjs';
+
+const windowsTest = process.platform === 'win32' ? test : test.skip;
+const orchestratorPath = fileURLToPath(new URL('./run-packaged-windows-connect-smoke.ps1', import.meta.url));
+const taskkillPath = String.raw`C:\Windows\System32\taskkill.exe`;
 
 const parent = String.raw`C:\runner-temp\propr-connect-packaged-stage`;
 const leaf = 'propr-connect-package-0123456789abcdef0123456789abcdef';
@@ -39,6 +46,70 @@ const peFixture = architecture => {
   bytes.write('PE\0\0', 0x80, 'ascii');
   bytes.writeUInt16LE(architecture === 'arm64' ? 0xaa64 : 0x8664, 0x84);
   return bytes;
+};
+
+const processExists = processId => {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false;
+    throw error;
+  }
+};
+
+const waitForProcessExit = async (processId, timeoutMilliseconds = 5_000) => {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (processExists(processId) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  return !processExists(processId);
+};
+
+const startNativeNodeTree = async () => {
+  const rootSource = String.raw`
+const { spawn } = require('node:child_process');
+const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+  shell: false,
+  windowsHide: true,
+  stdio: 'ignore',
+});
+process.stdout.write(String(descendant.pid) + '\n');
+setInterval(() => {}, 1000);
+`;
+  const root = spawn(process.execPath, ['-e', rootSource], {
+    shell: false,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  const descendantProcessId = await new Promise((resolve, reject) => {
+    let output = '';
+    const timeout = setTimeout(() => reject(new Error('native process tree did not start')), 5_000);
+    root.once('error', error => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    root.stdout.on('data', chunk => {
+      output += chunk.toString('ascii');
+      const newline = output.indexOf('\n');
+      if (newline < 0) return;
+      clearTimeout(timeout);
+      const value = output.slice(0, newline).trim();
+      if (!/^[1-9][0-9]{0,9}$/u.test(value)) reject(new Error('native descendant pid was invalid'));
+      else resolve(Number(value));
+    });
+  });
+  return { root, descendantProcessId };
+};
+
+const terminateTreeAfterTest = processId => {
+  if (!Number.isSafeInteger(processId) || processId < 1 || !processExists(processId)) return;
+  spawnSync(taskkillPath, ['/PID', String(processId), '/T', '/F'], {
+    shell: false,
+    windowsHide: true,
+    stdio: 'ignore',
+    timeout: 5_000,
+  });
 };
 
 const validationOptions = overrides => ({
@@ -226,8 +297,18 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(orchestrator, /SetAccessRuleProtection\(\$true, \$false\)/u);
   assert.match(orchestrator, /SetOwner\(\$Administrators\)/u);
   assert.match(orchestrator, /\[Diagnostics\.Process\]::new\(\)/u);
+  assert.match(orchestrator, /\$taskkillExecutable = 'C:\\Windows\\System32\\taskkill\.exe'/u);
+  assert.match(
+    orchestrator,
+    /\$taskkillStart\.Arguments = \[String\]::Join\(' ', \[string\[\]\]@\('\/PID', \$processIdText, '\/T', '\/F'\)\)/u,
+  );
+  assert.match(orchestrator, /\$taskkillStart\.UseShellExecute = \$false/u);
+  assert.match(orchestrator, /\$processIdText -cnotmatch '\^\[1-9\]\[0-9\]\{0,9\}\$'/u);
+  assert.match(orchestrator, /\$taskkillProcess\.WaitForExit\(\$terminationTimeoutMilliseconds\)/u);
+  assert.match(orchestrator, /Task\]::WaitAll\([\s\S]*?\$streamCloseTimeoutMilliseconds/u);
+  assert.doesNotMatch(orchestrator, /(?:cmd(?:\.exe)?|powershell(?:\.exe)?)['"]?\s+\/c[\s\S]*?taskkill/iu);
   assert.match(orchestrator, /WaitForExit\(\$cleanupTimeoutMilliseconds\)/u);
-  assert.match(orchestrator, /if\(!\$cleanupProcess\.WaitForExit[\s\S]*?\$cleanupProcess\.Kill\(\)/u);
+  assert.match(orchestrator, /if\(!\$cleanupProcess\.WaitForExit[\s\S]*?\$cleanupProcess\.Kill\(\)[\s\S]*?WaitForExit\(\$terminationTimeoutMilliseconds\)/u);
   assert.match(orchestrator, /Remove-Item -LiteralPath \$root -Recurse/u);
   assert.doesNotMatch(orchestrator, /Remove-Item -LiteralPath \$parent -Recurse/u);
   assert.match(orchestrator, /\$createdAccount\.SID\.Value -cne \$testUserSid\.Value/u);
@@ -259,7 +340,7 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.doesNotMatch(harness, /child\.once\('error', error/u);
 });
 
-test('a never-settling cleanup is terminated without replacing the primary failure', async () => {
+test('the bounded cleanup source requires proven child exit and bounded stream closure', async () => {
   const orchestrator = await readFile(new URL('./run-packaged-windows-connect-smoke.ps1', import.meta.url), 'utf8');
   const boundedCleanup = orchestrator.slice(
     orchestrator.indexOf('function Invoke-BoundedCleanup'),
@@ -268,13 +349,75 @@ test('a never-settling cleanup is terminated without replacing the primary failu
   assert.match(boundedCleanup, /\$cleanupProcess=\[Diagnostics\.Process\]::new\(\)/u);
   assert.match(
     boundedCleanup,
-    /if\(!\$cleanupProcess\.WaitForExit\(\$cleanupTimeoutMilliseconds\)\)\{[\s\S]*?\$cleanupProcess\.Kill\(\)[\s\S]*?return 'timeout'/u,
+    /if\(!\$cleanupProcess\.WaitForExit\(\$cleanupTimeoutMilliseconds\)\)\{[\s\S]*?\$cleanupProcess\.Kill\(\)[\s\S]*?if\(!\$cleanupProcess\.WaitForExit\(\$terminationTimeoutMilliseconds\)\)\{return 'failed'\}[\s\S]*?Task\]::WaitAll[\s\S]*?return 'timeout'/u,
   );
+  assert.match(boundedCleanup, /\$cleanupOutputClose=\$cleanupProcess\.StandardOutput\.BaseStream\.CopyToAsync/u);
+  assert.match(boundedCleanup, /\$cleanupErrorClose=\$cleanupProcess\.StandardError\.BaseStream\.CopyToAsync/u);
+});
 
-  const outcome = orchestrator.slice(orchestrator.lastIndexOf('} finally {'));
-  const cleanupEnd = outcome.indexOf("if ($null -eq $primaryFailure");
-  assert.ok(cleanupEnd > 0);
-  assert.doesNotMatch(outcome.slice(0, cleanupEnd), /\$primaryFailure\s*=/u);
-  assert.match(outcome, /\$primaryFailure = 'artifact-inaccessible'\s*\$primaryPhase = 'cleanup'/u);
-  assert.match(outcome, /\$cleanupSecondary = 'cleanup-timeout'/u);
+windowsTest('the native timeout path terminates an actual child and descendant tree', async context => {
+  const { root, descendantProcessId } = await startNativeNodeTree();
+  context.after(() => terminateTreeAfterTest(root.pid));
+  context.after(() => terminateTreeAfterTest(descendantProcessId));
+  assert.equal(processExists(root.pid), true);
+  assert.equal(processExists(descendantProcessId), true);
+
+  const result = spawnSync(windowsPowerShell51Path(), [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-File',
+    orchestratorPath,
+    '-Architecture',
+    process.arch,
+    '-LifecycleTestMode',
+    'terminate-tree',
+    '-LifecycleTestProcessId',
+    String(root.pid),
+  ], {
+    shell: false,
+    windowsHide: true,
+    timeout: 15_000,
+  });
+
+  assert.ifError(result.error);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout.toString('utf8').trim(),
+    'PROPR_WINDOWS_PACKAGED_CONNECT_LIFECYCLE_TEST:tree-terminated');
+  assert.equal(result.stderr.length, 0);
+  assert.equal(await waitForProcessExit(root.pid), true, 'the native harness root must terminate');
+  assert.equal(await waitForProcessExit(descendantProcessId), true,
+    'the native harness descendant must terminate');
+});
+
+windowsTest('a real never-settling cleanup is bounded, terminated, and remains secondary', () => {
+  const startedAt = Date.now();
+  const result = spawnSync(windowsPowerShell51Path(), [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-File',
+    orchestratorPath,
+    '-Architecture',
+    process.arch,
+    '-LifecycleTestMode',
+    'cleanup-timeout',
+  ], {
+    shell: false,
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  const elapsedMilliseconds = Date.now() - startedAt;
+
+  assert.ifError(result.error);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout.length, 0);
+  assert.equal(
+    result.stderr.toString('utf8').trim(),
+    'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type:phase=staged-tree:cleanup=cleanup-timeout',
+  );
+  assert.ok(elapsedMilliseconds >= 750, 'the injected cleanup must reach its deadline');
+  assert.ok(elapsedMilliseconds < 8_000, 'the cleanup deadline and termination must remain bounded');
 });
