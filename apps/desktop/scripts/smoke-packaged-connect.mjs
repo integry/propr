@@ -5,6 +5,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
+import { encodedWindowsFixtureAcl } from './windows-fixture-acl.mjs';
 
 if (!['darwin', 'linux', 'win32'].includes(process.platform)) {
   throw new Error('Packaged Connect discovery smoke requires Darwin, Linux, or Windows');
@@ -190,68 +191,12 @@ const protectWindowsEntries = entries => {
     windowsFixtureFailure('membership', 'process-failed');
   }
   if (membership.stdout !== 'False') windowsFixtureFailure('membership', 'administrator');
-  const source = String.raw`
-$ErrorActionPreference='Stop'
-function Set-ProprFixtureAcl {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory=$true)][ValidateSet('directory','file')][string]$EntryKind,
-    [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$EntryPath
-  )
-  try {
-    if(-not [IO.Path]::IsPathRooted($EntryPath)){exit 40}
-    $canonicalPath=[IO.Path]::GetFullPath($EntryPath)
-    if(-not [String]::Equals($canonicalPath,$EntryPath,[StringComparison]::OrdinalIgnoreCase)){exit 40}
-  } catch { exit 40 }
-  try {
-    $item=Get-Item -LiteralPath $canonicalPath
-    $directory=$EntryKind -eq 'directory'
-    if($directory -ne $item.PSIsContainer){exit 41}
-  } catch { exit 41 }
-  try {
-    $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
-    if($null -eq $current){exit 42}
-  } catch { exit 42 }
-  try {
-    $system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
-    $admins=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
-  } catch { exit 43 }
-  try {
-    $acl=Get-Acl -LiteralPath $canonicalPath
-  } catch { exit 44 }
-  try {
-    $acl.SetAccessRuleProtection($true,$false)
-    foreach($existing in @($acl.Access)){$null=$acl.RemoveAccessRuleSpecific($existing)}
-  } catch { exit 45 }
-  try {
-    foreach($identity in @($current,$system,$admins)){
-      $rights=[Security.AccessControl.FileSystemRights]::FullControl
-      $accessType=[Security.AccessControl.AccessControlType]::Allow
-      $rule=if($directory){
-        $inheritance=[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
-        $propagation=[Security.AccessControl.PropagationFlags]::None
-        [Security.AccessControl.FileSystemAccessRule]::new($identity,$rights,$inheritance,$propagation,$accessType)
-      }else{[Security.AccessControl.FileSystemAccessRule]::new($identity,$rights,$accessType)}
-      $null=$acl.AddAccessRule($rule)
-    }
-  } catch { exit 46 }
-  try {
-    Set-Acl -LiteralPath $canonicalPath -AclObject $acl
-  } catch { exit 47 }
-}
-try {
-  Set-ProprFixtureAcl -EntryKind $env:PROPR_FIXTURE_ACL_KIND -EntryPath $env:PROPR_FIXTURE_ACL_PATH
-} catch {
-  exit 40
-}`;
-  const encoded = Buffer.from(source, 'utf16le').toString('base64');
   for (const entry of entries) {
     const result = spawnSync('powershell.exe', [
-      '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded,
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedWindowsFixtureAcl,
     ], {
       shell: false,
       windowsHide: true,
-      encoding: 'utf8',
       timeout: 30_000,
       env: {
         ...process.env,
@@ -260,7 +205,8 @@ try {
       },
     });
     if (result.error || result.signal) windowsFixtureFailure('powershell-invocation', 'process-failed');
-    if (result.stdout || result.stderr) windowsFixtureFailure('powershell-invocation', 'unexpected-output');
+    if (result.stdout.length !== 0) windowsFixtureFailure('powershell-invocation', 'powershell-stdout');
+    if (result.stderr.length !== 0) windowsFixtureFailure('powershell-invocation', 'powershell-stderr');
     const failurePhase = new Map([
       [40, 'path-qualification'],
       [41, 'item-type'],

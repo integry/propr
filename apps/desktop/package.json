@@ -22,6 +22,7 @@
     "typecheck": "tsc --noEmit",
     "pretest": "npm run prepare:renderer",
     "test": "tsx --test src/**/*.test.ts",
+    "test:windows-fixture-acl": "node --test scripts/windows-fixture-acl.test.mjs",
     "pretest:native-durability": "npm run prepare:renderer",
     "test:native-durability": "node scripts/run-native-durability.mjs",
     "prepackage": "npm run prepare:renderer",

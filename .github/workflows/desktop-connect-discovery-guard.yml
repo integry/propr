@@ -75,6 +75,10 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Verify encoded Windows PowerShell ACL helper success streams
+        if: matrix.platform == 'win32'
+        run: npm run test:windows-fixture-acl -w @propr/desktop
+
       - name: Package the target-native desktop app
         run: npm run desktop:package
 
