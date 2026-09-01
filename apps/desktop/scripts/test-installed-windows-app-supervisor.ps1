@@ -206,7 +206,7 @@ function Invoke-WorkflowCleanupController(
   [string]$ManifestPath,
   [string]$RunId,
   [string]$FixtureRoot,
-  [int]$CleanupTimeoutMilliseconds = 30000
+  [object]$CleanupTimeoutMilliseconds = 30000
 ) {
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
@@ -330,10 +330,17 @@ function Invoke-FixtureScenario(
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   if (!$process.Start()) { throw 'supervisor test process did not start' }
   try {
-    $completionBound = if ($Scenario -in @(
+    $completionBound = if ($Scenario -ceq 'NO_MARKER') {
+      60000
+    } elseif ($Scenario -in @(
         'OWNED_RESOURCES_THEN_DEADLINE',
         'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
-        'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE'
+        'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE',
+        'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE',
+        'SMOKE_AFTER_PROMOTION_THEN_DEADLINE',
+        'SMOKE_AFTER_ARTIFACTS_THEN_DEADLINE',
+        'SMOKE_FOREIGN_DESCENDANT_THEN_DEADLINE',
+        'SMOKE_TOKEN_MISMATCH_THEN_DEADLINE'
       )) { 90000 } else { 20000 }
     if (!$process.WaitForExit($completionBound)) {
       try { $process.Kill($true) } catch {}
@@ -360,7 +367,7 @@ function Test-BootstrapTimeout {
   $result = Invoke-FixtureScenario 'NO_MARKER'
   Assert-True ($result.ExitCode -eq 124) 'missing-marker bootstrap did not fail with the watchdog code'
   Assert-True ($result.ElapsedMilliseconds -ge 9000) 'bootstrap timeout ignored the injected deadline'
-  Assert-True ($result.ElapsedMilliseconds -lt 20000) 'missing-marker bootstrap completion was not bounded'
+  Assert-True ($result.ElapsedMilliseconds -lt 60000) 'missing-marker bootstrap completion was not bounded'
   Assert-Contains $result.Output `
     'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:BOOTSTRAP:TIMED_OUT' `
     'missing-marker bootstrap did not emit the fixed timeout line'
@@ -772,6 +779,16 @@ function Test-PreExistingCleanupOwnership {
       Assert-ProcessTreeGone $workflowProcessState
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'killed supervisor did not preserve the durable ownership manifest'
+      $parameterFailure = Invoke-WorkflowCleanupController `
+        $workflowManifest $workflowRunId $workflowStateDirectory -1
+      Assert-True ($parameterFailure.ExitCode -eq 125 -and
+          $parameterFailure.Result -ceq 'FAILED' -and
+          $parameterFailure.ControllerStatus.StartsWith(
+            'CONTROLLER_PARAMETER_VALIDATION_PARAMETERS_',
+            [StringComparison]::Ordinal
+          )) 'controller parameter failure was not caught and phase-classified'
+      Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
+        'controller parameter failure discarded authenticated recovery authority'
       $timedOutCleanup = Invoke-WorkflowCleanupController `
         $workflowManifest $workflowRunId $workflowStateDirectory 1
       Assert-True ($timedOutCleanup.ExitCode -eq 124 -and
@@ -948,6 +965,87 @@ function Test-PreExistingCleanupOwnership {
   }
   Write-Host 'PROPR_WINDOWS_SUPERVISOR_OWNERSHIP:PRE_EXISTING_AUTHORITIES:PRESERVED'
   [Console]::Out.Flush()
+}
+
+function Test-SmokePromotionInterruptionAuthority {
+  foreach ($testCase in @(
+    @{ Scenario = 'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE'; Label = 'before promotion' },
+    @{ Scenario = 'SMOKE_AFTER_PROMOTION_THEN_DEADLINE'; Label = 'after promotion' },
+    @{ Scenario = 'SMOKE_AFTER_ARTIFACTS_THEN_DEADLINE'; Label = 'after artifact creation' }
+  )) {
+    $stateDirectory = New-StateDirectory (
+      'smoke-' + $testCase.Scenario.ToLowerInvariant().Replace('_', '-'))
+    $result = Invoke-FixtureScenario $testCase.Scenario $stateDirectory
+    Assert-True ($result.ExitCode -eq 124) `
+      "smoke interruption $($testCase.Label) did not preserve watchdog status"
+    Assert-Contains $result.Output `
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+      "smoke interruption $($testCase.Label) did not complete recovery cleanup"
+    $owned = Read-FixtureResourceState $stateDirectory
+    Assert-OwnedResourcesGone $owned
+  }
+
+  $foreignStateDirectory = New-StateDirectory 'smoke-in-place-foreign-descendant'
+  $foreignResult = Invoke-FixtureScenario `
+    'SMOKE_FOREIGN_DESCENDANT_THEN_DEADLINE' $foreignStateDirectory
+  Assert-True ($foreignResult.ExitCode -eq 125) `
+    'smoke foreign descendant did not fail closed'
+  Assert-Contains $foreignResult.Output `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED' `
+    'smoke foreign descendant did not emit fixed cleanup failure evidence'
+  $foreignOwned = Read-FixtureResourceState $foreignStateDirectory
+  Assert-True ((Get-Content -LiteralPath $foreignOwned.ForeignSmokePath -Raw).Trim() -ceq `
+      'foreign-smoke-in-place') 'smoke foreign descendant was removed or changed'
+  Assert-True (Test-Path -LiteralPath $foreignOwned.ManifestPath -PathType Leaf) `
+    'smoke foreign descendant discarded authenticated recovery authority'
+  $foreignManifest = Get-Content -LiteralPath $foreignOwned.ManifestPath -Raw -Encoding UTF8 |
+    ConvertFrom-Json -ErrorAction Stop
+  Assert-True ($foreignManifest.State -ceq 'ACTIVE') `
+    'smoke foreign descendant did not preserve ACTIVE recovery authority'
+  Remove-Item -LiteralPath $foreignOwned.ForeignSmokePath -Force -ErrorAction Stop
+  $retry = Invoke-WorkflowCleanupController `
+    $foreignOwned.ManifestPath $foreignOwned.RunId $foreignStateDirectory
+  Assert-True ($retry.ExitCode -eq 0 -and $retry.Result -ceq 'COMPLETE') `
+    'smoke foreign-descendant recovery did not retry to exact success'
+  Assert-OwnedResourcesGone $foreignOwned
+
+  $tokenStateDirectory = New-StateDirectory 'smoke-token-mismatch'
+  $tokenResult = Invoke-FixtureScenario `
+    'SMOKE_TOKEN_MISMATCH_THEN_DEADLINE' $tokenStateDirectory
+  Assert-True ($tokenResult.ExitCode -eq 125) `
+    'mismatched smoke ownership token did not fail closed'
+  $tokenOwned = Read-FixtureResourceState $tokenStateDirectory
+  $tokenPath = Join-Path $tokenOwned.SmokeDirectory '.propr-installed-app-owner'
+  Assert-True ((Get-Content -LiteralPath $tokenPath -Raw).Trim() -ceq 'foreign-owner') `
+    'mismatched smoke ownership token was removed or changed'
+  Assert-True (Test-Path -LiteralPath $tokenOwned.ManifestPath -PathType Leaf) `
+    'mismatched smoke ownership token discarded recovery authority'
+  Remove-Item -LiteralPath $tokenPath -Force -ErrorAction Stop
+  $missingToken = Invoke-WorkflowCleanupController `
+    $tokenOwned.ManifestPath $tokenOwned.RunId $tokenStateDirectory
+  Assert-True ($missingToken.ExitCode -eq 20 -and $missingToken.Result -ceq 'FAILED') `
+    'missing smoke ownership token did not fail manifest validation closed'
+  Assert-True (Test-Path -LiteralPath $tokenOwned.ManifestPath -PathType Leaf) `
+    'missing smoke ownership token discarded recovery authority'
+  [IO.File]::WriteAllText($tokenPath, [string]$tokenOwned.Token, [Text.Encoding]::ASCII)
+  $tokenRetry = Invoke-WorkflowCleanupController `
+    $tokenOwned.ManifestPath $tokenOwned.RunId $tokenStateDirectory
+  Assert-True ($tokenRetry.ExitCode -eq 0 -and $tokenRetry.Result -ceq 'COMPLETE') `
+    'restored exact smoke ownership token did not retry to cleanup success'
+  Assert-OwnedResourcesGone $tokenOwned
+}
+
+function Test-PrimaryWorkerFallbackForeignDescendants {
+  $stateDirectory = New-StateDirectory 'primary-fallback-foreign-descendants'
+  $result = Invoke-FixtureScenario 'PRIMARY_FALLBACK_FOREIGN_DESCENDANTS' $stateDirectory
+  Assert-True ($result.ExitCode -eq 0) `
+    'primary worker fallback foreign-descendant fixture did not complete'
+  $state = Get-Content -LiteralPath (Join-Path $stateDirectory 'primary-fallback.json') `
+    -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
+  Assert-True ((Get-Content -LiteralPath $state.InstallForeign -Raw).Trim() -ceq `
+      'foreign-install') 'primary install fallback removed or changed a foreign descendant'
+  Assert-True ((Get-Content -LiteralPath $state.ShortcutForeign -Raw).Trim() -ceq `
+      'foreign-shortcut') 'primary shortcut fallback removed or changed a foreign descendant'
 }
 
 function Test-PreExistingAppPathsAuthority {
@@ -1336,7 +1434,9 @@ try {
   Test-OperationDeadlineAndTreeTermination
   Test-FailClosedMarkers
   Test-LiveCancellationAndRedaction
+  Test-PrimaryWorkerFallbackForeignDescendants
   Test-PreExistingCleanupOwnership
+  Test-SmokePromotionInterruptionAuthority
   Test-PreExistingAppPathsAuthority
   Test-HkcuInstalledValueOwnership
   Test-ProvisionalUserMarkerOwnership

@@ -1,11 +1,37 @@
 param(
-  [Parameter(Mandatory=$true)][string]$OwnershipManifest,
-  [Parameter(Mandatory=$true)][string]$Installer,
-  [Parameter(Mandatory=$true)][string]$ExpectedRunId,
-  [ValidateRange(1,600000)][int]$CleanupTimeoutMilliseconds = 4 * 60 * 1000,
-  [ValidateRange(1,30000)][int]$TerminationTimeoutMilliseconds = 30 * 1000,
-  [string]$FixtureRoot
+  [object]$OwnershipManifest,
+  [object]$Installer,
+  [object]$ExpectedRunId,
+  [object]$CleanupTimeoutMilliseconds = 4 * 60 * 1000,
+  [object]$TerminationTimeoutMilliseconds = 30 * 1000,
+  [object]$FixtureRoot
 )
+
+enum WorkflowCleanupControllerPhase {
+  INITIALIZATION
+  PARAMETER_VALIDATION
+  PATH_VALIDATION
+  PROCESS_START
+  PROCESS_WAIT
+  PROCESS_FINALIZATION
+  STREAM_FINALIZATION
+  RESOURCE_FINALIZATION
+  AUTHORITY_FINALIZATION
+  RESULT_EMISSION
+}
+
+enum WorkflowCleanupControllerLine {
+  TYPE_LOAD
+  PARAMETERS
+  PATHS
+  START
+  WAIT
+  TERMINATE
+  DRAIN
+  DISPOSE
+  AUTHORITY
+  EMIT
+}
 
 $ErrorActionPreference = 'Stop'
 $cleanupProcess = $null
@@ -16,7 +42,76 @@ $fixedResult = 'FAILED'
 $fixedStatus = 'CONTROLLER_FAILURE'
 $fixedExitCode = 125
 $validatedManifestPath = $null
+[WorkflowCleanupControllerPhase]$controllerPhase = 'INITIALIZATION'
+[WorkflowCleanupControllerLine]$controllerLine = 'TYPE_LOAD'
+$controllerBodyActive = $false
 
+function Write-FixedResult([ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result) {
+  Write-Host "PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:$Result"
+  Write-Host (
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:{0}:EXIT_CODE:{1}' -f `
+      $script:fixedStatus, $script:fixedExitCode)
+  [Console]::Out.Flush()
+}
+
+function Set-CaughtControllerFailure($ErrorRecord) {
+  $phases = @(
+    'INITIALIZATION','PARAMETER_VALIDATION','PATH_VALIDATION','PROCESS_START',
+    'PROCESS_WAIT','PROCESS_FINALIZATION','STREAM_FINALIZATION',
+    'RESOURCE_FINALIZATION','AUTHORITY_FINALIZATION','RESULT_EMISSION'
+  )
+  $lines = @(
+    'TYPE_LOAD','PARAMETERS','PATHS','START','WAIT','TERMINATE','DRAIN',
+    'DISPOSE','AUTHORITY','EMIT'
+  )
+  $categories = @{
+    AuthenticationError = 'AUTHENTICATION'
+    CloseError = 'CLOSE'
+    InvalidArgument = 'INVALID_ARGUMENT'
+    InvalidData = 'INVALID_DATA'
+    InvalidOperation = 'INVALID_OPERATION'
+    LimitsExceeded = 'LIMIT'
+    NotEnabled = 'NOT_ENABLED'
+    ObjectNotFound = 'NOT_FOUND'
+    OpenError = 'OPEN'
+    OperationStopped = 'STOPPED'
+    PermissionDenied = 'PERMISSION'
+    ReadError = 'READ'
+    ResourceBusy = 'BUSY'
+    ResourceUnavailable = 'UNAVAILABLE'
+    SecurityError = 'SECURITY'
+    WriteError = 'WRITE'
+  }
+  $phase = if ($phases -ccontains [string]$script:controllerPhase) {
+    [string]$script:controllerPhase
+  } else { 'INITIALIZATION' }
+  $line = if ($lines -ccontains [string]$script:controllerLine) {
+    [string]$script:controllerLine
+  } else { 'TYPE_LOAD' }
+  $categoryName = [string]$ErrorRecord.CategoryInfo.Category
+  $category = if ($categories.ContainsKey($categoryName)) {
+    $categories[$categoryName]
+  } else { 'UNCLASSIFIED' }
+  $script:fixedResult = 'FAILED'
+  $script:fixedStatus = 'CONTROLLER_{0}_{1}_{2}' -f $phase, $line, $category
+  $script:fixedExitCode = 125
+}
+
+# Producer-boundary trap: every uncaught controller error is reduced to the
+# allowlisted phase/line/category tuple and execution continues only into the
+# next bounded finalization statement. While the controller body is active the
+# trap exits that labeled phase first, so a type-load or body failure cannot
+# continue into process setup.
+trap {
+  Set-CaughtControllerFailure $_
+  if ($script:controllerBodyActive) {
+    break controllerBody
+  }
+  continue
+}
+
+$controllerBodyActive = $true
+:controllerBody do {
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -125,6 +220,8 @@ public sealed class ProPRWorkflowCleanupOutputDrain : IDisposable
 {
     private const long CharacterLimit = 4096;
     private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
+    private StreamReader standardOutputReader;
+    private StreamReader standardErrorReader;
     private Task<long> standardOutputTask;
     private Task<long> standardErrorTask;
 
@@ -145,8 +242,10 @@ public sealed class ProPRWorkflowCleanupOutputDrain : IDisposable
     {
         if (standardOutputTask != null || standardErrorTask != null)
             throw new InvalidOperationException("stream drain was already started");
-        standardOutputTask = Pump(process.StandardOutput, cancellation.Token);
-        standardErrorTask = Pump(process.StandardError, cancellation.Token);
+        standardOutputReader = process.StandardOutput;
+        standardErrorReader = process.StandardError;
+        standardOutputTask = Pump(standardOutputReader, cancellation.Token);
+        standardErrorTask = Pump(standardErrorReader, cancellation.Token);
     }
 
     public ProPRWorkflowCleanupDrainResult Finish(int timeoutMilliseconds)
@@ -164,23 +263,56 @@ public sealed class ProPRWorkflowCleanupOutputDrain : IDisposable
         };
     }
 
-    public void Dispose()
+    public bool CancelAndFinish(int timeoutMilliseconds)
     {
         cancellation.Cancel();
+        try { if (standardOutputReader != null) standardOutputReader.Dispose(); } catch { }
+        try { if (standardErrorReader != null) standardErrorReader.Dispose(); } catch { }
+        if (standardOutputTask == null || standardErrorTask == null) return true;
+        try { Task.WhenAll(standardOutputTask, standardErrorTask).Wait(timeoutMilliseconds); }
+        catch { }
+        return standardOutputTask.IsCompleted && standardErrorTask.IsCompleted;
+    }
+
+    public void Dispose()
+    {
+        CancelAndFinish(1000);
         cancellation.Dispose();
     }
 }
 '@
 
-function Write-FixedResult([ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result) {
-  Write-Host "PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:$Result"
-  Write-Host (
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:{0}:EXIT_CODE:{1}' -f `
-      $script:fixedStatus, $script:fixedExitCode)
-  [Console]::Out.Flush()
+$controllerPhase = 'PARAMETER_VALIDATION'
+$controllerLine = 'PARAMETERS'
+$cleanupTimeout = 0
+$terminationTimeout = 0
+if ([string]::IsNullOrWhiteSpace([string]$OwnershipManifest) -or
+    [string]::IsNullOrWhiteSpace([string]$Installer) -or
+    [string]::IsNullOrWhiteSpace([string]$ExpectedRunId) -or
+    ![int]::TryParse(
+      [string]$CleanupTimeoutMilliseconds,
+      [Globalization.NumberStyles]::None,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [ref]$cleanupTimeout
+    ) -or $cleanupTimeout -lt 1 -or $cleanupTimeout -gt 600000 -or
+    ![int]::TryParse(
+      [string]$TerminationTimeoutMilliseconds,
+      [Globalization.NumberStyles]::None,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [ref]$terminationTimeout
+    ) -or $terminationTimeout -lt 1 -or $terminationTimeout -gt 30000) {
+  throw 'workflow cleanup controller parameters are invalid'
 }
+$OwnershipManifest = [string]$OwnershipManifest
+$Installer = [string]$Installer
+$ExpectedRunId = [string]$ExpectedRunId
+$FixtureRoot = if ($null -eq $FixtureRoot) { $null } else { [string]$FixtureRoot }
+$CleanupTimeoutMilliseconds = $cleanupTimeout
+$TerminationTimeoutMilliseconds = $terminationTimeout
 
 try {
+  $controllerPhase = 'PATH_VALIDATION'
+  $controllerLine = 'PATHS'
   if ($ExpectedRunId -notmatch '^[a-f0-9]{32}$') { throw 'cleanup run identity is invalid' }
   $manifestPath = [IO.Path]::GetFullPath($OwnershipManifest)
   $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
@@ -227,6 +359,8 @@ try {
     $startInfo.ArgumentList.Add((Resolve-Path -LiteralPath $FixtureRoot -ErrorAction Stop).Path)
   }
   $cleanupJob = [ProPRWorkflowCleanupJob]::new()
+  $controllerPhase = 'PROCESS_START'
+  $controllerLine = 'START'
   $cleanupProcess = [Diagnostics.Process]::new()
   $cleanupProcess.StartInfo = $startInfo
   if (!$cleanupProcess.Start()) { throw 'workflow cleanup did not start' }
@@ -239,7 +373,10 @@ try {
     try { $cleanupProcess.Kill($true) } catch {}
     throw 'workflow cleanup ownership failed'
   }
+  $controllerPhase = 'PROCESS_WAIT'
+  $controllerLine = 'WAIT'
   if (!$cleanupProcess.WaitForExit($CleanupTimeoutMilliseconds)) {
+    $controllerLine = 'TERMINATE'
     $terminationVerified = $false
     try {
       $cleanupJob.Terminate(125)
@@ -267,12 +404,15 @@ try {
     $fixedExitCode = 21
   }
 } catch {
-  $fixedResult = 'FAILED'
-  $fixedStatus = 'CONTROLLER_FAILURE'
-  $fixedExitCode = 125
+  Set-CaughtControllerFailure $_
 }
 
+} while ($false)
+$controllerBodyActive = $false
+
 try {
+  $controllerPhase = 'PROCESS_FINALIZATION'
+  $controllerLine = 'TERMINATE'
   if ($null -ne $cleanupProcess -and !$cleanupProcess.HasExited) {
     if ($null -ne $cleanupJob) {
       $cleanupJob.Dispose()
@@ -292,9 +432,12 @@ try {
 }
 
 try {
+  $controllerPhase = 'STREAM_FINALIZATION'
+  $controllerLine = 'DRAIN'
   if ($null -ne $outputDrain) {
     $drainResult = $outputDrain.Finish($TerminationTimeoutMilliseconds)
     if ($null -eq $drainResult) {
+      [void]$outputDrain.CancelAndFinish($TerminationTimeoutMilliseconds)
       $fixedResult = 'FAILED'
       $fixedStatus = 'STREAM_DRAIN_TIMEOUT'
       $fixedExitCode = 125
@@ -318,6 +461,8 @@ try {
   $fixedExitCode = 125
 }
 
+$controllerPhase = 'RESOURCE_FINALIZATION'
+$controllerLine = 'DISPOSE'
 foreach ($resource in @($outputDrain, $cleanupJob, $cleanupProcess, $cleanupReadyEvent)) {
   if ($null -eq $resource) { continue }
   try { $resource.Dispose() } catch {
@@ -329,6 +474,8 @@ foreach ($resource in @($outputDrain, $cleanupJob, $cleanupProcess, $cleanupRead
 
 if ($fixedResult -ceq 'COMPLETE' -and $validatedManifestPath) {
   try {
+    $controllerPhase = 'AUTHORITY_FINALIZATION'
+    $controllerLine = 'AUTHORITY'
     foreach ($path in @("$validatedManifestPath.new", $validatedManifestPath)) {
       if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
     }
@@ -339,6 +486,13 @@ if ($fixedResult -ceq 'COMPLETE' -and $validatedManifestPath) {
   }
 }
 
-Write-FixedResult $fixedResult
+try {
+  $controllerPhase = 'RESULT_EMISSION'
+  $controllerLine = 'EMIT'
+  Write-FixedResult $fixedResult
+} catch {
+  Set-CaughtControllerFailure $_
+  exit 125
+}
 
 exit $fixedExitCode

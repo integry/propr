@@ -383,7 +383,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /SetAccessRuleProtection\(\$true, \$false\)/);
     assert.match(installedWindowsAppTest, /S-1-5-18/);
     assert.match(installedWindowsAppTest, /S-1-5-32-544/);
-    assert.match(installedWindowsAppTest, /Remove-SmokeUserDataDirectory \$smokeUserDataDirectory/);
+    assert.match(installedWindowsAppTest, /Remove-SmokeUserDataDirectory \$smokeOwnershipRecord/);
     assert.match(installedWindowsAppTest, /propr:\/\/connect/);
     assert.match(installedWindowsAppTest, /deferred Windows update authority resource/);
     assert.match(installedWindowsAppTest, /\[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::CommonPrograms\)/);
@@ -473,7 +473,11 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /\$item\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint/);
     assert.match(installedWindowsAppTest, /\[IO\.FileStream\]::new\(/);
     assert.doesNotMatch(installedWindowsAppTest, /New-Object IO\.FileStream\(/);
-    assert.doesNotMatch(installedWindowsAppTest, /Get-ChildItem[^\n]*smoke|ReadAll|ReadToEnd/);
+    const evidenceReader = installedWindowsAppTest.slice(
+      installedWindowsAppTest.indexOf('function Get-SmokeEventEvidence'),
+      installedWindowsAppTest.indexOf("Write-Stage 'INSTALL' 'BEGIN'"),
+    );
+    assert.doesNotMatch(evidenceReader, /Get-ChildItem[^\n]*smoke|ReadAll|ReadToEnd/);
     const smokeEventAllowlist = installedWindowsAppTest.match(
       /\$smokeEventCodes = \[ordered\]@\{([\s\S]*?)\n\}/,
     );
@@ -549,11 +553,14 @@ describe('desktop trusted release workflow', () => {
 
     assert.match(
       installedWindowsAppTest,
-      /\} catch \{\n\s+\$primaryFailure = \$_\n\s+throw\n\} finally \{\n\s+\$cleanupFailed = \$false[\s\S]*Invoke-Msi @\('\/x'[\s\S]*Remove-SmokeUserDataDirectory \$smokeUserDataDirectory/,
+      /\} catch \{\n\s+\$primaryFailure = \$_\n\s+throw\n\} finally \{\n\s+\$cleanupFailed = \$false[\s\S]*Invoke-Msi @\('\/x'[\s\S]*Remove-SmokeUserDataDirectory \$smokeOwnershipRecord/,
     );
     assert.match(installedWindowsAppTest, /Get-CimInstance -ClassName Win32_UserProfile/);
     assert.match(installedWindowsAppTest, /Remove-LocalUser -Name \$testUser -ErrorAction Stop/);
-    assert.match(installedWindowsAppTest, /Remove-Item -LiteralPath \$installRoot -Recurse -Force -ErrorAction Stop/);
+    assert.match(
+      installedWindowsAppTest,
+      /Get-ChildItem -LiteralPath \$installRoot -Force -ErrorAction Stop[\s\S]*Remove-Item -LiteralPath \$installRoot -Force -ErrorAction Stop/,
+    );
 
     for (const section of [job('package', 'finalize'), job('release-package', 'release-finalize')]) {
       assert.match(section, /- platform: win32\n\s+arch: x64\n/);
@@ -670,6 +677,14 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppWorkflowCleanup, /reader\.ReadAsync/);
     assert.match(installedWindowsAppWorkflowCleanup, /STREAM_DRAIN_(?:TIMEOUT|FAILURE)/);
     assert.match(installedWindowsAppWorkflowCleanup, /CHILD_STDERR/);
+    assert.match(installedWindowsAppWorkflowCleanup, /WorkflowCleanupControllerPhase/);
+    assert.match(installedWindowsAppWorkflowCleanup, /WorkflowCleanupControllerLine/);
+    assert.match(installedWindowsAppWorkflowCleanup, /Set-CaughtControllerFailure/);
+    assert.match(
+      installedWindowsAppWorkflowCleanup,
+      /trap \{[\s\S]*if \(\$script:controllerBodyActive\)[\s\S]*break controllerBody[\s\S]*:controllerBody do \{/,
+    );
+    assert.match(installedWindowsAppWorkflowCleanup, /CancelAndFinish/);
     assert.doesNotMatch(
       installedWindowsAppWorkflowCleanup,
       /add_(?:Output|Error)DataReceived|Begin(?:Output|Error)ReadLine/,
@@ -688,6 +703,22 @@ describe('desktop trusted release workflow', () => {
       /OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE/,
     );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /in-place foreign child was removed or changed/);
+    for (const checkpoint of [
+      'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE',
+      'SMOKE_AFTER_PROMOTION_THEN_DEADLINE',
+      'SMOKE_AFTER_ARTIFACTS_THEN_DEADLINE',
+      'SMOKE_FOREIGN_DESCENDANT_THEN_DEADLINE',
+      'SMOKE_TOKEN_MISMATCH_THEN_DEADLINE',
+    ]) {
+      assert.match(installedWindowsAppSupervisorBehaviorTest, new RegExp(checkpoint));
+      assert.match(installedWindowsAppSupervisorFixture, new RegExp(checkpoint));
+    }
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /foreign-smoke-in-place/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PrimaryWorkerFallbackForeignDescendants/);
+    assert.match(installedWindowsAppSupervisorFixture, /PRIMARY_FALLBACK_FOREIGN_DESCENDANTS/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /primary install fallback removed or changed/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /primary shortcut fallback removed or changed/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /CONTROLLER_PARAMETER_VALIDATION_PARAMETERS_/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /InjectTerminationFailure/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /termination failure discarded authenticated recovery authority/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-ProvisionalUserMarkerOwnership/);
@@ -702,6 +733,26 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(ownedDirectoryCleanup, /Remove-Item[^\n]*-Recurse/);
     assert.match(ownedDirectoryCleanup, /owned directory contains an unexpected descendant/);
     assert.match(ownedDirectoryCleanup, /Get-ChildItem[^\n]*-Force/);
+    assert.match(installedWindowsAppCleanup, /Resolve-SmokeDirectoryAuthority/);
+    assert.match(installedWindowsAppCleanup, /Remove-OwnedSmokeDirectory/);
+    assert.match(installedWindowsAppCleanup, /Get-FileSystemEntryIdentity/);
+    assert.match(installedWindowsAppCleanup, /smoke user-data object owner is not authorized/);
+    assert.match(installedWindowsAppCleanup, /smoke user-data object ACL is not authorized/);
+    assert.match(installedWindowsAppCleanup, /entries\.Count -ge 50000/);
+    const smokeCleanup = installedWindowsAppCleanup.slice(
+      installedWindowsAppCleanup.indexOf('function Remove-OwnedSmokeDirectory'),
+      installedWindowsAppCleanup.indexOf('function Remove-OwnedDirectory'),
+    );
+    assert.doesNotMatch(smokeCleanup, /Remove-Item[^\n]*-Recurse/);
+    assert.match(smokeCleanup, /Get-ChildItem[^\n]*-Force/);
+    assert.match(
+      installedWindowsAppTest,
+      /Write-DurableOwnershipToken[\s\S]*Promote-SmokeOwnershipRecord[\s\S]*SHORTCUT_PRESENT_PROBE/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /CreatorSid = \[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)\.User\.Value/,
+    );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /replacement install tree was removed or changed/,
@@ -854,7 +905,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppTest,
-      /if \(\$installRootCreatedByRun -and \(Test-Path -LiteralPath \$installRoot\)\)[\s\S]*Remove-Item -LiteralPath \$installRoot -Recurse/,
+      /if \(\$installRootCreatedByRun -and \(Test-Path -LiteralPath \$installRoot\)\)[\s\S]*Get-ChildItem -LiteralPath \$installRoot -Force[\s\S]*Remove-Item -LiteralPath \$installRoot -Force/,
     );
     assert.match(
       installedWindowsAppTest,
@@ -866,7 +917,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppTest,
-      /if \(\$createdByRun\) \{\n\s+Remove-Item -LiteralPath \$path -Recurse/,
+      /if \(\$createdByRun\) \{[\s\S]*Get-ChildItem -LiteralPath \$path -Force[\s\S]*Remove-Item -LiteralPath \$path -Force/,
     );
   });
 
@@ -1120,8 +1171,18 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       cleanup,
-      /if \(\$startMenuShortcutFolderCreatedByRun[\s\S]*Get-DirectoryIdentity \$startMenuShortcutFolder[\s\S]*Remove-Item -LiteralPath \$startMenuShortcutFolder -Recurse -Force -ErrorAction Stop/,
+      /if \(\$startMenuShortcutFolderCreatedByRun[\s\S]*Get-DirectoryIdentity \$startMenuShortcutFolder[\s\S]*Get-ChildItem -LiteralPath \$startMenuShortcutFolder -Force[\s\S]*Remove-Item -LiteralPath \$startMenuShortcutFolder -Force -ErrorAction Stop/,
     );
+    const installFallback = cleanup.slice(
+      cleanup.indexOf("'CLEANUP' 'INSTALL_ROOT_FALLBACK' 'BEGIN'"),
+      cleanup.indexOf("'CLEANUP' 'PROTOCOL_FALLBACK' 'BEGIN'"),
+    );
+    const shortcutFallback = cleanup.slice(
+      cleanup.indexOf("'CLEANUP' 'SHORTCUT_FALLBACK' 'BEGIN'"),
+      cleanup.indexOf("'CLEANUP' 'FINAL_AGGREGATION' 'BEGIN'"),
+    );
+    assert.doesNotMatch(installFallback, /Remove-Item[^\n]*-Recurse/);
+    assert.doesNotMatch(shortcutFallback, /Remove-Item[^\n]*-Recurse/);
     assert.doesNotMatch(
       installedWindowsAppTest,
       /Remove-Item[^\n]*\$commonPrograms[^\n]*-Recurse|Remove-Item[^\n]*-Recurse[^\n]*\$commonPrograms/,

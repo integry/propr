@@ -7,6 +7,55 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class ProPRFixtureDirectoryIdentity
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string path, uint access, uint share, IntPtr security, uint creation,
+        uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
+    public static string Read(string path)
+    {
+        using (SafeFileHandle handle = CreateFile(
+            path, 0x80, 0x7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero))
+        {
+            if (handle == null || handle.IsInvalid)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            BY_HANDLE_FILE_INFORMATION information;
+            if (!GetFileInformationByHandle(handle, out information))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if ((information.FileAttributes & 0x400) != 0 ||
+                (information.FileAttributes & 0x10) == 0)
+                throw new InvalidOperationException("fixture directory identity changed");
+            return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
+                information.FileIndexHigh, information.FileIndexLow);
+        }
+    }
+}
+'@
 $scenario = $env:PROPR_SUPERVISOR_FIXTURE_SCENARIO
 $stateDirectory = $env:PROPR_SUPERVISOR_FIXTURE_STATE_DIRECTORY
 if ($scenario -notin @(
@@ -19,6 +68,12 @@ if ($scenario -notin @(
     'CANCELLATION',
     'OWNED_RESOURCES_NORMAL_SUCCESS',
     'OWNED_RESOURCES_FOR_INTERRUPTION',
+    'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE',
+    'SMOKE_AFTER_PROMOTION_THEN_DEADLINE',
+    'SMOKE_AFTER_ARTIFACTS_THEN_DEADLINE',
+    'SMOKE_FOREIGN_DESCENDANT_THEN_DEADLINE',
+    'SMOKE_TOKEN_MISMATCH_THEN_DEADLINE',
+    'PRIMARY_FALLBACK_FOREIGN_DESCENDANTS',
     'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE',
     'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
     'OWNED_RESOURCES_THEN_DEADLINE'
@@ -98,7 +153,46 @@ function Get-FixtureFileIdentity([string]$Path) {
   }
 }
 
-function New-OwnedFixtureResources {
+function Set-FixtureSmokeAcl([string]$Path, [string]$UserSid) {
+  $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+  $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+  $acl = [Security.AccessControl.DirectorySecurity]::new()
+  $acl.SetAccessRuleProtection($true, $false)
+  $acl.SetOwner($administratorsSid)
+  $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+  foreach ($sid in @(
+      [Security.Principal.SecurityIdentifier]::new($UserSid),
+      $systemSid,
+      $administratorsSid
+    )) {
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+      $sid,
+      [Security.AccessControl.FileSystemRights]::FullControl,
+      $inheritance,
+      [Security.AccessControl.PropagationFlags]::None,
+      [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$acl.AddAccessRule($rule)
+  }
+  Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+}
+
+function New-FixtureSmokeArtifacts([string]$Path) {
+  $electronData = Join-Path $Path 'profile\AppData\Local\ProPR'
+  [void](New-Item -ItemType Directory -Path $electronData -Force -ErrorAction Stop)
+  [IO.File]::WriteAllText(
+    (Join-Path $Path 'application.stdout.log'), 'owned-log', [Text.Encoding]::ASCII)
+  [IO.File]::WriteAllText(
+    (Join-Path $Path 'application.smoke-evidence.jsonl'),
+    '{"event":"desktop.smoke.authorized"}', [Text.Encoding]::UTF8)
+  [IO.File]::WriteAllText(
+    (Join-Path $electronData 'electron-data.json'), 'owned-electron-data', [Text.Encoding]::ASCII)
+}
+
+function New-OwnedFixtureResources(
+  [ValidateSet('BEFORE_PROMOTION','AFTER_PROMOTION','AFTER_ARTIFACTS')]
+    [string]$SmokeCheckpoint = 'AFTER_ARTIFACTS'
+) {
   $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
     ConvertFrom-Json -ErrorAction Stop
   if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 2 -or
@@ -114,13 +208,12 @@ function New-OwnedFixtureResources {
   $smokeDirectory = Join-Path $ownedRoot 'smoke-data'
   [void](New-Item -ItemType Directory -Path $ownedRoot -Force -ErrorAction Stop)
   Write-FixtureOwnershipToken (Join-Path $ownedRoot '.propr-installed-app-owner') $token
-  foreach ($directory in @($installRoot, $shortcutFolder, $smokeDirectory)) {
+  foreach ($directory in @($installRoot, $shortcutFolder)) {
     [void](New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop)
     Write-FixtureOwnershipToken (Join-Path $directory '.propr-installed-app-owner') $token
   }
   [IO.File]::WriteAllText((Join-Path $installRoot 'installed.txt'), 'owned', [Text.Encoding]::ASCII)
   [IO.File]::WriteAllText($shortcut, 'owned-shortcut', [Text.Encoding]::ASCII)
-  [IO.File]::WriteAllText((Join-Path $smokeDirectory 'smoke.txt'), 'owned', [Text.Encoding]::ASCII)
 
   $registryPath = "Registry::HKEY_LOCAL_MACHINE\Software\ProPRSupervisorFixture\$($manifest.RunId)\owned"
   [void](New-Item -Path $registryPath -Force -ErrorAction Stop)
@@ -154,11 +247,37 @@ function New-OwnedFixtureResources {
   $provisionalUserRecord.Sid = $userSid
   $provisionalUserRecord.Provisional = $false
 
+  $smokeRecord = [ordered]@{
+    Kind = 'SMOKE_DATA'
+    Path = $smokeDirectory
+    Owned = $true
+    Token = $token
+    Identity = $null
+    Provisional = $true
+    UserSid = $userSid
+    CreatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    RootOwnerSid = 'S-1-5-32-544'
+  }
+  $manifest.Directories = @($smokeRecord)
+  $manifest.Users = @($provisionalUserRecord)
+  Write-FixtureOwnershipManifest $manifest
+  [void](New-Item -ItemType Directory -Path $smokeDirectory -ErrorAction Stop)
+  Set-FixtureSmokeAcl $smokeDirectory $userSid
+  Write-FixtureOwnershipToken (Join-Path $smokeDirectory '.propr-installed-app-owner') $token
+  if ($SmokeCheckpoint -ne 'BEFORE_PROMOTION') {
+    $smokeRecord.Identity = [ProPRFixtureDirectoryIdentity]::Read($smokeDirectory)
+    $smokeRecord.Provisional = $false
+    Write-FixtureOwnershipManifest $manifest
+    if ($SmokeCheckpoint -eq 'AFTER_ARTIFACTS') {
+      New-FixtureSmokeArtifacts $smokeDirectory
+    }
+  }
+
   $ownedDirectories = @(
     [ordered]@{ Kind = 'FIXTURE_ROOT'; Path = $ownedRoot; Owned = $true; Token = $token },
     [ordered]@{ Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true; Token = $token },
     [ordered]@{ Kind = 'SHORTCUT_FOLDER'; Path = $shortcutFolder; Owned = $true; Token = $token },
-    [ordered]@{ Kind = 'SMOKE_DATA'; Path = $smokeDirectory; Owned = $true; Token = $token }
+    $smokeRecord
   )
   $conflictingDirectories = @(
     $env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_DIRECTORIES -split '\|' | Where-Object { $_ }
@@ -176,12 +295,6 @@ function New-OwnedFixtureResources {
     [ordered]@{
       Kind = 'SHORTCUT_FILE'; Path = $shortcut; Owned = $true; Token = $token
       Identity = (Get-FixtureFileIdentity $shortcut); Provisional = $false
-    },
-    [ordered]@{
-      Kind = 'FIXTURE_FILE'; Path = (Join-Path $smokeDirectory 'smoke.txt')
-      Owned = $true; Token = $null
-      Identity = (Get-FixtureFileIdentity (Join-Path $smokeDirectory 'smoke.txt'))
-      Provisional = $false
     }
   )
   if ($env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_SHORTCUT) {
@@ -274,6 +387,91 @@ function New-OwnedFixtureResources {
     (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
 }
 
+function New-SmokeCheckpointFixtureResources(
+  [ValidateSet('BEFORE_PROMOTION','AFTER_PROMOTION','AFTER_ARTIFACTS')]
+    [string]$Checkpoint
+) {
+  $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
+    ConvertFrom-Json -ErrorAction Stop
+  if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 2 -or
+      $manifest.State -cne 'ACTIVE') {
+    throw 'smoke checkpoint manifest was not initialized'
+  }
+  $token = [Guid]::NewGuid().ToString('N')
+  $userName = $env:PROPR_SUPERVISOR_FIXTURE_OWNED_USER
+  $passwordText = $env:PROPR_SUPERVISOR_FIXTURE_OWNED_PASSWORD
+  if ($userName -notmatch '^prpr[a-f0-9]{8}$' -or !$passwordText -or
+      (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue)) {
+    throw 'smoke checkpoint user baseline is invalid'
+  }
+  $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
+  $userMarker = "prpr-own-$([Guid]::NewGuid().ToString('N'))"
+  $userRecord = [ordered]@{
+    Name = $userName
+    Sid = $null
+    Owned = $true
+    Provisional = $true
+    OwnershipMarker = $userMarker
+  }
+  $manifest.Users = @($userRecord)
+  Write-FixtureOwnershipManifest $manifest
+  New-LocalUser -Name $userName -Password $password -Description $userMarker `
+    -AccountNeverExpires -PasswordNeverExpires | Out-Null
+  $userSid = (Get-LocalUser -Name $userName -ErrorAction Stop).SID.Value
+  $userRecord.Sid = $userSid
+  $userRecord.Provisional = $false
+
+  $smokeDirectory = Join-Path $stateDirectory 'smoke-data'
+  $smokeRecord = [ordered]@{
+    Kind = 'SMOKE_DATA'
+    Path = $smokeDirectory
+    Owned = $true
+    Token = $token
+    Identity = $null
+    Provisional = $true
+    UserSid = $userSid
+    CreatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    RootOwnerSid = 'S-1-5-32-544'
+  }
+  $manifest.Directories = @($smokeRecord)
+  $manifest.Files = @()
+  $manifest.RegistryKeys = @()
+  $manifest.RegistryValues = @()
+  $manifest.Users = @($userRecord)
+  $manifest.Profiles = @()
+  Write-FixtureOwnershipManifest $manifest
+
+  $resourceState = [ordered]@{
+    OwnedRoot = $smokeDirectory
+    InstallRoot = Join-Path $stateDirectory 'absent-install-root'
+    ShortcutFolder = Join-Path $stateDirectory 'absent-shortcut-folder'
+    Shortcut = Join-Path $stateDirectory 'absent-shortcut.lnk'
+    SmokeDirectory = $smokeDirectory
+    RegistryPath = "Registry::HKEY_LOCAL_MACHINE\Software\ProPRSupervisorFixture\$($manifest.RunId)\absent"
+    RegistryRoot = "Registry::HKEY_LOCAL_MACHINE\Software\ProPRSupervisorFixture\$($manifest.RunId)"
+    UserName = $userName
+    UserSid = $userSid
+    ProfilePath = ''
+    ManifestPath = $OwnershipManifest
+    RunId = [string]$manifest.RunId
+    Token = $token
+  }
+  $resourceState | ConvertTo-Json -Compress | Set-Content -LiteralPath `
+    (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
+
+  [void](New-Item -ItemType Directory -Path $smokeDirectory -ErrorAction Stop)
+  Set-FixtureSmokeAcl $smokeDirectory $userSid
+  Write-FixtureOwnershipToken (Join-Path $smokeDirectory '.propr-installed-app-owner') $token
+  if ($Checkpoint -eq 'BEFORE_PROMOTION') { return }
+
+  $smokeRecord.Identity = [ProPRFixtureDirectoryIdentity]::Read($smokeDirectory)
+  $smokeRecord.Provisional = $false
+  Write-FixtureOwnershipManifest $manifest
+  if ($Checkpoint -eq 'AFTER_PROMOTION') { return }
+
+  New-FixtureSmokeArtifacts $smokeDirectory
+}
+
 function Replace-FixtureOwnedResources {
   $state = Get-Content -LiteralPath (Join-Path $stateDirectory 'resources.json') `
     -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
@@ -304,6 +502,56 @@ function Add-FixtureForeignChild {
     'foreign-in-place',
     [Text.Encoding]::ASCII
   )
+}
+
+function Add-FixtureForeignSmokeDescendant {
+  $state = Get-Content -LiteralPath (Join-Path $stateDirectory 'resources.json') `
+    -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
+  $foreignPath = Join-Path $state.SmokeDirectory 'foreign-in-place.txt'
+  [IO.File]::WriteAllText($foreignPath, 'foreign-smoke-in-place', [Text.Encoding]::ASCII)
+  $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  $acl = [Security.AccessControl.FileSecurity]::new()
+  $acl.SetAccessRuleProtection($true, $false)
+  $acl.SetOwner($currentSid)
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+    $currentSid,
+    [Security.AccessControl.FileSystemRights]::FullControl,
+    [Security.AccessControl.AccessControlType]::Allow
+  )
+  [void]$acl.AddAccessRule($rule)
+  Set-Acl -LiteralPath $foreignPath -AclObject $acl -ErrorAction Stop
+  $state | Add-Member -NotePropertyName ForeignSmokePath -NotePropertyValue $foreignPath
+  $state | ConvertTo-Json -Compress | Set-Content -LiteralPath `
+    (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
+}
+
+function Test-PrimaryFallbackForeignDescendants {
+  $installRoot = Join-Path $stateDirectory 'primary-install-root'
+  $shortcutFolder = Join-Path $stateDirectory 'primary-shortcut-folder'
+  [void](New-Item -ItemType Directory -Path $installRoot -ErrorAction Stop)
+  [void](New-Item -ItemType Directory -Path $shortcutFolder -ErrorAction Stop)
+  $installForeign = Join-Path $installRoot 'foreign-in-place.txt'
+  $shortcutForeign = Join-Path $shortcutFolder 'foreign-in-place.txt'
+  [IO.File]::WriteAllText($installForeign, 'foreign-install', [Text.Encoding]::ASCII)
+  [IO.File]::WriteAllText($shortcutForeign, 'foreign-shortcut', [Text.Encoding]::ASCII)
+  foreach ($directory in @($installRoot, $shortcutFolder)) {
+    $identity = [ProPRFixtureDirectoryIdentity]::Read($directory)
+    if ([ProPRFixtureDirectoryIdentity]::Read($directory) -cne $identity) {
+      throw 'primary fallback directory identity changed'
+    }
+    if (@(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop).Count -eq 0) {
+      Remove-Item -LiteralPath $directory -Force -ErrorAction Stop
+      throw 'primary fallback fixture did not contain a foreign descendant'
+    }
+    if (!(Test-Path -LiteralPath $directory -PathType Container)) {
+      throw 'primary fallback removed a nonempty owned directory'
+    }
+  }
+  [ordered]@{
+    InstallForeign = $installForeign
+    ShortcutForeign = $shortcutForeign
+  } | ConvertTo-Json -Compress | Set-Content -LiteralPath `
+    (Join-Path $stateDirectory 'primary-fallback.json') -Encoding ASCII
 }
 
 function Start-FixtureDescendant {
@@ -415,6 +663,55 @@ switch ($scenario) {
     Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
       [DateTime]::UtcNow.AddSeconds(60).Ticks)
     Start-Sleep -Seconds 300
+  }
+  'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-SmokeCheckpointFixtureResources 'BEFORE_PROMOTION'
+    Write-FixtureMarker ('{0}|USER_SETUP|SMOKE_DATA_CREATE|BEGIN' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'SMOKE_AFTER_PROMOTION_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-SmokeCheckpointFixtureResources 'AFTER_PROMOTION'
+    Write-FixtureMarker ('{0}|USER_SETUP|SMOKE_DATA_CREATE|COMPLETE' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'SMOKE_AFTER_ARTIFACTS_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-SmokeCheckpointFixtureResources 'AFTER_ARTIFACTS'
+    Write-FixtureMarker ('{0}|APP_EXIT|EVIDENCE_INSPECTION|BEGIN' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'SMOKE_FOREIGN_DESCENDANT_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-SmokeCheckpointFixtureResources 'AFTER_ARTIFACTS'
+    Add-FixtureForeignSmokeDescendant
+    Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'SMOKE_TOKEN_MISMATCH_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-SmokeCheckpointFixtureResources 'BEFORE_PROMOTION'
+    $owned = Get-Content -LiteralPath (Join-Path $stateDirectory 'resources.json') `
+      -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
+    [IO.File]::WriteAllText(
+      (Join-Path $owned.SmokeDirectory '.propr-installed-app-owner'),
+      'foreign-owner',
+      [Text.Encoding]::ASCII
+    )
+    Write-FixtureMarker ('{0}|USER_SETUP|SMOKE_DATA_CREATE|BEGIN' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'PRIMARY_FALLBACK_FOREIGN_DESCENDANTS' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    Test-PrimaryFallbackForeignDescendants
+    Write-FixtureMarker ('{0}|CLEANUP|SHORTCUT_FALLBACK|COMPLETE' -f `
+      [DateTime]::UtcNow.AddSeconds(60).Ticks)
   }
   'OWNED_RESOURCES_REPLACED_THEN_DEADLINE' {
     Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)

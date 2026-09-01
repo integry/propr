@@ -46,20 +46,25 @@ public static class ProPRDirectoryIdentity
     private static extern bool GetFileInformationByHandle(
         SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
 
-    public static string Read(string path)
+    public static string ReadEntry(string path, bool expectDirectory)
     {
         using (SafeFileHandle handle = CreateFile(
-            path, 0x80, 0x7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero))
+            path, 0x80, 0x7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero))
         {
             if (handle == null || handle.IsInvalid)
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "directory identity open failed");
             BY_HANDLE_FILE_INFORMATION information;
             if (!GetFileInformationByHandle(handle, out information))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "directory identity read failed");
+            bool isDirectory = (information.FileAttributes & 0x10) != 0;
+            if ((information.FileAttributes & 0x400) != 0 || isDirectory != expectDirectory)
+                throw new InvalidOperationException("file-system object identity changed");
             return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
                 information.FileIndexHigh, information.FileIndexLow);
         }
     }
+
+    public static string Read(string path) { return ReadEntry(path, true); }
 }
 '@
 
@@ -130,6 +135,15 @@ function Get-DirectoryIdentity([string]$Path) {
   $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
   if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $null }
   return [ProPRDirectoryIdentity]::Read($item.FullName)
+}
+
+function Get-FileSystemEntryIdentity([string]$Path, [bool]$Directory) {
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if ($item.PSIsContainer -ne $Directory -or
+      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'file-system object identity is invalid'
+  }
+  return [ProPRDirectoryIdentity]::ReadEntry($item.FullName, $Directory)
 }
 
 function Get-RegistryTreeIdentity([string]$Path) {
@@ -280,8 +294,235 @@ function Test-AllowedFileSystemPath([string]$Kind, [string]$Path) {
   return $false
 }
 
+function Assert-SmokeAccessControl($Item, $Record, [bool]$Root) {
+  $userSid = [string]$Record.UserSid
+  $creatorSid = [string]$Record.CreatorSid
+  $rootOwnerSid = [string]$Record.RootOwnerSid
+  if ($userSid -notmatch '^S-\d+(?:-\d+)+$' -or
+      $creatorSid -notmatch '^S-\d+(?:-\d+)+$' -or
+      $rootOwnerSid -cne 'S-1-5-32-544') {
+    throw 'smoke user-data manifest security authority is invalid'
+  }
+  $systemSid = 'S-1-5-18'
+  $expectedAccessSids = @($userSid, $systemSid, $rootOwnerSid) | Sort-Object -Unique
+  if ($expectedAccessSids.Count -ne 3) {
+    throw 'smoke user-data manifest security authority is invalid'
+  }
+  $acl = Get-Acl -LiteralPath $Item.FullName -ErrorAction Stop
+  $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  $allowedOwnerSids = @($userSid, $creatorSid, $rootOwnerSid) | Sort-Object -Unique
+  if ($allowedOwnerSids -cnotcontains $ownerSid) {
+    throw 'smoke user-data object owner is not authorized'
+  }
+  $rules = @($acl.Access)
+  $actualAccessSids = @($rules | ForEach-Object {
+    ($_.IdentityReference.Translate([Security.Principal.SecurityIdentifier])).Value
+  }) | Sort-Object -Unique
+  $fullControl = [Security.AccessControl.FileSystemRights]::FullControl
+  $expectedInheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+  $invalidRules = if ($Root) {
+    @($rules | Where-Object {
+      $_.IsInherited -or
+      $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+      ($_.FileSystemRights -band $fullControl) -ne $fullControl -or
+      $_.InheritanceFlags -ne $expectedInheritance -or
+      $_.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None
+    })
+  } else {
+    $inheritedFlags = if ($Item.PSIsContainer) {
+      $expectedInheritance
+    } else { [Security.AccessControl.InheritanceFlags]::None }
+    @($rules | Where-Object {
+      !$_.IsInherited -or
+      $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+      ($_.FileSystemRights -band $fullControl) -ne $fullControl -or
+      $_.InheritanceFlags -ne $inheritedFlags -or
+      $_.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None
+    })
+  }
+  if (($Root -and (!$acl.AreAccessRulesProtected -or $ownerSid -cne $rootOwnerSid)) -or
+      (!$Root -and $acl.AreAccessRulesProtected) -or
+      $rules.Count -ne 3 -or $invalidRules.Count -ne 0 -or
+      @(Compare-Object $expectedAccessSids $actualAccessSids).Count -ne 0) {
+    throw 'smoke user-data object ACL is not authorized'
+  }
+}
+
+function Assert-OwnedSmokeRoot($Record) {
+  $path = [IO.Path]::GetFullPath([string]$Record.Path)
+  if (!(Test-AllowedFileSystemPath 'SMOKE_DATA' $path) -or
+      [string]$Record.Token -notmatch '^[a-f0-9]{32}$') {
+    throw 'smoke user-data cleanup scope is invalid'
+  }
+  $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+  if (!$item.PSIsContainer -or
+      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'smoke user-data root identity is invalid'
+  }
+  $markerPath = Join-Path $path $ownerFileName
+  $marker = Get-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+  if (!($marker -is [IO.FileInfo]) -or
+      ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'smoke user-data ownership token does not match'
+  }
+  $markerIdentity = Get-FileSystemEntryIdentity $marker.FullName $false
+  $markerStream = [IO.File]::Open(
+    $markerPath,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read
+  )
+  try {
+    if ($markerStream.Length -le 0 -or $markerStream.Length -gt 128) {
+      throw 'smoke user-data ownership token does not match'
+    }
+    $markerBytes = [byte[]]::new([int]$markerStream.Length)
+    $markerOffset = 0
+    while ($markerOffset -lt $markerBytes.Length) {
+      $markerRead = $markerStream.Read(
+        $markerBytes, $markerOffset, $markerBytes.Length - $markerOffset)
+      if ($markerRead -eq 0) { throw 'smoke user-data ownership token does not match' }
+      $markerOffset += $markerRead
+    }
+    if ($markerStream.ReadByte() -ne -1 -or
+        [Text.Encoding]::ASCII.GetString($markerBytes) -cne [string]$Record.Token) {
+      throw 'smoke user-data ownership token does not match'
+    }
+  } finally {
+    $markerStream.Dispose()
+  }
+  Assert-SmokeAccessControl $item $Record $true
+  Assert-SmokeAccessControl $marker $Record $false
+  if ((Get-FileSystemEntryIdentity $marker.FullName $false) -cne $markerIdentity) {
+    throw 'smoke user-data ownership token identity changed'
+  }
+  return $item
+}
+
+function Resolve-SmokeDirectoryAuthority($Record, $Manifest, [string]$ManifestPath) {
+  if (!$Record.Owned -or [string]$Record.Kind -cne 'SMOKE_DATA') { return $false }
+  $recordKeys = @($Record.PSObject.Properties | ForEach-Object { $_.Name })
+  $expectedKeys = @(
+    'Kind','Path','Owned','Token','Identity','Provisional',
+    'UserSid','CreatorSid','RootOwnerSid'
+  )
+  if ($recordKeys.Count -ne $expectedKeys.Count -or
+      @($expectedKeys | Where-Object { $recordKeys -cnotcontains $_ }).Count -ne 0 -or
+      $Record.Owned -isnot [bool] -or $Record.Provisional -isnot [bool] -or
+      [string]$Record.Token -notmatch '^[a-f0-9]{32}$' -or
+      [string]$Record.UserSid -notmatch '^S-\d+(?:-\d+)+$' -or
+      [string]$Record.CreatorSid -notmatch '^S-\d+(?:-\d+)+$' -or
+      [string]$Record.RootOwnerSid -cne 'S-1-5-32-544' -or
+      (![bool]$Record.Provisional -and [string]$Record.Identity -notmatch '^[a-f0-9]{24}$') -or
+      ([bool]$Record.Provisional -and $null -ne $Record.Identity)) {
+    throw 'smoke user-data manifest authority is invalid'
+  }
+  $ownedUsers = @($Manifest.Users | Where-Object { $_.Owned })
+  if ($ownedUsers.Count -ne 1 -or [bool]$ownedUsers[0].Provisional -or
+      [string]$ownedUsers[0].Sid -cne [string]$Record.UserSid) {
+    throw 'smoke user-data SID is not the exact run-owned user SID'
+  }
+  if (!(Test-Path -LiteralPath ([string]$Record.Path))) { return $false }
+  $root = Assert-OwnedSmokeRoot $Record
+  $identity = Get-FileSystemEntryIdentity $root.FullName $true
+  if ([bool]$Record.Provisional) {
+    $Record.Identity = $identity
+    $Record.Provisional = $false
+    Write-DurableOwnershipManifest $ManifestPath $Manifest
+    return $true
+  }
+  if ([string]$Record.Identity -cne $identity) {
+    throw 'smoke user-data root identity does not match'
+  }
+  return $false
+}
+
+function Remove-OwnedSmokeDirectory($Record) {
+  if (!$Record.Owned -or !(Test-Path -LiteralPath ([string]$Record.Path))) { return }
+  if ([bool]$Record.Provisional) {
+    throw 'provisional smoke user-data authority was not durably promoted'
+  }
+  $root = Assert-OwnedSmokeRoot $Record
+  if ((Get-FileSystemEntryIdentity $root.FullName $true) -cne [string]$Record.Identity) {
+    throw 'smoke user-data root identity does not match'
+  }
+  $rootPath = $root.FullName.TrimEnd('\')
+  $pending = [Collections.Generic.Queue[object]]::new()
+  $pending.Enqueue([PSCustomObject]@{
+    Path = $root.FullName
+    Identity = [string]$Record.Identity
+    Root = $true
+  })
+  $entries = [Collections.Generic.List[object]]::new()
+  while ($pending.Count -ne 0) {
+    $queuedDirectory = $pending.Dequeue()
+    $directory = Get-Item -LiteralPath $queuedDirectory.Path -Force -ErrorAction Stop
+    Assert-SmokeAccessControl $directory $Record ([bool]$queuedDirectory.Root)
+    if ((Get-FileSystemEntryIdentity $directory.FullName $true) -cne
+        [string]$queuedDirectory.Identity) {
+      throw 'smoke user-data directory identity changed during traversal'
+    }
+    foreach ($child in @(Get-ChildItem -LiteralPath $directory.FullName -Force -ErrorAction Stop)) {
+      if ($entries.Count -ge 50000) { throw 'smoke user-data cleanup entry bound was exceeded' }
+      $childPath = [IO.Path]::GetFullPath($child.FullName)
+      if (!$childPath.StartsWith("$rootPath\", [StringComparison]::OrdinalIgnoreCase) -or
+          ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'smoke user-data descendant scope is invalid'
+      }
+      Assert-SmokeAccessControl $child $Record $false
+      $identity = Get-FileSystemEntryIdentity $childPath ([bool]$child.PSIsContainer)
+      $entries.Add([PSCustomObject]@{
+        Path = $childPath
+        Directory = [bool]$child.PSIsContainer
+        Identity = $identity
+      })
+      if ($child.PSIsContainer) {
+        $pending.Enqueue([PSCustomObject]@{
+          Path = $childPath
+          Identity = $identity
+          Root = $false
+        })
+      }
+    }
+  }
+
+  foreach ($entry in @($entries | Where-Object { !$_.Directory })) {
+    $item = Get-Item -LiteralPath $entry.Path -Force -ErrorAction Stop
+    Assert-SmokeAccessControl $item $Record $false
+    if ((Get-FileSystemEntryIdentity $entry.Path $false) -cne [string]$entry.Identity) {
+      throw 'smoke user-data file identity changed during cleanup'
+    }
+    Remove-Item -LiteralPath $entry.Path -Force -ErrorAction Stop
+  }
+  foreach ($entry in @($entries | Where-Object { $_.Directory } |
+      Sort-Object { ([string]$_.Path).Length } -Descending)) {
+    $item = Get-Item -LiteralPath $entry.Path -Force -ErrorAction Stop
+    Assert-SmokeAccessControl $item $Record $false
+    if ((Get-FileSystemEntryIdentity $entry.Path $true) -cne [string]$entry.Identity -or
+        @(Get-ChildItem -LiteralPath $entry.Path -Force -ErrorAction Stop).Count -ne 0) {
+      throw 'smoke user-data directory identity changed or is not empty'
+    }
+    Remove-Item -LiteralPath $entry.Path -Force -ErrorAction Stop
+  }
+  $root = Get-Item -LiteralPath $rootPath -Force -ErrorAction Stop
+  if (!$root.PSIsContainer -or
+      ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'smoke user-data root identity changed during cleanup'
+  }
+  Assert-SmokeAccessControl $root $Record $true
+  if ((Get-FileSystemEntryIdentity $root.FullName $true) -cne [string]$Record.Identity -or
+      @(Get-ChildItem -LiteralPath $root.FullName -Force -ErrorAction Stop).Count -ne 0) {
+    throw 'smoke user-data root changed or is not empty'
+  }
+  Remove-Item -LiteralPath $root.FullName -Force -ErrorAction Stop
+}
+
 function Remove-OwnedDirectory($Record) {
   if (!$Record.Owned) { return }
+  if ([string]$Record.Kind -ceq 'SMOKE_DATA') {
+    Remove-OwnedSmokeDirectory $Record
+    return
+  }
   $path = [string]$Record.Path
   $kind = [string]$Record.Kind
   if (!(Test-AllowedFileSystemPath $kind $path)) { throw 'directory cleanup scope is invalid' }
@@ -674,6 +915,9 @@ try {
     if ($record.Owned -and
         !(Test-AllowedFileSystemPath ([string]$record.Kind) ([string]$record.Path))) {
       throw 'directory manifest scope is invalid'
+    }
+    if ($record.Owned -and [string]$record.Kind -ceq 'SMOKE_DATA') {
+      [void](Resolve-SmokeDirectoryAuthority $record $manifest $manifestPath)
     }
   }
   foreach ($record in @($manifest.Files)) {
