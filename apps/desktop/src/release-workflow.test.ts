@@ -232,6 +232,19 @@ describe('desktop trusted release workflow', () => {
     assert.equal(normalizedFixture, workflow);
   });
 
+  test('runs and uploads fail-closed visual acceptance only from Linux x64 packages', () => {
+    for (const section of [job('package', 'finalize'), job('release-package', 'release-finalize')]) {
+      assert.match(section, /if: matrix\.platform == 'linux' && matrix\.arch == 'x64'[\s\S]*npm run desktop:acceptance/);
+      assert.match(section, /npm run desktop:acceptance:verify/);
+      assert.match(section, /if-no-files-found: error/);
+      assert.match(section, /path: desktop-acceptance-artifacts/);
+      assert.match(section, /dbus-run-session[\s\S]*gnome-keyring-daemon[\s\S]*xvfb-run/);
+    }
+    assert.equal(workflow.match(/npm run desktop:acceptance$/gm)?.length, 2);
+    assert.equal(workflow.match(/npm run desktop:acceptance:verify/g)?.length, 2);
+    assert.equal(workflow.match(/path: desktop-acceptance-artifacts/g)?.length, 2);
+  });
+
   test('runs the native DMG layout suite on both macOS architectures', () => {
     for (const [jobName, section] of [
       ['unsigned validation', job('package', 'finalize')],

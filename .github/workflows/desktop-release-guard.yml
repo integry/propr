@@ -142,7 +142,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio dbus-x11 fakeroot gnome-keyring libsecret-1-0 rpm zip
+          sudo apt-get install --yes cpio dbus-x11 fakeroot fonts-liberation gnome-keyring libsecret-1-0 rpm zip
 
       - name: Package desktop app from clean checkout
         shell: bash
@@ -206,6 +206,31 @@ jobs:
             eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
             xvfb-run --auto-servernum npm run desktop:smoke
           ' bash "$keyring_root"
+
+      - name: Capture packaged Linux x64 visual and accessibility acceptance evidence
+        if: matrix.platform == 'linux' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          PROPR_DESKTOP_ACCEPTANCE_OUTPUT: ${{ github.workspace }}/desktop-acceptance-artifacts
+        run: |
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            export XDG_DATA_HOME="$1"
+            eval "$(printf "%s\n" "propr-packaged-acceptance" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run desktop:acceptance
+          ' bash "$keyring_root"
+          npm run desktop:acceptance:verify
+
+      - name: Publish mandatory packaged desktop acceptance evidence
+        if: matrix.platform == 'linux' && matrix.arch == 'x64'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-acceptance-linux-x64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: desktop-acceptance-artifacts
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Launch packaged Windows application and exercise MVP desktop flows
         if: matrix.platform == 'win32'
@@ -474,7 +499,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio dbus-x11 fakeroot gnome-keyring libsecret-1-0 rpm zip
+          sudo apt-get install --yes cpio dbus-x11 fakeroot fonts-liberation gnome-keyring libsecret-1-0 rpm zip
 
       - name: Configure required macOS signing and notarization
         if: matrix.platform == 'darwin'
@@ -652,6 +677,31 @@ jobs:
             eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
             xvfb-run --auto-servernum npm run desktop:smoke
           ' bash "$keyring_root"
+
+      - name: Capture signed packaged Linux x64 visual and accessibility acceptance evidence
+        if: matrix.platform == 'linux' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          PROPR_DESKTOP_ACCEPTANCE_OUTPUT: ${{ github.workspace }}/desktop-acceptance-artifacts
+        run: |
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            export XDG_DATA_HOME="$1"
+            eval "$(printf "%s\n" "propr-packaged-acceptance" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run desktop:acceptance
+          ' bash "$keyring_root"
+          npm run desktop:acceptance:verify
+
+      - name: Publish mandatory signed packaged desktop acceptance evidence
+        if: matrix.platform == 'linux' && matrix.arch == 'x64'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-production-acceptance-linux-x64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: desktop-acceptance-artifacts
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Launch signed packaged Windows application and exercise MVP desktop flows
         if: matrix.platform == 'win32'

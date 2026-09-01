@@ -35,6 +35,8 @@ import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
+import { authorizePackagedAcceptanceTest } from './acceptance-test-authorization';
+import { AcceptanceSetupController } from './acceptance-setup-controller';
 import {
   createBrowserWindowOptions,
   MINIMUM_BROWSER_WINDOW_SIZE,
@@ -51,8 +53,16 @@ const PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_windo
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 let packagedSmokeUserDataDirectory: string | null = null;
+let packagedAcceptanceUserDataDirectory: string | null = null;
 let packagedSmokeEvidence: ReturnType<typeof createPackagedSmokeEvidenceSink> = null;
 try {
+  packagedAcceptanceUserDataDirectory = authorizePackagedAcceptanceTest({
+    argv: process.argv,
+    defaultUserDataDirectory: join(app.getPath('appData'), app.name),
+    environmentTriggered: process.env.PROPR_DESKTOP_ACCEPTANCE_TEST === '1',
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+  });
   packagedSmokeUserDataDirectory = authorizePackagedSmokeTest({
     argv: process.argv,
     defaultUserDataDirectory: join(app.getPath('appData'), app.name),
@@ -69,10 +79,19 @@ try {
     packagedSmokeEvidence = createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory);
     packagedSmokeEvidence?.write('desktop.smoke.authorized');
   }
+  if (packagedAcceptanceUserDataDirectory) {
+    if (packagedSmokeUserDataDirectory) throw new Error('Desktop test modes are mutually exclusive');
+    const stats = lstatSync(packagedAcceptanceUserDataDirectory);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error('Packaged desktop acceptance --user-data-dir must be an existing non-link directory');
+    }
+    app.setPath('userData', packagedAcceptanceUserDataDirectory);
+  }
 } catch {
   process.exit(1);
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
+const packagedAcceptanceTest = packagedAcceptanceUserDataDirectory !== null;
 const transportSmoke = packagedTransportSmoke(packagedSmokeTest);
 const inertSetupActions = new Proxy({} as SetupActions, {
   get() {
@@ -87,7 +106,7 @@ const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
 );
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
-let setupController: DesktopSetupController | null = null;
+let setupController: DesktopSetupController | AcceptanceSetupController | null = null;
 const operationCoordinator = new DesktopOperationCoordinator();
 
 if (process.platform === 'win32') {
@@ -451,11 +470,15 @@ if (!hasSingleInstanceLock) {
     const credentials = new DesktopCredentialService({
       profiles,
       fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
-      openExternal: async url => { await shell.openExternal(url); },
+      openExternal: async url => {
+        if (packagedAcceptanceTest) return;
+        await shell.openExternal(url);
+      },
       clientName: `ProPR Desktop (${process.platform})`,
       reportRevocationFailure: diagnostic => {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
       },
+      ...(packagedAcceptanceTest ? { pairingTiming: { sleep: async () => undefined } } : {}),
     });
     const sessionSecurity = configureSessionSecurity(credentials);
     const credentialInitialization = await credentials.initialize();
@@ -465,14 +488,24 @@ if (!hasSingleInstanceLock) {
       });
     }
     const defaultRootDir = join(app.getPath('userData'), 'desktop', 'local-stack');
-    const localHost = process.platform === 'linux' && !packagedSmokeTest
+    const localHost = process.platform === 'linux' && !packagedSmokeTest && !packagedAcceptanceTest
       ? await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined, defaultRootDir, app.getPath('userData'))
       : null;
     const lifecycle = new LocalLifecycleController(
       localHost?.lifecycle,
       (event, fields) => log('error', event, fields),
     );
-    setupController = new DesktopSetupController({
+    const emitSetupSnapshot = (snapshot: import('./shared/contract').DesktopSetupSnapshot) => {
+      const target = mainWindow;
+      if (target && !target.isDestroyed()) target.webContents.send(IPC_CHANNELS.setupProgress, snapshot);
+    };
+    setupController = packagedAcceptanceTest
+      ? new AcceptanceSetupController({
+          rootDir: defaultRootDir,
+          scenario: process.env.PROPR_DESKTOP_ACCEPTANCE_SCENARIO,
+          emit: emitSetupSnapshot,
+        })
+      : new DesktopSetupController({
       actions: localHost?.actions ?? inertSetupActions,
       platform: packagedSmokeTest ? 'darwin' : process.platform,
       appDataDir: app.getPath('userData'),
@@ -504,10 +537,7 @@ if (!hasSingleInstanceLock) {
           lastConnectedAt: saved.updatedAt,
         };
       },
-      emit(snapshot) {
-        const target = mainWindow;
-        if (target && !target.isDestroyed()) target.webContents.send(IPC_CHANNELS.setupProgress, snapshot);
-      },
+      emit: emitSetupSnapshot,
       diagnose(event, fields) { log('error', event, fields); },
     });
     const registeredIpc = registerIpcHandlers({
@@ -522,7 +552,10 @@ if (!hasSingleInstanceLock) {
       devServerUrl,
       packagedRendererUrl,
       coordinator: operationCoordinator,
-      openExternal: async url => { await shell.openExternal(url); },
+      openExternal: async url => {
+        if (packagedAcceptanceTest) return;
+        await shell.openExternal(url);
+      },
     });
 
     const shutdownLifecycle = transportSmoke?.shutdownMode === 'forced-timeout'
@@ -571,7 +604,7 @@ if (!hasSingleInstanceLock) {
           windowsSignerPins: __PROPR_DESKTOP_WINDOWS_SIGNER_PINS__,
         }
       : undefined;
-    if (app.isPackaged && process.platform !== 'win32' && updateConfig && !packagedSmokeTest) {
+    if (app.isPackaged && process.platform !== 'win32' && updateConfig && !packagedSmokeTest && !packagedAcceptanceTest) {
       const runUpdateCheck = () => {
         void checkForSignedUpdates({
           config: updateConfig,

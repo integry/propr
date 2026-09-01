@@ -167,7 +167,7 @@ describe('packaged smoke profile authorization', () => {
     const smokeFlowEnd = main.indexOf("log('info', 'desktop.renderer.mvp_flows.ready'", smokeFlowStart);
     const smokeFlow = main.slice(smokeFlowStart, smokeFlowEnd);
 
-    assert.match(main, /process\.platform === 'linux' && !packagedSmokeTest\s*\? await createDesktopLocalHost/);
+    assert.match(main, /process\.platform === 'linux' && !packagedSmokeTest && !packagedAcceptanceTest\s*\? await createDesktopLocalHost/);
     assert.doesNotMatch(smokeFlow, /lifecycle\.(?:start|stop|restart)|localSetup\.(?:start|retry|cancel)/);
     assert.match(smokeFlow, /stagedConnectCandidate/);
     assert.match(smokeFlow, /window\.__PROPR_DESKTOP__/);
