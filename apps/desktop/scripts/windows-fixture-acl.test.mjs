@@ -2,18 +2,18 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, win32 } from 'node:path';
+import { join } from 'node:path';
 import { it } from 'node:test';
-import { encodedWindowsFixtureAcl } from './windows-fixture-acl.mjs';
+import {
+  canonicalizeWindowsFixtureEntry,
+  encodedWindowsFixtureAcl,
+  windowsPowerShell51Path,
+} from './windows-fixture-acl.mjs';
 
 const windowsIt = process.platform === 'win32' ? it : it.skip;
 
-windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and byte-empty', () => {
-  assert.ok(process.env.SystemRoot);
-  const powershell = win32.join(
-    process.env.SystemRoot,
-    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
-  );
+windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and byte-empty', t => {
+  const powershell = windowsPowerShell51Path();
   const version = spawnSync(powershell, [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
     '[Console]::Out.Write($PSVersionTable.PSVersion.ToString(2))',
@@ -26,40 +26,58 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
   const temporaryDirectoryAlias = tmpdir();
   const canonicalTemporaryDirectory = realpathSync(temporaryDirectoryAlias);
   const fixture = mkdtempSync(join(canonicalTemporaryDirectory, 'propr-fixture-acl-output-'));
-  const fixtureAlias = join(temporaryDirectoryAlias, basename(fixture));
   const directory = join(fixture, 'data');
   const file = join(directory, 'identity.json');
   mkdirSync(directory);
   writeFileSync(file, '{}\n');
 
   try {
+    const canonicalDirectory = canonicalizeWindowsFixtureEntry({
+      entryKind: 'directory', entryPath: directory, powershellPath: powershell,
+    });
+    const canonicalFile = canonicalizeWindowsFixtureEntry({
+      entryKind: 'file', entryPath: file, powershellPath: powershell,
+    });
+    const canonicalizedEntries = [
+      [directory, canonicalDirectory],
+      [file, canonicalFile],
+    ];
+    const normalizationCategories = new Set();
+    for (const [originalPath, entry] of canonicalizedEntries) {
+      if (entry.path.toUpperCase() !== originalPath.toUpperCase()) {
+        normalizationCategories.add(entry.normalization);
+      }
+    }
+    for (const category of [...normalizationCategories].sort()) {
+      t.diagnostic(`PS5.1 path normalization category=${category}`);
+    }
+
     const entries = [
       { label: 'relative path', kind: 'directory', path: 'data', status: 40 },
-      { label: 'mismatched directory kind', kind: 'file', path: directory, status: 41 },
-      { label: 'mismatched file kind', kind: 'directory', path: file, status: 41 },
-      { label: 'invalid full path', kind: 'file', path: `${directory}\\invalid|name`, status: 48 },
-      { label: 'canonical traversal alias', kind: 'directory', path: `${directory}\\..\\data`, status: 49 },
+      { label: 'mismatched directory kind', kind: 'file', path: canonicalDirectory.path, status: 41 },
+      { label: 'mismatched file kind', kind: 'directory', path: canonicalFile.path, status: 41 },
+      { label: 'invalid full path', kind: 'file', path: `${canonicalDirectory.path}\\invalid|name`, status: 48 },
+      { label: 'canonical traversal alias', kind: 'directory', path: `${canonicalDirectory.path}\\..\\data`, status: 49 },
       { label: 'empty path', kind: 'directory', path: '', status: 50 },
-      { label: 'invalid entry kind', kind: 'invalid', path: file, status: 50 },
-      { label: 'directory success', kind: 'directory', path: directory, status: 0 },
-      { label: 'file success', kind: 'file', path: file, status: 0 },
+      { label: 'invalid entry kind', kind: 'invalid', path: canonicalFile.path, status: 50 },
+      { label: 'directory success', kind: 'directory', path: canonicalDirectory.path, status: 0 },
+      { label: 'file success', kind: 'file', path: canonicalFile.path, status: 0 },
     ];
 
-    // Windows PowerShell 5.1 GetFullPath expands existing 8.3 components. When
-    // the runner supplies that spelling, reproduce the original directory and
-    // file failures and prove they are canonical-equality rejections.
-    if (fixtureAlias.toUpperCase() !== fixture.toUpperCase()) {
+    // Node realpath can retain a spelling that PS5.1 further canonicalizes.
+    // Keep that spelling uncanonicalized and prove the helper rejects it.
+    if (canonicalDirectory.path.toUpperCase() !== directory.toUpperCase()) {
       entries.unshift(
         {
-          label: 'temporary directory canonical alias',
+          label: 'precanonical directory spelling',
           kind: 'directory',
-          path: join(fixtureAlias, 'data'),
+          path: directory,
           status: 49,
         },
         {
-          label: 'temporary file canonical alias',
+          label: 'precanonical file spelling',
           kind: 'file',
-          path: join(fixtureAlias, 'data', 'identity.json'),
+          path: file,
           status: 49,
         },
       );

@@ -5,7 +5,11 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import { encodedWindowsFixtureAcl } from './windows-fixture-acl.mjs';
+import {
+  canonicalizeWindowsFixtureEntry,
+  encodedWindowsFixtureAcl,
+  windowsPowerShell51Path,
+} from './windows-fixture-acl.mjs';
 
 if (!['darwin', 'linux', 'win32'].includes(process.platform)) {
   throw new Error('Packaged Connect discovery smoke requires Darwin, Linux, or Windows');
@@ -183,7 +187,8 @@ const windowsFixtureFailure = (phase, category) => {
 };
 
 const protectWindowsEntries = entries => {
-  const membership = spawnSync('powershell.exe', [
+  const powershell = windowsPowerShell51Path();
+  const membership = spawnSync(powershell, [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
     '[Console]::Out.Write(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))',
   ], { shell: false, windowsHide: true, encoding: 'utf8', timeout: 10_000 });
@@ -192,7 +197,12 @@ const protectWindowsEntries = entries => {
   }
   if (membership.stdout !== 'False') windowsFixtureFailure('membership', 'administrator');
   for (const entry of entries) {
-    const result = spawnSync('powershell.exe', [
+    const canonicalEntry = canonicalizeWindowsFixtureEntry({
+      entryKind: entry.kind,
+      entryPath: entry.path,
+      powershellPath: powershell,
+    });
+    const result = spawnSync(powershell, [
       '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedWindowsFixtureAcl,
     ], {
       shell: false,
@@ -201,7 +211,7 @@ const protectWindowsEntries = entries => {
       env: {
         ...process.env,
         PROPR_FIXTURE_ACL_KIND: entry.kind,
-        PROPR_FIXTURE_ACL_PATH: entry.path,
+        PROPR_FIXTURE_ACL_PATH: canonicalEntry.path,
       },
     });
     if (result.error || result.signal) windowsFixtureFailure('powershell-invocation', 'process-failed');
