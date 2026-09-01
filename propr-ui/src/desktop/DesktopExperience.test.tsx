@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesktopExperience } from './DesktopExperience';
 import { DesktopTitleBar } from './DesktopTitleBar';
-import type { DesktopAdapters, DesktopConnectionResult, DesktopProfile } from './types';
+import { DESKTOP_ACCESS_INVALID_EVENT, type DesktopAdapters, type DesktopConnectionResult, type DesktopProfile } from './types';
 
 const apiMock = vi.hoisted(() => ({ setApiBaseUrl: vi.fn() }));
 const runtimeMock = vi.hoisted(() => ({ setDesktopApiBaseUrl: vi.fn() }));
@@ -37,10 +37,10 @@ const adaptersFor = (
     getActiveId: vi.fn(async () => activeId),
     setActiveId: vi.fn(async () => undefined),
   },
-  discovery: { discover: vi.fn(async () => []) },
+  discovery: { supported: true, discover: vi.fn(async () => []) },
   authentication: { authenticate: vi.fn(async () => undefined) },
   externalBrowser: { open: vi.fn(async () => undefined) },
-  localSetup: { setup: vi.fn(async () => localProfile) },
+  localSetup: { supported: true, setup: vi.fn(async () => localProfile) },
   connection: { probe: vi.fn(probe) },
 });
 
@@ -58,6 +58,24 @@ describe('DesktopExperience', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('offers network search only when the adapter has a real discovery provider', async () => {
+    const capable = adaptersFor();
+    const { unmount } = render(
+      <DesktopExperience adapters={capable}><div>Capable app</div></DesktopExperience>
+    );
+    const search = await screen.findByRole('button', { name: /Search for instances on this network/i });
+    fireEvent.click(search);
+    await waitFor(() => expect(capable.discovery.discover).toHaveBeenCalledOnce());
+    unmount();
+
+    const incapable = adaptersFor();
+    incapable.discovery.supported = false;
+    render(<DesktopExperience adapters={incapable}><div>Incapable app</div></DesktopExperience>);
+    expect(await screen.findByRole('heading', { name: 'Let’s set up this computer' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Search for instances on this network/i })).not.toBeInTheDocument();
+    expect(incapable.discovery.discover).not.toHaveBeenCalled();
   });
 
   it('runs first-time local setup through adapters before mounting the shared app', async () => {
@@ -140,6 +158,49 @@ describe('DesktopExperience', () => {
     expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
   });
 
+  it('uses one activation commit instead of renderer setActive and never publishes a failed B selection', async () => {
+    const probe = vi.fn(async (profile: DesktopProfile): Promise<DesktopConnectionResult> => ({
+      status: 'ready',
+      version: '0.8.15',
+      activationTicket: `ticket-${profile.id}`,
+    }));
+    const adapters = adaptersFor([localProfile, remoteProfile], localProfile.id, probe);
+    adapters.connection.activate = vi.fn()
+      .mockResolvedValueOnce({ status: 'ready', transportScope: 'scope-a' })
+      .mockRejectedValueOnce(new Error('Profile selection could not be written.'));
+    adapters.connection.publishActivation = vi.fn();
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
+    expect(adapters.connection.publishActivation).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click((await screen.findByText('Team server')).closest('button')!);
+
+    expect(await screen.findByText(/could not save this connection/i)).toBeInTheDocument();
+    expect(screen.queryByText(/selection could not be written/i)).not.toBeInTheDocument();
+    expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
+    expect(adapters.connection.publishActivation).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not publish ready state when main activation reports a changed profile binding', async () => {
+    const adapters = adaptersFor([localProfile], localProfile.id);
+    adapters.connection.activate = vi.fn(async () => ({
+      status: 'authentication-required' as const,
+      message: 'This connection changed while it was being activated.',
+    }));
+    adapters.connection.publishActivation = vi.fn();
+
+    render(<DesktopExperience adapters={adapters}><div>Wrong profile app</div></DesktopExperience>);
+
+    expect(await screen.findByText(/connection changed while it was being activated/i)).toBeInTheDocument();
+    expect(screen.queryByText('Wrong profile app')).not.toBeInTheDocument();
+    expect(adapters.connection.publishActivation).not.toHaveBeenCalled();
+    expect(runtimeMock.setDesktopApiBaseUrl).not.toHaveBeenCalled();
+    expect(apiMock.setApiBaseUrl).not.toHaveBeenCalled();
+  });
+
   it('ignores a stale connection result after the adapters change', async () => {
     let resolveFirstProbe: ((result: DesktopConnectionResult) => void) | undefined;
     const firstProbe = vi.fn(() => new Promise<DesktopConnectionResult>(resolve => {
@@ -217,6 +278,52 @@ describe('DesktopExperience', () => {
     expect(adapters.profiles.setActiveId).toHaveBeenCalledWith(null);
   });
 
+  it('settles a rejected fire-and-forget authentication cancellation during shutdown', async () => {
+    const adapters = adaptersFor([localProfile], null, async () => ({
+      status: 'authentication-required', message: 'Sign in required.',
+    }));
+    adapters.authentication.cancel = vi.fn(async () => { throw new Error('private IPC cancellation failure'); });
+    const unhandled = vi.fn();
+    window.addEventListener('unhandledrejection', unhandled);
+    const { unmount } = render(
+      <DesktopExperience adapters={adapters}><div>Cancelled app</div></DesktopExperience>
+    );
+
+    fireEvent.click((await screen.findByText('This computer')).closest('button')!);
+    expect(await screen.findByText('Sign in to continue to this instance.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Choose another instance' }));
+    unmount();
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(adapters.authentication.cancel).toHaveBeenCalledWith(localProfile.id);
+    expect(unhandled).not.toHaveBeenCalled();
+    window.removeEventListener('unhandledrejection', unhandled);
+  });
+
+  it('ignores a delayed access-invalid event from A after B has connected', async () => {
+    const probe = vi.fn(async (profile: DesktopProfile): Promise<DesktopConnectionResult> => ({
+      status: 'ready',
+      version: '0.8.15',
+      transportScope: profile.id === localProfile.id ? 'scope-11' : 'scope-12',
+    }));
+    const adapters = adaptersFor([localProfile, remoteProfile], localProfile.id, probe);
+    adapters.connection.deactivate = vi.fn();
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click((await screen.findByText('Team server')).closest('button')!);
+    await waitFor(() => expect(probe).toHaveBeenCalledWith(remoteProfile));
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+
+    window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, {
+      detail: { profileId: localProfile.id, transportScope: 'scope-11', code: 'INVALID_INSTANCE_TOKEN' },
+    }));
+
+    expect(screen.getByText('Connected app')).toBeInTheDocument();
+    expect(adapters.connection.deactivate).not.toHaveBeenCalled();
+  });
+
   it('supports editing a recent profile and connecting to the updated URL', async () => {
     const adapters = adaptersFor([localProfile]);
     render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
@@ -232,6 +339,24 @@ describe('DesktopExperience', () => {
       id: 'local',
       name: 'Office ProPR',
       baseUrl: 'https://office.example.com',
+      kind: 'remote',
+    }));
+  });
+
+  it('derives a remote-to-loopback edit kind from the normalized submitted URL', async () => {
+    const adapters = adaptersFor([remoteProfile]);
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Recent instances')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Team server' }));
+    fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'HTTP://LOCALHOST:3000/' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(adapters.profiles.save).toHaveBeenCalledWith(expect.objectContaining({
+      id: remoteProfile.id,
+      baseUrl: 'http://localhost:3000',
+      kind: 'local',
     }));
   });
 
@@ -311,10 +436,15 @@ describe('DesktopExperience', () => {
       .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' })
       .mockImplementationOnce(() => pendingProbe.promise);
     const adapters = adaptersFor([localProfile], localProfile.id, probe);
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+    render(
+      <DesktopExperience adapters={adapters}>
+        <DesktopTitleBar />
+        <div>Connected app</div>
+      </DesktopExperience>
+    );
 
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
-    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connected: This computer' }));
     if (profileKind === 'new') {
       fireEvent.click(await screen.findByRole('button', { name: /Add instance/i }));
       fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'New server' } });

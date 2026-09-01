@@ -128,7 +128,7 @@ Optional: expose a local stack's API to the hosted control plane at `https://app
 |---|---|---|---|
 | `PROPR_UI_TUNNEL_TOKEN` | Unset | Cloudflare Tunnel token; setting it enables the tunnel on the next `propr start` (unless you ran `propr tunnel off`). This is a **live credential** — anyone with it can route traffic through your tunnel. Keep it in `.env` only; never commit, log, or share it. | Tunnel mode. |
 | `PROPR_UI_TUNNEL_ENABLED` | Unset | `true`/`1` explicitly enables the tunnel. A token is still required — `propr check` fails without one. Redundant when a token is set. | Optional. |
-| `PROPR_INSTANCE_ID` | Unset | This stack's instance id — a valid DNS label (letters, digits, hyphens; 1–63 chars). Derives the public URL `https://t-<id>.propr.dev`. | Tunnel mode, unless an explicit URL is set. |
+| `PROPR_INSTANCE_ID` | Unset | This stack's instance id — letters, digits, and hyphens; 1–61 characters so the full `t-<id>` DNS label remains valid. Derives the public URL `https://t-<id>.propr.dev`. | Tunnel mode, unless an explicit URL is set. |
 | `PROPR_UI_PUBLIC_API_URL` | Derived from `PROPR_INSTANCE_ID` | Explicit public API URL the hosted UI talks to; overrides the derived one. | Override only. |
 | `PROPR_CLOUDFLARED_IMAGE` | `cloudflare/cloudflared:2024.12.2` (pinned) | The cloudflared sidecar image. | Override only. |
 

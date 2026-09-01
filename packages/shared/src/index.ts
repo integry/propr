@@ -59,6 +59,24 @@ export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
 export { MIN_SESSION_SECRET_LENGTH, validateSessionSecret } from './sessionSecret.js';
 
 export {
+  canonicalProprHttpUrlOrigin,
+  isProprLoopbackHostname,
+  normalizeProprApiOrigin,
+  PROPR_API_ORIGIN_PARITY_CASES,
+  type NormalizeProprApiOriginOptions,
+} from './apiOrigin.js';
+
+export {
+  DESKTOP_REVOCATION_BINDING_HEADER,
+  DESKTOP_TOKEN_REVOCATION_ENDPOINT,
+  DESKTOP_TOKEN_REVOCATION_SCHEMA,
+  DESKTOP_TOKEN_REVOCATION_VERSION,
+  DESKTOP_TOKEN_TERMINAL_CODES,
+  type DesktopTokenTerminalCode,
+  type DesktopTokenTerminalRevocation,
+} from './desktopTokenRevocation.js';
+
+export {
   INSTANCE_PERMISSIONS,
   type AuthenticatedInstanceUser,
   type InstanceAuthorizationSource,
@@ -93,11 +111,15 @@ export {
   DEFAULT_PROPR_GH_RELAY_URL,
   DEFAULT_PROPR_UI_ORIGIN,
   DESKTOP_RENDERER_ORIGIN,
+  DESKTOP_TRANSPORT_SCOPE_HEADER,
+  DESKTOP_TRANSPORT_SCOPE_QUERY,
   PROPR_UI_PROXY_SUFFIX,
   PROPR_UI_PROXY_LABEL_PREFIX,
   MAX_PROPR_API_BASE_URL_LENGTH,
   DEFAULT_CLOUDFLARED_IMAGE,
   proprInstanceProxyUrl,
+  canonicalProprProxySelector,
+  canonicalProprProxyUrl,
   isValidProprInstanceId,
   parseProprConnectEndpoint,
   isCanonicalProprConnectHostname,
@@ -111,6 +133,18 @@ export {
   normalizeDesktopPairingApprovalUrl,
   type DesktopPairingApprovalUrlInput,
 } from './desktopPairing.js';
+
+export {
+  PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION,
+  PROPR_CONNECT_DISCOVERY_MAX_BYTES,
+  PUBLIC_INSTANCE_IDENTITY_SCHEMA_VERSION,
+  PUBLIC_INSTANCE_IDENTITY_FILENAME,
+  isPublicInstanceIdentity,
+  parseProprDesktopDiscovery,
+  parsePublicInstanceIdentityDocument,
+  type PublicInstanceIdentityDocument,
+  type ProprDesktopDiscovery,
+} from './connectDiscovery.js';
 
 // Export routing URL validation (shared by intake prerequisites and the daemon
 // routing service so the boot/CLI checks and the dialer agree on one policy)

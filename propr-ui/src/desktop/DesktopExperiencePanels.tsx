@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { parseProprConnectEndpoint } from '@propr/shared';
+import React, { useState } from 'react';
+import { isProprLoopbackHostname, parseProprConnectEndpoint } from '@propr/shared';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -16,7 +16,7 @@ import {
 import { normalizeBaseUrl } from './browserAdapters';
 import type { DesktopConnectionResult, DesktopProfile } from './types';
 
-const profileId = (): string => {
+const createProfileId = (): string => {
   try { return crypto.randomUUID(); } catch { return `profile-${Date.now()}`; }
 };
 
@@ -39,7 +39,7 @@ const connectionLabel = (result: DesktopConnectionResult): string => {
   return 'Connected';
 };
 
-export const DesktopBrand = () => (
+export const DesktopBrand: React.FC = () => (
   <div className="desktop-brand" aria-label="ProPR Desktop">
     <img src="/logo.png" alt="" />
     <span>ProPR</span>
@@ -53,7 +53,7 @@ interface ProfileEditorProps {
   onSave(profile: DesktopProfile): void;
 }
 
-export const ProfileEditor = ({ initial, operationError, onCancel, onSave }: ProfileEditorProps) => {
+export const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operationError, onCancel, onSave }) => {
   const [name, setName] = useState(initial?.name || 'My ProPR');
   const [baseUrl, setBaseUrl] = useState(initial ? initial.baseUrl : 'http://127.0.0.1:3000');
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -62,27 +62,36 @@ export const ProfileEditor = ({ initial, operationError, onCancel, onSave }: Pro
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     try {
-      const hostname = new URL(baseUrl).hostname;
+      const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+      const hostname = new URL(normalizedBaseUrl).hostname;
       onSave({
-        id: initial?.id || profileId(),
+        id: initial?.id || createProfileId(),
         name: name.trim() || 'My ProPR',
-        baseUrl: normalizeBaseUrl(baseUrl),
-        kind: initial?.kind || (hostname === '127.0.0.1' || hostname === 'localhost' ? 'local' : 'remote'),
+        baseUrl: normalizedBaseUrl,
+        kind: isProprLoopbackHostname(hostname) ? 'local' : 'remote',
         lastConnectedAt: initial?.lastConnectedAt,
       });
-    } catch {
-      setValidationError('Enter a valid ProPR instance origin.');
+    } catch (caught) {
+      setValidationError(caught instanceof Error ? caught.message : 'Enter a valid instance URL.');
     }
   };
 
   const error = validationError || operationError;
   return (
     <form className="desktop-profile-form" onSubmit={submit}>
-      <button type="button" className="desktop-back-button" onClick={onCancel}><ArrowLeft aria-hidden="true" /> Back</button>
+      <button type="button" className="desktop-back-button" onClick={onCancel}>
+        <ArrowLeft aria-hidden="true" /> Back
+      </button>
       <h2>{initial ? 'Edit instance' : 'Connect to an instance'}</h2>
       <p>Enter the address shown by your ProPR server.</p>
-      <label>Display name<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="Team ProPR" maxLength={80} /></label>
-      <label>Instance URL<input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} inputMode="url" placeholder="https://propr.example.com" maxLength={2048} aria-describedby={error ? 'profile-url-error' : undefined} /></label>
+      <label>
+        Display name
+        <input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="Team ProPR" maxLength={80} />
+      </label>
+      <label>
+        Instance URL
+        <input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} inputMode="url" placeholder="https://propr.example.com" maxLength={2048} aria-describedby={error ? 'profile-url-error' : undefined} />
+      </label>
       {connectEndpoint && <div className="desktop-connect-verified" role="status"><Cloud aria-hidden="true" /> Verified ProPR Connect endpoint</div>}
       {error && <div id="profile-url-error" className="desktop-inline-error" role="alert">{error}</div>}
       <button type="submit" className="desktop-primary-button">{initial ? 'Save changes' : 'Connect'}</button>
@@ -97,7 +106,7 @@ interface ProfileListProps {
   onRemove(profile: DesktopProfile): void;
 }
 
-export const ProfileList = ({ profiles, onConnect, onEdit, onRemove }: ProfileListProps) => (
+export const ProfileList: React.FC<ProfileListProps> = ({ profiles, onConnect, onEdit, onRemove }) => (
   <div className="desktop-recents">
     <h2>Recent instances</h2>
     <div className="desktop-profile-list">
@@ -123,12 +132,16 @@ interface ChooserProps extends ProfileListProps {
   busy: boolean;
   error: string | null;
   localSetupSupported: boolean;
+  networkDiscoverySupported: boolean;
   onLocalSetup(): void;
   onConnectNew(): void;
   onDiscover(): void;
 }
 
-export const InstanceChooser = ({ profiles, busy, error, localSetupSupported, onLocalSetup, onConnectNew, onDiscover, ...listProps }: ChooserProps) => (
+export const InstanceChooser: React.FC<ChooserProps> = ({
+  profiles, busy, error, localSetupSupported, networkDiscoverySupported,
+  onLocalSetup, onConnectNew, onDiscover, ...listProps
+}) => (
   <main className="desktop-welcome-card">
     <DesktopBrand />
     <div className="desktop-welcome-copy">
@@ -141,17 +154,24 @@ export const InstanceChooser = ({ profiles, busy, error, localSetupSupported, on
     <div className="desktop-setup-actions">
       {localSetupSupported && (
         <button type="button" className="desktop-choice-button desktop-choice-primary" onClick={onLocalSetup} disabled={busy}>
-          <span><Computer aria-hidden="true" /></span><span><strong>Set up this computer</strong><small>Create a local ProPR workspace</small></span>
+          <span><Computer aria-hidden="true" /></span>
+          <span><strong>Set up this computer</strong><small>Create a local ProPR workspace</small></span>
           {busy ? <LoaderCircle className="desktop-spin" /> : <ChevronRight />}
         </button>
       )}
       <button type="button" className="desktop-choice-button" onClick={onConnectNew} disabled={busy}>
-        <span><Server aria-hidden="true" /></span><span><strong>Connect to an existing instance</strong><small>Use a local or remote server URL</small></span><ChevronRight />
+        <span><Server aria-hidden="true" /></span>
+        <span><strong>Connect to an existing instance</strong><small>Use a local or remote server URL</small></span>
+        <ChevronRight />
       </button>
     </div>
     {error && <div className="desktop-inline-error" role="alert">{error}</div>}
     {profiles.length > 0 && <ProfileList profiles={profiles} {...listProps} />}
-    <button type="button" className="desktop-discover-button" onClick={onDiscover} disabled={busy}><Search aria-hidden="true" /> Search for instances on this network</button>
+    {networkDiscoverySupported && (
+      <button type="button" className="desktop-discover-button" onClick={onDiscover} disabled={busy}>
+        <Search aria-hidden="true" /> Search for instances on this network
+      </button>
+    )}
   </main>
 );
 
@@ -179,6 +199,7 @@ export const ConnectionPanel = ({ profile, result, onBack, onRetry, onAuthentica
           <span className="desktop-eyebrow">{connectionLabel(result)}</span><h1>{profile.name}</h1>
           <p>{result.message}</p>
           {result.status === 'incompatible' && safeVersion(result.version) && <div className="desktop-version-note">Instance version {safeVersion(result.version)} · Desktop {__APP_VERSION__}</div>}
+          {'authentication' in result && result.authentication && <div className="desktop-version-note">{result.authentication}</div>}
           <div className="desktop-connection-actions">
             {result.status === 'authentication-required' && <button type="button" className="desktop-primary-button" onClick={onAuthenticate}>Sign in in browser</button>}
             <button type="button" className={result.status === 'authentication-required' ? 'desktop-secondary-button' : 'desktop-primary-button'} onClick={onRetry}><RefreshCw /> {managed ? 'Retry' : 'Try again'}</button>

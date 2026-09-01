@@ -1,5 +1,7 @@
 import {
+  canonicalProprHttpUrlOrigin,
   isProprConnectReservedHostAttempt,
+  isProprLoopbackHostname,
   MAX_PROPR_API_BASE_URL_LENGTH,
   parseProprConnectEndpoint,
 } from '@propr/shared';
@@ -23,15 +25,6 @@ export interface ProprApiEndpointClassification {
   /** Present only after exact ProPR Connect hostname verification. */
   connectInstanceId?: string;
 }
-
-const isLoopbackHostname = (hostname: string): boolean => {
-  const normalized = hostname.toLowerCase().replace(/\.$/, '');
-  if (normalized === 'localhost' || normalized.endsWith('.localhost') || normalized === '[::1]') return true;
-  const parts = normalized.split('.');
-  return parts.length === 4
-    && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
-    && Number(parts[0]) === 127;
-};
 
 const configurationError = (message: string): never => {
   throw new ProprClientError(message, { kind: 'configuration', code: 'INVALID_API_BASE_URL' });
@@ -70,19 +63,17 @@ export const normalizeApiBaseUrl = (
   if (parsed.pathname.replace(/\//g, '') !== '') {
     return invalidApiBaseUrl();
   }
-  if (
-    parsed.protocol === 'http:'
-    && !isLoopbackHostname(parsed.hostname)
-    && options.allowInsecureHttp !== true
-  ) {
-    return invalidApiBaseUrl();
-  }
-
   if (isProprConnectReservedHostAttempt(value) && !parseProprConnectEndpoint(value)) {
     return invalidApiBaseUrl();
   }
 
-  return parsed.origin as ProprApiBaseUrl;
+  const normalized = canonicalProprHttpUrlOrigin(candidate, {
+    allowInsecureHttp: options.allowInsecureHttp,
+  });
+  if (!normalized) {
+    return invalidApiBaseUrl();
+  }
+  return normalized as ProprApiBaseUrl;
 };
 
 /** Normalize an API origin and identify only the exact ProPR Connect shape. */
@@ -102,7 +93,7 @@ export const classifyApiBaseUrl = (
   }
   return {
     baseUrl,
-    kind: isLoopbackHostname(new URL(baseUrl).hostname) ? 'loopback' : 'remote',
+    kind: isProprLoopbackHostname(new URL(baseUrl).hostname) ? 'loopback' : 'remote',
   };
 };
 

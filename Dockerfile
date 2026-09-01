@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
 # Copy package files (including workspace packages)
 COPY package*.json ./
 COPY packages/shared/package*.json ./packages/shared/
+COPY packages/local-setup/package*.json ./packages/local-setup/
 COPY packages/core/package*.json ./packages/core/
 COPY packages/api/package*.json ./packages/api/
 
@@ -29,6 +30,9 @@ COPY . .
 
 # Build shared package first (required for @propr/shared imports)
 RUN cd packages/shared && npm run build
+
+# Build Node-local shared storage helpers used by the API and CLI.
+RUN cd packages/local-setup && npm run build
 
 # Build core package (required for @propr/core imports)
 RUN cd packages/core && npm run build

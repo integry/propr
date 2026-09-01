@@ -97,7 +97,13 @@ Useful follow-up commands:
 propr tunnel verify      # check cloudflared + /api/status, /, /socket.io/
 propr tunnel off         # stop only the sidecar; token/env values stay in .env
 propr tunnel on          # restart the sidecar later
+propr connect status --json --root /path/to/stack  # secret-free desktop discovery
 ```
+
+`connect status` requires an explicit caller-owned stack root and never scans the
+filesystem. Its JSON stdout contains no tokens, account/repository/host identity,
+environment values, or paths. Exit codes are 0 ready, 2 known not ready, 3
+incompatible, 4 invalid configuration/root, 5 timeout, and 1 internal failure.
 
 `propr tunnel off` intentionally leaves the Connect-written `.env` values in
 place. If you are switching the same stack back to a local or custom self-hosted

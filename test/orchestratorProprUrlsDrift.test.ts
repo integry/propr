@@ -13,6 +13,8 @@ import {
   PROPR_UI_COMPATIBILITY,
   PROPR_UI_SUPPORTED_API_COMPATIBILITY,
   proprInstanceProxyUrl as sharedProxyUrl,
+  canonicalProprProxySelector,
+  canonicalProprProxyUrl as sharedCanonicalProxyUrl,
   isValidProprInstanceId as sharedIsValidId,
   isProprProxyUrl as sharedIsProxyUrl,
   proprTunnelEndpoints as sharedTunnelEndpoints,
@@ -28,6 +30,7 @@ import {
   DEFAULT_CLOUDFLARED_IMAGE as LAUNCHER_CLOUDFLARED_IMAGE,
   DEFAULT_PROPR_UI_ORIGIN as LAUNCHER_PROPR_UI_ORIGIN,
   proprInstanceProxyUrl as launcherProxyUrl,
+  canonicalProprProxyUrl as launcherCanonicalProxyUrl,
   isValidProprInstanceId as launcherIsValidId,
   isProprProxyUrl as launcherIsProxyUrl,
   proprTunnelEndpoints as launcherTunnelEndpoints,
@@ -42,7 +45,7 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
   });
 
   test('proprInstanceProxyUrl agrees for valid, blank, and invalid ids', () => {
-    const cases = ['abc123', 'a', 'with-hyphen', '', '   ', null, undefined, 'bad id', 'has/slash', 'under_score', 'has.dot', '-leading', 'trailing-'];
+    const cases = ['abc123', 'a', 'with-hyphen', 't-Abc', 'T-Abc', '', '   ', null, undefined, 'bad id', 'has/slash', 'under_score', 'has.dot', '-leading', 'trailing-'];
     for (const id of cases) {
       assert.equal(
         launcherProxyUrl(id as string | undefined),
@@ -50,6 +53,11 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
         `proxy URL diverged for ${JSON.stringify(id)}`,
       );
     }
+  });
+
+  test('mixed-case existing prefixes are removed before adding the canonical prefix', () => {
+    assert.equal(sharedProxyUrl('T-Abc'), 'https://t-abc.propr.dev');
+    assert.equal(launcherProxyUrl('T-Abc'), 'https://t-abc.propr.dev');
   });
 
   test('isValidProprInstanceId agrees across the same cases', () => {
@@ -104,6 +112,44 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
         `isProprProxyUrl diverged for ${JSON.stringify(url)}`,
       );
     }
+  });
+
+  test('canonical proxy parsing agrees and rejects authority lookalikes', () => {
+    const cases = [
+      'https://t-abc123.propr.dev',
+      'https://t-abc123.propr.dev/',
+      'https://T-AbC123.ProPR.dev/',
+      'HTTPS://t-abc123.propr.dev',
+      ' https://t-abc123.propr.dev',
+      'https://user@t-abc123.propr.dev',
+      'https://t-abc123.propr.dev:443',
+      'https://t-abc123.propr.dev.',
+      'https://t-abc123.propr.dev//',
+      'https://t-аbc.propr.dev',
+      `https://t-${'a'.repeat(62)}.propr.dev`,
+    ];
+    for (const url of cases) {
+      assert.equal(launcherCanonicalProxyUrl(url), sharedCanonicalProxyUrl(url));
+    }
+  });
+
+  test('scheme-less Connect selectors accept only one canonical host spelling', () => {
+    assert.equal(canonicalProprProxySelector('t-abc123.propr.dev'), 't-abc123.propr.dev');
+    assert.equal(canonicalProprProxySelector('T-AbC123.ProPR.dev'), undefined);
+    for (const selector of [
+      'abc123',
+      'https://t-abc123.propr.dev',
+      'user@t-abc123.propr.dev',
+      't-abc123.propr.dev:443',
+      't-abc123.propr.dev/',
+      't-abc123.propr.dev?x=1',
+      't-abc123.propr.dev#x',
+      ' t-abc123.propr.dev',
+      't-abc123%2epropr.dev',
+      't-abc123.propr.dev.',
+      't-a.b.propr.dev',
+      't-аbc.propr.dev',
+    ]) assert.equal(canonicalProprProxySelector(selector), undefined, selector);
   });
 
   test('proprTunnelEndpoints agrees, including trailing-slash normalization', () => {

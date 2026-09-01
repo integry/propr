@@ -138,6 +138,45 @@ describe('getApiBaseUrl', () => {
     expect(getApiBaseUrl()).toBe('https://app.propr.dev');
   });
 
+  it('does not normalize noncanonical managed origins into hosted authority', async () => {
+    const { resolveApiBaseUrl } = await import('./runtimeConfig');
+    for (const apiBaseUrl of [
+      'https://t-abc123.propr.dev/',
+      'https://t-abc123.propr.dev//',
+      ' https://t-abc123.propr.dev',
+      'https://T-AbC123.ProPR.dev',
+      'http://t-abc123.propr.dev',
+      'https://t-abc123.propr.dev:444',
+      'https://user:password@t-abc123.propr.dev',
+      'https://t-abc123.propr.dev/api',
+      'https://extra.t-abc123.propr.dev',
+      'https://t-é.propr.dev',
+      'https://t-é.propr.dev:443',
+      'https://t-é.propr.dev:444',
+      'https://user:password@t-é.propr.dev/api',
+      'https://t-é.nested.propr.dev',
+    ]) {
+      expect(resolveApiBaseUrl(
+        'app.propr.dev',
+        '',
+        { apiBaseUrl },
+        undefined,
+      )).toBe('');
+    }
+
+    for (const unrelated of [
+      'https://t-x.propr.dev.example.com',
+      'https://nested.t-x.propr.dev.example.com',
+    ]) {
+      expect(resolveApiBaseUrl(
+        'app.propr.dev',
+        '',
+        { apiBaseUrl: unrelated },
+        undefined,
+      )).toBe(unrelated);
+    }
+  });
+
   it('returns empty on the hosted OAuth completion route with a tunnel without touching hosted session state', async () => {
     const hostedWindow = stubHostedWindow({
       search: '?oauth_complete=true&tunnel=t-attacker.propr.dev',
@@ -376,6 +415,11 @@ describe('hosted tunnel query API base', () => {
       '?tunnel=t-abc123.propr.dev%2Fapi',
       '?tunnel=t-abc123.propr.dev%3Ffrom%3Dconnect',
       '?tunnel=t-abc123.propr.dev%23fragment',
+      '?tunnel=user%40t-abc123.propr.dev',
+      '?tunnel=t-abc123.propr.dev%3A443',
+      '?tunnel=t-%D0%B0bc.propr.dev',
+      '?tunnel=t-abc123%2Epropr.dev',
+      '?tunnel=%20t-abc123.propr.dev',
       '?tunnel=%2Fapi'
     ]) {
       expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', bad)).toBeNull();

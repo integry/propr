@@ -31,9 +31,12 @@
 //     authority, even if sessionStorage was copied from an existing tab.
 
 import {
+  canonicalProprProxyUrl,
   DEFAULT_PROPR_UI_ORIGIN,
   isProprProxyUrl,
   MAX_PROPR_API_BASE_URL_LENGTH,
+  PROPR_UI_PROXY_LABEL_PREFIX,
+  PROPR_UI_PROXY_SUFFIX,
 } from '@propr/shared';
 import { normalizeApiBaseUrl } from '@propr/client';
 import {
@@ -122,6 +125,38 @@ export const isValidHttpUrl = (value: string): boolean => {
   try {
     const url = new URL(value);
     return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+/** Whether a raw URL places a managed-looking tunnel label under propr.dev. */
+const claimsManagedTunnelNamespace = (value: string): boolean => {
+  // Inspect the literal authority before URL applies IDNA conversion. This is
+  // deliberately the same raw-authority classification used by the API: the
+  // first label starts with t- and the terminal labels are exactly propr.dev.
+  const rawAuthority = value
+    .slice(value.indexOf('://') + 3)
+    .split(/[/?#]/, 1)[0]
+    ?.split('@')
+    .pop()
+    ?.toLowerCase() ?? '';
+  const rawHostname = rawAuthority.replace(/:\d+$/, '').replace(/\.$/, '');
+  const rawLabels = rawHostname.split('.');
+  if (
+    rawLabels[0]?.startsWith(PROPR_UI_PROXY_LABEL_PREFIX) === true
+    && rawLabels.at(-2) === 'propr'
+    && rawLabels.at(-1) === 'dev'
+  ) return true;
+
+  try {
+    const hostname = new URL(value.trim()).hostname.toLowerCase().replace(/\.$/, '');
+    const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+    if (!hostname.endsWith(suffix)) return false;
+    return hostname
+      .slice(0, -suffix.length)
+      .split('.')
+      .some(label => label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX));
   } catch {
     return false;
   }
@@ -276,6 +311,9 @@ export const resolveApiBaseUrl = (
     buildTimeApiBaseUrl ||
     ''
   );
+  if (isHostedUiOrigin(hostname) && claimsManagedTunnelNamespace(selectedApiBaseUrl)) {
+    return canonicalProprProxyUrl(selectedApiBaseUrl) ?? '';
+  }
   return normalizeApiBaseUrl(selectedApiBaseUrl);
 };
 /* eslint-enable max-params */
@@ -332,11 +370,10 @@ if (typeof window !== 'undefined') {
  * connection so they always target the same origin. Returns an empty string
  * for same-origin requests.
  *
- * Trailing slashes are stripped here, once, so the many callers that build
- * paths as `${API_BASE_URL}/api/...` never produce a double slash (e.g.
- * `https://t-abc.propr.dev//api/compatibility`). The orchestrator already
- * normalizes the values it injects, but a hand-served `public/config.js`,
- * `VITE_API_BASE_URL`, or manually set apiBaseUrl can still carry one.
+ * Generic/self-managed URL spellings are normalized here so callers that build
+ * paths as `${API_BASE_URL}/api/...` never produce a double slash. Hosted
+ * managed tunnel origins are checked before that normalization and must already
+ * use their exact lowercase, slash-free canonical spelling.
  */
 export const getApiBaseUrl = (): string => {
   return getRuntimeApiBaseUrlState().apiBaseUrl;

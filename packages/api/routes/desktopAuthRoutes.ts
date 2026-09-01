@@ -5,6 +5,14 @@ import {
   desktopAuthService,
 } from '../desktopAuthService.js';
 import { isUserWhitelisted } from '../userWhitelist.js';
+import {
+  DESKTOP_REVOCATION_BINDING_HEADER,
+  DESKTOP_TOKEN_REVOCATION_ENDPOINT,
+  DESKTOP_TOKEN_REVOCATION_SCHEMA,
+  DESKTOP_TOKEN_REVOCATION_VERSION,
+  canonicalProprHttpUrlOrigin,
+  normalizeProprApiOrigin,
+} from '@propr/shared';
 
 interface DesktopAuthRoutesOptions {
   service?: DesktopAuthService;
@@ -26,15 +34,9 @@ function sendDesktopAuthError(error: unknown, res: Response): void {
 
 export function isTrustedPairingApprovalOrigin(origin: string | undefined, frontendUrl: string | undefined): boolean {
   if (!origin || !frontendUrl) return false;
-  try {
-    const expected = new URL(frontendUrl);
-    const supplied = new URL(origin);
-    return supplied.origin === expected.origin
-      && (supplied.protocol === 'https:'
-        || (supplied.protocol === 'http:' && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(supplied.hostname)));
-  } catch {
-    return false;
-  }
+  const expected = canonicalProprHttpUrlOrigin(frontendUrl);
+  const supplied = normalizeProprApiOrigin(origin);
+  return expected !== null && supplied === expected;
 }
 
 /** Pairing approval is intentionally session-only. */
@@ -69,8 +71,25 @@ export function createDesktopAuthRoutes(options: DesktopAuthRoutesOptions = {}) 
 
   async function startPairing(req: Request, res: Response): Promise<void> {
     try {
-      const result = await service.startPairing((req.body as { clientName?: unknown } | undefined)?.clientName);
+      const body = req.body as Record<string, unknown> | undefined;
+      const result = await service.startPairing(body?.clientName, body);
       res.status(201).json(result);
+    } catch (error) {
+      sendDesktopAuthError(error, res);
+    }
+  }
+
+  async function activatePairing(req: Request, res: Response): Promise<void> {
+    try {
+      res.json(await service.activatePairing(pathParameter(req.params.pairingId), req.body));
+    } catch (error) {
+      sendDesktopAuthError(error, res);
+    }
+  }
+
+  async function cancelPairing(req: Request, res: Response): Promise<void> {
+    try {
+      res.json(await service.cancelPairing(pathParameter(req.params.pairingId), req.body));
     } catch (error) {
       sendDesktopAuthError(error, res);
     }
@@ -148,15 +167,49 @@ export function createDesktopAuthRoutes(options: DesktopAuthRoutesOptions = {}) 
     }
   }
 
+  async function revokeCurrentToken(req: Request, res: Response): Promise<void> {
+    const authorization = req.header('authorization');
+    const credentialGeneration = req.header(DESKTOP_REVOCATION_BINDING_HEADER);
+    if (!authorization || !/^Bearer propr_it_[A-Za-z0-9_-]{43}$/.test(authorization)
+      || !credentialGeneration
+      || !/^[A-Za-z0-9_-]{22}$/.test(credentialGeneration)) {
+      res.status(403).json({
+        code: 'INSTANCE_TOKEN_REQUIRED',
+        error: 'The current desktop token is required',
+      });
+      return;
+    }
+    try {
+      const result = await service.revokePresentedToken(authorization.slice(7).trim());
+      if (result.revoked) {
+        res.status(204).end();
+        return;
+      }
+      res.status(result.code === 'TOKEN_NOT_FOUND' ? 404 : 401).json({
+        schema: DESKTOP_TOKEN_REVOCATION_SCHEMA,
+        version: DESKTOP_TOKEN_REVOCATION_VERSION,
+        endpoint: DESKTOP_TOKEN_REVOCATION_ENDPOINT,
+        terminal: true,
+        code: result.code,
+        credentialGeneration,
+      });
+    } catch (error) {
+      sendDesktopAuthError(error, res);
+    }
+  }
+
   return {
     browserSessionGuard,
     approvalOriginGuard,
     startPairing,
     pollPairing,
+    activatePairing,
+    cancelPairing,
     getPairingApproval,
     openPairingApproval,
     approvePairing,
     listTokens,
+    revokeCurrentToken,
     revokeToken,
   };
 }

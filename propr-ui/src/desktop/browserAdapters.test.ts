@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import { normalizeBaseUrl, resolveDesktopAdapters } from './browserAdapters';
 import { DESKTOP_AUTHENTICATION_COMPLETE_EVENT } from './types';
 
@@ -37,6 +38,13 @@ describe('desktop browser fixtures', () => {
       'https://propr.example.com?token=secret',
     ]) {
       expect(() => normalizeBaseUrl(unsafe)).toThrow('The configured ProPR API URL is invalid.');
+    }
+  });
+
+  it('matches the shared canonical origin parity table', () => {
+    for (const [, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      if (expected === null) expect(() => normalizeBaseUrl(input)).toThrow();
+      else expect(normalizeBaseUrl(input)).toBe(expected);
     }
   });
 

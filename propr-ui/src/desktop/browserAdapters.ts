@@ -1,5 +1,6 @@
 import { normalizeApiBaseUrl, ProprClientError } from '@propr/client';
 import { evaluateProprApiCompatibility } from '@propr/shared';
+import { createElectronDesktopAdapters } from './electronAdapters';
 import type {
   DesktopAdapters,
   DesktopAuthenticationCompleteEventDetail,
@@ -166,12 +167,13 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
       else window.localStorage.removeItem(ACTIVE_PROFILE_KEY);
     },
   },
-  discovery: { async discover() { return fixture ? [fixtureProfile] : []; } },
+  discovery: { supported: true, async discover() { return fixture ? [fixtureProfile] : []; } },
   externalBrowser: { async open(url) { window.open(url, '_blank', 'noopener,noreferrer'); } },
   authentication: {
     authenticate: authenticateBrowserFixture,
   },
   localSetup: {
+    supported: true,
     async setup() {
       if (fixture) return fixtureProfile;
       throw new Error('Local setup will be available when the desktop host adapter is connected.');
@@ -190,6 +192,7 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
 export const resolveDesktopAdapters = (): DesktopAdapters | null => {
   const bridge: ProprDesktopBridge | undefined = window.__PROPR_DESKTOP__;
   if (bridge?.isDesktop) return bridge;
+  if (window.proprDesktop) return createElectronDesktopAdapters(window.proprDesktop);
   const fixture = import.meta.env.DEV ? fixtureFromLocation() : null;
   return fixture ? createBrowserAdapters(fixture) : null;
 };
