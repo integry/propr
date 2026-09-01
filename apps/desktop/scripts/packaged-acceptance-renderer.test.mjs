@@ -7,6 +7,7 @@ import { ACCEPTANCE_VARIANTS } from './acceptance-artifacts.mjs';
 import { analyzeExistingElectronRenderer } from './packaged-acceptance-axe.mjs';
 import {
   captureElectronRendererScreenshot,
+  configureElectronRendererVariant,
   forEachElectronRendererVariant,
   waitForUsableElectronRenderer,
 } from './packaged-acceptance-renderer.mjs';
@@ -24,6 +25,61 @@ const installedChromium = () => [
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
 ].find(candidate => existsSync(candidate));
+
+const rendererVariantFixture = ({ cdpSpan = 'effective', rendererSpan = 'effective' } = {}) => {
+  let viewport;
+  let metrics;
+  let reducedMotion = false;
+  const commands = [];
+  const dimensionsFor = span => {
+    if (span === 'layout') return { width: viewport.width, height: viewport.height };
+    if (span === 'invalid') return { width: viewport.width - 17, height: viewport.height - 11 };
+    return { width: viewport.width / metrics.zoom, height: viewport.height / metrics.zoom };
+  };
+  const page = {
+    emulateMedia: async media => { reducedMotion = media.reducedMotion === 'reduce'; },
+    setViewportSize: async value => { viewport = { ...value }; },
+    viewportSize: () => ({ ...viewport }),
+    evaluate: async () => ({
+      ...viewport,
+      deviceScaleFactor: metrics.deviceScaleFactor,
+      reducedMotion,
+      screenWidth: viewport.width,
+      screenHeight: viewport.height,
+      visualViewport: { ...dimensionsFor(rendererSpan), scale: metrics.zoom },
+    }),
+  };
+  const cdp = {
+    send: async (method, params) => {
+      commands.push({ method, params });
+      if (method === 'Browser.getWindowForTarget') throw new Error('Browser.getWindowForTarget is unavailable');
+      if (method === 'Emulation.setDeviceMetricsOverride') {
+        metrics = { deviceScaleFactor: params.deviceScaleFactor, zoom: metrics?.zoom || 1 };
+        return {};
+      }
+      if (method === 'Emulation.setPageScaleFactor') {
+        metrics.zoom = params.pageScaleFactor;
+        return {};
+      }
+      if (method === 'Page.getLayoutMetrics') {
+        const rawVisualViewport = dimensionsFor(cdpSpan);
+        return {
+          cssLayoutViewport: { clientWidth: viewport.width, clientHeight: viewport.height },
+          cssVisualViewport: {
+            clientWidth: rawVisualViewport.width,
+            clientHeight: rawVisualViewport.height,
+            scale: metrics.zoom,
+          },
+        };
+      }
+      if (method === 'Page.captureScreenshot') {
+        return { data: Buffer.from(`${viewport.width}x${viewport.height}@${metrics.deviceScaleFactor}/${metrics.zoom}/${reducedMotion}`).toString('base64') };
+      }
+      throw new Error(`Unexpected CDP command: ${method}`);
+    },
+  };
+  return { commands, cdp, page };
+};
 
 describe('packaged acceptance renderer discovery', () => {
   it('waits deterministically when CDP precedes the first Electron renderer page', async () => {
@@ -83,60 +139,23 @@ describe('packaged acceptance renderer discovery', () => {
 
 describe('packaged acceptance renderer variants', () => {
   it('configures and captures all five variants when Browser.getWindowForTarget is unavailable', async () => {
-    let viewport;
-    let metrics;
-    let reducedMotion = false;
-    const commands = [];
+    const { commands, cdp, page } = rendererVariantFixture();
     const captures = [];
-    const page = {
-      emulateMedia: async media => { reducedMotion = media.reducedMotion === 'reduce'; },
-      setViewportSize: async value => { viewport = { ...value }; },
-      viewportSize: () => ({ ...viewport }),
-      evaluate: async () => ({
-        ...viewport,
-        deviceScaleFactor: metrics.deviceScaleFactor,
-        reducedMotion,
-        screenWidth: viewport.width,
-        screenHeight: viewport.height,
-        visualViewport: {
-          width: viewport.width / metrics.zoom,
-          height: viewport.height / metrics.zoom,
-          scale: metrics.zoom,
-        },
-      }),
-    };
-    const cdp = {
-      send: async (method, params) => {
-        commands.push({ method, params });
-        if (method === 'Browser.getWindowForTarget') throw new Error('Browser.getWindowForTarget is unavailable');
-        if (method === 'Emulation.setDeviceMetricsOverride') {
-          metrics = { deviceScaleFactor: params.deviceScaleFactor, zoom: metrics?.zoom || 1 };
-          return {};
-        }
-        if (method === 'Emulation.setPageScaleFactor') {
-          metrics.zoom = params.pageScaleFactor;
-          return {};
-        }
-        if (method === 'Page.getLayoutMetrics') {
-          return {
-            cssLayoutViewport: { clientWidth: viewport.width, clientHeight: viewport.height },
-            cssVisualViewport: {
-              clientWidth: viewport.width / metrics.zoom,
-              clientHeight: viewport.height / metrics.zoom,
-              scale: metrics.zoom,
-            },
-          };
-        }
-        if (method === 'Page.captureScreenshot') {
-          return { data: Buffer.from(`${viewport.width}x${viewport.height}@${metrics.deviceScaleFactor}/${metrics.zoom}/${reducedMotion}`).toString('base64') };
-        }
-        throw new Error(`Unexpected CDP command: ${method}`);
-      },
-    };
 
     await forEachElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS, async ({ variant, config, metrics: actual }) => {
       captures.push({ variant, bytes: await captureElectronRendererScreenshot(cdp), actual });
       assert.deepEqual(actual.viewport, config.viewport);
+      assert.deepEqual(actual.layoutViewport, config.viewport);
+      assert.deepEqual(actual.cdpVisualViewport, {
+        width: config.viewport.width / config.zoom,
+        height: config.viewport.height / config.zoom,
+        scale: config.zoom,
+      });
+      assert.deepEqual(actual.rendererVisualViewport, actual.cdpVisualViewport);
+      assert.deepEqual(actual.effectiveVisibleCssSpan, {
+        width: config.viewport.width / config.zoom,
+        height: config.viewport.height / config.zoom,
+      });
       assert.equal(actual.deviceScaleFactor, config.deviceScaleFactor);
       assert.equal(actual.zoom, config.zoom);
       assert.equal(actual.reducedMotion, config.reducedMotion);
@@ -150,6 +169,31 @@ describe('packaged acceptance renderer variants', () => {
     assert.equal(commands.filter(command => command.method === 'Emulation.setPageScaleFactor').length, 5);
     assert.equal(commands.filter(command => command.method === 'Page.getLayoutMetrics').length, 5);
     assert.equal(commands.filter(command => command.method === 'Page.captureScreenshot').length, 5);
+  });
+
+  it('accepts packaged Electron raw layout span plus measured scale and derives real zoom-200 dimensions', async () => {
+    const { commands, cdp, page } = rendererVariantFixture({ cdpSpan: 'layout' });
+    const config = ACCEPTANCE_VARIANTS['zoom-200'];
+
+    const actual = await configureElectronRendererVariant(page, cdp, config, { settle: async () => undefined });
+
+    assert.deepEqual(actual.viewport, { width: 1280, height: 820 });
+    assert.deepEqual(actual.layoutViewport, { width: 1280, height: 820 });
+    assert.deepEqual(actual.cdpVisualViewport, { width: 1280, height: 820, scale: 2 });
+    assert.deepEqual(actual.rendererVisualViewport, { width: 640, height: 410, scale: 2 });
+    assert.deepEqual(actual.effectiveVisibleCssSpan, { width: 640, height: 410 });
+    assert.deepEqual(
+      commands.find(command => command.method === 'Emulation.setPageScaleFactor')?.params,
+      { pageScaleFactor: 2 },
+    );
+  });
+
+  it('rejects raw visual dimensions that prove neither layout nor effective scaled span', async () => {
+    const { cdp, page } = rendererVariantFixture({ cdpSpan: 'invalid' });
+    await assert.rejects(
+      configureElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS['zoom-200'], { settle: async () => undefined }),
+      /CDP visual viewport changed: expected raw layout span 1280x820 or raw effective span 640x410/,
+    );
   });
 
   describe('real Chromium existing-target axe boundary', {
@@ -254,10 +298,10 @@ describe('packaged acceptance renderer variants', () => {
       await assert.rejects(cdp.send('Target.createTarget', { url: 'about:blank' }), /Target\.createTarget is unsupported/);
 
       const checks = [];
-      await forEachElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS, async ({ variant }) => {
+      await forEachElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS, async ({ variant, metrics }) => {
         const violations = await analyzeExistingElectronRenderer(page);
         const cleanupState = await evaluateRenderer(() => ({ ...globalThis.__acceptanceAxeCleanup }));
-        checks.push({ variant, violations, cleanupState });
+        checks.push({ variant, violations, cleanupState, metrics });
         assert.equal(cleanupState.started, checks.length);
         assert.equal(cleanupState.callbackBased, checks.length);
         assert.equal(cleanupState.completed, checks.length);
@@ -270,6 +314,10 @@ describe('packaged acceptance renderer variants', () => {
         assert.ok(check.violations.some(violation => violation.id === 'button-name'
           && violation.impact === 'critical' && violation.nodes === 1));
       }
+      const headlessZoom = checks.find(check => check.variant === 'zoom-200').metrics;
+      assert.deepEqual(headlessZoom.cdpVisualViewport, { width: 640, height: 410, scale: 2 });
+      assert.deepEqual(headlessZoom.rendererVisualViewport, { width: 640, height: 410, scale: 2 });
+      assert.deepEqual(headlessZoom.effectiveVisibleCssSpan, { width: 640, height: 410 });
 
       assert.equal(newPageAttempts, 1);
       assert.equal(createTargetAttempts, 1);

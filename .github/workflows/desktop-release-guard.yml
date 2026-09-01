@@ -42,7 +42,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   renderer-axe-boundary:
-    name: Prove real Chromium existing-target axe boundary
+    name: Prove renderer metrics and existing-target axe boundary
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -62,8 +62,8 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Run focused existing-target axe boundary regression
-        run: node --test --test-name-pattern='real Chromium existing-target axe boundary' apps/desktop/scripts/packaged-acceptance-renderer.test.mjs
+      - name: Run focused renderer metric and existing-target axe regressions
+        run: node --test --test-name-pattern='packaged acceptance renderer variants' apps/desktop/scripts/packaged-acceptance-renderer.test.mjs
 
   package:
     name: Validate unsigned ${{ matrix.platform }}-${{ matrix.arch }} package

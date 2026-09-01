@@ -8,6 +8,30 @@ const assertRendererMetrics = (actual, expected, description) => {
   }
 };
 
+const measureEffectiveVisibleCssSpan = (rawViewport, layoutViewport, scale, description) => {
+  const effective = {
+    width: layoutViewport.width / scale,
+    height: layoutViewport.height / scale,
+  };
+  const reportsLayoutSpan = closeEnough(rawViewport?.width, layoutViewport.width)
+    && closeEnough(rawViewport?.height, layoutViewport.height);
+  const reportsEffectiveSpan = closeEnough(rawViewport?.width, effective.width)
+    && closeEnough(rawViewport?.height, effective.height);
+  if (!reportsLayoutSpan && !reportsEffectiveSpan) {
+    throw new Error(
+      `Packaged Electron ${description} changed: expected raw layout span ${layoutViewport.width}x${layoutViewport.height}`
+      + ` or raw effective span ${effective.width}x${effective.height}, received ${rawViewport?.width}x${rawViewport?.height}`,
+    );
+  }
+
+  const derived = reportsLayoutSpan
+    ? { width: rawViewport.width / scale, height: rawViewport.height / scale }
+    : { width: rawViewport.width, height: rawViewport.height };
+  assertRendererMetrics(derived.width, effective.width, `${description} effective width`);
+  assertRendererMetrics(derived.height, effective.height, `${description} effective height`);
+  return derived;
+};
+
 /**
  * Configure the visible Electron renderer without relying on Browser-domain
  * commands on a target-scoped CDP session. Playwright owns the viewport/window
@@ -63,33 +87,55 @@ export const configureElectronRendererVariant = async (
     },
   }));
 
-  const expectedVisualWidth = viewport.width / zoom;
-  const expectedVisualHeight = viewport.height / zoom;
   assertRendererMetrics(playwrightViewport?.width, viewport.width, 'Playwright viewport width');
   assertRendererMetrics(playwrightViewport?.height, viewport.height, 'Playwright viewport height');
   assertRendererMetrics(layout?.cssLayoutViewport?.clientWidth, viewport.width, 'layout viewport width');
   assertRendererMetrics(layout?.cssLayoutViewport?.clientHeight, viewport.height, 'layout viewport height');
-  assertRendererMetrics(layout?.cssVisualViewport?.clientWidth, expectedVisualWidth, 'visual viewport width');
-  assertRendererMetrics(layout?.cssVisualViewport?.clientHeight, expectedVisualHeight, 'visual viewport height');
   assertRendererMetrics(layout?.cssVisualViewport?.scale, zoom, 'page scale');
   assertRendererMetrics(renderer?.width, viewport.width, 'renderer viewport width');
   assertRendererMetrics(renderer?.height, viewport.height, 'renderer viewport height');
   assertRendererMetrics(renderer?.deviceScaleFactor, deviceScaleFactor, 'device scale factor');
   assertRendererMetrics(renderer?.screenWidth, viewport.width, 'renderer screen width');
   assertRendererMetrics(renderer?.screenHeight, viewport.height, 'renderer screen height');
-  assertRendererMetrics(renderer?.visualViewport?.width, expectedVisualWidth, 'renderer visual viewport width');
-  assertRendererMetrics(renderer?.visualViewport?.height, expectedVisualHeight, 'renderer visual viewport height');
   assertRendererMetrics(renderer?.visualViewport?.scale, zoom, 'renderer page scale');
+  const layoutViewport = {
+    width: layout.cssLayoutViewport.clientWidth,
+    height: layout.cssLayoutViewport.clientHeight,
+  };
+  const cdpVisualViewport = {
+    width: layout.cssVisualViewport.clientWidth,
+    height: layout.cssVisualViewport.clientHeight,
+    scale: layout.cssVisualViewport.scale,
+  };
+  const rendererVisualViewport = {
+    width: renderer.visualViewport.width,
+    height: renderer.visualViewport.height,
+    scale: renderer.visualViewport.scale,
+  };
+  const effectiveVisibleCssSpan = measureEffectiveVisibleCssSpan(
+    cdpVisualViewport,
+    layoutViewport,
+    cdpVisualViewport.scale,
+    'CDP visual viewport',
+  );
+  const rendererEffectiveVisibleCssSpan = measureEffectiveVisibleCssSpan(
+    rendererVisualViewport,
+    layoutViewport,
+    rendererVisualViewport.scale,
+    'renderer visual viewport',
+  );
+  assertRendererMetrics(rendererEffectiveVisibleCssSpan.width, effectiveVisibleCssSpan.width, 'effective visible CSS width');
+  assertRendererMetrics(rendererEffectiveVisibleCssSpan.height, effectiveVisibleCssSpan.height, 'effective visible CSS height');
   if (renderer?.reducedMotion !== reducedMotion) {
     throw new Error(`Packaged Electron reduced-motion emulation changed: expected ${reducedMotion}, received ${renderer?.reducedMotion}`);
   }
 
   return {
     viewport: { width: renderer.width, height: renderer.height },
-    visualViewport: {
-      width: renderer.visualViewport.width,
-      height: renderer.visualViewport.height,
-    },
+    layoutViewport,
+    cdpVisualViewport,
+    rendererVisualViewport,
+    effectiveVisibleCssSpan,
     deviceScaleFactor: renderer.deviceScaleFactor,
     zoom: renderer.visualViewport.scale,
     reducedMotion: renderer.reducedMotion,

@@ -84,6 +84,34 @@ const assertExactJson = (actual, expected, description) => {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`${description} changed`);
 };
 
+const assertViewportMetricEvidence = (evidence, config, description) => {
+  const expectedEffective = {
+    width: config.viewport.width / config.zoom,
+    height: config.viewport.height / config.zoom,
+  };
+  assertExactKeys(evidence.layoutViewport, ['width', 'height'], `${description} layout viewport`);
+  assertExactKeys(evidence.cdpVisualViewport, ['width', 'height', 'scale'], `${description} CDP visual viewport`);
+  assertExactKeys(evidence.rendererVisualViewport, ['width', 'height', 'scale'], `${description} renderer visual viewport`);
+  assertExactKeys(evidence.effectiveVisibleCssSpan, ['width', 'height'], `${description} effective visible CSS span`);
+  if (JSON.stringify(evidence.layoutViewport) !== JSON.stringify(config.viewport)
+    // The real packaged Electron target reports the raw layout-sized span here;
+    // scale is what makes its effective visible CSS span smaller at zoom-200.
+    || evidence.cdpVisualViewport.width !== config.viewport.width
+    || evidence.cdpVisualViewport.height !== config.viewport.height
+    || evidence.cdpVisualViewport.scale !== config.zoom
+    || evidence.rendererVisualViewport.scale !== config.zoom
+    || JSON.stringify(evidence.effectiveVisibleCssSpan) !== JSON.stringify(expectedEffective)) {
+    throw new Error(`${description} viewport metric evidence changed`);
+  }
+  const rendererReportsLayoutSpan = evidence.rendererVisualViewport.width === config.viewport.width
+    && evidence.rendererVisualViewport.height === config.viewport.height;
+  const rendererReportsEffectiveSpan = evidence.rendererVisualViewport.width === expectedEffective.width
+    && evidence.rendererVisualViewport.height === expectedEffective.height;
+  if (!rendererReportsLayoutSpan && !rendererReportsEffectiveSpan) {
+    throw new Error(`${description} renderer visual viewport metric evidence changed`);
+  }
+};
+
 export const readPngDimensions = bytes => {
   if (bytes.length < 24 || !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
     throw new Error('Acceptance screenshot is not a PNG');
@@ -309,6 +337,7 @@ const expectedArtifactFiles = () => new Set([
 const validateScreenshotEntry = (entry, expectedName) => {
   assertExactKeys(entry, [
     'name', 'journey', 'variant', 'width', 'height', 'deviceScaleFactor', 'zoom', 'reducedMotion',
+    'layoutViewport', 'cdpVisualViewport', 'rendererVisualViewport', 'effectiveVisibleCssSpan',
     'locale', 'timezone', 'font', 'colorScheme', 'rendererTime', 'originPolicy', 'visibleData',
     'animations', 'bytes', 'sha256', 'repeatabilitySha256',
   ], `Acceptance screenshot ${expectedName}`);
@@ -327,6 +356,7 @@ const validateScreenshotEntry = (entry, expectedName) => {
     || !isSha256(entry.sha256) || entry.repeatabilitySha256 !== entry.sha256) {
     throw new Error(`Acceptance screenshot metadata changed for ${expectedName}`);
   }
+  assertViewportMetricEvidence(entry, config, `Acceptance screenshot ${expectedName}`);
 };
 
 const validateAccessibility = accessibility => {
@@ -334,7 +364,7 @@ const validateAccessibility = accessibility => {
     'schemaVersion', 'generatedAt', 'serious', 'critical', 'findings', 'checks', 'keyboardOrder',
     'visibleFocus', 'modalFocusTrap', 'modalFocusRestore', 'accessibleNames', 'liveAnnouncements',
   ], 'Acceptance accessibility report');
-  if (accessibility.schemaVersion !== 2 || accessibility.generatedAt !== FIXED_TIME
+  if (accessibility.schemaVersion !== 3 || accessibility.generatedAt !== FIXED_TIME
     || accessibility.serious !== 0 || accessibility.critical !== 0 || accessibility.findings?.length !== 0
     || accessibility.keyboardOrder !== true || accessibility.visibleFocus !== true
     || accessibility.modalFocusTrap !== true || accessibility.modalFocusRestore !== true
@@ -354,6 +384,7 @@ const validateAccessibility = accessibility => {
     assertExactKeys(check, [
       'name', 'journey', 'variant', 'serious', 'critical', 'accessibleNames', 'locale', 'timezone',
       'fontLoaded', 'reducedMotion', 'viewport', 'deviceScaleFactor', 'zoom', 'animationsDisabled', 'rendererTime',
+      'layoutViewport', 'cdpVisualViewport', 'rendererVisualViewport', 'effectiveVisibleCssSpan',
     ], `Acceptance accessibility check ${name}`);
     const [journey, variantWithExtension] = name.split('--');
     const variant = variantWithExtension.slice(0, -4);
@@ -365,6 +396,7 @@ const validateAccessibility = accessibility => {
       || check.timezone !== DETERMINISTIC_INPUTS.timezone || check.rendererTime !== FIXED_TIME) {
       throw new Error(`Acceptance accessibility metadata changed for ${name}`);
     }
+    assertViewportMetricEvidence(check, config, `Acceptance accessibility check ${name}`);
     if (check.serious !== 0 || check.critical !== 0 || check.accessibleNames !== true
       || check.fontLoaded !== true || check.animationsDisabled !== true) {
       throw new Error(`Acceptance accessibility check failed for ${name}`);
@@ -420,7 +452,7 @@ export const validateAcceptanceEvidence = (accessibility, manifest, summary, san
     'schemaVersion', 'generatedAt', 'platform', 'arch', 'executableBoundary', 'deterministicInputs',
     'nativePackageCoverage', 'screenshots', 'supporting',
   ], 'Acceptance manifest');
-  if (manifest.schemaVersion !== 2 || manifest.platform !== 'linux' || manifest.arch !== 'x64'
+  if (manifest.schemaVersion !== 3 || manifest.platform !== 'linux' || manifest.arch !== 'x64'
     || manifest.generatedAt !== FIXED_TIME || manifest.executableBoundary !== 'packaged-electron-main-preload-renderer'
     || manifest.screenshots?.length !== expectedScreenshotNames().length) {
     throw new Error('Acceptance manifest is incomplete or non-deterministic');
@@ -511,7 +543,7 @@ export const writeAcceptanceManifest = async (outputDirectory, screenshotMetadat
     supporting.push({ name, bytes: bytes.length, sha256: sha256(bytes) });
   }
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     generatedAt: FIXED_TIME,
     platform: 'linux',
     arch: 'x64',

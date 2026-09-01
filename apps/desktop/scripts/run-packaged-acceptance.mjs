@@ -466,6 +466,10 @@ const inspectAccessibility = async (page, journey, variant, config, metrics, nam
     fontLoaded: deterministic.fontLoaded,
     reducedMotion: deterministic.reducedMotion,
     viewport: metrics.viewport,
+    layoutViewport: metrics.layoutViewport,
+    cdpVisualViewport: metrics.cdpVisualViewport,
+    rendererVisualViewport: metrics.rendererVisualViewport,
+    effectiveVisibleCssSpan: metrics.effectiveVisibleCssSpan,
     deviceScaleFactor: metrics.deviceScaleFactor,
     zoom: metrics.zoom,
     animationsDisabled: deterministic.animationsDisabled,
@@ -500,6 +504,10 @@ const captureVariants = async (page, journey) => {
         deviceScaleFactor: metrics.deviceScaleFactor,
         zoom: metrics.zoom,
         reducedMotion: metrics.reducedMotion,
+        layoutViewport: metrics.layoutViewport,
+        cdpVisualViewport: metrics.cdpVisualViewport,
+        rendererVisualViewport: metrics.rendererVisualViewport,
+        effectiveVisibleCssSpan: metrics.effectiveVisibleCssSpan,
         locale: DETERMINISTIC_INPUTS.locale,
         timezone: DETERMINISTIC_INPUTS.timezone,
         font: DETERMINISTIC_INPUTS.font,
@@ -670,7 +678,7 @@ try {
   const serious = axeFindings.filter(finding => finding.impact === 'serious').length;
   const critical = axeFindings.filter(finding => finding.impact === 'critical').length;
   const accessibility = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     generatedAt: FIXED_TIME,
     serious,
     critical,

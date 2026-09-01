@@ -56,8 +56,22 @@ const pngHeader = (width, height) => {
   return bytes;
 };
 
+const viewportMetricEvidenceFor = config => ({
+  layoutViewport: { ...config.viewport },
+  cdpVisualViewport: { ...config.viewport, scale: config.zoom },
+  rendererVisualViewport: {
+    width: config.viewport.width / config.zoom,
+    height: config.viewport.height / config.zoom,
+    scale: config.zoom,
+  },
+  effectiveVisibleCssSpan: {
+    width: config.viewport.width / config.zoom,
+    height: config.viewport.height / config.zoom,
+  },
+});
+
 const accessibilityFor = () => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   generatedAt: FIXED_TIME,
   serious: 0,
   critical: 0,
@@ -67,6 +81,7 @@ const accessibilityFor = () => ({
     locale: DETERMINISTIC_INPUTS.locale, timezone: DETERMINISTIC_INPUTS.timezone, fontLoaded: true,
     reducedMotion: config.reducedMotion, viewport: config.viewport, deviceScaleFactor: config.deviceScaleFactor,
     zoom: config.zoom, animationsDisabled: true, rendererTime: FIXED_TIME,
+    ...viewportMetricEvidenceFor(config),
   }))),
   keyboardOrder: true,
   visibleFocus: true,
@@ -124,6 +139,7 @@ const createCompleteArtifactSet = async root => {
         deviceScaleFactor: config.deviceScaleFactor,
         zoom: config.zoom,
         reducedMotion: config.reducedMotion,
+        ...viewportMetricEvidenceFor(config),
         locale: DETERMINISTIC_INPUTS.locale,
         timezone: DETERMINISTIC_INPUTS.timezone,
         font: DETERMINISTIC_INPUTS.font,
@@ -211,6 +227,15 @@ describe('packaged acceptance artifact contract', () => {
           services: { ...evidence.summary.services, connect: { confirmedRequests: 0, journeys: [] } },
         }, evidence.sanitizedLog),
         /not observed/,
+      );
+      const relabeledManifest = structuredClone(evidence.manifest);
+      const zoomEntry = relabeledManifest.screenshots.find(entry => entry.variant === 'zoom-200');
+      zoomEntry.cdpVisualViewport.scale = 1;
+      zoomEntry.rendererVisualViewport.scale = 1;
+      zoomEntry.effectiveVisibleCssSpan = { width: 1280, height: 820 };
+      assert.throws(
+        () => validateAcceptanceEvidence(evidence.accessibility, relabeledManifest, evidence.summary, evidence.sanitizedLog),
+        /zoom-200.*viewport metric evidence changed/,
       );
       const screenshotPath = join(root, 'screenshots', expectedScreenshotNames()[0]);
       await writeFile(screenshotPath, pngHeader(1, 1));
