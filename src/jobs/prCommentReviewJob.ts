@@ -27,21 +27,10 @@ import {
 } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
+import type { PRJobContext } from './prCommentJobTypes.js';
 
 export type { ReviewAssignment, ReviewResult } from './prReviewRunner.js';
-
-export interface PRJobContext {
-    pullRequestNumber: number;
-    jobBranchName: string | undefined;
-    repoOwner: string;
-    repoName: string;
-    llm: string | null | undefined;
-    correlationId: string;
-    correlatedLogger: Logger;
-    primaryProcessingLabels: string[];
-    isBatchJob: boolean;
-    commentsToProcess: UnprocessedComment[];
-}
+export type { PRJobContext } from './prCommentJobTypes.js';
 
 interface ProcessingState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;

@@ -23,7 +23,7 @@ To **take over an existing PR** for ongoing work (so that natural follow-up comm
 | `/fix` | You want to apply a `/review`'s pending suggestions | Yes | [`/fix`](#fix) |
 | `/merge` | You want the base branch merged into the PR branch | Maybe, if conflicts need resolution | [`/merge`](#merge) |
 | `/switch <model-id>` | You want future PR work to use a different model | No, unless you include follow-up instructions | [`/switch`](#switch) |
-| `/use <model-id>` | You want one immediate follow-up run with a temporary model | Yes | [`/use`](#use) |
+| `/use <model-id>` | You want to switch models and run an immediate follow-up | Yes | [`/use`](#use) |
 | `/ultrafix` | You want an automated review-fix loop | Yes | [`/ultrafix`](#ultrafix) |
 
 ## Syntax Rules
@@ -170,14 +170,14 @@ Without instructions, `/switch` only updates the label and makes no code changes
 
 ### `/use`
 
-`/use` runs one immediate follow-up task with a temporary model:
+`/use` is the documented switch-and-run command. It first replaces the PR's model label with the selected model's canonical configured label, then queues an immediate follow-up:
 
 ```text
 /use <model-id>
 Please investigate the flaky test failure and update the PR.
 ```
 
-The PR's model label keeps its current value. Later work returns to the PR's configured model unless you use `/switch` or another `/use`. Like `/switch`, `/use` takes one model argument, and the agent sees only your instructions, without the command syntax.
+The label update completes before work is queued, and the selected agent and model are also stored on the job. This keeps batching, restarts, and provider-limit retries on the new provider. If another writer is active, ProPR saves the follow-up for the next run instead of starting a concurrent writer. A delayed provider-limit retry is superseded so the new provider does not wait for the old provider's reset. Like `/switch`, `/use` takes one model argument, and the agent sees only your instructions, without the command syntax.
 
 ### Choosing A Model
 
@@ -187,7 +187,7 @@ Use routing when:
 
 - A model is better suited to the task
 - The current model is stuck
-- You want a one-off second opinion
+- You want to move the PR to a different provider
 - You need to work around provider capacity or rate limits
 
 ## Ultrafix And Branch Updates

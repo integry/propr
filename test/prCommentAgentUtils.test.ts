@@ -10,7 +10,7 @@ const privateKeyPath = join(tmpdir(), 'propr-test-private-key.pem');
 writeFileSync(privateKeyPath, '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n');
 process.env.GH_PRIVATE_KEY_PATH ||= privateKeyPath;
 process.env.DEFAULT_CLAUDE_MODEL ||= 'haiku';
-const { generateSummaryTitle, resolveAndExecuteAgent } = await import('../src/jobs/prCommentAgentUtils.js');
+const { generateSummaryTitle, isProviderLimitRetrySuperseded, resolveAndExecuteAgent } = await import('../src/jobs/prCommentAgentUtils.js');
 const { AgentRegistry } = await import('@propr/core');
 const { db } = await import('@propr/core');
 
@@ -42,6 +42,54 @@ function baseOptions(overrides = {}) {
         ...overrides,
     };
 }
+
+test('provider-limit retry routing rejects transitional and different labels but allows its matching singleton', async (t) => {
+    const registry = AgentRegistry.getInstance();
+    const agents = [
+        {
+            config: {
+                alias: 'claude',
+                type: 'claude',
+                enabled: true,
+                defaultModel: 'claude-opus-4-8',
+                supportedModels: ['claude-opus-4-8'],
+            },
+        },
+        {
+            config: {
+                alias: 'codex',
+                type: 'codex',
+                enabled: true,
+                defaultModel: 'gpt-5.6-sol',
+                supportedModels: ['gpt-5.6-sol'],
+            },
+        },
+    ];
+    t.mock.method(registry, 'ensureInitialized', async () => undefined);
+    t.mock.method(registry, 'getAllAgents', () => agents as never);
+
+    const retry = {
+        isRetryFromRateLimit: true,
+        agentAlias: 'claude',
+        modelName: 'claude-opus-4-8',
+        pullRequestNumber: 1897,
+        correlatedLogger: logger as never,
+    };
+
+    assert.strictEqual(await isProviderLimitRetrySuperseded([
+        'AI',
+        'llm-claude-opus48',
+        'llm-codex-gpt56-sol',
+    ], retry), true, 'old and target labels visible during convergence must supersede the retry');
+    assert.strictEqual(await isProviderLimitRetrySuperseded([
+        'AI',
+        'llm-claude-opus48',
+    ], retry), false, 'the retry matching the one managed label remains allowed');
+    assert.strictEqual(await isProviderLimitRetrySuperseded([
+        'AI',
+        'llm-codex-gpt56-sol',
+    ], retry), true, 'a different managed-label singleton must supersede the retry');
+});
 
 describe('generateSummaryTitle fallback behavior', () => {
     test('returns deterministic fallback for empty context without invoking the LLM', async () => {

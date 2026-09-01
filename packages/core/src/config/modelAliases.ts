@@ -366,7 +366,10 @@ export {
     getAllCustomLabels,
     resolveCustomLabel,
     resolveLlmLabel,
+    resolveCanonicalModelSelection,
+    resolveCanonicalModelSelectionFromLabels,
     resolveReviewModels,
+    type CanonicalModelSelection,
     ReviewModelResolutionError,
     type ReviewAssignment,
 } from './modelLabelResolution.js';

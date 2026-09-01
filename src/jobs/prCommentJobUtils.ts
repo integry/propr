@@ -5,6 +5,8 @@ import {
     generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
     resolveModelAlias, getPendingPrCommentsKey,
+    resolveCanonicalModelSelectionFromLabels,
+    withUltrafixLabelTransition,
     describeAgentTermination, resolveAgentTerminationReason,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager,
@@ -15,6 +17,8 @@ import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
 import { releasePRProcessingLock } from './prProcessingLock.js';
+import { buildProviderLimitRetryJobData } from './prCommentRouting.js';
+export { buildProviderLimitRetryJobData } from './prCommentRouting.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -167,6 +171,38 @@ export interface JobErrorOptions {
     startingWorkComment: { data: { id: number } } | null;
     claudeResult: ClaudeCodeResponse | null; correlationId: string;
     correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string;
+    redisClient: Redis;
+    /** Actual in-memory routing used by this attempt; never persisted for ordinary jobs. */
+    runtimeAgentAlias?: string; runtimeModelName?: string;
+}
+
+interface ProviderLimitRetryRouting {
+    runtimeAgentAlias?: string;
+    runtimeModelName?: string;
+}
+
+/** Persist the concrete provider route used by the failed attempt. */
+export function buildRuntimeProviderLimitRetryJobData(
+    jobData: CommentJobData,
+    routing: ProviderLimitRetryRouting,
+): CommentJobData {
+    const retryData = buildProviderLimitRetryJobData(jobData);
+    if (!routing.runtimeAgentAlias || !routing.runtimeModelName) return retryData;
+
+    return {
+        ...retryData,
+        agentAlias: routing.runtimeAgentAlias,
+        modelName: routing.runtimeModelName,
+        llm: routing.runtimeModelName,
+    };
+}
+
+/** Build a deterministic retry identity from the persisted concrete route. */
+export function buildProviderLimitRetryJobId(jobData: CommentJobData): string {
+    const routingSlug = `${jobData.agentAlias || 'default'}-${jobData.modelName || jobData.llm || 'default'}`
+        .replace(/[^a-zA-Z0-9-]/g, '-');
+    const branchSlug = (jobData.branchName || 'main').replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 30);
+    return `pr-comments-batch-${jobData.repoOwner}-${jobData.repoName}-${jobData.pullRequestNumber}-${routingSlug}-${branchSlug}-ratelimit-retry`;
 }
 
 export class UsageLimitError extends Error {
@@ -198,31 +234,77 @@ async function postCancellationComment(params: CancellationCommentParams): Promi
     }
 }
 
-async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
-    const { pullRequestNumber, repoOwner, repoName, authorsText, octokit, correlatedLogger } = options;
+async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJobData>, options: JobErrorOptions): Promise<'requeued' | 'provider_limit_retry_superseded'> {
+    const { pullRequestNumber, repoOwner, repoName, authorsText, octokit, correlatedLogger, redisClient } = options;
     correlatedLogger.warn({ pullRequestNumber, resetTimestamp: error.resetTimestamp }, 'Claude usage limit hit during PR comment processing. Requeueing job.');
 
     const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
     const delay = (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
     const readableResetTime = formatResetTime(error.resetTimestamp);
 
-    // Use deterministic jobId to prevent duplicate jobs if requeue is triggered multiple times
-    const llmSlug = (job.data.llm || 'default').replace(/[^a-zA-Z0-9-]/g, '-');
-    const branchSlug = (job.data.branchName || 'main').replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 30);
-    const requeueJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${llmSlug}-${branchSlug}-ratelimit-retry`;
+    return withUltrafixLabelTransition(
+        redisClient,
+        { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
+        async lease => {
+            // `/use` holds this same per-PR lease through label convergence and
+            // its queue snapshot. Re-read the canonical selection while holding
+            // it, then publish before releasing it, so a retry is either visible
+            // to `/use` or observes the newly selected provider and yields.
+            const retryJobData = buildRuntimeProviderLimitRetryJobData(job.data, options);
+            const retryAgentAlias = retryJobData.agentAlias;
+            const retryModelName = retryJobData.modelName;
+            if (octokit && retryAgentAlias && retryModelName) {
+                try {
+                    const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                        owner: repoOwner,
+                        repo: repoName,
+                        pull_number: pullRequestNumber,
+                    }) as { data: { labels: Array<{ name: string }> } };
+                    const liveSelection = await resolveCanonicalModelSelectionFromLabels(
+                        response.data.labels,
+                        process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
+                    );
+                    if (liveSelection) {
+                        if (
+                            liveSelection.agentAlias.toLowerCase() !== retryAgentAlias.toLowerCase()
+                            || liveSelection.model.toLowerCase() !== retryModelName.toLowerCase()
+                        ) {
+                            correlatedLogger.info({
+                                pullRequestNumber,
+                                retryAgent: retryAgentAlias,
+                                retryModel: retryModelName,
+                                liveAgent: liveSelection.agentAlias,
+                                liveModel: liveSelection.model,
+                            }, 'Provider-limit retry superseded by a newer durable PR model selection');
+                            return 'provider_limit_retry_superseded';
+                        }
+                        retryJobData.modelLabel = liveSelection.githubLabel;
+                    }
+                } catch (selectionError) {
+                    correlatedLogger.warn({ error: (selectionError as Error).message }, 'Could not verify live PR model before provider-limit requeue; preserving retry');
+                }
+            }
 
-    if (octokit) {
-        try {
-            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`
-            });
-        } catch (commentError) {
-            correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to PR.');
-        }
-    }
+            // Use deterministic jobId to prevent duplicate jobs if requeue is triggered multiple times
+            const requeueJobId = buildProviderLimitRetryJobId(retryJobData);
 
-    await issueQueue.add(job.name, job.data, { jobId: requeueJobId, delay: Math.max(0, delay) });
+            if (octokit) {
+                try {
+                    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
+                        body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`
+                    });
+                } catch (commentError) {
+                    correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to PR.');
+                }
+            }
+
+            await lease.assertOwned();
+            await issueQueue.add(job.name, retryJobData, { jobId: requeueJobId, delay: Math.max(0, delay) });
+            await lease.assertOwned();
+            return 'requeued';
+        },
+    );
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
@@ -260,7 +342,7 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
     }
 }
 
-export async function handleJobError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
+export async function handleJobError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<'provider_limit_retry_superseded' | undefined> {
     const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
 
     const isUserCancelled = error.message?.includes('aborted by user');
@@ -275,16 +357,18 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
             await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
             correlatedLogger.info({ taskId, commentId: startingWorkComment.data.id }, 'Updated GitHub comment for cancelled task');
         }
-        return;
+        return undefined;
     }
 
     if (isUsageLimit) {
-        await handleUsageLimitError(error as UsageLimitError, job, options);
+        const disposition = await handleUsageLimitError(error as UsageLimitError, job, options);
+        return disposition === 'provider_limit_retry_superseded' ? disposition : undefined;
     } else if (isUserCancelled) {
         await handleUserCancellation(options, error.message);
     } else {
         await handleGenericError(error, options);
     }
+    return undefined;
 }
 
 export interface CleanupOptions {
@@ -370,11 +454,7 @@ export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
 export type { PRFile } from './prFileUtils.js';
 export {
-    fetchPRFiles,
-    fetchPRFileContents,
-    formatPRDiff,
-    formatPRDiffWithMetadata,
-    formatFileContents,
-    agentResultToClaudeResponse,
+    fetchPRFiles, fetchPRFileContents, formatPRDiff, formatPRDiffWithMetadata,
+    formatFileContents, agentResultToClaudeResponse,
 } from './prFileUtils.js';
 export { applyPendingCommentCommandContext } from './prCommentCommandContext.js';

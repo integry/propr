@@ -2,6 +2,7 @@ import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
 import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
 import { shortHash } from '@propr/shared';
+import { buildAgentModelLlmLabel, buildDynamicLlmLabel } from '@propr/shared';
 import { ALL_MODELS, MODEL_INFO_MAP, type AgentType } from './modelDefinitions.js';
 import {
     MODEL_ALIASES,
@@ -30,6 +31,7 @@ async function resolveCustomLabel(label: string): Promise<LlmLabelResolution | n
     const lowerLabel = label.toLowerCase();
 
     for (const agent of agents) {
+        if (!agent.config.enabled) continue;
         // Check modelCustomLabels for this agent
         if (agent.config.modelCustomLabels) {
             for (const [modelId, customLabel] of Object.entries(agent.config.modelCustomLabels)) {
@@ -44,6 +46,92 @@ async function resolveCustomLabel(label: string): Promise<LlmLabelResolution | n
     }
 
     return null;
+}
+
+export interface CanonicalModelSelection extends LlmLabelResolution {
+    /** The one GitHub label that durably represents this selection. */
+    githubLabel: string;
+}
+
+/**
+ * Resolve a slash-command model token to an enabled, configured agent/model and
+ * the exact GitHub label used by that configuration.  This deliberately does
+ * not invent `llm-${modelId}`: catalog labels, per-model custom labels, agent
+ * aliases, and dynamic labels all have their own canonical spelling.
+ */
+async function resolveCanonicalModelSelection(requested: string): Promise<CanonicalModelSelection | null> {
+    const token = requested.trim();
+    if (!token) return null;
+
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+    const agents = registry.getAllAgents();
+
+    // parseSlashCommand strips llm-, while callers outside the parser may pass
+    // a complete configured label. Try both spellings for custom labels.
+    const customCandidates = token.toLowerCase().startsWith('llm-')
+        ? [token]
+        : [token, `llm-${token}`];
+    let customResolution: LlmLabelResolution | null = null;
+    let matchedCustomLabel: string | null = null;
+    for (const candidate of customCandidates) {
+        customResolution = await resolveCustomLabel(candidate);
+        if (customResolution) {
+            matchedCustomLabel = candidate;
+            break;
+        }
+    }
+
+    const normalizedToken = token.replace(/^llm-/i, '');
+    const resolution = customResolution ?? await resolveLlmLabel(normalizedToken, true);
+    const agent = agents.find(candidate =>
+        candidate.config.enabled
+        && candidate.config.alias.toLowerCase() === resolution.agentAlias.toLowerCase()
+    );
+    if (!agent) return null;
+
+    const configuredModel = agent.config.supportedModels.find(model =>
+        model.toLowerCase() === resolution.model.toLowerCase()
+    );
+    if (!configuredModel) return null;
+
+    const configuredCustomLabel = agent.config.modelCustomLabels?.[configuredModel]
+        ?? Object.entries(agent.config.modelCustomLabels ?? {}).find(
+            ([model]) => model.toLowerCase() === configuredModel.toLowerCase()
+        )?.[1];
+    const modelInfo = MODEL_INFO_MAP[configuredModel];
+    const labelAgentAlias = agent.config.alias === 'default'
+        ? agent.config.type
+        : agent.config.alias;
+    const githubLabel = configuredCustomLabel
+        || matchedCustomLabel
+        || (modelInfo && buildAgentModelLlmLabel(agent.config.type, labelAgentAlias, modelInfo))
+        || buildDynamicLlmLabel(agent.config.alias, configuredModel);
+
+    return { agentAlias: agent.config.alias, model: configuredModel, githubLabel };
+}
+
+/** Resolve the canonical configured selection represented by a PR label set. */
+async function resolveCanonicalModelSelectionFromLabels(
+    labels: Array<string | { name: string }>,
+    modelLabelPattern = '^llm-(.+)$',
+): Promise<CanonicalModelSelection | null> {
+    const pattern = new RegExp(modelLabelPattern);
+    const customLabels = new Set((await getAllCustomLabels()).map(label => label.toLowerCase()));
+    const managedLabels: string[] = [];
+    for (const label of labels) {
+        const name = typeof label === 'string' ? label : label.name;
+        if (customLabels.has(name.toLowerCase()) || name.match(pattern)?.[1]) managedLabels.push(name);
+    }
+    // Exclusive label convergence adds the target before removing the old
+    // label. Do not choose either routing while that transition is visible.
+    if (managedLabels.length !== 1) return null;
+
+    const [managedLabel] = managedLabels;
+    const requested = customLabels.has(managedLabel.toLowerCase())
+        ? managedLabel
+        : managedLabel.match(pattern)?.[1] ?? managedLabel;
+    return resolveCanonicalModelSelection(requested);
 }
 
 /**
@@ -265,11 +353,14 @@ function resolveKnownModelAliasLabel(label: string, agents: { config: AgentConfi
  * @param label - The LLM label without the "llm-" prefix (e.g., "gemini-pro", "claude-opus", "opus")
  * @returns Object with agentAlias and model
  */
-async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
+async function resolveLlmLabel(label: string, enabledOnly = false): Promise<LlmLabelResolution> {
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
-    const agents = registry.getAllAgents();
+    const agents = registry.getAllAgents().filter(agent => !enabledOnly || agent.config.enabled);
+    const defaultAgentAlias = enabledOnly
+        ? agents[0]?.config.alias ?? 'default'
+        : registry.getDefaultAgent()?.config.alias ?? 'default';
 
     const supportedModelMatch = resolveBySupportedModelId(label, agents);
     if (supportedModelMatch) {
@@ -282,8 +373,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         return explicitLabelMatch;
     }
     if (label.includes('~')) {
-        const defaultAgent = registry.getDefaultAgent();
-        return { agentAlias: defaultAgent?.config.alias || 'default', model: label };
+        return { agentAlias: defaultAgentAlias, model: label };
     }
 
     const lowerLabel = label.toLowerCase();
@@ -323,8 +413,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         return knownAliasMatch;
     }
 
-    const defaultAgent = registry.getDefaultAgent();
-    return { agentAlias: defaultAgent?.config.alias || 'default', model: label };
+    return { agentAlias: defaultAgentAlias, model: label };
 }
 
 /**
@@ -455,5 +544,7 @@ export {
     getAllCustomLabels,
     resolveCustomLabel,
     resolveLlmLabel,
+    resolveCanonicalModelSelection,
+    resolveCanonicalModelSelectionFromLabels,
     resolveReviewModels,
 };
