@@ -19,7 +19,7 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
-    "test:prepare": "npm run build --workspace=packages/shared && npm run build --workspace=packages/core && npm run build --workspace=packages/local-setup && npm run build --workspace=packages/cli",
+    "test:prepare": "npm run build --workspace=packages/shared && npm run build --workspace=packages/core && npm run build --workspace=packages/client && npm run build --workspace=packages/local-setup && npm run build --workspace=packages/cli",
     "test:server": "node scripts/run-test-suite.mjs",
     "test:full:prepared": "npm run test:server",
     "test:full": "npm run test:prepare && npm run test:full:prepared",

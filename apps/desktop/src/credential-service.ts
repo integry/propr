@@ -33,7 +33,8 @@ const DEFINITIVE_INVALID_CODES = new Set([
 
 export interface CredentialServiceDependencies {
   profiles: Pick<ProfileStore,
-    'list' | 'saveAndDetachCredential' | 'commitPairedProfile' | 'detachProfile' | 'setActive' | 'activateProfile' | 'security'
+    'list' | 'saveAndDetachCredential' | 'commitPairedProfile' | 'detachProfile' | 'setActive' | 'activateProfile'
+    | 'activateLocalProfile' | 'restoreLocalProfile' | 'security'
     | 'readCredential' | 'readProfileCredential' | 'writeCredential' | 'removeCredential'
     | 'removeCredentialIfCurrent' | 'journalPendingRevocation' | 'releasePendingRevocation'
     | 'pendingRevocations' | 'completePendingRevocation' | 'awaitIdle'>;
@@ -81,6 +82,22 @@ interface PendingActivation {
   activeProfileId: string | null;
   credential: StoredCredential;
   identityEpoch: string;
+}
+
+interface PendingLocalActivation {
+  ticket: string;
+  probeTicket: number;
+  profileId: string;
+  origin: string;
+  profileGeneration: number;
+  selectionGeneration: number;
+}
+
+interface ActiveLocalActivation {
+  ticket: string;
+  profileId: string;
+  previousActiveProfileId: string | null;
+  selectionGeneration: number;
 }
 
 type RequestHeaders = Record<string, string | string[]>;
@@ -329,6 +346,9 @@ export class DesktopCredentialService {
   #selectionGeneration = 0;
   #latestProbeTicket = 0;
   #pendingActivation: PendingActivation | null = null;
+  #pendingLocalActivation: PendingLocalActivation | null = null;
+  #activeLocalActivation: ActiveLocalActivation | null = null;
+  #localActivationMutationTicket: string | null = null;
   #active: ActiveCredential | null = null;
   #publishingPair = false;
   #publishWaiters: Array<() => void> = [];
@@ -411,6 +431,8 @@ export class DesktopCredentialService {
     this.#closed = true;
     this.#active = null;
     this.#pendingActivation = null;
+    this.#pendingLocalActivation = null;
+    this.#activeLocalActivation = null;
     this.#lifecycleController.abort(new Error('Desktop credential service disposed'));
     for (const controller of this.#operationControllers) controller.abort(new Error('Desktop credential service disposed'));
     for (const controller of this.#pairingControllers.values()) controller.abort();
@@ -479,6 +501,8 @@ export class DesktopCredentialService {
     this.#selectionGeneration += 1;
     this.#latestProbeTicket += 1;
     this.#pendingActivation = null;
+    this.#pendingLocalActivation = null;
+    this.#activeLocalActivation = null;
     for (const controller of this.#pairingControllers.values()) controller.abort();
     this.#pairingControllers.clear();
     this.#active = null;
@@ -494,6 +518,117 @@ export class DesktopCredentialService {
     try {
       if (this.#publishingPair) await this.#waitForPairPublish();
       this.#cancelPairingNow(profileId);
+    } finally {
+      operation.done();
+    }
+  }
+
+  async prepareLocalActivation(input: DesktopProfileInput): Promise<{ localActivationTicket: string }> {
+    const operation = this.#beginOperation();
+    try {
+      if (!input.id) throw new Error('Desktop profile id is required');
+      const origin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
+      if (!origin || origin !== input.apiBaseUrl) throw new Error('Invalid desktop API URL');
+      const hostname = new URL(origin).hostname.toLowerCase();
+      if (hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '[::1]') {
+        throw new Error('Local desktop activation requires a loopback profile');
+      }
+      const probeTicket = ++this.#latestProbeTicket;
+      this.#pendingActivation = null;
+      // Reserve the generation before the first await. Once a newer local
+      // attempt reaches main, an older durable activation can no longer win
+      // while this request waits for a pairing publication to settle.
+      this.#pendingLocalActivation = null;
+      await this.#waitForPairPublish();
+      if (this.#closed || this.#latestProbeTicket !== probeTicket) {
+        throw new Error('Local desktop activation expired. Check the connection again.');
+      }
+      const localActivationTicket = randomBytes(32).toString('base64url');
+      this.#pendingLocalActivation = {
+        ticket: localActivationTicket,
+        probeTicket,
+        profileId: input.id,
+        origin,
+        profileGeneration: this.#generation(input.id),
+        selectionGeneration: this.#selectionGeneration,
+      };
+      return { localActivationTicket };
+    } finally {
+      operation.done();
+    }
+  }
+
+  async activateLocal(
+    localActivationTicket: unknown,
+    beforeCommit?: (previousOrigin: string | undefined, nextOrigin: string) => Promise<void>,
+  ): Promise<{ status: 'ready'; profileId: string }> {
+    const operation = this.#beginOperation();
+    try {
+      await this.#waitForPairPublish();
+      if (typeof localActivationTicket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(localActivationTicket)) {
+        throw new Error('Invalid local desktop activation ticket');
+      }
+      const pending = this.#pendingLocalActivation;
+      if (!pending || pending.ticket !== localActivationTicket || !this.#pendingLocalIsCurrent(pending)) {
+        throw new Error('Local desktop activation expired. Check the connection again.');
+      }
+      // Consume before the durable mutation so a concurrent replay cannot
+      // share the same trusted activation decision.
+      this.#pendingLocalActivation = null;
+      this.#localActivationMutationTicket = pending.ticket;
+      const activated = await this.#profiles.activateLocalProfile(
+        pending.profileId,
+        pending.origin,
+        () => this.#pendingLocalIsCurrent(pending),
+        beforeCommit,
+      );
+      if (!activated) {
+        throw new Error('Local desktop activation expired. Check the connection again.');
+      }
+      if (!this.#pendingLocalIsCurrent(pending)
+        || this.#localActivationMutationTicket !== pending.ticket) {
+        await this.#profiles.restoreLocalProfile(
+          pending.profileId,
+          activated.previousActiveProfileId,
+          () => this.#selectionGeneration === pending.selectionGeneration
+            && this.#localActivationMutationTicket === pending.ticket,
+        );
+        throw new Error('Local desktop activation expired. Check the connection again.');
+      }
+      this.#selectionGeneration += 1;
+      this.#active = null;
+      this.#activeLocalActivation = {
+        ticket: pending.ticket,
+        profileId: pending.profileId,
+        previousActiveProfileId: activated.previousActiveProfileId,
+        selectionGeneration: this.#selectionGeneration,
+      };
+      return { status: 'ready', profileId: pending.profileId };
+    } finally {
+      operation.done();
+    }
+  }
+
+  async discardLocal(localActivationTicket: unknown): Promise<{ discarded: boolean }> {
+    const operation = this.#beginOperation();
+    try {
+      if (typeof localActivationTicket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(localActivationTicket)) {
+        return { discarded: false };
+      }
+      const active = this.#activeLocalActivation;
+      if (!active || active.ticket !== localActivationTicket
+        || active.selectionGeneration !== this.#selectionGeneration) return { discarded: false };
+      // Consume before awaiting. A newer activation changes either this exact
+      // memory authority or the selection generation, making rollback a no-op.
+      this.#activeLocalActivation = null;
+      const discarded = await this.#profiles.restoreLocalProfile(
+        active.profileId,
+        active.previousActiveProfileId,
+        () => this.#activeLocalActivation === null
+          && this.#selectionGeneration === active.selectionGeneration
+          && this.#localActivationMutationTicket === active.ticket,
+      );
+      return { discarded };
     } finally {
       operation.done();
     }
@@ -663,6 +798,7 @@ export class DesktopCredentialService {
     if (!origin || origin !== input.apiBaseUrl) throw new Error('Invalid desktop API URL');
     const probeTicket = ++this.#latestProbeTicket;
     this.#pendingActivation = null;
+    this.#pendingLocalActivation = null;
     const operationGeneration = this.#generation(input.id);
     const operationSelection = this.#selectionGeneration;
     const discoveryClient = this.#client(origin);
@@ -851,6 +987,7 @@ export class DesktopCredentialService {
       selectionGeneration: this.#selectionGeneration,
       transportScope,
     };
+    this.#activeLocalActivation = null;
     return {
       status: 'ready',
       profileId: pending.profileId,
@@ -1224,7 +1361,15 @@ export class DesktopCredentialService {
   }
 
   #pendingIsCurrent(pending: PendingActivation): boolean {
-    return this.#latestProbeTicket === pending.probeTicket
+    return !this.#closed
+      && this.#latestProbeTicket === pending.probeTicket
+      && this.#generation(pending.profileId) === pending.profileGeneration
+      && this.#selectionGeneration === pending.selectionGeneration;
+  }
+
+  #pendingLocalIsCurrent(pending: PendingLocalActivation): boolean {
+    return !this.#closed
+      && this.#latestProbeTicket === pending.probeTicket
       && this.#generation(pending.profileId) === pending.profileGeneration
       && this.#selectionGeneration === pending.selectionGeneration;
   }

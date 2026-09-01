@@ -6,6 +6,9 @@ export const IPC_CHANNELS = Object.freeze({
   authenticationPair: 'desktop:authentication-pair',
   authenticationCancel: 'desktop:authentication-cancel',
   connectionProbe: 'desktop:connection-probe',
+  connectionPrepareLocal: 'desktop:connection-prepare-local',
+  connectionActivateLocal: 'desktop:connection-activate-local',
+  connectionDiscardLocal: 'desktop:connection-discard-local',
   connectionActivate: 'desktop:connection-activate',
   connectionDiscard: 'desktop:connection-discard',
   connectionInvalidate: 'desktop:connection-invalidate',
@@ -130,7 +133,7 @@ export interface DesktopProfileView {
 }
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string; authentication?: string; activationTicket?: string }
+  | { status: 'ready'; version?: string; authentication?: string; activationTicket?: string; localActivationTicket?: string }
   | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };
@@ -143,6 +146,11 @@ export interface DesktopConnectionScope {
 export interface DesktopActivatedConnection extends DesktopConnectionScope {
   status: 'ready';
   identityEpoch: string;
+}
+
+export interface DesktopLocalActivatedConnection {
+  status: 'ready';
+  profileId: string;
 }
 
 export interface DesktopAccessInvalidation extends DesktopConnectionScope {
@@ -242,6 +250,8 @@ export interface DesktopRendererBridge {
   };
   connection: {
     probe(profile: DesktopProfileView): Promise<DesktopConnectionResult>;
+    activateLocal(localActivationTicket: string): Promise<DesktopLocalActivatedConnection>;
+    discardLocal(localActivationTicket: string): Promise<{ discarded: boolean }>;
     activate(activationTicket: string): Promise<DesktopActivatedConnection>;
     discard(value: DesktopConnectionScope): Promise<{ discarded: boolean }>;
     invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }>;

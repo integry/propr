@@ -12,6 +12,11 @@ import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
 import { DesktopOperationCoordinator } from './operation-coordinator';
+import {
+  packagedTransportSmoke,
+  runPackagedTransportSmoke,
+  type PackagedTransportSmoke,
+} from './packaged-transport-smoke';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
 import { DesktopSetupController } from './setup-controller';
 import { promptForWebhookSecret } from './secure-secret-prompt';
@@ -68,6 +73,7 @@ try {
   process.exit(1);
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
+const transportSmoke = packagedTransportSmoke(packagedSmokeTest);
 const inertSetupActions = new Proxy({} as SetupActions, {
   get() {
     return () => { throw new Error('Local setup is unavailable in this desktop mode'); };
@@ -236,7 +242,7 @@ const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<stri
         candidateApiUrl: elements.apiUrl.value,
         connectLabel: elements.submit.textContent?.trim(),
         noticeText: elements.notice.textContent?.trim(),
-        runtimeFooterPresent: Array.from(card.querySelectorAll('*')).some(element => element.textContent?.trim().startsWith('Runtime:')),
+        runtimeFooterPresent: Array.from(elements.card.querySelectorAll('*')).some(element => element.textContent?.trim().startsWith('Runtime:')),
       },
       ...Object.fromEntries(Object.entries(elements).map(([name, element]) => [name, bounds(element)])),
     };
@@ -280,7 +286,7 @@ const inspectPackagedReducedNativeWindow = (): Record<string, unknown> => {
   }
 };
 
-const createMainWindow = async (): Promise<BrowserWindow> => {
+const createMainWindow = async (smoke: PackagedTransportSmoke | null = null): Promise<BrowserWindow> => {
   const workArea = selectInitialWindowWorkArea(screen);
   const window = new BrowserWindow(
     createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged, workArea),
@@ -315,7 +321,9 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
   if (validatedDevUrl) {
     await window.loadURL(new URL('renderer.html', validatedDevUrl).href);
   } else {
-    await window.loadURL(packagedRendererUrl);
+    const rendererUrl = new URL(packagedRendererUrl);
+    if (smoke) rendererUrl.hash = 'packaged-transport-smoke';
+    await window.loadURL(rendererUrl.href);
   }
 
   await readyToShow;
@@ -517,9 +525,12 @@ if (!hasSingleInstanceLock) {
       openExternal: async url => { await shell.openExternal(url); },
     });
 
+    const shutdownLifecycle = transportSmoke?.shutdownMode === 'forced-timeout'
+      ? { shutdown: () => new Promise<void>(() => undefined) }
+      : lifecycle;
     const shutdown = createDesktopShutdownCoordinator({
       credentials,
-      lifecycle,
+      lifecycle: shutdownLifecycle,
       setup: setupController,
       operations: operationCoordinator,
       ipc: registeredIpc,
@@ -530,11 +541,27 @@ if (!hasSingleInstanceLock) {
       quit: () => app.quit(),
       onStarted: () => { shutdownStarted = true; },
       log,
-    });
+    }, transportSmoke?.shutdownMode === 'forced-timeout' ? { drainTimeoutMs: 250 } : undefined);
     app.on('before-quit', event => shutdown.beforeQuit(event));
 
-    mainWindow = await createMainWindow();
-    if (packagedSmokeTest) app.quit();
+    mainWindow = await createMainWindow(transportSmoke);
+    if (transportSmoke) {
+      await runPackagedTransportSmoke({
+        window: mainWindow,
+        profiles,
+        credentials,
+        desktopSession: session.defaultSession,
+        smoke: transportSmoke,
+        log: (event, fields) => log('info', event, fields),
+      });
+    }
+    if (packagedSmokeTest) {
+      app.quit();
+      if (transportSmoke?.shutdownMode === 'retry') {
+        log('info', 'desktop.app.shutdown_retry_requested');
+        app.quit();
+      }
+    }
 
     const updateConfig = __PROPR_DESKTOP_UPDATE_MANIFEST_URL__
       ? {

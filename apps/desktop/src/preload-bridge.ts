@@ -223,15 +223,30 @@ export const createDesktopRendererBridge = (
       onProgress: () => () => undefined,
     },
     connection: {
-      probe: profile => connectionProbe
-        ? connectionProbe(profile)
-        : profile.kind === 'local'
-          ? probeDesktopProfile(profile)
-          : invoke(ipc, IPC_CHANNELS.connectionProbe, {
-          id: profile.id,
-          label: profile.name,
-          apiBaseUrl: profile.baseUrl,
-          }),
+      probe: async profile => {
+        if (connectionProbe) return connectionProbe(profile);
+        const input = { id: profile.id, label: profile.name, apiBaseUrl: profile.baseUrl };
+        if (profile.kind !== 'local') return invoke(ipc, IPC_CHANNELS.connectionProbe, input);
+        const prepared = await invoke<{ localActivationTicket: string }>(
+          ipc,
+          IPC_CHANNELS.connectionPrepareLocal,
+          input,
+        );
+        const result = await probeDesktopProfile(profile);
+        return result.status === 'ready'
+          ? { ...result, localActivationTicket: prepared.localActivationTicket }
+          : result;
+      },
+      activateLocal: localActivationTicket => invoke(
+        ipc,
+        IPC_CHANNELS.connectionActivateLocal,
+        localActivationTicket,
+      ),
+      discardLocal: localActivationTicket => invoke(
+        ipc,
+        IPC_CHANNELS.connectionDiscardLocal,
+        localActivationTicket,
+      ),
       activate: activationTicket => invoke(ipc, IPC_CHANNELS.connectionActivate, activationTicket),
       discard: value => invoke(ipc, IPC_CHANNELS.connectionDiscard, value),
       invalidate: value => invoke(ipc, IPC_CHANNELS.connectionInvalidate, value),

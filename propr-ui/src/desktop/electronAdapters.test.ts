@@ -35,6 +35,8 @@ const bridgeFixture = (): DesktopRendererBridge => ({
   },
   connection: {
     probe: async () => ({ status: 'ready', activationTicket: 'ticket' }),
+    activateLocal: async () => ({ status: 'ready', profileId: 'local-1' }),
+    discardLocal: async () => ({ discarded: true }),
     activate: async () => ({
       status: 'ready', profileId: profile.id, transportScope: 'S'.repeat(22), identityEpoch: 'E'.repeat(22),
     }),
@@ -76,8 +78,12 @@ describe('Electron desktop renderer adapter', () => {
   it('selects a local profile without publishing a bearer transport scope', async () => {
     const local = { id: 'local-1', name: 'This computer', baseUrl: 'http://127.0.0.1:4000', kind: 'local' as const };
     const bridge = bridgeFixture();
-    bridge.profiles.setActiveId = vi.fn(async () => undefined);
-    bridge.connection.probe = vi.fn(async () => ({ status: 'ready' as const, version: '0.8.15' }));
+    bridge.connection.activateLocal = vi.fn(bridge.connection.activateLocal);
+    bridge.connection.probe = vi.fn(async () => ({
+      status: 'ready' as const,
+      version: '0.8.15',
+      localActivationTicket: 'L'.repeat(43),
+    }));
     bridge.connection.activate = vi.fn(bridge.connection.activate);
     const adapters = createElectronDesktopAdapters(bridge);
     const probe = await adapters.connection.probe(local);
@@ -86,8 +92,12 @@ describe('Electron desktop renderer adapter', () => {
 
     const activated = await adapters.connection.activate!(local, probe);
 
-    expect(activated).toEqual({ status: 'ready', version: '0.8.15' });
-    expect(bridge.profiles.setActiveId).toHaveBeenCalledWith(local.id);
+    expect(activated).toEqual({
+      status: 'ready',
+      version: '0.8.15',
+      localActivationTicket: 'L'.repeat(43),
+    });
+    expect(bridge.connection.activateLocal).toHaveBeenCalledWith('L'.repeat(43));
     expect(bridge.connection.activate).not.toHaveBeenCalled();
     expect(getDesktopConnectionScope()).toBeNull();
   });
@@ -103,6 +113,28 @@ describe('Electron desktop renderer adapter', () => {
     );
     expect(result.status).toBe('authentication-required');
     expect(bridge.connection.discard).toHaveBeenCalledOnce();
+    expect(getDesktopConnectionScope()).toBeNull();
+  });
+
+  it('rolls back a local selection that becomes stale while trusted activation is in flight', async () => {
+    const local = { id: 'local-1', name: 'This computer', baseUrl: 'http://127.0.0.1:4000', kind: 'local' as const };
+    const bridge = bridgeFixture();
+    let current = true;
+    bridge.connection.activateLocal = vi.fn(async ticket => {
+      expect(ticket).toBe('L'.repeat(43));
+      current = false;
+      return { status: 'ready' as const, profileId: local.id };
+    });
+    bridge.connection.discardLocal = vi.fn(bridge.connection.discardLocal);
+    const adapters = createElectronDesktopAdapters(bridge);
+    const result = await adapters.connection.activate!(
+      local,
+      { status: 'ready', localActivationTicket: 'L'.repeat(43) },
+      () => current,
+    );
+
+    expect(result.status).toBe('offline');
+    expect(bridge.connection.discardLocal).toHaveBeenCalledWith('L'.repeat(43));
     expect(getDesktopConnectionScope()).toBeNull();
   });
 });

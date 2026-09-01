@@ -39,6 +39,8 @@ const bridgeWithDeepLinks = () => {
     },
     connection: {
       probe: async () => ({ status: 'ready', activationTicket: 'test-ticket' }),
+      activateLocal: async () => ({ status: 'ready', profileId: 'test' }),
+      discardLocal: async () => ({ discarded: true }),
       activate: async () => ({ status: 'ready', profileId: 'test', transportScope: 'A'.repeat(22), identityEpoch: 'B'.repeat(22) }),
       discard: async () => ({ discarded: true }),
       invalidate: async () => ({ invalidated: true }),

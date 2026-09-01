@@ -105,6 +105,16 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   });
   handle(IPC_CHANNELS.authenticationPair, (_event, profile) => options.credentials.pair(profile));
   handle(IPC_CHANNELS.authenticationCancel, (_event, profileId) => options.credentials.cancelPairing(profileId));
+  handle(IPC_CHANNELS.connectionPrepareLocal, (_event, profile) => options.credentials.prepareLocalActivation(profile));
+  handle(IPC_CHANNELS.connectionActivateLocal, (_event, localActivationTicket) => options.credentials.activateLocal(
+    localActivationTicket,
+    (previousOrigin, nextOrigin) => clearDesktopInstanceCookies(
+      options.desktopSession,
+      [previousOrigin, nextOrigin].filter((origin): origin is string => origin !== undefined),
+    ),
+  ));
+  handle(IPC_CHANNELS.connectionDiscardLocal, (_event, localActivationTicket) =>
+    options.credentials.discardLocal(localActivationTicket));
   handle(IPC_CHANNELS.connectionProbe, (_event, profile) => options.credentials.probe(profile));
   handle(IPC_CHANNELS.connectionActivate, async (_event, activationTicket) => {
     const before = await options.credentials.listProfiles();

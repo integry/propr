@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const EXPECTED = Object.freeze({
-  'credential-service': 68,
+  'credential-service': 69,
   'profile-store': 39,
   'pairing-shutdown': 10,
 });

@@ -122,7 +122,7 @@ describe('packaged smoke profile authorization', () => {
     const appReady = main.indexOf("log('info', 'desktop.app.ready'");
     const beforeQuit = main.indexOf("app.on('before-quit'");
     const shutdownCoordinator = main.indexOf('createDesktopShutdownCoordinator({');
-    const createWindow = main.indexOf('mainWindow = await createMainWindow()');
+    const createWindow = main.indexOf('mainWindow = await createMainWindow(transportSmoke)');
     const mvpReady = main.indexOf("log('info', 'desktop.renderer.mvp_flows.ready'");
     const layoutReady = main.indexOf("log('info', PACKAGED_LAYOUT_READY_EVENT");
     const reducedWindowReady = main.indexOf("log('info', PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT");

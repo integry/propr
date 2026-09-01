@@ -142,7 +142,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio fakeroot rpm zip
+          sudo apt-get install --yes cpio dbus-x11 fakeroot gnome-keyring libsecret-1-0 rpm zip
 
       - name: Package desktop app from clean checkout
         shell: bash
@@ -198,7 +198,14 @@ jobs:
         run: |
           sudo chown root:root "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
           sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
-          xvfb-run --auto-servernum npm run desktop:smoke
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            export XDG_DATA_HOME="$1"
+            eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run desktop:smoke
+          ' bash "$keyring_root"
 
       - name: Launch packaged Windows application and exercise MVP desktop flows
         if: matrix.platform == 'win32'
@@ -467,7 +474,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio fakeroot rpm zip
+          sudo apt-get install --yes cpio dbus-x11 fakeroot gnome-keyring libsecret-1-0 rpm zip
 
       - name: Configure required macOS signing and notarization
         if: matrix.platform == 'darwin'
@@ -637,7 +644,14 @@ jobs:
         run: |
           sudo chown root:root "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
           sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
-          xvfb-run --auto-servernum npm run desktop:smoke
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            export XDG_DATA_HOME="$1"
+            eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run desktop:smoke
+          ' bash "$keyring_root"
 
       - name: Launch signed packaged Windows application and exercise MVP desktop flows
         if: matrix.platform == 'win32'

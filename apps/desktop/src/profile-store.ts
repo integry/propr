@@ -613,6 +613,56 @@ export class ProfileStore {
     });
   }
 
+  activateLocalProfile(
+    profileId: string,
+    expectedProfileOrigin: string,
+    isCurrent: () => boolean,
+    beforeCommit?: (previousOrigin: string | undefined, nextOrigin: string) => Promise<void>,
+  ): Promise<{ previousActiveProfileId: string | null } | null> {
+    assertProfileId(profileId);
+    if (normalizeApiBaseUrl(expectedProfileOrigin) !== expectedProfileOrigin) {
+      throw new Error('Invalid desktop API URL');
+    }
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      const profile = state.profiles.find(item => item.id === profileId);
+      if (!isCurrent() || profile?.apiBaseUrl !== expectedProfileOrigin) return null;
+
+      const previousActiveProfileId = state.activeProfileId;
+      const previousOrigin = state.profiles.find(item => item.id === previousActiveProfileId)?.apiBaseUrl;
+      await beforeCommit?.(previousOrigin, expectedProfileOrigin);
+      if (!isCurrent()) return null;
+      state.activeProfileId = profileId;
+      await this.#writeState(state);
+      if (isCurrent()) return { previousActiveProfileId };
+
+      // A newer trusted activation generation won while the durable replace
+      // was in flight. Restore the pre-attempt selection before releasing the
+      // serialized profile boundary, so stale renderer work cannot persist.
+      state.activeProfileId = previousActiveProfileId;
+      await this.#writeState(state);
+      return null;
+    });
+  }
+
+  restoreLocalProfile(
+    profileId: string,
+    previousActiveProfileId: string | null,
+    isCurrent: () => boolean,
+  ): Promise<boolean> {
+    assertProfileId(profileId);
+    if (previousActiveProfileId !== null) assertProfileId(previousActiveProfileId);
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      if (!isCurrent() || state.activeProfileId !== profileId
+        || (previousActiveProfileId !== null
+          && !state.profiles.some(profile => profile.id === previousActiveProfileId))) return false;
+      state.activeProfileId = previousActiveProfileId;
+      await this.#writeState(state);
+      return isCurrent();
+    });
+  }
+
   setActive(profileId: string | null): Promise<void> {
     if (profileId !== null) assertProfileId(profileId);
     return this.#mutate(async () => {

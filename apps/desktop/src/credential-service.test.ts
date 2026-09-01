@@ -122,6 +122,58 @@ afterEach(async () => {
 });
 
 describe('main-process desktop credential service', () => {
+  it('rolls back a superseded overlapping local activation before it can persist or publish', async () => {
+    const blocked = deferred<void>();
+    const entered = deferred<void>();
+    let blockActivationWrite = false;
+    let blockedOnce = false;
+    const directory = await mkdtemp(join(tmpdir(), 'propr-local-activation-'));
+    temporaryDirectories.push(directory);
+    const store = new ProfileStore(directory, encryption, {
+      async beforeIO(operation) {
+        if (!blockActivationWrite || blockedOnce || operation !== 'journal-write') return;
+        blockedOnce = true;
+        entered.resolve();
+        await blocked.promise;
+      },
+    });
+    await store.save({ id: 'local-a', label: 'Local A', apiBaseUrl: 'http://127.0.0.1:4101' });
+    await store.save({ id: 'local-b', label: 'Local B', apiBaseUrl: 'http://127.0.0.1:4102' });
+    const service = createCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async () => { throw new Error('local activation must not use remote transport'); },
+    });
+
+    const first = await service.prepareLocalActivation({
+      id: 'local-a', label: 'Local A', apiBaseUrl: 'http://127.0.0.1:4101',
+    });
+    blockActivationWrite = true;
+    const staleActivation = service.activateLocal(first.localActivationTicket);
+    await entered.promise;
+    const current = await service.prepareLocalActivation({
+      id: 'local-b', label: 'Local B', apiBaseUrl: 'http://127.0.0.1:4102',
+    });
+    blocked.resolve();
+
+    await assert.rejects(staleActivation, /expired/i);
+    assert.equal((await store.list()).activeProfileId, null);
+    assert.deepEqual(await service.activateLocal(current.localActivationTicket), {
+      status: 'ready', profileId: 'local-b',
+    });
+    assert.equal((await store.list()).activeProfileId, 'local-b');
+    const replacement = await service.prepareLocalActivation({
+      id: 'local-a', label: 'Local A', apiBaseUrl: 'http://127.0.0.1:4101',
+    });
+    assert.deepEqual(await service.discardLocal(current.localActivationTicket), { discarded: true });
+    assert.equal((await store.list()).activeProfileId, null);
+    assert.deepEqual(await service.activateLocal(replacement.localActivationTicket), {
+      status: 'ready', profileId: 'local-a',
+    });
+    await assert.rejects(service.activateLocal(first.localActivationTicket), /expired/i);
+  });
+
   it('injects the active bearer only for its bound profile origin and strips renderer identity', async () => {
     const store = await createStore();
     const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
@@ -1995,6 +2047,10 @@ describe('main-process desktop credential service', () => {
         detachProfile: (profileId: string) => store.detachProfile(profileId),
         setActive: (profileId: string | null) => store.setActive(profileId),
         activateProfile: (...args: Parameters<ProfileStore['activateProfile']>) => store.activateProfile(...args),
+        activateLocalProfile: (...args: Parameters<ProfileStore['activateLocalProfile']>) =>
+          store.activateLocalProfile(...args),
+        restoreLocalProfile: (...args: Parameters<ProfileStore['restoreLocalProfile']>) =>
+          store.restoreLocalProfile(...args),
         security: () => store.security(),
         readCredential: (profileId: string) => store.readCredential(profileId),
         readProfileCredential: (profileId: string) => store.readProfileCredential(profileId),
