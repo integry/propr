@@ -155,13 +155,8 @@ public sealed class ProPRWorkflowCleanupInvocationJob : IDisposable
         return information.ActiveProcesses;
     }
 
-    public bool HasNoActiveProcesses() { return ReadActiveProcessCount() == 0; }
-
-    public bool TerminateAndWait(uint exitCode, int timeoutMilliseconds)
+    public bool WaitForNoActiveProcesses(int timeoutMilliseconds)
     {
-        if (!TerminateJobObject(handle, exitCode))
-            throw new Win32Exception(Marshal.GetLastWin32Error(),
-                "invocation termination failed");
         var watch = Stopwatch.StartNew();
         do
         {
@@ -170,6 +165,14 @@ public sealed class ProPRWorkflowCleanupInvocationJob : IDisposable
         }
         while (watch.ElapsedMilliseconds < timeoutMilliseconds);
         return ReadActiveProcessCount() == 0;
+    }
+
+    public bool TerminateAndWait(uint exitCode, int timeoutMilliseconds)
+    {
+        if (!TerminateJobObject(handle, exitCode))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "invocation termination failed");
+        return WaitForNoActiveProcesses(timeoutMilliseconds);
     }
 
     public void Dispose() { if (handle != null) handle.Dispose(); }
@@ -213,6 +216,7 @@ public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
     private StreamReader errorReader;
     private Task outputTask;
     private Task errorTask;
+    private readonly ManualResetEventSlim startupObserved = new ManualResetEventSlim(false);
     private bool startupSeen;
     private bool terminalSeen;
     private bool defect;
@@ -243,6 +247,23 @@ public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
         for (int i = 0; i < FixedStatuses.Length; i++)
             if (String.Equals(FixedStatuses[i], value, StringComparison.Ordinal)) return true;
         return ControllerFailure.IsMatch(value);
+    }
+
+    private static bool IsStatusExitPairValid(string status, int exitCode)
+    {
+        switch (status)
+        {
+            case "EMPTY_OR_CLEANED": return exitCode == 0;
+            case "MANIFEST_VALIDATION_FAILURE": return exitCode == 20;
+            case "OWNED_RESOURCE_CLEANUP_FAILURE": return exitCode == 21;
+            case "CHILD_STDOUT":
+            case "CHILD_STDOUT_LIMIT": return exitCode == 122;
+            case "CHILD_STDERR":
+            case "CHILD_STDERR_LIMIT": return exitCode == 123;
+            case "TIMEOUT": return exitCode == 124;
+            default:
+                return exitCode == 125 && IsFixedStatus(status);
+        }
     }
 
     private void SetDefect(string category)
@@ -283,6 +304,7 @@ public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
                 StartupProcessExit = processExit;
                 StartupLine = startupLine;
             }
+            startupObserved.Set();
             return;
         }
 
@@ -312,7 +334,8 @@ public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
                 (String.Equals(Result, "FAILED", StringComparison.Ordinal) &&
                     (String.Equals(ControllerStatus, "EMPTY_OR_CLEANED", StringComparison.Ordinal) ||
                     String.Equals(ControllerStatus, "TIMEOUT", StringComparison.Ordinal) ||
-                    ReportedExitCode == 0)))
+                    ReportedExitCode == 0)) ||
+                !IsStatusExitPairValid(ControllerStatus, ReportedExitCode))
                 SetDefect("MALFORMED");
             return;
         }
@@ -385,10 +408,22 @@ public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
         return true;
     }
 
+    public Task<bool> SignalCancellationAfterStartup(
+        EventWaitHandle cancellation, int timeoutMilliseconds)
+    {
+        if (cancellation == null) throw new ArgumentNullException("cancellation");
+        return Task.Factory.StartNew(() =>
+        {
+            if (!startupObserved.Wait(timeoutMilliseconds)) return false;
+            return cancellation.Set();
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+    }
+
     public bool IsProtocolValid(int processExitCode)
     {
         return !defect && startupSeen && terminalSeen && LineCount == 2 &&
             StandardErrorCount == 0 && processExitCode == ReportedExitCode &&
+            IsStatusExitPairValid(ControllerStatus, ReportedExitCode) &&
             (String.Equals(StartupClass, "READY", StringComparison.Ordinal) ||
                 StartupProcessExit == processExitCode);
     }
@@ -397,6 +432,7 @@ public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
     {
         try { if (outputReader != null) outputReader.Dispose(); } catch { }
         try { if (errorReader != null) errorReader.Dispose(); } catch { }
+        startupObserved.Dispose();
     }
 }
 '@
@@ -1099,6 +1135,7 @@ function Invoke-WorkflowCleanupController(
   [string]$StartupFailureClass = '',
   [object]$InvocationTimeoutMilliseconds = 40000,
   [Threading.WaitHandle]$CancellationWaitHandle = $null,
+  [bool]$SignalCancellationAfterStartup = $false,
   [bool]$InjectTreeTerminationFailure = $false,
   [string]$ProtocolFixture = ''
 ) {
@@ -1145,6 +1182,7 @@ function Invoke-WorkflowCleanupController(
   $process.StartInfo = $startInfo
   $job = $null
   $capture = $null
+  $cancellationSignalTask = $null
   $processStarted = $false
   $lifecycleCategory = 'PROCESS_CREATION_FAILURE'
   $treeTerminationCategory = 'NOT_REQUIRED'
@@ -1161,6 +1199,13 @@ function Invoke-WorkflowCleanupController(
     }
     $capture = [ProPRWorkflowCleanupProtocolCapture]::new()
     $capture.Start($process)
+    if ($SignalCancellationAfterStartup) {
+      if ($CancellationWaitHandle -isnot [Threading.EventWaitHandle]) {
+        throw 'workflow cleanup after-startup cancellation event is invalid'
+      }
+      $cancellationSignalTask = $capture.SignalCancellationAfterStartup(
+        [Threading.EventWaitHandle]$CancellationWaitHandle, $invocationTimeout)
+    }
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $cancelled = $false
     while (!$process.HasExited -and $watch.ElapsedMilliseconds -lt $invocationTimeout) {
@@ -1185,7 +1230,7 @@ function Invoke-WorkflowCleanupController(
       [void]$process.WaitForExit(3000)
     } else {
       $lifecycleCategory = 'EXITED'
-      if (!$job.HasNoActiveProcesses()) {
+      if (!$job.WaitForNoActiveProcesses(3000)) {
         $lifecycleCategory = 'ACTIVE_TREE_AFTER_EXIT'
         $treeTerminationCategory = 'FAILED'
         if (!$InjectTreeTerminationFailure) {
@@ -1253,6 +1298,9 @@ function Invoke-WorkflowCleanupController(
     if ($processStarted -and !$process.HasExited) {
       try { if ($null -ne $job) { [void]$job.TerminateAndWait(125, 3000) } } catch {}
       try { if (!$process.HasExited) { $process.Kill($true) } } catch {}
+    }
+    if ($null -ne $cancellationSignalTask) {
+      try { [void]$cancellationSignalTask.Wait(3000) } catch {}
     }
     if ($null -ne $capture) { $capture.Dispose() }
     if ($null -ne $job) { $job.Dispose() }
@@ -1382,6 +1430,8 @@ function Test-WorkflowCleanupProtocolStateMachine {
     [PSCustomObject]@{ Fixture='PARTIAL_RECORD'; Observed='PARTIAL'; Lifecycle='EXITED' },
     [PSCustomObject]@{ Fixture='STDERR_RECORD'; Observed='TERMINAL'; Lifecycle='EXITED'; Stderr=1 },
     [PSCustomObject]@{ Fixture='INVALID_STARTUP_METADATA'; Observed='MALFORMED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='MISMATCHED_MANIFEST_EXIT_125'; Observed='MALFORMED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='MISMATCHED_CHILD_STDOUT_EXIT_21'; Observed='MALFORMED'; Lifecycle='EXITED' },
     [PSCustomObject]@{ Fixture='TIMEOUT_BEFORE_STARTUP'; Observed='NONE'; Lifecycle='TIMEOUT_BEFORE_STARTUP' },
     [PSCustomObject]@{ Fixture='TIMEOUT_AFTER_STARTUP'; Observed='STARTUP'; Lifecycle='TIMEOUT_AFTER_STARTUP' },
     [PSCustomObject]@{ Fixture='STREAM_DRAIN_RACE'; Observed='TERMINAL'; Lifecycle='ACTIVE_TREE_AFTER_EXIT' }
@@ -1412,9 +1462,32 @@ function Test-WorkflowCleanupProtocolStateMachine {
       "$($case.Fixture) diagnostic disclosed a path"
   }
 
-  foreach ($cancellationAfterStartup in @($false)) {
+  foreach ($exactPair in @(
+      [PSCustomObject]@{ Fixture='EXACT_MANIFEST_20'; Status='MANIFEST_VALIDATION_FAILURE'; ExitCode=20; Result='FAILED' },
+      [PSCustomObject]@{ Fixture='EXACT_OWNED_RESOURCE_21'; Status='OWNED_RESOURCE_CLEANUP_FAILURE'; ExitCode=21; Result='FAILED' },
+      [PSCustomObject]@{ Fixture='EXACT_CHILD_STDOUT_122'; Status='CHILD_STDOUT'; ExitCode=122; Result='FAILED' },
+      [PSCustomObject]@{ Fixture='EXACT_CHILD_STDERR_123'; Status='CHILD_STDERR'; ExitCode=123; Result='FAILED' },
+      [PSCustomObject]@{ Fixture='EXACT_TIMEOUT_124'; Status='TIMEOUT'; ExitCode=124; Result='TIMED_OUT' },
+      [PSCustomObject]@{ Fixture='EXACT_CONTROLLER_FAILURE_125'; Status='CONTROLLER_FAILURE'; ExitCode=125; Result='FAILED' },
+      [PSCustomObject]@{ Fixture='EXACT_FINALIZATION_FAILURE_125'; Status='PROCESS_FINALIZATION_FAILURE'; ExitCode=125; Result='FAILED' }
+    )) {
+    $result = Invoke-WorkflowCleanupController `
+      -InvocationIdentifier 'PROTOCOL_REGRESSION' `
+      -ManifestPath $dummyInstaller `
+      -RunId ([Guid]::NewGuid().ToString('N')) `
+      -FixtureRoot $testRoot `
+      -InvocationTimeoutMilliseconds 1000 `
+      -ProtocolFixture $exactPair.Fixture
+    Assert-True ($result.ExitCode -eq $exactPair.ExitCode -and
+        $result.ReportedExitCode -eq $exactPair.ExitCode -and
+        $result.Result -ceq $exactPair.Result -and
+        $result.ControllerStatus -ceq $exactPair.Status) `
+      "$($exactPair.Fixture) did not preserve its exact status/exit pair"
+  }
+
+  foreach ($cancellationAfterStartup in @($false, $true)) {
     $cancel = [Threading.EventWaitHandle]::new(
-      $true, [Threading.EventResetMode]::ManualReset)
+      !$cancellationAfterStartup, [Threading.EventResetMode]::ManualReset)
     try {
       $diagnostic = ''
       $fixture = if ($cancellationAfterStartup) {
@@ -1426,12 +1499,19 @@ function Test-WorkflowCleanupProtocolStateMachine {
           -ManifestPath $dummyInstaller `
           -RunId ([Guid]::NewGuid().ToString('N')) `
           -FixtureRoot $testRoot `
-          -InvocationTimeoutMilliseconds 1000 `
+          -InvocationTimeoutMilliseconds 5000 `
           -CancellationWaitHandle $cancel `
+          -SignalCancellationAfterStartup $cancellationAfterStartup `
           -ProtocolFixture $fixture)
       } catch { $diagnostic = $_.Exception.Message }
-      Assert-True ($diagnostic -cmatch
-          ':LIFECYCLE:CANCELLED_(?:BEFORE|AFTER)_STARTUP:') `
+      $expectedLifecycle = if ($cancellationAfterStartup) {
+        'CANCELLED_AFTER_STARTUP'
+      } else { 'CANCELLED_BEFORE_STARTUP' }
+      Assert-Contains $diagnostic `
+        ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' +
+          'INVOCATION:PROTOCOL_REGRESSION:') `
+        'workflow cleanup cancellation lost its exact invocation attribution'
+      Assert-Contains $diagnostic ":LIFECYCLE:$expectedLifecycle:" `
         'workflow cleanup cancellation lost its bounded lifecycle category'
       Assert-Contains $diagnostic ':TREE_TERMINATION:COMPLETE:' `
         'workflow cleanup cancellation did not terminate its complete owned tree'

@@ -1012,7 +1012,21 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /\[ValidateSet\([\s\S]*'STARTUP_PROTOCOL'[\s\S]*'PROTOCOL_REGRESSION'/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /ONE_LINE_STARTUP[\s\S]*DUPLICATE_STARTUP[\s\S]*REORDERED_RECORDS/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /TIMEOUT_BEFORE_STARTUP[\s\S]*TIMEOUT_AFTER_STARTUP[\s\S]*STREAM_DRAIN_RACE/);
-    assert.match(installedWindowsAppSupervisorBehaviorTest, /CANCELLED_(?:BEFORE|AFTER)_STARTUP/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /foreach \(\$cancellationAfterStartup in @\(\$false, \$true\)\)/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /CANCELLED_BEFORE_STARTUP[\s\S]*CANCELLED_AFTER_STARTUP/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /SignalCancellationAfterStartup/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /WaitForNoActiveProcesses\(3000\)/);
+    assert.match(
+      installedWindowsAppWorkflowCleanup,
+      /WaitForNoActiveProcesses\(\s*\$TerminationTimeoutMilliseconds\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /MANIFEST_VALIDATION_FAILURE[\s\S]*return exitCode == 20[\s\S]*CHILD_STDOUT[\s\S]*return exitCode == 122/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /MISMATCHED_MANIFEST_EXIT_125/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /MISMATCHED_CHILD_STDOUT_EXIT_21/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /EXACT_MANIFEST_20[\s\S]*EXACT_FINALIZATION_FAILURE_125/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /TREE_TERMINATION:FAILED/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,

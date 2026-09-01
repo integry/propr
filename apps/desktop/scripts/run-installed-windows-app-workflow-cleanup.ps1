@@ -92,6 +92,66 @@ function Invoke-ProtocolFixture([string]$Name) {
       [Console]::Out.Write("$startup`r`n"); [Console]::Out.Flush()
       [Threading.Thread]::Sleep(60000); exit 125
     }
+    'MISMATCHED_MANIFEST_EXIT_125' {
+      [Console]::Out.Write(
+        "$startup`r`n" +
+        ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+          "RESULT:FAILED:STATUS:MANIFEST_VALIDATION_FAILURE:EXIT_CODE:125`r`n"))
+      [Console]::Out.Flush(); exit 125
+    }
+    'MISMATCHED_CHILD_STDOUT_EXIT_21' {
+      [Console]::Out.Write(
+        "$startup`r`n" +
+        ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+          "RESULT:FAILED:STATUS:CHILD_STDOUT:EXIT_CODE:21`r`n"))
+      [Console]::Out.Flush(); exit 21
+    }
+    'EXACT_MANIFEST_20' {
+      [Console]::Out.Write(
+        "$startup`r`n" +
+        ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+          "RESULT:FAILED:STATUS:MANIFEST_VALIDATION_FAILURE:EXIT_CODE:20`r`n"))
+      [Console]::Out.Flush(); exit 20
+    }
+    'EXACT_OWNED_RESOURCE_21' {
+      [Console]::Out.Write(
+        "$startup`r`n" +
+        ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+          "RESULT:FAILED:STATUS:OWNED_RESOURCE_CLEANUP_FAILURE:EXIT_CODE:21`r`n"))
+      [Console]::Out.Flush(); exit 21
+    }
+    'EXACT_CHILD_STDOUT_122' {
+      [Console]::Out.Write(
+        "$startup`r`n" +
+        ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+          "RESULT:FAILED:STATUS:CHILD_STDOUT:EXIT_CODE:122`r`n"))
+      [Console]::Out.Flush(); exit 122
+    }
+    'EXACT_CHILD_STDERR_123' {
+      [Console]::Out.Write(
+        "$startup`r`n" +
+        ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+          "RESULT:FAILED:STATUS:CHILD_STDERR:EXIT_CODE:123`r`n"))
+      [Console]::Out.Flush(); exit 123
+    }
+    'EXACT_TIMEOUT_124' {
+      [Console]::Out.Write(
+        "$startup`r`n" +
+        ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+          "RESULT:TIMED_OUT:STATUS:TIMEOUT:EXIT_CODE:124`r`n"))
+      [Console]::Out.Flush(); exit 124
+    }
+    'EXACT_CONTROLLER_FAILURE_125' {
+      [Console]::Out.Write("$startup`r`n$terminal`r`n")
+      [Console]::Out.Flush(); exit 125
+    }
+    'EXACT_FINALIZATION_FAILURE_125' {
+      [Console]::Out.Write(
+        "$startup`r`n" +
+        ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+          "RESULT:FAILED:STATUS:PROCESS_FINALIZATION_FAILURE:EXIT_CODE:125`r`n"))
+      [Console]::Out.Flush(); exit 125
+    }
     'STREAM_DRAIN_RACE' {
       [Console]::Out.Write("$startup`r`n$terminal`r`n"); [Console]::Out.Flush()
       $child = [Diagnostics.ProcessStartInfo]::new()

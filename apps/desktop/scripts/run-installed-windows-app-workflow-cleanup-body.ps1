@@ -454,7 +454,8 @@ $TerminationTimeoutMilliseconds = $terminationTimeout
       $fixedExitCode = 125
     }
   } else {
-    $cleanupTreeZeroVerified = $cleanupJob.HasNoActiveProcesses()
+    $cleanupTreeZeroVerified = $cleanupJob.WaitForNoActiveProcesses(
+      $TerminationTimeoutMilliseconds)
     if (!$cleanupTreeZeroVerified) {
       try {
         $cleanupTreeZeroVerified = $cleanupJob.TerminateAndWait(
