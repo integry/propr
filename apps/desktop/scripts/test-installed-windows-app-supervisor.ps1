@@ -207,8 +207,11 @@ function Assert-ReplacedFixtureResourcesSurvive($Owned) {
 }
 
 function Assert-ReplacedExecutableSurvives($Owned) {
+  $expected = if ($Owned.PSObject.Properties['ByteIdenticalReplacement']) {
+    'owned-executable'
+  } else { 'foreign-executable' }
   Assert-True ((Get-Content -LiteralPath $Owned.Executable -Raw).Trim() -ceq
-      'foreign-executable') 'replacement executable was removed or changed'
+      $expected) 'replacement executable was removed or changed'
 }
 
 function Assert-ReplacedShortcutSurvives($Owned) {
@@ -260,31 +263,39 @@ function Invoke-WorkflowCleanupController(
     Assert-True ($process.WaitForExit(40000)) 'workflow cleanup fixture exceeded its bound'
     $output = $process.StandardOutput.ReadToEnd()
     $errorOutput = $process.StandardError.ReadToEnd()
-    Assert-True ($output.Length -le 512) 'workflow cleanup fixture output exceeded its fixed bound'
     $outputLines = @($output -split '\r?\n' | Where-Object { $_ })
-    Assert-True ($outputLines.Count -eq 2) `
-      'workflow cleanup fixture did not emit exactly two fixed result lines'
+    $lineCount = if ($outputLines.Count -ge 3) { '3+' } else { [string]$outputLines.Count }
+    $stderrCount = [Math]::Min(4096, $errorOutput.Length)
+    if ($output.Length -gt 512 -or $outputLines.Count -ne 2) {
+      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}' -f `
+        $lineCount, $stderrCount)
+    }
     $resultMatch = [regex]::Match(
       $outputLines[0],
       '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:(COMPLETE|FAILED|TIMED_OUT)$'
     )
-    Assert-True $resultMatch.Success `
-      'workflow cleanup fixture emitted an invalid fixed result'
+    if (!$resultMatch.Success) {
+      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}' -f `
+        $lineCount, $stderrCount)
+    }
     $resultName = $resultMatch.Groups[1].Value
     $statusMatch = [regex]::Match(
       $outputLines[1],
       '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):EXIT_CODE:([0-9]+)$'
     )
-    Assert-True $statusMatch.Success `
-      'workflow cleanup fixture emitted an invalid fixed status'
+    if (!$statusMatch.Success) {
+      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}' -f `
+        $lineCount, $stderrCount)
+    }
     $controllerStatus = $statusMatch.Groups[1].Value
     $reportedExitCode = [int]$statusMatch.Groups[2].Value
     if ($errorOutput.Length -ne 0) {
       $stderrCode = if ($errorOutput.Length -gt 4096) {
         'CONTROLLER_STDERR_LIMIT'
       } else { 'CONTROLLER_STDERR_PRESENT' }
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:{0}:STATUS:{1}:EXIT_CODE:{2}' -f `
-        $stderrCode, $controllerStatus, $reportedExitCode)
+      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:{0}:STATUS:{1}:EXIT_CODE:{2}:' +
+        'LINE_COUNT:{3}:STDERR_COUNT:{4}' -f `
+        $stderrCode, $controllerStatus, $reportedExitCode, $lineCount, $stderrCount)
     }
     return [PSCustomObject]@{
       ExitCode = $process.ExitCode
@@ -371,6 +382,7 @@ function Invoke-FixtureScenario(
         'OWNED_RESOURCES_THEN_DEADLINE',
         'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
         'OWNED_EXECUTABLE_REPLACED_THEN_DEADLINE',
+        'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE',
         'OWNED_SHORTCUT_REPLACED_THEN_DEADLINE',
         'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE',
         'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE',
@@ -398,6 +410,74 @@ function Invoke-FixtureScenario(
   } finally {
     $process.Dispose()
   }
+}
+
+function Invoke-CriticalCancellationScenario([string]$Scenario) {
+  $stateDirectory = New-StateDirectory $Scenario.ToLowerInvariant()
+  $eventName = "Local\ProPRInstalledAppCancellation-$([Guid]::NewGuid().ToString('N'))"
+  $cancellation = [Threading.EventWaitHandle]::new(
+    $false, [Threading.EventResetMode]::ManualReset, $eventName)
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = New-SupervisorStartInfo `
+    $Scenario $stateDirectory $eventName $false
+  try {
+    if (!$process.Start()) { throw 'critical-cancellation supervisor did not start' }
+    $gatePath = Join-Path $stateDirectory 'critical-gate.txt'
+    $gateWait = [Diagnostics.Stopwatch]::StartNew()
+    while (!(Test-Path -LiteralPath $gatePath -PathType Leaf)) {
+      if ($gateWait.ElapsedMilliseconds -ge 45000) {
+        throw 'critical-cancellation fixture did not reach its interruption gate'
+      }
+      Start-Sleep -Milliseconds 25
+    }
+    Assert-True ((Get-Content -LiteralPath $gatePath -Raw -Encoding ASCII) -ceq $Scenario) `
+      'critical-cancellation fixture published the wrong interruption gate'
+    [void]$cancellation.Set()
+    Assert-True ($process.WaitForExit(90000)) `
+      'critical-cancellation supervisor exceeded its fixed completion bound'
+    $output = $process.StandardOutput.ReadToEnd()
+    $errorOutput = $process.StandardError.ReadToEnd()
+    Assert-ProcessTreeGone (Read-FixtureProcessState $stateDirectory)
+    return [PSCustomObject]@{
+      ExitCode = $process.ExitCode
+      Output = $output
+      Error = $errorOutput
+      StateDirectory = $stateDirectory
+    }
+  } finally {
+    if (!$process.HasExited) { try { $process.Kill($true) } catch {} }
+    $process.Dispose()
+    $cancellation.Dispose()
+  }
+}
+
+function Test-MsiTransactionInterruptionGates {
+  $duringMsi = Invoke-CriticalCancellationScenario 'DURING_MSI'
+  Assert-True ($duringMsi.ExitCode -eq 125) `
+    'DURING_MSI cancellation did not preserve the supervisor cancellation status'
+  Assert-Contains $duringMsi.Output `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:GRACE' `
+    'DURING_MSI cancellation did not enter the fixed transaction grace'
+  Assert-Contains $duringMsi.Output `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:ROLLED_BACK_CLEAN' `
+    'DURING_MSI cancellation did not prove the exact clean rollback receipt'
+  Assert-Contains $duringMsi.Output `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+    'DURING_MSI clean rollback did not complete bounded cleanup'
+  Assert-True (!(Test-Path -LiteralPath (Join-Path $duringMsi.StateDirectory 'owned'))) `
+    'DURING_MSI rollback did not retain the exact clean fixture baseline'
+
+  $duringCapture = Invoke-CriticalCancellationScenario 'DURING_OWNERSHIP_CAPTURE'
+  Assert-True ($duringCapture.ExitCode -eq 125) `
+    'DURING_OWNERSHIP_CAPTURE cancellation did not preserve cancellation status'
+  Assert-Contains $duringCapture.Output `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:COMMITTED' `
+    'DURING_OWNERSHIP_CAPTURE did not publish durable nonprovisional authority'
+  Assert-Contains $duringCapture.Output `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+    'DURING_OWNERSHIP_CAPTURE durable authority did not complete cleanup'
+  $capturedOwned = Read-FixtureResourceState $duringCapture.StateDirectory
+  Assert-OwnedResourcesGone $capturedOwned
 }
 
 function Test-BootstrapTimeout {
@@ -769,6 +849,29 @@ function Test-PreExistingCleanupOwnership {
       Assert-OwnedResourcesGone $replacedOwned
     }
 
+    $byteIdenticalDirectory = New-StateDirectory 'byte-identical-replaced-executable'
+    $byteIdenticalResult = Invoke-FixtureScenario `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' $byteIdenticalDirectory
+    Assert-True ($byteIdenticalResult.ExitCode -eq 125) `
+      'byte-identical replace-via-move did not fail closed on entry identity'
+    $byteIdenticalOwned = Read-FixtureResourceState $byteIdenticalDirectory
+    Assert-ReplacedExecutableSurvives $byteIdenticalOwned
+    $byteIdenticalManifest = Get-Content -LiteralPath $byteIdenticalOwned.ManifestPath `
+      -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    Assert-True ($byteIdenticalManifest.State -ceq 'ACTIVE') `
+      'byte-identical replace-via-move discarded ACTIVE recovery authority'
+    Remove-Item -LiteralPath $byteIdenticalOwned.Executable -Force -ErrorAction Stop
+    Move-Item -LiteralPath $byteIdenticalOwned.ExecutableBackup `
+      -Destination $byteIdenticalOwned.Executable -ErrorAction Stop
+    $byteIdenticalRetry = Invoke-WorkflowCleanupController `
+      $byteIdenticalOwned.ManifestPath $byteIdenticalOwned.RunId $byteIdenticalDirectory
+    Assert-True ($byteIdenticalRetry.ExitCode -eq 0 -and
+        $byteIdenticalRetry.Result -ceq 'COMPLETE') `
+      'byte-identical file cleanup did not succeed after exact entry identity restoration'
+    Assert-True (!(Test-Path -LiteralPath $byteIdenticalOwned.Executable) -and
+        !(Test-Path -LiteralPath $byteIdenticalOwned.ManifestPath)) `
+      'byte-identical file retry did not consume the exact owned entry and authority'
+
     $foreignChildStateDirectory = New-StateDirectory 'in-place-foreign-child'
     $foreignChildResult = Invoke-FixtureScenario `
       'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE' $foreignChildStateDirectory
@@ -980,7 +1083,8 @@ function Test-PreExistingCleanupOwnership {
           ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
           InstallerPath = $dummyInstaller; Fixture = $true
           FixtureRoot = $workflowStateDirectory; BaselineClean = $false
-          InstallAttempted = $false; Directories = @(); Files = @()
+          InstallAttempted = $false; MsiTransactionState = 'NONE'
+          Directories = @(); Files = @()
           RegistryKeys = @(); RegistryValues = @(); Users = @(); Profiles = @()
         }
         [IO.File]::WriteAllText(
@@ -1196,6 +1300,7 @@ function Test-PreExistingAppPathsAuthority {
       ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
       InstallerPath = $dummyInstaller; Fixture = $false; FixtureRoot = $null
       BaselineClean = $true; InstallAttempted = $true
+      MsiTransactionState = 'COMMITTED'
       Directories = @(); Files = @(); Users = @(); Profiles = @()
       RegistryValues = @([ordered]@{
         Kind = 'HKCU_INSTALLED'
@@ -1289,6 +1394,7 @@ function Test-HkcuInstalledValueOwnership {
       FixtureRoot = $null
       BaselineClean = $InstallAttempted
       InstallAttempted = $InstallAttempted
+      MsiTransactionState = if ($InstallAttempted) { 'PENDING' } else { 'NONE' }
       Directories = @()
       Files = @()
       RegistryKeys = @()
@@ -1342,13 +1448,13 @@ function Test-HkcuInstalledValueOwnership {
       $unchangedManifest.Path $unchangedManifest.RunId ''
     Assert-True ($unchanged.ExitCode -eq 21 -and
         $unchanged.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
-      'unchanged HKCU baseline incorrectly bypassed the MSI uninstall attempt'
+      'path-only pending MSI receipt was not rejected before uninstall'
     $unchangedKey = Get-Item -LiteralPath $desktopKey -ErrorAction Stop
     Assert-True ($unchangedKey.GetValueKind($installedName).ToString() -ceq 'String' -and
         [string]$unchangedKey.GetValue($installedName) -ceq $sentinelInstalled) `
-      'failed MSI uninstall changed the unchanged HKCU baseline'
+      'rejected pending MSI receipt changed the unchanged HKCU baseline'
     Assert-True (Test-Path -LiteralPath $unchangedManifest.Path -PathType Leaf) `
-      'failed unchanged-HKCU uninstall discarded authenticated recovery authority'
+      'rejected pending MSI receipt discarded authenticated recovery authority'
     Remove-Item -LiteralPath $unchangedManifest.Path -Force -ErrorAction Stop
 
     Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
@@ -1436,6 +1542,7 @@ function Test-ProvisionalUserMarkerOwnership {
       FixtureRoot = $testRoot
       BaselineClean = $false
       InstallAttempted = $false
+      MsiTransactionState = 'NONE'
       Directories = @()
       Files = @()
       RegistryKeys = @()
@@ -1524,6 +1631,7 @@ try {
   Test-NegativeWorkerExitFinalization
   Test-FailClosedMarkers
   Test-LiveCancellationAndRedaction
+  Test-MsiTransactionInterruptionGates
   Test-PrimaryWorkerFallbackForeignDescendants
   Test-PreExistingCleanupOwnership
   Test-SmokePromotionInterruptionAuthority

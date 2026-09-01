@@ -235,10 +235,10 @@ function Assert-MsiManagedFileSystemAuthority($Manifest) {
     $candidatePath = if ($FixtureRoot -and $candidate.Records.Count -eq 1) {
       [string]$candidate.Records[0].Path
     } else { [string]$candidate.Path }
-    if (!$candidatePath -or !(Test-Path -LiteralPath $candidatePath)) { continue }
     if ($candidate.Records.Count -ne 1) {
       throw 'MSI-managed file-system authority is missing or ambiguous'
     }
+    if (!$candidatePath -or !(Test-Path -LiteralPath $candidatePath)) { continue }
     $record = $candidate.Records[0]
     $entryIdentity = if ($candidate.Directory) {
       [string]$record.Identity
@@ -309,29 +309,83 @@ function Get-RegistryTreeIdentity([string]$Path) {
   finally { $sha256.Dispose() }
 }
 
-function Test-ProvisionalRegistryIdentity([string]$Kind, [string]$Path, [string]$Application) {
-  if ($Kind -eq 'APP_PATH') {
-    $key = Get-Item -LiteralPath $Path -ErrorAction Stop
-    return @($key.GetSubKeyNames()).Count -eq 0 -and
-      @($key.GetValueNames()).Count -eq 1 -and
-      @($key.GetValueNames())[0] -ceq '' -and
-      [string]$key.GetValue('') -ceq $Application
+function Get-MsiProductCode([string]$Path) {
+  $installerCom = $null
+  $database = $null
+  $view = $null
+  $record = $null
+  try {
+    $installerCom = New-Object -ComObject WindowsInstaller.Installer
+    $database = $installerCom.OpenDatabase($Path, 0)
+    $view = $database.OpenView(
+      "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ProductCode'")
+    $view.Execute()
+    $record = $view.Fetch()
+    $productCode = if ($null -eq $record) { $null } else { [string]$record.StringData(1) }
+    if ($productCode -notmatch '^\{[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}\}$') {
+      throw 'MSI product identity is invalid'
+    }
+    return $productCode.ToUpperInvariant()
+  } finally {
+    foreach ($resource in @($record, $view, $database, $installerCom)) {
+      if ($null -ne $resource -and [Runtime.InteropServices.Marshal]::IsComObject($resource)) {
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($resource)
+      }
+    }
   }
-  if ($Kind -ne 'PROTOCOL') { return $false }
-  $root = Get-Item -LiteralPath $Path -ErrorAction Stop
-  $shell = Get-Item -LiteralPath "$Path\shell" -ErrorAction Stop
-  $open = Get-Item -LiteralPath "$Path\shell\open" -ErrorAction Stop
-  $command = Get-Item -LiteralPath "$Path\shell\open\command" -ErrorAction Stop
-  return @($root.GetSubKeyNames()).Count -eq 1 -and $root.GetSubKeyNames()[0] -ceq 'shell' -and
-    (@($root.GetValueNames() | Sort-Object -CaseSensitive) -join '|') -ceq '|URL Protocol' -and
-    [string]$root.GetValue('') -ceq 'URL:ProPR Protocol' -and
-    [string]$root.GetValue('URL Protocol') -ceq '' -and
-    @($shell.GetSubKeyNames()).Count -eq 1 -and $shell.GetSubKeyNames()[0] -ceq 'open' -and
-    @($shell.GetValueNames()).Count -eq 0 -and
-    @($open.GetSubKeyNames()).Count -eq 1 -and $open.GetSubKeyNames()[0] -ceq 'command' -and
-    @($open.GetValueNames()).Count -eq 0 -and @($command.GetSubKeyNames()).Count -eq 0 -and
-    @($command.GetValueNames()).Count -eq 1 -and $command.GetValueNames()[0] -ceq '' -and
-    [string]$command.GetValue('') -ceq "`"$Application`" `"%1`""
+}
+
+function Assert-MsiProductIsUnregistered([string]$Path) {
+  $installerCom = $null
+  try {
+    $productCode = Get-MsiProductCode $Path
+    $installerCom = New-Object -ComObject WindowsInstaller.Installer
+    if ([int]$installerCom.ProductState($productCode) -ne -1) {
+      throw 'Windows Installer product registration is not at the clean baseline'
+    }
+  } finally {
+    if ($null -ne $installerCom -and
+        [Runtime.InteropServices.Marshal]::IsComObject($installerCom)) {
+      [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installerCom)
+    }
+  }
+}
+
+function Assert-MsiRolledBackCleanBaseline($Manifest) {
+  if ($FixtureRoot -or [string]$Manifest.MsiTransactionState -cne 'ROLLED_BACK_CLEAN') {
+    return
+  }
+  foreach ($path in @(
+      (Join-Path $env:ProgramFiles 'ProPR Desktop'),
+      (Join-Path ([Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::CommonPrograms)) 'ProPR Desktop'),
+      'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr',
+      'Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\propr-desktop.exe'
+    )) {
+    if (Test-Path -LiteralPath $path) {
+      throw 'MSI rollback did not restore the exact clean baseline'
+    }
+  }
+  if (@($Manifest.Directories).Count -ne 0 -or @($Manifest.Files).Count -ne 0 -or
+      @($Manifest.RegistryKeys).Count -ne 0) {
+    throw 'MSI rollback receipt contains file-system or machine-registry authority'
+  }
+  $installedRecords = @($Manifest.RegistryValues)
+  if ($installedRecords.Count -ne 1) {
+    throw 'MSI rollback current-user baseline receipt is missing or ambiguous'
+  }
+  $record = $installedRecords[0]
+  $current = Get-RegistryValueSnapshot ([string]$record.Path) ([string]$record.Name)
+  $matchesBaseline = if ([bool]$record.BaselineValueExisted) {
+    $current.Exists -and $current.Kind -ceq [string]$record.BaselineValueKind -and
+      $current.Data -ceq [string]$record.BaselineValueData
+  } else { !$current.Exists }
+  $keyMatchesBaseline = (Test-Path -LiteralPath ([string]$record.Path)) -eq
+    [bool]$record.BaselineKeyExisted
+  if (!$matchesBaseline -or !$keyMatchesBaseline) {
+    throw 'MSI rollback did not restore the exact current-user baseline'
+  }
+  Assert-MsiProductIsUnregistered ([string]$Manifest.InstallerPath)
 }
 
 function Convert-RegistryValueToBytes(
@@ -694,7 +748,11 @@ function Remove-OwnedFile($Record) {
   }
   if ([string]$Record.Identity -notmatch '^[a-f0-9]{64}$' -or
       (Get-FileIdentity $path) -cne [string]$Record.Identity) {
-    throw 'owned file identity does not match'
+    throw 'owned file content identity does not match'
+  }
+  if ([string]$Record.EntryIdentity -notmatch '^[a-f0-9]{24}$' -or
+      (Get-FileSystemEntryIdentity $path $false) -cne [string]$Record.EntryIdentity) {
+    throw 'owned file entry identity does not match'
   }
   Remove-Item -LiteralPath $path -Force -ErrorAction Stop
   if (Test-Path -LiteralPath $path) { throw 'owned file cleanup did not complete' }
@@ -833,6 +891,7 @@ function Write-EmptyOwnershipReceipt([string]$Path, $Manifest) {
   $Manifest.State = 'EMPTY'
   $Manifest.BaselineClean = $false
   $Manifest.InstallAttempted = $false
+  $Manifest.MsiTransactionState = 'NONE'
   $Manifest.Directories = @()
   $Manifest.Files = @()
   $Manifest.RegistryKeys = @()
@@ -974,18 +1033,31 @@ try {
   $expectedManifestKeys = @(
     'SchemaVersion','ManifestType','State','RunId','CreatedUtcTicks','ExpiresUtcTicks',
     'InstallerPath','Fixture',
-    'FixtureRoot','BaselineClean','InstallAttempted','Directories','Files','RegistryKeys',
+    'FixtureRoot','BaselineClean','InstallAttempted','MsiTransactionState',
+    'Directories','Files','RegistryKeys',
     'RegistryValues','Users','Profiles'
   )
   if ($manifestKeys.Count -ne $expectedManifestKeys.Count -or
       @($expectedManifestKeys | Where-Object { $manifestKeys -cnotcontains $_ }).Count -ne 0 -or
       $manifest.Fixture -isnot [bool] -or $manifest.BaselineClean -isnot [bool] -or
       $manifest.InstallAttempted -isnot [bool] -or
+      [string]$manifest.MsiTransactionState -notin @(
+        'NONE','PENDING','COMMITTED','ROLLED_BACK_CLEAN'
+      ) -or
       $manifest.SchemaVersion -ne 2 -or
       [string]$manifest.ManifestType -cne 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -or
       [string]$manifest.State -notin @('ACTIVE','EMPTY') -or
       [string]$manifest.RunId -notmatch '^[a-f0-9]{32}$') {
     throw 'ownership manifest schema is invalid'
+  }
+  if (!$manifest.Fixture -and (
+      ([string]$manifest.MsiTransactionState -ceq 'NONE' -and
+        [bool]$manifest.InstallAttempted) -or
+      ([string]$manifest.MsiTransactionState -in @(
+          'PENDING','COMMITTED','ROLLED_BACK_CLEAN'
+        ) -and (!([bool]$manifest.BaselineClean) -or
+          !([bool]$manifest.InstallAttempted))))) {
+    throw 'MSI transaction receipt state is inconsistent'
   }
   $authorizedRunId = [string]$manifest.RunId
   $pathRunId = [IO.Path]::GetFileNameWithoutExtension($manifestPath).Substring(
@@ -1017,6 +1089,7 @@ try {
 
   if ([string]$manifest.State -ceq 'EMPTY') {
     if ($manifest.BaselineClean -or $manifest.InstallAttempted -or
+        [string]$manifest.MsiTransactionState -cne 'NONE' -or
         @($manifest.Directories).Count -ne 0 -or @($manifest.Files).Count -ne 0 -or
         @($manifest.RegistryKeys).Count -ne 0 -or @($manifest.RegistryValues).Count -ne 0 -or
         @($manifest.Users).Count -ne 0 -or @($manifest.Profiles).Count -ne 0) {
@@ -1026,7 +1099,6 @@ try {
     exit 0
   }
 
-  $script:authorizedApplication = Join-Path $env:ProgramFiles 'ProPR Desktop\propr-desktop.exe'
   foreach ($record in @($manifest.Directories)) {
     if ($record.Owned -and
         !(Test-AllowedFileSystemPath ([string]$record.Kind) ([string]$record.Path))) {
@@ -1040,6 +1112,11 @@ try {
     if ($record.Owned -and
         !(Test-AllowedFileSystemPath ([string]$record.Kind) ([string]$record.Path))) {
       throw 'file manifest scope is invalid'
+    }
+    if ($record.Owned -and !$record.Provisional -and
+        ([string]$record.Identity -notmatch '^[a-f0-9]{64}$' -or
+          [string]$record.EntryIdentity -notmatch '^[a-f0-9]{24}$')) {
+      throw 'file manifest durable identity is invalid'
     }
   }
   foreach ($record in @($manifest.Users)) {
@@ -1067,8 +1144,9 @@ try {
     }
   }
 
-  $allowProvisionalMsiUninstall = !$manifest.Fixture -and
-    [bool]$manifest.BaselineClean -and [bool]$manifest.InstallAttempted
+  $allowAuthenticatedMsiUninstall = !$manifest.Fixture -and
+    [bool]$manifest.BaselineClean -and [bool]$manifest.InstallAttempted -and
+    [string]$manifest.MsiTransactionState -ceq 'COMMITTED'
   foreach ($record in @($manifest.RegistryKeys)) {
     if (!$record.Owned) { continue }
     $path = [string]$record.Path
@@ -1094,11 +1172,8 @@ try {
         throw 'registry manifest scope is invalid'
       }
       if (!(Test-Path -LiteralPath $path)) { continue }
-      if ($allowProvisionalMsiUninstall -and [bool]$record.Provisional) {
-        if (!(Test-ProvisionalRegistryIdentity $kind $path $script:authorizedApplication)) {
-          throw 'registry manifest provisional identity is invalid'
-        }
-      } elseif ([string]$record.Identity -notmatch '^[a-f0-9]{64}$' -or
+      if ([bool]$record.Provisional -or
+          [string]$record.Identity -notmatch '^[a-f0-9]{64}$' -or
           (Get-RegistryTreeIdentity $path) -cne [string]$record.Identity) {
         throw 'registry manifest ownership identity is invalid'
       }
@@ -1175,7 +1250,50 @@ try {
       ($manifest.Fixture -and @($manifest.RegistryValues).Count -ne 0)) {
     throw 'registry value manifest cardinality is invalid'
   }
+  if (!$manifest.Fixture -and
+      [string]$manifest.MsiTransactionState -ceq 'COMMITTED') {
+    $ownedDirectoryKinds = @($manifest.Directories | Where-Object {
+      $_.Owned -and [string]$_.Kind -in @('INSTALL_ROOT','SHORTCUT_FOLDER')
+    } | ForEach-Object { [string]$_.Kind })
+    $ownedFileKinds = @($manifest.Files | Where-Object {
+      $_.Owned -and [string]$_.Kind -ceq 'SHORTCUT_FILE'
+    } | ForEach-Object { [string]$_.Kind })
+    $ownedRegistryKinds = @($manifest.RegistryKeys | Where-Object {
+      $_.Owned -and [string]$_.Kind -in @('PROTOCOL','APP_PATH')
+    } | ForEach-Object { [string]$_.Kind })
+    if ($ownedDirectoryKinds.Count -ne 2 -or
+        @($ownedDirectoryKinds | Where-Object {
+          $_ -notin @('INSTALL_ROOT','SHORTCUT_FOLDER')
+        }).Count -ne 0 -or
+        @($ownedDirectoryKinds | Select-Object -Unique).Count -ne 2 -or
+        $ownedFileKinds.Count -ne 1 -or $ownedFileKinds[0] -cne 'SHORTCUT_FILE' -or
+        $ownedRegistryKinds.Count -ne 2 -or
+        @($ownedRegistryKinds | Where-Object {
+          $_ -notin @('PROTOCOL','APP_PATH')
+        }).Count -ne 0 -or
+        @($ownedRegistryKinds | Select-Object -Unique).Count -ne 2 -or
+        @($manifest.Directories | Where-Object { $_.Owned -and $_.Provisional }).Count -ne 0 -or
+        @($manifest.Files | Where-Object { $_.Owned -and $_.Provisional }).Count -ne 0 -or
+        @($manifest.RegistryKeys | Where-Object { $_.Owned -and $_.Provisional }).Count -ne 0 -or
+        @($manifest.RegistryValues | Where-Object {
+          !$_.Owned -or $_.Provisional
+        }).Count -ne 0) {
+      throw 'committed MSI transaction receipt is incomplete or provisional'
+    }
+  }
   $manifestValidated = $true
+  if (!$manifest.Fixture) {
+    if ([string]$manifest.MsiTransactionState -ceq 'PENDING') {
+      throw 'MSI transaction has no durable cleanup authority receipt'
+    }
+    if ([string]$manifest.MsiTransactionState -ceq 'NONE' -and
+        [bool]$manifest.InstallAttempted) {
+      throw 'MSI install attempt has no transaction receipt'
+    }
+    if ([string]$manifest.MsiTransactionState -ceq 'ROLLED_BACK_CLEAN') {
+      Assert-MsiRolledBackCleanBaseline $manifest
+    }
+  }
   $adoptedProvisionalUser = $false
   foreach ($record in @($manifest.Users)) {
     if (Resolve-ProvisionalOwnedUser $record) { $adoptedProvisionalUser = $true }
@@ -1196,10 +1314,10 @@ try {
       $cleanupFailed = $true
     }
   }
-  if ([bool]$manifest.InstallAttempted) {
+  if ([string]$manifest.MsiTransactionState -ceq 'COMMITTED') {
     Assert-MsiManagedFileSystemAuthority $manifest
   }
-  if ($allowProvisionalMsiUninstall -and !$cleanupFailed) {
+  if ($allowAuthenticatedMsiUninstall -and !$cleanupFailed) {
     $msiExitCode = 1618
     for ($attempt = 0; $attempt -lt 12 -and $msiExitCode -eq 1618; $attempt += 1) {
       if ($attempt -ne 0) { Start-Sleep -Seconds 2 }

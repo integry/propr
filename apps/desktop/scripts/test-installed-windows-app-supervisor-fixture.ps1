@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 function Initialize-FixtureDirectoryIdentity {
+  if ('ProPRFixtureDirectoryIdentity' -as [type]) { return }
   Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -71,6 +72,8 @@ if ($scenario -notin @(
     'INACCESSIBLE_MARKER',
     'NEGATIVE_EXIT',
     'CANCELLATION',
+    'DURING_MSI',
+    'DURING_OWNERSHIP_CAPTURE',
     'OWNED_RESOURCES_NORMAL_SUCCESS',
     'OWNED_RESOURCES_FOR_INTERRUPTION',
     'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE',
@@ -81,6 +84,7 @@ if ($scenario -notin @(
     'PRIMARY_FALLBACK_FOREIGN_DESCENDANTS',
     'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE',
     'OWNED_EXECUTABLE_REPLACED_THEN_DEADLINE',
+    'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE',
     'OWNED_SHORTCUT_REPLACED_THEN_DEADLINE',
     'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
     'OWNED_RESOURCES_THEN_DEADLINE'
@@ -129,6 +133,14 @@ function Write-FixtureOwnershipManifest($Manifest) {
     $stream.Dispose()
   }
   [IO.File]::Move($temporaryManifest, $OwnershipManifest, $true)
+}
+
+function Write-FixtureCriticalGate([string]$Name) {
+  [IO.File]::WriteAllText(
+    (Join-Path $stateDirectory 'critical-gate.txt'),
+    $Name,
+    [Text.Encoding]::ASCII
+  )
 }
 
 function Write-FixtureOwnershipToken([string]$Path, [string]$Token) {
@@ -235,7 +247,8 @@ function New-FixtureSmokeArtifacts([string]$Path) {
 
 function New-OwnedFixtureResources(
   [ValidateSet('BEFORE_PROMOTION','AFTER_PROMOTION','AFTER_ARTIFACTS')]
-    [string]$SmokeCheckpoint = 'AFTER_ARTIFACTS'
+    [string]$SmokeCheckpoint = 'AFTER_ARTIFACTS',
+  [bool]$PublishCommittedReceipt = $true
 ) {
   Initialize-FixtureDirectoryIdentity
   $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
@@ -380,6 +393,7 @@ function New-OwnedFixtureResources(
   }
   $manifest.Profiles = @()
   $manifest.InstallAttempted = $true
+  if ($PublishCommittedReceipt) { $manifest.MsiTransactionState = 'COMMITTED' }
   if ($env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_PROFILE_SID) {
     $manifest.Profiles += [ordered]@{
       Sid = $env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_PROFILE_SID
@@ -443,6 +457,38 @@ function New-OwnedFixtureResources(
     Token = $token
   }
   $resourceState | ConvertTo-Json -Compress | Set-Content -LiteralPath `
+    (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
+}
+
+function New-ByteIdenticalOwnedFileFixture {
+  Initialize-FixtureDirectoryIdentity
+  $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
+    ConvertFrom-Json -ErrorAction Stop
+  $root = Join-Path $stateDirectory 'byte-identical-file-root'
+  $executable = Join-Path $root 'owned-file.exe'
+  [void](New-Item -ItemType Directory -Path $root -ErrorAction Stop)
+  [IO.File]::WriteAllText($executable, 'owned-executable', [Text.Encoding]::ASCII)
+  $manifest.BaselineClean = $false
+  $manifest.InstallAttempted = $false
+  $manifest.MsiTransactionState = 'NONE'
+  $manifest.Directories = @()
+  $manifest.Files = @([ordered]@{
+    Kind = 'FIXTURE_FILE'; Path = $executable; Owned = $true; Token = $null
+    Identity = (Get-FixtureFileIdentity $executable)
+    EntryIdentity = (Get-FixtureEntryIdentity $executable $false)
+    Provisional = $false
+  })
+  $manifest.RegistryKeys = @()
+  $manifest.RegistryValues = @()
+  $manifest.Users = @()
+  $manifest.Profiles = @()
+  Write-FixtureOwnershipManifest $manifest
+  [ordered]@{
+    Executable = $executable
+    ManifestPath = $OwnershipManifest
+    RunId = [string]$manifest.RunId
+    ByteIdenticalReplacement = $true
+  } | ConvertTo-Json -Compress | Set-Content -LiteralPath `
     (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
 }
 
@@ -568,6 +614,21 @@ function Replace-FixtureExecutable {
   Move-Item -LiteralPath $state.Executable -Destination $backup -ErrorAction Stop
   [IO.File]::WriteAllText($state.Executable, 'foreign-executable', [Text.Encoding]::ASCII)
   $state | Add-Member -NotePropertyName ExecutableBackup -NotePropertyValue $backup
+  $state | ConvertTo-Json -Compress | Set-Content -LiteralPath `
+    (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
+}
+
+function Replace-FixtureExecutableByteIdenticallyViaMove {
+  $state = Get-Content -LiteralPath (Join-Path $stateDirectory 'resources.json') `
+    -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
+  $backup = Join-Path $stateDirectory 'original-byte-identical-executable.exe'
+  $replacement = Join-Path $stateDirectory 'foreign-byte-identical-executable.exe'
+  [IO.File]::Copy($state.Executable, $replacement, $false)
+  Move-Item -LiteralPath $state.Executable -Destination $backup -ErrorAction Stop
+  Move-Item -LiteralPath $replacement -Destination $state.Executable -ErrorAction Stop
+  $state | Add-Member -NotePropertyName ExecutableBackup -NotePropertyValue $backup
+  $state | Add-Member -NotePropertyName ByteIdenticalReplacement `
+    -NotePropertyValue $true
   $state | ConvertTo-Json -Compress | Set-Content -LiteralPath `
     (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
 }
@@ -740,6 +801,49 @@ switch ($scenario) {
       [DateTime]::UtcNow.AddSeconds(10).Ticks)
     Start-Sleep -Seconds 300
   }
+  'DURING_MSI' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
+      ConvertFrom-Json -ErrorAction Stop
+    $manifest.BaselineClean = $true
+    $manifest.InstallAttempted = $true
+    $manifest.MsiTransactionState = 'PENDING'
+    Write-FixtureOwnershipManifest $manifest
+    Write-FixtureMarker ('{0}|INSTALL|MSI_INSTALL|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    Write-FixtureCriticalGate 'DURING_MSI'
+    Start-Sleep -Milliseconds 750
+    $manifest.Directories = @()
+    $manifest.Files = @()
+    $manifest.RegistryKeys = @()
+    $manifest.RegistryValues = @()
+    $manifest.MsiTransactionState = 'ROLLED_BACK_CLEAN'
+    Write-FixtureOwnershipManifest $manifest
+    Write-FixtureMarker ('{0}|INSTALL|OWNERSHIP_CAPTURE|COMPLETE' -f `
+      [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'DURING_OWNERSHIP_CAPTURE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    Initialize-FixtureDirectoryIdentity
+    $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
+      ConvertFrom-Json -ErrorAction Stop
+    $manifest.BaselineClean = $true
+    $manifest.InstallAttempted = $true
+    $manifest.MsiTransactionState = 'PENDING'
+    Write-FixtureOwnershipManifest $manifest
+    Write-FixtureMarker ('{0}|INSTALL|OWNERSHIP_CAPTURE|BEGIN' -f `
+      [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    Write-FixtureCriticalGate 'DURING_OWNERSHIP_CAPTURE'
+    Start-Sleep -Milliseconds 750
+    New-OwnedFixtureResources -PublishCommittedReceipt $false
+    $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
+      ConvertFrom-Json -ErrorAction Stop
+    $manifest.MsiTransactionState = 'COMMITTED'
+    Write-FixtureOwnershipManifest $manifest
+    Write-FixtureMarker ('{0}|INSTALL|OWNERSHIP_CAPTURE|COMPLETE' -f `
+      [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    Start-Sleep -Seconds 300
+  }
   'NEGATIVE_EXIT' {
     Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(10).Ticks)
     Start-Sleep -Milliseconds 500
@@ -820,6 +924,14 @@ switch ($scenario) {
     Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
     New-OwnedFixtureResources
     Replace-FixtureExecutable
+    Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-ByteIdenticalOwnedFileFixture
+    Replace-FixtureExecutableByteIdenticallyViaMove
     Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
       [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
     Start-Sleep -Seconds 300

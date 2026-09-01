@@ -47,8 +47,8 @@ $validatedManifestPath = $null
 $controllerBodyActive = $false
 
 function Write-FixedResult([ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result) {
-  Write-Host "PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:$Result"
-  Write-Host (
+  [Console]::Out.WriteLine("PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:$Result")
+  [Console]::Out.WriteLine(
     'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:{0}:EXIT_CODE:{1}' -f `
       $script:fixedStatus, $script:fixedExitCode)
   [Console]::Out.Flush()

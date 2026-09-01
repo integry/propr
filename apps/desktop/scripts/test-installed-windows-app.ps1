@@ -118,6 +118,7 @@ $shortcutOwnedIdentity = $null
 $shortcutOwnedEntryIdentity = $null
 $hkcuDesktopKeyCreatedByRun = $false
 $msiTimeoutMilliseconds = 10 * 60 * 1000
+$msiCaptureRollbackGraceMilliseconds = 30 * 1000
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
 $redirectedStreamDrainTimeoutMilliseconds = 30 * 1000
@@ -244,6 +245,7 @@ $ownershipState = [ordered]@{
   FixtureRoot = $null
   BaselineClean = $false
   InstallAttempted = $false
+  MsiTransactionState = 'NONE'
   Directories = @()
   Files = @()
   RegistryKeys = @()
@@ -535,6 +537,87 @@ function Get-RegistryValueSnapshot([string]$Path, [string]$Name) {
   }
 }
 
+function Get-MsiProductCode([string]$Path) {
+  $installerCom = $null
+  $database = $null
+  $view = $null
+  $record = $null
+  try {
+    $installerCom = New-Object -ComObject WindowsInstaller.Installer
+    $database = $installerCom.OpenDatabase($Path, 0)
+    $view = $database.OpenView(
+      "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ProductCode'")
+    $view.Execute()
+    $record = $view.Fetch()
+    $productCode = if ($null -eq $record) { $null } else { [string]$record.StringData(1) }
+    if ($productCode -notmatch '^\{[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}\}$') {
+      throw 'MSI product identity is invalid'
+    }
+    return $productCode.ToUpperInvariant()
+  } finally {
+    foreach ($resource in @($record, $view, $database, $installerCom)) {
+      if ($null -ne $resource -and [Runtime.InteropServices.Marshal]::IsComObject($resource)) {
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($resource)
+      }
+    }
+  }
+}
+
+function Assert-MsiProductIsUnregistered([string]$Path) {
+  $installerCom = $null
+  try {
+    $productCode = Get-MsiProductCode $Path
+    $installerCom = New-Object -ComObject WindowsInstaller.Installer
+    if ([int]$installerCom.ProductState($productCode) -ne -1) {
+      throw 'Windows Installer product registration is not at the clean baseline'
+    }
+  } finally {
+    if ($null -ne $installerCom -and
+        [Runtime.InteropServices.Marshal]::IsComObject($installerCom)) {
+      [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installerCom)
+    }
+  }
+}
+
+function Assert-ExactCleanMsiBaselineAfterRollback {
+  foreach ($path in @(
+      $installRoot,
+      $startMenuShortcutFolder,
+      $protocolRegistryPath,
+      $appPathsRegistryPath
+    )) {
+    if (Test-Path -LiteralPath $path) {
+      throw 'Windows Installer rollback did not restore the exact clean baseline'
+    }
+  }
+  $current = Get-RegistryValueSnapshot $hkcuDesktopRegistryPath $hkcuInstalledValueName
+  $valueMatches = if ($hkcuInstalledValueExistedBeforeInstall) {
+    $current.Exists -and $current.Kind -ceq $hkcuInstalledBaselineKind -and
+      $current.Data -ceq $hkcuInstalledBaselineData
+  } else { !$current.Exists }
+  $keyMatches = (Test-Path -LiteralPath $hkcuDesktopRegistryPath) -eq
+    $hkcuDesktopKeyExistedBeforeInstall
+  if (!$valueMatches -or !$keyMatches) {
+    throw 'Windows Installer rollback did not restore the exact current-user baseline'
+  }
+  Assert-MsiProductIsUnregistered $installerPath
+}
+
+function Wait-ExactCleanMsiBaselineAfterRollback {
+  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    try {
+      Assert-ExactCleanMsiBaselineAfterRollback
+      return
+    } catch {
+      if ($stopwatch.ElapsedMilliseconds -ge $msiCaptureRollbackGraceMilliseconds) {
+        throw 'Windows Installer rollback clean-baseline grace expired'
+      }
+    }
+    Start-Sleep -Milliseconds 100
+  } while ($true)
+}
+
 function Test-MsiInstalledValue([string]$Path, [string]$Name) {
   $snapshot = Get-RegistryValueSnapshot $Path $Name
   return $snapshot.Exists -and $snapshot.Kind -ceq 'DWord' -and
@@ -733,6 +816,7 @@ try {
       $startMenuShortcutExistedBeforeInstall -or $startMenuShortcutFolderExistedBeforeInstall) {
     throw 'installed-app harness requires an unowned clean machine baseline'
   }
+  Assert-MsiProductIsUnregistered $installerPath
   $ownershipState.BaselineClean = $true
   Write-OwnershipManifest
   Write-WatchdogMarker 'INITIALIZATION' 'BASELINE' $externalOperationTimeoutMilliseconds 'COMPLETE'
@@ -1553,8 +1637,9 @@ try {
   try {
     $installAttempted = $true
     $ownershipState.InstallAttempted = $true
-    # The clean baseline plus install-attempt transition is only provisional
-    # evidence for a bounded MSI uninstall until exact ownership is captured.
+    $ownershipState.MsiTransactionState = 'PENDING'
+    # PENDING is a recovery signal only. It never authorizes MSI uninstall or
+    # path-based reconstruction/deletion; only a durable transaction receipt can.
     $ownershipState.Directories = @(
       [ordered]@{
         Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true
@@ -1595,6 +1680,7 @@ try {
       KeyCreatedByRun = $false
     })
     Write-OwnershipManifest
+    $msiTransactionFailure = $null
     try {
       Invoke-BoundedExternalOperation `
         -Stage 'INSTALL' `
@@ -1604,13 +1690,42 @@ try {
           Invoke-Msi @('/i', "`"$installerPath`"", '/qn', '/norestart') 'machine install'
           $script:msiInstallCompleted = $true
         }
-    } finally {
+    } catch {
+      $msiTransactionFailure = $_
+    }
+    if ($null -ne $msiTransactionFailure) {
       Invoke-BoundedExternalOperation `
         -Stage 'INSTALL' `
         -Substage 'OWNERSHIP_CAPTURE' `
         -TimeoutMilliseconds $externalOperationTimeoutMilliseconds `
         -Operation {
-          if (!$script:msiInstallCompleted) { return }
+          Wait-ExactCleanMsiBaselineAfterRollback
+          $ownershipState.Directories = @()
+          $ownershipState.Files = @()
+          $ownershipState.RegistryKeys = @()
+          $ownershipState.RegistryValues = @([ordered]@{
+            Kind = 'HKCU_INSTALLED'; Path = $hkcuDesktopRegistryPath
+            Name = $hkcuInstalledValueName; Owned = $false; Provisional = $false
+            BaselineKeyExisted = $hkcuDesktopKeyExistedBeforeInstall
+            BaselineValueExisted = $hkcuInstalledValueExistedBeforeInstall
+            BaselineValueKind = $hkcuInstalledBaselineKind
+            BaselineValueData = $hkcuInstalledBaselineData
+            IdentityValueKind = $null; IdentityValueData = $null
+            KeyCreatedByRun = $false
+          })
+          $ownershipState.MsiTransactionState = 'ROLLED_BACK_CLEAN'
+          Write-OwnershipManifest
+        }
+      throw $msiTransactionFailure
+    } else {
+      Invoke-BoundedExternalOperation `
+        -Stage 'INSTALL' `
+        -Substage 'OWNERSHIP_CAPTURE' `
+        -TimeoutMilliseconds $externalOperationTimeoutMilliseconds `
+        -Operation {
+          if (!$script:msiInstallCompleted) {
+            throw 'MSI transaction commit status is unavailable'
+          }
           $script:installRootCreatedByRun =
             !$installRootExistedBeforeInstall -and (Test-Path -LiteralPath $installRoot)
           $script:protocolCreatedByRun =
@@ -1626,6 +1741,11 @@ try {
           $script:startMenuShortcutFolderCreatedByRun =
             !$startMenuShortcutFolderExistedBeforeInstall -and
               (Test-Path -LiteralPath $startMenuShortcutFolder)
+          if (!$script:installRootCreatedByRun -or !$script:protocolCreatedByRun -or
+              !$script:appPathsCreatedByRun -or !$script:startMenuShortcutCreatedByRun -or
+              !$script:startMenuShortcutFolderCreatedByRun) {
+            throw 'MSI commit did not create every canonical managed resource'
+          }
           $ownedDirectories = @()
           if ($script:installRootCreatedByRun) {
             $script:installRootOwnedIdentity = Get-DirectoryIdentity $installRoot
@@ -1673,6 +1793,9 @@ try {
           $ownedRegistryKeys = @()
           if ($script:protocolCreatedByRun) {
             $script:protocolOwnedIdentity = Get-RegistryTreeIdentity $protocolRegistryPath
+            if ([string]$script:protocolOwnedIdentity -notmatch '^[a-f0-9]{64}$') {
+              throw 'installed protocol identity could not be captured'
+            }
             $ownedRegistryKeys += [ordered]@{
               Kind = 'PROTOCOL'; Path = $protocolRegistryPath
               Owned = $true; Token = $null; Identity = $script:protocolOwnedIdentity
@@ -1681,6 +1804,9 @@ try {
           }
           if ($script:appPathsCreatedByRun) {
             $script:appPathsOwnedIdentity = Get-RegistryTreeIdentity $appPathsRegistryPath
+            if ([string]$script:appPathsOwnedIdentity -notmatch '^[a-f0-9]{64}$') {
+              throw 'installed App Paths identity could not be captured'
+            }
             $ownedRegistryKeys += [ordered]@{
               Kind = 'APP_PATH'; Path = $appPathsRegistryPath
               Owned = $true; Token = $null; Identity = $script:appPathsOwnedIdentity
@@ -1709,6 +1835,7 @@ try {
             IdentityValueData = $script:hkcuInstalledOwnedData
             KeyCreatedByRun = $script:hkcuDesktopKeyCreatedByRun
           })
+          $ownershipState.MsiTransactionState = 'COMMITTED'
           Write-OwnershipManifest
         }
     }
@@ -1948,7 +2075,8 @@ try {
   throw
 } finally {
   $cleanupFailed = $false
-  if ($installAttempted) {
+  if ($installAttempted -and
+      [string]$ownershipState.MsiTransactionState -ceq 'COMMITTED') {
     Write-Stage 'UNINSTALL' 'BEGIN'
     $uninstallFailed = $false
 
@@ -2284,6 +2412,7 @@ try {
     $ownershipState.State = 'EMPTY'
     $ownershipState.BaselineClean = $false
     $ownershipState.InstallAttempted = $false
+    $ownershipState.MsiTransactionState = 'NONE'
     $ownershipState.Directories = @()
     $ownershipState.Files = @()
     $ownershipState.RegistryKeys = @()

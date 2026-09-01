@@ -625,7 +625,10 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(installedWindowsAppSupervisor, /Stop-OwnedWorker \(\[uint32\]\$exitCode\)/);
     assert.match(installedWindowsAppSupervisorFixture, /'NEGATIVE_EXIT'[\s\S]*exit -1/);
     assert.match(installedWindowsAppSupervisor, /\$worker\.WaitForExit\(\$WatchdogTerminationMilliseconds\)/);
-    assert.match(installedWindowsAppSupervisor, /if \(\$workerTreeTerminated\) \{[\s\S]*Invoke-PostTerminationCleanup/);
+    assert.match(
+      installedWindowsAppSupervisor,
+      /if \(\$workerTreeTerminated -and \$postTerminationCleanupAuthorized\) \{[\s\S]*Invoke-PostTerminationCleanup/,
+    );
     assert.match(installedWindowsAppSupervisor, /Invoke-PostTerminationCleanup/);
     assert.match(installedWindowsAppSupervisor, /\$cleanupRequired = \$terminateOwnedTree -or \$workerStarted/);
     assert.match(
@@ -649,9 +652,10 @@ describe('desktop trusted release workflow', () => {
       /Assert-MsiManagedFileSystemAuthority \$manifest\n\s+\$msi = Start-Process msiexec\.exe/,
     );
     assert.doesNotMatch(installedWindowsAppCleanup, /AllowProvisionalProductOwnership/);
+    assert.doesNotMatch(installedWindowsAppCleanup, /allowProvisionalMsiUninstall/);
     assert.match(
       installedWindowsAppCleanup,
-      /\$allowProvisionalMsiUninstall[\s\S]*Start-Process msiexec\.exe/,
+      /\$allowAuthenticatedMsiUninstall[\s\S]*MsiTransactionState -ceq 'COMMITTED'[\s\S]*Start-Process msiexec\.exe/,
     );
     assert.match(
       installedWindowsAppCleanup,
@@ -659,8 +663,16 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppTest,
-      /if \(!\$script:msiInstallCompleted\) \{ return \}[\s\S]*Get-DirectoryIdentity \$installRoot/,
+      /MsiTransactionState = 'PENDING'[\s\S]*if \(!\$script:msiInstallCompleted\)[\s\S]*Get-DirectoryIdentity \$installRoot/,
     );
+    assert.match(installedWindowsAppTest, /MsiTransactionState = 'ROLLED_BACK_CLEAN'/);
+    assert.match(installedWindowsAppTest, /MsiTransactionState = 'COMMITTED'/);
+    assert.match(installedWindowsAppTest, /Assert-ExactCleanMsiBaselineAfterRollback/);
+    assert.match(installedWindowsAppTest, /Assert-MsiProductIsUnregistered \$installerPath/);
+    assert.match(installedWindowsAppCleanup, /Assert-MsiProductIsUnregistered/);
+    assert.match(installedWindowsAppSupervisor, /Wait-MsiCriticalTransactionReceipt/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /DURING_MSI/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /DURING_OWNERSHIP_CAPTURE/);
     assert.match(
       installedWindowsAppTest,
       /Registry::HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\propr-desktop\.exe/,
@@ -697,6 +709,9 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppWorkflowCleanup, /WorkflowCleanupControllerLine/);
     assert.match(installedWindowsAppWorkflowCleanup, /Set-CaughtControllerFailure/);
     assert.match(installedWindowsAppWorkflowCleanup, /\[Console\]::SetError\(\[IO\.TextWriter\]::Null\)/);
+    assert.match(installedWindowsAppWorkflowCleanup, /\[Console\]::Out\.WriteLine/);
+    assert.equal(installedWindowsAppWorkflowCleanup.match(/\[Console\]::Out\.WriteLine/g)?.length, 2);
+    assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /Write-Host/);
     assert.ok(
       installedWindowsAppWorkflowCleanup.indexOf('[Console]::SetError([IO.TextWriter]::Null)')
         < installedWindowsAppWorkflowCleanup.indexOf("Add-Type -TypeDefinition @'"),
@@ -732,7 +747,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /replacement shortcut was removed or changed/);
     assert.match(
       installedWindowsAppSupervisorFixture,
-      /function Initialize-FixtureDirectoryIdentity \{\n\s+Add-Type -TypeDefinition/,
+      /function Initialize-FixtureDirectoryIdentity \{[\s\S]*?Add-Type -TypeDefinition/,
     );
     assert.doesNotMatch(
       installedWindowsAppSupervisorFixture.slice(
@@ -792,6 +807,24 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppCleanup, /Resolve-SmokeDirectoryAuthority/);
     assert.match(installedWindowsAppCleanup, /Remove-OwnedSmokeDirectory/);
     assert.match(installedWindowsAppCleanup, /Get-FileSystemEntryIdentity/);
+    const ownedFileCleanup = installedWindowsAppCleanup.slice(
+      installedWindowsAppCleanup.indexOf('function Remove-OwnedFile'),
+      installedWindowsAppCleanup.indexOf('function Remove-OwnedRegistryKey'),
+    );
+    assert.match(
+      ownedFileCleanup,
+      /Record\.EntryIdentity[\s\S]*Get-FileSystemEntryIdentity \$path \$false/,
+    );
+    assert.ok(
+      ownedFileCleanup.indexOf('Get-FileSystemEntryIdentity $path $false')
+        < ownedFileCleanup.indexOf('Remove-Item -LiteralPath $path'),
+      'owned file entry identity must be checked immediately before deletion',
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /LINE_COUNT:\{0\}:STDERR_COUNT:\{1\}/);
     assert.match(installedWindowsAppCleanup, /smoke user-data object owner is not authorized/);
     assert.match(installedWindowsAppCleanup, /smoke user-data object ACL is not authorized/);
     assert.match(installedWindowsAppCleanup, /entries\.Count -ge 50000/);

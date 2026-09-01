@@ -16,6 +16,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $maximumMarkerDeadlineMilliseconds = 11 * 60 * 1000
+$msiCriticalTransactionGraceMilliseconds = 30 * 1000
 $watchdogStages = @(
   'INITIALIZATION','INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP'
 )
@@ -75,6 +76,7 @@ $exitCode = 125
 $terminateOwnedTree = $false
 $workerStarted = $false
 $supervisorOutcomeComplete = $false
+$postTerminationCleanupAuthorized = $true
 
 Add-Type -TypeDefinition @'
 using System;
@@ -416,6 +418,7 @@ function Write-InitialOwnershipManifest(
     FixtureRoot = if ($Fixture) { $AuthorizedFixtureRoot } else { $null }
     BaselineClean = $false
     InstallAttempted = $false
+    MsiTransactionState = 'NONE'
     Directories = @()
     Files = @()
     RegistryKeys = @()
@@ -438,6 +441,101 @@ function Write-InitialOwnershipManifest(
   } finally {
     $stream.Dispose()
   }
+}
+
+function Test-MsiCriticalMarker($Marker) {
+  return $null -ne $Marker -and [string]$Marker.Stage -ceq 'INSTALL' -and
+    [string]$Marker.Substage -in @('MSI_INSTALL','OWNERSHIP_CAPTURE') -and
+    !([string]$Marker.Substage -ceq 'OWNERSHIP_CAPTURE' -and
+      [string]$Marker.Status -ceq 'COMPLETE')
+}
+
+function Get-DurableMsiTransactionReceipt {
+  try {
+    $item = Get-Item -LiteralPath $ownershipManifestPath -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $item.Length -le 0 -or $item.Length -gt 65536) { return 'UNAVAILABLE' }
+    $bytes = [byte[]]::new([int]$item.Length)
+    $stream = [IO.FileStream]::new(
+      $item.FullName,
+      [IO.FileMode]::Open,
+      [IO.FileAccess]::Read,
+      [IO.FileShare]'ReadWrite, Delete',
+      4096,
+      [IO.FileOptions]::SequentialScan
+    )
+    try {
+      $offset = 0
+      while ($offset -lt $bytes.Length) {
+        $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+        if ($read -eq 0) { return 'UNAVAILABLE' }
+        $offset += $read
+      }
+      if ($stream.ReadByte() -ne -1) { return 'UNAVAILABLE' }
+    } finally {
+      $stream.Dispose()
+    }
+    $manifest = ConvertFrom-Json `
+      -InputObject ([Text.UTF8Encoding]::new($false, $true).GetString($bytes)) `
+      -ErrorAction Stop
+    if ([string]$manifest.RunId -cne $ownershipRunId -or
+        [string]$manifest.State -notin @('ACTIVE','EMPTY')) { return 'UNAVAILABLE' }
+    if ([string]$manifest.State -ceq 'EMPTY' -and
+        [string]$manifest.MsiTransactionState -ceq 'NONE' -and
+        !$manifest.InstallAttempted) { return 'ROLLED_BACK_CLEAN' }
+    if ([string]$manifest.MsiTransactionState -ceq 'ROLLED_BACK_CLEAN' -and
+        @($manifest.Directories).Count -eq 0 -and @($manifest.Files).Count -eq 0 -and
+        @($manifest.RegistryKeys).Count -eq 0 -and
+        (($manifest.Fixture -and @($manifest.RegistryValues).Count -eq 0) -or
+          (!$manifest.Fixture -and @($manifest.RegistryValues).Count -eq 1 -and
+            !$manifest.RegistryValues[0].Owned))) {
+      return 'ROLLED_BACK_CLEAN'
+    }
+    if ([string]$manifest.MsiTransactionState -cne 'COMMITTED') { return 'UNAVAILABLE' }
+    $ownedDirectories = @($manifest.Directories | Where-Object {
+      $_.Owned -and [string]$_.Kind -in @('INSTALL_ROOT','SHORTCUT_FOLDER') -and
+      !$_.Provisional -and
+      [string]$_.Identity -match '^[a-f0-9]{24}$' -and
+      [string]$_.TreeIdentity -match '^[a-f0-9]{64}$'
+    })
+    $ownedFiles = @($manifest.Files | Where-Object {
+      $_.Owned -and [string]$_.Kind -ceq 'SHORTCUT_FILE' -and !$_.Provisional -and
+      [string]$_.Identity -match '^[a-f0-9]{64}$' -and
+      [string]$_.EntryIdentity -match '^[a-f0-9]{24}$'
+    })
+    $ownedRegistryKeys = @($manifest.RegistryKeys | Where-Object {
+      $_.Owned -and [string]$_.Kind -in @('PROTOCOL','APP_PATH') -and
+      !$_.Provisional -and [string]$_.Identity -match '^[a-f0-9]{64}$'
+    })
+    $ownedRegistryValues = @($manifest.RegistryValues | Where-Object {
+      $_.Owned -and [string]$_.Kind -ceq 'HKCU_INSTALLED' -and !$_.Provisional -and
+      [string]$_.IdentityValueKind -and [string]$_.IdentityValueData
+    })
+    if ($ownedDirectories.Count -ne 2 -or $ownedFiles.Count -ne 1 -or
+        (!$manifest.Fixture -and
+          ($ownedRegistryKeys.Count -ne 2 -or $ownedRegistryValues.Count -ne 1))) {
+      return 'UNAVAILABLE'
+    }
+    return 'COMMITTED'
+  } catch {
+    return 'UNAVAILABLE'
+  }
+}
+
+function Wait-MsiCriticalTransactionReceipt {
+  Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:GRACE'
+  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    $receipt = Get-DurableMsiTransactionReceipt
+    if ($receipt -in @('COMMITTED','ROLLED_BACK_CLEAN')) {
+      Write-WatchdogLine `
+        "PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:$receipt"
+      return $true
+    }
+    Start-Sleep -Milliseconds 25
+  } while ($stopwatch.ElapsedMilliseconds -lt $msiCriticalTransactionGraceMilliseconds)
+  Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:UNPROVEN'
+  return $false
 }
 
 function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$AuthorizedFixtureRoot) {
@@ -600,7 +698,17 @@ try {
   $firstMarkerAccepted = $false
   while ($true) {
     if ($null -ne $cancellationEvent -and $cancellationEvent.WaitOne(0)) {
+      try {
+        $cancellationMarker = Read-WatchdogMarker $markerPath $MarkerReadTimeoutMilliseconds
+        if ($cancellationMarker.State -eq 'Valid' -and
+            (Test-WatchdogMarkerSchema $cancellationMarker)) {
+          $lastValidMarker = $cancellationMarker
+        }
+      } catch {}
       Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:SUPERVISOR:CANCELLED'
+      if (Test-MsiCriticalMarker $lastValidMarker) {
+        $postTerminationCleanupAuthorized = Wait-MsiCriticalTransactionReceipt
+      }
       $exitCode = 125
       $terminateOwnedTree = $true
       break
@@ -644,6 +752,9 @@ try {
         Write-WatchdogLine ('PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:{0}:{1}:{2}:TIMED_OUT' -f `
           $marker.Stage, $marker.Substage, $marker.Status)
         $exitCode = 124
+        if (Test-MsiCriticalMarker $marker) {
+          $postTerminationCleanupAuthorized = Wait-MsiCriticalTransactionReceipt
+        }
         $terminateOwnedTree = $true
         break
       }
@@ -697,7 +808,7 @@ try {
     # Job Object API requires a valid uint32, so finalization always uses this
     # fixed supervisor-owned termination code instead of casting worker status.
     $workerTreeTerminated = Stop-OwnedWorker 125
-    if ($workerTreeTerminated) {
+    if ($workerTreeTerminated -and $postTerminationCleanupAuthorized) {
       $fixedCleanupResult = Invoke-PostTerminationCleanup $installerPath $FixtureCleanupRoot
     } else {
       Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
