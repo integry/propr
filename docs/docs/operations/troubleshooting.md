@@ -100,7 +100,7 @@ Then check credentials, branch settings, and agent configuration — the usual c
 Recovery runs through the PR conversation:
 
 - Add a clearer follow-up comment with stronger instructions.
-- `/switch <model-id>` to change the PR's model going forward, or `/use <model-id>` for a one-off task with a different model.
+- `/use <model-id>` to change the PR's model label without queuing work, or `/switch <model-id>` when you also need its optional follow-up behavior.
 - `/review` then `/fix`, or `/ultrafix` for an automated review-fix loop (remove the `ultrafix` PR label to stop it).
 - Re-run with a smaller scope — see [Work Splitting](../features/work-splitting.md).
 - Undo a bad commit with `propr task revert owner/repo <pr> <sha> <issue>`, which runs a signed system task (authorized via `SYSTEM_TASK_SECRET`) that resets the branch and force-pushes.

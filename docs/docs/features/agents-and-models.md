@@ -68,7 +68,7 @@ Reasoning flags require Claude Code >= 2.1.68 and Codex CLI >= 0.144.0. Saving a
 
 ## Model Labels
 
-Every model has a GitHub label of the form `llm-<agent>-<model-alias>`. Add one to an issue (together with your trigger label, such as `AI`) to route that issue to the model. The same identity follows the run through the system: task records show the selected agent and model, and branch names include the model identifier for traceability.
+Every model has a GitHub label of the form `llm-<agent>-<model-alias>`. For ordinary issues, add the trigger label (such as `AI`) by itself and ProPR uses the configured default model. Add one model label only when you want an explicit override. The same identity follows the run through the system: task records show the selected agent and model, and branch names include the model identifier for traceability.
 
 Adding **several** model labels to one issue fans the work out into one job per model label: each model gets its own run, its own worktree and branch, and its own pull request. Compare the PRs, merge the best one, and close the rest. If a `base-<branch>` label is also present, the fan-out is per base × per model.
 
@@ -84,7 +84,7 @@ The same aliases work in PR comments (the `llm-` prefix is optional; the raw cat
 
 ```
 /switch claude-opus5      # future follow-ups on this PR use this model
-/use codex-gpt56-sol      # one follow-up with this model
+/use codex-gpt56-sol      # change this PR's model label
 /review claude-opus5 codex-gpt56-sol   # independent reviews from two models
 ```
 

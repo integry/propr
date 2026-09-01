@@ -49,10 +49,10 @@ describe('buildSlashCommandsBlock', () => {
         assert.ok(switchLine.toLowerCase().includes('change') || switchLine.toLowerCase().includes('model'));
     });
 
-    test('/use description mentions single or override', () => {
+    test('/use description says it changes the PR model label', () => {
         const result = buildSlashCommandsBlock();
         const useLine = result.split('\n').find(l => l.includes('`/use`'));
         assert.ok(useLine);
-        assert.ok(useLine.toLowerCase().includes('single') || useLine.toLowerCase().includes('override'));
+        assert.ok(useLine.toLowerCase().includes('model label'));
     });
 });
