@@ -26,6 +26,7 @@ import {
   verifyAcceptanceArtifacts,
   writeAcceptanceManifest,
 } from './acceptance-artifacts.mjs';
+import { waitForUsableElectronRenderer } from './packaged-acceptance-renderer.mjs';
 
 if (process.platform !== 'linux' || process.arch !== 'x64') {
   throw new Error('Packaged desktop visual acceptance must run on Linux x64');
@@ -116,7 +117,7 @@ const createFixture = async (mode, fixedOrigin) => {
       return json(response, 200, {
         pairingId: PAIRING_ID,
         deviceSecret: DEVICE_SECRET,
-        approvalUrl: `${fixedOrigin}/desktop/approve`,
+        approvalUrl: `${fixedOrigin}/api/desktop/pairings/${PAIRING_ID}/browser`,
         expiresAt: new Date(FIXED_MILLIS + 60_000).toISOString(),
         interval: 1,
       });
@@ -259,9 +260,10 @@ const launchApplication = async (scenario, initialDeepLink) => {
     const timeout = setTimeout(() => rejectEndpoint(new Error('Packaged Electron CDP endpoint did not start')), 20_000);
     const wsEndpoint = await endpoint.finally(() => clearTimeout(timeout));
     browser = await chromium.connectOverCDP(wsEndpoint);
-    const context = browser.contexts()[0];
-    const page = context?.pages()[0];
-    if (!context || !page) throw new Error('Packaged Electron did not expose its renderer page');
+    const { context, page } = await waitForUsableElectronRenderer(browser, child, {
+      expectedUrlPrefix: DESKTOP_RENDERER_ORIGIN,
+      timeoutMs: 15_000,
+    });
     page.on('console', message => {
       const journey = activeJourney;
       const pending = Promise.all(message.args().map(async argument => {
@@ -624,6 +626,12 @@ try {
     await pair(page, readyOrigin, 'Operations');
     const opener = page.getByRole('button', { name: /Connected: Operations/ });
     await opener.waitFor({ timeout: 15_000 });
+    await waitForObserved(() => {
+      const journeyRequests = requestRecords.filter(record => record.journey === 'dashboard-profile-manager');
+      return journeyRequests.some(record => record.method === 'POST' && record.url === '/api/desktop/pairings')
+        && journeyRequests.some(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/poll`)
+        && journeyRequests.some(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/activate`);
+    }, `the complete pairing flow for ${PAIRING_ID}`);
     await waitForObserved(() => socketRecords.some(record => record.journey === 'dashboard-profile-manager' && record.authenticated), 'an authenticated Socket.IO connection');
     await waitForObserved(() => socketRecords.some(record => record.journey === 'dashboard-profile-manager' && record.event !== 'connection'), 'an authenticated renderer Socket.IO event');
     await application.context.tracing.start({ screenshots: true, snapshots: true, sources: false });

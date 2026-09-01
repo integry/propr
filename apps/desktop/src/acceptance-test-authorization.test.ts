@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { dirname, join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { authorizePackagedAcceptanceTest } from './acceptance-test-authorization';
 
+const acceptanceUserData = resolve('/tmp/propr-desktop-acceptance-a1');
+const defaultUserData = resolve('/tmp/default');
 const input = {
-  argv: ['app', '--propr-acceptance-test', '--user-data-dir=/tmp/propr-desktop-acceptance-a1'],
-  defaultUserDataDirectory: '/tmp/default',
+  argv: ['app', '--propr-acceptance-test', `--user-data-dir=${acceptanceUserData}`],
+  defaultUserDataDirectory: defaultUserData,
   environmentTriggered: true,
   isPackaged: true,
   platform: 'linux' as const,
@@ -12,7 +15,7 @@ const input = {
 
 describe('packaged acceptance authorization', () => {
   it('accepts only the dual-trigger packaged Linux launch with an isolated profile', () => {
-    assert.equal(authorizePackagedAcceptanceTest(input), '/tmp/propr-desktop-acceptance-a1');
+    assert.equal(authorizePackagedAcceptanceTest(input), acceptanceUserData);
     assert.equal(authorizePackagedAcceptanceTest({ ...input, argv: ['app'], environmentTriggered: false }), null);
   });
 
@@ -21,7 +24,15 @@ describe('packaged acceptance authorization', () => {
     assert.throws(() => authorizePackagedAcceptanceTest({ ...input, platform: 'darwin' }), /Linux/);
     assert.throws(() => authorizePackagedAcceptanceTest({
       ...input,
-      argv: ['app', '--propr-acceptance-test', '--user-data-dir=/tmp/default'],
+      argv: ['app', '--propr-acceptance-test', `--user-data-dir=${defaultUserData}`],
+    }), /must use/);
+    assert.throws(() => authorizePackagedAcceptanceTest({
+      ...input,
+      argv: ['app', '--propr-acceptance-test', `--user-data-dir=${join(acceptanceUserData, '..', 'default')}`],
+    }), /must use/);
+    assert.throws(() => authorizePackagedAcceptanceTest({
+      ...input,
+      argv: ['app', '--propr-acceptance-test', `--user-data-dir=${join(dirname(acceptanceUserData), 'propr-desktop-acceptance-a1', '..', 'escaped')}`],
     }), /must use/);
   });
 });

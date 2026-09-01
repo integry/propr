@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
@@ -225,18 +225,31 @@ describe('packaged acceptance artifact contract', () => {
       await mkdir(join(leaf, 'nested'), { recursive: true });
       await writeFile(join(leaf, 'nested', 'artifact'), 'safe');
       await safeRemoveAcceptanceLeaf(resolve(leaf), { kind: 'artifact', allowedWorkspaceParents: [parent] });
+      await safeRemoveAcceptanceLeaf(resolve(leaf), { kind: 'artifact', allowedWorkspaceParents: [parent] });
       await assert.rejects(safeRemoveAcceptanceLeaf(resolve(parent), { kind: 'artifact', allowedWorkspaceParents: [parent] }), /dedicated allowlisted leaf/);
       const tooDeep = join(parent, 'nested', ACCEPTANCE_ARTIFACT_LEAF);
       await mkdir(tooDeep, { recursive: true });
-      await assert.rejects(safeRemoveAcceptanceLeaf(resolve(tooDeep), { kind: 'artifact', allowedWorkspaceParents: [parent] }), /dedicated allowlisted leaf/);
+      await assert.rejects(safeRemoveAcceptanceLeaf(resolve(tooDeep), { kind: 'artifact', allowedWorkspaceParents: [parent] }), /canonical allowlisted parent/);
       const realParent = join(parent, 'real-parent');
       const linkedParent = join(parent, 'linked-parent');
       await mkdir(join(realParent, ACCEPTANCE_ARTIFACT_LEAF), { recursive: true });
       await symlink(realParent, linkedParent);
       await assert.rejects(
         safeRemoveAcceptanceLeaf(resolve(linkedParent, ACCEPTANCE_ARTIFACT_LEAF), { kind: 'artifact', allowedWorkspaceParents: [linkedParent] }),
-        /symlink ancestry/,
+        /allowed parent must be an existing non-link directory/,
       );
+      const outside = await mkdtemp(join(tmpdir(), 'propr-acceptance-contract-escape-'));
+      try {
+        const escapedParent = join(parent, 'escaped-parent');
+        await symlink(outside, escapedParent);
+        await mkdir(join(outside, 'nested', ACCEPTANCE_ARTIFACT_LEAF), { recursive: true });
+        await assert.rejects(
+          safeRemoveAcceptanceLeaf(join(escapedParent, 'nested', ACCEPTANCE_ARTIFACT_LEAF), { kind: 'artifact', allowedWorkspaceParents: [parent] }),
+          /canonical allowlisted parent/,
+        );
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
       const linkedLeaf = join(parent, ACCEPTANCE_ARTIFACT_LEAF);
       await symlink(join(realParent, ACCEPTANCE_ARTIFACT_LEAF), linkedLeaf);
       await assert.rejects(
@@ -244,5 +257,25 @@ describe('packaged acceptance artifact contract', () => {
         /non-link directory/,
       );
     } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+
+  it('authorizes the standard macOS temporary-directory alias by canonical parent identity', {
+    skip: process.platform !== 'darwin' ? 'macOS-only /var alias regression' : false,
+  }, async t => {
+    const aliasedParent = await mkdtemp(join(resolve(tmpdir()), 'propr-acceptance-macos-alias-'));
+    const canonicalParent = await realpath(aliasedParent);
+    if (aliasedParent === canonicalParent) {
+      await rm(aliasedParent, { recursive: true, force: true });
+      t.skip('the configured macOS temporary directory does not use an alias');
+      return;
+    }
+    const leaf = join(aliasedParent, ACCEPTANCE_ARTIFACT_LEAF);
+    try {
+      await mkdir(leaf);
+      await safeRemoveAcceptanceLeaf(leaf, { kind: 'artifact', allowedWorkspaceParents: [canonicalParent] });
+      await safeRemoveAcceptanceLeaf(leaf, { kind: 'artifact', allowedWorkspaceParents: [canonicalParent] });
+    } finally {
+      await rm(aliasedParent, { recursive: true, force: true });
+    }
   });
 });

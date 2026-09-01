@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -260,26 +260,30 @@ const allowedCleanup = (kind, allowedWorkspaceParents) => {
   throw new Error('Unknown acceptance cleanup kind');
 };
 
-const assertNoSymlinkAncestry = async target => {
-  const root = parse(target).root;
-  let current = root;
-  for (const segment of relative(root, target).split(sep).filter(Boolean)) {
-    current = join(current, segment);
-    let stats;
-    try { stats = await lstat(current); } catch (error) { if (error?.code === 'ENOENT') return; throw error; }
-    if (stats.isSymbolicLink()) throw new Error(`Acceptance cleanup rejects symlink ancestry: ${current}`);
-  }
-};
-
 export const safeRemoveAcceptanceLeaf = async (input, { kind = 'artifact', allowedWorkspaceParents } = {}) => {
   if (!isAbsolute(input)) throw new Error('Acceptance cleanup requires an absolute path');
   const target = resolve(input);
   const policy = allowedCleanup(kind, allowedWorkspaceParents);
   const parent = dirname(target);
-  if (target === parse(target).root || !policy.parents.has(parent) || !policy.name(basename(target))) {
+  if (target === parse(target).root || !policy.name(basename(target))) {
     throw new Error('Acceptance cleanup target is not a dedicated allowlisted leaf');
   }
-  await assertNoSymlinkAncestry(parent);
+  const canonicalAllowedParents = new Set();
+  for (const allowedParent of policy.parents) {
+    const allowedStats = await lstat(allowedParent);
+    if (allowedStats.isSymbolicLink() || !allowedStats.isDirectory()) {
+      throw new Error('Acceptance cleanup allowed parent must be an existing non-link directory');
+    }
+    canonicalAllowedParents.add(await realpath(allowedParent));
+  }
+  const parentStats = await lstat(parent);
+  if (parentStats.isSymbolicLink() || !parentStats.isDirectory()) {
+    throw new Error('Acceptance cleanup parent must be an existing non-link directory');
+  }
+  const canonicalParent = await realpath(parent);
+  if (!canonicalAllowedParents.has(canonicalParent)) {
+    throw new Error('Acceptance cleanup target parent is not the canonical allowlisted parent');
+  }
   let stats;
   try { stats = await lstat(target); } catch (error) { if (error?.code === 'ENOENT') return; throw error; }
   if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error('Acceptance cleanup target must be a non-link directory');
