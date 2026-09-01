@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, screen, session, shell } from 'electron';
 import type { Rectangle } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
+import type { SetupActions } from '@propr/local-setup';
 import { DeepLinkDelivery } from './deep-link-delivery';
 import { createDesktopLocalHost } from './desktop-host';
 import { registerIpcHandlers } from './ipc';
@@ -65,6 +66,11 @@ try {
   process.exit(1);
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
+const inertSetupActions = new Proxy({} as SetupActions, {
+  get() {
+    return () => { throw new Error('Local setup is unavailable in this desktop mode'); };
+  },
+});
 let mainWindow: BrowserWindow | null = null;
 const initialDeepLink = deepLinkFromArguments(process.argv);
 const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
@@ -315,32 +321,27 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
   if (packagedSmokeTest) {
     const profileFlow = await window.webContents.executeJavaScript(`(async () => {
       const bridge = window.proprDesktop;
-      const local = await bridge.profiles.save({ label: 'Local setup', apiBaseUrl: 'http://localhost:4000' });
-      const remote = await bridge.profiles.save({ label: 'ProPR Connect', apiBaseUrl: 'https://connect.propr.dev' });
-      await bridge.profiles.setActive(remote.id);
-      const profiles = await bridge.profiles.list();
-      const lifecycle = await bridge.lifecycle.start();
       const deadline = performance.now() + 2000;
-      let connectDeepLink = false;
+      let stagedConnectCandidate = false;
       do {
-        const labels = Array.from(document.querySelectorAll('.desktop-connection-card form > label'));
-        connectDeepLink = labels[1]?.querySelector('input')?.value === 'https://connect.propr.dev';
-        if (connectDeepLink) break;
+        const labels = Array.from(document.querySelectorAll('.desktop-profile-form label'));
+        const urlLabel = labels.find(label => label.textContent?.includes('Instance URL'));
+        stagedConnectCandidate = urlLabel?.querySelector('input')?.value === 'https://connect.propr.dev'
+          && Array.from(document.querySelectorAll('button')).some(button => button.textContent?.trim() === 'Connect');
+        if (stagedConnectCandidate) break;
         await new Promise(resolve => setTimeout(resolve, 25));
       } while (performance.now() < deadline);
+      const profiles = await bridge.profiles.list();
       return {
-        active: profiles.activeProfileId === remote.id,
-        local: profiles.profiles.some(profile => profile.id === local.id && profile.apiBaseUrl === 'http://localhost:4000'),
-        remote: profiles.profiles.some(profile => profile.id === remote.id && profile.apiBaseUrl === 'https://connect.propr.dev'),
-        lifecycleBoundary: lifecycle.ok === false && lifecycle.code === 'not-implemented',
-        connectDeepLink,
+        noPersistedCandidate: profiles.profiles.length === 0,
+        noActiveCandidate: profiles.activeProfileId === null,
+        stagedConnectCandidate,
       };
     })()`);
-    if (!profileFlow?.active || !profileFlow?.local || !profileFlow?.remote
-      || !profileFlow?.lifecycleBoundary || !profileFlow?.connectDeepLink) {
-      throw new Error('Packaged desktop local/remote/API profile flow failed');
+    if (!profileFlow?.noPersistedCandidate || !profileFlow?.noActiveCandidate || !profileFlow?.stagedConnectCandidate) {
+      throw new Error('Packaged desktop staged Connect flow failed');
     }
-    log('info', 'desktop.renderer.mvp_flows.ready', { connectDiscovery: true });
+    log('info', 'desktop.renderer.mvp_flows.ready', { connectCandidateStaged: true });
     log('info', PACKAGED_LAYOUT_READY_EVENT, { layout: await inspectPackagedLayout(window) });
     log('info', PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT, {
       layout: inspectPackagedReducedNativeWindow(),
@@ -400,13 +401,15 @@ if (!hasSingleInstanceLock) {
     };
     const profiles = new ProfileStore(app.getPath('userData'), encryption);
     const defaultRootDir = join(app.getPath('userData'), 'desktop', 'local-stack');
-    const localHost = await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined, defaultRootDir, app.getPath('userData'));
+    const localHost = process.platform === 'linux' && !packagedSmokeTest
+      ? await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined, defaultRootDir, app.getPath('userData'))
+      : null;
     const lifecycle = new LocalLifecycleController(
-      process.platform === 'linux' ? localHost.lifecycle : undefined,
+      localHost?.lifecycle,
       (event, fields) => log('error', event, fields),
     );
     setupController = new DesktopSetupController({
-      actions: localHost.actions,
+      actions: localHost?.actions ?? inertSetupActions,
       platform: process.platform,
       appDataDir: app.getPath('userData'),
       statePath: join(app.getPath('userData'), 'desktop', 'setup-state.json'),
@@ -422,7 +425,7 @@ if (!hasSingleInstanceLock) {
         return selected.canceled ? null : selected.filePaths[0] ?? null;
       },
       promptWebhookSecret: promptForWebhookSecret,
-      resolveApiBaseUrl: localHost.resolveApiBaseUrl,
+      resolveApiBaseUrl: localHost?.resolveApiBaseUrl ?? (async () => { throw new Error('Local setup is unavailable'); }),
       async registerProfile({ name, apiBaseUrl }, signal) {
         signal?.throwIfAborted();
         const existing = (await profiles.list()).profiles.find(profile => profile.apiBaseUrl === apiBaseUrl);

@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { realpathSync } from 'node:fs';
 import { chmod, mkdtemp, rename, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir as systemTmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { SetupFilesystemCapabilities, SetupSecretCapabilities } from './setup-capabilities';
 import { parseDesktopSetupRequest } from './setup-schema';
+
+const tmpdir = (): string => realpathSync(systemTmpdir());
 
 const sessionId = '00000000-0000-4000-8000-000000000000';
 const baseRequest = () => ({

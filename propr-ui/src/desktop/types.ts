@@ -61,6 +61,9 @@ export interface DesktopConnectionAdapter {
 
 export interface DesktopAdapters {
   platform: DesktopPlatform;
+  app: {
+    onDeepLink(listener: (url: string) => void): () => void;
+  };
   profiles: DesktopProfileAdapter;
   discovery: DesktopDiscoveryAdapter;
   authentication: DesktopAuthenticationAdapter;

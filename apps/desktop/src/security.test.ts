@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   deepLinkFromArguments,
   applyDevelopmentRendererCsp,
+  connectApiBaseUrlFromDeepLink,
   dashboardPathFromDeepLink,
   isSafeExternalUrl,
   isTrustedRendererUrl,
@@ -73,6 +74,10 @@ describe('desktop URL security', () => {
     assert.equal(normalizeDeepLink('propr://delete-everything'), null);
     assert.equal(normalizeDeepLink('https://propr.example.com'), null);
     assert.equal(normalizeDeepLink('propr://user:secret@connect'), null);
+    assert.equal(connectApiBaseUrlFromDeepLink(link), 'https://propr.example.com');
+    assert.equal(normalizeDeepLink('propr://connect?api=http%3A%2F%2Fexample.com'), null);
+    assert.equal(normalizeDeepLink('propr://connect?api=https%3A%2F%2Fpropr.example.com&token=secret'), null);
+    assert.equal(normalizeDeepLink('propr://connect?api=https%3A%2F%2Fuser%3Asecret%40propr.example.com'), null);
   });
 
   it('accepts a normal internal dashboard route from an open deep link', () => {

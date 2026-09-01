@@ -9,6 +9,7 @@ import type {
 } from './shared/contract';
 import { IPC_CHANNELS } from './shared/contract';
 import { evaluateProprApiCompatibility } from '@propr/shared';
+import { normalizeApiBaseUrl } from './security';
 
 export interface PreloadIpc {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>;
@@ -88,32 +89,36 @@ const profileView = (profile: DesktopProfile): DesktopProfileView => ({
 
 const bounded = (value: string, maximum = 512): string => value.slice(0, maximum);
 
-/** Local-only probe seam; PR #1977 owns remote authentication and transport. */
-export const probeLocalDesktopProfile = async (
+/** Compatibility probe for confirmed local or remote profile origins. */
+export const probeDesktopProfile = async (
   profile: DesktopProfileView,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<DesktopConnectionResult> => {
-  if (profile.kind !== 'local' || !isLoopback(profile.baseUrl)) {
-    return { status: 'offline', message: 'Remote connections are not included in local setup.' };
+  const baseUrl = normalizeApiBaseUrl(profile.baseUrl);
+  if (!baseUrl || baseUrl !== profile.baseUrl) {
+    return { status: 'offline', message: 'This profile does not contain a valid ProPR instance origin.' };
+  }
+  if (profile.kind === 'local' && !isLoopback(baseUrl)) {
+    return { status: 'offline', message: 'This local profile does not use a loopback address.' };
   }
   try {
-    const response = await fetchImpl(`${profile.baseUrl}/api/compatibility`, {
+    const response = await fetchImpl(`${baseUrl}/api/compatibility`, {
       credentials: 'include',
       cache: 'no-store',
       signal: AbortSignal.timeout(8_000),
     });
     if (response.status === 401 || response.status === 403) {
-      return { status: 'authentication-required', message: 'Sign in to continue to this local instance.' };
+      return { status: 'authentication-required', message: 'Sign in to continue to this instance.' };
     }
     if (response.status === 404) return { status: 'ready' };
-    if (!response.ok) return { status: 'offline', message: `The local instance returned HTTP ${response.status}.` };
+    if (!response.ok) return { status: 'offline', message: `The instance returned HTTP ${response.status}.` };
     const metadata = await response.json() as { apiCompatibility?: string; version?: string };
     const compatibility = evaluateProprApiCompatibility(metadata);
     const version = compatibility.apiVersion ? bounded(compatibility.apiVersion, 64) : undefined;
     if (compatibility.compatible || compatibility.reason === 'missing') return { status: 'ready', version };
     return { status: 'incompatible', message: bounded(compatibility.message), version };
   } catch {
-    return { status: 'offline', message: 'ProPR Desktop could not reach this local instance. Check that it is running and try again.' };
+    return { status: 'offline', message: 'ProPR Desktop could not reach this instance. Check that it is running and try again.' };
   }
 };
 
@@ -121,7 +126,8 @@ export const probeLocalDesktopProfile = async (
 export const createDesktopRendererBridge = (
   ipc: PreloadIpc,
   platform: NodeJS.Platform = process.platform,
-  connectionProbe: (profile: DesktopProfileView) => Promise<DesktopConnectionResult> = probeLocalDesktopProfile,
+  connectionProbe: (profile: DesktopProfileView) => Promise<DesktopConnectionResult> = probeDesktopProfile,
+  onDeepLink: DesktopBridge['app']['onDeepLink'] = () => () => undefined,
 ): DesktopRendererBridge => {
   const progressListeners = new Set<(snapshot: DesktopSetupSnapshot) => void>();
   ipc.on(IPC_CHANNELS.setupProgress, (_event, snapshot: DesktopSetupSnapshot) => {
@@ -131,6 +137,7 @@ export const createDesktopRendererBridge = (
   const bridge: DesktopRendererBridge = {
     isDesktop: true,
     platform: platformView(platform),
+    app: { onDeepLink: listener => onDeepLink(listener) },
     profiles: {
       list: async () => {
         const result = await invoke<{ profiles: DesktopProfile[] }>(ipc, IPC_CHANNELS.profilesList);

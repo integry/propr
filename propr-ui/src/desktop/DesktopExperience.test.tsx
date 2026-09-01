@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesktopExperience } from './DesktopExperience';
 import { DesktopTitleBar } from './DesktopTitleBar';
+import { DesktopDeepLinkInbox } from '../desktop-deep-link';
 import type { DesktopAdapters, DesktopConnectionResult, DesktopProfile } from './types';
 
 const apiMock = vi.hoisted(() => ({ setApiBaseUrl: vi.fn() }));
@@ -26,6 +27,7 @@ const adaptersFor = (
   probe: (profile: DesktopProfile) => Promise<DesktopConnectionResult> = async () => ({ status: 'ready', version: '0.8.15' })
 ): DesktopAdapters => ({
   platform: 'linux',
+  app: { onDeepLink: vi.fn(() => () => undefined) },
   profiles: {
     list: vi.fn(async () => profiles),
     save: vi.fn(async () => undefined),
@@ -107,6 +109,66 @@ describe('DesktopExperience', () => {
     expect(adapters.profiles.setActiveId).toHaveBeenCalledWith('local');
     expect(runtimeMock.setDesktopApiBaseUrl).toHaveBeenCalledWith(localProfile.baseUrl);
     expect(apiMock.setApiBaseUrl).toHaveBeenCalledWith(localProfile.baseUrl);
+  });
+
+  it('stages a Connect deep link for explicit confirmation without probing or mutating profiles', async () => {
+    const adapters = adaptersFor();
+    const deepLinks = new DesktopDeepLinkInbox();
+    render(<DesktopExperience adapters={adapters} deepLinks={deepLinks}><div>Shared route tree</div></DesktopExperience>);
+
+    expect(await screen.findByRole('heading', { name: 'Let’s set up this computer' })).toBeInTheDocument();
+    vi.clearAllMocks();
+    act(() => deepLinks.receive('propr://connect?api=https%3A%2F%2Fcandidate.example'));
+
+    expect(await screen.findByRole('status')).toHaveTextContent(/untrusted instance address/i);
+    expect(screen.getByLabelText('Instance URL')).toHaveValue('https://candidate.example');
+    expect(adapters.discovery.discover).not.toHaveBeenCalled();
+    expect(adapters.connection.probe).not.toHaveBeenCalled();
+    expect(adapters.authentication.authenticate).not.toHaveBeenCalled();
+    expect(adapters.profiles.save).not.toHaveBeenCalled();
+    expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText('Shared route tree')).toBeInTheDocument();
+    expect(adapters.connection.probe).toHaveBeenCalledOnce();
+    expect(adapters.profiles.save).toHaveBeenCalledOnce();
+    expect(adapters.profiles.setActiveId).toHaveBeenCalledOnce();
+  });
+
+  it('routes a bounded Open deep link only for the validated active profile', async () => {
+    const adapters = adaptersFor([localProfile], localProfile.id);
+    const deepLinks = new DesktopDeepLinkInbox();
+    window.location.hash = '';
+    render(<DesktopExperience adapters={adapters} deepLinks={deepLinks}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    act(() => deepLinks.receive('propr://open?path=%2Ftasks%3Fstatus%3Dopen'));
+    expect(window.location.hash).toBe('#/tasks?status=open');
+  });
+
+  it('uses one fixed redacted UI state for malformed desktop links', async () => {
+    const adapters = adaptersFor();
+    const deepLinks = new DesktopDeepLinkInbox();
+    render(<DesktopExperience adapters={adapters} deepLinks={deepLinks}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByRole('heading', { name: 'Let’s set up this computer' })).toBeInTheDocument();
+    act(() => deepLinks.receive('propr://open?path=SENTINEL_ATTACKER_VALUE'));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('ProPR Desktop could not use that link. Choose an instance and try again.');
+    expect(alert).not.toHaveTextContent('SENTINEL_ATTACKER_VALUE');
+    expect(adapters.profiles.save).not.toHaveBeenCalled();
+    expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
+  });
+
+  it.each(['macos', 'windows'] as const)('activates an existing remote profile on %s', async platform => {
+    const adapters = adaptersFor([remoteProfile], remoteProfile.id);
+    adapters.platform = platform;
+    render(<DesktopExperience adapters={adapters}><div>Remote dashboard</div></DesktopExperience>);
+
+    expect(await screen.findByText('Remote dashboard')).toBeInTheDocument();
+    expect(adapters.connection.probe).toHaveBeenCalledWith(remoteProfile);
+    expect(runtimeMock.setDesktopApiBaseUrl).toHaveBeenCalledWith(remoteProfile.baseUrl);
   });
 
   it('shows a retryable offline state and recovers without reloading', async () => {

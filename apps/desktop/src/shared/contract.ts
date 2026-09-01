@@ -185,6 +185,9 @@ export interface DesktopSetupSnapshot {
 export interface DesktopRendererBridge {
   isDesktop: true;
   platform: DesktopPlatformView;
+  app: {
+    onDeepLink(listener: (url: string) => void): () => void;
+  };
   profiles: {
     list(): Promise<DesktopProfileView[]>;
     save(profile: DesktopProfileView): Promise<void>;

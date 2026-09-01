@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir as systemTmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { writePrivateFileAtomic, type SetupActions } from '@propr/local-setup';
 import { DesktopSetupController } from './setup-controller';
+
+const tmpdir = (): string => realpathSync(systemTmpdir());
 
 const fakeActions = (): SetupActions => {
   const env: Record<string, string> = {};

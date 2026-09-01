@@ -1,26 +1,75 @@
 import { dashboardPathFromDeepLink } from '../../apps/desktop/src/security';
 
-/** Holds an accepted dashboard route until the shared hash router can observe it. */
+const validProfileId = (value: string): boolean => value.length > 0 && value.length <= 128 && !/[\u0000-\u001F\u007F]/.test(value);
+
+interface PendingNavigation {
+  path: string;
+  profileId: string;
+}
+
+/** Holds accepted routes while binding each one to the profile active when it arrived. */
 export class DesktopDeepLinkNavigation {
-  private dashboardReady = false;
-  private readonly pendingPaths: string[] = [];
+  private activeProfileId: string | null = null;
+  private readonly pending: PendingNavigation[] = [];
 
-  constructor(private readonly navigate: (path: string) => void) {}
+  constructor(
+    private readonly navigate: (path: string) => void,
+    private readonly reject: () => void = () => undefined,
+  ) {}
 
-  receive(value: string): boolean {
+  receive(value: string, profileId: string): boolean {
     const path = dashboardPathFromDeepLink(value);
-    if (!path) return false;
-    if (this.dashboardReady) this.navigate(path);
-    else this.pendingPaths.push(path);
+    if (!path || !validProfileId(profileId)) {
+      this.reject();
+      return false;
+    }
+    if (this.activeProfileId === profileId) this.navigate(path);
+    else if (this.activeProfileId === null) this.pending.push({ path, profileId });
+    else {
+      this.reject();
+      return false;
+    }
     return true;
   }
 
-  setDashboardReady(): void {
-    this.dashboardReady = true;
-    this.pendingPaths.splice(0).forEach(path => this.navigate(path));
+  setDashboardReady(profileId: string): void {
+    if (!validProfileId(profileId)) {
+      this.rejectPending();
+      return;
+    }
+    this.activeProfileId = profileId;
+    this.pending.splice(0).forEach(item => {
+      if (item.profileId === profileId) this.navigate(item.path);
+      else this.reject();
+    });
   }
 
   setDashboardUnavailable(): void {
-    this.dashboardReady = false;
+    this.activeProfileId = null;
+  }
+
+  rejectPending(): void {
+    const rejected = this.pending.splice(0).length;
+    if (rejected > 0) this.reject();
+  }
+}
+
+/** One-consumer handoff used between the presentation boundary and desktop experience. */
+export class DesktopDeepLinkInbox {
+  private listener: ((value: string) => void) | null = null;
+  private readonly pending: string[] = [];
+
+  receive(value: string): void {
+    if (this.listener) this.listener(value);
+    else this.pending.push(value);
+  }
+
+  subscribe(listener: (value: string) => void): () => void {
+    if (this.listener) throw new Error('Desktop deep-link inbox already has a consumer');
+    this.listener = listener;
+    this.pending.splice(0).forEach(value => listener(value));
+    return () => {
+      if (this.listener === listener) this.listener = null;
+    };
   }
 }

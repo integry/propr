@@ -133,6 +133,7 @@ const authenticateBrowserFixture = (profile: DesktopProfile): Promise<void> => n
 
 const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters => ({
   platform: detectPlatform(),
+  app: { onDeepLink: () => () => undefined },
   profiles: {
     async list() {
       if (fixture === 'first-run') return [];
