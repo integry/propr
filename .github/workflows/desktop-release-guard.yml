@@ -142,7 +142,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio dbus-x11 fakeroot fonts-liberation gnome-keyring libsecret-1-0 rpm zip
+          sudo apt-get install --yes cpio dbus-x11 fakeroot fonts-liberation gnome-keyring libsecret-1-0 rpm tesseract-ocr zip
 
       - name: Package desktop app from clean checkout
         shell: bash
@@ -499,7 +499,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio dbus-x11 fakeroot fonts-liberation gnome-keyring libsecret-1-0 rpm zip
+          sudo apt-get install --yes cpio dbus-x11 fakeroot fonts-liberation gnome-keyring libsecret-1-0 rpm tesseract-ocr zip
 
       - name: Configure required macOS signing and notarization
         if: matrix.platform == 'darwin'

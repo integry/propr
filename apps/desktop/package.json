@@ -24,7 +24,7 @@
     "smoke:package": "node scripts/smoke-packaged.mjs",
     "smoke:inspect": "node scripts/smoke-packaged.mjs --inspect-only",
     "acceptance:package": "node scripts/run-packaged-acceptance.mjs",
-    "acceptance:verify": "node -e \"import('./scripts/acceptance-artifacts.mjs').then(m => m.verifyAcceptanceArtifacts(process.env.PROPR_DESKTOP_ACCEPTANCE_OUTPUT || 'desktop-acceptance-artifacts'))\"",
+    "acceptance:verify": "node -e \"import('./scripts/acceptance-artifacts.mjs').then(m => m.verifyAcceptanceArtifacts(process.env.PROPR_DESKTOP_ACCEPTANCE_OUTPUT || m.defaultAcceptanceOutputDirectory()))\"",
     "premake": "npm run prepare:renderer",
     "make": "electron-forge make",
     "make:dmg": "node scripts/make-dmg.mjs",
