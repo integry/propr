@@ -8,6 +8,7 @@ import { duplicateTurnResult, type RunGoalTurnResult } from './turnDelivery.js';
 import { assertSafeProviderIdentifier, safeDiagnostic } from './securityBoundary.js';
 import { compactImmediateModelIntents, immediateModelIntents, nextModelGeneration } from './modelChangeProtocol.js';
 import { rebuildProviderSnapshot } from './providerResultBoundary.js';
+import { resolveDeferredModel, settledResumeKind, turnExecution } from './turnExecutionProtocol.js';
 
 export interface RunGoalTurnRequest extends Omit<GoalBeginTurnRequest, 'executionId' | 'attemptId' |
     'correctiveMessages' | 'operationGeneration' | 'operationFence'> {
@@ -386,52 +387,4 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
         return { disposition: 'started', state: outcome.state, execution };
     }
 
-}
-
-function turnExecution(
-    state: GoalSessionState,
-    request: Pick<RunGoalTurnRequest, 'turnId' | 'executionId' | 'attemptId'>,
-    mint: () => string,
-    mintFresh: (previous: string) => string,
-): GoalExecutionIdentity {
-    const retry = state.retryTurn?.turnId === request.turnId
-        && state.retryTurn.executionId === request.executionId ? state.retryTurn : undefined;
-    return {
-        executionId: request.executionId,
-        attemptId: retry ? mintFresh(retry.crashedAttemptId) : request.attemptId ?? mint(),
-    };
-}
-
-function resolveDeferredModel(
-    state: GoalSessionState,
-    fallback: string,
-    enabled: boolean,
-): {
-    requestedModel: string;
-    activeModelChange?: NonNullable<GoalSessionState['activeTurn']>['modelChange'];
-    providerModelChange?: GoalBeginTurnRequest['modelChange'];
-} {
-    const requestedModel = state.pendingModelChange ?? state.modelChangeIntent?.model ?? fallback;
-    const modelIntent = enabled && state.pendingModelChange === requestedModel
-        && state.modelChangeIntent?.model === requestedModel ? state.modelChangeIntent : undefined;
-    const generation = modelIntent?.generation ?? state.modelChangeGeneration ?? 0;
-    return {
-        requestedModel,
-        activeModelChange: modelIntent ? {
-            modelChangeId: modelIntent.modelChangeId, generation,
-            previousModel: modelIntent.previousModel ?? state.currentModel,
-        } : undefined,
-        providerModelChange: modelIntent ? { modelChangeId: modelIntent.modelChangeId, generation } : undefined,
-    };
-}
-
-function settledResumeKind(
-    state: GoalSessionState,
-    kind: 'active_turn' | 'recovered_after_turn',
-): boolean {
-    const liveStatus = kind === 'active_turn' ? state.status === 'running'
-        : state.status === 'running' || state.status === 'pause_requested';
-    return liveStatus && Boolean(state.activeTurn) && state.resumeIntent?.phase === 'settled'
-        && state.completedResume?.operationId === state.resumeIntent.operationId
-        && state.completedResume.kind === kind;
 }

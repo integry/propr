@@ -23,6 +23,13 @@ interface TurnStreamOptions {
     openStream: () => AsyncIterable<GoalSessionEvent> | Promise<AsyncIterable<GoalSessionEvent>>;
 }
 
+interface TurnStreamProgress {
+    state: GoalSessionState;
+    completed: boolean;
+    reachedPause: boolean;
+    stop: boolean;
+}
+
 /** Exact-attempt stream consumption and atomic event/state persistence. */
 export abstract class GoalTurnStreamRunner extends GoalSessionCore {
     protected async driveTurnStream(options: TurnStreamOptions): Promise<TurnStreamOutcome> {
@@ -37,33 +44,17 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
             for (;;) {
                 const next = await this.providerResult(() => iterator.next(), rebuildIteratorResult);
                 if (next.done) break;
-                const event = next.value;
-                const settlesModelEvidence = event.type === 'model_changed'
-                    && this.adapter.capabilities.modelChange === 'next_turn'
-                    && current.activeTurn?.modelChange !== undefined
-                    && !immediateModelIntents(current).find(intent =>
-                        intent.modelChangeId === current.activeTurn?.modelChange?.modelChangeId)?.invocationEvidence;
-                current = await this.settleNextTurnModelEvidence(fence, execution, current, event);
-                if (settlesModelEvidence) continue;
-                if (completed) throw new GoalSessionContractError('Provider emitted an event after turn completion', 'EVENT_AFTER_COMPLETION');
-                assertFirstTurnIdentityEvent(current, event, this.adapter.capabilities.nativeSessionId);
-                if (event.type === 'message_acknowledged') {
-                    await this.acknowledgeNextTurnMessage(fence, execution, event.messageId, awaitingMessageIds);
-                    continue;
-                }
-                assertSuppliedMessagesAcknowledged(event, awaitingMessageIds);
-                if (event.type === 'completion' && this.adapter.capabilities.pause === 'after_turn') {
-                    current = await this.requireActiveAttemptState(fence, execution);
-                }
-                current = await this.applyTurnEvent({ fence, current, execution, event });
-                if (event.type === 'pause_boundary') reachedPause = true;
-                if (event.type === 'completion') completed = true;
-                if (event.type !== 'completion' && !isAtomicTurnAudit(event)) await this.append(fence, execution, event);
-                if (stopsAtActivePause(event, this.adapter.capabilities.pause)) {
+                const progress = await this.processTurnStreamEvent({
+                    fence, execution, state: current, event: next.value,
+                    awaitingMessageIds, completed,
+                });
+                current = progress.state;
+                completed = progress.completed;
+                reachedPause ||= progress.reachedPause;
+                if (progress.stop) {
                     if (iterator.return) await this.providerEffect(() => iterator.return!());
                     break;
                 }
-                if (event.type === 'completion' && current.status === 'paused') reachedPause = true;
             }
             if (!completed && !reachedPause) {
                 const error = 'Provider stream ended without a completion or safe pause boundary';
@@ -85,6 +76,42 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
             // contract/crash identity.
             throw error;
         }
+    }
+
+    private async processTurnStreamEvent(options: {
+        fence: GoalSessionFence;
+        execution: GoalExecutionIdentity;
+        state: GoalSessionState;
+        event: GoalSessionEvent;
+        awaitingMessageIds: string[];
+        completed: boolean;
+    }): Promise<TurnStreamProgress> {
+        const { fence, execution, event, awaitingMessageIds } = options;
+        const settlesModelEvidence = needsNextTurnModelEvidence(
+            options.state, event, this.adapter.capabilities.modelChange,
+        );
+        let state = await this.settleNextTurnModelEvidence(fence, execution, options.state, event);
+        if (settlesModelEvidence) return unchangedStreamProgress(state, options.completed);
+        if (options.completed) {
+            throw new GoalSessionContractError('Provider emitted an event after turn completion', 'EVENT_AFTER_COMPLETION');
+        }
+        assertFirstTurnIdentityEvent(state, event, this.adapter.capabilities.nativeSessionId);
+        if (event.type === 'message_acknowledged') {
+            await this.acknowledgeNextTurnMessage(fence, execution, event.messageId, awaitingMessageIds);
+            return unchangedStreamProgress(state, false);
+        }
+        assertSuppliedMessagesAcknowledged(event, awaitingMessageIds);
+        if (event.type === 'completion' && this.adapter.capabilities.pause === 'after_turn') {
+            state = await this.requireActiveAttemptState(fence, execution);
+        }
+        state = await this.applyTurnEvent({ fence, current: state, execution, event });
+        if (event.type !== 'completion' && !isAtomicTurnAudit(event)) await this.append(fence, execution, event);
+        const completed = event.type === 'completion';
+        const reachedPause = event.type === 'pause_boundary' || (completed && state.status === 'paused');
+        return {
+            state, completed, reachedPause,
+            stop: stopsAtActivePause(event, this.adapter.capabilities.pause),
+        };
     }
 
     private async acknowledgeNextTurnMessage(
@@ -273,4 +300,19 @@ function invocationEvidenceOccurrence(event: GoalSessionEvent): string | undefin
     return event.type === 'model_changed'
         ? event.providerEventId ?? (event.providerEventOrdinal === undefined ? undefined : `ordinal-${event.providerEventOrdinal}`)
         : undefined;
+}
+
+function needsNextTurnModelEvidence(
+    state: GoalSessionState,
+    event: GoalSessionEvent,
+    capability: 'next_safe_boundary' | 'next_turn',
+): boolean {
+    if (event.type !== 'model_changed' || capability !== 'next_turn' || !state.activeTurn?.modelChange) return false;
+    const invocation = state.activeTurn.modelChange;
+    return !immediateModelIntents(state).find(intent =>
+        intent.modelChangeId === invocation.modelChangeId)?.invocationEvidence;
+}
+
+function unchangedStreamProgress(state: GoalSessionState, completed: boolean): TurnStreamProgress {
+    return { state, completed, reachedPause: false, stop: false };
 }

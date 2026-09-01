@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { appendFile, mkdir, realpath, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -10,80 +9,23 @@ import type {
     GoalExecutionIdentity,
     GoalSessionEventSink,
     GoalSessionFence,
-    GoalSessionIdentity,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { isSensitiveHostSourcePath } from './worktreeIdentity.js';
-
-export interface GoalContainerLayout {
-    executionId: string;
-    containerName: string;
-    sessionRoot: string;
-    providerHome: string;
-    logPath: string;
-}
-
-/**
- * A read-only credential source mounted into the container, kept separate from
- * the writable provider home so secrets never share a directory with mutable
- * goal state.
- */
-export interface GoalCredentialMount {
-    /** Absolute host path holding the credential material. */
-    source: string;
-    /** Absolute, provider-owned container path; mounted read-only. */
-    target: string;
-    /** Explicit provider ownership; inferred from the native target for legacy callers. */
-    provider?: 'claude' | 'codex' | 'antigravity';
-}
-
-/** Adapter-facing view of exact in-memory protocol chunks (never persistence). */
-export interface GoalContainerOutputObserver {
-    next(output: Readonly<SupervisedDockerOutput>): void | 'unsubscribe' | Promise<void | 'unsubscribe'>;
-    complete?(): void | Promise<void>;
-    error?(error: Error): void | Promise<void>;
-}
-
-export interface StartGoalContainerRequest extends GoalSessionFence, GoalExecutionIdentity {
-    image: string;
-    command: string[];
-    worktreePath: string;
-    /** Durable fingerprint of the exact worktree recorded on the active turn. */
-    worktreeFingerprint: string;
-    /** Provider-specific home location, for example /home/node/.codex. Must be provider-owned. */
-    providerHomeTarget: string;
-    /**
-     * Allow-listed environment. Names are passed to Docker as `--env NAME` while
-     * the values are injected into the docker client's environment, so secret
-     * values never appear in argv or a process listing.
-     */
-    environment?: Record<string, string>;
-    /** Read-only credential mounts, kept separate from the writable provider home. */
-    credentialMounts?: ReadonlyArray<GoalCredentialMount>;
-    /** Ordered and backpressured in the same queue as durable output persistence. */
-    outputObserver?: GoalContainerOutputObserver;
-    signal?: AbortSignal;
-    timeout?: number;
-    taskId?: string;
-}
-
-/** Eager provider process construction is control-scoped and never invents a turn. */
-export interface StartGoalOpenContainerRequest extends GoalSessionIdentity, GoalExecutionIdentity {
-    controllerEpoch: number;
-    deterministicOpenKey: string;
-    image: string;
-    command: string[];
-    worktreePath: string;
-    worktreeFingerprint: string;
-    providerHomeTarget: string;
-    environment?: Record<string, string>;
-    credentialMounts?: ReadonlyArray<GoalCredentialMount>;
-    outputObserver?: GoalContainerOutputObserver;
-    signal?: AbortSignal;
-    timeout?: number;
-    taskId?: string;
-}
+import {
+    buildGoalContainerLayout, buildGoalOpenContainerLayout, DEFAULT_GOAL_CONTAINER_RETENTION,
+    GOAL_SCOPE_PATTERN, validateAbsolutePath, validateBindMountPath,
+    type GoalContainerIsolationPolicy, type GoalContainerLayout, type GoalContainerRetentionPolicy,
+    type GoalCredentialMount, type StartGoalContainerRequest, type StartGoalOpenContainerRequest,
+} from './goalContainerLayout.js';
+export {
+    buildGoalContainerLayout, buildGoalOpenContainerLayout, DEFAULT_GOAL_CONTAINER_RETENTION,
+} from './goalContainerLayout.js';
+export type {
+    GoalContainerIsolationPolicy, GoalContainerLayout, GoalContainerOutputObserver,
+    GoalContainerRetentionPolicy, GoalCredentialMount, StartGoalContainerRequest, StartGoalOpenContainerRequest,
+} from './goalContainerLayout.js';
 
 /** Container paths a provider home may never shadow. */
 const RESERVED_CONTAINER_PATHS = new Set(['/', '/workspace', '/etc', '/root', '/home', '/usr', '/bin', '/var', '/tmp', '/proc', '/sys', '/dev']);
@@ -91,100 +33,6 @@ const RESERVED_CONTAINER_PATHS = new Set(['/', '/workspace', '/etc', '/root', '/
 const PROVIDER_HOME_ROOTS = ['/home/', '/root/', '/opt/'];
 const CREDENTIAL_TARGET_DENY_TREES = ['/proc', '/sys', '/dev'];
 const MAX_GOAL_LOG_BYTES = 8 * 1024 * 1024;
-
-export interface GoalContainerRetentionPolicy {
-    succeededMs: number;
-    cancelledMs: number;
-    failedMs: number;
-}
-
-/** Host resources explicitly approved for this supervisor instance. */
-export interface GoalContainerIsolationPolicy {
-    environmentKeys: ReadonlyArray<string>;
-    worktreePaths: ReadonlyArray<string>;
-    providerHomeTargets: ReadonlyArray<string>;
-    credentialMounts?: ReadonlyArray<GoalCredentialMount>;
-}
-
-/**
- * Terminal homes and their bounded diagnostic logs are retained briefly, then
- * removed. Failed sessions receive a longer window. Worktrees and authoritative
- * events owned by the injected persistence ports are never deleted here.
- */
-export const DEFAULT_GOAL_CONTAINER_RETENTION: GoalContainerRetentionPolicy = {
-    succeededMs: 24 * 60 * 60 * 1000,
-    cancelledMs: 24 * 60 * 60 * 1000,
-    failedMs: 7 * 24 * 60 * 60 * 1000,
-};
-
-/** An opaque, derived goal scope: 24 hex characters from buildGoalContainerLayout. */
-const GOAL_SCOPE_PATTERN = /^[a-f0-9]{24}$/;
-
-function opaquePart(value: string, length = 16): string {
-    return createHash('sha256').update(value).digest('hex').slice(0, length);
-}
-
-function goalScopeFor(request: GoalSessionIdentity): string {
-    return opaquePart(`${request.goalId}\0${request.sessionId}`, 24);
-}
-
-function validateAbsolutePath(value: string, name: string): void {
-    if (!path.isAbsolute(value)) throw new Error(`${name} must be an absolute path`);
-}
-
-/**
- * Validates a host path that is interpolated into a Docker `--mount` CSV value.
- * A comma, `=`, or control character would be parsed by Docker as an additional
- * mount field/option, so such paths are rejected outright.
- */
-function validateBindMountPath(value: string, name: string): void {
-    validateAbsolutePath(value, name);
-    if (/[,=\n\r\0]/.test(value)) {
-        throw new Error(`${name} may not contain a comma, '=', or control character that could inject Docker --mount options`);
-    }
-}
-
-export function buildGoalContainerLayout(baseDirectory: string, request: GoalSessionFence & GoalExecutionIdentity): GoalContainerLayout {
-    return buildScopedGoalContainerLayout(baseDirectory, request, request.turnId);
-}
-
-export function buildGoalOpenContainerLayout(
-    baseDirectory: string,
-    request: StartGoalOpenContainerRequest,
-): GoalContainerLayout {
-    return buildScopedGoalContainerLayout(baseDirectory, request, `open:${request.deterministicOpenKey}`);
-}
-
-function buildScopedGoalContainerLayout(
-    baseDirectory: string,
-    request: GoalSessionIdentity & GoalExecutionIdentity & { controllerEpoch: number },
-    operationIdentity: string,
-): GoalContainerLayout {
-    validateBindMountPath(baseDirectory, 'Goal container base directory');
-    const goalScope = goalScopeFor(request);
-    const executionId = [
-        goalScope,
-        `e${request.controllerEpoch}`,
-        opaquePart(operationIdentity, 10),
-        opaquePart(request.attemptId, 10),
-    ].join('-');
-    const sessionRoot = path.join(baseDirectory, 'goals', goalScope);
-    const logDir = path.join(sessionRoot, 'logs');
-    // The log file name is built only from the opaque, derived executionId, so
-    // caller-controlled turn/attempt identifiers can never inject a separator or
-    // `..` that would escape the goal's log directory.
-    const logPath = path.join(logDir, `${executionId}.jsonl`);
-    if (path.dirname(logPath) !== logDir) {
-        throw new Error('Derived goal log path escaped the goal log directory');
-    }
-    return {
-        executionId,
-        containerName: `propr-goal-${executionId}`,
-        sessionRoot,
-        providerHome: path.join(sessionRoot, 'provider-home'),
-        logPath,
-    };
-}
 
 const BLOCKED_ENVIRONMENT_KEYS = /^(?:DOCKER(?:_|$)|LD_PRELOAD$|LD_LIBRARY_PATH$|SSH(?:_|$)|HOME$|NODE_OPTIONS$|GIT_ASKPASS$|GIT_SSH(?:_|$)|AWS_(?:CONFIG|SHARED_CREDENTIALS)_FILE$|GOOGLE_APPLICATION_CREDENTIALS$)/;
 

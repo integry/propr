@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type {
     GoalExecutionIdentity,
     GoalSessionAdapter,
@@ -24,27 +24,8 @@ import {
     nextState,
     validateControlFence,
 } from './support.js';
-
-function completesAtAfterTurnPause(
-    state: GoalSessionState,
-    outcome: Extract<GoalSessionEvent, { type: 'completion' }>['outcome'],
-    pauseCapability: 'active_turn' | 'after_turn',
-): boolean {
-    return outcome === 'succeeded'
-        && pauseCapability === 'after_turn'
-        && (state.status === 'pause_requested'
-            || state.status === 'paused'
-            || state.pendingAfterTurnPause === true);
-}
-
-function needsAfterTurnPauseAudit(
-    state: GoalSessionState,
-    outcome: Extract<GoalSessionEvent, { type: 'completion' }>['outcome'],
-    pauseCapability: 'active_turn' | 'after_turn',
-): boolean {
-    return completesAtAfterTurnPause(state, outcome, pauseCapability)
-        && (state.status === 'pause_requested' || state.pendingAfterTurnPause === true);
-}
+import { completesAtAfterTurnPause, needsAfterTurnPauseAudit } from './turnCompletionProtocol.js';
+import { controlOperationId, mintFreshAttemptId } from './controlOperationIdentity.js';
 
 /**
  * Low-level, fenced state and event primitives shared by every high-level goal
@@ -67,20 +48,12 @@ export abstract class GoalSessionCore {
     }
 
     protected mintFreshAttemptId(previousAttemptId: string): string {
-        for (let attempt = 0; attempt < 4; attempt += 1) {
-            const candidate = this.mintAttemptId();
-            if (candidate && candidate !== previousAttemptId) return candidate;
-        }
-        throw new GoalSessionContractError('Could not mint a fresh recovery attempt identity', 'RECOVERY_ATTEMPT_REUSED');
+        return mintFreshAttemptId(previousAttemptId, () => this.mintAttemptId());
     }
 
     /** Stable, non-secret identity for a control operation claimed at one state version. */
     protected controlOperationId(kind: string, state: GoalSessionState): string {
-        const scope = createHash('sha256')
-            .update(`${state.goalId}\0${state.sessionId}`)
-            .digest('hex')
-            .slice(0, 24);
-        return `${kind}-${scope}-e${state.controllerEpoch}-v${state.version}`;
+        return controlOperationId(kind, state);
     }
 
     protected async claimResumeOperation(

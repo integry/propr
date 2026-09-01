@@ -1,5 +1,6 @@
 import type {
-    GoalCancelRequest, GoalPendingCancellationContext, GoalSessionControlFence, GoalSessionState,
+    GoalCancelRequest, GoalPendingCancellationContext, GoalProviderCancelRequest,
+    GoalSessionControlFence, GoalSessionState,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalImmediateModelControls } from './GoalImmediateModelControls.js';
@@ -28,7 +29,7 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
             throw new GoalSessionContractError('Cancelling state is missing its durable cancellation intent', 'CANCELLATION_INTENT_MISSING');
         }
         const intent = state.cancellationIntent;
-        const request = {
+        const request: GoalProviderCancelRequest = {
             goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
             reason: safeFailureDiagnostic(intent.reason, 'Operator cancelled the goal session'),
             cancellationId: intent.cancellationId,
@@ -38,24 +39,43 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
                 { kind: 'cancel', operationId: intent.cancellationId },
             ),
         };
-        let signalError: unknown;
-        let completionWon = true;
+        const signalError = await this.signalProviderCancellation(fence, state, request);
+        const completion = await this.completeClaimedCancellation(fence, state, request);
+        state = completion.state;
+        await this.publishProviderOperationBarrier(
+            fence, state.providerOperationGeneration ?? request.operationGeneration, intent.cancellationId,
+        );
+        state = await this.markBarrierPublished(fence, state);
+        if (completion.won && signalError && !(signalError instanceof CancellationTimedOut)) throw signalError;
+        return state;
+    }
+
+    private async signalProviderCancellation(
+        fence: GoalSessionControlFence,
+        state: GoalSessionState,
+        request: GoalProviderCancelRequest,
+    ): Promise<unknown> {
+        const intent = state.cancellationIntent!;
         try {
             await this.publishProviderOperationBarrier(fence, request.operationGeneration, intent.cancellationId);
             const authoritative = await this.requireControlledStateForBarrier(fence);
-            if (authoritative.status !== 'cancelling'
-                || authoritative.providerOperationGeneration !== request.operationGeneration
-                || authoritative.cancellationIntent?.cancellationId !== intent.cancellationId
-                || authoritative.providerBarrierIntent?.phase !== 'published') {
-                throw new StaleGoalSessionFenceError('Provider cancellation was durably replaced');
-            }
+            assertCancellationAuthority(authoritative, request);
             const signal = this.providerEffect(() => intent.pendingContext
                 ? this.adapter.cancelPending!(request, intent.pendingContext)
                 : this.adapter.cancel(request, persistedSnapshot(state)));
             await boundedCancellation(signal);
+            return undefined;
         } catch (error) {
-            signalError = error;
+            return error;
         }
+    }
+
+    private async completeClaimedCancellation(
+        fence: GoalSessionControlFence,
+        state: GoalSessionState,
+        request: GoalProviderCancelRequest,
+    ): Promise<{ state: GoalSessionState; won: boolean }> {
+        const intent = state.cancellationIntent!;
         try {
             state = await this.commitControlCompletion(state, request, {
                 status: 'terminated', activeTurn: undefined, initializationIntent: undefined,
@@ -69,22 +89,17 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
                 },
                 pendingAfterTurnPause: undefined, modelChangeIntent: undefined, modelChangeIntents: undefined,
             }, { type: 'completion', outcome: 'cancelled', error: intent.reason });
+            return { state, won: true };
         } catch (error) {
             if (!(error instanceof StaleGoalSessionFenceError)) throw error;
             const current = await this.requireState(fence);
             if (current.status !== 'terminated'
                 || current.cancellationIntent?.cancellationId !== intent.cancellationId) throw error;
-            completionWon = false;
             state = await this.repairPendingProviderBarrier({
                 ...fence, controllerEpoch: current.controllerEpoch,
             }, current);
+            return { state, won: false };
         }
-        await this.publishProviderOperationBarrier(
-            fence, state.providerOperationGeneration ?? request.operationGeneration, intent.cancellationId,
-        );
-        state = await this.markBarrierPublished(fence, state);
-        if (completionWon && signalError && !(signalError instanceof CancellationTimedOut)) throw signalError;
-        return state;
     }
 
     protected async repairPendingProviderBarrier(
@@ -218,5 +233,17 @@ async function boundedCancellation(signal: Promise<void>): Promise<void> {
     } finally {
         if (timer) clearTimeout(timer);
         void signal.catch(() => undefined);
+    }
+}
+
+function assertCancellationAuthority(
+    state: GoalSessionState,
+    request: GoalProviderCancelRequest,
+): void {
+    if (state.status !== 'cancelling'
+        || state.providerOperationGeneration !== request.operationGeneration
+        || state.cancellationIntent?.cancellationId !== request.cancellationId
+        || state.providerBarrierIntent?.phase !== 'published') {
+        throw new StaleGoalSessionFenceError('Provider cancellation was durably replaced');
     }
 }

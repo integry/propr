@@ -1,6 +1,5 @@
 import type {
-    GoalProviderDuplexTransport, GoalProviderOpenContext, GoalProviderOperationFence, GoalRepositoryIdentity,
-    GoalSessionIdentity, GoalSessionState,
+    GoalProviderOpenContext, GoalSessionState,
 } from './contract.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -18,10 +17,13 @@ import {
     latestImmediateModelIntent,
 } from './modelChangeProtocol.js';
 import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
-import { assertSafeProviderIdentifier, safeFailureDiagnostic } from './securityBoundary.js';
-import { SUPERVISED_CODEX_MODEL } from './CodexAppServerOpen.js';
+import { safeFailureDiagnostic } from './securityBoundary.js';
 import { rebuildProviderSnapshot } from './providerResultBoundary.js';
 import { credentialFreeRepositoryIdentity } from './repositorySecurity.js';
+import {
+    durableCodexOpenKey, validateEagerOpenContext, validateSupervisedOpenPlan,
+    type GoalSupervisedOpenClaim, type OpenGoalSessionRequest,
+} from './goalSessionOpen.js';
 import {
     assertProviderIdentity,
     nextState,
@@ -31,30 +33,9 @@ import {
     validateIdentity,
 } from './support.js';
 
-export interface OpenGoalSessionRequest extends GoalSessionIdentity {
-    provider: string;
-    controllerEpoch: number;
-    openContext?: GoalProviderOpenContext;
-    /** Preferred eager-open API: transport construction occurs after the exact durable claim. */
-    supervisedOpen?: GoalSupervisedOpenPlan;
-}
-
-export interface GoalSupervisedOpenClaim {
-    executionId: string;
-    attemptId: string;
-    deterministicOpenKey: string;
-    operationGeneration: number;
-    /** Serializable provider-visible fence checked before process construction. */
-    operationFence: GoalProviderOperationFence;
-}
-
-export interface GoalSupervisedOpenPlan {
-    repository: GoalRepositoryIdentity;
-    requestedModel: string;
-    providerHomeTarget: string;
-    credentialTargets: string[];
-    createTransport(claim: Readonly<GoalSupervisedOpenClaim>): Promise<GoalProviderDuplexTransport>;
-}
+export type {
+    GoalSupervisedOpenClaim, GoalSupervisedOpenPlan, OpenGoalSessionRequest,
+} from './goalSessionOpen.js';
 
 export type { ReconcileGoalSessionResult } from './GoalSessionRecoveryControls.js';
 
@@ -78,8 +59,8 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             'Eager open accepts one supervised transport source', 'UNSAFE_PROVIDER_VALUE',
         );
         const openContext = request.openContext === undefined
-            ? undefined : await this.validateEagerOpenContext(request);
-        if (request.supervisedOpen) await this.validateSupervisedOpenPlan(request.supervisedOpen);
+            ? undefined : await validateEagerOpenContext(this.adapter, request);
+        if (request.supervisedOpen) await validateSupervisedOpenPlan(this.adapter, request.supervisedOpen);
         request = {
             goalId: request.goalId, sessionId: request.sessionId, provider: request.provider,
             controllerEpoch: request.controllerEpoch, openContext, supervisedOpen: request.supervisedOpen,
@@ -182,68 +163,6 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
 
     private canRecoverIncompleteInit(state: GoalSessionState): boolean {
         return this.adapter.supportsDeterministicOpen === true && state.initializationIntent !== undefined;
-    }
-
-    private async validateEagerOpenContext(
-        request: OpenGoalSessionRequest,
-    ): Promise<GoalProviderOpenContext | undefined> {
-        if (request.provider !== 'codex' || this.adapter.capabilities.nativeSessionId !== 'eager') {
-            if (request.openContext !== undefined) throw new GoalSessionContractError(
-                'Only eager Codex open accepts a supervised context', 'UNSAFE_PROVIDER_VALUE',
-            );
-            return undefined;
-        }
-        const context = request.openContext;
-        if (!context) throw new GoalSessionContractError(
-            'Eager Codex open requires a supervised stdio context', 'OPEN_CONTEXT_MISSING',
-        );
-        assertSafeProviderIdentifier(context.executionId);
-        assertSafeProviderIdentifier(context.attemptId);
-        if (context.requestedModel !== SUPERVISED_CODEX_MODEL) throw new GoalSessionContractError(
-            'Eager Codex open requires exact gpt-5.6-sol', 'MODEL_ACK_MISMATCH',
-        );
-        if (!Array.isArray(context.credentialTargets) || context.credentialTargets.length > 16
-            || context.credentialTargets.some(target => typeof target !== 'string'
-                || !target.startsWith('/home/node/.codex/') || target.includes('\0'))
-            || new Set(context.credentialTargets).size !== context.credentialTargets.length) {
-            throw new GoalSessionContractError('Codex credential targets are unsafe', 'UNSAFE_PROVIDER_VALUE');
-        }
-        const repository = await credentialFreeRepositoryIdentity(context.repository);
-        if (!isExactRepositoryIdentity(repository, context.repository)
-            || context.providerHomeTarget !== '/home/node/.codex'
-            || typeof context.transport.write !== 'function'
-            || typeof context.transport.closeInput !== 'function'
-            || typeof context.transport.cancel !== 'function'
-            || !context.transport.output || typeof context.transport.output[Symbol.asyncIterator] !== 'function'
-            || !context.transport.completion || typeof context.transport.completion.then !== 'function') {
-            throw new GoalSessionContractError('Eager Codex open context is unsafe', 'UNSAFE_PROVIDER_VALUE');
-        }
-        return {
-            executionId: context.executionId, attemptId: context.attemptId,
-            repository, requestedModel: context.requestedModel,
-            providerHomeTarget: context.providerHomeTarget,
-            credentialTargets: [...context.credentialTargets],
-            deterministicOpenKey: context.deterministicOpenKey,
-            transport: context.transport,
-        };
-    }
-
-    private async validateSupervisedOpenPlan(plan: GoalSupervisedOpenPlan): Promise<void> {
-        if (this.adapter.provider !== 'codex' || this.adapter.capabilities.nativeSessionId !== 'eager') {
-            throw new GoalSessionContractError('Supervised eager open is Codex-only', 'UNSAFE_PROVIDER_VALUE');
-        }
-        if (plan.requestedModel !== SUPERVISED_CODEX_MODEL || plan.providerHomeTarget !== '/home/node/.codex'
-            || typeof plan.createTransport !== 'function') throw new GoalSessionContractError(
-            'Supervised Codex open plan is not canonical', 'UNSAFE_PROVIDER_VALUE',
-        );
-        const repository = await credentialFreeRepositoryIdentity(plan.repository);
-        if (!isExactRepositoryIdentity(repository, plan.repository)
-            || !Array.isArray(plan.credentialTargets) || plan.credentialTargets.length > 16
-            || plan.credentialTargets.some(target => typeof target !== 'string'
-                || !target.startsWith('/home/node/.codex/') || target.includes('\0'))
-            || new Set(plan.credentialTargets).size !== plan.credentialTargets.length) {
-            throw new GoalSessionContractError('Supervised Codex open plan is unsafe', 'UNSAFE_PROVIDER_VALUE');
-        }
     }
 
     private async openFirstTurnIdentitySession(
@@ -483,7 +402,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             throw new StaleGoalSessionFenceError('Supervised provider transport claim was durably replaced');
         }
         const transport = await this.providerEffect(() => request.supervisedOpen!.createTransport(Object.freeze({ ...claim })));
-        return this.validateEagerOpenContext({
+        return validateEagerOpenContext(this.adapter, {
             ...request,
             openContext: {
                 ...claim,
@@ -495,26 +414,6 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             },
         });
     }
-}
-
-function durableCodexOpenKey(state: GoalSessionState): string | undefined {
-    const metadata = state.recoveryMetadata;
-    if (!metadata || Array.isArray(metadata) || typeof metadata !== 'object') return undefined;
-    const payload = metadata.payload;
-    if (!payload || Array.isArray(payload) || typeof payload !== 'object') return undefined;
-    return typeof payload.openKey === 'string' ? payload.openKey : undefined;
-}
-
-function isExactRepositoryIdentity(
-    canonical: GoalRepositoryIdentity,
-    candidate: GoalRepositoryIdentity,
-): boolean {
-    const keys = Object.keys(candidate);
-    return keys.every(key => ['repository', 'worktreePath', 'branch', 'headSha'].includes(key))
-        && canonical.repository === candidate.repository
-        && canonical.worktreePath === candidate.worktreePath
-        && canonical.branch === candidate.branch
-        && canonical.headSha === candidate.headSha;
 }
 
 export {

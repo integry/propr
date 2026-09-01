@@ -6,8 +6,7 @@ import { resolveModelChangeHistory } from './modelChangeHistory.js';
 import { nextState, persistedSnapshot } from './support.js';
 import { assertSafeProviderIdentifier } from './securityBoundary.js';
 import { rebuildModelAcknowledgement } from './providerResultBoundary.js';
-
-const MODEL_APPLICATION_LEASE_MS = 30_000;
+import { claimModelApplicationIntent } from './modelApplicationLease.js';
 
 /** Durable generation and convergence protocol for provider model side effects. */
 export abstract class GoalImmediateModelControls extends GoalTurnRunner {
@@ -321,13 +320,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
                 assertModelControllable(state);
                 continue;
             }
-            const claimed: GoalModelChangeIntent = {
-                ...current,
-                phase: current.phase === 'committed' ? 'committed' : 'provider_in_doubt',
-                applicationToken: `${current.modelChangeId}:e${state.controllerEpoch}:v${state.version}`,
-                applicationControllerEpoch: state.controllerEpoch,
-                leaseExpiresAt: new Date(Date.now() + MODEL_APPLICATION_LEASE_MS).toISOString(),
-            };
+            const claimed = claimModelApplicationIntent(current, state);
             const intents = replaceImmediateModelIntent(state, claimed);
             try {
                 const saved = await this.compareAndSetExact(state, {
