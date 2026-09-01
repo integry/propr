@@ -212,27 +212,114 @@ function Test-LiveCancellationAndRedaction {
   }
 }
 
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
+function Get-RunnerProfileSnapshot {
+  try {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    Assert-True ($null -ne $identity -and $null -ne $identity.User) `
+      'runner profile authority validation failed'
+    $identitySid = $identity.User.Value
+    Assert-True (![string]::IsNullOrWhiteSpace($identitySid)) `
+      'runner profile authority validation failed'
 
-public static class ProPRSupervisorOwnershipProfileFixture
-{
-    [DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern int CreateProfile(
-        string userSid,
-        string userName,
-        StringBuilder profilePath,
-        uint profilePathLength);
+    $profiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
+      $_.SID -ceq $identitySid
+    })
+    Assert-True ($profiles.Count -eq 1) 'runner profile authority validation failed'
+    $profile = $profiles[0]
+    Assert-True (!$profile.Special -and $profile.Loaded) `
+      'runner profile authority validation failed'
+    Assert-True (![string]::IsNullOrWhiteSpace([string]$profile.LocalPath) -and
+      [IO.Path]::IsPathRooted([string]$profile.LocalPath)) `
+      'runner profile authority validation failed'
 
-    [DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool DeleteProfile(string userSid, string profilePath, string computerName);
+    $rawCimLocalPath = [string]$profile.LocalPath
+    $cimLocalPath = $rawCimLocalPath.TrimEnd('\')
+    Assert-True ($rawCimLocalPath -ceq $cimLocalPath) `
+      'runner profile authority validation failed'
+    $canonicalLocalPath = [IO.Path]::GetFullPath($cimLocalPath).TrimEnd('\')
+    Assert-True ([string]::Equals(
+      $cimLocalPath,
+      $canonicalLocalPath,
+      [StringComparison]::Ordinal
+    )) 'runner profile authority validation failed'
+    $resolvedProfilePath = Resolve-Path -LiteralPath $canonicalLocalPath -ErrorAction Stop
+    $resolvedLocalPath = $resolvedProfilePath.ProviderPath.TrimEnd('\')
+    Assert-True ([string]::Equals(
+      $resolvedLocalPath,
+      $canonicalLocalPath,
+      [StringComparison]::Ordinal
+    )) 'runner profile authority validation failed'
+
+    $profileDirectory = Get-Item -LiteralPath $canonicalLocalPath -Force -ErrorAction Stop
+    Assert-True ($profileDirectory.PSIsContainer) 'runner profile authority validation failed'
+    $pathCursor = $profileDirectory
+    while ($null -ne $pathCursor) {
+      Assert-True (($pathCursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+        'runner profile authority validation failed'
+      $parentPath = Split-Path -Parent $pathCursor.FullName
+      if ([string]::IsNullOrEmpty($parentPath) -or
+          [string]::Equals($parentPath, $pathCursor.FullName, [StringComparison]::OrdinalIgnoreCase)) {
+        break
+      }
+      $pathCursor = Get-Item -LiteralPath $parentPath -Force -ErrorAction Stop
+    }
+
+    $profileOwner = (Get-Acl -LiteralPath $canonicalLocalPath -ErrorAction Stop).Owner
+    Assert-True (![string]::IsNullOrWhiteSpace($profileOwner)) `
+      'runner profile authority validation failed'
+    $profileOwnerSid = if ($profileOwner -match '^S-\d+(?:-\d+)+$') {
+      [Security.Principal.SecurityIdentifier]::new($profileOwner).Value
+    } else {
+      $profileOwnerAccount = [Security.Principal.NTAccount]::new($profileOwner)
+      $profileOwnerAccount.Translate([Security.Principal.SecurityIdentifier]).Value
+    }
+
+    return [PSCustomObject]@{
+      ProfileExists = $true
+      DirectoryExists = $true
+      IdentitySid = $identitySid
+      ProfileSid = [string]$profile.SID
+      CimLocalPath = $cimLocalPath
+      CanonicalLocalPath = $canonicalLocalPath
+      DirectoryOwnerSid = $profileOwnerSid
+      DirectoryAttributes = [int64]$profileDirectory.Attributes
+      Loaded = [bool]$profile.Loaded
+      Special = [bool]$profile.Special
+      Status = [uint32]$profile.Status
+      HealthStatus = [uint32]$profile.HealthStatus
+      RoamingConfigured = [bool]$profile.RoamingConfigured
+      RoamingPath = [string]$profile.RoamingPath
+      RoamingPreference = [bool]$profile.RoamingPreference
+    }
+  } catch {
+    throw 'runner profile authority validation failed'
+  } finally {
+    if ($null -ne $identity) { $identity.Dispose() }
+  }
 }
-'@
+
+function Assert-RunnerProfileUnchanged($Before) {
+  $after = Get-RunnerProfileSnapshot
+  $unchanged = $after.ProfileExists -and $Before.ProfileExists -and
+    $after.DirectoryExists -and $Before.DirectoryExists -and
+    $after.IdentitySid -ceq $Before.IdentitySid -and
+    $after.ProfileSid -ceq $Before.ProfileSid -and
+    $after.CimLocalPath -ceq $Before.CimLocalPath -and
+    $after.CanonicalLocalPath -ceq $Before.CanonicalLocalPath -and
+    $after.DirectoryOwnerSid -ceq $Before.DirectoryOwnerSid -and
+    $after.DirectoryAttributes -eq $Before.DirectoryAttributes -and
+    $after.Loaded -eq $Before.Loaded -and
+    $after.Special -eq $Before.Special -and
+    $after.Status -eq $Before.Status -and
+    $after.HealthStatus -eq $Before.HealthStatus -and
+    $after.RoamingConfigured -eq $Before.RoamingConfigured -and
+    $after.RoamingPath -ceq $Before.RoamingPath -and
+    $after.RoamingPreference -eq $Before.RoamingPreference
+  Assert-True $unchanged 'runner profile authority changed during ownership test'
+}
 
 function Test-PreExistingCleanupOwnership {
+  $runnerProfileBefore = Get-RunnerProfileSnapshot
   $installRoot = Join-Path $env:ProgramFiles 'ProPR Desktop'
   $protocolRoot = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
   $commonPrograms = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)
@@ -246,28 +333,25 @@ function Test-PreExistingCleanupOwnership {
   $userName = "prpr$([Guid]::NewGuid().ToString('N').Substring(0,8))"
   $password = ConvertTo-SecureString "P!$([Guid]::NewGuid().ToString('N'))z9" -AsPlainText -Force
   $userCreated = $false
-  $profileCreated = $false
   $installCreated = $false
   $protocolCreated = $false
   $shortcutCreated = $false
   $userSid = $null
-  $profilePath = $null
   try {
-    New-LocalUser -Name $userName -Password $password -AccountNeverExpires -PasswordNeverExpires | Out-Null
+    Assert-True ($null -eq (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue)) `
+      'pre-existing local user fixture baseline was not clean'
+    $createdUser = New-LocalUser -Name $userName -Password $password `
+      -AccountNeverExpires -PasswordNeverExpires
     $userCreated = $true
-    $userSid = (Get-LocalUser -Name $userName -ErrorAction Stop).SID
-    $profileBuffer = [Text.StringBuilder]::new(1024)
-    $createProfileResult = [ProPRSupervisorOwnershipProfileFixture]::CreateProfile(
-      $userSid.Value,
-      $userName,
-      $profileBuffer,
-      [uint32]$profileBuffer.Capacity
-    )
-    if ($createProfileResult -ne 0) {
-      [Runtime.InteropServices.Marshal]::ThrowExceptionForHR($createProfileResult)
-    }
-    $profilePath = $profileBuffer.ToString()
-    $profileCreated = $true
+    $userSid = $createdUser.SID
+    Assert-True ($null -ne $userSid) 'pre-existing local user fixture ownership capture failed'
+    $capturedUser = Get-LocalUser -Name $userName -ErrorAction Stop
+    Assert-True ($capturedUser.SID.Equals($userSid)) `
+      'pre-existing local user fixture ownership capture failed'
+    $fixtureUserProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+      Where-Object { $_.SID -ceq $userSid.Value })
+    Assert-True ($fixtureUserProfiles.Count -eq 0) `
+      'pre-existing local user fixture unexpectedly acquired a profile'
 
     [void](New-Item -ItemType Directory -Path $installRoot -ErrorAction Stop)
     $installCreated = $true
@@ -276,8 +360,8 @@ function Test-PreExistingCleanupOwnership {
     $protocolCreated = $true
     Set-ItemProperty -LiteralPath $protocolRoot -Name 'PreExisting' -Value 'owned-before-run'
     [void](New-Item -ItemType Directory -Path $shortcutFolder -ErrorAction Stop)
-    Set-Content -LiteralPath $shortcut -Value 'owned-before-run'
     $shortcutCreated = $true
+    Set-Content -LiteralPath $shortcut -Value 'owned-before-run'
 
     $stateDirectory = New-StateDirectory 'ownership'
     $process = [Diagnostics.Process]::new()
@@ -291,6 +375,21 @@ function Test-PreExistingCleanupOwnership {
       Assert-Contains $output `
         'PROPR_WINDOWS_INSTALLED_SMOKE:OPERATION:INITIALIZATION:BASELINE:FAILED' `
         'production worker did not execute its pre-existing-resource rejection path'
+      Assert-NotContains $output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:OPERATION:CLEANUP:PROFILE_LOOKUP:BEGIN' `
+        'production worker selected a pre-existing profile for lookup'
+      Assert-NotContains $output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:OPERATION:CLEANUP:PROFILE_REMOVE:BEGIN' `
+        'production worker selected a pre-existing profile for deletion'
+      $redactedEvidence = "$output`n$standardError"
+      Assert-NotContains $redactedEvidence $runnerProfileBefore.IdentitySid `
+        'ownership evidence exposed the runner identity SID'
+      Assert-NotContains $redactedEvidence $runnerProfileBefore.CanonicalLocalPath `
+        'ownership evidence exposed the runner profile path'
+      Assert-NotContains $redactedEvidence $userName `
+        'ownership evidence exposed the fixture local-user name'
+      Assert-NotContains $redactedEvidence $userSid.Value `
+        'ownership evidence exposed the fixture local-user SID'
     } finally {
       if (!$process.HasExited) { try { $process.Kill($true) } catch {} }
       $process.Dispose()
@@ -304,8 +403,10 @@ function Test-PreExistingCleanupOwnership {
       'owned-before-run') 'pre-existing shortcut was removed or changed'
     $remainingUser = Get-LocalUser -Name $userName -ErrorAction Stop
     Assert-True ($remainingUser.SID.Equals($userSid)) 'pre-existing local user was removed or replaced'
-    Assert-True (Test-Path -LiteralPath $profilePath -PathType Container) `
-      'pre-existing user profile was removed'
+    $fixtureUserProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+      Where-Object { $_.SID -ceq $userSid.Value })
+    Assert-True ($fixtureUserProfiles.Count -eq 0) `
+      'pre-existing local user fixture unexpectedly acquired a profile'
   } finally {
     if ($shortcutCreated -and (Test-Path -LiteralPath $shortcutFolder)) {
       Remove-Item -LiteralPath $shortcutFolder -Recurse -Force -ErrorAction SilentlyContinue
@@ -316,26 +417,20 @@ function Test-PreExistingCleanupOwnership {
     if ($installCreated -and (Test-Path -LiteralPath $installRoot)) {
       Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
-    $profileDeleted = !$profileCreated
-    if ($profileCreated) {
-      $profileDeleted = [ProPRSupervisorOwnershipProfileFixture]::DeleteProfile(
-        $userSid.Value,
-        $null,
-        $null
-      )
+    if ($userCreated) {
+      $ownedUser = Get-LocalUser -Name $userName -ErrorAction SilentlyContinue
+      if ($null -ne $ownedUser) {
+        Assert-True ($null -ne $userSid -and $ownedUser.SID.Equals($userSid)) `
+          'refusing to remove a local user not owned by the fixture'
+        Remove-LocalUser -Name $userName -ErrorAction Stop
+        Assert-True ($null -eq (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue)) `
+          'ownership local-user fixture cleanup failed'
+      }
     }
-    if ($userCreated -and (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue)) {
-      Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
-    }
-    if (!$profileDeleted) {
-      $profileDeleted = [ProPRSupervisorOwnershipProfileFixture]::DeleteProfile(
-        $userSid.Value,
-        $null,
-        $null
-      )
-    }
-    if (!$profileDeleted) { throw 'ownership profile fixture cleanup failed' }
+    Assert-RunnerProfileUnchanged $runnerProfileBefore
   }
+  Write-Host 'PROPR_WINDOWS_SUPERVISOR_OWNERSHIP:PRE_EXISTING_AUTHORITIES:PRESERVED'
+  [Console]::Out.Flush()
 }
 
 if (![OperatingSystem]::IsWindows()) { throw 'supervisor behavior tests require Windows' }

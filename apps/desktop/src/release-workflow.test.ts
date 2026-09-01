@@ -562,6 +562,22 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-LiveCancellationAndRedaction/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingCleanupOwnership/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-ProcessTreeGone/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /WindowsIdentity\]::GetCurrent\(\)/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-Acl -LiteralPath \$canonicalLocalPath/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /FileAttributes\]::ReparsePoint/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-RunnerProfileUnchanged/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_WINDOWS_SUPERVISOR_OWNERSHIP:PRE_EXISTING_AUTHORITIES:PRESERVED/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisorBehaviorTest,
+      /CreateProfile|DeleteProfile|Remove-CimInstance|userenv\.dll/,
+    );
     assert.match(installedWindowsAppSupervisorFixture, /Start-FixtureDescendant/);
 
     assert.match(installedWindowsAppSupervisor, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000/);
