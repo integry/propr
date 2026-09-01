@@ -92,6 +92,7 @@ export {
   DEFAULT_PROPR_ROUTING_URL,
   DEFAULT_PROPR_GH_RELAY_URL,
   DEFAULT_PROPR_UI_ORIGIN,
+  DESKTOP_RENDERER_ORIGIN,
   PROPR_UI_PROXY_SUFFIX,
   PROPR_UI_PROXY_LABEL_PREFIX,
   DEFAULT_CLOUDFLARED_IMAGE,
@@ -147,6 +148,7 @@ export {
   getProprCompatibilityMetadata,
   evaluateProprApiCompatibility,
   type ProprCompatibilityMetadata,
+  type ProprDesktopAuthenticationCapabilities,
   type ProprApiCompatibilityInput,
   type ProprApiCompatibilityResult,
 } from './proprCompatibility.js';

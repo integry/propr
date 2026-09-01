@@ -124,7 +124,7 @@ describe('demo mode API helpers', () => {
         headers: { 'Content-Type': 'application/json' },
       }));
 
-    const request = new Request('http://localhost/api/github/repos');
+    const request = new Request(new URL('/api/github/repos', window.location.origin));
     const response = await apiFetch(request);
 
     expect(response.status).toBe(200);

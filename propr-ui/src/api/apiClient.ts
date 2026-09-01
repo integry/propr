@@ -1,7 +1,25 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+import { ProprClient } from '@propr/client';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
+import { currentUiPathname, navigateToUiPath } from '../config/runtimeMode';
 
-export const API_BASE_URL = getApiBaseUrl();
+const createProprClient = (baseUrl: string): ProprClient => new ProprClient({
+  baseUrl,
+  // Domain modules already opt into cookies route-by-route. Preserve their
+  // exact RequestInit behavior while sharing the session transport policy.
+  authentication: { type: 'session', applyByDefault: false },
+});
+
+export let API_BASE_URL = getApiBaseUrl();
+export let proprClient = createProprClient(API_BASE_URL);
+
+/** Update the live bindings used by existing API modules when desktop profiles switch. */
+export const setApiBaseUrl = (value: string): void => {
+  const nextApiBaseUrl = value.trim().replace(/\/+$/, '');
+  const nextProprClient = createProprClient(nextApiBaseUrl);
+  API_BASE_URL = nextApiBaseUrl;
+  proprClient = nextProprClient;
+};
 export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 const TOKEN_REFRESHED_CODE = 'TOKEN_REFRESHED';
 const SAFE_PUBLIC_ERROR_CODES = new Set(['AGENT_VERSION_LOOKUP_UNAVAILABLE']);
@@ -98,10 +116,10 @@ const throwUnauthorizedResponse = (data: ApiErrorBody | null): never => {
   if (data?.code === TOKEN_REFRESHED_CODE) {
     throw new TokenRefreshRetryRequiredError(getApiErrorMessage(data));
   }
-  if (window.location.pathname === '/login') throw new Error('Authentication required');
+  if (currentUiPathname() === '/login') throw new Error('Authentication required');
   // Preserve only the validated active flow so login/OAuth cannot be driven by
   // arbitrary raw URL input or copied sessionStorage.
-  window.location.href = pathWithActiveHostedTunnelFlow('/login');
+  navigateToUiPath(pathWithActiveHostedTunnelFlow('/login'));
   throw new Error('Authentication required');
 };
 
@@ -130,8 +148,10 @@ export const apiFetch = async (
   init?: RequestInit,
   options: ApiFetchOptions = {}
 ): Promise<Response> => {
-  const response = await fetch(input, init);
-  if (isReplayableApiRequest(input, init, options) && await shouldRetryAfterTokenRefresh(response)) return fetch(input, init);
+  const response = await proprClient.fetch(input, init);
+  if (isReplayableApiRequest(input, init, options) && await shouldRetryAfterTokenRefresh(response)) {
+    return proprClient.fetch(input, init);
+  }
   return response;
 };
 

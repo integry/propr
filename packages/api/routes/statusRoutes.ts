@@ -69,12 +69,19 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
   let agentStatusCache: { expiresAt: number; statuses: AgentStatus[] } | undefined;
 
   function getCompatibility(_req: Request, res: Response): void {
-    res.json(getProprCompatibilityMetadata());
+    res.json(getProprCompatibilityMetadata(!isDemoMode()));
+  }
+
+  function getDesktopDiscovery(_req: Request, res: Response): void {
+    res.json({
+      product: 'ProPR',
+      ...getProprCompatibilityMetadata(!isDemoMode()),
+    });
   }
 
   async function getStatus(req: Request, res: Response): Promise<void> {
     try {
-      const compatibility = getProprCompatibilityMetadata();
+      const compatibility = getProprCompatibilityMetadata(!isDemoMode());
       // In demo mode, return all-green status
       if (isDemoMode()) {
         res.json({
@@ -195,7 +202,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     }
   }
 
-  return { getCompatibility, getStatus };
+  return { getCompatibility, getDesktopDiscovery, getStatus };
 
   async function getCachedAgentStatuses(): Promise<AgentStatus[]> {
     const currentTime = now();

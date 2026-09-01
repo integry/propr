@@ -1,5 +1,5 @@
 import { createContext } from 'react';
-import { Socket } from 'socket.io-client';
+import type { Socket } from '@propr/client';
 import { TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 
 export interface SocketContextValue {

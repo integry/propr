@@ -140,6 +140,39 @@ test("--no-skill conflicts with --install-skill", async () => {
   assert.match(errors.join(""), /cannot be used with/);
 });
 
+for (const platform of ["darwin", "win32"] as const) {
+  test(`setup reaches the agent-skill and engine flow on ${platform}`, { concurrency: false }, async () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...originalPlatform, value: platform });
+    const offeredTargets: Array<string | undefined> = [];
+    let sequentialRuns = 0;
+    const exitCodes: number[] = [];
+
+    try {
+      const command = createSetupCommand({
+        offerAgentSkill: async options => {
+          offeredTargets.push(options?.explicitTargets);
+          return [];
+        },
+        createConfig: async () => ({} as never),
+        runSequential: async () => {
+          sequentialRuns += 1;
+          return { completed: true } as never;
+        },
+        exit: code => { exitCodes.push(code); },
+      });
+
+      await command.parseAsync(["node", "propr", "--no-tui", "--install-skill", "codex"]);
+
+      assert.deepEqual(offeredTargets, ["codex"]);
+      assert.equal(sequentialRuns, 1);
+      assert.deepEqual(exitCodes, [0]);
+    } finally {
+      Object.defineProperty(process, "platform", originalPlatform);
+    }
+  });
+}
+
 for (const proprDemoMode of [undefined, "false"] as const) {
   test(`Ink login is required for GH_AUTH_MODE=demo when PROPR_DEMO_MODE is ${proprDemoMode ?? "absent"}`, () => {
     assert.equal(shouldPrepareInkGithubLogin(proprDemoMode, false), true);

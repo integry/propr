@@ -1,0 +1,152 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { PROPR_API_COMPATIBILITY } from '@propr/shared';
+import {
+  ProprClient,
+  ProprClientError,
+  normalizeApiBaseUrl,
+  normalizeInstanceProfile,
+} from '../src/index.js';
+
+describe('Propr API base URLs and instance profiles', () => {
+  it('supports browser same-origin, loopback, and secure remote instances', () => {
+    assert.equal(normalizeApiBaseUrl(), '');
+    assert.equal(normalizeApiBaseUrl('  http://localhost:4000///  '), 'http://localhost:4000');
+    assert.equal(normalizeApiBaseUrl('http://127.0.0.1:3000'), 'http://127.0.0.1:3000');
+    assert.equal(normalizeApiBaseUrl('http://[::1]:3000'), 'http://[::1]:3000');
+    assert.equal(normalizeApiBaseUrl('https://propr.example.com/'), 'https://propr.example.com');
+
+    const profile = normalizeInstanceProfile({
+      id: 'remote-primary',
+      name: 'Remote primary',
+      apiBaseUrl: 'https://propr.example.com/',
+      authentication: 'bearer',
+    });
+    assert.equal(profile.apiBaseUrl, 'https://propr.example.com');
+    assert.equal(profile.name, 'Remote primary');
+  });
+
+  it('rejects malformed and unsafe endpoints', () => {
+    for (const value of [
+      '/api',
+      'ftp://propr.example.com',
+      'https://user:secret@propr.example.com',
+      'https://propr.example.com/api',
+      'https://propr.example.com?token=secret',
+      'http://propr.example.com',
+    ]) {
+      assert.throws(() => normalizeApiBaseUrl(value), ProprClientError);
+    }
+  });
+});
+
+describe('ProprClient REST transport', () => {
+  it('adds a fresh bearer token without exposing it in the endpoint', async () => {
+    const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
+    const client = new ProprClient({
+      baseUrl: 'https://propr.example.com',
+      authentication: { type: 'bearer', getAccessToken: () => 'secret-token' },
+      fetch: async (input, init) => {
+        calls.push([input, init]);
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+
+    await client.request('/api/status');
+
+    assert.equal(calls[0][0], 'https://propr.example.com/api/status');
+    assert.equal(new Headers(calls[0][1]?.headers).get('Authorization'), 'Bearer secret-token');
+    assert.doesNotMatch(String(calls[0][0]), /secret-token/);
+  });
+
+  it('uses cookies for session authentication', async () => {
+    let captured: RequestInit | undefined;
+    const client = new ProprClient({
+      authentication: { type: 'session' },
+      fetch: async (_input, init) => {
+        captured = init;
+        return new Response(null, { status: 204 });
+      },
+    });
+
+    await client.request('/api/status');
+    assert.equal(captured?.credentials, 'include');
+  });
+
+  it('returns structured HTTP errors without changing the backend body', async () => {
+    const body = { code: 'NOT_ALLOWED', message: 'No access' };
+    const client = new ProprClient({
+      fetch: async () => new Response(JSON.stringify(body), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    });
+
+    await assert.rejects(client.request('/api/admin'), (error: unknown) => {
+      assert.ok(error instanceof ProprClientError);
+      assert.equal(error.kind, 'http');
+      assert.equal(error.status, 403);
+      assert.equal(error.code, 'NOT_ALLOWED');
+      assert.deepEqual(error.body, body);
+      return true;
+    });
+  });
+
+  it('distinguishes cancellation from a client timeout', async () => {
+    const abortingFetch: typeof fetch = async (_input, init) => new Promise((_resolve, reject) => {
+      const rejectAborted = () => reject(new DOMException('Aborted', 'AbortError'));
+      if (init?.signal?.aborted) rejectAborted();
+      else init?.signal?.addEventListener('abort', rejectAborted);
+    });
+    const client = new ProprClient({ fetch: abortingFetch });
+
+    await assert.rejects(
+      client.fetch('/api/slow', {}, { timeoutMs: 1 }),
+      (error: unknown) => error instanceof ProprClientError && error.kind === 'timeout'
+    );
+
+    const controller = new AbortController();
+    const cancelled = client.fetch('/api/slow', { signal: controller.signal });
+    controller.abort();
+    await assert.rejects(
+      cancelled,
+      (error: unknown) => error instanceof ProprClientError && error.kind === 'aborted'
+    );
+  });
+});
+
+describe('Propr compatibility negotiation', () => {
+  it('reports an API compatibility mismatch', async () => {
+    const client = new ProprClient({
+      fetch: async () => new Response(JSON.stringify({
+        version: '99.0.0',
+        apiCompatibility: '9999-12-31',
+        uiCompatibility: PROPR_API_COMPATIBILITY,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    });
+
+    const result = await client.negotiateCompatibility();
+    assert.equal(result.compatible, false);
+    if (!result.compatible) assert.equal(result.reason, 'too_new');
+    await assert.rejects(
+      client.requireCompatibility(),
+      (error: unknown) => error instanceof ProprClientError
+        && error.kind === 'compatibility'
+        && error.code === 'too_new'
+    );
+  });
+
+  it('rejects malformed compatibility metadata as a structured response error', async () => {
+    const client = new ProprClient({
+      fetch: async () => new Response(JSON.stringify({ apiCompatibility: 42 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    });
+
+    await assert.rejects(
+      client.negotiateCompatibility(),
+      (error: unknown) => error instanceof ProprClientError && error.kind === 'invalid_response'
+    );
+  });
+});
