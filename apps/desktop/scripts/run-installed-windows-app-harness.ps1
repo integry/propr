@@ -1,23 +1,72 @@
 param(
   [Parameter(Mandatory=$true)][string]$Installer,
-  [Parameter(Mandatory=$true)][ValidateSet('x64','arm64')][string]$Architecture
+  [Parameter(Mandatory=$true)][ValidateSet('x64','arm64')][string]$Architecture,
+  [string]$WorkerPath,
+  [ValidateRange(1,60000)][int]$BootstrapTimeoutMilliseconds = 60 * 1000,
+  [ValidateRange(1,10000)][int]$WatchdogPollMilliseconds = 250,
+  [ValidateRange(1,30000)][int]$WatchdogTerminationMilliseconds = 30 * 1000,
+  [ValidateRange(1,5000)][int]$MarkerReadTimeoutMilliseconds = 250,
+  [string]$CancellationEventName
 )
 
 $ErrorActionPreference = 'Stop'
-$watchdogPollMilliseconds = 250
-$watchdogTerminationMilliseconds = 30 * 1000
+$maximumMarkerDeadlineMilliseconds = 11 * 60 * 1000
+$watchdogStages = @(
+  'INITIALIZATION','INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP'
+)
+$watchdogSubstages = @(
+  'PATHS',
+  'BASELINE',
+  'MSI_INSTALL',
+  'OWNERSHIP_CAPTURE',
+  'INSTALL_TREE_SCAN',
+  'APPLICATION_IMAGE',
+  'PROTOCOL_ASSERTION',
+  'SHORTCUT_ASSERTION',
+  'USER_CREATE',
+  'USER_SID',
+  'SMOKE_DATA_CREATE',
+  'SHORTCUT_PRESENT_PROBE',
+  'ALTERNATE_USER_START',
+  'APPLICATION_WAIT',
+  'STREAM_DRAIN',
+  'EVIDENCE_INSPECTION',
+  'MSI_UNINSTALL',
+  'INSTALL_TREE_ASSERTION',
+  'PROTOCOL_ABSENCE_ASSERTION',
+  'SHORTCUT_FILE_ASSERTION',
+  'SHORTCUT_FOLDER_ASSERTION',
+  'SHORTCUT_ABSENCE_PROBE',
+  'SMOKE_DATA_REMOVE',
+  'PROFILE_LOOKUP',
+  'PROFILE_REMOVE',
+  'USER_LOOKUP',
+  'USER_REMOVE',
+  'INSTALL_ROOT_FALLBACK',
+  'PROTOCOL_FALLBACK',
+  'SHORTCUT_FALLBACK'
+)
 $markerName = "propr-installed-app-watchdog-$([Guid]::NewGuid().ToString('N')).marker"
 $markerPath = Join-Path ([IO.Path]::GetTempPath()) $markerName
 $ownershipReadyEventName = "Local\ProPRInstalledApp-$([Guid]::NewGuid().ToString('N'))"
-$workerPath = Join-Path $PSScriptRoot 'test-installed-windows-app.ps1'
+$productionWorkerPath = Join-Path $PSScriptRoot 'test-installed-windows-app.ps1'
 $worker = $null
 $job = $null
 $ownershipReadyEvent = $null
+$cancellationEvent = $null
+$lastValidMarker = $null
+$exitCode = 125
+$terminateOwnedTree = $false
 
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Globalization;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 
 public sealed class ProPRKillOnCloseJob : IDisposable
@@ -117,33 +166,166 @@ public sealed class ProPRKillOnCloseJob : IDisposable
         if (handle != null) handle.Dispose();
     }
 }
+
+public enum ProPRMarkerReadState
+{
+    Missing,
+    Valid,
+    Invalid,
+    Inaccessible
+}
+
+public sealed class ProPRMarkerReadResult
+{
+    public ProPRMarkerReadState State;
+    public long Deadline;
+    public string Stage;
+    public string Substage;
+    public string Status;
+}
+
+public static class ProPRBoundedMarkerReader
+{
+    private const int MaximumMarkerBytes = 256;
+    private static readonly Regex MarkerPattern = new Regex(
+        "^(?<Deadline>[0-9]+)\\|(?<Stage>[A-Z_]+)\\|(?<Substage>[A-Z_]+)\\|(?<Status>BEGIN|COMPLETE|FAILED)$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    public static Task<ProPRMarkerReadResult> ReadAsync(string path)
+    {
+        return Task.Run(() => Read(path));
+    }
+
+    private static ProPRMarkerReadResult Result(ProPRMarkerReadState state)
+    {
+        return new ProPRMarkerReadResult { State = state };
+    }
+
+    private static ProPRMarkerReadResult Read(string path)
+    {
+        try
+        {
+            var item = new FileInfo(path);
+            item.Refresh();
+            if (!item.Exists) return Result(ProPRMarkerReadState.Missing);
+            if ((item.Attributes & FileAttributes.ReparsePoint) != 0 || item.Length <= 0 ||
+                item.Length > MaximumMarkerBytes)
+                return Result(ProPRMarkerReadState.Invalid);
+
+            int length = checked((int)item.Length);
+            var bytes = new byte[length];
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete, 256, FileOptions.SequentialScan))
+            {
+                int offset = 0;
+                while (offset < length)
+                {
+                    int read = stream.Read(bytes, offset, length - offset);
+                    if (read == 0) return Result(ProPRMarkerReadState.Invalid);
+                    offset += read;
+                }
+                if (stream.ReadByte() != -1) return Result(ProPRMarkerReadState.Invalid);
+            }
+
+            for (int index = 0; index < bytes.Length; index++)
+                if (bytes[index] > 0x7f) return Result(ProPRMarkerReadState.Invalid);
+            string text = Encoding.ASCII.GetString(bytes);
+            Match match = MarkerPattern.Match(text);
+            long deadline;
+            if (!match.Success || !long.TryParse(match.Groups["Deadline"].Value,
+                NumberStyles.None, CultureInfo.InvariantCulture, out deadline))
+                return Result(ProPRMarkerReadState.Invalid);
+            return new ProPRMarkerReadResult {
+                State = ProPRMarkerReadState.Valid,
+                Deadline = deadline,
+                Stage = match.Groups["Stage"].Value,
+                Substage = match.Groups["Substage"].Value,
+                Status = match.Groups["Status"].Value
+            };
+        }
+        catch (FileNotFoundException) { return Result(ProPRMarkerReadState.Missing); }
+        catch (DirectoryNotFoundException) { return Result(ProPRMarkerReadState.Missing); }
+        catch (UnauthorizedAccessException) { return Result(ProPRMarkerReadState.Inaccessible); }
+        catch (IOException) { return Result(ProPRMarkerReadState.Inaccessible); }
+        catch { return Result(ProPRMarkerReadState.Invalid); }
+    }
+}
 '@
 
-function Read-WatchdogMarker([string]$Path) {
-  try {
-    if (![IO.File]::Exists($Path)) { return $null }
-    $record = [IO.File]::ReadAllText($Path, [Text.Encoding]::ASCII)
-    if ($record -notmatch
-        '^(?<Deadline>[0-9]+)\|(?<Stage>[A-Z_]+)\|(?<Substage>[A-Z_]+)\|(?<Status>BEGIN|COMPLETE|FAILED)$') {
-      return $null
-    }
-    return [PSCustomObject]@{
-      Deadline = [int64]$Matches.Deadline
-      Stage = $Matches.Stage
-      Substage = $Matches.Substage
-      Status = $Matches.Status
-    }
-  } catch {
-    return $null
+function Write-WatchdogLine([string]$Line) {
+  Write-Host $Line
+  [Console]::Out.Flush()
+}
+
+function Read-WatchdogMarker([string]$Path, [int]$TimeoutMilliseconds) {
+  $readTask = [ProPRBoundedMarkerReader]::ReadAsync($Path)
+  if (!$readTask.Wait($TimeoutMilliseconds)) {
+    return [PSCustomObject]@{ State = 'TimedOut' }
+  }
+  $result = $readTask.Result
+  if ($result.State -ne [ProPRMarkerReadState]::Valid) {
+    return [PSCustomObject]@{ State = $result.State.ToString() }
+  }
+  return [PSCustomObject]@{
+    State = 'Valid'
+    Deadline = $result.Deadline
+    Stage = $result.Stage
+    Substage = $result.Substage
+    Status = $result.Status
+  }
+}
+
+function Test-FreshMarker($Marker) {
+  $now = [DateTime]::UtcNow.Ticks
+  if ($Marker.Deadline -le $now) { return $false }
+  return ($Marker.Deadline - $now) -le
+    ([int64]$maximumMarkerDeadlineMilliseconds * [TimeSpan]::TicksPerMillisecond)
+}
+
+function Test-WatchdogMarkerSchema($Marker) {
+  return $watchdogStages -ccontains $Marker.Stage -and
+    $watchdogSubstages -ccontains $Marker.Substage
+}
+
+function Accept-WatchdogMarker($Marker) {
+  $identity = '{0}:{1}:{2}:{3}' -f $Marker.Deadline, $Marker.Stage, $Marker.Substage, $Marker.Status
+  $previousIdentity = if ($null -eq $script:lastValidMarker) { $null } else {
+    '{0}:{1}:{2}:{3}' -f $script:lastValidMarker.Deadline, $script:lastValidMarker.Stage,
+      $script:lastValidMarker.Substage, $script:lastValidMarker.Status
+  }
+  $script:lastValidMarker = $Marker
+  if ($identity -cne $previousIdentity) {
+    Write-WatchdogLine ('PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:ACCEPTED:{0}:{1}:{2}' -f `
+      $Marker.Stage, $Marker.Substage, $Marker.Status)
+  }
+}
+
+function Stop-OwnedWorker([uint32]$TerminationExitCode) {
+  if ($null -ne $job) {
+    try { $job.Terminate($TerminationExitCode) } catch {}
+  }
+  if ($null -ne $worker) {
+    try {
+      if (!$worker.HasExited) {
+        [void]$worker.WaitForExit($WatchdogTerminationMilliseconds)
+      }
+    } catch {}
   }
 }
 
 try {
   $installerPath = (Resolve-Path -LiteralPath $Installer -ErrorAction Stop).Path
-  $workerPath = (Resolve-Path -LiteralPath $workerPath -ErrorAction Stop).Path
+  $selectedWorkerPath = if ($WorkerPath) { $WorkerPath } else { $productionWorkerPath }
+  $selectedWorkerPath = (Resolve-Path -LiteralPath $selectedWorkerPath -ErrorAction Stop).Path
   $hostPath = (Get-Process -Id $PID -ErrorAction Stop).Path
   if ([IO.Path]::GetFileName($hostPath) -notin @('pwsh.exe', 'powershell.exe')) {
     throw 'PowerShell host resolution failed'
+  }
+  if ($CancellationEventName) {
+    if ($CancellationEventName -notmatch '^Local\\ProPRInstalledAppCancellation-[a-f0-9]{32}$') {
+      throw 'supervisor cancellation event name is invalid'
+    }
+    $cancellationEvent = [Threading.EventWaitHandle]::OpenExisting($CancellationEventName)
   }
 
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -158,7 +340,7 @@ try {
     '-NoLogo',
     '-NoProfile',
     '-NonInteractive',
-    '-File', $workerPath,
+    '-File', $selectedWorkerPath,
     '-Installer', $installerPath,
     '-Architecture', $Architecture,
     '-WatchdogMarker', $markerPath,
@@ -171,6 +353,7 @@ try {
   $worker = [Diagnostics.Process]::new()
   $worker.StartInfo = $startInfo
   if (!$worker.Start()) { throw 'installed-app worker did not start' }
+  $bootstrapStopwatch = [Diagnostics.Stopwatch]::StartNew()
   try {
     $job.AddProcess($worker.Handle)
     [void]$ownershipReadyEvent.Set()
@@ -179,39 +362,116 @@ try {
     throw 'installed-app worker ownership failed'
   }
 
-  while (!$worker.WaitForExit($watchdogPollMilliseconds)) {
-    $marker = Read-WatchdogMarker $markerPath
-    if ($null -ne $marker -and [DateTime]::UtcNow.Ticks -gt $marker.Deadline) {
-      Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:{0}:{1}:{2}:TIMED_OUT' -f `
-        $marker.Stage, $marker.Substage, $marker.Status)
-      [Console]::Out.Flush()
-      $job.Terminate(124)
-      if (!$worker.WaitForExit($watchdogTerminationMilliseconds)) {
-        throw 'installed-app worker termination timed out'
+  $firstMarkerAccepted = $false
+  while ($true) {
+    if ($null -ne $cancellationEvent -and $cancellationEvent.WaitOne(0)) {
+      Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:SUPERVISOR:CANCELLED'
+      $exitCode = 125
+      $terminateOwnedTree = $true
+      break
+    }
+
+    $waitMilliseconds = $WatchdogPollMilliseconds
+    if (!$firstMarkerAccepted) {
+      $remainingBootstrapMilliseconds = $BootstrapTimeoutMilliseconds -
+        [int]$bootstrapStopwatch.ElapsedMilliseconds
+      if ($remainingBootstrapMilliseconds -le 0) { $waitMilliseconds = 1 }
+      else { $waitMilliseconds = [Math]::Min($waitMilliseconds, $remainingBootstrapMilliseconds) }
+    }
+    $workerExited = $worker.WaitForExit($waitMilliseconds)
+
+    $readTimeout = $MarkerReadTimeoutMilliseconds
+    if (!$firstMarkerAccepted) {
+      $remainingBootstrapMilliseconds = $BootstrapTimeoutMilliseconds -
+        [int]$bootstrapStopwatch.ElapsedMilliseconds
+      if ($remainingBootstrapMilliseconds -gt 0) {
+        $readTimeout = [Math]::Min($readTimeout, $remainingBootstrapMilliseconds)
+      } else {
+        $readTimeout = 1
       }
-      exit 124
+    }
+    $marker = Read-WatchdogMarker $markerPath ([Math]::Max(1, $readTimeout))
+    if ($marker.State -eq 'Valid' -and !(Test-WatchdogMarkerSchema $marker)) {
+      $marker = [PSCustomObject]@{ State = 'Invalid' }
+    }
+
+    if ($marker.State -eq 'Valid') {
+      if (!$firstMarkerAccepted) {
+        if ($bootstrapStopwatch.ElapsedMilliseconds -gt $BootstrapTimeoutMilliseconds -or
+            !(Test-FreshMarker $marker)) {
+          Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:BOOTSTRAP:FAILED'
+          $exitCode = 124
+          $terminateOwnedTree = $true
+          break
+        }
+        $firstMarkerAccepted = $true
+      } elseif (!(Test-FreshMarker $marker)) {
+        Write-WatchdogLine ('PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:{0}:{1}:{2}:TIMED_OUT' -f `
+          $marker.Stage, $marker.Substage, $marker.Status)
+        $exitCode = 124
+        $terminateOwnedTree = $true
+        break
+      }
+      Accept-WatchdogMarker $marker
+    } elseif (!$firstMarkerAccepted) {
+      if ($marker.State -in @('Invalid','Inaccessible','TimedOut')) {
+        Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:BOOTSTRAP:FAILED'
+        $exitCode = 124
+        $terminateOwnedTree = $true
+        break
+      }
+      if ($workerExited) {
+        Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:BOOTSTRAP:FAILED'
+        $exitCode = 124
+        $terminateOwnedTree = $true
+        break
+      }
+      if ($bootstrapStopwatch.ElapsedMilliseconds -ge $BootstrapTimeoutMilliseconds) {
+        Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:BOOTSTRAP:TIMED_OUT'
+        $exitCode = 124
+        $terminateOwnedTree = $true
+        break
+      }
+    } else {
+      Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MARKER:FAILED'
+      $exitCode = 124
+      $terminateOwnedTree = $true
+      break
+    }
+
+    if ($workerExited) {
+      $exitCode = $worker.ExitCode
+      break
     }
   }
-
-  exit $worker.ExitCode
 } catch {
-  $lastMarker = Read-WatchdogMarker $markerPath
-  if ($null -ne $lastMarker) {
-    Write-Host ('PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:{0}:{1}:{2}:ABORTED' -f `
-      $lastMarker.Stage, $lastMarker.Substage, $lastMarker.Status)
-    [Console]::Out.Flush()
-  }
-  Write-Host 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:SUPERVISOR:FAILED'
-  [Console]::Out.Flush()
-  if ($null -ne $job) {
-    try { $job.Terminate(125) } catch {}
-  }
-  throw 'installed-app harness supervision failed'
+  Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:SUPERVISOR:FAILED'
+  $exitCode = 125
+  $terminateOwnedTree = $true
 } finally {
-  if ($null -ne $worker) { $worker.Dispose() }
+  if ($terminateOwnedTree) { Stop-OwnedWorker ([uint32]$exitCode) }
+
+  try {
+    $finalMarker = Read-WatchdogMarker $markerPath $MarkerReadTimeoutMilliseconds
+    if ($finalMarker.State -eq 'Valid' -and (Test-WatchdogMarkerSchema $finalMarker) -and
+        (Test-FreshMarker $finalMarker)) {
+      $lastValidMarker = $finalMarker
+    }
+  } catch {}
+  if ($null -ne $lastValidMarker) {
+    Write-WatchdogLine ('PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:{0}:{1}:{2}' -f `
+      $lastValidMarker.Stage, $lastValidMarker.Substage, $lastValidMarker.Status)
+  } else {
+    Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:NONE'
+  }
+
   if ($null -ne $job) { $job.Dispose() }
+  if ($null -ne $worker) { $worker.Dispose() }
   if ($null -ne $ownershipReadyEvent) { $ownershipReadyEvent.Dispose() }
+  if ($null -ne $cancellationEvent) { $cancellationEvent.Dispose() }
   try {
     if ([IO.File]::Exists($markerPath)) { [IO.File]::Delete($markerPath) }
   } catch {}
 }
+
+exit $exitCode

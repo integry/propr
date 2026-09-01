@@ -46,6 +46,14 @@ const installedWindowsAppSupervisor = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/run-installed-windows-app-harness.ps1', import.meta.url)),
   'utf8',
 ));
+const installedWindowsAppSupervisorBehaviorTest = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/test-installed-windows-app-supervisor.ps1', import.meta.url)),
+  'utf8',
+));
+const installedWindowsAppSupervisorFixture = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/test-installed-windows-app-supervisor-fixture.ps1', import.meta.url)),
+  'utf8',
+));
 
 const preflightAppTokenPermissions = (preflight: string): string[] => (
   [...preflight.matchAll(/^\s+permission-([a-z-]+): (read|write)$/gm)]
@@ -398,7 +406,7 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(releaseArchitecture, /electron-winstaller|7z-(?:x64|arm64)\.exe/);
   });
 
-  test('bounds and diagnoses installed Windows process lifecycles on x64 and ARM64', () => {
+  test('supplementary lint retains installed Windows worker lifecycle contracts', () => {
     assert.doesNotMatch(installedWindowsAppTest, /(?:^|\s)-Wait(?:\s|$)/);
     assert.equal(installedWindowsAppTest.match(/Start-Process/g)?.length, 1);
     assert.match(installedWindowsAppTest, /\$msiTimeoutMilliseconds = 10 \* 60 \* 1000/);
@@ -543,10 +551,19 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /- platform: win32\n\s+arch: x64\n/);
       assert.match(section, /- platform: win32\n\s+arch: arm64\n/);
       assert.equal(section.match(/run-installed-windows-app-harness\.ps1/g)?.length, 1);
+      assert.equal(section.match(/test-installed-windows-app-supervisor\.ps1/g)?.length, 1);
     }
   });
 
-  test('supervises every installed-app external operation and preserves cancellation evidence', () => {
+  test('runs executable supervisor acceptance on both Windows architectures and keeps supplementary contracts', () => {
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-BootstrapTimeout/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-OperationDeadlineAndTreeTermination/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-FailClosedMarkers/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-LiveCancellationAndRedaction/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingCleanupOwnership/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-ProcessTreeGone/);
+    assert.match(installedWindowsAppSupervisorFixture, /Start-FixtureDescendant/);
+
     assert.match(installedWindowsAppSupervisor, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000/);
     assert.match(installedWindowsAppSupervisor, /AssignProcessToJobObject\(handle, processHandle\)/);
     assert.match(installedWindowsAppSupervisor, /TerminateJobObject\(handle, exitCode\)/);
@@ -558,10 +575,11 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(installedWindowsAppTest, /\$ownershipHandshakeTimeoutMilliseconds = 5 \* 1000/);
     assert.match(installedWindowsAppTest, /\$ownershipReady\.WaitOne\(\$ownershipHandshakeTimeoutMilliseconds\)/);
-    assert.match(installedWindowsAppSupervisor, /\$worker\.WaitForExit\(\$watchdogPollMilliseconds\)/);
-    assert.match(installedWindowsAppSupervisor, /\[DateTime\]::UtcNow\.Ticks -gt \$marker\.Deadline/);
-    assert.match(installedWindowsAppSupervisor, /\$job\.Terminate\(124\)/);
-    assert.match(installedWindowsAppSupervisor, /exit 124/);
+    assert.match(installedWindowsAppSupervisor, /if \(!\$worker\.Start\(\)\)[^\n]+\n\s+\$bootstrapStopwatch = \[Diagnostics\.Stopwatch\]::StartNew\(\)/);
+    assert.match(installedWindowsAppSupervisor, /\[ProPRBoundedMarkerReader\]::ReadAsync\(\$Path\)/);
+    assert.match(installedWindowsAppSupervisor, /\$readTask\.Wait\(\$TimeoutMilliseconds\)/);
+    assert.match(installedWindowsAppSupervisor, /\$job\.Terminate\(\$TerminationExitCode\)/);
+    assert.match(installedWindowsAppSupervisor, /exit \$exitCode/);
     assert.match(installedWindowsAppSupervisor, /if \(\$null -ne \$job\) \{ \$job\.Dispose\(\) \}/);
 
     assert.match(installedWindowsAppTest, /\[IO\.FileOptions\]::WriteThrough/);
@@ -580,15 +598,23 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisor,
-      /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:\{0\}:\{1\}:\{2\}:ABORTED/,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:BOOTSTRAP:TIMED_OUT/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:BOOTSTRAP:FAILED/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:ACCEPTED:\{0\}:\{1\}:\{2\}/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:\{0\}:\{1\}:\{2\}/,
     );
     assert.match(
       installedWindowsAppTest,
       /PROPR_WINDOWS_INSTALLED_SMOKE:OPERATION:\{0\}:\{1\}:\{2\}' -f `[\s\S]{0,100}\[Console\]::Out\.Flush\(\)/,
-    );
-    assert.match(
-      installedWindowsAppSupervisor,
-      /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:\{0\}:\{1\}:\{2\}:TIMED_OUT'[\s\S]{0,150}\[Console\]::Out\.Flush\(\)[\s\S]{0,100}\$job\.Terminate\(124\)/,
     );
 
     const markerWriter = installedWindowsAppTest.match(
@@ -651,7 +677,7 @@ describe('desktop trusted release workflow', () => {
     );
   });
 
-  test('keeps all destructive installed-app cleanup fail-closed to run-owned resources', () => {
+  test('supplementary lint retains fail-closed installed-app cleanup guards', () => {
     assert.match(
       installedWindowsAppTest,
       /if \(\$installRootExistedBeforeInstall -or \$protocolExistedBeforeInstall -or[\s\S]*\$startMenuShortcutFolderExistedBeforeInstall\) \{\n\s+throw 'installed-app harness requires an unowned clean machine baseline'/,
