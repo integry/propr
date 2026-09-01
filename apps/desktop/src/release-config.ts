@@ -43,10 +43,10 @@ export const resolveDesktopVersion = (
   platform: NodeJS.Platform = process.platform,
 ): string => {
   const version = env.PROPR_DESKTOP_VERSION?.trim() || packageVersion;
-  if (platform === 'win32') assertWindowsInstallerProductVersion(version);
   if (!RELEASE_VERSION_PATTERN.test(version)) {
     throw new Error(`ProPR Desktop version must be canonical stable semver (received ${JSON.stringify(version)})`);
   }
+  if (platform === 'win32') assertWindowsInstallerProductVersion(version);
   return version;
 };
 
