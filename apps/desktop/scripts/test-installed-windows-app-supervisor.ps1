@@ -1511,7 +1511,7 @@ function Test-WorkflowCleanupProtocolStateMachine {
         ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' +
           'INVOCATION:PROTOCOL_REGRESSION:') `
         'workflow cleanup cancellation lost its exact invocation attribution'
-      Assert-Contains $diagnostic ":LIFECYCLE:$expectedLifecycle:" `
+      Assert-Contains $diagnostic ":LIFECYCLE:${expectedLifecycle}:" `
         'workflow cleanup cancellation lost its bounded lifecycle category'
       Assert-Contains $diagnostic ':TREE_TERMINATION:COMPLETE:' `
         'workflow cleanup cancellation did not terminate its complete owned tree'
