@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
 import { ConfigManager } from './config/ConfigManager.js';
 import { discoverConfiguredConnect } from './desktopDiscovery.js';
+import type { DesktopConnectDiscoverySmokeDiagnostic } from './desktopDiscovery.js';
 import type { ConnectStatusDocument } from './commands/connectCommand.js';
 
 const directories: string[] = [];
@@ -41,16 +42,30 @@ describe('fixed desktop Connect discovery entry point', () => {
       version: null,
       reasonCodes: ['NOT_CONFIGURED'],
     };
+    const diagnostics: DesktopConnectDiscoverySmokeDiagnostic[] = [];
 
     assert.equal(await discoverConfiguredConnect({
       configRoot,
       platform: 'linux',
+      reportSmokeDiagnostic: diagnostic => diagnostics.push(diagnostic),
       readStatus: async root => {
         receivedRoot = root;
         return status;
       },
     }), status);
     assert.equal(receivedRoot, nativeRoot);
+    assert.deepEqual(diagnostics, [
+      { phase: 'config-read', code: 'STARTED' },
+      { phase: 'config-read', code: 'PASSED' },
+      { phase: 'addon-integrity-type', code: 'STARTED' },
+      { phase: 'addon-integrity-type', code: 'PASSED' },
+      { phase: 'addon-load', code: 'STARTED' },
+      { phase: 'addon-load', code: 'PASSED' },
+      { phase: 'descriptor-operation', code: 'STARTED' },
+      { phase: 'descriptor-operation', code: 'PASSED' },
+      { phase: 'status-resolution', code: 'STARTED' },
+      { phase: 'status-resolution', code: 'PASSED' },
+    ]);
   });
 
   test('ordinary Windows discovery reads only the saved native root from fixed config', async () => {

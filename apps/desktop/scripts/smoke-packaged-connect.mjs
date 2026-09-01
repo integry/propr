@@ -49,13 +49,14 @@ const nativeHashes = {
   },
 };
 const CHILD_CAPTURE_MAX_BYTES = 64 * 1024;
-const CHILD_DIAGNOSTIC_MAX_RECORDS = 12;
+const CHILD_DIAGNOSTIC_MAX_RECORDS = 20;
 const childDiagnosticEvents = new Set([
   'desktop.app.ready',
   'desktop.app.start_failed',
   'desktop.log.write_failed',
   'desktop.main_process.uncaught_exception',
   'desktop.renderer.connect_discovery.ready',
+  'desktop.renderer.connect_discovery.phase',
   'desktop.renderer.connect_discovery.status',
   'desktop.renderer.gone',
   'desktop.renderer.ready',
@@ -72,6 +73,15 @@ const childDiagnosticCodes = new Set([
   'OPERATION_FAILED',
   'UNCAUGHT_EXCEPTION',
 ]);
+const childDiagnosticPhases = new Set([
+  'config-read',
+  'addon-integrity-type',
+  'addon-load',
+  'descriptor-operation',
+  'authority-inspection',
+  'status-resolution',
+]);
+const childDiagnosticPhaseCodes = new Set(['STARTED', 'PASSED', 'FAILED']);
 
 const childRecords = output => output.split(/\r?\n/).flatMap(line => {
   try {
@@ -84,9 +94,14 @@ const boundedChildDiagnostics = records => records.flatMap(record => {
   if (!record || typeof record !== 'object' || !childDiagnosticEvents.has(record.event)) return [];
   const nestedCode = record.error && typeof record.error === 'object' ? record.error.code : undefined;
   const candidateCode = typeof record.code === 'string' ? record.code : nestedCode;
+  const phase = typeof record.phase === 'string' ? record.phase : undefined;
   return [{
     event: record.event,
-    ...(childDiagnosticCodes.has(candidateCode) ? { code: candidateCode } : {}),
+    ...(childDiagnosticPhases.has(phase) && childDiagnosticPhaseCodes.has(candidateCode)
+      ? { phase, code: candidateCode }
+      : childDiagnosticCodes.has(candidateCode)
+        ? { code: candidateCode }
+        : {}),
   }];
 }).slice(0, CHILD_DIAGNOSTIC_MAX_RECORDS);
 
@@ -176,9 +191,13 @@ function Set-ProprFixtureAcl {
     $acl=if($directory){[Security.AccessControl.DirectorySecurity]::new()}else{[Security.AccessControl.FileSecurity]::new()}
     $acl.SetOwner($current);$acl.SetAccessRuleProtection($true,$false)
     foreach($identity in @($current,$system,$admins)){
+      $rights=[Security.AccessControl.FileSystemRights]::FullControl
+      $accessType=[Security.AccessControl.AccessControlType]::Allow
       $rule=if($directory){
-        [Security.AccessControl.FileSystemAccessRule]::new($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
-      }else{[Security.AccessControl.FileSystemAccessRule]::new($identity,'FullControl','Allow')}
+        $inheritance=[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+        $propagation=[Security.AccessControl.PropagationFlags]::None
+        [Security.AccessControl.FileSystemAccessRule]::new($identity,$rights,$inheritance,$propagation,$accessType)
+      }else{[Security.AccessControl.FileSystemAccessRule]::new($identity,$rights,$accessType)}
       $null=$acl.AddAccessRule($rule)
     }
   } catch { exit 41 }

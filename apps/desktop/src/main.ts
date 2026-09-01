@@ -576,6 +576,12 @@ if (!hasSingleInstanceLock) {
             fetchImpl: connectSmoke.fetch,
             inspectTunnel: () => ({ kind: 'ok', running: true }),
           } : undefined,
+          reportSmokeDiagnostic: connectSmoke
+            ? diagnostic => log('info', 'desktop.renderer.connect_discovery.phase', {
+                phase: diagnostic.phase,
+                code: diagnostic.code,
+              })
+            : undefined,
         });
         if (connectSmoke) {
           const statusCode = {

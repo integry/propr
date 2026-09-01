@@ -173,6 +173,11 @@ const DARWIN_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
   x64: "e5a49be0db85655b9ff1d0614de9d61defd41a0a1b2eff8f11571407f10d809b",
 };
 
+/** Writable rejection is universal; execution is required only at the packaged source boundary. */
+export function isConnectAuthorityBrokerModeSafe(mode: bigint, packaged: boolean): boolean {
+  return (mode & 0o022n) === 0n && (!packaged || (mode & 0o111n) !== 0n);
+}
+
 function readExactDescriptor(fd: number, size: number): Buffer {
   if (!Number.isSafeInteger(size) || size <= 0 || size > 512 * 1024) {
     throw new Error("packaged native authority broker failed integrity verification");
@@ -221,8 +226,7 @@ function darwinAuthorityBrokerArtifact(): {
         || stat.size <= 0n
         || stat.size > BigInt(512 * 1024)
         || (typeof process.getuid === "function" && stat.uid !== 0n && stat.uid !== BigInt(process.getuid()))
-        || (packaged && (stat.mode & 0o022n) !== 0n)
-        || (stat.mode & 0o111n) === 0n
+        || !isConnectAuthorityBrokerModeSafe(stat.mode, packaged)
       ) {
         closeSync(fd);
         fd = undefined;

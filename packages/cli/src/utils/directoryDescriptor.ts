@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, lstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,13 @@ export interface NativeDirectoryOperationTestEvent {
   mode?: number;
   result?: number;
 }
+
+export type NativeDirectorySmokePhase = "addon-integrity-type" | "addon-load" | "descriptor-operation";
+export type NativeDirectorySmokeCode = "STARTED" | "PASSED" | "FAILED";
+export type NativeDirectorySmokeDiagnostic = (
+  phase: NativeDirectorySmokePhase,
+  code: NativeDirectorySmokeCode,
+) => void;
 
 type NativeDirectoryOperationTestHook = (event: NativeDirectoryOperationTestEvent) => void;
 
@@ -99,11 +106,27 @@ export function verifyDirectoryOperationArtifact(artifact: string, expected: str
   }
 }
 
-function hostOperations(): NativeDirectoryOperations {
+function hostOperations(reportSmokeDiagnostic?: NativeDirectorySmokeDiagnostic): NativeDirectoryOperations {
   if (process.platform !== "darwin" && process.platform !== "linux") {
     throw new Error(`native directory operations were requested on unsupported platform ${process.platform}`);
   }
-  nativeOperations ??= createRequire(import.meta.url)(nativeArtifactPath(process.platform, process.arch)) as NativeDirectoryOperations;
+  reportSmokeDiagnostic?.("addon-integrity-type", "STARTED");
+  let artifact: string;
+  try {
+    artifact = nativeArtifactPath(process.platform, process.arch);
+    reportSmokeDiagnostic?.("addon-integrity-type", "PASSED");
+  } catch (error) {
+    reportSmokeDiagnostic?.("addon-integrity-type", "FAILED");
+    throw error;
+  }
+  reportSmokeDiagnostic?.("addon-load", "STARTED");
+  try {
+    nativeOperations ??= createRequire(import.meta.url)(artifact) as NativeDirectoryOperations;
+    reportSmokeDiagnostic?.("addon-load", "PASSED");
+  } catch (error) {
+    reportSmokeDiagnostic?.("addon-load", "FAILED");
+    throw error;
+  }
   return nativeOperations;
 }
 
@@ -117,17 +140,39 @@ export function assertNativeDirectoryEntry(
   directory: string,
   name: string,
   expectedKind: DirectoryEntryIdentity['kind'],
+  reportSmokeDiagnostic?: NativeDirectorySmokeDiagnostic,
 ): void {
   if (!/^[A-Za-z0-9._-]{1,128}$/.test(name) || name === '.' || name === '..') {
     throw new Error('native directory authority entry name is invalid');
   }
-  const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const operations = hostOperations(reportSmokeDiagnostic);
+  reportSmokeDiagnostic?.("descriptor-operation", "STARTED");
+  let directoryFd: number | undefined;
+  let entryFd: number | undefined;
   try {
-    if (hostOperations().lstatAt(fd, name).kind !== expectedKind) {
+    directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    // Pin through the addon's descriptor-relative open, then let the host
+    // runtime inspect that descriptor. This avoids architecture-specific C
+    // stat ABI wrappers while retaining no-follow and exact-type authority.
+    entryFd = operations.openAt(directoryFd, name, constants.O_RDONLY | constants.O_NOFOLLOW, 0);
+    const entry = fstatSync(entryFd);
+    const kind = entry.isFile()
+      ? "file"
+      : entry.isDirectory()
+        ? "directory"
+        : entry.isSymbolicLink()
+          ? "symbolic-link"
+          : "other";
+    if (kind !== expectedKind) {
       throw new Error('native directory authority entry type did not match');
     }
+    reportSmokeDiagnostic?.("descriptor-operation", "PASSED");
+  } catch (error) {
+    reportSmokeDiagnostic?.("descriptor-operation", "FAILED");
+    throw error;
   } finally {
-    closeSync(fd);
+    if (entryFd !== undefined) closeSync(entryFd);
+    if (directoryFd !== undefined) closeSync(directoryFd);
   }
 }
 

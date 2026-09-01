@@ -275,6 +275,11 @@ export interface LocalConnectStatusDependencies {
   inspectTunnel?: (
     cfg: OrchestratorConfig,
   ) => { kind: 'ok'; running: boolean } | { kind: 'internalFailure' };
+  /** @internal Fixed smoke-only phase outcomes; never carries errors or native evidence. */
+  reportSmokeDiagnostic?: (
+    phase: 'authority-inspection' | 'status-resolution',
+    code: 'STARTED' | 'PASSED' | 'FAILED',
+  ) => void;
 }
 
 /** Pure status state machine used by the CLI wiring and deterministic tests. */
@@ -371,6 +376,8 @@ export async function getLocalConnectStatus(
   root: string | undefined,
   dependencies: LocalConnectStatusDependencies = {},
 ): Promise<ConnectStatusDocument> {
+  let phase: 'authority-inspection' | 'status-resolution' = 'authority-inspection';
+  dependencies.reportSmokeDiagnostic?.(phase, 'STARTED');
   try {
     const prepared = await prepareConnectHostConfig();
     const local = await withOwnedConnectRootSnapshot(root, async (snapshot) => {
@@ -394,16 +401,24 @@ export async function getLocalConnectStatus(
         sidecarInspection,
       };
     }, { parseEnvFile: prepared.parseEnvFile });
+    dependencies.reportSmokeDiagnostic?.(phase, 'PASSED');
+    phase = 'status-resolution';
+    dependencies.reportSmokeDiagnostic?.(phase, 'STARTED');
     if (local.sidecarInspection.kind === "internalFailure") {
-      return baseDocument("internalFailure", { reasonCodes: ["INTERNAL_FAILURE"] });
+      const result = baseDocument("internalFailure", { reasonCodes: ["INTERNAL_FAILURE"] });
+      dependencies.reportSmokeDiagnostic?.(phase, 'PASSED');
+      return result;
     }
-    return resolveConnectStatus({
+    const result = await resolveConnectStatus({
       cfg: local.cfg,
       sidecarRunning: local.sidecarInspection.running,
       publicInstanceIdentity: local.publicInstanceIdentity,
       fetchImpl: dependencies.fetchImpl,
     });
+    dependencies.reportSmokeDiagnostic?.(phase, 'PASSED');
+    return result;
   } catch (error) {
+    dependencies.reportSmokeDiagnostic?.(phase, 'FAILED');
     if (error instanceof WindowsAuthorityInspectionError) return unavailableRootAuthorityStatus();
     if (error instanceof ConnectRootError) {
       return invalidConnectRootStatus();
