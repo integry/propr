@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { isValidWebhookSecret } from './webhook-secret-policy';
 
 interface PromptCommand {
   command: string;
@@ -33,7 +34,7 @@ const runPrompt = ({ command, args }: PromptCommand, signal?: AbortSignal): Prom
       if (code === 1) return resolve({ unavailable: false, value: null });
       if (code !== 0 || output.length > 2048) return reject(new Error('The native secret prompt failed.'));
       const value = output.toString('utf8').replace(/[\r\n]+$/, '');
-      if (!value || value.length > 512 || /[\0\r\n]/.test(value)) return reject(new Error('The native secret prompt returned an invalid value.'));
+      if (!isValidWebhookSecret(value)) return reject(new Error('The native secret prompt returned an invalid value.'));
       resolve({ unavailable: false, value });
     });
   });

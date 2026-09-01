@@ -650,23 +650,24 @@ describe('desktop local setup controller', {
   });
 
   it('keeps native webhook secret bytes out of snapshots, resume state, logs, errors, and diagnostics', async () => {
-    const sentinel = 'SENTINEL_NATIVE_SECRET_9f08c7';
+    const sentinel = 'w3bh00k-16chars!';
+    assert.equal(sentinel.length, 16);
     const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-secret-boundary-'));
     const emitted: unknown[] = [];
     const diagnostics: unknown[] = [];
     const actions = fakeActions();
     actions.hasGithubToken = () => true;
+    actions.detectGithubAuthMode = () => ({ mode: 'app', warnings: [] });
     actions.inspectDatastoreAdministrators = async () => ({ status: 'has-admin' });
     actions.pullImages = async ({ onLog }) => {
       onLog?.(`progress ${sentinel}`);
       return { pulledCore: ['api'], pulledAgents: [], failedCore: [], failedAgents: [] };
     };
-    actions.startStack = async () => { throw new Error(`daemon failure ${sentinel}`); };
     const statePath = join(directory, 'state.json');
     const controller = new DesktopSetupController({
       actions, platform: 'linux', statePath, defaultRootDir: join(directory, 'stack'),
       selectPrivateKey: async () => null, promptWebhookSecret: async () => sentinel,
-      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit: snapshot => emitted.push(snapshot),
+      resolveApiBaseUrl: async () => { throw new Error(`daemon failure ${sentinel}`); }, registerProfile: async () => { throw new Error('not called'); }, emit: snapshot => emitted.push(snapshot),
       diagnose: (_event, fields) => diagnostics.push(fields),
     });
     const status = await controller.status();
@@ -678,9 +679,17 @@ describe('desktop local setup controller', {
       github: { mode: 'keep' },
       intake: { mode: 'direct_webhook', secretCapability: secret.capability }, whitelist: null, repository: null,
     });
-    const rendererVisible = JSON.stringify({ result, emitted, diagnostics, persisted: await readFile(statePath, 'utf8') });
+    assert.equal(result.phase, 'failed');
+    const rendererVisible = JSON.stringify({ result, emitted, persisted: await readFile(statePath, 'utf8') });
     assert.doesNotMatch(rendererVisible, new RegExp(sentinel));
     assert.match(rendererVisible, /REDACTED/);
+    const protectedDiagnostics = JSON.stringify(diagnostics);
+    assert.doesNotMatch(protectedDiagnostics, new RegExp(sentinel));
+    assert.match(protectedDiagnostics, /daemon failure \[REDACTED\]/);
+    const diagnosticError = (diagnostics[0] as { error: { name: string; message: string; stack: string } }).error;
+    assert.equal(diagnosticError.name, 'Error');
+    assert.equal(diagnosticError.message, 'daemon failure [REDACTED]');
+    assert.equal(typeof diagnosticError.stack, 'string');
     await assert.rejects(controller.retry(), /Re-enter the intake/);
   });
 });

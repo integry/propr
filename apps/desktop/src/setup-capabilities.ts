@@ -20,6 +20,7 @@ import {
 } from '@propr/local-setup';
 import type { DesktopFilesystemSelection, DesktopSecretSelection } from './shared/contract';
 import type { SetupActions } from '@propr/local-setup';
+import { isValidWebhookSecret } from './webhook-secret-policy';
 
 type SelectionKind = 'private-key';
 
@@ -284,7 +285,7 @@ export class SetupSecretCapabilities {
   constructor(now: () => number = Date.now) { this.#now = now; }
 
   issue(sessionId: string, value: string): DesktopSecretSelection {
-    if (!value || value.length > 512 || /[\0\r\n]/.test(value)) throw new SetupCapabilityError('The webhook secret is invalid.');
+    if (!isValidWebhookSecret(value)) throw new SetupCapabilityError('The webhook secret is invalid.');
     const capability = randomBytes(32).toString('base64url');
     this.#records.set(capability, { sessionId, value, expiresAt: this.#now() + TTL_MS });
     return { capability, label: 'Secret entered' };
@@ -292,7 +293,9 @@ export class SetupSecretCapabilities {
 
   validate(capability: string, sessionId: string): void {
     const record = this.#records.get(capability);
-    if (!record || record.sessionId !== sessionId || record.expiresAt < this.#now()) throw new SetupCapabilityError();
+    if (!record || record.sessionId !== sessionId || record.expiresAt < this.#now() || !isValidWebhookSecret(record.value)) {
+      throw new SetupCapabilityError();
+    }
   }
 
   consume(capability: string, sessionId: string): string {

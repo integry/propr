@@ -20,9 +20,20 @@ describe('desktop secret boundary redaction', () => {
   });
 
   it('supports exact contextual redaction for unstructured webhook secrets and private-key paths', () => {
-    const secret = 'totally-arbitrary-webhook-value';
+    const secret = 'w3bh00k-16chars!';
+    assert.equal(secret.length, 16);
     const path = '/secure/custom-name.bin';
     const serialized = JSON.stringify(redactDesktopValue(new Error(`${secret} ${path}`), 0, [secret, path]));
-    assert.doesNotMatch(serialized, /totally-arbitrary|custom-name/);
+    assert.doesNotMatch(serialized, /w3bh00k-16chars|custom-name/);
+    assert.match(serialized, /\"name\":\"Error\"/);
+    assert.match(serialized, /\"message\":\"\[REDACTED\] \[REDACTED\]\"/);
+    assert.match(serialized, /\"stack\":/);
+  });
+
+  it('does not globally redact one-character contextual strings', () => {
+    const redacted = redactDesktopValue(new Error('x remains diagnostic context'), 0, ['x']) as Record<string, unknown>;
+    assert.equal(redacted.name, 'Error');
+    assert.equal(redacted.message, 'x remains diagnostic context');
+    assert.equal(typeof redacted.stack, 'string');
   });
 });

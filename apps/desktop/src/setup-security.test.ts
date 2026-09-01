@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { SetupFilesystemCapabilities, SetupSecretCapabilities } from './setup-capabilities';
 import { parseDesktopSetupRequest } from './setup-schema';
+import { MAX_WEBHOOK_SECRET_LENGTH, MIN_WEBHOOK_SECRET_LENGTH } from './webhook-secret-policy';
 
 const tmpdir = (): string => realpathSync(systemTmpdir());
 
@@ -86,6 +87,22 @@ describe('desktop setup filesystem capabilities', {
 });
 
 describe('desktop setup secret capabilities', () => {
+  it('enforces the shared webhook-secret minimum and preserves the maximum during issuance and validation', () => {
+    const secrets = new SetupSecretCapabilities();
+    assert.throws(() => secrets.issue(sessionId, 'a'.repeat(MIN_WEBHOOK_SECRET_LENGTH - 1)), /webhook secret is invalid/i);
+
+    const shortest = 'b'.repeat(MIN_WEBHOOK_SECRET_LENGTH);
+    const issued = secrets.issue(sessionId, shortest);
+    assert.doesNotThrow(() => secrets.validate(issued.capability, sessionId));
+    assert.equal(secrets.consume(issued.capability, sessionId), shortest);
+
+    const longest = 'c'.repeat(MAX_WEBHOOK_SECRET_LENGTH);
+    const maximum = secrets.issue(sessionId, longest);
+    assert.doesNotThrow(() => secrets.validate(maximum.capability, sessionId));
+    assert.equal(secrets.consume(maximum.capability, sessionId), longest);
+    assert.throws(() => secrets.issue(sessionId, 'd'.repeat(MAX_WEBHOOK_SECRET_LENGTH + 1)), /webhook secret is invalid/i);
+  });
+
   it('is opaque, expiring, session-bound, single-use, and rejects forgery/replay', () => {
     const sentinel = 'SENTINEL_SECRET_CAPABILITY_VALUE';
     let now = 1_000;
