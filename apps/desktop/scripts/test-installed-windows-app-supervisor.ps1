@@ -1187,6 +1187,8 @@ function Invoke-WorkflowCleanupController(
   $lifecycleCategory = 'PROCESS_CREATION_FAILURE'
   $treeTerminationCategory = 'NOT_REQUIRED'
   $validatedProcessExit = 'INVALID'
+  $drainComplete = $false
+  $drainAttempted = $false
   try {
     $job = [ProPRWorkflowCleanupInvocationJob]::new()
     if (!$process.Start()) { throw 'workflow cleanup fixture did not start' }
@@ -1230,6 +1232,17 @@ function Invoke-WorkflowCleanupController(
       [void]$process.WaitForExit(3000)
     } else {
       $lifecycleCategory = 'EXITED'
+      $drainAttempted = $true
+      $drainComplete = $capture.Finish(3000)
+      if (!$drainComplete) {
+        $lifecycleCategory = if ($capture.DrainFailed) {
+          'DRAIN_FAILURE'
+        } else { 'DRAIN_TIMEOUT' }
+      }
+      if ($process.ExitCode -in @(0,20,21,122,123,124,125)) {
+        $validatedProcessExit =
+          $process.ExitCode.ToString([Globalization.CultureInfo]::InvariantCulture)
+      }
       if (!$job.WaitForNoActiveProcesses(3000)) {
         $lifecycleCategory = 'ACTIVE_TREE_AFTER_EXIT'
         $treeTerminationCategory = 'FAILED'
@@ -1240,9 +1253,15 @@ function Invoke-WorkflowCleanupController(
             }
           } catch {}
         }
+        if (!$drainComplete) {
+          $drainComplete = $capture.Finish(0)
+        }
       }
     }
-    $drainComplete = $capture.Finish(3000)
+    if (!$drainAttempted) {
+      $drainAttempted = $true
+      $drainComplete = $capture.Finish(3000)
+    }
     if (!$drainComplete -and $lifecycleCategory -ceq 'EXITED') {
       $lifecycleCategory = if ($capture.DrainFailed) { 'DRAIN_FAILURE' } else { 'DRAIN_TIMEOUT' }
     }
@@ -1398,6 +1417,45 @@ function Test-WorkflowCleanupStartupProtocol {
   [Console]::Out.Flush()
 }
 
+function Get-WorkflowCleanupStateMachineAssertionMessage(
+  [string]$Message,
+  [string]$Diagnostic,
+  [string]$Fixture
+) {
+  Assert-NotContains $Diagnostic $dummyInstaller `
+    "$Fixture diagnostic disclosed the dummy installer"
+  Assert-NotContains $Diagnostic $testRoot `
+    "$Fixture diagnostic disclosed a path"
+  $fixedMatch = [regex]::Match($Diagnostic, (
+      '^PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' +
+      'INVOCATION:PROTOCOL_REGRESSION:OBSERVED:' +
+      '(?<Observed>NONE|STARTUP|TERMINAL|MALFORMED|PARTIAL|DUPLICATE|REORDERED|EXTRA|OVERSIZED):' +
+      'LINE_COUNT:(?<LineCount>0|1|2|3\+):STDERR_COUNT:(?<StderrCount>[0-9]+):' +
+      'PROCESS_EXIT:(?<ProcessExit>0|20|21|122|123|124|125|INVALID):' +
+      'LIFECYCLE:(?<Lifecycle>EXITED|PROCESS_CREATION_FAILURE|OWNERSHIP_FAILURE|' +
+      'TIMEOUT_BEFORE_STARTUP|TIMEOUT_AFTER_STARTUP|' +
+      'CANCELLED_BEFORE_STARTUP|CANCELLED_AFTER_STARTUP|' +
+      'ACTIVE_TREE_AFTER_EXIT|DRAIN_TIMEOUT|DRAIN_FAILURE):' +
+      'TREE_TERMINATION:(?<TreeTermination>NOT_REQUIRED|COMPLETE|FAILED):' +
+      'STARTUP_CLASS:(?<StartupClass>NONE|READY|PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):' +
+      'LINE_NUMBER:(?<LineNumber>[0-3])$'
+    ), [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+  Assert-True $fixedMatch.Success `
+    "$Fixture did not emit the fixed bounded diagnostic"
+  $lineCount = if ($fixedMatch.Groups['LineCount'].Value -ceq '3+') {
+    3
+  } else { [int]$fixedMatch.Groups['LineCount'].Value }
+  $expectedDiagnostic = Get-WorkflowCleanupProtocolMismatchDiagnostic `
+    'PROTOCOL_REGRESSION' $fixedMatch.Groups['Observed'].Value $lineCount `
+    ([int]$fixedMatch.Groups['StderrCount'].Value) `
+    $fixedMatch.Groups['ProcessExit'].Value $fixedMatch.Groups['Lifecycle'].Value `
+    $fixedMatch.Groups['TreeTermination'].Value $fixedMatch.Groups['StartupClass'].Value `
+    ([int]$fixedMatch.Groups['LineNumber'].Value)
+  Assert-True ($Diagnostic -ceq $expectedDiagnostic) `
+    "$Fixture diagnostic did not equal the fixed bounded value"
+  return "$Message`: $Diagnostic"
+}
+
 function Test-WorkflowCleanupProtocolStateMachine {
   $scriptText = Get-Content -LiteralPath $PSCommandPath -Raw -Encoding UTF8
   $expectedInvocations = @(
@@ -1420,7 +1478,10 @@ function Test-WorkflowCleanupProtocolStateMachine {
   }
 
   $cases = @(
-    [PSCustomObject]@{ Fixture='ONE_LINE_STARTUP'; Observed='STARTUP'; Lifecycle='EXITED' },
+    [PSCustomObject]@{
+      Fixture='ONE_LINE_STARTUP'; Observed='STARTUP'; LineCount=1; ProcessExit=125
+      Lifecycle='EXITED'; TreeTermination='NOT_REQUIRED'; StartupClass='READY'; LineNumber=1
+    },
     [PSCustomObject]@{ Fixture='MISSING_TERMINAL'; Observed='STARTUP'; Lifecycle='EXITED' },
     [PSCustomObject]@{ Fixture='DUPLICATE_STARTUP'; Observed='DUPLICATE'; Lifecycle='EXITED' },
     [PSCustomObject]@{ Fixture='EXTRA_RECORD'; Observed='EXTRA'; Lifecycle='EXITED' },
@@ -1438,28 +1499,54 @@ function Test-WorkflowCleanupProtocolStateMachine {
   )
   foreach ($case in $cases) {
     $diagnostic = ''
+    $caseInvocationTimeout = if ($case.Fixture -in @(
+        'TIMEOUT_BEFORE_STARTUP','TIMEOUT_AFTER_STARTUP','STREAM_DRAIN_RACE'
+      )) { 250 } else { 1000 }
     try {
       [void](Invoke-WorkflowCleanupController `
         -InvocationIdentifier 'PROTOCOL_REGRESSION' `
         -ManifestPath $dummyInstaller `
         -RunId ([Guid]::NewGuid().ToString('N')) `
         -FixtureRoot $testRoot `
-        -InvocationTimeoutMilliseconds 250 `
+        -InvocationTimeoutMilliseconds $caseInvocationTimeout `
         -ProtocolFixture $case.Fixture)
     } catch { $diagnostic = $_.Exception.Message }
+    $fixture = [string]$case.Fixture
     Assert-Contains $diagnostic `
       'PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:INVOCATION:PROTOCOL_REGRESSION:' `
-      "$($case.Fixture) did not emit an invocation-attributed fixed diagnostic"
+      (Get-WorkflowCleanupStateMachineAssertionMessage `
+        "$fixture did not emit an invocation-attributed fixed diagnostic" `
+        $diagnostic $fixture)
     Assert-Contains $diagnostic ":OBSERVED:$($case.Observed):" `
-      "$($case.Fixture) did not retain its bounded observed-line category"
+      (Get-WorkflowCleanupStateMachineAssertionMessage `
+        "$fixture did not retain its bounded observed-line category" `
+        $diagnostic $fixture)
     Assert-Contains $diagnostic ":LIFECYCLE:$($case.Lifecycle):" `
-      "$($case.Fixture) did not retain its primary lifecycle category"
+      (Get-WorkflowCleanupStateMachineAssertionMessage `
+        "$fixture did not retain its primary lifecycle category" `
+        $diagnostic $fixture)
     if ($case.PSObject.Properties['Stderr']) {
       Assert-Contains $diagnostic ":STDERR_COUNT:$($case.Stderr):" `
-        "$($case.Fixture) did not retain its bounded stderr count"
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its bounded stderr count" $diagnostic $fixture)
     }
-    Assert-NotContains $diagnostic $dummyInstaller `
-      "$($case.Fixture) diagnostic disclosed a path"
+    if ($case.PSObject.Properties['LineCount']) {
+      Assert-Contains $diagnostic ":LINE_COUNT:$($case.LineCount):" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its bounded line count" $diagnostic $fixture)
+      Assert-Contains $diagnostic ":PROCESS_EXIT:$($case.ProcessExit):" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its fixed process exit" $diagnostic $fixture)
+      Assert-Contains $diagnostic ":TREE_TERMINATION:$($case.TreeTermination):" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its tree outcome" $diagnostic $fixture)
+      Assert-Contains $diagnostic ":STARTUP_CLASS:$($case.StartupClass):" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its startup class" $diagnostic $fixture)
+      Assert-Contains $diagnostic ":LINE_NUMBER:$($case.LineNumber)" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its startup line number" $diagnostic $fixture)
+    }
   }
 
   foreach ($exactPair in @(
@@ -1507,14 +1594,21 @@ function Test-WorkflowCleanupProtocolStateMachine {
       $expectedLifecycle = if ($cancellationAfterStartup) {
         'CANCELLED_AFTER_STARTUP'
       } else { 'CANCELLED_BEFORE_STARTUP' }
+      $fixture = "CANCELLATION_$expectedLifecycle"
       Assert-Contains $diagnostic `
         ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' +
           'INVOCATION:PROTOCOL_REGRESSION:') `
-        'workflow cleanup cancellation lost its exact invocation attribution'
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          'workflow cleanup cancellation lost its exact invocation attribution' `
+          $diagnostic $fixture)
       Assert-Contains $diagnostic ":LIFECYCLE:${expectedLifecycle}:" `
-        'workflow cleanup cancellation lost its bounded lifecycle category'
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          'workflow cleanup cancellation lost its bounded lifecycle category' `
+          $diagnostic $fixture)
       Assert-Contains $diagnostic ':TREE_TERMINATION:COMPLETE:' `
-        'workflow cleanup cancellation did not terminate its complete owned tree'
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          'workflow cleanup cancellation did not terminate its complete owned tree' `
+          $diagnostic $fixture)
     } finally { $cancel.Dispose() }
   }
 
@@ -1530,9 +1624,13 @@ function Test-WorkflowCleanupProtocolStateMachine {
       -ProtocolFixture 'TIMEOUT_AFTER_STARTUP')
   } catch { $treeFailureDiagnostic = $_.Exception.Message }
   Assert-Contains $treeFailureDiagnostic ':LIFECYCLE:TIMEOUT_AFTER_STARTUP:' `
-    'tree-termination failure replaced the primary timeout outcome'
+    (Get-WorkflowCleanupStateMachineAssertionMessage `
+      'tree-termination failure replaced the primary timeout outcome' `
+      $treeFailureDiagnostic 'TREE_TERMINATION_FAILURE')
   Assert-Contains $treeFailureDiagnostic ':TREE_TERMINATION:FAILED:' `
-    'tree-termination failure was not represented by its fixed category'
+    (Get-WorkflowCleanupStateMachineAssertionMessage `
+      'tree-termination failure was not represented by its fixed category' `
+      $treeFailureDiagnostic 'TREE_TERMINATION_FAILURE')
 
   Write-Host 'PROPR_WINDOWS_SUPERVISOR_CONTROLLER_STATE_MACHINE:BOUNDED:PASSED'
   [Console]::Out.Flush()
