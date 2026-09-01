@@ -4,6 +4,7 @@ import {
   type LocalConnectStatusDependencies,
 } from './commands/connectCommand.js';
 import { createConfigManager } from './config/index.js';
+import { assertNativeDirectoryEntry } from './utils/directoryDescriptor.js';
 
 export const DESKTOP_CONNECT_DISCOVERY_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set([
   'darwin',
@@ -39,6 +40,9 @@ export async function discoverConfiguredConnect({
     warn: () => undefined,
   });
   const root = config.getStackRoot();
+  if (platform === 'linux' && root !== undefined) {
+    assertNativeDirectoryEntry(configRoot, 'config.json', 'file');
+  }
   return readStatus ? readStatus(root) : getLocalConnectStatus(root, statusDependencies);
 }
 

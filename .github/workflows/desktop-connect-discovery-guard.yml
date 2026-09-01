@@ -37,6 +37,14 @@ jobs:
             runner: macos-15
             platform: darwin
             arch: arm64
+          - target: linux-x64
+            runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
           - target: win32-x64
             runner: windows-2025
             platform: win32
@@ -70,6 +78,10 @@ jobs:
       - name: Package the target-native desktop app
         run: npm run desktop:package
 
+      - name: Run packaged Linux main-to-renderer discovery
+        if: matrix.platform == 'linux'
+        run: xvfb-run --auto-servernum npm run smoke:connect-package -w @propr/desktop
+
       - name: Run packaged Darwin main-to-renderer discovery
         if: matrix.platform == 'darwin'
         run: npm run smoke:connect-package -w @propr/desktop
@@ -79,7 +91,8 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $userName = 'propr-packaged-discovery'
+          $userName = 'propr-connect-ci'
+          if ($userName.Length -gt 20) { throw 'packaged discovery user name exceeds the local-account limit' }
           $plainPassword = [Guid]::NewGuid().ToString('N') + 'aA1!'
           $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
           $credential = [PSCredential]::new("$env:COMPUTERNAME\$userName", $securePassword)

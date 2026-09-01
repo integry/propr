@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,7 +79,11 @@ function nativeArtifactPath(platform: NodeJS.Platform, arch: string): string {
   ].map(physicalNativeArtifactCandidate);
   const artifact = candidates.find((candidate) => existsSync(candidate));
   if (!artifact) throw new Error(`packaged ${platform} directory-operations artifact is missing for ${arch}`);
-  if (platform === "darwin") assertCanonicalNativeArtifactParents(artifact);
+  assertCanonicalNativeArtifactParents(artifact);
+  const named = lstatSync(artifact);
+  if (!named.isFile() || named.isSymbolicLink() || (named.mode & 0o022) !== 0) {
+    throw new Error(`packaged directory-operations artifact failed type verification for ${platform}-${arch}`);
+  }
   verifyDirectoryOperationArtifact(artifact, expected, `${platform}-${arch}`);
   return artifact;
 }
@@ -97,6 +101,30 @@ function hostOperations(): NativeDirectoryOperations {
   }
   nativeOperations ??= createRequire(import.meta.url)(nativeArtifactPath(process.platform, process.arch)) as NativeDirectoryOperations;
   return nativeOperations;
+}
+
+/**
+ * Load the integrity-pinned host addon and perform one descriptor-relative
+ * operation. Packaged desktop discovery uses this on Linux so acceptance binds
+ * the selected native artifact to the running main process, rather than merely
+ * inspecting a file copied into the package.
+ */
+export function assertNativeDirectoryEntry(
+  directory: string,
+  name: string,
+  expectedKind: DirectoryEntryIdentity['kind'],
+): void {
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(name) || name === '.' || name === '..') {
+    throw new Error('native directory authority entry name is invalid');
+  }
+  const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    if (hostOperations().lstatAt(fd, name).kind !== expectedKind) {
+      throw new Error('native directory authority entry type did not match');
+    }
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function openAt(dirfd: number, name: string, flags: number, mode = 0): number {

@@ -508,10 +508,14 @@ const DARWIN_ACL_FLAGS = new Set(["directory_inherit", "file_inherit", "inherite
 
 /** Reject malformed ACL output and every ACL allow entry carrying mutation authority. */
 export function assertSafeDarwinAclOutput(output: string): void {
-  if (!output || Buffer.byteLength(output, "utf8") > 24 * 1024 || output.includes("\0")) {
+  // acl_to_text() may represent a valid empty extended ACL as an empty string
+  // on APFS. Canonicalize only that exact representation to the audited empty
+  // document; every non-empty malformed spelling remains rejected.
+  const canonicalOutput = output === "" ? "!#acl 1\n" : output;
+  if (Buffer.byteLength(canonicalOutput, "utf8") > 24 * 1024 || canonicalOutput.includes("\0")) {
     throw new Error("Darwin ACL authority inspection was malformed");
   }
-  const lines = output.replace(/\n$/, "").split("\n");
+  const lines = canonicalOutput.replace(/\n$/, "").split("\n");
   if (!/^!#acl 1(?: (?:defer_inherit|no_inherit)(?:,(?:defer_inherit|no_inherit))*)?$/.test(lines[0])) {
     throw new Error("Darwin ACL authority inspection was malformed");
   }

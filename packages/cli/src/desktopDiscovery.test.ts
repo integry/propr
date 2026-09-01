@@ -14,6 +14,45 @@ after(async () => {
 });
 
 describe('fixed desktop Connect discovery entry point', () => {
+  test('Linux configured discovery executes the target-native directory authority addon', {
+    skip: process.platform !== 'linux' || (process.arch !== 'x64' && process.arch !== 'arm64')
+      ? 'requires a packaged Linux native addon target'
+      : false,
+  }, async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'propr-desktop-discovery-linux-'));
+    directories.push(parent);
+    const configRoot = join(parent, '.propr');
+    const nativeRoot = join(parent, 'stack');
+    const config = new ConfigManager(configRoot, { warn: () => undefined });
+    await config.init();
+    await config.setStackRoot(nativeRoot);
+    let receivedRoot: string | undefined;
+    const status: ConnectStatusDocument = {
+      schemaVersion: 1,
+      status: 'notReady',
+      canonicalEndpoint: null,
+      publicInstanceIdentity: null,
+      configured: false,
+      enabled: false,
+      sidecarRunning: false,
+      apiReady: false,
+      restartRequired: false,
+      compatibility: null,
+      version: null,
+      reasonCodes: ['NOT_CONFIGURED'],
+    };
+
+    assert.equal(await discoverConfiguredConnect({
+      configRoot,
+      platform: 'linux',
+      readStatus: async root => {
+        receivedRoot = root;
+        return status;
+      },
+    }), status);
+    assert.equal(receivedRoot, nativeRoot);
+  });
+
   test('ordinary Windows discovery reads only the saved native root from fixed config', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'propr-desktop-discovery-'));
     directories.push(parent);

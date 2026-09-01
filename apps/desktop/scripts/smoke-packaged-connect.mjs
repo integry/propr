@@ -6,8 +6,8 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 
-if (process.platform !== 'darwin' && process.platform !== 'win32') {
-  throw new Error('Packaged Connect discovery smoke requires Darwin or Windows');
+if (!['darwin', 'linux', 'win32'].includes(process.platform)) {
+  throw new Error('Packaged Connect discovery smoke requires Darwin, Linux, or Windows');
 }
 if (process.arch !== 'x64' && process.arch !== 'arm64') {
   throw new Error('Packaged Connect discovery smoke requires x64 or arm64');
@@ -16,7 +16,7 @@ if (process.arch !== 'x64' && process.arch !== 'arm64') {
 const artifactRoot = resolve('out', `propr-desktop-${process.platform}-${process.arch}`);
 const binaryPath = process.platform === 'darwin'
   ? join(artifactRoot, 'propr-desktop.app', 'Contents', 'MacOS', 'propr-desktop')
-  : join(artifactRoot, 'propr-desktop.exe');
+  : join(artifactRoot, process.platform === 'linux' ? 'propr-desktop' : 'propr-desktop.exe');
 const resourcesPath = process.platform === 'darwin'
   ? join(artifactRoot, 'propr-desktop.app', 'Contents', 'Resources')
   : join(artifactRoot, 'resources');
@@ -28,15 +28,72 @@ const secrets = [
   'tunnel-secret-SENTINEL', 'connector-secret-SENTINEL',
   'relay-secret-SENTINEL', 'github-secret-SENTINEL',
 ];
-const darwinHashes = {
-  arm64: {
-    'connect-authority-broker': '75fda2624bf093555e726b968401321fef61ea7ae0479f4c1892be0dfc6554c0',
-    'directory-operations.node': '88f07c0c7a4371f4fb227a4691009d09517de582ba49297d28d03ac94e586615',
+const nativeHashes = {
+  darwin: {
+    arm64: {
+      'connect-authority-broker': '75fda2624bf093555e726b968401321fef61ea7ae0479f4c1892be0dfc6554c0',
+      'directory-operations.node': '88f07c0c7a4371f4fb227a4691009d09517de582ba49297d28d03ac94e586615',
+    },
+    x64: {
+      'connect-authority-broker': 'e5a49be0db85655b9ff1d0614de9d61defd41a0a1b2eff8f11571407f10d809b',
+      'directory-operations.node': '62183c0f4083cb8c98e09e2d2c688f8f81703e12b0f22320c335b51e927eaf53',
+    },
   },
-  x64: {
-    'connect-authority-broker': 'e5a49be0db85655b9ff1d0614de9d61defd41a0a1b2eff8f11571407f10d809b',
-    'directory-operations.node': '62183c0f4083cb8c98e09e2d2c688f8f81703e12b0f22320c335b51e927eaf53',
+  linux: {
+    arm64: {
+      'directory-operations.node': '29b28b76ed8781f2567897ad9ba576798bbb669937048218e0416601788e0f1c',
+    },
+    x64: {
+      'directory-operations.node': '7199378f1c7b443a05c596eae7c66f9a77cc01b4a493c07748df0df1083950f6',
+    },
   },
+};
+const CHILD_CAPTURE_MAX_BYTES = 64 * 1024;
+const CHILD_DIAGNOSTIC_MAX_RECORDS = 12;
+const childDiagnosticEvents = new Set([
+  'desktop.app.ready',
+  'desktop.app.start_failed',
+  'desktop.log.write_failed',
+  'desktop.main_process.uncaught_exception',
+  'desktop.renderer.connect_discovery.ready',
+  'desktop.renderer.connect_discovery.status',
+  'desktop.renderer.gone',
+  'desktop.renderer.ready',
+]);
+const childDiagnosticCodes = new Set([
+  'CONNECT_STATUS_INCOMPATIBLE',
+  'CONNECT_STATUS_INTERNAL_FAILURE',
+  'CONNECT_STATUS_INVALID_CONFIG',
+  'CONNECT_STATUS_NOT_READY',
+  'CONNECT_STATUS_READY',
+  'CONNECT_STATUS_TIMEOUT',
+  'DETAIL_REDACTED',
+  'LOG_WRITE_FAILED',
+  'OPERATION_FAILED',
+  'UNCAUGHT_EXCEPTION',
+]);
+
+const childRecords = output => output.split(/\r?\n/).flatMap(line => {
+  try {
+    const record = JSON.parse(line.slice(line.indexOf('{')));
+    return record && typeof record === 'object' && !Array.isArray(record) ? [record] : [];
+  } catch { return []; }
+});
+
+const boundedChildDiagnostics = records => records.flatMap(record => {
+  if (!record || typeof record !== 'object' || !childDiagnosticEvents.has(record.event)) return [];
+  const nestedCode = record.error && typeof record.error === 'object' ? record.error.code : undefined;
+  const candidateCode = typeof record.code === 'string' ? record.code : nestedCode;
+  return [{
+    event: record.event,
+    ...(childDiagnosticCodes.has(candidateCode) ? { code: candidateCode } : {}),
+  }];
+}).slice(0, CHILD_DIAGNOSTIC_MAX_RECORDS);
+
+const authorityMechanism = () => {
+  if (process.platform === 'darwin') return 'packaged-broker';
+  if (process.platform === 'linux') return 'in-process-native-addon';
+  return 'inherited-standard-handle';
 };
 
 const assertCanonicalParents = async candidate => {
@@ -62,8 +119,8 @@ const assertPackageAuthority = async () => {
     }
     return;
   }
-  const selected = join(unpackedNative, `darwin-${process.arch}`);
-  for (const [name, expected] of Object.entries(darwinHashes[process.arch])) {
+  const selected = join(unpackedNative, `${process.platform}-${process.arch}`);
+  for (const [name, expected] of Object.entries(nativeHashes[process.platform][process.arch])) {
     const candidate = join(selected, name);
     await assertCanonicalParents(candidate);
     const named = await lstat(candidate);
@@ -71,15 +128,15 @@ const assertPackageAuthority = async () => {
       || named.isSymbolicLink()
       || (named.mode & 0o022) !== 0
       || (name === 'connect-authority-broker' && (named.mode & 0o111) === 0)) {
-      throw new Error('Packaged Darwin native authority artifact failed type or mode verification');
+      throw new Error('Packaged native authority artifact failed type or mode verification');
     }
     const digest = createHash('sha256').update(await readFile(candidate)).digest('hex');
-    if (digest !== expected) throw new Error('Packaged Darwin native authority artifact failed integrity verification');
+    if (digest !== expected) throw new Error('Packaged native authority artifact failed integrity verification');
   }
   const otherArch = process.arch === 'arm64' ? 'x64' : 'arm64';
   try {
-    await lstat(join(unpackedNative, `darwin-${otherArch}`));
-    throw new Error('Darwin package contains the unselected architecture authority artifacts');
+    await lstat(join(unpackedNative, `${process.platform}-${otherArch}`));
+    throw new Error('Package contains unselected architecture authority artifacts');
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
@@ -142,7 +199,7 @@ try {
     '',
   ].join('\n'), { mode: 0o600 });
   await writeFile(identityPath, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: identity })}\n`, { mode: 0o600 });
-  if (process.platform === 'darwin') {
+  if (process.platform !== 'win32') {
     await Promise.all([
       chmod(fixture, 0o700), chmod(configRoot, 0o700), chmod(stackRoot, 0o700),
       chmod(dataRoot, 0o700), chmod(userDataPath, 0o700), chmod(configPath, 0o600),
@@ -154,6 +211,16 @@ try {
   await assertPackageAuthority();
 
   let output = '';
+  const sensitiveNeedles = [
+    ...secrets, fixture, configRoot, stackRoot, identity,
+    'S-1-5-', 'volumeSerialNumber', 'fileId', 'authorityDiagnostic',
+  ];
+  const maximumNeedleLength = Math.max(...sensitiveNeedles.map(value => value.length));
+  const capturedChunks = [];
+  let capturedBytes = 0;
+  let captureTruncated = false;
+  let scanTail = '';
+  let sensitiveOutputObserved = false;
   const child = spawn(binaryPath, ['--disable-gpu', `--user-data-dir=${userDataPath}`], {
     shell: false,
     windowsHide: true,
@@ -167,7 +234,19 @@ try {
       GITHUB_TOKEN: secrets[3],
     },
   });
-  const capture = chunk => { output += chunk.toString(); };
+  const capture = chunk => {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const text = bytes.toString('utf8');
+    const scan = `${scanTail}${text}`;
+    if (sensitiveNeedles.some(needle => scan.includes(needle))) sensitiveOutputObserved = true;
+    scanTail = scan.slice(-(maximumNeedleLength - 1));
+    const remaining = CHILD_CAPTURE_MAX_BYTES - capturedBytes;
+    if (remaining > 0) {
+      capturedChunks.push(bytes.subarray(0, remaining));
+      capturedBytes += Math.min(bytes.byteLength, remaining);
+    }
+    if (bytes.byteLength > remaining) captureTruncated = true;
+  };
   child.stdout.on('data', capture); child.stderr.on('data', capture);
   const result = await new Promise((resolveResult, reject) => {
     const timeout = setTimeout(() => {
@@ -178,20 +257,27 @@ try {
       clearTimeout(timeout); resolveResult({ code, signal });
     });
   });
-  if (result.code !== 0 || result.signal) throw new Error('Packaged Connect discovery app failed');
-  const records = output.split(/\r?\n/).flatMap(line => {
-    try { return [JSON.parse(line.slice(line.indexOf('{')))]; } catch { return []; }
-  });
+  output = Buffer.concat(capturedChunks, capturedBytes).toString('utf8');
+  if (sensitiveOutputObserved || sensitiveNeedles.some(sentinel => output.includes(sentinel))) {
+    throw new Error('Packaged Connect discovery output leaked secret, path, or native evidence');
+  }
+  const records = childRecords(output);
+  if (result.code !== 0 || result.signal) {
+    process.stderr.write(`${JSON.stringify({
+      event: 'packaged_connect.child_failed',
+      category: result.signal ? 'signal' : 'nonzero-exit',
+      capture: captureTruncated ? 'truncated' : 'complete',
+      records: boundedChildDiagnostics(records),
+    })}\n`);
+    throw new Error('Packaged Connect discovery app failed');
+  }
   const proof = records.find(record => record.event === readyEvent);
-  const expectedMechanism = process.platform === 'darwin' ? 'packaged-broker' : 'inherited-standard-handle';
+  const expectedMechanism = authorityMechanism();
   if (!proof
     || proof.selectedPlatform !== process.platform
     || proof.selectedArch !== process.arch
     || proof.authorityMechanism !== expectedMechanism
     || proof.rendererSchemaValid !== true) throw new Error('Packaged Connect discovery proof was incomplete');
-  for (const sentinel of [...secrets, fixture, stackRoot, identity, 'S-1-5-', 'volumeSerialNumber', 'fileId', 'authorityDiagnostic']) {
-    if (output.includes(sentinel)) throw new Error('Packaged Connect discovery output leaked secret, path, or native evidence');
-  }
   if (relative(canonicalTemp, configRoot).startsWith('..')) throw new Error('Connect smoke config escaped its fixed root');
   process.stdout.write(`Packaged Connect discovery passed for ${process.platform}-${process.arch}: ${expectedMechanism}.\n`);
 } finally {

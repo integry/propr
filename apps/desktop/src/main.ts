@@ -281,7 +281,11 @@ const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<
   log('info', 'desktop.renderer.connect_discovery.ready', {
     selectedPlatform: process.platform,
     selectedArch: process.arch,
-    authorityMechanism: process.platform === 'darwin' ? 'packaged-broker' : 'inherited-standard-handle',
+    authorityMechanism: process.platform === 'darwin'
+      ? 'packaged-broker'
+      : process.platform === 'linux'
+        ? 'in-process-native-addon'
+        : 'inherited-standard-handle',
     rendererSchemaValid: true,
   });
 };
@@ -565,13 +569,27 @@ if (!hasSingleInstanceLock) {
     const profiles = new ProfileStore(app.getPath('userData'), productionEncryption);
     const connectDiscovery = new DesktopConnectDiscoveryService(profiles, {
       supported: DESKTOP_CONNECT_DISCOVERY_PLATFORMS.has(process.platform),
-      discover: () => discoverConfiguredConnect({
-        configRoot: connectSmoke?.configRoot ?? join(app.getPath('home'), '.propr'),
-        statusDependencies: connectSmoke ? {
-          fetchImpl: connectSmoke.fetch,
-          inspectTunnel: () => ({ kind: 'ok', running: true }),
-        } : undefined,
-      }),
+      discover: async () => {
+        const status = await discoverConfiguredConnect({
+          configRoot: connectSmoke?.configRoot ?? join(app.getPath('home'), '.propr'),
+          statusDependencies: connectSmoke ? {
+            fetchImpl: connectSmoke.fetch,
+            inspectTunnel: () => ({ kind: 'ok', running: true }),
+          } : undefined,
+        });
+        if (connectSmoke) {
+          const statusCode = {
+            incompatible: 'CONNECT_STATUS_INCOMPATIBLE',
+            internalFailure: 'CONNECT_STATUS_INTERNAL_FAILURE',
+            invalidConfig: 'CONNECT_STATUS_INVALID_CONFIG',
+            notReady: 'CONNECT_STATUS_NOT_READY',
+            ready: 'CONNECT_STATUS_READY',
+            timeout: 'CONNECT_STATUS_TIMEOUT',
+          }[status.status];
+          log('info', 'desktop.renderer.connect_discovery.status', { code: statusCode });
+        }
+        return status;
+      },
     });
     const credentials = new DesktopCredentialService({
       profiles,

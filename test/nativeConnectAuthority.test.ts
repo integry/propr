@@ -19,6 +19,7 @@ const READ_ONLY_ACL = [
 ].join("\n");
 
 test("Darwin ACL contract accepts bounded empty and read-only documents", () => {
+  assert.doesNotThrow(() => assertSafeDarwinAclOutput(""));
   assert.doesNotThrow(() => assertSafeDarwinAclOutput(EMPTY_ACL));
   assert.doesNotThrow(() => assertSafeDarwinAclOutput(READ_ONLY_ACL));
 });
@@ -34,7 +35,8 @@ test("Darwin ACL contract rejects mutation grants", () => {
 
 test("Darwin ACL contract rejects malformed and oversized output", () => {
   for (const malformed of [
-    "",
+    "\n",
+    "user supplied path",
     "!#acl 1 extra\n",
     "!#acl 2\n",
     "!#acl 1\nunknown\n",
