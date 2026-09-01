@@ -2,7 +2,7 @@ import {
   type ProprApiCompatibilityResult,
 } from '@propr/shared';
 import { isProprClientError } from '@propr/client';
-import { proprClient } from './apiClient';
+import { getProprClient } from './apiClient';
 
 // Bound the pre-render compatibility probe so a slow/unreachable API can't trap
 // the user on a spinner waiting out the browser's default fetch timeout. On
@@ -19,7 +19,7 @@ export class ProprCompatibilityCheckError extends Error {
 
 export async function checkProprApiCompatibility(): Promise<ProprApiCompatibilityResult> {
   try {
-    return await proprClient.negotiateCompatibility({
+    return await getProprClient().negotiateCompatibility({
       timeoutMs: COMPATIBILITY_CHECK_TIMEOUT_MS,
     });
   } catch (error) {

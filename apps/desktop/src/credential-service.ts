@@ -38,7 +38,7 @@ export interface CredentialServiceDependencies {
     | 'removeCredentialIfCurrent' | 'journalPendingRevocation' | 'releasePendingRevocation'
     | 'pendingRevocations' | 'completePendingRevocation' | 'awaitIdle'>;
   fetch: typeof globalThis.fetch;
-  openExternal(url: string): Promise<void>;
+  openPairingBrowser(request: DesktopPairingBrowserRequest): Promise<void>;
   clientName: string;
   /** Deterministic pairing timing for protocol tests. Production uses the client defaults. */
   pairingTiming?: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
@@ -50,6 +50,12 @@ export interface CredentialServiceDependencies {
     code: 'network' | 'http' | 'local-cleanup';
     status?: number;
   }): void;
+}
+
+export interface DesktopPairingBrowserRequest {
+  apiBaseUrl: string;
+  pairingId: string;
+  approvalUrl: string;
 }
 
 export interface CredentialServiceInitialization {
@@ -316,7 +322,7 @@ const authenticationSummary = (capabilities: {
 export class DesktopCredentialService {
   readonly #profiles: CredentialServiceDependencies['profiles'];
   readonly #fetch: typeof globalThis.fetch;
-  readonly #openExternal: (url: string) => Promise<void>;
+  readonly #openPairingBrowser: (request: DesktopPairingBrowserRequest) => Promise<void>;
   readonly #clientName: string;
   readonly #pairingTiming: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
   readonly #pairingProtocol: PairingProtocolRequestOptions;
@@ -344,7 +350,7 @@ export class DesktopCredentialService {
   constructor(dependencies: CredentialServiceDependencies) {
     this.#profiles = dependencies.profiles;
     this.#fetch = dependencies.fetch;
-    this.#openExternal = dependencies.openExternal;
+    this.#openPairingBrowser = dependencies.openPairingBrowser;
     this.#clientName = dependencies.clientName;
     this.#pairingTiming = dependencies.pairingTiming ?? {};
     this.#pairingProtocol = dependencies.pairingProtocol ?? {};
@@ -546,11 +552,15 @@ export class DesktopCredentialService {
           credentialGeneration,
         },
         signal: controller.signal,
-        onApprovalRequired: async approvalUrl => {
+        onApprovalRequired: async (approvalUrl, _expiresAt, pairingId) => {
           this.#assertPairingCurrent(
             proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
           );
-          await this.#openExternal(approvalUrl);
+          await this.#openPairingBrowser({
+            apiBaseUrl: proposed.apiBaseUrl,
+            pairingId,
+            approvalUrl,
+          });
         },
       });
       provisional = completed;

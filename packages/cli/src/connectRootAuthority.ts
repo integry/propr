@@ -24,6 +24,11 @@ import {
   WindowsNativeStageError,
   windowsInspectionEntryKind,
 } from "./connectWindowsAuthority.js";
+import {
+  assertCanonicalNativeArtifactParents,
+  isPackagedNativeArtifactResolution,
+  physicalNativeArtifactCandidate,
+} from "./utils/nativeArtifact.js";
 
 const NATIVE_INSPECTION_MAX_BYTES = 128 * 1024;
 const WINDOWS_SID = /^S-\d(?:-\d+)+$/;
@@ -168,6 +173,11 @@ const DARWIN_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
   x64: "e5a49be0db85655b9ff1d0614de9d61defd41a0a1b2eff8f11571407f10d809b",
 };
 
+/** Writable rejection is universal; execution is required only at the packaged source boundary. */
+export function isConnectAuthorityBrokerModeSafe(mode: bigint, packaged: boolean): boolean {
+  return (mode & 0o022n) === 0n && (!packaged || (mode & 0o111n) !== 0n);
+}
+
 function readExactDescriptor(fd: number, size: number): Buffer {
   if (!Number.isSafeInteger(size) || size <= 0 || size > 512 * 1024) {
     throw new Error("packaged native authority broker failed integrity verification");
@@ -197,10 +207,14 @@ function darwinAuthorityBrokerArtifact(): {
     join(moduleDirectory, "native", relative),
     join(moduleDirectory, "..", "native", relative),
     join(moduleDirectory, "..", "..", "native", relative),
-  ];
-  for (const path of candidates) {
+  ].map((logicalPath) => {
+    const path = physicalNativeArtifactCandidate(logicalPath);
+    return { path, packaged: isPackagedNativeArtifactResolution(logicalPath, path) };
+  });
+  for (const { path, packaged } of candidates) {
     let fd: number | undefined;
     try {
+      if (packaged) assertCanonicalNativeArtifactParents(path);
       fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       const stat = fstatSync(fd, { bigint: true });
       const named = lstatSync(path, { bigint: true });
@@ -212,7 +226,7 @@ function darwinAuthorityBrokerArtifact(): {
         || stat.size <= 0n
         || stat.size > BigInt(512 * 1024)
         || (typeof process.getuid === "function" && stat.uid !== 0n && stat.uid !== BigInt(process.getuid()))
-        || (stat.mode & 0o022n) !== 0n
+        || !isConnectAuthorityBrokerModeSafe(stat.mode, packaged)
       ) {
         closeSync(fd);
         fd = undefined;
@@ -502,10 +516,14 @@ const DARWIN_ACL_FLAGS = new Set(["directory_inherit", "file_inherit", "inherite
 
 /** Reject malformed ACL output and every ACL allow entry carrying mutation authority. */
 export function assertSafeDarwinAclOutput(output: string): void {
-  if (!output || Buffer.byteLength(output, "utf8") > 24 * 1024 || output.includes("\0")) {
+  // acl_to_text() may represent a valid empty extended ACL as an empty string
+  // on APFS. Canonicalize only that exact representation to the audited empty
+  // document; every non-empty malformed spelling remains rejected.
+  const canonicalOutput = output === "" ? "!#acl 1\n" : output;
+  if (Buffer.byteLength(canonicalOutput, "utf8") > 24 * 1024 || canonicalOutput.includes("\0")) {
     throw new Error("Darwin ACL authority inspection was malformed");
   }
-  const lines = output.replace(/\n$/, "").split("\n");
+  const lines = canonicalOutput.replace(/\n$/, "").split("\n");
   if (!/^!#acl 1(?: (?:defer_inherit|no_inherit)(?:,(?:defer_inherit|no_inherit))*)?$/.test(lines[0])) {
     throw new Error("Darwin ACL authority inspection was malformed");
   }

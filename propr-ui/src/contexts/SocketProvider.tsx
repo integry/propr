@@ -5,8 +5,8 @@ import { SocketContext, SocketContextValue } from './SocketContext';
 import {
   getDesktopConnectionScope,
   getDesktopSocketConfigurationKey,
+  getProprClient,
   handleDesktopAccessCode,
-  proprClient,
   subscribeDesktopConnectionScope,
 } from '../api/apiClient';
 import { isDesktopRuntime } from '../config/runtimeMode';
@@ -44,7 +44,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       return;
     }
     setIsConnected(false);
-    const newSocket = proprClient.connectSocket({
+    const newSocket = getProprClient().connectSocket({
       transports: ['websocket'],
       autoConnect: true,
       path: '/socket.io/',

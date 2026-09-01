@@ -114,16 +114,16 @@ describe('getApiBaseUrl', () => {
     expect(getApiBaseUrl()).toBe('');
   });
 
-  it('strips a trailing slash from the runtime value so paths do not double up', async () => {
+  it('rejects a trailing slash on a reserved Connect runtime value', async () => {
     window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://t-abc123.propr.dev/' };
     const getApiBaseUrl = await loadGetApiBaseUrl();
-    expect(getApiBaseUrl()).toBe('https://t-abc123.propr.dev');
+    expect(getApiBaseUrl()).toBe('');
   });
 
-  it('rejects multiple trailing slashes as a non-default origin path', async () => {
+  it('rejects repeated trailing slashes on a reserved Connect runtime value', async () => {
     window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://t-abc123.propr.dev///' };
     const getApiBaseUrl = await loadGetApiBaseUrl();
-    expect(() => getApiBaseUrl()).toThrow(/canonical HTTPS origin/i);
+    expect(getApiBaseUrl()).toBe('');
   });
 
   it('strips a trailing slash from the build-time env var', async () => {
@@ -228,10 +228,16 @@ describe('getApiBaseUrl', () => {
       search: '?oauth_complete=true',
     });
 
-    const { getActiveHostedTunnelFlowId, getApiBaseUrl, HOSTED_TUNNEL_API_BASE_STORAGE_KEY } =
+    const {
+      getActiveHostedTunnelFlowId,
+      getApiBaseUrl,
+      getRuntimeApiBaseUrlState,
+      HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+    } =
       await import('./runtimeConfig');
 
     expect(getApiBaseUrl()).toBe('');
+    expect(getRuntimeApiBaseUrlState()).toEqual({ apiBaseUrl: '', issue: null });
     expectNoSessionStorageAccess(hostedWindow.sessionStorage);
     expect(hostedWindow.localStorage.getItem).not.toHaveBeenCalled();
     expect(hostedWindow.localStorage.setItem).not.toHaveBeenCalled();
@@ -255,6 +261,37 @@ describe('getApiBaseUrl', () => {
     expect(hostedWindow.name).not.toBe('original-window-name');
     expect(getActiveHostedTunnelFlowId()).toBeTruthy();
   });
+
+  it('blocks API client construction when the hosted UI has no selected stack', async () => {
+    stubHostedWindow({ search: '', pathname: '/' });
+
+    const { getRuntimeApiBaseUrlState } = await import('./runtimeConfig');
+    expect(getRuntimeApiBaseUrlState()).toMatchObject({
+      apiBaseUrl: '',
+      issue: { code: 'HOSTED_STACK_REQUIRED' },
+    });
+
+    const { getProprClient, proprClient } = await import('../api/apiClient');
+    expect(proprClient).toBeNull();
+    expect(() => getProprClient()).toThrow('The ProPR connection configuration is invalid.');
+  });
+
+  it('blocks API client construction for a non-Connect hosted runtime URL', async () => {
+    stubHostedWindow({
+      config: { apiBaseUrl: 'https://custom.example.com' },
+      search: '',
+      pathname: '/',
+    });
+
+    const { getRuntimeApiBaseUrlState } = await import('./runtimeConfig');
+    expect(getRuntimeApiBaseUrlState()).toMatchObject({
+      apiBaseUrl: '',
+      issue: { code: 'INVALID_RUNTIME_CONFIGURATION' },
+    });
+
+    const { proprClient } = await import('../api/apiClient');
+    expect(proprClient).toBeNull();
+  });
 });
 
 describe('hosted tunnel query API base', () => {
@@ -264,6 +301,10 @@ describe('hosted tunnel query API base', () => {
     vi.resetModules();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('accepts the Connect tunnel hostname on the hosted UI origin', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
     expect(
@@ -271,21 +312,91 @@ describe('hosted tunnel query API base', () => {
     ).toBe('https://t-abc123.propr.dev');
   });
 
-  it('rejects full URLs and alternate selector serialization', async () => {
+  it('accepts only a literal exact full hosted proxy URL', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
-    for (const bad of [
+    expect(
+      hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=https://t-abc123.propr.dev')
+    ).toBe('https://t-abc123.propr.dev');
+    expect(hostedTunnelQueryApiBaseUrl(
+      'app.propr.dev',
       '?tunnel=https%3A%2F%2Ft-abc123.propr.dev',
-      '?tunnel=https%3A%2F%2Ft-abc123.propr.dev%2F%2F',
-      '?tunnel=t-abc123.propr.dev%2F',
-      '?tunnel=abc123',
-      '?tunnel=t-abc123.propr.dev.',
-      '?tunnel=t-abc123.propr.dev&tunnel=t-other.propr.dev',
-    ]) expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', bad)).toBeNull();
+    )).toBeNull();
   });
 
-  it('rejects noncanonical DNS case', async () => {
+  it('rejects a bare instance id because shorthand must include the complete canonical host', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
-    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=T-AbC123.ProPR.dev')).toBeNull();
+    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=abc123')).toBeNull();
+  });
+
+  it('rejects every slash on scheme-less shorthand', async () => {
+    const { hostedTunnelQueryApiBaseUrl } = await load();
+    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=t-abc123.propr.dev%2F%2F')).toBeNull();
+    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=t-abc123.propr.dev//')).toBeNull();
+  });
+
+  it('rejects exact noncanonical Connect shorthand reproductions without storing flow state', async () => {
+    const { hostedTunnelQueryApiBaseUrl, resolveApiBaseUrl } = await load();
+    for (const search of [
+      '?tunnel=user:secret@t-abc123.propr.dev',
+      '?tunnel=t-abc123.propr.dev:443',
+      '?tunnel=t-abc123.propr.dev:8443',
+      '?tunnel=t-%61bc123.propr.dev',
+      '?tunnel=t%2Dabc123.propr.dev',
+      '?%74unnel=t-abc123.propr.dev',
+      '?tunnel=T-abc123.propr.dev',
+      '?tunnel=t-abc123.propr.dev.',
+      '?tunnel=t-abc123.propr.dev.evil.example',
+      '?tunnel=t-abc123.foo.propr.dev',
+      '?tunnel=t-abc123.propr.dev%5Cpath',
+      '?tunnel=t-abc123.propr.dev%2Fpath',
+      '?tunnel=t-abc123.propr.dev%3Ftoken%3Dsecret',
+      '?tunnel=t-abc123.propr.dev%23fragment',
+      '?tunnel=%20t-abc123.propr.dev',
+      '?tunnel=t-%C3%A1bc123.propr.dev',
+      '?tunnel=xn--t-bca123.propr.dev',
+    ]) {
+      const storage = memoryStorage();
+      expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', search), search).toBeNull();
+      expect(resolveApiBaseUrl('app.propr.dev', search, undefined, undefined, storage), search).toBe('');
+      expect(storage.setItem, search).not.toHaveBeenCalled();
+    }
+  });
+
+  it('does not let an encoded tunnel name fall through to valid runtime configuration', async () => {
+    stubHostedWindow({
+      config: { apiBaseUrl: 'https://t-configured.propr.dev' },
+      pathname: '/',
+      search: '?%74unnel=t-selected.propr.dev',
+    });
+    const { getRuntimeApiBaseUrlState, hostedTunnelQueryApiBaseUrl } = await load();
+
+    expect(hostedTunnelQueryApiBaseUrl(
+      'app.propr.dev',
+      '?%74unnel=t-selected.propr.dev',
+    )).toBeNull();
+    expect(getRuntimeApiBaseUrlState()).toMatchObject({
+      apiBaseUrl: '',
+      issue: { code: 'INVALID_RUNTIME_CONFIGURATION' },
+    });
+  });
+
+  it('does not let an encoded tunnel name fall through to a valid stored endpoint', async () => {
+    stubHostedWindow({
+      name: 'propr-hosted-flow-context:stored-context|preserved',
+      pathname: '/',
+      search: '?%74unnel=t-selected.propr.dev&flow=stored-flow',
+      sessionInitial: {
+        'propr.hostedTunnelApiBaseUrl': 'https://t-stored.propr.dev',
+        'propr.hostedTunnelContextId': 'stored-context',
+        'propr.hostedTunnelFlowId': 'stored-flow',
+      },
+    });
+    const { getRuntimeApiBaseUrlState } = await load();
+
+    expect(getRuntimeApiBaseUrlState()).toMatchObject({
+      apiBaseUrl: '',
+      issue: { code: 'INVALID_RUNTIME_CONFIGURATION' },
+    });
   });
 
   it('ignores tunnel query params off the hosted UI origin', async () => {
@@ -756,7 +867,7 @@ describe('runtimeConfigWarning', () => {
 
   it('warns on the hosted UI origin when config.js did not load', async () => {
     const runtimeConfigWarning = await loadWarning();
-    expect(runtimeConfigWarning('app.propr.dev', undefined)).toContain('config.js did not load');
+    expect(runtimeConfigWarning('app.propr.dev', undefined)).toBe('[propr] HOSTED_STACK_REQUIRED');
   });
 
   it('does not warn about missing config when a valid Connect tunnel deep link is present', async () => {
@@ -797,8 +908,8 @@ describe('runtimeConfigWarning', () => {
 
   it('warns on the hosted UI origin when apiBaseUrl is empty', async () => {
     const runtimeConfigWarning = await loadWarning();
-    expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '' })).toContain('apiBaseUrl is empty');
-    expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '   ' })).toContain('apiBaseUrl is empty');
+    expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '' })).toBe('[propr] HOSTED_STACK_REQUIRED');
+    expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '   ' })).toBe('[propr] INVALID_RUNTIME_CONFIGURATION');
   });
 
   it('does not warn when apiBaseUrl is configured', async () => {
@@ -809,14 +920,14 @@ describe('runtimeConfigWarning', () => {
   it('warns on the hosted UI origin when apiBaseUrl is not a valid http(s) URL', async () => {
     const runtimeConfigWarning = await loadWarning();
     for (const bad of ['t-abc123.propr.dev', '/api', 'ftp://t-abc123.propr.dev', 'not a url']) {
-      expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: bad })).toContain('not a valid http(s) URL');
+      expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: bad })).toBe('[propr] INVALID_RUNTIME_CONFIGURATION');
     }
   });
 
   it('warns on the hosted UI origin when apiBaseUrl is a valid URL but not a ProPR proxy URL', async () => {
     const runtimeConfigWarning = await loadWarning();
     for (const notProxy of ['https://custom.example.com', 'http://t-abc123.propr.dev', 'https://t-a.b.propr.dev']) {
-      expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: notProxy })).toContain('not a hosted ProPR proxy URL');
+      expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: notProxy })).toBe('[propr] INVALID_RUNTIME_CONFIGURATION');
     }
   });
 
@@ -885,11 +996,11 @@ describe('hosted UI connection issue', () => {
   it('blocks invalid hosted runtime API URLs', async () => {
     const hostedUiConnectionIssue = await loadIssue();
     expect(hostedUiConnectionIssue('app.propr.dev', { apiBaseUrl: '/api' })?.title).toBe(
-      'Invalid hosted UI configuration'
+      'Invalid ProPR configuration'
     );
     expect(
       hostedUiConnectionIssue('app.propr.dev', { apiBaseUrl: 'https://custom.example.com' })?.title
-    ).toBe('Invalid hosted UI tunnel');
+    ).toBe('Invalid ProPR configuration');
   });
 
   it('does not block local or self-hosted origins', async () => {

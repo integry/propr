@@ -1,0 +1,127 @@
+name: Packaged Connect Discovery Guard
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-connect-discovery-guard.yml'
+      - 'apps/desktop/**'
+      - 'packages/cli/**'
+      - 'packages/client/**'
+      - 'packages/shared/**'
+      - 'propr-ui/**'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-connect-discovery-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packaged-connect-discovery:
+    name: Packaged Connect (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-x64
+            runner: macos-15-intel
+            platform: darwin
+            arch: x64
+          - target: darwin-arm64
+            runner: macos-15
+            platform: darwin
+            arch: arm64
+          - target: linux-x64
+            runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - target: win32-x64
+            runner: windows-2025
+            platform: win32
+            arch: x64
+          - target: win32-arm64
+            runner: windows-11-arm
+            platform: win32
+            arch: arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up target-native Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          architecture: ${{ matrix.arch }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify selected host architecture
+        shell: bash
+        run: |
+          test "$(node -p process.platform)" = "${{ matrix.platform }}"
+          test "$(node -p process.arch)" = "${{ matrix.arch }}"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify encoded Windows PowerShell ACL helper success streams
+        if: matrix.platform == 'win32'
+        run: npm run test:windows-fixture-acl -w @propr/desktop
+
+      - name: Package the target-native desktop app
+        run: npm run desktop:package
+
+      - name: Run packaged Linux main-to-renderer discovery
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sandbox="apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          sudo chown root:root "$sandbox"
+          sudo chmod 4755 "$sandbox"
+          test "$(stat -c '%U:%G:%a' "$sandbox")" = 'root:root:4755'
+          dbus-run-session -- xvfb-run --auto-servernum npm run smoke:connect-package -w @propr/desktop
+
+      - name: Run packaged Darwin main-to-renderer discovery
+        if: matrix.platform == 'darwin'
+        run: npm run smoke:connect-package -w @propr/desktop
+
+      - name: Run packaged Windows main-to-renderer discovery as an ordinary user
+        if: matrix.platform == 'win32'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $userName = 'propr-connect-ci'
+          if ($userName.Length -gt 20) { throw 'packaged discovery user name exceeds the local-account limit' }
+          $plainPassword = [Guid]::NewGuid().ToString('N') + 'aA1!'
+          $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+          $credential = [PSCredential]::new("$env:COMPUTERNAME\$userName", $securePassword)
+          $stdout = Join-Path $env:RUNNER_TEMP 'packaged-connect.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'packaged-connect.stderr'
+          try {
+            New-LocalUser -Name $userName -Password $securePassword -PasswordNeverExpires | Out-Null
+            $administrators = Get-LocalGroupMember -Group 'Administrators' | ForEach-Object { $_.Name }
+            if ($administrators -contains "$env:COMPUTERNAME\$userName") { throw 'packaged discovery user is an administrator' }
+            $node = (Get-Command node.exe).Source
+            $desktopDirectory = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop'
+            $process = Start-Process -FilePath $node -ArgumentList @('scripts/smoke-packaged-connect.mjs') -WorkingDirectory $desktopDirectory -Credential $credential -LoadUserProfile -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            Get-Content -LiteralPath $stdout
+            if ($process.ExitCode -ne 0) {
+              Get-Content -LiteralPath $stderr
+              throw "packaged Connect discovery exited $($process.ExitCode)"
+            }
+            if ((Get-Content -Raw -LiteralPath $stderr).Length -ne 0) { throw 'packaged Connect discovery wrote stderr' }
+          } finally {
+            Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
+          }

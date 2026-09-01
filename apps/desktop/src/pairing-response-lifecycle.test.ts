@@ -228,7 +228,7 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
           return json({
             pairingId: `dpr_${'A'.repeat(22)}`,
             deviceSecret: 'B'.repeat(43),
-            approvalUrl: `${origin}/approve`,
+            approvalUrl: `${origin}/api/desktop/pairings/dpr_${'A'.repeat(22)}/browser`,
             expiresAt,
             interval: 1,
           }, 201);
@@ -265,7 +265,7 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
         service = new DesktopCredentialService({
           profiles: store,
           clientName: `Native ${scenario.name}`,
-          openExternal: async () => undefined,
+          openPairingBrowser: async () => undefined,
           fetch: fetchImplementation,
           pairingTiming: { now: () => protocolNow, sleep: async () => undefined },
           pairingProtocol: {
@@ -291,6 +291,10 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
           } as unknown as IpcMain,
           profiles: store,
           credentials: service,
+          connectDiscovery: {
+            discover: async () => [],
+            rediscover: async () => null,
+          },
           lifecycle: {} as LocalLifecycleController,
           logger: { log: () => undefined } as unknown as DesktopLogger,
           desktopSession,
@@ -410,7 +414,10 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
         await bounded(shutdown.awaitFinished());
         const original = await bounded(admitted);
         assert.equal(original.status, 'rejected');
-        if (original.status === 'rejected') assert.match(String(original.error), /Desktop pairing was cancelled/i);
+        if (original.status === 'rejected') {
+          assert.match(String(original.error), /Desktop operation failed \[IPC_OPERATION_FAILED\]/);
+          assert.doesNotMatch(String(original.error), /Desktop pairing was cancelled/i);
+        }
         assert.equal(targetSignal?.aborted, true);
         assert.equal(counts.rendererPublication, 0);
         assert.equal(counts.ipcEntry, 1);

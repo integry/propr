@@ -1,7 +1,10 @@
 export {
   apiUrl,
+  classifyApiBaseUrl,
   normalizeApiBaseUrl,
   type NormalizeApiBaseUrlOptions,
+  type ProprApiEndpointClassification,
+  type ProprApiEndpointKind,
   type ProprApiBaseUrl,
 } from './baseUrl.js';
 export {

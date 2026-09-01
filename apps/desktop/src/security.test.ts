@@ -32,13 +32,28 @@ describe('desktop URL security', () => {
     assert.equal(normalizeApiBaseUrl('http://propr.example.com'), null);
     assert.equal(normalizeApiBaseUrl('http://[2001:db8::1]:4000'), null);
     assert.equal(normalizeApiBaseUrl('https://user:secret@propr.example.com'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev'), 'https://t-instance123.propr.dev');
+    assert.equal(normalizeApiBaseUrl(' https://t-instance123.propr.dev'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev '), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev/'), null);
+    assert.equal(normalizeApiBaseUrl('HTTPS://t-instance123.propr.dev'), null);
+    assert.equal(normalizeApiBaseUrl('https://T-instance123.propr.dev'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev:443'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev:8443'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-%69nstance123.propr.dev'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr%2edev'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.foo.propr.dev'), null);
+    assert.equal(normalizeApiBaseUrl('https://x.t-instance123.propr.dev'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev.'), null);
+    assert.equal(normalizeApiBaseUrl(`https://example.com/${'private'.repeat(400)}`), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev.example.com'), 'https://t-instance123.propr.dev.example.com');
     assert.equal(normalizeApiBaseUrl('file:///tmp/propr'), null);
     assert.equal(normalizeApiBaseUrl('http://localhost.:4000'), null);
     assert.equal(normalizeApiBaseUrl('http://127.1:4000'), null);
     assert.equal(normalizeApiBaseUrl('http://0177.0.0.1:4000'), null);
     assert.equal(normalizeApiBaseUrl('http://0x7f000001:4000'), null);
     assert.equal(normalizeApiBaseUrl('http://[::ffff:127.0.0.1]:4000'), null);
-    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), null);
+    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), 'https://propr.example.com');
   });
 
   it('denies unsafe external browser schemes and credential-bearing URLs', () => {

@@ -84,11 +84,12 @@ export function canonicalProprProxyUrl(url) {
 // propr-routing only forwards /api/* and /socket.io/* on these hosts, so the
 // tunnel base URL must be one of them. Requires exactly one t-<instance-id>
 // label before the suffix (other propr.dev hosts and nested hosts are rejected)
-// and a bare origin (a non-root path/query/fragment is rejected so
+// and the exact lowercase ASCII bare origin (a slash/path/query/fragment is rejected so
 // proprTunnelEndpoints does not double up the /api prefix). Mirrors
 // isProprProxyUrl() in the shared pkg.
 export function isProprProxyUrl(url) {
-    return canonicalProprProxyUrl(url) !== undefined;
+    return typeof url === 'string'
+        && /^https:\/\/t-(?:[a-z0-9]|[a-z0-9][a-z0-9-]{0,59}[a-z0-9])\.propr\.dev$/.test(url);
 }
 
 function normalizeProprInstanceId(instanceId) {
@@ -351,11 +352,10 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || manifest.images.cloudflared || DEFAULT_CLOUDFLARED_IMAGE;
     // Explicit URL wins; otherwise derive from the instance id's proxy hostname.
     // Falls back to undefined for local development (no instance id), where
-    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Keep
-    // explicit bytes unchanged so alternate spellings are rejected before any
-    // parser or consumer can normalize them into authority.
-    const configuredUiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId);
-    const uiPublicApiUrl = configuredUiPublicApiUrl || undefined;
+    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Preserve
+    // explicit raw spelling so validation cannot turn an alternate reserved
+    // Connect spelling into a trusted canonical endpoint.
+    const uiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId) || undefined;
 
     return Object.freeze({
         stack, network, envFileLocal, envFileHost, nodeEnv,

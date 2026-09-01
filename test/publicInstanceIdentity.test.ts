@@ -20,7 +20,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import {
   ConnectRootError,
   getOrCreatePublicInstanceIdentity as getCliIdentity,
@@ -48,6 +48,9 @@ import {
   type ConnectRootAuthorityInspector,
   type WindowsAuthorityInspection,
 } from '../packages/cli/src/connectRootAuthority.js';
+import { setNativeDirectoryOpenTestHook } from '../packages/cli/src/utils/directoryDescriptor.js';
+
+afterEach(() => setNativeDirectoryOpenTestHook());
 
 const IDS = {
   first: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -372,6 +375,249 @@ test('Connect root replacement never redirects env/data reads and fails closed',
     }), ConnectRootError);
     assert.equal(parsedBytes, 'ORIGINAL=value\n');
     assert.equal(parsedBytes.includes('REPLACEMENT_SENTINEL'), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('Linux authority walk accepts the pinned read-only fallback after consecutive EINVAL opens', {
+  skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
+}, async () => {
+  const parent = temporaryRoot('propr-connect-authority-fallback-');
+  const root = connectRoot(parent);
+  let fallbackOpens = 0;
+  try {
+    setNativeDirectoryOpenTestHook((phase, directory) => {
+      if (directory !== root) return;
+      if (phase === 'before-primary-open') {
+        throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'before-directory-fallback-open') {
+        throw Object.assign(new Error('injected directory-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'after-fallback-open') fallbackOpens += 1;
+    }, true);
+    await withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile: () => ({}) });
+    assert.equal(fallbackOpens, 2, 'initial and final authority walks both use the pinned fallback');
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('Linux authority walk fallback rejects named-directory replacement', {
+  skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
+}, async () => {
+  const parent = temporaryRoot('propr-connect-authority-replacement-');
+  const root = connectRoot(parent);
+  const detached = join(parent, 'detached');
+  let replaced = false;
+  try {
+    setNativeDirectoryOpenTestHook((phase, directory) => {
+      if (directory !== root) return;
+      if (phase === 'before-primary-open') {
+        throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'before-directory-fallback-open') {
+        throw Object.assign(new Error('injected directory-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'after-fallback-open' && !replaced) {
+        replaced = true;
+        renameSync(root, detached);
+        connectRoot(parent, 'REPLACEMENT_SENTINEL=never-read\n');
+      }
+    }, true);
+    await assert.rejects(
+      withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile: () => ({}) }),
+      ConnectRootError,
+    );
+    assert.equal(replaced, true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('Linux authority walk fallback rejects a symlink substituted after open', {
+  skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
+}, async () => {
+  const parent = temporaryRoot('propr-connect-authority-symlink-');
+  const root = connectRoot(parent);
+  const detached = join(parent, 'detached');
+  let replaced = false;
+  try {
+    setNativeDirectoryOpenTestHook((phase, directory) => {
+      if (directory !== root) return;
+      if (phase === 'before-primary-open') {
+        throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'before-directory-fallback-open') {
+        throw Object.assign(new Error('injected directory-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'after-fallback-open' && !replaced) {
+        replaced = true;
+        renameSync(root, detached);
+        symlinkSync(detached, root, 'dir');
+      }
+    }, true);
+    await assert.rejects(
+      withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile: () => ({}) }),
+      ConnectRootError,
+    );
+    assert.equal(replaced, true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('Linux authority walk never reaches the read-only fallback after a non-EINVAL directory-open failure', {
+  skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
+}, async () => {
+  const parent = temporaryRoot('propr-connect-authority-non-einval-');
+  const root = connectRoot(parent);
+  let fallbackObserved = false;
+  try {
+    setNativeDirectoryOpenTestHook((phase, directory) => {
+      if (directory !== root) return;
+      if (phase === 'before-primary-open') {
+        throw Object.assign(new Error('injected strict-open failure'), { code: 'EINVAL' });
+      }
+      if (phase === 'before-directory-fallback-open') {
+        throw Object.assign(new Error('injected denied directory open'), { code: 'EACCES' });
+      }
+      if (phase === 'before-readonly-fallback-open') fallbackObserved = true;
+    }, true);
+    await assert.rejects(
+      withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile: () => ({}) }),
+      ConnectRootError,
+    );
+    assert.equal(fallbackObserved, false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+type AuthorityChildCallsite = 'trusted-home .propr' | 'existing identity data' | 'new identity data';
+
+function authorityChildFixture(callsite: AuthorityChildCallsite): {
+  parent: string;
+  target: string;
+  run: () => Promise<unknown>;
+} {
+  const parent = temporaryRoot(`propr-connect-child-authority-${callsite.replaceAll(' ', '-')}-`);
+  if (callsite === 'trusted-home .propr') {
+    const home = join(parent, 'home');
+    const target = join(home, '.propr');
+    privateDirectory(target);
+    writeFileSync(join(target, 'config.json'), JSON.stringify({
+      tunnelEnabledByRoot: { '/trusted/stack': false },
+    }), { mode: 0o600 });
+    chmodSync(join(target, 'config.json'), 0o600);
+    return {
+      parent,
+      target,
+      run: () => readTrustedConnectTunnelOverride('/trusted/stack', { trustedHome: home }),
+    };
+  }
+  if (callsite === 'existing identity data') {
+    const root = connectRoot(parent);
+    return {
+      parent,
+      target: join(root, 'data'),
+      run: () => withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile: () => ({}) }),
+    };
+  }
+  const target = join(parent, 'data');
+  return {
+    parent,
+    target,
+    run: () => getCliIdentity(target, () => IDS.first),
+  };
+}
+
+for (const callsite of [
+  'trusted-home .propr',
+  'existing identity data',
+  'new identity data',
+] as const satisfies readonly AuthorityChildCallsite[]) {
+  test(`Linux ${callsite} authority child is opened through the full pinned fallback`, {
+    skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
+  }, async () => {
+    for (const scenario of [
+      'second-stage EINVAL',
+      'replacement',
+      'symlink',
+      'non-directory',
+      'non-EINVAL',
+    ] as const) {
+      const fixture = authorityChildFixture(callsite);
+      const detached = `${fixture.target}.detached`;
+      let targetOpen = 0;
+      let directoryFallbackObserved = false;
+      let readOnlyFallbackObserved = false;
+      try {
+        setNativeDirectoryOpenTestHook((phase, directory) => {
+          if (directory !== fixture.target) return;
+          if (phase === 'before-primary-open') {
+            targetOpen += 1;
+            if (targetOpen !== 1) return;
+            if (scenario === 'non-EINVAL') {
+              throw Object.assign(new Error('injected denied child open'), { code: 'EACCES' });
+            }
+            if (scenario === 'non-directory') {
+              renameSync(fixture.target, detached);
+              writeFileSync(fixture.target, 'not a directory\n', { mode: 0o600 });
+            }
+            throw Object.assign(new Error('injected strict child-open failure'), { code: 'EINVAL' });
+          }
+          if (targetOpen !== 1) return;
+          if (phase === 'before-directory-fallback-open') {
+            directoryFallbackObserved = true;
+            throw Object.assign(new Error('injected directory child-open failure'), { code: 'EINVAL' });
+          }
+          if (phase === 'before-readonly-fallback-open') readOnlyFallbackObserved = true;
+          if (phase === 'after-fallback-open' && (scenario === 'replacement' || scenario === 'symlink')) {
+            renameSync(fixture.target, detached);
+            if (scenario === 'replacement') privateDirectory(fixture.target);
+            else symlinkSync(detached, fixture.target, 'dir');
+          }
+        }, true);
+
+        if (scenario === 'second-stage EINVAL') {
+          await assert.doesNotReject(fixture.run(), `${callsite}: ${scenario}`);
+          assert.equal(directoryFallbackObserved, true, `${callsite}: ${scenario}`);
+          assert.equal(readOnlyFallbackObserved, true, `${callsite}: ${scenario}`);
+        } else {
+          await assert.rejects(fixture.run(), undefined, `${callsite}: ${scenario}`);
+          if (scenario === 'non-EINVAL') {
+            assert.equal(directoryFallbackObserved, false, `${callsite}: ${scenario}`);
+            assert.equal(readOnlyFallbackObserved, false, `${callsite}: ${scenario}`);
+          }
+        }
+      } finally {
+        setNativeDirectoryOpenTestHook();
+        rmSync(fixture.parent, { recursive: true, force: true });
+      }
+    }
+  });
+}
+
+test('trusted-home absence is translated only after the authority helper returns final ENOENT', {
+  skip: process.platform !== 'linux' ? 'requires Linux descriptor-relative child opens' : false,
+}, async () => {
+  const parent = temporaryRoot('propr-connect-child-authority-absent-');
+  const home = join(parent, 'home');
+  const target = join(home, '.propr');
+  privateDirectory(home);
+  let strictFailures = 0;
+  try {
+    setNativeDirectoryOpenTestHook((phase, directory) => {
+      if (directory === target && phase === 'before-primary-open') {
+        strictFailures += 1;
+        throw Object.assign(new Error('injected strict child-open failure'), { code: 'EINVAL' });
+      }
+    }, true);
+    assert.equal(await readTrustedConnectTunnelOverride('/trusted/stack', { trustedHome: home }), undefined);
+    assert.equal(strictFailures, 1);
+    assert.equal(existsSync(target), false);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }

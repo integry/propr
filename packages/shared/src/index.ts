@@ -115,14 +115,24 @@ export {
   DESKTOP_TRANSPORT_SCOPE_QUERY,
   PROPR_UI_PROXY_SUFFIX,
   PROPR_UI_PROXY_LABEL_PREFIX,
+  MAX_PROPR_API_BASE_URL_LENGTH,
   DEFAULT_CLOUDFLARED_IMAGE,
   proprInstanceProxyUrl,
   canonicalProprProxySelector,
   canonicalProprProxyUrl,
   isValidProprInstanceId,
+  parseProprConnectEndpoint,
+  isCanonicalProprConnectHostname,
+  isProprConnectReservedHostAttempt,
+  type ProprConnectEndpoint,
   isProprProxyUrl,
   proprTunnelEndpoints,
 } from './proprServiceUrls.js';
+
+export {
+  normalizeDesktopPairingApprovalUrl,
+  type DesktopPairingApprovalUrlInput,
+} from './desktopPairing.js';
 
 export {
   PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION,

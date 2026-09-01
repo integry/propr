@@ -23,6 +23,7 @@ import {
   directoryDescriptorAccess,
   mkdirAt,
   lstatAt,
+  openAuthorityDirectoryNoFollow,
   openAt,
   renameAt,
   unlinkAt,
@@ -213,18 +214,21 @@ function assertPrivateEnv(stat: Stats, callerUid: number | undefined, platform: 
 
 function openRootNoFollow(rootDir: string, platform: NodeJS.Platform): AcquiredRoot {
   if (platform !== "win32") directoryDescriptorAccess(platform);
-  const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   const parsed = parse(rootDir);
-  let fd = openSync(parsed.root, flags);
+  let fd = openAuthorityDirectoryNoFollow(parsed.root);
   const ancestry: Array<{ path: string; stat: Stats; fd: number }> = [];
   let visible = parsed.root;
   try {
     for (const component of rootDir.slice(parsed.root.length).split(sep).filter(Boolean)) {
       const current = heldDirectory(fd, platform, visible);
-      const next = current.openChild(component, flags);
+      const nextVisible = join(visible, component);
+      const next = openAuthorityDirectoryNoFollow(
+        nextVisible,
+        flags => current.openChild(component, flags),
+      );
       if (visible === parsed.root) closeSync(fd);
       fd = next;
-      visible = join(visible, component);
+      visible = nextVisible;
       const named = lstatSync(visible);
       const pinned = fstatSync(fd);
       if (named.isSymbolicLink() || !sameIdentity(named, pinned)) throw new ConnectRootError();
@@ -392,9 +396,9 @@ export async function readTrustedConnectTunnelOverride(
     await options.onBoundary?.("config-directory-before-open");
     let configDirectoryFd: number;
     try {
-      configDirectoryFd = home.root.openChild(
-        ".propr",
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      configDirectoryFd = openAuthorityDirectoryNoFollow(
+        join(homePath, ".propr"),
+        flags => home!.root.openChild(".propr", flags),
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -692,7 +696,6 @@ export async function withOwnedConnectRootSnapshot<T>(
     }
     assertPrivateRoot(fstatSync(root.fd), callerUid, platform);
 
-    const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
     const verifyNamedRoot = () => {
       const held = fstatSync(root!.fd);
       const named = lstatSync(requestedRoot);
@@ -700,7 +703,10 @@ export async function withOwnedConnectRootSnapshot<T>(
       return held;
     };
     verifyNamedRoot();
-    const dataFd = root.openChild("data", directoryFlags);
+    const dataFd = openAuthorityDirectoryNoFollow(
+      join(requestedRoot, "data"),
+      flags => root!.openChild("data", flags),
+    );
     data = heldDirectory(dataFd, ioPlatform, join(requestedRoot, "data"));
     verifyNamedRoot();
     const initialDataStat = fstatSync(data.fd);
@@ -957,9 +963,9 @@ export async function getOrCreatePublicInstanceIdentity(
         } catch (mkdirError) {
           if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
         }
-        const createdFd = acquiredParent.root.openChild(
-          basename(dataPath),
-          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        const createdFd = openAuthorityDirectoryNoFollow(
+          dataPath,
+          flags => acquiredParent.root.openChild(basename(dataPath), flags),
         );
         try {
           fchmodSync(createdFd, 0o700);

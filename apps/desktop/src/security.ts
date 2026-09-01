@@ -1,8 +1,12 @@
-import { DESKTOP_PROTOCOL } from './shared/contract';
 import {
   canonicalProprHttpUrlOrigin,
+  isProprConnectReservedHostAttempt,
+  MAX_PROPR_API_BASE_URL_LENGTH,
+  parseProprConnectEndpoint,
+} from '@propr/shared';
+import { DESKTOP_PROTOCOL } from './shared/contract';
+import {
   isProprLoopbackHostname,
-  normalizeProprApiOrigin,
 } from '@propr/shared';
 
 const DEEP_LINK_ACTIONS = new Set(['connect', 'open']);
@@ -97,7 +101,13 @@ export const dashboardPathFromDeepLink = (value: string): string | null => {
 };
 
 export const normalizeApiBaseUrl = (value: string): string | null => {
-  return normalizeProprApiOrigin(value);
+  if (value.length > MAX_PROPR_API_BASE_URL_LENGTH) return null;
+  const candidate = value.trim();
+  const url = parseUrl(candidate);
+  if (!url || hasCredentials(url) || url.hash || url.search) return null;
+  if (url.pathname.replace(/\//g, '') !== '') return null;
+  if (isProprConnectReservedHostAttempt(value) && !parseProprConnectEndpoint(value)) return null;
+  return canonicalProprHttpUrlOrigin(candidate);
 };
 
 export const isSafeExternalUrl = (value: string): boolean => {

@@ -409,13 +409,13 @@ test('api container receives explicit request rate-limit overrides', () => {
   }
 });
 
-test('an explicit noncanonical PROPR_UI_PUBLIC_API_URL is preserved for strict rejection', () => {
+test('an alternate explicit Connect URL remains raw and fails validation', () => {
   const cfg = resolveConfig({
     PROPR_UI_TUNNEL_TOKEN: 'secret-token',
     PROPR_UI_PUBLIC_API_URL: 'https://t-abc123.propr.dev/',
   }, { manifestPath });
   assert.equal(cfg.uiPublicApiUrl, 'https://t-abc123.propr.dev/');
-  assert.equal(validateEnv(cfg).ok, false);
+  assert.match(validateEnv(cfg).errors.join('\n'), /not a hosted proxy URL/);
 });
 
 test('ui container receives the tunnel public API URL (no /api appended) when set', () => {

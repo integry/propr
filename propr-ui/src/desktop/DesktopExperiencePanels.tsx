@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { isProprLoopbackHostname } from '@propr/shared';
+import { isProprLoopbackHostname, parseProprConnectEndpoint } from '@propr/shared';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -20,6 +20,18 @@ const createProfileId = (): string => {
   try { return crypto.randomUUID(); } catch { return `profile-${Date.now()}`; }
 };
 
+const safeVersion = (version: string | undefined): string | null =>
+  version && /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(version) ? version : null;
+
+const safeProfileDisplayLabel = (name: string): string => {
+  const normalized = name.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim();
+  const bounded = Array.from(normalized).slice(0, 80).join('');
+  if (!bounded || /https?:|\.propr\.dev\b|[/?#@\\]|token|secret|password/i.test(bounded)) {
+    return 'Saved connection';
+  }
+  return bounded;
+};
+
 const connectionLabel = (result: DesktopConnectionResult): string => {
   if (result.status === 'incompatible') return 'Update required';
   if (result.status === 'authentication-required') return 'Sign in required';
@@ -27,7 +39,7 @@ const connectionLabel = (result: DesktopConnectionResult): string => {
   return 'Connected';
 };
 
-const DesktopBrand: React.FC = () => (
+export const DesktopBrand: React.FC = () => (
   <div className="desktop-brand" aria-label="ProPR Desktop">
     <img src="/logo.png" alt="" />
     <span>ProPR</span>
@@ -43,8 +55,9 @@ interface ProfileEditorProps {
 
 export const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operationError, onCancel, onSave }) => {
   const [name, setName] = useState(initial?.name || 'My ProPR');
-  const [baseUrl, setBaseUrl] = useState(initial?.baseUrl || 'http://127.0.0.1:3000');
+  const [baseUrl, setBaseUrl] = useState(initial ? initial.baseUrl : 'http://127.0.0.1:3000');
   const [validationError, setValidationError] = useState<string | null>(null);
+  const connectEndpoint = parseProprConnectEndpoint(baseUrl);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -73,12 +86,13 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operation
       <p>Enter the address shown by your ProPR server.</p>
       <label>
         Display name
-        <input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="Team ProPR" />
+        <input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="Team ProPR" maxLength={80} />
       </label>
       <label>
         Instance URL
-        <input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} inputMode="url" placeholder="https://propr.example.com" aria-describedby={error ? 'profile-url-error' : undefined} />
+        <input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} inputMode="url" placeholder="https://propr.example.com" maxLength={2048} aria-describedby={error ? 'profile-url-error' : undefined} />
       </label>
+      {connectEndpoint && <div className="desktop-connect-verified" role="status"><Cloud aria-hidden="true" /> Verified ProPR Connect endpoint</div>}
       {error && <div id="profile-url-error" className="desktop-inline-error" role="alert">{error}</div>}
       <button type="submit" className="desktop-primary-button">{initial ? 'Save changes' : 'Connect'}</button>
     </form>
@@ -100,7 +114,10 @@ export const ProfileList: React.FC<ProfileListProps> = ({ profiles, onConnect, o
         <div className="desktop-profile-row" key={profile.id}>
           <button type="button" className="desktop-profile-connect" onClick={() => onConnect(profile)}>
             <span className="desktop-profile-icon">{profile.kind === 'local' ? <Computer /> : <Cloud />}</span>
-            <span><strong>{profile.name}</strong><small>{profile.baseUrl}</small></span>
+            <span>
+              <strong>{profile.name}</strong>
+              <small>{parseProprConnectEndpoint(profile.baseUrl) ? 'ProPR Connect' : profile.kind === 'local' ? 'Local instance' : 'Remote instance'}</small>
+            </span>
             <ChevronRight className="desktop-profile-chevron" aria-hidden="true" />
           </button>
           <button type="button" className="desktop-icon-button" onClick={() => onEdit(profile)} aria-label={`Edit ${profile.name}`}><Pencil /></button>
@@ -165,37 +182,52 @@ interface ConnectionPanelProps {
   onRetry(): void;
   onAuthenticate(): void;
   onHelp(): void;
+  onReenter(): void;
+  onRediscover(): void;
 }
 
-export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
-  profile, result, onBack, onRetry, onAuthenticate, onHelp,
+export const ConnectionPanel = ({ profile, result, onBack, onRetry, onAuthenticate, onHelp, onReenter, onRediscover }: ConnectionPanelProps) => {
+  const managed = Boolean(result && parseProprConnectEndpoint(profile.baseUrl));
+  return (
+    <main className="desktop-connection-card" aria-live="polite">
+      <DesktopBrand />
+      {!result ? (
+        <><div className="desktop-connection-visual desktop-connecting"><LoaderCircle /></div><h1>Connecting to {profile.name}</h1><p>Checking the instance and desktop compatibility…</p><div className="desktop-connection-actions"><button type="button" className="desktop-link-button" onClick={onBack}><ArrowLeft aria-hidden="true" /> Back</button></div></>
+      ) : (
+        <>
+          <div className={`desktop-connection-visual desktop-${result.status}`}><AlertTriangle /></div>
+          <span className="desktop-eyebrow">{connectionLabel(result)}</span><h1>{profile.name}</h1>
+          <p>{result.message}</p>
+          {result.status === 'incompatible' && safeVersion(result.version) && <div className="desktop-version-note">Instance version {safeVersion(result.version)} · Desktop {__APP_VERSION__}</div>}
+          {'authentication' in result && result.authentication && <div className="desktop-version-note">{result.authentication}</div>}
+          <div className="desktop-connection-actions">
+            {result.status === 'authentication-required' && <button type="button" className="desktop-primary-button" onClick={onAuthenticate}>Sign in in browser</button>}
+            <button type="button" className={result.status === 'authentication-required' ? 'desktop-secondary-button' : 'desktop-primary-button'} onClick={onRetry}><RefreshCw /> {managed ? 'Retry' : 'Try again'}</button>
+            {managed && <button type="button" className="desktop-secondary-button" onClick={onReenter}>Re-enter Connect address</button>}
+            {managed && <button type="button" className="desktop-secondary-button" onClick={onRediscover}>Rediscover Connect endpoint</button>}
+            <button type="button" className="desktop-link-button" onClick={onBack}>Choose another instance</button>
+            <button type="button" className="desktop-link-button" onClick={onHelp}>Open connection help</button>
+          </div>
+        </>
+      )}
+    </main>
+  );
+};
+
+export const ManagedRecoveryReview = ({ profile, onCancel, onConfirm }: {
+  profile: DesktopProfile;
+  onCancel(): void;
+  onConfirm(): void;
 }) => (
   <main className="desktop-connection-card" aria-live="polite">
     <DesktopBrand />
-    {!result ? (
-      <>
-        <div className="desktop-connection-visual desktop-connecting"><LoaderCircle /></div>
-        <h1>Connecting to {profile.name}</h1>
-        <p>Checking the instance and desktop compatibility…</p>
-        <div className="desktop-connection-actions"><button type="button" className="desktop-link-button" onClick={onBack}><ArrowLeft aria-hidden="true" /> Back</button></div>
-      </>
-    ) : (
-      <>
-        <div className={`desktop-connection-visual desktop-${result.status}`}><AlertTriangle /></div>
-        <span className="desktop-eyebrow">{connectionLabel(result)}</span>
-        <h1>{profile.name}</h1>
-        <p>{result.message || 'This instance needs authentication before ProPR Desktop can connect.'}</p>
-        {'version' in result && result.version && <div className="desktop-version-note">Instance version {result.version} · Desktop {__APP_VERSION__}</div>}
-        {'authentication' in result && result.authentication && <div className="desktop-version-note">{result.authentication}</div>}
-        <div className="desktop-connection-actions">
-          {result.status === 'authentication-required' && <button type="button" className="desktop-primary-button" onClick={onAuthenticate}>Sign in in browser</button>}
-          <button type="button" className={result.status === 'authentication-required' ? 'desktop-secondary-button' : 'desktop-primary-button'} onClick={onRetry}><RefreshCw /> Try again</button>
-          <button type="button" className="desktop-link-button" onClick={onBack}>Choose another instance</button>
-          <button type="button" className="desktop-link-button" onClick={onHelp}>Open connection help</button>
-        </div>
-      </>
-    )}
+    <div className="desktop-connection-visual"><Cloud aria-hidden="true" /></div>
+    <span className="desktop-eyebrow">ProPR Connect rediscovered</span>
+    <h1>Use the rediscovered endpoint?</h1>
+    <p>A replacement endpoint was discovered for the saved connection “{safeProfileDisplayLabel(profile.name)}”. Confirm before updating that connection.</p>
+    <div className="desktop-connection-actions">
+      <button type="button" className="desktop-primary-button" onClick={onConfirm}>Connect to rediscovered endpoint</button>
+      <button type="button" className="desktop-link-button" onClick={onCancel}>Keep saved connection</button>
+    </div>
   </main>
 );
-
-export { DesktopBrand };

@@ -1,16 +1,23 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { parseProprConnectEndpoint } from '@propr/shared';
 import { LoaderCircle, Plus, X } from 'lucide-react';
 import { setApiBaseUrl } from '../api/apiClient';
 import * as runtimeConfig from '../config/runtimeConfig';
 import { DesktopContext } from './DesktopContext';
-import { useDesktopModal, useSerializedMutationQueue } from './desktopExperienceHooks';
+import { useAttemptFence, useDesktopModal, useSerializedMutationQueue } from './desktopExperienceHooks';
 import {
   ConnectionPanel,
   DesktopBrand,
   InstanceChooser,
+  ManagedRecoveryReview,
   ProfileEditor,
   ProfileList,
 } from './DesktopExperiencePanels';
+import {
+  managedRecoveryMessage,
+  managedRediscoveryUnavailableMessage,
+  safeConnectionMessage,
+} from './desktopExperienceMessages';
 import { DESKTOP_ACCESS_INVALID_EVENT, type DesktopAccessInvalidEventDetail, type DesktopAdapters, type DesktopConnectionResult, type DesktopProfile } from './types';
 import './desktop.css';
 
@@ -19,6 +26,7 @@ type ExperienceState =
   | { phase: 'choose' }
   | { phase: 'connecting'; profile: DesktopProfile }
   | { phase: 'blocked'; profile: DesktopProfile; result: Exclude<DesktopConnectionResult, { status: 'ready' }> }
+  | { phase: 'recovery-review'; profile: DesktopProfile; candidate: DesktopProfile }
   | { phase: 'connected'; profile: DesktopProfile; result: Extract<DesktopConnectionResult, { status: 'ready' }> };
 
 interface DesktopExperienceProps {
@@ -33,7 +41,8 @@ const mergeProfiles = (current: DesktopProfile[], incoming: DesktopProfile[]): D
     (b.lastConnectedAt || '').localeCompare(a.lastConnectedAt || ''));
 };
 
-const recoverableError = (message: string, error: unknown): string => `${message}${error instanceof Error && error.message ? ` ${error.message}` : ''} Try again.`;
+const recoverableError = (message: string): string => `${message} Try again.`;
+
 const settleAuthenticationCancellation = (adapters: DesktopAdapters, profileId: string): void => {
   // Back/navigation must remain synchronous. Cancellation is best effort and
   // its rejection is deliberately consumed so shutdown cannot create an
@@ -54,11 +63,19 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   const activeProfileId = useRef<string | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const { begin: beginDiscoveryAttempt, invalidate: invalidateDiscovery } = useAttemptFence();
+  const cancelDiscovery = useCallback(() => {
+    invalidateDiscovery();
+    setBusy(false);
+  }, [invalidateDiscovery]);
   const enqueueProfileMutation = useSerializedMutationQueue();
-  const closeManager = useCallback(() => { setManagerOpen(false); setEditing(null); }, []);
+  const closeManager = useCallback(() => {
+    cancelDiscovery(); setManagerOpen(false); setEditing(null);
+  }, [cancelDiscovery]);
   const { dialogRef: managerRef, openModal: openManager } = useDesktopModal(managerOpen, setManagerOpen, closeManager);
 
   const connect = useCallback(async (profile: DesktopProfile) => {
+    cancelDiscovery();
     const attempt = ++connectionAttempt.current;
     const isCurrentAttempt = () => connectionAttempt.current === attempt;
     setOperationError(null);
@@ -67,7 +84,14 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     try {
       const probeResult = await adapters.connection.probe(profile);
       if (!isCurrentAttempt()) return;
-      if (probeResult.status !== 'ready') { setState({ phase: 'blocked', profile, result: probeResult }); return; }
+      if (probeResult.status !== 'ready') {
+        setState({
+          phase: 'blocked',
+          profile,
+          result: { ...probeResult, message: safeConnectionMessage(probeResult, Boolean(parseProprConnectEndpoint(profile.baseUrl))) },
+        });
+        return;
+      }
 
       operation = 'persist';
       const connectedProfile = { ...profile, lastConnectedAt: new Date().toISOString() };
@@ -92,15 +116,14 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       if (adapters.connection.publishActivation) adapters.connection.publishActivation(connectedProfile, result);
       else setApiBaseUrl(connectedProfile.baseUrl);
       setState({ phase: 'connected', profile: connectedProfile, result });
-    } catch (error) {
+    } catch {
       if (!isCurrentAttempt()) return;
-      const detail = error instanceof Error && error.message ? ` ${error.message}` : '';
       const message = operation === 'persist'
-        ? `The instance is reachable, but ProPR Desktop could not save this connection.${detail} Try again.`
-        : `ProPR Desktop could not check this instance.${detail} Try again.`;
+        ? 'The instance is reachable, but ProPR Desktop could not save this connection. Try again.'
+        : 'ProPR Desktop could not check this instance. Try again.';
       setState({ phase: 'blocked', profile, result: { status: 'offline', message } });
     }
-  }, [adapters, enqueueProfileMutation]);
+  }, [adapters, cancelDiscovery, enqueueProfileMutation]);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,17 +135,18 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       const active = stored.find(profile => profile.id === activeId);
       if (active) void connect(active);
       else setState({ phase: 'choose' });
-    }).catch(error => {
+    }).catch(() => {
       if (!cancelled) {
-        setOperationError(error instanceof Error ? error.message : 'Profiles could not be loaded.');
+        setOperationError('Profiles could not be loaded. Try again.');
         setState({ phase: 'choose' });
       }
     });
     return () => {
       cancelled = true;
       connectionAttempt.current += 1;
+      invalidateDiscovery();
     };
-  }, [adapters, connect]);
+  }, [adapters, connect, invalidateDiscovery]);
 
   useEffect(() => {
     const accessInvalid = (event: Event) => {
@@ -169,6 +193,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   }, [connect, openManager]);
 
   const removeProfile = async (profile: DesktopProfile) => {
+    cancelDiscovery();
     if (!window.confirm(`Remove “${profile.name}” from this computer?`)) return;
     setOperationError(null);
     try {
@@ -179,12 +204,13 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
         adapters.connection.deactivate?.();
         setState({ phase: 'choose' });
       }
-    } catch (error) {
-      setOperationError(recoverableError('ProPR Desktop could not remove this instance.', error));
+    } catch {
+      setOperationError(recoverableError('ProPR Desktop could not remove this instance.'));
     }
   };
 
   const saveProfile = async (profile: DesktopProfile, shouldConnect = true) => {
+    cancelDiscovery();
     setOperationError(null);
     if (shouldConnect) {
       closeManager();
@@ -196,36 +222,49 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       await enqueueProfileMutation(() => adapters.profiles.save(profile));
       setProfiles(current => mergeProfiles(current, [profile]));
       setEditing(null);
-    } catch (error) {
-      setOperationError(recoverableError('ProPR Desktop could not save this instance.', error));
+    } catch {
+      setOperationError(recoverableError('ProPR Desktop could not save this instance.'));
     }
   };
 
   const setupLocal = async () => {
+    cancelDiscovery();
     setBusy(true);
     setOperationError(null);
     try {
       const profile = await adapters.localSetup.setup();
       await saveProfile(profile);
-    } catch (error) { setOperationError(error instanceof Error ? error.message : 'Local setup could not be started.'); }
-    finally { setBusy(false); }
-  };
-
-  const discover = async () => {
-    setBusy(true);
-    setOperationError(null);
-    try {
-      const discovered = await adapters.discovery.discover();
-      setProfiles(current => mergeProfiles(current, discovered));
-      if (!discovered.length) setOperationError('No new ProPR instances were found on this network.');
-    } catch (error) {
-      setOperationError(error instanceof Error ? error.message : 'Network discovery is unavailable.');
+    } catch {
+      setOperationError('Local setup could not be started. Try again.');
     } finally {
       setBusy(false);
     }
   };
 
+  const discover = async () => {
+    const isCurrentAttempt = beginDiscoveryAttempt();
+    setBusy(true);
+    setOperationError(null);
+    try {
+      const discovered = await adapters.discovery.discover();
+      if (!isCurrentAttempt()) return;
+      const candidate = discovered[0];
+      if (candidate) {
+        // Discovery is evidence for a proposed endpoint, never permission to
+        // persist, pair, or activate it. The editor owns explicit confirmation.
+        setEditing(candidate);
+      } else {
+        setOperationError('No new ProPR instances were found on this network.');
+      }
+    } catch {
+      if (isCurrentAttempt()) setOperationError('Network discovery is unavailable. Try again.');
+    } finally {
+      if (isCurrentAttempt()) setBusy(false);
+    }
+  };
+
   const choose = () => {
+    cancelDiscovery();
     if ('profile' in state) settleAuthenticationCancellation(adapters, state.profile.id);
     adapters.connection.deactivate?.();
     const attempt = ++connectionAttempt.current;
@@ -233,8 +272,8 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       if (connectionAttempt.current !== attempt) return;
       await adapters.profiles.setActiveId(null);
       activeProfileId.current = null;
-    }).catch(error => {
-      if (connectionAttempt.current === attempt) setOperationError(recoverableError('ProPR Desktop could not clear the active instance.', error));
+    }).catch(() => {
+      if (connectionAttempt.current === attempt) setOperationError(recoverableError('ProPR Desktop could not clear the active instance.'));
     });
     setManagerOpen(false);
     setEditing(null);
@@ -243,27 +282,85 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   const retry = () => { if ('profile' in state) void connect(state.profile); };
 
-  const runBlockedAction = async (profile: DesktopProfile, action: () => Promise<void>, failureMessage: string, onSuccess?: () => Promise<void>) => {
+  const runBlockedAction = async (
+    profile: DesktopProfile,
+    action: () => Promise<void>,
+    failureMessage: string,
+    connectFailureMessage?: string,
+    onSuccess?: () => Promise<void>,
+  ) => {
+    cancelDiscovery();
     const attempt = connectionAttempt.current;
     try {
       await action();
       if (connectionAttempt.current === attempt) await onSuccess?.();
-    } catch (error) {
-      const message = recoverableError(failureMessage, error);
+    } catch {
+      const message = recoverableError(failureMessage);
       setState(current => current.phase === 'blocked' && current.profile.id === profile.id
-        ? { ...current, result: { ...current.result, message } }
+        ? {
+          ...current,
+          result: parseProprConnectEndpoint(profile.baseUrl) && connectFailureMessage
+            ? { status: 'offline', message: recoverableError(connectFailureMessage) }
+            : { ...current.result, message },
+        }
         : current);
     }
   };
 
-  const openEditor = (profile: DesktopProfile | 'new') => { setOperationError(null); setEditing(profile); };
+  const openEditor = (profile: DesktopProfile | 'new') => {
+    cancelDiscovery(); setOperationError(null); setEditing(profile);
+  };
+
+  const closeEditor = () => { cancelDiscovery(); setEditing(null); };
+
+  const reenterManagedEndpoint = (profile: DesktopProfile) => {
+    cancelDiscovery();
+    connectionAttempt.current += 1;
+    setOperationError(null);
+    setState({ phase: 'choose' });
+    setEditing({ ...profile, baseUrl: '' });
+  };
+
+  const rediscoverManagedEndpoint = async (profile: DesktopProfile) => {
+    const isCurrentDiscovery = beginDiscoveryAttempt();
+    const attempt = ++connectionAttempt.current;
+    const showUnavailable = () => {
+      if (connectionAttempt.current !== attempt || !isCurrentDiscovery()) return;
+      setState(current => current.phase === 'blocked' && current.profile.id === profile.id
+        ? {
+          phase: 'blocked',
+          profile,
+          result: { status: 'offline', message: managedRediscoveryUnavailableMessage },
+        }
+        : current);
+    };
+    if (!adapters.managedTunnelRecovery) {
+      showUnavailable();
+      return;
+    }
+    try {
+      const discovered = await adapters.managedTunnelRecovery.rediscover(profile.id);
+      if (connectionAttempt.current !== attempt || !isCurrentDiscovery()) return;
+      if (!discovered || discovered.id !== profile.id) return showUnavailable();
+      const endpoint = parseProprConnectEndpoint(discovered.baseUrl);
+      if (!endpoint) return showUnavailable();
+      setState({
+        phase: 'recovery-review',
+        profile,
+        candidate: { ...profile, baseUrl: endpoint.origin, kind: 'remote' },
+      });
+    } catch {
+      showUnavailable();
+    }
+  };
 
   const content = () => {
     if (state.phase === 'loading') return <div className="desktop-loading"><LoaderCircle className="desktop-spin" /><span>Opening ProPR…</span></div>;
-    if (state.phase === 'connecting') return <ConnectionPanel profile={state.profile} onBack={choose} onRetry={retry} onAuthenticate={() => undefined} onHelp={() => undefined} />;
-    if (state.phase === 'blocked') return <ConnectionPanel profile={state.profile} result={state.result} onBack={choose} onRetry={retry} onAuthenticate={() => void runBlockedAction(state.profile, () => adapters.authentication.authenticate(state.profile), 'ProPR Desktop could not open sign in.', () => connect(state.profile))} onHelp={() => void runBlockedAction(state.profile, () => adapters.externalBrowser.open('https://propr.dev'), 'ProPR Desktop could not open connection help.')} />;
-    if (editing) return <main className="desktop-welcome-card"><DesktopBrand /><ProfileEditor initial={editing === 'new' ? undefined : editing} operationError={operationError} onCancel={() => setEditing(null)} onSave={profile => void saveProfile(profile)} /></main>;
-    return <InstanceChooser profiles={profiles} busy={busy} error={operationError} localSetupSupported={adapters.localSetup.supported} networkDiscoverySupported={adapters.discovery.supported} onLocalSetup={() => void setupLocal()} onConnectNew={() => openEditor('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />;
+    if (state.phase === 'connecting') return <ConnectionPanel profile={state.profile} onBack={choose} onRetry={retry} onAuthenticate={() => undefined} onHelp={() => undefined} onReenter={() => undefined} onRediscover={() => undefined} />;
+    if (state.phase === 'recovery-review') return <ManagedRecoveryReview profile={state.profile} onCancel={() => { cancelDiscovery(); setState({ phase: 'blocked', profile: state.profile, result: { status: 'offline', message: managedRecoveryMessage } }); }} onConfirm={() => void connect(state.candidate)} />;
+    if (state.phase === 'blocked') return <ConnectionPanel profile={state.profile} result={state.result} onBack={choose} onRetry={retry} onAuthenticate={() => void runBlockedAction(state.profile, () => adapters.authentication.authenticate(state.profile), 'ProPR Desktop could not open sign in.', 'ProPR Connect pairing could not be completed.', () => connect(state.profile))} onHelp={() => void runBlockedAction(state.profile, () => adapters.externalBrowser.open('https://propr.dev'), 'ProPR Desktop could not open connection help.')} onReenter={() => reenterManagedEndpoint(state.profile)} onRediscover={() => void rediscoverManagedEndpoint(state.profile)} />;
+    if (editing) return <main className="desktop-welcome-card"><DesktopBrand /><ProfileEditor initial={editing === 'new' ? undefined : editing} operationError={operationError} onCancel={closeEditor} onSave={profile => void saveProfile(profile)} /></main>;
+    return <InstanceChooser profiles={profiles} busy={busy} error={operationError} localSetupSupported={adapters.platform === 'linux' && adapters.localSetup.supported} networkDiscoverySupported={adapters.discovery.supported} onLocalSetup={() => void setupLocal()} onConnectNew={() => openEditor('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />;
   };
 
   if (state.phase !== 'connected') return <div className={`desktop-entry desktop-platform-${adapters.platform}`}>{content()}</div>;
@@ -286,7 +383,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
           <section ref={managerRef} className="desktop-profile-manager" role="dialog" aria-modal="true" aria-labelledby="desktop-manager-title" tabIndex={-1}>
             <header><div><span className="desktop-eyebrow">Desktop</span><h2 id="desktop-manager-title">Manage instances</h2></div><button type="button" className="desktop-icon-button" onClick={closeManager} aria-label="Close instance manager"><X /></button></header>
             {editing ? (
-              <ProfileEditor initial={editing === 'new' ? undefined : editing} operationError={operationError} onCancel={() => setEditing(null)} onSave={profile => void saveProfile(profile, editing === 'new' || state.profile.id === profile.id)} />
+              <ProfileEditor initial={editing === 'new' ? undefined : editing} operationError={operationError} onCancel={closeEditor} onSave={profile => void saveProfile(profile, editing === 'new' || state.profile.id === profile.id)} />
             ) : (
               <>
                 {operationError && <div className="desktop-inline-error" role="alert">{operationError}</div>}

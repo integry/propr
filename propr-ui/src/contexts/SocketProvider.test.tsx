@@ -36,7 +36,7 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock('../api/apiClient', () => ({
-  proprClient: { connectSocket: connectSocketMock },
+  getProprClient: () => ({ connectSocket: connectSocketMock }),
   getDesktopConnectionScope: () => state.scope,
   getDesktopSocketConfigurationKey: () =>
     `${runtime.desktop ? 'desktop' : 'browser'}\u0000${state.origin}\u0000${state.scope?.profileId ?? ''}\u0000${state.scope?.transportScope ?? ''}`,

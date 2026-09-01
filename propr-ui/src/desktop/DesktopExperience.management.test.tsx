@@ -105,7 +105,8 @@ describe('DesktopExperience profile management', () => {
     fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://unavailable.example.com/' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(await screen.findByText('The updated server is unavailable.')).toBeInTheDocument();
+    expect(await screen.findByText(/could not reach this instance.*try again/i)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('The updated server is unavailable.');
     expect(adapters.profiles.save).not.toHaveBeenCalled();
     expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
     expect(runtimeMock.setDesktopApiBaseUrl).not.toHaveBeenCalled();
@@ -126,7 +127,8 @@ describe('DesktopExperience profile management', () => {
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Retryable edit' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/could not save this instance.*storage is locked.*try again/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not save this instance.*try again/i);
+    expect(document.body).not.toHaveTextContent('Profile storage is locked.');
     expect(screen.getByLabelText('Display name')).toHaveValue('Retryable edit');
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByText('Retryable edit')).toBeInTheDocument();
@@ -140,7 +142,8 @@ describe('DesktopExperience profile management', () => {
     expect(await screen.findByText('Team server')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove Team server' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/could not remove this instance.*storage is locked.*try again/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not remove this instance.*try again/i);
+    expect(document.body).not.toHaveTextContent('Profile storage is locked.');
     expect(screen.getByText('Team server')).toBeInTheDocument();
     expect(adapters.profiles.remove).toHaveBeenCalledWith(remoteProfile.id);
   });
@@ -170,11 +173,13 @@ describe('DesktopExperience profile management', () => {
     render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
 
     fireEvent.click(await screen.findByRole('button', { name: /Sign in in browser/i }));
-    expect(await screen.findByText(/could not open sign in.*browser launch failed.*try again/i)).toBeInTheDocument();
+    expect(await screen.findByText(/could not open sign in.*try again/i)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('Browser launch failed.');
     expect(screen.getByRole('button', { name: /Sign in in browser/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Open connection help/i }));
-    expect(await screen.findByText(/could not open connection help.*no browser is configured.*try again/i)).toBeInTheDocument();
+    expect(await screen.findByText(/could not open connection help.*try again/i)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('No browser is configured.');
     expect(screen.getByRole('button', { name: /Open connection help/i })).toBeInTheDocument();
   });
 

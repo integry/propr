@@ -20,6 +20,7 @@ describe('desktop browser fixtures', () => {
     const adapters = resolveDesktopAdapters();
     expect(adapters).not.toBeNull();
     await expect(adapters?.profiles.list()).resolves.toHaveLength(2);
+    expect(adapters?.discovery.supported).toBe(false);
   });
 
   it('does not enable query-driven fixtures in production mode', () => {
@@ -29,10 +30,16 @@ describe('desktop browser fixtures', () => {
     expect(resolveDesktopAdapters()).toBeNull();
   });
 
-  it('normalizes safe instance origins and rejects non-http protocols', () => {
-    expect(() => normalizeBaseUrl(' https://propr.example.com/// ')).toThrow(/canonical HTTPS origin/i);
-    expect(() => normalizeBaseUrl('file:///tmp/propr')).toThrow(/http/i);
-    expect(() => normalizeBaseUrl('https://user:secret@example.com')).toThrow(/canonical HTTPS origin/i);
+  it('normalizes safe instance origins and rejects unsafe URL components', () => {
+    expect(normalizeBaseUrl(' https://propr.example.com/// ')).toBe('https://propr.example.com');
+    for (const unsafe of [
+      'file:///tmp/propr',
+      'https://user:secret@example.com',
+      'https://propr.example.com/api',
+      'https://propr.example.com?token=secret',
+    ]) {
+      expect(() => normalizeBaseUrl(unsafe)).toThrow('The configured ProPR API URL is invalid.');
+    }
   });
 
   it('matches the shared canonical origin parity table', () => {

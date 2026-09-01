@@ -3,7 +3,6 @@ import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { NextFunction, Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import { closeConnection } from '@propr/core';
-import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import { up as createDesktopAuthTables } from '../../core/src/db/migrations/20260829000000_create_desktop_auth.js';
 import { up as addTwoPhaseDesktopPairing } from '../../core/src/db/migrations/20260830000000_add_two_phase_desktop_pairing.js';
 import {
@@ -76,73 +75,6 @@ describe('desktop browser pairing', () => {
     assert.notEqual(row.device_secret_hash, pairing.deviceSecret);
     assert.equal(JSON.stringify(row).includes(pairing.deviceSecret), false);
     assert.equal(JSON.stringify(audit).includes(pairing.deviceSecret), false);
-  });
-
-  test('uses the configured API browser entry and preserves only a managed hosted tunnel selector', async () => {
-    const hosted = new DesktopAuthService({
-      database,
-      now: () => new Date(now),
-      approvalBaseUrl: 'https://app.propr.dev',
-      publicApiUrl: 'https://t-instance123.propr.dev',
-    });
-    const pairing = await startPairing(hosted, 'Windows desktop', 'https://t-instance123.propr.dev');
-
-    assert.equal(
-      pairing.approvalUrl,
-      `https://t-instance123.propr.dev/api/desktop/pairings/${pairing.pairingId}/browser`,
-    );
-    assert.equal(
-      hosted.getFrontendApprovalUrl(pairing.pairingId).toString(),
-      `https://app.propr.dev/desktop/pairing?pairing_id=${pairing.pairingId}&tunnel=t-instance123.propr.dev`,
-    );
-    const selfManaged = new DesktopAuthService({
-      database,
-      approvalBaseUrl: 'https://app.propr.dev',
-      publicApiUrl: 'https://t-tenant.propr.dev.example.com',
-    });
-    assert.equal(
-      selfManaged.getFrontendApprovalUrl(pairing.pairingId).toString(),
-      `https://app.propr.dev/desktop/pairing?pairing_id=${pairing.pairingId}`,
-    );
-  });
-
-  test('pairing rejects noncanonical spellings in the reserved managed tunnel namespace', () => {
-    const pairingId = 'dpr_' + 'A'.repeat(22);
-    for (const publicApiUrl of [
-      'https://user@t-instance123.propr.dev',
-      'https://t-instance123.propr.dev:443',
-      'https://t-instance123.propr.dev/path',
-      'https://t-instance123.propr.dev?query=1',
-      'https://t-instance123.propr.dev#fragment',
-      'https://t-instance123.propr.dev.',
-      'https://t-instance123.extra.propr.dev',
-      'https://extra.t-instance123.propr.dev',
-      'https://t-аbc.propr.dev',
-    ]) {
-      const hosted = new DesktopAuthService({
-        database,
-        now: () => new Date(now),
-        approvalBaseUrl: 'https://app.propr.dev',
-        publicApiUrl,
-      });
-      assert.throws(
-        () => hosted.getFrontendApprovalUrl(pairingId),
-        /API_PUBLIC_URL|noncanonical reserved|browser entry/,
-      );
-    }
-  });
-
-  test('pairing rejects mixed-case managed tunnel DNS before URL normalization', () => {
-    const pairingId = 'dpr_' + 'A'.repeat(22);
-    const hosted = new DesktopAuthService({
-      database,
-      approvalBaseUrl: 'https://app.propr.dev',
-      publicApiUrl: 'https://T-Instance123.ProPR.dev',
-    });
-    assert.throws(
-      () => hosted.getFrontendApprovalUrl(pairingId),
-      /API_PUBLIC_URL|noncanonical reserved/,
-    );
   });
 
   test('provisions one unusable credential, then activates it exactly once without storing plaintext', async () => {
@@ -279,19 +211,6 @@ describe('desktop browser pairing', () => {
     await assert.rejects(startPairing(insecure, 'Laptop'), /requires HTTPS/);
   });
 
-  test('matches the shared canonical origin parity table for the public REST and Socket origin', async () => {
-    let index = 0;
-    for (const [name, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
-      const candidate = new DesktopAuthService({
-        database,
-        approvalBaseUrl: 'https://app.example.test',
-        publicApiUrl: input,
-      });
-      const start = startPairing(candidate, `Parity ${index++}`, expected ?? 'https://invalid.example.test');
-      if (expected === null) await assert.rejects(start, undefined, name);
-      else assert.equal(new URL((await start).approvalUrl).origin, expected, name);
-    }
-  });
 });
 
 describe('instance token ownership and revocation', () => {

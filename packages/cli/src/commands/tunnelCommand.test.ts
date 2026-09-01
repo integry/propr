@@ -182,6 +182,25 @@ test("tunnel setup rejects a proxy URL carrying a path", () => {
   );
 });
 
+test("tunnel setup rejects alternate raw Connect URL spellings", () => {
+  for (const url of [
+    " https://t-abc123.propr.dev",
+    "https://t-abc123.propr.dev ",
+    "https://t-abc123.propr.dev/",
+    "https://t-abc123.propr.dev//",
+    "HTTPS://t-abc123.propr.dev",
+    "https://T-abc123.propr.dev",
+    "https://t-abc123.propr.dev:443",
+    "https://x.t-abc123.propr.dev",
+  ]) {
+    assert.throws(
+      () => buildTunnelSetupEnv({ token: "secret-token", url }),
+      /hosted proxy URL/,
+      url,
+    );
+  }
+});
+
 test("tunnel setup rejects --force because it only applies to tunnel on", () => {
   assert.throws(
     () => validateTunnelCommandOptions("setup", { force: true }),

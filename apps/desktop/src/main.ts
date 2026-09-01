@@ -1,11 +1,19 @@
 import { randomBytes } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { isAbsolute, basename, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, crashReporter, ipcMain, net, protocol, safeStorage, screen, session, shell } from 'electron';
 import {
   DESKTOP_RENDERER_ORIGIN,
   DESKTOP_TRANSPORT_SCOPE_HEADER,
+  PROPR_API_COMPATIBILITY,
+  PROPR_UI_COMPATIBILITY,
 } from '@propr/shared';
+import {
+  DESKTOP_CONNECT_DISCOVERY_PLATFORMS,
+  discoverConfiguredConnect,
+} from '@propr/cli/desktop-discovery';
+import { DesktopConnectDiscoveryService } from './connect-discovery';
 import { DeepLinkDelivery } from './deep-link-delivery';
 import { clearDesktopInstanceCookies } from './desktop-session';
 import { DesktopCredentialService } from './credential-service';
@@ -13,6 +21,7 @@ import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
+import { openApprovedDesktopPairingUrl } from './pairing-browser';
 import { createDesktopShutdownCoordinator } from './shutdown';
 import {
   deepLinkFromArguments,
@@ -49,6 +58,46 @@ interface PackagedTransportSmoke {
   shutdownMode: 'success' | 'retry' | 'forced-timeout';
 }
 
+interface PackagedConnectSmoke {
+  configRoot: string;
+  fetch: typeof globalThis.fetch;
+}
+
+const packagedConnectSmoke = (): PackagedConnectSmoke | null => {
+  if (!app.isPackaged || process.env.PROPR_DESKTOP_CONNECT_SMOKE_TEST !== '1') return null;
+  const suppliedRoot = process.env.PROPR_DESKTOP_CONNECT_SMOKE_CONFIG_ROOT;
+  if (!suppliedRoot || !isAbsolute(suppliedRoot)) throw new Error('Packaged Connect smoke requires an isolated config root');
+  const configRoot = realpathSync.native(suppliedRoot);
+  const temporaryRoot = realpathSync.native(app.getPath('temp'));
+  const contained = relative(temporaryRoot, configRoot);
+  if (!contained || contained.startsWith('..') || isAbsolute(contained)) {
+    throw new Error('Packaged Connect smoke config root is outside the temporary directory');
+  }
+  const endpoint = 'https://t-packaged123.propr.dev';
+  const publicInstanceIdentity = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const fetch: typeof globalThis.fetch = async input => {
+    if (input.toString() !== `${endpoint}/api/desktop/discovery`) {
+      throw new Error('Packaged Connect smoke rejected an unexpected network request');
+    }
+    return new Response(JSON.stringify({
+      schemaVersion: 1,
+      product: 'ProPR',
+      version: app.getVersion(),
+      apiCompatibility: PROPR_API_COMPATIBILITY,
+      uiCompatibility: PROPR_UI_COMPATIBILITY,
+      canonicalEndpoint: endpoint,
+      publicInstanceIdentity,
+      desktopAuthentication: {
+        protocolVersion: 2,
+        browserPairing: true,
+        instanceBearerTokens: true,
+        socketIoBearerAuthentication: true,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  return { configRoot, fetch };
+};
+
 const packagedTransportSmoke = (): PackagedTransportSmoke | null => {
   if (!app.isPackaged || process.env.PROPR_DESKTOP_SMOKE_TEST !== '1') return null;
   const firstOrigin = normalizeApiBaseUrl(process.env.PROPR_DESKTOP_SMOKE_FIRST_ORIGIN ?? '');
@@ -67,10 +116,10 @@ const packagedTransportSmoke = (): PackagedTransportSmoke | null => {
 const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>
   logger
     ? logger.log(level, event, fields)
-    : console.error(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...fields }));
+    : console.error(JSON.stringify({ timestamp: new Date().toISOString(), level, event, code: fields ? 'DETAIL_REDACTED' : undefined }));
 
-process.on('uncaughtExceptionMonitor', error => {
-  log('error', 'desktop.main_process.uncaught_exception', { error });
+process.on('uncaughtExceptionMonitor', () => {
+  log('error', 'desktop.main_process.uncaught_exception', { code: 'UNCAUGHT_EXCEPTION' });
 });
 
 protocol.registerSchemesAsPrivileged([{
@@ -206,6 +255,39 @@ const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<stri
     workArea: screen.getDisplayMatching(windowBounds).workArea,
     ...rendererLayout,
   };
+};
+
+const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<void> => {
+  const proof = await window.webContents.executeJavaScript(`(async () => {
+    const bridge = window.proprDesktop;
+    const metadata = await bridge.app.getMetadata();
+    const candidates = await bridge.discovery.discover();
+    return { supported: bridge.discovery.supported, metadata, candidates };
+  })()`);
+  const candidate = proof?.candidates?.[0];
+  if (proof?.supported !== true
+    || proof.metadata?.packaged !== true
+    || proof.metadata?.platform !== process.platform
+    || proof.metadata?.arch !== process.arch
+    || !Array.isArray(proof.candidates)
+    || proof.candidates.length !== 1
+    || !candidate
+    || Object.keys(candidate).sort().join(',') !== 'apiBaseUrl,id,label'
+    || candidate.id !== 'propr-connect-discovered'
+    || candidate.label !== 'ProPR Connect'
+    || candidate.apiBaseUrl !== 'https://t-packaged123.propr.dev') {
+    throw new Error('Packaged Connect renderer discovery proof was invalid');
+  }
+  log('info', 'desktop.renderer.connect_discovery.ready', {
+    selectedPlatform: process.platform,
+    selectedArch: process.arch,
+    authorityMechanism: process.platform === 'darwin'
+      ? 'packaged-broker'
+      : process.platform === 'linux'
+        ? 'in-process-native-addon'
+        : 'inherited-standard-handle',
+    rendererSchemaValid: true,
+  });
 };
 
 const runPackagedTransportSmoke = async (
@@ -468,6 +550,8 @@ if (!hasSingleInstanceLock) {
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
     const disposeRendererProtocol = configurePackagedRendererProtocol();
     const transportSmoke = packagedTransportSmoke();
+    const connectSmoke = packagedConnectSmoke();
+    if (transportSmoke && connectSmoke) throw new Error('Packaged desktop smoke modes are mutually exclusive');
 
     const productionEncryption: EncryptionProvider = {
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -483,10 +567,42 @@ if (!hasSingleInstanceLock) {
       decrypt: value => safeStorage.decryptString(value),
     };
     const profiles = new ProfileStore(app.getPath('userData'), productionEncryption);
+    const connectDiscovery = new DesktopConnectDiscoveryService(profiles, {
+      supported: DESKTOP_CONNECT_DISCOVERY_PLATFORMS.has(process.platform),
+      discover: async () => {
+        const status = await discoverConfiguredConnect({
+          configRoot: connectSmoke?.configRoot ?? join(app.getPath('home'), '.propr'),
+          statusDependencies: connectSmoke ? {
+            fetchImpl: connectSmoke.fetch,
+            inspectTunnel: () => ({ kind: 'ok', running: true }),
+          } : undefined,
+          reportSmokeDiagnostic: connectSmoke
+            ? diagnostic => log('info', 'desktop.renderer.connect_discovery.phase', {
+                phase: diagnostic.phase,
+                code: diagnostic.code,
+                ...(diagnostic.substep ? { substep: diagnostic.substep } : {}),
+                ...(diagnostic.category ? { category: diagnostic.category } : {}),
+              })
+            : undefined,
+        });
+        if (connectSmoke) {
+          const statusCode = {
+            incompatible: 'CONNECT_STATUS_INCOMPATIBLE',
+            internalFailure: 'CONNECT_STATUS_INTERNAL_FAILURE',
+            invalidConfig: 'CONNECT_STATUS_INVALID_CONFIG',
+            notReady: 'CONNECT_STATUS_NOT_READY',
+            ready: 'CONNECT_STATUS_READY',
+            timeout: 'CONNECT_STATUS_TIMEOUT',
+          }[status.status];
+          log('info', 'desktop.renderer.connect_discovery.status', { code: statusCode });
+        }
+        return status;
+      },
+    });
     const credentials = new DesktopCredentialService({
       profiles,
       fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
-      openExternal: async url => { await shell.openExternal(url); },
+      openPairingBrowser: request => openApprovedDesktopPairingUrl(request, shell),
       clientName: `ProPR Desktop (${process.platform})`,
       reportRevocationFailure: diagnostic => {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
@@ -505,12 +621,13 @@ if (!hasSingleInstanceLock) {
       ipcMain,
       profiles,
       credentials,
+      connectDiscovery,
       lifecycle,
       logger,
       desktopSession: session.defaultSession,
       devServerUrl,
       packagedRendererUrl,
-      openExternal: async url => { await shell.openExternal(url); },
+      openExternal: openAllowedExternalUrl,
     });
     mainWindow = await createMainWindow(transportSmoke);
     deepLinkDelivery.setWindow(mainWindow);
@@ -542,7 +659,10 @@ if (!hasSingleInstanceLock) {
     }, transportSmoke?.shutdownMode === 'forced-timeout' ? { drainTimeoutMs: 250 } : undefined);
     app.on('before-quit', event => shutdown.beforeQuit(event));
 
-    if (transportSmoke) {
+    if (connectSmoke) {
+      await runPackagedConnectDiscoverySmoke(mainWindow);
+      app.quit();
+    } else if (transportSmoke) {
       await runPackagedTransportSmoke(mainWindow, profiles, credentials, transportSmoke);
       app.quit();
       if (transportSmoke.shutdownMode === 'retry') {

@@ -15,6 +15,11 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
+const connectDiscovery = {
+  discover: async () => [],
+  rediscover: async () => null,
+};
+
 describe('desktop IPC shutdown gate', () => {
   it('clears old and new origin storage through the real save IPC before a same-ID URL commit', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
@@ -38,6 +43,7 @@ describe('desktop IPC shutdown gate', () => {
       } as unknown as IpcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession: {
@@ -104,6 +110,7 @@ describe('desktop IPC shutdown gate', () => {
       ipcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession,
@@ -180,6 +187,7 @@ describe('desktop IPC shutdown gate', () => {
       ipcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession,
@@ -193,7 +201,7 @@ describe('desktop IPC shutdown gate', () => {
 
     await assert.rejects(
       Promise.resolve(handlers.get(IPC_CHANNELS.connectionActivate)!(event, 'T'.repeat(43))),
-      /storage clear failed/,
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
     );
     assert.equal(clearCalls, 2);
     assert.deepEqual(discarded, [{ profileId: 'profile-b', transportScope: 'scope-b' }]);
@@ -231,6 +239,7 @@ describe('desktop IPC shutdown gate', () => {
       ipcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession,
@@ -242,7 +251,7 @@ describe('desktop IPC shutdown gate', () => {
 
     await assert.rejects(
       Promise.resolve(handlers.get(IPC_CHANNELS.connectionActivate)!(event, 'T'.repeat(43))),
-      /post-activation profile read failed/,
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
     );
     assert.equal(listCalls, 2);
     assert.equal(discardCalls, 1);
@@ -273,6 +282,7 @@ describe('desktop IPC shutdown gate', () => {
       ipcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession,
@@ -284,7 +294,7 @@ describe('desktop IPC shutdown gate', () => {
 
     await assert.rejects(
       Promise.resolve(handlers.get(IPC_CHANNELS.profilesRemove)!(event, 'profile-a')),
-      /origin storage clear failed/,
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
     );
     assert.equal(removalCommitted, false);
   });
@@ -312,6 +322,7 @@ describe('desktop IPC shutdown gate', () => {
       ipcMain,
       profiles: {} as ProfileStore,
       credentials,
+      connectDiscovery,
       lifecycle: {} as LocalLifecycleController,
       logger: { log: () => undefined } as unknown as DesktopLogger,
       desktopSession: {} as Session,
@@ -374,6 +385,7 @@ describe('desktop IPC shutdown gate', () => {
         ipcMain,
         profiles: {} as ProfileStore,
         credentials,
+        connectDiscovery,
         lifecycle: {} as LocalLifecycleController,
         logger: { log: () => undefined } as unknown as DesktopLogger,
         desktopSession,

@@ -7,6 +7,7 @@ import {
   assertNativeWindowsEntriesAuthority,
   assertSafeWindowsAuthority,
   assertWindowsInspectionShape,
+  isConnectAuthorityBrokerModeSafe,
   parseWindowsInspectionDocument,
   stableAuthorityIdentity,
   WindowsAuthorityInspectionError,
@@ -37,6 +38,16 @@ import {
 const USER = "S-1-5-21-100-200-300-1001";
 const SYSTEM = "S-1-5-18";
 const ADMINISTRATORS = "S-1-5-32-544";
+
+test("unpackaged Connect authority brokers reject group/other-writable modes", () => {
+  assert.equal(isConnectAuthorityBrokerModeSafe(0o644n, false), true);
+  assert.equal(isConnectAuthorityBrokerModeSafe(0o755n, false), true);
+  assert.equal(isConnectAuthorityBrokerModeSafe(0o775n, false), false);
+  assert.equal(isConnectAuthorityBrokerModeSafe(0o757n, false), false);
+  assert.equal(isConnectAuthorityBrokerModeSafe(0o644n, true), false);
+  assert.equal(isConnectAuthorityBrokerModeSafe(0o755n, true), true);
+  assert.equal(isConnectAuthorityBrokerModeSafe(0o775n, true), false);
+});
 
 function inspection(overrides: Partial<WindowsAuthorityInspection> = {}): WindowsAuthorityInspection {
   return {

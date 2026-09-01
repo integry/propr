@@ -209,10 +209,14 @@ jobs:
               $acl.SetOwner($Owner)
               $acl.SetAccessRuleProtection($true, $false)
               foreach ($identity in @($userIdentity, $systemIdentity, $adminIdentity)) {
+                $rights = [Security.AccessControl.FileSystemRights]::FullControl
+                $accessType = [Security.AccessControl.AccessControlType]::Allow
                 $rule = if ($Directory) {
-                  [Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+                  $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+                  $propagation = [Security.AccessControl.PropagationFlags]::None
+                  [Security.AccessControl.FileSystemAccessRule]::new($identity, $rights, $inheritance, $propagation, $accessType)
                 } else {
-                  [Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'Allow')
+                  [Security.AccessControl.FileSystemAccessRule]::new($identity, $rights, $accessType)
                 }
                 $acl.AddAccessRule($rule) | Out-Null
               }

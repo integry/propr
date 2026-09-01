@@ -24,7 +24,7 @@ const profiles = mode === 'after-remote-success'
 const service = new DesktopCredentialService({
   profiles,
   clientName: 'Crash fixture',
-  openExternal: async () => undefined,
+  openPairingBrowser: async () => undefined,
   fetch: async (_input, init) => {
     const authorization = new Headers(init?.headers).get('Authorization');
     if (authorization !== `Bearer propr_it_${'A'.repeat(43)}`) {

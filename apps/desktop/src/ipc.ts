@@ -1,6 +1,7 @@
 import type { App, IpcMain, IpcMainInvokeEvent, Session } from 'electron';
 import { clearDesktopInstanceCookies, logoutDesktopSession } from './desktop-session';
 import type { DesktopCredentialService } from './credential-service';
+import type { DesktopConnectDiscoveryService } from './connect-discovery';
 import type { DesktopLogger } from './logger';
 import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
@@ -12,6 +13,7 @@ interface RegisterIpcOptions {
   ipcMain: IpcMain;
   profiles: ProfileStore;
   credentials: DesktopCredentialService;
+  connectDiscovery: Pick<DesktopConnectDiscoveryService, 'discover' | 'rediscover'>;
   lifecycle: LocalLifecycleController;
   logger: DesktopLogger;
   desktopSession: Session;
@@ -54,8 +56,8 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       try {
         return await invocation;
       } catch (error) {
-        options.logger.log('error', 'desktop.ipc.failed', { channel, error });
-        throw error;
+        options.logger.log('error', 'desktop.ipc.failed', { channel, code: 'IPC_OPERATION_FAILED' });
+        throw new Error('Desktop operation failed [IPC_OPERATION_FAILED]');
       } finally {
         active.delete(invocation);
         options.observeInvocation?.('exit', channel);
@@ -126,6 +128,14 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   });
   handle(IPC_CHANNELS.connectionDiscard, (_event, value) => options.credentials.discardActivation(value));
   handle(IPC_CHANNELS.connectionInvalidate, (_event, value) => options.credentials.invalidate(value));
+  handle(IPC_CHANNELS.connectDiscover, (_event, ...args) => {
+    if (args.length) throw new Error('Invalid Connect discovery request');
+    return options.connectDiscovery.discover();
+  });
+  handle(IPC_CHANNELS.connectRediscover, (_event, profileId, ...args) => {
+    if (args.length) throw new Error('Invalid Connect rediscovery request');
+    return options.connectDiscovery.rediscover(profileId);
+  });
   handle(IPC_CHANNELS.lifecycleStatus, () => options.lifecycle.status());
   handle(IPC_CHANNELS.lifecycleStart, () => options.lifecycle.start());
   handle(IPC_CHANNELS.lifecycleStop, () => options.lifecycle.stop());

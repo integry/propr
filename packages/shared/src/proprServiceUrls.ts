@@ -55,6 +55,18 @@ export const DESKTOP_TRANSPORT_SCOPE_QUERY = 'proprDesktopTransportScope';
  */
 export const PROPR_UI_PROXY_SUFFIX = 'propr.dev';
 export const PROPR_UI_PROXY_LABEL_PREFIX = 't-';
+export const MAX_PROPR_API_BASE_URL_LENGTH = 2048;
+
+const CANONICAL_PROPR_CONNECT_HOST_PATTERN =
+  /^(t-([a-z0-9]|[a-z0-9][a-z0-9-]{0,59}[a-z0-9]))\.propr\.dev$/;
+
+/** A verified, canonical ProPR Connect API origin. */
+export interface ProprConnectEndpoint {
+  kind: 'propr-connect';
+  origin: string;
+  hostname: string;
+  instanceId: string;
+}
 
 /**
  * Default Cloudflare Tunnel image used to expose the local stack's UI/API to
@@ -164,13 +176,86 @@ export function canonicalProprProxyUrl(url: string | undefined | null): string |
  * tunnel base URL must be one of them. Requires https and *exactly one* valid
  * `t-<instance-id>` label in front of the shared {@link PROPR_UI_PROXY_SUFFIX}.
  * Other propr.dev hosts like `app.propr.dev` and nested hosts are rejected. It
- * must also be a bare origin: a non-root path, query, or fragment (e.g.
+ * must also be the exact raw bare origin: a slash, path, query, or fragment (e.g.
  * `https://t-abc.propr.dev/api`) is rejected because
  * {@link proprTunnelEndpoints} appends `/api/...` itself and a base path would
  * double it up (`.../api/api/status`). Returns false for a malformed URL.
  */
+export function parseProprConnectEndpoint(url: string | undefined | null): ProprConnectEndpoint | null {
+  if (typeof url !== 'string' || url.length > MAX_PROPR_API_BASE_URL_LENGTH) return null;
+  // Trust only one byte-for-byte spelling. Avoid URL parsing before this match:
+  // WHATWG normalization would erase case, default ports, escapes, IDNA input,
+  // repeated slashes, and other distinctions that are security-significant for
+  // the reserved Connect namespace.
+  const match = /^https:\/\/(t-(?:[a-z0-9]|[a-z0-9][a-z0-9-]{0,59}[a-z0-9])\.propr\.dev)$/.exec(url);
+  if (!match) return null;
+  const hostname = match[1];
+  const hostMatch = CANONICAL_PROPR_CONNECT_HOST_PATTERN.exec(hostname);
+  if (!hostMatch) return null;
+  return {
+    kind: 'propr-connect',
+    origin: url,
+    hostname,
+    instanceId: hostMatch[2],
+  };
+}
+
+/** Whether a raw host is the exact lowercase ASCII Connect shorthand. */
+export function isCanonicalProprConnectHostname(hostname: string | undefined | null): boolean {
+  return typeof hostname === 'string'
+    && hostname.length <= 253
+    && CANONICAL_PROPR_CONNECT_HOST_PATTERN.test(hostname);
+}
+
+/**
+ * Whether an absolute URL is trying to address the reserved ProPR Connect DNS
+ * namespace. This deliberately recognizes noncanonical spellings so a failed
+ * strict Connect parse cannot fall through and acquire ordinary remote-origin
+ * behavior. It does not reserve suffix lookalikes outside `*.propr.dev`.
+ */
+export function isProprConnectReservedHostAttempt(url: string | undefined | null): boolean {
+  if (typeof url !== 'string' || !url || url.length > MAX_PROPR_API_BASE_URL_LENGTH) return false;
+  if (parseProprConnectEndpoint(url)) return true;
+
+  const isReservedHostname = (hostname: string): boolean => {
+    const normalized = hostname.toLowerCase().replace(/\.+$/, '');
+    const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+    if (!normalized.endsWith(suffix)) return false;
+    const labels = normalized.slice(0, -suffix.length).split('.');
+    return labels.some(label => label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX));
+  };
+
+  try {
+    if (isReservedHostname(new URL(url).hostname)) return true;
+  } catch {
+    // Raw authority inspection below still catches malformed reserved attempts.
+  }
+
+  const authority = /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i.exec(url)?.[1];
+  if (!authority) return false;
+  const spellings = [authority];
+  try {
+    const decoded = decodeURIComponent(authority);
+    if (decoded !== authority) spellings.push(decoded);
+  } catch {
+    // A malformed escape cannot become a canonical endpoint, but the literal
+    // spelling can still identify an attempted reserved hostname.
+  }
+  return spellings.some(spelling => spelling
+    .split('@')
+    .flatMap(part => part.split('\\'))
+    .some(part => isReservedHostname(part.replace(/:\d+$/, ''))));
+}
+
+/**
+ * Whether a URL is the exact hosted endpoint shape used by ProPR Connect.
+ *
+ * The legacy function name remains part of the tunnel configuration contract;
+ * new desktop-facing code should prefer {@link parseProprConnectEndpoint} so
+ * user-visible copy can consistently use the ProPR Connect name.
+ */
 export function isProprProxyUrl(url: string | undefined | null): boolean {
-  return canonicalProprProxyUrl(url) !== undefined;
+  return parseProprConnectEndpoint(url) !== null;
 }
 
 function normalizeProprInstanceId(instanceId: string | undefined | null): string {

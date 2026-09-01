@@ -1,7 +1,7 @@
 import { DEMO_MODE_READ_ONLY_CODE, DESKTOP_TRANSPORT_SCOPE_HEADER } from '@propr/shared';
-import { normalizeApiBaseUrl, ProprClient } from '@propr/client';
+import { normalizeApiBaseUrl, ProprClient, ProprClientError } from '@propr/client';
 import type { DesktopBridge } from '../../../apps/desktop/src/shared/contract';
-import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
+import { getRuntimeApiBaseUrlState, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import { currentUiPathname, isDesktopRuntime, navigateToUiPath } from '../config/runtimeMode';
 import { DESKTOP_ACCESS_INVALID_EVENT } from '../desktop/types';
 
@@ -32,8 +32,23 @@ const createProprClient = (baseUrl: string): ProprClient => new ProprClient({
     : { type: 'session', applyByDefault: false },
 });
 
-export let API_BASE_URL = getApiBaseUrl();
-export let proprClient = createProprClient(API_BASE_URL);
+const initialApiConfiguration = getRuntimeApiBaseUrlState();
+
+export let API_BASE_URL = initialApiConfiguration.apiBaseUrl;
+// This live binding is null only while hosted runtime configuration is blocked;
+// callers that can run in that state must use getProprClient(). Packaged desktop
+// transport is initialized only after a valid activation and can use the binding.
+export let proprClient: ProprClient = initialApiConfiguration.issue
+  ? null as never
+  : createProprClient(API_BASE_URL);
+
+export const getProprClient = (): ProprClient => {
+  if (proprClient) return proprClient;
+  throw new ProprClientError('The ProPR connection configuration is invalid.', {
+    kind: 'configuration',
+    code: 'INVALID_RUNTIME_CONFIGURATION',
+  });
+};
 
 /** Update the live bindings used by existing API modules when desktop profiles switch. */
 export const setApiBaseUrl = (value: string): void => {
@@ -255,7 +270,7 @@ export const apiFetch = async (
   options: ApiFetchOptions = {}
 ): Promise<Response> => {
   const requestScope = desktopConnectionScope;
-  const requestClient = proprClient;
+  const requestClient = getProprClient();
   const requestInit = scopedRequestInit(input, init, requestScope);
   const response = await requestClient.fetch(input, requestInit);
   responseScopes.set(response, requestScope);
