@@ -64,7 +64,9 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
       { label: 'relative path', kind: 'directory', path: 'data', status: 40 },
       { label: 'mismatched directory kind', kind: 'file', path: canonicalDirectory.path, status: 41 },
       { label: 'mismatched file kind', kind: 'directory', path: canonicalFile.path, status: 41 },
-      { label: 'invalid full path', kind: 'file', path: `${canonicalDirectory.path}\\invalid|name`, status: 48 },
+      // A server-only UNC is rooted, but PS5.1/.NET Framework rejects it because
+      // a valid UNC must also name a share. This reaches GetFullPath (phase 48).
+      { label: 'invalid full path', kind: 'file', path: '\\\\propr-invalid-unc\\', status: 48 },
       { label: 'canonical traversal alias', kind: 'directory', path: `${canonicalDirectory.path}\\..\\data`, status: 49 },
       { label: 'empty path', kind: 'directory', path: '', status: 50 },
       { label: 'invalid entry kind', kind: 'invalid', path: canonicalFile.path, status: 50 },
