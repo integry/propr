@@ -7,21 +7,41 @@ import { it } from 'node:test';
 import {
   canonicalizeWindowsFixtureEntry,
   encodedWindowsFixtureAcl,
+  windowsFixtureAclSource,
   windowsPowerShell51Path,
 } from './windows-fixture-acl.mjs';
 
 const windowsIt = process.platform === 'win32' ? it : it.skip;
 
+const ownerClassifierSource = String.raw`
+function Get-ProprOwnerCategoryToken {
+  param(
+    [Parameter(Mandatory=$true)][Security.Principal.SecurityIdentifier]$Owner,
+    [Parameter(Mandatory=$true)][Security.Principal.SecurityIdentifier]$Current
+  )
+  if($Owner.Value -eq $Current.Value){return 1}
+  if($Owner.Value -eq 'S-1-5-32-544'){return 2}
+  if($Owner.Value -eq 'S-1-5-18'){return 3}
+  return 0
+}`;
+
 const exactDaclProofSource = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
+${ownerClassifierSource}
 try {
   $entryKind=$env:PROPR_FIXTURE_ACL_KIND
   $entryPath=$env:PROPR_FIXTURE_ACL_PATH
   $proofKind=$env:PROPR_FIXTURE_ACL_PROOF
+  $expectedOwnerCategory=$env:PROPR_FIXTURE_ACL_OWNER_CATEGORY
   if(($entryKind -ne 'directory' -and $entryKind -ne 'file') -or
     ($proofKind -ne 'owner' -and $proofKind -ne 'exact') -or
     [String]::IsNullOrEmpty($entryPath)){exit 70}
+  if($proofKind -eq 'owner' -and -not [String]::IsNullOrEmpty($expectedOwnerCategory)){exit 70}
+  if($proofKind -eq 'exact' -and
+    $expectedOwnerCategory -ne 'current-user' -and
+    $expectedOwnerCategory -ne 'administrators' -and
+    $expectedOwnerCategory -ne 'system'){exit 70}
 } catch { exit 70 }
 try {
   $sections=[System.Security.AccessControl.AccessControlSections]::Access -bor [System.Security.AccessControl.AccessControlSections]::Owner
@@ -32,9 +52,23 @@ try {
 try {
   $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
   $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier])
-  if($null -eq $current -or $null -eq $owner -or $owner.Value -ne $current.Value){exit 72}
+  if($null -eq $current -or $null -eq $owner){exit 72}
+  $ownerCategoryToken=Get-ProprOwnerCategoryToken -Owner $owner -Current $current
 } catch { exit 72 }
-if($proofKind -eq 'owner'){exit 0}
+if($ownerCategoryToken -eq 0){exit 78}
+if($proofKind -eq 'owner'){
+  if($ownerCategoryToken -eq 1){exit 75}
+  if($ownerCategoryToken -eq 2){exit 76}
+  if($ownerCategoryToken -eq 3){exit 77}
+  exit 72
+}
+try {
+  $expectedOwnerCategoryToken=if($expectedOwnerCategory -eq 'current-user'){1}
+    elseif($expectedOwnerCategory -eq 'administrators'){2}
+    elseif($expectedOwnerCategory -eq 'system'){3}
+    else{exit 70}
+  if($ownerCategoryToken -ne $expectedOwnerCategoryToken){exit 79}
+} catch { exit 72 }
 try {
   $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
   if(-not $acl.AreAccessRulesProtected -or -not $acl.AreAccessRulesCanonical -or
@@ -60,6 +94,36 @@ try {
 
 const encodedExactDaclProof = Buffer.from(exactDaclProofSource, 'utf16le').toString('base64');
 
+const ownerClassifierRegressionSource = String.raw`
+$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+${ownerClassifierSource}
+try {
+  $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
+  $admins=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+  $system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+  $unknown=[Security.Principal.SecurityIdentifier]::new('S-1-0-0')
+  if($null -eq $current -or
+    (Get-ProprOwnerCategoryToken -Owner $current -Current $current) -ne 1 -or
+    (Get-ProprOwnerCategoryToken -Owner $admins -Current $current) -ne 2 -or
+    (Get-ProprOwnerCategoryToken -Owner $system -Current $current) -ne 3){exit 80}
+  $unknownOwnerCategoryToken=Get-ProprOwnerCategoryToken -Owner $unknown -Current $current
+} catch { exit 82 }
+if($unknownOwnerCategoryToken -eq 0){exit 78}
+exit 81
+`;
+
+const encodedOwnerClassifierRegression = Buffer.from(
+  ownerClassifierRegressionSource,
+  'utf16le',
+).toString('base64');
+
+const baselineOwnerCategories = new Map([
+  [75, 'current-user'],
+  [76, 'administrators'],
+  [77, 'system'],
+]);
+
 const assertPowerShellStreamEmpty = (stream, category) => {
   if (!Buffer.isBuffer(stream) || stream.length !== 0) {
     const error = new Error(`Windows fixture ACL helper stream contract failed [category=${category}]`);
@@ -68,10 +132,12 @@ const assertPowerShellStreamEmpty = (stream, category) => {
   }
 };
 
-const assertAclProof = (powershell, entry, proofKind) => {
-  const result = spawnSync(powershell, [
+const runAclProof = (powershell, entry, proofKind, ownerCategory = '') => spawnSync(
+  powershell,
+  [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedExactDaclProof,
-  ], {
+  ],
+  {
     shell: false,
     windowsHide: true,
     timeout: 30_000,
@@ -80,20 +146,54 @@ const assertAclProof = (powershell, entry, proofKind) => {
       PROPR_FIXTURE_ACL_KIND: entry.kind,
       PROPR_FIXTURE_ACL_PATH: entry.path,
       PROPR_FIXTURE_ACL_PROOF: proofKind,
+      PROPR_FIXTURE_ACL_OWNER_CATEGORY: ownerCategory,
     },
-  });
+  },
+);
+
+const proofFailureCategory = status => new Map([
+  [70, 'input'],
+  [71, 'access-control-read'],
+  [72, 'owner-lookup'],
+  [73, 'protection'],
+  [74, 'rules'],
+  [78, 'owner-not-allowlisted'],
+  [79, 'owner-category-mismatch'],
+]).get(status) ?? 'unexpected-exit';
+
+const assertProofProcess = result => {
   assert.ifError(result.error);
   assert.equal(result.signal, null);
   assertPowerShellStreamEmpty(result.stdout, 'dacl-proof-stdout');
   assertPowerShellStreamEmpty(result.stderr, 'dacl-proof-stderr');
-  const category = new Map([
-    [70, 'input'],
-    [71, 'access-control-read'],
-    [72, 'owner'],
-    [73, 'protection'],
-    [74, 'rules'],
-  ]).get(result.status) ?? 'unexpected-exit';
-  assert.equal(result.status, 0, `${entry.kind} ${proofKind} ACL proof failed [category=${category}]`);
+};
+
+const classifyBaselineOwner = (powershell, entry) => {
+  const result = runAclProof(powershell, entry, 'owner');
+  assertProofProcess(result);
+  const ownerCategory = baselineOwnerCategories.get(result.status);
+  assert.ok(
+    ownerCategory,
+    `${entry.kind} owner ACL proof failed [category=${proofFailureCategory(result.status)}]`,
+  );
+  return ownerCategory;
+};
+
+const assertExactAcl = (powershell, entry, ownerCategory) => {
+  const result = runAclProof(powershell, entry, 'exact', ownerCategory);
+  assertProofProcess(result);
+  assert.equal(
+    result.status,
+    0,
+    `${entry.kind} exact ACL proof failed [category=${proofFailureCategory(result.status)}]`,
+  );
+};
+
+const assertOwnerCategoryMismatch = (powershell, entry, ownerCategory) => {
+  const mismatchedCategory = ownerCategory === 'current-user' ? 'administrators' : 'current-user';
+  const result = runAclProof(powershell, entry, 'exact', mismatchedCategory);
+  assertProofProcess(result);
+  assert.equal(result.status, 79, `${entry.kind} accepted a mismatched owner category`);
 };
 
 windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and byte-empty', t => {
@@ -106,6 +206,34 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
   assert.equal(version.status, 0);
   assert.equal(version.stdout, '5.1');
   assert.equal(version.stderr, '');
+
+  assert.match(
+    windowsFixtureAclSource,
+    /AccessControlSections\]::Access\s*\r?\n/u,
+    'production mutation must request the access-control section',
+  );
+  assert.doesNotMatch(
+    windowsFixtureAclSource,
+    /AccessControlSections\]::Owner|\.SetOwner\s*\(/u,
+    'production mutation must not request or set owner',
+  );
+
+  const classifierRegression = spawnSync(powershell, [
+    '-NoLogo', '-NoProfile', '-NonInteractive',
+    '-EncodedCommand', encodedOwnerClassifierRegression,
+  ], { shell: false, windowsHide: true, timeout: 10_000 });
+  assertProofProcess(classifierRegression);
+  const classifierCategory = new Map([
+    [78, 'unknown-owner'],
+    [80, 'allowlisted-owner'],
+    [81, 'unknown-owner-accepted'],
+    [82, 'owner-lookup'],
+  ]).get(classifierRegression.status) ?? 'unexpected-exit';
+  assert.equal(
+    classifierRegression.status,
+    78,
+    `owner classifier regression failed [category=${classifierCategory}]`,
+  );
 
   const temporaryDirectoryAlias = tmpdir();
   const canonicalTemporaryDirectory = realpathSync(temporaryDirectoryAlias);
@@ -136,11 +264,10 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
       t.diagnostic(`PS5.1 path normalization category=${category}`);
     }
 
-    const ownerBaselineEntries = [
+    const entriesWithBaselineOwner = [
       { kind: 'directory', path: canonicalDirectory.path },
       { kind: 'file', path: canonicalFile.path },
-    ];
-    for (const entry of ownerBaselineEntries) assertAclProof(powershell, entry, 'owner');
+    ].map(entry => ({ ...entry, ownerCategory: classifyBaselineOwner(powershell, entry) }));
 
     const entries = [
       { label: 'relative path', kind: 'directory', path: 'data', status: 40 },
@@ -194,7 +321,12 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
       assertPowerShellStreamEmpty(result.stdout, 'powershell-stdout');
       assertPowerShellStreamEmpty(result.stderr, 'powershell-stderr');
       assert.equal(result.status, entry.status, `${entry.label} returned the wrong redacted phase code`);
-      if (entry.status === 0) assertAclProof(powershell, entry, 'exact');
+      if (entry.status === 0) {
+        const baseline = entriesWithBaselineOwner.find(candidate => candidate.kind === entry.kind);
+        assert.ok(baseline, `missing ${entry.kind} baseline owner category`);
+        assertExactAcl(powershell, entry, baseline.ownerCategory);
+        assertOwnerCategoryMismatch(powershell, entry, baseline.ownerCategory);
+      }
     }
   } finally {
     rmSync(fixture, { recursive: true, force: true });
