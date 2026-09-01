@@ -363,8 +363,8 @@ $TerminationTimeoutMilliseconds = $terminationTimeout
   }
   $validatedManifestPath = $manifestPath
   $installerPath = (Resolve-Path -LiteralPath $Installer -ErrorAction Stop).Path
-  $cleanupWorkerPath = (Resolve-Path -LiteralPath
-    (Join-Path $PSScriptRoot 'cleanup-installed-windows-app.ps1') -ErrorAction Stop).Path
+  $cleanupWorkerCandidatePath = Join-Path $PSScriptRoot 'cleanup-installed-windows-app.ps1'
+  $cleanupWorkerPath = (Resolve-Path -LiteralPath $cleanupWorkerCandidatePath -ErrorAction Stop).Path
   $hostPath = (Get-Process -Id $PID -ErrorAction Stop).Path
   if ([IO.Path]::GetFileName($hostPath) -notin @('pwsh.exe', 'powershell.exe')) {
     throw 'PowerShell host resolution failed'

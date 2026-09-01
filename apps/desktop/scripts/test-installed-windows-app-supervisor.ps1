@@ -36,6 +36,20 @@ function Assert-NotContains([string]$Text, [string]$Forbidden, [string]$Message)
   Assert-True (!$Text.Contains($Forbidden, [StringComparison]::OrdinalIgnoreCase)) $Message
 }
 
+function Test-WorkflowCleanupBodyParserRegression {
+  $cleanupBodyPath = Join-Path $PSScriptRoot `
+    'run-installed-windows-app-workflow-cleanup-body.ps1'
+  $tokens = $null
+  $parseErrors = $null
+  [void][System.Management.Automation.Language.Parser]::ParseFile(
+    $cleanupBodyPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+  )
+  Assert-True ($parseErrors.Count -eq 0) `
+    'workflow cleanup production body failed whole-file parser regression'
+}
+
 function New-StateDirectory([string]$Name) {
   $path = Join-Path $testRoot $Name
   [void](New-Item -ItemType Directory -Path $path -ErrorAction Stop)
@@ -2352,6 +2366,7 @@ $actualArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchi
 Assert-True ($actualArchitecture -ceq $Architecture) `
   "supervisor behavior tests expected $Architecture but are running on $actualArchitecture"
 
+Test-WorkflowCleanupBodyParserRegression
 [void](New-Item -ItemType Directory -Path $testRoot -ErrorAction Stop)
 Initialize-TestInstaller
 try {
