@@ -423,8 +423,18 @@ test('the diagnostic allowance precedes a cumulatively bounded production standa
     windowsAuthority,
     /export const WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS = 240_000;/,
   );
-  assert.match(harness, /const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = 255_000;/);
-  assert.equal(255_000, WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS + 15_000);
+  assert.match(harness, /const WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT = 2;/);
+  assert.match(harness, /const WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS = 15_000;/);
+  assert.match(
+    harness,
+    /const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = \(\s*WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT\s*\* nativeAuthority\.WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS\s*\) \+ WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;/,
+  );
+  const windowsProductScenarioTimeoutMs = (
+    2 * WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS
+  ) + 15_000;
+  assert.equal(windowsProductScenarioTimeoutMs, 495_000);
+  assert.equal(Number.isFinite(windowsProductScenarioTimeoutMs), true);
+  assert.equal(Number.isSafeInteger(windowsProductScenarioTimeoutMs), true);
   assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 4 * WINDOWS_INSPECTION_TIMEOUT_MS);
   assert.notEqual(
     WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS / WINDOWS_INSPECTION_TIMEOUT_MS,

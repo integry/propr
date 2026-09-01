@@ -111,6 +111,8 @@ const probeMilestoneAllowlist = Object.freeze([
 const probeTimingAllowlist = Object.freeze([
   "under-5s", "5-to-15s", "15-to-30s", "30-to-45s", "45-to-60s", "at-least-60s",
 ]);
+const WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT = 2;
+const WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS = 15_000;
 const scenarioNames = new Set(scenarioAllowlist);
 const assertionStages = new Set(assertionStageAllowlist);
 const statusKinds = new Set(statusKindAllowlist);
@@ -119,7 +121,6 @@ const reasonCodes = new Set(reasonCodeAllowlist);
 const nativeStages = new Set(nativeStageAllowlist);
 const probeMilestones = new Set(probeMilestoneAllowlist);
 const probeTimings = new Set(probeTimingAllowlist);
-const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = 255_000;
 
 function parseBoundedFailureStatus(stdout) {
   if (typeof stdout !== "string" || stdout.length === 0 || Buffer.byteLength(stdout, "utf8") >= 2048) return null;
@@ -214,6 +215,10 @@ try {
   assert.ok(expectedUser && actualUser.toLowerCase() === expectedUser.toLowerCase(), "proof did not run as the limited user");
   currentStage = "native-timing";
   const nativeAuthority = await import(windowsAuthorityModule);
+  const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = (
+    WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT
+    * nativeAuthority.WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS
+  ) + WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;
   const probeFd = openSync(
     fixture,
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
