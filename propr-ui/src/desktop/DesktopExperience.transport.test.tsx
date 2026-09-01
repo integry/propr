@@ -273,4 +273,3 @@ describe('DesktopExperience transport and fencing', () => {
   });
 
 });
-
