@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory=$true)][string]$Installer,
   [Parameter(Mandatory=$true)][ValidateSet('x64','arm64')][string]$Architecture,
   [Parameter(Mandatory=$true)][string]$WatchdogMarker,
-  [Parameter(Mandatory=$true)][string]$OwnershipReadyEvent
+  [Parameter(Mandatory=$true)][string]$OwnershipReadyEvent,
+  [Parameter(Mandatory=$true)][string]$OwnershipManifest
 )
 
 enum SmokeEvidenceInspectionPhase {
@@ -40,6 +41,16 @@ if ((Split-Path -Leaf $watchdogMarkerPath) -notmatch
       [StringComparison]::OrdinalIgnoreCase
     )) {
   throw 'watchdog marker path is invalid'
+}
+$ownershipManifestPath = [IO.Path]::GetFullPath($OwnershipManifest)
+if ((Split-Path -Leaf $ownershipManifestPath) -notmatch
+      '^propr-installed-app-ownership-[a-f0-9]{32}\.json$' -or
+    ![string]::Equals(
+      (Split-Path -Parent $ownershipManifestPath).TrimEnd('\'),
+      $watchdogMarkerParent,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+  throw 'ownership manifest path is invalid'
 }
 $bootstrapDeadline = [DateTime]::UtcNow.AddMilliseconds($bootstrapWatchdogTimeoutMilliseconds).Ticks
 $bootstrapRecord = '{0}|INITIALIZATION|PATHS|BEGIN' -f $bootstrapDeadline
@@ -148,6 +159,64 @@ $startMenuShortcutFolderExistedBeforeInstall = Test-Path -LiteralPath $startMenu
 $startMenuShortcutCreatedByRun = $false
 $startMenuShortcutFolderCreatedByRun = $false
 $shortcutFileByteCap = 64 * 1024
+$ownershipRunId = [IO.Path]::GetFileNameWithoutExtension($ownershipManifestPath).Substring(
+  'propr-installed-app-ownership-'.Length)
+$ownershipToken = [Guid]::NewGuid().ToString('N')
+$ownershipState = [ordered]@{
+  SchemaVersion = 1
+  RunId = $ownershipRunId
+  InstallerPath = $installerPath
+  Fixture = $false
+  FixtureRoot = $null
+  BaselineClean = $false
+  InstallAttempted = $false
+  Directories = @()
+  Files = @()
+  RegistryKeys = @()
+  Users = @()
+  Profiles = @()
+}
+
+function Write-OwnershipManifest {
+  $temporaryManifest = "$ownershipManifestPath.new"
+  $bytes = [Text.Encoding]::UTF8.GetBytes(
+    ($ownershipState | ConvertTo-Json -Depth 6 -Compress))
+  $stream = [IO.FileStream]::new(
+    $temporaryManifest,
+    [IO.FileMode]::Create,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::None,
+    4096,
+    [IO.FileOptions]::WriteThrough
+  )
+  try {
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    $stream.Dispose()
+  }
+  [IO.File]::Move($temporaryManifest, $ownershipManifestPath, $true)
+}
+
+function Write-DurableOwnershipToken([string]$Path, [string]$Token) {
+  $bytes = [Text.Encoding]::ASCII.GetBytes($Token)
+  $stream = [IO.FileStream]::new(
+    $Path,
+    [IO.FileMode]::CreateNew,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::Read,
+    4096,
+    [IO.FileOptions]::WriteThrough
+  )
+  try {
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    $stream.Dispose()
+  }
+}
+
+Write-OwnershipManifest
 
 function Write-WatchdogMarker(
   [ValidateSet('INITIALIZATION','INSTALL','VALIDATION','USER_SETUP','APP_LAUNCH','APP_EXIT','UNINSTALL','CLEANUP')]
@@ -263,6 +332,8 @@ try {
       $startMenuShortcutExistedBeforeInstall -or $startMenuShortcutFolderExistedBeforeInstall) {
     throw 'installed-app harness requires an unowned clean machine baseline'
   }
+  $ownershipState.BaselineClean = $true
+  Write-OwnershipManifest
   Write-WatchdogMarker 'INITIALIZATION' 'BASELINE' $externalOperationTimeoutMilliseconds 'COMPLETE'
 } catch {
   Write-WatchdogMarker 'INITIALIZATION' 'BASELINE' $externalOperationTimeoutMilliseconds 'FAILED'
@@ -652,8 +723,16 @@ function Test-StartMenuShortcutAsOrdinaryUser(
   throw 'ordinary-user shortcut probe failed'
 }
 
-function New-SmokeUserDataDirectory([Security.Principal.SecurityIdentifier]$UserSid) {
-  $path = Join-Path $machineTemp "propr-desktop-smoke-$([Guid]::NewGuid().ToString('N'))"
+function New-SmokeUserDataDirectory(
+  [Security.Principal.SecurityIdentifier]$UserSid,
+  [string]$Path
+) {
+  $path = [IO.Path]::GetFullPath($Path)
+  if ((Split-Path -Leaf $path) -notmatch '^propr-desktop-smoke-[a-f0-9]{32}$' -or
+      ![string]::Equals(
+        (Split-Path -Parent $path), $machineTemp, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'smoke user-data directory path is invalid'
+  }
   $createdByRun = $false
   try {
     if (Test-Path -LiteralPath $path) {
@@ -879,6 +958,26 @@ try {
   Write-Stage 'INSTALL' 'BEGIN'
   try {
     $installAttempted = $true
+    $ownershipState.InstallAttempted = $true
+    # The clean baseline plus the durable install-attempt transition owns any
+    # canonical product resource that appears before MSI returns or hangs.
+    $ownershipState.Directories = @(
+      [ordered]@{
+        Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true; Token = $null
+      },
+      [ordered]@{
+        Kind = 'SHORTCUT_FOLDER'; Path = $startMenuShortcutFolder
+        Owned = $true; Token = $null
+      }
+    )
+    $ownershipState.Files = @([ordered]@{
+      Kind = 'SHORTCUT_FILE'; Path = $startMenuShortcut; Owned = $true; Token = $null
+    })
+    $ownershipState.RegistryKeys = @([ordered]@{
+      Kind = 'PROTOCOL'; Path = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
+      Owned = $true; Token = $null
+    })
+    Write-OwnershipManifest
     try {
       Invoke-BoundedExternalOperation `
         -Stage 'INSTALL' `
@@ -903,6 +1002,31 @@ try {
           $script:startMenuShortcutFolderCreatedByRun =
             !$startMenuShortcutFolderExistedBeforeInstall -and
               (Test-Path -LiteralPath $startMenuShortcutFolder)
+          $ownedDirectories = @()
+          if ($script:installRootCreatedByRun) {
+            $ownedDirectories += [ordered]@{
+              Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true; Token = $null
+            }
+          }
+          if ($script:startMenuShortcutFolderCreatedByRun) {
+            $ownedDirectories += [ordered]@{
+              Kind = 'SHORTCUT_FOLDER'; Path = $startMenuShortcutFolder
+              Owned = $true; Token = $null
+            }
+          }
+          $ownershipState.Directories = $ownedDirectories
+          $ownershipState.Files = if ($script:startMenuShortcutCreatedByRun) {
+            @([ordered]@{
+              Kind = 'SHORTCUT_FILE'; Path = $startMenuShortcut; Owned = $true; Token = $null
+            })
+          } else { @() }
+          $ownershipState.RegistryKeys = if ($script:protocolCreatedByRun) {
+            @([ordered]@{
+              Kind = 'PROTOCOL'; Path = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
+              Owned = $true; Token = $null
+            })
+          } else { @() }
+          Write-OwnershipManifest
         }
     }
     Write-Stage 'INSTALL' 'COMPLETE'
@@ -973,17 +1097,46 @@ try {
         if (Get-LocalUser -Name $testUser -ErrorAction SilentlyContinue) {
           throw 'refusing to replace a pre-existing local user'
         }
+        $provisionalUser = [ordered]@{
+          Name = $testUser
+          Sid = $null
+          Owned = $true
+          Provisional = $true
+        }
+        $ownershipState.Users = @($provisionalUser)
+        Write-OwnershipManifest
         New-LocalUser -Name $testUser -Password $password `
           -AccountNeverExpires -PasswordNeverExpires | Out-Null
         $script:testUserCreatedByRun = $true
+        $script:testUserSid = (Get-LocalUser -Name $testUser -ErrorAction Stop).SID
+        $provisionalUser.Sid = $script:testUserSid.Value
+        $provisionalUser.Provisional = $false
+        Write-OwnershipManifest
       }
     $testUserSid = Invoke-BoundedExternalOperation 'USER_SETUP' 'USER_SID' `
       $externalOperationTimeoutMilliseconds {
-        (Get-LocalUser -Name $testUser -ErrorAction Stop).SID
+        $script:testUserSid
       }
+    $smokeUserDataCandidate = Join-Path `
+      $machineTemp "propr-desktop-smoke-$([Guid]::NewGuid().ToString('N'))"
+    if (Test-Path -LiteralPath $smokeUserDataCandidate) {
+      throw 'refusing to replace a pre-existing smoke user-data directory'
+    }
+    $smokeOwnershipRecord = [ordered]@{
+      Kind = 'SMOKE_DATA'; Path = $smokeUserDataCandidate
+      Owned = $true; Token = $ownershipToken; Provisional = $true
+    }
+    $ownershipState.Directories = @($ownershipState.Directories) + @($smokeOwnershipRecord)
+    Write-OwnershipManifest
     $smokeUserDataDirectory = Invoke-BoundedExternalOperation `
       'USER_SETUP' 'SMOKE_DATA_CREATE' $recursiveOperationTimeoutMilliseconds {
-        New-SmokeUserDataDirectory $testUserSid
+        $ownedSmokeDirectory = New-SmokeUserDataDirectory $testUserSid $smokeUserDataCandidate
+        Write-DurableOwnershipToken `
+          -Path (Join-Path $ownedSmokeDirectory '.propr-installed-app-owner') `
+          -Token $ownershipToken
+        $smokeOwnershipRecord.Provisional = $false
+        Write-OwnershipManifest
+        $ownedSmokeDirectory
       }
     Invoke-BoundedExternalOperation `
       'USER_SETUP' 'SHORTCUT_PRESENT_PROBE' $externalOperationTimeoutMilliseconds {

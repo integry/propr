@@ -46,6 +46,10 @@ const installedWindowsAppSupervisor = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/run-installed-windows-app-harness.ps1', import.meta.url)),
   'utf8',
 ));
+const installedWindowsAppCleanup = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/cleanup-installed-windows-app.ps1', import.meta.url)),
+  'utf8',
+));
 const installedWindowsAppSupervisorBehaviorTest = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/test-installed-windows-app-supervisor.ps1', import.meta.url)),
   'utf8',
@@ -576,7 +580,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.doesNotMatch(
       installedWindowsAppSupervisorBehaviorTest,
-      /CreateProfile|DeleteProfile|Remove-CimInstance|userenv\.dll/,
+      /CreateProfile|DeleteProfile|userenv\.dll/,
     );
     assert.match(installedWindowsAppSupervisorFixture, /Start-FixtureDescendant/);
 
@@ -595,11 +599,19 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisor, /\[ProPRBoundedMarkerReader\]::ReadAsync\(\$Path\)/);
     assert.match(installedWindowsAppSupervisor, /\$readTask\.Wait\(\$TimeoutMilliseconds\)/);
     assert.match(installedWindowsAppSupervisor, /\$job\.Terminate\(\$TerminationExitCode\)/);
+    assert.match(installedWindowsAppSupervisor, /Invoke-PostTerminationCleanup/);
+    assert.match(
+      installedWindowsAppSupervisor,
+      /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE/,
+    );
+    assert.match(installedWindowsAppCleanup, /Remove-OwnedProfiles/);
+    assert.match(installedWindowsAppCleanup, /Remove-OwnedRegistryKey/);
+    assert.match(installedWindowsAppCleanup, /Remove-OwnedDirectory/);
     assert.match(installedWindowsAppSupervisor, /exit \$exitCode/);
     assert.match(installedWindowsAppSupervisor, /if \(\$null -ne \$job\) \{ \$job\.Dispose\(\) \}/);
 
     assert.match(installedWindowsAppTest, /\[IO\.FileOptions\]::WriteThrough/);
-    assert.equal(installedWindowsAppTest.match(/\.Flush\(\$true\)/g)?.length, 2);
+    assert.equal(installedWindowsAppTest.match(/\.Flush\(\$true\)/g)?.length, 4);
     assert.match(
       installedWindowsAppTest,
       /\$record = '\{0\}\|\{1\}\|\{2\}\|\{3\}' -f \$deadline, \$Stage, \$Substage, \$Status/,

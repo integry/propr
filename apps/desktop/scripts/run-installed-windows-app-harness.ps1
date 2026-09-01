@@ -5,8 +5,10 @@ param(
   [ValidateRange(1,60000)][int]$BootstrapTimeoutMilliseconds = 60 * 1000,
   [ValidateRange(1,10000)][int]$WatchdogPollMilliseconds = 250,
   [ValidateRange(1,30000)][int]$WatchdogTerminationMilliseconds = 30 * 1000,
+  [ValidateRange(1000,600000)][int]$PostTerminationCleanupMilliseconds = 4 * 60 * 1000,
   [ValidateRange(1,5000)][int]$MarkerReadTimeoutMilliseconds = 250,
-  [string]$CancellationEventName
+  [string]$CancellationEventName,
+  [string]$FixtureCleanupRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,8 +50,11 @@ $watchdogSubstages = @(
 )
 $markerName = "propr-installed-app-watchdog-$([Guid]::NewGuid().ToString('N')).marker"
 $markerPath = Join-Path ([IO.Path]::GetTempPath()) $markerName
+$ownershipManifestName = "propr-installed-app-ownership-$([Guid]::NewGuid().ToString('N')).json"
+$ownershipManifestPath = Join-Path ([IO.Path]::GetTempPath()) $ownershipManifestName
 $ownershipReadyEventName = "Local\ProPRInstalledApp-$([Guid]::NewGuid().ToString('N'))"
 $productionWorkerPath = Join-Path $PSScriptRoot 'test-installed-windows-app.ps1'
+$cleanupWorkerPath = Join-Path $PSScriptRoot 'cleanup-installed-windows-app.ps1'
 $worker = $null
 $job = $null
 $ownershipReadyEvent = $null
@@ -313,10 +318,122 @@ function Stop-OwnedWorker([uint32]$TerminationExitCode) {
   }
 }
 
+function Write-InitialOwnershipManifest(
+  [string]$Path,
+  [string]$InstallerPath,
+  [bool]$Fixture,
+  [string]$AuthorizedFixtureRoot
+) {
+  $runId = [IO.Path]::GetFileNameWithoutExtension($Path).Substring(
+    'propr-installed-app-ownership-'.Length)
+  $manifest = [ordered]@{
+    SchemaVersion = 1
+    RunId = $runId
+    InstallerPath = $InstallerPath
+    Fixture = $Fixture
+    FixtureRoot = if ($Fixture) { $AuthorizedFixtureRoot } else { $null }
+    BaselineClean = $false
+    InstallAttempted = $false
+    Directories = @()
+    Files = @()
+    RegistryKeys = @()
+    Users = @()
+    Profiles = @()
+  }
+  $bytes = [Text.Encoding]::UTF8.GetBytes(($manifest | ConvertTo-Json -Depth 6 -Compress))
+  $stream = [IO.FileStream]::new(
+    $Path,
+    [IO.FileMode]::CreateNew,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::Read,
+    4096,
+    [IO.FileOptions]::WriteThrough
+  )
+  try {
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    $stream.Dispose()
+  }
+}
+
+function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$AuthorizedFixtureRoot) {
+  $cleanupJob = $null
+  $cleanupProcess = $null
+  $cleanupReadyEvent = $null
+  try {
+    $cleanupReadyEventName = "Local\ProPRInstalledAppCleanup-$([Guid]::NewGuid().ToString('N'))"
+    $cleanupReadyEvent = [Threading.EventWaitHandle]::new(
+      $false,
+      [Threading.EventResetMode]::ManualReset,
+      $cleanupReadyEventName
+    )
+    $cleanupStartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $cleanupStartInfo.FileName = $hostPath
+    $cleanupStartInfo.UseShellExecute = $false
+    $cleanupStartInfo.CreateNoWindow = $true
+    foreach ($argument in @(
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-File', $cleanupWorkerPath,
+      '-OwnershipManifest', $ownershipManifestPath,
+      '-Installer', $InstallerPath,
+      '-OwnershipReadyEvent', $cleanupReadyEventName
+    )) {
+      $cleanupStartInfo.ArgumentList.Add($argument)
+    }
+    if ($AuthorizedFixtureRoot) {
+      $cleanupStartInfo.ArgumentList.Add('-FixtureRoot')
+      $cleanupStartInfo.ArgumentList.Add($AuthorizedFixtureRoot)
+    }
+
+    $cleanupJob = [ProPRKillOnCloseJob]::new()
+    $cleanupProcess = [Diagnostics.Process]::new()
+    $cleanupProcess.StartInfo = $cleanupStartInfo
+    if (!$cleanupProcess.Start()) { throw 'post-termination cleanup did not start' }
+    try {
+      $cleanupJob.AddProcess($cleanupProcess.Handle)
+      [void]$cleanupReadyEvent.Set()
+    } catch {
+      try { $cleanupProcess.Kill($true) } catch {}
+      throw 'post-termination cleanup ownership failed'
+    }
+    if (!$cleanupProcess.WaitForExit($PostTerminationCleanupMilliseconds)) {
+      try { $cleanupJob.Terminate(125) } catch {}
+      try { [void]$cleanupProcess.WaitForExit($WatchdogTerminationMilliseconds) } catch {}
+      Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:TIMED_OUT'
+      return $false
+    }
+    if ($cleanupProcess.ExitCode -ne 0) {
+      Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
+      return $false
+    }
+    Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE'
+    return $true
+  } catch {
+    Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
+    return $false
+  } finally {
+    if ($null -ne $cleanupJob) { $cleanupJob.Dispose() }
+    if ($null -ne $cleanupProcess) { $cleanupProcess.Dispose() }
+    if ($null -ne $cleanupReadyEvent) { $cleanupReadyEvent.Dispose() }
+  }
+}
+
 try {
   $installerPath = (Resolve-Path -LiteralPath $Installer -ErrorAction Stop).Path
   $selectedWorkerPath = if ($WorkerPath) { $WorkerPath } else { $productionWorkerPath }
   $selectedWorkerPath = (Resolve-Path -LiteralPath $selectedWorkerPath -ErrorAction Stop).Path
+  $cleanupWorkerPath = (Resolve-Path -LiteralPath $cleanupWorkerPath -ErrorAction Stop).Path
+  $usingProductionWorker = [string]::Equals(
+    $selectedWorkerPath, $productionWorkerPath, [StringComparison]::OrdinalIgnoreCase)
+  if ($FixtureCleanupRoot) {
+    if ($usingProductionWorker) { throw 'production worker cannot use a fixture cleanup scope' }
+    $FixtureCleanupRoot = (Resolve-Path -LiteralPath $FixtureCleanupRoot -ErrorAction Stop).Path
+  } elseif (!$usingProductionWorker) {
+    throw 'injected workers require a fixture cleanup scope'
+  }
   $hostPath = (Get-Process -Id $PID -ErrorAction Stop).Path
   if ([IO.Path]::GetFileName($hostPath) -notin @('pwsh.exe', 'powershell.exe')) {
     throw 'PowerShell host resolution failed'
@@ -327,6 +444,8 @@ try {
     }
     $cancellationEvent = [Threading.EventWaitHandle]::OpenExisting($CancellationEventName)
   }
+  Write-InitialOwnershipManifest `
+    $ownershipManifestPath $installerPath (!$usingProductionWorker) $FixtureCleanupRoot
 
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
@@ -344,7 +463,8 @@ try {
     '-Installer', $installerPath,
     '-Architecture', $Architecture,
     '-WatchdogMarker', $markerPath,
-    '-OwnershipReadyEvent', $ownershipReadyEventName
+    '-OwnershipReadyEvent', $ownershipReadyEventName,
+    '-OwnershipManifest', $ownershipManifestPath
   )) {
     $startInfo.ArgumentList.Add($argument)
   }
@@ -449,7 +569,10 @@ try {
   $exitCode = 125
   $terminateOwnedTree = $true
 } finally {
-  if ($terminateOwnedTree) { Stop-OwnedWorker ([uint32]$exitCode) }
+  if ($terminateOwnedTree) {
+    Stop-OwnedWorker ([uint32]$exitCode)
+    if (!(Invoke-PostTerminationCleanup $installerPath $FixtureCleanupRoot)) { $exitCode = 125 }
+  }
 
   try {
     $finalMarker = Read-WatchdogMarker $markerPath $MarkerReadTimeoutMilliseconds
@@ -472,6 +595,9 @@ try {
   try {
     if ([IO.File]::Exists($markerPath)) { [IO.File]::Delete($markerPath) }
   } catch {}
+  foreach ($path in @($ownershipManifestPath, "$ownershipManifestPath.new")) {
+    try { if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } } catch {}
+  }
 }
 
 exit $exitCode

@@ -10,6 +10,15 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) `
   "propr-supervisor-tests-$([Guid]::NewGuid().ToString('N'))"
 $dummyInstaller = Join-Path $testRoot 'fixture.msi'
 $secretNeedle = 'C:\Users\fixture-user\token=fixture-credential'
+$ownedFixtureUserName = "prpr$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+$ownedFixturePassword = "P!$([Guid]::NewGuid().ToString('N'))x7"
+$conflictingFixtureUserName = $null
+$conflictingFixtureUserSid = $null
+$conflictingFixtureProfileSid = $null
+$conflictingFixtureProfilePath = $null
+$conflictingFixtureDirectories = $null
+$conflictingFixtureShortcut = $null
+$conflictingFixtureRegistryPath = $null
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (!$Condition) { throw $Message }
@@ -50,6 +59,7 @@ function New-SupervisorStartInfo(
     '-BootstrapTimeoutMilliseconds', $(if ($UseProductionWorker) { '10000' } else { '2000' }),
     '-WatchdogPollMilliseconds', '25',
     '-WatchdogTerminationMilliseconds', '3000',
+    '-PostTerminationCleanupMilliseconds', '30000',
     '-MarkerReadTimeoutMilliseconds', '200'
   )) {
     $startInfo.ArgumentList.Add([string]$argument)
@@ -57,9 +67,29 @@ function New-SupervisorStartInfo(
   if (!$UseProductionWorker) {
     $startInfo.ArgumentList.Add('-WorkerPath')
     $startInfo.ArgumentList.Add($fixtureWorkerPath)
+    $startInfo.ArgumentList.Add('-FixtureCleanupRoot')
+    $startInfo.ArgumentList.Add($StateDirectory)
     $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_SCENARIO'] = $Scenario
     $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_STATE_DIRECTORY'] = $StateDirectory
     $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_SECRET'] = $secretNeedle
+    $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_OWNED_USER'] = $ownedFixtureUserName
+    $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_OWNED_PASSWORD'] = $ownedFixturePassword
+    if ($conflictingFixtureUserName) {
+      $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_CONFLICT_USER'] =
+        $conflictingFixtureUserName
+      $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_CONFLICT_USER_SID'] =
+        $conflictingFixtureUserSid
+      $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_CONFLICT_PROFILE_SID'] =
+        $conflictingFixtureProfileSid
+      $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_CONFLICT_PROFILE_PATH'] =
+        $conflictingFixtureProfilePath
+      $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_CONFLICT_DIRECTORIES'] =
+        $conflictingFixtureDirectories
+      $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_CONFLICT_SHORTCUT'] =
+        $conflictingFixtureShortcut
+      $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_CONFLICT_REGISTRY'] =
+        $conflictingFixtureRegistryPath
+    }
   }
   if ($CancellationEventName) {
     $startInfo.ArgumentList.Add('-CancellationEventName')
@@ -80,6 +110,13 @@ function Read-FixtureProcessState([string]$StateDirectory) {
   return Get-Content -LiteralPath $statePath -Raw -Encoding ASCII | ConvertFrom-Json
 }
 
+function Read-FixtureResourceState([string]$StateDirectory) {
+  $statePath = Join-Path $StateDirectory 'resources.json'
+  Assert-True (Test-Path -LiteralPath $statePath -PathType Leaf) `
+    'fixture did not publish owned resource state'
+  return Get-Content -LiteralPath $statePath -Raw -Encoding ASCII | ConvertFrom-Json
+}
+
 function Assert-ProcessTreeGone($State) {
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   do {
@@ -91,14 +128,19 @@ function Assert-ProcessTreeGone($State) {
   throw 'owned worker process tree survived supervisor completion'
 }
 
-function Invoke-FixtureScenario([string]$Scenario) {
-  $stateDirectory = New-StateDirectory $Scenario.ToLowerInvariant()
+function Invoke-FixtureScenario([string]$Scenario, [string]$ExistingStateDirectory = '') {
+  $stateDirectory = if ($ExistingStateDirectory) {
+    $ExistingStateDirectory
+  } else {
+    New-StateDirectory $Scenario.ToLowerInvariant()
+  }
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = New-SupervisorStartInfo $Scenario $stateDirectory '' $false
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   if (!$process.Start()) { throw 'supervisor test process did not start' }
   try {
-    if (!$process.WaitForExit(10000)) {
+    $completionBound = if ($Scenario -eq 'OWNED_RESOURCES_THEN_DEADLINE') { 90000 } else { 10000 }
+    if (!$process.WaitForExit($completionBound)) {
       try { $process.Kill($true) } catch {}
       throw 'supervisor exceeded the executable test completion bound'
     }
@@ -112,6 +154,7 @@ function Invoke-FixtureScenario([string]$Scenario) {
       ElapsedMilliseconds = $stopwatch.ElapsedMilliseconds
       Output = $standardOutput
       Error = $standardError
+      StateDirectory = $stateDirectory
     }
   } finally {
     $process.Dispose()
@@ -320,22 +363,17 @@ function Assert-RunnerProfileUnchanged($Before) {
 
 function Test-PreExistingCleanupOwnership {
   $runnerProfileBefore = Get-RunnerProfileSnapshot
-  $installRoot = Join-Path $env:ProgramFiles 'ProPR Desktop'
-  $protocolRoot = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
-  $commonPrograms = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)
-  $shortcutFolder = Join-Path $commonPrograms 'ProPR Desktop'
-  $shortcut = Join-Path $shortcutFolder 'ProPR Desktop.lnk'
-  foreach ($path in @($installRoot, $protocolRoot, $shortcutFolder)) {
-    Assert-True (!(Test-Path -LiteralPath $path)) `
-      'ownership behavior test requires the same clean baseline as the installed-app harness'
-  }
-
+  $stateDirectory = New-StateDirectory 'ownership'
+  $conflictRoot = Join-Path $stateDirectory 'pre-existing'
+  $conflictInstallRoot = Join-Path $conflictRoot 'install-tree'
+  $conflictShortcutFolder = Join-Path $conflictRoot 'shortcut-folder'
+  $conflictShortcut = Join-Path $conflictShortcutFolder 'ProPR Desktop.lnk'
+  $conflictSmokeDirectory = Join-Path $conflictRoot 'smoke-data'
+  $conflictRegistryPath = "Registry::HKEY_LOCAL_MACHINE\Software\ProPRSupervisorFixture\conflict-$([Guid]::NewGuid().ToString('N'))"
   $userName = "prpr$([Guid]::NewGuid().ToString('N').Substring(0,8))"
   $password = ConvertTo-SecureString "P!$([Guid]::NewGuid().ToString('N'))z9" -AsPlainText -Force
   $userCreated = $false
-  $installCreated = $false
-  $protocolCreated = $false
-  $shortcutCreated = $false
+  $registryCreated = $false
   $userSid = $null
   try {
     Assert-True ($null -eq (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue)) `
@@ -353,54 +391,75 @@ function Test-PreExistingCleanupOwnership {
     Assert-True ($fixtureUserProfiles.Count -eq 0) `
       'pre-existing local user fixture unexpectedly acquired a profile'
 
-    [void](New-Item -ItemType Directory -Path $installRoot -ErrorAction Stop)
-    $installCreated = $true
-    Set-Content -LiteralPath (Join-Path $installRoot 'pre-existing.txt') -Value 'owned-before-run'
-    [void](New-Item -Path $protocolRoot -Force -ErrorAction Stop)
-    $protocolCreated = $true
-    Set-ItemProperty -LiteralPath $protocolRoot -Name 'PreExisting' -Value 'owned-before-run'
-    [void](New-Item -ItemType Directory -Path $shortcutFolder -ErrorAction Stop)
-    $shortcutCreated = $true
-    Set-Content -LiteralPath $shortcut -Value 'owned-before-run'
+    foreach ($directory in @(
+      $conflictInstallRoot, $conflictShortcutFolder, $conflictSmokeDirectory
+    )) {
+      [void](New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop)
+      Set-Content -LiteralPath (Join-Path $directory 'pre-existing.txt') -Value 'owned-before-run'
+    }
+    Set-Content -LiteralPath $conflictShortcut -Value 'owned-before-run'
+    [void](New-Item -Path $conflictRegistryPath -Force -ErrorAction Stop)
+    $registryCreated = $true
+    Set-ItemProperty -LiteralPath $conflictRegistryPath -Name 'PreExisting' -Value 'owned-before-run'
 
-    $stateDirectory = New-StateDirectory 'ownership'
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = New-SupervisorStartInfo '' $stateDirectory '' $true
-    if (!$process.Start()) { throw 'production ownership probe did not start' }
-    try {
-      Assert-True ($process.WaitForExit(20000)) 'production ownership probe did not complete within the bound'
-      $output = $process.StandardOutput.ReadToEnd()
-      $standardError = $process.StandardError.ReadToEnd()
-      Assert-True ($process.ExitCode -ne 0) 'production worker accepted a pre-existing resource baseline'
-      Assert-Contains $output `
-        'PROPR_WINDOWS_INSTALLED_SMOKE:OPERATION:INITIALIZATION:BASELINE:FAILED' `
-        'production worker did not execute its pre-existing-resource rejection path'
-      Assert-NotContains $output `
-        'PROPR_WINDOWS_INSTALLED_SMOKE:OPERATION:CLEANUP:PROFILE_LOOKUP:BEGIN' `
-        'production worker selected a pre-existing profile for lookup'
-      Assert-NotContains $output `
-        'PROPR_WINDOWS_INSTALLED_SMOKE:OPERATION:CLEANUP:PROFILE_REMOVE:BEGIN' `
-        'production worker selected a pre-existing profile for deletion'
-      $redactedEvidence = "$output`n$standardError"
-      Assert-NotContains $redactedEvidence $runnerProfileBefore.IdentitySid `
-        'ownership evidence exposed the runner identity SID'
-      Assert-NotContains $redactedEvidence $runnerProfileBefore.CanonicalLocalPath `
-        'ownership evidence exposed the runner profile path'
-      Assert-NotContains $redactedEvidence $userName `
-        'ownership evidence exposed the fixture local-user name'
-      Assert-NotContains $redactedEvidence $userSid.Value `
-        'ownership evidence exposed the fixture local-user SID'
-    } finally {
-      if (!$process.HasExited) { try { $process.Kill($true) } catch {} }
-      $process.Dispose()
+    $script:conflictingFixtureUserName = $userName
+    $script:conflictingFixtureUserSid = $userSid.Value
+    $script:conflictingFixtureProfileSid = $runnerProfileBefore.ProfileSid
+    $script:conflictingFixtureProfilePath = $runnerProfileBefore.CanonicalLocalPath
+    $script:conflictingFixtureDirectories = @(
+      $conflictInstallRoot, $conflictShortcutFolder, $conflictSmokeDirectory
+    ) -join '|'
+    $script:conflictingFixtureShortcut = $conflictShortcut
+    $script:conflictingFixtureRegistryPath = $conflictRegistryPath
+
+    $result = Invoke-FixtureScenario 'OWNED_RESOURCES_THEN_DEADLINE' $stateDirectory
+    Assert-True ($result.ExitCode -eq 124) 'owned-resource timeout did not preserve watchdog status'
+    Assert-Contains $result.Output `
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:CLEANUP:SMOKE_DATA_REMOVE:BEGIN:TIMED_OUT' `
+      'owned-resource fixture did not reach the forced timeout boundary'
+    Assert-Contains $result.Output `
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+      'forced timeout did not execute bounded post-termination cleanup'
+    $redactedEvidence = "$($result.Output)`n$($result.Error)"
+    foreach ($forbidden in @(
+      $runnerProfileBefore.IdentitySid,
+      $runnerProfileBefore.CanonicalLocalPath,
+      $userName,
+      $userSid.Value,
+      $ownedFixtureUserName,
+      $ownedFixturePassword
+    )) {
+      Assert-NotContains $redactedEvidence $forbidden `
+        'ownership cleanup evidence exposed an identity or credential'
     }
 
-    Assert-True ((Get-Content -LiteralPath (Join-Path $installRoot 'pre-existing.txt') -Raw).Trim() -ceq `
+    $owned = Read-FixtureResourceState $stateDirectory
+    foreach ($ownedPath in @(
+      $owned.OwnedRoot, $owned.InstallRoot, $owned.ShortcutFolder,
+      $owned.Shortcut, $owned.SmokeDirectory
+    )) {
+      Assert-True (!(Test-Path -LiteralPath $ownedPath)) `
+        'post-termination cleanup left a run-owned file-system resource behind'
+    }
+    Assert-True (!(Test-Path -LiteralPath $owned.RegistryPath)) `
+      'post-termination cleanup left a run-owned registry resource behind'
+    Assert-True (!(Test-Path -LiteralPath $owned.RegistryRoot)) `
+      'post-termination cleanup left the run-owned registry root behind'
+    Assert-True ($null -eq (Get-LocalUser -Name $owned.UserName -ErrorAction SilentlyContinue)) `
+      'post-termination cleanup left the run-owned local user behind'
+    $ownedProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+      Where-Object { $_.SID -ceq $owned.UserSid })
+    Assert-True ($ownedProfiles.Count -eq 0) `
+      'post-termination cleanup left the run-owned profile behind'
+
+    Assert-True ((Get-Content -LiteralPath (Join-Path $conflictInstallRoot 'pre-existing.txt') -Raw).Trim() -ceq `
       'owned-before-run') 'pre-existing install tree was removed or changed'
-    Assert-True ((Get-ItemPropertyValue -LiteralPath $protocolRoot -Name 'PreExisting') -ceq `
+    Assert-True ((Get-ItemPropertyValue -LiteralPath $conflictRegistryPath -Name 'PreExisting') -ceq `
       'owned-before-run') 'pre-existing registry tree was removed or changed'
-    Assert-True ((Get-Content -LiteralPath $shortcut -Raw).Trim() -ceq `
+    Assert-True ((Get-Content -LiteralPath $conflictShortcut -Raw).Trim() -ceq `
       'owned-before-run') 'pre-existing shortcut was removed or changed'
+    Assert-True ((Get-Content -LiteralPath (Join-Path $conflictSmokeDirectory 'pre-existing.txt') -Raw).Trim() -ceq `
+      'owned-before-run') 'pre-existing smoke data was removed or changed'
     $remainingUser = Get-LocalUser -Name $userName -ErrorAction Stop
     Assert-True ($remainingUser.SID.Equals($userSid)) 'pre-existing local user was removed or replaced'
     $fixtureUserProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
@@ -408,14 +467,20 @@ function Test-PreExistingCleanupOwnership {
     Assert-True ($fixtureUserProfiles.Count -eq 0) `
       'pre-existing local user fixture unexpectedly acquired a profile'
   } finally {
-    if ($shortcutCreated -and (Test-Path -LiteralPath $shortcutFolder)) {
-      Remove-Item -LiteralPath $shortcutFolder -Recurse -Force -ErrorAction SilentlyContinue
+    $script:conflictingFixtureUserName = $null
+    $script:conflictingFixtureUserSid = $null
+    $script:conflictingFixtureProfileSid = $null
+    $script:conflictingFixtureProfilePath = $null
+    $script:conflictingFixtureDirectories = $null
+    $script:conflictingFixtureShortcut = $null
+    $script:conflictingFixtureRegistryPath = $null
+    if ($registryCreated -and (Test-Path -LiteralPath $conflictRegistryPath)) {
+      Remove-Item -LiteralPath $conflictRegistryPath -Recurse -Force -ErrorAction SilentlyContinue
     }
-    if ($protocolCreated -and (Test-Path -LiteralPath $protocolRoot)) {
-      Remove-Item -LiteralPath $protocolRoot -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    if ($installCreated -and (Test-Path -LiteralPath $installRoot)) {
-      Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+    $fixtureRegistryRoot = 'Registry::HKEY_LOCAL_MACHINE\Software\ProPRSupervisorFixture'
+    if ((Test-Path -LiteralPath $fixtureRegistryRoot) -and
+        @(Get-ChildItem -LiteralPath $fixtureRegistryRoot -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+      Remove-Item -LiteralPath $fixtureRegistryRoot -Force -ErrorAction SilentlyContinue
     }
     if ($userCreated) {
       $ownedUser = Get-LocalUser -Name $userName -ErrorAction SilentlyContinue
@@ -426,6 +491,15 @@ function Test-PreExistingCleanupOwnership {
         Assert-True ($null -eq (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue)) `
           'ownership local-user fixture cleanup failed'
       }
+    }
+    $ownedUser = Get-LocalUser -Name $ownedFixtureUserName -ErrorAction SilentlyContinue
+    if ($null -ne $ownedUser) {
+      $ownedProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue |
+        Where-Object { $_.SID -ceq $ownedUser.SID.Value })
+      foreach ($profile in $ownedProfiles) {
+        Remove-CimInstance -InputObject $profile -ErrorAction SilentlyContinue
+      }
+      Remove-LocalUser -Name $ownedFixtureUserName -ErrorAction SilentlyContinue
     }
     Assert-RunnerProfileUnchanged $runnerProfileBefore
   }
