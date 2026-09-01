@@ -86,6 +86,7 @@ if ($scenario -notin @(
     'OWNED_EXECUTABLE_REPLACED_THEN_DEADLINE',
     'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE',
     'OWNED_SHORTCUT_REPLACED_THEN_DEADLINE',
+    'OWNED_PROFILE_PATH_MISMATCH_THEN_DEADLINE',
     'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
     'OWNED_RESOURCES_THEN_DEADLINE'
   )) {
@@ -440,6 +441,16 @@ function New-OwnedFixtureResources(
     Start-Sleep -Milliseconds 250
   } while ($profileLookupStopwatch.ElapsedMilliseconds -lt 10000)
   if ($profiles.Count -ne 1) { throw 'fixture owned profile was not created' }
+  $canonicalProfilePath = (Resolve-Path -LiteralPath ([string]$profiles[0].LocalPath) `
+    -ErrorAction Stop).ProviderPath.TrimEnd('\')
+  $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
+    ConvertFrom-Json -ErrorAction Stop
+  $manifest.Profiles = @($manifest.Profiles) + @([ordered]@{
+    Sid = $userSid
+    LocalPath = $canonicalProfilePath
+    Owned = $true
+  })
+  Write-FixtureOwnershipManifest $manifest
   $resourceState = [ordered]@{
     OwnedRoot = $ownedRoot
     InstallRoot = $installRoot
@@ -451,7 +462,7 @@ function New-OwnedFixtureResources(
     RegistryRoot = Split-Path -Parent $registryPath
     UserName = $userName
     UserSid = $userSid
-    ProfilePath = [string]$profiles[0].LocalPath
+    ProfilePath = $canonicalProfilePath
     ManifestPath = $OwnershipManifest
     RunId = [string]$manifest.RunId
     Token = $token
@@ -640,6 +651,28 @@ function Replace-FixtureShortcut {
   Move-Item -LiteralPath $state.Shortcut -Destination $backup -ErrorAction Stop
   [IO.File]::WriteAllText($state.Shortcut, 'foreign-shortcut', [Text.Encoding]::ASCII)
   $state | Add-Member -NotePropertyName ShortcutBackup -NotePropertyValue $backup
+  $state | ConvertTo-Json -Compress | Set-Content -LiteralPath `
+    (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
+}
+
+function Replace-FixtureProfilePath {
+  $state = Get-Content -LiteralPath (Join-Path $stateDirectory 'resources.json') `
+    -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
+  $mismatchedPath = Join-Path $stateDirectory 'mismatched-profile-path'
+  [void](New-Item -ItemType Directory -Path $mismatchedPath -ErrorAction Stop)
+  $canonicalMismatch = (Resolve-Path -LiteralPath $mismatchedPath -ErrorAction Stop).ProviderPath
+  $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
+    ConvertFrom-Json -ErrorAction Stop
+  $ownedProfile = @($manifest.Profiles | Where-Object {
+    $_.Owned -and [string]$_.Sid -ceq [string]$state.UserSid
+  })
+  if ($ownedProfile.Count -ne 1) {
+    throw 'fixture durable profile ownership record is missing'
+  }
+  $ownedProfile[0].LocalPath = $canonicalMismatch
+  Write-FixtureOwnershipManifest $manifest
+  $state | Add-Member -NotePropertyName MismatchedProfilePath `
+    -NotePropertyValue $canonicalMismatch
   $state | ConvertTo-Json -Compress | Set-Content -LiteralPath `
     (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
 }
@@ -941,6 +974,14 @@ switch ($scenario) {
     New-OwnedFixtureResources
     Replace-FixtureShortcut
     Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'OWNED_PROFILE_PATH_MISMATCH_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-OwnedFixtureResources
+    Replace-FixtureProfilePath
+    Write-FixtureMarker ('{0}|CLEANUP|PROFILE_REMOVE|BEGIN' -f `
       [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
     Start-Sleep -Seconds 300
   }

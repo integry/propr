@@ -275,6 +275,21 @@ function Write-OwnershipManifest {
   [IO.File]::Move($temporaryManifest, $ownershipManifestPath, $true)
 }
 
+function Resolve-CanonicalProfileLocalPath([string]$LocalPath) {
+  if ([string]::IsNullOrWhiteSpace($LocalPath) -or
+      ![IO.Path]::IsPathRooted($LocalPath)) {
+    throw 'profile local path is invalid'
+  }
+  $fullPath = [IO.Path]::GetFullPath($LocalPath).TrimEnd('\')
+  $resolved = (Resolve-Path -LiteralPath $fullPath -ErrorAction Stop).ProviderPath.TrimEnd('\')
+  $item = Get-Item -LiteralPath $resolved -Force -ErrorAction Stop
+  if (!$item.PSIsContainer -or
+      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'profile local path is not a canonical directory'
+  }
+  return [IO.Path]::GetFullPath($resolved).TrimEnd('\')
+}
+
 function Write-DurableOwnershipToken([string]$Path, [string]$Token) {
   $bytes = [Text.Encoding]::ASCII.GetBytes($Token)
   $stream = [IO.FileStream]::new(
@@ -2075,6 +2090,7 @@ try {
   throw
 } finally {
   $cleanupFailed = $false
+  $profileCleanupFailed = $false
   if ($installAttempted -and
       [string]$ownershipState.MsiTransactionState -ceq 'COMMITTED') {
     Write-Stage 'UNINSTALL' 'BEGIN'
@@ -2241,14 +2257,56 @@ try {
       $profiles = @(Invoke-BoundedExternalOperation `
         'CLEANUP' 'PROFILE_LOOKUP' $externalOperationTimeoutMilliseconds {
           @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
-            $_.SID -eq $testUserSid.Value
+            $_.SID -ceq $testUserSid.Value
           })
         })
+      $ownedUserRecords = @($ownershipState.Users | Where-Object {
+        $_.Owned -and [string]$_.Sid -ceq $testUserSid.Value
+      })
+      if ($ownedUserRecords.Count -ne 1) {
+        throw 'durable profile owner identity is missing'
+      }
+      $ownedProfileRecords = @($ownershipState.Profiles | Where-Object {
+        $_.Owned -and [string]$_.Sid -ceq $testUserSid.Value
+      })
+      if ($profiles.Count -ne 0 -and $ownedProfileRecords.Count -eq 0) {
+        $currentOwnedUser = Get-LocalUser -Name $testUser -ErrorAction Stop
+        if ([string]$currentOwnedUser.SID.Value -cne $testUserSid.Value -or
+            [string]$currentOwnedUser.Description -cne
+              [string]$ownedUserRecords[0].OwnershipMarker) {
+          throw 'uncaptured profile lacks authenticated marker and SID authority'
+        }
+        foreach ($profile in $profiles) {
+          if ([string]$profile.SID -cne $testUserSid.Value) {
+            throw 'profile SID changed during ownership promotion'
+          }
+          $ownershipState.Profiles = @($ownershipState.Profiles) + @([ordered]@{
+            Sid = $testUserSid.Value
+            LocalPath = Resolve-CanonicalProfileLocalPath ([string]$profile.LocalPath)
+            Owned = $true
+          })
+        }
+        Write-OwnershipManifest
+        $ownedProfileRecords = @($ownershipState.Profiles | Where-Object {
+          $_.Owned -and [string]$_.Sid -ceq $testUserSid.Value
+        })
+      }
       Invoke-BoundedExternalOperation `
         'CLEANUP' 'PROFILE_REMOVE' $recursiveOperationTimeoutMilliseconds {
           foreach ($profile in $profiles) {
-            if ($profile.SID -ne $testUserSid.Value) {
-              throw 'refusing to remove a profile not owned by the test user'
+            $canonicalLocalPath = Resolve-CanonicalProfileLocalPath `
+              ([string]$profile.LocalPath)
+            $matchingRecords = @($ownedProfileRecords | Where-Object {
+              $_.Owned -and [string]$_.Sid -ceq $testUserSid.Value -and
+                [string]::Equals(
+                  [IO.Path]::GetFullPath([string]$_.LocalPath).TrimEnd('\'),
+                  $canonicalLocalPath,
+                  [StringComparison]::OrdinalIgnoreCase
+                )
+            })
+            if ([string]$profile.SID -cne $testUserSid.Value -or
+                $matchingRecords.Count -ne 1) {
+              throw 'refusing to remove a profile without exact durable SID and path ownership'
             }
             Remove-CimInstance -InputObject $profile -ErrorAction Stop
           }
@@ -2257,11 +2315,15 @@ try {
     Write-CleanupSubstage 'CLEANUP' 'PROFILE' 'COMPLETE'
   } catch {
     Write-CleanupSubstage 'CLEANUP' 'PROFILE' 'FAILED'
+    $profileCleanupFailed = $true
     $cleanupFailed = $true
   }
 
   Write-CleanupSubstage 'CLEANUP' 'USER' 'BEGIN'
   try {
+    if ($profileCleanupFailed) {
+      throw 'profile cleanup failed; retaining authenticated local-user authority'
+    }
     if ($testUserCreatedByRun -and $null -ne $testUserSid) {
       $ownedUser = Invoke-BoundedExternalOperation `
         'CLEANUP' 'USER_LOOKUP' $externalOperationTimeoutMilliseconds {

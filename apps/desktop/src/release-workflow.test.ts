@@ -636,6 +636,15 @@ describe('desktop trusted release workflow', () => {
       /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE/,
     );
     assert.match(installedWindowsAppCleanup, /Remove-OwnedProfiles/);
+    assert.match(installedWindowsAppCleanup, /Promote-UncapturedOwnedProfiles/);
+    assert.match(
+      installedWindowsAppCleanup,
+      /\$matchingRecords = @\(\$ProfileRecords[\s\S]*Test-SamePath[\s\S]*\$matchingRecords\.Count -ne 1[\s\S]*Remove-CimInstance/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /mismatched durable profile path did not fail closed[\s\S]*mismatched profile path discarded ACTIVE recovery authority/,
+    );
     assert.match(installedWindowsAppCleanup, /Remove-OwnedRegistryKey/);
     assert.match(installedWindowsAppCleanup, /Remove-OwnedDirectory/);
     assert.match(installedWindowsAppCleanup, /APP_PATH/);
@@ -728,18 +737,13 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppWorkflowCleanup, /WorkflowCleanupControllerPhase/);
     assert.match(installedWindowsAppWorkflowCleanup, /WorkflowCleanupControllerLine/);
     assert.match(installedWindowsAppWorkflowCleanup, /Set-CaughtControllerFailure/);
-    assert.match(installedWindowsAppWorkflowCleanup, /\[Console\]::SetError\(\[IO\.TextWriter\]::Null\)/);
+    assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /Console\]::SetError|\btrap\b|controllerBody/);
     assert.match(installedWindowsAppWorkflowCleanup, /\[Console\]::Out\.WriteLine/);
     assert.equal(installedWindowsAppWorkflowCleanup.match(/\[Console\]::Out\.WriteLine/g)?.length, 2);
     assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /Write-Host/);
-    assert.ok(
-      installedWindowsAppWorkflowCleanup.indexOf('[Console]::SetError([IO.TextWriter]::Null)')
-        < installedWindowsAppWorkflowCleanup.indexOf("Add-Type -TypeDefinition @'"),
-      'controller raw stderr must be suppressed before cold type loading',
-    );
     assert.match(
       installedWindowsAppWorkflowCleanup,
-      /trap \{[\s\S]*if \(\$script:controllerBodyActive\)[\s\S]*break controllerBody[\s\S]*:controllerBody do \{/,
+      /try \{\nAdd-Type -TypeDefinition @'[\s\S]*\$controllerPhase = 'PROCESS_WAIT'[\s\S]*\} catch \{\n\s+Set-CaughtControllerFailure \$_\n\}/,
     );
     assert.match(installedWindowsAppWorkflowCleanup, /CancelAndFinish/);
     assert.doesNotMatch(
@@ -1010,7 +1014,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppTest,
-      /if \(\$profile\.SID -ne \$testUserSid\.Value\)[\s\S]*Remove-CimInstance -InputObject \$profile/,
+      /\$matchingRecords = @\(\$ownedProfileRecords[\s\S]*\$matchingRecords\.Count -ne 1[\s\S]*Remove-CimInstance -InputObject \$profile/,
     );
     assert.match(
       installedWindowsAppTest,

@@ -140,6 +140,21 @@ function Test-SamePath([string]$Left, [string]$Right) {
   )
 }
 
+function Resolve-CanonicalProfileLocalPath([string]$LocalPath) {
+  if ([string]::IsNullOrWhiteSpace($LocalPath) -or
+      ![IO.Path]::IsPathRooted($LocalPath)) {
+    throw 'profile local path is invalid'
+  }
+  $fullPath = [IO.Path]::GetFullPath($LocalPath).TrimEnd('\')
+  $resolved = (Resolve-Path -LiteralPath $fullPath -ErrorAction Stop).ProviderPath.TrimEnd('\')
+  $item = Get-Item -LiteralPath $resolved -Force -ErrorAction Stop
+  if (!$item.PSIsContainer -or
+      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'profile local path is not a canonical directory'
+  }
+  return [IO.Path]::GetFullPath($resolved).TrimEnd('\')
+}
+
 function Test-PathWithin([string]$Path, [string]$Root) {
   $fullPath = [IO.Path]::GetFullPath($Path)
   $fullRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\')
@@ -969,7 +984,58 @@ function Resolve-ProvisionalOwnedUser($Record) {
   return $true
 }
 
-function Remove-OwnedProfiles($UserRecord) {
+function Promote-UncapturedOwnedProfiles($UserRecord, $Manifest) {
+  if (!$UserRecord.Owned) { return $false }
+  $name = [string]$UserRecord.Name
+  $sid = [string]$UserRecord.Sid
+  $ownershipMarker = [string]$UserRecord.OwnershipMarker
+  if ($sid -notmatch '^S-\d+(?:-\d+)+$' -and $UserRecord.Provisional) {
+    return $false
+  }
+  if ($name -notmatch '^(?:propr-ci-|prpr)[a-f0-9]{8}$' -or
+      $sid -notmatch '^S-\d+(?:-\d+)+$' -or
+      $ownershipMarker -notmatch '^prpr-own-[a-f0-9]{32}$') {
+    throw 'profile promotion identity is invalid'
+  }
+  $durableProfiles = @($Manifest.Profiles | Where-Object {
+    $_.Owned -and [string]$_.Sid -ceq $sid
+  })
+  if ($durableProfiles.Count -ne 0) { return $false }
+
+  $profiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+    Where-Object { $_.SID -ceq $sid })
+  if ($profiles.Count -eq 0) { return $false }
+
+  # An absent profile record can be promoted only while the exact run-created
+  # account still authenticates both the marker and SID. A durable path record
+  # is published by the caller before any profile deletion is attempted.
+  $user = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
+  if ($null -eq $user -or [string]$user.Description -cne $ownershipMarker -or
+      [string]$user.SID.Value -cne $sid) {
+    throw 'uncaptured profile lacks authenticated marker and SID authority'
+  }
+  $promoted = @()
+  foreach ($profile in $profiles) {
+    if ([string]$profile.SID -cne $sid) {
+      throw 'profile SID changed during ownership promotion'
+    }
+    $canonicalLocalPath = Resolve-CanonicalProfileLocalPath ([string]$profile.LocalPath)
+    if (@($promoted | Where-Object {
+        Test-SamePath ([string]$_.LocalPath) $canonicalLocalPath
+      }).Count -ne 0) {
+      throw 'profile ownership promotion is ambiguous'
+    }
+    $promoted += [ordered]@{
+      Sid = $sid
+      LocalPath = $canonicalLocalPath
+      Owned = $true
+    }
+  }
+  $Manifest.Profiles = @($Manifest.Profiles) + @($promoted)
+  return $true
+}
+
+function Remove-OwnedProfiles($UserRecord, $ProfileRecords) {
   if (!$UserRecord.Owned) { return }
   $name = [string]$UserRecord.Name
   if ($name -notmatch '^(?:propr-ci-|prpr)[a-f0-9]{8}$') {
@@ -988,7 +1054,14 @@ function Remove-OwnedProfiles($UserRecord) {
     if ($profiles.Count -eq 0) { return }
     try {
       foreach ($profile in $profiles) {
-        if ($profile.SID -cne $sid) { throw 'profile SID ownership changed' }
+        $canonicalLocalPath = Resolve-CanonicalProfileLocalPath ([string]$profile.LocalPath)
+        $matchingRecords = @($ProfileRecords | Where-Object {
+          $_.Owned -and [string]$_.Sid -ceq $sid -and
+            (Test-SamePath ([string]$_.LocalPath) $canonicalLocalPath)
+        })
+        if ([string]$profile.SID -cne $sid -or $matchingRecords.Count -ne 1) {
+          throw 'profile lacks exact durable SID and path ownership'
+        }
         Remove-CimInstance -InputObject $profile -ErrorAction Stop
       }
     } catch {
@@ -1010,7 +1083,10 @@ function Remove-ExplicitOwnedProfile($Record) {
     $_.SID -ceq $sid
   })
   foreach ($profile in $profiles) {
-    if ($profile.SID -cne $sid -or !(Test-SamePath ([string]$profile.LocalPath) $localPath)) {
+    $canonicalRecordPath = Resolve-CanonicalProfileLocalPath $localPath
+    $canonicalCurrentPath = Resolve-CanonicalProfileLocalPath ([string]$profile.LocalPath)
+    if ($profile.SID -cne $sid -or
+        !(Test-SamePath $canonicalCurrentPath $canonicalRecordPath)) {
       throw 'profile path ownership changed'
     }
     Remove-CimInstance -InputObject $profile -ErrorAction Stop
@@ -1343,11 +1419,14 @@ try {
       Assert-MsiRolledBackCleanBaseline $manifest
     }
   }
-  $adoptedProvisionalUser = $false
+  $ownershipPromoted = $false
   foreach ($record in @($manifest.Users)) {
-    if (Resolve-ProvisionalOwnedUser $record) { $adoptedProvisionalUser = $true }
+    if (Resolve-ProvisionalOwnedUser $record) { $ownershipPromoted = $true }
+    if (Promote-UncapturedOwnedProfiles $record $manifest) {
+      $ownershipPromoted = $true
+    }
   }
-  if ($adoptedProvisionalUser) {
+  if ($ownershipPromoted) {
     Write-DurableOwnershipManifest $manifestPath $manifest
   }
   foreach ($record in @($manifest.RegistryValues)) {
@@ -1393,14 +1472,23 @@ try {
   foreach ($record in @($manifest.RegistryValues)) {
     try { Restore-OwnedRegistryValue $record } catch { $cleanupFailed = $true }
   }
+  $profileCleanupFailed = $false
   foreach ($record in @($manifest.Profiles)) {
-    try { Remove-ExplicitOwnedProfile $record } catch { $cleanupFailed = $true }
+    try { Remove-ExplicitOwnedProfile $record } catch {
+      $profileCleanupFailed = $true
+      $cleanupFailed = $true
+    }
   }
   foreach ($record in @($manifest.Users)) {
-    try { Remove-OwnedProfiles $record } catch { $cleanupFailed = $true }
+    try { Remove-OwnedProfiles $record $manifest.Profiles } catch {
+      $profileCleanupFailed = $true
+      $cleanupFailed = $true
+    }
   }
-  foreach ($record in @($manifest.Users)) {
-    try { Remove-OwnedUser $record } catch { $cleanupFailed = $true }
+  if (!$profileCleanupFailed) {
+    foreach ($record in @($manifest.Users)) {
+      try { Remove-OwnedUser $record } catch { $cleanupFailed = $true }
+    }
   }
   $directories = @($manifest.Directories) | Sort-Object {
     ([string]$_.Path).Length

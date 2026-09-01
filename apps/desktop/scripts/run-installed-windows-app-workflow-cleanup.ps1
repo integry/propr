@@ -45,7 +45,6 @@ $fixedExitCode = 125
 $validatedManifestPath = $null
 [WorkflowCleanupControllerPhase]$controllerPhase = 'INITIALIZATION'
 [WorkflowCleanupControllerLine]$controllerLine = 'TYPE_LOAD'
-$controllerBodyActive = $false
 $cleanupTreeZeroVerified = $false
 
 function Write-FixedResult([ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result) {
@@ -99,26 +98,10 @@ function Set-CaughtControllerFailure($ErrorRecord) {
   $script:fixedExitCode = 125
 }
 
-# Producer-boundary trap: every uncaught controller error is reduced to the
-# allowlisted phase/line/category tuple and execution continues only into the
-# next bounded finalization statement. While the controller body is active the
-# trap exits that labeled phase first, so a type-load or body failure cannot
-# continue into process setup.
-trap {
-  Set-CaughtControllerFailure $_
-  if ($script:controllerBodyActive) {
-    break controllerBody
-  }
-  continue
-}
-
-$controllerBodyActive = $true
-:controllerBody do {
-# The controller has a fixed stdout protocol and maps every caught failure to
-# that protocol. Suppress the host's architecture-specific raw error rendering
-# before cold type load; child stdout/stderr remain separately pumped, bounded,
-# and classified below.
-[Console]::SetError([IO.TextWriter]::Null)
+# The ordinary outer catch covers cold type loading and every controller-body
+# phase. It consumes PowerShell error records without host rendering and maps
+# them to the fixed protocol before bounded finalization runs.
+try {
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -367,7 +350,6 @@ $FixtureRoot = if ($null -eq $FixtureRoot) { $null } else { [string]$FixtureRoot
 $CleanupTimeoutMilliseconds = $cleanupTimeout
 $TerminationTimeoutMilliseconds = $terminationTimeout
 
-try {
   $controllerPhase = 'PATH_VALIDATION'
   $controllerLine = 'PATHS'
   if ($ExpectedRunId -notmatch '^[a-f0-9]{32}$') { throw 'cleanup run identity is invalid' }
@@ -487,9 +469,6 @@ try {
 } catch {
   Set-CaughtControllerFailure $_
 }
-
-} while ($false)
-$controllerBodyActive = $false
 
 try {
   $controllerPhase = 'PROCESS_FINALIZATION'

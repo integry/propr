@@ -39,6 +39,27 @@ function New-StateDirectory([string]$Name) {
   return $path
 }
 
+function Write-TestOwnershipManifest([string]$Path, $Manifest) {
+  $temporaryPath = "$Path.test.new"
+  $bytes = [Text.Encoding]::UTF8.GetBytes(
+    ($Manifest | ConvertTo-Json -Depth 6 -Compress))
+  $stream = [IO.FileStream]::new(
+    $temporaryPath,
+    [IO.FileMode]::Create,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::None,
+    4096,
+    [IO.FileOptions]::WriteThrough
+  )
+  try {
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    $stream.Dispose()
+  }
+  [IO.File]::Move($temporaryPath, $Path, $true)
+}
+
 function New-SupervisorStartInfo(
   [string]$Scenario,
   [string]$StateDirectory,
@@ -388,6 +409,7 @@ function Invoke-FixtureScenario(
         'OWNED_EXECUTABLE_REPLACED_THEN_DEADLINE',
         'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE',
         'OWNED_SHORTCUT_REPLACED_THEN_DEADLINE',
+        'OWNED_PROFILE_PATH_MISMATCH_THEN_DEADLINE',
         'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE',
         'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE',
         'SMOKE_AFTER_PROMOTION_THEN_DEADLINE',
@@ -852,6 +874,58 @@ function Test-PreExistingCleanupOwnership {
         "replacement $($replacementCase.Label) authority did not retry to success"
       Assert-OwnedResourcesGone $replacedOwned
     }
+
+    $profileMismatchDirectory = New-StateDirectory 'profile-path-mismatch'
+    $profileMismatchResult = Invoke-FixtureScenario `
+      'OWNED_PROFILE_PATH_MISMATCH_THEN_DEADLINE' $profileMismatchDirectory
+    Assert-True ($profileMismatchResult.ExitCode -eq 125) `
+      'mismatched durable profile path did not fail closed'
+    Assert-Contains $profileMismatchResult.Output `
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED' `
+      'mismatched durable profile path did not emit fixed cleanup failure evidence'
+    $profileMismatchOwned = Read-FixtureResourceState $profileMismatchDirectory
+    $survivingProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+      Where-Object { $_.SID -ceq [string]$profileMismatchOwned.UserSid })
+    Assert-True ($survivingProfiles.Count -eq 1) `
+      'mismatched durable path selected the owned profile for deletion'
+    $survivingProfilePath = (Resolve-Path -LiteralPath `
+      ([string]$survivingProfiles[0].LocalPath) -ErrorAction Stop).ProviderPath.TrimEnd('\')
+    Assert-True ([string]::Equals(
+        $survivingProfilePath,
+        ([string]$profileMismatchOwned.ProfilePath).TrimEnd('\'),
+        [StringComparison]::OrdinalIgnoreCase
+      )) 'mismatched-path regression did not preserve the exact live profile'
+    $profileMismatchManifest = Get-Content -LiteralPath $profileMismatchOwned.ManifestPath `
+      -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    Assert-True ($profileMismatchManifest.State -ceq 'ACTIVE') `
+      'mismatched profile path discarded ACTIVE recovery authority'
+    $profileMismatchUsers = @($profileMismatchManifest.Users | Where-Object {
+      $_.Owned -and [string]$_.Sid -ceq [string]$profileMismatchOwned.UserSid
+    })
+    $remainingProfileUser = Get-LocalUser -Name $profileMismatchOwned.UserName `
+      -ErrorAction Stop
+    Assert-True ($profileMismatchUsers.Count -eq 1 -and
+        [string]$remainingProfileUser.SID.Value -ceq [string]$profileMismatchOwned.UserSid -and
+        [string]$remainingProfileUser.Description -ceq
+          [string]$profileMismatchUsers[0].OwnershipMarker) `
+      'mismatched profile path discarded authenticated marker and SID authority'
+    $ownedProfileRecords = @($profileMismatchManifest.Profiles | Where-Object {
+      $_.Owned -and [string]$_.Sid -ceq [string]$profileMismatchOwned.UserSid
+    })
+    Assert-True ($ownedProfileRecords.Count -eq 1 -and
+        [string]::Equals(
+          [string]$ownedProfileRecords[0].LocalPath,
+          [string]$profileMismatchOwned.MismatchedProfilePath,
+          [StringComparison]::OrdinalIgnoreCase
+        )) 'mismatched durable profile record was silently re-authorized'
+    $ownedProfileRecords[0].LocalPath = [string]$profileMismatchOwned.ProfilePath
+    Write-TestOwnershipManifest $profileMismatchOwned.ManifestPath $profileMismatchManifest
+    $profileMismatchRetry = Invoke-WorkflowCleanupController `
+      $profileMismatchOwned.ManifestPath $profileMismatchOwned.RunId $profileMismatchDirectory
+    Assert-True ($profileMismatchRetry.ExitCode -eq 0 -and
+        $profileMismatchRetry.Result -ceq 'COMPLETE') `
+      'profile cleanup did not succeed after exact durable path restoration'
+    Assert-OwnedResourcesGone $profileMismatchOwned
 
     $byteIdenticalDirectory = New-StateDirectory 'byte-identical-replaced-executable'
     $byteIdenticalResult = Invoke-FixtureScenario `
