@@ -110,23 +110,59 @@ function decodeMappedValue(value: string): DecodedView {
   return { characters, value: characters.map(({ character }) => character).join('') };
 }
 
+function readEventuallyEncodedHexCharacter(
+  value: string,
+  index: number
+): ClassifiedCharacter | undefined {
+  if (isHexCharacter(value[index])) return { character: value[index]!, end: index + 1 };
+  if (value[index] !== '%') return undefined;
+  let octetIndex = index + 1;
+  while (value.slice(octetIndex, octetIndex + 2).toLowerCase() === '25') octetIndex += 2;
+  const octet = value.slice(octetIndex, octetIndex + 2);
+  if (!/^[0-9a-f]{2}$/iu.test(octet)) return undefined;
+  const character = String.fromCharCode(Number.parseInt(octet, 16));
+  return isHexCharacter(character) ? { character, end: octetIndex + 2 } : undefined;
+}
+
 /**
- * Read a boundary character through an unresolved contiguous percent nesting.
- * This is classification-only: the candidate will fail closed because a valid
- * percent octet remains after the bounded standard decoder.
+ * Read one eventual octet through contiguous or decomposed percent nesting.
+ * Each input character is inspected only within its component, so arbitrary
+ * residual depth remains linear without adding attacker-controlled passes.
  */
 function readClassifiedCharacter(value: string, index: number): ClassifiedCharacter | undefined {
   if (value[index] !== '%') return value[index] === undefined
     ? undefined
     : { character: value[index]!, end: index + 1 };
-  let octetIndex = index + 1;
-  while (value.slice(octetIndex, octetIndex + 2).toLowerCase() === '25') octetIndex += 2;
-  const octet = value.slice(octetIndex, octetIndex + 2);
-  if (!/^[0-9a-f]{2}$/iu.test(octet)) return undefined;
+  let highIndex = index + 1;
+  while (value.slice(highIndex, highIndex + 2).toLowerCase() === '25') highIndex += 2;
+  const high = readEventuallyEncodedHexCharacter(value, highIndex);
+  if (high === undefined) return undefined;
+  const low = readEventuallyEncodedHexCharacter(value, high.end);
+  if (low === undefined) return undefined;
   return {
-    character: String.fromCharCode(Number.parseInt(octet, 16)),
-    end: octetIndex + 2,
+    character: String.fromCharCode(Number.parseInt(`${high.character}${low.character}`, 16)),
+    end: low.end,
   };
+}
+
+/** Collapse only classifiable residual octets, retaining their exact raw spans. */
+function classifyResidualOctets(decoded: DecodedView): DecodedView {
+  const characters: MappedCharacter[] = [];
+  for (let index = 0; index < decoded.characters.length;) {
+    const classified = readClassifiedCharacter(decoded.value, index);
+    if (classified !== undefined && classified.end > index + 1) {
+      characters.push({
+        character: classified.character,
+        rawEnd: decoded.characters[classified.end - 1]!.rawEnd,
+        rawStart: decoded.characters[index]!.rawStart,
+      });
+      index = classified.end;
+    } else {
+      characters.push(decoded.characters[index]!);
+      index += 1;
+    }
+  }
+  return { characters, value: characters.map(({ character }) => character).join('') };
 }
 
 function isControlCharacter(character: string): boolean {
@@ -307,7 +343,7 @@ function shouldRedactRawPath(candidate: RawPathCandidate): boolean {
 
 /** Redact complete raw path tokens after bounded, mapped percent decoding. */
 export function redactRawPathTokens(value: string, inputTruncated: boolean): string {
-  const decoded = decodeMappedValue(value);
+  const decoded = classifyResidualOctets(decodeMappedValue(value));
   let result = '';
   let copiedThrough = 0;
   for (let index = 0; index < decoded.value.length; index += 1) {

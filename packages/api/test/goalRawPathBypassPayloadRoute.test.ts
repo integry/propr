@@ -14,6 +14,11 @@ function projectString(value: string): string {
   return (toPublicGoalEventPayload({ message: value }) as { message: string }).message;
 }
 
+function addPercentLayers(value: string, count: number): string {
+  while (count-- > 0) value = value.replaceAll('%', '%25');
+  return value;
+}
+
 test('raw traversal paths normalize rooted backslashes without consuming UNC syntax', () => {
   const positiveCases = [
     [String.raw`\Temp\..\Users\alice\private.txt`, REDACTED],
@@ -163,6 +168,57 @@ test('distributed percent octets use standard bounded decoding before classifica
     message: REDACTED,
     nested: { value: [{ source: REDACTED }] },
   });
+});
+
+test('distributed path openers beyond the decode-pass boundary cannot bypass discovery', () => {
+  for (const layers of [7, 8, 32]) {
+    const encodedPathOpener = addPercentLayers('%25%32%46', layers);
+    const encodedBoundaryOpener = addPercentLayers('%25%35%42', layers);
+    const path = `${encodedPathOpener}project/../home/alice/private`;
+    const boundary = `${encodedBoundaryOpener}/project/../home/alice/private%5D`;
+
+    assert.deepEqual(toPublicGoalEventPayload({ message: path, source: boundary }), {
+      message: REDACTED,
+      source: `${encodedBoundaryOpener}${REDACTED}%5D`,
+    }, `outer layers: ${layers}`);
+  }
+
+  const deepPath = `${addPercentLayers('%25%32%46', 8)}project/../home/alice/private`;
+  const deepBoundaryOpener = addPercentLayers('%25%35%42', 32);
+  const deepBoundary = `${deepBoundaryOpener}/project/../home/alice/private%5D`;
+  assert.deepEqual(toPublicGoalEventPayload({
+    nested: {
+      value: [{
+        nested: {
+          source: [{
+            nested: { target: [deepPath, deepBoundary] },
+          }],
+        },
+      }],
+    },
+  }), {
+    nested: {
+      value: [{
+        nested: {
+          source: [{
+            nested: { target: [REDACTED, `${deepBoundaryOpener}${REDACTED}%5D`] },
+          }],
+        },
+      }],
+    },
+  });
+});
+
+test('deep distributed percent classification stays bounded and linear', () => {
+  const elapsed: number[] = [];
+  for (const layers of [256, 512, 1_024, 2_048]) {
+    const input = `${addPercentLayers('%25%32%46', layers)
+    }project/../home/alice/private`;
+    const startedAt = performance.now();
+    assert.equal(projectString(input), REDACTED, `outer layers: ${layers}`);
+    elapsed.push(performance.now() - startedAt);
+  }
+  assert.ok(elapsed[3]! < Math.max(500, elapsed[0]! * 16), elapsed.join(', '));
 });
 
 test('heterogeneous two-separator roots fail closed while safe authorities remain public', () => {
