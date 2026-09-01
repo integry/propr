@@ -8,6 +8,7 @@ import type {
   createInstanceCatalogRoutes,
 } from './routes/index.js';
 import {
+  requireAgentTankUsageAccess,
   requireManageAgents,
   requireManageMembers,
   requireManageRuntime,
@@ -64,7 +65,7 @@ export function createManagementRouteEntries({
     ['get', '/api/config/agent-tank', requireManageAgents, configRoutes.getAgentTankSettings],
     ['post', '/api/config/agent-tank', requireManageAgents, configRoutes.postAgentTankSettings],
     ['get', '/api/config/agent-tank/status', requireManageAgents, configRoutes.getAgentTankStatus],
-    ['get', '/api/config/agent-tank/usage', requireManageAgents, configRoutes.getAgentTankUsage],
+    ['get', '/api/config/agent-tank/usage', requireAgentTankUsageAccess, configRoutes.getAgentTankUsage],
     ['post', '/api/config/agent-tank/refresh', requireManageAgents, configRoutes.postAgentTankRefresh],
     ['get', '/api/config/agent-tank/detect', requireManageAgents, configRoutes.getAgentTankDetect],
 
