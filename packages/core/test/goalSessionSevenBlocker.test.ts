@@ -272,7 +272,7 @@ test('separate SQLite cancellation after the final steering read blocks provider
         ...control, reason: 'cancel after final steering read',
     });
     adapter.release.resolve();
-    await assert.rejects(delivery, /cancelled or replaced/);
+    await assert.rejects(delivery, /Provider operation failed safely/);
     assert.equal(adapter.effects, 0);
     assert.equal((await deliveryPorts.listPending(identity)).length, 1);
     assert.equal((await deliveryPorts.replay(identity)).filter(event =>

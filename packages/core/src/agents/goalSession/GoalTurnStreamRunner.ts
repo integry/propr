@@ -5,7 +5,8 @@ import type {
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalSessionCore } from './GoalSessionCore.js';
 import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
-import { safeFailureDiagnostic, safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { safeFailureDiagnostic, sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { immediateModelIntents } from './modelChangeProtocol.js';
 import {
     assertFirstTurnIdentityEvent, assertSuppliedMessagesAcknowledged,
     isAtomicTurnAudit, streamAuditTransitionId,
@@ -31,8 +32,12 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
         let completed = false;
         try {
             const stream = await options.openStream();
-            for await (const rawEvent of stream) {
-                const event = sanitizeGoalSessionEvent(rawEvent);
+            const iterator = await this.providerEffect(() => stream[Symbol.asyncIterator]());
+            for (;;) {
+                const next = await this.providerEffect(() => iterator.next());
+                if (next.done) break;
+                const event = await this.providerEffect(() => sanitizeGoalSessionEvent(next.value));
+                current = await this.settleNextTurnModelEvidence(fence, execution, current, event);
                 if (completed) throw new GoalSessionContractError('Provider emitted an event after turn completion', 'EVENT_AFTER_COMPLETION');
                 assertFirstTurnIdentityEvent(current, event, this.adapter.capabilities.nativeSessionId);
                 if (event.type === 'message_acknowledged') {
@@ -47,7 +52,10 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
                 if (event.type === 'pause_boundary') reachedPause = true;
                 if (event.type === 'completion') completed = true;
                 if (event.type !== 'completion' && !isAtomicTurnAudit(event)) await this.append(fence, execution, event);
-                if (event.type === 'pause_boundary' && this.adapter.capabilities.pause === 'active_turn') break;
+                if (stopsAtActivePause(event, this.adapter.capabilities.pause)) {
+                    if (iterator.return) await this.providerEffect(() => iterator.return!());
+                    break;
+                }
                 if (event.type === 'completion' && current.status === 'paused') reachedPause = true;
             }
             if (!completed && !reachedPause) {
@@ -58,10 +66,17 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
             return { state: current, completed, reachedPause };
         } catch (error) {
             if (error instanceof StaleGoalSessionFenceError) throw error;
+            // A persistence/transport crash is not a provider failure and must
+            // leave the exact durable invocation recoverable.  Provider and
+            // protocol failures have already been rebuilt as contract errors.
+            if (!(error instanceof GoalSessionContractError)) throw error;
             const message = safeFailureDiagnostic((error as Error).message, 'Provider turn failed safely');
             await this.finishTurnIfOwned(fence, execution, message);
-            if (error instanceof GoalSessionContractError) throw error;
-            throw safeProviderException(error, 'Provider turn failed safely');
+            // Adapter creation, iterator.next/return, and provider event decoding
+            // were rebuilt at their exact boundaries above.  Anything else was
+            // raised by trusted runtime persistence and must retain its internal
+            // contract/crash identity.
+            throw error;
         }
     }
 
@@ -87,12 +102,62 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
         awaitingMessageIds.shift();
     }
 
+    private async settleNextTurnModelEvidence(
+        fence: GoalSessionFence,
+        execution: GoalExecutionIdentity,
+        state: GoalSessionState,
+        event: GoalSessionEvent,
+    ): Promise<GoalSessionState> {
+        if (this.adapter.capabilities.modelChange !== 'next_turn' || !state.activeTurn?.modelChange) return state;
+        const invocation = state.activeTurn.modelChange;
+        const durableIntent = immediateModelIntents(state).find(intent =>
+            intent.modelChangeId === invocation.modelChangeId && intent.generation === invocation.generation);
+        if (durableIntent?.invocationEvidence) return state;
+        const occurrenceId = invocationEvidenceOccurrence(event);
+        if (!occurrenceId) return state;
+        if (!durableIntent) throw new GoalSessionContractError(
+            'Deferred model intent disappeared before invocation evidence', 'MODEL_EVIDENCE_MISSING',
+        );
+        const acknowledgement = {
+            outcome: 'acknowledged' as const,
+            requestedModel: durableIntent.model,
+            appliesAt: 'next_turn' as const,
+            effectiveModel: durableIntent.model,
+        };
+        const settled = {
+            ...durableIntent,
+            phase: 'committed' as const,
+            acknowledgement,
+            invocationEvidence: { ...execution, occurrenceId, acceptedAt: new Date().toISOString() },
+        };
+        const saved = await this.commitTurnTransition({
+            state, fence, execution,
+            update: value => ({
+                currentModel: settled.model,
+                pendingModelChange: value.modelChangeIntent?.modelChangeId === settled.modelChangeId
+                    ? undefined : value.pendingModelChange,
+                modelChangeIntent: value.modelChangeIntent?.modelChangeId === settled.modelChangeId
+                    ? settled : value.modelChangeIntent,
+                modelChangeIntents: immediateModelIntents(value).map(intent =>
+                    intent.modelChangeId === settled.modelChangeId ? settled : intent),
+            }),
+            auditEvents: [{
+                type: 'model_changed', previousModel: invocation.previousModel,
+                model: settled.model, providerEventId: occurrenceId,
+            }],
+            transitionId: `model-invocation:${settled.modelChangeId}:${execution.executionId}:${execution.attemptId}:${occurrenceId}`,
+        });
+        await this.ports.modelChanges.settle(fence, settled.modelChangeId, acknowledgement);
+        return saved;
+    }
+
     private async applyTurnEvent(options: {
         fence: GoalSessionFence; current: GoalSessionState;
         execution: GoalExecutionIdentity; event: GoalSessionEvent;
     }): Promise<GoalSessionState> {
         const { fence, current, execution, event } = options;
         if (event.type === 'checkpoint') return this.persistCheckpoint(fence, current, execution, event);
+        if (event.type === 'usage') return this.persistUsage(fence, current, execution, event);
         if (event.type === 'model_changed') return this.commitTurnTransition({
             state: current, fence, execution,
             update: value => ({
@@ -113,6 +178,37 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
         return current;
     }
 
+    private persistUsage(
+        fence: GoalSessionFence,
+        state: GoalSessionState,
+        execution: GoalExecutionIdentity,
+        event: Extract<GoalSessionEvent, { type: 'usage' }>,
+    ): Promise<GoalSessionState> {
+        const accounting = state.usageAccounting ?? { version: 1 as const, lastWatermark: -1, occurrences: [] };
+        if (accounting.occurrences.includes(event.occurrenceId) || event.watermark <= accounting.lastWatermark) {
+            return Promise.resolve(state);
+        }
+        if (event.semantics === 'delta' && event.watermark !== accounting.lastWatermark + 1) {
+            throw new GoalSessionContractError('Provider delta usage skipped a durable watermark', 'USAGE_WATERMARK_GAP');
+        }
+        return this.commitTurnTransition({
+            state, fence, execution,
+            update: value => {
+                const current = value.usageAccounting ?? { version: 1 as const, lastWatermark: -1, occurrences: [] };
+                if (current.occurrences.includes(event.occurrenceId) || event.watermark <= current.lastWatermark) return {};
+                return {
+                    usageAccounting: {
+                        version: 1 as const,
+                        lastWatermark: event.watermark,
+                        occurrences: [...current.occurrences, event.occurrenceId].slice(-256),
+                    },
+                };
+            },
+            auditEvents: [event],
+            transitionId: `usage:${execution.executionId}:${execution.attemptId}:${event.occurrenceId}:${event.watermark}`,
+        });
+    }
+
     private persistCheckpoint(
         fence: GoalSessionFence,
         state: GoalSessionState,
@@ -122,11 +218,11 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
         if (event.providerSessionId && state.providerSessionId && event.providerSessionId !== state.providerSessionId) {
             throw new GoalSessionContractError('Checkpoint attempted to replace the provider session identity', 'PROVIDER_SESSION_CHANGED');
         }
-        assertCredentialFreeRecoveryMetadata(event.recoveryMetadata);
+        assertCredentialFreeRecoveryMetadata(event.recoveryMetadata, this.adapter.provider);
         return this.updateActiveTurnState(fence, execution, value => ({
             ...value,
             providerSessionId: event.providerSessionId ?? value.providerSessionId,
-            recoveryMetadata: sanitizeRecoveryMetadata(event.recoveryMetadata),
+            recoveryMetadata: sanitizeRecoveryMetadata(event.recoveryMetadata, this.adapter.provider),
             initializationIntent: event.providerSessionId ? undefined : value.initializationIntent,
             currentModel: event.providerSessionId && !value.providerSessionId
                 ? value.activeTurn?.requestedModel ?? value.currentModel : value.currentModel,
@@ -146,5 +242,21 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
         } catch {
             return this.requireState(fence);
         }
+    }
+}
+
+function stopsAtActivePause(event: GoalSessionEvent, pause: 'active_turn' | 'after_turn'): boolean {
+    return event.type === 'pause_boundary' && pause === 'active_turn';
+}
+
+function invocationEvidenceOccurrence(event: GoalSessionEvent): string | undefined {
+    switch (event.type) {
+        case 'checkpoint': return event.checkpointId;
+        case 'usage': return event.occurrenceId;
+        case 'assistant': return event.messageId;
+        case 'model_changed': return event.providerEventId ?? (event.providerEventOrdinal === undefined ? undefined : `ordinal-${event.providerEventOrdinal}`);
+        case 'pause_boundary': return event.providerEventId ?? (event.providerEventOrdinal === undefined ? undefined : `ordinal-${event.providerEventOrdinal}`);
+        case 'completion': return `completion-${event.outcome}`;
+        default: return undefined;
     }
 }

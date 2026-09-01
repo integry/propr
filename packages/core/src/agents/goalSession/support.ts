@@ -56,7 +56,7 @@ export function persistedSnapshot(state: GoalSessionState): GoalProviderSessionS
     }
     return {
         providerSessionId: state.providerSessionId,
-        recoveryMetadata: sanitizeRecoveryMetadata(state.recoveryMetadata),
+        recoveryMetadata: sanitizeRecoveryMetadata(state.recoveryMetadata, state.provider),
         model: state.currentModel,
     };
 }

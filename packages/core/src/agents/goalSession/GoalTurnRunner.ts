@@ -1,5 +1,4 @@
-import type { GoalBeginTurnRequest, GoalExecutionIdentity, GoalProviderCorrectiveMessage, GoalSessionControlFence,
-    GoalSessionFence, GoalSessionState, GoalTurnResumeCapabilityOutcome } from './contract.js';
+import type { GoalBeginTurnRequest, GoalExecutionIdentity, GoalModelChangeIntent, GoalProviderCorrectiveMessage, GoalSessionControlFence, GoalSessionFence, GoalSessionState, GoalTurnResumeCapabilityOutcome } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalTurnStreamRunner } from './GoalTurnStreamRunner.js';
 import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
@@ -7,11 +6,11 @@ import { credentialFreeRepositoryIdentity, validateTurnRequestIdentity } from '.
 import { assertProviderIdentity, nextState, persistedSnapshot, providerTurnContext, validateControlFence } from './support.js';
 import { duplicateTurnResult, type RunGoalTurnResult } from './turnDelivery.js';
 import { assertSafeProviderIdentifier, safeDiagnostic } from './securityBoundary.js';
+import { compactImmediateModelIntents, immediateModelIntents, nextModelGeneration } from './modelChangeProtocol.js';
 
-export interface RunGoalTurnRequest extends Omit<GoalBeginTurnRequest,
-    'executionId' | 'attemptId' | 'correctiveMessages' | 'operationGeneration' | 'operationFence'> {
-    executionId: string;
-    attemptId?: string;
+export interface RunGoalTurnRequest extends Omit<GoalBeginTurnRequest, 'executionId' | 'attemptId' |
+    'correctiveMessages' | 'operationGeneration' | 'operationFence'> {
+    executionId: string; attemptId?: string;
 }
 
 export type { RunGoalTurnResult } from './turnDelivery.js';
@@ -21,25 +20,21 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
         validateControlFence(request);
         validateTurnRequestIdentity(request);
         assertSafeProviderIdentifier(request.requestedModel);
-        if (request.context !== undefined) assertCredentialFreeRecoveryMetadata(request.context);
+        if (request.context !== undefined) assertCredentialFreeRecoveryMetadata(request.context, this.adapter.provider);
         const safeRequest: RunGoalTurnRequest = {
             goalId: request.goalId, sessionId: request.sessionId,
             controllerEpoch: request.controllerEpoch, turnId: request.turnId,
             executionId: request.executionId, attemptId: request.attemptId,
             objective: safeDiagnostic(request.objective, '[redacted objective]'),
-            context: request.context === undefined ? undefined : sanitizeRecoveryMetadata(request.context),
+            context: request.context === undefined ? undefined : sanitizeRecoveryMetadata(request.context, this.adapter.provider),
             repository: await credentialFreeRepositoryIdentity(request.repository),
             requestedModel: safeDiagnostic(request.requestedModel, 'default'),
         };
         let state = await this.requireControlledState(safeRequest);
-        const recoveringRetry = state.retryTurn?.turnId === safeRequest.turnId
-            && state.retryTurn.executionId === safeRequest.executionId;
-        const execution: GoalExecutionIdentity = {
-            executionId: safeRequest.executionId,
-            attemptId: recoveringRetry
-                ? this.mintFreshAttemptId(state.retryTurn!.crashedAttemptId)
-                : safeRequest.attemptId ?? this.mintAttemptId(),
-        };
+        const execution = turnExecution(
+            state, safeRequest,
+            () => this.mintAttemptId(), previous => this.mintFreshAttemptId(previous),
+        );
 
         const duplicate = duplicateTurnResult(state, safeRequest.turnId, execution);
         if (duplicate) return duplicate;
@@ -47,9 +42,12 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             throw new GoalSessionContractError(`Cannot begin a turn while session is ${state.status}`, 'SESSION_NOT_IDLE');
         }
 
-        const requestedModel = state.pendingModelChange ?? state.modelChangeIntent?.model ?? safeRequest.requestedModel;
+        state = await this.claimImplicitNextTurnModel(safeRequest, state);
+
+        const { requestedModel, activeModelChange, providerModelChange } = resolveDeferredModel(
+            state, safeRequest.requestedModel, this.adapter.capabilities.modelChange === 'next_turn',
+        );
         assertSafeProviderIdentifier(requestedModel);
-        state = await this.applyModelAtTurnBoundary(safeRequest, state, requestedModel);
         const correctiveMessages = await this.nextTurnCorrectiveMessages(safeRequest);
         const operationGeneration = (state.providerOperationGeneration ?? 0) + 1;
         const activeTurn = {
@@ -60,6 +58,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             requestedModel,
             repository: safeRequest.repository,
             providerOperationGeneration: operationGeneration,
+            modelChange: activeModelChange,
             status: 'running' as const,
         };
         const claimed = await this.ports.state.compareAndSet(state, nextState(state, {
@@ -68,9 +67,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             status: 'running',
             providerOperationGeneration: operationGeneration,
             retryTurn: undefined,
-            modelChangeIntent: this.adapter.capabilities.modelChange === 'next_turn'
-                ? undefined
-                : state.modelChangeIntent,
+            modelChangeIntent: state.modelChangeIntent,
         }));
         if (!claimed) {
             state = await this.requireControlledState(safeRequest);
@@ -86,6 +83,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             correctiveMessages: correctiveMessages.length ? correctiveMessages : undefined,
             operationGeneration,
             operationFence: this.turnProviderOperationFence(safeRequest, execution, operationGeneration),
+            modelChange: providerModelChange,
         };
         const outcome = await this.driveTurnStream({
             fence: safeRequest,
@@ -100,66 +98,37 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
         return { disposition: 'started', state: outcome.state, execution };
     }
 
-    private async applyModelAtTurnBoundary(
-        request: GoalSessionControlFence,
+    private async claimImplicitNextTurnModel(
+        request: GoalSessionControlFence & { requestedModel: string },
         state: GoalSessionState,
-        requestedModel: string,
     ): Promise<GoalSessionState> {
-        if (this.adapter.capabilities.modelChange !== 'next_turn') return state;
-        if (state.currentModel === requestedModel) {
-            if (state.pendingModelChange !== requestedModel) return state;
-            return this.compareAndSetExact(state, {
-                requestedModel,
-                pendingModelChange: undefined,
-            }, 'A newer model intent superseded the turn-boundary model acknowledgement');
+        if (this.adapter.capabilities.modelChange !== 'next_turn'
+            || state.pendingModelChange !== undefined
+            || state.currentModel === undefined
+            || state.currentModel === request.requestedModel) return state;
+        const modelChangeId = this.controlOperationId('model', state);
+        const historical = await this.ports.modelChanges.claim(request, modelChangeId, request.requestedModel);
+        if (historical.model !== request.requestedModel) {
+            throw new GoalSessionContractError('Implicit model identity conflicts with durable history', 'MODEL_OPERATION_CONFLICT');
         }
-        if (!state.providerSessionId) return state;
-        let intent = state.modelChangeIntent?.model === requestedModel ? state.modelChangeIntent : undefined;
-        if (!intent) {
-            intent = {
-                modelChangeId: this.controlOperationId('model', state),
-                model: requestedModel,
-                requestedAt: new Date().toISOString(),
-            };
-            state = await this.compareAndSetExact(state, {
-                requestedModel,
-                modelChangeIntent: intent,
-            }, 'A newer model intent superseded the turn-boundary provider claim');
-        }
-        assertSafeProviderIdentifier(intent.modelChangeId);
-        assertSafeProviderIdentifier(requestedModel);
-        const operationGeneration = state.providerOperationGeneration ?? 0;
-        await this.publishProviderOperationBarrier(request, operationGeneration);
-        const operationFence = this.providerOperationFence(
-            request, operationGeneration, { kind: 'model', operationId: intent.modelChangeId },
-        );
-        const acknowledgement = await this.providerEffect(() => this.adapter.requestModelChange(
-            {
-                ...request,
-                model: requestedModel,
-                modelChangeId: intent.modelChangeId,
-                applicationGeneration: intent.generation ?? state.modelChangeGeneration ?? 1,
-                operationGeneration,
-                operationFence,
-            },
-            persistedSnapshot(state),
-        ));
-        if (acknowledgement.requestedModel !== requestedModel
-            || acknowledgement.effectiveModel !== requestedModel) {
-            throw new GoalSessionContractError('Provider did not apply the requested model at the turn boundary', 'MODEL_ACK_MISMATCH');
-        }
-        const changed = await this.commitControlTransition({
-            state,
-            fence: request,
+        const generation = nextModelGeneration(state);
+        const intent: GoalModelChangeIntent = {
+            modelChangeId, model: request.requestedModel, requestedAt: new Date().toISOString(),
+            generation, previousModel: state.currentModel, phase: 'pending',
+        };
+        return this.commitControlTransition({
+            state, fence: request,
             changes: {
-                requestedModel,
-                currentModel: requestedModel,
-                pendingModelChange: undefined,
+                requestedModel: request.requestedModel, pendingModelChange: request.requestedModel,
+                modelChangeIntent: intent,
+                modelChangeIntents: compactImmediateModelIntents([...immediateModelIntents(state), intent]),
+                modelChangeGeneration: generation,
             },
-            auditEvents: [{ type: 'model_changed', previousModel: state.currentModel, model: requestedModel }],
-            transitionId: `model-applied:${intent.modelChangeId}`,
+            auditEvents: [{
+                type: 'model_change_acknowledged', requestedModel: request.requestedModel, appliesAt: 'next_turn',
+            }],
+            transitionId: `model-requested:${modelChangeId}`,
         });
-        return changed;
     }
 
     private async nextTurnCorrectiveMessages(
@@ -233,7 +202,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             await this.expireResumeOperation(fence, intent.operationId, intent.operationGeneration);
             throw error;
         }
-        assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
+        assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata, this.adapter.provider);
         assertProviderIdentity(state, snapshot);
         state = await this.requireLiveResumeOperation(fence, intent.operationId, intent.operationGeneration);
         state = await this.commitControlTransition({
@@ -344,14 +313,9 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
         state = await this.claimResumeOperation(fence, state, {
             kind: 'recovered_after_turn', execution, turnId: initialTurn.turnId,
         });
-        const claimedIntent = state.resumeIntent!;
-        const requestedModel = state.pendingModelChange ?? state.modelChangeIntent?.model ?? state.activeTurn!.requestedModel;
-        try {
-            state = await this.applyModelAtTurnBoundary(fence, state, requestedModel);
-        } catch (error) {
-            await this.expireResumeOperation(fence, claimedIntent.operationId, claimedIntent.operationGeneration);
-            throw error;
-        }
+        const { requestedModel, activeModelChange, providerModelChange } = resolveDeferredModel(
+            state, state.activeTurn!.requestedModel, this.adapter.capabilities.modelChange === 'next_turn',
+        );
         state = await this.promoteResumeOperation(fence, state);
         const intent = state.resumeIntent!;
         state = await this.requireLiveResumeOperation(fence, intent.operationId, intent.operationGeneration);
@@ -363,6 +327,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             ...execution,
             executionEpoch: fence.controllerEpoch,
             requestedModel,
+            modelChange: activeModelChange ?? turn.modelChange,
             status: 'running' as const,
             providerOperationGeneration: intent.operationGeneration,
         };
@@ -373,8 +338,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             changes: {
                 status: recoveringPause ? 'pause_requested' : 'running',
                 activeTurn: recoveringPause ? { ...activeTurn, status: 'pause_requested' } : activeTurn,
-                modelChangeIntent: this.adapter.capabilities.modelChange === 'next_turn'
-                    ? undefined : state.modelChangeIntent,
+                modelChangeIntent: state.modelChangeIntent,
                 resumeIntent: { ...intent, phase: 'settled' },
                 completedResume: {
                     operationId: intent.operationId, operationGeneration: intent.operationGeneration,
@@ -395,6 +359,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             providerOperation: this.providerResumeRequest(fence, intent),
             operationGeneration: intent.operationGeneration,
             operationFence: this.turnProviderOperationFence(turnFence, execution, intent.operationGeneration),
+            modelChange: providerModelChange,
         };
         const outcome = await this.driveTurnStream({
             fence: turnFence,
@@ -409,6 +374,43 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
         return { disposition: 'started', state: outcome.state, execution };
     }
 
+}
+
+function turnExecution(
+    state: GoalSessionState,
+    request: Pick<RunGoalTurnRequest, 'turnId' | 'executionId' | 'attemptId'>,
+    mint: () => string,
+    mintFresh: (previous: string) => string,
+): GoalExecutionIdentity {
+    const retry = state.retryTurn?.turnId === request.turnId
+        && state.retryTurn.executionId === request.executionId ? state.retryTurn : undefined;
+    return {
+        executionId: request.executionId,
+        attemptId: retry ? mintFresh(retry.crashedAttemptId) : request.attemptId ?? mint(),
+    };
+}
+
+function resolveDeferredModel(
+    state: GoalSessionState,
+    fallback: string,
+    enabled: boolean,
+): {
+    requestedModel: string;
+    activeModelChange?: NonNullable<GoalSessionState['activeTurn']>['modelChange'];
+    providerModelChange?: GoalBeginTurnRequest['modelChange'];
+} {
+    const requestedModel = state.pendingModelChange ?? state.modelChangeIntent?.model ?? fallback;
+    const modelIntent = enabled && state.pendingModelChange === requestedModel
+        && state.modelChangeIntent?.model === requestedModel ? state.modelChangeIntent : undefined;
+    const generation = modelIntent?.generation ?? state.modelChangeGeneration ?? 0;
+    return {
+        requestedModel,
+        activeModelChange: modelIntent ? {
+            modelChangeId: modelIntent.modelChangeId, generation,
+            previousModel: modelIntent.previousModel ?? state.currentModel,
+        } : undefined,
+        providerModelChange: modelIntent ? { modelChangeId: modelIntent.modelChangeId, generation } : undefined,
+    };
 }
 
 function settledResumeKind(

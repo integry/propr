@@ -16,6 +16,8 @@ import type {
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { safeFailureDiagnostic, safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { decodeDurableGoalSessionState } from './durableStateSecurity.js';
+import { boundedProviderBoundary, expireResumeLease } from './providerBarrierProtocol.js';
 import {
     controlExecutionIdentity,
     nextState,
@@ -168,15 +170,14 @@ export abstract class GoalSessionCore {
         pendingCancellationId?: string,
     ): Promise<void> {
         try {
-            await this.adapter.publishOperationBarrier({
+            await boundedProviderBoundary(this.adapter.publishOperationBarrier({
                 goalId: identity.goalId,
                 sessionId: identity.sessionId,
                 generation,
                 publishedAt: new Date().toISOString(),
                 pendingCancellationId,
-            });
+            }));
         } catch (error) {
-            if (error instanceof GoalSessionContractError) throw error;
             throw safeProviderException(error, 'Provider barrier publication failed safely');
         }
     }
@@ -185,7 +186,6 @@ export abstract class GoalSessionCore {
         try {
             return await effect();
         } catch (error) {
-            if (error instanceof GoalSessionContractError) throw error;
             throw safeProviderException(error);
         }
     }
@@ -207,15 +207,11 @@ export abstract class GoalSessionCore {
         operationGeneration: number,
     ): Promise<void> {
         try {
-            const state = await this.requireControlledState(fence);
-            const intent = state.resumeIntent;
-            if (!intent || intent.operationId !== operationId
-                || intent.operationGeneration !== operationGeneration) return;
-            const saved = await this.ports.state.compareAndSet(state, nextState(state, {
-                providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
-                resumeIntent: { ...intent, leaseExpiresAt: new Date(0).toISOString() },
-            }));
-            if (saved) await this.publishProviderOperationBarrier(saved, saved.providerOperationGeneration ?? 0);
+            await expireResumeLease({
+                ports: this.ports, fence, operationId, operationGeneration,
+                load: () => this.requireControlledStateForBarrier(fence),
+                publish: (state, generation) => this.publishProviderOperationBarrier(state, generation),
+            });
         } catch (error) {
             if (!(error instanceof StaleGoalSessionFenceError)) throw error;
         }
@@ -224,11 +220,20 @@ export abstract class GoalSessionCore {
     protected async requireState(identity: GoalSessionIdentity): Promise<GoalSessionState> {
         const state = await this.ports.state.load(identity);
         if (!state) throw new GoalSessionContractError('Goal session does not exist', 'SESSION_NOT_FOUND');
-        return state;
+        return decodeDurableGoalSessionState(state);
     }
 
     /** Loads state for a session-scoped control operation, rejecting stale epochs. */
     protected async requireControlledState(fence: GoalSessionControlFence): Promise<GoalSessionState> {
+        const state = await this.requireControlledStateForBarrier(fence);
+        if (state.providerBarrierIntent?.phase === 'pending') {
+            throw new StaleGoalSessionFenceError('A durable provider invalidation fenced this operation');
+        }
+        return state;
+    }
+
+    /** Cancellation/reopen repair is the only path allowed to observe a pending barrier. */
+    protected async requireControlledStateForBarrier(fence: GoalSessionControlFence): Promise<GoalSessionState> {
         validateControlFence(fence);
         const state = await this.requireState(fence);
         if (state.controllerEpoch !== fence.controllerEpoch) throw new StaleGoalSessionFenceError();

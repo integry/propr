@@ -30,6 +30,7 @@ export type {
     GoalContainerLayout,
     GoalContainerIsolationPolicy,
     GoalContainerRetentionPolicy,
+    GoalContainerOutputObserver,
     GoalCredentialMount,
     StartGoalContainerRequest,
 } from './GoalContainerSupervisor.js';
@@ -42,4 +43,6 @@ export {
 } from './worktreeIdentity.js';
 export { MODEL_CHANGE_SETTLED_RETRY_HORIZON } from './modelChangeProtocol.js';
 export { GOAL_RECOVERY_METADATA_CODEC_VERSION, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
+export { openSupervisedCodexAppServer, SUPERVISED_CODEX_MODEL } from './CodexAppServerOpen.js';
 export type { GoalRecoveryMetadataV1 } from './recoveryMetadata.js';
+export { decodeDurableGoalSessionState } from './durableStateSecurity.js';

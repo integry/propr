@@ -1,27 +1,24 @@
 import type {
-    GoalCancelRequest,
     GoalExecutionIdentity,
     GoalMessageDeliveryOutcome,
     GoalPauseAcknowledgement,
     GoalPauseRequest,
-    GoalPendingCancellationContext,
     GoalSessionControlFence,
     GoalSessionState,
     GoalSteeringCommand,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
-import { GoalImmediateModelControls } from './GoalImmediateModelControls.js';
+import { GoalCancellationControls } from './GoalCancellationControls.js';
 import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 import { safeDiagnostic, safeFailureDiagnostic, sanitizeGoalSessionEvent } from './securityBoundary.js';
 import {
     assertProviderIdentity,
     controlExecutionIdentity,
-    nextState,
     persistedSnapshot,
 } from './support.js';
 
 /** Capability-aware steering, pause, resume, model, and cancellation controls. */
-export abstract class GoalSessionControls extends GoalImmediateModelControls {
+export abstract class GoalSessionControls extends GoalCancellationControls {
     async deliverMessage(request: GoalSteeringCommand): Promise<GoalMessageDeliveryOutcome> {
         let state = await this.requireActiveTurnState(request);
         const execution = this.activeExecution(state);
@@ -168,7 +165,7 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             await this.expireResumeOperation(request, intent.operationId, intent.operationGeneration);
             throw error;
         }
-        assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata);
+        assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata, this.adapter.provider);
         assertProviderIdentity(state, snapshot);
         state = await this.requireLiveResumeOperation(request, intent.operationId, intent.operationGeneration);
         return this.commitControlTransition({
@@ -176,7 +173,7 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             fence: request,
             changes: {
                 providerSessionId: snapshot.providerSessionId,
-                recoveryMetadata: sanitizeRecoveryMetadata(snapshot.recoveryMetadata),
+                recoveryMetadata: sanitizeRecoveryMetadata(snapshot.recoveryMetadata, this.adapter.provider),
                 currentModel: snapshot.model ?? state.currentModel,
                 status: 'idle',
                 resumeIntent: { ...intent, phase: 'settled' },
@@ -189,127 +186,6 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
             transitionId: `resume-settled:${intent.operationId}:${intent.operationGeneration}`,
             execution,
         });
-    }
-
-    async cancel(request: GoalCancelRequest): Promise<GoalSessionState> {
-        const state = await this.claimCancellation(request);
-        if (state.status === 'terminated' || state.status === 'failed') return state;
-        return this.resumeClaimedCancellation(request, state);
-    }
-
-    /** Replays a durable cancelling claim during open/recovery without starting provider work. */
-    protected async resumeClaimedCancellation(
-        fence: GoalSessionControlFence,
-        state: GoalSessionState,
-    ): Promise<GoalSessionState> {
-        if (state.status === 'terminated') return state;
-        if (state.status !== 'cancelling' || !state.cancellationIntent) {
-            throw new GoalSessionContractError('Cancelling state is missing its durable cancellation intent', 'CANCELLATION_INTENT_MISSING');
-        }
-        const intent = state.cancellationIntent;
-        const request = {
-            goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
-            reason: safeFailureDiagnostic(intent.reason, 'Operator cancelled the goal session'),
-            cancellationId: intent.cancellationId,
-            operationGeneration: state.providerOperationGeneration ?? 0,
-            operationFence: this.providerOperationFence(
-                fence, state.providerOperationGeneration ?? 0,
-                { kind: 'cancel', operationId: intent.cancellationId },
-            ),
-        };
-        let signalError: unknown;
-        try {
-            await this.publishProviderOperationBarrier(
-                fence, request.operationGeneration, intent.cancellationId,
-            );
-            const signal = this.providerEffect(() => intent.pendingContext
-                ? this.adapter.cancelPending!(request, intent.pendingContext)
-                : this.adapter.cancel(request, persistedSnapshot(state)));
-            await boundedCancellation(signal);
-        } catch (error) {
-            signalError = error;
-        }
-        state = await this.commitControlCompletion(state, request, {
-            status: 'terminated',
-            activeTurn: undefined,
-            initializationIntent: undefined,
-            retryTurn: undefined,
-            recoveryAttempt: undefined,
-            completedRecovery: undefined,
-            resumeIntent: undefined,
-            completedResume: undefined,
-            providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
-            pendingAfterTurnPause: undefined,
-            modelChangeIntent: undefined,
-            modelChangeIntents: undefined,
-        }, { type: 'completion', outcome: 'cancelled', error: intent.reason });
-        await this.publishProviderOperationBarrier(
-            fence, state.providerOperationGeneration ?? request.operationGeneration, intent.cancellationId,
-        );
-        // Terminal fencing is authoritative even when the adapter reports that
-        // its best-effort process signal failed. Surface that failure only after
-        // the session can no longer remain permanently stuck in cancelling.
-        if (signalError && !(signalError instanceof CancellationTimedOut)) throw signalError;
-        return state;
-    }
-
-    private async claimCancellation(request: GoalCancelRequest): Promise<GoalSessionState> {
-        for (;;) {
-            const state = await this.requireControlledState(request);
-            if (state.status === 'terminated' || state.status === 'failed') return state;
-            if (state.status === 'cancelling' && state.cancellationIntent) return state;
-            if (!state.providerSessionId && (!state.initializationIntent || !this.adapter.cancelPending)) {
-                throw new GoalSessionContractError(
-                    'A lazy-ID provider must implement pending cancellation before it can be cancelled safely',
-                    'CAPABILITY_METHOD_MISSING',
-                );
-            }
-            const pendingContext = this.pendingCancellationContext(state);
-            const reason = safeFailureDiagnostic(request.reason, 'Operator cancelled the goal session');
-            const claimed = await this.ports.state.compareAndSet(state, nextState(state, {
-                status: 'cancelling',
-                activeTurn: undefined,
-                recoveryAttempt: undefined,
-                completedRecovery: undefined,
-                resumeIntent: undefined,
-                completedResume: undefined,
-                providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
-                cancellationIntent: {
-                    cancellationId: this.controlOperationId('cancel', state),
-                    reason,
-                    claimedAt: new Date().toISOString(),
-                    pendingContext,
-                },
-            }));
-            if (claimed) {
-                await this.publishProviderOperationBarrier(
-                    request, claimed.providerOperationGeneration ?? 0, claimed.cancellationIntent?.cancellationId,
-                );
-                return claimed;
-            }
-        }
-    }
-
-    private pendingCancellationContext(state: GoalSessionState): GoalPendingCancellationContext | undefined {
-        if (state.providerSessionId) return undefined;
-        if (!state.initializationIntent || !this.adapter.cancelPending) {
-            throw new GoalSessionContractError(
-                'A lazy-ID provider must implement pending cancellation before it can be cancelled safely',
-                'CAPABILITY_METHOD_MISSING',
-            );
-        }
-        return {
-            initializationIntent: {
-                attemptId: state.initializationIntent.attemptId,
-                deterministicOpenKey: state.initializationIntent.deterministicOpenKey,
-                recordedAt: state.initializationIntent.recordedAt,
-            },
-            activeTurn: state.activeTurn ? {
-                turnId: state.activeTurn.turnId,
-                executionId: state.activeTurn.executionId,
-                attemptId: state.activeTurn.attemptId,
-            } : undefined,
-        };
     }
 
     private async requestAfterTurnPause(request: GoalPauseRequest): Promise<GoalPauseAcknowledgement> {
@@ -346,12 +222,10 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
                     pendingAfterTurnPause: true,
                     resumeIntent: undefined,
                     completedResume: undefined,
-                    providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
                 },
                 auditEvents: [{ type: 'pause_requested', appliesAt: 'after_turn' }],
                 transitionId: this.controlOperationId('pause-after-turn', state),
             });
-            await this.publishProviderOperationBarrier(request, state.providerOperationGeneration ?? 0);
         }
         return { appliesAt: 'after_turn' };
     }
@@ -359,22 +233,5 @@ export abstract class GoalSessionControls extends GoalImmediateModelControls {
     private activeExecution(state: GoalSessionState): GoalExecutionIdentity {
         if (!state.activeTurn) throw new StaleGoalSessionFenceError('No active turn owns this operation');
         return { executionId: state.activeTurn.executionId, attemptId: state.activeTurn.attemptId };
-    }
-}
-
-const CANCELLATION_TIMEOUT_MS = 1_000;
-
-class CancellationTimedOut extends Error {}
-
-async function boundedCancellation(signal: Promise<void>): Promise<void> {
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new CancellationTimedOut('Provider cancellation timed out')), CANCELLATION_TIMEOUT_MS);
-    });
-    try {
-        await Promise.race([signal, timeout]);
-    } finally {
-        if (timer) clearTimeout(timer);
-        void signal.catch(() => undefined);
     }
 }

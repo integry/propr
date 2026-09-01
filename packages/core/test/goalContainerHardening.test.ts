@@ -234,16 +234,89 @@ test('start rejects provider homes that shadow reserved or non-provider paths', 
     await assert.rejects(supervisor.start({ ...baseRequest(), providerHomeTarget: '/etc/agent' }), /provider-owned/);
 });
 
-test('start refuses credentials mounted inside the writable provider home', async () => {
+test('start supports an explicitly configured read-only Codex credential file at its native target', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-hard-'));
     const supervisor = createSupervisor(base, {
         ...isolation,
         credentialMounts: [{ source: approvedCredential, target: '/home/node/.codex/creds' }],
     });
-    await assert.rejects(
-        supervisor.start({ ...baseRequest(), credentialMounts: [{ source: approvedCredential, target: '/home/node/.codex/creds' }] }),
-        /separately from the writable provider home/,
-    );
+    await supervisor.start({
+        ...baseRequest(), credentialMounts: [{
+            provider: 'codex', source: approvedCredential, target: '/home/node/.codex/creds',
+        }],
+    });
+    assert.ok(spawnCalls.at(-1)?.args.includes(
+        `type=bind,src=${approvedCredential},dst=/home/node/.codex/creds,readonly`,
+    ));
+});
+
+test('separate credential-file ingress supports explicit Claude, Codex, and Antigravity native auth files', async () => {
+    const profiles = [
+        { provider: 'claude' as const, home: '/home/node/.claude', target: '/home/node/.claude.json' },
+        { provider: 'codex' as const, home: '/home/node/.codex', target: '/home/node/.codex/auth.json' },
+        { provider: 'antigravity' as const, home: '/home/node/.gemini', target: '/home/node/.gemini/oauth_creds.json' },
+    ];
+    for (const profile of profiles) {
+        const base = fs.mkdtempSync(path.join(os.tmpdir(), `goal-${profile.provider}-auth-`));
+        const mount = { provider: profile.provider, source: approvedCredential, target: profile.target };
+        const supervisor = createSupervisor(base, {
+            ...isolation, providerHomeTargets: [profile.home], credentialMounts: [mount],
+        });
+        await supervisor.start({
+            ...baseRequest(), providerHomeTarget: profile.home, credentialMounts: [mount],
+        });
+        assert.ok(spawnCalls.at(-1)?.args.includes(
+            `type=bind,src=${approvedCredential},dst=${profile.target},readonly`,
+        ));
+    }
+});
+
+test('adapter output observes the exact durable mixed-channel queue with backpressure and unsubscribe', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-adapter-output-'));
+    const durable: Array<{ channel: string; data: string }> = [];
+    const sink = {
+        ...events,
+        append: async (_fence: unknown, _execution: unknown, event: { channel: string; data: string }) => {
+            durable.push({ channel: event.channel, data: event.data });
+            return { accepted: true as const };
+        },
+    } as unknown as EventSink;
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const observed: Array<{ sequence: number; channel: string; data: string }> = [];
+    const supervisor = new GoalContainerSupervisor(base, sink, undefined, isolation);
+    await supervisor.start({
+        ...baseRequest(),
+        outputObserver: {
+            next: async output => {
+                assert.equal(durable.length, output.sequence, 'durability precedes adapter delivery in the same queue');
+                observed.push({ sequence: output.sequence, channel: output.channel, data: output.data });
+                if (output.sequence === 1) await firstGate;
+                if (output.sequence === 2) return 'unsubscribe';
+            },
+        },
+    });
+    child.stdout.emit('data', Buffer.from('first'));
+    child.stderr.emit('data', Buffer.from('second'));
+    for (let attempt = 0; attempt < 100 && observed.length === 0; attempt += 1) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.deepEqual(observed.map(output => output.data), ['first']);
+    assert.equal(durable.length, 1, 'the supervised source remains backpressured behind the adapter');
+    releaseFirst();
+    for (let attempt = 0; attempt < 100 && observed.length < 2; attempt += 1) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.deepEqual(observed, [
+        { sequence: 1, channel: 'stdout', data: 'first' },
+        { sequence: 2, channel: 'stderr', data: 'second' },
+    ]);
+    child.stdout.emit('data', Buffer.from('durable-only'));
+    for (let attempt = 0; attempt < 100 && durable.length < 3; attempt += 1) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.equal(observed.length, 2, 'unsubscribe does not bypass or tail durable output');
+    assert.deepEqual(durable.map(output => output.data), ['first', 'second', 'durable-only']);
 });
 
 test('credential targets reject descendants of proc, sys, and dev even when allow-listed', async () => {

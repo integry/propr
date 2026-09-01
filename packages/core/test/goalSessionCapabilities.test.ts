@@ -80,6 +80,12 @@ class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
                 recoveryMetadata: { conversation: 'native-first-turn-id' },
             };
         }
+        if (request.modelChange && context.binding === 'bound') {
+            yield {
+                type: 'checkpoint', checkpointId: `model-${request.modelChange.generation}`,
+                recoveryMetadata: { conversation: 'native-first-turn-id', checkpoint: `model-${request.modelChange.generation}` },
+            };
+        }
         this.turnStarted?.();
         if (this.holdTurn) await this.holdTurn;
         if (this.acknowledgeMessages) {
@@ -326,6 +332,16 @@ test('a restarted lazy-ID controller finishes a cancellation claimed before a cr
     const claimed = await persistence.compareAndSet(opened, {
         ...withoutVersion,
         status: 'cancelling',
+        providerOperationGeneration: 1,
+        cancellationIntent: {
+            cancellationId: 'crashed-cancellation', reason: 'resume cancellation after crash',
+            claimedAt: new Date().toISOString(),
+            pendingContext: { initializationIntent: opened.initializationIntent! },
+        },
+        providerBarrierIntent: {
+            generation: 1, operationId: 'crashed-cancellation', kind: 'cancellation', phase: 'published',
+            claimedAt: new Date().toISOString(), pendingCancellationId: 'crashed-cancellation',
+        },
         updatedAt: new Date().toISOString(),
     });
     assert.equal(claimed?.status, 'cancelling');
@@ -414,8 +430,8 @@ test('first-turn identity, FIFO next-turn ack, and after-turn pause/resume stay 
         requestedModel: 'model-b',
     });
     assert.equal(second.state.status, 'idle');
-    assert.deepEqual(adapter.modelCalls, ['model-b']);
-    assert.deepEqual(adapter.actions.slice(-2), ['model:model-b', 'begin:turn-two']);
+    assert.deepEqual(adapter.modelCalls, []);
+    assert.deepEqual(adapter.actions.slice(-1), ['begin:turn-two']);
     assert.equal(adapter.contexts[1]?.binding, 'bound');
     assert.equal(adapter.contexts[1]?.binding === 'bound'
         ? adapter.contexts[1].snapshot.providerSessionId
@@ -864,8 +880,10 @@ test('first-turn after-turn profile reconciles a post-ID container loss through 
     assert.equal(adapter.requests.at(-1)?.turnId, 'turn-crashed-after-binding');
     assert.equal(adapter.requests.at(-1)?.attemptId, 'attempt-continuation');
     assert.equal(adapter.requests.at(-1)?.requestedModel, 'model-recovered');
-    assert.deepEqual(adapter.actions.slice(-2), ['model:model-recovered', 'begin:turn-crashed-after-binding']);
-    assert.deepEqual(adapter.modelCalls, ['model-recovered']);
+    assert.equal(adapter.actions.at(-1), 'begin:turn-crashed-after-binding');
+    assert.equal(adapter.requests.at(-1)?.modelChange?.modelChangeId,
+        (await persistence.load(identity))?.modelChangeIntents?.find(intent => intent.model === 'model-recovered')?.modelChangeId);
+    assert.deepEqual(adapter.modelCalls, [], 'next-turn intent is supplied at the actual invocation, not through a side call');
     assert.equal(adapter.contexts.at(-1)?.binding, 'bound');
     assert.equal((await persistence.load(identity))?.currentModel, 'model-recovered');
     assert.equal((await persistence.load(identity))?.pendingModelChange, undefined);

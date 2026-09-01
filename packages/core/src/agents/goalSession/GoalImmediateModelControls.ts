@@ -1,7 +1,7 @@
 import type { GoalModelChangeAcknowledgement, GoalModelChangeIntent, GoalModelChangeRequest, GoalSessionControlFence, GoalSessionEvent, GoalSessionState } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { GoalTurnRunner } from './GoalTurnRunner.js';
-import { compactImmediateModelIntents, assertModelControllable, hasUnresolvedImmediateModelIntent, immediateModelIntents, latestImmediateModelIntent, nextModelGeneration, replaceImmediateModelIntent, requestedImmediateModelIntent, validateImmediateModelAcknowledgement } from './modelChangeProtocol.js';
+import { compactImmediateModelIntents, assertModelControllable, hasUnresolvedImmediateModelIntent, immediateModelIntents, isLiveModelLease, latestImmediateModelIntent, nextModelGeneration, obsoleteModelIntents, replaceImmediateModelIntent, requestedImmediateModelIntent, validateImmediateModelAcknowledgement } from './modelChangeProtocol.js';
 import { resolveModelChangeHistory } from './modelChangeHistory.js';
 import { nextState, persistedSnapshot } from './support.js';
 import { assertSafeProviderIdentifier } from './securityBoundary.js';
@@ -17,14 +17,11 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             throw new GoalSessionContractError(`Cannot change model while the session is ${state.status}`, 'SESSION_NOT_CONTROLLABLE');
         }
         const sameModelIntent = immediateModelIntents(state).findLast(intent => intent.model === request.model);
-        const operationId = request.operationId
-            ?? sameModelIntent?.modelChangeId
-            ?? this.controlOperationId('model', state);
+        const operationId = request.operationId ?? sameModelIntent?.modelChangeId ?? this.controlOperationId('model', state);
         // Validate before the exact-history claim so a rejected identity cannot
         // allocate order or leave any durable/provider trace.
         assertSafeProviderIdentifier(operationId);
-        const retainedIntent = immediateModelIntents(state)
-            .some(intent => intent.modelChangeId === operationId);
+        const retainedIntent = immediateModelIntents(state).some(intent => intent.modelChangeId === operationId);
         const appliesAt = this.adapter.capabilities.modelChange === 'next_turn' ? 'next_turn' : 'next_safe_boundary';
         const historical = await resolveModelChangeHistory(
             this.ports.modelChanges, request, { operationId, appliesAt, retainedIntent },
@@ -33,27 +30,44 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         const exactRequest = { ...request, operationId };
         if (this.adapter.capabilities.modelChange === 'next_turn') {
             const acknowledgement = { requestedModel: request.model, appliesAt: 'next_turn' as const };
-            if (state.pendingModelChange === request.model && state.modelChangeIntent?.model === request.model) {
-                await this.ports.modelChanges.settle(request, operationId, acknowledgement);
+            if (state.pendingModelChange === request.model
+                && state.modelChangeIntent?.model === request.model
+                && state.modelChangeIntent.modelChangeId === operationId) {
                 return acknowledgement;
             }
             const modelChangeId = operationId;
             const generation = nextModelGeneration(state);
+            const intent: GoalModelChangeIntent = {
+                modelChangeId, model: request.model, requestedAt: new Date().toISOString(), generation,
+                previousModel: state.currentModel, phase: 'pending',
+            };
+            const superseded = immediateModelIntents(state).map(previous =>
+                previous.phase === 'pending' ? {
+                    ...previous,
+                    phase: 'superseded' as const,
+                    acknowledgement: previous.acknowledgement ?? {
+                        requestedModel: previous.model, appliesAt: 'next_turn' as const,
+                    },
+                } : previous);
+            const intents = compactImmediateModelIntents([...superseded, intent]);
             state = await this.commitControlTransition({
                 state,
                 fence: request,
                 changes: {
                     requestedModel: request.model,
                     pendingModelChange: request.model,
-                    modelChangeIntent: {
-                        modelChangeId, model: request.model, requestedAt: new Date().toISOString(), generation,
-                    },
+                    modelChangeIntent: intent,
+                    modelChangeIntents: intents,
                     modelChangeGeneration: generation,
                 },
                 auditEvents: [{ type: 'model_change_acknowledged', ...acknowledgement }],
                 transitionId: `model-requested:${modelChangeId}`,
             });
-            await this.ports.modelChanges.settle(request, operationId, acknowledgement);
+            for (const previous of superseded) {
+                if (previous.phase === 'superseded' && previous.acknowledgement) {
+                    await this.ports.modelChanges.settle(request, previous.modelChangeId, previous.acknowledgement);
+                }
+            }
             return acknowledgement;
         }
         const acknowledgement = await this.applyImmediateModelChange(exactRequest, state);
@@ -251,8 +265,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
 
     /** Repairs a provider side effect that completed after controller takeover. */
     private async reapplyLatestModelAtLiveFence(identity: GoalSessionControlFence): Promise<void> {
-        const state = await this.requireState(identity);
-        const intent = latestImmediateModelIntent(state);
+        const state = await this.requireState(identity), intent = latestImmediateModelIntent(state);
         if (!intent || state.status === 'cancelling' || state.status === 'terminated' || state.status === 'failed') return;
         const fence = { goalId: state.goalId, sessionId: state.sessionId, controllerEpoch: state.controllerEpoch };
         await this.reapplyLatestModel(fence, intent);
@@ -272,7 +285,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
                 intent.modelChangeId !== latest.modelChangeId
                 && intent.phase !== 'superseded'
                 && intent.phase !== 'committed');
-            const liveBlocker = blockers.find(intent => this.isLiveModelLease(intent, state.controllerEpoch));
+            const liveBlocker = blockers.find(intent => isLiveModelLease(intent, state.controllerEpoch));
             if (liveBlocker) {
                 await new Promise<void>(resolve => setImmediate(resolve));
                 continue;
@@ -299,7 +312,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
             const current = immediateModelIntents(state)
                 .find(value => value.modelChangeId === requested.modelChangeId);
             if (!current) throw new StaleGoalSessionFenceError('The model application generation disappeared');
-            if (this.isLiveModelLease(current, state.controllerEpoch)) {
+            if (isLiveModelLease(current, state.controllerEpoch)) {
                 await new Promise<void>(resolve => setImmediate(resolve));
                 state = await this.requireControlledState(fence);
                 assertModelControllable(state);
@@ -324,13 +337,6 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
                 state = await this.requireControlledState(fence);
             }
         }
-    }
-
-    private isLiveModelLease(intent: GoalModelChangeIntent, controllerEpoch: number): boolean {
-        return Boolean(intent.applicationToken
-            && intent.applicationControllerEpoch === controllerEpoch
-            && intent.leaseExpiresAt
-            && Date.parse(intent.leaseExpiresAt) > Date.now());
     }
 
     private async clearModelApplicationLease(
@@ -390,13 +396,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
         reconciled: boolean,
     ): Promise<void> {
         const state = await this.requireControlledState(fence);
-        let changed = false;
-        const intents = compactImmediateModelIntents(immediateModelIntents(state).map(intent => {
-            if (intent.modelChangeId === latestModelChangeId
-                || intent.phase === 'committed' || intent.phase === 'superseded') return intent;
-            changed = true;
-            return { ...intent, phase: reconciled ? 'superseded' as const : 'superseded_in_doubt' as const };
-        }));
+        const { changed, intents } = obsoleteModelIntents(state, latestModelChangeId, reconciled);
         if (!changed) return;
         await this.compareAndSetExact(state, {
             modelChangeIntents: intents,

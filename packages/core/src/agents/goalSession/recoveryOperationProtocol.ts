@@ -1,8 +1,7 @@
 import type {
-    GoalExecutionIdentity, GoalSessionControlFence, GoalSessionRuntimePorts, GoalSessionState,
+    GoalExecutionIdentity, GoalSessionState,
 } from './contract.js';
 import { StaleGoalSessionFenceError } from './errors.js';
-import { nextState } from './support.js';
 
 export const RECOVERY_LEASE_MS = 30_000;
 
@@ -68,20 +67,6 @@ export function assertLiveRecoveryLease(
         || Date.parse(recovery.leaseExpiresAt) <= Date.now()) {
         throw new StaleGoalSessionFenceError('Reconciliation provider operation was durably preempted');
     }
-}
-
-export async function expireRecoveryLeaseIfOwned(
-    ports: GoalSessionRuntimePorts,
-    fence: GoalSessionControlFence,
-    operationToken: string,
-): Promise<void> {
-    const state = await ports.state.load(fence);
-    if (!state || state.controllerEpoch !== fence.controllerEpoch
-        || state.recoveryAttempt?.operationToken !== operationToken) return;
-    await ports.state.compareAndSet(state, nextState(state, {
-        providerOperationGeneration: (state.providerOperationGeneration ?? 0) + 1,
-        recoveryAttempt: { ...state.recoveryAttempt, leaseExpiresAt: new Date(0).toISOString() },
-    }));
 }
 
 export function completedRecoveryResult(state: GoalSessionState, controllerEpoch: number): {

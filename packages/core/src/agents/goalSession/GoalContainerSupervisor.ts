@@ -12,7 +12,7 @@ import type {
     GoalSessionFence,
     GoalSessionIdentity,
 } from './contract.js';
-import { StaleGoalSessionFenceError } from './errors.js';
+import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { isSensitiveHostSourcePath } from './worktreeIdentity.js';
 
@@ -34,6 +34,15 @@ export interface GoalCredentialMount {
     source: string;
     /** Absolute, provider-owned container path; mounted read-only. */
     target: string;
+    /** Explicit provider ownership; inferred from the native target for legacy callers. */
+    provider?: 'claude' | 'codex' | 'antigravity';
+}
+
+/** Adapter-facing view of the exact supervised persistence stream. */
+export interface GoalContainerOutputObserver {
+    next(output: Readonly<SupervisedDockerOutput>): void | 'unsubscribe' | Promise<void | 'unsubscribe'>;
+    complete?(): void | Promise<void>;
+    error?(error: Error): void | Promise<void>;
 }
 
 export interface StartGoalContainerRequest extends GoalSessionFence, GoalExecutionIdentity {
@@ -52,6 +61,8 @@ export interface StartGoalContainerRequest extends GoalSessionFence, GoalExecuti
     environment?: Record<string, string>;
     /** Read-only credential mounts, kept separate from the writable provider home. */
     credentialMounts?: ReadonlyArray<GoalCredentialMount>;
+    /** Ordered and backpressured in the same queue as durable output persistence. */
+    outputObserver?: GoalContainerOutputObserver;
     signal?: AbortSignal;
     timeout?: number;
     taskId?: string;
@@ -172,8 +183,9 @@ function validateProviderHomeTarget(target: string, allowedTargets: ReadonlySet<
     if (!allowedTargets.has(normalized)) throw new Error(`Provider home target ${normalized} is not explicitly allow-listed`);
 }
 
-const SENSITIVE_SOURCE_SEGMENT = /(?:^|\/)(?:\.ssh|\.aws|\.docker|\.config|credentials?|id_rsa|id_ed25519)(?:\/|$)/i;
+const SENSITIVE_SOURCE_SEGMENT = /(?:^|\/)(?:\.ssh|\.aws|\.docker|\.config|id_rsa|id_ed25519)(?:\/|$)/i;
 const CONTAINER_SOCKET_PATHS = new Set(['/var/run/docker.sock', '/run/docker.sock', '/run/podman/podman.sock']);
+const CREDENTIAL_SOURCE_DENY_TREES = ['/proc', '/sys', '/dev', '/run', '/etc', '/boot', '/bin', '/sbin', '/usr', '/var/lib/docker', '/var/lib/containers'];
 
 async function resolveApprovedSource(source: string, allowedSources: ReadonlySet<string>, name: string): Promise<string> {
     validateBindMountPath(source, name);
@@ -197,12 +209,12 @@ async function canonicalCredentialSource(source: string): Promise<string> {
     if (source !== lexical) throw new Error('Credential mount source must be canonical and may not contain traversal aliases');
     const resolved = await realpath(lexical).catch(() => null);
     if (!resolved || resolved !== lexical) throw new Error('Credential mount source must exist and may not use a symlink alias');
-    if (isSensitiveHostSourcePath(lexical) || isSensitiveHostSourcePath(resolved)
-        || CONTAINER_SOCKET_PATHS.has(lexical) || CONTAINER_SOCKET_PATHS.has(resolved)
-        || SENSITIVE_SOURCE_SEGMENT.test(resolved)) {
+    if (CONTAINER_SOCKET_PATHS.has(lexical) || CONTAINER_SOCKET_PATHS.has(resolved)
+        || SENSITIVE_SOURCE_SEGMENT.test(resolved)
+        || CREDENTIAL_SOURCE_DENY_TREES.some(root => resolved === root || resolved.startsWith(`${root}/`))) {
         throw new Error('Credential mount source is a broad or sensitive host path');
     }
-    if (!(await stat(resolved)).isFile()) throw new Error('Credential mount source must be an explicitly approved file');
+    if (!(await stat(resolved)).isFile()) throw new Error('Credential mount source is a broad or sensitive path, not a regular file');
     return resolved;
 }
 
@@ -212,7 +224,7 @@ function canonicalCredentialTarget(target: string): string {
     if (target !== normalized) throw new Error('Credential mount target must be canonical and may not contain traversal aliases');
     if (RESERVED_CONTAINER_PATHS.has(normalized) || CONTAINER_SOCKET_PATHS.has(normalized)
         || CREDENTIAL_TARGET_DENY_TREES.some(root => normalized.startsWith(`${root}/`))
-        || normalized.startsWith('/etc/') || SENSITIVE_SOURCE_SEGMENT.test(normalized)) {
+        || normalized.startsWith('/etc/')) {
         throw new Error('Credential mount target is a broad or sensitive container path');
     }
     return normalized;
@@ -271,16 +283,37 @@ async function validateCredentialMounts(
     for (const mount of mounts) {
         const source = await canonicalCredentialSource(mount.source);
         const target = canonicalCredentialTarget(mount.target);
-        if (!allowedMounts.has(`${source}\0${target}`)) {
+        const provider = mount.provider ?? credentialProviderForTarget(target) ?? credentialProviderForHome(home);
+        if (!provider || !isProviderCredentialTarget(provider, target)) {
+            throw new Error('Credential mount target is not owned by Claude, Codex, or Antigravity');
+        }
+        if (!allowedMounts.has(`${provider}\0${source}\0${target}`)
+            && !allowedMounts.has(`${source}\0${target}`)) {
             throw new Error('Credential mount source and target pair is not explicitly allow-listed');
         }
-        if (target === home || target.startsWith(`${home}/`)) {
-            throw new Error('Credentials must be mounted separately from the writable provider home');
-        }
+        if (target === home) throw new Error('A credential file may not replace the writable provider home directory');
         if (target === '/workspace' || target.startsWith('/workspace/')) {
             throw new Error('Credentials may not be mounted inside the writable workspace');
         }
     }
+}
+
+function credentialProviderForTarget(target: string): GoalCredentialMount['provider'] {
+    if (target === '/home/node/.claude.json' || target.startsWith('/home/node/.claude/')) return 'claude';
+    if (target.startsWith('/home/node/.codex/')) return 'codex';
+    if (target.startsWith('/home/node/.gemini/')) return 'antigravity';
+    return undefined;
+}
+
+function credentialProviderForHome(home: string): GoalCredentialMount['provider'] {
+    if (home === '/home/node/.claude') return 'claude';
+    if (home === '/home/node/.codex') return 'codex';
+    if (home === '/home/node/.gemini') return 'antigravity';
+    return undefined;
+}
+
+function isProviderCredentialTarget(provider: NonNullable<GoalCredentialMount['provider']>, target: string): boolean {
+    return credentialProviderForTarget(target) === provider || target === '/home/node/.creds';
 }
 
 /**
@@ -320,7 +353,7 @@ export class GoalContainerSupervisor {
             credentialMounts,
             request.providerHomeTarget,
             new Set((this.isolation.credentialMounts ?? []).map(mount =>
-                `${path.resolve(mount.source)}\0${path.posix.normalize(mount.target).replace(/\/+$/, '')}`)),
+                `${mount.provider ?? credentialProviderForTarget(path.posix.normalize(mount.target).replace(/\/+$/, '')) ?? credentialProviderForHome(path.posix.normalize(request.providerHomeTarget).replace(/\/+$/, '')) ?? ''}\0${path.resolve(mount.source)}\0${path.posix.normalize(mount.target).replace(/\/+$/, '')}`)),
         );
         const layout = buildGoalContainerLayout(this.baseDirectory, request);
         await Promise.all([
@@ -328,6 +361,7 @@ export class GoalContainerSupervisor {
             mkdir(path.dirname(layout.logPath), { recursive: true, mode: 0o700 }),
         ]);
         const appendGoalLog = createGoalLogSink(layout.logPath);
+        let observerSubscribed = request.outputObserver !== undefined;
         // Explicit public DTOs: the start request also carries commands,
         // environment values, mounts, host paths, task IDs, and arbitrary excess
         // properties. None of those may cross the durable event boundary.
@@ -378,8 +412,34 @@ export class GoalContainerSupervisor {
                     throw new StaleGoalSessionFenceError(`Container output rejected by durable sink: ${result.reason}`);
                 }
                 await appendGoalLog({ ...output, channel: safeOutput.channel, data: safeOutput.data });
+                if (observerSubscribed && request.outputObserver) {
+                    let disposition: void | 'unsubscribe';
+                    try {
+                        disposition = await request.outputObserver.next(Object.freeze({
+                            goalId: output.goalId, sessionId: output.sessionId,
+                            controllerEpoch: output.controllerEpoch, turnId: output.turnId,
+                            executionId: output.executionId, attemptId: output.attemptId,
+                            worktreeFingerprint: output.worktreeFingerprint, sequence: output.sequence,
+                            recordedAt: output.recordedAt, channel: safeOutput.channel, data: safeOutput.data,
+                        }));
+                    } catch {
+                        throw new GoalSessionContractError(
+                            'Provider output consumer failed safely', 'PROVIDER_OPERATION_FAILED',
+                        );
+                    }
+                    if (disposition === 'unsubscribe') observerSubscribed = false;
+                }
             },
         });
+        // Completion notifications are observed and rebuilt; they never create
+        // an unhandled rejection or expose a subprocess exception to an adapter.
+        void execution.completion.then(async () => {
+            if (observerSubscribed) await request.outputObserver?.complete?.();
+        }, async () => {
+            if (observerSubscribed) await request.outputObserver?.error?.(
+                new GoalSessionContractError('Supervised provider output failed safely', 'PROVIDER_OPERATION_FAILED'),
+            );
+        }).catch(() => undefined);
         return { layout, execution };
     }
 

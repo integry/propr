@@ -10,6 +10,7 @@ import type {
     GoalProviderOperationFence, GoalProviderSessionSnapshot, GoalSessionAdapter, GoalSessionEvent,
 } from '../src/agents/goalSession/contract.js';
 import { GoalSessionSupervisor } from '../src/agents/goalSession/GoalSessionSupervisor.js';
+import { GoalSessionContractError } from '../src/agents/goalSession/errors.js';
 import { InMemoryGoalSessionPorts } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
 import { sanitizeRecoveryMetadata } from '../src/agents/goalSession/recoveryMetadata.js';
 import { sanitizeGoalSessionEvent } from '../src/agents/goalSession/securityBoundary.js';
@@ -60,7 +61,7 @@ test('event and recovery codecs reject traversal, endpoints, commands, extras, a
         type: 'tool', toolCallId: 'tool-1', name: 'read', phase: 'completed', data: { file: 'src/a.ts', line: 0 },
     }), { type: 'tool', toolCallId: 'tool-1', name: 'read', phase: 'completed', data: { file: 'src/a.ts', line: 0 } });
     for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
-        assert.throws(() => sanitizeGoalSessionEvent({ type: 'usage', inputTokens: invalid }));
+        assert.throws(() => sanitizeGoalSessionEvent({ type: 'usage', occurrenceId: 'usage-invalid', semantics: 'delta', watermark: 0, inputTokens: invalid }));
         assert.throws(() => sanitizeRecoveryMetadata({ offset: invalid }));
     }
     for (const poisoned of [
@@ -94,7 +95,7 @@ test('both model capability profiles reject unsafe caller IDs before history or 
     }
 });
 
-test('reopen scrubs durable legacy extras and provider URL exceptions cross as generic errors', async () => {
+test('reopen rejects durable poison without mutation and provider URL exceptions cross as generic errors', async () => {
     const timestamp = new Date().toISOString();
     const ports = new InMemoryGoalSessionPorts();
     await ports.create({
@@ -104,12 +105,12 @@ test('reopen scrubs durable legacy extras and provider URL exceptions cross as g
         createdAt: timestamp, updatedAt: timestamp, legacyEnvelope: { command: 'docker ps', credential: 'opaque-value' },
     });
     const adapter = new IdentityAuditAdapter('next_turn');
-    await new GoalSessionSupervisor(adapter, ports.asRuntimePorts()).openSession({
+    const poisonedBefore = await ports.load(identity);
+    await assert.rejects(new GoalSessionSupervisor(adapter, ports.asRuntimePorts()).openSession({
         ...identity, provider: adapter.provider, controllerEpoch: 2,
-    });
-    assert.deepEqual(adapter.openedPersisted?.recoveryMetadata, { checkpoint: 'safe' });
-    assert.deepEqual((await ports.load(identity))?.recoveryMetadata, {});
-    assert.doesNotMatch(JSON.stringify(await ports.load(identity)), /legacyEnvelope|opaque-value|docker ps/);
+    }), (error: unknown) => error instanceof GoalSessionContractError && error.code === 'INVALID_DURABLE_STATE');
+    assert.deepEqual(await ports.load(identity), poisonedBefore);
+    assert.equal(adapter.openedPersisted, undefined);
 
     class ThrowingAdapter extends IdentityAuditAdapter {
         override async openSession(): Promise<GoalProviderSessionSnapshot> {

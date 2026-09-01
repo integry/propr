@@ -107,3 +107,25 @@ export function hasUnresolvedImmediateModelIntent(state: GoalSessionState): bool
     return immediateModelIntents(state).some(intent =>
         Boolean(intent.applicationToken) || (intent.phase !== 'committed' && intent.phase !== 'superseded'));
 }
+
+export function isLiveModelLease(intent: GoalModelChangeIntent, controllerEpoch: number): boolean {
+    return Boolean(intent.applicationToken
+        && intent.applicationControllerEpoch === controllerEpoch
+        && intent.leaseExpiresAt
+        && Date.parse(intent.leaseExpiresAt) > Date.now());
+}
+
+export function obsoleteModelIntents(
+    state: GoalSessionState,
+    latestModelChangeId: string,
+    reconciled: boolean,
+): { changed: boolean; intents: GoalModelChangeIntent[] } {
+    let changed = false;
+    const intents = compactImmediateModelIntents(immediateModelIntents(state).map(intent => {
+        if (intent.modelChangeId === latestModelChangeId
+            || intent.phase === 'committed' || intent.phase === 'superseded') return intent;
+        changed = true;
+        return { ...intent, phase: reconciled ? 'superseded' as const : 'superseded_in_doubt' as const };
+    }));
+    return { changed, intents };
+}

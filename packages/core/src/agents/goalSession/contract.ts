@@ -1,5 +1,17 @@
-import type { GoalProviderOperationFence } from './providerOperationBoundary.js';
-export type { GoalModelChangeHistoryPort, GoalModelChangeHistoryRecord, GoalProviderBarrierPublication, GoalProviderOperationFence } from './providerOperationBoundary.js';
+import type {
+    GoalModelInvocationEvidence, GoalProviderBarrierIntent, GoalProviderOpenContext,
+    GoalProviderOperationFence, GoalUsageAccounting,
+} from './providerOperationBoundary.js';
+import type { GoalProviderCapabilities } from './providerCapabilities.js';
+export type {
+    GoalModelChangeHistoryPort, GoalModelChangeHistoryRecord, GoalModelInvocationEvidence,
+    GoalProviderBarrierIntent, GoalProviderBarrierPublication, GoalProviderDuplexTransport,
+    GoalProviderOpenContext, GoalProviderOperationFence, GoalUsageAccounting,
+} from './providerOperationBoundary.js';
+export type {
+    GoalModelChangeBoundary, GoalNativeSessionIdTiming, GoalPauseBoundary,
+    GoalProviderCapabilities, GoalSteeringBoundary,
+} from './providerCapabilities.js';
 export type { GoalSessionRecoveryPort, GoalSessionRuntimePorts } from './runtimePorts.js';
 
 /** JSON values are used for recovery data so it can be persisted without provider objects. */
@@ -67,6 +79,8 @@ export interface GoalTurnState extends GoalExecutionIdentity {
     repository: GoalRepositoryIdentity;
     /** Cancellation/replacement barrier captured for this provider invocation. */
     providerOperationGeneration?: number;
+    /** Exact deferred model generation this invocation is entitled to apply. */
+    modelChange?: { modelChangeId: string; generation: number; previousModel?: string };
     status: 'running' | 'pause_requested' | 'paused' | 'completed' | 'cancelled' | 'failed';
 }
 
@@ -177,30 +191,9 @@ export interface GoalModelChangeIntent {
     leaseExpiresAt?: string;
     /** Retained after commit so an ambiguous retry can return the original acknowledgement. */
     acknowledgement?: GoalModelChangeAcknowledgement;
+    /** Exact first-invocation evidence for a next-turn model application. */
+    invocationEvidence?: GoalModelInvocationEvidence;
 }
-
-export type GoalNativeSessionIdTiming = 'eager' | 'first_turn';
-export type GoalSteeringBoundary = 'active_turn' | 'next_turn';
-export type GoalPauseBoundary = 'active_turn' | 'after_turn';
-export type GoalModelChangeBoundary = 'next_safe_boundary' | 'next_turn';
-
-/**
- * Provider behavior that the supervisor can rely on. A first-turn provider
- * must also state what happens if its first invocation dies before exposing a
- * native ID; the supervisor never invents an ID or silently opens a new one.
- */
-export type GoalProviderCapabilities = {
-    nativeSessionId: 'eager';
-    steering: GoalSteeringBoundary;
-    pause: GoalPauseBoundary;
-    modelChange: GoalModelChangeBoundary;
-} | {
-    nativeSessionId: 'first_turn';
-    firstTurnIdCrashPolicy: 'retry_deterministically' | 'fail';
-    steering: GoalSteeringBoundary;
-    pause: GoalPauseBoundary;
-    modelChange: GoalModelChangeBoundary;
-};
 
 export interface GoalProviderSessionSnapshot {
     /** Stable, provider-issued identity. It must never be replaced during resume. */
@@ -245,6 +238,8 @@ export interface GoalSessionState extends GoalSessionIdentity {
     completedRecovery?: GoalCompletedRecovery;
     /** Last allocated generation across recovery/resume provider operations. */
     providerOperationGeneration?: number;
+    /** Blocks new primitives while an invalidating publication is pending. */
+    providerBarrierIntent?: GoalProviderBarrierIntent;
     resumeIntent?: GoalResumeIntent;
     completedResume?: GoalCompletedResume;
     /** In-flight or completed cancellation identity. Active turn ownership is cleared when this is claimed. */
@@ -258,6 +253,8 @@ export interface GoalSessionState extends GoalSessionIdentity {
     modelChangeIntents?: GoalModelChangeIntent[];
     /** Last allocated immediate-model generation. */
     modelChangeGeneration?: number;
+    /** Bounded retry-safe provider usage cursor. */
+    usageAccounting?: GoalUsageAccounting;
     failureReason?: string;
     /** Optimistic concurrency token owned by the state port. */
     version: number;
@@ -272,7 +269,11 @@ export type GoalSessionEvent =
     | { type: 'assistant'; messageId?: string; content: string; data?: GoalSessionJsonValue }
     | { type: 'tool'; toolCallId: string; name: string; phase: GoalToolPhase; data?: GoalSessionJsonValue }
     | { type: 'todo'; todoId: string; title: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; data?: GoalSessionJsonValue }
-    | { type: 'usage'; model?: string; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; costUsd?: number; data?: GoalSessionJsonValue }
+    | {
+        type: 'usage'; occurrenceId: string; semantics: 'delta' | 'cumulative'; watermark: number;
+        model?: string; inputTokens?: number; outputTokens?: number;
+        cachedInputTokens?: number; costUsd?: number; data?: GoalSessionJsonValue;
+    }
     | { type: 'checkpoint'; checkpointId: string; recoveryMetadata: GoalSessionJsonValue; providerSessionId?: string }
     | { type: 'message_acknowledged'; messageId: string }
     | { type: 'pause_requested'; appliesAt: 'immediate' | 'next_safe_boundary' | 'after_turn' }
@@ -406,11 +407,8 @@ export interface GoalSessionMessagePort {
 }
 
 export interface GoalProviderOpenRequest extends GoalSessionIdentity {
-    provider: string;
-    controllerEpoch: number;
-    attemptId: string;
-    operationGeneration: number;
-    operationFence: GoalProviderOperationFence;
+    provider: string; controllerEpoch: number; attemptId: string;
+    operationGeneration: number; operationFence: GoalProviderOperationFence;
     persisted?: GoalProviderSessionSnapshot;
     /**
      * Stable key a deterministic provider uses to re-open the same underlying
@@ -418,6 +416,8 @@ export interface GoalProviderOpenRequest extends GoalSessionIdentity {
      * persisted. Only meaningful when the adapter reports supportsDeterministicOpen.
      */
     deterministicOpenKey?: string;
+    /** Required by eager process-like providers such as Codex App Server. */
+    openContext?: GoalProviderOpenContext;
 }
 
 export interface GoalBeginTurnRequest extends GoalSessionFence, GoalExecutionIdentity {
@@ -434,12 +434,12 @@ export interface GoalBeginTurnRequest extends GoalSessionFence, GoalExecutionIde
     correctiveMessages?: GoalProviderCorrectiveMessage[];
     /** Present when this invocation settles a durable recovered-resume claim. */
     providerOperation?: Pick<GoalProviderResumeRequest, 'operationId' | 'operationGeneration' | 'operationPhase' | 'operationLeaseExpiresAt' | 'kind'>;
+    /** Deferred model intent applied by this invocation, never by a pre-turn side call. */
+    modelChange?: { modelChangeId: string; generation: number };
 }
 
 export interface GoalProviderCorrectiveMessage {
-    messageId: string;
-    sequence: number;
-    body: string;
+    messageId: string; sequence: number; body: string;
 }
 
 /** Legacy-compatible supervisor command; the provider never receives this weaker shape. */
@@ -512,10 +512,8 @@ export type GoalTurnResumeCapabilityOutcome = {
 };
 
 export interface GoalModelChangeAcknowledgement {
-    outcome?: 'acknowledged' | 'outside_retry_horizon';
-    requestedModel: string;
-    appliesAt: 'immediate' | 'next_safe_boundary' | 'next_turn';
-    effectiveModel?: string;
+    outcome?: 'acknowledged' | 'outside_retry_horizon'; requestedModel: string;
+    appliesAt: 'immediate' | 'next_safe_boundary' | 'next_turn'; effectiveModel?: string;
 }
 
 export interface GoalProviderReconcileRequest extends GoalSessionIdentity, GoalExecutionIdentity {

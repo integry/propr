@@ -147,7 +147,7 @@ test('starts a recoverable turn and replays ordered normalized output and usage'
         { type: 'assistant', messageId: 'assistant-1', content: 'working' },
         { type: 'tool', toolCallId: 'tool-1', name: 'edit', phase: 'completed', data: { file: 'a.ts' } },
         { type: 'todo', todoId: 'todo-1', title: 'test', status: 'completed' },
-        { type: 'usage', model: 'model-a', inputTokens: 12, outputTokens: 5 },
+        { type: 'usage', occurrenceId: 'usage-1', semantics: 'delta', watermark: 0, model: 'model-a', inputTokens: 12, outputTokens: 5 },
         { type: 'checkpoint', checkpointId: 'cp-1', recoveryMetadata: { checkpoint: 'cp-1' } },
         { type: 'completion', outcome: 'succeeded', summary: 'done' },
     ];
@@ -330,8 +330,9 @@ test('an unsupported model transition fails without replacing the provider sessi
 
     await assert.rejects(
         supervisor.requestModelChange({ ...fence, model: 'model-unsupported' }),
-        (error: unknown) => error instanceof UnsupportedGoalSessionTransitionError
-            && error.code === 'UNSUPPORTED_MODEL_TRANSITION',
+        (error: unknown) => error instanceof GoalSessionContractError
+            && !(error instanceof UnsupportedGoalSessionTransitionError)
+            && error.code === 'PROVIDER_OPERATION_FAILED',
     );
     const unchanged = await persistence.load(identity);
     assert.equal(unchanged?.currentModel, 'model-a');
@@ -480,7 +481,7 @@ test('resumes the exact paused turn on a replacement supervisor and completes on
     ];
     adapter.resumeEvents = [
         { type: 'assistant', messageId: 'a2', content: 'step two' },
-        { type: 'usage', model: 'model-a', inputTokens: 3, outputTokens: 4 },
+        { type: 'usage', occurrenceId: 'usage-resume-1', semantics: 'delta', watermark: 0, model: 'model-a', inputTokens: 3, outputTokens: 4 },
         { type: 'completion', outcome: 'succeeded', summary: 'finished after restart' },
     ];
     const { persistence, supervisor } = await openedRuntime(adapter);
@@ -591,7 +592,7 @@ test('a synchronous begin-turn invocation failure fences the session as failed w
 
     await assert.rejects(
         supervisor.runTurn({ ...fence, executionId: 'exec-b', attemptId: 'att-b', objective: 'boom', repository, requestedModel: 'model-a' }),
-        /begin invocation exploded/,
+        /Provider operation failed safely/,
     );
 
     const state = await persistence.load(identity);
@@ -618,7 +619,7 @@ test('a synchronous resume-turn invocation failure fences the session as failed 
     const paused = await running;
     assert.equal(paused.state.status, 'paused');
 
-    await assert.rejects(supervisor.resumeTurn(fence), /resume invocation exploded/);
+    await assert.rejects(supervisor.resumeTurn(fence), /Provider operation failed safely/);
 
     const state = await persistence.load(identity);
     assert.equal(state?.status, 'failed');
@@ -800,7 +801,7 @@ test('each failed recovery retry durably advances to another fresh attempt', asy
         objective: 'retry recovery', repository, requestedModel: 'model-a',
     });
 
-    await assert.rejects(supervisor.resumeTurn(fence), /recovery transport failed/);
+    await assert.rejects(supervisor.resumeTurn(fence), /Provider operation failed safely/);
     assert.equal((await persistence.load(identity))?.activeTurn?.attemptId, 'attempt-recovery-one');
     assert.equal((await persistence.load(identity))?.status, 'paused');
     assert.deepEqual(await persistence.append(fence, {

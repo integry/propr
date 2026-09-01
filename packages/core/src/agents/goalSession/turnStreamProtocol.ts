@@ -34,7 +34,7 @@ export function assertSuppliedMessagesAcknowledged(
 }
 
 export function isAtomicTurnAudit(event: GoalSessionEvent): boolean {
-    return event.type === 'model_changed' || event.type === 'pause_boundary';
+    return event.type === 'model_changed' || event.type === 'pause_boundary' || event.type === 'usage';
 }
 
 export function streamAuditTransitionId(

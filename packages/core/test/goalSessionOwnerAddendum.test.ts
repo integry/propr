@@ -437,7 +437,7 @@ test('a thrown reconciliation preserves live identity and a retry durably claims
         return { outcome: 'alive', reason: 'retry observed live container' };
     };
     const { persistence, supervisor } = await seededRecovery(adapter, ['recovery-thrown', 'recovery-retry']);
-    await assert.rejects(supervisor.reconcile(identity, 2, repository), /reconcile transport failed/);
+    await assert.rejects(supervisor.reconcile(identity, 2, repository), /Provider operation failed safely/);
     const failedCall = await persistence.load(identity);
     assert.equal(failedCall?.activeTurn?.attemptId, 'attempt-live');
     assert.equal(failedCall?.recoveryAttempt?.attemptId, 'recovery-thrown');
@@ -570,11 +570,14 @@ test('recovered after-turn retry preserves a concurrent newer model intent and a
         modelStarted: (() => void) | undefined;
         holdModel: Promise<void> | undefined;
 
-        override async requestModelChange(request: GoalModelChangeRequest) {
-            this.modelRequests.push(request.model);
-            this.modelStarted?.();
-            if (this.holdModel) await this.holdModel;
-            return { requestedModel: request.model, appliesAt: 'immediate' as const, effectiveModel: request.model };
+        override beginTurn(request: GoalBeginTurnRequest): AsyncIterable<GoalSessionEvent> {
+            const adapter = this;
+            return (async function* () {
+                adapter.modelRequests.push(request.requestedModel);
+                adapter.modelStarted?.();
+                if (adapter.holdModel) await adapter.holdModel;
+                yield { type: 'completion', outcome: 'succeeded' } as const;
+            })();
         }
     }
     const adapter = new BoundaryAdapter();
@@ -610,15 +613,20 @@ test('recovered after-turn retry preserves a concurrent newer model intent and a
 
     await supervisor.requestModelChange({ ...identity, controllerEpoch: 1, model: 'model-new' });
     releaseOldModel.resolve();
-    await assert.rejects(staleResume, StaleGoalSessionFenceError);
+    const oldInvocation = await staleResume;
+    assert.equal(oldInvocation.disposition, 'started');
     const newerIntent = await persistence.load(identity);
-    assert.equal(newerIntent?.status, 'paused');
-    assert.equal(newerIntent?.currentModel, 'model-a');
+    assert.equal(newerIntent?.status, 'idle');
+    assert.equal(newerIntent?.currentModel, 'model-old');
     assert.equal(newerIntent?.pendingModelChange, 'model-new');
 
     adapter.modelStarted = undefined;
     adapter.holdModel = undefined;
-    const recovered = await supervisor.resumeTurn({ ...identity, controllerEpoch: 1 });
+    const recovered = await supervisor.runTurn({
+        ...identity, controllerEpoch: 1, turnId: 'owner-next-turn', executionId: 'owner-next-execution',
+        attemptId: 'owner-next-attempt', objective: 'apply the newer deferred model', repository,
+        requestedModel: 'model-new',
+    });
     assert.equal(recovered.disposition, 'started');
     assert.equal(recovered.state.status, 'idle');
     assert.equal(recovered.state.currentModel, 'model-new');
@@ -631,5 +639,5 @@ test('recovered after-turn retry preserves a concurrent newer model intent and a
         'model-old', 'model-new',
     ]);
     assert.deepEqual(replay.filter(record => record.event.type === 'model_changed').map(record =>
-        record.event.type === 'model_changed' ? record.event.model : ''), ['model-new']);
+        record.event.type === 'model_changed' ? record.event.model : ''), ['model-old', 'model-new']);
 });

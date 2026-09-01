@@ -23,8 +23,11 @@ export function safeFailureDiagnostic(value: string, fallback: string): string {
 
 /** Rebuilds an untrusted provider exception without its stack, cause, or excess fields. */
 export function safeProviderException(error: unknown, fallback = 'Provider operation failed safely'): GoalSessionContractError {
-    const message = error instanceof Error ? error.message : '';
-    return new GoalSessionContractError(safeFailureDiagnostic(message, fallback), 'PROVIDER_OPERATION_FAILED');
+    // Never inspect an untrusted Error. message/cause/stack/name may be hostile
+    // getters and even a provider-created GoalSessionContractError is not a
+    // trusted internal contract error once it crosses this boundary.
+    void error;
+    return new GoalSessionContractError(fallback, 'PROVIDER_OPERATION_FAILED');
 }
 
 /** Copies only documented event fields; provider excess properties never cross persistence. */
@@ -34,7 +37,7 @@ export function sanitizeGoalSessionEvent(event: GoalSessionEvent): GoalSessionEv
         case 'assistant': return clean({ type: 'assistant', messageId: safeOptionalId(event.messageId), content: safeDiagnostic(event.content, '[redacted]'), data: safeJson(event.data) });
         case 'tool': return clean({ type: 'tool', toolCallId: safeId(event.toolCallId), name: safeId(event.name), phase: closed(event.phase, ['started', 'progress', 'completed', 'failed'], 'tool phase'), data: safeJson(event.data) });
         case 'todo': return clean({ type: 'todo', todoId: safeId(event.todoId), title: safeDiagnostic(event.title, '[redacted]'), status: closed(event.status, ['pending', 'in_progress', 'completed', 'cancelled'], 'todo status'), data: safeJson(event.data) });
-        case 'usage': return clean({ type: 'usage', model: safeOptionalId(event.model), inputTokens: nonNegativeInteger(event.inputTokens, 'inputTokens'), outputTokens: nonNegativeInteger(event.outputTokens, 'outputTokens'), cachedInputTokens: nonNegativeInteger(event.cachedInputTokens, 'cachedInputTokens'), costUsd: nonNegativeFinite(event.costUsd, 'costUsd'), data: safeJson(event.data) });
+        case 'usage': return clean({ type: 'usage', occurrenceId: safeId(event.occurrenceId), semantics: closed(event.semantics, ['delta', 'cumulative'], 'usage semantics'), watermark: requiredNonNegativeInteger(event.watermark, 'watermark'), model: safeOptionalId(event.model), inputTokens: nonNegativeInteger(event.inputTokens, 'inputTokens'), outputTokens: nonNegativeInteger(event.outputTokens, 'outputTokens'), cachedInputTokens: nonNegativeInteger(event.cachedInputTokens, 'cachedInputTokens'), costUsd: nonNegativeFinite(event.costUsd, 'costUsd'), data: safeJson(event.data) });
         case 'checkpoint': return clean({ type: 'checkpoint', checkpointId: safeId(event.checkpointId), recoveryMetadata: sanitizeRecoveryMetadata(event.recoveryMetadata), providerSessionId: safeOptionalId(event.providerSessionId) });
         case 'message_acknowledged': return { type: 'message_acknowledged', messageId: safeId(event.messageId) };
         case 'pause_requested': return { type: 'pause_requested', appliesAt: closed(event.appliesAt, ['immediate', 'next_safe_boundary', 'after_turn'], 'pause boundary') };
@@ -54,7 +57,7 @@ function clean<T extends GoalSessionEvent>(value: T): T {
 }
 
 function safeId(value: string): string {
-    if (!SAFE_ID.test(value) || SECRET.test(value)) throw new GoalSessionContractError('Provider emitted an unsafe identifier', 'UNSAFE_PROVIDER_VALUE');
+    if (typeof value !== 'string' || !SAFE_ID.test(value) || SECRET.test(value)) throw new GoalSessionContractError('Provider emitted an unsafe identifier', 'UNSAFE_PROVIDER_VALUE');
     return value;
 }
 
@@ -67,6 +70,7 @@ function safeOptionalId(value: string | undefined): string | undefined {
 }
 
 function safeOutput(value: string): string {
+    if (typeof value !== 'string') throw new GoalSessionContractError('Provider emitted non-string output', 'INVALID_PROVIDER_EVENT');
     if (SECRET.test(value) || value.includes('\0')) return '[redacted output]';
     return Buffer.byteLength(value) <= 1024 * 1024 ? value : Buffer.from(value).subarray(0, 1024 * 1024).toString();
 }

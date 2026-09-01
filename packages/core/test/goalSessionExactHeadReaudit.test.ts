@@ -394,7 +394,7 @@ test('reopen repairs a superseded provider-success/local-failure window before u
     await started.promise;
     await supervisor.requestModelChange({ ...control, model: 'model-c' });
     gate.resolve();
-    await assert.rejects(stale, /local failure after applying model-b/);
+    await assert.rejects(stale, /Provider operation failed safely/);
     assert.equal(effects.model, 'model-b');
 
     const replacementAdapter = new ExactHeadAdapter(effects);
@@ -423,7 +423,7 @@ test('expired stale model lease leaves recovery evidence and cached newest repai
     await started.promise;
     await supervisor.requestModelChange({ ...control, model: 'model-c' });
     gate.resolve();
-    await assert.rejects(stale, /local failure after applying model-b/);
+    await assert.rejects(stale, /Provider operation failed safely/);
     assert.equal(effects.model, 'model-b');
 
     const evidence = await firstPorts.load(identity);
@@ -595,7 +595,7 @@ test('same-controller cancellation can recover a completed failed reconciliation
     adapter.reconcileFailure = true;
     const ports = new InMemoryGoalSessionPorts();
     const { supervisor } = await recoverableRuntime(adapter, ports);
-    await assert.rejects(supervisor.reconcile(identity, 1, repository), /reconcile transport failed/);
+    await assert.rejects(supervisor.reconcile(identity, 1, repository), /Provider operation failed safely/);
     assert.equal((await ports.load(identity))?.recoveryAttempt?.phase, 'provider_in_doubt');
     assert.equal((await supervisor.cancel({ ...control, reason: 'cancel failed recovery' })).status, 'terminated');
     assert.equal(adapter.reconcileCalls, 1);

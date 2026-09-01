@@ -20,6 +20,7 @@ import {
     StaleGoalSessionFenceError,
 } from '../src/agents/goalSession/GoalSessionSupervisor.js';
 import { InMemoryGoalSessionPorts } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
+import { fingerprintGoalWorktree } from '../src/agents/goalSession/worktreeIdentity.js';
 
 const identity = { goalId: 'reaudit-goal', sessionId: 'reaudit-session' };
 const repository = {
@@ -39,6 +40,8 @@ class ReauditAdapter implements GoalSessionAdapter {
     readonly provider = 'reaudit-provider';
     readonly capabilities: GoalProviderCapabilities;
     readonly modelCalls: GoalProviderModelChangeRequest[] = [];
+    readonly turnCalls: GoalBeginTurnRequest[] = [];
+    readonly turnModelEffects = new Set<string>();
     readonly cancelCalls: GoalProviderCancelRequest[] = [];
     readonly modelEffects = new Set<string>();
     readonly cancelEffects: Set<string>;
@@ -64,7 +67,11 @@ class ReauditAdapter implements GoalSessionAdapter {
         return { providerSessionId: 'reaudit-native', recoveryMetadata: { checkpoint: 'open' }, model: 'model-a' };
     }
 
-    beginTurn(request: GoalBeginTurnRequest): AsyncIterable<GoalSessionEvent> { return this.stream(request); }
+    beginTurn(request: GoalBeginTurnRequest): AsyncIterable<GoalSessionEvent> {
+        this.turnCalls.push(structuredClone(request));
+        if (request.modelChange) this.turnModelEffects.add(request.modelChange.modelChangeId);
+        return this.stream(request);
+    }
 
     async resumeSession(
         _request: GoalSessionControlFence,
@@ -197,7 +204,7 @@ test('process replacement open resumes bound and unbound cancelling claims witho
             assert.equal(initial.cancelCalls[0].cancellationId, replacement.cancelCalls[0].cancellationId);
 
             releaseInitial.resolve();
-            await assert.rejects(originalCancel, StaleGoalSessionFenceError);
+            assert.equal((await originalCancel).status, 'terminated');
             releaseReplacement.resolve();
             assert.equal((await reopening).status, 'terminated');
             assert.equal((await reopenedSupervisor.openSession({
@@ -233,45 +240,48 @@ test('reopen converges when provider cancellation completes in the takeover CAS 
     await initial.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
     const cancelling = initial.cancel({ ...control, reason: 'complete during takeover' });
     await cancelStarted.promise;
-    persistence.beforeTakeover = async () => {
-        releaseCancel.resolve();
-        assert.equal((await cancelling).status, 'terminated');
-    };
     const replacementAdapter = new ReauditAdapter();
+    replacementAdapter.cancelStarted = releaseCancel.resolve;
     const replacement = new GoalSessionSupervisor(replacementAdapter, persistence.asRuntimePorts());
     const reopened = await replacement.openSession({ ...identity, provider: replacementAdapter.provider, controllerEpoch: 2 });
     assert.equal(reopened.status, 'terminated');
+    assert.equal((await cancelling).status, 'terminated');
     assert.equal(replacementAdapter.openCalls, 0);
-    assert.equal(replacementAdapter.cancelCalls.length, 0, 'the already-completed primitive is not signalled again');
+    assert.equal(replacementAdapter.cancelCalls.length, 1, 'replay uses the same durable cancellation identity');
     assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'completion').length, 1);
 });
-
-class CrashAfterModelClaimPorts extends InMemoryGoalSessionPorts {
-    private crash = true;
-
-    override async compareAndSet(expected: GoalSessionState, next: Omit<GoalSessionState, 'version'>) {
-        const saved = await super.compareAndSet(expected, next);
-        if (this.crash && !expected.modelChangeIntent && next.modelChangeIntent) {
-            this.crash = false;
-            throw new Error('Injected crash after model claim before provider call');
-        }
-        return saved;
-    }
-}
 
 test('next-turn model application is crash-safe at pre-call, post-provider/pre-CAS, and post-CAS windows', async t => {
     const capabilities = {
         nativeSessionId: 'eager', steering: 'next_turn', pause: 'after_turn', modelChange: 'next_turn',
     } as const;
+    const recoverInvocation = async (adapter: ReauditAdapter, persistence: InMemoryGoalSessionPorts) => {
+        persistence.setContainerInspection(identity, { status: 'missing' });
+        persistence.setRepositoryInspection(repository, {
+            ...repository, exists: true, observedRepository: repository.repository,
+            observedBranch: repository.branch, observedHeadSha: repository.headSha,
+            resolvedWorktreePath: repository.worktreePath,
+            observedWorktreeFingerprint: fingerprintGoalWorktree(repository),
+        });
+        adapter.reconcile = async () => ({
+            outcome: 'resumed' as const, reason: 'replay exact deferred invocation',
+            snapshot: { providerSessionId: 'reaudit-native', recoveryMetadata: { checkpoint: 'recovered' }, model: 'model-a' },
+        });
+        const recovered = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
+        const reconciled = await recovered.reconcile(identity, 2, repository);
+        assert.equal(reconciled.outcome, 'resumed');
+        return recovered.resumeTurn({ ...identity, controllerEpoch: 2 });
+    };
     await t.test('pre-call', async () => {
         const adapter = new ReauditAdapter(capabilities);
-        const persistence = new CrashAfterModelClaimPorts();
+        const persistence = new InMemoryGoalSessionPorts();
         const { supervisor } = await openRuntime(adapter, persistence);
-        await assert.rejects(supervisor.runTurn(turnRequest('model-b')), /after model claim before provider call/);
-        assert.equal(adapter.modelCalls.length, 0);
+        persistence.setTransitionFault('after_commit');
+        await assert.rejects(supervisor.runTurn(turnRequest('model-b')), /after state\/audit transaction commit/);
+        assert.equal(adapter.turnCalls.length, 0);
         const recovered = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
         assert.equal((await recovered.runTurn(turnRequest('model-b'))).state.currentModel, 'model-b');
-        assert.equal(adapter.modelEffects.size, 1);
+        assert.equal(adapter.turnModelEffects.size, 1);
     });
 
     await t.test('post-provider/pre-CAS', async () => {
@@ -280,11 +290,10 @@ test('next-turn model application is crash-safe at pre-call, post-provider/pre-C
         await supervisor.requestModelChange({ ...control, model: 'model-b' });
         persistence.setTransitionFault('before_commit');
         await assert.rejects(supervisor.runTurn(turnRequest()), /before state\/audit transaction commit/);
-        const recovered = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
-        await recovered.runTurn(turnRequest());
-        assert.equal(adapter.modelCalls.length, 2);
-        assert.equal(new Set(adapter.modelCalls.map(call => call.modelChangeId)).size, 1);
-        assert.equal(adapter.modelEffects.size, 1);
+        await recoverInvocation(adapter, persistence);
+        assert.equal(adapter.turnCalls.length, 2);
+        assert.equal(new Set(adapter.turnCalls.map(call => call.modelChange?.modelChangeId)).size, 1);
+        assert.equal(adapter.turnModelEffects.size, 1);
         assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'model_changed').length, 1);
     });
 
@@ -297,9 +306,9 @@ test('next-turn model application is crash-safe at pre-call, post-provider/pre-C
         const applied = await persistence.load(identity);
         assert.equal(applied?.currentModel, 'model-b');
         assert.equal(applied?.modelChangeIntent?.model, 'model-b', 'the applied claim remains until the turn is durably claimed');
-        const recovered = new GoalSessionSupervisor(adapter, persistence.asRuntimePorts());
-        await recovered.runTurn(turnRequest());
-        assert.equal(adapter.modelCalls.length, 1);
+        await recoverInvocation(adapter, persistence);
+        assert.equal(adapter.turnCalls.length, 2);
+        assert.equal(adapter.turnModelEffects.size, 1);
         assert.equal((await persistence.replay(identity)).filter(record => record.event.type === 'model_changed').length, 1);
     });
 });

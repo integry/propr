@@ -243,9 +243,9 @@ test('streamed model and pause events survive transition crash windows without s
                 const events = await ports.replay(identity);
                 assert.equal(events.filter(value => value.event.type === eventType).length,
                     fault === 'after_commit' ? 1 : 0);
-                assert.equal(events.filter(value => value.event.type === 'completion').length, 1);
-                assert.equal(events.slice(events.findIndex(value => value.event.type === 'completion') + 1)
-                    .some(value => value.event.type === eventType), false);
+                assert.equal(events.filter(value => value.event.type === 'completion').length, 0,
+                    'a runtime persistence crash leaves the exact invocation recoverable');
+                assert.equal((await ports.load(identity))?.activeTurn?.attemptId, 'final-attempt');
             });
         }
     }
@@ -331,7 +331,7 @@ test('reconcile routes bound and unbound cancelling sessions only through stable
                 replacementAdapter.cancelCalls[0].cancellationId,
             ]).size, 1);
             initialRelease.resolve();
-            await assert.rejects(cancelling, StaleGoalSessionFenceError);
+            assert.equal((await cancelling).status, 'terminated');
             replacementRelease.resolve();
             assert.equal((await recovery).state.status, 'terminated');
             assert.equal((await replacement.reconcile(identity, 2, repository)).state.status, 'terminated');
@@ -386,14 +386,12 @@ test('reconcile cannot invalidate cancellation completion racing its durable tak
     const { supervisor } = await openRuntime(adapter, ports);
     const cancelling = supervisor.cancel({ ...control, reason: 'finish during reconcile takeover' });
     await started.promise;
-    ports.beforeTakeover = async () => {
-        release.resolve();
-        assert.equal((await cancelling).status, 'terminated');
-    };
     const replacementAdapter = new FinalReauditAdapter();
+    replacementAdapter.cancelStarted = release.resolve;
     const replacement = new GoalSessionSupervisor(replacementAdapter, ports.asRuntimePorts());
     const result = await replacement.reconcile(identity, 2, repository);
     assert.equal(result.state.status, 'terminated');
+    assert.equal((await cancelling).status, 'terminated');
     assert.equal(replacementAdapter.reconcileCalls, 0);
-    assert.equal(replacementAdapter.cancelCalls.length, 0);
+    assert.equal(replacementAdapter.cancelCalls.length, 1);
 });

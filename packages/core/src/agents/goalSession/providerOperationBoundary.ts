@@ -1,7 +1,45 @@
 import type {
+    GoalExecutionIdentity,
     GoalModelChangeAcknowledgement,
+    GoalRepositoryIdentity,
     GoalSessionIdentity,
 } from './contract.js';
+
+export interface GoalProviderBarrierIntent {
+    generation: number;
+    operationId: string;
+    kind: 'cancellation' | 'terminal' | 'replacement' | 'lease_expiry';
+    phase: 'pending' | 'published';
+    claimedAt: string;
+    pendingCancellationId?: string;
+}
+
+export interface GoalModelInvocationEvidence extends GoalExecutionIdentity {
+    occurrenceId: string;
+    acceptedAt: string;
+}
+
+export interface GoalUsageAccounting {
+    version: 1;
+    lastWatermark: number;
+    occurrences: string[];
+}
+
+export interface GoalProviderDuplexTransport {
+    readonly output: AsyncIterable<string>;
+    write(message: string): Promise<void>;
+    closeInput(): void;
+    cancel(): Promise<void>;
+    readonly completion: Promise<{ exitCode: number | null }>;
+}
+
+export interface GoalProviderOpenContext extends GoalExecutionIdentity {
+    repository: GoalRepositoryIdentity;
+    requestedModel: string;
+    providerHomeTarget: string;
+    credentialTargets: string[];
+    transport: GoalProviderDuplexTransport;
+}
 
 /**
  * Serializable capability presented to the provider primitive at its first
