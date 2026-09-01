@@ -30,7 +30,14 @@
 //   - A new tab opened to app.propr.dev (no tunnel/flow in URL) never has URL
 //     authority, even if sessionStorage was copied from an existing tab.
 
-import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl, proprInstanceProxyUrl } from '@propr/shared';
+import {
+  canonicalProprProxySelector,
+  canonicalProprProxyUrl,
+  DEFAULT_PROPR_UI_ORIGIN,
+  isProprProxyUrl,
+  PROPR_UI_PROXY_LABEL_PREFIX,
+  PROPR_UI_PROXY_SUFFIX,
+} from '@propr/shared';
 import { normalizeApiBaseUrl } from '@propr/client';
 
 export interface ProprRuntimeConfig {
@@ -105,6 +112,38 @@ export const isValidHttpUrl = (value: string): boolean => {
   }
 };
 
+/** Whether a raw URL places a managed-looking tunnel label under propr.dev. */
+const claimsManagedTunnelNamespace = (value: string): boolean => {
+  // Inspect the literal authority before URL applies IDNA conversion. This is
+  // deliberately the same raw-authority classification used by the API: the
+  // first label starts with t- and the terminal labels are exactly propr.dev.
+  const rawAuthority = value
+    .slice(value.indexOf('://') + 3)
+    .split(/[/?#]/, 1)[0]
+    ?.split('@')
+    .pop()
+    ?.toLowerCase() ?? '';
+  const rawHostname = rawAuthority.replace(/:\d+$/, '').replace(/\.$/, '');
+  const rawLabels = rawHostname.split('.');
+  if (
+    rawLabels[0]?.startsWith(PROPR_UI_PROXY_LABEL_PREFIX) === true
+    && rawLabels.at(-2) === 'propr'
+    && rawLabels.at(-1) === 'dev'
+  ) return true;
+
+  try {
+    const hostname = new URL(value.trim()).hostname.toLowerCase().replace(/\.$/, '');
+    const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+    if (!hostname.endsWith(suffix)) return false;
+    return hostname
+      .slice(0, -suffix.length)
+      .split('.')
+      .some(label => label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX));
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Resolve the Connect deep-link API base from `?tunnel=`. Connect opens the
  * hosted UI as `https://app.propr.dev?tunnel=t-<id>.propr.dev` after a
@@ -118,29 +157,17 @@ export const hostedTunnelQueryApiBaseUrl = (
 ): string | null => {
   if (!isHostedUiOrigin(hostname)) return null;
 
-  const raw = new URLSearchParams(search).get('tunnel')?.trim();
-  if (!raw) return null;
+  // Inspect the literal query serialization before URLSearchParams can decode
+  // `%2f`, `%40`, Unicode, or another alternate spelling into something that a
+  // URL parser might reinterpret. Connect emits one literal scheme-less host.
+  const fields = search.replace(/^\?/, '').split('&');
+  const selectors = fields
+    .filter(field => field === 'tunnel' || field.startsWith('tunnel='))
+    .map(field => field.slice('tunnel='.length));
+  if (selectors.length !== 1 || !selectors[0] || /[%+]/.test(selectors[0])) return null;
 
-  try {
-    const normalized = normalizeApiBaseUrl(raw);
-    if (normalized && isProprProxyUrl(normalized)) return normalized;
-  } catch {
-    // A bare instance id/hostname is handled below. An absolute non-origin URL
-    // must not be repaired into a broader credential scope.
-    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(raw)) return null;
-  }
-
-  const instanceUrl = proprInstanceProxyUrl(raw);
-  if (instanceUrl) return instanceUrl;
-
-  try {
-    const url = new URL(`https://${raw}`);
-    if (/[^/]/.test(url.pathname) || url.search || url.hash) return null;
-    const normalized = `https://${url.hostname}`;
-    return isProprProxyUrl(normalized) ? normalized : null;
-  } catch {
-    return null;
-  }
+  const selector = canonicalProprProxySelector(selectors[0]);
+  return selector ? `https://${selector}` : null;
 };
 
 type HostedTunnelStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
@@ -432,10 +459,13 @@ export const resolveApiBaseUrl = (
   const selectedApiBaseUrl = (
     queryApiBaseUrl ||
     storedApiBaseUrl ||
-    config?.apiBaseUrl?.trim() ||
-    buildTimeApiBaseUrl?.trim() ||
+    (config?.apiBaseUrl?.trim() ? config.apiBaseUrl : undefined) ||
+    (buildTimeApiBaseUrl?.trim() ? buildTimeApiBaseUrl : undefined) ||
     ''
   );
+  if (isHostedUiOrigin(hostname) && claimsManagedTunnelNamespace(selectedApiBaseUrl)) {
+    return canonicalProprProxyUrl(selectedApiBaseUrl) ?? '';
+  }
   return normalizeApiBaseUrl(selectedApiBaseUrl);
 };
 /* eslint-enable max-params */
@@ -492,11 +522,10 @@ if (typeof window !== 'undefined') {
  * connection so they always target the same origin. Returns an empty string
  * for same-origin requests.
  *
- * Trailing slashes are stripped here, once, so the many callers that build
- * paths as `${API_BASE_URL}/api/...` never produce a double slash (e.g.
- * `https://t-abc.propr.dev//api/compatibility`). The orchestrator already
- * normalizes the values it injects, but a hand-served `public/config.js`,
- * `VITE_API_BASE_URL`, or manually set apiBaseUrl can still carry one.
+ * Generic/self-managed URL spellings are normalized here so callers that build
+ * paths as `${API_BASE_URL}/api/...` never produce a double slash. Hosted
+ * managed tunnel origins are checked before that normalization and must already
+ * use their exact lowercase, slash-free canonical spelling.
  */
 export const getApiBaseUrl = (): string => {
   if (

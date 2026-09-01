@@ -89,11 +89,11 @@ function emptyStackStatus(): ReturnType<OrchestratorModule["startStack"]> {
 
 const sink = () => {};
 
-test("tunnel setup builds env from the Connect proxy URL", () => {
+test("tunnel setup builds env from the exact Connect proxy URL", () => {
   assert.deepEqual(
     buildTunnelSetupEnv({
       token: "secret-token",
-      url: "https://t-abc123.propr.dev/",
+      url: "https://t-abc123.propr.dev",
     }),
     {
       PROPR_UI_TUNNEL_TOKEN: "secret-token",
@@ -106,6 +106,25 @@ test("tunnel setup builds env from the Connect proxy URL", () => {
       PROPR_WEB_AUTH_MODE: "connect",
     }
   );
+});
+
+test("tunnel setup rejects every noncanonical raw URL spelling", () => {
+  for (const url of [
+    "https://t-abc123.propr.dev/",
+    "https://t-abc123.propr.dev////",
+    "https://T-AbC123.ProPR.dev",
+    " https://t-abc123.propr.dev",
+    "https://user@t-abc123.propr.dev///",
+    "https://t-abc123.propr.dev:443///",
+    "https://t-abc123.propr.dev/path///",
+    "https://t-abc123.propr.dev?query=1///",
+    "https://t-abc123.propr.dev#fragment///",
+    "https://t%2dabc123.propr.dev///",
+    "https://t-abc123.propr.dev.///",
+    "https://t-\u00e4bc.propr.dev///",
+  ]) {
+    assert.throws(() => buildTunnelSetupEnv({ token: "secret-token", url }), /hosted proxy URL/);
+  }
 });
 
 test("tunnel setup builds env from an instance id", () => {
@@ -190,6 +209,15 @@ test("tunnel setup canonicalizes a mixed-case instance id", () => {
       PROPR_WEB_AUTH_MODE: "connect",
     }
   );
+});
+
+test("tunnel setup removes a mixed-case existing t- prefix exactly once", () => {
+  const env = buildTunnelSetupEnv({
+    token: "secret-token",
+    instanceId: "T-AbC123",
+  });
+  assert.equal(env.PROPR_INSTANCE_ID, "abc123");
+  assert.equal(env.PROPR_UI_PUBLIC_API_URL, "https://t-abc123.propr.dev");
 });
 
 test("tunnel setup --start starts a stopped stack with tunnel settings", async () => {

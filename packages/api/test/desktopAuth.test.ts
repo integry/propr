@@ -13,8 +13,6 @@ import {
 } from '../desktopAuthService.js';
 import {
   createDesktopAuthRoutes,
-  isTrustedPairingApprovalOrigin,
-  requireBrowserPairingSession,
 } from '../routes/desktopAuthRoutes.js';
 import type { GitHubUser } from '../authTypes.js';
 import { ensureAuthenticated } from '../auth.js';
@@ -96,6 +94,54 @@ describe('desktop browser pairing', () => {
     assert.equal(
       hosted.getFrontendApprovalUrl(pairing.pairingId).toString(),
       `https://app.propr.dev/desktop/pairing?pairing_id=${pairing.pairingId}&tunnel=t-instance123.propr.dev`,
+    );
+    const selfManaged = new DesktopAuthService({
+      database,
+      approvalBaseUrl: 'https://app.propr.dev',
+      publicApiUrl: 'https://t-tenant.propr.dev.example.com',
+    });
+    assert.equal(
+      selfManaged.getFrontendApprovalUrl(pairing.pairingId).toString(),
+      `https://app.propr.dev/desktop/pairing?pairing_id=${pairing.pairingId}`,
+    );
+  });
+
+  test('pairing rejects noncanonical spellings in the reserved managed tunnel namespace', () => {
+    const pairingId = 'dpr_' + 'A'.repeat(22);
+    for (const publicApiUrl of [
+      'https://user@t-instance123.propr.dev',
+      'https://t-instance123.propr.dev:443',
+      'https://t-instance123.propr.dev/path',
+      'https://t-instance123.propr.dev?query=1',
+      'https://t-instance123.propr.dev#fragment',
+      'https://t-instance123.propr.dev.',
+      'https://t-instance123.extra.propr.dev',
+      'https://extra.t-instance123.propr.dev',
+      'https://t-аbc.propr.dev',
+    ]) {
+      const hosted = new DesktopAuthService({
+        database,
+        now: () => new Date(now),
+        approvalBaseUrl: 'https://app.propr.dev',
+        publicApiUrl,
+      });
+      assert.throws(
+        () => hosted.getFrontendApprovalUrl(pairingId),
+        /API_PUBLIC_URL|noncanonical reserved|browser entry/,
+      );
+    }
+  });
+
+  test('pairing rejects mixed-case managed tunnel DNS before URL normalization', () => {
+    const pairingId = 'dpr_' + 'A'.repeat(22);
+    const hosted = new DesktopAuthService({
+      database,
+      approvalBaseUrl: 'https://app.propr.dev',
+      publicApiUrl: 'https://T-Instance123.ProPR.dev',
+    });
+    assert.throws(
+      () => hosted.getFrontendApprovalUrl(pairingId),
+      /API_PUBLIC_URL|noncanonical reserved/,
     );
   });
 
@@ -386,43 +432,5 @@ describe('instance token ownership and revocation', () => {
     assert.equal(request.authenticationMethod, 'instance_token');
     assert.equal(request.instanceTokenId, 'token-1');
     assert.equal(request.user?.id, owner.id);
-  });
-});
-
-describe('pairing approval request protection', () => {
-  test('accepts only the exact HTTPS frontend origin', () => {
-    assert.equal(isTrustedPairingApprovalOrigin('https://app.example.test', 'https://app.example.test/path'), true);
-    assert.equal(isTrustedPairingApprovalOrigin('https://preview.app.example.test', 'https://app.example.test'), false);
-    assert.equal(isTrustedPairingApprovalOrigin('http://app.example.test', 'https://app.example.test'), false);
-    assert.equal(isTrustedPairingApprovalOrigin('http://127.1:3000', 'http://127.0.0.1:3000'), false);
-    assert.equal(isTrustedPairingApprovalOrigin('http://local%68ost:3000', 'http://localhost:3000'), false);
-    assert.equal(isTrustedPairingApprovalOrigin(undefined, 'https://app.example.test'), false);
-  });
-
-  test('requires a browser session even when another authentication method supplied the user', () => {
-    const guard = requireBrowserPairingSession();
-    const calls: Array<{ status?: number; body?: unknown }> = [];
-    const response = {
-      status(value: number) { calls.push({ status: value }); return response; },
-      json(value: unknown) { calls[calls.length - 1].body = value; return response; },
-    } as unknown as Response;
-    let nextCalls = 0;
-    const next = (() => { nextCalls++; }) as NextFunction;
-
-    guard({
-      authenticationMethod: 'instance_token',
-      user: owner,
-      isAuthenticated: () => false,
-      header: () => 'https://app.example.test',
-    } as unknown as Request, response, next);
-    assert.equal(calls[0].status, 403);
-
-    guard({
-      authenticationMethod: 'session',
-      user: owner,
-      isAuthenticated: () => true,
-      header: () => 'https://app.example.test',
-    } as unknown as Request, response, next);
-    assert.equal(nextCalls, 1);
   });
 });

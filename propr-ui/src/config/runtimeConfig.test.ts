@@ -138,6 +138,45 @@ describe('getApiBaseUrl', () => {
     expect(getApiBaseUrl()).toBe('https://app.propr.dev');
   });
 
+  it('does not normalize noncanonical managed origins into hosted authority', async () => {
+    const { resolveApiBaseUrl } = await import('./runtimeConfig');
+    for (const apiBaseUrl of [
+      'https://t-abc123.propr.dev/',
+      'https://t-abc123.propr.dev//',
+      ' https://t-abc123.propr.dev',
+      'https://T-AbC123.ProPR.dev',
+      'http://t-abc123.propr.dev',
+      'https://t-abc123.propr.dev:444',
+      'https://user:password@t-abc123.propr.dev',
+      'https://t-abc123.propr.dev/api',
+      'https://extra.t-abc123.propr.dev',
+      'https://t-é.propr.dev',
+      'https://t-é.propr.dev:443',
+      'https://t-é.propr.dev:444',
+      'https://user:password@t-é.propr.dev/api',
+      'https://t-é.nested.propr.dev',
+    ]) {
+      expect(resolveApiBaseUrl(
+        'app.propr.dev',
+        '',
+        { apiBaseUrl },
+        undefined,
+      )).toBe('');
+    }
+
+    for (const unrelated of [
+      'https://t-x.propr.dev.example.com',
+      'https://nested.t-x.propr.dev.example.com',
+    ]) {
+      expect(resolveApiBaseUrl(
+        'app.propr.dev',
+        '',
+        { apiBaseUrl: unrelated },
+        undefined,
+      )).toBe(unrelated);
+    }
+  });
+
   it('returns empty on the hosted OAuth completion route with a tunnel without touching hosted session state', async () => {
     const hostedWindow = stubHostedWindow({
       search: '?oauth_complete=true&tunnel=t-attacker.propr.dev',
@@ -232,18 +271,21 @@ describe('hosted tunnel query API base', () => {
     ).toBe('https://t-abc123.propr.dev');
   });
 
-  it('rejects a full hosted proxy URL carrying a non-default path', async () => {
+  it('rejects full URLs and alternate selector serialization', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
-    expect(
-      hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=https%3A%2F%2Ft-abc123.propr.dev%2F%2F')
-    ).toBeNull();
+    for (const bad of [
+      '?tunnel=https%3A%2F%2Ft-abc123.propr.dev',
+      '?tunnel=https%3A%2F%2Ft-abc123.propr.dev%2F%2F',
+      '?tunnel=t-abc123.propr.dev%2F',
+      '?tunnel=abc123',
+      '?tunnel=t-abc123.propr.dev.',
+      '?tunnel=t-abc123.propr.dev&tunnel=t-other.propr.dev',
+    ]) expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', bad)).toBeNull();
   });
 
-  it('accepts an instance id for manually built hosted UI links', async () => {
+  it('rejects noncanonical DNS case', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
-    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=abc123')).toBe(
-      'https://t-abc123.propr.dev'
-    );
+    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=T-AbC123.ProPR.dev')).toBeNull();
   });
 
   it('ignores tunnel query params off the hosted UI origin', async () => {
@@ -262,6 +304,11 @@ describe('hosted tunnel query API base', () => {
       '?tunnel=t-abc123.propr.dev%2Fapi',
       '?tunnel=t-abc123.propr.dev%3Ffrom%3Dconnect',
       '?tunnel=t-abc123.propr.dev%23fragment',
+      '?tunnel=user%40t-abc123.propr.dev',
+      '?tunnel=t-abc123.propr.dev%3A443',
+      '?tunnel=t-%D0%B0bc.propr.dev',
+      '?tunnel=t-abc123%2Epropr.dev',
+      '?tunnel=%20t-abc123.propr.dev',
       '?tunnel=%2Fapi'
     ]) {
       expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', bad)).toBeNull();
@@ -287,7 +334,7 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
 
     const flowId = rememberHostedTunnelApiBaseUrl(
       'app.propr.dev',
-      'https://t-abc123.propr.dev/',
+      'https://t-abc123.propr.dev',
       storage,
       'tab-context'
     );
@@ -310,7 +357,7 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
       readStoredHostedTunnelApiBaseUrl,
     } = await load();
     const storage = memoryStorage({
-      [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev/',
+      [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev',
       [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'test-context-id',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'test-flow-id',
     });

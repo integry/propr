@@ -43,11 +43,11 @@ export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:2024.12.2';
 export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
 
 // Whether an instance id is a valid single DNS label for the proxy hostname
-// (t-<id>.propr.dev): 1–63 chars, ASCII letters/digits/hyphens only, no
-// leading/trailing hyphen. Mirrors isValidProprInstanceId() in the shared pkg.
+// (t-<id>.propr.dev): 1–61 chars (leaving room for `t-`), ASCII
+// letters/digits/hyphens only, no leading/trailing hyphen.
 export function isValidProprInstanceId(instanceId) {
     const id = (instanceId ?? '').trim();
-    return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(id);
+    return /^[a-z0-9]([a-z0-9-]{0,59}[a-z0-9])?$/i.test(id);
 }
 
 // Derive the per-instance public API/UI URL (https://t-<instanceId>.propr.dev)
@@ -61,6 +61,25 @@ export function proprInstanceProxyUrl(instanceId) {
     return isValidProprInstanceId(id) ? `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
 }
 
+export function canonicalProprProxyUrl(url) {
+    if (!url || url !== url.trim() || /[^\x20-\x7e]/.test(url)) return undefined;
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== ''
+            || parsed.port !== '' || parsed.pathname !== '/' || parsed.search !== '' || parsed.hash !== '') return undefined;
+        const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+        if (!parsed.hostname.endsWith(suffix)) return undefined;
+        const label = parsed.hostname.slice(0, -suffix.length);
+        if (label.length > 63 || label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) return undefined;
+        const id = label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length);
+        if (!isValidProprInstanceId(id)) return undefined;
+        const canonical = `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}`;
+        return url === canonical ? canonical : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 // Whether a URL is a hosted per-instance proxy URL (https://t-<id>.propr.dev).
 // propr-routing only forwards /api/* and /socket.io/* on these hosts, so the
 // tunnel base URL must be one of them. Requires exactly one t-<instance-id>
@@ -69,28 +88,12 @@ export function proprInstanceProxyUrl(instanceId) {
 // proprTunnelEndpoints does not double up the /api prefix). Mirrors
 // isProprProxyUrl() in the shared pkg.
 export function isProprProxyUrl(url) {
-    if (!url) return false;
-    try {
-        const { protocol, hostname, pathname, search, hash } = new URL(url);
-        if (protocol !== 'https:') return false;
-        // Trailing slashes are tolerated; any real path segment/query/fragment
-        // is rejected so a base path can't double up the appended /api prefix.
-        if (/[^/]/.test(pathname) || search || hash) return false;
-        const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
-        if (!hostname.endsWith(suffix)) return false;
-        const label = hostname.slice(0, -suffix.length);
-        if (label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) {
-            return false;
-        }
-        return isValidProprInstanceId(label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length));
-    } catch {
-        return false;
-    }
+    return canonicalProprProxyUrl(url) !== undefined;
 }
 
 function normalizeProprInstanceId(instanceId) {
     const id = (instanceId ?? '').trim();
-    return id.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+    return id.toLowerCase().startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
         ? id.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)
         : id;
 }
@@ -216,9 +219,14 @@ function envFileValueFrom(envFileLocal, name) {
  * `check`/`init` commands to inspect HOST_*_DIR settings without re-reading.
  */
 export function readEnvFile(envFilePath) {
+    if (!envFilePath || !isReadableFile(envFilePath)) return {};
+    return parseEnvFileContents(readFileSync(envFilePath, 'utf8'));
+}
+
+/** Parse already-authorized env bytes without reopening their pathname. */
+export function parseEnvFileContents(contents) {
     const out = {};
-    if (!envFilePath || !isReadableFile(envFilePath)) return out;
-    for (const rawLine of readFileSync(envFilePath, 'utf8').split(/\r?\n/)) {
+    for (const rawLine of contents.split(/\r?\n/)) {
         const parsed = parseEnvAssignment(rawLine);
         if (parsed) out[parsed.name] = parsed.value;
     }
@@ -251,10 +259,15 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // from the CLI/launcher process environment. Inspect that exact source so a
     // developer's shell NODE_ENV cannot accidentally describe (or alter) the
     // packaged container runtime.
-    const nodeEnv = readEnvFile(envFileLocal).NODE_ENV || undefined;
+    const authorizedEnvFileValues = overrides.envFileValues;
+    const nodeEnv = (authorizedEnvFileValues ?? readEnvFile(envFileLocal)).NODE_ENV || undefined;
 
     // value precedence: explicit override → process env → .env file
-    const get = (name) => env[name] !== undefined ? env[name] : envFileValueFrom(envFileLocal, name) || undefined;
+    const get = (name) => env[name] !== undefined
+        ? env[name]
+        : authorizedEnvFileValues
+            ? authorizedEnvFileValues[name] || undefined
+            : envFileValueFrom(envFileLocal, name) || undefined;
 
     const hostData = overrides.hostData ?? env.PROPR_DATA_DIR;
     const hostLogs = overrides.hostLogs ?? env.PROPR_LOGS_DIR;
@@ -338,12 +351,11 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || manifest.images.cloudflared || DEFAULT_CLOUDFLARED_IMAGE;
     // Explicit URL wins; otherwise derive from the instance id's proxy hostname.
     // Falls back to undefined for local development (no instance id), where
-    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Trailing
-    // slashes are stripped once here so every consumer (API/worker/UI env, status
-    // output, endpoint rendering) sees one canonical form — the derived URL never
-    // has one, but an explicit PROPR_UI_PUBLIC_API_URL might.
-    const uiPublicApiUrl =
-        (get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId))?.replace(/\/+$/, '') || undefined;
+    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Keep
+    // explicit bytes unchanged so alternate spellings are rejected before any
+    // parser or consumer can normalize them into authority.
+    const configuredUiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId);
+    const uiPublicApiUrl = configuredUiPublicApiUrl || undefined;
 
     return Object.freeze({
         stack, network, envFileLocal, envFileHost, nodeEnv,
@@ -507,11 +519,13 @@ export function validateDockerBindPath(name, value, { containerPath = false } = 
 
 const REMOTE_IMAGE_CHECK_TIMEOUT_MS = 5000;
 
-export function docker(args, { capture = false, timeout } = {}) {
+export function docker(args, { capture = false, timeout, env, maxBuffer } = {}) {
     const res = spawnSync('docker', args, {
         stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
         encoding: 'utf8',
         timeout,
+        env,
+        maxBuffer,
     });
     if (res.status !== 0 && !capture) {
         const detail = res.error?.message || (res.signal ? `signal ${res.signal}` : `code ${res.status}`);
@@ -1474,7 +1488,7 @@ export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache } = {}
 
 /** Async mirror of getStackStatus. */
 export async function getStackStatusAsync(cfg) {
-    const res = await dockerAsync(STACK_STATUS_PS_ARGS);
+    const res = await dockerAsync(stackStatusPsArgs(cfg));
     return parseStackStatus(cfg, res.stdout);
 }
 
@@ -1565,16 +1579,76 @@ export function parseStackStatus(cfg, stdout) {
     return { stack: cfg.stack, network: cfg.network, running: anyRunning, services };
 }
 
-const STACK_STATUS_PS_ARGS = ['ps', '-a', '--format', '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'];
+const STACK_STATUS_MAX_BYTES = 64 * 1024;
+
+function stackStatusPsArgs(cfg) {
+    // `cfg.stack` has already passed the Docker-name validation before Connect
+    // reaches this boundary. Keep the label expression in one argv element so
+    // neither a shell nor Docker's fuzzy name matching can broaden discovery.
+    if (typeof cfg?.stack !== 'string' || cfg.stack.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(cfg.stack)) {
+        throw new Error('Docker stack status scope is invalid');
+    }
+    return [
+        'ps',
+        '-a',
+        '--filter',
+        `label=propr.stack=${cfg.stack}`,
+        '--format',
+        '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}',
+    ];
+}
+
+/**
+ * Run and strictly validate one bounded Docker status inspection. The command
+ * result is retained so callers can distinguish an absent service (a successful
+ * empty inspection) from a missing binary, daemon error, timeout, signal, or
+ * truncated/malformed output.
+ */
+export function inspectStackStatus(cfg, { timeout, env } = {}) {
+    let args;
+    try {
+        args = stackStatusPsArgs(cfg);
+    } catch (error) {
+        return { result: { status: null, stdout: '', stderr: '', error } };
+    }
+    const result = docker(args, {
+        capture: true,
+        timeout,
+        env,
+        maxBuffer: STACK_STATUS_MAX_BYTES,
+    });
+    if (result.status !== 0 || result.error || result.signal || typeof result.stdout !== 'string') {
+        return { result };
+    }
+
+    const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
+    const seenExpectedNames = new Set();
+    const validStates = new Set(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead']);
+    for (const line of result.stdout.split('\n')) {
+        if (line === '') continue;
+        const fields = line.endsWith('\r') ? line.slice(0, -1).split('\t') : line.split('\t');
+        if (fields.length !== 4) return { result };
+        const [name, state, status] = fields;
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) || !validStates.has(state) || status.length === 0) {
+            return { result };
+        }
+        // The daemon-side label filter is a scope reduction, not an authority
+        // assertion. Every row returned for the target label must still be one
+        // of this stack's canonical service containers, exactly once.
+        if (!expectedNames.has(name) || seenExpectedNames.has(name)) return { result };
+        seenExpectedNames.add(name);
+    }
+    return { result, status: parseStackStatus(cfg, result.stdout) };
+}
 
 /** Per-service state for the whole stack, discovered by canonical container name. */
-export function getStackStatus(cfg) {
-    const res = docker(STACK_STATUS_PS_ARGS, { capture: true });
+export function getStackStatus(cfg, { timeout } = {}) {
+    const res = docker(stackStatusPsArgs(cfg), { capture: true, timeout });
     return parseStackStatus(cfg, res.stdout);
 }
 
-export function getServiceState(cfg, service) {
-    return getStackStatus(cfg).services.find((s) => s.service === service);
+export function getServiceState(cfg, service, opts) {
+    return getStackStatus(cfg, opts).services.find((s) => s.service === service);
 }
 
 // Best-effort GET <publicApiUrl>/api/status behind a hard timeout. propr-routing

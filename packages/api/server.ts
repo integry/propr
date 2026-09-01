@@ -72,6 +72,7 @@ import {
   createWebhookRequestRateLimiter,
 } from './requestRateLimits.js';
 import { desktopAuthService } from './desktopAuthService.js';
+import { prohibitApiResponseCaching } from './apiCacheControl.js';
 import { startConfigReloadSubscription, type ConfigReloadSubscription } from './services/configReloadSubscription.js';
 import {
   assertNoDuplicateRoutes,
@@ -150,6 +151,11 @@ const HOST = resolveApiListenHost();
 
 configureApiProxyTrust(app);
 
+// This is the earliest `/api` response boundary. Keep it before CORS and every
+// global or route limiter so success, failure, and saturation responses cannot
+// be cached by a browser or intermediary.
+app.use('/api', prohibitApiResponseCaching);
+
 if (!process.env.FRONTEND_URL) {
   console.error('FRONTEND_URL environment variable is required');
   process.exit(1);
@@ -175,14 +181,6 @@ app.use(corsRejectionHandler);
 
 app.use('/api', createApiRequestRateLimiter());
 setupWebhookRoute();
-
-// Prevent caching of API responses to avoid stale CORS issues
-app.use('/api', (_req, res, next) => {
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
-  next();
-});
 
 app.use(express.json({ limit: '1mb' }));
 

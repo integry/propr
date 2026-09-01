@@ -1,0 +1,520 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  cpSync,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdtempSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir, userInfo } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { getOrCreatePublicInstanceIdentity } from '../packages/cli/src/connectIdentity.js';
+
+const CLI = join(process.cwd(), 'packages', 'cli', 'dist', 'index.js');
+const FETCH_FIXTURE = join(process.cwd(), 'test', 'fixtures', 'connectFetchMock.mjs');
+const OS_HOME_FIXTURE = join(process.cwd(), 'test', 'fixtures', 'connectOsHomeMock.mjs');
+const IDENTITY = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ENDPOINT = 'https://t-abc123.propr.dev';
+const FIXTURE_NODE_ARGS = Object.freeze([
+  '--no-warnings',
+  '--import',
+  OS_HOME_FIXTURE,
+  '--import',
+  FETCH_FIXTURE,
+]);
+
+assert.deepEqual(FIXTURE_NODE_ARGS, [
+  '--no-warnings',
+  '--import',
+  OS_HOME_FIXTURE,
+  '--import',
+  FETCH_FIXTURE,
+]);
+
+interface PathSnapshot {
+  kind: 'absent' | 'directory' | 'file' | 'other' | 'symlink';
+  metadata?: {
+    birthtimeMs: number;
+    ctimeMs: number;
+    dev: number;
+    gid: number;
+    ino: number;
+    mode: number;
+    mtimeMs: number;
+    nlink: number;
+    size: number;
+    uid: number;
+  };
+  sha256?: string;
+  target?: string;
+}
+
+function snapshotPath(path: string): PathSnapshot {
+  let named: ReturnType<typeof lstatSync>;
+  try {
+    named = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'absent' };
+    throw error;
+  }
+  const metadata = {
+    birthtimeMs: named.birthtimeMs,
+    ctimeMs: named.ctimeMs,
+    dev: named.dev,
+    gid: named.gid,
+    ino: named.ino,
+    mode: named.mode,
+    mtimeMs: named.mtimeMs,
+    nlink: named.nlink,
+    size: named.size,
+    uid: named.uid,
+  };
+  if (named.isSymbolicLink()) return { kind: 'symlink', metadata, target: readlinkSync(path) };
+  if (named.isDirectory()) return { kind: 'directory', metadata };
+  if (!named.isFile()) return { kind: 'other', metadata };
+
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const held = fstatSync(fd);
+    assert.equal(held.dev, named.dev, 'OS config changed while its bytes were snapshotted');
+    assert.equal(held.ino, named.ino, 'OS config changed while its bytes were snapshotted');
+    return {
+      kind: 'file',
+      metadata,
+      sha256: createHash('sha256').update(readFileSync(fd)).digest('hex'),
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function makeRoot(
+  parent: string,
+  name: string,
+  endpoint = ENDPOINT,
+  tunnel: { token?: string; enabled?: string } = {
+    token: 'relay-token-in-root-SENTINEL',
+    enabled: 'true',
+  },
+): string {
+  const root = join(parent, name);
+  mkdirSync(join(root, 'data'), { recursive: true, mode: 0o700 });
+  chmodSync(root, 0o700);
+  chmodSync(join(root, 'data'), 0o700);
+  writeFileSync(join(root, '.env'), [
+    'PROPR_STACK=authorized',
+    'PROPR_INSTANCE_ID=abc123',
+    `PROPR_UI_PUBLIC_API_URL=${endpoint}`,
+    ...(tunnel.enabled === undefined ? [] : [`PROPR_UI_TUNNEL_ENABLED=${tunnel.enabled}`]),
+    ...(tunnel.token === undefined ? [] : [`PROPR_UI_TUNNEL_TOKEN=${tunnel.token}`]),
+    '',
+  ].join('\n'), { mode: 0o600 });
+  chmodSync(join(root, '.env'), 0o600);
+  return root;
+}
+
+function persistTunnelOverride(home: string, root: string, enabled: boolean): void {
+  const configDir = join(home, '.propr');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(configDir, 0o700);
+  const configPath = join(configDir, 'config.json');
+  writeFileSync(configPath, JSON.stringify({
+    tunnelEnabledByRoot: { [root]: enabled },
+  }), { mode: 0o600 });
+  chmodSync(configPath, 0o600);
+}
+
+function installFakeDocker(parent: string): string {
+  const bin = join(parent, 'bin');
+  mkdirSync(bin, { mode: 0o700 });
+  const docker = join(bin, 'docker');
+  writeFileSync(docker, `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+const behaviorPath = path.join(__dirname, 'docker-behavior');
+const behavior = fs.existsSync(behaviorPath) ? fs.readFileSync(behaviorPath, 'utf8') : 'ready';
+const expectationsPath = path.join(__dirname, 'docker-env-expectations');
+if (fs.existsSync(expectationsPath)) {
+  const expected = JSON.parse(fs.readFileSync(expectationsPath, 'utf8'));
+  if (Object.entries(expected).some(([name, value]) => process.env[name] !== value)) process.exit(8);
+}
+const denied = ['DOCKER_AUTH_CONFIG', 'REGISTRY_PASSWORD', 'PROPR_CONNECTOR_TOKEN', 'PROPR_RELAY_TOKEN', 'GITHUB_TOKEN', 'NODE_OPTIONS', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'UNTRUSTED_AMBIENT'];
+if (denied.some((name) => process.env[name] !== undefined)) process.exit(8);
+const expectedArgs = ['ps', '-a', '--filter', 'label=propr.stack=authorized', '--format', '{{.Names}}\\t{{.State}}\\t{{.Status}}\\t{{.Ports}}'];
+const exactFilter = JSON.stringify(process.argv.slice(2)) === JSON.stringify(expectedArgs);
+const replacementPath = path.join(__dirname, 'replace-root');
+if (fs.existsSync(replacementPath)) {
+  const root = fs.readFileSync(replacementPath, 'utf8');
+  const detached = root + '.detached';
+  fs.renameSync(root, detached);
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true, mode: 0o700 });
+  fs.chmodSync(root, 0o700);
+  fs.chmodSync(path.join(root, 'data'), 0o700);
+  fs.writeFileSync(path.join(root, '.env'), 'REPLACEMENT_BYTES_SENTINEL=never-read\\n', { mode: 0o600 });
+}
+process.stderr.write('docker-private-output-SENTINEL\\n');
+if (behavior === 'nonzero') process.exit(9);
+if (behavior === 'timeout') setInterval(() => {}, 60_000);
+if (behavior === 'signal') process.kill(process.pid, 'SIGTERM');
+if (behavior === 'large-unrelated') process.stdout.write(exactFilter ? 'authorized-tunnel\\trunning\\tUp 1 second\\t\\n' : 'unrelated-api\\trunning\\tUp\\t\\n'.repeat(5000));
+else if (behavior === 'duplicate') process.stdout.write('authorized-tunnel\\trunning\\tUp\\t\\nauthorized-tunnel\\trunning\\tUp\\t\\n');
+else if (behavior === 'unknown') process.stdout.write('authorized-hostile\\trunning\\tUp\\t\\n');
+else if (behavior === 'malformed') process.stdout.write('authorized-tunnel running malformed-output-SENTINEL\\n');
+else if (behavior === 'truncated') process.stdout.write('x'.repeat(70 * 1024));
+else if (behavior === 'absent') process.stdout.write('');
+else if (behavior === 'stopped') process.stdout.write('authorized-tunnel\\texited\\tExited (0) 1 second ago\\t\\n');
+else process.stdout.write('authorized-tunnel\\trunning\\tUp 1 second\\t\\n');
+`, { mode: 0o700 });
+  chmodSync(docker, 0o700);
+  return bin;
+}
+
+interface InvocationOptions {
+  cli?: string;
+  dockerBehavior?: 'ready' | 'absent' | 'stopped' | 'nonzero' | 'timeout' | 'signal' | 'malformed' | 'truncated' | 'large-unrelated' | 'duplicate' | 'unknown';
+  replaceRoot?: boolean;
+  windowsSemantics?: boolean;
+  arguments?: string[];
+  environment?: Record<string, string>;
+  dockerEnvironmentExpectations?: Record<string, string>;
+}
+
+function invoke(
+  root: string,
+  mode: string,
+  bin: string,
+  privateParent: string,
+  options: InvocationOptions = {},
+): { status: number | null; stdout: string; stderr: string; document: Record<string, unknown> } {
+  const credentialPath = join(privateParent, 'credential-path-SENTINEL');
+  const behaviorPath = join(bin, 'docker-behavior');
+  const replacementPath = join(bin, 'replace-root');
+  const expectationsPath = join(bin, 'docker-env-expectations');
+  if (options.dockerBehavior) writeFileSync(behaviorPath, options.dockerBehavior, { mode: 0o600 });
+  if (options.replaceRoot) writeFileSync(replacementPath, root, { mode: 0o600 });
+  if (options.dockerEnvironmentExpectations) {
+    writeFileSync(expectationsPath, JSON.stringify(options.dockerEnvironmentExpectations), { mode: 0o600 });
+  }
+  const result = spawnSync(process.execPath, [
+    ...FIXTURE_NODE_ARGS,
+    options.cli ?? CLI,
+    ...(options.arguments ?? ['connect', 'status', '--json', '--root', root]),
+  ], {
+    shell: false,
+    cwd: join(privateParent, 'hostile-cwd'),
+    encoding: 'utf8',
+    timeout: 10_000,
+    env: {
+      ...process.env,
+      PATH: bin,
+      HOME: join(privateParent, 'home-private-SENTINEL'),
+      PROPR_TEST_OS_HOME: join(privateParent, 'isolated-os-home'),
+      PROPR_TEST_DISCOVERY_MODE: mode,
+      PROPR_TEST_PUBLIC_IDENTITY: IDENTITY,
+      PROPR_TEST_PLATFORM: options.windowsSemantics ? 'win32' : '',
+      PROPR_STACK: 'ambient-stack-SENTINEL',
+      PROPR_NETWORK: 'ambient-network-SENTINEL',
+      PROPR_ROOT: join(privateParent, 'ambient-root-SENTINEL'),
+      PROPR_INSTANCE_ID: 'ambient-instance-SENTINEL',
+      PROPR_UI_PUBLIC_API_URL: 'https://t-ambient.propr.dev',
+      PROPR_UI_TUNNEL_ENABLED: 'false',
+      PROPR_UI_TUNNEL_TOKEN: 'ambient-tunnel-token-SENTINEL',
+      API_PUBLIC_URL: 'https://t-ambient-api.propr.dev',
+      API_PORT: '4999',
+      UI_PORT: '5999',
+      DOCS_PORT: '6999',
+      HOST_DATA_DIR: join(privateParent, 'ambient-data-SENTINEL'),
+      HOST_LOGS_DIR: join(privateParent, 'ambient-logs-SENTINEL'),
+      HOST_REPOS_DIR: join(privateParent, 'ambient-repos-SENTINEL'),
+      PROPR_CONNECTOR_TOKEN: 'connector-token-SENTINEL',
+      PROPR_RELAY_TOKEN: 'relay-token-SENTINEL',
+      GITHUB_TOKEN: 'github-token-SENTINEL',
+      GH_PRIVATE_KEY_PATH: credentialPath,
+      UNTRUSTED_RAW_URL: 'https://userinfo:secret@raw-url-SENTINEL.invalid/path',
+      DOCKER_AUTH_CONFIG: 'docker-auth-SENTINEL',
+      REGISTRY_PASSWORD: 'registry-password-SENTINEL',
+      HTTP_PROXY: 'http://proxy-SENTINEL.invalid',
+      HTTPS_PROXY: 'http://proxy-SENTINEL.invalid',
+      NO_PROXY: 'no-proxy-SENTINEL',
+      UNTRUSTED_AMBIENT: 'ambient-SENTINEL',
+      ...options.environment,
+      NODE_OPTIONS: undefined,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  rmSync(behaviorPath, { force: true });
+  rmSync(replacementPath, { force: true });
+  rmSync(expectationsPath, { force: true });
+  assert.equal(result.signal, null);
+  assert.ok(
+    result.stdout.length > 0 && result.stdout.length < 2048,
+    `status=${result.status} stderr=${result.stderr}`,
+  );
+  assert.equal(result.stdout.trim().split(/\r?\n/).length, 1);
+  const document = JSON.parse(result.stdout) as Record<string, unknown>;
+  const expectedStderr = document.status === 'ready'
+    ? ''
+    : `ProPR Connect discovery: ${document.status}.\n`;
+  assert.equal(result.stderr, expectedStderr);
+  assert.ok(result.stderr.length < 128);
+  for (const sentinel of [
+    'connector-token-SENTINEL',
+    'relay-token-SENTINEL',
+    'github-token-SENTINEL',
+    credentialPath,
+    privateParent,
+    'docker-private-output-SENTINEL',
+    'raw-url-SENTINEL',
+    'REPLACEMENT_BYTES_SENTINEL',
+    'transport-SENTINEL',
+    'ambient-stack-SENTINEL',
+    'ambient-instance-SENTINEL',
+    'INTERPOLATION_SECRET_PATH_SENTINEL',
+  ]) {
+    assert.equal(result.stdout.includes(sentinel), false, `stdout leaked ${sentinel}`);
+    assert.equal(result.stderr.includes(sentinel), false, `stderr leaked ${sentinel}`);
+  }
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, document };
+}
+
+test('the built CLI emits one bounded secret-free JSON document for every exit class', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'propr-built-connect-cli-'));
+  chmodSync(parent, 0o700);
+  const bin = installFakeDocker(parent);
+  const isolatedOsHome = join(parent, 'isolated-os-home');
+  mkdirSync(isolatedOsHome, { mode: 0o700 });
+  mkdirSync(join(parent, 'home-private-SENTINEL'), { mode: 0o700 });
+  mkdirSync(join(parent, 'hostile-cwd'), { mode: 0o700 });
+  const osConfigDir = join(userInfo().homedir, '.propr');
+  const osConfigPath = join(osConfigDir, 'config.json');
+  const osConfigDirBefore = snapshotPath(osConfigDir);
+  const osConfigBefore = osConfigDirBefore.kind === 'directory'
+    ? snapshotPath(osConfigPath)
+    : undefined;
+  writeFileSync(join(parent, 'hostile-cwd', '.env'), [
+    'PROPR_STACK=cwd-stack-SENTINEL',
+    'PROPR_UI_PUBLIC_API_URL=https://t-cwd-SENTINEL.propr.dev',
+    'HOST_DATA_DIR=${INTERPOLATION_SECRET_PATH_SENTINEL}',
+  ].join('\n'), { mode: 0o600 });
+  try {
+    const readyRoot = makeRoot(parent, 'ready-private-root-SENTINEL');
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(readyRoot, 'data'), () => IDENTITY), IDENTITY);
+    const ready = invoke(readyRoot, 'ready', bin, parent);
+    assert.equal(ready.status, 0, JSON.stringify(ready.document));
+    assert.equal(ready.document.status, 'ready');
+    assert.equal(ready.document.canonicalEndpoint, ENDPOINT);
+    assert.equal(
+      existsSync(join(isolatedOsHome, '.propr')),
+      false,
+      'an absent isolated OS config directory must not be created',
+    );
+
+    persistTunnelOverride(isolatedOsHome, readyRoot, false);
+    const persistedOff = invoke(readyRoot, 'ready', bin, parent);
+    assert.equal(persistedOff.status, 0);
+    assert.equal(persistedOff.document.enabled, false);
+    assert.deepEqual(persistedOff.document.reasonCodes, ['TUNNEL_DISABLED']);
+
+    const envDisabledRoot = makeRoot(parent, 'env-disabled-root', ENDPOINT, { enabled: 'false' });
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(envDisabledRoot, 'data'), () => IDENTITY), IDENTITY);
+    persistTunnelOverride(isolatedOsHome, envDisabledRoot, true);
+    const persistedOn = invoke(envDisabledRoot, 'ready', bin, parent);
+    assert.equal(persistedOn.status, 0, JSON.stringify(persistedOn.document));
+    assert.equal(persistedOn.document.status, 'ready');
+    assert.equal(persistedOn.document.enabled, true);
+
+    const dockerTransport = {
+      DOCKER_HOST: 'ssh://docker.example.test',
+      DOCKER_CONTEXT: 'trusted-context',
+      DOCKER_TLS_VERIFY: '1',
+      DOCKER_CERT_PATH: join(parent, 'private-cert-path-SENTINEL'),
+      DOCKER_CONFIG: join(parent, 'private-docker-config-SENTINEL'),
+      HOME: join(parent, 'docker-home-SENTINEL'),
+      SSH_AUTH_SOCK: join(parent, 'ssh-agent-SENTINEL'),
+    };
+    const customDocker = invoke(readyRoot, 'ready', bin, parent, {
+      environment: dockerTransport,
+      dockerEnvironmentExpectations: dockerTransport,
+    });
+    assert.equal(customDocker.status, 0);
+    const tlsOnlyTransport = { DOCKER_TLS: '1' };
+    const tlsOnlyDocker = invoke(readyRoot, 'ready', bin, parent, {
+      environment: tlsOnlyTransport,
+      dockerEnvironmentExpectations: tlsOnlyTransport,
+    });
+    assert.equal(tlsOnlyDocker.status, 0);
+    const unrelatedInventory = invoke(readyRoot, 'ready', bin, parent, { dockerBehavior: 'large-unrelated' });
+    assert.equal(unrelatedInventory.status, 0);
+    for (const dockerBehavior of ['duplicate', 'unknown'] as const) {
+      const hostile = invoke(readyRoot, 'ready', bin, parent, { dockerBehavior });
+      assert.equal(hostile.status, 1, dockerBehavior);
+      assert.deepEqual(hostile.document.reasonCodes, ['INTERNAL_FAILURE']);
+    }
+    const oversizedDocker = invoke(readyRoot, 'ready', bin, parent, {
+      environment: { DOCKER_HOST: 'x'.repeat(4097) },
+    });
+    assert.equal(oversizedDocker.status, 1);
+    assert.deepEqual(oversizedDocker.document.reasonCodes, ['INTERNAL_FAILURE']);
+
+    persistTunnelOverride(join(parent, 'home-private-SENTINEL'), readyRoot, false);
+    const hostileAmbientHomeIgnored = invoke(readyRoot, 'ready', bin, parent);
+    assert.equal(hostileAmbientHomeIgnored.status, 0);
+    persistTunnelOverride(join(parent, 'home-private-SENTINEL'), readyRoot, true);
+    assert.equal(invoke(readyRoot, 'ready', bin, parent).status, 0);
+
+    const tokenlessRoot = makeRoot(parent, 'tokenless-root', ENDPOINT, {});
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(tokenlessRoot, 'data'), () => IDENTITY), IDENTITY);
+    persistTunnelOverride(join(parent, 'home-private-SENTINEL'), tokenlessRoot, false);
+    const tokenlessOff = invoke(tokenlessRoot, 'ready', bin, parent);
+    assert.deepEqual(tokenlessOff.document.reasonCodes, ['TUNNEL_DISABLED']);
+
+    const equalsRoot = invoke(readyRoot, 'ready', bin, parent, {
+      arguments: ['--project', 'owner/repo', 'connect', 'status', `--root=${readyRoot}`, '--json'],
+    });
+    assert.equal(equalsRoot.status, 0);
+    assert.equal(equalsRoot.document.canonicalEndpoint, ENDPOINT);
+
+    for (const dockerBehavior of ['absent', 'stopped'] as const) {
+      const notReady = invoke(readyRoot, 'ready', bin, parent, { dockerBehavior });
+      assert.equal(notReady.status, 0, dockerBehavior);
+      assert.equal(notReady.document.status, 'notReady', dockerBehavior);
+      assert.deepEqual(notReady.document.reasonCodes, ['SIDECAR_NOT_RUNNING'], dockerBehavior);
+    }
+
+    for (const [name, failureBin, dockerBehavior] of [
+      ['ENOENT', join(parent, 'missing-docker-bin'), undefined],
+      ['daemon nonzero', bin, 'nonzero'],
+      ['timeout', bin, 'timeout'],
+      ['signal', bin, 'signal'],
+      ['malformed output', bin, 'malformed'],
+      ['truncated output', bin, 'truncated'],
+    ] as const) {
+      mkdirSync(failureBin, { recursive: true, mode: 0o700 });
+      const failure = invoke(readyRoot, 'ready', failureBin, parent, { dockerBehavior });
+      assert.equal(failure.status, 1, name);
+      assert.equal(failure.document.status, 'internalFailure', name);
+      assert.deepEqual(failure.document.reasonCodes, ['INTERNAL_FAILURE'], name);
+    }
+
+    const unreachable = invoke(readyRoot, 'unreachable', bin, parent);
+    assert.equal(unreachable.status, 0);
+    assert.deepEqual(unreachable.document.reasonCodes, ['API_UNREACHABLE']);
+
+    for (const mode of ['unsupported', 'invalid', 'invalid-utf8']) {
+      const incompatible = invoke(readyRoot, mode, bin, parent);
+      assert.equal(incompatible.status, 2, mode);
+      assert.equal(incompatible.document.status, 'incompatible');
+    }
+
+    const invalidEndpointRoot = makeRoot(parent, 'invalid-endpoint-root', `${ENDPOINT}/path`);
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(invalidEndpointRoot, 'data'), () => IDENTITY), IDENTITY);
+    const invalidEndpoint = invoke(invalidEndpointRoot, 'ready', bin, parent);
+    assert.equal(invalidEndpoint.status, 1);
+    assert.deepEqual(invalidEndpoint.document.reasonCodes, ['INVALID_ENDPOINT']);
+
+    const missingRoot = invoke(join(parent, 'missing-private-root'), 'ready', bin, parent);
+    assert.equal(missingRoot.status, 1, JSON.stringify(missingRoot.document));
+    assert.deepEqual(missingRoot.document.reasonCodes, ['INVALID_ROOT']);
+
+    let malformedRootDocument: Record<string, unknown> | undefined;
+    for (const arguments_ of [
+      ['connect', 'status', '--json'],
+      ['connect', 'status', '--json', '--root'],
+      ['connect', 'status', '--json', '--root='],
+      ['connect', 'status', '--json', '--root', ''],
+      ['connect', 'status', '--json', '--root', readyRoot, '--root', readyRoot],
+      ['connect', 'status', '--json', `--root=${readyRoot}`, `--root=${readyRoot}`],
+      ['connect', 'status', '--json', '--', '--root', '/x'],
+      ['connect', 'status', '--json', '--', '--root=/x'],
+      ['connect', 'status', '--json', '--', '--help'],
+      ['connect', 'status', '--json', '--', '-h'],
+    ]) {
+      const malformedRoot = invoke(readyRoot, 'ready', bin, parent, { arguments: arguments_ });
+      assert.equal(malformedRoot.status, 1, arguments_.join(' '));
+      assert.equal(malformedRoot.document.status, 'invalidConfig', arguments_.join(' '));
+      assert.deepEqual(malformedRoot.document.reasonCodes, ['INVALID_ROOT'], arguments_.join(' '));
+      assert.doesNotMatch(malformedRoot.stdout, /(?:^|\n)(?:Usage:|error:)/i, arguments_.join(' '));
+      assert.doesNotMatch(malformedRoot.stderr, /(?:Usage:|error:)/i, arguments_.join(' '));
+      malformedRootDocument ??= malformedRoot.document;
+      assert.deepEqual(malformedRoot.document, malformedRootDocument, arguments_.join(' '));
+    }
+
+    const timeout = invoke(readyRoot, 'timeout', bin, parent);
+    assert.equal(timeout.status, 0);
+    assert.equal(timeout.document.status, 'timeout');
+
+    const replacedRoot = makeRoot(parent, 'replaced-private-root');
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(replacedRoot, 'data'), () => IDENTITY), IDENTITY);
+    const replaced = invoke(replacedRoot, 'ready', bin, parent, { replaceRoot: true });
+    assert.equal(replaced.status, 1);
+    assert.deepEqual(replaced.document.reasonCodes, ['INVALID_ROOT']);
+
+    const copiedPackage = join(parent, 'copied-built-cli');
+    cpSync(join(process.cwd(), 'packages', 'cli'), copiedPackage, { recursive: true });
+    symlinkSync(join(process.cwd(), 'node_modules'), join(parent, 'node_modules'), 'dir');
+    rmSync(join(copiedPackage, 'dist', 'orchestrator', 'manifest.json'));
+    const internal = invoke(
+      readyRoot,
+      'ready',
+      bin,
+      parent,
+      { cli: join(copiedPackage, 'dist', 'index.js') },
+    );
+    assert.equal(internal.status, 1);
+    assert.equal(internal.document.status, 'internalFailure');
+  } finally {
+    try {
+      assert.deepEqual(snapshotPath(osConfigDir), osConfigDirBefore, 'the actual OS config directory changed');
+      if (osConfigBefore) {
+        assert.deepEqual(snapshotPath(osConfigPath), osConfigBefore, 'the actual OS config bytes or metadata changed');
+      }
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  }
+});
+
+test('the built CLI rejects malformed Unix roots and reports unavailable Windows ACL diagnostics', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'propr-built-connect-root-'));
+  chmodSync(parent, 0o700);
+  const bin = installFakeDocker(parent);
+  mkdirSync(join(parent, 'isolated-os-home'), { mode: 0o700 });
+  mkdirSync(join(parent, 'home-private-SENTINEL'), { mode: 0o700 });
+  mkdirSync(join(parent, 'hostile-cwd'), { mode: 0o700 });
+  writeFileSync(join(parent, 'hostile-cwd', '.env'), 'PROPR_STACK=cwd-stack-SENTINEL\n', { mode: 0o600 });
+  try {
+    const root = makeRoot(parent, 'real-root');
+    const alias = join(parent, 'root-alias');
+    symlinkSync(root, alias, 'dir');
+    const symlink = invoke(alias, 'ready', bin, parent);
+    assert.equal(symlink.status, 1);
+    assert.deepEqual(symlink.document.reasonCodes, ['INVALID_ROOT']);
+
+    chmodSync(join(root, 'data'), 0o777);
+    const unsafe = invoke(root, 'ready', bin, parent);
+    assert.equal(unsafe.status, 1);
+    assert.deepEqual(unsafe.document.reasonCodes, ['INVALID_ROOT']);
+
+    chmodSync(join(root, 'data'), 0o700);
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(root, 'data'), () => IDENTITY), IDENTITY);
+    const windows = invoke(root, 'ready', bin, parent, { windowsSemantics: true });
+    assert.equal(windows.status, 1);
+    assert.equal(windows.document.status, 'invalidConfig');
+    assert.deepEqual(windows.document.reasonCodes, ['ACL_DIAGNOSTIC_UNAVAILABLE']);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
