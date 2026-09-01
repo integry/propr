@@ -13,3 +13,12 @@ export {
   CANONICAL_JSON_MAX_DEPTH,
   CANONICAL_JSON_MAX_NODES,
 } from './strictCanonicalJson.js';
+export { validateGoalPlan, deterministicGoalNodeId, deterministicGoalBranch } from './goalPlanValidator.js';
+export {
+  GoalOrchestrationRepository,
+  buildGoalArtifactMarker,
+  parseGoalArtifactMarker,
+} from './goalOrchestrationRepository.js';
+export { GoalController, type GoalControllerOptions, type GoalControllerTickResult } from './goalController.js';
+export { GoalControllerSupervisor, type GoalSupervisorOptions } from './goalControllerSupervisor.js';
+export * from './goalOrchestrationTypes.js';
