@@ -912,7 +912,7 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /Write-Host/);
     assert.match(
       installedWindowsAppWorkflowCleanup,
-      /Add-Type -TypeDefinition @'[\s\S]*'@\n\ntry \{\n\$controllerPhase = 'PARAMETER_VALIDATION'[\s\S]*\$controllerPhase = 'PROCESS_WAIT'[\s\S]*\n\} catch \{\n\s+Set-CaughtControllerFailure \$_\n\}/,
+      /Add-Type -TypeDefinition @'[\s\S]*'@[\s\S]*Write-StartupRecord\n\ntry \{\n\$controllerPhase = 'PARAMETER_VALIDATION'[\s\S]*\$controllerPhase = 'PROCESS_WAIT'[\s\S]*\n\} catch \{\n\s+Set-CaughtControllerFailure \$_\n\}/,
     );
     assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /\$invokeController|StartupFailureClass/);
     assert.match(
@@ -928,6 +928,12 @@ describe('desktop trusted release workflow', () => {
       /'PARSER'[\s\S]*'PARAMETER_BINDING'[\s\S]*'TYPE_LOAD'[\s\S]*'OTHER'/,
     );
     assert.match(installedWindowsAppWorkflowCleanupWrapper, /Write-StartupFailure \$_/);
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /WORKFLOW_CLEANUP:STARTUP:FAILED:[\s\S]*WORKFLOW_CLEANUP:TERMINAL:/,
+    );
+    assert.match(installedWindowsAppWorkflowCleanup, /WORKFLOW_CLEANUP:STARTUP:READY/);
+    assert.match(installedWindowsAppWorkflowCleanup, /WORKFLOW_CLEANUP:TERMINAL:RESULT:\{0\}/);
     assert.equal(
       installedWindowsAppWorkflowCleanupWrapper.match(/\[Console\]::Out\.WriteLine/g)?.length,
       2,
@@ -975,24 +981,39 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisorFixture,
       /'OWNED_RESOURCES_THEN_DEADLINE' \{[\s\S]*Write-FixtureMarker[\s\S]*New-OwnedFixtureResources/,
     );
-    const controllerStatusParser = installedWindowsAppSupervisorBehaviorTest.indexOf(
-      '$statusMatch = Get-WorkflowCleanupControllerStatusMatch',
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /ProPRWorkflowCleanupProtocolCapture/);
+    const controllerJobAssignment = installedWindowsAppSupervisorBehaviorTest.indexOf(
+      '$job.AddProcess($process.Handle)',
     );
-    assert.notEqual(controllerStatusParser, -1);
+    const controllerCaptureStart = installedWindowsAppSupervisorBehaviorTest.indexOf(
+      '$capture.Start($process)',
+    );
     assert.ok(
-      controllerStatusParser
-        < installedWindowsAppSupervisorBehaviorTest.indexOf('if ($errorOutput.Length -ne 0)'),
-      'controller fixed stdout must be parsed before bounded stderr classification',
+      controllerJobAssignment !== -1 && controllerJobAssignment < controllerCaptureStart,
+      'controller root must enter the outer Job Object before bounded stream capture starts',
+    );
+    const workflowCleanupInvocation = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Invoke-WorkflowCleanupController',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Test-WorkflowCleanupStartupProtocol',
+      ),
+    );
+    assert.doesNotMatch(workflowCleanupInvocation, /\.ReadToEnd\(\)|\bOutput = \$output/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' \+\s*'INVOCATION:\{0\}:OBSERVED:\{1\}:LINE_COUNT:\{2\}:STDERR_COUNT:\{3\}:/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /PROPR_WORKFLOW_CLEANUP_FIXTURE:\{0\}:STATUS:\{1\}:EXIT_CODE:\{2\}/,
+      /PROCESS_EXIT:\{4\}:LIFECYCLE:\{5\}:TREE_TERMINATION:\{6\}:' \+\s*'STARTUP_CLASS:\{7\}:LINE_NUMBER:\{8\}/,
     );
-    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SanitizedControllerStartupDiagnostic/);
-    assert.match(
-      installedWindowsAppSupervisorBehaviorTest,
-      /STARTUP_CLASS:\{0\}:PROCESS_EXIT:\{1\}:LINE:\{2\}/,
-    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /\[ValidateSet\([\s\S]*'STARTUP_PROTOCOL'[\s\S]*'PROTOCOL_REGRESSION'/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /ONE_LINE_STARTUP[\s\S]*DUPLICATE_STARTUP[\s\S]*REORDERED_RECORDS/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /TIMEOUT_BEFORE_STARTUP[\s\S]*TIMEOUT_AFTER_STARTUP[\s\S]*STREAM_DRAIN_RACE/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /CANCELLED_(?:BEFORE|AFTER)_STARTUP/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /TREE_TERMINATION:FAILED/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /'PARSER'[\s\S]*'PARAMETER_BINDING'[\s\S]*'TYPE_LOAD'[\s\S]*'OTHER'/,
@@ -1064,7 +1085,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /Get-WorkflowCleanupControllerStatusMatch[\s\S]*workflow cleanup parser accepted malformed startup metadata/,
+      /Get-WorkflowCleanupControllerStatusMatch[\s\S]*workflow cleanup parser accepted a malformed terminal record/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
@@ -1131,7 +1152,7 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisorBehaviorTest,
       /OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE/,
     );
-    assert.match(installedWindowsAppSupervisorBehaviorTest, /LINE_COUNT:\{0\}:STDERR_COUNT:\{1\}/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /LINE_COUNT:\{2\}:STDERR_COUNT:\{3\}/);
     assert.match(installedWindowsAppCleanup, /smoke user-data object owner is not authorized/);
     assert.match(installedWindowsAppCleanup, /smoke user-data object ACL is not authorized/);
     assert.match(installedWindowsAppCleanup, /entries\.Count -ge 50000/);

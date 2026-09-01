@@ -36,6 +36,371 @@ function Assert-NotContains([string]$Text, [string]$Forbidden, [string]$Message)
   Assert-True (!$Text.Contains($Forbidden, [StringComparison]::OrdinalIgnoreCase)) $Message
 }
 
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
+
+public sealed class ProPRWorkflowCleanupInvocationJob : IDisposable
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    private const int JobObjectExtendedLimitInformation = 9;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private SafeFileHandle handle;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateJobObject(IntPtr attributes, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(
+        SafeFileHandle job, int informationClass, IntPtr information, uint length);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(SafeFileHandle job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(
+        SafeFileHandle job, int informationClass,
+        out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION information,
+        uint length, IntPtr returnLength);
+
+    public ProPRWorkflowCleanupInvocationJob()
+    {
+        handle = CreateJobObject(IntPtr.Zero, null);
+        if (handle == null || handle.IsInvalid)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "invocation job creation failed");
+        var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        int size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+        IntPtr buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            Marshal.StructureToPtr(limits, buffer, false);
+            if (!SetInformationJobObject(handle, JobObjectExtendedLimitInformation,
+                    buffer, (uint)size))
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "invocation job configuration failed");
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    public void AddProcess(IntPtr processHandle)
+    {
+        if (!AssignProcessToJobObject(handle, processHandle))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "invocation process ownership failed");
+    }
+
+    private uint ReadActiveProcessCount()
+    {
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION information;
+        uint size = (uint)Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));
+        if (!QueryInformationJobObject(handle, 1, out information, size, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "invocation accounting failed");
+        return information.ActiveProcesses;
+    }
+
+    public bool HasNoActiveProcesses() { return ReadActiveProcessCount() == 0; }
+
+    public bool TerminateAndWait(uint exitCode, int timeoutMilliseconds)
+    {
+        if (!TerminateJobObject(handle, exitCode))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "invocation termination failed");
+        var watch = Stopwatch.StartNew();
+        do
+        {
+            if (ReadActiveProcessCount() == 0) return true;
+            Thread.Sleep(25);
+        }
+        while (watch.ElapsedMilliseconds < timeoutMilliseconds);
+        return ReadActiveProcessCount() == 0;
+    }
+
+    public void Dispose() { if (handle != null) handle.Dispose(); }
+}
+
+public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
+{
+    private const int LineCharacterLimit = 384;
+    private const int CountLimit = 4096;
+    private const string Prefix = "PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:";
+    private static readonly Regex ReadyStartup = new Regex(
+        "^" + Prefix + "STARTUP:READY$", RegexOptions.CultureInvariant);
+    private static readonly Regex FailedStartup = new Regex(
+        "^" + Prefix + "STARTUP:FAILED:CLASS:(PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):" +
+        "PROCESS_EXIT:(0|-?[1-9][0-9]*):LINE:(0|[1-9][0-9]{0,5})$",
+        RegexOptions.CultureInvariant);
+    private static readonly Regex Terminal = new Regex(
+        "^" + Prefix + "TERMINAL:RESULT:(COMPLETE|FAILED|TIMED_OUT):" +
+        "STATUS:([A-Z_]+):EXIT_CODE:(0|20|21|122|123|124|125)$",
+        RegexOptions.CultureInvariant);
+    private static readonly Regex ControllerFailure = new Regex(
+        "^CONTROLLER_(INITIALIZATION|PARAMETER_VALIDATION|PATH_VALIDATION|PROCESS_START|" +
+        "PROCESS_WAIT|PROCESS_FINALIZATION|STREAM_FINALIZATION|RESOURCE_FINALIZATION|" +
+        "AUTHORITY_FINALIZATION|RESULT_EMISSION)_(TYPE_LOAD|PARAMETERS|PATHS|START|WAIT|" +
+        "TERMINATE|DRAIN|DISPOSE|AUTHORITY|EMIT)_(AUTHENTICATION|CLOSE|INVALID_ARGUMENT|" +
+        "INVALID_DATA|INVALID_OPERATION|LIMIT|NOT_ENABLED|NOT_FOUND|OPEN|STOPPED|" +
+        "PERMISSION|READ|BUSY|UNAVAILABLE|SECURITY|WRITE|UNCLASSIFIED)$",
+        RegexOptions.CultureInvariant);
+    private static readonly string[] FixedStatuses = new string[] {
+        "CONTROLLER_FAILURE", "TIMEOUT", "TERMINATION_FAILURE",
+        "ACTIVE_PROCESS_AFTER_ROOT_EXIT", "EMPTY_OR_CLEANED",
+        "MANIFEST_VALIDATION_FAILURE", "OWNED_RESOURCE_CLEANUP_FAILURE",
+        "PROCESS_FINALIZATION_TIMEOUT", "PROCESS_FINALIZATION_FAILURE",
+        "STREAM_DRAIN_TIMEOUT", "CHILD_STDERR_LIMIT", "CHILD_STDERR",
+        "CHILD_STDOUT_LIMIT", "CHILD_STDOUT", "STREAM_DRAIN_FAILURE",
+        "RESOURCE_FINALIZATION_FAILURE", "AUTHORITY_FINALIZATION_FAILURE",
+        "STARTUP_FAILURE"
+    };
+
+    private StreamReader outputReader;
+    private StreamReader errorReader;
+    private Task outputTask;
+    private Task errorTask;
+    private bool startupSeen;
+    private bool terminalSeen;
+    private bool defect;
+
+    public int LineCount { get; private set; }
+    public int StandardErrorCount { get; private set; }
+    public string ObservedLineCategory { get; private set; }
+    public int ObservedLineNumber { get; private set; }
+    public string StartupClass { get; private set; }
+    public int StartupProcessExit { get; private set; }
+    public int StartupLine { get; private set; }
+    public string Result { get; private set; }
+    public string ControllerStatus { get; private set; }
+    public int ReportedExitCode { get; private set; }
+    public bool DrainFailed { get; private set; }
+
+    public ProPRWorkflowCleanupProtocolCapture()
+    {
+        ObservedLineCategory = "NONE";
+        StartupClass = "NONE";
+        Result = "INVALID";
+        ControllerStatus = "INVALID";
+        ReportedExitCode = -1;
+    }
+
+    private static bool IsFixedStatus(string value)
+    {
+        for (int i = 0; i < FixedStatuses.Length; i++)
+            if (String.Equals(FixedStatuses[i], value, StringComparison.Ordinal)) return true;
+        return ControllerFailure.IsMatch(value);
+    }
+
+    private void SetDefect(string category)
+    {
+        if (!defect)
+        {
+            defect = true;
+            ObservedLineCategory = category;
+            ObservedLineNumber = Math.Min(3, Math.Max(1, LineCount));
+        }
+    }
+
+    private void CompleteLine(string line, bool oversized)
+    {
+        LineCount = Math.Min(3, LineCount + 1);
+        if (defect) return;
+        if (oversized) { SetDefect("OVERSIZED"); return; }
+
+        Match ready = ReadyStartup.Match(line);
+        Match failed = FailedStartup.Match(line);
+        Match terminal = Terminal.Match(line);
+        if (!startupSeen)
+        {
+            if (terminal.Success) { SetDefect("REORDERED"); return; }
+            if (!ready.Success && !failed.Success) { SetDefect("MALFORMED"); return; }
+            startupSeen = true;
+            ObservedLineCategory = "STARTUP";
+            ObservedLineNumber = LineCount;
+            if (ready.Success) StartupClass = "READY";
+            else
+            {
+                StartupClass = failed.Groups[1].Value;
+                int processExit;
+                int startupLine;
+                if (!Int32.TryParse(failed.Groups[2].Value, out processExit) ||
+                    !Int32.TryParse(failed.Groups[3].Value, out startupLine))
+                { SetDefect("MALFORMED"); return; }
+                StartupProcessExit = processExit;
+                StartupLine = startupLine;
+            }
+            return;
+        }
+
+        if (!terminalSeen)
+        {
+            if (ready.Success || failed.Success) { SetDefect("DUPLICATE"); return; }
+            if (!terminal.Success || !IsFixedStatus(terminal.Groups[2].Value))
+            { SetDefect("MALFORMED"); return; }
+            terminalSeen = true;
+            ObservedLineCategory = "TERMINAL";
+            ObservedLineNumber = LineCount;
+            Result = terminal.Groups[1].Value;
+            ControllerStatus = terminal.Groups[2].Value;
+            ReportedExitCode = Int32.Parse(terminal.Groups[3].Value);
+            bool startupFailure = !String.Equals(StartupClass, "READY", StringComparison.Ordinal);
+            if ((startupFailure && (!String.Equals(Result, "FAILED", StringComparison.Ordinal) ||
+                    !String.Equals(ControllerStatus, "STARTUP_FAILURE", StringComparison.Ordinal) ||
+                    ReportedExitCode != 125)) ||
+                (!startupFailure && String.Equals(ControllerStatus, "STARTUP_FAILURE",
+                    StringComparison.Ordinal)) ||
+                (String.Equals(Result, "COMPLETE", StringComparison.Ordinal) &&
+                    (!String.Equals(ControllerStatus, "EMPTY_OR_CLEANED", StringComparison.Ordinal) ||
+                    ReportedExitCode != 0)) ||
+                (String.Equals(Result, "TIMED_OUT", StringComparison.Ordinal) &&
+                    (!String.Equals(ControllerStatus, "TIMEOUT", StringComparison.Ordinal) ||
+                    ReportedExitCode != 124)) ||
+                (String.Equals(Result, "FAILED", StringComparison.Ordinal) &&
+                    (String.Equals(ControllerStatus, "EMPTY_OR_CLEANED", StringComparison.Ordinal) ||
+                    String.Equals(ControllerStatus, "TIMEOUT", StringComparison.Ordinal) ||
+                    ReportedExitCode == 0)))
+                SetDefect("MALFORMED");
+            return;
+        }
+
+        SetDefect((ready.Success || failed.Success || terminal.Success) ? "DUPLICATE" : "EXTRA");
+    }
+
+    private void PumpOutput()
+    {
+        var line = new StringBuilder();
+        var buffer = new char[256];
+        bool oversized = false;
+        while (true)
+        {
+            int count = outputReader.Read(buffer, 0, buffer.Length);
+            if (count == 0) break;
+            for (int i = 0; i < count; i++)
+            {
+                char value = buffer[i];
+                if (value == '\n')
+                {
+                    if (line.Length > 0 && line[line.Length - 1] == '\r')
+                        line.Length = line.Length - 1;
+                    CompleteLine(line.ToString(), oversized);
+                    line.Clear();
+                    oversized = false;
+                }
+                else if (value > 0x7f) oversized = true;
+                else if (line.Length < LineCharacterLimit) line.Append(value);
+                else oversized = true;
+            }
+        }
+        if (line.Length != 0 || oversized)
+        {
+            LineCount = Math.Min(3, LineCount + 1);
+            SetDefect(oversized ? "OVERSIZED" : "PARTIAL");
+        }
+    }
+
+    private void PumpError()
+    {
+        var buffer = new char[256];
+        while (true)
+        {
+            int count = errorReader.Read(buffer, 0, buffer.Length);
+            if (count == 0) return;
+            StandardErrorCount = Math.Min(CountLimit + 1, StandardErrorCount + count);
+        }
+    }
+
+    public void Start(Process process)
+    {
+        outputReader = process.StandardOutput;
+        errorReader = process.StandardError;
+        outputTask = Task.Factory.StartNew(PumpOutput, CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        errorTask = Task.Factory.StartNew(PumpError, CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+    }
+
+    public bool Finish(int timeoutMilliseconds)
+    {
+        if (outputTask == null || errorTask == null) return false;
+        try
+        {
+            if (!Task.WaitAll(new Task[] { outputTask, errorTask }, timeoutMilliseconds))
+                return false;
+        }
+        catch { DrainFailed = true; return false; }
+        return true;
+    }
+
+    public bool IsProtocolValid(int processExitCode)
+    {
+        return !defect && startupSeen && terminalSeen && LineCount == 2 &&
+            StandardErrorCount == 0 && processExitCode == ReportedExitCode &&
+            (String.Equals(StartupClass, "READY", StringComparison.Ordinal) ||
+                StartupProcessExit == processExitCode);
+    }
+
+    public void Dispose()
+    {
+        try { if (outputReader != null) outputReader.Dispose(); } catch { }
+        try { if (errorReader != null) errorReader.Dispose(); } catch { }
+    }
+}
+'@
+
 function Test-WorkflowCleanupBodyParserRegression {
   $cleanupBodyPath = Join-Path $PSScriptRoot `
     'run-installed-windows-app-workflow-cleanup-body.ps1'
@@ -561,13 +926,12 @@ function Get-SanitizedWorkflowCleanupResultDiagnostic($Result) {
   return $diagnostic
 }
 
-function Get-WorkflowCleanupControllerStatusMatch([string]$StatusLine) {
+function Get-WorkflowCleanupControllerStatusMatch([string]$TerminalLine) {
   return [regex]::Match(
-    $StatusLine,
-    ('^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):' +
-      'EXIT_CODE:([0-9]+)(?::STARTUP_CLASS:' +
-      '(PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):PROCESS_EXIT:(-?[0-9]+):' +
-      'LINE:([0-9]+))?$')
+    $TerminalLine,
+    ('^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+      'RESULT:(COMPLETE|FAILED|TIMED_OUT):STATUS:([A-Z_]+):' +
+      'EXIT_CODE:(0|20|21|122|123|124|125)$')
   )
 }
 
@@ -656,51 +1020,87 @@ function Assert-MsiPreflightPreservedResources($Owned) {
     'MSI file-system preflight failure removed the run-owned user'
 }
 
-function Get-SanitizedControllerStartupDiagnostic(
-  [string]$ErrorText,
-  [int]$ProcessExitCode
+function Get-WorkflowCleanupProtocolMismatchDiagnostic(
+  [string]$InvocationIdentifier,
+  [string]$ObservedLineCategory,
+  [int]$LineCount,
+  [int]$StandardErrorCount,
+  [string]$ValidatedProcessExit,
+  [string]$LifecycleCategory,
+  [string]$TreeTerminationCategory,
+  [string]$StartupClass,
+  [int]$LineNumber
 ) {
-  $classification = if ($ErrorText -match
-      '(?im)\bParserError\b|\bMissingEndCurlyBrace\b|\bUnexpectedToken\b|\bParseException\b') {
-    'PARSER'
-  } elseif ($ErrorText -match
-      '(?im)\bParameterBinding(?:Exception|ValidationException)?\b|cannot bind (?:argument|parameter)|parameter cannot be processed') {
-    'PARAMETER_BINDING'
-  } elseif ($ErrorText -match
-      '(?im)\bAdd-Type\b|\bTypeNotFound\b|unable to find type|error CS[0-9]{4}') {
-    'TYPE_LOAD'
-  } else {
-    'OTHER'
-  }
-  $lineNumber = 0
-  $lineMatch = [regex]::Match(
-    $ErrorText,
-    '(?im)^\s*at .+?:(\d+)\s+char:\d+\s*$'
+  $invocations = @(
+    'STARTUP_PROTOCOL','REPLACEMENT_RETRY','REPLACED_ENTRY_RETRY',
+    'PROFILE_ALTERNATE_LEAF','PROFILE_RETRY','EXECUTABLE_IDENTITY_RETRY',
+    'FOREIGN_CHILD_RETRY','TERMINATION_RETRY','PARAMETER_VALIDATION',
+    'EARLY_INITIALIZATION_TIMEOUT','CLEANUP_TIMEOUT','INSTALLER_REPLACEMENT',
+    'RESOURCE_COLLISION','WORKFLOW_RETRY','NORMAL_CLEANUP','MANIFEST_VALIDATION',
+    'SMOKE_PROMOTION_RETRY','SMOKE_TOKEN_MISSING','SMOKE_TOKEN_RETRY',
+    'APP_PATH_MISMATCH','HKCU_BASELINE_RESTORE','HKCU_PENDING_RECEIPT',
+    'HKCU_NONEMPTY','HKCU_EMPTY','HKCU_CONFLICT','HKCU_PROVISIONAL',
+    'USER_MARKER_OWNED','USER_MARKER_REPLACEMENT','PROTOCOL_REGRESSION'
   )
-  if (!$lineMatch.Success) {
-    $lineMatch = [regex]::Match($ErrorText, '(?im)\bline\s+(\d+)\b')
+  if ($InvocationIdentifier -cnotin $invocations) { $InvocationIdentifier = 'INVALID' }
+  if ($ObservedLineCategory -cnotin @(
+      'NONE','STARTUP','TERMINAL','MALFORMED','PARTIAL','DUPLICATE',
+      'REORDERED','EXTRA','OVERSIZED'
+    )) { $ObservedLineCategory = 'MALFORMED' }
+  if ($LifecycleCategory -cnotin @(
+      'EXITED','PROCESS_CREATION_FAILURE','OWNERSHIP_FAILURE',
+      'TIMEOUT_BEFORE_STARTUP','TIMEOUT_AFTER_STARTUP',
+      'CANCELLED_BEFORE_STARTUP','CANCELLED_AFTER_STARTUP',
+      'ACTIVE_TREE_AFTER_EXIT','DRAIN_TIMEOUT','DRAIN_FAILURE'
+    )) { $LifecycleCategory = 'DRAIN_FAILURE' }
+  if ($TreeTerminationCategory -cnotin @('NOT_REQUIRED','COMPLETE','FAILED')) {
+    $TreeTerminationCategory = 'FAILED'
   }
-  if ($lineMatch.Success) {
-    [void]([int]::TryParse(
-      $lineMatch.Groups[1].Value,
-      [Globalization.NumberStyles]::None,
-      [Globalization.CultureInfo]::InvariantCulture,
-      [ref]$lineNumber
-    ))
+  if ($StartupClass -cnotin @(
+      'NONE','READY','PARSER','PARAMETER_BINDING','TYPE_LOAD','OTHER'
+    )) { $StartupClass = 'NONE' }
+  if ($ValidatedProcessExit -cnotmatch '^(?:0|20|21|122|123|124|125)$') {
+    $ValidatedProcessExit = 'INVALID'
   }
-  $signedExit = $ProcessExitCode.ToString([Globalization.CultureInfo]::InvariantCulture)
-  $numericLine = $lineNumber.ToString([Globalization.CultureInfo]::InvariantCulture)
-  return 'STARTUP_CLASS:{0}:PROCESS_EXIT:{1}:LINE:{2}' -f `
-    $classification, $signedExit, $numericLine
+  $boundedLineCount = if ($LineCount -ge 3) { '3+' } else {
+    [Math]::Max(0, $LineCount).ToString([Globalization.CultureInfo]::InvariantCulture)
+  }
+  $boundedStderrCount = [Math]::Min(4096, [Math]::Max(0, $StandardErrorCount))
+  $boundedLineNumber = [Math]::Min(3, [Math]::Max(0, $LineNumber))
+  return (('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' +
+    'INVOCATION:{0}:OBSERVED:{1}:LINE_COUNT:{2}:STDERR_COUNT:{3}:' +
+    'PROCESS_EXIT:{4}:LIFECYCLE:{5}:TREE_TERMINATION:{6}:' +
+    'STARTUP_CLASS:{7}:LINE_NUMBER:{8}') -f `
+    $InvocationIdentifier, $ObservedLineCategory, $boundedLineCount,
+    $boundedStderrCount.ToString([Globalization.CultureInfo]::InvariantCulture),
+    $ValidatedProcessExit, $LifecycleCategory, $TreeTerminationCategory,
+    $StartupClass,
+    $boundedLineNumber.ToString([Globalization.CultureInfo]::InvariantCulture))
 }
 
 function Invoke-WorkflowCleanupController(
+  [Parameter(Mandatory=$true)]
+  [ValidateSet(
+    'STARTUP_PROTOCOL','REPLACEMENT_RETRY','REPLACED_ENTRY_RETRY',
+    'PROFILE_ALTERNATE_LEAF','PROFILE_RETRY','EXECUTABLE_IDENTITY_RETRY',
+    'FOREIGN_CHILD_RETRY','TERMINATION_RETRY','PARAMETER_VALIDATION',
+    'EARLY_INITIALIZATION_TIMEOUT','CLEANUP_TIMEOUT','INSTALLER_REPLACEMENT',
+    'RESOURCE_COLLISION','WORKFLOW_RETRY','NORMAL_CLEANUP','MANIFEST_VALIDATION',
+    'SMOKE_PROMOTION_RETRY','SMOKE_TOKEN_MISSING','SMOKE_TOKEN_RETRY',
+    'APP_PATH_MISMATCH','HKCU_BASELINE_RESTORE','HKCU_PENDING_RECEIPT',
+    'HKCU_NONEMPTY','HKCU_EMPTY','HKCU_CONFLICT','HKCU_PROVISIONAL',
+    'USER_MARKER_OWNED','USER_MARKER_REPLACEMENT','PROTOCOL_REGRESSION'
+  )][string]$InvocationIdentifier,
   [string]$ManifestPath,
   [string]$RunId,
   [string]$FixtureRoot,
   [object]$CleanupTimeoutMilliseconds = 30000,
   [bool]$FixtureEarlyInitializationChild = $false,
-  [string]$StartupFailureClass = ''
+  [string]$StartupFailureClass = '',
+  [object]$InvocationTimeoutMilliseconds = 40000,
+  [Threading.WaitHandle]$CancellationWaitHandle = $null,
+  [bool]$InjectTreeTerminationFailure = $false,
+  [string]$ProtocolFixture = ''
 ) {
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
@@ -728,62 +1128,134 @@ function Invoke-WorkflowCleanupController(
     $startInfo.ArgumentList.Add('-StartupFailureClass')
     $startInfo.ArgumentList.Add($StartupFailureClass)
   }
+  if ($ProtocolFixture) {
+    $startInfo.ArgumentList.Add('-ProtocolFixture')
+    $startInfo.ArgumentList.Add($ProtocolFixture)
+  }
+  $invocationTimeout = 0
+  if (![int]::TryParse(
+      [string]$InvocationTimeoutMilliseconds,
+      [Globalization.NumberStyles]::None,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [ref]$invocationTimeout
+    ) -or $invocationTimeout -lt 1 -or $invocationTimeout -gt 40000) {
+    throw 'workflow cleanup invocation timeout is invalid'
+  }
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
+  $job = $null
+  $capture = $null
+  $processStarted = $false
+  $lifecycleCategory = 'PROCESS_CREATION_FAILURE'
+  $treeTerminationCategory = 'NOT_REQUIRED'
+  $validatedProcessExit = 'INVALID'
   try {
+    $job = [ProPRWorkflowCleanupInvocationJob]::new()
     if (!$process.Start()) { throw 'workflow cleanup fixture did not start' }
-    Assert-True ($process.WaitForExit(40000)) 'workflow cleanup fixture exceeded its bound'
-    $output = $process.StandardOutput.ReadToEnd()
-    $errorOutput = $process.StandardError.ReadToEnd()
-    $outputLines = @($output -split '\r?\n' | Where-Object { $_ })
-    $lineCount = if ($outputLines.Count -ge 3) { '3+' } else { [string]$outputLines.Count }
-    $stderrCount = [Math]::Min(4096, $errorOutput.Length)
-    if ($output.Length -gt 512 -or $outputLines.Count -ne 2) {
-      $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
-        $errorOutput ([int]$process.ExitCode)
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}:{2}' -f `
-        $lineCount, $stderrCount, $startupDiagnostic)
+    $processStarted = $true
+    try {
+      $job.AddProcess($process.Handle)
+    } catch {
+      $lifecycleCategory = 'OWNERSHIP_FAILURE'
+      throw
     }
-    $resultMatch = [regex]::Match(
-      $outputLines[0],
-      '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:(COMPLETE|FAILED|TIMED_OUT)$'
-    )
-    if (!$resultMatch.Success) {
-      $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
-        $errorOutput ([int]$process.ExitCode)
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}:{2}' -f `
-        $lineCount, $stderrCount, $startupDiagnostic)
+    $capture = [ProPRWorkflowCleanupProtocolCapture]::new()
+    $capture.Start($process)
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $cancelled = $false
+    while (!$process.HasExited -and $watch.ElapsedMilliseconds -lt $invocationTimeout) {
+      if ($null -ne $CancellationWaitHandle -and $CancellationWaitHandle.WaitOne(0)) {
+        $cancelled = $true
+        break
+      }
+      [Threading.Thread]::Sleep(25)
     }
-    $resultName = $resultMatch.Groups[1].Value
-    $statusMatch = Get-WorkflowCleanupControllerStatusMatch $outputLines[1]
-    if (!$statusMatch.Success) {
-      $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
-        $errorOutput ([int]$process.ExitCode)
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}:{2}' -f `
-        $lineCount, $stderrCount, $startupDiagnostic)
+    if (!$process.HasExited) {
+      $lifecycleCategory = if ($cancelled) {
+        'CANCELLED_BEFORE_STARTUP'
+      } else { 'TIMEOUT_BEFORE_STARTUP' }
+      $treeTerminationCategory = 'FAILED'
+      if (!$InjectTreeTerminationFailure) {
+        try {
+          if ($job.TerminateAndWait(125, 3000)) {
+            $treeTerminationCategory = 'COMPLETE'
+          }
+        } catch {}
+      }
+      [void]$process.WaitForExit(3000)
+    } else {
+      $lifecycleCategory = 'EXITED'
+      if (!$job.HasNoActiveProcesses()) {
+        $lifecycleCategory = 'ACTIVE_TREE_AFTER_EXIT'
+        $treeTerminationCategory = 'FAILED'
+        if (!$InjectTreeTerminationFailure) {
+          try {
+            if ($job.TerminateAndWait(125, 3000)) {
+              $treeTerminationCategory = 'COMPLETE'
+            }
+          } catch {}
+        }
+      }
     }
-    $controllerStatus = $statusMatch.Groups[1].Value
-    $reportedExitCode = [int]$statusMatch.Groups[2].Value
-    if ($errorOutput.Length -ne 0) {
-      $stderrCode = if ($errorOutput.Length -gt 4096) {
-        'CONTROLLER_STDERR_LIMIT'
-      } else { 'CONTROLLER_STDERR_PRESENT' }
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:{0}:STATUS:{1}:EXIT_CODE:{2}:' +
-        'LINE_COUNT:{3}:STDERR_COUNT:{4}' -f `
-        $stderrCode, $controllerStatus, $reportedExitCode, $lineCount, $stderrCount)
+    $drainComplete = $capture.Finish(3000)
+    if (!$drainComplete -and $lifecycleCategory -ceq 'EXITED') {
+      $lifecycleCategory = if ($capture.DrainFailed) { 'DRAIN_FAILURE' } else { 'DRAIN_TIMEOUT' }
+    }
+    if ($lifecycleCategory -like '*BEFORE_STARTUP' -and
+        $capture.StartupClass -cne 'NONE') {
+      $lifecycleCategory = $lifecycleCategory.Replace('BEFORE_STARTUP', 'AFTER_STARTUP')
+    }
+    if ($process.HasExited -and $process.ExitCode -in @(0,20,21,122,123,124,125)) {
+      $validatedProcessExit =
+        $process.ExitCode.ToString([Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($lifecycleCategory -cne 'EXITED' -or
+        $treeTerminationCategory -cne 'NOT_REQUIRED' -or
+        !$drainComplete -or
+        !$capture.IsProtocolValid([int]$process.ExitCode)) {
+      throw (Get-WorkflowCleanupProtocolMismatchDiagnostic `
+        $InvocationIdentifier $capture.ObservedLineCategory $capture.LineCount `
+        $capture.StandardErrorCount $validatedProcessExit $lifecycleCategory `
+        $treeTerminationCategory $capture.StartupClass $capture.ObservedLineNumber)
     }
     return [PSCustomObject]@{
+      InvocationIdentifier = $InvocationIdentifier
       ExitCode = $process.ExitCode
-      Result = $resultName
-      ControllerStatus = $controllerStatus
-      ReportedExitCode = $reportedExitCode
-      StartupClass = [string]$statusMatch.Groups[3].Value
-      StartupProcessExit = [string]$statusMatch.Groups[4].Value
-      StartupLine = [string]$statusMatch.Groups[5].Value
-      Output = $output
+      Result = $capture.Result
+      ControllerStatus = $capture.ControllerStatus
+      ReportedExitCode = $capture.ReportedExitCode
+      StartupClass = if ($capture.StartupClass -ceq 'READY') { '' } else {
+        $capture.StartupClass
+      }
+      StartupProcessExit = if ($capture.StartupClass -ceq 'READY') { '' } else {
+        [string]$capture.StartupProcessExit
+      }
+      StartupLine = if ($capture.StartupClass -ceq 'READY') { '' } else {
+        [string]$capture.StartupLine
+      }
     }
+  } catch {
+    if ($_.Exception.Message -like 'PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:*') {
+      throw
+    }
+    $lineCategory = if ($null -eq $capture) { 'NONE' } else {
+      $capture.ObservedLineCategory
+    }
+    $lineCount = if ($null -eq $capture) { 0 } else { $capture.LineCount }
+    $stderrCount = if ($null -eq $capture) { 0 } else { $capture.StandardErrorCount }
+    $startupClass = if ($null -eq $capture) { 'NONE' } else { $capture.StartupClass }
+    $lineNumber = if ($null -eq $capture) { 0 } else { $capture.ObservedLineNumber }
+    throw (Get-WorkflowCleanupProtocolMismatchDiagnostic `
+      $InvocationIdentifier $lineCategory $lineCount $stderrCount `
+      $validatedProcessExit $lifecycleCategory $treeTerminationCategory `
+      $startupClass $lineNumber)
   } finally {
-    if (!$process.HasExited) { try { $process.Kill($true) } catch {} }
+    if ($processStarted -and !$process.HasExited) {
+      try { if ($null -ne $job) { [void]$job.TerminateAndWait(125, 3000) } } catch {}
+      try { if (!$process.HasExited) { $process.Kill($true) } } catch {}
+    }
+    if ($null -ne $capture) { $capture.Dispose() }
+    if ($null -ne $job) { $job.Dispose() }
     $process.Dispose()
   }
 }
@@ -791,7 +1263,8 @@ function Invoke-WorkflowCleanupController(
 function Test-WorkflowCleanupStartupProtocol {
   foreach ($failureClass in @('PARSER','PARAMETER_BINDING','TYPE_LOAD','OTHER')) {
     $result = Invoke-WorkflowCleanupController `
-      $dummyInstaller $([Guid]::NewGuid().ToString('N')) $testRoot 30000 $false `
+      'STARTUP_PROTOCOL' $dummyInstaller $([Guid]::NewGuid().ToString('N')) `
+      $testRoot 30000 $false `
       $failureClass
     Assert-True ($result.ExitCode -eq 125 -and
         $result.ReportedExitCode -eq 125 -and
@@ -812,12 +1285,12 @@ function Test-WorkflowCleanupStartupProtocol {
   }
 
   foreach ($invalidStatusLine in @(
-      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:EXIT_CODE:125:STARTUP_CLASS:INVALID:PROCESS_EXIT:125:LINE:12',
-      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:EXIT_CODE:125:STARTUP_CLASS:PARSER:PROCESS_EXIT:+125:LINE:12',
-      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:EXIT_CODE:125:STARTUP_CLASS:PARSER:PROCESS_EXIT:125:LINE:-1'
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:RESULT:INVALID:STATUS:STARTUP_FAILURE:EXIT_CODE:125',
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:RESULT:FAILED:STATUS:STARTUP_FAILURE:EXIT_CODE:+125',
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:RESULT:FAILED:STATUS:STARTUP_FAILURE:EXIT_CODE:126'
     )) {
     Assert-True (!(Get-WorkflowCleanupControllerStatusMatch $invalidStatusLine).Success) `
-      'workflow cleanup parser accepted malformed startup metadata'
+      'workflow cleanup parser accepted a malformed terminal record'
   }
 
   $validStartupMetadata = [PSCustomObject]@{
@@ -874,6 +1347,114 @@ function Test-WorkflowCleanupStartupProtocol {
       'CONTROLLER_STATUS:OWNED_RESOURCE_CLEANUP_FAILURE:REPORTED_EXIT_CODE:21'
     )) 'non-startup cleanup diagnostic included startup-only metadata'
   Write-Host 'PROPR_WINDOWS_SUPERVISOR_CONTROLLER_STARTUP:FIXED_PROTOCOL:PASSED'
+  [Console]::Out.Flush()
+}
+
+function Test-WorkflowCleanupProtocolStateMachine {
+  $scriptText = Get-Content -LiteralPath $PSCommandPath -Raw -Encoding UTF8
+  $expectedInvocations = @(
+    'STARTUP_PROTOCOL','REPLACEMENT_RETRY','REPLACED_ENTRY_RETRY',
+    'PROFILE_ALTERNATE_LEAF','PROFILE_RETRY','EXECUTABLE_IDENTITY_RETRY',
+    'FOREIGN_CHILD_RETRY','TERMINATION_RETRY','PARAMETER_VALIDATION',
+    'EARLY_INITIALIZATION_TIMEOUT','CLEANUP_TIMEOUT','INSTALLER_REPLACEMENT',
+    'RESOURCE_COLLISION','WORKFLOW_RETRY','NORMAL_CLEANUP','MANIFEST_VALIDATION',
+    'SMOKE_PROMOTION_RETRY','SMOKE_TOKEN_MISSING','SMOKE_TOKEN_RETRY',
+    'APP_PATH_MISMATCH','HKCU_BASELINE_RESTORE','HKCU_PENDING_RECEIPT',
+    'HKCU_NONEMPTY','HKCU_EMPTY','HKCU_CONFLICT','HKCU_PROVISIONAL',
+    'USER_MARKER_OWNED','USER_MARKER_REPLACEMENT','PROTOCOL_REGRESSION'
+  )
+  foreach ($identifier in $expectedInvocations) {
+    Assert-True ($scriptText -cmatch ((
+        "Invoke-WorkflowCleanupController\s+``\r?\n\s+(?:" +
+        "'|\-InvocationIdentifier\s+')") +
+        [regex]::Escape($identifier) + "'"
+      )) "workflow cleanup invocation identifier $identifier has no fixed callsite"
+  }
+
+  $cases = @(
+    [PSCustomObject]@{ Fixture='ONE_LINE_STARTUP'; Observed='STARTUP'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='MISSING_TERMINAL'; Observed='STARTUP'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='DUPLICATE_STARTUP'; Observed='DUPLICATE'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='EXTRA_RECORD'; Observed='EXTRA'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='REORDERED_RECORDS'; Observed='REORDERED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='OVERSIZED_RECORD'; Observed='OVERSIZED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='MALFORMED_RECORD'; Observed='MALFORMED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='PARTIAL_RECORD'; Observed='PARTIAL'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='STDERR_RECORD'; Observed='TERMINAL'; Lifecycle='EXITED'; Stderr=1 },
+    [PSCustomObject]@{ Fixture='INVALID_STARTUP_METADATA'; Observed='MALFORMED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='TIMEOUT_BEFORE_STARTUP'; Observed='NONE'; Lifecycle='TIMEOUT_BEFORE_STARTUP' },
+    [PSCustomObject]@{ Fixture='TIMEOUT_AFTER_STARTUP'; Observed='STARTUP'; Lifecycle='TIMEOUT_AFTER_STARTUP' },
+    [PSCustomObject]@{ Fixture='STREAM_DRAIN_RACE'; Observed='TERMINAL'; Lifecycle='ACTIVE_TREE_AFTER_EXIT' }
+  )
+  foreach ($case in $cases) {
+    $diagnostic = ''
+    try {
+      [void](Invoke-WorkflowCleanupController `
+        -InvocationIdentifier 'PROTOCOL_REGRESSION' `
+        -ManifestPath $dummyInstaller `
+        -RunId ([Guid]::NewGuid().ToString('N')) `
+        -FixtureRoot $testRoot `
+        -InvocationTimeoutMilliseconds 250 `
+        -ProtocolFixture $case.Fixture)
+    } catch { $diagnostic = $_.Exception.Message }
+    Assert-Contains $diagnostic `
+      'PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:INVOCATION:PROTOCOL_REGRESSION:' `
+      "$($case.Fixture) did not emit an invocation-attributed fixed diagnostic"
+    Assert-Contains $diagnostic ":OBSERVED:$($case.Observed):" `
+      "$($case.Fixture) did not retain its bounded observed-line category"
+    Assert-Contains $diagnostic ":LIFECYCLE:$($case.Lifecycle):" `
+      "$($case.Fixture) did not retain its primary lifecycle category"
+    if ($case.PSObject.Properties['Stderr']) {
+      Assert-Contains $diagnostic ":STDERR_COUNT:$($case.Stderr):" `
+        "$($case.Fixture) did not retain its bounded stderr count"
+    }
+    Assert-NotContains $diagnostic $dummyInstaller `
+      "$($case.Fixture) diagnostic disclosed a path"
+  }
+
+  foreach ($cancellationAfterStartup in @($false)) {
+    $cancel = [Threading.EventWaitHandle]::new(
+      $true, [Threading.EventResetMode]::ManualReset)
+    try {
+      $diagnostic = ''
+      $fixture = if ($cancellationAfterStartup) {
+        'TIMEOUT_AFTER_STARTUP'
+      } else { 'TIMEOUT_BEFORE_STARTUP' }
+      try {
+        [void](Invoke-WorkflowCleanupController `
+          -InvocationIdentifier 'PROTOCOL_REGRESSION' `
+          -ManifestPath $dummyInstaller `
+          -RunId ([Guid]::NewGuid().ToString('N')) `
+          -FixtureRoot $testRoot `
+          -InvocationTimeoutMilliseconds 1000 `
+          -CancellationWaitHandle $cancel `
+          -ProtocolFixture $fixture)
+      } catch { $diagnostic = $_.Exception.Message }
+      Assert-True ($diagnostic -cmatch
+          ':LIFECYCLE:CANCELLED_(?:BEFORE|AFTER)_STARTUP:') `
+        'workflow cleanup cancellation lost its bounded lifecycle category'
+      Assert-Contains $diagnostic ':TREE_TERMINATION:COMPLETE:' `
+        'workflow cleanup cancellation did not terminate its complete owned tree'
+    } finally { $cancel.Dispose() }
+  }
+
+  $treeFailureDiagnostic = ''
+  try {
+    [void](Invoke-WorkflowCleanupController `
+      -InvocationIdentifier 'PROTOCOL_REGRESSION' `
+      -ManifestPath $dummyInstaller `
+      -RunId ([Guid]::NewGuid().ToString('N')) `
+      -FixtureRoot $testRoot `
+      -InvocationTimeoutMilliseconds 250 `
+      -InjectTreeTerminationFailure $true `
+      -ProtocolFixture 'TIMEOUT_AFTER_STARTUP')
+  } catch { $treeFailureDiagnostic = $_.Exception.Message }
+  Assert-Contains $treeFailureDiagnostic ':LIFECYCLE:TIMEOUT_AFTER_STARTUP:' `
+    'tree-termination failure replaced the primary timeout outcome'
+  Assert-Contains $treeFailureDiagnostic ':TREE_TERMINATION:FAILED:' `
+    'tree-termination failure was not represented by its fixed category'
+
+  Write-Host 'PROPR_WINDOWS_SUPERVISOR_CONTROLLER_STATE_MACHINE:BOUNDED:PASSED'
   [Console]::Out.Flush()
 }
 
@@ -1405,7 +1986,8 @@ function Test-PreExistingCleanupOwnership {
       'false standalone cleanup result discarded authenticated recovery authority'
     Restore-ReplacedFixtureAuthority $replacementOwned
     $replacementRetry = Invoke-WorkflowCleanupController `
-      $replacementOwned.ManifestPath $replacementOwned.RunId $replacementStateDirectory
+      'REPLACEMENT_RETRY' $replacementOwned.ManifestPath $replacementOwned.RunId `
+      $replacementStateDirectory
     $replacementRetryDiagnostic =
       Get-SanitizedWorkflowCleanupResultDiagnostic $replacementRetry
     Assert-True ($replacementRetry.ExitCode -eq 0 -and
@@ -1448,7 +2030,8 @@ function Test-PreExistingCleanupOwnership {
         "replacement $($replacementCase.Label) discarded ACTIVE recovery authority"
       Restore-ReplacedFixtureAuthority $replacedOwned
       $replacedRetry = Invoke-WorkflowCleanupController `
-        $replacedOwned.ManifestPath $replacedOwned.RunId $replacedStateDirectory
+        'REPLACED_ENTRY_RETRY' $replacedOwned.ManifestPath $replacedOwned.RunId `
+        $replacedStateDirectory
       Assert-True ($replacedRetry.ExitCode -eq 0 -and
           $replacedRetry.Result -ceq 'COMPLETE') `
         "replacement $($replacementCase.Label) authority did not retry to success"
@@ -1504,7 +2087,8 @@ function Test-PreExistingCleanupOwnership {
     $ownedProfileRecords[0].LocalPath = $runnerProfileBefore.CanonicalLocalPath
     Write-TestOwnershipManifest $profileMismatchOwned.ManifestPath $profileMismatchManifest
     $alternateLeafCleanup = Invoke-WorkflowCleanupController `
-      $profileMismatchOwned.ManifestPath $profileMismatchOwned.RunId $profileMismatchDirectory
+      'PROFILE_ALTERNATE_LEAF' $profileMismatchOwned.ManifestPath `
+      $profileMismatchOwned.RunId $profileMismatchDirectory
     Assert-True ($alternateLeafCleanup.ExitCode -eq 21 -and
         $alternateLeafCleanup.Result -ceq 'FAILED') `
       'alternate ProfilesDirectory leaf did not fail closed'
@@ -1520,7 +2104,8 @@ function Test-PreExistingCleanupOwnership {
     $ownedProfileRecords[0].LocalPath = [string]$profileMismatchOwned.ProfilePath
     Write-TestOwnershipManifest $profileMismatchOwned.ManifestPath $profileMismatchManifest
     $profileMismatchRetry = Invoke-WorkflowCleanupController `
-      $profileMismatchOwned.ManifestPath $profileMismatchOwned.RunId $profileMismatchDirectory
+      'PROFILE_RETRY' $profileMismatchOwned.ManifestPath `
+      $profileMismatchOwned.RunId $profileMismatchDirectory
     Assert-True ($profileMismatchRetry.ExitCode -eq 0 -and
         $profileMismatchRetry.Result -ceq 'COMPLETE') `
       'profile cleanup did not succeed after exact durable path restoration'
@@ -1541,7 +2126,8 @@ function Test-PreExistingCleanupOwnership {
     Move-Item -LiteralPath $byteIdenticalOwned.ExecutableBackup `
       -Destination $byteIdenticalOwned.Executable -ErrorAction Stop
     $byteIdenticalRetry = Invoke-WorkflowCleanupController `
-      $byteIdenticalOwned.ManifestPath $byteIdenticalOwned.RunId $byteIdenticalDirectory
+      'EXECUTABLE_IDENTITY_RETRY' $byteIdenticalOwned.ManifestPath `
+      $byteIdenticalOwned.RunId $byteIdenticalDirectory
     Assert-True ($byteIdenticalRetry.ExitCode -eq 0 -and
         $byteIdenticalRetry.Result -ceq 'COMPLETE') `
       'byte-identical file cleanup did not succeed after exact entry identity restoration'
@@ -1569,7 +2155,8 @@ function Test-PreExistingCleanupOwnership {
       'in-place foreign-child failure did not preserve the ACTIVE manifest'
     Remove-Item -LiteralPath $foreignChildPath -Force -ErrorAction Stop
     $foreignChildRetry = Invoke-WorkflowCleanupController `
-      $foreignChildOwned.ManifestPath $foreignChildOwned.RunId $foreignChildStateDirectory
+      'FOREIGN_CHILD_RETRY' $foreignChildOwned.ManifestPath `
+      $foreignChildOwned.RunId $foreignChildStateDirectory
     Assert-True ($foreignChildRetry.ExitCode -eq 0 -and
         $foreignChildRetry.Result -ceq 'COMPLETE') `
       'in-place foreign-child cleanup did not retry to exact success'
@@ -1595,7 +2182,8 @@ function Test-PreExistingCleanupOwnership {
     Assert-True (Test-Path -LiteralPath $terminationFailureOwned.InstallRoot -PathType Container) `
       'cleanup mutated resources before worker-tree termination was verified'
     $terminationRetry = Invoke-WorkflowCleanupController `
-      $terminationFailureOwned.ManifestPath $terminationFailureOwned.RunId `
+      'TERMINATION_RETRY' $terminationFailureOwned.ManifestPath `
+      $terminationFailureOwned.RunId `
       $terminationFailureStateDirectory
     Assert-True ($terminationRetry.ExitCode -eq 0 -and
         $terminationRetry.Result -ceq 'COMPLETE') `
@@ -1649,7 +2237,8 @@ function Test-PreExistingCleanupOwnership {
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'killed supervisor did not preserve the durable ownership manifest'
       $parameterFailure = Invoke-WorkflowCleanupController `
-        $workflowManifest $workflowRunId $workflowStateDirectory -1
+        'PARAMETER_VALIDATION' $workflowManifest $workflowRunId `
+        $workflowStateDirectory -1
       Assert-True ($parameterFailure.ExitCode -eq 125 -and
           $parameterFailure.Result -ceq 'FAILED' -and
           $parameterFailure.ControllerStatus.StartsWith(
@@ -1659,7 +2248,8 @@ function Test-PreExistingCleanupOwnership {
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'controller parameter failure discarded authenticated recovery authority'
       $earlyInitializationTimeout = Invoke-WorkflowCleanupController `
-        $workflowManifest $workflowRunId $workflowStateDirectory 5000 $true
+        'EARLY_INITIALIZATION_TIMEOUT' $workflowManifest $workflowRunId `
+        $workflowStateDirectory 5000 $true
       Assert-True ($earlyInitializationTimeout.ExitCode -eq 124 -and
           $earlyInitializationTimeout.ReportedExitCode -eq 124 -and
           $earlyInitializationTimeout.Result -ceq 'TIMED_OUT') `
@@ -1671,7 +2261,7 @@ function Test-PreExistingCleanupOwnership {
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'early-initialization timeout discarded authenticated recovery authority'
       $timedOutCleanup = Invoke-WorkflowCleanupController `
-        $workflowManifest $workflowRunId $workflowStateDirectory 1
+        'CLEANUP_TIMEOUT' $workflowManifest $workflowRunId $workflowStateDirectory 1
       Assert-True ($timedOutCleanup.ExitCode -eq 124 -and
           $timedOutCleanup.ReportedExitCode -eq 124 -and
           $timedOutCleanup.Result -ceq 'TIMED_OUT') `
@@ -1687,7 +2277,8 @@ function Test-PreExistingCleanupOwnership {
         (Get-FileHash -LiteralPath $dummyInstaller -Algorithm SHA256).Hash
       try {
         $replacedInstallerCleanup = Invoke-WorkflowCleanupController `
-          $workflowManifest $workflowRunId $workflowStateDirectory
+          'INSTALLER_REPLACEMENT' $workflowManifest $workflowRunId `
+          $workflowStateDirectory
         Assert-True ($replacedInstallerCleanup.ExitCode -eq 21 -and
             $replacedInstallerCleanup.ReportedExitCode -eq 21 -and
             $replacedInstallerCleanup.Result -ceq 'FAILED' -and
@@ -1718,7 +2309,7 @@ function Test-PreExistingCleanupOwnership {
       Set-ItemProperty -LiteralPath $workflowOwned.RegistryPath `
         -Name 'ProPRInstalledAppOwner' -Value 'foreign-owner'
       $failedWorkflowCleanup = Invoke-WorkflowCleanupController `
-        $workflowManifest $workflowRunId $workflowStateDirectory
+        'RESOURCE_COLLISION' $workflowManifest $workflowRunId $workflowStateDirectory
       Assert-True ($failedWorkflowCleanup.ExitCode -eq 21 -and
           $failedWorkflowCleanup.ReportedExitCode -eq 21 -and
           $failedWorkflowCleanup.Result -ceq 'FAILED' -and
@@ -1733,14 +2324,12 @@ function Test-PreExistingCleanupOwnership {
       Set-ItemProperty -LiteralPath $workflowOwned.RegistryPath `
         -Name 'ProPRInstalledAppOwner' -Value ([string]$workflowOwned.Token)
       $workflowCleanup = Invoke-WorkflowCleanupController `
-        $workflowManifest $workflowRunId $workflowStateDirectory
+        'WORKFLOW_RETRY' $workflowManifest $workflowRunId $workflowStateDirectory
       Assert-True ($workflowCleanup.ExitCode -eq 0 -and
           $workflowCleanup.ReportedExitCode -eq 0 -and
-          $workflowCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
+          $workflowCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED' -and
+          $workflowCleanup.InvocationIdentifier -ceq 'WORKFLOW_RETRY') `
         'workflow cleanup controller did not retry to fixed cleanup success'
-      Assert-Contains $workflowCleanup.Output `
-        'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:COMPLETE' `
-        'workflow cleanup controller did not emit fixed completion evidence'
       Assert-OwnedResourcesGone $workflowOwned
       Assert-True (!(Test-Path -LiteralPath $workflowManifest)) `
         'workflow cleanup did not consume the ownership manifest'
@@ -1783,7 +2372,7 @@ function Test-PreExistingCleanupOwnership {
           @($normalReceipt.Profiles).Count -eq 0) `
         'normal supervisor did not produce a typed authenticated empty-state receipt'
       $normalCleanup = Invoke-WorkflowCleanupController `
-        $normalManifest $normalRunId $normalStateDirectory
+        'NORMAL_CLEANUP' $normalManifest $normalRunId $normalStateDirectory
       Assert-True ($normalCleanup.ExitCode -eq 0 -and
           $normalCleanup.ReportedExitCode -eq 0 -and
           $normalCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
@@ -1826,16 +2415,14 @@ function Test-PreExistingCleanupOwnership {
         )
       }
       $failedCleanup = Invoke-WorkflowCleanupController `
-        $badManifest $badRunId $workflowStateDirectory
+        'MANIFEST_VALIDATION' $badManifest $badRunId $workflowStateDirectory
       Assert-True ($failedCleanup.ExitCode -ne 0) `
         "$manifestCase workflow manifest did not fail closed"
       Assert-True ($failedCleanup.ExitCode -eq 20 -and
           $failedCleanup.ReportedExitCode -eq 20 -and
-          $failedCleanup.ControllerStatus -ceq 'MANIFEST_VALIDATION_FAILURE') `
+          $failedCleanup.ControllerStatus -ceq 'MANIFEST_VALIDATION_FAILURE' -and
+          $failedCleanup.InvocationIdentifier -ceq 'MANIFEST_VALIDATION') `
         "$manifestCase workflow manifest did not report fixed validation status"
-      Assert-Contains $failedCleanup.Output `
-        'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED' `
-        "$manifestCase workflow manifest did not emit fixed failure evidence"
       if ($manifestCase -ne 'MISSING') {
         Assert-True (Test-Path -LiteralPath $badManifest -PathType Leaf) `
           "$manifestCase workflow failure discarded authenticated recovery authority"
@@ -1929,7 +2516,8 @@ function Test-SmokePromotionInterruptionAuthority {
     'smoke foreign descendant did not preserve ACTIVE recovery authority'
   Remove-Item -LiteralPath $foreignOwned.ForeignSmokePath -Force -ErrorAction Stop
   $retry = Invoke-WorkflowCleanupController `
-    $foreignOwned.ManifestPath $foreignOwned.RunId $foreignStateDirectory
+    'SMOKE_PROMOTION_RETRY' $foreignOwned.ManifestPath $foreignOwned.RunId `
+    $foreignStateDirectory
   Assert-True ($retry.ExitCode -eq 0 -and $retry.Result -ceq 'COMPLETE') `
     'smoke foreign-descendant recovery did not retry to exact success'
   Assert-OwnedResourcesGone $foreignOwned
@@ -1947,14 +2535,15 @@ function Test-SmokePromotionInterruptionAuthority {
     'mismatched smoke ownership token discarded recovery authority'
   Remove-Item -LiteralPath $tokenPath -Force -ErrorAction Stop
   $missingToken = Invoke-WorkflowCleanupController `
-    $tokenOwned.ManifestPath $tokenOwned.RunId $tokenStateDirectory
+    'SMOKE_TOKEN_MISSING' $tokenOwned.ManifestPath $tokenOwned.RunId `
+    $tokenStateDirectory
   Assert-True ($missingToken.ExitCode -eq 20 -and $missingToken.Result -ceq 'FAILED') `
     'missing smoke ownership token did not fail manifest validation closed'
   Assert-True (Test-Path -LiteralPath $tokenOwned.ManifestPath -PathType Leaf) `
     'missing smoke ownership token discarded recovery authority'
   [IO.File]::WriteAllText($tokenPath, [string]$tokenOwned.Token, [Text.Encoding]::ASCII)
   $tokenRetry = Invoke-WorkflowCleanupController `
-    $tokenOwned.ManifestPath $tokenOwned.RunId $tokenStateDirectory
+    'SMOKE_TOKEN_RETRY' $tokenOwned.ManifestPath $tokenOwned.RunId $tokenStateDirectory
   Assert-True ($tokenRetry.ExitCode -eq 0 -and $tokenRetry.Result -ceq 'COMPLETE') `
     'restored exact smoke ownership token did not retry to cleanup success'
   Assert-OwnedResourcesGone $tokenOwned
@@ -2064,16 +2653,14 @@ function Test-PreExistingAppPathsAuthority {
       [Text.Encoding]::UTF8
     )
     $mismatchCleanup = Invoke-WorkflowCleanupController `
-      $mismatchManifest $mismatchRunId ''
+      'APP_PATH_MISMATCH' $mismatchManifest $mismatchRunId ''
     Assert-True ($mismatchCleanup.ExitCode -ne 0) `
       'mismatched App Paths ownership identity did not fail closed'
     Assert-True ($mismatchCleanup.ExitCode -eq 20 -and
         $mismatchCleanup.ReportedExitCode -eq 20 -and
-        $mismatchCleanup.ControllerStatus -ceq 'MANIFEST_VALIDATION_FAILURE') `
+        $mismatchCleanup.ControllerStatus -ceq 'MANIFEST_VALIDATION_FAILURE' -and
+        $mismatchCleanup.InvocationIdentifier -ceq 'APP_PATH_MISMATCH') `
       'mismatched App Paths ownership did not report fixed validation status'
-    Assert-Contains $mismatchCleanup.Output `
-      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED' `
-      'mismatched App Paths ownership did not emit fixed failure evidence'
     Assert-True ((Get-Item -LiteralPath $appPaths).GetValue('') -ceq $sentinelApplication) `
       'mismatched App Paths ownership removed the pre-existing executable value'
     Assert-True ((Get-Item -LiteralPath $appPaths).GetValue('Path') -ceq 'C:\pre-existing') `
@@ -2171,7 +2758,8 @@ function Test-HkcuInstalledValueOwnership {
     (Get-Item -LiteralPath $desktopKey).SetValue(
       $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
     $restoreManifest = New-HkcuManifest $true $true 'String' $baselineData $false
-    $restore = Invoke-WorkflowCleanupController $restoreManifest.Path $restoreManifest.RunId ''
+    $restore = Invoke-WorkflowCleanupController `
+      'HKCU_BASELINE_RESTORE' $restoreManifest.Path $restoreManifest.RunId ''
     Assert-True ($restore.ExitCode -eq 0 -and
         $restore.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
       'pre-existing HKCU installed value restoration did not complete'
@@ -2185,7 +2773,7 @@ function Test-HkcuInstalledValueOwnership {
     $unchangedManifest = New-HkcuManifest `
       $true $true 'String' $baselineData $false $false $true
     $unchanged = Invoke-WorkflowCleanupController `
-      $unchangedManifest.Path $unchangedManifest.RunId ''
+      'HKCU_PENDING_RECEIPT' $unchangedManifest.Path $unchangedManifest.RunId ''
     Assert-True ($unchanged.ExitCode -eq 21 -and
         $unchanged.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
       'path-only pending MSI receipt was not rejected before uninstall'
@@ -2204,7 +2792,8 @@ function Test-HkcuInstalledValueOwnership {
     (Get-Item -LiteralPath $desktopKey).SetValue(
       'Unrelated', $sentinelUnrelated, [Microsoft.Win32.RegistryValueKind]::String)
     $nonemptyManifest = New-HkcuManifest $false $false $null $null $true
-    $nonempty = Invoke-WorkflowCleanupController $nonemptyManifest.Path $nonemptyManifest.RunId ''
+    $nonempty = Invoke-WorkflowCleanupController `
+      'HKCU_NONEMPTY' $nonemptyManifest.Path $nonemptyManifest.RunId ''
     Assert-True ($nonempty.ExitCode -eq 0) `
       'run-owned HKCU value cleanup with unrelated values failed'
     $nonemptyKey = Get-Item -LiteralPath $desktopKey -ErrorAction Stop
@@ -2217,7 +2806,8 @@ function Test-HkcuInstalledValueOwnership {
     (Get-Item -LiteralPath $desktopKey).SetValue(
       $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
     $emptyManifest = New-HkcuManifest $false $false $null $null $true
-    $empty = Invoke-WorkflowCleanupController $emptyManifest.Path $emptyManifest.RunId ''
+    $empty = Invoke-WorkflowCleanupController `
+      'HKCU_EMPTY' $emptyManifest.Path $emptyManifest.RunId ''
     Assert-True ($empty.ExitCode -eq 0 -and !(Test-Path -LiteralPath $desktopKey)) `
       'run-created empty HKCU key was not removed'
 
@@ -2226,7 +2816,7 @@ function Test-HkcuInstalledValueOwnership {
       $installedName, 'foreign-conflict', [Microsoft.Win32.RegistryValueKind]::String)
     $conflictManifest = New-HkcuManifest $false $false $null $null $true
     $conflict = Invoke-WorkflowCleanupController `
-      $conflictManifest.Path $conflictManifest.RunId ''
+      'HKCU_CONFLICT' $conflictManifest.Path $conflictManifest.RunId ''
     Assert-True ($conflict.ExitCode -eq 21 -and
         $conflict.ReportedExitCode -eq 21 -and
         $conflict.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
@@ -2244,7 +2834,7 @@ function Test-HkcuInstalledValueOwnership {
       $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
     $provisionalManifest = New-HkcuManifest $false $false $null $null $true $true
     $provisional = Invoke-WorkflowCleanupController `
-      $provisionalManifest.Path $provisionalManifest.RunId ''
+      'HKCU_PROVISIONAL' $provisionalManifest.Path $provisionalManifest.RunId ''
     Assert-True ($provisional.ExitCode -eq 21 -and
         $provisional.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
       'provisional HKCU evidence authorized manual registry deletion'
@@ -2320,7 +2910,7 @@ function Test-ProvisionalUserMarkerOwnership {
     New-LocalUser -Name $positiveName -Password $password `
       -Description $positiveMarker -AccountNeverExpires -PasswordNeverExpires | Out-Null
     $positive = Invoke-WorkflowCleanupController `
-      $positiveManifest.Path $positiveManifest.RunId $testRoot
+      'USER_MARKER_OWNED' $positiveManifest.Path $positiveManifest.RunId $testRoot
     Assert-True ($positive.ExitCode -eq 0 -and
         $positive.Result -ceq 'COMPLETE') `
       'marker-bound provisional local-user recovery did not complete'
@@ -2333,7 +2923,8 @@ function Test-ProvisionalUserMarkerOwnership {
       -AccountNeverExpires -PasswordNeverExpires | Out-Null
     $replacementSid = (Get-LocalUser -Name $replacementName -ErrorAction Stop).SID.Value
     $replacement = Invoke-WorkflowCleanupController `
-      $replacementManifest.Path $replacementManifest.RunId $testRoot
+      'USER_MARKER_REPLACEMENT' $replacementManifest.Path `
+      $replacementManifest.RunId $testRoot
     Assert-True ($replacement.ExitCode -eq 21 -and
         $replacement.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
       'provisional username authorized replacement-account deletion'
@@ -2371,6 +2962,7 @@ Test-WorkflowCleanupBodyParserRegression
 Initialize-TestInstaller
 try {
   Test-WorkflowCleanupStartupProtocol
+  Test-WorkflowCleanupProtocolStateMachine
   Test-BootstrapTimeout
   Test-WindowsPowerShellCleanupCompatibility
   Test-OperationDeadlineAndTreeTermination

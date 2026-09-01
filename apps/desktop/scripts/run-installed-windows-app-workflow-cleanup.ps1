@@ -6,7 +6,8 @@ param(
   [object]$TerminationTimeoutMilliseconds = 30 * 1000,
   [object]$FixtureRoot,
   [object]$FixtureEarlyInitializationChild,
-  [object]$StartupFailureClass
+  [object]$StartupFailureClass,
+  [object]$ProtocolFixture
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,16 +37,88 @@ function Write-StartupFailure($ErrorRecord) {
     $candidateLine = [int64]$ErrorRecord.InvocationInfo.ScriptLineNumber
     if ($candidateLine -ge 0 -and $candidateLine -le 999999) { $line = $candidateLine }
   } catch {}
-  [Console]::Out.WriteLine('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED')
   [Console]::Out.WriteLine((
-    ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:' +
-      'EXIT_CODE:125:STARTUP_CLASS:{0}:PROCESS_EXIT:125:LINE:{1}') -f `
+    ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STARTUP:FAILED:' +
+      'CLASS:{0}:PROCESS_EXIT:125:LINE:{1}') -f `
       $failureClass, $line
   ))
   [Console]::Out.Flush()
+  [Console]::Out.WriteLine(
+    ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+      'RESULT:FAILED:STATUS:STARTUP_FAILURE:EXIT_CODE:125'))
+  [Console]::Out.Flush()
+}
+
+function Invoke-ProtocolFixture([string]$Name) {
+  $startup = 'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STARTUP:READY'
+  $terminal = ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+    'RESULT:FAILED:STATUS:CONTROLLER_FAILURE:EXIT_CODE:125')
+  switch ($Name) {
+    'ONE_LINE_STARTUP' {
+      [Console]::Out.Write("$startup`r`n"); [Console]::Out.Flush(); exit 125
+    }
+    'MISSING_TERMINAL' {
+      [Console]::Out.Write("$startup`r`n"); [Console]::Out.Flush(); exit 125
+    }
+    'DUPLICATE_STARTUP' {
+      [Console]::Out.Write("$startup`r`n$startup`r`n$terminal`r`n")
+      [Console]::Out.Flush(); exit 125
+    }
+    'EXTRA_RECORD' {
+      [Console]::Out.Write("$startup`r`n$terminal`r`nEXTRA`r`n")
+      [Console]::Out.Flush(); exit 125
+    }
+    'REORDERED_RECORDS' {
+      [Console]::Out.Write("$terminal`r`n$startup`r`n")
+      [Console]::Out.Flush(); exit 125
+    }
+    'OVERSIZED_RECORD' {
+      [Console]::Out.Write(('A' * 385) + "`r`n")
+      [Console]::Out.Flush(); exit 125
+    }
+    'MALFORMED_RECORD' {
+      [Console]::Out.Write("MALFORMED`r`n$terminal`r`n")
+      [Console]::Out.Flush(); exit 125
+    }
+    'PARTIAL_RECORD' {
+      [Console]::Out.Write($startup); [Console]::Out.Flush(); exit 125
+    }
+    'STDERR_RECORD' {
+      [Console]::Out.Write("$startup`r`n$terminal`r`n"); [Console]::Out.Flush()
+      [Console]::Error.Write('E'); [Console]::Error.Flush(); exit 125
+    }
+    'TIMEOUT_BEFORE_STARTUP' { [Threading.Thread]::Sleep(60000); exit 125 }
+    'TIMEOUT_AFTER_STARTUP' {
+      [Console]::Out.Write("$startup`r`n"); [Console]::Out.Flush()
+      [Threading.Thread]::Sleep(60000); exit 125
+    }
+    'STREAM_DRAIN_RACE' {
+      [Console]::Out.Write("$startup`r`n$terminal`r`n"); [Console]::Out.Flush()
+      $child = [Diagnostics.ProcessStartInfo]::new()
+      $child.FileName = (Get-Process -Id $PID -ErrorAction Stop).Path
+      $child.UseShellExecute = $false
+      $child.ArgumentList.Add('-NoLogo')
+      $child.ArgumentList.Add('-NoProfile')
+      $child.ArgumentList.Add('-NonInteractive')
+      $child.ArgumentList.Add('-Command')
+      $child.ArgumentList.Add('[Threading.Thread]::Sleep(60000)')
+      [void][Diagnostics.Process]::Start($child)
+      exit 125
+    }
+    'INVALID_STARTUP_METADATA' {
+      [Console]::Out.Write(
+        ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STARTUP:FAILED:' +
+          "CLASS:INVALID:PROCESS_EXIT:125:LINE:0`r`n$terminal`r`n"))
+      [Console]::Out.Flush(); exit 125
+    }
+    default { throw [InvalidOperationException]::new('protocol fixture is invalid') }
+  }
 }
 
 try {
+  if ($null -ne $ProtocolFixture) {
+    Invoke-ProtocolFixture ([string]$ProtocolFixture)
+  }
   if ($null -ne $StartupFailureClass) {
     switch ([string]$StartupFailureClass) {
       'PARSER' { [void][scriptblock]::Create('{') }

@@ -47,11 +47,17 @@ $validatedManifestPath = $null
 [WorkflowCleanupControllerLine]$controllerLine = 'TYPE_LOAD'
 $cleanupTreeZeroVerified = $false
 
-function Write-FixedResult([ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result) {
-  [Console]::Out.WriteLine("PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:$Result")
+function Write-StartupRecord {
   [Console]::Out.WriteLine(
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:{0}:EXIT_CODE:{1}' -f `
-      $script:fixedStatus, $script:fixedExitCode)
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STARTUP:READY')
+  [Console]::Out.Flush()
+}
+
+function Write-FixedResult([ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result) {
+  [Console]::Out.WriteLine(
+    ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:RESULT:{0}:' +
+      'STATUS:{1}:EXIT_CODE:{2}') -f `
+      $Result, $script:fixedStatus, $script:fixedExitCode)
   [Console]::Out.Flush()
 }
 
@@ -317,6 +323,12 @@ public sealed class ProPRWorkflowCleanupOutputDrain : IDisposable
     }
 }
 '@
+
+# Reaching this boundary proves that the whole body parsed and its fixed native
+# types loaded.  Publish and flush the startup record before parameter or path
+# validation can begin; the terminal record is emitted only after all process,
+# stream, resource, and authority finalization has completed.
+Write-StartupRecord
 
 try {
 $controllerPhase = 'PARAMETER_VALIDATION'
