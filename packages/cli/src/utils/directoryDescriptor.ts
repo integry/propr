@@ -60,6 +60,15 @@ export type NativeDirectorySmokeDiagnostic = (
 
 type NativeDirectoryOperationTestHook = (event: NativeDirectoryOperationTestEvent) => void;
 
+export type NativeDirectoryOpenTestPhase =
+  | "before-primary-open"
+  | "after-fallback-before-lstat"
+  | "after-fallback-open"
+  | "after-fallback-fstat"
+  | "after-fallback-after-lstat";
+
+type NativeDirectoryOpenTestHook = (phase: NativeDirectoryOpenTestPhase, directory: string) => void;
+
 export const DARWIN_DIRECTORY_OPERATION_SHA256: Readonly<Record<string, string>> = {
   arm64: "88f07c0c7a4371f4fb227a4691009d09517de582ba49297d28d03ac94e586615",
   x64: "62183c0f4083cb8c98e09e2d2c688f8f81703e12b0f22320c335b51e927eaf53",
@@ -72,6 +81,8 @@ export const LINUX_DIRECTORY_OPERATION_SHA256: Readonly<Record<string, string>> 
 
 let nativeOperations: NativeDirectoryOperations | undefined;
 let nativeOperationTestHook: NativeDirectoryOperationTestHook | undefined;
+let nativeDirectoryOpenTestHook: NativeDirectoryOpenTestHook | undefined;
+let nativeDirectoryOpenFallbackTestEnabled = false;
 
 function smokeFailureCategory(error: unknown): NativeDirectorySmokeFailureCategory {
   const code = error && typeof error === "object" && "code" in error
@@ -89,6 +100,15 @@ function smokeFailureCategory(error: unknown): NativeDirectorySmokeFailureCatego
 /** Install a deterministic race injector around a native descriptor-operation boundary. */
 export function setNativeDirectoryOperationTestHook(hook?: NativeDirectoryOperationTestHook): void {
   nativeOperationTestHook = hook;
+}
+
+/** Install a deterministic test-only injector around the native authority directory open. */
+export function setNativeDirectoryOpenTestHook(
+  hook?: NativeDirectoryOpenTestHook,
+  enableLinuxArm64Fallback = false,
+): void {
+  nativeDirectoryOpenTestHook = hook;
+  nativeDirectoryOpenFallbackTestEnabled = hook !== undefined && enableLinuxArm64Fallback;
 }
 
 /** Linux has traversable procfs dirfds; Darwin uses the packaged *at addon. */
@@ -157,6 +177,64 @@ function hostOperations(reportSmokeDiagnostic?: NativeDirectorySmokeDiagnostic):
   return nativeOperations;
 }
 
+function errorCode(error: unknown): unknown {
+  return error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+}
+
+function sameDirectoryIdentity(
+  left: Readonly<{ dev: number; ino: number }>,
+  right: Readonly<{ dev: number; ino: number }>,
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+/**
+ * Open and pin the authority directory. Some Linux ARM64 hosts reject the
+ * strict directory/no-follow flag combination with EINVAL. Only that errno on
+ * Linux ARM64 may use the compatibility open, and the held descriptor must
+ * identify the exact same non-link directory before and after it is opened.
+ */
+function openNativeAuthorityDirectory(directory: string): number {
+  try {
+    nativeDirectoryOpenTestHook?.("before-primary-open", directory);
+    return openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch (error) {
+    const isLinuxArm64 = process.platform === "linux" && process.arch === "arm64";
+    if ((!isLinuxArm64 && !nativeDirectoryOpenFallbackTestEnabled) || errorCode(error) !== "EINVAL") throw error;
+  }
+
+  nativeDirectoryOpenTestHook?.("after-fallback-before-lstat", directory);
+  const before = lstatSync(directory);
+  if (!before.isDirectory() || before.isSymbolicLink()) {
+    throw new Error("native directory authority root was not a non-link directory before open");
+  }
+
+  let directoryFd: number | undefined;
+  try {
+    directoryFd = openSync(directory, constants.O_RDONLY);
+    nativeDirectoryOpenTestHook?.("after-fallback-open", directory);
+    const opened = fstatSync(directoryFd);
+    nativeDirectoryOpenTestHook?.("after-fallback-fstat", directory);
+    const after = lstatSync(directory);
+    nativeDirectoryOpenTestHook?.("after-fallback-after-lstat", directory);
+    if (!opened.isDirectory()
+      || !after.isDirectory()
+      || after.isSymbolicLink()
+      || !sameDirectoryIdentity(before, opened)
+      || !sameDirectoryIdentity(before, after)
+      || !sameDirectoryIdentity(opened, after)) {
+      throw new Error("native directory authority root changed during descriptor fallback");
+    }
+    const result = directoryFd;
+    directoryFd = undefined;
+    return result;
+  } finally {
+    if (directoryFd !== undefined) closeSync(directoryFd);
+  }
+}
+
 /**
  * Load the integrity-pinned host addon and perform one descriptor-relative
  * operation. Packaged desktop discovery uses this on Linux so acceptance binds
@@ -179,7 +257,7 @@ export function assertNativeDirectoryEntry(
   let substep: NativeDirectorySmokeSubstep = "directory-open";
   let failureReported = false;
   try {
-    directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    directoryFd = openNativeAuthorityDirectory(directory);
     // Pin through the addon's descriptor-relative open, then let the host
     // runtime inspect that descriptor. This avoids architecture-specific C
     // stat ABI wrappers while retaining no-follow and exact-type authority.

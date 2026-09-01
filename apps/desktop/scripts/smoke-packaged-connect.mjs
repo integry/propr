@@ -207,8 +207,6 @@ function Set-ProprFixtureAcl {
     $system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
     $admins=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
     $acl=Get-Acl -LiteralPath $EntryPath
-    $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier])
-    if($owner.Value -cne $current.Value){exit 40}
   } catch { exit 40 }
   try {
     $acl.SetAccessRuleProtection($true,$false)
