@@ -208,7 +208,7 @@ const protectWindowsEntries = entries => {
     if (result.stdout.length !== 0) windowsFixtureFailure('powershell-invocation', 'powershell-stdout');
     if (result.stderr.length !== 0) windowsFixtureFailure('powershell-invocation', 'powershell-stderr');
     const failurePhase = new Map([
-      [40, 'path-qualification'],
+      [40, 'rooted-path'],
       [41, 'item-type'],
       [42, 'current-sid-lookup'],
       [43, 'sid-construction'],
@@ -216,6 +216,9 @@ const protectWindowsEntries = entries => {
       [45, 'dacl-protection'],
       [46, 'rule-create'],
       [47, 'rule-apply'],
+      [48, 'full-path'],
+      [49, 'canonical-equality'],
+      [50, 'outer-invocation'],
     ]).get(result.status);
     if (failurePhase) windowsFixtureFailure(failurePhase, 'operation-failed');
     if (result.status !== 0) windowsFixtureFailure('powershell-invocation', 'unexpected-exit');

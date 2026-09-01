@@ -8,9 +8,13 @@ function Set-ProprFixtureAcl {
   )
   try {
     if(-not [IO.Path]::IsPathRooted($EntryPath)){exit 40}
-    $canonicalPath=[IO.Path]::GetFullPath($EntryPath)
-    if(-not [String]::Equals($canonicalPath,$EntryPath,[StringComparison]::OrdinalIgnoreCase)){exit 40}
   } catch { exit 40 }
+  try {
+    $canonicalPath=[IO.Path]::GetFullPath($EntryPath)
+  } catch { exit 48 }
+  try {
+    if(-not [String]::Equals($canonicalPath,$EntryPath,[StringComparison]::OrdinalIgnoreCase)){exit 49}
+  } catch { exit 49 }
   try {
     $item=Get-Item -LiteralPath $canonicalPath
     $directory=$EntryKind -eq 'directory'
@@ -48,9 +52,9 @@ function Set-ProprFixtureAcl {
   } catch { exit 47 }
 }
 try {
-  Set-ProprFixtureAcl -EntryKind $env:PROPR_FIXTURE_ACL_KIND -EntryPath $env:PROPR_FIXTURE_ACL_PATH
+  $null=Set-ProprFixtureAcl -EntryKind $env:PROPR_FIXTURE_ACL_KIND -EntryPath $env:PROPR_FIXTURE_ACL_PATH
 } catch {
-  exit 40
+  exit 50
 }`;
 
 export const encodedWindowsFixtureAcl = Buffer.from(windowsFixtureAclSource, 'utf16le').toString('base64');
