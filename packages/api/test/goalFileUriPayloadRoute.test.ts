@@ -53,7 +53,6 @@ test('file URI parser fails closed for encoded, malformed, ambiguous, and nonloc
     'file:///%68%6f%6d%65/%70%72%6f%70%72/%2e%73%73%68/%69%64%5f%72%73%61',
     'file:///%2e%2e/%72%75%6e/%73%65%63%72%65%74%73/token',
     'file:///%2572un/%2573ecrets/token',
-    'file:///project/safe%20name.txt',
     'file:///run/%ZZ/token',
     'file:///run/%/token',
     'file:///run/%C0%AFtoken',
@@ -261,6 +260,8 @@ test('file URI parser preserves ordinary text, HTTP URLs, and explicitly safe lo
     'file:/home_backup/readme',
     'file:/home.txt',
     'file:/run-book',
+    'file:///project/safe%20name.txt',
+    'file%3A%2F%2F%2Fproject%2Fdocs%2Freadme.txt',
   ];
 
   for (const safe of safeValues) assert.equal(projectString(safe), safe);

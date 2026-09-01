@@ -1,16 +1,20 @@
+import {
+  decodePublicStringView,
+  rawSpanForDecodedRange,
+  readClassifiedCharacter,
+  type DecodedPublicStringView,
+  type SensitiveRawSpan,
+} from './goalRoutePublicStringDecoder.js';
+
 const RAW_PATH_REDACTION = '[REDACTED_SENSITIVE_PATH]';
 const RAW_PATH_TERMINATOR = /[\s"'`<>,;?#&()[\]{}]/u;
-const RAW_PATH_OPENER = /[\s"'`=()[\]{:};,&]/u;
+const RAW_PATH_OPENER = /[\s"'`=()[\]{:};,?&#]/u;
 const WORD_CHARACTER = /[\p{L}\p{N}]/u;
 const URI_SCHEME = /[a-z][a-z0-9+.-]*$/iu;
 const WINDOWS_DRIVE = /^\/?[a-z][:|]/iu;
 const VALID_PERCENT_OCTET = /%[0-9a-f]{2}/iu;
 const CREDENTIAL_SEGMENT = /^(?:\.aws|\.azure|\.config|\.docker|\.env(?:\.(?!example$).*)?|\.git-credentials|\.gnupg|\.kube|\.netrc|\.npmrc|\.ssh|configs?|configuration|credentials?|docker\.sock|secrets?|workspaces?|worktrees?)$/iu;
 
-// Eight standard passes cover every supported encoded form while keeping work
-// independent of attacker-controlled nesting. A remaining valid octet makes a
-// classified path fail closed instead of driving another pass.
-const MAX_PERCENT_DECODE_PASSES = 8;
 const MAX_CLASSIFIED_TOKEN_CHARACTERS = 16_640;
 
 const POSIX_SENSITIVE_ROOTS = new Set([
@@ -22,17 +26,6 @@ const WINDOWS_SENSITIVE_ROOTS = new Set([
   'programdata', 'users', 'windows', 'workspace', 'workspaces', 'worktree', 'worktrees',
 ]);
 
-interface MappedCharacter {
-  character: string;
-  rawEnd: number;
-  rawStart: number;
-}
-
-interface DecodedView {
-  characters: MappedCharacter[];
-  value: string;
-}
-
 interface RawPathCandidate {
   decodedToken: string;
   end: number;
@@ -41,11 +34,6 @@ interface RawPathCandidate {
   start: number;
   token: string;
   tooLong: boolean;
-}
-
-interface ClassifiedCharacter {
-  character: string;
-  end: number;
 }
 
 interface NormalizedPath {
@@ -63,106 +51,6 @@ interface NormalizedSegments {
   credential: boolean;
   root: string | undefined;
   traversal: boolean;
-}
-
-function isHexCharacter(character: string | undefined): boolean {
-  return character !== undefined && /^[0-9a-f]$/iu.test(character);
-}
-
-/** Decode standard percent octets while retaining their exact raw spans. */
-function decodeMappedValue(value: string): DecodedView {
-  let rawIndex = 0;
-  let characters: MappedCharacter[] = [];
-  for (const character of value) {
-    characters.push({
-      character,
-      rawEnd: rawIndex + character.length,
-      rawStart: rawIndex,
-    });
-    rawIndex += character.length;
-  }
-  for (let pass = 0; pass < MAX_PERCENT_DECODE_PASSES; pass += 1) {
-    const decoded: MappedCharacter[] = [];
-    let changed = false;
-    for (let index = 0; index < characters.length; index += 1) {
-      const current = characters[index]!;
-      const high = characters[index + 1];
-      const low = characters[index + 2];
-      if (current.character === '%' && isHexCharacter(high?.character)
-        && isHexCharacter(low?.character)) {
-        decoded.push({
-          character: String.fromCharCode(Number.parseInt(
-            `${high!.character}${low!.character}`,
-            16
-          )),
-          rawEnd: low!.rawEnd,
-          rawStart: current.rawStart,
-        });
-        index += 2;
-        changed = true;
-      } else {
-        decoded.push(current);
-      }
-    }
-    characters = decoded;
-    if (!changed) break;
-  }
-  return { characters, value: characters.map(({ character }) => character).join('') };
-}
-
-function readEventuallyEncodedHexCharacter(
-  value: string,
-  index: number
-): ClassifiedCharacter | undefined {
-  if (isHexCharacter(value[index])) return { character: value[index]!, end: index + 1 };
-  if (value[index] !== '%') return undefined;
-  let octetIndex = index + 1;
-  while (value.slice(octetIndex, octetIndex + 2).toLowerCase() === '25') octetIndex += 2;
-  const octet = value.slice(octetIndex, octetIndex + 2);
-  if (!/^[0-9a-f]{2}$/iu.test(octet)) return undefined;
-  const character = String.fromCharCode(Number.parseInt(octet, 16));
-  return isHexCharacter(character) ? { character, end: octetIndex + 2 } : undefined;
-}
-
-/**
- * Read one eventual octet through contiguous or decomposed percent nesting.
- * Each input character is inspected only within its component, so arbitrary
- * residual depth remains linear without adding attacker-controlled passes.
- */
-function readClassifiedCharacter(value: string, index: number): ClassifiedCharacter | undefined {
-  if (value[index] !== '%') return value[index] === undefined
-    ? undefined
-    : { character: value[index]!, end: index + 1 };
-  let highIndex = index + 1;
-  while (value.slice(highIndex, highIndex + 2).toLowerCase() === '25') highIndex += 2;
-  const high = readEventuallyEncodedHexCharacter(value, highIndex);
-  if (high === undefined) return undefined;
-  const low = readEventuallyEncodedHexCharacter(value, high.end);
-  if (low === undefined) return undefined;
-  return {
-    character: String.fromCharCode(Number.parseInt(`${high.character}${low.character}`, 16)),
-    end: low.end,
-  };
-}
-
-/** Collapse only classifiable residual octets, retaining their exact raw spans. */
-function classifyResidualOctets(decoded: DecodedView): DecodedView {
-  const characters: MappedCharacter[] = [];
-  for (let index = 0; index < decoded.characters.length;) {
-    const classified = readClassifiedCharacter(decoded.value, index);
-    if (classified !== undefined && classified.end > index + 1) {
-      characters.push({
-        character: classified.character,
-        rawEnd: decoded.characters[classified.end - 1]!.rawEnd,
-        rawStart: decoded.characters[index]!.rawStart,
-      });
-      index = classified.end;
-    } else {
-      characters.push(decoded.characters[index]!);
-      index += 1;
-    }
-  }
-  return { characters, value: characters.map(({ character }) => character).join('') };
 }
 
 function isControlCharacter(character: string): boolean {
@@ -183,11 +71,36 @@ function hasMalformedPercentEncoding(value: string): boolean {
   return false;
 }
 
-function hasRawPathBoundary(value: string, index: number): boolean {
+function malformedPercentPrefixBoundaries(value: string): Uint8Array {
+  const boundaries = new Uint8Array(value.length + 1);
+  let suffix = '';
+  let tracking = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (character === '%') {
+      tracking = true;
+      suffix = '';
+    } else if (tracking) {
+      if (suffix === '2' && character === '5') suffix = '';
+      else if (suffix === '' && character === '2') suffix = '2';
+      else suffix = suffix.length < 3 ? `${suffix}${character}` : suffix;
+    }
+    boundaries[index + 1] = Number(tracking && suffix.length <= 2
+      && !/^[0-9a-f]{2}$/iu.test(suffix));
+  }
+  return boundaries;
+}
+
+function hasRawPathBoundary(
+  value: string,
+  index: number,
+  malformedPrefix: boolean
+): boolean {
   if (index === 0) return true;
   const previous = value[index - 1]!;
   if (previous === '|') return index === 1 || !WORD_CHARACTER.test(value[index - 2]!);
-  return RAW_PATH_OPENER.test(previous);
+  return RAW_PATH_OPENER.test(previous) || isControlCharacter(previous)
+    || malformedPrefix;
 }
 
 function followsUriScheme(value: string, index: number): boolean {
@@ -197,8 +110,10 @@ function followsUriScheme(value: string, index: number): boolean {
   return URI_SCHEME.test(value.slice(schemeStart, index - 1));
 }
 
-function canStartRawPath(value: string, index: number): boolean {
-  if (!hasRawPathBoundary(value, index) || followsUriScheme(value, index)) return false;
+function canStartRawPath(value: string, index: number, malformedPrefix: boolean): boolean {
+  if (!hasRawPathBoundary(value, index, malformedPrefix) || followsUriScheme(value, index)) {
+    return false;
+  }
   let prefixIndex = index;
   let separatorCount = 0;
   let classified = readClassifiedCharacter(value, prefixIndex);
@@ -226,7 +141,7 @@ function isCandidateTerminator(character: string): boolean {
 }
 
 function readRawPathCandidate(
-  decoded: DecodedView,
+  decoded: DecodedPublicStringView,
   original: string,
   startIndex: number,
   inputTruncated: boolean
@@ -253,10 +168,12 @@ function readRawPathCandidate(
     if (/^[\\/]$/u.test(character)) segmentStart = endIndex + 1;
     endIndex += 1;
   }
-  const start = decoded.characters[startIndex]!.rawStart;
-  const end = endIndex === decoded.characters.length
-    ? original.length
-    : decoded.characters[endIndex]!.rawStart;
+  const { end, start } = rawSpanForDecodedRange(
+    decoded,
+    original.length,
+    startIndex,
+    endIndex
+  );
   return {
     decodedToken: decoded.value.slice(startIndex, endIndex),
     end,
@@ -328,9 +245,9 @@ function shouldRedactRawPath(candidate: RawPathCandidate): boolean {
   if (normalized.mixedRoot || normalized.invalid || malformed) return true;
   const residualOctet = VALID_PERCENT_OCTET.test(candidate.decodedToken);
   if (normalized.authority) {
-    // Traversal into credential-bearing shares is private; homogeneous safe
-    // authorities otherwise retain the established public behavior.
-    return residualOctet || (normalized.traversal && normalized.credential);
+    // Exact credential segments are private even without traversal. Homogeneous
+    // safe authorities otherwise retain the established public behavior.
+    return residualOctet || normalized.credential;
   }
   if (candidate.partial || candidate.tooLong || residualOctet) return true;
   if (normalized.credential) return true;
@@ -341,19 +258,31 @@ function shouldRedactRawPath(candidate: RawPathCandidate): boolean {
     : POSIX_SENSITIVE_ROOTS.has(root));
 }
 
-/** Redact complete raw path tokens after bounded, mapped percent decoding. */
+/** Derive ordered raw spans for sensitive paths from the shared decoded view. */
+export function findSensitiveRawPathSpans(
+  decoded: DecodedPublicStringView,
+  value: string,
+  inputTruncated: boolean
+): SensitiveRawSpan[] {
+  const spans: SensitiveRawSpan[] = [];
+  const malformedBoundaries = malformedPercentPrefixBoundaries(decoded.value);
+  for (let index = 0; index < decoded.value.length; index += 1) {
+    if (!canStartRawPath(decoded.value, index, malformedBoundaries[index] === 1)) continue;
+    const candidate = readRawPathCandidate(decoded, value, index, inputTruncated);
+    if (shouldRedactRawPath(candidate)) spans.push(candidate);
+    index = Math.max(index, candidate.endIndex - 1);
+  }
+  return spans;
+}
+
+/** Backward-compatible direct entrypoint; retained public strings use one view. */
 export function redactRawPathTokens(value: string, inputTruncated: boolean): string {
-  const decoded = classifyResidualOctets(decodeMappedValue(value));
+  const spans = findSensitiveRawPathSpans(decodePublicStringView(value), value, inputTruncated);
   let result = '';
   let copiedThrough = 0;
-  for (let index = 0; index < decoded.value.length; index += 1) {
-    if (!canStartRawPath(decoded.value, index)) continue;
-    const candidate = readRawPathCandidate(decoded, value, index, inputTruncated);
-    if (shouldRedactRawPath(candidate)) {
-      result += `${value.slice(copiedThrough, candidate.start)}${RAW_PATH_REDACTION}`;
-      copiedThrough = candidate.end;
-    }
-    index = Math.max(index, candidate.endIndex - 1);
+  for (const span of spans) {
+    result += `${value.slice(copiedThrough, span.start)}${RAW_PATH_REDACTION}`;
+    copiedThrough = span.end;
   }
   return copiedThrough === 0 ? value : `${result}${value.slice(copiedThrough)}`;
 }

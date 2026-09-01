@@ -14,8 +14,7 @@ import type {
   PublicGoalMessageDto,
   PublicGoalNodeDto,
 } from '@propr/shared';
-import { redactFileUriTokens } from './goalRouteFileUriSanitizer.js';
-import { redactRawPathTokens } from './goalRouteRawPathSanitizer.js';
+import { redactPublicPathTokens } from './goalRoutePublicStringSanitizer.js';
 
 const PUBLIC_EVENT_PAYLOAD_LIMITS = {
   depth: 16,
@@ -75,7 +74,7 @@ const PUBLIC_EVENT_REDACTION_LOOKAHEAD_BYTES = 256;
 // Raw sockets, Docker hosts, Windows paths, roots, and credential paths share
 // explicit opening/closing token delimiters. A pipe is a raw boundary only when
 // it is not attached to a word; embedded file-URI pipe suffixes are classified
-// by redactFileUriTokens before these patterns run.
+// by the shared public-string classifier before these patterns run.
 const IPV6_HEXTET_SOURCE = '[0-9A-F]{1,4}';
 const IPV4_OCTET_SOURCE = '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])';
 const IPV4_ADDRESS_SOURCE = `${IPV4_OCTET_SOURCE}(?:\\.${IPV4_OCTET_SOURCE}){3}`;
@@ -174,8 +173,7 @@ function truncateUtf8(value: string, maxBytes: number): string {
 }
 
 function redactSensitiveEventValues(value: string, inputTruncated: boolean): string {
-  let sanitized = redactFileUriTokens(value, inputTruncated);
-  sanitized = redactRawPathTokens(sanitized, inputTruncated);
+  let sanitized = redactPublicPathTokens(value, inputTruncated);
   sanitized = redactSecrets(sanitized);
   for (const pattern of SENSITIVE_EVENT_VALUE_PATTERNS) {
     sanitized = sanitized.replace(pattern, `$1${SENSITIVE_PATH_MARKER}`);

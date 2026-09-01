@@ -1,4 +1,10 @@
 import { redactSecrets } from '@propr/core';
+import {
+  decodePublicStringView,
+  rawSpanForDecodedRange,
+  type DecodedPublicStringView,
+  type SensitiveRawSpan,
+} from './goalRoutePublicStringDecoder.js';
 
 const FILE_URI_SCHEME = 'file:';
 const FILE_URI_TOKEN_BYTE_LIMIT = 4_096;
@@ -47,7 +53,10 @@ const SENSITIVE_ROOT_IN_METADATA = /(?:^|[=&#;()[\]{}]|(?<![\p{L}\p{N}])\|)\/(?:
 
 interface FileUriCandidate {
   end: number;
+  endIndex: number;
   partial: boolean;
+  rawByteLength: number;
+  start: number;
   token: string;
 }
 
@@ -57,6 +66,15 @@ function hasUriControlCharacter(value: string): boolean {
   for (const character of value) {
     const codePoint = character.codePointAt(0)!;
     if (codePoint <= 0x1f || codePoint === 0x7f) return true;
+  }
+  return false;
+}
+
+function hasMalformedPercentEncoding(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== '%') continue;
+    if (!/^[0-9a-f]{2}$/iu.test(value.slice(index + 1, index + 3))) return true;
+    index += 2;
   }
   return false;
 }
@@ -92,78 +110,67 @@ function fileUriDelimiterAction(
 }
 
 function readFileUriCandidate(
-  value: string,
-  start: number,
+  decoded: DecodedPublicStringView,
+  original: string,
+  startIndex: number,
   inputTruncated: boolean
 ): FileUriCandidate {
-  let end = start + FILE_URI_SCHEME.length;
+  const value = decoded.value;
+  let endIndex = startIndex + FILE_URI_SCHEME.length;
   let inMetadata = false;
-  let inAuthority = value.slice(end, end + 2) === '//';
+  let inAuthority = value.slice(endIndex, endIndex + 2) === '//';
   const expectedClosers: string[] = [];
-  while (end < value.length) {
-    const character = value[end]!;
+  while (endIndex < value.length) {
+    const character = value[endIndex]!;
     if (inAuthority && character === '/'
-      && end >= start + FILE_URI_SCHEME.length + 2) inAuthority = false;
+      && endIndex >= startIndex + FILE_URI_SCHEME.length + 2) inAuthority = false;
     const delimiterAction = fileUriDelimiterAction(
       character,
       inMetadata,
       inAuthority,
       expectedClosers.at(-1)
     );
-    if (delimiterAction === 'terminate') break;
+    const mappedCharacter = decoded.characters[endIndex]!;
+    const encodedWhitespace = /\s/u.test(character)
+      && original.slice(mappedCharacter.rawStart, mappedCharacter.rawEnd) !== character;
+    if (delimiterAction === 'terminate' && !encodedWhitespace) break;
     if (delimiterAction === 'enter-metadata') {
       inMetadata = true;
-      end += 1;
+      endIndex += 1;
       continue;
     }
     if (delimiterAction === 'open') {
       expectedClosers.push(matchingClosingDelimiter(character));
-      end += 1;
+      endIndex += 1;
       continue;
     }
     if (delimiterAction === 'close') {
       expectedClosers.pop();
-      end += 1;
+      endIndex += 1;
       continue;
     }
-    if (end > start + FILE_URI_SCHEME.length && isFileSchemeAt(value, end)) {
-      while (end > start && /[,;|]/u.test(value[end - 1]!)) end -= 1;
+    if (endIndex > startIndex + FILE_URI_SCHEME.length
+      && isFileSchemeAt(value, endIndex)) {
+      while (endIndex > startIndex && /[,;|]/u.test(value[endIndex - 1]!)) endIndex -= 1;
       break;
     }
-    end += 1;
+    endIndex += 1;
   }
-  const reachedInputEnd = end === value.length;
+  const reachedInputEnd = endIndex === value.length;
+  const { end, start } = rawSpanForDecodedRange(
+    decoded,
+    original.length,
+    startIndex,
+    endIndex
+  );
   return {
     end,
-    partial: reachedInputEnd && end === value.length && inputTruncated,
-    token: value.slice(start, end),
+    endIndex,
+    partial: reachedInputEnd && inputTruncated,
+    rawByteLength: Buffer.byteLength(original.slice(start, end), 'utf8'),
+    start,
+    token: value.slice(startIndex, endIndex),
   };
-}
-
-function strictlyDecodeUriComponent(value: string): {
-  decoded: string;
-  encoded: boolean;
-  valid: boolean;
-} {
-  let encoded = false;
-  for (let index = 0; index < value.length; index += 1) {
-    if (value[index] !== '%') continue;
-    encoded = true;
-    if (!/^[0-9a-f]{2}$/iu.test(value.slice(index + 1, index + 3))) {
-      return { decoded: '', encoded, valid: false };
-    }
-    index += 2;
-  }
-  try {
-    const decoded = decodeURIComponent(value);
-    return {
-      decoded,
-      encoded,
-      valid: !hasUriControlCharacter(decoded) && !ENCODED_OCTET.test(decoded),
-    };
-  } catch {
-    return { decoded: '', encoded, valid: false };
-  }
 }
 
 function splitLocalFileUri(token: string): {
@@ -260,25 +267,21 @@ function shouldRedactFileUri(candidate: FileUriCandidate): boolean {
   // A prose label ending in "file:" is not a URI. If it is cut at the
   // inspection boundary, however, it may be the start of a URI and is unsafe.
   if (!candidate.partial && candidate.token.length === FILE_URI_SCHEME.length) return false;
-  if (candidate.partial || Buffer.byteLength(candidate.token, 'utf8') > FILE_URI_TOKEN_BYTE_LIMIT) {
+  if (candidate.partial || candidate.rawByteLength > FILE_URI_TOKEN_BYTE_LIMIT) {
     return true;
   }
-  if (hasUriControlCharacter(candidate.token)) return true;
+  if (hasUriControlCharacter(candidate.token)
+    || hasMalformedPercentEncoding(candidate.token)
+    || ENCODED_OCTET.test(candidate.token)) return true;
 
-  const decoded = strictlyDecodeUriComponent(candidate.token);
-  if (!decoded.valid) return true;
-
-  const local = splitLocalFileUri(decoded.decoded);
+  const local = splitLocalFileUri(candidate.token);
   if (!local.valid) return true;
   if (hasSensitiveMetadata(local.metadata)) return true;
 
   const normalized = normalizeAbsolutePath(local.path);
   if (!normalized.valid || normalized.segments.length === 0
     || hasSensitiveLocalPath(normalized.segments)) return true;
-  // Encoded file URI spellings remain intentionally fail-closed, but are
-  // classified above in decoded/normalized form so encoded drive designators
-  // follow the same path and metadata rules as their raw equivalents.
-  return decoded.encoded;
+  return false;
 }
 
 /**
@@ -287,17 +290,29 @@ function shouldRedactFileUri(candidate: FileUriCandidate): boolean {
  * unterminated token at that boundary to fail closed without scanning an
  * attacker-sized string.
  */
+export function findSensitiveFileUriSpans(
+  decoded: DecodedPublicStringView,
+  value: string,
+  inputTruncated: boolean
+): SensitiveRawSpan[] {
+  const spans: SensitiveRawSpan[] = [];
+  for (let index = 0; index < decoded.value.length; index += 1) {
+    if (!isFileSchemeAt(decoded.value, index)) continue;
+    const candidate = readFileUriCandidate(decoded, value, index, inputTruncated);
+    if (shouldRedactFileUri(candidate)) spans.push(candidate);
+    index = candidate.endIndex - 1;
+  }
+  return spans;
+}
+
+/** Backward-compatible direct entrypoint; retained public strings use one view. */
 export function redactFileUriTokens(value: string, inputTruncated: boolean): string {
+  const spans = findSensitiveFileUriSpans(decodePublicStringView(value), value, inputTruncated);
   let result = '';
   let copiedThrough = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    if (!isFileSchemeAt(value, index)) continue;
-    const candidate = readFileUriCandidate(value, index, inputTruncated);
-    if (shouldRedactFileUri(candidate)) {
-      result += `${value.slice(copiedThrough, index)}${FILE_URI_REDACTION}`;
-      copiedThrough = candidate.end;
-    }
-    index = candidate.end - 1;
+  for (const span of spans) {
+    result += `${value.slice(copiedThrough, span.start)}${FILE_URI_REDACTION}`;
+    copiedThrough = span.end;
   }
   return copiedThrough === 0 ? value : `${result}${value.slice(copiedThrough)}`;
 }
