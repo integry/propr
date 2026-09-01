@@ -17,8 +17,9 @@ $manifestValidated = $false
 $authorizedRunId = $null
 $cleanupValidationPhase = 'HANDSHAKE'
 $cleanupValidationPhases = @(
-  'HANDSHAKE','FILE_AUTHORITY','UTF8_SCHEMA','LIFETIME','RUN_ID',
-  'INSTALLER_PATH','FIXTURE_SCOPE','INITIAL_ACTIVE_MATCH'
+  'HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',
+  'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','IDENTIFIER_FORMATS',
+  'LIFETIME','RUN_ID','INSTALLER_PATH','FIXTURE_SCOPE','INITIAL_ACTIVE_MATCH'
 )
 
 function Write-FixtureCleanupValidationPhase([string]$Phase) {
@@ -1023,7 +1024,10 @@ function Write-DurableOwnershipManifest([string]$Path, $Manifest) {
   } finally {
     $stream.Dispose()
   }
-  [IO.File]::Move($temporaryPath, $Path, $true)
+  # File.Move(source, destination, overwrite) is not available on the .NET
+  # Framework used by Windows PowerShell 5.1. The canonical manifest exists,
+  # so File.Replace retains the same atomic same-volume replacement contract.
+  [IO.File]::Replace($temporaryPath, $Path, $null, $true)
 }
 
 function Write-EmptyOwnershipReceipt([string]$Path, $Manifest) {
@@ -1273,9 +1277,14 @@ try {
   } finally {
     $manifestStream.Dispose()
   }
-  $cleanupValidationPhase = 'UTF8_SCHEMA'
+  $cleanupValidationPhase = 'UTF8_DECODE'
   $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
-  $manifest = ConvertFrom-Json -InputObject $strictUtf8.GetString($manifestBytes) -ErrorAction Stop
+  $manifestJson = $strictUtf8.GetString($manifestBytes)
+
+  $cleanupValidationPhase = 'JSON_PARSE'
+  $manifest = ConvertFrom-Json -InputObject $manifestJson -ErrorAction Stop
+
+  $cleanupValidationPhase = 'EXACT_KEY_SET'
   $manifestKeys = @($manifest.PSObject.Properties | ForEach-Object { $_.Name })
   $expectedManifestKeys = @(
     'SchemaVersion','ManifestType','State','RunId','CreatedUtcTicks','ExpiresUtcTicks',
@@ -1285,21 +1294,47 @@ try {
     'RegistryValues','Users','Profiles'
   )
   if ($manifestKeys.Count -ne $expectedManifestKeys.Count -or
-      @($expectedManifestKeys | Where-Object { $manifestKeys -cnotcontains $_ }).Count -ne 0 -or
-      $manifest.Fixture -isnot [bool] -or $manifest.BaselineClean -isnot [bool] -or
-      $manifest.InstallAttempted -isnot [bool] -or
-      [string]$manifest.MsiTransactionState -notin @(
-        'NONE','PENDING','COMMITTED','ROLLED_BACK_CLEAN'
-      ) -or
+      @($expectedManifestKeys | Where-Object {
+        $manifestKeys -cnotcontains $_
+      }).Count -ne 0) {
+    throw 'ownership manifest key set is invalid'
+  }
+
+  $cleanupValidationPhase = 'BOOLEAN_TYPES'
+  # Windows PowerShell 5.1 can retain an incidental PSObject wrapper around a
+  # JSON primitive. Inspect the explicit base object while still rejecting
+  # strings, numbers, and every other truthy value.
+  if ($null -eq $manifest.Fixture -or
+      $manifest.Fixture.PSObject.BaseObject.GetType() -ne [bool] -or
+      $null -eq $manifest.BaselineClean -or
+      $manifest.BaselineClean.PSObject.BaseObject.GetType() -ne [bool] -or
+      $null -eq $manifest.InstallAttempted -or
+      $manifest.InstallAttempted.PSObject.BaseObject.GetType() -ne [bool]) {
+    throw 'ownership manifest Boolean types are invalid'
+  }
+
+  $cleanupValidationPhase = 'TRANSACTION_ENUM'
+  if ([string]$manifest.MsiTransactionState -cnotin @(
+      'NONE','PENDING','COMMITTED','ROLLED_BACK_CLEAN'
+    )) {
+    throw 'ownership manifest transaction enum is invalid'
+  }
+
+  $cleanupValidationPhase = 'SCHEMA_TYPE_STATE'
+  if (
       $manifest.SchemaVersion -ne 3 -or
       [string]$manifest.ManifestType -cne 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -or
-      [string]$manifest.State -notin @('ACTIVE','EMPTY') -or
-      [string]$manifest.RunId -notmatch '^[a-f0-9]{32}$' -or
-      [string]$manifest.InstallerEntryIdentity -notmatch '^[a-f0-9]{24}$' -or
-      [string]$manifest.InstallerSha256 -notmatch '^[a-f0-9]{64}$' -or
-      [string]$manifest.InstallerProductCode -notmatch
+      [string]$manifest.State -cnotin @('ACTIVE','EMPTY')) {
+    throw 'ownership manifest schema version, type, or state is invalid'
+  }
+
+  $cleanupValidationPhase = 'IDENTIFIER_FORMATS'
+  if ([string]$manifest.RunId -cnotmatch '^[a-f0-9]{32}$' -or
+      [string]$manifest.InstallerEntryIdentity -cnotmatch '^[a-f0-9]{24}$' -or
+      [string]$manifest.InstallerSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+      [string]$manifest.InstallerProductCode -cnotmatch
         '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$') {
-    throw 'ownership manifest schema is invalid'
+    throw 'ownership manifest durable identifier formats are invalid'
   }
   if (!$manifest.Fixture -and (
       ([string]$manifest.MsiTransactionState -ceq 'NONE' -and

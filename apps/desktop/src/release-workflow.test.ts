@@ -753,7 +753,19 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppCleanup,
-      /HANDSHAKE','FILE_AUTHORITY','UTF8_SCHEMA','LIFETIME','RUN_ID',[\s\S]*'INSTALLER_PATH','FIXTURE_SCOPE','INITIAL_ACTIVE_MATCH'/,
+      /HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',[\s\S]*'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','IDENTIFIER_FORMATS',[\s\S]*'INITIAL_ACTIVE_MATCH'/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /\$manifest\.Fixture\.PSObject\.BaseObject\.GetType\(\) -ne \[bool\][\s\S]*\$manifest\.BaselineClean\.PSObject\.BaseObject\.GetType\(\) -ne \[bool\][\s\S]*\$manifest\.InstallAttempted\.PSObject\.BaseObject\.GetType\(\) -ne \[bool\]/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /\[IO\.File\]::Replace\(\$temporaryPath, \$Path, \$null, \$true\)/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppCleanup,
+      /\[IO\.File\]::Move\(\$temporaryPath, \$Path, \$true\)/,
     );
     assert.match(
       installedWindowsAppSupervisor,
@@ -783,6 +795,10 @@ describe('desktop trusted release workflow', () => {
       /\\ACLEANUP_VALIDATION_PHASE:[\s\S]*INITIAL_ACTIVE_MATCH\)\\r\?\\n\\z/,
     );
     assert.match(
+      installedWindowsAppSupervisor,
+      /System32\\WindowsPowerShell\\v1\.0\\powershell\.exe/,
+    );
+    assert.match(
       installedWindowsAppCleanup,
       /\[Console\]::Out\.WriteLine\(\s*'CLEANUP_VALIDATION_PHASE:' \+ \$Phase/,
     );
@@ -792,7 +808,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /CLEANUP_VALIDATION_PHASE:[\s\S]*HANDSHAKE\|FILE_AUTHORITY\|UTF8_SCHEMA\|LIFETIME\|RUN_ID\|INSTALLER_PATH\|/,
+      /CLEANUP_VALIDATION_PHASE:[\s\S]*HANDSHAKE\|FILE_AUTHORITY\|UTF8_DECODE\|JSON_PARSE\|EXACT_KEY_SET\|[\s\S]*BOOLEAN_TYPES\|TRANSACTION_ENUM\|SCHEMA_TYPE_STATE\|IDENTIFIER_FORMATS\|/,
     );
     assert.doesNotMatch(
       installedWindowsAppCleanup,

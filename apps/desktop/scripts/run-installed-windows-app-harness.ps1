@@ -818,7 +818,17 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
       $cleanupReadyEventName
     )
     $cleanupStartInfo = [Diagnostics.ProcessStartInfo]::new()
-    $cleanupStartInfo.FileName = $hostPath
+    $cleanupHostPath = $hostPath
+    if ($fixtureNoMarkerDiagnostic) {
+      # Exercise the supervisor writer and production cleanup reader across the
+      # Windows PowerShell 5.1 boundary in the focused native fixture only.
+      $cleanupHostPath = Join-Path $env:SystemRoot `
+        'System32\WindowsPowerShell\v1.0\powershell.exe'
+      if (!(Test-Path -LiteralPath $cleanupHostPath -PathType Leaf)) {
+        throw 'Windows PowerShell 5.1 fixture host is unavailable'
+      }
+    }
+    $cleanupStartInfo.FileName = $cleanupHostPath
     $cleanupStartInfo.UseShellExecute = $false
     $cleanupStartInfo.CreateNoWindow = $true
     foreach ($argument in @(
@@ -908,8 +918,10 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
         $diagnosticMatch = [regex]::Match(
           [Text.Encoding]::ASCII.GetString($diagnosticBytes),
           ('\ACLEANUP_VALIDATION_PHASE:' +
-            '(HANDSHAKE|FILE_AUTHORITY|UTF8_SCHEMA|LIFETIME|RUN_ID|' +
-            'INSTALLER_PATH|FIXTURE_SCOPE|INITIAL_ACTIVE_MATCH)\r?\n\z'),
+            '(HANDSHAKE|FILE_AUTHORITY|UTF8_DECODE|JSON_PARSE|EXACT_KEY_SET|' +
+            'BOOLEAN_TYPES|TRANSACTION_ENUM|SCHEMA_TYPE_STATE|' +
+            'IDENTIFIER_FORMATS|LIFETIME|RUN_ID|INSTALLER_PATH|FIXTURE_SCOPE|' +
+            'INITIAL_ACTIVE_MATCH)\r?\n\z'),
           [Text.RegularExpressions.RegexOptions]::CultureInvariant
         )
         if (!$diagnosticMatch.Success) {
