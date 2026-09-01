@@ -94,7 +94,7 @@ for (const requiredSkillFile of ["SKILL.md", join("agents", "openai.yaml")]) {
 const nativeArtifacts = {
   "darwin-arm64": "88f07c0c7a4371f4fb227a4691009d09517de582ba49297d28d03ac94e586615",
   "darwin-x64": "62183c0f4083cb8c98e09e2d2c688f8f81703e12b0f22320c335b51e927eaf53",
-  "linux-arm64": "29b28b76ed8781f2567897ad9ba576798bbb669937048218e0416601788e0f1c",
+  "linux-arm64": "916679f413251c4b23c51167987a874bbbdd9d96991882bfac9093e0ea5fa051",
   "linux-x64": "7199378f1c7b443a05c596eae7c66f9a77cc01b4a493c07748df0df1083950f6",
 };
 for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {

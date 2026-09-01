@@ -37,6 +37,7 @@ import {
 import {
   DARWIN_DIRECTORY_OPERATION_SHA256,
   LINUX_DIRECTORY_OPERATION_SHA256,
+  assertNativeDirectoryEntry,
   directoryDescriptorAccess,
   verifyDirectoryOperationArtifact,
 } from "./utils/directoryDescriptor.js";
@@ -124,6 +125,58 @@ test("native Linux x64 helper loads, stats, and atomically refuses replacement",
   } finally {
     closeSync(fd);
   }
+});
+
+test("native descriptor smoke failures expose only fixed substeps and categories", {
+  skip: process.platform !== "linux" || process.arch !== "x64"
+    ? "requires the real Linux x64 addon"
+    : false,
+}, () => {
+  const root = temporaryRoot();
+  const file = join(root, "entry");
+  writeFileSync(file, "entry\n");
+
+  const directoryDiagnostics: unknown[] = [];
+  assert.throws(() => assertNativeDirectoryEntry(
+    join(root, "absent"),
+    "entry",
+    "file",
+    (phase, code, failure) => directoryDiagnostics.push({ phase, code, ...failure }),
+  ));
+  assert.deepEqual(directoryDiagnostics.at(-1), {
+    phase: "descriptor-operation",
+    code: "FAILED",
+    substep: "directory-open",
+    category: "missing-entry",
+  });
+
+  const missingDiagnostics: unknown[] = [];
+  assert.throws(() => assertNativeDirectoryEntry(
+    root,
+    "missing",
+    "file",
+    (phase, code, failure) => missingDiagnostics.push({ phase, code, ...failure }),
+  ));
+  assert.deepEqual(missingDiagnostics.at(-1), {
+    phase: "descriptor-operation",
+    code: "FAILED",
+    substep: "addon-open",
+    category: "missing-entry",
+  });
+
+  const typeDiagnostics: unknown[] = [];
+  assert.throws(() => assertNativeDirectoryEntry(
+    root,
+    "entry",
+    "directory",
+    (phase, code, failure) => typeDiagnostics.push({ phase, code, ...failure }),
+  ));
+  assert.deepEqual(typeDiagnostics.at(-1), {
+    phase: "descriptor-operation",
+    code: "FAILED",
+    substep: "fstat-type",
+    category: "type-mismatch",
+  });
 });
 
 test("native Darwin child uses inherited fd 3 without changing either cwd", {

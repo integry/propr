@@ -39,9 +39,23 @@ export interface NativeDirectoryOperationTestEvent {
 
 export type NativeDirectorySmokePhase = "addon-integrity-type" | "addon-load" | "descriptor-operation";
 export type NativeDirectorySmokeCode = "STARTED" | "PASSED" | "FAILED";
+export type NativeDirectorySmokeSubstep = "directory-open" | "addon-open" | "fstat-type";
+export type NativeDirectorySmokeFailureCategory =
+  | "access-denied"
+  | "invalid-argument"
+  | "io-failure"
+  | "missing-entry"
+  | "not-directory"
+  | "symlink-refused"
+  | "type-mismatch"
+  | "unexpected";
 export type NativeDirectorySmokeDiagnostic = (
   phase: NativeDirectorySmokePhase,
   code: NativeDirectorySmokeCode,
+  failure?: Readonly<{
+    substep: NativeDirectorySmokeSubstep;
+    category: NativeDirectorySmokeFailureCategory;
+  }>,
 ) => void;
 
 type NativeDirectoryOperationTestHook = (event: NativeDirectoryOperationTestEvent) => void;
@@ -52,12 +66,25 @@ export const DARWIN_DIRECTORY_OPERATION_SHA256: Readonly<Record<string, string>>
 };
 
 export const LINUX_DIRECTORY_OPERATION_SHA256: Readonly<Record<string, string>> = {
-  arm64: "29b28b76ed8781f2567897ad9ba576798bbb669937048218e0416601788e0f1c",
+  arm64: "916679f413251c4b23c51167987a874bbbdd9d96991882bfac9093e0ea5fa051",
   x64: "7199378f1c7b443a05c596eae7c66f9a77cc01b4a493c07748df0df1083950f6",
 };
 
 let nativeOperations: NativeDirectoryOperations | undefined;
 let nativeOperationTestHook: NativeDirectoryOperationTestHook | undefined;
+
+function smokeFailureCategory(error: unknown): NativeDirectorySmokeFailureCategory {
+  const code = error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  if (code === "EACCES" || code === "EPERM") return "access-denied";
+  if (code === "EINVAL") return "invalid-argument";
+  if (code === "EIO") return "io-failure";
+  if (code === "ENOENT") return "missing-entry";
+  if (code === "ENOTDIR") return "not-directory";
+  if (code === "ELOOP") return "symlink-refused";
+  return "unexpected";
+}
 
 /** Install a deterministic race injector around a native descriptor-operation boundary. */
 export function setNativeDirectoryOperationTestHook(hook?: NativeDirectoryOperationTestHook): void {
@@ -149,12 +176,16 @@ export function assertNativeDirectoryEntry(
   reportSmokeDiagnostic?.("descriptor-operation", "STARTED");
   let directoryFd: number | undefined;
   let entryFd: number | undefined;
+  let substep: NativeDirectorySmokeSubstep = "directory-open";
+  let failureReported = false;
   try {
     directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     // Pin through the addon's descriptor-relative open, then let the host
     // runtime inspect that descriptor. This avoids architecture-specific C
     // stat ABI wrappers while retaining no-follow and exact-type authority.
+    substep = "addon-open";
     entryFd = operations.openAt(directoryFd, name, constants.O_RDONLY | constants.O_NOFOLLOW, 0);
+    substep = "fstat-type";
     const entry = fstatSync(entryFd);
     const kind = entry.isFile()
       ? "file"
@@ -164,11 +195,21 @@ export function assertNativeDirectoryEntry(
           ? "symbolic-link"
           : "other";
     if (kind !== expectedKind) {
+      reportSmokeDiagnostic?.("descriptor-operation", "FAILED", {
+        substep,
+        category: "type-mismatch",
+      });
+      failureReported = true;
       throw new Error('native directory authority entry type did not match');
     }
     reportSmokeDiagnostic?.("descriptor-operation", "PASSED");
   } catch (error) {
-    reportSmokeDiagnostic?.("descriptor-operation", "FAILED");
+    if (!failureReported) {
+      reportSmokeDiagnostic?.("descriptor-operation", "FAILED", {
+        substep,
+        category: smokeFailureCategory(error),
+      });
+    }
     throw error;
   } finally {
     if (entryFd !== undefined) closeSync(entryFd);

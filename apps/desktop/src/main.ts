@@ -580,6 +580,8 @@ if (!hasSingleInstanceLock) {
             ? diagnostic => log('info', 'desktop.renderer.connect_discovery.phase', {
                 phase: diagnostic.phase,
                 code: diagnostic.code,
+                ...(diagnostic.substep ? { substep: diagnostic.substep } : {}),
+                ...(diagnostic.category ? { category: diagnostic.category } : {}),
               })
             : undefined,
         });

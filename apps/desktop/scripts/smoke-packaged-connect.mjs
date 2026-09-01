@@ -41,7 +41,7 @@ const nativeHashes = {
   },
   linux: {
     arm64: {
-      'directory-operations.node': '29b28b76ed8781f2567897ad9ba576798bbb669937048218e0416601788e0f1c',
+      'directory-operations.node': '916679f413251c4b23c51167987a874bbbdd9d96991882bfac9093e0ea5fa051',
     },
     x64: {
       'directory-operations.node': '7199378f1c7b443a05c596eae7c66f9a77cc01b4a493c07748df0df1083950f6',
@@ -82,6 +82,17 @@ const childDiagnosticPhases = new Set([
   'status-resolution',
 ]);
 const childDiagnosticPhaseCodes = new Set(['STARTED', 'PASSED', 'FAILED']);
+const childDiagnosticSubsteps = new Set(['directory-open', 'addon-open', 'fstat-type']);
+const childDiagnosticCategories = new Set([
+  'access-denied',
+  'invalid-argument',
+  'io-failure',
+  'missing-entry',
+  'not-directory',
+  'symlink-refused',
+  'type-mismatch',
+  'unexpected',
+]);
 
 const childRecords = output => output.split(/\r?\n/).flatMap(line => {
   try {
@@ -95,10 +106,17 @@ const boundedChildDiagnostics = records => records.flatMap(record => {
   const nestedCode = record.error && typeof record.error === 'object' ? record.error.code : undefined;
   const candidateCode = typeof record.code === 'string' ? record.code : nestedCode;
   const phase = typeof record.phase === 'string' ? record.phase : undefined;
+  const substep = typeof record.substep === 'string' ? record.substep : undefined;
+  const category = typeof record.category === 'string' ? record.category : undefined;
   return [{
     event: record.event,
     ...(childDiagnosticPhases.has(phase) && childDiagnosticPhaseCodes.has(candidateCode)
-      ? { phase, code: candidateCode }
+      ? {
+          phase,
+          code: candidateCode,
+          ...(candidateCode === 'FAILED' && childDiagnosticSubsteps.has(substep) ? { substep } : {}),
+          ...(candidateCode === 'FAILED' && childDiagnosticCategories.has(category) ? { category } : {}),
+        }
       : childDiagnosticCodes.has(candidateCode)
         ? { code: candidateCode }
         : {}),
@@ -188,8 +206,13 @@ function Set-ProprFixtureAcl {
     $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
     $system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
     $admins=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
-    $acl=if($directory){[Security.AccessControl.DirectorySecurity]::new()}else{[Security.AccessControl.FileSecurity]::new()}
-    $acl.SetOwner($current);$acl.SetAccessRuleProtection($true,$false)
+    $acl=Get-Acl -LiteralPath $EntryPath
+    $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier])
+    if($owner.Value -cne $current.Value){exit 40}
+  } catch { exit 40 }
+  try {
+    $acl.SetAccessRuleProtection($true,$false)
+    foreach($existing in @($acl.Access)){$acl.RemoveAccessRuleSpecific($existing)}
     foreach($identity in @($current,$system,$admins)){
       $rights=[Security.AccessControl.FileSystemRights]::FullControl
       $accessType=[Security.AccessControl.AccessControlType]::Allow
@@ -225,12 +248,12 @@ try {
         PROPR_FIXTURE_ACL_PATH: entry.path,
       },
     });
-    if (result.error || result.signal) windowsFixtureFailure('acl-process', 'process-failed');
-    if (result.stdout || result.stderr) windowsFixtureFailure('acl-process', 'unexpected-output');
-    if (result.status === 40) windowsFixtureFailure('parameter-binding', 'validation-failed');
-    if (result.status === 41) windowsFixtureFailure('acl-construction', 'operation-failed');
-    if (result.status === 42) windowsFixtureFailure(`set-acl-${entry.kind}`, 'operation-failed');
-    if (result.status !== 0) windowsFixtureFailure('acl-process', 'unexpected-exit');
+    if (result.error || result.signal) windowsFixtureFailure('owner-verify', 'process-failed');
+    if (result.stdout || result.stderr) windowsFixtureFailure('owner-verify', 'unexpected-output');
+    if (result.status === 40) windowsFixtureFailure('owner-verify', 'operation-failed');
+    if (result.status === 41) windowsFixtureFailure('rule-create', 'operation-failed');
+    if (result.status === 42) windowsFixtureFailure('rule-apply', 'operation-failed');
+    if (result.status !== 0) windowsFixtureFailure('rule-apply', 'unexpected-exit');
   }
 };
 

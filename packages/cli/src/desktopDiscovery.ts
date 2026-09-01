@@ -4,7 +4,11 @@ import {
   type LocalConnectStatusDependencies,
 } from './commands/connectCommand.js';
 import { createConfigManager } from './config/index.js';
-import { assertNativeDirectoryEntry } from './utils/directoryDescriptor.js';
+import {
+  assertNativeDirectoryEntry,
+  type NativeDirectorySmokeFailureCategory,
+  type NativeDirectorySmokeSubstep,
+} from './utils/directoryDescriptor.js';
 
 export const DESKTOP_CONNECT_DISCOVERY_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set([
   'darwin',
@@ -34,6 +38,8 @@ export type DesktopConnectDiscoverySmokePhase =
 export interface DesktopConnectDiscoverySmokeDiagnostic {
   readonly phase: DesktopConnectDiscoverySmokePhase;
   readonly code: 'STARTED' | 'PASSED' | 'FAILED';
+  readonly substep?: NativeDirectorySmokeSubstep;
+  readonly category?: NativeDirectorySmokeFailureCategory;
 }
 
 /**
@@ -65,8 +71,8 @@ export async function discoverConfiguredConnect({
     throw error;
   }
   if (platform === 'linux' && root !== undefined) {
-    assertNativeDirectoryEntry(configRoot, 'config.json', 'file', (phase, code) => {
-      reportSmokeDiagnostic?.({ phase, code });
+    assertNativeDirectoryEntry(configRoot, 'config.json', 'file', (phase, code, failure) => {
+      reportSmokeDiagnostic?.({ phase, code, ...failure });
     });
   }
   if (readStatus) {
