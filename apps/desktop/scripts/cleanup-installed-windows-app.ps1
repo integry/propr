@@ -18,7 +18,8 @@ $authorizedRunId = $null
 $cleanupValidationPhase = 'HANDSHAKE'
 $cleanupValidationPhases = @(
   'HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',
-  'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','IDENTIFIER_FORMATS',
+  'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','RUN_ID_FORMAT',
+  'INSTALLER_ENTRY_ID_FORMAT','INSTALLER_SHA256_FORMAT','INSTALLER_PRODUCT_CODE_FORMAT',
   'LIFETIME','RUN_ID','INSTALLER_PATH','FIXTURE_SCOPE','INITIAL_ACTIVE_MATCH'
 )
 
@@ -1328,14 +1329,52 @@ try {
     throw 'ownership manifest schema version, type, or state is invalid'
   }
 
-  $cleanupValidationPhase = 'IDENTIFIER_FORMATS'
-  if ([string]$manifest.RunId -cnotmatch '^[a-f0-9]{32}$' -or
-      [string]$manifest.InstallerEntryIdentity -cnotmatch '^[a-f0-9]{24}$' -or
-      [string]$manifest.InstallerSha256 -cnotmatch '^[a-f0-9]{64}$' -or
-      [string]$manifest.InstallerProductCode -cnotmatch
-        '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$') {
-    throw 'ownership manifest durable identifier formats are invalid'
+  $cleanupValidationPhase = 'RUN_ID_FORMAT'
+  $runIdBaseObject = if ($null -eq $manifest.RunId) {
+    $null
+  } else { $manifest.RunId.PSObject.BaseObject }
+  if ($null -eq $runIdBaseObject -or
+      $runIdBaseObject.GetType() -ne [string] -or
+      [string]$runIdBaseObject -cnotmatch '^[a-f0-9]{32}$') {
+    throw 'ownership manifest run identifier format is invalid'
   }
+
+  $cleanupValidationPhase = 'INSTALLER_ENTRY_ID_FORMAT'
+  $installerEntryIdBaseObject = if ($null -eq $manifest.InstallerEntryIdentity) {
+    $null
+  } else { $manifest.InstallerEntryIdentity.PSObject.BaseObject }
+  if ($null -eq $installerEntryIdBaseObject -or
+      $installerEntryIdBaseObject.GetType() -ne [string] -or
+      [string]$installerEntryIdBaseObject -cnotmatch '^[a-f0-9]{24}$') {
+    throw 'ownership manifest installer entry identifier format is invalid'
+  }
+
+  $cleanupValidationPhase = 'INSTALLER_SHA256_FORMAT'
+  $installerSha256BaseObject = if ($null -eq $manifest.InstallerSha256) {
+    $null
+  } else { $manifest.InstallerSha256.PSObject.BaseObject }
+  if ($null -eq $installerSha256BaseObject -or
+      $installerSha256BaseObject.GetType() -ne [string] -or
+      [string]$installerSha256BaseObject -cnotmatch '^[a-f0-9]{64}$') {
+    throw 'ownership manifest installer digest format is invalid'
+  }
+
+  $cleanupValidationPhase = 'INSTALLER_PRODUCT_CODE_FORMAT'
+  $installerProductCodeBaseObject = if ($null -eq $manifest.InstallerProductCode) {
+    $null
+  } else { $manifest.InstallerProductCode.PSObject.BaseObject }
+  if ($null -eq $installerProductCodeBaseObject -or
+      $installerProductCodeBaseObject.GetType() -ne [string] -or
+      [string]$installerProductCodeBaseObject -cnotmatch
+      '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$') {
+    throw 'ownership manifest installer product-code format is invalid'
+  }
+  # Keep the validated JSON wire strings, not host-specific PSObject display
+  # representations, for every downstream authority comparison and receipt.
+  $manifest.RunId = [string]$runIdBaseObject
+  $manifest.InstallerEntryIdentity = [string]$installerEntryIdBaseObject
+  $manifest.InstallerSha256 = [string]$installerSha256BaseObject
+  $manifest.InstallerProductCode = [string]$installerProductCodeBaseObject
   if (!$manifest.Fixture -and (
       ([string]$manifest.MsiTransactionState -ceq 'NONE' -and
         [bool]$manifest.InstallAttempted) -or

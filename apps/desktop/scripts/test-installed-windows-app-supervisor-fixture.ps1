@@ -65,6 +65,7 @@ $scenario = $env:PROPR_SUPERVISOR_FIXTURE_SCENARIO
 $stateDirectory = $env:PROPR_SUPERVISOR_FIXTURE_STATE_DIRECTORY
 if ($scenario -notin @(
     'NO_MARKER',
+    'NO_MARKER_WINDOWS_POWERSHELL',
     'VALID_THEN_DEADLINE',
     'MALFORMED_MARKER',
     'TORN_MARKER',
@@ -796,6 +797,9 @@ try {
 
 switch ($scenario) {
   'NO_MARKER' {
+    Start-Sleep -Seconds 300
+  }
+  'NO_MARKER_WINDOWS_POWERSHELL' {
     Start-Sleep -Seconds 300
   }
   'VALID_THEN_DEADLINE' {

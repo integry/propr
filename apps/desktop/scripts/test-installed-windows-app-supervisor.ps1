@@ -286,7 +286,8 @@ function Get-SanitizedSupervisorMarkerDiagnostic($Result) {
     [string]$Result.Output,
     '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:CLEANUP_VALIDATION_PHASE:' +
       '(HANDSHAKE|FILE_AUTHORITY|UTF8_DECODE|JSON_PARSE|EXACT_KEY_SET|' +
-      'BOOLEAN_TYPES|TRANSACTION_ENUM|SCHEMA_TYPE_STATE|IDENTIFIER_FORMATS|' +
+      'BOOLEAN_TYPES|TRANSACTION_ENUM|SCHEMA_TYPE_STATE|RUN_ID_FORMAT|' +
+      'INSTALLER_ENTRY_ID_FORMAT|INSTALLER_SHA256_FORMAT|INSTALLER_PRODUCT_CODE_FORMAT|' +
       'LIFETIME|RUN_ID|INSTALLER_PATH|FIXTURE_SCOPE|INITIAL_ACTIVE_MATCH)\r?$'
   )
   $cleanupValidationPhase = if ($cleanupValidationPhaseMatch.Success) {
@@ -608,7 +609,9 @@ function Invoke-FixtureScenario(
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   if (!$process.Start()) { throw 'supervisor test process did not start' }
   try {
-    $completionBound = if ($Scenario -ceq 'NO_MARKER') {
+    $completionBound = if ($Scenario -in @(
+        'NO_MARKER','NO_MARKER_WINDOWS_POWERSHELL'
+      )) {
       60000
     } elseif ($Scenario -in @(
         'OWNED_RESOURCES_THEN_DEADLINE',
@@ -716,6 +719,8 @@ function Test-MsiTransactionInterruptionGates {
 function Test-BootstrapTimeout {
   $result = Invoke-FixtureScenario 'NO_MARKER'
   $diagnostic = Get-SanitizedSupervisorMarkerDiagnostic $result
+  Assert-True ([string]::IsNullOrEmpty([string]$result.Error)) `
+    'missing-marker native pwsh fixture emitted stderr'
   Assert-True ($result.ExitCode -eq 124) `
     "missing-marker bootstrap did not fail with the watchdog code:$diagnostic"
   Assert-True ($result.ElapsedMilliseconds -ge 9000) 'bootstrap timeout ignored the injected deadline'
@@ -737,6 +742,22 @@ function Test-BootstrapTimeout {
   Assert-Contains $result.Output `
     'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
     'missing-marker bootstrap did not complete bounded cleanup'
+}
+
+function Test-WindowsPowerShellCleanupCompatibility {
+  $result = Invoke-FixtureScenario 'NO_MARKER_WINDOWS_POWERSHELL'
+  $diagnostic = Get-SanitizedSupervisorMarkerDiagnostic $result
+  Assert-True ([string]::IsNullOrEmpty([string]$result.Error)) `
+    'Windows PowerShell cleanup compatibility fixture emitted stderr'
+  Assert-True ($result.ExitCode -eq 124) `
+    "Windows PowerShell cleanup compatibility did not preserve watchdog exit:$diagnostic"
+  Assert-Contains $result.Output `
+    ('PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:FIXTURE_FINALIZATION:' +
+      'CLEANUP_CHILD_EXIT:0') `
+    'Windows PowerShell cleanup compatibility did not consume exact identifiers'
+  Assert-Contains $result.Output `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+    'Windows PowerShell cleanup compatibility did not complete'
 }
 
 function Test-OperationDeadlineAndTreeTermination {
@@ -2011,6 +2032,7 @@ Initialize-TestInstaller
 try {
   Test-WorkflowCleanupStartupProtocol
   Test-BootstrapTimeout
+  Test-WindowsPowerShellCleanupCompatibility
   Test-OperationDeadlineAndTreeTermination
   Test-NegativeWorkerExitFinalization
   Test-FailClosedMarkers

@@ -753,11 +753,19 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppCleanup,
-      /HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',[\s\S]*'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','IDENTIFIER_FORMATS',[\s\S]*'INITIAL_ACTIVE_MATCH'/,
+      /HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',[\s\S]*'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','RUN_ID_FORMAT',[\s\S]*'INSTALLER_ENTRY_ID_FORMAT','INSTALLER_SHA256_FORMAT','INSTALLER_PRODUCT_CODE_FORMAT',[\s\S]*'INITIAL_ACTIVE_MATCH'/,
     );
     assert.match(
       installedWindowsAppCleanup,
       /\$manifest\.Fixture\.PSObject\.BaseObject\.GetType\(\) -ne \[bool\][\s\S]*\$manifest\.BaselineClean\.PSObject\.BaseObject\.GetType\(\) -ne \[bool\][\s\S]*\$manifest\.InstallAttempted\.PSObject\.BaseObject\.GetType\(\) -ne \[bool\]/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /\$manifest\.RunId\.PSObject\.BaseObject[\s\S]*GetType\(\) -ne \[string\][\s\S]*\$manifest\.InstallerEntryIdentity\.PSObject\.BaseObject[\s\S]*\$manifest\.InstallerSha256\.PSObject\.BaseObject[\s\S]*\$manifest\.InstallerProductCode\.PSObject\.BaseObject/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /\$manifest\.RunId = \[string\]\$runIdBaseObject[\s\S]*\$manifest\.InstallerProductCode = \[string\]\$installerProductCodeBaseObject/,
     );
     assert.match(
       installedWindowsAppCleanup,
@@ -794,9 +802,23 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisor,
       /\\ACLEANUP_VALIDATION_PHASE:[\s\S]*INITIAL_ACTIVE_MATCH\)\\r\?\\n\\z/,
     );
+    assert.match(installedWindowsAppSupervisor, /\$cleanupHostPath = \$hostPath/);
     assert.match(
       installedWindowsAppSupervisor,
-      /System32\\WindowsPowerShell\\v1\.0\\powershell\.exe/,
+      /if \(\$fixtureWindowsPowerShellCleanup\)[\s\S]*System32\\WindowsPowerShell\\v1\.0\\powershell\.exe/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /function Get-CanonicalManifestIdentifiers[\s\S]*ToLowerInvariant\(\)[\s\S]*\[Guid\]::TryParseExact\([\s\S]*ToString\('B'\)\.ToUpperInvariant\(\)/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisor,
+      /InstallerEntryIdentity = \[string\]\$InstallerAuthority\.EntryIdentity[\s\S]*InstallerProductCode = \[string\]\$InstallerAuthority\.ProductCode/,
+      'the 3af4800 capture/display representation must not be persisted as the identifier wire format',
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /\$roundTrip = ConvertFrom-Json[\s\S]*\$roundTrip\.RunId -cne \$identifiers\.RunId[\s\S]*\$roundTrip\.InstallerProductCode -cne[\s\S]*\$identifiers\.InstallerProductCode/,
     );
     assert.match(
       installedWindowsAppCleanup,
@@ -808,8 +830,10 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /CLEANUP_VALIDATION_PHASE:[\s\S]*HANDSHAKE\|FILE_AUTHORITY\|UTF8_DECODE\|JSON_PARSE\|EXACT_KEY_SET\|[\s\S]*BOOLEAN_TYPES\|TRANSACTION_ENUM\|SCHEMA_TYPE_STATE\|IDENTIFIER_FORMATS\|/,
+      /CLEANUP_VALIDATION_PHASE:[\s\S]*HANDSHAKE\|FILE_AUTHORITY\|UTF8_DECODE\|JSON_PARSE\|EXACT_KEY_SET\|[\s\S]*BOOLEAN_TYPES\|TRANSACTION_ENUM\|SCHEMA_TYPE_STATE\|RUN_ID_FORMAT\|[\s\S]*INSTALLER_ENTRY_ID_FORMAT\|INSTALLER_SHA256_FORMAT\|INSTALLER_PRODUCT_CODE_FORMAT\|/,
     );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-WindowsPowerShellCleanupCompatibility/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /NO_MARKER_WINDOWS_POWERSHELL/);
     assert.doesNotMatch(
       installedWindowsAppCleanup,
       /Start-Process msiexec\.exe[\s\S]{0,180}`"\$resolvedInstaller`"/,

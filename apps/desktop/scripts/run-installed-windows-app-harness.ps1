@@ -78,6 +78,7 @@ $workerStarted = $false
 $supervisorOutcomeComplete = $false
 $postTerminationCleanupAuthorized = $true
 $fixtureNoMarkerDiagnostic = $false
+$fixtureWindowsPowerShellCleanup = $false
 $fixtureWorkerTreeTerminationOutcome = 'FAILED'
 $fixtureCleanupChildExitCategory = 'OTHER'
 
@@ -648,6 +649,45 @@ function Stop-OwnedWorker([uint32]$TerminationExitCode) {
   }
 }
 
+function Get-CanonicalManifestIdentifiers([string]$RunId, $InstallerAuthority) {
+  if ($RunId -cnotmatch '^[a-f0-9]{32}$') {
+    throw 'manifest run identifier is not canonical'
+  }
+
+  $entryIdentity = [string]$InstallerAuthority.EntryIdentity
+  if ($entryIdentity -notmatch '^[A-Fa-f0-9]{24}$') {
+    throw 'installer entry identifier cannot be represented canonically'
+  }
+  $entryIdentity = $entryIdentity.ToLowerInvariant()
+
+  $sha256 = [string]$InstallerAuthority.Sha256
+  if ($sha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+    throw 'installer digest cannot be represented canonically'
+  }
+  $sha256 = $sha256.ToLowerInvariant()
+
+  $productCodeText = [string]$InstallerAuthority.ProductCode
+  $productCode = [Guid]::Empty
+  if (![Guid]::TryParseExact($productCodeText, 'B', [ref]$productCode)) {
+    throw 'installer product code cannot be represented canonically'
+  }
+  $productCodeText = $productCode.ToString('B').ToUpperInvariant()
+
+  if ($entryIdentity -cnotmatch '^[a-f0-9]{24}$' -or
+      $sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+      $productCodeText -cnotmatch
+        '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$') {
+    throw 'canonical manifest identifier construction failed'
+  }
+
+  return [PSCustomObject]@{
+    RunId = $RunId
+    InstallerEntryIdentity = $entryIdentity
+    InstallerSha256 = $sha256
+    InstallerProductCode = $productCodeText
+  }
+}
+
 function Write-InitialOwnershipManifest(
   [string]$Path,
   $InstallerAuthority,
@@ -656,18 +696,19 @@ function Write-InitialOwnershipManifest(
 ) {
   $runId = [IO.Path]::GetFileNameWithoutExtension($Path).Substring(
     'propr-installed-app-ownership-'.Length)
+  $identifiers = Get-CanonicalManifestIdentifiers $runId $InstallerAuthority
   $createdUtcTicks = [DateTime]::UtcNow.Ticks
   $manifest = [ordered]@{
     SchemaVersion = 3
     ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
     State = 'ACTIVE'
-    RunId = $runId
+    RunId = $identifiers.RunId
     CreatedUtcTicks = $createdUtcTicks
     ExpiresUtcTicks = $createdUtcTicks + ([TimeSpan]::TicksPerHour * 3)
     InstallerPath = [string]$InstallerAuthority.Path
-    InstallerEntryIdentity = [string]$InstallerAuthority.EntryIdentity
-    InstallerSha256 = [string]$InstallerAuthority.Sha256
-    InstallerProductCode = [string]$InstallerAuthority.ProductCode
+    InstallerEntryIdentity = $identifiers.InstallerEntryIdentity
+    InstallerSha256 = $identifiers.InstallerSha256
+    InstallerProductCode = $identifiers.InstallerProductCode
     Fixture = $Fixture
     FixtureRoot = if ($Fixture) { $AuthorizedFixtureRoot } else { $null }
     BaselineClean = $false
@@ -680,7 +721,17 @@ function Write-InitialOwnershipManifest(
     Users = @()
     Profiles = @()
   }
-  $bytes = [Text.Encoding]::UTF8.GetBytes(($manifest | ConvertTo-Json -Depth 6 -Compress))
+  $manifestJson = $manifest | ConvertTo-Json -Depth 6 -Compress
+  $roundTrip = ConvertFrom-Json -InputObject $manifestJson -ErrorAction Stop
+  if ([string]$roundTrip.RunId -cne $identifiers.RunId -or
+      [string]$roundTrip.InstallerEntryIdentity -cne
+        $identifiers.InstallerEntryIdentity -or
+      [string]$roundTrip.InstallerSha256 -cne $identifiers.InstallerSha256 -or
+      [string]$roundTrip.InstallerProductCode -cne
+        $identifiers.InstallerProductCode) {
+    throw 'canonical manifest identifier round trip failed'
+  }
+  $bytes = [Text.Encoding]::UTF8.GetBytes($manifestJson)
   $stream = [IO.FileStream]::new(
     $Path,
     [IO.FileMode]::CreateNew,
@@ -818,10 +869,11 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
       $cleanupReadyEventName
     )
     $cleanupStartInfo = [Diagnostics.ProcessStartInfo]::new()
+    # Production and the principal fixture use the exact host that launched the
+    # supervisor. A separate fixture retains Windows PowerShell 5.1 coverage
+    # without attributing native pwsh 7 evidence to that compatibility host.
     $cleanupHostPath = $hostPath
-    if ($fixtureNoMarkerDiagnostic) {
-      # Exercise the supervisor writer and production cleanup reader across the
-      # Windows PowerShell 5.1 boundary in the focused native fixture only.
+    if ($fixtureWindowsPowerShellCleanup) {
       $cleanupHostPath = Join-Path $env:SystemRoot `
         'System32\WindowsPowerShell\v1.0\powershell.exe'
       if (!(Test-Path -LiteralPath $cleanupHostPath -PathType Leaf)) {
@@ -920,7 +972,8 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
           ('\ACLEANUP_VALIDATION_PHASE:' +
             '(HANDSHAKE|FILE_AUTHORITY|UTF8_DECODE|JSON_PARSE|EXACT_KEY_SET|' +
             'BOOLEAN_TYPES|TRANSACTION_ENUM|SCHEMA_TYPE_STATE|' +
-            'IDENTIFIER_FORMATS|LIFETIME|RUN_ID|INSTALLER_PATH|FIXTURE_SCOPE|' +
+            'RUN_ID_FORMAT|INSTALLER_ENTRY_ID_FORMAT|INSTALLER_SHA256_FORMAT|' +
+            'INSTALLER_PRODUCT_CODE_FORMAT|LIFETIME|RUN_ID|INSTALLER_PATH|FIXTURE_SCOPE|' +
             'INITIAL_ACTIVE_MATCH)\r?\n\z'),
           [Text.RegularExpressions.RegexOptions]::CultureInvariant
         )
@@ -988,8 +1041,12 @@ try {
   if ($FixtureCleanupRoot) {
     if ($usingProductionWorker) { throw 'production worker cannot use a fixture cleanup scope' }
     $FixtureCleanupRoot = (Resolve-Path -LiteralPath $FixtureCleanupRoot -ErrorAction Stop).Path
-    $fixtureNoMarkerDiagnostic =
-      [string]$env:PROPR_SUPERVISOR_FIXTURE_SCENARIO -ceq 'NO_MARKER'
+    $fixtureScenario = [string]$env:PROPR_SUPERVISOR_FIXTURE_SCENARIO
+    $fixtureNoMarkerDiagnostic = $fixtureScenario -in @(
+      'NO_MARKER','NO_MARKER_WINDOWS_POWERSHELL'
+    )
+    $fixtureWindowsPowerShellCleanup =
+      $fixtureScenario -ceq 'NO_MARKER_WINDOWS_POWERSHELL'
   } elseif (!$usingProductionWorker) {
     throw 'injected workers require a fixture cleanup scope'
   }
