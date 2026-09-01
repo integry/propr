@@ -1,6 +1,7 @@
+/* eslint-disable max-lines -- orchestration state transitions share one fenced transaction boundary */
 import crypto from 'node:crypto';
 import type { Knex } from 'knex';
-import { GOAL_ERROR_CODES, isTerminalGoalState, type GoalNodeKind, type GoalNodeStatus } from '@propr/shared';
+import { GOAL_ERROR_CODES, type GoalNodeKind } from '@propr/shared';
 import type { GoalLeaseFence, GoalRecord } from './goalTypes.js';
 import {
   GoalError,
@@ -184,7 +185,7 @@ export class GoalOrchestrationRepository {
       for (const row of rows) {
         if (reservations.length >= available) break;
         if (blocked.has(row.node_id as string) || activeNodes.has(row.node_id as string)) continue;
-        if (Boolean(row.no_code)) {
+        if (row.no_code) {
           await trx('goal_nodes').where({ goal_id: goalId, node_id: row.node_id }).update({ status: 'completed', updated_at: nowIso() });
           continue;
         }
@@ -302,6 +303,8 @@ export class GoalOrchestrationRepository {
     await goalTransaction(this.db, async (trx) => { await guardLease(trx, goalId, fence); });
   }
 
+  // Lock identity, expiry, and lease fencing are intentionally explicit at this persistence boundary.
+  // eslint-disable-next-line max-params
   async acquireBranchLock(goalId: string, nodeId: string, targetBranch: string, owner: string, ttlMs: number, fence: GoalLeaseFence): Promise<boolean> {
     const lockOwner = boundedText(owner, 'owner') as string;
     const branch = boundedText(targetBranch, 'targetBranch') as string;
@@ -476,7 +479,7 @@ export class GoalOrchestrationRepository {
       .whereIn('node_id', descendants).andWhere('kind', 'pull_request');
     const byNode = new Map(artifacts.map((artifact) => [artifact.node_id, artifact]));
     return rows.every((row) => {
-      if (Boolean(row.no_code)) return row.kind === 'implementation_issue' || row.kind === 'implementation_pr'
+      if (row.no_code) return row.kind === 'implementation_issue' || row.kind === 'implementation_pr'
         ? row.status === 'completed'
         : true;
       if ((row.kind === 'implementation_issue' || row.kind === 'implementation_pr') && row.status !== 'completed') return false;
@@ -484,6 +487,8 @@ export class GoalOrchestrationRepository {
     });
   }
 
+  // Cycle identity and exact-SHA evidence are kept explicit at this persistence boundary.
+  // eslint-disable-next-line max-params
   async startUltrafixCycle(goalId: string, nodeId: string, attemptId: string, headSha: string, fence: GoalLeaseFence): Promise<number> {
     return goalTransaction(this.db, async (trx) => {
       await guardLease(trx, goalId, fence);
@@ -502,6 +507,8 @@ export class GoalOrchestrationRepository {
     });
   }
 
+  // Cycle identity, outcome, and lease fencing are kept explicit at this persistence boundary.
+  // eslint-disable-next-line max-params
   async finishUltrafixCycle(
     goalId: string,
     nodeId: string,
@@ -584,11 +591,11 @@ export class GoalOrchestrationRepository {
     const incomplete = descendantRows.filter((candidate) => {
       if (candidate.kind === 'implementation_issue' || candidate.kind === 'implementation_pr') {
         if (candidate.status !== 'completed') return true;
-        if (Boolean(candidate.no_code)) return false;
+        if (candidate.no_code) return false;
         const childArtifact = artifactByNode.get(candidate.node_id as string);
         return childArtifact == null || !['merged', 'no_diff'].includes(childArtifact.state);
       }
-      if (Boolean(candidate.no_code)) return false;
+      if (candidate.no_code) return false;
       const integrationArtifact = artifactByNode.get(candidate.node_id as string);
       return integrationArtifact == null || !['merged', 'no_diff'].includes(integrationArtifact.state);
     });

@@ -32,6 +32,8 @@ export interface GoalControllerTickResult {
  * can only be produced by the separately owned runtime port.
  */
 export class GoalController {
+  // The controller boundary keeps its state stores and restricted side-effect ports explicit.
+  // eslint-disable-next-line max-params
   constructor(
     private readonly goals: GoalRepository,
     private readonly orchestration: GoalOrchestrationRepository,
