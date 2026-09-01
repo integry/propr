@@ -743,6 +743,26 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisor, /SchemaVersion = 3/);
     assert.match(installedWindowsAppTest, /SchemaVersion = 3/);
     assert.match(installedWindowsAppCleanup, /SchemaVersion -ne 3/);
+    assert.match(
+      installedWindowsAppCleanup,
+      /\[IO\.FileShare\]'ReadWrite, Delete'[\s\S]*ReadHandle\(\s*\$manifestStream\.SafeFileHandle,/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /ReadEntry\(\$manifestPath, \$false\) -cne\s+\$manifestEntryIdentity/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /HANDSHAKE','FILE_AUTHORITY','UTF8_SCHEMA','LIFETIME','RUN_ID',[\s\S]*'INSTALLER_PATH','FIXTURE_SCOPE','INITIAL_ACTIVE_MATCH'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /if \(\$fixtureNoMarkerDiagnostic\)[\s\S]*-FixtureValidationDiagnostic/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /CLEANUP_VALIDATION_PHASE:[\s\S]*HANDSHAKE\|FILE_AUTHORITY\|UTF8_SCHEMA\|LIFETIME\|RUN_ID\|INSTALLER_PATH\|/,
+    );
     assert.doesNotMatch(
       installedWindowsAppCleanup,
       /Start-Process msiexec\.exe[\s\S]{0,180}`"\$resolvedInstaller`"/,

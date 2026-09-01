@@ -715,6 +715,9 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
       $cleanupStartInfo.ArgumentList.Add('-FixtureRoot')
       $cleanupStartInfo.ArgumentList.Add($AuthorizedFixtureRoot)
     }
+    if ($fixtureNoMarkerDiagnostic) {
+      $cleanupStartInfo.ArgumentList.Add('-FixtureValidationDiagnostic')
+    }
 
     $cleanupJob = [ProPRKillOnCloseJob]::new()
     $cleanupProcess = [Diagnostics.Process]::new()

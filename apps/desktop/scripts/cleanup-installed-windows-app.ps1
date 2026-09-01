@@ -4,6 +4,7 @@ param(
   [Parameter(Mandatory=$true)][string]$ExpectedRunId,
   [Parameter(Mandatory=$true)][string]$OwnershipReadyEvent,
   [string]$FixtureRoot,
+  [switch]$FixtureValidationDiagnostic,
   [switch]$FixtureEarlyInitializationChild
 )
 
@@ -14,20 +15,42 @@ $ownerRegistryValue = 'ProPRInstalledAppOwner'
 $cleanupFailed = $false
 $manifestValidated = $false
 $authorizedRunId = $null
+$cleanupValidationPhase = 'HANDSHAKE'
+$cleanupValidationPhases = @(
+  'HANDSHAKE','FILE_AUTHORITY','UTF8_SCHEMA','LIFETIME','RUN_ID',
+  'INSTALLER_PATH','FIXTURE_SCOPE','INITIAL_ACTIVE_MATCH'
+)
+
+function Write-FixtureCleanupValidationPhase([string]$Phase) {
+  if (!$FixtureValidationDiagnostic -or !$FixtureRoot -or
+      $cleanupValidationPhases -cnotcontains $Phase) {
+    return
+  }
+  [Console]::Out.WriteLine(
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:CLEANUP_VALIDATION_PHASE:' + $Phase
+  )
+  [Console]::Out.Flush()
+}
+
+function Exit-CleanupHandshakeFailure {
+  Write-FixtureCleanupValidationPhase 'HANDSHAKE'
+  if ($FixtureValidationDiagnostic -and $FixtureRoot) { exit 20 }
+  exit 1
+}
 
 try {
-  if ($ExpectedRunId -notmatch '^[a-f0-9]{32}$') { exit 1 }
+  if ($ExpectedRunId -notmatch '^[a-f0-9]{32}$') { Exit-CleanupHandshakeFailure }
   if ($OwnershipReadyEvent -notmatch '^Local\\ProPRInstalledAppCleanup-[a-f0-9]{32}$') {
-    exit 1
+    Exit-CleanupHandshakeFailure
   }
   $ownershipReady = [Threading.EventWaitHandle]::OpenExisting($OwnershipReadyEvent)
   try {
-    if (!$ownershipReady.WaitOne(5000)) { exit 1 }
+    if (!$ownershipReady.WaitOne(5000)) { Exit-CleanupHandshakeFailure }
   } finally {
     $ownershipReady.Dispose()
   }
 } catch {
-  exit 1
+  Exit-CleanupHandshakeFailure
 }
 
 # This fixture runs after the ownership release but before cold type loading so
@@ -110,6 +133,20 @@ public static class ProPRDirectoryIdentity
     private static extern bool GetFileInformationByHandle(
         SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
 
+    public static string ReadHandle(SafeFileHandle handle, bool expectDirectory)
+    {
+        if (handle == null || handle.IsInvalid)
+            throw new InvalidOperationException("file-system identity handle is invalid");
+        BY_HANDLE_FILE_INFORMATION information;
+        if (!GetFileInformationByHandle(handle, out information))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "directory identity read failed");
+        bool isDirectory = (information.FileAttributes & 0x10) != 0;
+        if ((information.FileAttributes & 0x400) != 0 || isDirectory != expectDirectory)
+            throw new InvalidOperationException("file-system object identity changed");
+        return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
+            information.FileIndexHigh, information.FileIndexLow);
+    }
+
     public static string ReadEntry(string path, bool expectDirectory)
     {
         using (SafeFileHandle handle = CreateFile(
@@ -117,14 +154,7 @@ public static class ProPRDirectoryIdentity
         {
             if (handle == null || handle.IsInvalid)
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "directory identity open failed");
-            BY_HANDLE_FILE_INFORMATION information;
-            if (!GetFileInformationByHandle(handle, out information))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "directory identity read failed");
-            bool isDirectory = (information.FileAttributes & 0x10) != 0;
-            if ((information.FileAttributes & 0x400) != 0 || isDirectory != expectDirectory)
-                throw new InvalidOperationException("file-system object identity changed");
-            return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
-                information.FileIndexHigh, information.FileIndexLow);
+            return ReadHandle(handle, expectDirectory);
         }
     }
 
@@ -1192,6 +1222,7 @@ function Remove-OwnedUser($Record) {
 }
 
 try {
+  $cleanupValidationPhase = 'FILE_AUTHORITY'
   $manifestPath = [IO.Path]::GetFullPath($OwnershipManifest)
   $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
   if ((Split-Path -Leaf $manifestPath) -notmatch
@@ -1199,19 +1230,26 @@ try {
       !(Test-SamePath (Split-Path -Parent $manifestPath) $tempRoot)) {
     throw 'ownership manifest path is invalid'
   }
-  $manifestItem = Get-Item -LiteralPath $manifestPath -Force -ErrorAction Stop
-  if (($manifestItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-      $manifestItem.Length -le 0 -or $manifestItem.Length -gt 65536) {
-    throw 'ownership manifest metadata is invalid'
-  }
-  $manifestBytes = [byte[]]::new([int]$manifestItem.Length)
-  $manifestStream = [IO.File]::Open(
+  # Durable manifests are replaced atomically. Read from one authenticated
+  # ordinary-file handle while permitting that protocol's delete sharing, then
+  # prove the pathname still names the same entry before trusting the bytes.
+  $manifestStream = [IO.FileStream]::new(
     $manifestPath,
     [IO.FileMode]::Open,
     [IO.FileAccess]::Read,
-    [IO.FileShare]::Read
+    [IO.FileShare]'ReadWrite, Delete',
+    4096,
+    [IO.FileOptions]::SequentialScan
   )
   try {
+    if ($manifestStream.Length -le 0 -or $manifestStream.Length -gt 65536) {
+      throw 'ownership manifest metadata is invalid'
+    }
+    $manifestEntryIdentity = [ProPRDirectoryIdentity]::ReadHandle(
+      $manifestStream.SafeFileHandle,
+      $false
+    )
+    $manifestBytes = [byte[]]::new([int]$manifestStream.Length)
     $manifestOffset = 0
     while ($manifestOffset -lt $manifestBytes.Length) {
       $read = $manifestStream.Read(
@@ -1223,9 +1261,17 @@ try {
       $manifestOffset += $read
     }
     if ($manifestStream.ReadByte() -ne -1) { throw 'ownership manifest changed during read' }
+    $manifestItem = Get-Item -LiteralPath $manifestPath -Force -ErrorAction Stop
+    if (($manifestItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $manifestItem.Length -ne $manifestBytes.Length -or
+        [ProPRDirectoryIdentity]::ReadEntry($manifestPath, $false) -cne
+          $manifestEntryIdentity) {
+      throw 'ownership manifest entry changed during read'
+    }
   } finally {
     $manifestStream.Dispose()
   }
+  $cleanupValidationPhase = 'UTF8_SCHEMA'
   $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
   $manifest = ConvertFrom-Json -InputObject $strictUtf8.GetString($manifestBytes) -ErrorAction Stop
   $manifestKeys = @($manifest.PSObject.Properties | ForEach-Object { $_.Name })
@@ -1262,12 +1308,14 @@ try {
           !([bool]$manifest.InstallAttempted))))) {
     throw 'MSI transaction receipt state is inconsistent'
   }
+  $cleanupValidationPhase = 'RUN_ID'
   $authorizedRunId = [string]$manifest.RunId
   $pathRunId = [IO.Path]::GetFileNameWithoutExtension($manifestPath).Substring(
     'propr-installed-app-ownership-'.Length)
   if ($authorizedRunId -cne $pathRunId -or $authorizedRunId -cne $ExpectedRunId) {
     throw 'ownership manifest run identity is invalid'
   }
+  $cleanupValidationPhase = 'LIFETIME'
   $createdUtcTicks = [int64]$manifest.CreatedUtcTicks
   $expiresUtcTicks = [int64]$manifest.ExpiresUtcTicks
   $nowUtcTicks = [DateTime]::UtcNow.Ticks
@@ -1277,10 +1325,12 @@ try {
       $expiresUtcTicks -lt $nowUtcTicks) {
     throw 'ownership manifest lifetime is invalid'
   }
+  $cleanupValidationPhase = 'INSTALLER_PATH'
   $resolvedInstaller = (Resolve-Path -LiteralPath $Installer -ErrorAction Stop).Path
   if (!(Test-SamePath ([string]$manifest.InstallerPath) $resolvedInstaller)) {
     throw 'ownership manifest installer identity is invalid'
   }
+  $cleanupValidationPhase = 'FIXTURE_SCOPE'
   if ($FixtureRoot) {
     $FixtureRoot = (Resolve-Path -LiteralPath $FixtureRoot -ErrorAction Stop).Path
     if (!$manifest.Fixture -or !(Test-SamePath ([string]$manifest.FixtureRoot) $FixtureRoot)) {
@@ -1295,6 +1345,7 @@ try {
   # authenticated schema-v3 ACTIVE authority, no baseline or install attempt,
   # transaction NONE, and no resource records. Revalidate the durable installer
   # authority before atomically converting it to the ordinary EMPTY receipt.
+  $cleanupValidationPhase = 'INITIAL_ACTIVE_MATCH'
   $initialActiveFixtureManifest = $manifest.Fixture -and
     [string]$manifest.State -ceq 'ACTIVE' -and
     !$manifest.BaselineClean -and !$manifest.InstallAttempted -and
@@ -1303,6 +1354,9 @@ try {
     @($manifest.RegistryKeys).Count -eq 0 -and
     @($manifest.RegistryValues).Count -eq 0 -and @($manifest.Users).Count -eq 0 -and
     @($manifest.Profiles).Count -eq 0
+  if ($FixtureValidationDiagnostic -and !$initialActiveFixtureManifest) {
+    throw 'initial fixture ownership authority does not match'
+  }
   if ($initialActiveFixtureManifest) {
     $manifestValidated = $true
     Assert-InstallerArtifactAuthority $manifest
@@ -1616,6 +1670,7 @@ try {
 
 if ($cleanupFailed) {
   if ($manifestValidated) { exit 21 }
+  Write-FixtureCleanupValidationPhase $cleanupValidationPhase
   exit 20
 }
 exit 0

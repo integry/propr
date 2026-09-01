@@ -282,12 +282,22 @@ function Get-SanitizedSupervisorMarkerDiagnostic($Result) {
   $cleanupChildExit = if ($cleanupChildMatch.Success) {
     $cleanupChildMatch.Groups[1].Value
   } else { 'OTHER' }
+  $cleanupValidationPhaseMatch = [regex]::Match(
+    [string]$Result.Output,
+    '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:CLEANUP_VALIDATION_PHASE:' +
+      '(HANDSHAKE|FILE_AUTHORITY|UTF8_SCHEMA|LIFETIME|RUN_ID|INSTALLER_PATH|' +
+      'FIXTURE_SCOPE|INITIAL_ACTIVE_MATCH)\r?$'
+  )
+  $cleanupValidationPhase = if ($cleanupValidationPhaseMatch.Success) {
+    $cleanupValidationPhaseMatch.Groups[1].Value
+  } else { 'NONE' }
   $signedExit = ([int]$Result.ExitCode).ToString(
     [Globalization.CultureInfo]::InvariantCulture)
   return ('SUPERVISOR_EXIT:{0}:BOOTSTRAP_TIMED_OUT:{1}:LAST_VALID_NONE:{2}:' +
-    'POST_TERMINATION_CLEANUP:{3}:SUBPHASE:{4}:CLEANUP_CHILD_EXIT:{5}') -f `
+    'POST_TERMINATION_CLEANUP:{3}:SUBPHASE:{4}:CLEANUP_CHILD_EXIT:{5}:' +
+    'CLEANUP_VALIDATION_PHASE:{6}') -f `
     $signedExit, ([int]$bootstrapTimedOutPresent), ([int]$lastValidNonePresent),
-    $postTerminationOutcome, $subphase, $cleanupChildExit
+    $postTerminationOutcome, $subphase, $cleanupChildExit, $cleanupValidationPhase
 }
 
 function Assert-OwnedResourcesGone($Owned) {
