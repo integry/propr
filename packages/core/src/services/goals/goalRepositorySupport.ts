@@ -377,6 +377,7 @@ export function encodeCursor(
   return Buffer.from(cursorJson(createdAt, goalId, binding), 'utf8').toString('base64url');
 }
 
+// eslint-disable-next-line complexity -- strict canonical decoding validates every filter-bound cursor field
 export function decodeCursor(
   value: string | null | undefined,
   binding: GoalListCursorBinding

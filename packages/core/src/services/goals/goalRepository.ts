@@ -182,6 +182,7 @@ export class GoalRepository {
     return this.events.markMessageAcknowledged(goalId, messageId, fence);
   }
 
+  // eslint-disable-next-line max-params -- facade preserves the explicit durable message transition contract
   failMessage(goalId: string, messageId: string, fence: GoalLeaseFence, error: string, retryable = false): Promise<void> {
     return this.events.failMessage(goalId, messageId, fence, error, retryable);
   }

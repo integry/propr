@@ -23,6 +23,7 @@ export function encodeChecklistCursor(binding: Binding, value: ChecklistCursorVa
   return Buffer.from(serialize(binding, value), 'utf8').toString('base64url');
 }
 
+// eslint-disable-next-line complexity -- strict canonical decoding validates every signed cursor field
 export function decodeChecklistCursor(cursor: string | null | undefined, binding: Binding): ChecklistCursorValue | null {
   if (cursor === null || cursor === undefined) return null;
   if (!cursor || characterLength(cursor) > GOAL_CURSOR_MAX_LENGTH || !/^[A-Za-z0-9_-]+$/.test(cursor)) throw invalid();

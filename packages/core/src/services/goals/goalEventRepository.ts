@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- event persistence, replay, messaging, and projections share one transaction boundary */
 import crypto from 'crypto';
 import type { Knex } from 'knex';
 import {
@@ -146,6 +147,7 @@ export class GoalEventRepository {
   }
 
   /** Opaque, filter-bound, count- and byte-bounded historical replay. */
+  // eslint-disable-next-line complexity -- replay validates cursor, retention, filtering, and byte bounds together
   async readEventPage(
     goalId: string,
     options: {
@@ -389,6 +391,7 @@ export class GoalEventRepository {
     });
   }
 
+  // eslint-disable-next-line max-params -- public message transition keeps the lease fence and failure fields explicit
   async failMessage(goalId: string, messageId: string, fence: GoalLeaseFence, error: string, retryable = false): Promise<void> {
     requireEnhanced(await this.hasEnhancedSchema());
     const id = boundedText(messageId, 'messageId') as string;
@@ -545,6 +548,7 @@ async function guardSourceIdentity(trx: Knex.Transaction, goalId: string, input:
   }
 }
 
+// eslint-disable-next-line max-params -- projection receives the transaction and immutable event coordinates explicitly
 async function projectTypedEvent(
   trx: Knex.Transaction, goalId: string, sequence: number, createdAt: string,
   event: DurableGoalEventInput

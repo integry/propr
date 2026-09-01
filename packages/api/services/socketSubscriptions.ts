@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- resource subscriptions share authentication, room limits, and disconnect cleanup */
 import type { Socket } from 'socket.io';
 import type { SocketPrincipal } from '../auth.js';
 import type { QueueBroadcaster } from './queueBroadcaster.js';

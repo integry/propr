@@ -16,6 +16,7 @@ interface UsageGroup {
 export class GoalStatisticsRepository {
   constructor(private readonly db: Knex) {}
 
+  // eslint-disable-next-line complexity -- the aggregate maps every durable projection into one consistent snapshot
   async get(goalId: string): Promise<GoalStatistics> {
     const goal = await requireGoalRecord(this.db, goalId);
     const timing = await new GoalReadRepository(this.db).getActiveTimeStats(goalId);

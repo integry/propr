@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- authenticated goal reads and mutations share one ownership-checked route boundary */
 /**
  * Authenticated goal control-plane API under /api/goals.
  *

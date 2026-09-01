@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- lifecycle and model mutations share optimistic-version and idempotency invariants */
 import type { Knex } from 'knex';
 import {
   GOAL_ERROR_CODES,
