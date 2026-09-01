@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { lstat, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, test } from 'node:test';
 import {
@@ -15,6 +18,7 @@ const expected = Object.freeze({
   arch: 'x64',
   authorityMechanism: 'inherited-standard-handle',
 });
+const privateWindowsPath = String.raw`C:\Users\private-user\private-path-SENTINEL`;
 
 const readyRecord = (overrides = {}) => ({
   timestamp: '2026-09-01T22:00:00.000Z',
@@ -73,7 +77,7 @@ const run = ({ app = new FakeChild(), onApp, onKiller, ...options } = {}) => {
     args: ['--disable-gpu'],
     env: {},
     ...expected,
-    sensitiveNeedles: ['secret-SENTINEL', '/private/path-SENTINEL'],
+    sensitiveNeedles: ['secret-SENTINEL', '/private/path-SENTINEL', privateWindowsPath],
     treeKillerPath: '/system/taskkill.exe',
     spawn,
     readyTimeoutMs: 15,
@@ -243,6 +247,41 @@ describe('packaged Connect bounded child lifecycle', () => {
     assert.equal(result.category, 'output-rejected');
     assert.doesNotMatch(JSON.stringify(result), /SENTINEL/u);
   });
+
+  test('rejects a JSON-escaped Windows path in a non-allowlisted record before readiness', async () => {
+    const encoded = JSON.stringify({ event: 'untrusted.event', detail: { path: privateWindowsPath } });
+    assert.equal(encoded.includes(privateWindowsPath), false);
+    const { result } = await run({
+      onApp: app => {
+        app.write(`${encoded}\n`);
+        app.write(readyRecord());
+      },
+      onKiller: (killer, app) => {
+        app.close(null, 'SIGKILL');
+        killer.close(0, null);
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.category, 'output-rejected');
+    assert.deepEqual(result.records, [{ event: CONNECT_READY_EVENT }]);
+    assert.doesNotMatch(JSON.stringify(result), /private-user|private-path-SENTINEL/u);
+  });
+
+  test('revokes success for a JSON-escaped Windows path after the exact ready proof', async () => {
+    const { result } = await run({
+      onApp: app => {
+        app.write(readyRecord());
+        queueMicrotask(() => {
+          app.write({ event: 'untrusted.event', detail: { path: privateWindowsPath } });
+          app.close(0, null);
+        });
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.category, 'output-rejected');
+    assert.deepEqual(result.records, [{ event: CONNECT_READY_EVENT }]);
+    assert.doesNotMatch(JSON.stringify(result), /private-user|private-path-SENTINEL/u);
+  });
 });
 
 describe('packaged Connect fixture cleanup', () => {
@@ -257,6 +296,19 @@ describe('packaged Connect fixture cleanup', () => {
     retryDelayMs: 1,
     lstatImpl: async () => stats,
     realpathImpl: async value => value,
+  };
+  const settlesWithin = async (promise, milliseconds = 250) => {
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('cleanup exceeded its test bound')), milliseconds);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   };
 
   test('retries a transient Windows EBUSY only inside the authorized fixture', async () => {
@@ -288,6 +340,61 @@ describe('packaged Connect fixture cleanup', () => {
     assert.equal(combined.category, 'timeout-before-ready');
     assert.deepEqual(combined.secondary, ['fixture-cleanup-failed']);
     assert.doesNotMatch(JSON.stringify(combined), /private|SENTINEL/u);
+  });
+
+  test('bounds a never-settling removal and preserves the primary result', async () => {
+    const cleanup = await settlesWithin(removeAuthorizedConnectFixture({
+      ...identityOptions,
+      retryBoundMs: 10,
+      rmImpl: () => new Promise(() => {}),
+    }));
+    assert.deepEqual(cleanup, { ok: false, category: 'fixture-cleanup-failed' });
+    const primary = {
+      ok: false,
+      category: 'timeout-before-ready',
+      capture: 'complete',
+      records: [],
+    };
+    assert.deepEqual(preservePrimaryWithCleanup(primary, cleanup), {
+      ...primary,
+      secondary: ['fixture-cleanup-failed'],
+    });
+  });
+
+  test('bounds a never-settling authorization call as a fixed cleanup failure', async () => {
+    let removalAttempted = false;
+    const cleanup = await settlesWithin(removeAuthorizedConnectFixture({
+      ...identityOptions,
+      retryBoundMs: 10,
+      lstatImpl: () => new Promise(() => {}),
+      rmImpl: async () => { removalAttempted = true; },
+    }));
+    assert.deepEqual(cleanup, { ok: false, category: 'fixture-cleanup-failed' });
+    assert.equal(removalAttempted, false);
+    const primary = { ok: false, category: 'spawn-error', capture: 'complete', records: [] };
+    assert.deepEqual(preservePrimaryWithCleanup(primary, cleanup), {
+      ...primary,
+      secondary: ['fixture-cleanup-failed'],
+    });
+  });
+
+  test('isolates default Windows filesystem cleanup from the harness process', async () => {
+    const canonicalTemporaryParent = await realpath(tmpdir());
+    const isolatedFixture = await mkdtemp(join(
+      canonicalTemporaryParent, 'propr-desktop-connect-smoke-',
+    ));
+    try {
+      const cleanup = await removeAuthorizedConnectFixture({
+        fixture: isolatedFixture,
+        canonicalTemporaryParent,
+        platform: 'win32',
+        retryBoundMs: 2_000,
+      });
+      assert.deepEqual(cleanup, { ok: true });
+      await assert.rejects(lstat(isolatedFixture), { code: 'ENOENT' });
+    } finally {
+      await rm(isolatedFixture, { recursive: true, force: true });
+    }
   });
 
   test('refuses a link, renamed leaf, or fixture outside the canonical temporary parent', async () => {

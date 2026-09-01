@@ -1,8 +1,8 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { lstat, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative } from 'node:path';
-import { performance } from 'node:perf_hooks';
 import { TextDecoder } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 export const CONNECT_READY_EVENT = 'desktop.renderer.connect_discovery.ready';
 export const CHILD_CAPTURE_MAX_BYTES = 64 * 1024;
@@ -12,6 +12,10 @@ const RECORD_MAX_BYTES = 8 * 1024;
 const RECORD_MAX_COUNT = 128;
 const WINDOWS_PID_MAX = 0xffff_ffff;
 const FIXTURE_LEAF_PATTERN = /^propr-desktop-connect-smoke-[A-Za-z0-9]{6}$/u;
+const ISOLATED_CLEANUP_ARGUMENT = '--internal-isolated-connect-fixture-cleanup';
+const MODULE_PATH = fileURLToPath(import.meta.url);
+const isIsolatedCleanupProcess = process.argv[1] === MODULE_PATH
+  && process.argv[2] === ISOLATED_CLEANUP_ARGUMENT;
 
 const diagnosticEvents = new Set([
   'desktop.app.ready',
@@ -107,6 +111,26 @@ const createRecordCapture = ({ sensitiveNeedles, onRecord, onSensitiveOutput }) 
   const endedStreams = new Set();
   const normalizedNeedles = sensitiveNeedles.filter(value => typeof value === 'string' && value.length > 0);
   const maximumNeedleLength = Math.max(1, ...normalizedNeedles.map(value => value.length));
+  const reportSensitiveOutput = () => {
+    if (sensitiveOutput) return;
+    sensitiveOutput = true;
+    onSensitiveOutput();
+  };
+
+  const parsedContentIsSensitive = parsed => {
+    const pending = [parsed];
+    while (pending.length > 0) {
+      const value = pending.pop();
+      if (typeof value === 'string') {
+        if (normalizedNeedles.some(needle => value.includes(needle))) return true;
+      } else if (Array.isArray(value)) {
+        pending.push(...value);
+      } else if (value && typeof value === 'object') {
+        for (const [key, nested] of Object.entries(value)) pending.push(key, nested);
+      }
+    }
+    return false;
+  };
 
   const streamState = name => {
     if (!streams.has(name)) streams.set(name, {
@@ -127,6 +151,10 @@ const createRecordCapture = ({ sensitiveNeedles, onRecord, onSensitiveOutput }) 
     }
     let record;
     try { record = JSON.parse(framed); } catch { return; }
+    // JSON escaping can hide a decoded path (notably Windows backslashes) from
+    // the raw stream scan, so inspect every bounded parsed string before the
+    // record can contribute either readiness or diagnostics.
+    if (parsedContentIsSensitive(record)) reportSensitiveOutput();
     if (!record || typeof record !== 'object' || Array.isArray(record)) return;
     recordCount += 1;
     onRecord(record);
@@ -134,10 +162,7 @@ const createRecordCapture = ({ sensitiveNeedles, onRecord, onSensitiveOutput }) 
 
   const scan = (state, text) => {
     const candidate = `${state.scanTail}${text}`;
-    if (!sensitiveOutput && normalizedNeedles.some(needle => candidate.includes(needle))) {
-      sensitiveOutput = true;
-      onSensitiveOutput();
-    }
+    if (normalizedNeedles.some(needle => candidate.includes(needle))) reportSensitiveOutput();
     state.scanTail = maximumNeedleLength > 1 ? candidate.slice(-(maximumNeedleLength - 1)) : '';
   };
 
@@ -453,32 +478,134 @@ export const runPackagedConnectLifecycle = async ({
   };
 };
 
+const createCleanupPhaseDeadline = milliseconds => {
+  let timedOut = false;
+  let timer;
+  const timeout = new Promise(resolveTimeout => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      resolveTimeout({ status: 'timed-out' });
+    }, Math.max(0, milliseconds));
+  });
+  return {
+    run: operation => {
+      if (timedOut) return Promise.resolve({ status: 'timed-out' });
+      let pending;
+      try { pending = operation(); } catch (error) {
+        return Promise.resolve({ status: 'rejected', error });
+      }
+      return Promise.race([
+        Promise.resolve(pending).then(
+          value => ({ status: 'fulfilled', value }),
+          error => ({ status: 'rejected', error }),
+        ),
+        timeout,
+      ]);
+    },
+    dispose: () => clearTimeout(timer),
+  };
+};
+
 const fixtureIdentityIsAuthorized = async ({
   fixture,
   canonicalTemporaryParent,
   generatedLeaf,
   lstatImpl,
   realpathImpl,
+  runBeforeDeadline,
 }) => {
   if (typeof fixture !== 'string' || typeof canonicalTemporaryParent !== 'string'
     || typeof generatedLeaf !== 'string' || !FIXTURE_LEAF_PATTERN.test(generatedLeaf)
     || basename(fixture) !== generatedLeaf || dirname(fixture) !== canonicalTemporaryParent
-    || relative(canonicalTemporaryParent, fixture) !== generatedLeaf) return false;
-  let stats;
-  try { stats = await lstatImpl(fixture); } catch (error) {
-    return error?.code === 'ENOENT';
+    || relative(canonicalTemporaryParent, fixture) !== generatedLeaf) return { authorized: false };
+  const fixtureStats = await runBeforeDeadline(() => lstatImpl(fixture));
+  if (fixtureStats.status === 'timed-out') return { timedOut: true };
+  if (fixtureStats.status === 'rejected') {
+    return { authorized: fixtureStats.error?.code === 'ENOENT' };
+  }
+  const identity = await Promise.all([
+    runBeforeDeadline(() => realpathImpl(canonicalTemporaryParent)),
+    runBeforeDeadline(() => realpathImpl(fixture)),
+    runBeforeDeadline(() => lstatImpl(canonicalTemporaryParent)),
+  ]);
+  if (identity.some(result => result.status === 'timed-out')) return { timedOut: true };
+  if (identity.some(result => result.status === 'rejected')) return { authorized: false };
+  const [parentPath, fixturePath, parentStats] = identity.map(result => result.value);
+  const stats = fixtureStats.value;
+  try {
+    return {
+      authorized: parentPath === canonicalTemporaryParent
+        && fixturePath === fixture
+        && parentStats.isDirectory()
+        && !parentStats.isSymbolicLink()
+        && stats.isDirectory()
+        && !stats.isSymbolicLink(),
+    };
+  } catch { return { authorized: false }; }
+};
+
+const isolatedCleanupResult = async ({
+  fixture,
+  canonicalTemporaryParent,
+  generatedLeaf,
+  retryBoundMs,
+  retryDelayMs,
+  phase,
+}) => {
+  if (!isAbsolute(process.execPath)) return { ok: false, category: 'fixture-cleanup-failed' };
+  let child;
+  try {
+    child = nodeSpawn(process.execPath, [MODULE_PATH, ISOLATED_CLEANUP_ARGUMENT], {
+      shell: false,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch { return { ok: false, category: 'fixture-cleanup-failed' }; }
+  let stdout = '';
+  let stdoutOverflow = false;
+  child.stdout.on('data', chunk => {
+    if (stdoutOverflow) return;
+    stdout += chunk.toString('utf8');
+    if (Buffer.byteLength(stdout, 'utf8') > RECORD_MAX_BYTES) {
+      stdout = '';
+      stdoutOverflow = true;
+    }
+  });
+  child.stderr.on('data', () => undefined);
+  child.stdin.on('error', () => undefined);
+  const close = new Promise(resolveClose => {
+    let settled = false;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      resolveClose(result);
+    };
+    child.once('error', () => finish({ closed: false }));
+    child.once('close', (code, signal) => finish({ closed: true, code, signal }));
+  });
+  child.stdin.end(JSON.stringify({
+    fixture, canonicalTemporaryParent, generatedLeaf, retryBoundMs, retryDelayMs,
+  }));
+  const boundedClose = await phase.run(() => close);
+  if (boundedClose.status !== 'fulfilled' || !boundedClose.value.closed
+    || boundedClose.value.code !== 0 || boundedClose.value.signal !== null || stdoutOverflow) {
+    try { child.kill('SIGKILL'); } catch { /* The fixed cleanup failure is already selected. */ }
+    child.stdin.destroy();
+    child.stdout.destroy();
+    child.stderr.destroy();
+    child.unref();
+    return { ok: false, category: 'fixture-cleanup-failed' };
   }
   try {
-    const [parentPath, fixturePath, parentStats] = await Promise.all([
-      realpathImpl(canonicalTemporaryParent), realpathImpl(fixture), lstatImpl(canonicalTemporaryParent),
-    ]);
-    return parentPath === canonicalTemporaryParent
-      && fixturePath === fixture
-      && parentStats.isDirectory()
-      && !parentStats.isSymbolicLink()
-      && stats.isDirectory()
-      && !stats.isSymbolicLink();
-  } catch { return false; }
+    const result = JSON.parse(stdout);
+    const keys = Object.keys(result).sort();
+    if (result.ok === true && keys.length === 1 && keys[0] === 'ok') return result;
+    if (result.ok === false && keys.length === 2 && keys[0] === 'category' && keys[1] === 'ok'
+      && ['fixture-cleanup-authorization-failed', 'fixture-cleanup-failed'].includes(result.category)) {
+      return result;
+    }
+  } catch { /* Return only the fixed failure below. */ }
+  return { ok: false, category: 'fixture-cleanup-failed' };
 };
 
 export const removeAuthorizedConnectFixture = async ({
@@ -492,24 +619,48 @@ export const removeAuthorizedConnectFixture = async ({
   realpathImpl = realpath,
   rmImpl = rm,
 }) => {
-  if (!await fixtureIdentityIsAuthorized({
-    fixture, canonicalTemporaryParent, generatedLeaf, lstatImpl, realpathImpl,
-  })) return { ok: false, category: 'fixture-cleanup-authorization-failed' };
-  const deadline = performance.now() + Math.max(0, retryBoundMs);
-  while (true) {
-    try {
-      await rmImpl(fixture, { recursive: true, force: true, maxRetries: 0 });
-      return { ok: true };
-    } catch (error) {
-      const retryable = platform === 'win32' && ['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(error?.code);
-      if (!retryable || performance.now() + retryDelayMs > deadline) {
+  const phase = createCleanupPhaseDeadline(retryBoundMs);
+  try {
+    if (platform === 'win32' && !isIsolatedCleanupProcess
+      && lstatImpl === lstat && realpathImpl === realpath && rmImpl === rm) {
+      return await isolatedCleanupResult({
+        fixture, canonicalTemporaryParent, generatedLeaf, retryBoundMs, retryDelayMs, phase,
+      });
+    }
+    const authorize = () => fixtureIdentityIsAuthorized({
+      fixture, canonicalTemporaryParent, generatedLeaf, lstatImpl, realpathImpl,
+      runBeforeDeadline: phase.run,
+    });
+    const initialAuthorization = await authorize();
+    if (initialAuthorization.timedOut) {
+      return { ok: false, category: 'fixture-cleanup-failed' };
+    }
+    if (!initialAuthorization.authorized) {
+      return { ok: false, category: 'fixture-cleanup-authorization-failed' };
+    }
+    while (true) {
+      const removal = await phase.run(() => rmImpl(fixture, {
+        recursive: true, force: true, maxRetries: 0,
+      }));
+      if (removal.status === 'fulfilled') return { ok: true };
+      if (removal.status === 'timed-out') {
         return { ok: false, category: 'fixture-cleanup-failed' };
       }
-      await boundedDelay(retryDelayMs);
-      if (!await fixtureIdentityIsAuthorized({
-        fixture, canonicalTemporaryParent, generatedLeaf, lstatImpl, realpathImpl,
-      })) return { ok: false, category: 'fixture-cleanup-authorization-failed' };
+      const retryable = platform === 'win32'
+        && ['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(removal.error?.code);
+      if (!retryable) return { ok: false, category: 'fixture-cleanup-failed' };
+      const delay = await phase.run(() => boundedDelay(retryDelayMs));
+      if (delay.status !== 'fulfilled') return { ok: false, category: 'fixture-cleanup-failed' };
+      const retryAuthorization = await authorize();
+      if (retryAuthorization.timedOut) {
+        return { ok: false, category: 'fixture-cleanup-failed' };
+      }
+      if (!retryAuthorization.authorized) {
+        return { ok: false, category: 'fixture-cleanup-authorization-failed' };
+      }
     }
+  } finally {
+    phase.dispose();
   }
 };
 
@@ -517,3 +668,25 @@ export const preservePrimaryWithCleanup = (outcome, cleanup) => cleanup.ok ? out
   ...outcome,
   secondary: [...new Set([...(outcome.secondary ?? []), cleanup.category])],
 });
+
+if (isIsolatedCleanupProcess) {
+  let input = '';
+  try {
+    for await (const chunk of process.stdin) {
+      input += chunk;
+      if (Buffer.byteLength(input, 'utf8') > RECORD_MAX_BYTES) throw new Error('invalid cleanup input');
+    }
+    const options = JSON.parse(input);
+    const result = await removeAuthorizedConnectFixture({
+      fixture: options.fixture,
+      canonicalTemporaryParent: options.canonicalTemporaryParent,
+      generatedLeaf: options.generatedLeaf,
+      platform: 'win32',
+      retryBoundMs: options.retryBoundMs,
+      retryDelayMs: options.retryDelayMs,
+    });
+    process.stdout.write(JSON.stringify(result));
+  } catch {
+    process.stdout.write(JSON.stringify({ ok: false, category: 'fixture-cleanup-failed' }));
+  }
+}
