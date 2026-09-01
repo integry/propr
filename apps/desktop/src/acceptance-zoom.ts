@@ -66,10 +66,7 @@ export const isPackagedAcceptanceZoomFactor = (value: unknown): value is Package
   value === 1 || value === 2
 );
 
-const preloadHasAcceptanceTriggers = (
-  argv: readonly string[],
-  environmentValue: string | undefined,
-): boolean => argv.includes('--propr-acceptance-test') && environmentValue === '1';
+const preloadHasAcceptanceEnvironment = (environmentValue: string | undefined): boolean => environmentValue === '1';
 
 /**
  * Register the two fixed authorization routes only after the main process has
@@ -114,10 +111,9 @@ export const registerPackagedAcceptanceZoomIpc = ({
 export const createPackagedAcceptanceZoomBridge = (
   ipc: PackagedAcceptancePreloadIpc,
   frame: PackagedAcceptanceWebFrame,
-  argv: readonly string[] = process.argv,
   environmentValue: string | undefined = process.env.PROPR_DESKTOP_ACCEPTANCE_TEST,
 ): Readonly<{ setZoomFactor(factor: PackagedAcceptanceZoomFactor): Promise<PackagedAcceptanceZoomResult> }> | null => {
-  if (!preloadHasAcceptanceTriggers(argv, environmentValue)) return null;
+  if (!preloadHasAcceptanceEnvironment(environmentValue)) return null;
   const authorization = ipc.sendSync(PACKAGED_ACCEPTANCE_ZOOM_AUTH_CHANNEL, { protocolVersion: 1 });
   if (!isAuthorizationAcknowledgement(authorization)) return null;
 

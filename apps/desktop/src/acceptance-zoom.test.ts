@@ -74,39 +74,62 @@ describe('packaged acceptance Electron zoom authorization', () => {
 });
 
 describe('packaged acceptance Electron zoom preload bridge', () => {
-  it('does not attest or expose a bridge without both exact acceptance triggers', () => {
+  it('does not attest or expose a bridge without the exact acceptance environment', () => {
     let syncCalls = 0;
     const ipc: PackagedAcceptancePreloadIpc = {
       sendSync: () => { syncCalls += 1; return { authorized: true, protocolVersion: 1 }; },
       invoke: async () => ({ authorized: true, requestedFactor: 1 }),
     };
     const frame = { setZoomFactor() {}, getZoomFactor: () => 1 };
-    assert.equal(createPackagedAcceptanceZoomBridge(ipc, frame, ['app'], '1'), null);
-    assert.equal(createPackagedAcceptanceZoomBridge(ipc, frame, ['app', '--propr-acceptance-test'], undefined), null);
+    for (const environmentValue of [undefined, '', '0', 'true', '01', '1 ']) {
+      assert.equal(createPackagedAcceptanceZoomBridge(ipc, frame, environmentValue), null);
+    }
     assert.equal(syncCalls, 0);
   });
 
-  it('fails closed on malformed main acknowledgement and resets before applying 1 or 2', async () => {
-    const malformedIpc: PackagedAcceptancePreloadIpc = {
-      sendSync: () => ({ authorized: true, protocolVersion: 1, extra: true }),
-      invoke: async () => undefined,
-    };
+  it('fails closed on an absent or malformed main acknowledgement', () => {
     const frame = { setZoomFactor() {}, getZoomFactor: () => 1 };
-    assert.equal(createPackagedAcceptanceZoomBridge(
-      malformedIpc, frame, ['app', '--propr-acceptance-test'], '1',
-    ), null);
+    for (const acknowledgement of [
+      undefined,
+      null,
+      false,
+      { authorized: false, protocolVersion: 1 },
+      { authorized: true, protocolVersion: 2 },
+      { authorized: true, protocolVersion: 1, extra: true },
+    ]) {
+      const ipc: PackagedAcceptancePreloadIpc = {
+        sendSync: () => acknowledgement,
+        invoke: async () => undefined,
+      };
+      assert.equal(createPackagedAcceptanceZoomBridge(ipc, frame, '1'), null);
+    }
+  });
 
+  it('accepts exact environment plus main attestation with real preload argv lacking the main switch', async () => {
     let current = 2;
     const calls: number[] = [];
     const ipc: PackagedAcceptancePreloadIpc = {
       sendSync: () => ({ authorized: true, protocolVersion: 1 }),
       invoke: async (_channel, factor) => ({ authorized: true, requestedFactor: factor }),
     };
-    const bridge = createPackagedAcceptanceZoomBridge(ipc, {
-      setZoomFactor(factor) { calls.push(factor); current = factor; },
-      getZoomFactor: () => current,
-    }, ['app', '--propr-acceptance-test'], '1');
+    const originalArgv = process.argv;
+    const originalEnvironment = process.env.PROPR_DESKTOP_ACCEPTANCE_TEST;
+    let bridge: ReturnType<typeof createPackagedAcceptanceZoomBridge>;
+    try {
+      process.argv = ['/opt/ProPR Desktop/propr-desktop', '--type=renderer'];
+      process.env.PROPR_DESKTOP_ACCEPTANCE_TEST = '1';
+      bridge = createPackagedAcceptanceZoomBridge(ipc, {
+        setZoomFactor(factor) { calls.push(factor); current = factor; },
+        getZoomFactor: () => current,
+      });
+    } finally {
+      process.argv = originalArgv;
+      if (originalEnvironment === undefined) delete process.env.PROPR_DESKTOP_ACCEPTANCE_TEST;
+      else process.env.PROPR_DESKTOP_ACCEPTANCE_TEST = originalEnvironment;
+    }
     assert.ok(bridge);
+    assert.equal(Object.isFrozen(bridge), true);
+    assert.deepEqual(Object.keys(bridge), ['setZoomFactor']);
     assert.deepEqual(await bridge.setZoomFactor(2), {
       requestedFactor: 2, resetFactor: 1, appliedFactor: 2, mechanism: 'electron-web-frame',
     });
@@ -117,7 +140,7 @@ describe('packaged acceptance Electron zoom preload bridge', () => {
     const malformedApply = createPackagedAcceptanceZoomBridge({
       sendSync: () => ({ authorized: true, protocolVersion: 1 }),
       invoke: async () => ({ authorized: true, requestedFactor: 2, extra: true }),
-    }, frame, ['app', '--propr-acceptance-test'], '1');
+    }, { setZoomFactor() {}, getZoomFactor: () => 1 }, '1');
     assert.ok(malformedApply);
     await assert.rejects(malformedApply.setZoomFactor(2), /acknowledgement is malformed/);
   });
@@ -129,14 +152,14 @@ describe('packaged acceptance Electron zoom preload bridge', () => {
     };
     const resetFailure = createPackagedAcceptanceZoomBridge(ipc, {
       setZoomFactor() {}, getZoomFactor: () => 2,
-    }, ['app', '--propr-acceptance-test'], '1');
+    }, '1');
     assert.ok(resetFailure);
     await assert.rejects(resetFailure.setZoomFactor(2), /zoom reset failed/);
 
     let reads = 0;
     const applyFailure = createPackagedAcceptanceZoomBridge(ipc, {
       setZoomFactor() {}, getZoomFactor: () => (++reads === 1 ? 1 : 1),
-    }, ['app', '--propr-acceptance-test'], '1');
+    }, '1');
     assert.ok(applyFailure);
     await assert.rejects(applyFailure.setZoomFactor(2), /zoom application failed/);
   });
