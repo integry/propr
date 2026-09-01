@@ -142,36 +142,76 @@ const assertPackageAuthority = async () => {
   }
 };
 
-const protectWindowsEntries = paths => {
+const windowsFixtureFailure = (phase, category) => {
+  const error = new Error(`Could not prepare the ordinary-user Windows authority fixture [phase=${phase} category=${category}]`);
+  error.stack = error.message;
+  throw error;
+};
+
+const protectWindowsEntries = entries => {
   const membership = spawnSync('powershell.exe', [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
     '[Console]::Out.Write(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))',
   ], { shell: false, windowsHide: true, encoding: 'utf8', timeout: 10_000 });
-  if (membership.status !== 0 || membership.stdout !== 'False') {
-    throw new Error('Packaged Windows Connect discovery must run as an ordinary user');
+  if (membership.error || membership.signal || membership.status !== 0 || membership.stderr) {
+    windowsFixtureFailure('membership', 'process-failed');
   }
+  if (membership.stdout !== 'False') windowsFixtureFailure('membership', 'administrator');
   const source = String.raw`
 $ErrorActionPreference='Stop'
-$current=[Security.Principal.WindowsIdentity]::GetCurrent().User
-$system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
-$admins=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
-foreach($path in $args){
-  $directory=(Get-Item -LiteralPath $path).PSIsContainer
-  $acl=if($directory){[Security.AccessControl.DirectorySecurity]::new()}else{[Security.AccessControl.FileSecurity]::new()}
-  $acl.SetOwner($current);$acl.SetAccessRuleProtection($true,$false)
-  foreach($identity in @($current,$system,$admins)){
-    $rule=if($directory){
-      [Security.AccessControl.FileSystemAccessRule]::new($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
-    }else{[Security.AccessControl.FileSystemAccessRule]::new($identity,'FullControl','Allow')}
-    $null=$acl.AddAccessRule($rule)
-  }
-  Set-Acl -LiteralPath $path -AclObject $acl
+function Set-ProprFixtureAcl {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)][ValidateSet('directory','file')][string]$EntryKind,
+    [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$EntryPath
+  )
+  try {
+    if(-not [IO.Path]::IsPathFullyQualified($EntryPath)){exit 40}
+    $item=Get-Item -LiteralPath $EntryPath
+    $directory=$EntryKind -eq 'directory'
+    if($directory -ne $item.PSIsContainer){exit 40}
+    $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
+    $system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $admins=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    $acl=if($directory){[Security.AccessControl.DirectorySecurity]::new()}else{[Security.AccessControl.FileSecurity]::new()}
+    $acl.SetOwner($current);$acl.SetAccessRuleProtection($true,$false)
+    foreach($identity in @($current,$system,$admins)){
+      $rule=if($directory){
+        [Security.AccessControl.FileSystemAccessRule]::new($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
+      }else{[Security.AccessControl.FileSystemAccessRule]::new($identity,'FullControl','Allow')}
+      $null=$acl.AddAccessRule($rule)
+    }
+  } catch { exit 41 }
+  try {
+    Set-Acl -LiteralPath $EntryPath -AclObject $acl
+  } catch { exit 42 }
+}
+try {
+  Set-ProprFixtureAcl -EntryKind $env:PROPR_FIXTURE_ACL_KIND -EntryPath $env:PROPR_FIXTURE_ACL_PATH
+} catch {
+  exit 40
 }`;
-  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', source, ...paths], {
-    shell: false, windowsHide: true, encoding: 'utf8', timeout: 30_000,
-  });
-  if (result.status !== 0 || result.error || result.signal || result.stderr) {
-    throw new Error('Could not prepare the ordinary-user Windows authority fixture');
+  const encoded = Buffer.from(source, 'utf16le').toString('base64');
+  for (const entry of entries) {
+    const result = spawnSync('powershell.exe', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded,
+    ], {
+      shell: false,
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: {
+        ...process.env,
+        PROPR_FIXTURE_ACL_KIND: entry.kind,
+        PROPR_FIXTURE_ACL_PATH: entry.path,
+      },
+    });
+    if (result.error || result.signal) windowsFixtureFailure('acl-process', 'process-failed');
+    if (result.stdout || result.stderr) windowsFixtureFailure('acl-process', 'unexpected-output');
+    if (result.status === 40) windowsFixtureFailure('parameter-binding', 'validation-failed');
+    if (result.status === 41) windowsFixtureFailure('acl-construction', 'operation-failed');
+    if (result.status === 42) windowsFixtureFailure(`set-acl-${entry.kind}`, 'operation-failed');
+    if (result.status !== 0) windowsFixtureFailure('acl-process', 'unexpected-exit');
   }
 };
 
@@ -198,15 +238,20 @@ try {
     `PROPR_UI_TUNNEL_TOKEN=${secrets[0]}`,
     '',
   ].join('\n'), { mode: 0o600 });
-  await writeFile(identityPath, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: identity })}\n`, { mode: 0o600 });
+  await writeFile(identityPath, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: identity })}\n`, { mode: 0o644 });
   if (process.platform !== 'win32') {
     await Promise.all([
       chmod(fixture, 0o700), chmod(configRoot, 0o700), chmod(stackRoot, 0o700),
       chmod(dataRoot, 0o700), chmod(userDataPath, 0o700), chmod(configPath, 0o600),
-      chmod(envPath, 0o600), chmod(identityPath, 0o600),
+      chmod(envPath, 0o600), chmod(identityPath, 0o644),
     ]);
   } else {
-    protectWindowsEntries([stackRoot, dataRoot, envPath, identityPath]);
+    protectWindowsEntries([
+      { path: stackRoot, kind: 'directory' },
+      { path: dataRoot, kind: 'directory' },
+      { path: envPath, kind: 'file' },
+      { path: identityPath, kind: 'file' },
+    ]);
   }
   await assertPackageAuthority();
 

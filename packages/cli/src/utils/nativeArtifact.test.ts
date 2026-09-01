@@ -5,14 +5,20 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   assertCanonicalNativeArtifactParents,
+  isPackagedNativeArtifactResolution,
   physicalNativeArtifactCandidate,
 } from './nativeArtifact.js';
 
 test('packaged native artifact candidates resolve to the physical non-ASAR resource', () => {
+  const logical = join('/Applications/ProPR.app/Contents/Resources/app.asar', '.vite/native/broker');
+  const physical = join('/Applications/ProPR.app/Contents/Resources/app.asar.unpacked', '.vite/native/broker');
   assert.equal(
-    physicalNativeArtifactCandidate(join('/Applications/ProPR.app/Contents/Resources/app.asar', '.vite/native/broker')),
-    join('/Applications/ProPR.app/Contents/Resources/app.asar.unpacked', '.vite/native/broker'),
+    physicalNativeArtifactCandidate(logical),
+    physical,
   );
+  assert.equal(isPackagedNativeArtifactResolution(logical, physical), true);
+  assert.equal(isPackagedNativeArtifactResolution(physical, physical), false);
+  assert.equal(isPackagedNativeArtifactResolution(join('/workspace', 'native', 'broker'), join('/workspace', 'native', 'broker')), false);
 });
 
 test('packaged native artifact candidates require canonical non-link parent ancestry', () => {

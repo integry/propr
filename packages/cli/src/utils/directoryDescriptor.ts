@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertCanonicalNativeArtifactParents,
+  isPackagedNativeArtifactResolution,
   physicalNativeArtifactCandidate,
 } from "./nativeArtifact.js";
 
@@ -76,16 +77,19 @@ function nativeArtifactPath(platform: NodeJS.Platform, arch: string): string {
   const candidates = [
     join(moduleDirectory, "..", "native", relativeArtifact),
     join(moduleDirectory, "..", "..", "native", relativeArtifact),
-  ].map(physicalNativeArtifactCandidate);
-  const artifact = candidates.find((candidate) => existsSync(candidate));
+  ].map((logicalPath) => {
+    const path = physicalNativeArtifactCandidate(logicalPath);
+    return { path, packaged: isPackagedNativeArtifactResolution(logicalPath, path) };
+  });
+  const artifact = candidates.find((candidate) => existsSync(candidate.path));
   if (!artifact) throw new Error(`packaged ${platform} directory-operations artifact is missing for ${arch}`);
-  assertCanonicalNativeArtifactParents(artifact);
-  const named = lstatSync(artifact);
-  if (!named.isFile() || named.isSymbolicLink() || (named.mode & 0o022) !== 0) {
+  if (artifact.packaged) assertCanonicalNativeArtifactParents(artifact.path);
+  const named = lstatSync(artifact.path);
+  if (!named.isFile() || named.isSymbolicLink() || (artifact.packaged && (named.mode & 0o022) !== 0)) {
     throw new Error(`packaged directory-operations artifact failed type verification for ${platform}-${arch}`);
   }
-  verifyDirectoryOperationArtifact(artifact, expected, `${platform}-${arch}`);
-  return artifact;
+  verifyDirectoryOperationArtifact(artifact.path, expected, `${platform}-${arch}`);
+  return artifact.path;
 }
 
 export function verifyDirectoryOperationArtifact(artifact: string, expected: string, arch: string): void {

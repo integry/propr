@@ -26,6 +26,7 @@ import {
 } from "./connectWindowsAuthority.js";
 import {
   assertCanonicalNativeArtifactParents,
+  isPackagedNativeArtifactResolution,
   physicalNativeArtifactCandidate,
 } from "./utils/nativeArtifact.js";
 
@@ -201,11 +202,14 @@ function darwinAuthorityBrokerArtifact(): {
     join(moduleDirectory, "native", relative),
     join(moduleDirectory, "..", "native", relative),
     join(moduleDirectory, "..", "..", "native", relative),
-  ].map(physicalNativeArtifactCandidate);
-  for (const path of candidates) {
+  ].map((logicalPath) => {
+    const path = physicalNativeArtifactCandidate(logicalPath);
+    return { path, packaged: isPackagedNativeArtifactResolution(logicalPath, path) };
+  });
+  for (const { path, packaged } of candidates) {
     let fd: number | undefined;
     try {
-      assertCanonicalNativeArtifactParents(path);
+      if (packaged) assertCanonicalNativeArtifactParents(path);
       fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       const stat = fstatSync(fd, { bigint: true });
       const named = lstatSync(path, { bigint: true });
@@ -217,7 +221,7 @@ function darwinAuthorityBrokerArtifact(): {
         || stat.size <= 0n
         || stat.size > BigInt(512 * 1024)
         || (typeof process.getuid === "function" && stat.uid !== 0n && stat.uid !== BigInt(process.getuid()))
-        || (stat.mode & 0o022n) !== 0n
+        || (packaged && (stat.mode & 0o022n) !== 0n)
         || (stat.mode & 0o111n) === 0n
       ) {
         closeSync(fd);

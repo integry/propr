@@ -9,6 +9,14 @@ export function physicalNativeArtifactCandidate(candidate: string): string {
   return `${candidate.slice(0, index)}${sep}app.asar.unpacked${sep}${candidate.slice(index + marker.length)}`;
 }
 
+/** True only when an ASAR logical path was remapped to its physical unpacked resource. */
+export function isPackagedNativeArtifactResolution(logicalCandidate: string, physicalCandidate: string): boolean {
+  const marker = `${sep}app.asar${sep}`;
+  return logicalCandidate.includes(marker)
+    && physicalCandidate !== logicalCandidate
+    && physicalCandidate === physicalNativeArtifactCandidate(logicalCandidate);
+}
+
 /** Require every existing parent of a packaged native candidate to be canonical and non-link. */
 export function assertCanonicalNativeArtifactParents(candidate: string): void {
   let parent = dirname(resolve(candidate));

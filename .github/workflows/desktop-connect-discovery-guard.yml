@@ -80,7 +80,13 @@ jobs:
 
       - name: Run packaged Linux main-to-renderer discovery
         if: matrix.platform == 'linux'
-        run: xvfb-run --auto-servernum npm run smoke:connect-package -w @propr/desktop
+        shell: bash
+        run: |
+          sandbox="apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          sudo chown root:root "$sandbox"
+          sudo chmod 4755 "$sandbox"
+          test "$(stat -c '%U:%G:%a' "$sandbox")" = 'root:root:4755'
+          dbus-run-session -- xvfb-run --auto-servernum npm run smoke:connect-package -w @propr/desktop
 
       - name: Run packaged Darwin main-to-renderer discovery
         if: matrix.platform == 'darwin'
@@ -103,7 +109,8 @@ jobs:
             $administrators = Get-LocalGroupMember -Group 'Administrators' | ForEach-Object { $_.Name }
             if ($administrators -contains "$env:COMPUTERNAME\$userName") { throw 'packaged discovery user is an administrator' }
             $node = (Get-Command node.exe).Source
-            $process = Start-Process -FilePath $node -ArgumentList @('apps/desktop/scripts/smoke-packaged-connect.mjs') -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $desktopDirectory = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop'
+            $process = Start-Process -FilePath $node -ArgumentList @('scripts/smoke-packaged-connect.mjs') -WorkingDirectory $desktopDirectory -Credential $credential -LoadUserProfile -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
             Get-Content -LiteralPath $stdout
             if ($process.ExitCode -ne 0) {
               Get-Content -LiteralPath $stderr
