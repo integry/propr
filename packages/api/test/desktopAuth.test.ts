@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- pairing, activation, and revocation share one integration fixture */
 import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { NextFunction, Request, Response } from 'express';

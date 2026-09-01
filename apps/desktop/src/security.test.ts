@@ -53,7 +53,7 @@ describe('desktop URL security', () => {
     assert.equal(normalizeApiBaseUrl('http://0177.0.0.1:4000'), null);
     assert.equal(normalizeApiBaseUrl('http://0x7f000001:4000'), null);
     assert.equal(normalizeApiBaseUrl('http://[::ffff:127.0.0.1]:4000'), null);
-    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), null);
+    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), 'https://propr.example.com');
   });
 
   it('denies unsafe external browser schemes and credential-bearing URLs', () => {

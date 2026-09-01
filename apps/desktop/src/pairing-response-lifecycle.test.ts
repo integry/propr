@@ -410,7 +410,10 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
         await bounded(shutdown.awaitFinished());
         const original = await bounded(admitted);
         assert.equal(original.status, 'rejected');
-        if (original.status === 'rejected') assert.match(String(original.error), /Desktop pairing was cancelled/i);
+        if (original.status === 'rejected') {
+          assert.match(String(original.error), /Desktop operation failed \[IPC_OPERATION_FAILED\]/);
+          assert.doesNotMatch(String(original.error), /Desktop pairing was cancelled/i);
+        }
         assert.equal(targetSignal?.aborted, true);
         assert.equal(counts.rendererPublication, 0);
         assert.equal(counts.ipcEntry, 1);

@@ -257,6 +257,9 @@ interface PublicApiBase {
   managedSelector: string | null;
 }
 
+// The validation branches below intentionally keep every reserved-namespace
+// rejection at this single trust boundary.
+// eslint-disable-next-line complexity
 function publicApiBase(configured?: string): PublicApiBase | null {
   const raw = configured ?? process.env.API_PUBLIC_URL;
   if (!raw) return null;

@@ -193,7 +193,7 @@ describe('desktop IPC shutdown gate', () => {
 
     await assert.rejects(
       Promise.resolve(handlers.get(IPC_CHANNELS.connectionActivate)!(event, 'T'.repeat(43))),
-      /storage clear failed/,
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
     );
     assert.equal(clearCalls, 2);
     assert.deepEqual(discarded, [{ profileId: 'profile-b', transportScope: 'scope-b' }]);
@@ -242,7 +242,7 @@ describe('desktop IPC shutdown gate', () => {
 
     await assert.rejects(
       Promise.resolve(handlers.get(IPC_CHANNELS.connectionActivate)!(event, 'T'.repeat(43))),
-      /post-activation profile read failed/,
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
     );
     assert.equal(listCalls, 2);
     assert.equal(discardCalls, 1);
@@ -284,7 +284,7 @@ describe('desktop IPC shutdown gate', () => {
 
     await assert.rejects(
       Promise.resolve(handlers.get(IPC_CHANNELS.profilesRemove)!(event, 'profile-a')),
-      /origin storage clear failed/,
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
     );
     assert.equal(removalCommitted, false);
   });

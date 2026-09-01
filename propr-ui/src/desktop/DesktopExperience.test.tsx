@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- connection, recovery, and transport fencing share one integration fixture */
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesktopExperience } from './DesktopExperience';

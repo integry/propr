@@ -32,10 +32,10 @@ const adaptersFor = (
     getActiveId: vi.fn(async () => savedProfile.id),
     setActiveId: vi.fn(async () => undefined),
   },
-  discovery: { discover: vi.fn(async () => []) },
+  discovery: { supported: false, discover: vi.fn(async () => []) },
   authentication: { authenticate: vi.fn(async () => undefined) },
   externalBrowser: { open: vi.fn(async () => undefined) },
-  localSetup: { setup: vi.fn(async () => savedProfile) },
+  localSetup: { supported: false, setup: vi.fn(async () => savedProfile) },
   connection: { probe: vi.fn(probe) },
 });
 
