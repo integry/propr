@@ -300,7 +300,24 @@ function Remove-OwnedDirectory($Record) {
   if (!$tokenMatches -and !$identityMatches) {
     throw 'owned directory identity does not match'
   }
-  Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+  $markerPath = Join-Path $path $ownerFileName
+  $children = @(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop)
+  $unexpectedChildren = @($children | Where-Object {
+    ![string]::Equals($_.FullName, $markerPath, [StringComparison]::OrdinalIgnoreCase)
+  })
+  if ($unexpectedChildren.Count -ne 0) {
+    throw 'owned directory contains an unexpected descendant'
+  }
+  if ($children.Count -ne 0) {
+    if (!$tokenMatches -or $children.Count -ne 1) {
+      throw 'owned directory marker identity does not match'
+    }
+    Remove-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+  }
+  if (@(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop).Count -ne 0) {
+    throw 'owned directory is not empty'
+  }
+  Remove-Item -LiteralPath $path -Force -ErrorAction Stop
   if (Test-Path -LiteralPath $path) { throw 'owned directory cleanup did not complete' }
 }
 
@@ -435,16 +452,7 @@ function Restore-OwnedRegistryValue($Record) {
   }
 }
 
-function Write-EmptyOwnershipReceipt([string]$Path, $Manifest) {
-  $Manifest.State = 'EMPTY'
-  $Manifest.BaselineClean = $false
-  $Manifest.InstallAttempted = $false
-  $Manifest.Directories = @()
-  $Manifest.Files = @()
-  $Manifest.RegistryKeys = @()
-  $Manifest.RegistryValues = @()
-  $Manifest.Users = @()
-  $Manifest.Profiles = @()
+function Write-DurableOwnershipManifest([string]$Path, $Manifest) {
   $temporaryPath = "$Path.new"
   $bytes = [Text.Encoding]::UTF8.GetBytes(($Manifest | ConvertTo-Json -Depth 6 -Compress))
   $stream = [IO.FileStream]::new(
@@ -464,6 +472,38 @@ function Write-EmptyOwnershipReceipt([string]$Path, $Manifest) {
   [IO.File]::Move($temporaryPath, $Path, $true)
 }
 
+function Write-EmptyOwnershipReceipt([string]$Path, $Manifest) {
+  $Manifest.State = 'EMPTY'
+  $Manifest.BaselineClean = $false
+  $Manifest.InstallAttempted = $false
+  $Manifest.Directories = @()
+  $Manifest.Files = @()
+  $Manifest.RegistryKeys = @()
+  $Manifest.RegistryValues = @()
+  $Manifest.Users = @()
+  $Manifest.Profiles = @()
+  Write-DurableOwnershipManifest $Path $Manifest
+}
+
+function Resolve-ProvisionalOwnedUser($Record) {
+  if (!$Record.Owned -or [string]$Record.Sid -match '^S-\d+(?:-\d+)+$') {
+    return $false
+  }
+  if (!$Record.Provisional) { throw 'owned user SID is invalid' }
+  $name = [string]$Record.Name
+  $ownershipMarker = [string]$Record.OwnershipMarker
+  $user = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
+  if ($null -eq $user) { return $false }
+  if ($ownershipMarker -notmatch '^prpr-own-[a-f0-9]{32}$' -or
+      [string]$user.Description -cne $ownershipMarker -or
+      [string]$user.SID.Value -notmatch '^S-\d+(?:-\d+)+$') {
+    throw 'provisional local-user ownership marker does not match'
+  }
+  $Record.Sid = [string]$user.SID.Value
+  $Record.Provisional = $false
+  return $true
+}
+
 function Remove-OwnedProfiles($UserRecord) {
   if (!$UserRecord.Owned) { return }
   $name = [string]$UserRecord.Name
@@ -472,10 +512,9 @@ function Remove-OwnedProfiles($UserRecord) {
   }
   $sid = [string]$UserRecord.Sid
   if ($sid -notmatch '^S-\d+(?:-\d+)+$') {
-    if (!$UserRecord.Provisional) { throw 'owned user SID is invalid' }
-    $provisionalUser = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
-    if ($null -eq $provisionalUser) { return }
-    $sid = $provisionalUser.SID.Value
+    if ($UserRecord.Provisional -and
+        $null -eq (Get-LocalUser -Name $name -ErrorAction SilentlyContinue)) { return }
+    throw 'owned user SID was not durably resolved'
   }
   for ($attempt = 0; $attempt -lt 10; $attempt += 1) {
     $profiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
@@ -522,9 +561,13 @@ function Remove-OwnedUser($Record) {
   }
   $user = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
   if ($null -eq $user) { return }
+  $ownershipMarker = [string]$Record.OwnershipMarker
+  if ($ownershipMarker -notmatch '^prpr-own-[a-f0-9]{32}$' -or
+      [string]$user.Description -cne $ownershipMarker) {
+    throw 'local-user ownership marker does not match'
+  }
   if ($sid -notmatch '^S-\d+(?:-\d+)+$') {
-    if (!$Record.Provisional) { throw 'owned local-user identity is invalid' }
-    $sid = $user.SID.Value
+    throw 'owned local-user SID was not durably resolved'
   }
   if ($user.SID.Value -cne $sid) { throw 'local-user SID ownership changed' }
   Remove-LocalUser -Name $name -ErrorAction Stop
@@ -640,12 +683,21 @@ try {
     }
   }
   foreach ($record in @($manifest.Users)) {
+    if ($record.Owned -and ($record.Owned -isnot [bool] -or
+        $record.Provisional -isnot [bool])) {
+      throw 'user manifest ownership state is invalid'
+    }
     if ($record.Owned -and [string]$record.Name -notmatch '^(?:propr-ci-|prpr)[a-f0-9]{8}$') {
       throw 'user manifest identity is invalid'
     }
     if ($record.Owned -and !$record.Provisional -and
         [string]$record.Sid -notmatch '^S-\d+(?:-\d+)+$') {
       throw 'user manifest SID is invalid'
+    }
+    if ($record.Owned -and
+        [string]$record.OwnershipMarker -notmatch
+          '^prpr-own-[a-f0-9]{32}$') {
+      throw 'user manifest ownership marker is invalid'
     }
   }
   foreach ($record in @($manifest.Profiles)) {
@@ -764,23 +816,27 @@ try {
     throw 'registry value manifest cardinality is invalid'
   }
   $manifestValidated = $true
-  $skipMsiUninstall = $false
+  $adoptedProvisionalUser = $false
+  foreach ($record in @($manifest.Users)) {
+    if (Resolve-ProvisionalOwnedUser $record) { $adoptedProvisionalUser = $true }
+  }
+  if ($adoptedProvisionalUser) {
+    Write-DurableOwnershipManifest $manifestPath $manifest
+  }
   foreach ($record in @($manifest.RegistryValues)) {
     if (!$record.Owned) { continue }
     $current = Get-RegistryValueSnapshot ([string]$record.Path) ([string]$record.Name)
     $matchesBaseline = [bool]$record.BaselineValueExisted -and $current.Exists -and
       $current.Kind -ceq [string]$record.BaselineValueKind -and
       $current.Data -ceq [string]$record.BaselineValueData
-    if ($matchesBaseline) {
-      $skipMsiUninstall = $true
-    } elseif ($current.Exists -and
+    if (!$matchesBaseline -and $current.Exists -and
         (([bool]$record.Provisional -and
             !(Test-MsiInstalledValue ([string]$record.Path) ([string]$record.Name))) -or
           (![bool]$record.Provisional -and !(Test-RegistryValueIdentity $record $current)))) {
       $cleanupFailed = $true
     }
   }
-  if ($allowProvisionalMsiUninstall -and !$skipMsiUninstall -and !$cleanupFailed) {
+  if ($allowProvisionalMsiUninstall -and !$cleanupFailed) {
     $msiExitCode = 1618
     for ($attempt = 0; $attempt -lt 12 -and $msiExitCode -eq 1618; $attempt += 1) {
       if ($attempt -ne 0) { Start-Sleep -Seconds 2 }

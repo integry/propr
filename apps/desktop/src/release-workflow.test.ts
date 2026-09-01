@@ -609,7 +609,12 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisor, /if \(!\$worker\.Start\(\)\)[^\n]+\n\s+\$workerStarted = \$true\n\s+\$bootstrapStopwatch = \[Diagnostics\.Stopwatch\]::StartNew\(\)/);
     assert.match(installedWindowsAppSupervisor, /\[ProPRBoundedMarkerReader\]::ReadAsync\(\$Path\)/);
     assert.match(installedWindowsAppSupervisor, /\$readTask\.Wait\(\$TimeoutMilliseconds\)/);
-    assert.match(installedWindowsAppSupervisor, /\$job\.Terminate\(\$TerminationExitCode\)/);
+    assert.match(
+      installedWindowsAppSupervisor,
+      /\$job\.TerminateAndWait\(\$TerminationExitCode, \$WatchdogTerminationMilliseconds\)/,
+    );
+    assert.match(installedWindowsAppSupervisor, /\$worker\.WaitForExit\(\$WatchdogTerminationMilliseconds\)/);
+    assert.match(installedWindowsAppSupervisor, /if \(\$workerTreeTerminated\) \{[\s\S]*Invoke-PostTerminationCleanup/);
     assert.match(installedWindowsAppSupervisor, /Invoke-PostTerminationCleanup/);
     assert.match(installedWindowsAppSupervisor, /\$cleanupRequired = \$terminateOwnedTree -or \$workerStarted/);
     assert.match(
@@ -661,9 +666,13 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppWorkflowCleanup, /MANIFEST_VALIDATION_FAILURE/);
     assert.match(installedWindowsAppWorkflowCleanup, /OWNED_RESOURCE_CLEANUP_FAILURE/);
     assert.match(installedWindowsAppWorkflowCleanup, /ProPRWorkflowCleanupOutputDrain/);
+    assert.match(installedWindowsAppWorkflowCleanup, /StreamReader reader/);
+    assert.match(installedWindowsAppWorkflowCleanup, /reader\.ReadAsync/);
+    assert.match(installedWindowsAppWorkflowCleanup, /STREAM_DRAIN_(?:TIMEOUT|FAILURE)/);
+    assert.match(installedWindowsAppWorkflowCleanup, /CHILD_STDERR/);
     assert.doesNotMatch(
       installedWindowsAppWorkflowCleanup,
-      /add_(?:Output|Error)DataReceived\(\{\}\)/,
+      /add_(?:Output|Error)DataReceived|Begin(?:Output|Error)ReadLine/,
     );
     assert.match(
       installedWindowsAppWorkflowCleanup,
@@ -676,18 +685,40 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /OWNED_RESOURCES_REPLACED_THEN_DEADLINE/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
+      /OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /in-place foreign child was removed or changed/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /InjectTerminationFailure/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /termination failure discarded authenticated recovery authority/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-ProvisionalUserMarkerOwnership/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /provisional username authorized replacement-account deletion/);
+    assert.match(installedWindowsAppTest, /-Description \$userOwnershipMarker/);
+    assert.match(installedWindowsAppCleanup, /provisional local-user ownership marker does not match/);
+    assert.doesNotMatch(installedWindowsAppCleanup, /\$skipMsiUninstall/);
+    const ownedDirectoryCleanup = installedWindowsAppCleanup.slice(
+      installedWindowsAppCleanup.indexOf('function Remove-OwnedDirectory'),
+      installedWindowsAppCleanup.indexOf('function Remove-OwnedFile'),
+    );
+    assert.doesNotMatch(ownedDirectoryCleanup, /Remove-Item[^\n]*-Recurse/);
+    assert.match(ownedDirectoryCleanup, /owned directory contains an unexpected descendant/);
+    assert.match(ownedDirectoryCleanup, /Get-ChildItem[^\n]*-Force/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
       /replacement install tree was removed or changed/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /timed-out workflow cleanup discarded authenticated recovery authority[\s\S]*failed workflow cleanup discarded authenticated recovery authority[\s\S]*retry to fixed cleanup success/,
     );
+    const fixedResultWrite = installedWindowsAppWorkflowCleanup.indexOf(
+      'Write-FixedResult $fixedResult',
+    );
     assert.ok(
-      installedWindowsAppWorkflowCleanup.indexOf('Write-FixedResult $fixedResult')
-        < installedWindowsAppWorkflowCleanup.indexOf(
-          'foreach ($path in @($validatedManifestPath, "$validatedManifestPath.new"))',
+      fixedResultWrite > installedWindowsAppWorkflowCleanup.indexOf('$resource.Dispose()')
+        && fixedResultWrite > installedWindowsAppWorkflowCleanup.indexOf(
+          'if ($fixedResult -ceq \'COMPLETE\' -and $validatedManifestPath)',
         ),
-      'failed manifest must remain available until fixed controller evidence is emitted',
+      'fixed controller evidence must be emitted after bounded finalization',
     );
     assert.doesNotMatch(
       installedWindowsAppSupervisorBehaviorTest,
@@ -700,7 +731,11 @@ describe('desktop trusted release workflow', () => {
       );
     }
     assert.match(installedWindowsAppSupervisor, /exit \$exitCode/);
-    assert.match(installedWindowsAppSupervisor, /if \(\$null -ne \$job\) \{ \$job\.Dispose\(\) \}/);
+    assert.match(
+      installedWindowsAppSupervisor,
+      /foreach \(\$resource in @\(\$job, \$worker, \$ownershipReadyEvent, \$cancellationEvent\)\)/,
+    );
+    assert.match(installedWindowsAppSupervisor, /try \{ \$resource\.Dispose\(\) \} catch/);
 
     assert.match(installedWindowsAppTest, /\[IO\.FileOptions\]::WriteThrough/);
     assert.equal(installedWindowsAppTest.match(/\.Flush\(\$true\)/g)?.length, 4);

@@ -19,6 +19,7 @@ if ($scenario -notin @(
     'CANCELLATION',
     'OWNED_RESOURCES_NORMAL_SUCCESS',
     'OWNED_RESOURCES_FOR_INTERRUPTION',
+    'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE',
     'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
     'OWNED_RESOURCES_THEN_DEADLINE'
   )) {
@@ -135,9 +136,23 @@ function New-OwnedFixtureResources {
   if (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue) {
     throw 'fixture owned-user baseline was not clean'
   }
+  $userOwnershipMarker =
+    "prpr-own-$([Guid]::NewGuid().ToString('N'))"
+  $provisionalUserRecord = [ordered]@{
+    Name = $userName
+    Sid = $null
+    Owned = $true
+    Provisional = $true
+    OwnershipMarker = $userOwnershipMarker
+  }
+  $manifest.Users = @($provisionalUserRecord)
+  Write-FixtureOwnershipManifest $manifest
   New-LocalUser -Name $userName -Password $password `
+    -Description $userOwnershipMarker `
     -AccountNeverExpires -PasswordNeverExpires | Out-Null
   $userSid = (Get-LocalUser -Name $userName -ErrorAction Stop).SID.Value
+  $provisionalUserRecord.Sid = $userSid
+  $provisionalUserRecord.Provisional = $false
 
   $ownedDirectories = @(
     [ordered]@{ Kind = 'FIXTURE_ROOT'; Path = $ownedRoot; Owned = $true; Token = $token },
@@ -153,8 +168,20 @@ function New-OwnedFixtureResources {
   $manifest.Directories = @($ownedDirectories) + @($conflictingDirectories)
   $manifest.Files = @(
     [ordered]@{
+      Kind = 'FIXTURE_FILE'; Path = (Join-Path $installRoot 'installed.txt')
+      Owned = $true; Token = $null
+      Identity = (Get-FixtureFileIdentity (Join-Path $installRoot 'installed.txt'))
+      Provisional = $false
+    },
+    [ordered]@{
       Kind = 'SHORTCUT_FILE'; Path = $shortcut; Owned = $true; Token = $token
       Identity = (Get-FixtureFileIdentity $shortcut); Provisional = $false
+    },
+    [ordered]@{
+      Kind = 'FIXTURE_FILE'; Path = (Join-Path $smokeDirectory 'smoke.txt')
+      Owned = $true; Token = $null
+      Identity = (Get-FixtureFileIdentity (Join-Path $smokeDirectory 'smoke.txt'))
+      Provisional = $false
     }
   )
   if ($env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_SHORTCUT) {
@@ -173,9 +200,7 @@ function New-OwnedFixtureResources {
       Owned = $false; Token = $null
     }
   }
-  $manifest.Users = @(
-    [ordered]@{ Name = $userName; Sid = $userSid; Owned = $true }
-  )
+  $manifest.Users = @($provisionalUserRecord)
   if ($env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_USER) {
     $manifest.Users += [ordered]@{
       Name = $env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_USER
@@ -269,6 +294,16 @@ function Replace-FixtureOwnedResources {
   [IO.File]::WriteAllText($state.Shortcut, 'foreign-shortcut', [Text.Encoding]::ASCII)
   Set-ItemProperty -LiteralPath $state.RegistryPath `
     -Name 'ProPRInstalledAppOwner' -Value 'foreign-owner'
+}
+
+function Add-FixtureForeignChild {
+  $state = Get-Content -LiteralPath (Join-Path $stateDirectory 'resources.json') `
+    -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
+  [IO.File]::WriteAllText(
+    (Join-Path $state.InstallRoot 'foreign-in-place.txt'),
+    'foreign-in-place',
+    [Text.Encoding]::ASCII
+  )
 }
 
 function Start-FixtureDescendant {
@@ -385,6 +420,14 @@ switch ($scenario) {
     Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
     New-OwnedFixtureResources
     Replace-FixtureOwnedResources
+    Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-OwnedFixtureResources
+    Add-FixtureForeignChild
     Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
       [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
     Start-Sleep -Seconds 300

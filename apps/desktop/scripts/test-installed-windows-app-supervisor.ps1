@@ -45,7 +45,8 @@ function New-SupervisorStartInfo(
   [string]$CancellationEventName,
   [bool]$UseProductionWorker,
   [string]$WorkflowManifest = '',
-  [string]$ExpectedRunId = ''
+  [string]$ExpectedRunId = '',
+  [bool]$InjectTerminationFailure = $false
 ) {
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
@@ -93,6 +94,9 @@ function New-SupervisorStartInfo(
       $startInfo.Environment['PROPR_SUPERVISOR_FIXTURE_CONFLICT_REGISTRY'] =
         $conflictingFixtureRegistryPath
     }
+  }
+  if ($InjectTerminationFailure) {
+    $startInfo.ArgumentList.Add('-InjectTerminationFailure')
   }
   if ($CancellationEventName) {
     $startInfo.ArgumentList.Add('-CancellationEventName')
@@ -231,8 +235,12 @@ function Invoke-WorkflowCleanupController(
     $output = $process.StandardOutput.ReadToEnd()
     $errorOutput = $process.StandardError.ReadToEnd()
     Assert-True ($output.Length -le 512) 'workflow cleanup fixture output exceeded its fixed bound'
-    Assert-True ($errorOutput.Length -eq 0) `
-      'workflow cleanup fixture emitted non-fixed error output'
+    if ($errorOutput.Length -ne 0) {
+      $stderrCode = if ($errorOutput.Length -gt 4096) {
+        'PROPR_WORKFLOW_CLEANUP_FIXTURE:CONTROLLER_STDERR_LIMIT'
+      } else { 'PROPR_WORKFLOW_CLEANUP_FIXTURE:CONTROLLER_STDERR_PRESENT' }
+      throw $stderrCode
+    }
     $outputLines = @($output -split '\r?\n' | Where-Object { $_ })
     Assert-True ($outputLines.Count -eq 2) `
       'workflow cleanup fixture did not emit exactly two fixed result lines'
@@ -306,19 +314,26 @@ $env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_REGISTRY = $ConflictRegistry
   return [PSCustomObject]@{ Pipeline = $pipeline; AsyncResult = $asyncResult }
 }
 
-function Invoke-FixtureScenario([string]$Scenario, [string]$ExistingStateDirectory = '') {
+function Invoke-FixtureScenario(
+  [string]$Scenario,
+  [string]$ExistingStateDirectory = '',
+  [bool]$InjectTerminationFailure = $false
+) {
   $stateDirectory = if ($ExistingStateDirectory) {
     $ExistingStateDirectory
   } else {
     New-StateDirectory $Scenario.ToLowerInvariant()
   }
   $process = [Diagnostics.Process]::new()
-  $process.StartInfo = New-SupervisorStartInfo $Scenario $stateDirectory '' $false
+  $process.StartInfo = New-SupervisorStartInfo `
+    $Scenario $stateDirectory '' $false '' '' $InjectTerminationFailure
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   if (!$process.Start()) { throw 'supervisor test process did not start' }
   try {
     $completionBound = if ($Scenario -in @(
-        'OWNED_RESOURCES_THEN_DEADLINE','OWNED_RESOURCES_REPLACED_THEN_DEADLINE'
+        'OWNED_RESOURCES_THEN_DEADLINE',
+        'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
+        'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE'
       )) { 90000 } else { 20000 }
     if (!$process.WaitForExit($completionBound)) {
       try { $process.Kill($true) } catch {}
@@ -657,6 +672,59 @@ function Test-PreExistingCleanupOwnership {
     Assert-OwnedResourcesGone $replacementOwned
     Assert-True (!(Test-Path -LiteralPath $replacementOwned.ManifestPath)) `
       'successful standalone cleanup retry did not consume recovery authority'
+
+    $foreignChildStateDirectory = New-StateDirectory 'in-place-foreign-child'
+    $foreignChildResult = Invoke-FixtureScenario `
+      'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE' $foreignChildStateDirectory
+    Assert-True ($foreignChildResult.ExitCode -eq 125) `
+      'in-place foreign child did not fail the standalone cleanup'
+    Assert-Contains $foreignChildResult.Output `
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED' `
+      'in-place foreign child did not emit fixed cleanup failure evidence'
+    $foreignChildOwned = Read-FixtureResourceState $foreignChildStateDirectory
+    $foreignChildPath = Join-Path $foreignChildOwned.InstallRoot 'foreign-in-place.txt'
+    Assert-True ((Get-Content -LiteralPath $foreignChildPath -Raw).Trim() -ceq `
+        'foreign-in-place') 'in-place foreign child was removed or changed'
+    Assert-True (Test-Path -LiteralPath $foreignChildOwned.ManifestPath -PathType Leaf) `
+      'in-place foreign-child failure discarded authenticated recovery authority'
+    $foreignChildManifest = Get-Content -LiteralPath $foreignChildOwned.ManifestPath `
+      -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    Assert-True ($foreignChildManifest.State -ceq 'ACTIVE') `
+      'in-place foreign-child failure did not preserve the ACTIVE manifest'
+    Remove-Item -LiteralPath $foreignChildPath -Force -ErrorAction Stop
+    $foreignChildRetry = Invoke-WorkflowCleanupController `
+      $foreignChildOwned.ManifestPath $foreignChildOwned.RunId $foreignChildStateDirectory
+    Assert-True ($foreignChildRetry.ExitCode -eq 0 -and
+        $foreignChildRetry.Result -ceq 'COMPLETE') `
+      'in-place foreign-child cleanup did not retry to exact success'
+    Assert-OwnedResourcesGone $foreignChildOwned
+
+    $terminationFailureStateDirectory = New-StateDirectory 'termination-failure'
+    $terminationFailureResult = Invoke-FixtureScenario `
+      'OWNED_RESOURCES_THEN_DEADLINE' $terminationFailureStateDirectory $true
+    Assert-True ($terminationFailureResult.ExitCode -eq 125) `
+      'unverified worker-tree termination did not fail closed'
+    Assert-Contains $terminationFailureResult.Output `
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED' `
+      'unverified worker-tree termination did not emit fixed failure evidence'
+    $terminationFailureOwned = Read-FixtureResourceState $terminationFailureStateDirectory
+    Assert-ProcessTreeGone (Read-FixtureProcessState $terminationFailureStateDirectory)
+    Assert-True (Test-Path -LiteralPath $terminationFailureOwned.ManifestPath -PathType Leaf) `
+      'termination failure discarded authenticated recovery authority'
+    $terminationFailureManifest = Get-Content `
+      -LiteralPath $terminationFailureOwned.ManifestPath -Raw -Encoding UTF8 |
+      ConvertFrom-Json -ErrorAction Stop
+    Assert-True ($terminationFailureManifest.State -ceq 'ACTIVE') `
+      'termination failure did not preserve the ACTIVE manifest'
+    Assert-True (Test-Path -LiteralPath $terminationFailureOwned.InstallRoot -PathType Container) `
+      'cleanup mutated resources before worker-tree termination was verified'
+    $terminationRetry = Invoke-WorkflowCleanupController `
+      $terminationFailureOwned.ManifestPath $terminationFailureOwned.RunId `
+      $terminationFailureStateDirectory
+    Assert-True ($terminationRetry.ExitCode -eq 0 -and
+        $terminationRetry.Result -ceq 'COMPLETE') `
+      'termination-failure authority did not retry to exact cleanup success'
+    Assert-OwnedResourcesGone $terminationFailureOwned
 
     Assert-True ((Get-Content -LiteralPath (Join-Path $conflictInstallRoot 'pre-existing.txt') -Raw).Trim() -ceq `
       'owned-before-run') 'pre-existing install tree was removed or changed'
@@ -1013,7 +1081,8 @@ function Test-HkcuInstalledValueOwnership {
     [AllowNull()][string]$BaselineKind,
     [AllowNull()][string]$BaselineData,
     [bool]$KeyCreatedByRun,
-    [bool]$Provisional = $false
+    [bool]$Provisional = $false,
+    [bool]$InstallAttempted = $false
   ) {
     $runId = [Guid]::NewGuid().ToString('N')
     $path = Join-Path ([IO.Path]::GetTempPath()) `
@@ -1031,8 +1100,8 @@ function Test-HkcuInstalledValueOwnership {
       InstallerPath = $dummyInstaller
       Fixture = $false
       FixtureRoot = $null
-      BaselineClean = $false
-      InstallAttempted = $false
+      BaselineClean = $InstallAttempted
+      InstallAttempted = $InstallAttempted
       Directories = @()
       Files = @()
       RegistryKeys = @()
@@ -1079,6 +1148,21 @@ function Test-HkcuInstalledValueOwnership {
       'pre-existing HKCU installed value was not restored exactly'
     Assert-True ([string]$restoredKey.GetValue('Unrelated') -ceq $sentinelUnrelated) `
       'unrelated HKCU value was changed during baseline restoration'
+
+    $unchangedManifest = New-HkcuManifest `
+      $true $true 'String' $baselineData $false $false $true
+    $unchanged = Invoke-WorkflowCleanupController `
+      $unchangedManifest.Path $unchangedManifest.RunId ''
+    Assert-True ($unchanged.ExitCode -eq 21 -and
+        $unchanged.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
+      'unchanged HKCU baseline incorrectly bypassed the MSI uninstall attempt'
+    $unchangedKey = Get-Item -LiteralPath $desktopKey -ErrorAction Stop
+    Assert-True ($unchangedKey.GetValueKind($installedName).ToString() -ceq 'String' -and
+        [string]$unchangedKey.GetValue($installedName) -ceq $sentinelInstalled) `
+      'failed MSI uninstall changed the unchanged HKCU baseline'
+    Assert-True (Test-Path -LiteralPath $unchangedManifest.Path -PathType Leaf) `
+      'failed unchanged-HKCU uninstall discarded authenticated recovery authority'
+    Remove-Item -LiteralPath $unchangedManifest.Path -Force -ErrorAction Stop
 
     Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
@@ -1147,6 +1231,99 @@ function Test-HkcuInstalledValueOwnership {
   [Console]::Out.Flush()
 }
 
+function Test-ProvisionalUserMarkerOwnership {
+  function New-ProvisionalUserManifest([string]$UserName, [string]$OwnershipMarker) {
+    $runId = [Guid]::NewGuid().ToString('N')
+    $path = Join-Path ([IO.Path]::GetTempPath()) `
+      "propr-installed-app-ownership-$runId.json"
+    $createdTicks = [DateTime]::UtcNow.Ticks
+    $manifest = [ordered]@{
+      SchemaVersion = 2
+      ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
+      State = 'ACTIVE'
+      RunId = $runId
+      CreatedUtcTicks = $createdTicks
+      ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
+      InstallerPath = $dummyInstaller
+      Fixture = $true
+      FixtureRoot = $testRoot
+      BaselineClean = $false
+      InstallAttempted = $false
+      Directories = @()
+      Files = @()
+      RegistryKeys = @()
+      RegistryValues = @()
+      Users = @([ordered]@{
+        Name = $UserName
+        Sid = $null
+        Owned = $true
+        Provisional = $true
+        OwnershipMarker = $OwnershipMarker
+      })
+      Profiles = @()
+    }
+    [IO.File]::WriteAllText(
+      $path,
+      ($manifest | ConvertTo-Json -Depth 6 -Compress),
+      [Text.Encoding]::UTF8
+    )
+    return [PSCustomObject]@{ RunId = $runId; Path = $path }
+  }
+
+  $password = ConvertTo-SecureString "P!$([Guid]::NewGuid().ToString('N'))u8" `
+    -AsPlainText -Force
+  $positiveName = "prpr$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+  $positiveMarker = "prpr-own-$([Guid]::NewGuid().ToString('N'))"
+  $replacementName = "prpr$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+  $replacementMarker = "prpr-own-$([Guid]::NewGuid().ToString('N'))"
+  $positiveManifest = $null
+  $replacementManifest = $null
+  try {
+    $positiveManifest = New-ProvisionalUserManifest $positiveName $positiveMarker
+    New-LocalUser -Name $positiveName -Password $password `
+      -Description $positiveMarker -AccountNeverExpires -PasswordNeverExpires | Out-Null
+    $positive = Invoke-WorkflowCleanupController `
+      $positiveManifest.Path $positiveManifest.RunId $testRoot
+    Assert-True ($positive.ExitCode -eq 0 -and
+        $positive.Result -ceq 'COMPLETE') `
+      'marker-bound provisional local-user recovery did not complete'
+    Assert-True ($null -eq (Get-LocalUser -Name $positiveName -ErrorAction SilentlyContinue)) `
+      'marker-bound provisional local-user recovery left its account behind'
+
+    $replacementManifest = New-ProvisionalUserManifest $replacementName $replacementMarker
+    New-LocalUser -Name $replacementName -Password $password `
+      -Description "prpr-own-$([Guid]::NewGuid().ToString('N'))" `
+      -AccountNeverExpires -PasswordNeverExpires | Out-Null
+    $replacementSid = (Get-LocalUser -Name $replacementName -ErrorAction Stop).SID.Value
+    $replacement = Invoke-WorkflowCleanupController `
+      $replacementManifest.Path $replacementManifest.RunId $testRoot
+    Assert-True ($replacement.ExitCode -eq 21 -and
+        $replacement.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
+      'provisional username authorized replacement-account deletion'
+    $survivingReplacement = Get-LocalUser -Name $replacementName -ErrorAction Stop
+    Assert-True ($survivingReplacement.SID.Value -ceq $replacementSid) `
+      'replacement account identity changed during provisional cleanup'
+    Assert-True (Test-Path -LiteralPath $replacementManifest.Path -PathType Leaf) `
+      'provisional replacement failure discarded authenticated recovery authority'
+    $replacementAuthority = Get-Content -LiteralPath $replacementManifest.Path `
+      -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    Assert-True ($replacementAuthority.State -ceq 'ACTIVE') `
+      'provisional replacement failure did not preserve the ACTIVE manifest'
+  } finally {
+    foreach ($name in @($positiveName, $replacementName)) {
+      $user = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
+      if ($null -ne $user) { Remove-LocalUser -Name $name -ErrorAction SilentlyContinue }
+    }
+    foreach ($manifest in @($positiveManifest, $replacementManifest)) {
+      if ($null -ne $manifest -and (Test-Path -LiteralPath $manifest.Path)) {
+        Remove-Item -LiteralPath $manifest.Path -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
+  Write-Host 'PROPR_WINDOWS_SUPERVISOR_OWNERSHIP:PROVISIONAL_USER_MARKER:PRESERVED'
+  [Console]::Out.Flush()
+}
+
 if (![OperatingSystem]::IsWindows()) { throw 'supervisor behavior tests require Windows' }
 $actualArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
 Assert-True ($actualArchitecture -ceq $Architecture) `
@@ -1162,6 +1339,7 @@ try {
   Test-PreExistingCleanupOwnership
   Test-PreExistingAppPathsAuthority
   Test-HkcuInstalledValueOwnership
+  Test-ProvisionalUserMarkerOwnership
   Write-Host "PROPR_WINDOWS_SUPERVISOR_TESTS:${Architecture}:PASSED"
   [Console]::Out.Flush()
 } finally {

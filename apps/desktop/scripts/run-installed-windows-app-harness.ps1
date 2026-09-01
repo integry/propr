@@ -10,7 +10,8 @@ param(
   [string]$CancellationEventName,
   [string]$FixtureCleanupRoot,
   [string]$OwnershipManifest,
-  [string]$ExpectedRunId
+  [string]$ExpectedRunId,
+  [switch]$InjectTerminationFailure
 )
 
 $ErrorActionPreference = 'Stop'
@@ -144,6 +145,27 @@ public sealed class ProPRKillOnCloseJob : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(
+        SafeFileHandle job,
+        int informationClass,
+        out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION information,
+        uint informationLength,
+        IntPtr returnLength);
+
     public ProPRKillOnCloseJob()
     {
         handle = CreateJobObject(IntPtr.Zero, null);
@@ -172,10 +194,29 @@ public sealed class ProPRKillOnCloseJob : IDisposable
             throw new Win32Exception(Marshal.GetLastWin32Error(), "worker ownership failed");
     }
 
-    public void Terminate(uint exitCode)
+    private uint ReadActiveProcessCount()
     {
-        if (!handle.IsInvalid && !TerminateJobObject(handle, exitCode))
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION information;
+        uint size = (uint)Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));
+        if (!QueryInformationJobObject(handle, 1, out information, size, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "job accounting failed");
+        return information.ActiveProcesses;
+    }
+
+    public bool TerminateAndWait(uint exitCode, int timeoutMilliseconds)
+    {
+        if (handle == null || handle.IsInvalid)
+            throw new InvalidOperationException("job handle is unavailable");
+        if (!TerminateJobObject(handle, exitCode))
             throw new Win32Exception(Marshal.GetLastWin32Error(), "job termination failed");
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        do
+        {
+            if (ReadActiveProcessCount() == 0) return true;
+            System.Threading.Thread.Sleep(25);
+        }
+        while (stopwatch.ElapsedMilliseconds < timeoutMilliseconds);
+        return ReadActiveProcessCount() == 0;
     }
 
     public void Dispose()
@@ -318,15 +359,39 @@ function Accept-WatchdogMarker($Marker) {
 }
 
 function Stop-OwnedWorker([uint32]$TerminationExitCode) {
-  if ($null -ne $job) {
-    try { $job.Terminate($TerminationExitCode) } catch {}
-  }
-  if ($null -ne $worker) {
+  if ($null -eq $job) { return $false }
+  if ($InjectTerminationFailure) {
     try {
-      if (!$worker.HasExited) {
+      $job.Dispose()
+      $script:job = $null
+      if ($null -ne $worker) {
         [void]$worker.WaitForExit($WatchdogTerminationMilliseconds)
       }
     } catch {}
+    return $false
+  }
+  try {
+    if (!$job.TerminateAndWait($TerminationExitCode, $WatchdogTerminationMilliseconds)) {
+      return $false
+    }
+    $job.Dispose()
+    $script:job = $null
+    if ($null -eq $worker) { return !$workerStarted }
+    if (!$worker.WaitForExit($WatchdogTerminationMilliseconds) -or !$worker.HasExited) {
+      return $false
+    }
+    return $true
+  } catch {
+    try {
+      if ($null -ne $job) {
+        $job.Dispose()
+        $script:job = $null
+      }
+      if ($null -ne $worker) {
+        [void]$worker.WaitForExit($WatchdogTerminationMilliseconds)
+      }
+    } catch {}
+    return $false
   }
 }
 
@@ -419,8 +484,14 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
       throw 'post-termination cleanup ownership failed'
     }
     if (!$cleanupProcess.WaitForExit($PostTerminationCleanupMilliseconds)) {
-      try { $cleanupJob.Terminate(125) } catch {}
-      try { [void]$cleanupProcess.WaitForExit($WatchdogTerminationMilliseconds) } catch {}
+      $cleanupTreeGone = $false
+      try {
+        $cleanupTreeGone = $cleanupJob.TerminateAndWait(
+          125,
+          $WatchdogTerminationMilliseconds
+        ) -and $cleanupProcess.WaitForExit($WatchdogTerminationMilliseconds) -and
+          $cleanupProcess.HasExited
+      } catch {}
       Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:TIMED_OUT'
       return $false
     }
@@ -473,6 +544,9 @@ try {
     $FixtureCleanupRoot = (Resolve-Path -LiteralPath $FixtureCleanupRoot -ErrorAction Stop).Path
   } elseif (!$usingProductionWorker) {
     throw 'injected workers require a fixture cleanup scope'
+  }
+  if ($InjectTerminationFailure -and $usingProductionWorker) {
+    throw 'termination failure injection requires an authorized fixture worker'
   }
   $hostPath = (Get-Process -Id $PID -ErrorAction Stop).Path
   if ([IO.Path]::GetFileName($hostPath) -notin @('pwsh.exe', 'powershell.exe')) {
@@ -619,9 +693,14 @@ try {
     !$supervisorOutcomeComplete
   $fixedCleanupResult = $null
   if ($cleanupRequired -and $installerPath -and $ownershipRunId) {
-    Stop-OwnedWorker ([uint32]$exitCode)
-    $fixedCleanupResult = Invoke-PostTerminationCleanup $installerPath $FixtureCleanupRoot
-    if (!$fixedCleanupResult) { $exitCode = 125 }
+    $workerTreeTerminated = Stop-OwnedWorker ([uint32]$exitCode)
+    if ($workerTreeTerminated) {
+      $fixedCleanupResult = Invoke-PostTerminationCleanup $installerPath $FixtureCleanupRoot
+    } else {
+      Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
+      $fixedCleanupResult = $false
+    }
+    if ($fixedCleanupResult -ne $true) { $exitCode = 125 }
   }
 
   try {
@@ -638,10 +717,13 @@ try {
     Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:NONE'
   }
 
-  if ($null -ne $job) { $job.Dispose() }
-  if ($null -ne $worker) { $worker.Dispose() }
-  if ($null -ne $ownershipReadyEvent) { $ownershipReadyEvent.Dispose() }
-  if ($null -ne $cancellationEvent) { $cancellationEvent.Dispose() }
+  foreach ($resource in @($job, $worker, $ownershipReadyEvent, $cancellationEvent)) {
+    if ($null -eq $resource) { continue }
+    try { $resource.Dispose() } catch {
+      $fixedCleanupResult = $false
+      $exitCode = 125
+    }
+  }
   try {
     if ([IO.File]::Exists($markerPath)) { [IO.File]::Delete($markerPath) }
   } catch {}

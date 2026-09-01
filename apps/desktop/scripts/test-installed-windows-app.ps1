@@ -1513,15 +1513,19 @@ try {
         if (Get-LocalUser -Name $testUser -ErrorAction SilentlyContinue) {
           throw 'refusing to replace a pre-existing local user'
         }
+        $userOwnershipMarker =
+          "prpr-own-$([Guid]::NewGuid().ToString('N'))"
         $provisionalUser = [ordered]@{
           Name = $testUser
           Sid = $null
           Owned = $true
           Provisional = $true
+          OwnershipMarker = $userOwnershipMarker
         }
         $ownershipState.Users = @($provisionalUser)
         Write-OwnershipManifest
         New-LocalUser -Name $testUser -Password $password `
+          -Description $userOwnershipMarker `
           -AccountNeverExpires -PasswordNeverExpires | Out-Null
         $script:testUserCreatedByRun = $true
         $script:testUserSid = (Get-LocalUser -Name $testUser -ErrorAction Stop).SID

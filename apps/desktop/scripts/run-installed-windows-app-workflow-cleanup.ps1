@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 $cleanupProcess = $null
 $cleanupJob = $null
 $cleanupReadyEvent = $null
+$outputDrain = $null
 $fixedResult = 'FAILED'
 $fixedStatus = 'CONTROLLER_FAILURE'
 $fixedExitCode = 125
@@ -19,7 +20,11 @@ $validatedManifestPath = $null
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 
 public sealed class ProPRWorkflowCleanupJob : IDisposable
@@ -110,12 +115,59 @@ public sealed class ProPRWorkflowCleanupJob : IDisposable
     public void Dispose() { if (handle != null) handle.Dispose(); }
 }
 
-public static class ProPRWorkflowCleanupOutputDrain
+public sealed class ProPRWorkflowCleanupDrainResult
 {
-    public static void Attach(System.Diagnostics.Process process)
+    public long StandardOutputCharacters;
+    public long StandardErrorCharacters;
+}
+
+public sealed class ProPRWorkflowCleanupOutputDrain : IDisposable
+{
+    private const long CharacterLimit = 4096;
+    private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
+    private Task<long> standardOutputTask;
+    private Task<long> standardErrorTask;
+
+    private static async Task<long> Pump(StreamReader reader, CancellationToken token)
     {
-        process.OutputDataReceived += delegate(object sender, System.Diagnostics.DataReceivedEventArgs args) { };
-        process.ErrorDataReceived += delegate(object sender, System.Diagnostics.DataReceivedEventArgs args) { };
+        var buffer = new char[1024];
+        long characters = 0;
+        while (true)
+        {
+            int count = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+            if (count == 0) return characters;
+            token.ThrowIfCancellationRequested();
+            characters = Math.Min(CharacterLimit + 1, characters + count);
+        }
+    }
+
+    public void Start(Process process)
+    {
+        if (standardOutputTask != null || standardErrorTask != null)
+            throw new InvalidOperationException("stream drain was already started");
+        standardOutputTask = Pump(process.StandardOutput, cancellation.Token);
+        standardErrorTask = Pump(process.StandardError, cancellation.Token);
+    }
+
+    public ProPRWorkflowCleanupDrainResult Finish(int timeoutMilliseconds)
+    {
+        if (standardOutputTask == null || standardErrorTask == null)
+            throw new InvalidOperationException("stream drain was not started");
+        Task all = Task.WhenAll(standardOutputTask, standardErrorTask);
+        if (!all.Wait(timeoutMilliseconds)) return null;
+        if (standardOutputTask.IsFaulted || standardOutputTask.IsCanceled ||
+            standardErrorTask.IsFaulted || standardErrorTask.IsCanceled)
+            throw new InvalidOperationException("stream drain failed");
+        return new ProPRWorkflowCleanupDrainResult {
+            StandardOutputCharacters = standardOutputTask.Result,
+            StandardErrorCharacters = standardErrorTask.Result
+        };
+    }
+
+    public void Dispose()
+    {
+        cancellation.Cancel();
+        cancellation.Dispose();
     }
 }
 '@
@@ -178,9 +230,8 @@ try {
   $cleanupProcess = [Diagnostics.Process]::new()
   $cleanupProcess.StartInfo = $startInfo
   if (!$cleanupProcess.Start()) { throw 'workflow cleanup did not start' }
-  [ProPRWorkflowCleanupOutputDrain]::Attach($cleanupProcess)
-  $cleanupProcess.BeginOutputReadLine()
-  $cleanupProcess.BeginErrorReadLine()
+  $outputDrain = [ProPRWorkflowCleanupOutputDrain]::new()
+  $outputDrain.Start($cleanupProcess)
   try {
     $cleanupJob.AddProcess($cleanupProcess.Handle)
     [void]$cleanupReadyEvent.Set()
@@ -189,11 +240,21 @@ try {
     throw 'workflow cleanup ownership failed'
   }
   if (!$cleanupProcess.WaitForExit($CleanupTimeoutMilliseconds)) {
-    try { $cleanupJob.Terminate(125) } catch {}
-    try { [void]$cleanupProcess.WaitForExit($TerminationTimeoutMilliseconds) } catch {}
-    $fixedResult = 'TIMED_OUT'
-    $fixedStatus = 'TIMEOUT'
-    $fixedExitCode = 124
+    $terminationVerified = $false
+    try {
+      $cleanupJob.Terminate(125)
+      $terminationVerified = $cleanupProcess.WaitForExit($TerminationTimeoutMilliseconds) -and
+        $cleanupProcess.HasExited
+    } catch {}
+    if ($terminationVerified) {
+      $fixedResult = 'TIMED_OUT'
+      $fixedStatus = 'TIMEOUT'
+      $fixedExitCode = 124
+    } else {
+      $fixedResult = 'FAILED'
+      $fixedStatus = 'TERMINATION_FAILURE'
+      $fixedExitCode = 125
+    }
   } elseif ($cleanupProcess.ExitCode -eq 0) {
     $fixedResult = 'COMPLETE'
     $fixedStatus = 'EMPTY_OR_CLEANED'
@@ -209,16 +270,75 @@ try {
   $fixedResult = 'FAILED'
   $fixedStatus = 'CONTROLLER_FAILURE'
   $fixedExitCode = 125
-} finally {
-  Write-FixedResult $fixedResult
-  if ($null -ne $cleanupJob) { $cleanupJob.Dispose() }
-  if ($null -ne $cleanupProcess) { $cleanupProcess.Dispose() }
-  if ($null -ne $cleanupReadyEvent) { $cleanupReadyEvent.Dispose() }
-  if ($fixedResult -ceq 'COMPLETE' -and $validatedManifestPath) {
-    foreach ($path in @($validatedManifestPath, "$validatedManifestPath.new")) {
-      try { if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } } catch {}
+}
+
+try {
+  if ($null -ne $cleanupProcess -and !$cleanupProcess.HasExited) {
+    if ($null -ne $cleanupJob) {
+      $cleanupJob.Dispose()
+      $cleanupJob = $null
+    }
+    if (!$cleanupProcess.WaitForExit($TerminationTimeoutMilliseconds) -or
+        !$cleanupProcess.HasExited) {
+      $fixedResult = 'FAILED'
+      $fixedStatus = 'PROCESS_FINALIZATION_TIMEOUT'
+      $fixedExitCode = 125
     }
   }
+} catch {
+  $fixedResult = 'FAILED'
+  $fixedStatus = 'PROCESS_FINALIZATION_FAILURE'
+  $fixedExitCode = 125
 }
+
+try {
+  if ($null -ne $outputDrain) {
+    $drainResult = $outputDrain.Finish($TerminationTimeoutMilliseconds)
+    if ($null -eq $drainResult) {
+      $fixedResult = 'FAILED'
+      $fixedStatus = 'STREAM_DRAIN_TIMEOUT'
+      $fixedExitCode = 125
+    } elseif ($drainResult.StandardErrorCharacters -ne 0) {
+      $fixedResult = 'FAILED'
+      $fixedStatus = if ($drainResult.StandardErrorCharacters -gt 4096) {
+        'CHILD_STDERR_LIMIT'
+      } else { 'CHILD_STDERR' }
+      $fixedExitCode = 123
+    } elseif ($drainResult.StandardOutputCharacters -ne 0) {
+      $fixedResult = 'FAILED'
+      $fixedStatus = if ($drainResult.StandardOutputCharacters -gt 4096) {
+        'CHILD_STDOUT_LIMIT'
+      } else { 'CHILD_STDOUT' }
+      $fixedExitCode = 122
+    }
+  }
+} catch {
+  $fixedResult = 'FAILED'
+  $fixedStatus = 'STREAM_DRAIN_FAILURE'
+  $fixedExitCode = 125
+}
+
+foreach ($resource in @($outputDrain, $cleanupJob, $cleanupProcess, $cleanupReadyEvent)) {
+  if ($null -eq $resource) { continue }
+  try { $resource.Dispose() } catch {
+    $fixedResult = 'FAILED'
+    $fixedStatus = 'RESOURCE_FINALIZATION_FAILURE'
+    $fixedExitCode = 125
+  }
+}
+
+if ($fixedResult -ceq 'COMPLETE' -and $validatedManifestPath) {
+  try {
+    foreach ($path in @("$validatedManifestPath.new", $validatedManifestPath)) {
+      if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
+    }
+  } catch {
+    $fixedResult = 'FAILED'
+    $fixedStatus = 'AUTHORITY_FINALIZATION_FAILURE'
+    $fixedExitCode = 125
+  }
+}
+
+Write-FixedResult $fixedResult
 
 exit $fixedExitCode
