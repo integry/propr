@@ -121,3 +121,109 @@ test('isolates authentication and revalidation across namespaces on one transpor
     await new Promise<void>(resolve => httpServer.close(() => resolve()));
   }
 });
+
+test('authenticates a pre-registered namespace and isolates its credential snapshot', async () => {
+  const httpServer = createServer();
+  const io = new SocketIOServer(httpServer, { transports: ['websocket'] });
+  let preRegisteredServerSocket: ServerSocket | undefined;
+  io.of('/pre-registered').on('connection', socket => {
+    preRegisteredServerSocket = socket;
+  });
+
+  const seenAuthorization: string[] = [];
+  configureSocketAuthentication(io, {
+    engineMiddleware: [],
+    authenticate: async request => {
+      assert.equal(Object.isFrozen(request.headers), true);
+      const authorization = request.headers.authorization;
+      seenAuthorization.push(authorization ?? '<missing>');
+      if (authorization === 'Bearer pre-registered-token') return principal('pre-registered');
+      if (authorization === 'Bearer later-token') return principal('later');
+      throw new SocketAuthenticationError('AUTHENTICATION_REQUIRED', 'invalid bearer');
+    },
+  });
+
+  io.of('/later').on('connection', () => undefined);
+  await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
+  const port = (httpServer.address() as AddressInfo).port;
+  const rejectedPreRegistered = createSocketClient(
+    `http://127.0.0.1:${port}/pre-registered`,
+    { transports: ['websocket'], autoConnect: false, reconnection: false },
+  );
+
+  try {
+    const rejected = waitForConnectError(rejectedPreRegistered);
+    rejectedPreRegistered.connect();
+    const unauthenticatedError = await rejected;
+    assert.equal(unauthenticatedError.data?.code, 'AUTHENTICATION_REQUIRED');
+  } finally {
+    rejectedPreRegistered.disconnect();
+  }
+
+  const mismatchedPreRegistered = createSocketClient(
+    `http://127.0.0.1:${port}/pre-registered`,
+    {
+      transports: ['websocket'],
+      auth: { token: 'mismatched-token' },
+      autoConnect: false,
+      reconnection: false,
+    },
+  );
+
+  try {
+    const rejected = waitForConnectError(mismatchedPreRegistered);
+    mismatchedPreRegistered.connect();
+    assert.equal((await rejected).data?.code, 'AUTHENTICATION_REQUIRED');
+  } finally {
+    mismatchedPreRegistered.disconnect();
+  }
+
+  const preRegistered = createSocketClient(`http://127.0.0.1:${port}/pre-registered`, {
+    transports: ['websocket'],
+    auth: { token: 'pre-registered-token' },
+    autoConnect: false,
+    reconnection: false,
+  });
+  const later = preRegistered.io.socket('/later');
+  later.auth = { token: 'mismatched-token' };
+
+  try {
+    const preRegisteredConnected = waitForConnect(preRegistered);
+    preRegistered.connect();
+    await preRegisteredConnected;
+    const engineId = preRegistered.io.engine?.id;
+    assert(engineId);
+    assert(preRegisteredServerSocket);
+    assert.equal(preRegisteredServerSocket.request.headers.authorization, undefined);
+
+    const mismatchedError = waitForConnectError(later);
+    later.connect();
+    assert.equal((await mismatchedError).data?.code, 'AUTHENTICATION_REQUIRED');
+    assert.equal(preRegistered.io.engine?.id, engineId);
+    assert.equal(await revalidateSocketAuthentication(preRegisteredServerSocket), true);
+    assert.equal(preRegistered.connected, true);
+
+    later.auth = { token: 'later-token' };
+    const laterConnected = waitForConnect(later);
+    later.connect();
+    await laterConnected;
+    assert.equal(preRegistered.io.engine?.id, engineId);
+    assert.equal(await revalidateSocketAuthentication(preRegisteredServerSocket), true);
+    assert.equal(preRegistered.connected, true);
+    assert.equal(preRegisteredServerSocket.request.headers.authorization, undefined);
+    assert.deepEqual(seenAuthorization, [
+      '<missing>',
+      'Bearer mismatched-token',
+      'Bearer pre-registered-token',
+      'Bearer mismatched-token',
+      'Bearer pre-registered-token',
+      'Bearer later-token',
+      'Bearer pre-registered-token',
+    ]);
+  } finally {
+    preRegistered.disconnect();
+    later.disconnect();
+    await io.close();
+    await new Promise<void>(resolve => httpServer.close(() => resolve()));
+  }
+});
