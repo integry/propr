@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { SupervisedDockerOutput } from '../../claude/docker/dockerExecutor.js';
 import type {
-    GoalExecutionIdentity, GoalSessionFence, GoalSessionIdentity,
+    GoalExecutionIdentity, GoalProviderOperationFence, GoalSessionFence, GoalSessionIdentity,
 } from './contract.js';
 
 export interface GoalContainerLayout {
@@ -28,6 +28,7 @@ export interface GoalContainerOutputObserver {
 }
 
 export interface StartGoalContainerRequest extends GoalSessionFence, GoalExecutionIdentity {
+    operationFence: GoalProviderOperationFence;
     image: string;
     command: string[];
     worktreePath: string;
@@ -45,6 +46,7 @@ export interface StartGoalContainerRequest extends GoalSessionFence, GoalExecuti
 export interface StartGoalOpenContainerRequest extends GoalSessionIdentity, GoalExecutionIdentity {
     controllerEpoch: number;
     deterministicOpenKey: string;
+    operationFence: GoalProviderOperationFence;
     image: string;
     command: string[];
     worktreePath: string;

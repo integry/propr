@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type {
     GoalBeginTurnRequest, GoalProviderCancelRequest, GoalProviderOpenContext, GoalProviderOpenRequest,
-    GoalProviderSessionSnapshot, GoalSessionAdapter, GoalSessionEvent, GoalSessionState,
+    GoalModelChangeRequest, GoalProviderSessionSnapshot, GoalSessionAdapter, GoalSessionEvent, GoalSessionState,
 } from '../src/agents/goalSession/contract.js';
 import { openSupervisedCodexAppServer } from '../src/agents/goalSession/CodexAppServerOpen.js';
 import { decodeDurableGoalSessionState } from '../src/agents/goalSession/durableStateSecurity.js';
 import { GoalSessionSupervisor } from '../src/agents/goalSession/GoalSessionSupervisor.js';
+import { GoalSessionContractError } from '../src/agents/goalSession/errors.js';
 import { InMemoryGoalSessionPorts } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
 import { sanitizeNewRecoveryMetadata, sanitizeRecoveryMetadata } from '../src/agents/goalSession/recoveryMetadata.js';
 import {
@@ -66,6 +67,10 @@ test('strict durable decoding rejects every malformed known field, accessors, an
                 operationGeneration: 2, kind: 'after_turn', controllerEpoch: 1,
                 claimedAt: base.createdAt, leaseExpiresAt: base.createdAt, phase: 'claimed',
             } },
+        { ...base, providerOperationGeneration: 2, providerBarrierIntent: {
+            generation: 2, operationId: 'orphan-operation:lease-expiry', kind: 'lease_expiry',
+            phase: 'pending', claimedAt: base.createdAt,
+        } },
         { ...base, modelChangeGeneration: 2, modelChangeIntents: [
             { modelChangeId: 'duplicate', model: 'a', requestedAt: base.createdAt, generation: 1 },
             { modelChangeId: 'duplicate', model: 'b', requestedAt: base.createdAt, generation: 2 },
@@ -113,6 +118,73 @@ test('strict durable decoding rejects every malformed known field, accessors, an
     });
     assert.throws(() => decodeDurableGoalSessionState(accessor));
     assert.equal(getterRead, false, 'decoder rejects accessor fields without evaluating them');
+
+    const intent = {
+        modelChangeId: 'cross-attempt-model', model: 'model-b', requestedAt: base.createdAt,
+        generation: 1, phase: 'committed' as const,
+        acknowledgement: {
+            outcome: 'acknowledged' as const, requestedModel: 'model-b',
+            appliesAt: 'next_turn' as const, effectiveModel: 'model-b',
+        },
+        invocationEvidence: {
+            executionId: 'execution-live', attemptId: 'attempt-old', modelChangeId: 'cross-attempt-model',
+            generation: 1, occurrenceId: 'model-occurrence', requestedModel: 'model-b',
+            effectiveModel: 'model-b', acceptedAt: base.createdAt,
+        },
+    };
+    assert.throws(() => decodeDurableGoalSessionState({
+        ...base, status: 'running', currentModel: 'model-b', modelChangeGeneration: 1,
+        modelChangeIntents: [intent], modelChangeIntent: intent,
+        activeTurn: {
+            turnId: 'turn-live', executionId: 'execution-live', attemptId: 'attempt-new', executionEpoch: 1,
+            objective: 'objective', requestedModel: 'model-b', repository, status: 'running',
+            modelChange: { modelChangeId: intent.modelChangeId, generation: 1, previousModel: 'model-a' },
+        },
+    }), /activeTurn model invocation evidence/);
+});
+
+test('orphan pending lease-expiry poison fails before every provider mutation', async () => {
+    let providerMutations = 0;
+    const adapter: GoalSessionAdapter = {
+        provider: 'poison-adapter',
+        capabilities: {
+            nativeSessionId: 'eager', steering: 'next_turn', pause: 'after_turn', modelChange: 'next_turn',
+        },
+        publishOperationBarrier: async () => { providerMutations += 1; },
+        openSession: async () => {
+            providerMutations += 1;
+            return { providerSessionId: 'poison-native', recoveryMetadata: {} };
+        },
+        beginTurn: async function* () { providerMutations += 1; },
+        resumeSession: async (_request, snapshot) => { providerMutations += 1; return snapshot; },
+        requestModelChange: async request => {
+            providerMutations += 1;
+            return { requestedModel: request.model, appliesAt: 'next_turn' };
+        },
+        cancel: async () => { providerMutations += 1; },
+        reconcile: async () => { providerMutations += 1; return { outcome: 'failed', reason: 'unused' }; },
+    };
+    const ports = new InMemoryGoalSessionPorts();
+    const timestamp = new Date().toISOString();
+    await ports.create({
+        ...identity, provider: adapter.provider, providerSessionId: 'poison-native', recoveryMetadata: {},
+        controllerEpoch: 1, status: 'idle', currentModel: 'model-a', completedTurnIds: [],
+        providerOperationGeneration: 4,
+        providerBarrierIntent: {
+            generation: 4, operationId: 'missing-live-intent:lease-expiry', kind: 'lease_expiry',
+            phase: 'pending', claimedAt: timestamp,
+        },
+        createdAt: timestamp, updatedAt: timestamp,
+    });
+    const before = await ports.load(identity);
+    const supervisor = new GoalSessionSupervisor(adapter, ports.asRuntimePorts());
+    await assert.rejects(
+        supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 }),
+        (error: unknown) => error instanceof GoalSessionContractError && error.code === 'INVALID_DURABLE_STATE',
+    );
+    assert.equal(providerMutations, 0);
+    assert.deepEqual(await ports.load(identity), before);
+    assert.deepEqual(await ports.replay(identity), []);
 });
 
 test('all resolved provider DTO boundaries rebuild hostile proxies as one generic error', async () => {
@@ -182,10 +254,11 @@ class LineTransport {
     readonly output: AsyncIterable<string>;
     readonly completion = Promise.resolve({ exitCode: 0 });
     cancelled = false;
+    private ended = false;
     private readonly lines: string[] = [];
     private readonly readers: Array<(result: IteratorResult<string>) => void> = [];
 
-    constructor(private readonly listedSource?: string) {
+    constructor() {
         this.output = { [Symbol.asyncIterator]: () => ({ next: () => this.next() }) };
     }
 
@@ -196,28 +269,17 @@ class LineTransport {
         if (id === undefined) return;
         const method = request.method;
         if (method === 'initialize') this.push(JSON.stringify({ id, result: {
-            userAgent: 'codex-cli/0.146.0', codexHome: '/home/node/.codex',
+            userAgent: 'propr_goal_runtime/0.146.0 (Linux; x86_64) test', codexHome: '/home/node/.codex',
             platformFamily: 'unix', platformOs: 'linux',
         } }));
         else if (method === 'model/list') this.push(JSON.stringify({
             id, result: { data: [{ id: 'gpt-5.6-sol', model: 'gpt-5.6-sol' }], nextCursor: null },
         }));
-        else if (method === 'thread/list') this.push(JSON.stringify({ id, result: {
-            data: this.listedSource ? [{
-                id: 'codex-thread', sessionId: 'codex-session', cwd: '/workspace', source: this.listedSource,
-            }] : [], nextCursor: null, backwardsCursor: null,
-        } }));
         else if (method === 'thread/start') this.push(JSON.stringify({
-            id, result: {
-                thread: { id: 'codex-thread', sessionId: 'codex-session' },
-                model: 'gpt-5.6-sol', cwd: '/workspace',
-            },
+            id, result: threadResponse(false),
         }));
         else if (method === 'thread/resume') this.push(JSON.stringify({
-            id, result: {
-                thread: { id: 'codex-thread', sessionId: 'codex-session' },
-                model: 'gpt-5.6-sol', cwd: '/workspace',
-            },
+            id, result: threadResponse(true),
         }));
         else throw new Error(`Unexpected test protocol method ${String(method)}`);
     }
@@ -228,14 +290,59 @@ class LineTransport {
     private next(): Promise<IteratorResult<string>> {
         const line = this.lines.shift();
         if (line !== undefined) return Promise.resolve({ done: false, value: line });
+        if (this.ended) return Promise.resolve({ done: true, value: undefined });
         return new Promise(resolve => this.readers.push(resolve));
     }
 
-    private push(line: string): void {
+    protected push(line: string): void {
         const reader = this.readers.shift();
         if (reader) reader({ done: false, value: line });
         else this.lines.push(line);
     }
+
+    protected finish(): void {
+        this.ended = true;
+        for (const reader of this.readers.splice(0)) reader({ done: true, value: undefined });
+    }
+}
+
+class LostThreadStartTransport extends LineTransport {
+    override async write(line: string): Promise<void> {
+        const request = JSON.parse(line) as Record<string, unknown>;
+        if (request.method !== 'thread/start') return super.write(line);
+        this.writes.push(request);
+        this.finish();
+    }
+}
+
+class MalformedModelListTransport extends LineTransport {
+    override async write(line: string): Promise<void> {
+        const request = JSON.parse(line) as Record<string, unknown>;
+        if (request.method !== 'model/list') return super.write(line);
+        this.writes.push(request);
+        this.push(JSON.stringify({ id: request.id, result: {} }));
+    }
+}
+
+function threadResponse(resume: boolean): Record<string, unknown> {
+    return {
+        thread: {
+            id: 'codex-thread', extra: null, sessionId: 'codex-session', forkedFromId: null,
+            parentThreadId: null, preview: '', ephemeral: false, isPinned: false,
+            historyMode: 'paginated', modelProvider: 'openai', createdAt: 1, updatedAt: 1,
+            recencyAt: 1, status: { type: 'idle' }, path: null, cwd: '/workspace',
+            cliVersion: '0.146.0', source: 'appServer', canAcceptDirectInput: true,
+            threadSource: null, agentNickname: null, agentRole: null, gitInfo: null, name: null, turns: [],
+        },
+        model: 'gpt-5.6-sol', modelProvider: 'openai', serviceTier: null, cwd: '/workspace',
+        runtimeWorkspaceRoots: ['/workspace'], instructionSources: [], approvalPolicy: 'never',
+        approvalsReviewer: 'user', sandbox: {
+            type: 'workspaceWrite', writableRoots: ['/workspace'], networkAccess: false,
+            excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+        },
+        activePermissionProfile: null, reasoningEffort: null, multiAgentMode: 'explicitRequestOnly',
+        ...(resume ? { initialTurnsPage: null, turnsBackwardsCursor: null, itemsBackwardsCursor: null } : {}),
+    };
 }
 
 test('supervised Codex eager open uses stdio, exact gpt-5.6-sol, and starts no fake turn', async () => {
@@ -249,7 +356,7 @@ test('supervised Codex eager open uses stdio, exact gpt-5.6-sol, and starts no f
     assert.equal(snapshot.providerSessionId, 'codex-thread');
     assert.equal(snapshot.model, 'gpt-5.6-sol');
     assert.deepEqual(transport.writes.map(write => write.method), [
-        'initialize', 'initialized', 'model/list', 'thread/list', 'thread/start',
+        'initialize', 'initialized', 'model/list', 'thread/start',
     ]);
     assert.equal('params' in transport.writes[1], false);
     assert.deepEqual((transport.writes[0].params as Record<string, unknown>).capabilities, {
@@ -260,34 +367,60 @@ test('supervised Codex eager open uses stdio, exact gpt-5.6-sol, and starts no f
     assert.equal((start?.params as Record<string, unknown>)?.model, 'gpt-5.6-sol');
     assert.equal((start?.params as Record<string, unknown>)?.cwd, '/workspace');
     assert.equal((start?.params as Record<string, unknown>)?.approvalPolicy, 'never');
-    assert.equal((start?.params as Record<string, unknown>)?.sandbox, 'workspaceWrite');
-    assert.match(String((start?.params as Record<string, unknown>)?.serviceName), /^propr-open-[a-f0-9]{64}$/);
+    assert.equal((start?.params as Record<string, unknown>)?.sandbox, 'workspace-write');
+    assert.equal('serviceName' in (start?.params as Record<string, unknown>), false);
     assert.equal('metadata' in (start?.params as Record<string, unknown>), false);
     assert.deepEqual(sanitizeRecoveryMetadata(snapshot.recoveryMetadata, 'codex'), snapshot.recoveryMetadata);
+    assert.equal(transport.cancelled, true, 'successful open explicitly closes the owned App Server transport');
 });
 
-test('Codex response-loss adoption requires the exact durable service binding', async () => {
+test('Codex response loss fails closed and persisted exact identity is the only resume path', async () => {
     const first = new LineTransport();
     const context: GoalProviderOpenContext = {
         executionId: 'codex-execution', attemptId: 'codex-attempt', repository,
         requestedModel: 'gpt-5.6-sol', providerHomeTarget: '/home/node/.codex',
         credentialTargets: [], deterministicOpenKey: 'durable-open-key', transport: first,
     };
-    await openSupervisedCodexAppServer(context);
-    const start = first.writes.find(write => write.method === 'thread/start');
-    const binding = String((start?.params as Record<string, unknown>)?.serviceName);
+    const persisted = await openSupervisedCodexAppServer(context);
+    const lost = new LostThreadStartTransport();
+    await assert.rejects(
+        openSupervisedCodexAppServer({ ...context, transport: lost }),
+        (error: unknown) => error instanceof GoalSessionContractError && error.code === 'PROVIDER_OPEN_IN_DOUBT',
+    );
+    assert.equal(lost.writes.some(write => write.method === 'thread/list'), false);
+    assert.equal(lost.cancelled, true);
 
-    const adopted = new LineTransport(binding);
-    const snapshot = await openSupervisedCodexAppServer({ ...context, transport: adopted });
+    const resumed = new LineTransport();
+    const snapshot = await openSupervisedCodexAppServer({ ...context, transport: resumed }, persisted);
     assert.equal(snapshot.providerSessionId, 'codex-thread');
-    assert.equal(adopted.writes.some(write => write.method === 'thread/start'), false);
-    assert.equal(adopted.writes.some(write => write.method === 'thread/resume'), true);
+    assert.equal(resumed.writes.some(write => write.method === 'thread/start'), false);
+    assert.equal(resumed.writes.some(write => write.method === 'thread/resume'), true);
 
-    const unrelated = new LineTransport('propr-open-'.concat('0'.repeat(64)));
-    await assert.rejects(openSupervisedCodexAppServer({ ...context, transport: unrelated }),
+    const mutations: Array<(snapshot: GoalProviderSessionSnapshot) => void> = [
+        snapshot => { snapshot.providerSessionId = 'foreign-thread'; },
+        snapshot => { snapshot.model = 'different-model'; },
+        snapshot => { (snapshot.recoveryMetadata as { protocolVersion: string }).protocolVersion = 'future'; },
+        snapshot => { ((snapshot.recoveryMetadata as { payload: Record<string, unknown> }).payload).openKey = 'other-key'; },
+        snapshot => { ((snapshot.recoveryMetadata as { payload: Record<string, unknown> }).payload).repository = 'other/repo'; },
+        snapshot => { ((snapshot.recoveryMetadata as { payload: Record<string, unknown> }).payload).model = 'different-model'; },
+        snapshot => { ((snapshot.recoveryMetadata as { payload: Record<string, unknown> }).payload).providerHomeIdentity = '/other'; },
+        snapshot => { ((snapshot.recoveryMetadata as { payload: Record<string, unknown> }).payload).cliVersion = '0.145.0'; },
+    ];
+    for (const mutate of mutations) {
+        const mismatched = structuredClone(persisted);
+        mutate(mismatched);
+        const rejected = new LineTransport();
+        await assert.rejects(
+            openSupervisedCodexAppServer({ ...context, transport: rejected }, mismatched),
+            (error: unknown) => error instanceof GoalSessionContractError,
+        );
+        assert.equal(rejected.writes.some(write => write.method === 'thread/resume'), false);
+    }
+
+    const malformed = new MalformedModelListTransport();
+    await assert.rejects(openSupervisedCodexAppServer({ ...context, transport: malformed }),
         /Codex App Server open failed safely/);
-    assert.equal(unrelated.writes.some(write => write.method === 'thread/start'), false);
-    assert.equal(unrelated.cancelled, true);
+    assert.equal(malformed.writes.some(write => write.method === 'thread/start'), false);
 });
 
 test('hardened supervisor constructs eager-open transport only under its exact durable control claim', async () => {
@@ -341,6 +474,80 @@ test('hardened supervisor constructs eager-open transport only under its exact d
     assert.equal(opened.status, 'idle');
     assert.equal(opened.providerSessionId, 'codex-thread');
     assert.equal(opened.currentModel, 'gpt-5.6-sol');
+});
+
+class NextTurnEvidenceAdapter implements GoalSessionAdapter {
+    readonly provider = 'next-turn-evidence';
+    readonly capabilities = {
+        nativeSessionId: 'eager' as const, steering: 'next_turn' as const,
+        pause: 'after_turn' as const, modelChange: 'next_turn' as const,
+    };
+    mode: 'duplicate' | 'missing' | 'wrong' = 'duplicate';
+    betweenDuplicates?: () => Promise<void>;
+    async publishOperationBarrier(): Promise<void> {}
+    async openSession(): Promise<GoalProviderSessionSnapshot> {
+        return { providerSessionId: 'evidence-native', recoveryMetadata: {}, model: 'model-a' };
+    }
+    async *beginTurn(request: GoalBeginTurnRequest): AsyncIterable<GoalSessionEvent> {
+        if (this.mode !== 'missing' && request.modelChange) {
+            const event = {
+                type: 'model_changed' as const,
+                model: this.mode === 'wrong' ? 'model-wrong' : request.requestedModel,
+                providerEventId: `model-${request.modelChange.modelChangeId}-${request.modelChange.generation}`,
+            };
+            yield event;
+            if (this.mode === 'duplicate') {
+                await this.betweenDuplicates?.();
+                yield event;
+            }
+        }
+        yield { type: 'completion', outcome: 'succeeded' };
+    }
+    async resumeSession(_request: never, snapshot: GoalProviderSessionSnapshot) { return snapshot; }
+    async requestModelChange(request: GoalModelChangeRequest) {
+        return { requestedModel: request.model, appliesAt: 'next_turn' as const };
+    }
+    async cancel(): Promise<void> {}
+    async reconcile() { return { outcome: 'failed' as const, reason: 'unused' }; }
+}
+
+test('next-turn model evidence dedupes one occurrence and withholds unproven completion', async t => {
+    for (const mode of ['duplicate', 'missing', 'wrong'] as const) {
+        await t.test(mode, async () => {
+            const adapter = new NextTurnEvidenceAdapter();
+            adapter.mode = mode;
+            const ports = new InMemoryGoalSessionPorts();
+            const supervisor = new GoalSessionSupervisor(adapter, ports.asRuntimePorts());
+            await supervisor.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+            await supervisor.requestModelChange({ ...identity, controllerEpoch: 1, model: 'model-b' });
+            if (mode === 'duplicate') adapter.betweenDuplicates = async () => {
+                const state = await ports.load(identity);
+                const evidence = state?.modelChangeIntent?.invocationEvidence;
+                assert.deepEqual(evidence && {
+                    executionId: evidence.executionId, attemptId: evidence.attemptId,
+                    occurrenceId: evidence.occurrenceId, effectiveModel: evidence.effectiveModel,
+                }, {
+                    executionId: 'execution-duplicate', attemptId: 'attempt-duplicate',
+                    occurrenceId: `model-${state?.modelChangeIntent?.modelChangeId}-1`, effectiveModel: 'model-b',
+                });
+            };
+            const operation = supervisor.runTurn({
+                ...identity, controllerEpoch: 1, turnId: `evidence-${mode}`,
+                executionId: `execution-${mode}`, attemptId: `attempt-${mode}`,
+                objective: 'require exact next-turn evidence', repository, requestedModel: 'model-a',
+            });
+            if (mode === 'duplicate') {
+                assert.equal((await operation).state.status, 'idle');
+                assert.equal((await ports.replay(identity)).filter(record => record.event.type === 'model_changed').length, 1);
+                return;
+            }
+            await assert.rejects(operation, (error: unknown) => error instanceof GoalSessionContractError
+                && (error.code === 'MODEL_EVIDENCE_MISSING' || error.code === 'MODEL_ACK_MISMATCH'));
+            assert.equal((await ports.load(identity))?.status, 'failed');
+            assert.equal((await ports.replay(identity)).some(record =>
+                record.event.type === 'completion' && record.event.outcome === 'succeeded'), false);
+        });
+    }
 });
 
 class UsageAdapter implements GoalSessionAdapter {

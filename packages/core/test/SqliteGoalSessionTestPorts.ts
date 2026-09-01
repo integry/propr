@@ -20,6 +20,7 @@ import type {
     PersistedGoalSessionEvent,
 } from '../src/agents/goalSession/contract.js';
 import { sanitizeGoalSessionEvent } from '../src/agents/goalSession/securityBoundary.js';
+import { assertProviderFirstEffectState } from '../src/agents/goalSession/providerFirstEffect.js';
 
 function scope(identity: GoalSessionIdentity): string {
     return `${identity.goalId}\0${identity.sessionId}`;
@@ -73,7 +74,10 @@ export class SqliteGoalSessionTestPorts {
     }
 
     asRuntimePorts(): GoalSessionRuntimePorts {
-        return { state: this, transitions: this, events: this, terminal: this, messages: this, recovery: this, modelChanges: this };
+        return {
+            state: this, transitions: this, events: this, terminal: this, messages: this,
+            recovery: this, modelChanges: this, providerFirstEffects: this,
+        };
     }
 
     async claim(
@@ -117,18 +121,18 @@ export class SqliteGoalSessionTestPorts {
 
     close(): void { this.database.close(); }
 
-    /** Process-like adapter boundary: durable compare and first effect are one transaction. */
-    tryProviderEffect(fence: GoalProviderOperationFence): boolean {
-        return this.database.transaction(() => {
+    /** Production-shape boundary: locked durable compare and primitive start are one transaction. */
+    async start<T>(fence: GoalProviderOperationFence, effect: () => T): Promise<Awaited<T>> {
+        let result: T | undefined;
+        this.database.transaction(() => {
             const state = this.readState(fence);
-            if (!state || state.providerBarrierIntent?.phase === 'pending'
-                || state.providerOperationGeneration !== fence.generation
-                || (fence.leaseExpiresAt !== undefined && Date.parse(fence.leaseExpiresAt) <= Date.now())) return false;
-            const result = this.database.prepare(
+            assertProviderFirstEffectState(state, fence);
+            this.database.prepare(
                 'INSERT OR IGNORE INTO goal_provider_effects(scope, operation_id, kind) VALUES (?, ?, ?)',
             ).run(scope(fence), fence.operationId, fence.kind);
-            return result.changes === 1;
+            result = effect();
         }).immediate();
+        return result as Awaited<T>;
     }
 
     providerEffectCount(): number {

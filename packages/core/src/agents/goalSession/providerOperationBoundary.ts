@@ -56,10 +56,25 @@ export interface GoalProviderOpenContext extends GoalExecutionIdentity {
  * A present leaseExpiresAt is compared in that same atomic effect transaction.
  */
 export interface GoalProviderOperationFence extends GoalSessionIdentity {
+    readonly controllerEpoch: number;
     readonly generation: number;
     readonly operationId: string;
     readonly kind: 'open' | 'turn' | 'resume' | 'reconcile' | 'steer' | 'model' | 'pause' | 'cancel';
     readonly leaseExpiresAt?: string;
+    readonly turnId?: string;
+    readonly executionId?: string;
+    readonly attemptId?: string;
+}
+
+/**
+ * Linearizes a provider primitive's first external effect with state invalidation.
+ * A production implementation must execute `effect` while holding the same
+ * database transaction/serialization lock used by GoalSessionStatePort writes.
+ * The callback must start the primitive synchronously, before returning its
+ * promise or first iterator-next promise.
+ */
+export interface GoalProviderFirstEffectPort {
+    start<T>(fence: GoalProviderOperationFence, effect: () => T): Promise<Awaited<T>>;
 }
 
 /** Monotonic provider-visible high-water publication. */

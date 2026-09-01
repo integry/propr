@@ -55,7 +55,20 @@ function validateBarrierRelationships(state: GoalSessionState): void {
     validateBarrierStatus(state);
     validatePendingCancellationKind(state);
     validateTerminalCancellationIdentity(state);
+    validateLeaseExpiryIdentity(state);
     if (state.initializationIntent && state.providerSessionId) invalid('initializationIntent');
+}
+
+function validateLeaseExpiryIdentity(state: GoalSessionState): void {
+    const barrier = state.providerBarrierIntent;
+    if (barrier?.kind !== 'lease_expiry' || barrier.phase !== 'pending') return;
+    const matchesResume = state.resumeIntent?.phase === 'provider_in_doubt'
+        && barrier.generation === state.resumeIntent.operationGeneration + 1
+        && barrier.operationId === `${state.resumeIntent.operationId}:lease-expiry`;
+    const matchesRecovery = state.recoveryAttempt?.phase === 'provider_in_doubt'
+        && barrier.generation === state.recoveryAttempt.operationGeneration + 1
+        && barrier.operationId === `${state.recoveryAttempt.operationToken}:lease-expiry`;
+    if (!matchesResume && !matchesRecovery) invalid('orphan lease_expiry barrier');
 }
 
 function validateBarrierGeneration(state: GoalSessionState): void {
@@ -263,6 +276,11 @@ function validateActiveTurnModelChange(state: GoalSessionState, intents: GoalMod
     if (!intent || intent.generation !== active.generation || intent.model !== state.activeTurn?.requestedModel) {
         invalid('activeTurn.modelChange');
     }
+    if (intent.invocationEvidence
+        && (intent.invocationEvidence.executionId !== state.activeTurn?.executionId
+            || intent.invocationEvidence.attemptId !== state.activeTurn.attemptId)) {
+        invalid('activeTurn model invocation evidence');
+    }
 }
 
 function validateModelIntentRelationships(intent: GoalModelChangeIntent): void {
@@ -274,6 +292,17 @@ function validateModelIntentRelationships(intent: GoalModelChangeIntent): void {
     if (intent.acknowledgement?.requestedModel !== undefined
         && intent.acknowledgement.requestedModel !== intent.model) invalid('acknowledgement model mismatch');
     validateModelInvocationEvidence(intent, hasLease);
+    validatePreviousModelInvocationEvidence(intent);
+}
+
+function validatePreviousModelInvocationEvidence(intent: GoalModelChangeIntent): void {
+    const previous = intent.previousInvocationEvidence;
+    if (!previous) return;
+    if (intent.phase !== 'committed' || previous.modelChangeId !== intent.modelChangeId
+        || previous.generation !== intent.generation || previous.requestedModel !== intent.model
+        || previous.effectiveModel !== intent.acknowledgement?.effectiveModel
+        || intent.acknowledgement?.appliesAt !== 'next_turn'
+        || intent.acknowledgement.outcome !== 'acknowledged') invalid('previous model invocation evidence');
 }
 
 function hasModelLease(intent: GoalModelChangeIntent): boolean {
@@ -311,7 +340,9 @@ function validateModelInvocationEvidence(intent: GoalModelChangeIntent, hasLease
         || evidence.modelChangeId !== intent.modelChangeId
         || evidence.generation !== intent.generation
         || evidence.requestedModel !== intent.model
-        || evidence.effectiveModel !== intent.acknowledgement?.effectiveModel) invalid('model invocation evidence');
+        || evidence.effectiveModel !== intent.acknowledgement?.effectiveModel
+        || intent.acknowledgement?.appliesAt !== 'next_turn'
+        || intent.acknowledgement.outcome !== 'acknowledged') invalid('model invocation evidence');
 }
 
 function invalid(field: string): never {

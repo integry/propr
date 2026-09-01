@@ -6,7 +6,7 @@ import type { GoalProviderCapabilities } from './providerCapabilities.js';
 export type {
     GoalModelChangeHistoryPort, GoalModelChangeHistoryRecord, GoalModelInvocationEvidence,
     GoalProviderBarrierIntent, GoalProviderBarrierPublication, GoalProviderDuplexTransport,
-    GoalProviderOpenContext, GoalProviderOperationFence, GoalUsageAccounting,
+    GoalProviderFirstEffectPort, GoalProviderOpenContext, GoalProviderOperationFence, GoalUsageAccounting,
 } from './providerOperationBoundary.js';
 export type {
     GoalModelChangeBoundary, GoalNativeSessionIdTiming, GoalPauseBoundary,
@@ -193,6 +193,8 @@ export interface GoalModelChangeIntent {
     acknowledgement?: GoalModelChangeAcknowledgement;
     /** Exact first-invocation evidence for a next-turn model application. */
     invocationEvidence?: GoalModelInvocationEvidence;
+    /** Prior-attempt occurrence retained only to dedupe exact recovery replay. */
+    previousInvocationEvidence?: GoalModelInvocationEvidence;
 }
 
 export interface GoalProviderSessionSnapshot {

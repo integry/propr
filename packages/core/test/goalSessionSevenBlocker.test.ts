@@ -324,10 +324,17 @@ test('credential poison is rejected before provider/state/event boundaries and s
 
     const events = ports.asRuntimePorts().events;
     const container = new GoalContainerSupervisor('/tmp/seven-blocker-containers', events, undefined, {
-        environmentKeys: [], worktreePaths: ['/etc'], providerHomeTargets: ['/opt/provider'], credentialMounts: [],
+        isolation: {
+            environmentKeys: [], worktreePaths: ['/etc'], providerHomeTargets: ['/opt/provider'], credentialMounts: [],
+        },
+        providerFirstEffects: ports.asRuntimePorts().providerFirstEffects,
     });
     await assert.rejects(container.start({
         ...control, turnId: 'mount-turn', executionId: 'mount-execution', attemptId: 'mount-attempt',
+        operationFence: {
+            ...control, turnId: 'mount-turn', executionId: 'mount-execution', attemptId: 'mount-attempt',
+            generation: 1, operationId: 'mount-operation', kind: 'turn',
+        },
         image: 'unused', command: ['true'], worktreePath: '/etc', worktreeFingerprint: 'fingerprint',
         providerHomeTarget: '/opt/provider',
     }), /sensitive host root or descendant/);

@@ -5,9 +5,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { mock, test } from 'node:test';
+import type { GoalSessionAdapter } from '../src/agents/goalSession/contract.js';
 import { InMemoryGoalSessionPorts } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
 
 const spawnCalls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+let stdinHandler: ((data: string) => void) | undefined;
 const outputStream = () => Object.assign(new EventEmitter(), {
     pause: mock.fn(),
     resume: mock.fn(),
@@ -15,7 +17,7 @@ const outputStream = () => Object.assign(new EventEmitter(), {
 const child = Object.assign(new EventEmitter(), {
     stdout: outputStream(),
     stderr: outputStream(),
-    stdin: { destroyed: false, writableEnded: false, write(_d: string, cb: (e?: Error | null) => void) { cb(); return true; }, end() { this.writableEnded = true; } },
+    stdin: { destroyed: false, writableEnded: false, write(data: string, cb: (e?: Error | null) => void) { stdinHandler?.(data); cb(); return true; }, end() { this.writableEnded = true; } },
     exitCode: null as number | null,
     kill: mock.fn(() => true),
 });
@@ -32,6 +34,8 @@ await mock.module('child_process', {
 });
 
 const { GoalContainerSupervisor, buildGoalContainerLayout } = await import('../src/agents/goalSession/GoalContainerSupervisor.js');
+const { createSupervisedCodexAppServerFactory } = await import('../src/agents/goalSession/supervisedCodexOpenFactory.js');
+const { GoalSessionSupervisor } = await import('../src/agents/goalSession/GoalSessionSupervisor.js');
 type EventSink = ConstructorParameters<typeof GoalContainerSupervisor>[1];
 
 const events = { append: async () => ({ accepted: true }), appendControl: async () => ({ accepted: true }), replay: async () => [] } as unknown as EventSink;
@@ -45,10 +49,16 @@ const isolation = {
     providerHomeTargets: ['/home/node/.codex'],
     credentialMounts: [{ source: approvedCredential, target: '/home/node/.creds' }],
 };
+const firstEffects = { start: async <T>(_fence: unknown, effect: () => T): Promise<Awaited<T>> => effect() as Awaited<T> };
 
 function baseRequest() {
     return {
         ...idBits,
+        operationFence: {
+            goalId: idBits.goalId, sessionId: idBits.sessionId, controllerEpoch: idBits.controllerEpoch,
+            turnId: idBits.turnId, executionId: idBits.executionId, attemptId: idBits.attemptId,
+            generation: 1, operationId: 'turn-operation', kind: 'turn' as const,
+        },
         image: 'propr/agent:test',
         command: ['agent-command'],
         worktreePath: approvedWorktree,
@@ -58,7 +68,7 @@ function baseRequest() {
 }
 
 function createSupervisor(base: string, policy = isolation): InstanceType<typeof GoalContainerSupervisor> {
-    return new GoalContainerSupervisor(base, events, undefined, policy);
+    return new GoalContainerSupervisor(base, events, undefined, { isolation: policy, providerFirstEffects: firstEffects });
 }
 
 async function waitForFile(filePath: string): Promise<void> {
@@ -174,7 +184,9 @@ test('raw durable event DTOs and replay bytes exclude every poisoned start-reque
             runtime.events.appendControl(publicFence, publicExecution, event),
         replay: (eventIdentity, afterSequence) => runtime.events.replay(eventIdentity, afterSequence),
     };
-    const supervisor = new GoalContainerSupervisor(base, capturingEvents, undefined, isolation);
+    const supervisor = new GoalContainerSupervisor(base, capturingEvents, undefined, {
+        isolation, providerFirstEffects: firstEffects,
+    });
     const secrets = [
         'poison-environment-secret', 'poison-command-secret', 'poison-task-secret',
         'poison-excess-secret', approvedCredential, approvedWorktree,
@@ -182,6 +194,9 @@ test('raw durable event DTOs and replay bytes exclude every poisoned start-reque
     await supervisor.start({
         ...baseRequest(),
         ...ids,
+        operationFence: {
+            ...baseRequest().operationFence, ...ids,
+        },
         command: ['provider', '--secret', secrets[1]],
         environment: { OPENAI_API_KEY: secrets[0] },
         credentialMounts: [{ source: approvedCredential, target: '/home/node/.creds' }],
@@ -211,6 +226,10 @@ test('layout log sink truncates deterministically at its auditable byte bound', 
         ...baseRequest(),
         goalId: 'bounded-log-goal',
         sessionId: 'bounded-log-session',
+        operationFence: {
+            ...baseRequest().operationFence,
+            goalId: 'bounded-log-goal', sessionId: 'bounded-log-session',
+        },
     });
     child.stdout.emit('data', Buffer.alloc(8 * 1024 * 1024, 'x'));
     child.emit('close', 0);
@@ -284,7 +303,9 @@ test('adapter output observes the exact durable mixed-channel queue with backpre
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
     const observed: Array<{ sequence: number; channel: string; data: string }> = [];
-    const supervisor = new GoalContainerSupervisor(base, sink, undefined, isolation);
+    const supervisor = new GoalContainerSupervisor(base, sink, undefined, {
+        isolation, providerFirstEffects: firstEffects,
+    });
     await supervisor.start({
         ...baseRequest(),
         outputObserver: {
@@ -330,7 +351,9 @@ test('protocol observer receives parseable secret bytes while every durable surf
             return { accepted: true as const };
         },
     } as unknown as EventSink;
-    const supervisor = new GoalContainerSupervisor(base, sink, undefined, isolation);
+    const supervisor = new GoalContainerSupervisor(base, sink, undefined, {
+        isolation, providerFirstEffects: firstEffects,
+    });
     const { layout } = await supervisor.start({
         ...baseRequest(),
         outputObserver: { next: output => { observed.push(output.data); } },
@@ -350,10 +373,17 @@ test('protocol observer receives parseable secret bytes while every durable surf
 
 test('control-scoped eager open container has exact open labels and no invented turn label', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-open-container-'));
-    const supervisor = new GoalContainerSupervisor(base, events, undefined, isolation);
+    const supervisor = new GoalContainerSupervisor(base, events, undefined, {
+        isolation, providerFirstEffects: firstEffects,
+    });
     await supervisor.startOpen({
         goalId: 'open-goal', sessionId: 'open-session', controllerEpoch: 4,
         executionId: 'open-execution', attemptId: 'open-attempt', deterministicOpenKey: 'open-key-4',
+        operationFence: {
+            goalId: 'open-goal', sessionId: 'open-session', controllerEpoch: 4,
+            executionId: 'open-execution', attemptId: 'open-attempt', generation: 7,
+            operationId: 'open-attempt', kind: 'open',
+        },
         image: 'provider-image', command: ['codex', 'app-server', '--stdio'],
         worktreePath: approvedWorktree, worktreeFingerprint: 'open-fingerprint',
         providerHomeTarget: '/home/node/.codex',
@@ -429,7 +459,7 @@ test('cleanTerminalSession removes a real goal directory but refuses a symlink e
 
 test('cleanTerminalSession refuses an in-tree symlink to a sibling goal directory', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-sibling-'));
-    const supervisor = new GoalContainerSupervisor(base, events);
+    const supervisor = new GoalContainerSupervisor(base, events, undefined, { providerFirstEffects: firstEffects });
     fs.mkdirSync(path.join(base, 'goals'), { recursive: true });
     const past = new Date(0);
     const future = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
@@ -550,3 +580,92 @@ test('start rejects unapproved, broad, sensitive, and symlink-aliased mount sour
         /broad or sensitive/,
     );
 });
+
+test('production Codex factory composes claimed supervisor, duplex, and exact App Server open', async t => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-factory-open-'));
+    const ports = new InMemoryGoalSessionPorts();
+    const runtime = ports.asRuntimePorts();
+    const containers = new GoalContainerSupervisor(base, runtime.events, undefined, {
+        isolation: {
+            environmentKeys: [], worktreePaths: [approvedWorktree],
+            providerHomeTargets: ['/home/node/.codex'], credentialMounts: [],
+        },
+        providerFirstEffects: runtime.providerFirstEffects,
+    });
+    const repository = {
+        repository: 'integry/propr', worktreePath: approvedWorktree, branch: 'factory-open', headSha: 'abcdef',
+    };
+    const factory = createSupervisedCodexAppServerFactory(containers, {
+        repository, worktreeFingerprint: 'factory-fingerprint', image: 'codex-provider:test',
+    });
+    const adapter: GoalSessionAdapter = {
+        provider: 'codex',
+        capabilities: {
+            nativeSessionId: 'eager', steering: 'active_turn', pause: 'after_turn', modelChange: 'next_turn',
+        },
+        supportsDeterministicOpen: true,
+        publishOperationBarrier: async () => undefined,
+        openSession: request => factory.open(request),
+        beginTurn: async function* () { yield { type: 'completion', outcome: 'succeeded' }; },
+        resumeSession: async (_request, snapshot) => snapshot,
+        requestModelChange: async request => ({ requestedModel: request.model, appliesAt: 'next_turn' }),
+        cancel: async () => undefined,
+        reconcile: async () => ({ outcome: 'failed', reason: 'unused' }),
+    };
+    child.exitCode = null;
+    child.stdin.writableEnded = false;
+    stdinHandler = data => {
+        const request = JSON.parse(data) as { id?: string; method: string };
+        if (!request.id) return;
+        let result: Record<string, unknown>;
+        if (request.method === 'initialize') result = {
+            userAgent: 'propr_goal_runtime/0.146.0 (Linux; x86_64) factory',
+            codexHome: '/home/node/.codex', platformFamily: 'unix', platformOs: 'linux',
+        };
+        else if (request.method === 'model/list') result = {
+            data: [{ id: 'gpt-5.6-sol', model: 'gpt-5.6-sol' }], nextCursor: null,
+        };
+        else result = exactFactoryThreadResponse();
+        setImmediate(() => {
+            child.stdout.emit('data', Buffer.from(`${JSON.stringify({ id: request.id, result })}\n`));
+            if (request.method === 'thread/start') {
+                child.exitCode = 0;
+                child.emit('close', 0);
+            }
+        });
+    };
+    t.after(() => { stdinHandler = undefined; child.exitCode = null; child.stdin.writableEnded = false; });
+
+    const supervisor = new GoalSessionSupervisor(adapter, runtime);
+    const opened = await supervisor.openSession({
+        goalId: 'factory-goal', sessionId: 'factory-session', provider: 'codex', controllerEpoch: 1,
+        supervisedOpen: factory.plan,
+    });
+    assert.equal(opened.status, 'idle');
+    assert.equal(opened.providerSessionId, 'factory-thread');
+    const args = spawnCalls.at(-1)!.args;
+    assert.ok(args.includes('/workspace'));
+    assert.ok(args.includes('propr.goal.scope=open'));
+    assert.ok(args.some(value => value.startsWith('propr.goal.operation-generation=')));
+    assert.ok(args.some(value => value.startsWith('propr.goal.operation-id=')));
+});
+
+function exactFactoryThreadResponse(): Record<string, unknown> {
+    return {
+        thread: {
+            id: 'factory-thread', extra: null, sessionId: 'factory-session-native', forkedFromId: null,
+            parentThreadId: null, preview: '', ephemeral: false, isPinned: false,
+            historyMode: 'paginated', modelProvider: 'openai', createdAt: 1, updatedAt: 1,
+            recencyAt: 1, status: { type: 'idle' }, path: null, cwd: '/workspace', cliVersion: '0.146.0',
+            source: 'appServer', canAcceptDirectInput: true, threadSource: null, agentNickname: null,
+            agentRole: null, gitInfo: null, name: null, turns: [],
+        },
+        model: 'gpt-5.6-sol', modelProvider: 'openai', serviceTier: null, cwd: '/workspace',
+        runtimeWorkspaceRoots: ['/workspace'], instructionSources: [], approvalPolicy: 'never',
+        approvalsReviewer: 'user', sandbox: {
+            type: 'workspaceWrite', writableRoots: ['/workspace'], networkAccess: false,
+            excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+        },
+        activePermissionProfile: null, reasoningEffort: null, multiAgentMode: 'explicitRequestOnly',
+    };
+}

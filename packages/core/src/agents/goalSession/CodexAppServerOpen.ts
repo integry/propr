@@ -3,18 +3,23 @@ import type {
     GoalProviderSessionSnapshot,
     GoalSessionJsonValue,
 } from './contract.js';
-import { createHash } from 'node:crypto';
-import { CODEX_APP_SERVER_0146 } from './codexAppServer0146Schema.js';
+import {
+    CODEX_APP_SERVER_METHODS_0146, CODEX_APP_SERVER_PROTOCOL_0146, CODEX_CLI_VERSION_0146,
+    type CodexThreadResponse0146, type CodexThreadResumeParams0146, type CodexThreadStartParams0146,
+} from './codexAppServer0146Bindings.generated.js';
 import { GoalSessionContractError } from './errors.js';
 import { sanitizeNewRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
+import { assertExactThreadFields, assertExactThreadResponseFields } from './codexAppServer0146Validation.js';
 
 export const SUPERVISED_CODEX_MODEL = 'gpt-5.6-sol';
-export const SUPERVISED_CODEX_PROTOCOL = CODEX_APP_SERVER_0146.protocol;
+export const SUPERVISED_CODEX_PROTOCOL = CODEX_APP_SERVER_PROTOCOL_0146;
 const CODEX_CONTAINER_CWD = '/workspace';
 const MAX_APP_SERVER_LINE_BYTES = 1024 * 1024;
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const MAX_MESSAGES_PER_REQUEST = 512;
 const REQUEST_TIMEOUT_MS = 15_000;
+const MAX_MODEL_PAGES = 16;
+const MAX_MODELS = 1_600;
 
 type JsonObject = Record<string, GoalSessionJsonValue>;
 
@@ -29,30 +34,41 @@ export async function openSupervisedCodexAppServer(
 ): Promise<GoalProviderSessionSnapshot> {
     validateContext(context);
     const rpc = new StdioAppServerRpc(context);
+    let newThreadRequestStarted = false;
     try {
-        const initialized = await rpc.request(CODEX_APP_SERVER_0146.methods.initialize, {
-            clientInfo: { name: 'propr_goal_runtime', title: 'ProPR Goal Runtime', version: '1' },
-            capabilities: CODEX_APP_SERVER_0146.initializeCapabilities,
+        const initialized = await rpc.request(CODEX_APP_SERVER_METHODS_0146.initialize, {
+            clientInfo: {
+                name: 'propr_goal_runtime', title: 'ProPR Goal Runtime', version: CODEX_CLI_VERSION_0146,
+            },
+            capabilities: { experimentalApi: false, requestAttestation: false },
         });
         assertPinnedInitialize(initialized);
-        await rpc.notify(CODEX_APP_SERVER_0146.methods.initialized);
+        await rpc.notify(CODEX_APP_SERVER_METHODS_0146.initialized);
         await probeExactModel(rpc);
 
-        const persistedThread = decodePersistedThread(persisted);
-        const adoptedThread = persistedThread ?? await findExactOpenKeyThread(rpc, context);
-        const thread = adoptedThread
-            ? await rpc.request(CODEX_APP_SERVER_0146.methods.threadResume, {
-                threadId: adoptedThread.threadId,
-                model: SUPERVISED_CODEX_MODEL,
-            })
-            : await rpc.request(CODEX_APP_SERVER_0146.methods.threadStart, {
+        const persistedThread = decodePersistedThread(persisted, context);
+        let thread: JsonObject;
+        if (persistedThread) {
+            const params: CodexThreadResumeParams0146 = {
+                threadId: persistedThread.threadId,
                 model: SUPERVISED_CODEX_MODEL,
                 cwd: CODEX_CONTAINER_CWD,
                 approvalPolicy: 'never',
-                sandbox: 'workspaceWrite',
-                serviceName: durableServiceName(context),
-            });
-        const identity = decodeThreadResponse(thread, adoptedThread);
+                sandbox: 'workspace-write',
+                excludeTurns: true,
+            };
+            thread = await rpc.request(CODEX_APP_SERVER_METHODS_0146.threadResume, params as unknown as JsonObject);
+        } else {
+            const params: CodexThreadStartParams0146 = {
+                model: SUPERVISED_CODEX_MODEL,
+                cwd: CODEX_CONTAINER_CWD,
+                approvalPolicy: 'never',
+                sandbox: 'workspace-write',
+            };
+            newThreadRequestStarted = true;
+            thread = await rpc.request(CODEX_APP_SERVER_METHODS_0146.threadStart, params as JsonObject);
+        }
+        const identity = decodeThreadResponse(thread, persistedThread);
         const recoveryMetadata = sanitizeNewRecoveryMetadata({
             version: 2,
             provider: 'codex',
@@ -61,17 +77,21 @@ export async function openSupervisedCodexAppServer(
                 threadId: identity.threadId,
                 sessionId: identity.sessionId,
                 initialized: true,
-                checkpoint: adoptedThread ? 'response-loss-adopted' : 'thread-started',
+                checkpoint: persistedThread ? 'thread-resumed' : 'thread-started',
                 openKey: requiredOpenKey(context),
                 repository: context.repository.repository,
                 model: SUPERVISED_CODEX_MODEL,
                 providerHomeIdentity: context.providerHomeTarget,
+                cliVersion: CODEX_CLI_VERSION_0146,
             },
             usage: { components: [] },
         }, 'codex');
         return { providerSessionId: identity.threadId, recoveryMetadata, model: SUPERVISED_CODEX_MODEL };
-    } catch {
-        await context.transport.cancel().catch(() => undefined);
+    } catch (error) {
+        if (newThreadRequestStarted && !persisted) throw new GoalSessionContractError(
+            'Codex thread creation is in doubt; exact identifiers were not persisted', 'PROVIDER_OPEN_IN_DOUBT',
+        );
+        if (error instanceof GoalSessionContractError) throw error;
         throw new GoalSessionContractError('Codex App Server open failed safely', 'PROVIDER_OPERATION_FAILED');
     } finally {
         await rpc.close().catch(() => undefined);
@@ -90,7 +110,13 @@ class StdioAppServerRpc {
     }
 
     async close(): Promise<void> {
-        if (this.iterator.return) await this.iterator.return();
+        try { this.context.transport.closeInput(); }
+        catch { /* Cancellation below remains mandatory. */ }
+        await this.context.transport.cancel();
+        try {
+            const returned = this.iterator.return?.();
+            if (returned) void returned.catch(() => undefined);
+        } catch { /* The owned process is already cancelled. */ }
     }
 
     async notify(method: string): Promise<void> {
@@ -185,60 +211,65 @@ async function withTimeout<T>(operation: Promise<T>, transport: GoalProviderOpen
     }
 }
 
-async function findExactOpenKeyThread(
-    rpc: StdioAppServerRpc,
-    context: GoalProviderOpenContext,
-): Promise<{ threadId: string; sessionId: string } | undefined> {
-    const result = await rpc.request(CODEX_APP_SERVER_0146.methods.threadList, {
-        limit: 2, cwd: CODEX_CONTAINER_CWD, useStateDbOnly: true,
-    });
-    const data = result.data;
-    if (data === undefined) return undefined;
-    if (!Array.isArray(data) || data.length > 2) throw new Error('App Server thread list is malformed');
-    const expectedSource = durableServiceName(context);
-    const candidates = data.map(candidate => {
-        const thread = closedJsonObject(candidate, 'App Server listed thread');
-        return {
-            threadId: safeId(thread.id),
-            sessionId: safeId(thread.sessionId),
-            cwd: thread.cwd,
-            source: safeId(thread.source),
-        };
-    });
-    const sameWorkspace = candidates.filter(candidate => candidate.cwd === CODEX_CONTAINER_CWD);
-    const exact = sameWorkspace.filter(candidate => candidate.source === expectedSource);
-    if (exact.length === 0 && sameWorkspace.length > 0) {
-        throw new Error('App Server response-loss candidate lacks the exact durable open binding');
-    }
-    if (exact.length > 1) throw new Error('App Server response-loss adoption is ambiguous');
-    return exact[0];
-}
-
 function decodePersistedThread(
     persisted: GoalProviderSessionSnapshot | undefined,
+    context: GoalProviderOpenContext,
 ): { threadId: string; sessionId: string } | undefined {
     if (!persisted) return undefined;
     const metadata = sanitizeRecoveryMetadata(persisted.recoveryMetadata, 'codex');
     if (!isObject(metadata) || metadata.version !== 2 || !isObject(metadata.payload)) {
         throw new Error('Codex recovery metadata is not a v2 envelope');
     }
-    return { threadId: safeId(metadata.payload.threadId), sessionId: safeId(metadata.payload.sessionId) };
+    const payload = metadata.payload;
+    const threadId = safeId(payload.threadId);
+    const sessionId = safeId(payload.sessionId);
+    if (persisted.providerSessionId !== threadId || persisted.model !== SUPERVISED_CODEX_MODEL
+        || payload.openKey !== requiredOpenKey(context)
+        || payload.repository !== context.repository.repository
+        || payload.model !== SUPERVISED_CODEX_MODEL
+        || payload.providerHomeIdentity !== context.providerHomeTarget
+        || payload.cliVersion !== CODEX_CLI_VERSION_0146
+        || metadata.protocolVersion !== SUPERVISED_CODEX_PROTOCOL) {
+        throw new Error('Codex persisted resume identity does not match the exact open claim');
+    }
+    return { threadId, sessionId };
 }
 
 function decodeThreadResponse(
     result: JsonObject,
     fallback?: { threadId: string; sessionId: string },
 ): { threadId: string; sessionId: string } {
-    if (result.model !== SUPERVISED_CODEX_MODEL || result.cwd !== CODEX_CONTAINER_CWD) {
+    const response = exactJsonObject(result, [
+        'thread', 'model', 'modelProvider', 'serviceTier', 'cwd', 'runtimeWorkspaceRoots',
+        'instructionSources', 'approvalPolicy', 'approvalsReviewer', 'sandbox',
+        'activePermissionProfile', 'reasoningEffort', 'multiAgentMode',
+        ...(fallback ? ['initialTurnsPage', 'turnsBackwardsCursor', 'itemsBackwardsCursor'] : []),
+    ], 'App Server thread response') as unknown as CodexThreadResponse0146;
+    assertExactThreadResponseFields(response);
+    if (response.model !== SUPERVISED_CODEX_MODEL || response.cwd !== CODEX_CONTAINER_CWD) {
         throw new Error('App Server ignored or rerouted the exact model or workspace');
     }
-    const thread = closedJsonObject(result.thread, 'App Server thread response');
+    const thread = decodeExactThread(response.thread);
     const threadId = safeId(thread.id);
     const sessionId = safeId(thread.sessionId);
     if (fallback && (fallback.threadId !== threadId || fallback.sessionId !== sessionId)) {
         throw new Error('App Server resumed a different thread identity');
     }
     return { threadId, sessionId };
+}
+
+function decodeExactThread(value: unknown): JsonObject {
+    const thread = exactJsonObject(value, [
+        'id', 'extra', 'sessionId', 'forkedFromId', 'parentThreadId', 'preview', 'ephemeral', 'isPinned',
+        'historyMode', 'modelProvider', 'createdAt', 'updatedAt', 'recencyAt', 'status', 'path', 'cwd',
+        'cliVersion', 'source', 'canAcceptDirectInput', 'threadSource', 'agentNickname', 'agentRole',
+        'gitInfo', 'name', 'turns',
+    ], 'App Server thread');
+    assertExactThreadFields(thread as unknown as import('./codexAppServer0146Bindings.generated.js').CodexThread0146);
+    if (thread.cwd !== CODEX_CONTAINER_CWD || thread.cliVersion !== CODEX_CLI_VERSION_0146) {
+        throw new Error('App Server thread identity is not from exact Codex 0.146 App Server');
+    }
+    return thread;
 }
 
 function assertPinnedInitialize(result: JsonObject): void {
@@ -248,26 +279,39 @@ function assertPinnedInitialize(result: JsonObject): void {
     if (result.codexHome !== '/home/node/.codex' || result.platformOs !== 'linux') {
         throw new Error('App Server initialize identity is not the supervised container');
     }
+    if (typeof result.userAgent !== 'string'
+        || !result.userAgent.startsWith(`propr_goal_runtime/${CODEX_CLI_VERSION_0146} (`)) {
+        throw new Error('App Server CLI version is not exactly pinned');
+    }
 }
 
 async function probeExactModel(rpc: StdioAppServerRpc): Promise<void> {
-    const result = await rpc.request(CODEX_APP_SERVER_0146.methods.modelList, {
-        limit: 100, includeHidden: true,
-    });
-    if (!Array.isArray(result.data) || result.data.length > 100) throw new Error('App Server model probe is malformed');
-    const supported = result.data.some(value => {
-        const model = closedJsonObject(value, 'App Server model');
-        return model.model === SUPERVISED_CODEX_MODEL || model.id === SUPERVISED_CODEX_MODEL;
-    });
+    let cursor: string | null = null;
+    let supported = false;
+    let total = 0;
+    const seen = new Set<string>();
+    for (let page = 0; page < MAX_MODEL_PAGES; page += 1) {
+        const raw = await rpc.request(CODEX_APP_SERVER_METHODS_0146.modelList, {
+            limit: 100, includeHidden: true, cursor,
+        });
+        const result = exactJsonObject(raw, ['data', 'nextCursor'], 'App Server model/list response');
+        if (!Array.isArray(result.data) || result.data.length > 100
+            || (result.nextCursor !== null && typeof result.nextCursor !== 'string')) {
+            throw new Error('App Server model probe is malformed');
+        }
+        total += result.data.length;
+        if (total > MAX_MODELS) throw new Error('App Server model probe exceeded its aggregate bound');
+        supported ||= result.data.some(value => {
+            const model = closedJsonObject(value, 'App Server model');
+            return model.model === SUPERVISED_CODEX_MODEL || model.id === SUPERVISED_CODEX_MODEL;
+        });
+        if (result.nextCursor === null) break;
+        cursor = result.nextCursor;
+        if (seen.has(cursor)) throw new Error('App Server model pagination cursor repeated');
+        seen.add(cursor);
+        if (page === MAX_MODEL_PAGES - 1) throw new Error('App Server model pagination exceeded its page bound');
+    }
     if (!supported) throw new Error('App Server does not support exact gpt-5.6-sol');
-}
-
-function durableServiceName(context: GoalProviderOpenContext): string {
-    const binding = createHash('sha256').update([
-        requiredOpenKey(context), context.repository.repository, SUPERVISED_CODEX_MODEL,
-        context.providerHomeTarget,
-    ].join('\0')).digest('hex');
-    return `propr-open-${binding}`;
 }
 
 function requiredOpenKey(context: GoalProviderOpenContext): string {
@@ -308,6 +352,15 @@ function closedJsonObject(value: unknown, name: string): JsonObject {
         throw new Error(`${name} contains an accessor`);
     }
     return JSON.parse(JSON.stringify(value)) as JsonObject;
+}
+
+function exactJsonObject(value: unknown, fields: readonly string[], name: string): JsonObject {
+    const result = closedJsonObject(value, name);
+    const actual = Object.keys(result);
+    if (actual.length !== fields.length || fields.some(field => !(field in result))) {
+        throw new Error(`${name} does not match the generated Codex 0.146 schema`);
+    }
+    return result;
 }
 
 function isObject(value: unknown): value is JsonObject {

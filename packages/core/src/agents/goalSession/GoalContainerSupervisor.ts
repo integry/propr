@@ -7,6 +7,7 @@ import {
 } from '../../claude/docker/dockerExecutor.js';
 import type {
     GoalExecutionIdentity,
+    GoalProviderFirstEffectPort,
     GoalSessionEventSink,
     GoalSessionFence,
 } from './contract.js';
@@ -26,6 +27,18 @@ export type {
     GoalContainerIsolationPolicy, GoalContainerLayout, GoalContainerOutputObserver,
     GoalContainerRetentionPolicy, GoalCredentialMount, StartGoalContainerRequest, StartGoalOpenContainerRequest,
 } from './goalContainerLayout.js';
+
+export interface GoalContainerSupervisorOptions {
+    isolation?: GoalContainerIsolationPolicy;
+    providerFirstEffects?: GoalProviderFirstEffectPort;
+}
+
+function resolveSupervisorOptions(
+    value: GoalContainerSupervisorOptions | GoalContainerIsolationPolicy,
+): GoalContainerSupervisorOptions {
+    return 'environmentKeys' in value && 'worktreePaths' in value && 'providerHomeTargets' in value
+        ? { isolation: value } : value;
+}
 
 /** Container paths a provider home may never shadow. */
 const RESERVED_CONTAINER_PATHS = new Set(['/', '/workspace', '/etc', '/root', '/home', '/usr', '/bin', '/var', '/tmp', '/proc', '/sys', '/dev']);
@@ -196,20 +209,42 @@ function isProviderCredentialTarget(provider: NonNullable<GoalCredentialMount['p
     return credentialProviderForTarget(target) === provider || target === '/home/node/.creds';
 }
 
+function assertContainerOperationFence(
+    request: StartGoalContainerRequest | StartGoalOpenContainerRequest,
+    fence: import('./contract.js').GoalProviderOperationFence,
+    scope: 'turn' | 'open',
+): void {
+    const turnId = scope === 'turn' ? (request as StartGoalContainerRequest).turnId : undefined;
+    if (fence.goalId !== request.goalId || fence.sessionId !== request.sessionId
+        || fence.controllerEpoch !== request.controllerEpoch
+        || fence.executionId !== request.executionId || fence.attemptId !== request.attemptId
+        || fence.turnId !== turnId || fence.kind !== scope) {
+        throw new GoalSessionContractError(
+            'Container operation fence does not match its durable execution claim', 'STALE_FENCE',
+        );
+    }
+}
+
 /**
  * Owns goal-scoped container resources and converts duplex byte output into
  * normalized, atomically fenced durable events. Provider adapters retain
  * responsibility for interpreting structured protocol lines.
  */
 export class GoalContainerSupervisor {
+    private readonly isolation: GoalContainerIsolationPolicy;
+    private readonly providerFirstEffects?: GoalProviderFirstEffectPort;
+
     constructor(
         private readonly baseDirectory: string,
         private readonly events: GoalSessionEventSink,
         private readonly retention: GoalContainerRetentionPolicy = DEFAULT_GOAL_CONTAINER_RETENTION,
-        private readonly isolation: GoalContainerIsolationPolicy = {
-            environmentKeys: [], worktreePaths: [], providerHomeTargets: [], credentialMounts: [],
-        },
+        options: GoalContainerSupervisorOptions | GoalContainerIsolationPolicy = {},
     ) {
+        const resolved = resolveSupervisorOptions(options);
+        this.isolation = resolved.isolation ?? {
+            environmentKeys: [], worktreePaths: [], providerHomeTargets: [], credentialMounts: [],
+        };
+        this.providerFirstEffects = resolved.providerFirstEffects;
         validateAbsolutePath(baseDirectory, 'Goal container base directory');
     }
 
@@ -270,6 +305,11 @@ export class GoalContainerSupervisor {
             executionId: request.executionId,
             attemptId: request.attemptId,
         };
+        const operationFence = request.operationFence;
+        assertContainerOperationFence(request, operationFence, scope);
+        if (!this.providerFirstEffects) throw new GoalSessionContractError(
+            'Container start requires the authoritative provider first-effect gate', 'FIRST_EFFECT_GATE_MISSING',
+        );
 
         const dockerArgs = [
             'run', '--rm', '--name', layout.containerName,
@@ -283,7 +323,7 @@ export class GoalContainerSupervisor {
             request.image,
             ...request.command,
         ];
-        const execution = executeSupervisedDockerCommand(dockerArgs, {
+        const execution = await this.providerFirstEffects.start(operationFence, () => executeSupervisedDockerCommand(dockerArgs, {
             goalId: request.goalId,
             sessionId: request.sessionId,
             controllerEpoch: request.controllerEpoch,
@@ -295,6 +335,10 @@ export class GoalContainerSupervisor {
             attemptId: request.attemptId,
             worktreeFingerprint: request.worktreeFingerprint,
             taskId: request.taskId,
+            operationGeneration: operationFence.generation,
+            operationKind: operationFence.kind,
+            operationId: operationFence.operationId,
+            operationLeaseExpiresAt: operationFence.leaseExpiresAt,
             signal: request.signal,
             timeout: request.timeout,
             env: environment,
@@ -320,6 +364,9 @@ export class GoalContainerSupervisor {
                             controllerEpoch: output.controllerEpoch, turnId: output.turnId,
                             executionId: output.executionId, attemptId: output.attemptId,
                             worktreeFingerprint: output.worktreeFingerprint, sequence: output.sequence,
+                            operationGeneration: output.operationGeneration,
+                            operationKind: output.operationKind, operationId: output.operationId,
+                            operationLeaseExpiresAt: output.operationLeaseExpiresAt,
                             recordedAt: output.recordedAt, channel: output.channel, data: output.data,
                         }));
                     } catch {
@@ -330,7 +377,7 @@ export class GoalContainerSupervisor {
                     if (disposition === 'unsubscribe') observerSubscribed = false;
                 }
             },
-        });
+        }));
         // Completion notifications are observed and rebuilt; they never create
         // an unhandled rejection or expose a subprocess exception to an adapter.
         void execution.completion.then(async () => {

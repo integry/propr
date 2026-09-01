@@ -143,33 +143,36 @@ test('supervisor cancellation claim wins at the process-like adapter first-effec
     const supervisorPorts = new SqliteGoalSessionTestPorts(filename);
     const adapterPorts = new SqliteGoalSessionTestPorts(filename);
     t.after(() => { supervisorPorts.close(); adapterPorts.close(); });
-    let releaseTurn!: () => void;
-    let turnStarted!: () => void;
+    let releaseTurnPublication!: () => void;
+    let turnPublicationStarted!: () => void;
     let releaseCancellation!: () => void;
-    const turnGate = new Promise<void>(resolve => { releaseTurn = resolve; });
-    const started = new Promise<void>(resolve => { turnStarted = resolve; });
+    const turnPublicationGate = new Promise<void>(resolve => { releaseTurnPublication = resolve; });
+    const publicationStarted = new Promise<void>(resolve => { turnPublicationStarted = resolve; });
     const cancellationGate = new Promise<void>(resolve => { releaseCancellation = resolve; });
     class ProcessLikeAdapter extends IdentityAuditAdapter {
         override async publishOperationBarrier(publication: GoalProviderBarrierPublication): Promise<void> {
             if (publication.pendingCancellationId) await cancellationGate;
+            else if (publication.generation > 1) {
+                turnPublicationStarted();
+                await turnPublicationGate;
+            }
         }
         override async *beginTurn(request: GoalBeginTurnRequest): AsyncIterable<GoalSessionEvent> {
-            turnStarted();
-            await turnGate;
-            if (!adapterPorts.tryProviderEffect(request.operationFence)) throw new Error('stale effect rejected');
+            void request;
             yield { type: 'completion', outcome: 'succeeded' };
         }
     }
     const adapter = new ProcessLikeAdapter('next_turn');
     const first = new GoalSessionSupervisor(adapter, supervisorPorts.asRuntimePorts());
     await first.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    const effectsBeforeTurn = adapterPorts.providerEffectCount();
     const running = first.runTurn({
         ...identity, controllerEpoch: 1, turnId: 'barrier-turn', executionId: 'barrier-execution',
         attemptId: 'barrier-attempt', objective: 'prove exact provider boundary',
         repository: { repository: 'integry/propr', worktreePath: '/tmp/provider-boundary', branch: 'audit' },
         requestedModel: 'model-0',
     });
-    await started;
+    await publicationStarted;
     const cancelling = new GoalSessionSupervisor(adapter, adapterPorts.asRuntimePorts()).cancel({
         ...identity, controllerEpoch: 1, reason: 'invalidate before first effect',
     });
@@ -178,19 +181,61 @@ test('supervisor cancellation claim wins at the process-like adapter first-effec
         await new Promise<void>(resolve => setImmediate(resolve));
     }
     const invalidated = (await supervisorPorts.load(identity))!;
-    for (const kind of ['open', 'turn', 'resume', 'reconcile', 'steer', 'model', 'pause', 'cancel'] as const) {
-        assert.equal(adapterPorts.tryProviderEffect({
-            ...identity,
-            generation: (invalidated.providerOperationGeneration ?? 1) - 1,
-            operationId: `stale-${kind}`,
-            kind,
-        }), false, kind);
-    }
-    releaseTurn();
-    await assert.rejects(running, /Provider operation failed safely/);
-    assert.equal(adapterPorts.providerEffectCount(), 0);
+    releaseTurnPublication();
+    await assert.rejects(running);
+    assert.equal(adapterPorts.providerEffectCount(), effectsBeforeTurn);
     releaseCancellation();
     assert.equal((await cancelling).status, 'terminated');
+});
+
+test('SQLite takeover settles one published cancellation barrier without replacing terminal ownership', async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cancel-takeover-audit-'));
+    const filename = path.join(directory, 'state.sqlite');
+    const firstPorts = new SqliteGoalSessionTestPorts(filename);
+    const secondPorts = new SqliteGoalSessionTestPorts(filename);
+    t.after(() => {
+        firstPorts.close(); secondPorts.close();
+        fs.rmSync(directory, { recursive: true, force: true });
+    });
+    let releaseCancel!: () => void;
+    const cancelGate = new Promise<void>(resolve => { releaseCancel = resolve; });
+    class GatedCancelAdapter extends IdentityAuditAdapter {
+        cancelCalls = 0;
+        override async cancel(): Promise<void> {
+            this.cancelCalls += 1;
+            await cancelGate;
+        }
+    }
+    const adapter = new GatedCancelAdapter('next_turn');
+    const first = new GoalSessionSupervisor(adapter, firstPorts.asRuntimePorts());
+    const second = new GoalSessionSupervisor(adapter, secondPorts.asRuntimePorts());
+    await first.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 1 });
+    const cancelling = first.cancel({ ...identity, controllerEpoch: 1, reason: 'gated published cancellation' });
+    for (let attempt = 0; attempt < 100 && adapter.cancelCalls < 1; attempt += 1) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const takeover = second.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 2 });
+    for (let attempt = 0; attempt < 100 && adapter.cancelCalls < 2; attempt += 1) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const published = await secondPorts.load(identity);
+    assert.equal(published?.status, 'cancelling');
+    assert.equal(published?.controllerEpoch, 1);
+    assert.equal(published?.providerBarrierIntent?.kind, 'cancellation');
+    assert.equal(published?.providerBarrierIntent?.phase, 'published');
+    const cancellationId = published?.cancellationIntent?.cancellationId;
+
+    releaseCancel();
+    const [cancelled, reopened] = await Promise.all([cancelling, takeover]);
+    assert.equal(cancelled.status, 'terminated');
+    assert.equal(reopened.status, 'terminated');
+    assert.equal(reopened.controllerEpoch, 1, 'terminal takeover never replaces the cancellation owner');
+    assert.equal(reopened.cancellationIntent?.cancellationId, cancellationId);
+    assert.equal((await secondPorts.replay(identity)).filter(record => record.event.type === 'completion').length, 1);
+    const calls = adapter.cancelCalls;
+    const terminalRace = await second.openSession({ ...identity, provider: adapter.provider, controllerEpoch: 3 });
+    assert.equal(terminalRace.controllerEpoch, 1);
+    assert.equal(adapter.cancelCalls, calls, 'terminal takeover performs no provider mutation');
 });
 
 test('independent processes allocate unique exact model order and deterministically retain newest 64', async t => {

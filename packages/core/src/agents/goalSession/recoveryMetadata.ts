@@ -28,7 +28,10 @@ const PROVIDER_CODECS: Readonly<Record<RecoveryProvider, Codec>> = {
     codex: {
         protocolVersion: 'app-server-0.146.0',
         required: ['threadId', 'initialized'],
-        optional: ['sessionId', 'turnId', 'checkpoint', 'openKey', 'repository', 'model', 'providerHomeIdentity'],
+        optional: [
+            'sessionId', 'turnId', 'checkpoint', 'openKey', 'repository', 'model',
+            'providerHomeIdentity', 'cliVersion',
+        ],
     },
     claude: {
         protocolVersion: 'cli-2.1.220',
@@ -83,7 +86,10 @@ export function sanitizeNewRecoveryMetadata(
             || !isPlainObject(decoded.payload)) invalid('New provider recovery metadata must use the pinned v2 codec');
         const payload = decoded.payload as Record<string, GoalSessionJsonValue>;
         const required = expectedProvider === 'codex'
-            ? ['threadId', 'sessionId', 'initialized', 'openKey', 'repository', 'model', 'providerHomeIdentity']
+            ? [
+                'threadId', 'sessionId', 'initialized', 'openKey', 'repository', 'model',
+                'providerHomeIdentity', 'cliVersion',
+            ]
             : PROVIDER_CODECS[expectedProvider].required;
         if (required.some(field => payload[field] === undefined)) {
             invalid('New provider recovery metadata is missing an exact identity');

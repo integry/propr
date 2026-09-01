@@ -30,7 +30,10 @@ await mock.module('child_process', {
 const { executeSupervisedDockerCommand } = await import('../src/claude/docker/supervisedDockerExecutor.js');
 
 const tick = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
-const recoveryIdentity = { executionId: 'execution', attemptId: 'attempt', worktreeFingerprint: 'worktree' };
+const recoveryIdentity = {
+    executionId: 'execution', attemptId: 'attempt', worktreeFingerprint: 'worktree',
+    operationGeneration: 1, operationKind: 'turn' as const, operationId: 'turn-effect',
+};
 
 test('a slow sink pauses the source streams and preserves ordering without unbounded buffering', async () => {
     const received: string[] = [];

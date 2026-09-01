@@ -103,6 +103,25 @@ export function replaceImmediateModelIntent(
         intent.modelChangeId === replacement.modelChangeId ? replacement : intent));
 }
 
+/** Moves exact evidence out of the active slot before a fresh recovery attempt is authoritative. */
+export function prepareModelEvidenceForRecoveredAttempt(
+    state: GoalSessionState,
+    execution: { executionId: string; attemptId: string },
+): { modelChangeIntents?: GoalModelChangeIntent[]; modelChangeIntent?: GoalModelChangeIntent } {
+    const active = state.activeTurn?.modelChange;
+    if (!active) return {};
+    const intent = immediateModelIntents(state).find(candidate => candidate.modelChangeId === active.modelChangeId);
+    const evidence = intent?.invocationEvidence;
+    if (!intent || !evidence || evidence.executionId === execution.executionId && evidence.attemptId === execution.attemptId) {
+        return {};
+    }
+    const replacement = {
+        ...intent, invocationEvidence: undefined, previousInvocationEvidence: evidence,
+    };
+    const intents = replaceImmediateModelIntent(state, replacement);
+    return { modelChangeIntents: intents, modelChangeIntent: intents.at(-1) };
+}
+
 export function hasUnresolvedImmediateModelIntent(state: GoalSessionState): boolean {
     return immediateModelIntents(state).some(intent =>
         Boolean(intent.applicationToken) || (intent.phase !== 'committed' && intent.phase !== 'superseded'));

@@ -80,7 +80,7 @@ class FirstTurnBoundaryAdapter implements GoalSessionAdapter {
                 recoveryMetadata: { conversation: 'native-first-turn-id' },
             };
         }
-        if (request.modelChange && context.binding === 'bound') {
+        if (request.modelChange) {
             yield {
                 type: 'model_changed', model: request.requestedModel,
                 providerEventId: `model-${request.modelChange.modelChangeId}-${request.modelChange.generation}`,
@@ -646,7 +646,7 @@ test('reopen cleans an already-terminal first-turn failure without a new epoch c
     );
 
     const cleaned = await persistence.load(identity);
-    assert.equal(cleaned?.controllerEpoch, 2);
+    assert.equal(cleaned?.controllerEpoch, 1, 'terminal cleanup cannot transfer controller ownership');
     assert.equal(cleaned?.status, 'failed');
     assert.equal(cleaned?.activeTurn, undefined);
     assert.equal(cleaned?.initializationIntent, undefined);

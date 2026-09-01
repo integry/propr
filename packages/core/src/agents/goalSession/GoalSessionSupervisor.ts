@@ -21,7 +21,7 @@ import { safeFailureDiagnostic } from './securityBoundary.js';
 import { rebuildProviderSnapshot } from './providerResultBoundary.js';
 import { credentialFreeRepositoryIdentity } from './repositorySecurity.js';
 import {
-    durableCodexOpenKey, validateEagerOpenContext, validateSupervisedOpenPlan,
+    durableCodexOpenKey, validateClaimedEagerOpenContext, validateSupervisedOpenPlan,
     type GoalSupervisedOpenClaim, type OpenGoalSessionRequest,
 } from './goalSessionOpen.js';
 import {
@@ -55,15 +55,14 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 'UNSUPPORTED_PROVIDER',
             );
         }
-        if (request.openContext && request.supervisedOpen) throw new GoalSessionContractError(
-            'Eager open accepts one supervised transport source', 'UNSAFE_PROVIDER_VALUE',
-        );
-        const openContext = request.openContext === undefined
-            ? undefined : await validateEagerOpenContext(this.adapter, request);
         if (request.supervisedOpen) await validateSupervisedOpenPlan(this.adapter, request.supervisedOpen);
+        if (request.provider === 'codex' && this.adapter.capabilities.nativeSessionId === 'eager'
+            && !request.supervisedOpen) throw new GoalSessionContractError(
+            'Eager Codex open requires a post-claim supervised factory', 'OPEN_CONTEXT_MISSING',
+        );
         request = {
             goalId: request.goalId, sessionId: request.sessionId, provider: request.provider,
-            controllerEpoch: request.controllerEpoch, openContext, supervisedOpen: request.supervisedOpen,
+            controllerEpoch: request.controllerEpoch, supervisedOpen: request.supervisedOpen,
         };
 
         const opened = await this.loadOrCreateForOpen(request);
@@ -337,7 +336,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 throw new StaleGoalSessionFenceError('Provider open claim was durably replaced');
             }
             const effectiveOpenKey = deterministicOpenKey ?? openContext?.deterministicOpenKey;
-            const snapshot = await this.providerResult(() => this.adapter.openSession({
+            const snapshot = await this.providerResult(() => this.providerFirstEffect(operationFence, () => this.adapter.openSession({
                 goalId: request.goalId,
                 sessionId: request.sessionId,
                 provider: request.provider,
@@ -351,7 +350,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                     ...openContext,
                     deterministicOpenKey: effectiveOpenKey,
                 } : undefined,
-            }), value => rebuildProviderSnapshot(value, this.adapter.provider));
+            })), value => rebuildProviderSnapshot(value, this.adapter.provider));
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata, this.adapter.provider);
             assertProviderIdentity(state, snapshot);
             const preserveIntentModel = this.adapter.capabilities.modelChange === 'next_safe_boundary'
@@ -383,44 +382,44 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
         deterministicKey: string | undefined,
         operationGeneration: number,
     ): Promise<GoalProviderOpenContext | undefined> {
-        if (!request.supervisedOpen) return request.openContext;
+        if (!request.supervisedOpen) return undefined;
         const openKey = deterministicKey ?? durableCodexOpenKey(state);
         if (!openKey || !state.providerOpenAttemptId) throw new GoalSessionContractError(
             'Supervised open claim is missing its durable identity', 'OPEN_ATTEMPT_MISSING',
         );
+        const executionId = this.controlOperationId('open-execution', state);
         const claim: GoalSupervisedOpenClaim = {
-            executionId: this.controlOperationId('open-execution', state),
+            executionId,
             attemptId: state.providerOpenAttemptId,
             deterministicOpenKey: openKey,
             operationGeneration,
             operationFence: this.providerOperationFence(
-                request, operationGeneration, { kind: 'open', operationId: state.providerOpenAttemptId },
+                request, operationGeneration, {
+                    kind: 'open', operationId: state.providerOpenAttemptId,
+                    executionId, attemptId: state.providerOpenAttemptId,
+                },
             ),
         };
         const authoritative = await this.requireProviderGeneration(request, operationGeneration);
         if (authoritative.providerOpenAttemptId !== claim.attemptId) {
             throw new StaleGoalSessionFenceError('Supervised provider transport claim was durably replaced');
         }
-        const transport = await this.providerEffect(() => request.supervisedOpen!.createTransport(Object.freeze({ ...claim })));
-        return validateEagerOpenContext(this.adapter, {
-            ...request,
-            openContext: {
-                ...claim,
-                repository: request.supervisedOpen.repository,
-                requestedModel: request.supervisedOpen.requestedModel,
-                providerHomeTarget: request.supervisedOpen.providerHomeTarget,
-                credentialTargets: [...request.supervisedOpen.credentialTargets],
-                transport,
-            },
+        const transport = await this.providerFirstEffect(
+            claim.operationFence,
+            () => request.supervisedOpen!.createTransport(Object.freeze({ ...claim })),
+        );
+        return validateClaimedEagerOpenContext(this.adapter, {
+            ...claim,
+            repository: request.supervisedOpen.repository,
+            requestedModel: request.supervisedOpen.requestedModel,
+            providerHomeTarget: request.supervisedOpen.providerHomeTarget,
+            credentialTargets: [...request.supervisedOpen.credentialTargets],
+            transport,
         });
     }
 }
 
-export {
-    GoalSessionContractError,
-    StaleGoalSessionFenceError,
-    UnsupportedGoalSessionTransitionError,
-} from './errors.js';
+export { GoalSessionContractError, StaleGoalSessionFenceError, UnsupportedGoalSessionTransitionError } from './errors.js';
 export { assertCredentialFreeRecoveryMetadata } from './recoveryMetadata.js';
 export { firstPendingCorrectiveMessage } from './support.js';
 export type { RunGoalTurnRequest, RunGoalTurnResult } from './GoalTurnRunner.js';

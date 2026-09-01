@@ -32,6 +32,7 @@ export {
 export type {
     GoalContainerLayout,
     GoalContainerIsolationPolicy,
+    GoalContainerSupervisorOptions,
     GoalContainerRetentionPolicy,
     GoalContainerOutputObserver,
     GoalCredentialMount,
@@ -49,5 +50,9 @@ export { MODEL_CHANGE_SETTLED_RETRY_HORIZON } from './modelChangeProtocol.js';
 export { GOAL_RECOVERY_METADATA_CODEC_VERSION, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 export { openSupervisedCodexAppServer, SUPERVISED_CODEX_MODEL } from './CodexAppServerOpen.js';
 export { createProviderProtocolDuplex } from './providerProtocolDuplex.js';
+export { createSupervisedCodexAppServerFactory } from './supervisedCodexOpenFactory.js';
+export type {
+    GoalProviderOpenFactory, SupervisedCodexAppServerFactoryOptions,
+} from './supervisedCodexOpenFactory.js';
 export type { GoalRecoveryMetadataV1 } from './recoveryMetadata.js';
 export { decodeDurableGoalSessionState } from './durableStateSecurity.js';

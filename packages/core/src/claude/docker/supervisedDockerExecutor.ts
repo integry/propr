@@ -25,6 +25,10 @@ export interface SupervisedDockerFence {
     executionId: string;
     attemptId: string;
     worktreeFingerprint: string;
+    operationGeneration: number;
+    operationKind: 'open' | 'turn' | 'resume' | 'reconcile' | 'steer' | 'model' | 'pause' | 'cancel';
+    operationId: string;
+    operationLeaseExpiresAt?: string;
 }
 
 export interface SupervisedDockerOutput extends SupervisedDockerFence {
@@ -170,6 +174,10 @@ class OrderedBackpressureSink {
                 executionId: this.base.executionId,
                 attemptId: this.base.attemptId,
                 worktreeFingerprint: this.base.worktreeFingerprint,
+                operationGeneration: this.base.operationGeneration,
+                operationKind: this.base.operationKind,
+                operationId: this.base.operationId,
+                operationLeaseExpiresAt: this.base.operationLeaseExpiresAt,
                 sequence: this.nextSequence,
                 recordedAt: new Date().toISOString(),
                 channel,
@@ -248,6 +256,11 @@ export function addGoalFenceLabels(args: string[], fence: SupervisedDockerFence)
         '--label', `propr.goal.execution=${fence.executionId}`,
         '--label', `propr.goal.attempt=${fence.attemptId}`,
         '--label', `propr.goal.worktree-fingerprint=${fence.worktreeFingerprint}`,
+        '--label', `propr.goal.operation-generation=${fence.operationGeneration}`,
+        '--label', `propr.goal.operation-kind=${fence.operationKind}`,
+        '--label', `propr.goal.operation-id=${fence.operationId}`,
+        ...(fence.operationLeaseExpiresAt
+            ? ['--label', `propr.goal.operation-lease-expires-at=${fence.operationLeaseExpiresAt}`] : []),
         ...args.slice(1),
     ];
 }
@@ -255,7 +268,8 @@ export function addGoalFenceLabels(args: string[], fence: SupervisedDockerFence)
 function validateSupervisedOptions(args: string[], options: SupervisedDockerOptions): void {
     if (args[0] !== 'run') throw new Error('Supervised Docker execution only supports docker run');
     if (!options.goalId || !options.sessionId || !options.executionId || !options.attemptId
-        || !options.worktreeFingerprint || !Number.isSafeInteger(options.controllerEpoch)) {
+        || !options.worktreeFingerprint || !Number.isSafeInteger(options.controllerEpoch)
+        || !Number.isSafeInteger(options.operationGeneration) || !options.operationKind || !options.operationId) {
         throw new Error('A valid goal/session/controller epoch/turn fence is required');
     }
     if ((options.scope ?? 'turn') === 'turn' && !options.turnId) {
@@ -330,6 +344,10 @@ export function executeSupervisedDockerCommand(
             executionId: options.executionId,
             attemptId: options.attemptId,
             worktreeFingerprint: options.worktreeFingerprint,
+            operationGeneration: options.operationGeneration,
+            operationKind: options.operationKind,
+            operationId: options.operationId,
+            operationLeaseExpiresAt: options.operationLeaseExpiresAt,
         },
         deliver: options.durableOutput,
         streams: () => [child.stdout, child.stderr],

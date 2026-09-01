@@ -10,7 +10,6 @@ import { SUPERVISED_CODEX_MODEL } from './CodexAppServerOpen.js';
 export interface OpenGoalSessionRequest extends GoalSessionIdentity {
     provider: string;
     controllerEpoch: number;
-    openContext?: GoalProviderOpenContext;
     supervisedOpen?: GoalSupervisedOpenPlan;
 }
 
@@ -30,20 +29,15 @@ export interface GoalSupervisedOpenPlan {
     createTransport(claim: Readonly<GoalSupervisedOpenClaim>): Promise<GoalProviderDuplexTransport>;
 }
 
-export async function validateEagerOpenContext(
+export async function validateClaimedEagerOpenContext(
     adapter: Pick<GoalSessionAdapter, 'provider' | 'capabilities'>,
-    request: OpenGoalSessionRequest,
-): Promise<GoalProviderOpenContext | undefined> {
-    if (request.provider !== 'codex' || adapter.capabilities.nativeSessionId !== 'eager') {
-        if (request.openContext !== undefined) throw new GoalSessionContractError(
-            'Only eager Codex open accepts a supervised context', 'UNSAFE_PROVIDER_VALUE',
+    context: GoalProviderOpenContext,
+): Promise<GoalProviderOpenContext> {
+    if (adapter.provider !== 'codex' || adapter.capabilities.nativeSessionId !== 'eager') {
+        throw new GoalSessionContractError(
+            'Only eager Codex open accepts a claimed supervised context', 'UNSAFE_PROVIDER_VALUE',
         );
-        return undefined;
     }
-    const context = request.openContext;
-    if (!context) throw new GoalSessionContractError(
-        'Eager Codex open requires a supervised stdio context', 'OPEN_CONTEXT_MISSING',
-    );
     assertSafeProviderIdentifier(context.executionId);
     assertSafeProviderIdentifier(context.attemptId);
     if (context.requestedModel !== SUPERVISED_CODEX_MODEL) throw new GoalSessionContractError(

@@ -48,6 +48,9 @@ test('duplex Docker execution fences labels, keeps stdin open, and durably order
             executionId: 'execution-one',
             attemptId: 'attempt-one',
             worktreeFingerprint: 'worktree-one',
+            operationGeneration: 8,
+            operationKind: 'turn',
+            operationId: 'turn-one-effect',
             durableOutput: async event => {
                 await Promise.resolve();
                 output.push({ channel: event.channel, data: event.data });
@@ -96,6 +99,9 @@ test('raw durable output is a secret-free allowlist even with poisoned runtime e
         executionId: 'execution-safe-output',
         attemptId: 'attempt-safe-output',
         worktreeFingerprint: 'public-worktree-fingerprint',
+        operationGeneration: 10,
+        operationKind: 'turn' as const,
+        operationId: 'turn-safe-output-effect',
         env: { API_TOKEN: secretValues[0] },
         cwd: secretValues[2],
         request: { environment: { API_TOKEN: secretValues[0] }, command: secretValues[3] },
@@ -111,7 +117,8 @@ test('raw durable output is a secret-free allowlist even with poisoned runtime e
     assert.equal(delivered.length, 1);
     assert.deepEqual(Object.keys(delivered[0] as object).sort(), [
         'attemptId', 'channel', 'controllerEpoch', 'data', 'executionId', 'goalId',
-        'recordedAt', 'sequence', 'sessionId', 'turnId', 'worktreeFingerprint',
+        'operationGeneration', 'operationId', 'operationKind', 'operationLeaseExpiresAt', 'recordedAt', 'sequence',
+        'sessionId', 'turnId', 'worktreeFingerprint',
     ]);
     const raw = JSON.stringify(delivered[0]);
     for (const secret of secretValues) assert.ok(!raw.includes(secret), `raw delivery leaked ${secret}`);

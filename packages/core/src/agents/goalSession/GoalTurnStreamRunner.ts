@@ -1,5 +1,5 @@
 import type {
-    GoalExecutionIdentity, GoalProviderCorrectiveMessage, GoalSessionEvent,
+    GoalExecutionIdentity, GoalModelChangeIntent, GoalProviderCorrectiveMessage, GoalSessionEvent,
     GoalSessionFence, GoalSessionState,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
@@ -68,6 +68,7 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
             // leave the exact durable invocation recoverable.  Provider and
             // protocol failures have already been rebuilt as contract errors.
             if (!(error instanceof GoalSessionContractError)) throw error;
+            if (recoverableFirstTurnIdentityLoss(error, this.adapter.capabilities)) throw error;
             const message = safeFailureDiagnostic((error as Error).message, 'Provider turn failed safely');
             await this.finishTurnIfOwned(fence, execution, message);
             // Adapter creation, iterator.next/return, and provider event decoding
@@ -87,11 +88,11 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
         completed: boolean;
     }): Promise<TurnStreamProgress> {
         const { fence, execution, event, awaitingMessageIds } = options;
-        const settlesModelEvidence = needsNextTurnModelEvidence(
-            options.state, event, this.adapter.capabilities.modelChange,
+        const consumesModelEvidence = consumesNextTurnModelEvidence(
+            options.state, event, execution, this.adapter.capabilities.modelChange,
         );
         let state = await this.settleNextTurnModelEvidence(fence, execution, options.state, event);
-        if (settlesModelEvidence) return unchangedStreamProgress(state, options.completed);
+        if (consumesModelEvidence) return unchangedStreamProgress(state, options.completed);
         if (options.completed) {
             throw new GoalSessionContractError('Provider emitted an event after turn completion', 'EVENT_AFTER_COMPLETION');
         }
@@ -101,6 +102,7 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
             return unchangedStreamProgress(state, false);
         }
         assertSuppliedMessagesAcknowledged(event, awaitingMessageIds);
+        if (event.type === 'completion') assertExactNextTurnModelEvidence(state, execution);
         if (event.type === 'completion' && this.adapter.capabilities.pause === 'after_turn') {
             state = await this.requireActiveAttemptState(fence, execution);
         }
@@ -146,8 +148,17 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
         const invocation = state.activeTurn.modelChange;
         const durableIntent = immediateModelIntents(state).find(intent =>
             intent.modelChangeId === invocation.modelChangeId && intent.generation === invocation.generation);
-        if (durableIntent?.invocationEvidence) return state;
         const occurrenceId = invocationEvidenceOccurrence(event);
+        if (durableIntent?.invocationEvidence) {
+            const evidence = durableIntent.invocationEvidence;
+            if (event.type !== 'model_changed') return state;
+            if (occurrenceId === evidence.occurrenceId && event.model === evidence.effectiveModel
+                && evidence.executionId === execution.executionId && evidence.attemptId === execution.attemptId) return state;
+            throw new GoalSessionContractError(
+                'Deferred model evidence belongs to a different provider occurrence or attempt',
+                'MODEL_EVIDENCE_MISMATCH',
+            );
+        }
         if (!occurrenceId) return state;
         if (!durableIntent) throw new GoalSessionContractError(
             'Deferred model intent disappeared before invocation evidence', 'MODEL_EVIDENCE_MISSING',
@@ -156,6 +167,21 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
             throw new GoalSessionContractError(
                 'Provider effective model does not match the deferred model intent', 'MODEL_ACK_MISMATCH',
             );
+        }
+        if (sameHistoricalModelOccurrence(durableIntent, event, occurrenceId)) {
+            const rebound = {
+                ...durableIntent,
+                invocationEvidence: modelInvocationEvidence(durableIntent, execution, occurrenceId, event.model),
+            };
+            return this.updateActiveTurnState(fence, execution, value => ({
+                currentModel: rebound.model,
+                pendingModelChange: value.modelChangeIntent?.modelChangeId === rebound.modelChangeId
+                    ? undefined : value.pendingModelChange,
+                modelChangeIntent: value.modelChangeIntent?.modelChangeId === rebound.modelChangeId
+                    ? rebound : value.modelChangeIntent,
+                modelChangeIntents: immediateModelIntents(value).map(intent =>
+                    intent.modelChangeId === rebound.modelChangeId ? rebound : intent),
+            }));
         }
         const acknowledgement = {
             outcome: 'acknowledged' as const,
@@ -167,15 +193,7 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
             ...durableIntent,
             phase: 'committed' as const,
             acknowledgement,
-            invocationEvidence: {
-                ...execution,
-                modelChangeId: durableIntent.modelChangeId,
-                generation: durableIntent.generation!,
-                occurrenceId,
-                requestedModel: durableIntent.model,
-                effectiveModel: event.model,
-                acceptedAt: new Date().toISOString(),
-            },
+            invocationEvidence: modelInvocationEvidence(durableIntent, execution, occurrenceId, event.model),
         };
         const saved = await this.commitTurnTransition({
             state, fence, execution,
@@ -292,6 +310,14 @@ export abstract class GoalTurnStreamRunner extends GoalSessionCore {
     }
 }
 
+function recoverableFirstTurnIdentityLoss(
+    error: GoalSessionContractError,
+    capabilities: GoalSessionCore['adapter']['capabilities'],
+): boolean {
+    return error.code === 'FIRST_TURN_ID_NOT_BOUND' && capabilities.nativeSessionId === 'first_turn'
+        && capabilities.firstTurnIdCrashPolicy === 'retry_deterministically';
+}
+
 function stopsAtActivePause(event: GoalSessionEvent, pause: 'active_turn' | 'after_turn'): boolean {
     return event.type === 'pause_boundary' && pause === 'active_turn';
 }
@@ -302,15 +328,60 @@ function invocationEvidenceOccurrence(event: GoalSessionEvent): string | undefin
         : undefined;
 }
 
-function needsNextTurnModelEvidence(
+function sameHistoricalModelOccurrence(
+    intent: GoalModelChangeIntent,
+    event: Extract<GoalSessionEvent, { type: 'model_changed' }>,
+    occurrenceId: string,
+): boolean {
+    const previous = intent.previousInvocationEvidence;
+    return previous?.modelChangeId === intent.modelChangeId && previous.generation === intent.generation
+        && previous.occurrenceId === occurrenceId && previous.requestedModel === intent.model
+        && previous.effectiveModel === event.model;
+}
+
+function modelInvocationEvidence(
+    intent: GoalModelChangeIntent,
+    execution: GoalExecutionIdentity,
+    occurrenceId: string,
+    effectiveModel: string,
+) {
+    return {
+        ...execution, modelChangeId: intent.modelChangeId, generation: intent.generation!, occurrenceId,
+        requestedModel: intent.model, effectiveModel, acceptedAt: new Date().toISOString(),
+    };
+}
+
+function consumesNextTurnModelEvidence(
     state: GoalSessionState,
     event: GoalSessionEvent,
+    execution: GoalExecutionIdentity,
     capability: 'next_safe_boundary' | 'next_turn',
 ): boolean {
     if (event.type !== 'model_changed' || capability !== 'next_turn' || !state.activeTurn?.modelChange) return false;
     const invocation = state.activeTurn.modelChange;
-    return !immediateModelIntents(state).find(intent =>
+    const evidence = immediateModelIntents(state).find(intent =>
         intent.modelChangeId === invocation.modelChangeId)?.invocationEvidence;
+    if (!evidence) return true;
+    const occurrenceId = invocationEvidenceOccurrence(event);
+    return evidence.executionId === execution.executionId && evidence.attemptId === execution.attemptId
+        && evidence.occurrenceId === occurrenceId && evidence.effectiveModel === event.model;
+}
+
+function assertExactNextTurnModelEvidence(state: GoalSessionState, execution: GoalExecutionIdentity): void {
+    const invocation = state.activeTurn?.modelChange;
+    if (!invocation) return;
+    const intent = immediateModelIntents(state).find(candidate =>
+        candidate.modelChangeId === invocation.modelChangeId && candidate.generation === invocation.generation);
+    const evidence = intent?.invocationEvidence;
+    if (!intent || intent.phase !== 'committed' || intent.acknowledgement?.appliesAt !== 'next_turn'
+        || intent.acknowledgement.outcome !== 'acknowledged'
+        || evidence?.executionId !== execution.executionId || evidence.attemptId !== execution.attemptId
+        || evidence.modelChangeId !== invocation.modelChangeId || evidence.generation !== invocation.generation
+        || evidence.requestedModel !== intent.model || evidence.effectiveModel !== intent.model) {
+        throw new GoalSessionContractError(
+            'Turn completion lacks exact authoritative next-turn model evidence', 'MODEL_EVIDENCE_MISSING',
+        );
+    }
 }
 
 function unchangedStreamProgress(state: GoalSessionState, completed: boolean): TurnStreamProgress {

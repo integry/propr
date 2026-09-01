@@ -6,7 +6,7 @@ import type {
     GoalSessionEvent,
     GoalSessionJsonValue,
 } from './contract.js';
-import { GoalSessionContractError } from './errors.js';
+import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { sanitizeNewRecoveryMetadata } from './recoveryMetadata.js';
 import { safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
 
@@ -19,6 +19,7 @@ export async function untrustedProviderResult<T, R>(
     try {
         return rebuild(await effect());
     } catch (error) {
+        if (error instanceof StaleGoalSessionFenceError) throw error;
         throw safeProviderException(error);
     }
 }

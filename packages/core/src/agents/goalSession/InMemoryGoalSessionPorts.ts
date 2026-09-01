@@ -5,6 +5,8 @@ import type {
     GoalExecutionIdentity,
     GoalRepositoryIdentity,
     GoalRepositoryInspection,
+    GoalProviderFirstEffectPort,
+    GoalProviderOperationFence,
     GoalSessionControlFence,
     GoalSessionControlTransition,
     GoalSessionEvent,
@@ -26,6 +28,7 @@ import {
     matchesLiveMessageFence, matchesTransitionLiveFence, terminalCommitKey, transitionCommitKey,
 } from './inMemoryGoalSessionFences.js';
 import { sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { assertProviderFirstEffectState } from './providerFirstEffect.js';
 
 export class GoalSessionScopeError extends Error {
     constructor(message = 'A provider session is owned by a different goal') {
@@ -58,6 +61,7 @@ export class InMemoryGoalSessionPorts implements
     GoalSessionEventSink,
     GoalSessionMessagePort,
     GoalSessionRecoveryPort,
+    GoalProviderFirstEffectPort,
     GoalSessionTerminalPort,
     GoalSessionTransitionPort {
     /** Marks this implementation as an ephemeral test/embedding double, never durable storage. */
@@ -79,7 +83,14 @@ export class InMemoryGoalSessionPorts implements
         return {
             state: this, transitions: this, events: this, terminal: this,
             messages: this, recovery: this, modelChanges: this.modelChangeHistory,
+            providerFirstEffects: this,
         };
+    }
+
+    async start<T>(fence: GoalProviderOperationFence, effect: () => T): Promise<Awaited<T>> {
+        const state = this.states.get(keyOf(fence));
+        assertProviderFirstEffectState(state ? clone(state) : null, fence);
+        return effect() as Awaited<T>;
     }
 
     async load(identity: GoalSessionIdentity): Promise<GoalSessionState | null> {

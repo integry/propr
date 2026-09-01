@@ -228,6 +228,7 @@ function decodeModelIntent(value: unknown): GoalModelChangeIntent {
     const input = record(value, [
         'modelChangeId', 'model', 'requestedAt', 'generation', 'previousModel', 'phase', 'applicationToken',
         'applicationControllerEpoch', 'leaseExpiresAt', 'acknowledgement', 'invocationEvidence',
+        'previousInvocationEvidence',
     ], 'modelChangeIntent');
     const result: GoalModelChangeIntent = {
         modelChangeId: id(input.modelChangeId, 'modelChangeIntent.modelChangeId'), model: id(input.model, 'modelChangeIntent.model'),
@@ -241,22 +242,31 @@ function decodeModelIntent(value: unknown): GoalModelChangeIntent {
     if (input.leaseExpiresAt !== undefined) result.leaseExpiresAt = timestamp(input.leaseExpiresAt, 'modelChangeIntent.leaseExpiresAt');
     if (input.acknowledgement !== undefined) result.acknowledgement = decodeAcknowledgement(input.acknowledgement);
     if (input.invocationEvidence !== undefined) {
-        const evidence = record(input.invocationEvidence, [
-            'executionId', 'attemptId', 'modelChangeId', 'generation', 'occurrenceId',
-            'requestedModel', 'effectiveModel', 'acceptedAt',
-        ], 'modelChangeIntent.invocationEvidence');
-        result.invocationEvidence = {
-            executionId: id(evidence.executionId, 'invocationEvidence.executionId'),
-            attemptId: id(evidence.attemptId, 'invocationEvidence.attemptId'),
-            modelChangeId: id(evidence.modelChangeId, 'invocationEvidence.modelChangeId'),
-            generation: integer(evidence.generation, 'invocationEvidence.generation'),
-            occurrenceId: id(evidence.occurrenceId, 'invocationEvidence.occurrenceId'),
-            requestedModel: id(evidence.requestedModel, 'invocationEvidence.requestedModel'),
-            effectiveModel: id(evidence.effectiveModel, 'invocationEvidence.effectiveModel'),
-            acceptedAt: timestamp(evidence.acceptedAt, 'invocationEvidence.acceptedAt'),
-        };
+        result.invocationEvidence = decodeInvocationEvidence(input.invocationEvidence, 'invocationEvidence');
+    }
+    if (input.previousInvocationEvidence !== undefined) {
+        result.previousInvocationEvidence = decodeInvocationEvidence(
+            input.previousInvocationEvidence, 'previousInvocationEvidence',
+        );
     }
     return result;
+}
+
+function decodeInvocationEvidence(value: unknown, name: string): NonNullable<GoalModelChangeIntent['invocationEvidence']> {
+    const evidence = record(value, [
+        'executionId', 'attemptId', 'modelChangeId', 'generation', 'occurrenceId',
+        'requestedModel', 'effectiveModel', 'acceptedAt',
+    ], `modelChangeIntent.${name}`);
+    return {
+        executionId: id(evidence.executionId, `${name}.executionId`),
+        attemptId: id(evidence.attemptId, `${name}.attemptId`),
+        modelChangeId: id(evidence.modelChangeId, `${name}.modelChangeId`),
+        generation: integer(evidence.generation, `${name}.generation`),
+        occurrenceId: id(evidence.occurrenceId, `${name}.occurrenceId`),
+        requestedModel: id(evidence.requestedModel, `${name}.requestedModel`),
+        effectiveModel: id(evidence.effectiveModel, `${name}.effectiveModel`),
+        acceptedAt: timestamp(evidence.acceptedAt, `${name}.acceptedAt`),
+    };
 }
 
 function decodeAcknowledgement(value: unknown): GoalModelChangeAcknowledgement {

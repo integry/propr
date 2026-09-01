@@ -1,5 +1,5 @@
 import type {
-    GoalContainerInspection, GoalModelChangeHistoryPort, GoalRepositoryIdentity,
+    GoalContainerInspection, GoalModelChangeHistoryPort, GoalProviderFirstEffectPort, GoalRepositoryIdentity,
     GoalRepositoryInspection, GoalSessionEventSink, GoalSessionIdentity,
     GoalSessionMessagePort, GoalSessionStatePort, GoalSessionTerminalPort,
     GoalSessionTransitionPort,
@@ -18,4 +18,6 @@ export interface GoalSessionRuntimePorts {
     messages: GoalSessionMessagePort;
     recovery: GoalSessionRecoveryPort;
     modelChanges: GoalModelChangeHistoryPort;
+    /** Same authoritative transaction domain as state; never a process-local mutex. */
+    providerFirstEffects: GoalProviderFirstEffectPort;
 }

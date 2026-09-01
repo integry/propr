@@ -26,6 +26,9 @@ import {
 } from './support.js';
 import { completesAtAfterTurnPause, needsAfterTurnPauseAudit } from './turnCompletionProtocol.js';
 import { controlOperationId, mintFreshAttemptId } from './controlOperationIdentity.js';
+import {
+    createProviderOperationFence, createProviderResumeRequest, providerFirstEffectStream,
+} from './providerEffectProtocol.js';
 
 /**
  * Low-level, fenced state and event primitives shared by every high-level goal
@@ -111,31 +114,16 @@ export abstract class GoalSessionCore {
     }
 
     protected providerResumeRequest(fence: GoalSessionControlFence, intent: GoalResumeIntent): GoalProviderResumeRequest {
-        return {
-            goalId: fence.goalId, sessionId: fence.sessionId, controllerEpoch: fence.controllerEpoch,
-            operationId: intent.operationId, operationGeneration: intent.operationGeneration,
-            operationPhase: intent.phase === 'settled' ? 'settled' : 'provider_in_doubt', kind: intent.kind,
-            operationLeaseExpiresAt: intent.leaseExpiresAt,
-            operationFence: this.providerOperationFence(
-                fence, intent.operationGeneration,
-                { kind: 'resume', operationId: intent.operationId, leaseExpiresAt: intent.leaseExpiresAt },
-            ),
-        };
+        return createProviderResumeRequest(fence, intent);
     }
 
     protected providerOperationFence(
-        identity: GoalSessionIdentity,
+        identity: GoalSessionControlFence,
         generation: number,
-        operation: Pick<GoalProviderOperationFence, 'kind' | 'operationId' | 'leaseExpiresAt'>,
+        operation: Pick<GoalProviderOperationFence, 'kind' | 'operationId' | 'leaseExpiresAt'>
+            & Partial<Pick<GoalProviderOperationFence, 'turnId' | 'executionId' | 'attemptId'>>,
     ): GoalProviderOperationFence {
-        return {
-            goalId: identity.goalId,
-            sessionId: identity.sessionId,
-            generation,
-            kind: operation.kind,
-            operationId: operation.operationId,
-            leaseExpiresAt: operation.leaseExpiresAt,
-        };
+        return createProviderOperationFence(identity, generation, operation);
     }
 
     protected async publishProviderOperationBarrier(
@@ -164,6 +152,21 @@ export abstract class GoalSessionCore {
         }
     }
 
+    /** Starts the primitive while the authoritative state row is transaction-locked. */
+    protected async providerFirstEffect<T>(
+        fence: GoalProviderOperationFence,
+        effect: () => T,
+    ): Promise<Awaited<T>> {
+        return this.ports.providerFirstEffects.start(fence, effect);
+    }
+
+    protected providerFirstEffectStream<T>(
+        fence: GoalProviderOperationFence,
+        create: () => AsyncIterable<T>,
+    ): AsyncIterable<T> {
+        return providerFirstEffectStream(this.ports.providerFirstEffects, fence, create);
+    }
+
     protected async providerResult<T, R>(
         effect: () => T | Promise<T>,
         rebuild: (value: Awaited<T>) => R,
@@ -178,7 +181,10 @@ export abstract class GoalSessionCore {
     ): GoalProviderOperationFence {
         return this.providerOperationFence(
             fence, generation,
-            { kind: 'turn', operationId: `${fence.turnId}:${execution.executionId}:${execution.attemptId}` },
+            {
+                kind: 'turn', operationId: `${fence.turnId}:${execution.executionId}:${execution.attemptId}`,
+                turnId: fence.turnId, executionId: execution.executionId, attemptId: execution.attemptId,
+            },
         );
     }
 
