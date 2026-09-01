@@ -26,8 +26,10 @@ function Write-FixtureCleanupValidationPhase([string]$Phase) {
       $cleanupValidationPhases -cnotcontains $Phase) {
     return
   }
+  # Diagnostic success is deliberately silent; only validation exit 20 emits
+  # this single bounded child-protocol line for supervisor parsing.
   [Console]::Out.WriteLine(
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:CLEANUP_VALIDATION_PHASE:' + $Phase
+    'CLEANUP_VALIDATION_PHASE:' + $Phase
   )
   [Console]::Out.Flush()
 }

@@ -760,6 +760,37 @@ describe('desktop trusted release workflow', () => {
       /if \(\$fixtureNoMarkerDiagnostic\)[\s\S]*-FixtureValidationDiagnostic/,
     );
     assert.match(
+      installedWindowsAppSupervisor,
+      /if \(\$fixtureNoMarkerDiagnostic\) \{[\s\S]*RedirectStandardOutput = \$true[\s\S]*RedirectStandardError = \$true/,
+    );
+    assert.ok(
+      installedWindowsAppSupervisor.indexOf('$cleanupJob.AddProcess($cleanupProcess.Handle)')
+        < installedWindowsAppSupervisor.indexOf('[void]$cleanupReadyEvent.Set()'),
+      'cleanup diagnostic child must enter its Job Object before ownership release',
+    );
+    assert.ok(
+      installedWindowsAppSupervisor.indexOf('[void]$cleanupReadyEvent.Set()')
+        < installedWindowsAppSupervisor.indexOf('$cleanupDiagnosticDrain.Start($cleanupProcess)'),
+      'cleanup diagnostic ownership must be released before redirected stream drains begin',
+    );
+    assert.match(installedWindowsAppSupervisor, /class ProPRCleanupDiagnosticDrain/);
+    assert.match(installedWindowsAppSupervisor, /StandardOutputByteLimit = 96/);
+    assert.match(installedWindowsAppSupervisor, /StandardOutputLineLimit = 1/);
+    assert.match(installedWindowsAppSupervisor, /StandardErrorByteLimit = 0/);
+    assert.match(installedWindowsAppSupervisor, /StandardErrorLineLimit = 0/);
+    assert.match(
+      installedWindowsAppSupervisor,
+      /\\ACLEANUP_VALIDATION_PHASE:[\s\S]*INITIAL_ACTIVE_MATCH\)\\r\?\\n\\z/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /\[Console\]::Out\.WriteLine\(\s*'CLEANUP_VALIDATION_PHASE:' \+ \$Phase/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppCleanup,
+      /\[Console\]::Out\.WriteLine\([\s\S]{0,120}PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:CLEANUP_VALIDATION_PHASE/,
+    );
+    assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /CLEANUP_VALIDATION_PHASE:[\s\S]*HANDSHAKE\|FILE_AUTHORITY\|UTF8_SCHEMA\|LIFETIME\|RUN_ID\|INSTALLER_PATH\|/,
     );

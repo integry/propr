@@ -84,11 +84,13 @@ $fixtureCleanupChildExitCategory = 'OTHER'
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 
@@ -355,6 +357,125 @@ public static class ProPRBoundedMarkerReader
         catch (UnauthorizedAccessException) { return Result(ProPRMarkerReadState.Inaccessible); }
         catch (IOException) { return Result(ProPRMarkerReadState.Inaccessible); }
         catch { return Result(ProPRMarkerReadState.Invalid); }
+    }
+}
+
+public sealed class ProPRCleanupDiagnosticDrainResult
+{
+    public long StandardOutputBytes;
+    public long StandardOutputLines;
+    public byte[] StandardOutput;
+    public long StandardErrorBytes;
+    public long StandardErrorLines;
+}
+
+public sealed class ProPRCleanupDiagnosticDrain : IDisposable
+{
+    public const int StandardOutputByteLimit = 96;
+    public const int StandardOutputLineLimit = 1;
+    public const int StandardErrorByteLimit = 0;
+    public const int StandardErrorLineLimit = 0;
+
+    private sealed class PumpResult
+    {
+        public long Bytes;
+        public long Lines;
+        public byte[] Captured;
+    }
+
+    private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
+    private Stream standardOutput;
+    private Stream standardError;
+    private Task<PumpResult> standardOutputTask;
+    private Task<PumpResult> standardErrorTask;
+
+    private static async Task<PumpResult> Pump(
+        Stream stream,
+        int byteLimit,
+        int lineLimit,
+        CancellationToken token)
+    {
+        var buffer = new byte[64];
+        using (var captured = new MemoryStream(byteLimit + 1))
+        {
+            long bytes = 0;
+            long lines = 0;
+            while (true)
+            {
+                int count = await stream.ReadAsync(
+                    buffer, 0, buffer.Length, token).ConfigureAwait(false);
+                if (count == 0)
+                {
+                    return new PumpResult {
+                        Bytes = bytes,
+                        Lines = lines,
+                        Captured = captured.ToArray()
+                    };
+                }
+                bytes = Math.Min((long)byteLimit + 1, bytes + count);
+                for (int index = 0; index < count; index++)
+                    if (buffer[index] == (byte)'\n')
+                        lines = Math.Min((long)lineLimit + 1, lines + 1);
+                int remaining = byteLimit + 1 - checked((int)captured.Length);
+                if (remaining > 0)
+                    captured.Write(buffer, 0, Math.Min(remaining, count));
+            }
+        }
+    }
+
+    public void Start(Process process)
+    {
+        if (standardOutputTask != null || standardErrorTask != null)
+            throw new InvalidOperationException("diagnostic drain was already started");
+        standardOutput = process.StandardOutput.BaseStream;
+        standardError = process.StandardError.BaseStream;
+        standardOutputTask = Pump(
+            standardOutput,
+            StandardOutputByteLimit,
+            StandardOutputLineLimit,
+            cancellation.Token);
+        standardErrorTask = Pump(
+            standardError,
+            StandardErrorByteLimit,
+            StandardErrorLineLimit,
+            cancellation.Token);
+    }
+
+    public ProPRCleanupDiagnosticDrainResult Finish(int timeoutMilliseconds)
+    {
+        if (standardOutputTask == null || standardErrorTask == null)
+            throw new InvalidOperationException("diagnostic drain was not started");
+        Task all = Task.WhenAll(standardOutputTask, standardErrorTask);
+        if (!all.Wait(timeoutMilliseconds)) return null;
+        if (standardOutputTask.IsFaulted || standardOutputTask.IsCanceled ||
+            standardErrorTask.IsFaulted || standardErrorTask.IsCanceled)
+            throw new InvalidOperationException("diagnostic drain failed");
+        PumpResult output = standardOutputTask.Result;
+        PumpResult error = standardErrorTask.Result;
+        return new ProPRCleanupDiagnosticDrainResult {
+            StandardOutputBytes = output.Bytes,
+            StandardOutputLines = output.Lines,
+            StandardOutput = output.Captured,
+            StandardErrorBytes = error.Bytes,
+            StandardErrorLines = error.Lines
+        };
+    }
+
+    public bool CancelAndFinish(int timeoutMilliseconds)
+    {
+        cancellation.Cancel();
+        try { if (standardOutput != null) standardOutput.Dispose(); } catch { }
+        try { if (standardError != null) standardError.Dispose(); } catch { }
+        if (standardOutputTask == null || standardErrorTask == null) return true;
+        try { Task.WhenAll(standardOutputTask, standardErrorTask).Wait(timeoutMilliseconds); }
+        catch { }
+        return standardOutputTask.IsCompleted && standardErrorTask.IsCompleted;
+    }
+
+    public void Dispose()
+    {
+        CancelAndFinish(1000);
+        cancellation.Dispose();
     }
 }
 '@
@@ -688,6 +809,7 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
   $cleanupJob = $null
   $cleanupProcess = $null
   $cleanupReadyEvent = $null
+  $cleanupDiagnosticDrain = $null
   try {
     $cleanupReadyEventName = "Local\ProPRInstalledAppCleanup-$([Guid]::NewGuid().ToString('N'))"
     $cleanupReadyEvent = [Threading.EventWaitHandle]::new(
@@ -717,15 +839,23 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
     }
     if ($fixtureNoMarkerDiagnostic) {
       $cleanupStartInfo.ArgumentList.Add('-FixtureValidationDiagnostic')
+      $cleanupStartInfo.RedirectStandardOutput = $true
+      $cleanupStartInfo.RedirectStandardError = $true
     }
 
     $cleanupJob = [ProPRKillOnCloseJob]::new()
+    if ($fixtureNoMarkerDiagnostic) {
+      $cleanupDiagnosticDrain = [ProPRCleanupDiagnosticDrain]::new()
+    }
     $cleanupProcess = [Diagnostics.Process]::new()
     $cleanupProcess.StartInfo = $cleanupStartInfo
     if (!$cleanupProcess.Start()) { throw 'post-termination cleanup did not start' }
     try {
       $cleanupJob.AddProcess($cleanupProcess.Handle)
       [void]$cleanupReadyEvent.Set()
+      if ($fixtureNoMarkerDiagnostic) {
+        $cleanupDiagnosticDrain.Start($cleanupProcess)
+      }
     } catch {
       try { $cleanupProcess.Kill($true) } catch {}
       throw 'post-termination cleanup ownership failed'
@@ -746,6 +876,56 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
       ([int]$cleanupProcess.ExitCode).ToString(
         [Globalization.CultureInfo]::InvariantCulture)
     } else { 'OTHER' }
+    if ($fixtureNoMarkerDiagnostic) {
+      # The fixture protocol permits exactly one bounded phase line for exit 20.
+      # Exit 0 is the explicitly defined zero-byte success protocol. Any other
+      # child output leaves recovery authority in place and fails closed.
+      $diagnosticDrainResult = $cleanupDiagnosticDrain.Finish(
+        $WatchdogTerminationMilliseconds)
+      if ($null -eq $diagnosticDrainResult -or
+          $diagnosticDrainResult.StandardErrorBytes -ne 0 -or
+          $diagnosticDrainResult.StandardErrorLines -ne 0 -or
+          $diagnosticDrainResult.StandardOutputBytes -gt
+            [ProPRCleanupDiagnosticDrain]::StandardOutputByteLimit -or
+          $diagnosticDrainResult.StandardOutputLines -gt
+            [ProPRCleanupDiagnosticDrain]::StandardOutputLineLimit) {
+        Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
+        return $false
+      }
+      if ($cleanupProcess.ExitCode -eq 0) {
+        if ($diagnosticDrainResult.StandardOutputBytes -ne 0 -or
+            $diagnosticDrainResult.StandardOutputLines -ne 0) {
+          Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
+          return $false
+        }
+      } elseif ($cleanupProcess.ExitCode -eq 20) {
+        $diagnosticBytes = [byte[]]$diagnosticDrainResult.StandardOutput
+        if ($diagnosticDrainResult.StandardOutputLines -ne 1 -or
+            @($diagnosticBytes | Where-Object { $_ -gt 0x7f }).Count -ne 0) {
+          Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
+          return $false
+        }
+        $diagnosticMatch = [regex]::Match(
+          [Text.Encoding]::ASCII.GetString($diagnosticBytes),
+          ('\ACLEANUP_VALIDATION_PHASE:' +
+            '(HANDSHAKE|FILE_AUTHORITY|UTF8_SCHEMA|LIFETIME|RUN_ID|' +
+            'INSTALLER_PATH|FIXTURE_SCOPE|INITIAL_ACTIVE_MATCH)\r?\n\z'),
+          [Text.RegularExpressions.RegexOptions]::CultureInvariant
+        )
+        if (!$diagnosticMatch.Success) {
+          Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
+          return $false
+        }
+        Write-WatchdogLine (
+          'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:CLEANUP_VALIDATION_PHASE:' +
+          $diagnosticMatch.Groups[1].Value
+        )
+      } elseif ($diagnosticDrainResult.StandardOutputBytes -ne 0 -or
+          $diagnosticDrainResult.StandardOutputLines -ne 0) {
+        Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
+        return $false
+      }
+    }
     if ($cleanupProcess.ExitCode -ne 0) {
       Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
       return $false
@@ -756,9 +936,11 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
     Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
     return $false
   } finally {
-    if ($null -ne $cleanupJob) { $cleanupJob.Dispose() }
-    if ($null -ne $cleanupProcess) { $cleanupProcess.Dispose() }
-    if ($null -ne $cleanupReadyEvent) { $cleanupReadyEvent.Dispose() }
+    foreach ($resource in @(
+      $cleanupDiagnosticDrain, $cleanupJob, $cleanupProcess, $cleanupReadyEvent
+    )) {
+      if ($null -ne $resource) { try { $resource.Dispose() } catch {} }
+    }
   }
 }
 
