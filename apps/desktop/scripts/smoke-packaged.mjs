@@ -18,24 +18,28 @@ import {
 } from '@electron/fuses';
 import { assertPackagedLayout } from './packaged-layout.mjs';
 import {
+  createPackagedSmokeLaunch,
+  LAYOUT_READY_EVENT,
+  MVP_FLOWS_PROOF,
+  PACKAGED_SMOKE_LAUNCH_MODES,
+  REDUCED_NATIVE_WINDOW_READY_EVENT,
+  TRANSPORT_PROOF,
+  TRANSPORT_SMOKE_ENVIRONMENT_NAMES,
+} from './packaged-smoke-plan.mjs';
+import {
   assertPackagedNativeWindowSizing,
   createPrivateSmokeProfile,
   createSmokeChildEnvironment,
   removePrivateSmokeProfile,
 } from './packaged-smoke-support.mjs';
 
-const READY_EVENT = 'desktop.renderer.ready';
-const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
-const TRANSPORT_PROOF = 'desktop.renderer.transport_smoke.ready';
-const MVP_FLOWS_PROOF = 'desktop.renderer.mvp_flows.ready';
-const LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
-const REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_window.ready';
 const MAIN_PROCESS_ERROR_MARKERS = [
   'desktop.main_process.uncaught_exception',
   'A JavaScript error occurred in the main process',
   'Uncaught Exception:',
 ];
 const TIMEOUT_MS = 45_000;
+const RELEASE_GUARD_TIMEOUT_MS = 30_000;
 const INVALID_INSTANCE_TOKEN = 'INVALID_INSTANCE_TOKEN';
 const binaryPath = process.platform === 'darwin'
   ? resolve('out', `propr-desktop-darwin-${process.arch}`, 'propr-desktop.app', 'Contents', 'MacOS', 'propr-desktop')
@@ -54,18 +58,19 @@ if (process.platform === 'win32') {
   }
 }
 
-const parseEventLayout = (smokeOutput, expectedEvent) => {
+const parseEventRecord = (smokeOutput, expectedEvent) => {
   for (const line of smokeOutput.split(/\r?\n/)) {
     if (!line.includes(expectedEvent)) continue;
     try {
       const record = JSON.parse(line.slice(line.indexOf('{')));
-      if (record.event === expectedEvent) return record.layout;
+      if (record.event === expectedEvent) return record;
     } catch {
       // Ignore non-JSON Chromium output that happens to mention the event name.
     }
   }
   return undefined;
 };
+const parseEventLayout = (smokeOutput, expectedEvent) => parseEventRecord(smokeOutput, expectedEvent)?.layout;
 
 await access(binaryPath);
 
@@ -124,6 +129,43 @@ const discovery = JSON.stringify({
     socketIoBearerAuthentication: true,
   },
 });
+
+const profileApiRequests = [];
+const profileApiServer = createServer((request, response) => {
+  const record = {
+    method: request.method,
+    url: request.url,
+    origin: request.headers.origin ?? null,
+  };
+  profileApiRequests.push(record);
+  if (
+    record.method !== 'GET'
+    || !['/api/compatibility', '/api/desktop/discovery'].includes(record.url ?? '')
+    || record.origin !== DESKTOP_RENDERER_ORIGIN
+  ) {
+    response.writeHead(403, { 'Content-Type': 'application/json' });
+    response.end('{"error":"CORS origin rejected"}');
+    return;
+  }
+  response.writeHead(200, {
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Origin': DESKTOP_RENDERER_ORIGIN,
+    'Content-Type': 'application/json',
+  });
+  response.end(record.url === '/api/desktop/discovery'
+    ? '{"product":"ProPR","desktopAuthentication":{"protocolVersion":1}}'
+    : '{"profileEndpoint":true}');
+});
+
+const listenProfileApiFixture = async () => {
+  profileApiServer.listen(0, '127.0.0.1');
+  await once(profileApiServer, 'listening');
+  const address = profileApiServer.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Packaged desktop release-guard profile API did not bind to a TCP port');
+  }
+  return `http://127.0.0.1:${address.port}`;
+};
 
 const listenFixture = async name => {
   const server = createServer((request, response) => {
@@ -235,8 +277,9 @@ const scanPathsForSecrets = async (paths, secrets) => {
   return false;
 };
 
-const first = await listenFixture('first');
-const second = await listenFixture('second');
+let first;
+let second;
+let profileApiOrigin;
 const runs = [];
 const smokeProfiles = [];
 const shutdownSteps = [
@@ -261,36 +304,38 @@ const launch = async mode => {
   const smokeProfile = await createPrivateSmokeProfile();
   smokeProfiles.push(smokeProfile);
   const userDataPath = smokeProfile.userData;
-  const launchArguments = [
-    '--disable-gpu',
-    '--propr-smoke-test',
-    `--user-data-dir=${userDataPath}`,
-    ...(process.platform === 'linux' ? ['--password-store=gnome-libsecret'] : []),
-  ];
-  if (launchArguments.some(argument => argument === '--no-sandbox' || argument === '--disable-sandbox')) {
-    throw new Error('The packaged-binary smoke test must not disable Electron sandboxing');
-  }
-  const requestStart = requests.length;
-  let output = '';
+  const transport = mode !== 'release-guard';
   const baseChildEnvironment = await createSmokeChildEnvironment({
     profile: smokeProfile,
-    profileApiUrl: first.origin,
+    profileApiUrl: transport ? first.origin : profileApiOrigin,
   });
   const dbusSessionAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
-  if (process.platform === 'linux' && (
+  if (transport && process.platform === 'linux' && (
     typeof dbusSessionAddress !== 'string'
     || dbusSessionAddress.length > 4096
     || !/^unix:path=\/[^\0\r\n,]+(?:,guid=[0-9a-f]{32})?$/.test(dbusSessionAddress)
   )) {
     throw new Error('Packaged Linux transport smoke requires one validated D-Bus session address');
   }
-  const childEnvironment = {
-    ...baseChildEnvironment,
-    ...(process.platform === 'linux' ? { DBUS_SESSION_BUS_ADDRESS: dbusSessionAddress } : {}),
-    PROPR_DESKTOP_SMOKE_FIRST_ORIGIN: first.origin,
-    PROPR_DESKTOP_SMOKE_SECOND_ORIGIN: second.origin,
-    PROPR_DESKTOP_SMOKE_SHUTDOWN_MODE: mode,
-  };
+  const launchPlan = createPackagedSmokeLaunch({
+    mode,
+    platform: process.platform,
+    userDataPath,
+    baseChildEnvironment,
+    firstOrigin: first.origin,
+    secondOrigin: second.origin,
+    dbusSessionAddress,
+  });
+  const { childEnvironment, launchArguments, requiredMarkers } = launchPlan;
+  if (launchArguments.some(argument => argument === '--no-sandbox' || argument === '--disable-sandbox')) {
+    throw new Error('The packaged-binary smoke test must not disable Electron sandboxing');
+  }
+  if (!transport && TRANSPORT_SMOKE_ENVIRONMENT_NAMES.some(name => Object.hasOwn(childEnvironment, name))) {
+    throw new Error('Packaged desktop release-guard launch inherited a transport-smoke environment variable');
+  }
+  const requestStart = requests.length;
+  const profileApiRequestStart = profileApiRequests.length;
+  let output = '';
   const child = spawn(binaryPath, launchArguments, {
     cwd: smokeProfile.root,
     env: childEnvironment,
@@ -306,10 +351,11 @@ const launch = async mode => {
   child.stdout.on('data', capture);
   child.stderr.on('data', capture);
   const result = await new Promise((resolveResult, reject) => {
+    const timeoutMs = transport ? TIMEOUT_MS : RELEASE_GUARD_TIMEOUT_MS;
     const timeout = setTimeout(() => {
       child.kill('SIGKILL');
-      reject(new Error(`Packaged desktop ${mode} smoke exceeded ${TIMEOUT_MS / 1000} seconds`));
-    }, TIMEOUT_MS);
+      reject(new Error(`Packaged desktop ${mode} smoke exceeded ${timeoutMs / 1000} seconds`));
+    }, timeoutMs);
     child.once('error', error => { clearTimeout(timeout); reject(error); });
     child.once('close', (code, signal) => {
       clearTimeout(timeout);
@@ -322,37 +368,60 @@ const launch = async mode => {
   if (result.code !== 0) {
     throw new Error(`Packaged desktop exited with code ${result.code ?? 'null'} (signal ${result.signal ?? 'none'})`);
   }
-  const socketShutdownDeadline = Date.now() + 2_000;
-  while (fixtures.some(fixture => fixture.io.of('/').sockets.size !== 0)
-    && Date.now() < socketShutdownDeadline) {
-    await new Promise(resolveWait => setTimeout(resolveWait, 20));
+  const missingMarkers = requiredMarkers.filter(marker => !output.includes(marker));
+  if (missingMarkers.length !== 0) {
+    throw new Error(`Packaged desktop ${mode} smoke missed required markers: ${missingMarkers.join(', ')}`);
   }
-  if (fixtures.some(fixture => fixture.io.of('/').sockets.size !== 0)) {
-    throw new Error(`Packaged ${mode} shutdown left late authenticated Socket.IO work alive`);
-  }
-  if (!output.includes(READY_EVENT) || !output.includes(PRELOAD_BRIDGE_PROOF) || !output.includes(TRANSPORT_PROOF)) {
-    throw new Error('Packaged desktop did not publish the complete renderer transport proof');
-  }
-  const expectedBackend = process.platform === 'linux' ? 'gnome_libsecret' : 'os-protected';
-  if (!output.includes(`"storageBackend":"${expectedBackend}"`)) {
-    throw new Error(`Packaged desktop did not use ${expectedBackend} production credential protection`);
-  }
-  let previousStep = -1;
-  for (const step of shutdownSteps) {
-    const marker = `"step":"${step}"`;
-    if (output.split(marker).length - 1 !== 1 || output.indexOf(marker) <= previousStep) {
-      throw new Error(`Packaged ${mode} shutdown did not run ${step} exactly once in order`);
+  const runRequests = requests.slice(requestStart);
+  if (!transport) {
+    const releaseGuardRequests = profileApiRequests.slice(profileApiRequestStart);
+    const expectedProfileApiPaths = ['/api/compatibility', '/api/desktop/discovery'];
+    if (releaseGuardRequests.length !== expectedProfileApiPaths.length
+      || expectedProfileApiPaths.some(path => !releaseGuardRequests.some(request => request.url === path))
+      || releaseGuardRequests.some(request => (
+        request.method !== 'GET' || request.origin !== DESKTOP_RENDERER_ORIGIN
+      ))) {
+      throw new Error('Packaged desktop release guard did not make both profile API requests from its exact renderer origin');
     }
-    previousStep = output.indexOf(marker);
-  }
-  const forced = output.includes('desktop.app.shutdown_forced');
-  if (forced !== (mode === 'forced-timeout')) throw new Error(`Packaged ${mode} forced-timeout evidence was incorrect`);
-  if (mode === 'retry' && (!output.includes('desktop.app.shutdown_retry_requested')
-    || !output.includes('desktop.app.shutdown_retry'))) {
-    throw new Error('Packaged retry did not exercise a repeated prevented before-quit event');
-  }
-  if (!output.includes(MVP_FLOWS_PROOF)) {
-    throw new Error('Packaged desktop did not preserve the MVP bridge and lifecycle boundaries');
+    const mvpProof = parseEventRecord(output, MVP_FLOWS_PROOF);
+    if (mvpProof?.localProfile !== true
+      || mvpProof?.remoteActiveProfile !== true
+      || mvpProof?.lifecycleBoundary !== true
+      || mvpProof?.connectUiPopulated !== true) {
+      throw new Error('Packaged desktop release guard did not prove local/remote profiles, lifecycle, and Connect UI population');
+    }
+    if (runRequests.length !== 0 || output.includes(TRANSPORT_PROOF)) {
+      throw new Error('Packaged desktop release guard unexpectedly entered the transport-smoke branch');
+    }
+  } else {
+    const socketShutdownDeadline = Date.now() + 2_000;
+    while (fixtures.some(fixture => fixture.io.of('/').sockets.size !== 0)
+      && Date.now() < socketShutdownDeadline) {
+      await new Promise(resolveWait => setTimeout(resolveWait, 20));
+    }
+    if (fixtures.some(fixture => fixture.io.of('/').sockets.size !== 0)) {
+      throw new Error(`Packaged ${mode} shutdown left late authenticated Socket.IO work alive`);
+    }
+    const expectedBackend = process.platform === 'linux' ? 'gnome_libsecret' : 'os-protected';
+    if (!output.includes(`"storageBackend":"${expectedBackend}"`)) {
+      throw new Error(`Packaged desktop did not use ${expectedBackend} production credential protection`);
+    }
+    let previousStep = -1;
+    for (const step of shutdownSteps) {
+      const marker = `"step":"${step}"`;
+      if (output.split(marker).length - 1 !== 1 || output.indexOf(marker) <= previousStep) {
+        throw new Error(`Packaged ${mode} shutdown did not run ${step} exactly once in order`);
+      }
+      previousStep = output.indexOf(marker);
+    }
+    const forced = output.includes('desktop.app.shutdown_forced');
+    if (forced !== (mode === 'forced-timeout')) {
+      throw new Error(`Packaged ${mode} forced-timeout evidence was incorrect`);
+    }
+    if (mode === 'retry' && (!output.includes('desktop.app.shutdown_retry_requested')
+      || !output.includes('desktop.app.shutdown_retry'))) {
+      throw new Error('Packaged retry did not exercise a repeated prevented before-quit event');
+    }
   }
   const packagedLayout = parseEventLayout(output, LAYOUT_READY_EVENT);
   assertPackagedLayout(packagedLayout);
@@ -362,7 +431,10 @@ const launch = async mode => {
     { requireReducedWorkArea: true },
   );
 
-  const runRequests = requests.slice(requestStart);
+  if (!transport) {
+    runs.push({ mode, userDataPath, output, launchArguments, secrets: [] });
+    return;
+  }
   const authenticated = runRequests.filter(request => request.authorization?.startsWith('Bearer propr_it_'));
   const secrets = [...new Set(authenticated.map(request => request.authorization.slice('Bearer '.length)))];
   if (secrets.length !== 2) throw new Error(`Expected two ${mode} activation credentials, observed ${secrets.length}`);
@@ -394,7 +466,10 @@ const launch = async mode => {
 };
 
 try {
-  for (const mode of ['success', 'retry', 'forced-timeout']) await launch(mode);
+  profileApiOrigin = await listenProfileApiFixture();
+  first = await listenFixture('first');
+  second = await listenFixture('second');
+  for (const mode of PACKAGED_SMOKE_LAUNCH_MODES) await launch(mode);
   const allSecrets = runs.flatMap(run => run.secrets);
   const scanRoots = [
     ...runs.map(run => run.userDataPath),
@@ -404,14 +479,28 @@ try {
     throw new Error('A packaged credential entered the isolated userData or OS keyring scan roots');
   }
   console.log(
-    `Packaged ${process.platform} desktop transport smoke passed (3/3 shutdown modes): production OS credentials, `
-    + 'real Socket.IO/Engine.IO namespace auth, scope rotation/reconnect/error handling, five-type both-origin '
+    `Packaged ${process.platform} desktop smoke passed (4/4 isolated launches): release-guard protocol-1 profile `
+    + 'and Connect UI proof; 3/3 protocol-2 transport shutdown modes with production OS credentials, real '
+    + 'Socket.IO/Engine.IO namespace auth, scope rotation/reconnect/error handling, five-type both-origin '
     + `rollback cleanup, compiled welcome-card layout, no cookies, and byte scans of ${scanRoots.join(', ')}.`,
   );
 } finally {
-  for (const { io, server } of fixtures) {
-    await new Promise(resolveClose => io.close(resolveClose));
-    if (server.listening) await new Promise(resolveClose => server.close(resolveClose));
+  try {
+    for (const { io, server } of fixtures) {
+      await new Promise(resolveClose => io.close(resolveClose));
+      if (server.listening) await new Promise(resolveClose => server.close(resolveClose));
+    }
+  } finally {
+    try {
+      if (profileApiServer.listening) {
+        profileApiServer.closeAllConnections();
+        await new Promise((resolveClose, rejectClose) => profileApiServer.close(error => {
+          if (error) rejectClose(error);
+          else resolveClose();
+        }));
+      }
+    } finally {
+      for (const smokeProfile of smokeProfiles) await removePrivateSmokeProfile(smokeProfile);
+    }
   }
-  for (const smokeProfile of smokeProfiles) await removePrivateSmokeProfile(smokeProfile);
 }

@@ -12,6 +12,12 @@ import {
   removePrivateSmokeProfile,
   validateWindowsSystemRoot,
 } from './packaged-smoke-support.mjs';
+import {
+  CONNECT_DEEP_LINK,
+  createPackagedSmokeLaunch,
+  PACKAGED_SMOKE_LAUNCH_MODES,
+  TRANSPORT_SMOKE_ENVIRONMENT_NAMES,
+} from './packaged-smoke-plan.mjs';
 
 const assertPackagedSpawnOptions = (source) => {
   const normalizedSource = source.replace(/\r\n?/g, '\n');
@@ -103,6 +109,97 @@ describe('packaged smoke native window layout', () => {
 });
 
 describe('packaged smoke child environment', () => {
+  test('defines four isolated launches with exact per-mode environment, argv, and marker contracts', () => {
+    const firstOrigin = 'http://127.0.0.1:41001';
+    const secondOrigin = 'http://127.0.0.1:41002';
+    const dbusSessionAddress = 'unix:path=/run/user/1000/bus';
+    const connectDeepLink = 'propr://connect?api=https%3A%2F%2Fconnect.propr.dev';
+    assert.equal(CONNECT_DEEP_LINK, connectDeepLink);
+    assert.deepEqual(TRANSPORT_SMOKE_ENVIRONMENT_NAMES, [
+      'PROPR_DESKTOP_SMOKE_FIRST_ORIGIN',
+      'PROPR_DESKTOP_SMOKE_SECOND_ORIGIN',
+      'PROPR_DESKTOP_SMOKE_SHUTDOWN_MODE',
+    ]);
+    const launches = PACKAGED_SMOKE_LAUNCH_MODES.map((mode, index) => {
+      const userDataPath = `/private/propr-desktop-smoke-${mode}`;
+      const baseChildEnvironment = {
+        HOME: `${userDataPath}/home`,
+        PROPR_DESKTOP_SMOKE_PROFILE_API_URL: `http://127.0.0.1:${42000 + index}`,
+        PROPR_DESKTOP_SMOKE_TEST: '1',
+      };
+      return createPackagedSmokeLaunch({
+        mode,
+        platform: 'linux',
+        userDataPath,
+        baseChildEnvironment,
+        firstOrigin,
+        secondOrigin,
+        dbusSessionAddress,
+      });
+    });
+
+    assert.deepEqual(launches.map(launch => launch.mode), [
+      'release-guard', 'success', 'retry', 'forced-timeout',
+    ]);
+    for (const [index, launch] of launches.entries()) {
+      const mode = PACKAGED_SMOKE_LAUNCH_MODES[index];
+      const userDataPath = `/private/propr-desktop-smoke-${mode}`;
+      const baseEnvironment = {
+        HOME: `${userDataPath}/home`,
+        PROPR_DESKTOP_SMOKE_PROFILE_API_URL: `http://127.0.0.1:${42000 + index}`,
+        PROPR_DESKTOP_SMOKE_TEST: '1',
+      };
+      const commonMarkers = [
+        'desktop.renderer.ready',
+        '"preloadBridgeExposed":true',
+      ];
+      const layoutMarkers = [
+        'desktop.renderer.mvp_flows.ready',
+        'desktop.renderer.layout.ready',
+        'desktop.native.reduced_window.ready',
+      ];
+      if (mode === 'release-guard') {
+        assert.equal(launch.transport, false);
+        assert.deepEqual(launch.launchArguments, [
+          '--disable-gpu',
+          '--propr-smoke-test',
+          `--user-data-dir=${userDataPath}`,
+          connectDeepLink,
+        ]);
+        assert.deepEqual(launch.childEnvironment, baseEnvironment);
+        assert.deepEqual(launch.requiredMarkers, [
+          ...commonMarkers,
+          'desktop.renderer.profile_api.ready',
+          ...layoutMarkers,
+        ]);
+        for (const name of TRANSPORT_SMOKE_ENVIRONMENT_NAMES) {
+          assert.equal(Object.hasOwn(launch.childEnvironment, name), false);
+        }
+      } else {
+        assert.equal(launch.transport, true);
+        assert.deepEqual(launch.launchArguments, [
+          '--disable-gpu',
+          '--propr-smoke-test',
+          `--user-data-dir=${userDataPath}`,
+          '--password-store=gnome-libsecret',
+        ]);
+        assert.deepEqual(launch.childEnvironment, {
+          ...baseEnvironment,
+          DBUS_SESSION_BUS_ADDRESS: dbusSessionAddress,
+          PROPR_DESKTOP_SMOKE_FIRST_ORIGIN: firstOrigin,
+          PROPR_DESKTOP_SMOKE_SECOND_ORIGIN: secondOrigin,
+          PROPR_DESKTOP_SMOKE_SHUTDOWN_MODE: mode,
+        });
+        assert.deepEqual(launch.requiredMarkers, [
+          ...commonMarkers,
+          'desktop.renderer.transport_smoke.ready',
+          ...layoutMarkers,
+        ]);
+        assert.equal(launch.launchArguments.includes(connectDeepLink), false);
+      }
+    }
+  });
+
   test('passes only platform launch inputs and private profile paths from a hostile parent', async () => {
     const parent = await createPrivateSmokeProfile(tmpdir());
     const xAuthority = join(parent.root, 'Xauthority');
