@@ -15,9 +15,11 @@ const safeField = (value: unknown): unknown => {
 };
 
 const LAYOUT_EVENT = 'desktop.renderer.layout.ready';
+const REDUCED_NATIVE_WINDOW_EVENT = 'desktop.native.reduced_window.ready';
 const LAYOUT_KEYS = new Set([
-  'windowBounds', 'workArea', 'viewport', 'entry', 'card', 'logo', 'heading',
-  'connectButton', 'connectDescription',
+  'windowBounds', 'contentBounds', 'minimumSize', 'workArea', 'displayWorkArea',
+  'screen', 'viewport', 'entry', 'card', 'logo', 'heading', 'connectButton',
+  'connectDescription',
 ]);
 const LAYOUT_NUMBER_KEYS = new Set([
   'x', 'y', 'width', 'height', 'top', 'right', 'bottom', 'left',
@@ -53,13 +55,16 @@ export const sanitizeDesktopLogFields = (
   event: string,
   fields: Record<string, unknown>,
 ): Record<string, unknown> => Object.fromEntries(Object.entries(fields).map(([key, value]) => {
-  if (event === LAYOUT_EVENT && key === 'layout') {
+  if ((event === LAYOUT_EVENT || event === REDUCED_NATIVE_WINDOW_EVENT) && key === 'layout') {
     return [key, boundedLayout(value) ?? { code: 'DETAIL_REDACTED' }];
   }
   return [key, safeField(value)];
 }));
 
-export const createDesktopLogger = (logPath: string): DesktopLogger => {
+export const createDesktopLogger = (
+  logPath: string,
+  onWriteFailure?: () => void,
+): DesktopLogger => {
   let pending = Promise.resolve();
   const log = (level: LogLevel, event: string, fields: Record<string, unknown> = {}) => {
     const record = JSON.stringify({
@@ -75,7 +80,14 @@ export const createDesktopLogger = (logPath: string): DesktopLogger => {
         await mkdir(dirname(logPath), { recursive: true, mode: 0o700 });
         await appendFile(logPath, `${record}\n`, { encoding: 'utf8', mode: 0o600 });
       })
-      .catch(() => console.error(JSON.stringify({ level: 'error', event: 'desktop.log.write_failed', code: 'LOG_WRITE_FAILED' })));
+      .catch(() => {
+        try {
+          onWriteFailure?.();
+        } catch {
+          // Keep the fixed logger diagnostic available even if the smoke-only sink also fails.
+        }
+        console.error(JSON.stringify({ level: 'error', event: 'desktop.log.write_failed', code: 'LOG_WRITE_FAILED' }));
+      });
   };
   return { log };
 };

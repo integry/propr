@@ -1,8 +1,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Server as SocketIOServer } from 'socket.io';
 import {
@@ -18,11 +17,19 @@ import {
   getCurrentFuseWire,
 } from '@electron/fuses';
 import { assertPackagedLayout } from './packaged-layout.mjs';
+import {
+  assertPackagedNativeWindowSizing,
+  createPrivateSmokeProfile,
+  createSmokeChildEnvironment,
+  removePrivateSmokeProfile,
+} from './packaged-smoke-support.mjs';
 
 const READY_EVENT = 'desktop.renderer.ready';
 const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
 const TRANSPORT_PROOF = 'desktop.renderer.transport_smoke.ready';
+const MVP_FLOWS_PROOF = 'desktop.renderer.mvp_flows.ready';
 const LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
+const REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_window.ready';
 const MAIN_PROCESS_ERROR_MARKERS = [
   'desktop.main_process.uncaught_exception',
   'A JavaScript error occurred in the main process',
@@ -30,20 +37,29 @@ const MAIN_PROCESS_ERROR_MARKERS = [
 ];
 const TIMEOUT_MS = 45_000;
 const INVALID_INSTANCE_TOKEN = 'INVALID_INSTANCE_TOKEN';
-const artifact = process.platform === 'linux'
-  ? [`propr-desktop-linux-${process.arch}`, 'propr-desktop']
-  : process.platform === 'win32'
-    ? [`propr-desktop-win32-${process.arch}`, 'propr-desktop.exe']
-    : null;
-if (!artifact) throw new Error('The packaged transport smoke requires Linux or Windows');
-const binaryPath = resolve('out', ...artifact);
+const binaryPath = process.platform === 'darwin'
+  ? resolve('out', `propr-desktop-darwin-${process.arch}`, 'propr-desktop.app', 'Contents', 'MacOS', 'propr-desktop')
+  : resolve(
+      'out',
+      `propr-desktop-${process.platform}-${process.arch}`,
+      `propr-desktop${process.platform === 'win32' ? '.exe' : ''}`,
+    );
+const inspectOnly = process.argv.includes('--inspect-only');
 
-const parseLayout = smokeOutput => {
+if (process.platform === 'win32') {
+  const resources = resolve('out', `propr-desktop-win32-${process.arch}`, 'resources');
+  const entries = (await readdir(resources)).map(name => name.toLocaleLowerCase('en-US'));
+  if (entries.some(name => name.includes('windows-authority') || name.includes('windows-update-authority'))) {
+    throw new Error('Packaged Windows MVP contains a deferred update authority resource');
+  }
+}
+
+const parseEventLayout = (smokeOutput, expectedEvent) => {
   for (const line of smokeOutput.split(/\r?\n/)) {
-    if (!line.includes(LAYOUT_READY_EVENT)) continue;
+    if (!line.includes(expectedEvent)) continue;
     try {
       const record = JSON.parse(line.slice(line.indexOf('{')));
-      if (record.event === LAYOUT_READY_EVENT) return record.layout;
+      if (record.event === expectedEvent) return record.layout;
     } catch {
       // Ignore non-JSON Chromium output that happens to mention the event name.
     }
@@ -75,6 +91,14 @@ for (const [fuse, expectedState] of expectedFuses) {
       `Unexpected ${FuseV1Options[fuse]} fuse state: expected ${FuseState[expectedState]}, received ${FuseState[actualState] ?? actualState}`,
     );
   }
+}
+
+if (inspectOnly) {
+  console.log(`Packaged ${process.platform}-${process.arch} desktop artifact passed executable and fuse inspection.`);
+  process.exit(0);
+}
+if (process.platform !== 'linux' && process.platform !== 'win32') {
+  throw new Error('The packaged transport smoke requires Linux or Windows');
 }
 
 const requests = [];
@@ -214,7 +238,7 @@ const scanPathsForSecrets = async (paths, secrets) => {
 const first = await listenFixture('first');
 const second = await listenFixture('second');
 const runs = [];
-const createdUserDataPaths = [];
+const smokeProfiles = [];
 const shutdownSteps = [
   'admission-closed',
   'ipc-closed',
@@ -234,10 +258,12 @@ const shutdownSteps = [
 ];
 
 const launch = async mode => {
-  const userDataPath = await mkdtemp(resolve(tmpdir(), `propr-desktop-smoke-${mode}-`));
-  createdUserDataPaths.push(userDataPath);
+  const smokeProfile = await createPrivateSmokeProfile();
+  smokeProfiles.push(smokeProfile);
+  const userDataPath = smokeProfile.userData;
   const launchArguments = [
     '--disable-gpu',
+    '--propr-smoke-test',
     `--user-data-dir=${userDataPath}`,
     ...(process.platform === 'linux' ? ['--password-store=gnome-libsecret'] : []),
   ];
@@ -246,14 +272,29 @@ const launch = async mode => {
   }
   const requestStart = requests.length;
   let output = '';
+  const baseChildEnvironment = await createSmokeChildEnvironment({
+    profile: smokeProfile,
+    profileApiUrl: first.origin,
+  });
+  const dbusSessionAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
+  if (process.platform === 'linux' && (
+    typeof dbusSessionAddress !== 'string'
+    || dbusSessionAddress.length > 4096
+    || !/^unix:path=\/[^\0\r\n,]+(?:,guid=[0-9a-f]{32})?$/.test(dbusSessionAddress)
+  )) {
+    throw new Error('Packaged Linux transport smoke requires one validated D-Bus session address');
+  }
+  const childEnvironment = {
+    ...baseChildEnvironment,
+    ...(process.platform === 'linux' ? { DBUS_SESSION_BUS_ADDRESS: dbusSessionAddress } : {}),
+    PROPR_DESKTOP_SMOKE_FIRST_ORIGIN: first.origin,
+    PROPR_DESKTOP_SMOKE_SECOND_ORIGIN: second.origin,
+    PROPR_DESKTOP_SMOKE_SHUTDOWN_MODE: mode,
+  };
   const child = spawn(binaryPath, launchArguments, {
-    env: {
-      ...process.env,
-      PROPR_DESKTOP_SMOKE_FIRST_ORIGIN: first.origin,
-      PROPR_DESKTOP_SMOKE_SECOND_ORIGIN: second.origin,
-      PROPR_DESKTOP_SMOKE_SHUTDOWN_MODE: mode,
-      PROPR_DESKTOP_SMOKE_TEST: '1',
-    },
+    cwd: smokeProfile.root,
+    env: childEnvironment,
+    shell: false,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
@@ -310,7 +351,16 @@ const launch = async mode => {
     || !output.includes('desktop.app.shutdown_retry'))) {
     throw new Error('Packaged retry did not exercise a repeated prevented before-quit event');
   }
-  assertPackagedLayout(parseLayout(output));
+  if (!output.includes(MVP_FLOWS_PROOF)) {
+    throw new Error('Packaged desktop did not preserve the MVP bridge and lifecycle boundaries');
+  }
+  const packagedLayout = parseEventLayout(output, LAYOUT_READY_EVENT);
+  assertPackagedLayout(packagedLayout);
+  assertPackagedNativeWindowSizing(packagedLayout);
+  assertPackagedNativeWindowSizing(
+    parseEventLayout(output, REDUCED_NATIVE_WINDOW_READY_EVENT),
+    { requireReducedWorkArea: true },
+  );
 
   const runRequests = requests.slice(requestStart);
   const authenticated = runRequests.filter(request => request.authorization?.startsWith('Bearer propr_it_'));
@@ -363,5 +413,5 @@ try {
     await new Promise(resolveClose => io.close(resolveClose));
     if (server.listening) await new Promise(resolveClose => server.close(resolveClose));
   }
-  for (const userDataPath of createdUserDataPaths) await rm(userDataPath, { recursive: true, force: true });
+  for (const smokeProfile of smokeProfiles) await removePrivateSmokeProfile(smokeProfile);
 }

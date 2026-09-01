@@ -78,6 +78,7 @@
     "desktop:test": "npm run test -w @propr/desktop",
     "desktop:package": "npm run package -w @propr/desktop",
     "desktop:smoke": "npm run smoke:package -w @propr/desktop",
+    "desktop:smoke:inspect": "npm run smoke:inspect -w @propr/desktop",
     "desktop:make": "npm run make -w @propr/desktop",
     "audit:runtime": "npm audit --package-lock-only --omit=dev --audit-level=low",
     "desktop:audit:packaging": "npm audit --package-lock-only --workspace=@propr/desktop --include=dev --audit-level=high",

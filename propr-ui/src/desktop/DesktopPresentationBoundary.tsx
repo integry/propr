@@ -12,4 +12,3 @@ export const DesktopPresentationBoundary: React.FC<DesktopPresentationBoundaryPr
   const adapters = useState(resolveDesktopAdapters)[0];
   return adapters ? <DesktopExperience adapters={adapters}>{desktop}</DesktopExperience> : fallback;
 };
-

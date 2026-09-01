@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import { realpathSync } from 'node:fs';
-import { isAbsolute, basename, join, relative, resolve } from 'node:path';
+import { lstatSync, realpathSync } from 'node:fs';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, crashReporter, ipcMain, net, protocol, safeStorage, screen, session, shell } from 'electron';
+import type { Rectangle } from 'electron';
 import {
   DESKTOP_RENDERER_ORIGIN,
   DESKTOP_TRANSPORT_SCOPE_HEADER,
@@ -33,7 +34,14 @@ import {
   validatedDevServerUrl,
 } from './security';
 import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
-import { createBrowserWindowOptions } from './window-options';
+import { checkForSignedUpdates } from './signed-updates';
+import { authorizePackagedSmokeTest } from './smoke-test-authorization';
+import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
+import {
+  createBrowserWindowOptions,
+  MINIMUM_BROWSER_WINDOW_SIZE,
+  selectInitialWindowWorkArea,
+} from './window-options';
 
 const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
   ? MAIN_WINDOW_VITE_DEV_SERVER_URL
@@ -41,8 +49,32 @@ const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
 const PACKAGED_RENDERER_SCHEME = 'propr-app';
 const PACKAGED_RENDERER_HOST = 'renderer';
 const PACKAGED_LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
+const PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_window.ready';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
+let packagedSmokeUserDataDirectory: string | null = null;
+let packagedSmokeEvidence: ReturnType<typeof createPackagedSmokeEvidenceSink> = null;
+try {
+  packagedSmokeUserDataDirectory = authorizePackagedSmokeTest({
+    argv: process.argv,
+    defaultUserDataDirectory: join(app.getPath('appData'), app.name),
+    environmentTriggered: process.env.PROPR_DESKTOP_SMOKE_TEST === '1',
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+  });
+  if (packagedSmokeUserDataDirectory) {
+    const smokeDirectoryStats = lstatSync(packagedSmokeUserDataDirectory);
+    if (!smokeDirectoryStats.isDirectory() || smokeDirectoryStats.isSymbolicLink()) {
+      throw new Error('Packaged desktop smoke --user-data-dir must be an existing non-link directory');
+    }
+    app.setPath('userData', packagedSmokeUserDataDirectory);
+    packagedSmokeEvidence = createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory);
+    packagedSmokeEvidence?.write('desktop.smoke.authorized');
+  }
+} catch {
+  process.exit(1);
+}
+const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 let mainWindow: BrowserWindow | null = null;
 const initialDeepLink = deepLinkFromArguments(process.argv);
 const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
@@ -51,12 +83,16 @@ const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
 );
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
+if (process.platform === 'win32') {
+  app.setAppUserModelId('dev.propr.desktop');
+}
 
 interface PackagedTransportSmoke {
   firstOrigin: string;
   secondOrigin: string;
   shutdownMode: 'success' | 'retry' | 'forced-timeout';
 }
+let activePackagedTransportSmoke: PackagedTransportSmoke | null = null;
 
 interface PackagedConnectSmoke {
   configRoot: string;
@@ -100,6 +136,12 @@ const packagedConnectSmoke = (): PackagedConnectSmoke | null => {
 
 const packagedTransportSmoke = (): PackagedTransportSmoke | null => {
   if (!app.isPackaged || process.env.PROPR_DESKTOP_SMOKE_TEST !== '1') return null;
+  const transportRequested = [
+    process.env.PROPR_DESKTOP_SMOKE_FIRST_ORIGIN,
+    process.env.PROPR_DESKTOP_SMOKE_SECOND_ORIGIN,
+    process.env.PROPR_DESKTOP_SMOKE_SHUTDOWN_MODE,
+  ].some(value => value !== undefined);
+  if (!transportRequested) return null;
   const firstOrigin = normalizeApiBaseUrl(process.env.PROPR_DESKTOP_SMOKE_FIRST_ORIGIN ?? '');
   const secondOrigin = normalizeApiBaseUrl(process.env.PROPR_DESKTOP_SMOKE_SECOND_ORIGIN ?? '');
   const shutdownMode = process.env.PROPR_DESKTOP_SMOKE_SHUTDOWN_MODE;
@@ -113,10 +155,19 @@ const packagedTransportSmoke = (): PackagedTransportSmoke | null => {
   return { firstOrigin, secondOrigin, shutdownMode };
 };
 
-const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>
-  logger
-    ? logger.log(level, event, fields)
-    : console.error(JSON.stringify({ timestamp: new Date().toISOString(), level, event, code: fields ? 'DETAIL_REDACTED' : undefined }));
+const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) => {
+  packagedSmokeEvidence?.write(event);
+  if (logger) {
+    logger.log(level, event, fields);
+  } else {
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level,
+      event,
+      code: fields ? 'DETAIL_REDACTED' : undefined,
+    }));
+  }
+};
 
 process.on('uncaughtExceptionMonitor', () => {
   log('error', 'desktop.main_process.uncaught_exception', { code: 'UNCAUGHT_EXCEPTION' });
@@ -245,16 +296,51 @@ const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<stri
       };
     };
     return {
+      screen: { height: window.screen.height, width: window.screen.width },
+      workArea: { height: window.screen.availHeight, width: window.screen.availWidth },
       viewport: { height: window.innerHeight, width: window.innerWidth },
       ...Object.fromEntries(Object.entries(elements).map(([name, element]) => [name, bounds(element)])),
     };
   })()`);
   const windowBounds = window.getBounds();
+  const [minimumWidth, minimumHeight] = window.getMinimumSize();
   return {
-    windowBounds,
-    workArea: screen.getDisplayMatching(windowBounds).workArea,
     ...rendererLayout,
+    windowBounds,
+    contentBounds: window.getContentBounds(),
+    minimumSize: { width: minimumWidth, height: minimumHeight },
+    workArea: screen.getDisplayMatching(windowBounds).workArea,
   };
+};
+
+const createReducedSmokeWorkArea = (displayWorkArea: Rectangle): Rectangle => {
+  const width = Math.min(displayWorkArea.width, MINIMUM_BROWSER_WINDOW_SIZE.width - 80);
+  const height = Math.min(displayWorkArea.height, MINIMUM_BROWSER_WINDOW_SIZE.height - 60);
+  return {
+    x: displayWorkArea.x + Math.floor((displayWorkArea.width - width) / 2),
+    y: displayWorkArea.y + Math.floor((displayWorkArea.height - height) / 2),
+    width,
+    height,
+  };
+};
+
+const inspectPackagedReducedNativeWindow = (): Record<string, unknown> => {
+  const displayWorkArea = selectInitialWindowWorkArea(screen);
+  const workArea = createReducedSmokeWorkArea(displayWorkArea);
+  const probeWindow = new BrowserWindow(
+    createBrowserWindowOptions(join(__dirname, 'preload.cjs'), false, workArea),
+  );
+  try {
+    const [minimumWidth, minimumHeight] = probeWindow.getMinimumSize();
+    return {
+      displayWorkArea,
+      workArea,
+      windowBounds: probeWindow.getBounds(),
+      minimumSize: { width: minimumWidth, height: minimumHeight },
+    };
+  } finally {
+    probeWindow.destroy();
+  }
 };
 
 const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<void> => {
@@ -470,9 +556,12 @@ const runPackagedTransportSmoke = async (
 };
 
 const createMainWindow = async (
-  transportSmoke: PackagedTransportSmoke | null,
+  transportSmoke: PackagedTransportSmoke | null = activePackagedTransportSmoke,
 ): Promise<BrowserWindow> => {
-  const window = new BrowserWindow(createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged));
+  const workArea = selectInitialWindowWorkArea(screen);
+  const window = new BrowserWindow(
+    createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged, workArea),
+  );
   const readyToShow = new Promise<void>(resolveReady => window.once('ready-to-show', resolveReady));
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -492,9 +581,9 @@ const createMainWindow = async (
     deepLinkDelivery.didFinishLoad(window);
   });
   window.on('closed', () => {
+    deepLinkDelivery.clearWindow(window);
     if (mainWindow === window) {
       mainWindow = null;
-      deepLinkDelivery.clearWindow(window);
     }
   });
 
@@ -515,8 +604,82 @@ const createMainWindow = async (
   if (preloadBridgeExposed !== true) {
     throw new Error('Desktop preload bridge was not exposed to the renderer');
   }
-  if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1') {
+  deepLinkDelivery.setWindow(window);
+  const smokeProfileApiUrl = process.env.PROPR_DESKTOP_SMOKE_PROFILE_API_URL;
+  if (packagedSmokeTest && !transportSmoke && smokeProfileApiUrl) {
+    const normalizedSmokeApiUrl = normalizeApiBaseUrl(smokeProfileApiUrl);
+    if (!normalizedSmokeApiUrl || normalizedSmokeApiUrl !== smokeProfileApiUrl) {
+      throw new Error('Packaged desktop smoke profile API URL is invalid');
+    }
+    const endpoints = [
+      `${normalizedSmokeApiUrl}/api/compatibility`,
+      `${normalizedSmokeApiUrl}/api/desktop/discovery`,
+    ];
+    const result = await window.webContents.executeJavaScript(`(async () => {
+      const results = [];
+      for (const endpoint of ${JSON.stringify(endpoints)}) {
+        const response = await fetch(endpoint, { credentials: 'include' });
+        results.push({ ok: response.ok, status: response.status, body: await response.json() });
+      }
+      return results;
+    })()`);
+    if (result?.[0]?.ok !== true || result[0]?.body?.profileEndpoint !== true
+      || result?.[1]?.ok !== true || result[1]?.body?.product !== 'ProPR'
+      || result[1]?.body?.desktopAuthentication?.protocolVersion !== 1) {
+      throw new Error('Packaged renderer profile API or ProPR Connect discovery request failed');
+    }
+    log('info', 'desktop.renderer.profile_api.ready', { origin: DESKTOP_RENDERER_ORIGIN });
+  }
+  if (packagedSmokeTest && !transportSmoke) {
+    const profileFlow = await window.webContents.executeJavaScript(`(async () => {
+      const bridge = window.proprDesktop;
+      const local = await bridge.profiles.save({ label: 'Local setup', apiBaseUrl: 'http://localhost:4000' });
+      const remote = await bridge.profiles.save({ label: 'ProPR Connect', apiBaseUrl: 'https://connect.propr.dev' });
+      await bridge.profiles.setActive(remote.id);
+      const profiles = await bridge.profiles.list();
+      const lifecycle = await bridge.lifecycle.start();
+      const deadline = performance.now() + 2000;
+      let connectDeepLink = false;
+      do {
+        const labels = Array.from(document.querySelectorAll('.desktop-welcome-card form > label'));
+        connectDeepLink = labels[1]?.querySelector('input')?.value === 'https://connect.propr.dev';
+        if (connectDeepLink) break;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      } while (performance.now() < deadline);
+      return {
+        active: profiles.activeProfileId === remote.id,
+        local: profiles.profiles.some(profile => profile.id === local.id && profile.apiBaseUrl === 'http://localhost:4000'),
+        remote: profiles.profiles.some(profile => profile.id === remote.id && profile.apiBaseUrl === 'https://connect.propr.dev'),
+        lifecycleBoundary: lifecycle.ok === false && lifecycle.code === 'not-implemented',
+        connectDeepLink,
+      };
+    })()`);
+    if (!profileFlow?.active || !profileFlow?.local || !profileFlow?.remote
+      || !profileFlow?.lifecycleBoundary || !profileFlow?.connectDeepLink) {
+      throw new Error('Packaged desktop local/remote/API profile flow failed');
+    }
+  } else if (packagedSmokeTest) {
+    const boundary = await window.webContents.executeJavaScript(`(async () => {
+      const bridge = window.proprDesktop;
+      const metadata = await bridge.app.getMetadata();
+      const profiles = await bridge.profiles.list();
+      const lifecycle = await bridge.lifecycle.start();
+      return {
+        packaged: metadata.packaged,
+        profiles: Array.isArray(profiles.profiles),
+        lifecycleBoundary: lifecycle.ok === false && lifecycle.code === 'not-implemented',
+      };
+    })()`);
+    if (!boundary?.packaged || !boundary?.profiles || !boundary?.lifecycleBoundary) {
+      throw new Error('Packaged desktop transport smoke did not preserve the MVP bridge boundaries');
+    }
+  }
+  if (packagedSmokeTest) {
+    log('info', 'desktop.renderer.mvp_flows.ready', { connectDiscovery: true });
     log('info', PACKAGED_LAYOUT_READY_EVENT, { layout: await inspectPackagedLayout(window) });
+    log('info', PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT, {
+      layout: inspectPackagedReducedNativeWindow(),
+    });
   }
   log('info', 'desktop.renderer.ready', { preloadBridgeExposed: true });
   return window;
@@ -546,10 +709,14 @@ if (!hasSingleInstanceLock) {
 
   registerProtocolClient();
   void app.whenReady().then(async () => {
-    logger = createDesktopLogger(join(app.getPath('logs'), 'desktop.jsonl'));
+    logger = createDesktopLogger(
+      join(app.getPath('logs'), 'desktop.jsonl'),
+      () => packagedSmokeEvidence?.write('desktop.log.write_failed'),
+    );
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
     const disposeRendererProtocol = configurePackagedRendererProtocol();
     const transportSmoke = packagedTransportSmoke();
+    activePackagedTransportSmoke = transportSmoke;
     const connectSmoke = packagedConnectSmoke();
     if (transportSmoke && connectSmoke) throw new Error('Packaged desktop smoke modes are mutually exclusive');
 
@@ -629,19 +796,6 @@ if (!hasSingleInstanceLock) {
       packagedRendererUrl,
       openExternal: openAllowedExternalUrl,
     });
-    mainWindow = await createMainWindow(transportSmoke);
-    deepLinkDelivery.setWindow(mainWindow);
-
-    app.on('activate', () => {
-      if (shutdownStarted) return;
-      if (BrowserWindow.getAllWindows().length === 0) {
-        void createMainWindow(null).then(window => {
-          mainWindow = window;
-          deepLinkDelivery.setWindow(window);
-        });
-      }
-    });
-
     const shutdownLifecycle = transportSmoke?.shutdownMode === 'forced-timeout'
       ? { shutdown: () => new Promise<void>(() => undefined) }
       : lifecycle;
@@ -659,6 +813,8 @@ if (!hasSingleInstanceLock) {
     }, transportSmoke?.shutdownMode === 'forced-timeout' ? { drainTimeoutMs: 250 } : undefined);
     app.on('before-quit', event => shutdown.beforeQuit(event));
 
+    mainWindow = await createMainWindow();
+
     if (connectSmoke) {
       await runPackagedConnectDiscoverySmoke(mainWindow);
       app.quit();
@@ -669,9 +825,44 @@ if (!hasSingleInstanceLock) {
         log('info', 'desktop.app.shutdown_retry_requested');
         app.quit();
       }
+    } else if (packagedSmokeTest) {
+      app.quit();
     } else {
       mainWindow.show();
     }
+
+    const updateConfig = __PROPR_DESKTOP_UPDATE_MANIFEST_URL__
+      ? {
+          manifestUrl: __PROPR_DESKTOP_UPDATE_MANIFEST_URL__,
+          publicKey: __PROPR_DESKTOP_UPDATE_PUBLIC_KEY__,
+          signingIdentity: __PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY__,
+          windowsSignerPins: __PROPR_DESKTOP_WINDOWS_SIGNER_PINS__,
+        }
+      : undefined;
+    if (app.isPackaged && process.platform !== 'win32' && updateConfig && !packagedSmokeTest) {
+      const runUpdateCheck = () => {
+        void checkForSignedUpdates({
+          config: updateConfig,
+          currentVersion: app.getVersion(),
+          platform: process.platform,
+          arch: process.arch,
+          request: (url, init) => net.fetch(url, init),
+          cacheDirectory: join(app.getPath('userData'), 'verified-updates'),
+        }).then(result => log('info', 'desktop.update.check_complete', { result }))
+          .catch(() => log('error', 'desktop.update.check_failed'));
+      };
+      runUpdateCheck();
+    }
+
+    app.on('activate', () => {
+      if (shutdownStarted) return;
+      if (BrowserWindow.getAllWindows().length === 0) {
+        void createMainWindow(null).then(window => {
+          mainWindow = window;
+          deepLinkDelivery.setWindow(window);
+        });
+      }
+    });
   }).catch(error => {
     log('error', 'desktop.app.start_failed', { error });
     app.exit(1);
@@ -680,4 +871,9 @@ if (!hasSingleInstanceLock) {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('will-quit', () => {
+  packagedSmokeEvidence?.close();
+  packagedSmokeEvidence = null;
 });
