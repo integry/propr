@@ -746,9 +746,8 @@ function Test-BootstrapTimeout {
 }
 
 function Test-WindowsPowerShellCleanupCompatibility {
-  # The earlier split identifier-format evidence came from this PS5.1 cleanup
-  # child. Current NO_MARKER exit-21 evidence belongs to the principal native
-  # pwsh supervisor/cleanup path exercised by Test-BootstrapTimeout.
+  # This separate scenario runs the same supervisor-written initial ACTIVE
+  # receipt through the Windows PowerShell 5.1 cleanup reader/finalizer.
   $result = Invoke-FixtureScenario 'NO_MARKER_WINDOWS_POWERSHELL'
   $diagnostic = Get-SanitizedSupervisorMarkerDiagnostic $result
   Assert-True ([string]::IsNullOrEmpty([string]$result.Error)) `

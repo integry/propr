@@ -166,6 +166,43 @@ public static class ProPRDirectoryIdentity
 
     public static string Read(string path) { return ReadEntry(path, true); }
 }
+
+public static class ProPRAtomicFile
+{
+    private const uint MOVEFILE_REPLACE_EXISTING = 0x1;
+    private const uint MOVEFILE_WRITE_THROUGH = 0x8;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true,
+        EntryPoint = "MoveFileExW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool MoveFileExW(
+        string existingFileName, string newFileName, uint flags);
+
+    public static void ReplaceSameDirectory(string temporaryPath, string destinationPath)
+    {
+        string temporaryFullPath = System.IO.Path.GetFullPath(temporaryPath);
+        string destinationFullPath = System.IO.Path.GetFullPath(destinationPath);
+        string temporaryDirectory = System.IO.Path.GetDirectoryName(temporaryFullPath);
+        string destinationDirectory = System.IO.Path.GetDirectoryName(destinationFullPath);
+        if (String.IsNullOrEmpty(temporaryDirectory) ||
+            !String.Equals(temporaryDirectory, destinationDirectory,
+                StringComparison.OrdinalIgnoreCase) ||
+            !System.IO.File.Exists(temporaryFullPath) ||
+            !System.IO.File.Exists(destinationFullPath))
+        {
+            throw new InvalidOperationException(
+                "atomic ownership receipt replacement precondition failed");
+        }
+
+        if (!MoveFileExW(temporaryFullPath, destinationFullPath,
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            int error = Marshal.GetLastWin32Error();
+            throw new Win32Exception(error,
+                "atomic ownership receipt replacement failed");
+        }
+    }
+}
 '@
 
 function Test-SamePath([string]$Left, [string]$Right) {
@@ -1012,29 +1049,37 @@ function Restore-OwnedRegistryValue($Record) {
 
 function Write-DurableOwnershipManifest([string]$Path, $Manifest) {
   $temporaryPath = "$Path.new"
-  $bytes = [Text.Encoding]::UTF8.GetBytes(($Manifest | ConvertTo-Json -Depth 6 -Compress))
-  $stream = [IO.FileStream]::new(
-    $temporaryPath,
-    [IO.FileMode]::Create,
-    [IO.FileAccess]::Write,
-    [IO.FileShare]::None,
-    4096,
-    [IO.FileOptions]::WriteThrough
-  )
+  $replacementCompleted = $false
   try {
-    $stream.Write($bytes, 0, $bytes.Length)
-    $stream.Flush($true)
+    $bytes = [Text.Encoding]::UTF8.GetBytes((
+      $Manifest | ConvertTo-Json -Depth 6 -Compress
+    ))
+    $stream = [IO.FileStream]::new(
+      $temporaryPath,
+      [IO.FileMode]::Create,
+      [IO.FileAccess]::Write,
+      [IO.FileShare]::None,
+      4096,
+      [IO.FileOptions]::WriteThrough
+    )
+    try {
+      $stream.Write($bytes, 0, $bytes.Length)
+      $stream.Flush($true)
+    } finally {
+      $stream.Dispose()
+    }
+    if ($PSVersionTable.PSEdition -ceq 'Core') {
+      # Native pwsh provides the atomic same-directory overwrite overload.
+      [IO.File]::Move($temporaryPath, $Path, $true)
+    } else {
+      # .NET Framework File.Replace is unsuitable for the real PS5.1 reader
+      # flow. Use one same-directory Windows rename with no cross-volume-copy
+      # flag, replacing the existing pathname and waiting for durable completion.
+      [ProPRAtomicFile]::ReplaceSameDirectory($temporaryPath, $Path)
+    }
+    $replacementCompleted = $true
   } finally {
-    $stream.Dispose()
-  }
-  if ($PSVersionTable.PSEdition -ceq 'Core') {
-    # Native pwsh provides the atomic same-directory overwrite overload.
-    [IO.File]::Move($temporaryPath, $Path, $true)
-  } else {
-    # File.Move(source, destination, overwrite) is not available on the .NET
-    # Framework used by Windows PowerShell 5.1. The canonical manifest exists,
-    # so File.Replace retains the same atomic same-volume replacement contract.
-    [IO.File]::Replace($temporaryPath, $Path, $null, $true)
+    if (!$replacementCompleted) { [IO.File]::Delete($temporaryPath) }
   }
 }
 

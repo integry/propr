@@ -769,15 +769,20 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppCleanup,
-      /if \(\$PSVersionTable\.PSEdition -ceq 'Core'\) \{[\s\S]*\[IO\.File\]::Move\(\$temporaryPath, \$Path, \$true\)[\s\S]*\} else \{[\s\S]*\[IO\.File\]::Replace\(\$temporaryPath, \$Path, \$null, \$true\)/,
+      /if \(\$PSVersionTable\.PSEdition -ceq 'Core'\) \{[\s\S]*\[IO\.File\]::Move\(\$temporaryPath, \$Path, \$true\)[\s\S]*\} else \{[\s\S]*\[ProPRAtomicFile\]::ReplaceSameDirectory\(\$temporaryPath, \$Path\)/,
     );
     assert.match(
       installedWindowsAppCleanup,
-      /\[IO\.File\]::Replace\(\$temporaryPath, \$Path, \$null, \$true\)/,
+      /class ProPRAtomicFile[\s\S]*String\.Equals\(temporaryDirectory, destinationDirectory,[\s\S]*StringComparison\.OrdinalIgnoreCase\)[\s\S]*MoveFileExW\(temporaryFullPath, destinationFullPath,[\s\S]*MOVEFILE_REPLACE_EXISTING \| MOVEFILE_WRITE_THROUGH\)[\s\S]*Marshal\.GetLastWin32Error\(\)[\s\S]*new Win32Exception\(error/,
     );
+    assert.doesNotMatch(installedWindowsAppCleanup, /\[IO\.File\]::Replace\(/);
     assert.match(
       installedWindowsAppCleanup,
       /\[IO\.File\]::Move\(\$temporaryPath, \$Path, \$true\)/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /\$replacementCompleted = \$false[\s\S]*\$replacementCompleted = \$true\n\s+\} finally \{\n\s+if \(!\$replacementCompleted\) \{ \[IO\.File\]::Delete\(\$temporaryPath\) \}/,
     );
     assert.match(
       installedWindowsAppCleanup,
@@ -850,7 +855,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /earlier split identifier-format evidence came from this PS5\.1 cleanup[\s\S]*Current NO_MARKER exit-21 evidence belongs to the principal native/,
+      /separate scenario runs the same supervisor-written initial ACTIVE[\s\S]*Windows PowerShell 5\.1 cleanup reader\/finalizer/,
     );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-WindowsPowerShellCleanupCompatibility/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /NO_MARKER_WINDOWS_POWERSHELL/);
