@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import { chromium } from 'playwright';
 import { ACCEPTANCE_VARIANTS } from './acceptance-artifacts.mjs';
 import { analyzeExistingElectronRenderer } from './packaged-acceptance-axe.mjs';
@@ -152,16 +152,25 @@ describe('packaged acceptance renderer variants', () => {
     assert.equal(commands.filter(command => command.method === 'Page.captureScreenshot').length, 5);
   });
 
-  it('runs injected axe in the existing renderer for all five variants when new targets are unsupported', {
-    timeout: 30_000,
+  describe('real Chromium existing-target axe boundary', {
     skip: process.platform !== 'linux' || process.arch !== 'x64' ? 'Linux x64 packaged acceptance boundary' : false,
-  }, async () => {
-    const executablePath = installedChromium();
-    assert.ok(executablePath, 'A Chromium executable is required for the in-renderer axe boundary regression');
-    const browser = await chromium.launch({ executablePath, headless: true });
-    try {
-      const context = await browser.newContext();
-      const page = await context.newPage();
+  }, () => {
+    let browser;
+    let cdp;
+    let context;
+    let createTargetAttempts = 0;
+    let evaluateRenderer;
+    let injectionMode = 'success';
+    let newPageAttempts = 0;
+    let page;
+    let session;
+
+    before(async () => {
+      const executablePath = installedChromium();
+      assert.ok(executablePath, 'A Chromium executable is required for the in-renderer axe boundary regression');
+      browser = await chromium.launch({ executablePath, headless: true });
+      context = await browser.newContext();
+      page = await context.newPage();
       await page.setContent(`<!doctype html>
         <html lang="en"><head><title>Acceptance boundary</title></head>
         <body><main><h1>Acceptance boundary</h1><div id="shadow-host"></div></main>
@@ -169,7 +178,6 @@ describe('packaged acceptance renderer variants', () => {
           document.querySelector('#shadow-host').attachShadow({ mode: 'open' }).innerHTML = '<button></button>';
         </script></body></html>`);
 
-      let newPageAttempts = 0;
       Object.defineProperty(context, 'newPage', {
         configurable: true,
         value: async () => {
@@ -177,9 +185,8 @@ describe('packaged acceptance renderer variants', () => {
           throw new Error('Target.createTarget is unsupported');
         },
       });
-      const session = await context.newCDPSession(page);
-      let createTargetAttempts = 0;
-      const cdp = {
+      session = await context.newCDPSession(page);
+      cdp = {
         send: async (method, params) => {
           if (method === 'Target.createTarget') {
             createTargetAttempts += 1;
@@ -189,14 +196,10 @@ describe('packaged acceptance renderer variants', () => {
         },
       };
 
-      await assert.rejects(context.newPage(), /Target\.createTarget is unsupported/);
-      await assert.rejects(cdp.send('Target.createTarget', { url: 'about:blank' }), /Target\.createTarget is unsupported/);
-
-      const evaluateRenderer = page.evaluate.bind(page);
+      evaluateRenderer = page.evaluate.bind(page);
       await evaluateRenderer(() => {
         globalThis.__acceptanceAxeCleanup = { completed: 0, started: 0, callbackBased: 0 };
       });
-      let injectionMode = 'success';
       page.evaluate = async (pageFunction, argument) => {
         const result = await evaluateRenderer(pageFunction, argument);
         if (typeof pageFunction === 'string') {
@@ -234,6 +237,21 @@ describe('packaged acceptance renderer variants', () => {
         }
         return result;
       };
+    }, { timeout: 30_000 });
+
+    after(async () => {
+      try {
+        if (session) await session.detach();
+      } finally {
+        if (browser) await browser.close();
+      }
+    }, { timeout: 15_000 });
+
+    it('proves five-variant axe success and reinjection without creating a target', {
+      timeout: 45_000,
+    }, async () => {
+      await assert.rejects(context.newPage(), /Target\.createTarget is unsupported/);
+      await assert.rejects(cdp.send('Target.createTarget', { url: 'about:blank' }), /Target\.createTarget is unsupported/);
 
       const checks = [];
       await forEachElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS, async ({ variant }) => {
@@ -252,6 +270,15 @@ describe('packaged acceptance renderer variants', () => {
         assert.ok(check.violations.some(violation => violation.id === 'button-name'
           && violation.impact === 'critical' && violation.nodes === 1));
       }
+
+      assert.equal(newPageAttempts, 1);
+      assert.equal(createTargetAttempts, 1);
+      assert.equal(page.isClosed(), false);
+    });
+
+    it('fails closed at the production axe cleanup timeout', {
+      timeout: 10_000,
+    }, async () => {
       injectionMode = 'timeout';
       await assert.rejects(
         analyzeExistingElectronRenderer(page),
@@ -260,7 +287,12 @@ describe('packaged acceptance renderer variants', () => {
       );
       assert.equal(await evaluateRenderer(() => typeof globalThis.axe), 'object');
       await evaluateRenderer(() => Reflect.deleteProperty(globalThis, 'axe'));
+      assert.equal(page.isClosed(), false);
+    });
 
+    it('preserves the primary axe error alongside asynchronous cleanup failure', {
+      timeout: 10_000,
+    }, async () => {
       injectionMode = 'combined-failure';
       let combinedFailure;
       try {
@@ -278,9 +310,6 @@ describe('packaged acceptance renderer variants', () => {
       assert.equal(newPageAttempts, 1);
       assert.equal(createTargetAttempts, 1);
       assert.equal(page.isClosed(), false);
-      await session.detach();
-    } finally {
-      await browser.close();
-    }
+    });
   });
 });

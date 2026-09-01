@@ -41,10 +41,34 @@ jobs:
           node -e 'if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(process.argv[1])) process.exit(1)' "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+  renderer-axe-boundary:
+    name: Prove real Chromium existing-target axe boundary
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout pull-request validation source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked dependencies and real Chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run focused existing-target axe boundary regression
+        run: node --test --test-name-pattern='real Chromium existing-target axe boundary' apps/desktop/scripts/packaged-acceptance-renderer.test.mjs
+
   package:
     name: Validate unsigned ${{ matrix.platform }}-${{ matrix.arch }} package
     if: github.event_name == 'pull_request'
-    needs: validation-version
+    needs: [validation-version, renderer-axe-boundary]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
