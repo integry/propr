@@ -1511,12 +1511,16 @@ function Test-WorkflowCleanupProtocolStateMachine {
       Lifecycle='TIMEOUT_AFTER_STARTUP'; TreeTermination='COMPLETE'
       StartupClass='READY'; LineNumber=1; BeginTimeoutAfterStartup=$true
     },
-    [PSCustomObject]@{ Fixture='STREAM_DRAIN_RACE'; Observed='TERMINAL'; Lifecycle='ACTIVE_TREE_AFTER_EXIT' }
+    [PSCustomObject]@{
+      Fixture='STREAM_DRAIN_RACE'; Observed='TERMINAL'; LineCount=2; Stderr=0; ProcessExit=125
+      Lifecycle='ACTIVE_TREE_AFTER_EXIT'; TreeTermination='COMPLETE'
+      StartupClass='READY'; LineNumber=2; BeginTimeoutAfterStartup=$true
+    }
   )
   foreach ($case in $cases) {
     $diagnostic = ''
-    # TIMEOUT_AFTER_STARTUP gets its separate five-second startup phase above;
-    # its 250 ms countdown begins only after the complete record is captured.
+    # Startup-gated cases get a separate five-second startup phase above; their
+    # 250 ms countdown begins only after the complete startup record is captured.
     $caseInvocationTimeout = if ($case.Fixture -in @(
         'TIMEOUT_BEFORE_STARTUP','TIMEOUT_AFTER_STARTUP','STREAM_DRAIN_RACE'
       )) { 250 } else { 1000 }
