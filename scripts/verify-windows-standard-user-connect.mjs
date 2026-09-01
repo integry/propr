@@ -47,9 +47,6 @@ function tunnelFixtureEnvLines({ enabled }) {
 
 function windowsRootEnvironment(systemRootMode, systemRoot, windir, untrustedRoot) {
   if (systemRootMode === "missing") return {};
-  if (systemRootMode === "untrusted") {
-    return { SYSTEMROOT: untrustedRoot, WINDIR: untrustedRoot };
-  }
   return {
     SYSTEMROOT: systemRoot,
     WINDIR: systemRootMode === "mismatched" ? untrustedRoot : windir,
@@ -62,6 +59,19 @@ const WINDOWS_ROOT_MISSING_MARKER_VALUE = "windows-root-missing-v1";
 function missingWindowsRootFixtureEnvironment(systemRootMode) {
   return systemRootMode === "missing"
     ? { [WINDOWS_ROOT_MISSING_MARKER]: WINDOWS_ROOT_MISSING_MARKER_VALUE }
+    : {};
+}
+
+const WINDOWS_ROOT_UNTRUSTED_MARKER = "PROPR_TEST_WINDOWS_ROOT_UNTRUSTED";
+const WINDOWS_ROOT_UNTRUSTED_MARKER_VALUE = "windows-root-untrusted-v1";
+const WINDOWS_ROOT_UNTRUSTED_PATH = "PROPR_TEST_WINDOWS_ROOT_UNTRUSTED_PATH";
+
+function untrustedWindowsRootFixtureEnvironment(systemRootMode, untrustedRoot) {
+  return systemRootMode === "untrusted"
+    ? {
+        [WINDOWS_ROOT_UNTRUSTED_MARKER]: WINDOWS_ROOT_UNTRUSTED_MARKER_VALUE,
+        [WINDOWS_ROOT_UNTRUSTED_PATH]: untrustedRoot,
+      }
     : {};
 }
 
@@ -203,7 +213,7 @@ const authorityFailures = [
   { name: "authority-reparse", mode: "reparse", reason: "INVALID_ROOT" },
   { name: "authority-missing-system-root", systemRootMode: "missing", nativeStage: "resolver:env" },
   { name: "authority-mismatched-system-root", systemRootMode: "mismatched" },
-  { name: "authority-untrusted-system-root", systemRootMode: "untrusted" },
+  { name: "authority-untrusted-system-root", systemRootMode: "untrusted", nativeStage: "resolver:global-id" },
 ];
 
 let currentScenario = "ready";
@@ -393,6 +403,7 @@ try {
           fixture,
         ),
         ...missingWindowsRootFixtureEnvironment(scenario.systemRootMode),
+        ...untrustedWindowsRootFixtureEnvironment(scenario.systemRootMode, fixture),
         COMSPEC: process.env.ComSpec,
         USERPROFILE: process.env.USERPROFILE,
         HOMEDRIVE: process.env.HOMEDRIVE,

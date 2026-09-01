@@ -1,7 +1,7 @@
 import childProcess from "node:child_process";
 import { fstatSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const WINDOWS_ROOT_MISSING_MARKER = "PROPR_TEST_WINDOWS_ROOT_MISSING";
 const WINDOWS_ROOT_MISSING_MARKER_VALUE = "windows-root-missing-v1";
@@ -15,7 +15,32 @@ function consumeMissingWindowsRootFixtureMarker(environment = process.env) {
   }
 }
 
+const WINDOWS_ROOT_UNTRUSTED_MARKER = "PROPR_TEST_WINDOWS_ROOT_UNTRUSTED";
+const WINDOWS_ROOT_UNTRUSTED_MARKER_VALUE = "windows-root-untrusted-v1";
+const WINDOWS_ROOT_UNTRUSTED_PATH = "PROPR_TEST_WINDOWS_ROOT_UNTRUSTED_PATH";
+
+function consumeUntrustedWindowsRootFixtureMarker(environment = process.env, fixtureRoot = process.cwd()) {
+  const marker = Object.keys(environment).find((name) => name === WINDOWS_ROOT_UNTRUSTED_MARKER);
+  const rootPath = Object.keys(environment).find((name) => name === WINDOWS_ROOT_UNTRUSTED_PATH);
+  if (
+    marker === undefined
+    || environment[marker] !== WINDOWS_ROOT_UNTRUSTED_MARKER_VALUE
+    || rootPath === undefined
+    || typeof environment[rootPath] !== "string"
+    || resolve(environment[rootPath]).toLowerCase() !== resolve(fixtureRoot).toLowerCase()
+  ) return;
+  const untrustedRoot = environment[rootPath];
+  delete environment[marker];
+  delete environment[rootPath];
+  for (const name of Object.keys(environment)) {
+    if (/^(?:systemroot|windir)$/i.test(name)) delete environment[name];
+  }
+  environment.SystemRoot = untrustedRoot;
+  environment.WINDIR = untrustedRoot;
+}
+
 consumeMissingWindowsRootFixtureMarker();
+consumeUntrustedWindowsRootFixtureMarker();
 
 const originalSpawnSync = childProcess.spawnSync;
 const forbidden = /(?:connect-authority|ProPRConnectAuthority|pwsh|csc|msiexec)(?:\.exe)?$/i;
