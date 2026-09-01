@@ -3,6 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  assertCanonicalNativeArtifactParents,
+  physicalNativeArtifactCandidate,
+} from "./nativeArtifact.js";
 
 export type DirectoryDescriptorAccess = "child-paths" | "native-at";
 
@@ -72,9 +76,10 @@ function nativeArtifactPath(platform: NodeJS.Platform, arch: string): string {
   const candidates = [
     join(moduleDirectory, "..", "native", relativeArtifact),
     join(moduleDirectory, "..", "..", "native", relativeArtifact),
-  ];
+  ].map(physicalNativeArtifactCandidate);
   const artifact = candidates.find((candidate) => existsSync(candidate));
   if (!artifact) throw new Error(`packaged ${platform} directory-operations artifact is missing for ${arch}`);
+  if (platform === "darwin") assertCanonicalNativeArtifactParents(artifact);
   verifyDirectoryOperationArtifact(artifact, expected, `${platform}-${arch}`);
   return artifact;
 }

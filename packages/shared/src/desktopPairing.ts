@@ -1,7 +1,7 @@
+import { normalizeProprApiOrigin } from './apiOrigin.js';
 import {
   DEFAULT_PROPR_UI_ORIGIN,
   isProprConnectReservedHostAttempt,
-  MAX_PROPR_API_BASE_URL_LENGTH,
   parseProprConnectEndpoint,
 } from './proprServiceUrls.js';
 
@@ -19,25 +19,13 @@ export interface DesktopPairingApprovalUrlInput {
 const rawAuthority = (value: string): string | null =>
   /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i.exec(value)?.[1] ?? null;
 
-const isLoopbackHostname = (hostname: string): boolean => {
-  const normalized = hostname.toLowerCase().replace(/\.$/, '');
-  if (normalized === 'localhost' || normalized.endsWith('.localhost') || normalized === '[::1]') return true;
-  const parts = normalized.split('.');
-  return parts.length === 4
-    && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
-    && Number(parts[0]) === 127;
-};
-
 const bareHttpOrigin = (value: string): URL | null => {
-  if (value.length > MAX_PROPR_API_BASE_URL_LENGTH) return null;
   const connectEndpoint = parseProprConnectEndpoint(value);
   if (isProprConnectReservedHostAttempt(value) && !connectEndpoint) return null;
+  const normalized = normalizeProprApiOrigin(value);
+  if (normalized === null || normalized !== value) return null;
   try {
-    const url = new URL(value);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-    if (url.protocol === 'http:' && !isLoopbackHostname(url.hostname)) return null;
-    if (url.username || url.password || url.search || url.hash) return null;
-    if (/[^/]/.test(url.pathname)) return null;
+    const url = new URL(normalized);
     // Callers must supply the already-normalized discovery origin. Binding an
     // approval response to a second spelling would reintroduce encoded-host or
     // explicit-default-port ambiguity at the browser boundary.

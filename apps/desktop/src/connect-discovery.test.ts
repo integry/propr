@@ -60,6 +60,38 @@ describe('desktop fixed-root Connect discovery', () => {
     assert.equal(await service.rediscover('missing-profile'), null);
   });
 
+  it('discards rediscovery when the exact saved profile changes while native discovery awaits', async () => {
+    const saved = {
+      id: 'saved-profile', label: 'Managed workspace',
+      apiBaseUrl: 'https://t-stale123.propr.dev',
+      createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z',
+    };
+    const replacements = [
+      null,
+      { ...saved, label: 'Edited workspace', updatedAt: '2026-08-02T00:00:00.000Z' },
+      { ...saved, apiBaseUrl: 'https://t-replaced999.propr.dev', updatedAt: '2026-08-02T00:00:00.000Z' },
+      { ...saved, createdAt: '2026-08-02T00:00:00.000Z', updatedAt: '2026-08-02T00:00:00.000Z' },
+    ];
+    for (const replacement of replacements) {
+      let reads = 0;
+      let resolveDiscovery!: (status: ConnectStatusDocument) => void;
+      const discovery = new Promise<ConnectStatusDocument>(resolve => { resolveDiscovery = resolve; });
+      const service = new DesktopConnectDiscoveryService({
+        list: async () => {
+          const currentRead = reads++;
+          return {
+            profiles: currentRead === 0 ? [saved] : replacement ? [replacement] : [],
+            activeProfileId: saved.id,
+          };
+        },
+      }, { supported: true, discover: () => discovery });
+      const result = service.rediscover(saved.id);
+      await Promise.resolve();
+      resolveDiscovery(readyStatus('https://t-recovered456.propr.dev'));
+      assert.equal(await result, null);
+    }
+  });
+
   it('fails closed for unsupported hosts and malformed native results', async () => {
     const profiles = { list: async () => ({ profiles: [], activeProfileId: null }) };
     await assert.rejects(

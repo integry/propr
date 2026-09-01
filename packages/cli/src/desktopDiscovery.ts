@@ -1,4 +1,8 @@
-import { getLocalConnectStatus, type ConnectStatusDocument } from './commands/connectCommand.js';
+import {
+  getLocalConnectStatus,
+  type ConnectStatusDocument,
+  type LocalConnectStatusDependencies,
+} from './commands/connectCommand.js';
 import { createConfigManager } from './config/index.js';
 
 export const DESKTOP_CONNECT_DISCOVERY_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set([
@@ -12,6 +16,8 @@ export interface FixedConnectDiscoveryOptions {
   configRoot: string;
   platform?: NodeJS.Platform;
   readStatus?: (root: string | undefined) => Promise<ConnectStatusDocument>;
+  /** @internal Packaged smoke keeps native authority real while replacing external network/process probes. */
+  statusDependencies?: LocalConnectStatusDependencies;
 }
 
 /**
@@ -22,7 +28,8 @@ export interface FixedConnectDiscoveryOptions {
 export async function discoverConfiguredConnect({
   configRoot,
   platform = process.platform,
-  readStatus = getLocalConnectStatus,
+  readStatus,
+  statusDependencies,
 }: FixedConnectDiscoveryOptions): Promise<ConnectStatusDocument> {
   if (!DESKTOP_CONNECT_DISCOVERY_PLATFORMS.has(platform)) {
     throw new Error('Connect discovery is unavailable on this host');
@@ -31,7 +38,8 @@ export async function discoverConfiguredConnect({
     readOnly: true,
     warn: () => undefined,
   });
-  return readStatus(config.getStackRoot());
+  const root = config.getStackRoot();
+  return readStatus ? readStatus(root) : getLocalConnectStatus(root, statusDependencies);
 }
 
 export type { ConnectStatusDocument } from './commands/connectCommand.js';

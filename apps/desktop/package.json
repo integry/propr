@@ -27,6 +27,7 @@
     "prepackage": "npm run prepare:renderer",
     "package": "electron-forge package",
     "smoke:package": "node scripts/smoke-packaged.mjs",
+    "smoke:connect-package": "node scripts/smoke-packaged-connect.mjs",
     "premake": "npm run prepare:renderer",
     "make": "electron-forge make",
     "premake:deb": "npm run prepare:renderer",

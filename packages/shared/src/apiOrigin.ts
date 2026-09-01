@@ -19,6 +19,7 @@ export const PROPR_API_ORIGIN_PARITY_CASES = [
   ['fragment', 'https://propr.example.test#x', null],
   ['encoded host', 'http://local%68ost:3000', null],
   ['trailing dot', 'http://localhost.:3000', null],
+  ['localhost subdomain trailing dot', 'http://api.dev.localhost.:3000', null],
   ['short IPv4', 'http://127.1:3000', null],
   ['octal IPv4', 'http://0177.0.0.1:3000', null],
   ['hex IPv4', 'http://0x7f000001:3000', null],

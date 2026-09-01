@@ -24,6 +24,10 @@ import {
   WindowsNativeStageError,
   windowsInspectionEntryKind,
 } from "./connectWindowsAuthority.js";
+import {
+  assertCanonicalNativeArtifactParents,
+  physicalNativeArtifactCandidate,
+} from "./utils/nativeArtifact.js";
 
 const NATIVE_INSPECTION_MAX_BYTES = 128 * 1024;
 const WINDOWS_SID = /^S-\d(?:-\d+)+$/;
@@ -197,10 +201,11 @@ function darwinAuthorityBrokerArtifact(): {
     join(moduleDirectory, "native", relative),
     join(moduleDirectory, "..", "native", relative),
     join(moduleDirectory, "..", "..", "native", relative),
-  ];
+  ].map(physicalNativeArtifactCandidate);
   for (const path of candidates) {
     let fd: number | undefined;
     try {
+      assertCanonicalNativeArtifactParents(path);
       fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       const stat = fstatSync(fd, { bigint: true });
       const named = lstatSync(path, { bigint: true });
@@ -213,6 +218,7 @@ function darwinAuthorityBrokerArtifact(): {
         || stat.size > BigInt(512 * 1024)
         || (typeof process.getuid === "function" && stat.uid !== 0n && stat.uid !== BigInt(process.getuid()))
         || (stat.mode & 0o022n) !== 0n
+        || (stat.mode & 0o111n) === 0n
       ) {
         closeSync(fd);
         fd = undefined;

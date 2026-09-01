@@ -14,6 +14,51 @@ const safeField = (value: unknown): unknown => {
   return { code: 'DETAIL_REDACTED' };
 };
 
+const LAYOUT_EVENT = 'desktop.renderer.layout.ready';
+const LAYOUT_KEYS = new Set([
+  'windowBounds', 'workArea', 'viewport', 'entry', 'card', 'logo', 'heading',
+  'connectButton', 'connectDescription',
+]);
+const LAYOUT_NUMBER_KEYS = new Set([
+  'x', 'y', 'width', 'height', 'top', 'right', 'bottom', 'left',
+]);
+const LAYOUT_BOOLEAN_KEYS = new Set(['visible', 'maximized', 'fullScreen']);
+
+const boundedLayout = (value: unknown): Record<string, Record<string, number | boolean>> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const entries = Object.entries(value);
+  if (entries.length === 0 || entries.length > LAYOUT_KEYS.size) return null;
+  const result: Record<string, Record<string, number | boolean>> = {};
+  for (const [name, rawGeometry] of entries) {
+    if (!LAYOUT_KEYS.has(name) || !rawGeometry || typeof rawGeometry !== 'object' || Array.isArray(rawGeometry)) {
+      return null;
+    }
+    const geometry = Object.entries(rawGeometry);
+    if (geometry.length === 0 || geometry.length > LAYOUT_NUMBER_KEYS.size + LAYOUT_BOOLEAN_KEYS.size) return null;
+    const safeGeometry: Record<string, number | boolean> = {};
+    for (const [key, measurement] of geometry) {
+      const validNumber = LAYOUT_NUMBER_KEYS.has(key)
+        && typeof measurement === 'number'
+        && Number.isFinite(measurement);
+      const validBoolean = LAYOUT_BOOLEAN_KEYS.has(key) && typeof measurement === 'boolean';
+      if (!validNumber && !validBoolean) return null;
+      safeGeometry[key] = measurement;
+    }
+    result[name] = safeGeometry;
+  }
+  return result;
+};
+
+export const sanitizeDesktopLogFields = (
+  event: string,
+  fields: Record<string, unknown>,
+): Record<string, unknown> => Object.fromEntries(Object.entries(fields).map(([key, value]) => {
+  if (event === LAYOUT_EVENT && key === 'layout') {
+    return [key, boundedLayout(value) ?? { code: 'DETAIL_REDACTED' }];
+  }
+  return [key, safeField(value)];
+}));
+
 export const createDesktopLogger = (logPath: string): DesktopLogger => {
   let pending = Promise.resolve();
   const log = (level: LogLevel, event: string, fields: Record<string, unknown> = {}) => {
@@ -21,7 +66,7 @@ export const createDesktopLogger = (logPath: string): DesktopLogger => {
       timestamp: new Date().toISOString(),
       level,
       event,
-      ...Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, safeField(value)])),
+      ...sanitizeDesktopLogFields(event, fields),
     });
     const consoleMethod = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
     consoleMethod(record);

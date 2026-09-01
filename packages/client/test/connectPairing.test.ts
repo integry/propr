@@ -80,6 +80,8 @@ describe('ProPR Connect desktop pairing approval URLs', () => {
       'https://t-%69nstance123.propr.dev',
       'https://t-instance123.propr.dev.',
       'https://t-instance123.foo.propr.dev',
+      'http://localhost.:4000',
+      'http://api.dev.localhost.:4000',
     ]) {
       assert.equal(normalizeDesktopPairingApprovalUrl({
         apiBaseUrl: untrustedBase,
@@ -95,6 +97,7 @@ describe('ProPR Connect desktop pairing approval URLs', () => {
       'https://t-instance123.propr.dev.example.com',
       'http://127.0.0.1:4000',
       'http://localhost:4000',
+      'http://api.dev.localhost:4000',
     ]) {
       const approvalUrl = `${baseUrl}/api/desktop/pairings/${pairingId}/browser`;
       assert.equal(normalizeDesktopPairingApprovalUrl({ apiBaseUrl: baseUrl, pairingId, approvalUrl }), approvalUrl);

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { App, IpcMain, IpcMainInvokeEvent, Session } from 'electron';
 import type { ConnectStatusDocument } from '@propr/cli/desktop-discovery';
@@ -12,6 +12,7 @@ import type { ProfileStore } from '../../../apps/desktop/src/profile-store';
 import { IPC_CHANNELS } from '../../../apps/desktop/src/shared/contract';
 import { DesktopExperience } from './DesktopExperience';
 import { createElectronDesktopAdapters } from './electronAdapters';
+import type { DesktopAdapters, DesktopConnectionResult, DesktopProfile } from './types';
 
 vi.mock('../api/apiClient', () => ({
   getDesktopConnectionScope: () => null,
@@ -36,6 +37,33 @@ const readyStatus: ConnectStatusDocument = {
   version: '0.8.15',
   reasonCodes: [],
 };
+
+const savedProfile: DesktopProfile = {
+  id: 'saved', name: 'Saved instance', baseUrl: 'https://saved.example.test', kind: 'remote',
+};
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise; reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+};
+
+const adaptersWithDiscovery = (discover: DesktopAdapters['discovery']['discover']): DesktopAdapters => ({
+  platform: 'linux',
+  profiles: {
+    list: vi.fn(async () => [savedProfile]), save: vi.fn(async () => undefined),
+    remove: vi.fn(async () => undefined), getActiveId: vi.fn(async () => null),
+    setActiveId: vi.fn(async () => undefined),
+  },
+  discovery: { supported: true, discover },
+  authentication: { authenticate: vi.fn(async () => undefined) },
+  externalBrowser: { open: vi.fn(async () => undefined) },
+  localSetup: { supported: false, setup: vi.fn(async () => savedProfile) },
+  connection: { probe: vi.fn(async (): Promise<DesktopConnectionResult> => ({ status: 'ready' })) },
+});
 
 describe('DesktopExperience production Connect discovery pipeline', () => {
   it('flows fixed-root main discovery through IPC, preload, and Electron adapters without persistence', async () => {
@@ -92,5 +120,41 @@ describe('DesktopExperience production Connect discovery pipeline', () => {
     }));
     expect(invocations.find(item => item.channel === IPC_CHANNELS.connectDiscover)?.args).toEqual([]);
     registered.dispose();
+  });
+
+  it('discards a late discovery success after an editor action', async () => {
+    const pending = deferred<DesktopProfile[]>();
+    const adapters = adaptersWithDiscovery(() => pending.promise);
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Search for instances on this network/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Saved instance' }));
+    expect(await screen.findByRole('heading', { name: 'Edit instance' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Instance URL')).toHaveValue(savedProfile.baseUrl);
+
+    await act(() => {
+      pending.resolve([{
+        id: 'late', name: 'Late discovery',
+        baseUrl: 'https://t-late123.propr.dev', kind: 'remote',
+      }]);
+      return pending.promise;
+    });
+    expect(screen.getByLabelText('Instance URL')).toHaveValue(savedProfile.baseUrl);
+    expect(screen.queryByText('Late discovery')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(await screen.findByRole('button', { name: /Search for instances on this network/i })).toBeEnabled();
+  });
+
+  it('discards a late discovery error after a competing connection action', async () => {
+    const pending = deferred<DesktopProfile[]>();
+    const adapters = adaptersWithDiscovery(() => pending.promise);
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Search for instances on this network/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Saved instance/ }));
+    await act(async () => { pending.reject(new Error('native path SENTINEL')); await Promise.resolve(); });
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(screen.queryByText(/Network discovery is unavailable/)).not.toBeInTheDocument();
   });
 });
