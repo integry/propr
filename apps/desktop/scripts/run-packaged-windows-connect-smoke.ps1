@@ -13,8 +13,31 @@ $failureCategories = @(
   'architecture-mismatch',
   'spawn-failed'
 )
+$failurePhases = @(
+  'source-layout',
+  'runner-authority',
+  'account-setup',
+  'staging-copy',
+  'staging-acl',
+  'staged-contract',
+  'staged-tree',
+  'staged-architecture',
+  'ordinary-user-preflight',
+  'fixture-setup',
+  'package-authority',
+  'application-spawn',
+  'application-runtime',
+  'capture-parse',
+  'result-verify',
+  'cleanup'
+)
+$applicationTimeoutMilliseconds = 5 * 60 * 1000
+$terminationTimeoutMilliseconds = 30 * 1000
+$cleanupTimeoutMilliseconds = 60 * 1000
 $primaryFailure = $null
-$cleanupFailure = $false
+$primaryPhase = $null
+$failurePhase = 'source-layout'
+$cleanupSecondary = 'none'
 $testUser = $null
 $testUserSid = $null
 $stageParent = $null
@@ -36,7 +59,28 @@ function Get-FixedFailureCategory {
   if ($Exception.Message -cmatch '^PROPR_PACKAGED_CONNECT_FAILURE:(artifact-missing|artifact-inaccessible|artifact-type|architecture-mismatch|spawn-failed)$') {
     return $Matches[1]
   }
-  return 'spawn-failed'
+  if ($failurePhase -in @('application-spawn','application-runtime','result-verify')) {
+    return 'spawn-failed'
+  }
+  return 'artifact-inaccessible'
+}
+
+function Set-FailurePhase {
+  param([Parameter(Mandatory=$true)][string]$Phase)
+  if ($failurePhases -cnotcontains $Phase) {
+    throw [InvalidOperationException]::new('invalid-fixed-failure-phase')
+  }
+  $script:failurePhase = $Phase
+}
+
+function Stop-SpawnedProcess {
+  param([Parameter(Mandatory=$true)][Diagnostics.Process]$Process)
+  if (!$Process.HasExited) {
+    $Process.Kill()
+    if (!$Process.WaitForExit($terminationTimeoutMilliseconds)) {
+      Stop-PackagedConnect 'spawn-failed'
+    }
+  }
 }
 
 function Get-CanonicalItem {
@@ -230,41 +274,116 @@ function Assert-StagedEntryAcl {
   }
 }
 
-function Remove-BoundedStage {
-  param(
-    [Parameter(Mandatory=$true)][string]$Parent,
-    [Parameter(Mandatory=$true)][string]$AuthenticatedRunnerTemp,
-    [Parameter(Mandatory=$true)][Security.Principal.SecurityIdentifier]$PrivilegedUser,
-    [Parameter(Mandatory=$true)][Security.Principal.SecurityIdentifier]$Administrators
-  )
-  if ([IO.Path]::GetDirectoryName($Parent) -cne $AuthenticatedRunnerTemp -or
-      [IO.Path]::GetFileName($Parent) -cne 'propr-connect-packaged-stage') {
-    throw [InvalidOperationException]::new('bounded-cleanup-rejected')
+$boundedCleanupSource = @'
+$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+try {
+  $runnerTemp=$env:PROPR_CLEANUP_RUNNER_TEMP
+  $parent=$env:PROPR_CLEANUP_STAGE_PARENT
+  $leaf=$env:PROPR_CLEANUP_STAGE_LEAF
+  $privileged=[Security.Principal.SecurityIdentifier]::new($env:PROPR_CLEANUP_PRIVILEGED_SID)
+  $admins=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+  if([String]::IsNullOrEmpty($runnerTemp) -or ![IO.Path]::IsPathRooted($runnerTemp) -or
+    ![String]::Equals([IO.Path]::GetFullPath($runnerTemp),$runnerTemp,[StringComparison]::OrdinalIgnoreCase)){exit 91}
+  if(![String]::IsNullOrEmpty($parent) -or ![String]::IsNullOrEmpty($leaf)){
+    if([IO.Path]::GetDirectoryName($parent) -cne $runnerTemp -or
+      [IO.Path]::GetFileName($parent) -cne 'propr-connect-packaged-stage' -or
+      $leaf -cnotmatch '^propr-connect-package-[a-f0-9]{32}$'){exit 91}
+    $root=[IO.Path]::Combine($parent,$leaf)
+    if([IO.Path]::GetDirectoryName($root) -cne $parent -or [IO.Path]::GetFileName($root) -cne $leaf){exit 91}
+    if(Test-Path -LiteralPath $root){
+      $items=@((Get-Item -LiteralPath $root -Force -ErrorAction Stop))
+      $items+=@(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop)
+      if($items.Count -gt 20001){exit 91}
+      foreach($item in $items){
+        $isRoot=[String]::Equals($item.FullName,$root,[StringComparison]::OrdinalIgnoreCase)
+        if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+          ![String]::Equals([IO.Path]::GetFullPath($item.FullName),$item.FullName,[StringComparison]::OrdinalIgnoreCase) -or
+          (!$isRoot -and !$item.FullName.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)) -or
+          ($isRoot -and !$item.PSIsContainer)){exit 91}
+        $sections=[Security.AccessControl.AccessControlSections]::Owner
+        $acl=if($item.PSIsContainer){[IO.Directory]::GetAccessControl($item.FullName,$sections)}else{[IO.File]::GetAccessControl($item.FullName,$sections)}
+        $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier])
+        if(@($privileged.Value,$admins.Value) -cnotcontains $owner.Value){exit 91}
+      }
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
+      if(Test-Path -LiteralPath $root){exit 92}
+    }
+    if(Test-Path -LiteralPath $parent){
+      $parentItem=Get-Item -LiteralPath $parent -Force -ErrorAction Stop
+      if(!$parentItem.PSIsContainer -or ($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop).Count -ne 0){exit 91}
+      $parentAcl=[IO.Directory]::GetAccessControl($parent,[Security.AccessControl.AccessControlSections]::Owner)
+      $parentOwner=$parentAcl.GetOwner([Security.Principal.SecurityIdentifier])
+      if(@($privileged.Value,$admins.Value) -cnotcontains $parentOwner.Value){exit 91}
+      Remove-Item -LiteralPath $parent -Force -ErrorAction Stop
+      if(Test-Path -LiteralPath $parent){exit 92}
+    }
   }
-  if (Test-Path -LiteralPath $Parent) {
-    $cleanupItems = @((Get-Item -LiteralPath $Parent -Force -ErrorAction Stop))
-    $cleanupItems += @(Get-ChildItem -LiteralPath $Parent -Force -Recurse -ErrorAction Stop)
-    if ($cleanupItems.Count -gt 20002) { throw [InvalidOperationException]::new('bounded-cleanup-rejected') }
-    foreach ($item in $cleanupItems) {
-      $isRoot = [String]::Equals($item.FullName, $Parent, [StringComparison]::OrdinalIgnoreCase)
-      if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-          ![String]::Equals([IO.Path]::GetFullPath($item.FullName), $item.FullName, [StringComparison]::OrdinalIgnoreCase) -or
-          (!$isRoot -and !$item.FullName.StartsWith($Parent + '\', [StringComparison]::OrdinalIgnoreCase)) -or
-          ($isRoot -and !$item.PSIsContainer)) {
-        throw [InvalidOperationException]::new('bounded-cleanup-rejected')
-      }
-      $acl = if ($item.PSIsContainer) {
-        [IO.Directory]::GetAccessControl($item.FullName, [Security.AccessControl.AccessControlSections]::Owner)
-      } else {
-        [IO.File]::GetAccessControl($item.FullName, [Security.AccessControl.AccessControlSections]::Owner)
-      }
-      $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
-      if (@($PrivilegedUser.Value, $Administrators.Value) -cnotcontains $owner.Value) {
-        throw [InvalidOperationException]::new('bounded-cleanup-rejected')
+  foreach($capture in @($env:PROPR_CLEANUP_STDOUT,$env:PROPR_CLEANUP_STDERR)){
+    if(![String]::IsNullOrEmpty($capture)){
+      if([IO.Path]::GetDirectoryName($capture) -cne $runnerTemp -or
+        [IO.Path]::GetFileName($capture) -cnotmatch '^propr-connect-[a-f0-9]{32}\.(stdout|stderr)$'){exit 91}
+      if(Test-Path -LiteralPath $capture){
+        $captureItem=Get-Item -LiteralPath $capture -Force -ErrorAction Stop
+        if($captureItem.PSIsContainer -or ($captureItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){exit 91}
+        $captureAcl=[IO.File]::GetAccessControl($capture,[Security.AccessControl.AccessControlSections]::Owner)
+        $captureOwner=$captureAcl.GetOwner([Security.Principal.SecurityIdentifier])
+        if(@($privileged.Value,$admins.Value) -cnotcontains $captureOwner.Value){exit 91}
+        Remove-Item -LiteralPath $capture -Force -ErrorAction Stop
+        if(Test-Path -LiteralPath $capture){exit 92}
       }
     }
-    Remove-Item -LiteralPath $Parent -Recurse -Force -ErrorAction Stop
-    if (Test-Path -LiteralPath $Parent) { throw [InvalidOperationException]::new('bounded-cleanup-incomplete') }
+  }
+  $user=$env:PROPR_CLEANUP_USER
+  $userSid=$env:PROPR_CLEANUP_USER_SID
+  if(![String]::IsNullOrEmpty($user) -or ![String]::IsNullOrEmpty($userSid)){
+    if($user -cnotmatch '^prpc[a-f0-9]{12}$' -or [String]::IsNullOrEmpty($userSid)){exit 91}
+    $account=Get-LocalUser -Name $user -ErrorAction Stop
+    if($account.SID.Value -cne $userSid){exit 91}
+    Remove-LocalUser -Name $user -ErrorAction Stop
+    if($null -ne (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)){exit 92}
+  }
+  exit 0
+} catch { exit 93 }
+'@
+
+function Invoke-BoundedCleanup {
+  $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($boundedCleanupSource))
+  $start=[Diagnostics.ProcessStartInfo]::new()
+  $start.FileName=Join-Path $PSHOME 'powershell.exe'
+  $start.Arguments="-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
+  $start.UseShellExecute=$false
+  $start.CreateNoWindow=$true
+  $start.RedirectStandardOutput=$true
+  $start.RedirectStandardError=$true
+  $start.EnvironmentVariables['PROPR_CLEANUP_RUNNER_TEMP']=[string]$authenticatedRunnerTemp
+  $cleanupStageParent=if($null -eq $stageLeaf){''}else{[string]$stageParent}
+  $cleanupStageLeaf=if($null -eq $stageLeaf){''}else{[string]$stageLeaf}
+  $start.EnvironmentVariables['PROPR_CLEANUP_STAGE_PARENT']=$cleanupStageParent
+  $start.EnvironmentVariables['PROPR_CLEANUP_STAGE_LEAF']=$cleanupStageLeaf
+  $start.EnvironmentVariables['PROPR_CLEANUP_PRIVILEGED_SID']=if($null -eq $privilegedSid){''}else{$privilegedSid.Value}
+  $start.EnvironmentVariables['PROPR_CLEANUP_STDOUT']=[string]$stdout
+  $start.EnvironmentVariables['PROPR_CLEANUP_STDERR']=[string]$stderr
+  $start.EnvironmentVariables['PROPR_CLEANUP_USER']=[string]$testUser
+  $start.EnvironmentVariables['PROPR_CLEANUP_USER_SID']=if($null -eq $testUserSid){''}else{$testUserSid.Value}
+  $cleanupProcess=[Diagnostics.Process]::new()
+  $cleanupProcess.StartInfo=$start
+  try {
+    if(!$cleanupProcess.Start()){return 'failed'}
+    if(!$cleanupProcess.WaitForExit($cleanupTimeoutMilliseconds)){
+      try{$cleanupProcess.Kill();$null=$cleanupProcess.WaitForExit($terminationTimeoutMilliseconds)}catch{}
+      return 'timeout'
+    }
+    $cleanupOutput=$cleanupProcess.StandardOutput.ReadToEnd()
+    $cleanupError=$cleanupProcess.StandardError.ReadToEnd()
+    if($cleanupProcess.ExitCode -ne 0 -or $cleanupOutput.Length -ne 0 -or $cleanupError.Length -ne 0){return 'failed'}
+    return 'none'
+  } catch {
+    try{if(!$cleanupProcess.HasExited){$cleanupProcess.Kill()}}catch{}
+    return 'failed'
+  } finally {
+    $cleanupProcess.Dispose()
   }
 }
 
@@ -272,6 +391,7 @@ $authenticatedRunnerTemp = $null
 $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 try {
   try {
+    Set-FailurePhase 'source-layout'
     $desktopDirectory = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
     $sourceRoot = [IO.Path]::GetFullPath((Join-Path $desktopDirectory "out\propr-desktop-win32-$Architecture"))
     if ([IO.Path]::GetDirectoryName($sourceRoot) -cne (Join-Path $desktopDirectory 'out') -or
@@ -293,6 +413,7 @@ try {
     $sourceEntries = @(Assert-PackageTreeTypes $sourceRoot)
     Assert-PeArchitecture $sourceExecutable $Architecture
 
+    Set-FailurePhase 'runner-authority'
     if ([String]::IsNullOrEmpty($env:RUNNER_TEMP) -or ![IO.Path]::IsPathRooted($env:RUNNER_TEMP)) {
       Stop-PackagedConnect 'artifact-type'
     }
@@ -319,6 +440,7 @@ try {
     $stageParent = Join-Path $authenticatedRunnerTemp 'propr-connect-packaged-stage'
     if (Test-Path -LiteralPath $stageParent) { Stop-PackagedConnect 'artifact-type' }
 
+    Set-FailurePhase 'account-setup'
     $testUser = 'prpc' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
     $plainPassword = [Guid]::NewGuid().ToString('N') + 'aA1!'
     $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
@@ -326,11 +448,18 @@ try {
     $createdUser = New-LocalUser -Name $testUser -Password $securePassword -PasswordNeverExpires -ErrorAction Stop
     $testUserSid = $createdUser.SID
     if ($null -eq $testUserSid -or $testUser.Length -gt 20) { Stop-PackagedConnect 'artifact-type' }
-    $administrators = Get-LocalGroupMember -Group 'Administrators' -ErrorAction Stop
-    if (@($administrators | Where-Object { $_.SID.Value -eq $testUserSid.Value }).Count -ne 0) {
+    $createdAccount = Get-LocalUser -Name $testUser -ErrorAction Stop
+    if ($createdAccount.SID.Value -cne $testUserSid.Value) { Stop-PackagedConnect 'artifact-type' }
+    $administratorsAccount = $administratorsSid.Translate([Security.Principal.NTAccount]).Value
+    $administratorsName = $administratorsAccount.Substring($administratorsAccount.IndexOf('\') + 1)
+    if ([String]::IsNullOrEmpty($administratorsName)) { Stop-PackagedConnect 'artifact-type' }
+    $administratorsGroup = [ADSI]("WinNT://$env:COMPUTERNAME/$administratorsName,group")
+    $ordinaryUserEntry = [ADSI]("WinNT://$env:COMPUTERNAME/$testUser,user")
+    if ([bool]$administratorsGroup.psbase.Invoke('IsMember', $ordinaryUserEntry.Path)) {
       Stop-PackagedConnect 'artifact-type'
     }
 
+    Set-FailurePhase 'staging-copy'
     $stageLeaf = 'propr-connect-package-' + [Guid]::NewGuid().ToString('N')
     $stageRoot = Join-Path $stageParent $stageLeaf
     $null = New-Item -ItemType Directory -Path $stageParent -ErrorAction Stop
@@ -347,11 +476,13 @@ try {
     $null = Get-CanonicalItem (Join-Path $stageRoot 'resources\app.asar') 'file'
     Assert-PeArchitecture $stagedExecutable $Architecture
 
+    Set-FailurePhase 'staging-acl'
     $aclEntries = @((Get-Item -LiteralPath $stageParent -Force), (Get-Item -LiteralPath $stageRoot -Force))
     $aclEntries += @(Get-ChildItem -LiteralPath $stageRoot -Force -Recurse -ErrorAction Stop)
     foreach ($item in $aclEntries) { Set-StagedEntryAcl $item $testUserSid $administratorsSid }
     foreach ($item in $aclEntries) { Assert-StagedEntryAcl $item $testUserSid $administratorsSid }
 
+    Set-FailurePhase 'ordinary-user-preflight'
     $node = (Get-Command node.exe -CommandType Application -ErrorAction Stop).Source
     $null = Get-CanonicalItem $node 'file'
     $stdout = Join-Path $authenticatedRunnerTemp ('propr-connect-' + [Guid]::NewGuid().ToString('N') + '.stdout')
@@ -365,13 +496,13 @@ try {
       [Environment]::SetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_PARENT', $stageParent, 'Process')
       [Environment]::SetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_LEAF', $stageLeaf, 'Process')
       try {
+        Set-FailurePhase 'application-spawn'
         $process = Start-Process `
           -FilePath $node `
           -ArgumentList @('scripts/smoke-packaged-connect.mjs') `
           -WorkingDirectory $desktopDirectory `
           -Credential $credential `
           -LoadUserProfile `
-          -Wait `
           -PassThru `
           -RedirectStandardOutput $stdout `
           -RedirectStandardError $stderr `
@@ -383,7 +514,19 @@ try {
       [Environment]::SetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_PARENT', $previousParent, 'Process')
       [Environment]::SetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_LEAF', $previousLeaf, 'Process')
     }
+    Set-FailurePhase 'application-runtime'
+    try {
+      if (!$process.WaitForExit($applicationTimeoutMilliseconds)) {
+        Stop-SpawnedProcess $process
+        Stop-PackagedConnect 'spawn-failed'
+      }
+    } catch {
+      try { Stop-SpawnedProcess $process } catch {}
+      if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
+      Stop-PackagedConnect 'spawn-failed'
+    }
     if ($process.ExitCode -ne 0) {
+      Set-FailurePhase 'capture-parse'
       try {
         $failureCapture = Get-CanonicalItem $stderr 'file'
         if ($failureCapture.Length -lt 1 -or $failureCapture.Length -gt 65536) {
@@ -397,19 +540,22 @@ try {
         foreach ($line in $failureLines) {
           $record = ConvertFrom-Json -InputObject $line -ErrorAction Stop
           if ($record.event -ceq 'packaged_connect.artifact_failed' -and
-              $failureCategories -ccontains $record.category) {
+              $failureCategories -ccontains $record.category -and
+              $failurePhases -ccontains $record.phase) {
             $reportedCategories += $record.category
+            Set-FailurePhase $record.phase
           } elseif ($record.event -cne 'packaged_connect.child_failed') {
-            Stop-PackagedConnect 'spawn-failed'
+            Stop-PackagedConnect 'artifact-type'
           }
         }
-        if ($reportedCategories.Count -ne 1) { Stop-PackagedConnect 'spawn-failed' }
+        if ($reportedCategories.Count -ne 1) { Stop-PackagedConnect 'artifact-type' }
         Stop-PackagedConnect $reportedCategories[0]
       } catch {
         if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
-        Stop-PackagedConnect 'spawn-failed'
+        Stop-PackagedConnect 'artifact-type'
       }
     }
+    Set-FailurePhase 'result-verify'
     foreach ($capture in @($stdout, $stderr)) {
       $captureItem = Get-CanonicalItem $capture 'file'
       if ($captureItem.Length -gt 65536) { Stop-PackagedConnect 'spawn-failed' }
@@ -422,43 +568,27 @@ try {
     }
   } catch {
     $primaryFailure = Get-FixedFailureCategory $_.Exception
+    $primaryPhase = $failurePhase
   }
 } finally {
-  try {
-    if ($null -ne $stageParent -and $null -ne $authenticatedRunnerTemp -and $null -ne $privilegedSid) {
-      Remove-BoundedStage $stageParent $authenticatedRunnerTemp $privilegedSid $administratorsSid
+  if ($null -ne $authenticatedRunnerTemp -and $null -ne $privilegedSid) {
+    $cleanupResult = Invoke-BoundedCleanup
+    if ($cleanupResult -eq 'timeout') {
+      $cleanupSecondary = 'cleanup-timeout'
+    } elseif ($cleanupResult -ne 'none') {
+      $cleanupSecondary = 'cleanup-failed'
     }
-  } catch { $cleanupFailure = $true }
-  foreach ($capture in @($stdout, $stderr)) {
-    if ($null -ne $capture) {
-      try {
-        if ([IO.Path]::GetDirectoryName($capture) -cne $authenticatedRunnerTemp -or
-            [IO.Path]::GetFileName($capture) -cnotmatch '^propr-connect-[a-f0-9]{32}\.(stdout|stderr)$') {
-          throw [InvalidOperationException]::new('bounded-capture-cleanup-rejected')
-        }
-        Remove-Item -LiteralPath $capture -Force -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $capture) { throw [InvalidOperationException]::new('bounded-capture-cleanup-incomplete') }
-      } catch { $cleanupFailure = $true }
-    }
-  }
-  if ($null -ne $testUser -and $null -ne $testUserSid) {
-    try {
-      $account = Get-LocalUser -Name $testUser -ErrorAction Stop
-      if ($account.SID.Value -ne $testUserSid.Value -or $testUser -cnotmatch '^prpc[a-f0-9]{12}$') {
-        throw [InvalidOperationException]::new('bounded-account-cleanup-rejected')
-      }
-      Remove-LocalUser -Name $testUser -ErrorAction Stop
-      if ($null -ne (Get-LocalUser -Name $testUser -ErrorAction SilentlyContinue)) {
-        throw [InvalidOperationException]::new('bounded-account-cleanup-incomplete')
-      }
-    } catch { $cleanupFailure = $true }
   }
 }
 
-if ($null -eq $primaryFailure -and $cleanupFailure) { $primaryFailure = 'artifact-inaccessible' }
+if ($null -eq $primaryFailure -and $cleanupSecondary -ne 'none') {
+  $primaryFailure = 'artifact-inaccessible'
+  $primaryPhase = 'cleanup'
+}
 if ($null -ne $primaryFailure) {
   if ($failureCategories -cnotcontains $primaryFailure) { $primaryFailure = 'spawn-failed' }
-  [Console]::Error.WriteLine("PROPR_WINDOWS_PACKAGED_CONNECT:$primaryFailure")
+  if ($failurePhases -cnotcontains $primaryPhase) { $primaryPhase = 'application-runtime' }
+  [Console]::Error.WriteLine("PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=$primaryFailure`:phase=$primaryPhase`:cleanup=$cleanupSecondary")
   exit 1
 }
 [Console]::Out.WriteLine("PROPR_WINDOWS_PACKAGED_CONNECT:passed:$Architecture")

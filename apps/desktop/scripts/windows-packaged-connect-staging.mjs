@@ -14,22 +14,51 @@ export const WINDOWS_ARTIFACT_FAILURE_CATEGORIES = Object.freeze([
   'spawn-failed',
 ]);
 
+export const WINDOWS_ARTIFACT_FAILURE_PHASES = Object.freeze([
+  'staged-contract',
+  'staged-tree',
+  'staged-architecture',
+  'ordinary-user-preflight',
+  'fixture-setup',
+  'package-authority',
+  'application-spawn',
+  'application-runtime',
+  'result-verify',
+]);
+
 const STAGING_PARENT_LEAF = 'propr-connect-packaged-stage';
 const STAGING_LEAF_PATTERN = /^propr-connect-package-[a-f0-9]{32}$/u;
 const EXPECTED_MACHINES = Object.freeze({ x64: 0x8664, arm64: 0xaa64 });
 const MAX_CONTRACT_PATH_LENGTH = 4096;
 const PE_HEADER_BYTES = 4096;
 
+export const packagedConnectArtifactSensitiveNeedles = ({
+  platform,
+  artifactRoot,
+  binaryPath,
+  environment = process.env,
+}) => platform === 'win32' ? [
+  artifactRoot,
+  binaryPath,
+  environment.PROPR_DESKTOP_CONNECT_STAGING_PARENT,
+  environment.PROPR_DESKTOP_CONNECT_STAGING_LEAF,
+] : [];
+
 export class WindowsArtifactFailure extends Error {
-  constructor(category) {
-    super(`Packaged Connect Windows artifact failed [category=${category}]`);
+  constructor(category, phase = 'application-runtime') {
+    const fixedCategory = WINDOWS_ARTIFACT_FAILURE_CATEGORIES.includes(category)
+      ? category : 'artifact-inaccessible';
+    const fixedPhase = WINDOWS_ARTIFACT_FAILURE_PHASES.includes(phase)
+      ? phase : 'application-runtime';
+    super(`Packaged Connect Windows artifact failed [category=${fixedCategory} phase=${fixedPhase}]`);
     this.name = 'WindowsArtifactFailure';
-    this.category = category;
+    this.category = fixedCategory;
+    this.phase = fixedPhase;
     this.stack = this.message;
   }
 }
 
-const fail = category => { throw new WindowsArtifactFailure(category); };
+const fail = (category, phase) => { throw new WindowsArtifactFailure(category, phase); };
 
 const isCanonicalAbsoluteWindowsPath = value => (
   typeof value === 'string'
@@ -54,10 +83,12 @@ export const parseWindowsStagedPackageContract = environment => {
     || win32.dirname(parent) !== runnerTemp
     || win32.basename(parent) !== STAGING_PARENT_LEAF
     || !STAGING_LEAF_PATTERN.test(leaf ?? '')) {
-    fail('artifact-type');
+    fail('artifact-type', 'staged-contract');
   }
   const root = win32.join(parent, leaf);
-  if (win32.dirname(root) !== parent || win32.basename(root) !== leaf) fail('artifact-type');
+  if (win32.dirname(root) !== parent || win32.basename(root) !== leaf) {
+    fail('artifact-type', 'staged-contract');
+  }
   return Object.freeze({
     runnerTemp,
     parent,
@@ -71,17 +102,19 @@ export const parseWindowsStagedPackageContract = environment => {
 
 export const assertPackagedWindowsPeArchitecture = (bytes, expectedArchitecture) => {
   if (!Buffer.isBuffer(bytes) || !Object.hasOwn(EXPECTED_MACHINES, expectedArchitecture)) {
-    fail('architecture-mismatch');
+    fail('architecture-mismatch', 'staged-architecture');
   }
-  if (bytes.length < 0x40 || bytes.toString('ascii', 0, 2) !== 'MZ') fail('artifact-type');
+  if (bytes.length < 0x40 || bytes.toString('ascii', 0, 2) !== 'MZ') {
+    fail('artifact-type', 'staged-architecture');
+  }
   const peOffset = bytes.readUInt32LE(0x3c);
   if (peOffset < 0x40
     || peOffset + 6 > bytes.length
     || bytes.toString('ascii', peOffset, peOffset + 4) !== 'PE\0\0') {
-    fail('artifact-type');
+    fail('artifact-type', 'staged-architecture');
   }
   if (bytes.readUInt16LE(peOffset + 4) !== EXPECTED_MACHINES[expectedArchitecture]) {
-    fail('architecture-mismatch');
+    fail('architecture-mismatch', 'staged-architecture');
   }
 };
 
@@ -93,8 +126,8 @@ const readPeHeader = async path => {
     const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
     return bytes.subarray(0, bytesRead);
   } catch (error) {
-    if (error?.code === 'ENOENT') fail('artifact-missing');
-    fail('artifact-inaccessible');
+    if (error?.code === 'ENOENT') fail('artifact-missing', 'staged-architecture');
+    fail('artifact-inaccessible', 'staged-architecture');
   } finally {
     await handle?.close().catch(() => {});
   }
@@ -178,12 +211,16 @@ const runWindowsStagedPackagePreflight = paths => {
     },
   });
   if (result.error || result.signal || !Buffer.isBuffer(result.stdout) || result.stdout.length !== 0
-    || !Buffer.isBuffer(result.stderr) || result.stderr.length !== 0) fail('artifact-inaccessible');
-  if (result.status === 83 || result.status === 85) fail('artifact-inaccessible');
-  if (result.status === 82 || result.status === 84 || result.status === 80 || result.status === 81) {
-    fail('artifact-type');
+    || !Buffer.isBuffer(result.stderr) || result.stderr.length !== 0) {
+    fail('artifact-inaccessible', 'ordinary-user-preflight');
   }
-  if (result.status !== 0) fail('artifact-inaccessible');
+  if (result.status === 83 || result.status === 85) {
+    fail('artifact-inaccessible', 'ordinary-user-preflight');
+  }
+  if (result.status === 82 || result.status === 84 || result.status === 80 || result.status === 81) {
+    fail('artifact-type', 'ordinary-user-preflight');
+  }
+  if (result.status !== 0) fail('artifact-inaccessible', 'ordinary-user-preflight');
 };
 
 const canonicalizeEntry = async (kind, path) => canonicalizeWindowsFixtureEntry({
@@ -213,20 +250,22 @@ export const validateWindowsStagedPackage = async ({
   for (const [kind, path] of entries) {
     let stats;
     try { stats = await inspect(path); } catch (error) {
-      if (error?.code === 'ENOENT') fail('artifact-missing');
-      fail('artifact-inaccessible');
+      if (error?.code === 'ENOENT') fail('artifact-missing', 'staged-tree');
+      fail('artifact-inaccessible', 'staged-tree');
     }
     if (stats.isSymbolicLink()
-      || (kind === 'directory' ? !stats.isDirectory() : !stats.isFile())) fail('artifact-type');
+      || (kind === 'directory' ? !stats.isDirectory() : !stats.isFile())) {
+      fail('artifact-type', 'staged-tree');
+    }
     let canonical;
-    try { canonical = await canonicalize(kind, path); } catch { fail('artifact-type'); }
+    try { canonical = await canonicalize(kind, path); } catch { fail('artifact-type', 'staged-tree'); }
     if (!canonical || typeof canonical.path !== 'string'
-      || canonical.path.toUpperCase() !== path.toUpperCase()) fail('artifact-type');
+      || canonical.path.toUpperCase() !== path.toUpperCase()) fail('artifact-type', 'staged-tree');
   }
   assertPackagedWindowsPeArchitecture(await readHeader(paths.executable), expectedArchitecture);
   try { await preflight(paths); } catch (error) {
     if (error instanceof WindowsArtifactFailure) throw error;
-    fail('artifact-inaccessible');
+    fail('artifact-inaccessible', 'ordinary-user-preflight');
   }
   return paths;
 };
@@ -237,4 +276,18 @@ export const classifyWindowsArtifactFailure = error => {
   if (error?.code === 'ENOENT') return 'artifact-missing';
   if (error?.code === 'EACCES' || error?.code === 'EPERM') return 'artifact-inaccessible';
   return 'spawn-failed';
+};
+
+export const describeWindowsArtifactFailure = (error, fallbackPhase = 'application-runtime') => {
+  const phase = error instanceof WindowsArtifactFailure
+    && WINDOWS_ARTIFACT_FAILURE_PHASES.includes(error.phase)
+    ? error.phase
+    : (WINDOWS_ARTIFACT_FAILURE_PHASES.includes(fallbackPhase)
+      ? fallbackPhase : 'application-runtime');
+  const preSpawn = !['application-spawn', 'application-runtime', 'result-verify'].includes(phase);
+  const category = error instanceof WindowsArtifactFailure
+    ? classifyWindowsArtifactFailure(error)
+    : (preSpawn ? (error?.code === 'ENOENT' ? 'artifact-missing' : 'artifact-inaccessible')
+      : classifyWindowsArtifactFailure(error));
+  return Object.freeze({ category, phase });
 };

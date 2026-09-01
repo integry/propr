@@ -11,7 +11,8 @@ import {
   windowsPowerShell51Path,
 } from './windows-fixture-acl.mjs';
 import {
-  classifyWindowsArtifactFailure,
+  describeWindowsArtifactFailure,
+  packagedConnectArtifactSensitiveNeedles,
   validateWindowsStagedPackage,
   WindowsArtifactFailure,
 } from './windows-packaged-connect-staging.mjs';
@@ -104,17 +105,21 @@ const childDiagnosticCategories = new Set([
   'unexpected',
 ]);
 
+let packagedConnectPhase = 'fixture-setup';
+
 if (process.platform === 'win32') {
   try {
+    packagedConnectPhase = 'staged-contract';
     const staged = await validateWindowsStagedPackage({ expectedArchitecture: process.arch });
     artifactRoot = staged.root;
     binaryPath = staged.executable;
     resourcesPath = staged.resources;
     unpackedNative = join(resourcesPath, 'app.asar.unpacked', '.vite', 'native', 'prebuilds');
   } catch (error) {
+    const failure = describeWindowsArtifactFailure(error, packagedConnectPhase);
     process.stderr.write(`${JSON.stringify({
       event: 'packaged_connect.artifact_failed',
-      category: classifyWindowsArtifactFailure(error),
+      ...failure,
     })}\n`);
     process.exit(1);
   }
@@ -267,6 +272,7 @@ const configPath = join(configRoot, 'config.json');
 const userDataPath = join(fixture, 'desktop-user-data');
 
 try {
+  packagedConnectPhase = 'fixture-setup';
   await mkdir(configRoot, { recursive: true, mode: 0o700 });
   await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   await mkdir(userDataPath, { recursive: true, mode: 0o700 });
@@ -294,15 +300,17 @@ try {
       { path: identityPath, kind: 'file' },
     ]);
   }
+  packagedConnectPhase = 'package-authority';
   await assertPackageAuthority();
 
   let output = '';
   const sensitiveNeedles = [
-    ...secrets, fixture, configRoot, stackRoot, identity, artifactRoot, binaryPath,
-    ...(process.platform === 'win32' ? [
-      process.env.PROPR_DESKTOP_CONNECT_STAGING_PARENT,
-      process.env.PROPR_DESKTOP_CONNECT_STAGING_LEAF,
-    ] : []),
+    ...secrets, fixture, configRoot, stackRoot, identity,
+    ...packagedConnectArtifactSensitiveNeedles({
+      platform: process.platform,
+      artifactRoot,
+      binaryPath,
+    }),
     'S-1-5-', 'volumeSerialNumber', 'fileId', 'authorityDiagnostic',
   ].filter(value => typeof value === 'string' && value.length > 0);
   const maximumNeedleLength = Math.max(...sensitiveNeedles.map(value => value.length));
@@ -321,6 +329,7 @@ try {
   };
   delete childEnvironment.PROPR_DESKTOP_CONNECT_STAGING_PARENT;
   delete childEnvironment.PROPR_DESKTOP_CONNECT_STAGING_LEAF;
+  packagedConnectPhase = 'application-spawn';
   const child = spawn(binaryPath, ['--disable-gpu', `--user-data-dir=${userDataPath}`], {
     shell: false,
     windowsHide: true,
@@ -347,12 +356,13 @@ try {
     }, 300_000);
     child.once('error', () => {
       clearTimeout(timeout);
-      reject(new WindowsArtifactFailure('spawn-failed'));
+      reject(new WindowsArtifactFailure('spawn-failed', 'application-spawn'));
     });
     child.once('close', (code, signal) => {
       clearTimeout(timeout); resolveResult({ code, signal });
     });
   });
+  packagedConnectPhase = 'application-runtime';
   output = Buffer.concat(capturedChunks, capturedBytes).toString('utf8');
   if (sensitiveOutputObserved || sensitiveNeedles.some(sentinel => output.includes(sentinel))) {
     throw new Error('Packaged Connect discovery output leaked secret, path, or native evidence');
@@ -367,6 +377,7 @@ try {
     })}\n`);
     throw new Error('Packaged Connect discovery app failed');
   }
+  packagedConnectPhase = 'result-verify';
   const proof = records.find(record => record.event === readyEvent);
   const expectedMechanism = authorityMechanism();
   if (!proof
@@ -378,9 +389,10 @@ try {
   process.stdout.write(`Packaged Connect discovery passed for ${process.platform}-${process.arch}: ${expectedMechanism}.\n`);
 } catch (error) {
   if (process.platform !== 'win32') throw error;
+  const failure = describeWindowsArtifactFailure(error, packagedConnectPhase);
   process.stderr.write(`${JSON.stringify({
     event: 'packaged_connect.artifact_failed',
-    category: classifyWindowsArtifactFailure(error),
+    ...failure,
   })}\n`);
   process.exitCode = 1;
 } finally {
