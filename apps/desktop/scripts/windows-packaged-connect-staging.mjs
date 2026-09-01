@@ -26,6 +26,14 @@ export const WINDOWS_ARTIFACT_FAILURE_PHASES = Object.freeze([
   'result-verify',
 ]);
 
+export const WINDOWS_ARTIFACT_FAILURE_SUBPHASES = Object.freeze([
+  'preflight-invocation',
+  'descendant-enumeration',
+  'executable-read',
+  'unexpected-exit',
+  'authority-contract',
+]);
+
 const STAGING_PARENT_LEAF = 'propr-connect-packaged-stage';
 const STAGING_LEAF_PATTERN = /^propr-connect-package-[a-f0-9]{32}$/u;
 const EXPECTED_MACHINES = Object.freeze({ x64: 0x8664, arm64: 0xaa64 });
@@ -45,20 +53,27 @@ export const packagedConnectArtifactSensitiveNeedles = ({
 ] : [];
 
 export class WindowsArtifactFailure extends Error {
-  constructor(category, phase = 'application-runtime') {
+  constructor(category, phase = 'application-runtime', subphase) {
     const fixedCategory = WINDOWS_ARTIFACT_FAILURE_CATEGORIES.includes(category)
       ? category : 'artifact-inaccessible';
     const fixedPhase = WINDOWS_ARTIFACT_FAILURE_PHASES.includes(phase)
       ? phase : 'application-runtime';
-    super(`Packaged Connect Windows artifact failed [category=${fixedCategory} phase=${fixedPhase}]`);
+    const fixedSubphase = fixedPhase === 'ordinary-user-preflight'
+      && WINDOWS_ARTIFACT_FAILURE_SUBPHASES.includes(subphase)
+      ? subphase : undefined;
+    super(`Packaged Connect Windows artifact failed [category=${fixedCategory} phase=${fixedPhase}`
+      + `${fixedSubphase ? ` subphase=${fixedSubphase}` : ''}]`);
     this.name = 'WindowsArtifactFailure';
     this.category = fixedCategory;
     this.phase = fixedPhase;
+    this.subphase = fixedSubphase;
     this.stack = this.message;
   }
 }
 
-const fail = (category, phase) => { throw new WindowsArtifactFailure(category, phase); };
+const fail = (category, phase, subphase) => {
+  throw new WindowsArtifactFailure(category, phase, subphase);
+};
 
 const isCanonicalAbsoluteWindowsPath = value => (
   typeof value === 'string'
@@ -195,6 +210,25 @@ const encodedWindowsStagedPackagePreflight = Buffer.from(
   'utf16le',
 ).toString('base64');
 
+export const assertWindowsStagedPackagePreflightResult = result => {
+  if (result?.error || result?.signal || !Buffer.isBuffer(result?.stdout)
+    || result.stdout.length !== 0 || !Buffer.isBuffer(result?.stderr)
+    || result.stderr.length !== 0) {
+    fail('artifact-inaccessible', 'ordinary-user-preflight', 'preflight-invocation');
+  }
+  if (result.status === 0) return;
+  if (result.status === 83) {
+    fail('artifact-inaccessible', 'ordinary-user-preflight', 'descendant-enumeration');
+  }
+  if (result.status === 85) {
+    fail('artifact-inaccessible', 'ordinary-user-preflight', 'executable-read');
+  }
+  if ([80, 81, 82, 84].includes(result.status)) {
+    fail('artifact-type', 'ordinary-user-preflight', 'authority-contract');
+  }
+  fail('artifact-inaccessible', 'ordinary-user-preflight', 'unexpected-exit');
+};
+
 const runWindowsStagedPackagePreflight = paths => {
   const powershell = windowsPowerShell51Path();
   const result = spawnSync(powershell, [
@@ -210,17 +244,7 @@ const runWindowsStagedPackagePreflight = paths => {
       PROPR_DESKTOP_CONNECT_STAGING_LEAF: paths.leaf,
     },
   });
-  if (result.error || result.signal || !Buffer.isBuffer(result.stdout) || result.stdout.length !== 0
-    || !Buffer.isBuffer(result.stderr) || result.stderr.length !== 0) {
-    fail('artifact-inaccessible', 'ordinary-user-preflight');
-  }
-  if (result.status === 83 || result.status === 85) {
-    fail('artifact-inaccessible', 'ordinary-user-preflight');
-  }
-  if (result.status === 82 || result.status === 84 || result.status === 80 || result.status === 81) {
-    fail('artifact-type', 'ordinary-user-preflight');
-  }
-  if (result.status !== 0) fail('artifact-inaccessible', 'ordinary-user-preflight');
+  assertWindowsStagedPackagePreflightResult(result);
 };
 
 const canonicalizeEntry = async (kind, path) => canonicalizeWindowsFixtureEntry({
@@ -289,5 +313,8 @@ export const describeWindowsArtifactFailure = (error, fallbackPhase = 'applicati
     ? classifyWindowsArtifactFailure(error)
     : (preSpawn ? (error?.code === 'ENOENT' ? 'artifact-missing' : 'artifact-inaccessible')
       : classifyWindowsArtifactFailure(error));
-  return Object.freeze({ category, phase });
+  const subphase = error instanceof WindowsArtifactFailure
+    && WINDOWS_ARTIFACT_FAILURE_SUBPHASES.includes(error.subphase)
+    ? error.subphase : undefined;
+  return Object.freeze({ category, phase, ...(subphase ? { subphase } : {}) });
 };

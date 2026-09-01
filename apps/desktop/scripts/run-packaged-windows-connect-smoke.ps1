@@ -35,6 +35,13 @@ $failurePhases = @(
   'result-verify',
   'cleanup'
 )
+$failureSubphases = @(
+  'preflight-invocation',
+  'descendant-enumeration',
+  'executable-read',
+  'unexpected-exit',
+  'authority-contract'
+)
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
 $cleanupTimeoutMilliseconds = 60 * 1000
@@ -42,6 +49,7 @@ $streamCloseTimeoutMilliseconds = 30 * 1000
 $taskkillExecutable = 'C:\Windows\System32\taskkill.exe'
 $primaryFailure = $null
 $primaryPhase = $null
+$primarySubphase = $null
 $failurePhase = 'source-layout'
 $cleanupSecondary = 'none'
 $testUser = $null
@@ -666,6 +674,14 @@ try {
           if ($record.event -ceq 'packaged_connect.artifact_failed' -and
               $failureCategories -ccontains $record.category -and
               $failurePhases -ccontains $record.phase) {
+            if ($record.phase -ceq 'ordinary-user-preflight') {
+              if ($failureSubphases -cnotcontains $record.subphase) {
+                Stop-PackagedConnect 'artifact-type'
+              }
+              $primarySubphase = $record.subphase
+            } elseif ($null -ne $record.subphase) {
+              Stop-PackagedConnect 'artifact-type'
+            }
             $reportedCategories += $record.category
             Set-FailurePhase $record.phase
           } elseif ($record.event -cne 'packaged_connect.child_failed') {
@@ -713,7 +729,12 @@ if ($null -eq $primaryFailure -and $cleanupSecondary -ne 'none') {
 if ($null -ne $primaryFailure) {
   if ($failureCategories -cnotcontains $primaryFailure) { $primaryFailure = 'spawn-failed' }
   if ($failurePhases -cnotcontains $primaryPhase) { $primaryPhase = 'application-runtime' }
-  [Console]::Error.WriteLine("PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=$primaryFailure`:phase=$primaryPhase`:cleanup=$cleanupSecondary")
+  $subphaseEvidence = ''
+  if ($primaryPhase -ceq 'ordinary-user-preflight' -and
+      $failureSubphases -ccontains $primarySubphase) {
+    $subphaseEvidence = ":subphase=$primarySubphase"
+  }
+  [Console]::Error.WriteLine("PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=$primaryFailure`:phase=$primaryPhase$subphaseEvidence`:cleanup=$cleanupSecondary")
   exit 1
 }
 [Console]::Out.WriteLine("PROPR_WINDOWS_PACKAGED_CONNECT:passed:$Architecture")

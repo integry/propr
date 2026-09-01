@@ -6,6 +6,7 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   assertPackagedWindowsPeArchitecture,
+  assertWindowsStagedPackagePreflightResult,
   classifyWindowsArtifactFailure,
   describeWindowsArtifactFailure,
   packagedConnectArtifactSensitiveNeedles,
@@ -13,6 +14,7 @@ import {
   validateWindowsStagedPackage,
   WINDOWS_ARTIFACT_FAILURE_CATEGORIES,
   WINDOWS_ARTIFACT_FAILURE_PHASES,
+  WINDOWS_ARTIFACT_FAILURE_SUBPHASES,
   WindowsArtifactFailure,
 } from './windows-packaged-connect-staging.mjs';
 import { windowsPowerShell51Path } from './windows-fixture-acl.mjs';
@@ -227,6 +229,13 @@ describe('packaged Windows Connect staging contract', () => {
       assert.equal(classifyWindowsArtifactFailure(failure), category);
       assert.doesNotMatch(failure.message, /[A-Z]:\\|S-1-5-|--|username|environment|stack/iu);
     }
+    const invalidSubphase = new WindowsArtifactFailure(
+      'artifact-inaccessible',
+      'ordinary-user-preflight',
+      String.raw`C:\secret\account-name-S-1-5-21-123`,
+    );
+    assert.equal(invalidSubphase.subphase, undefined);
+    assert.doesNotMatch(invalidSubphase.message, /[A-Z]:\\|S-1-5-|account-name/iu);
   });
 
   test('classifies fixed phases without collapsing pre-spawn failures into spawn', () => {
@@ -247,14 +256,127 @@ describe('packaged Windows Connect staging contract', () => {
     );
     assert.deepEqual(
       describeWindowsArtifactFailure(
-        new WindowsArtifactFailure('artifact-type', 'ordinary-user-preflight'),
+        new WindowsArtifactFailure(
+          'artifact-type',
+          'ordinary-user-preflight',
+          'authority-contract',
+        ),
         'application-spawn',
       ),
-      { category: 'artifact-type', phase: 'ordinary-user-preflight' },
+      {
+        category: 'artifact-type',
+        phase: 'ordinary-user-preflight',
+        subphase: 'authority-contract',
+      },
     );
     assert.deepEqual(
       describeWindowsArtifactFailure(new Error('--token secret'), 'application-spawn'),
       { category: 'spawn-failed', phase: 'application-spawn' },
+    );
+  });
+
+  test('maps every preflight transport and exit result to fixed subphase evidence', () => {
+    assert.deepEqual(WINDOWS_ARTIFACT_FAILURE_SUBPHASES, [
+      'preflight-invocation',
+      'descendant-enumeration',
+      'executable-read',
+      'unexpected-exit',
+      'authority-contract',
+    ]);
+    const clean = status => ({
+      status,
+      error: undefined,
+      signal: null,
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.alloc(0),
+    });
+    assert.doesNotThrow(() => assertWindowsStagedPackagePreflightResult(clean(0)));
+
+    for (const [status, category, subphase] of [
+      [80, 'artifact-type', 'authority-contract'],
+      [81, 'artifact-type', 'authority-contract'],
+      [82, 'artifact-type', 'authority-contract'],
+      [83, 'artifact-inaccessible', 'descendant-enumeration'],
+      [84, 'artifact-type', 'authority-contract'],
+      [85, 'artifact-inaccessible', 'executable-read'],
+      [1, 'artifact-inaccessible', 'unexpected-exit'],
+      [86, 'artifact-inaccessible', 'unexpected-exit'],
+      [null, 'artifact-inaccessible', 'unexpected-exit'],
+    ]) {
+      assert.throws(
+        () => assertWindowsStagedPackagePreflightResult(clean(status)),
+        error => error instanceof WindowsArtifactFailure
+          && error.category === category
+          && error.phase === 'ordinary-user-preflight'
+          && error.subphase === subphase,
+      );
+    }
+
+    const invocationFailures = [
+      { ...clean(null), error: new Error(String.raw`C:\secret\invoke.exe`) },
+      { ...clean(null), signal: 'SIGTERM' },
+      { ...clean(0), stdout: Buffer.from('raw stdout account-name') },
+      { ...clean(0), stderr: Buffer.from('raw stderr S-1-5-21-123') },
+      { ...clean(0), stdout: 'not-a-buffer' },
+      { ...clean(0), stderr: 'not-a-buffer' },
+    ];
+    for (const result of invocationFailures) {
+      assert.throws(
+        () => assertWindowsStagedPackagePreflightResult(result),
+        error => error instanceof WindowsArtifactFailure
+          && error.category === 'artifact-inaccessible'
+          && error.phase === 'ordinary-user-preflight'
+          && error.subphase === 'preflight-invocation',
+      );
+    }
+  });
+
+  test('preflight diagnostics exclude path, SID, account name, stdout, and stderr evidence', () => {
+    const clean = status => ({
+      status,
+      error: undefined,
+      signal: null,
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.alloc(0),
+    });
+    const hostileResult = {
+      status: 85,
+      error: new Error(String.raw`C:\runner-temp\secret\propr-desktop.exe account-name S-1-5-21-123`),
+      signal: null,
+      stdout: Buffer.from('raw stdout account-name'),
+      stderr: Buffer.from(String.raw`raw stderr C:\secret S-1-5-21-123`),
+    };
+    const diagnosticFor = result => {
+      try {
+        assertWindowsStagedPackagePreflightResult(result);
+        assert.fail('the preflight result must fail');
+      } catch (error) {
+        return JSON.stringify({
+          event: 'packaged_connect.artifact_failed',
+          ...describeWindowsArtifactFailure(error, 'ordinary-user-preflight'),
+        });
+      }
+    };
+    const diagnostics = [
+      diagnosticFor(hostileResult),
+      diagnosticFor(clean(83)),
+      diagnosticFor(clean(85)),
+      diagnosticFor(clean(86)),
+      diagnosticFor(clean(84)),
+    ];
+    assert.deepEqual(
+      diagnostics.map(diagnostic => JSON.parse(diagnostic).subphase),
+      [
+        'preflight-invocation',
+        'descendant-enumeration',
+        'executable-read',
+        'unexpected-exit',
+        'authority-contract',
+      ],
+    );
+    assert.doesNotMatch(
+      diagnostics.join('\n'),
+      /[A-Z]:\\|S-1-5-|account-name|raw stdout|raw stderr/iu,
     );
   });
 
@@ -316,7 +438,9 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(orchestrator, /\.psbase\.Invoke\('IsMember', \$ordinaryUserEntry\.Path\)/u);
   assert.doesNotMatch(orchestrator, /Get-LocalGroupMember/u);
   assert.doesNotMatch(orchestrator, /Get-Content|Write-(?:Host|Error|Verbose|Debug|Information)|GITHUB_WORKSPACE/u);
-  assert.match(orchestrator, /PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=\$primaryFailure`:phase=\$primaryPhase`:cleanup=\$cleanupSecondary/u);
+  assert.match(orchestrator, /\$primaryPhase -ceq 'ordinary-user-preflight'[\s\S]*?\$failureSubphases -ccontains \$primarySubphase/u);
+  assert.match(orchestrator, /\$subphaseEvidence = ":subphase=\$primarySubphase"/u);
+  assert.match(orchestrator, /PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=\$primaryFailure`:phase=\$primaryPhase\$subphaseEvidence`:cleanup=\$cleanupSecondary/u);
 
   const cleanupFinally = orchestrator.slice(orchestrator.lastIndexOf('} finally {'));
   assert.match(cleanupFinally, /\$cleanupResult = Invoke-BoundedCleanup/u);
