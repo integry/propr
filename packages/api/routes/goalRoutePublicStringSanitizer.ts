@@ -37,6 +37,7 @@ function mergeOrderedSpans(
  */
 export function redactPublicPathTokens(value: string, inputTruncated: boolean): string {
   const decoded = decodePublicStringView(value);
+  if (decoded.residualPercentEncoding) return SENSITIVE_PATH_REDACTION;
   const spans = mergeOrderedSpans(
     findSensitiveFileUriSpans(decoded, value, inputTruncated),
     findSensitiveRawPathSpans(decoded, value, inputTruncated)

@@ -3,9 +3,10 @@ import { performance } from 'node:perf_hooks';
 import { after, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import { toPublicGoalEventPayload } from '../routes/goalRouteDtos.js';
+import { MAX_PERCENT_DECODE_PASSES } from '../routes/goalRoutePublicStringDecoder.js';
 import { redactPublicPathTokens } from '../routes/goalRoutePublicStringSanitizer.js';
 
-const DECODE_BUDGET = 8;
+const DECODE_BUDGET = MAX_PERCENT_DECODE_PASSES;
 const REDACTED = '[REDACTED_SENSITIVE_PATH]';
 
 after(async () => {
@@ -20,6 +21,19 @@ function encodeAllAscii(value: string): string {
   return [...Buffer.from(value, 'utf8')]
     .map((byte) => `%${byte.toString(16).padStart(2, '0')}`)
     .join('');
+}
+
+function recursivelyEncodeAllAscii(value: string, depth: number): string {
+  while (depth-- > 0) value = encodeAllAscii(value);
+  return value;
+}
+
+function recursiveAsciiCases(value: string): string[] {
+  return [1, 2, 3].flatMap((asciiDepth) => (
+    [DECODE_BUDGET - 1, DECODE_BUDGET, DECODE_BUDGET + 1].map((percentDepth) => (
+      addPercentLayers(recursivelyEncodeAllAscii(value, asciiDepth), percentDepth)
+    ))
+  ));
 }
 
 function encodeStructural(value: string): string {
@@ -216,6 +230,118 @@ test('decoded structural, control, and malformed prefixes expose later sensitive
     'ordinary control prose\0without a path',
     'ordinary delete prose\x7fwithout a path',
   ]) assert.equal(projectString(prose), prose, prose);
+});
+
+test('recursive all-ASCII properties remain closed across the terminal decode boundary', () => {
+  const fileUris = [
+    'file:/home',
+    'file:///home/.ssh/id',
+    'file://localhost/run/secrets/token',
+    'file:///C:/Users/alice/private.txt',
+  ];
+  for (const fileUri of fileUris) {
+    for (const candidate of recursiveAsciiCases(fileUri)) {
+      assertProjectedEverywhere(candidate);
+    }
+  }
+
+  const prefixedRoots = [
+    ['?', '/home/alice'],
+    ['#', '/run/secrets'],
+    ['\0', '/home/alice'],
+    ['\x7f', '/root/private'],
+    ['%2G', '/home/alice'],
+  ] as const;
+  for (const [prefix, root] of prefixedRoots) {
+    for (const asciiDepth of [1, 2, 3]) {
+      for (const percentDepth of [
+        DECODE_BUDGET - 1,
+        DECODE_BUDGET,
+        DECODE_BUDGET + 1,
+      ]) {
+        const encode = (value: string): string => addPercentLayers(
+          recursivelyEncodeAllAscii(value, asciiDepth),
+          percentDepth
+        );
+        assertProjectedEverywhere(`${encode(prefix)}${encode(root)}`, `${encode(prefix)}${REDACTED}`);
+      }
+    }
+  }
+
+  const beyondSupportedGrammar = addPercentLayers(
+    recursivelyEncodeAllAscii('file:/home', 4),
+    DECODE_BUDGET
+  );
+  assert.equal(projectString(beyondSupportedGrammar), REDACTED);
+});
+
+test('recursive all-ASCII spans preserve punctuation, cutoffs, and input identity', () => {
+  const encode = (value: string): string => addPercentLayers(
+    recursivelyEncodeAllAscii(value, 3),
+    DECODE_BUDGET
+  );
+  const file = encode('file:/home');
+  const queryPrefix = encode('?');
+  const queryPath = encode('/home/alice');
+  const malformedPrefix = encode('%2G');
+  const malformedPath = encode('/run/secrets');
+  const wrapped = `before [${file}], {${queryPrefix}${queryPath}}; (`
+    + `${malformedPrefix}${malformedPath}) after`;
+  assert.equal(projectString(wrapped), `before [${REDACTED}], {${queryPrefix}${REDACTED}}; (`
+    + `${malformedPrefix}${REDACTED}) after`);
+
+  const payload = {
+    message: file,
+    source: [queryPrefix + queryPath, {
+      value: malformedPrefix + malformedPath,
+      target: [file, queryPrefix + queryPath],
+    }],
+  };
+  const snapshot = structuredClone(payload);
+  assert.deepEqual(toPublicGoalEventPayload(payload), {
+    message: REDACTED,
+    source: [`${queryPrefix}${REDACTED}`, {
+      value: `${malformedPrefix}${REDACTED}`,
+      target: [REDACTED, `${queryPrefix}${REDACTED}`],
+    }],
+  });
+  assert.deepEqual(payload, snapshot);
+
+  const crossingCutoff = `${'p'.repeat(16_384 - file.length + 8)} ${file}`;
+  const cutoffProjection = projectString(crossingCutoff);
+  assert.equal(cutoffProjection.includes(REDACTED), true);
+  assert.equal(cutoffProjection.includes(file), false);
+
+  const aggregateProjection = toPublicGoalEventPayload({
+    status: 'a'.repeat(16_384),
+    eventName: 'b'.repeat(16_384),
+    repositoryOwner: 'c'.repeat(16_384),
+    requestedModel: 'd'.repeat(65_536 - (16_384 * 3) - file.length),
+    nested: { value: file },
+  }) as { nested: { value: string } };
+  assert.equal(aggregateProjection.nested.value.includes(REDACTED), true);
+  assert.equal(aggregateProjection.nested.value.includes(file), false);
+});
+
+test('safe recursive all-ASCII controls remain byte-identical', () => {
+  const safeValues = [
+    'file:/docs',
+    'https://example.test/profile/home/alice/.ssh/id_rsa',
+    'profile:///home/alice/.ssh/id_rsa',
+    'ordinary prose about home, roots, and files',
+    '//server/share/public/docs/readme.txt',
+    String.raw`\\server\share\public\docs\readme.txt`,
+    '//server/share/.env.example',
+    '/home-project/readme',
+    '/runtime/report',
+    '/optical/manual',
+    '/project/public/readme',
+  ];
+  for (const safe of safeValues) {
+    for (const candidate of recursiveAsciiCases(safe)) {
+      assert.equal(projectString(candidate), candidate, `${safe}: ${candidate.length}`);
+    }
+  }
 });
 
 test('raw-span redaction preserves wrappers, lists, cutoffs, nesting, and input identity', () => {

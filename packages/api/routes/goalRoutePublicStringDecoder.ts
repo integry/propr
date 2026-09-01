@@ -1,7 +1,8 @@
 // Eight standard passes cover every supported output spelling. The terminal
-// classifier retains the accepted arbitrary-depth decomposed-octet behavior
+// classifiers retain the accepted arbitrary-depth decomposed-octet behavior
 // without making the emitted decoder attacker-controlled.
 export const MAX_PERCENT_DECODE_PASSES = 8;
+const MAX_DISTRIBUTED_ASCII_DECODE_PASSES = 3;
 
 export interface MappedCharacter {
   character: string;
@@ -11,6 +12,7 @@ export interface MappedCharacter {
 
 export interface DecodedPublicStringView {
   characters: MappedCharacter[];
+  residualPercentEncoding: boolean;
   value: string;
 }
 
@@ -22,6 +24,11 @@ export interface SensitiveRawSpan {
 interface ClassifiedCharacter {
   character: string;
   end: number;
+}
+
+interface ClassifiedPublicStringView {
+  changed: boolean;
+  characters: MappedCharacter[];
 }
 
 function isHexCharacter(character: string | undefined): boolean {
@@ -66,6 +73,30 @@ export function readClassifiedCharacter(
   };
 }
 
+function classifyPublicStringView(
+  characters: MappedCharacter[]
+): ClassifiedPublicStringView {
+  const value = characters.map(({ character }) => character).join('');
+  const classified: MappedCharacter[] = [];
+  let changed = false;
+  for (let index = 0; index < characters.length;) {
+    const character = readClassifiedCharacter(value, index);
+    if (character !== undefined && character.end > index + 1) {
+      classified.push({
+        character: character.character,
+        rawEnd: characters[character.end - 1]!.rawEnd,
+        rawStart: characters[index]!.rawStart,
+      });
+      index = character.end;
+      changed = true;
+    } else {
+      classified.push(characters[index]!);
+      index += 1;
+    }
+  }
+  return { changed, characters: classified };
+}
+
 /** Build one bounded decoded inspection view while retaining exact raw spans. */
 export function decodePublicStringView(value: string): DecodedPublicStringView {
   let rawIndex = 0;
@@ -105,25 +136,22 @@ export function decodePublicStringView(value: string): DecodedPublicStringView {
     if (!changed) break;
   }
 
-  const boundedValue = characters.map(({ character }) => character).join('');
-  const classified: MappedCharacter[] = [];
-  for (let index = 0; index < characters.length;) {
-    const character = readClassifiedCharacter(boundedValue, index);
-    if (character !== undefined && character.end > index + 1) {
-      classified.push({
-        character: character.character,
-        rawEnd: characters[character.end - 1]!.rawEnd,
-        rawStart: characters[index]!.rawStart,
-      });
-      index = character.end;
-    } else {
-      classified.push(characters[index]!);
-      index += 1;
-    }
+  // A recursively encode-all-ASCII spelling distributes each next percent
+  // octet across the output of the preceding classification. Close that
+  // supported grammar with a fixed number of mapped passes. One additional
+  // non-emitting probe detects candidates that would otherwise disappear at
+  // this terminal budget, allowing the caller to fail closed. Both bounds are
+  // constants, so classification remains O(D * N) time and O(N) memory.
+  for (let pass = 0; pass < MAX_DISTRIBUTED_ASCII_DECODE_PASSES; pass += 1) {
+    const classified = classifyPublicStringView(characters);
+    characters = classified.characters;
+    if (!classified.changed) break;
   }
+  const residualPercentEncoding = classifyPublicStringView(characters).changed;
   return {
-    characters: classified,
-    value: classified.map(({ character }) => character).join(''),
+    characters,
+    residualPercentEncoding,
+    value: characters.map(({ character }) => character).join(''),
   };
 }
 
