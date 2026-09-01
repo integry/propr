@@ -1,10 +1,15 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile,
+  chmod, lstat, mkdir, mkdtemp, readFile, realpath, writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
+import {
+  preservePrimaryWithCleanup,
+  removeAuthorizedConnectFixture,
+  runPackagedConnectLifecycle,
+} from './packaged-connect-lifecycle.mjs';
 import {
   canonicalizeWindowsFixtureEntry,
   encodedWindowsFixtureAcl,
@@ -26,7 +31,6 @@ const resourcesPath = process.platform === 'darwin'
   ? join(artifactRoot, 'propr-desktop.app', 'Contents', 'Resources')
   : join(artifactRoot, 'resources');
 const unpackedNative = join(resourcesPath, 'app.asar.unpacked', '.vite', 'native', 'prebuilds');
-const readyEvent = 'desktop.renderer.connect_discovery.ready';
 const endpoint = 'https://t-packaged123.propr.dev';
 const identity = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const secrets = [
@@ -53,85 +57,25 @@ const nativeHashes = {
     },
   },
 };
-const CHILD_CAPTURE_MAX_BYTES = 64 * 1024;
-const CHILD_DIAGNOSTIC_MAX_RECORDS = 20;
-const childDiagnosticEvents = new Set([
-  'desktop.app.ready',
-  'desktop.app.start_failed',
-  'desktop.log.write_failed',
-  'desktop.main_process.uncaught_exception',
-  'desktop.renderer.connect_discovery.ready',
-  'desktop.renderer.connect_discovery.phase',
-  'desktop.renderer.connect_discovery.status',
-  'desktop.renderer.gone',
-  'desktop.renderer.ready',
-]);
-const childDiagnosticCodes = new Set([
-  'CONNECT_STATUS_INCOMPATIBLE',
-  'CONNECT_STATUS_INTERNAL_FAILURE',
-  'CONNECT_STATUS_INVALID_CONFIG',
-  'CONNECT_STATUS_NOT_READY',
-  'CONNECT_STATUS_READY',
-  'CONNECT_STATUS_TIMEOUT',
-  'DETAIL_REDACTED',
-  'LOG_WRITE_FAILED',
-  'OPERATION_FAILED',
-  'UNCAUGHT_EXCEPTION',
-]);
-const childDiagnosticPhases = new Set([
-  'config-read',
-  'addon-integrity-type',
-  'addon-load',
-  'descriptor-operation',
-  'authority-inspection',
-  'status-resolution',
-]);
-const childDiagnosticPhaseCodes = new Set(['STARTED', 'PASSED', 'FAILED']);
-const childDiagnosticSubsteps = new Set(['directory-open', 'addon-open', 'fstat-type']);
-const childDiagnosticCategories = new Set([
-  'access-denied',
-  'invalid-argument',
-  'io-failure',
-  'missing-entry',
-  'not-directory',
-  'symlink-refused',
-  'type-mismatch',
-  'unexpected',
-]);
-
-const childRecords = output => output.split(/\r?\n/).flatMap(line => {
-  try {
-    const record = JSON.parse(line.slice(line.indexOf('{')));
-    return record && typeof record === 'object' && !Array.isArray(record) ? [record] : [];
-  } catch { return []; }
-});
-
-const boundedChildDiagnostics = records => records.flatMap(record => {
-  if (!record || typeof record !== 'object' || !childDiagnosticEvents.has(record.event)) return [];
-  const nestedCode = record.error && typeof record.error === 'object' ? record.error.code : undefined;
-  const candidateCode = typeof record.code === 'string' ? record.code : nestedCode;
-  const phase = typeof record.phase === 'string' ? record.phase : undefined;
-  const substep = typeof record.substep === 'string' ? record.substep : undefined;
-  const category = typeof record.category === 'string' ? record.category : undefined;
-  return [{
-    event: record.event,
-    ...(childDiagnosticPhases.has(phase) && childDiagnosticPhaseCodes.has(candidateCode)
-      ? {
-          phase,
-          code: candidateCode,
-          ...(candidateCode === 'FAILED' && childDiagnosticSubsteps.has(substep) ? { substep } : {}),
-          ...(candidateCode === 'FAILED' && childDiagnosticCategories.has(category) ? { category } : {}),
-        }
-      : childDiagnosticCodes.has(candidateCode)
-        ? { code: candidateCode }
-        : {}),
-  }];
-}).slice(0, CHILD_DIAGNOSTIC_MAX_RECORDS);
-
 const authorityMechanism = () => {
   if (process.platform === 'darwin') return 'packaged-broker';
   if (process.platform === 'linux') return 'in-process-native-addon';
   return 'inherited-standard-handle';
+};
+
+const windowsTreeKiller = async () => {
+  if (process.platform !== 'win32') return undefined;
+  const powershell = windowsPowerShell51Path();
+  const candidate = join(dirname(dirname(dirname(powershell))), 'taskkill.exe');
+  const stats = await lstat(candidate);
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error('Windows tree termination tool failed validation');
+  }
+  const canonical = await realpath(candidate);
+  if (canonical.toLocaleLowerCase('en-US') !== candidate.toLocaleLowerCase('en-US')) {
+    throw new Error('Windows tree termination tool failed validation');
+  }
+  return canonical;
 };
 
 const assertCanonicalParents = async candidate => {
@@ -235,17 +179,22 @@ const protectWindowsEntries = entries => {
   }
 };
 
-const canonicalTemp = await realpath(tmpdir());
-const fixture = await mkdtemp(join(canonicalTemp, 'propr-desktop-connect-smoke-'));
-const configRoot = join(fixture, 'config');
-const stackRoot = join(fixture, 'stack-private-path-SENTINEL');
-const dataRoot = join(stackRoot, 'data');
-const identityPath = join(dataRoot, 'public-instance-identity.json');
-const envPath = join(stackRoot, '.env');
-const configPath = join(configRoot, 'config.json');
-const userDataPath = join(fixture, 'desktop-user-data');
-
+let canonicalTemp;
+let fixture;
+let generatedFixtureLeaf;
+let outcome = { ok: false, category: 'fixture-setup', capture: 'complete', records: [] };
+let failurePhase = 'fixture-setup';
 try {
+  canonicalTemp = await realpath(tmpdir());
+  fixture = await mkdtemp(join(canonicalTemp, 'propr-desktop-connect-smoke-'));
+  generatedFixtureLeaf = basename(fixture);
+  const configRoot = join(fixture, 'config');
+  const stackRoot = join(fixture, 'stack-private-path-SENTINEL');
+  const dataRoot = join(stackRoot, 'data');
+  const identityPath = join(dataRoot, 'public-instance-identity.json');
+  const envPath = join(stackRoot, '.env');
+  const configPath = join(configRoot, 'config.json');
+  const userDataPath = join(fixture, 'desktop-user-data');
   await mkdir(configRoot, { recursive: true, mode: 0o700 });
   await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   await mkdir(userDataPath, { recursive: true, mode: 0o700 });
@@ -273,23 +222,26 @@ try {
       { path: identityPath, kind: 'file' },
     ]);
   }
+  if (relative(canonicalTemp, fixture) !== generatedFixtureLeaf
+    || relative(canonicalTemp, configRoot) !== join(generatedFixtureLeaf, 'config')) {
+    throw new Error('Connect smoke fixture escaped its fixed root');
+  }
+  failurePhase = 'package-validation';
   await assertPackageAuthority();
-
-  let output = '';
+  const treeKillerPath = await windowsTreeKiller();
   const sensitiveNeedles = [
     ...secrets, fixture, configRoot, stackRoot, identity,
     'S-1-5-', 'volumeSerialNumber', 'fileId', 'authorityDiagnostic',
   ];
-  const maximumNeedleLength = Math.max(...sensitiveNeedles.map(value => value.length));
-  const capturedChunks = [];
-  let capturedBytes = 0;
-  let captureTruncated = false;
-  let scanTail = '';
-  let sensitiveOutputObserved = false;
-  const child = spawn(binaryPath, ['--disable-gpu', `--user-data-dir=${userDataPath}`], {
-    shell: false,
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
+  failurePhase = 'lifecycle-internal';
+  outcome = await runPackagedConnectLifecycle({
+    binaryPath,
+    args: ['--disable-gpu', `--user-data-dir=${userDataPath}`],
+    platform: process.platform,
+    arch: process.arch,
+    authorityMechanism: authorityMechanism(),
+    sensitiveNeedles,
+    treeKillerPath,
     env: {
       ...process.env,
       PROPR_DESKTOP_CONNECT_SMOKE_TEST: '1',
@@ -299,52 +251,30 @@ try {
       GITHUB_TOKEN: secrets[3],
     },
   });
-  const capture = chunk => {
-    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    const text = bytes.toString('utf8');
-    const scan = `${scanTail}${text}`;
-    if (sensitiveNeedles.some(needle => scan.includes(needle))) sensitiveOutputObserved = true;
-    scanTail = scan.slice(-(maximumNeedleLength - 1));
-    const remaining = CHILD_CAPTURE_MAX_BYTES - capturedBytes;
-    if (remaining > 0) {
-      capturedChunks.push(bytes.subarray(0, remaining));
-      capturedBytes += Math.min(bytes.byteLength, remaining);
-    }
-    if (bytes.byteLength > remaining) captureTruncated = true;
-  };
-  child.stdout.on('data', capture); child.stderr.on('data', capture);
-  const result = await new Promise((resolveResult, reject) => {
-    const timeout = setTimeout(() => {
-      child.kill('SIGKILL'); reject(new Error('Packaged Connect discovery smoke timed out'));
-    }, 300_000);
-    child.once('error', error => { clearTimeout(timeout); reject(error); });
-    child.once('close', (code, signal) => {
-      clearTimeout(timeout); resolveResult({ code, signal });
-    });
-  });
-  output = Buffer.concat(capturedChunks, capturedBytes).toString('utf8');
-  if (sensitiveOutputObserved || sensitiveNeedles.some(sentinel => output.includes(sentinel))) {
-    throw new Error('Packaged Connect discovery output leaked secret, path, or native evidence');
-  }
-  const records = childRecords(output);
-  if (result.code !== 0 || result.signal) {
-    process.stderr.write(`${JSON.stringify({
-      event: 'packaged_connect.child_failed',
-      category: result.signal ? 'signal' : 'nonzero-exit',
-      capture: captureTruncated ? 'truncated' : 'complete',
-      records: boundedChildDiagnostics(records),
-    })}\n`);
-    throw new Error('Packaged Connect discovery app failed');
-  }
-  const proof = records.find(record => record.event === readyEvent);
-  const expectedMechanism = authorityMechanism();
-  if (!proof
-    || proof.selectedPlatform !== process.platform
-    || proof.selectedArch !== process.arch
-    || proof.authorityMechanism !== expectedMechanism
-    || proof.rendererSchemaValid !== true) throw new Error('Packaged Connect discovery proof was incomplete');
-  if (relative(canonicalTemp, configRoot).startsWith('..')) throw new Error('Connect smoke config escaped its fixed root');
-  process.stdout.write(`Packaged Connect discovery passed for ${process.platform}-${process.arch}: ${expectedMechanism}.\n`);
+} catch {
+  outcome = { ok: false, category: failurePhase, capture: 'complete', records: [] };
 } finally {
-  await rm(fixture, { recursive: true, force: true });
+  let cleanup = { ok: true };
+  if (fixture && canonicalTemp && generatedFixtureLeaf) {
+    cleanup = await removeAuthorizedConnectFixture({
+      fixture,
+      canonicalTemporaryParent: canonicalTemp,
+      generatedLeaf: generatedFixtureLeaf,
+    });
+  }
+  if (!cleanup.ok) {
+    outcome = preservePrimaryWithCleanup(outcome, cleanup);
+  }
+  if (outcome.ok && cleanup.ok) {
+    process.stdout.write(`Packaged Connect discovery passed for ${process.platform}-${process.arch}: ${authorityMechanism()}.\n`);
+  } else {
+    process.stderr.write(`${JSON.stringify({
+      event: 'packaged_connect.smoke_failed',
+      category: outcome.category,
+      capture: outcome.capture,
+      records: outcome.records,
+      ...(outcome.secondary?.length ? { secondary: outcome.secondary } : {}),
+    })}\n`);
+    process.exitCode = 1;
+  }
 }
