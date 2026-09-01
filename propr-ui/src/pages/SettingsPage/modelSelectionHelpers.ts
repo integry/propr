@@ -147,6 +147,7 @@ function buildSyntheticModel(agentType: AgentType, modelId: string): ModelInfo {
     contextWindow: '',
     maxTokens: 0,
     openRouterId: modelId,
+    goalCapable: false,
   };
 }
 

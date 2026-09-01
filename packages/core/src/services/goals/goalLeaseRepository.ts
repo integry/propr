@@ -1,0 +1,117 @@
+import type { Knex } from 'knex';
+import {
+  GOAL_ERROR_CODES,
+  GOAL_LEASE_TTL_MAX_MS,
+  TERMINAL_GOAL_STATES,
+  isTerminalGoalState,
+} from '@propr/shared';
+import type { GoalRecord } from './goalTypes.js';
+import {
+  GoalError,
+  boundedText,
+  goalTransaction,
+  nowIso,
+  requireGoalRecord,
+  validateFence,
+} from './goalRepositorySupport.js';
+
+export class GoalLeaseRepository {
+  constructor(private readonly db: Knex) {}
+
+  async claimLease(goalId: string, owner: string, ttlMs: number): Promise<{ epoch: number; expiresAt: string }> {
+    const id = boundedText(goalId, 'goalId') as string;
+    const leaseOwner = boundedText(owner, 'leaseOwner') as string;
+    validateTtl(ttlMs);
+    return goalTransaction(this.db, async (trx) => {
+      const nowMs = Date.now();
+      const now = nowIso(nowMs);
+      const expiresAt = nowIso(nowMs + ttlMs);
+      const affected = await trx('goals').where('goal_id', id)
+        .whereNotIn('state', TERMINAL_GOAL_STATES)
+        .andWhere((available) => {
+          void available.whereNull('lease_owner')
+            .orWhere((expired) => void expired.whereNotNull('lease_expires_at').andWhere('lease_expires_at', '<=', now));
+        }).update({
+          lease_owner: leaseOwner,
+          lease_epoch: trx.raw('lease_epoch + 1'),
+          lease_expires_at: expiresAt,
+          updated_at: now,
+        });
+      if (affected !== 1) {
+        const goal = await trx<GoalRecord>('goals').where('goal_id', id).first();
+        if (!goal) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+        if (isTerminalGoalState(goal.state)) {
+          throw new GoalError(GOAL_ERROR_CODES.terminalState, 'Terminal goals cannot be claimed', 409);
+        }
+        throw new GoalError(GOAL_ERROR_CODES.leaseConflict, 'Controller lease is held by another owner', 409);
+      }
+      const goal = await requireGoalRecord(trx, id);
+      return { epoch: goal.lease_epoch, expiresAt };
+    });
+  }
+
+  async renewLease(goalId: string, owner: string, epoch: number, ttlMs: number): Promise<{ expiresAt: string }> {
+    const id = boundedText(goalId, 'goalId') as string;
+    const leaseOwner = boundedText(owner, 'leaseOwner') as string;
+    validateFence({ leaseOwner, leaseEpoch: epoch });
+    validateTtl(ttlMs);
+    return goalTransaction(this.db, async (trx) => {
+      const nowMs = Date.now();
+      const now = nowIso(nowMs);
+      const expiresAt = nowIso(nowMs + ttlMs);
+      const affected = await trx('goals').where({
+        goal_id: id,
+        lease_owner: leaseOwner,
+        lease_epoch: epoch,
+      }).whereNotIn('state', TERMINAL_GOAL_STATES)
+        .whereNotNull('lease_expires_at').andWhere('lease_expires_at', '>', now)
+        .update({ lease_expires_at: expiresAt, updated_at: now });
+      if (affected !== 1) await throwLeaseFailure(trx, id, true);
+      return { expiresAt };
+    });
+  }
+
+  async releaseLease(goalId: string, owner: string, epoch: number): Promise<void> {
+    const id = boundedText(goalId, 'goalId') as string;
+    const leaseOwner = boundedText(owner, 'leaseOwner') as string;
+    validateFence({ leaseOwner, leaseEpoch: epoch });
+    await goalTransaction(this.db, async (trx) => {
+      const now = nowIso();
+      const goal = await requireGoalRecord(trx, id);
+      const affected = await trx('goals').where({
+        goal_id: id,
+        lease_owner: leaseOwner,
+        lease_epoch: epoch,
+      }).whereNotNull('lease_expires_at').andWhere('lease_expires_at', '>', now)
+        .update({
+          lease_owner: null,
+          lease_expires_at: null,
+          ...(isTerminalGoalState(goal.state) ? {} : { updated_at: now }),
+        });
+      if (affected !== 1) await throwLeaseFailure(trx, id);
+    });
+  }
+}
+
+function validateTtl(ttlMs: number): void {
+  if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > GOAL_LEASE_TTL_MAX_MS) {
+    throw new GoalError(
+      GOAL_ERROR_CODES.validation,
+      `Lease TTL must be a positive safe integer no greater than ${GOAL_LEASE_TTL_MAX_MS}`,
+      400
+    );
+  }
+}
+
+async function throwLeaseFailure(
+  trx: Knex.Transaction,
+  goalId: string,
+  rejectTerminal = false
+): Promise<never> {
+  const goal = await trx<GoalRecord>('goals').where('goal_id', goalId).first();
+  if (!goal) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+  if (rejectTerminal && isTerminalGoalState(goal.state)) {
+    throw new GoalError(GOAL_ERROR_CODES.terminalState, 'Terminal goals cannot renew controller authority', 409);
+  }
+  throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Controller lease is stale or expired', 409);
+}

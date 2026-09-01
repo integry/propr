@@ -33,6 +33,17 @@ function createAgent(overrides: Partial<AgentConfig>): AgentConfig {
 }
 
 describe('agent config migration', () => {
+    test('populates explicit goal capability for built-in agent projections', () => {
+        for (const type of ['claude', 'codex', 'antigravity'] as const) {
+            const agent = createAgent({ type });
+            migrateAgentConfig(agent);
+            assert.strictEqual(agent.goalCapable, true);
+        }
+        const unsupported = createAgent({ type: 'opencode' });
+        migrateAgentConfig(unsupported);
+        assert.strictEqual(unsupported.goalCapable, false);
+    });
+
     test('resolves portable managed credentials through the deployment root', () => {
         const previous = process.env.PROPR_MANAGED_CREDENTIALS_DIR;
         try {
@@ -141,6 +152,7 @@ describe('agent config migration', () => {
             dockerImage: 'propr/agent:bundle-abc123-def456',
             supportedModels: [...AGENT_DEFAULTS.opencode.defaultModels],
             defaultModel: AGENT_DEFAULTS.opencode.defaultModels[0],
+            goalCapable: false,
             cliVersionType: 'default',
             cliVersionResolved: AGENT_DEFAULT_VERSIONS.opencode
         });

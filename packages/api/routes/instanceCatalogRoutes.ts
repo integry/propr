@@ -8,7 +8,8 @@ import {
   type RepoToMonitor,
   type RepositoryIndexingStatus,
 } from '@propr/core';
-import type {
+import {
+  MODEL_INFO_MAP,
   InstanceCatalogAgent,
   InstanceCatalogRepository,
   InstanceCatalogResponse,
@@ -26,10 +27,15 @@ interface InstanceCatalogRoutesDeps {
 }
 
 function catalogAgent(agent: AgentConfig): InstanceCatalogAgent {
+  const goalCapable = agent.goalCapable === true;
   return {
     alias: agent.alias,
     enabled: true,
     supportedModels: [...agent.supportedModels],
+    goalCapable,
+    goalCapableModels: goalCapable ? agent.supportedModels.filter(
+      model => MODEL_INFO_MAP[model]?.goalCapable === true
+    ) : [],
     ...(agent.defaultModel ? { defaultModel: agent.defaultModel } : {}),
   };
 }
