@@ -102,6 +102,8 @@ export function configureSocketAuthentication(
   io: SocketIOServer,
   options: SocketAuthenticationOptions,
 ): void {
+  const synthesizedAuthorizationRequests = new WeakSet<IncomingMessage>();
+
   for (const middleware of options.engineMiddleware) {
     io.engine.use((
       request: IncomingMessage,
@@ -118,6 +120,15 @@ export function configureSocketAuthentication(
 
   io.use(async (socket, next) => {
     const request = socket.request as unknown as Request;
+    if (synthesizedAuthorizationRequests.delete(request)) {
+      delete request.headers.authorization;
+    }
+    const handshakeToken = (socket.handshake.auth as { token?: unknown } | undefined)?.token;
+    if (!request.headers.authorization && typeof handshakeToken === 'string'
+      && handshakeToken.trim() && !/[\r\n]/.test(handshakeToken)) {
+      request.headers.authorization = `Bearer ${handshakeToken.trim()}`;
+      synthesizedAuthorizationRequests.add(request);
+    }
     const usesPassportSession = Boolean(request.isAuthenticated?.() && request.user);
     try {
       const initialPrincipal = await options.authenticate(request);
@@ -154,6 +165,7 @@ export function configureSocketAuthentication(
               `[SocketAuthentication] Disconnecting socket ${socket.id} after revalidation failed (${code})`,
             );
             delete data.principal;
+            socket.emit('authentication:error', { code });
             socket.disconnect(true);
             return false;
           }

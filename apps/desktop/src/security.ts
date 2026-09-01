@@ -1,7 +1,9 @@
 import { DESKTOP_PROTOCOL } from './shared/contract';
-
-// WHATWG URL.hostname retains brackets around IPv6 literals.
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
+import {
+  canonicalProprHttpUrlOrigin,
+  isProprLoopbackHostname,
+  normalizeProprApiOrigin,
+} from '@propr/shared';
 const DEEP_LINK_ACTIONS = new Set(['connect', 'open']);
 const DESKTOP_DASHBOARD_ORIGIN = 'https://desktop.propr.invalid';
 const RESERVED_DASHBOARD_PARAMETERS = new Set([
@@ -111,26 +113,21 @@ export const connectApiBaseUrlFromDeepLink = (value: string): string | null => {
 };
 
 export const normalizeApiBaseUrl = (value: string): string | null => {
-  const url = parseUrl(value.trim());
-  if (!url || hasCredentials(url) || url.hash || url.search) return null;
-  if (url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) return null;
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-  if (url.pathname.replace(/\//g, '') !== '') return null;
-  return url.origin;
+  return normalizeProprApiOrigin(value);
 };
 
 export const isSafeExternalUrl = (value: string): boolean => {
   const url = parseUrl(value);
   if (!url || hasCredentials(url)) return false;
-  return url.protocol === 'https:'
-    || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
+  return canonicalProprHttpUrlOrigin(value) === url.origin;
 };
 
 export const validatedDevServerUrl = (value: string | undefined): URL | null => {
   if (!value) return null;
   const url = parseUrl(value);
-  if (!url || url.protocol !== 'http:' || !LOOPBACK_HOSTS.has(url.hostname) || hasCredentials(url)) return null;
+  if (!url || url.protocol !== 'http:' || !isProprLoopbackHostname(url.hostname) || hasCredentials(url)) return null;
   if (url.pathname !== '/' || url.search || url.hash) return null;
+  if (canonicalProprHttpUrlOrigin(value) !== url.origin) return null;
   return url;
 };
 
@@ -142,7 +139,11 @@ export const isTrustedRendererUrl = (
   const candidateUrl = parseUrl(candidate);
   if (!candidateUrl) return false;
   const devUrl = validatedDevServerUrl(devServerUrl);
-  if (devUrl) return candidateUrl.origin === devUrl.origin;
+  if (devUrl) {
+    return !hasCredentials(candidateUrl)
+      && canonicalProprHttpUrlOrigin(candidate) === candidateUrl.origin
+      && candidateUrl.origin === devUrl.origin;
+  }
   const packagedUrl = parseUrl(packagedRendererUrl);
   if (!packagedUrl || hasCredentials(candidateUrl) || candidateUrl.search) return false;
   return candidateUrl.protocol === packagedUrl.protocol
@@ -187,7 +188,9 @@ export const rendererContentSecurityPolicy = (development = false): string => [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' https: http://127.0.0.1:* http://[::1]:* http://localhost:* ws://127.0.0.1:* ws://[::1]:* ws://localhost:* wss:",
+  // Electron main applies the shared canonical origin rule before any request;
+  // scheme sources are required here because CSP cannot express IPv4 127/8.
+  "connect-src 'self' https: http: ws: wss:",
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",

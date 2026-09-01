@@ -36,7 +36,6 @@ describe('desktop browser fixtures', () => {
 
   it('resolves fixture authentication only after the matching desktop completion signal', async () => {
     window.history.replaceState(null, '', '/?desktop-fixture=connected');
-    const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
     const adapters = resolveDesktopAdapters();
     const profile = (await adapters?.profiles.list())?.[0];
     expect(adapters).not.toBeNull();
@@ -59,8 +58,5 @@ describe('desktop browser fixtures', () => {
     }));
     await expect(authentication).resolves.toBeUndefined();
     expect(completed).toBe(true);
-    expect(decodeURIComponent(open.mock.calls[0]?.[0] as string)).toContain(
-      `propr://authentication-complete?profile_id=${profile!.id}`
-    );
   });
 });

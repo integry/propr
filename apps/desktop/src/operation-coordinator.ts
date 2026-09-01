@@ -17,7 +17,7 @@ export class DesktopOperationCoordinator {
 
   run<T>(kind: DesktopHostOperation, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.#shutdown) return Promise.reject(new Error(coordinatorShutdownError));
-    if (this.#active) return Promise.reject(new Error(coordinatorBusyError));
+    if (this.#active || this.#cancellation) return Promise.reject(new Error(coordinatorBusyError));
     const controller = new AbortController();
     const active = { kind, controller, promise: Promise.resolve() } as ActiveOperation;
     const promise = Promise.resolve().then(() => operation(controller.signal)).finally(() => {

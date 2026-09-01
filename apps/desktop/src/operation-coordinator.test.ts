@@ -57,6 +57,39 @@ describe('desktop main-process operation coordinator', () => {
     await Promise.all([first, second]);
   });
 
+  it('retains exclusive cancellation authority after aborted setup settles until cleanup finishes', async () => {
+    const coordinator = new DesktopOperationCoordinator();
+    const cleanup = deferred<void>();
+    let setupSettled = false;
+    let overlappingMutations = 0;
+    const setup = coordinator.run('setup', signal => new Promise<void>(resolve => {
+      const abort = () => resolve();
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+    }));
+    void setup.then(() => { setupSettled = true; });
+
+    const cancellation = coordinator.cancel(() => cleanup.promise);
+    await setup;
+    await Promise.resolve();
+    assert.equal(setupSettled, true, 'the setup promise must settle before the race attempt');
+
+    await assert.rejects(
+      coordinator.run('start', async () => { overlappingMutations += 1; }),
+      new RegExp(coordinatorBusyError),
+    );
+    await assert.rejects(
+      coordinator.run('setup', async () => { overlappingMutations += 1; }),
+      new RegExp(coordinatorBusyError),
+    );
+    assert.equal(overlappingMutations, 0);
+
+    cleanup.resolve();
+    await cancellation;
+    await coordinator.run('start', async () => { overlappingMutations += 1; });
+    assert.equal(overlappingMutations, 1);
+  });
+
   it('makes shutdown idempotent, aborts active work, and rejects late operations', async () => {
     const coordinator = new DesktopOperationCoordinator();
     let aborted = false;

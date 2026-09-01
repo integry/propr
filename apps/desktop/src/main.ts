@@ -6,6 +6,7 @@ import type { Rectangle } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import type { SetupActions } from '@propr/local-setup';
 import { DeepLinkDelivery } from './deep-link-delivery';
+import { DesktopCredentialService } from './credential-service';
 import { createDesktopLocalHost } from './desktop-host';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
@@ -121,14 +122,20 @@ const deliverDeepLink = (value: string): void => {
   deepLinkDelivery.deliver(value);
 };
 
-const configureSessionSecurity = (): void => {
+const configureSessionSecurity = (credentials: DesktopCredentialService): void => {
   const desktopSession = session.defaultSession;
   desktopSession.setPermissionCheckHandler(() => false);
   desktopSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    callback(credentials.prepareRequest(details.url, details.requestHeaders, {
+      method: details.method,
+      resourceType: details.resourceType,
+    }));
+  });
   desktopSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
-        ...details.responseHeaders,
+        ...credentials.sanitizeResponseHeaders(details.url, details.responseHeaders ?? {}),
         'Content-Security-Policy': [rendererContentSecurityPolicy(!app.isPackaged)],
       },
     });
@@ -328,7 +335,8 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
   }
   if (packagedSmokeTest) {
     const profileFlow = await window.webContents.executeJavaScript(`(async () => {
-      const bridge = window.proprDesktop;
+      const bridge = window.__PROPR_DESKTOP__;
+      const legacyBridge = window.proprDesktop;
       const deadline = performance.now() + 2000;
       let stagedConnectCandidate = false;
       do {
@@ -340,17 +348,21 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
         await new Promise(resolve => setTimeout(resolve, 25));
       } while (performance.now() < deadline);
       const profiles = await bridge.profiles.list();
+      const activeProfileId = await bridge.profiles.getActiveId();
       const setup = await bridge.localSetup.status();
       return {
-        noPersistedCandidate: profiles.profiles.length === 0,
-        noActiveCandidate: profiles.activeProfileId === null,
+        noPersistedCandidate: profiles.length === 0,
+        noActiveCandidate: activeProfileId === null,
         noLifecycleOrDockerAuthority: !('lifecycle' in bridge) && !('docker' in bridge),
+        legacyRemoteOnlyLifecycleInvariant: bridge.platform === 'linux'
+          || (!('lifecycle' in legacyBridge) && !('docker' in legacyBridge)),
         remoteOnlySetup: setup.phase === 'unsupported' && setup.capability?.kind === 'remote-only',
         stagedConnectCandidate,
       };
     })()`);
     if (!profileFlow?.noPersistedCandidate || !profileFlow?.noActiveCandidate
-      || !profileFlow?.noLifecycleOrDockerAuthority || !profileFlow?.remoteOnlySetup
+      || !profileFlow?.noLifecycleOrDockerAuthority || !profileFlow?.legacyRemoteOnlyLifecycleInvariant
+      || !profileFlow?.remoteOnlySetup
       || !profileFlow?.stagedConnectCandidate) {
       throw new Error('Packaged desktop staged Connect flow failed');
     }
@@ -396,7 +408,6 @@ if (!hasSingleInstanceLock) {
       () => packagedSmokeEvidence?.write('desktop.log.write_failed'),
     );
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
-    configureSessionSecurity();
     configurePackagedRendererProtocol();
 
     const encryption: EncryptionProvider = {
@@ -413,6 +424,22 @@ if (!hasSingleInstanceLock) {
       decrypt: value => safeStorage.decryptString(value),
     };
     const profiles = new ProfileStore(app.getPath('userData'), encryption);
+    const credentials = new DesktopCredentialService({
+      profiles,
+      fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
+      openExternal: async url => { await shell.openExternal(url); },
+      clientName: `ProPR Desktop (${process.platform})`,
+      reportRevocationFailure: diagnostic => {
+        log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
+      },
+    });
+    configureSessionSecurity(credentials);
+    const credentialInitialization = await credentials.initialize();
+    if (credentialInitialization.status === 'degraded') {
+      log('warn', 'desktop.credential_revocation.startup_degraded', {
+        retryPending: credentialInitialization.retryPending,
+      });
+    }
     const defaultRootDir = join(app.getPath('userData'), 'desktop', 'local-stack');
     const localHost = process.platform === 'linux' && !packagedSmokeTest
       ? await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined, defaultRootDir, app.getPath('userData'))
@@ -463,6 +490,7 @@ if (!hasSingleInstanceLock) {
       app,
       ipcMain,
       profiles,
+      credentials,
       lifecycle,
       setup: setupController,
       logger,
@@ -477,7 +505,8 @@ if (!hasSingleInstanceLock) {
       event.preventDefault();
       shutdownStarted = true;
       void operationCoordinator.shutdown(async () => {
-        await Promise.all([lifecycle.shutdown(), setupController?.shutdown()]);
+        await Promise.all([lifecycle.shutdown(), setupController?.shutdown(), credentials.dispose()]);
+        await profiles.close();
       }).finally(() => {
         log('info', 'desktop.app.shutdown');
         app.quit();

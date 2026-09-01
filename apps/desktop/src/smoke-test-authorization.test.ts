@@ -162,9 +162,12 @@ describe('packaged smoke profile authorization', () => {
     assert.match(main, /process\.platform === 'linux' && !packagedSmokeTest\s*\? await createDesktopLocalHost/);
     assert.doesNotMatch(smokeFlow, /lifecycle\.(?:start|stop|restart)|localSetup\.(?:start|retry|cancel)/);
     assert.match(smokeFlow, /stagedConnectCandidate/);
-    assert.match(smokeFlow, /profiles\.profiles\.length === 0/);
-    assert.match(smokeFlow, /profiles\.activeProfileId === null/);
+    assert.match(smokeFlow, /window\.__PROPR_DESKTOP__/);
+    assert.match(smokeFlow, /profiles\.length === 0/);
+    assert.match(smokeFlow, /activeProfileId === null/);
     assert.match(smokeFlow, /noLifecycleOrDockerAuthority/);
+    assert.match(smokeFlow, /legacyRemoteOnlyLifecycleInvariant/);
+    assert.match(smokeFlow, /!\('lifecycle' in legacyBridge\)/);
     assert.match(smokeFlow, /setup\.phase === 'unsupported'/);
     assert.match(smokeFlow, /setup\.capability\?\.kind === 'remote-only'/);
   });

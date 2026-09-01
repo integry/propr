@@ -16,7 +16,7 @@ import {
 
 describe('desktop URL security', () => {
   it('only accepts HTTPS and loopback HTTP API endpoints', () => {
-    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), 'https://propr.example.com');
+    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), null);
     assert.equal(normalizeApiBaseUrl('http://localhost:4000/'), 'http://localhost:4000');
     assert.equal(normalizeApiBaseUrl('http://127.0.0.1:4000'), 'http://127.0.0.1:4000');
     assert.equal(normalizeApiBaseUrl('http://[::1]:4000/'), 'http://[::1]:4000');
@@ -155,8 +155,7 @@ describe('desktop URL security', () => {
     assert.match(policy, /frame-src 'none'/);
     assert.doesNotMatch(policy, /unsafe-eval/);
     assert.match(policy, /script-src 'self'(?:;|$)/);
-    assert.match(policy, /http:\/\/\[::1\]:\*/);
-    assert.match(policy, /ws:\/\/\[::1\]:\*/);
+    assert.match(policy, /connect-src 'self' https: http: ws: wss:/);
   });
 
   it('relaxes inline scripts only while Vite serves the development renderer', () => {

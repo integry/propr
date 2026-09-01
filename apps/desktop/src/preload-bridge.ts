@@ -20,7 +20,10 @@ export interface PreloadIpc {
 const invoke = <T>(ipc: PreloadIpc, channel: string, ...args: unknown[]): Promise<T> =>
   ipc.invoke(channel, ...args) as Promise<T>;
 
-export const createDesktopBridge = (ipc: PreloadIpc): DesktopBridge => {
+export const createDesktopBridge = (
+  ipc: PreloadIpc,
+  platform: NodeJS.Platform = process.platform,
+): DesktopBridge => {
   const deepLinkListeners = new Set<(url: string) => void>();
   const pendingDeepLinks: string[] = [];
   ipc.on(IPC_CHANNELS.deepLink, (_event, value) => {
@@ -55,12 +58,22 @@ export const createDesktopBridge = (ipc: PreloadIpc): DesktopBridge => {
       remove: (profileId) => invoke(ipc, IPC_CHANNELS.profilesRemove, profileId),
       setActive: (profileId) => invoke(ipc, IPC_CHANNELS.profilesSetActive, profileId),
     },
-    lifecycle: {
+    authentication: {
+      pair: (profile) => invoke(ipc, IPC_CHANNELS.authenticationPair, profile),
+      cancel: (profileId) => invoke(ipc, IPC_CHANNELS.authenticationCancel, profileId),
+    },
+    connection: {
+      probe: (profile) => invoke(ipc, IPC_CHANNELS.connectionProbe, profile),
+      activate: (activationTicket) => invoke(ipc, IPC_CHANNELS.connectionActivate, activationTicket),
+      discard: (value) => invoke(ipc, IPC_CHANNELS.connectionDiscard, value),
+      invalidate: (value) => invoke(ipc, IPC_CHANNELS.connectionInvalidate, value),
+    },
+    ...(platform === 'linux' ? { lifecycle: {
       status: () => invoke(ipc, IPC_CHANNELS.lifecycleStatus),
       start: () => invoke(ipc, IPC_CHANNELS.lifecycleStart),
       stop: () => invoke(ipc, IPC_CHANNELS.lifecycleStop),
       restart: () => invoke(ipc, IPC_CHANNELS.lifecycleRestart),
-    },
+    } } : {}),
   };
 
   Object.values(bridge).forEach(Object.freeze);
@@ -115,7 +128,9 @@ export const probeDesktopProfile = async (
     const metadata = await response.json() as { apiCompatibility?: string; version?: string };
     const compatibility = evaluateProprApiCompatibility(metadata);
     const version = compatibility.apiVersion ? bounded(compatibility.apiVersion, 64) : undefined;
-    if (compatibility.compatible || compatibility.reason === 'missing') return { status: 'ready', version };
+    if (compatibility.compatible || compatibility.reason === 'missing') {
+      return { status: 'ready', version };
+    }
     return { status: 'incompatible', message: bounded(compatibility.message), version };
   } catch {
     return { status: 'offline', message: 'ProPR Desktop could not reach this instance. Check that it is running and try again.' };
@@ -126,7 +141,7 @@ export const probeDesktopProfile = async (
 export const createDesktopRendererBridge = (
   ipc: PreloadIpc,
   platform: NodeJS.Platform = process.platform,
-  connectionProbe: (profile: DesktopProfileView) => Promise<DesktopConnectionResult> = probeDesktopProfile,
+  connectionProbe?: (profile: DesktopProfileView) => Promise<DesktopConnectionResult>,
   onDeepLink: DesktopBridge['app']['onDeepLink'] = () => () => undefined,
 ): DesktopRendererBridge => {
   const platformName = platformView(platform);
@@ -178,8 +193,13 @@ export const createDesktopRendererBridge = (
         if (profile.kind !== 'remote' || !apiBaseUrl || apiBaseUrl !== profile.baseUrl) {
           throw new Error('Remote sign-in requires a canonical remote profile.');
         }
-        await invoke(ipc, IPC_CHANNELS.remoteAuthenticate, { profileId: profile.id, apiBaseUrl });
+        await invoke(ipc, IPC_CHANNELS.authenticationPair, {
+          id: profile.id,
+          label: profile.name,
+          apiBaseUrl,
+        });
       },
+      cancel: profileId => invoke(ipc, IPC_CHANNELS.authenticationCancel, profileId),
     },
     externalBrowser: { open: (url) => invoke(ipc, IPC_CHANNELS.openExternal, url) },
     localSetup: platformName === 'linux' ? {
@@ -202,7 +222,20 @@ export const createDesktopRendererBridge = (
       acquireWebhookSecret: localSetupUnavailable,
       onProgress: () => () => undefined,
     },
-    connection: { probe: connectionProbe },
+    connection: {
+      probe: profile => connectionProbe
+        ? connectionProbe(profile)
+        : profile.kind === 'local'
+          ? probeDesktopProfile(profile)
+          : invoke(ipc, IPC_CHANNELS.connectionProbe, {
+          id: profile.id,
+          label: profile.name,
+          apiBaseUrl: profile.baseUrl,
+          }),
+      activate: activationTicket => invoke(ipc, IPC_CHANNELS.connectionActivate, activationTicket),
+      discard: value => invoke(ipc, IPC_CHANNELS.connectionDiscard, value),
+      invalidate: value => invoke(ipc, IPC_CHANNELS.connectionInvalidate, value),
+    },
   };
   Object.values(bridge).filter(value => typeof value === 'object').forEach(Object.freeze);
   return Object.freeze(bridge);

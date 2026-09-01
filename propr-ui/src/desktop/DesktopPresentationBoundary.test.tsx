@@ -21,7 +21,7 @@ const bridgeWithDeepLinks = () => {
       setActiveId: async () => undefined,
     },
     discovery: { discover: async () => [] },
-    authentication: { authenticate: async () => undefined },
+    authentication: { authenticate: async () => undefined, cancel: async () => undefined },
     externalBrowser: { open: async () => undefined },
     localSetup: {
       status: async () => ({
@@ -37,7 +37,12 @@ const bridgeWithDeepLinks = () => {
       acquireWebhookSecret: async () => null,
       onProgress: () => () => undefined,
     },
-    connection: { probe: async () => ({ status: 'ready' }) },
+    connection: {
+      probe: async () => ({ status: 'ready', activationTicket: 'test-ticket' }),
+      activate: async () => ({ status: 'ready', profileId: 'test', transportScope: 'A'.repeat(22), identityEpoch: 'B'.repeat(22) }),
+      discard: async () => ({ discarded: true }),
+      invalidate: async () => ({ invalidated: true }),
+    },
   };
   return { bridge, listeners, onDeepLink };
 };

@@ -3,7 +3,12 @@ export const DESKTOP_PROTOCOL = 'propr';
 export const IPC_CHANNELS = Object.freeze({
   appMetadata: 'desktop:app-metadata',
   authLogout: 'desktop:auth-logout',
-  remoteAuthenticate: 'desktop:remote-authenticate',
+  authenticationPair: 'desktop:authentication-pair',
+  authenticationCancel: 'desktop:authentication-cancel',
+  connectionProbe: 'desktop:connection-probe',
+  connectionActivate: 'desktop:connection-activate',
+  connectionDiscard: 'desktop:connection-discard',
+  connectionInvalidate: 'desktop:connection-invalidate',
   openExternal: 'desktop:open-external',
   storageSecurity: 'desktop:storage-security',
   profilesList: 'desktop:profiles-list',
@@ -47,11 +52,6 @@ export interface DesktopProfile {
 export interface DesktopProfileInput {
   id?: string;
   label: string;
-  apiBaseUrl: string;
-}
-
-export interface DesktopRemoteAuthenticationRequest {
-  profileId: string;
   apiBaseUrl: string;
 }
 
@@ -100,7 +100,17 @@ export interface DesktopBridge {
     remove(profileId: string): Promise<void>;
     setActive(profileId: string | null): Promise<void>;
   };
-  lifecycle: {
+  authentication: {
+    pair(profile: DesktopProfileInput): Promise<{ paired: true }>;
+    cancel(profileId: string): Promise<void>;
+  };
+  connection: {
+    probe(profile: DesktopProfileInput): Promise<DesktopConnectionResult>;
+    activate(activationTicket: string): Promise<DesktopActivatedConnection>;
+    discard(value: DesktopConnectionScope): Promise<{ discarded: boolean }>;
+    invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }>;
+  };
+  lifecycle?: {
     status(): Promise<LocalLifecycleStatus>;
     start(): Promise<LocalLifecycleOperationResult>;
     stop(): Promise<LocalLifecycleOperationResult>;
@@ -120,10 +130,24 @@ export interface DesktopProfileView {
 }
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string }
-  | { status: 'authentication-required'; message?: string }
+  | { status: 'ready'; version?: string; authentication?: string; activationTicket?: string }
+  | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };
+
+export interface DesktopConnectionScope {
+  profileId: string;
+  transportScope: string;
+}
+
+export interface DesktopActivatedConnection extends DesktopConnectionScope {
+  status: 'ready';
+  identityEpoch: string;
+}
+
+export interface DesktopAccessInvalidation extends DesktopConnectionScope {
+  code: string;
+}
 
 export interface DesktopSetupRequest {
   sessionId: string;
@@ -202,7 +226,10 @@ export interface DesktopRendererBridge {
     setActiveId(profileId: string | null): Promise<void>;
   };
   discovery: { discover(): Promise<DesktopProfileView[]> };
-  authentication: { authenticate(profile: DesktopProfileView): Promise<void> };
+  authentication: {
+    authenticate(profile: DesktopProfileView): Promise<void>;
+    cancel(profileId: string): Promise<void>;
+  };
   externalBrowser: { open(url: string): Promise<void> };
   localSetup: {
     status(): Promise<DesktopSetupSnapshot>;
@@ -213,5 +240,10 @@ export interface DesktopRendererBridge {
     acquireWebhookSecret(): Promise<DesktopSecretSelection | null>;
     onProgress(listener: (snapshot: DesktopSetupSnapshot) => void): () => void;
   };
-  connection: { probe(profile: DesktopProfileView): Promise<DesktopConnectionResult> };
+  connection: {
+    probe(profile: DesktopProfileView): Promise<DesktopConnectionResult>;
+    activate(activationTicket: string): Promise<DesktopActivatedConnection>;
+    discard(value: DesktopConnectionScope): Promise<{ discarded: boolean }>;
+    invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }>;
+  };
 }

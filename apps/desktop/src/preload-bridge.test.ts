@@ -30,18 +30,31 @@ const setupRequest = {
 describe('desktop preload bridge', () => {
   it('exposes only the narrow frozen namespaces', () => {
     const bridge = createDesktopBridge(new FakeIpc());
-    assert.deepEqual(Object.keys(bridge).sort(), ['app', 'auth', 'external', 'lifecycle', 'profiles', 'storage']);
+    assert.deepEqual(Object.keys(bridge).sort(), [
+      'app', 'auth', 'authentication', 'connection', 'external', 'lifecycle', 'profiles', 'storage',
+    ]);
     assert.equal(Object.isFrozen(bridge), true);
     assert.equal(Object.values(bridge).every(Object.isFrozen), true);
     assert.equal('fs' in bridge, false);
     assert.equal('exec' in bridge, false);
   });
 
+  for (const platform of ['darwin', 'win32'] as const) {
+    it(`does not expose legacy local lifecycle authority on ${platform}`, async () => {
+      const ipc = new FakeIpc();
+      const bridge = createDesktopBridge(ipc, platform);
+      assert.equal('lifecycle' in bridge, false);
+      assert.equal('docker' in bridge, false);
+      assert.deepEqual(ipc.invocations, []);
+    });
+  }
+
   it('maps profile operations to fixed channels without a credential namespace', async () => {
     const ipc = new FakeIpc();
     const bridge = createDesktopBridge(ipc);
     await bridge.auth.logout('http://localhost:4000');
     await bridge.profiles.save({ label: 'Local', apiBaseUrl: 'http://localhost:4000' });
+    assert.ok(bridge.lifecycle);
     await bridge.lifecycle.start();
     assert.deepEqual(ipc.invocations, [
       { channel: IPC_CHANNELS.authLogout, args: ['http://localhost:4000'] },
@@ -124,13 +137,20 @@ describe('desktop preload bridge', () => {
       await assert.rejects(bridge.localSetup.start(setupRequest), /Local setup is unavailable/);
       await bridge.profiles.setActiveId(remote.id);
       await bridge.authentication.authenticate(remote);
+      await bridge.connection.probe(remote);
+      await bridge.connection.activate('activation-ticket');
 
       assert.deepEqual(ipc.invocations, [
         { channel: IPC_CHANNELS.profilesSetActive, args: [remote.id] },
         {
-          channel: IPC_CHANNELS.remoteAuthenticate,
-          args: [{ profileId: remote.id, apiBaseUrl: remote.baseUrl }],
+          channel: IPC_CHANNELS.authenticationPair,
+          args: [{ id: remote.id, label: remote.name, apiBaseUrl: remote.baseUrl }],
         },
+        {
+          channel: IPC_CHANNELS.connectionProbe,
+          args: [{ id: remote.id, label: remote.name, apiBaseUrl: remote.baseUrl }],
+        },
+        { channel: IPC_CHANNELS.connectionActivate, args: ['activation-ticket'] },
       ]);
       assert.equal(ipc.listeners.has(IPC_CHANNELS.setupProgress), false);
       assert.equal('lifecycle' in bridge, false);

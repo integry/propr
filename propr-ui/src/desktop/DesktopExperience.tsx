@@ -7,6 +7,7 @@ import { DesktopDeepLinkNavigation, type DesktopDeepLinkInbox } from '../desktop
 import { DesktopContext } from './DesktopContext';
 import { useDesktopModal, useSerializedMutationQueue } from './desktopExperienceHooks';
 import { ConnectionPanel, DesktopBrand, InstanceChooser, ProfileEditor, ProfileList } from './DesktopExperiencePanels';
+import { matchesDesktopAccessInvalidation, revokedDesktopConnection, useDesktopAccessInvalidation } from './desktopAccessInvalidation';
 import type { DesktopAdapters, DesktopConnectionResult, DesktopProfile } from './types';
 import { LocalSetupWizard } from './LocalSetupWizard';
 import './desktop.css';
@@ -131,23 +132,33 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     setState({ phase: 'connecting', profile });
     let operation: 'probe' | 'persist' = 'probe';
     try {
-      const result = await adapters.connection.probe(profile);
+      const probeResult = await adapters.connection.probe(profile);
       if (!isCurrentAttempt()) return;
-      if (result.status !== 'ready') { setState({ phase: 'blocked', profile, result }); return; }
+      if (probeResult.status !== 'ready') { setState({ phase: 'blocked', profile, result: probeResult }); return; }
 
       operation = 'persist';
       const connectedProfile = { ...profile, lastConnectedAt: new Date().toISOString() };
+      let result: DesktopConnectionResult = probeResult;
       await enqueueProfileMutation(async () => {
         if (!isCurrentAttempt()) return;
         await adapters.profiles.save(connectedProfile);
         if (!isCurrentAttempt()) return;
-        if (activeProfileId.current !== profile.id) await adapters.profiles.setActiveId(profile.id);
-        activeProfileId.current = profile.id;
+        if (adapters.connection.activate) {
+          result = await adapters.connection.activate(connectedProfile, probeResult, isCurrentAttempt);
+        } else if (activeProfileId.current !== profile.id) {
+          await adapters.profiles.setActiveId(profile.id);
+        }
+        if (result.status === 'ready') activeProfileId.current = profile.id;
       });
       if (!isCurrentAttempt()) return;
       setProfiles(current => mergeProfiles(current, [connectedProfile]));
+      if (result.status !== 'ready') {
+        setState({ phase: 'blocked', profile: connectedProfile, result });
+        return;
+      }
       runtimeConfig.setDesktopApiBaseUrl(connectedProfile.baseUrl);
-      setApiBaseUrl(connectedProfile.baseUrl);
+      if (adapters.connection.publishActivation) adapters.connection.publishActivation(connectedProfile, result);
+      else setApiBaseUrl(connectedProfile.baseUrl);
       setState({ phase: 'connected', profile: connectedProfile, result });
     } catch (error) {
       if (!isCurrentAttempt()) return;
@@ -158,6 +169,13 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       setState({ phase: 'blocked', profile, result: { status: 'offline', message } });
     }
   }, [adapters, enqueueProfileMutation]);
+
+  useDesktopAccessInvalidation(detail => setState(current => {
+    if (current.phase !== 'connected'
+      || !matchesDesktopAccessInvalidation(current.profile.id, current.result, detail)) return current;
+    adapters.connection.deactivate?.();
+    return { phase: 'blocked', profile: current.profile, result: revokedDesktopConnection(current.result) };
+  }));
 
   useEffect(() => {
     let cancelled = false;
@@ -240,7 +258,10 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       await enqueueProfileMutation(() => adapters.profiles.remove(profile.id));
       setProfiles(current => current.filter(item => item.id !== profile.id));
       if (activeProfileId.current === profile.id) activeProfileId.current = null;
-      if (state.phase === 'connected' && state.profile.id === profile.id) setState({ phase: 'choose' });
+      if (state.phase === 'connected' && state.profile.id === profile.id) {
+        adapters.connection.deactivate?.();
+        setState({ phase: 'choose' });
+      }
     } catch (error) {
       setOperationError(recoverableError('ProPR Desktop could not remove this instance.', error));
     }
@@ -285,6 +306,8 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   };
 
   const choose = () => {
+    if ('profile' in state) void adapters.authentication.cancel?.(state.profile.id).catch(() => undefined);
+    adapters.connection.deactivate?.();
     const attempt = ++connectionAttempt.current;
     void enqueueProfileMutation(async () => {
       if (connectionAttempt.current !== attempt) return;
