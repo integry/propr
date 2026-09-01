@@ -83,6 +83,8 @@ $application = Join-Path $installRoot 'propr-desktop.exe'
 $protocolRegistryPath = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
 $appPathsRegistryPath = `
   'Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\propr-desktop.exe'
+$hkcuDesktopRegistryPath = 'Registry::HKEY_CURRENT_USER\Software\ProPR\Desktop'
+$hkcuInstalledValueName = 'installed'
 $testUser = "propr-ci-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 $passwordText = "P!$([Guid]::NewGuid().ToString('N'))a7"
 $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
@@ -95,11 +97,16 @@ $smokeUserDataDirectory = $null
 $installRootExistedBeforeInstall = $false
 $protocolExistedBeforeInstall = $false
 $appPathsExistedBeforeInstall = $false
+$hkcuDesktopKeyExistedBeforeInstall = $false
+$hkcuInstalledValueExistedBeforeInstall = $false
+$hkcuInstalledBaselineKind = $null
+$hkcuInstalledBaselineData = $null
 $installRootCreatedByRun = $false
 $protocolCreatedByRun = $false
 $appPathsCreatedByRun = $false
 $protocolOwnedIdentity = $null
 $appPathsOwnedIdentity = $null
+$hkcuDesktopKeyCreatedByRun = $false
 $msiTimeoutMilliseconds = 10 * 60 * 1000
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
@@ -162,6 +169,7 @@ $installRootExistedBeforeInstall = Test-Path -LiteralPath $installRoot
 $protocolExistedBeforeInstall =
   Test-Path -LiteralPath $protocolRegistryPath
 $appPathsExistedBeforeInstall = Test-Path -LiteralPath $appPathsRegistryPath
+$hkcuDesktopKeyExistedBeforeInstall = Test-Path -LiteralPath $hkcuDesktopRegistryPath
 $startMenuShortcutExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcut
 $startMenuShortcutFolderExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcutFolder
 $startMenuShortcutCreatedByRun = $false
@@ -201,7 +209,10 @@ try {
 $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $initialOwnershipState = ConvertFrom-Json `
   -InputObject $strictUtf8.GetString($initialManifestBytes) -ErrorAction Stop
-if ($initialOwnershipState.SchemaVersion -ne 1 -or
+if ($initialOwnershipState.SchemaVersion -ne 2 -or
+    [string]$initialOwnershipState.ManifestType -cne
+      'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -or
+    [string]$initialOwnershipState.State -cne 'ACTIVE' -or
     [string]$initialOwnershipState.RunId -cne $ownershipRunId -or
     ![string]::Equals(
       [IO.Path]::GetFullPath([string]$initialOwnershipState.InstallerPath),
@@ -212,7 +223,9 @@ if ($initialOwnershipState.SchemaVersion -ne 1 -or
 }
 $ownershipToken = [Guid]::NewGuid().ToString('N')
 $ownershipState = [ordered]@{
-  SchemaVersion = 1
+  SchemaVersion = 2
+  ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
+  State = 'ACTIVE'
   RunId = $ownershipRunId
   CreatedUtcTicks = [int64]$initialOwnershipState.CreatedUtcTicks
   ExpiresUtcTicks = [int64]$initialOwnershipState.ExpiresUtcTicks
@@ -224,6 +237,7 @@ $ownershipState = [ordered]@{
   Directories = @()
   Files = @()
   RegistryKeys = @()
+  RegistryValues = @()
   Users = @()
   Profiles = @()
 }
@@ -314,6 +328,117 @@ function Get-RegistryTreeIdentity([string]$Path) {
   finally { $sha256.Dispose() }
 }
 
+function Convert-RegistryValueToBytes(
+  [Microsoft.Win32.RegistryValueKind]$Kind,
+  $Value
+) {
+  switch ($Kind) {
+    'DWord' { return [BitConverter]::GetBytes([int32]$Value) }
+    'QWord' { return [BitConverter]::GetBytes([int64]$Value) }
+    'String' { return [Text.Encoding]::UTF8.GetBytes([string]$Value) }
+    'ExpandString' { return [Text.Encoding]::UTF8.GetBytes([string]$Value) }
+    'MultiString' {
+      return [Text.Encoding]::UTF8.GetBytes(
+        (ConvertTo-Json -InputObject @([string[]]$Value) -Compress))
+    }
+    'Binary' { return [byte[]]$Value }
+    'None' { return [byte[]]$Value }
+    default { throw 'registry value kind is unsupported' }
+  }
+}
+
+function Get-RegistryValueSnapshot([string]$Path, [string]$Name) {
+  if (!(Test-Path -LiteralPath $Path)) {
+    return [PSCustomObject]@{ Exists = $false; Kind = $null; Data = $null }
+  }
+  $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+  if (@($key.GetValueNames()) -cnotcontains $Name) {
+    return [PSCustomObject]@{ Exists = $false; Kind = $null; Data = $null }
+  }
+  $kind = $key.GetValueKind($Name)
+  $value = $key.GetValue(
+    $Name,
+    $null,
+    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+  )
+  return [PSCustomObject]@{
+    Exists = $true
+    Kind = $kind.ToString()
+    Data = [Convert]::ToBase64String((Convert-RegistryValueToBytes $kind $value))
+  }
+}
+
+function Test-MsiInstalledValue([string]$Path, [string]$Name) {
+  $snapshot = Get-RegistryValueSnapshot $Path $Name
+  return $snapshot.Exists -and $snapshot.Kind -ceq 'DWord' -and
+    $snapshot.Data -ceq [Convert]::ToBase64String([BitConverter]::GetBytes([int32]1))
+}
+
+function Restore-HkcuInstalledBaseline {
+  $current = Get-RegistryValueSnapshot $hkcuDesktopRegistryPath $hkcuInstalledValueName
+  $matchesBaseline = $hkcuInstalledValueExistedBeforeInstall -and $current.Exists -and
+    $current.Kind -ceq $hkcuInstalledBaselineKind -and
+    $current.Data -ceq $hkcuInstalledBaselineData
+  if ($current.Exists -and !$matchesBaseline -and
+      !(Test-MsiInstalledValue $hkcuDesktopRegistryPath $hkcuInstalledValueName)) {
+    throw 'refusing to replace a conflicting current-user installed value'
+  }
+
+  if ($hkcuInstalledValueExistedBeforeInstall) {
+    if (!(Test-Path -LiteralPath $hkcuDesktopRegistryPath)) {
+      [void](New-Item -Path $hkcuDesktopRegistryPath -Force -ErrorAction Stop)
+    }
+    if (!$matchesBaseline) {
+      $kind = [Enum]::Parse(
+        [Microsoft.Win32.RegistryValueKind], $hkcuInstalledBaselineKind, $false)
+      $bytes = [Convert]::FromBase64String($hkcuInstalledBaselineData)
+      $value = switch ($kind) {
+        'DWord' { [BitConverter]::ToInt32($bytes, 0); break }
+        'QWord' { [BitConverter]::ToInt64($bytes, 0); break }
+        'String' { [Text.Encoding]::UTF8.GetString($bytes); break }
+        'ExpandString' { [Text.Encoding]::UTF8.GetString($bytes); break }
+        'MultiString' {
+          @([string[]](ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString($bytes))))
+          break
+        }
+        'Binary' { $bytes; break }
+        'None' { $bytes; break }
+        default { throw 'registry baseline kind is unsupported' }
+      }
+      (Get-Item -LiteralPath $hkcuDesktopRegistryPath -ErrorAction Stop).SetValue(
+        $hkcuInstalledValueName, $value, $kind)
+    }
+  } elseif ($current.Exists) {
+    Remove-ItemProperty -LiteralPath $hkcuDesktopRegistryPath `
+      -Name $hkcuInstalledValueName -Force -ErrorAction Stop
+  }
+
+  if ($hkcuDesktopKeyCreatedByRun -and (Test-Path -LiteralPath $hkcuDesktopRegistryPath)) {
+    $key = Get-Item -LiteralPath $hkcuDesktopRegistryPath -ErrorAction Stop
+    if (@($key.GetValueNames()).Count -eq 0 -and @($key.GetSubKeyNames()).Count -eq 0) {
+      Remove-Item -LiteralPath $hkcuDesktopRegistryPath -Force -ErrorAction Stop
+    }
+  }
+}
+
+$hkcuInstalledSnapshot = Get-RegistryValueSnapshot `
+  $hkcuDesktopRegistryPath $hkcuInstalledValueName
+$hkcuInstalledValueExistedBeforeInstall = [bool]$hkcuInstalledSnapshot.Exists
+$hkcuInstalledBaselineKind = $hkcuInstalledSnapshot.Kind
+$hkcuInstalledBaselineData = $hkcuInstalledSnapshot.Data
+$ownershipState.RegistryValues = @([ordered]@{
+  Kind = 'HKCU_INSTALLED'
+  Path = $hkcuDesktopRegistryPath
+  Name = $hkcuInstalledValueName
+  Owned = $false
+  Provisional = $false
+  BaselineKeyExisted = $hkcuDesktopKeyExistedBeforeInstall
+  BaselineValueExisted = $hkcuInstalledValueExistedBeforeInstall
+  BaselineValueKind = $hkcuInstalledBaselineKind
+  BaselineValueData = $hkcuInstalledBaselineData
+  KeyCreatedByRun = $false
+})
+
 Write-OwnershipManifest
 
 function Write-WatchdogMarker(
@@ -328,6 +453,7 @@ function Write-WatchdogMarker(
     'APPLICATION_IMAGE',
     'PROTOCOL_ASSERTION',
     'APP_PATH_ASSERTION',
+    'HKCU_INSTALLED_ASSERTION',
     'SHORTCUT_ASSERTION',
     'USER_CREATE',
     'USER_SID',
@@ -341,6 +467,7 @@ function Write-WatchdogMarker(
     'INSTALL_TREE_ASSERTION',
     'PROTOCOL_ABSENCE_ASSERTION',
     'APP_PATH_ABSENCE_ASSERTION',
+    'HKCU_INSTALLED_ABSENCE_ASSERTION',
     'SHORTCUT_FILE_ASSERTION',
     'SHORTCUT_FOLDER_ASSERTION',
     'SHORTCUT_ABSENCE_PROBE',
@@ -352,6 +479,7 @@ function Write-WatchdogMarker(
     'INSTALL_ROOT_FALLBACK',
     'PROTOCOL_FALLBACK',
     'APP_PATH_FALLBACK',
+    'HKCU_INSTALLED_FALLBACK',
     'SHORTCUT_FALLBACK'
   )][string]$Substage,
   [int]$TimeoutMilliseconds,
@@ -457,6 +585,7 @@ function Write-CleanupSubstage(
     'INSTALL_TREE',
     'PROTOCOL',
     'APP_PATH',
+    'HKCU_INSTALLED',
     'SHORTCUT_FILE',
     'SHORTCUT_FOLDER',
     'ORDINARY_USER_ABSENCE_PROBE',
@@ -466,6 +595,7 @@ function Write-CleanupSubstage(
     'INSTALL_ROOT_FALLBACK',
     'PROTOCOL_FALLBACK',
     'APP_PATH_FALLBACK',
+    'HKCU_INSTALLED_FALLBACK',
     'SHORTCUT_FALLBACK',
     'FINAL_AGGREGATION'
   )][string]$Substage,
@@ -1087,6 +1217,18 @@ try {
         Owned = $true; Token = $null; Identity = $null; Provisional = $true
       }
     )
+    $ownershipState.RegistryValues = @([ordered]@{
+      Kind = 'HKCU_INSTALLED'
+      Path = $hkcuDesktopRegistryPath
+      Name = $hkcuInstalledValueName
+      Owned = $true
+      Provisional = $true
+      BaselineKeyExisted = $hkcuDesktopKeyExistedBeforeInstall
+      BaselineValueExisted = $hkcuInstalledValueExistedBeforeInstall
+      BaselineValueKind = $hkcuInstalledBaselineKind
+      BaselineValueData = $hkcuInstalledBaselineData
+      KeyCreatedByRun = $false
+    })
     Write-OwnershipManifest
     try {
       Invoke-BoundedExternalOperation `
@@ -1109,6 +1251,9 @@ try {
               (Test-Path -LiteralPath $protocolRegistryPath)
           $script:appPathsCreatedByRun =
             !$appPathsExistedBeforeInstall -and (Test-Path -LiteralPath $appPathsRegistryPath)
+          $script:hkcuDesktopKeyCreatedByRun =
+            !$hkcuDesktopKeyExistedBeforeInstall -and
+              (Test-Path -LiteralPath $hkcuDesktopRegistryPath)
           $script:startMenuShortcutCreatedByRun =
             !$startMenuShortcutExistedBeforeInstall -and (Test-Path -LiteralPath $startMenuShortcut)
           $script:startMenuShortcutFolderCreatedByRun =
@@ -1150,6 +1295,18 @@ try {
             }
           }
           $ownershipState.RegistryKeys = $ownedRegistryKeys
+          $ownershipState.RegistryValues = @([ordered]@{
+            Kind = 'HKCU_INSTALLED'
+            Path = $hkcuDesktopRegistryPath
+            Name = $hkcuInstalledValueName
+            Owned = $true
+            Provisional = $false
+            BaselineKeyExisted = $hkcuDesktopKeyExistedBeforeInstall
+            BaselineValueExisted = $hkcuInstalledValueExistedBeforeInstall
+            BaselineValueKind = $hkcuInstalledBaselineKind
+            BaselineValueData = $hkcuInstalledBaselineData
+            KeyCreatedByRun = $script:hkcuDesktopKeyCreatedByRun
+          })
           Write-OwnershipManifest
         }
     }
@@ -1204,6 +1361,13 @@ try {
         $appPathApplication = (Get-Item -LiteralPath $appPathsRegistryPath).GetValue('')
         if ($appPathApplication -cne $application) {
           throw 'machine installer did not register canonical executable discovery'
+        }
+      }
+
+    Invoke-BoundedExternalOperation 'VALIDATION' 'HKCU_INSTALLED_ASSERTION' `
+      $externalOperationTimeoutMilliseconds {
+        if (!(Test-MsiInstalledValue $hkcuDesktopRegistryPath $hkcuInstalledValueName)) {
+          throw 'machine installer did not author the current-user installed value'
         }
       }
 
@@ -1393,6 +1557,9 @@ try {
                 (Get-RegistryTreeIdentity $appPathsRegistryPath) -cne $appPathsOwnedIdentity)) {
             throw 'refusing to uninstall over executable metadata with a mismatched ownership identity'
           }
+          if (!(Test-MsiInstalledValue $hkcuDesktopRegistryPath $hkcuInstalledValueName)) {
+            throw 'refusing to uninstall over current-user metadata with mismatched ownership'
+          }
           Invoke-Msi @('/x', "`"$installerPath`"", '/qn', '/norestart') 'machine uninstall'
         }
       Write-CleanupSubstage 'UNINSTALL' 'MSI_UNINSTALL' 'COMPLETE'
@@ -1440,6 +1607,21 @@ try {
       Write-CleanupSubstage 'UNINSTALL' 'APP_PATH' 'COMPLETE'
     } catch {
       Write-CleanupSubstage 'UNINSTALL' 'APP_PATH' 'FAILED'
+      $uninstallFailed = $true
+    }
+
+    Write-CleanupSubstage 'UNINSTALL' 'HKCU_INSTALLED' 'BEGIN'
+    try {
+      Invoke-BoundedExternalOperation `
+        'UNINSTALL' 'HKCU_INSTALLED_ABSENCE_ASSERTION' $externalOperationTimeoutMilliseconds {
+          if ((Get-RegistryValueSnapshot `
+                $hkcuDesktopRegistryPath $hkcuInstalledValueName).Exists) {
+            throw 'machine uninstall left current-user installed metadata behind'
+          }
+        }
+      Write-CleanupSubstage 'UNINSTALL' 'HKCU_INSTALLED' 'COMPLETE'
+    } catch {
+      Write-CleanupSubstage 'UNINSTALL' 'HKCU_INSTALLED' 'FAILED'
       $uninstallFailed = $true
     }
 
@@ -1620,6 +1802,18 @@ try {
     $cleanupFailed = $true
   }
 
+  Write-CleanupSubstage 'CLEANUP' 'HKCU_INSTALLED_FALLBACK' 'BEGIN'
+  try {
+    Invoke-BoundedExternalOperation `
+      'CLEANUP' 'HKCU_INSTALLED_FALLBACK' $externalOperationTimeoutMilliseconds {
+        Restore-HkcuInstalledBaseline
+      }
+    Write-CleanupSubstage 'CLEANUP' 'HKCU_INSTALLED_FALLBACK' 'COMPLETE'
+  } catch {
+    Write-CleanupSubstage 'CLEANUP' 'HKCU_INSTALLED_FALLBACK' 'FAILED'
+    $cleanupFailed = $true
+  }
+
   Write-CleanupSubstage 'CLEANUP' 'SHORTCUT_FALLBACK' 'BEGIN'
   $shortcutFallbackFailed = $false
   try {
@@ -1662,11 +1856,13 @@ try {
       throw 'installed Windows cleanup did not complete'
     }
   } else {
+    $ownershipState.State = 'EMPTY'
     $ownershipState.BaselineClean = $false
     $ownershipState.InstallAttempted = $false
     $ownershipState.Directories = @()
     $ownershipState.Files = @()
     $ownershipState.RegistryKeys = @()
+    $ownershipState.RegistryValues = @()
     $ownershipState.Users = @()
     $ownershipState.Profiles = @()
     Write-OwnershipManifest

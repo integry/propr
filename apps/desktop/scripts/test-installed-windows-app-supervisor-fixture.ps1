@@ -17,6 +17,7 @@ if ($scenario -notin @(
     'STALE_MARKER',
     'INACCESSIBLE_MARKER',
     'CANCELLATION',
+    'OWNED_RESOURCES_NORMAL_SUCCESS',
     'OWNED_RESOURCES_FOR_INTERRUPTION',
     'OWNED_RESOURCES_THEN_DEADLINE'
   )) {
@@ -87,7 +88,9 @@ function Write-FixtureOwnershipToken([string]$Path, [string]$Token) {
 function New-OwnedFixtureResources {
   $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
     ConvertFrom-Json -ErrorAction Stop
-  if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 1) {
+  if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 2 -or
+      $manifest.ManifestType -cne 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -or
+      $manifest.State -cne 'ACTIVE') {
     throw 'fixture ownership manifest was not initialized'
   }
   $token = [Guid]::NewGuid().ToString('N')
@@ -148,6 +151,7 @@ function New-OwnedFixtureResources {
   $manifest.RegistryKeys = @(
     [ordered]@{ Kind = 'PROTOCOL'; Path = $registryPath; Owned = $true; Token = $token }
   )
+  $manifest.RegistryValues = @()
   if ($env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_REGISTRY) {
     $manifest.RegistryKeys += [ordered]@{
       Kind = 'CONFLICT'; Path = $env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_REGISTRY
@@ -320,6 +324,12 @@ switch ($scenario) {
     Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
       [DateTime]::UtcNow.AddSeconds(60).Ticks)
     Start-Sleep -Seconds 300
+  }
+  'OWNED_RESOURCES_NORMAL_SUCCESS' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-OwnedFixtureResources
+    Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|COMPLETE' -f `
+      [DateTime]::UtcNow.AddSeconds(60).Ticks)
   }
 }
 

@@ -620,6 +620,9 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppCleanup, /Remove-OwnedRegistryKey/);
     assert.match(installedWindowsAppCleanup, /Remove-OwnedDirectory/);
     assert.match(installedWindowsAppCleanup, /APP_PATH/);
+    assert.match(installedWindowsAppCleanup, /HKEY_CURRENT_USER\\Software\\ProPR\\Desktop/);
+    assert.match(installedWindowsAppCleanup, /Restore-OwnedRegistryValue/);
+    assert.match(installedWindowsAppCleanup, /Write-EmptyOwnershipReceipt/);
     assert.match(installedWindowsAppCleanup, /Get-RegistryTreeIdentity/);
     assert.match(
       installedWindowsAppTest,
@@ -628,12 +631,31 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /APP_PATH_ASSERTION/);
     assert.match(installedWindowsAppTest, /APP_PATH_ABSENCE_ASSERTION/);
     assert.match(installedWindowsAppTest, /APP_PATH_FALLBACK/);
+    assert.match(installedWindowsAppTest, /HKCU_INSTALLED_ASSERTION/);
+    assert.match(installedWindowsAppTest, /HKCU_INSTALLED_ABSENCE_ASSERTION/);
+    assert.match(installedWindowsAppTest, /HKCU_INSTALLED_FALLBACK/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-HkcuInstalledValueOwnership/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /OWNED_RESOURCES_NORMAL_SUCCESS/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /typed authenticated empty-state receipt/);
     assert.match(
       installedWindowsAppTest,
       /Get-RegistryTreeIdentity \$appPathsRegistryPath[\s\S]*refusing to uninstall over executable metadata[\s\S]*Invoke-Msi @\('\/x'/,
     );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /mismatched App Paths ownership identity did not fail closed/);
     assert.match(installedWindowsAppWorkflowCleanup, /ProPRWorkflowCleanupJob/);
+    assert.match(installedWindowsAppWorkflowCleanup, /MANIFEST_VALIDATION_FAILURE/);
+    assert.match(installedWindowsAppWorkflowCleanup, /OWNED_RESOURCE_CLEANUP_FAILURE/);
+    assert.ok(
+      installedWindowsAppWorkflowCleanup.indexOf('Write-FixedResult $fixedResult')
+        < installedWindowsAppWorkflowCleanup.indexOf(
+          'foreach ($path in @($validatedManifestPath, "$validatedManifestPath.new"))',
+        ),
+      'failed manifest must remain available until fixed controller evidence is emitted',
+    );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisorBehaviorTest,
+      /workflowCleanup\.(?:Error|StandardError)|failedCleanup\.(?:Error|StandardError)/,
+    );
     for (const result of ['COMPLETE', 'FAILED', 'TIMED_OUT']) {
       assert.match(
         installedWindowsAppWorkflowCleanup,
@@ -697,6 +719,7 @@ describe('desktop trusted release workflow', () => {
       'APPLICATION_IMAGE',
       'PROTOCOL_ASSERTION',
       'APP_PATH_ASSERTION',
+      'HKCU_INSTALLED_ASSERTION',
       'SHORTCUT_ASSERTION',
       'USER_CREATE',
       'USER_SID',
@@ -710,6 +733,7 @@ describe('desktop trusted release workflow', () => {
       'INSTALL_TREE_ASSERTION',
       'PROTOCOL_ABSENCE_ASSERTION',
       'APP_PATH_ABSENCE_ASSERTION',
+      'HKCU_INSTALLED_ABSENCE_ASSERTION',
       'SHORTCUT_FILE_ASSERTION',
       'SHORTCUT_FOLDER_ASSERTION',
       'SHORTCUT_ABSENCE_PROBE',
@@ -721,6 +745,7 @@ describe('desktop trusted release workflow', () => {
       'INSTALL_ROOT_FALLBACK',
       'PROTOCOL_FALLBACK',
       'APP_PATH_FALLBACK',
+      'HKCU_INSTALLED_FALLBACK',
       'SHORTCUT_FALLBACK',
     ]);
     for (const operation of operations) {
@@ -908,6 +933,7 @@ describe('desktop trusted release workflow', () => {
       'INSTALL_TREE',
       'PROTOCOL',
       'APP_PATH',
+      'HKCU_INSTALLED',
       'SHORTCUT_FILE',
       'SHORTCUT_FOLDER',
       'ORDINARY_USER_ABSENCE_PROBE',
@@ -917,6 +943,7 @@ describe('desktop trusted release workflow', () => {
       'INSTALL_ROOT_FALLBACK',
       'PROTOCOL_FALLBACK',
       'APP_PATH_FALLBACK',
+      'HKCU_INSTALLED_FALLBACK',
       'SHORTCUT_FALLBACK',
       'FINAL_AGGREGATION',
     ]);
@@ -940,7 +967,15 @@ describe('desktop trusted release workflow', () => {
       assert.ok(substages.includes(substage));
       assert.ok(['BEGIN', 'COMPLETE', 'FAILED', 'SKIPPED'].includes(status));
     }
-    for (const substage of ['MSI_UNINSTALL', 'INSTALL_TREE', 'PROTOCOL', 'APP_PATH', 'SHORTCUT_FILE', 'SHORTCUT_FOLDER']) {
+    for (const substage of [
+      'MSI_UNINSTALL',
+      'INSTALL_TREE',
+      'PROTOCOL',
+      'APP_PATH',
+      'HKCU_INSTALLED',
+      'SHORTCUT_FILE',
+      'SHORTCUT_FOLDER',
+    ]) {
       for (const status of ['BEGIN', 'COMPLETE', 'FAILED']) {
         assert.ok(cleanupCalls.some(match => match[1] === 'UNINSTALL' && match[2] === substage && match[3] === status));
       }
@@ -957,6 +992,7 @@ describe('desktop trusted release workflow', () => {
       'INSTALL_ROOT_FALLBACK',
       'PROTOCOL_FALLBACK',
       'APP_PATH_FALLBACK',
+      'HKCU_INSTALLED_FALLBACK',
       'SHORTCUT_FALLBACK',
       'FINAL_AGGREGATION',
     ]) {

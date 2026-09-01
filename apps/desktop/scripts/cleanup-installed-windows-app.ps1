@@ -11,6 +11,7 @@ $ProgressPreference = 'SilentlyContinue'
 $ownerFileName = '.propr-installed-app-owner'
 $ownerRegistryValue = 'ProPRInstalledAppOwner'
 $cleanupFailed = $false
+$manifestValidated = $false
 $authorizedRunId = $null
 
 try {
@@ -125,6 +126,52 @@ function Test-ProvisionalRegistryIdentity([string]$Kind, [string]$Path, [string]
     [string]$command.GetValue('') -ceq "`"$Application`" `"%1`""
 }
 
+function Convert-RegistryValueToBytes(
+  [Microsoft.Win32.RegistryValueKind]$Kind,
+  $Value
+) {
+  switch ($Kind) {
+    'DWord' { return [BitConverter]::GetBytes([int32]$Value) }
+    'QWord' { return [BitConverter]::GetBytes([int64]$Value) }
+    'String' { return [Text.Encoding]::UTF8.GetBytes([string]$Value) }
+    'ExpandString' { return [Text.Encoding]::UTF8.GetBytes([string]$Value) }
+    'MultiString' {
+      return [Text.Encoding]::UTF8.GetBytes(
+        (ConvertTo-Json -InputObject @([string[]]$Value) -Compress))
+    }
+    'Binary' { return [byte[]]$Value }
+    'None' { return [byte[]]$Value }
+    default { throw 'registry value kind is unsupported' }
+  }
+}
+
+function Get-RegistryValueSnapshot([string]$Path, [string]$Name) {
+  if (!(Test-Path -LiteralPath $Path)) {
+    return [PSCustomObject]@{ Exists = $false; Kind = $null; Data = $null }
+  }
+  $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+  if (@($key.GetValueNames()) -cnotcontains $Name) {
+    return [PSCustomObject]@{ Exists = $false; Kind = $null; Data = $null }
+  }
+  $kind = $key.GetValueKind($Name)
+  $value = $key.GetValue(
+    $Name,
+    $null,
+    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+  )
+  return [PSCustomObject]@{
+    Exists = $true
+    Kind = $kind.ToString()
+    Data = [Convert]::ToBase64String((Convert-RegistryValueToBytes $kind $value))
+  }
+}
+
+function Test-MsiInstalledValue([string]$Path, [string]$Name) {
+  $snapshot = Get-RegistryValueSnapshot $Path $Name
+  return $snapshot.Exists -and $snapshot.Kind -ceq 'DWord' -and
+    $snapshot.Data -ceq [Convert]::ToBase64String([BitConverter]::GetBytes([int32]1))
+}
+
 function Test-AllowedFileSystemPath([string]$Kind, [string]$Path) {
   if ($FixtureRoot) { return Test-PathWithin $Path $FixtureRoot }
   $installRoot = Join-Path $env:ProgramFiles 'ProPR Desktop'
@@ -223,6 +270,101 @@ function Remove-OwnedRegistryKey($Record, [bool]$AllowProvisionalProductOwnershi
       Remove-Item -LiteralPath $runRoot -Force -ErrorAction Stop
     }
   }
+}
+
+function Restore-OwnedRegistryValue($Record) {
+  if (!$Record.Owned) { return }
+  $path = [string]$Record.Path
+  $name = [string]$Record.Name
+  if ([string]$Record.Kind -cne 'HKCU_INSTALLED' -or
+      ![string]::Equals(
+        $path,
+        'Registry::HKEY_CURRENT_USER\Software\ProPR\Desktop',
+        [StringComparison]::OrdinalIgnoreCase
+      ) -or $name -cne 'installed') {
+    throw 'registry value cleanup scope is invalid'
+  }
+
+  $current = Get-RegistryValueSnapshot $path $name
+  $baselineValueExists = [bool]$Record.BaselineValueExisted
+  $baselineKind = [string]$Record.BaselineValueKind
+  $baselineData = [string]$Record.BaselineValueData
+  $matchesBaseline = $baselineValueExists -and $current.Exists -and
+    $current.Kind -ceq $baselineKind -and $current.Data -ceq $baselineData
+  if ($current.Exists -and !$matchesBaseline -and !(Test-MsiInstalledValue $path $name)) {
+    throw 'registry value ownership changed'
+  }
+
+  if ($baselineValueExists) {
+    if (!(Test-Path -LiteralPath $path)) {
+      [void](New-Item -Path $path -Force -ErrorAction Stop)
+    }
+    if (!$matchesBaseline) {
+      $kind = [Enum]::Parse([Microsoft.Win32.RegistryValueKind], $baselineKind, $false)
+      $bytes = [Convert]::FromBase64String($baselineData)
+      $value = switch ($kind) {
+        'DWord' { [BitConverter]::ToInt32($bytes, 0); break }
+        'QWord' { [BitConverter]::ToInt64($bytes, 0); break }
+        'String' { [Text.Encoding]::UTF8.GetString($bytes); break }
+        'ExpandString' { [Text.Encoding]::UTF8.GetString($bytes); break }
+        'MultiString' {
+          @([string[]](ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString($bytes))))
+          break
+        }
+        'Binary' { $bytes; break }
+        'None' { $bytes; break }
+        default { throw 'registry baseline kind is unsupported' }
+      }
+      (Get-Item -LiteralPath $path -ErrorAction Stop).SetValue($name, $value, $kind)
+    }
+  } elseif ($current.Exists) {
+    Remove-ItemProperty -LiteralPath $path -Name $name -Force -ErrorAction Stop
+  }
+
+  if ([bool]$Record.KeyCreatedByRun -and (Test-Path -LiteralPath $path)) {
+    $key = Get-Item -LiteralPath $path -ErrorAction Stop
+    if (@($key.GetValueNames()).Count -eq 0 -and @($key.GetSubKeyNames()).Count -eq 0) {
+      Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+    }
+  }
+
+  $after = Get-RegistryValueSnapshot $path $name
+  if ($baselineValueExists) {
+    if (!$after.Exists -or $after.Kind -cne $baselineKind -or $after.Data -cne $baselineData) {
+      throw 'registry baseline restoration did not complete'
+    }
+  } elseif ($after.Exists) {
+    throw 'owned registry value cleanup did not complete'
+  }
+}
+
+function Write-EmptyOwnershipReceipt([string]$Path, $Manifest) {
+  $Manifest.State = 'EMPTY'
+  $Manifest.BaselineClean = $false
+  $Manifest.InstallAttempted = $false
+  $Manifest.Directories = @()
+  $Manifest.Files = @()
+  $Manifest.RegistryKeys = @()
+  $Manifest.RegistryValues = @()
+  $Manifest.Users = @()
+  $Manifest.Profiles = @()
+  $temporaryPath = "$Path.new"
+  $bytes = [Text.Encoding]::UTF8.GetBytes(($Manifest | ConvertTo-Json -Depth 6 -Compress))
+  $stream = [IO.FileStream]::new(
+    $temporaryPath,
+    [IO.FileMode]::Create,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::None,
+    4096,
+    [IO.FileOptions]::WriteThrough
+  )
+  try {
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    $stream.Dispose()
+  }
+  [IO.File]::Move($temporaryPath, $Path, $true)
 }
 
 function Remove-OwnedProfiles($UserRecord) {
@@ -333,15 +475,18 @@ try {
   $manifest = ConvertFrom-Json -InputObject $strictUtf8.GetString($manifestBytes) -ErrorAction Stop
   $manifestKeys = @($manifest.PSObject.Properties | ForEach-Object { $_.Name })
   $expectedManifestKeys = @(
-    'SchemaVersion','RunId','CreatedUtcTicks','ExpiresUtcTicks','InstallerPath','Fixture',
+    'SchemaVersion','ManifestType','State','RunId','CreatedUtcTicks','ExpiresUtcTicks',
+    'InstallerPath','Fixture',
     'FixtureRoot','BaselineClean','InstallAttempted','Directories','Files','RegistryKeys',
-    'Users','Profiles'
+    'RegistryValues','Users','Profiles'
   )
   if ($manifestKeys.Count -ne $expectedManifestKeys.Count -or
       @($expectedManifestKeys | Where-Object { $manifestKeys -cnotcontains $_ }).Count -ne 0 -or
       $manifest.Fixture -isnot [bool] -or $manifest.BaselineClean -isnot [bool] -or
       $manifest.InstallAttempted -isnot [bool] -or
-      $manifest.SchemaVersion -ne 1 -or
+      $manifest.SchemaVersion -ne 2 -or
+      [string]$manifest.ManifestType -cne 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -or
+      [string]$manifest.State -notin @('ACTIVE','EMPTY') -or
       [string]$manifest.RunId -notmatch '^[a-f0-9]{32}$') {
     throw 'ownership manifest schema is invalid'
   }
@@ -371,6 +516,17 @@ try {
     }
   } elseif ($manifest.Fixture) {
     throw 'fixture ownership manifest was not authorized'
+  }
+
+  if ([string]$manifest.State -ceq 'EMPTY') {
+    if ($manifest.BaselineClean -or $manifest.InstallAttempted -or
+        @($manifest.Directories).Count -ne 0 -or @($manifest.Files).Count -ne 0 -or
+        @($manifest.RegistryKeys).Count -ne 0 -or @($manifest.RegistryValues).Count -ne 0 -or
+        @($manifest.Users).Count -ne 0 -or @($manifest.Profiles).Count -ne 0) {
+      throw 'empty ownership receipt is invalid'
+    }
+    $manifestValidated = $true
+    exit 0
   }
 
   $script:authorizedApplication = Join-Path $env:ProgramFiles 'ProPR Desktop\propr-desktop.exe'
@@ -439,7 +595,83 @@ try {
       }
     }
   }
-  if ($allowProvisionalProductOwnership) {
+  foreach ($record in @($manifest.RegistryValues)) {
+    $recordKeys = @($record.PSObject.Properties | ForEach-Object { $_.Name })
+    $expectedRecordKeys = @(
+      'Kind','Path','Name','Owned','Provisional','BaselineKeyExisted',
+      'BaselineValueExisted','BaselineValueKind','BaselineValueData','KeyCreatedByRun'
+    )
+    if ($recordKeys.Count -ne $expectedRecordKeys.Count -or
+        @($expectedRecordKeys | Where-Object { $recordKeys -cnotcontains $_ }).Count -ne 0 -or
+        $record.Owned -isnot [bool] -or $record.Provisional -isnot [bool] -or
+        $record.BaselineKeyExisted -isnot [bool] -or
+        $record.BaselineValueExisted -isnot [bool] -or
+        $record.KeyCreatedByRun -isnot [bool] -or
+        [string]$record.Kind -cne 'HKCU_INSTALLED' -or
+        ![string]::Equals(
+          [string]$record.Path,
+          'Registry::HKEY_CURRENT_USER\Software\ProPR\Desktop',
+          [StringComparison]::OrdinalIgnoreCase
+        ) -or [string]$record.Name -cne 'installed' -or
+        ([bool]$record.KeyCreatedByRun -and [bool]$record.BaselineKeyExisted)) {
+      throw 'registry value manifest scope is invalid'
+    }
+    if ([bool]$record.BaselineValueExisted) {
+      if (![bool]$record.BaselineKeyExisted -or
+          [string]$record.BaselineValueKind -notin @(
+            'DWord','QWord','String','ExpandString','MultiString','Binary','None'
+          ) -or [string]$record.BaselineValueData -notmatch '^[A-Za-z0-9+/]*={0,2}$') {
+        throw 'registry value baseline is invalid'
+      }
+      try {
+        $baselineBytes = [Convert]::FromBase64String([string]$record.BaselineValueData)
+        if (([string]$record.BaselineValueKind -ceq 'DWord' -and
+              $baselineBytes.Length -ne 4) -or
+            ([string]$record.BaselineValueKind -ceq 'QWord' -and
+              $baselineBytes.Length -ne 8)) {
+          throw 'invalid baseline width'
+        }
+        if ([string]$record.BaselineValueKind -in @('String','ExpandString')) {
+          [void]([Text.UTF8Encoding]::new($false, $true).GetString($baselineBytes))
+        } elseif ([string]$record.BaselineValueKind -ceq 'MultiString') {
+          $multiStringJson = [Text.UTF8Encoding]::new($false, $true).GetString($baselineBytes)
+          $multiStringValue = ConvertFrom-Json -InputObject $multiStringJson `
+            -NoEnumerate -ErrorAction Stop
+          if ($multiStringValue -isnot [array] -or
+              @($multiStringValue | Where-Object { $_ -isnot [string] }).Count -ne 0) {
+            throw 'invalid multi-string baseline'
+          }
+        }
+      } catch {
+        throw 'registry value baseline is invalid'
+      }
+    } elseif ($null -ne $record.BaselineValueKind -or
+        $null -ne $record.BaselineValueData) {
+      throw 'registry value empty baseline is invalid'
+    }
+  }
+  if (@($manifest.RegistryValues).Count -gt 1 -or
+      (!$manifest.Fixture -and $manifest.InstallAttempted -and
+        @($manifest.RegistryValues).Count -ne 1) -or
+      ($manifest.Fixture -and @($manifest.RegistryValues).Count -ne 0)) {
+    throw 'registry value manifest cardinality is invalid'
+  }
+  $manifestValidated = $true
+  $skipMsiUninstall = $false
+  foreach ($record in @($manifest.RegistryValues)) {
+    if (!$record.Owned) { continue }
+    $current = Get-RegistryValueSnapshot ([string]$record.Path) ([string]$record.Name)
+    $matchesBaseline = [bool]$record.BaselineValueExisted -and $current.Exists -and
+      $current.Kind -ceq [string]$record.BaselineValueKind -and
+      $current.Data -ceq [string]$record.BaselineValueData
+    if ($matchesBaseline) {
+      $skipMsiUninstall = $true
+    } elseif ($current.Exists -and
+        !(Test-MsiInstalledValue ([string]$record.Path) ([string]$record.Name))) {
+      $cleanupFailed = $true
+    }
+  }
+  if ($allowProvisionalProductOwnership -and !$skipMsiUninstall -and !$cleanupFailed) {
     $msiExitCode = 1618
     for ($attempt = 0; $attempt -lt 12 -and $msiExitCode -eq 1618; $attempt += 1) {
       if ($attempt -ne 0) { Start-Sleep -Seconds 2 }
@@ -462,6 +694,9 @@ try {
   foreach ($record in @($manifest.RegistryKeys)) {
     try { Remove-OwnedRegistryKey $record $allowProvisionalProductOwnership } catch { $cleanupFailed = $true }
   }
+  foreach ($record in @($manifest.RegistryValues)) {
+    try { Restore-OwnedRegistryValue $record } catch { $cleanupFailed = $true }
+  }
   foreach ($record in @($manifest.Profiles)) {
     try { Remove-ExplicitOwnedProfile $record } catch { $cleanupFailed = $true }
   }
@@ -479,9 +714,13 @@ try {
       $cleanupFailed = $true
     }
   }
+  if (!$cleanupFailed) { Write-EmptyOwnershipReceipt $manifestPath $manifest }
 } catch {
   $cleanupFailed = $true
 }
 
-if ($cleanupFailed) { exit 1 }
+if ($cleanupFailed) {
+  if ($manifestValidated) { exit 21 }
+  exit 20
+}
 exit 0

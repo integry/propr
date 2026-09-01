@@ -12,6 +12,8 @@ $cleanupProcess = $null
 $cleanupJob = $null
 $cleanupReadyEvent = $null
 $fixedResult = 'FAILED'
+$fixedStatus = 'CONTROLLER_FAILURE'
+$fixedExitCode = 125
 $validatedManifestPath = $null
 
 Add-Type -TypeDefinition @'
@@ -111,6 +113,9 @@ public sealed class ProPRWorkflowCleanupJob : IDisposable
 
 function Write-FixedResult([ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result) {
   Write-Host "PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:$Result"
+  Write-Host (
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:{0}:EXIT_CODE:{1}' -f `
+      $script:fixedStatus, $script:fixedExitCode)
   [Console]::Out.Flush()
 }
 
@@ -145,6 +150,8 @@ try {
   $startInfo.FileName = $hostPath
   $startInfo.UseShellExecute = $false
   $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
   foreach ($argument in @(
     '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $cleanupWorkerPath,
     '-OwnershipManifest', $manifestPath,
@@ -162,6 +169,10 @@ try {
   $cleanupProcess = [Diagnostics.Process]::new()
   $cleanupProcess.StartInfo = $startInfo
   if (!$cleanupProcess.Start()) { throw 'workflow cleanup did not start' }
+  $cleanupProcess.add_OutputDataReceived({})
+  $cleanupProcess.add_ErrorDataReceived({})
+  $cleanupProcess.BeginOutputReadLine()
+  $cleanupProcess.BeginErrorReadLine()
   try {
     $cleanupJob.AddProcess($cleanupProcess.Handle)
     [void]$cleanupReadyEvent.Set()
@@ -173,11 +184,23 @@ try {
     try { $cleanupJob.Terminate(125) } catch {}
     try { [void]$cleanupProcess.WaitForExit($TerminationTimeoutMilliseconds) } catch {}
     $fixedResult = 'TIMED_OUT'
+    $fixedStatus = 'TIMEOUT'
+    $fixedExitCode = 124
   } elseif ($cleanupProcess.ExitCode -eq 0) {
     $fixedResult = 'COMPLETE'
+    $fixedStatus = 'EMPTY_OR_CLEANED'
+    $fixedExitCode = 0
+  } elseif ($cleanupProcess.ExitCode -eq 20) {
+    $fixedStatus = 'MANIFEST_VALIDATION_FAILURE'
+    $fixedExitCode = 20
+  } elseif ($cleanupProcess.ExitCode -eq 21) {
+    $fixedStatus = 'OWNED_RESOURCE_CLEANUP_FAILURE'
+    $fixedExitCode = 21
   }
 } catch {
   $fixedResult = 'FAILED'
+  $fixedStatus = 'CONTROLLER_FAILURE'
+  $fixedExitCode = 125
 } finally {
   Write-FixedResult $fixedResult
   if ($null -ne $cleanupJob) { $cleanupJob.Dispose() }
@@ -190,5 +213,4 @@ try {
   }
 }
 
-if ($fixedResult -ne 'COMPLETE') { exit 1 }
-exit 0
+exit $fixedExitCode

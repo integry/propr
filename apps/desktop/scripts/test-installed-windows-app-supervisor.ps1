@@ -191,10 +191,27 @@ function Invoke-WorkflowCleanupController(
   try {
     if (!$process.Start()) { throw 'workflow cleanup fixture did not start' }
     Assert-True ($process.WaitForExit(40000)) 'workflow cleanup fixture exceeded its bound'
+    $output = $process.StandardOutput.ReadToEnd()
+    $errorOutput = $process.StandardError.ReadToEnd()
+    Assert-True ($output.Length -le 512) 'workflow cleanup fixture output exceeded its fixed bound'
+    Assert-True ($errorOutput.Length -eq 0) `
+      'workflow cleanup fixture emitted non-fixed error output'
+    $outputLines = @($output -split '\r?\n' | Where-Object { $_ })
+    Assert-True ($outputLines.Count -eq 2) `
+      'workflow cleanup fixture did not emit exactly two fixed result lines'
+    Assert-True ($outputLines[0] -match
+      '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:(COMPLETE|FAILED|TIMED_OUT)$') `
+      'workflow cleanup fixture emitted an invalid fixed result'
+    $resultName = $Matches[1]
+    Assert-True ($outputLines[1] -match
+      '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):EXIT_CODE:([0-9]+)$') `
+      'workflow cleanup fixture emitted an invalid fixed status'
     return [PSCustomObject]@{
       ExitCode = $process.ExitCode
-      Output = $process.StandardOutput.ReadToEnd()
-      Error = $process.StandardError.ReadToEnd()
+      Result = $resultName
+      ControllerStatus = $Matches[1]
+      ReportedExitCode = [int]$Matches[2]
+      Output = $output
     }
   } finally {
     if (!$process.HasExited) { try { $process.Kill($true) } catch {} }
@@ -628,7 +645,10 @@ function Test-PreExistingCleanupOwnership {
         'killed supervisor did not preserve the durable ownership manifest'
       $workflowCleanup = Invoke-WorkflowCleanupController `
         $workflowManifest $workflowRunId $workflowStateDirectory
-      Assert-True ($workflowCleanup.ExitCode -eq 0) 'workflow cleanup controller failed'
+      Assert-True ($workflowCleanup.ExitCode -eq 0 -and
+          $workflowCleanup.ReportedExitCode -eq 0 -and
+          $workflowCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
+        'workflow cleanup controller did not report fixed cleanup success'
       Assert-Contains $workflowCleanup.Output `
         'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:COMPLETE' `
         'workflow cleanup controller did not emit fixed completion evidence'
@@ -640,6 +660,49 @@ function Test-PreExistingCleanupOwnership {
       $workflowSupervisor.Dispose()
     }
 
+    $normalStateDirectory = New-StateDirectory 'workflow-normal-already-cleaned'
+    $normalRunId = [Guid]::NewGuid().ToString('N')
+    $normalManifest = Join-Path ([IO.Path]::GetTempPath()) `
+      "propr-installed-app-ownership-$normalRunId.json"
+    $normalSupervisor = [Diagnostics.Process]::new()
+    $normalSupervisor.StartInfo = New-SupervisorStartInfo `
+      'OWNED_RESOURCES_NORMAL_SUCCESS' $normalStateDirectory '' $false `
+      $normalManifest $normalRunId
+    try {
+      if (!$normalSupervisor.Start()) { throw 'normal workflow supervisor fixture did not start' }
+      $normalOwned = Read-FixtureResourceState $normalStateDirectory
+      Assert-True ($normalSupervisor.WaitForExit(40000)) `
+        'normal workflow supervisor fixture exceeded its bound'
+      Assert-True ($normalSupervisor.ExitCode -eq 0) `
+        'normal workflow supervisor fixture did not complete successfully'
+      Assert-OwnedResourcesGone $normalOwned
+      Assert-True (Test-Path -LiteralPath $normalManifest -PathType Leaf) `
+        'normal supervisor did not preserve its empty ownership receipt'
+      $normalReceipt = Get-Content -LiteralPath $normalManifest -Raw -Encoding UTF8 |
+        ConvertFrom-Json -ErrorAction Stop
+      Assert-True ($normalReceipt.SchemaVersion -eq 2 -and
+          $normalReceipt.ManifestType -ceq 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -and
+          $normalReceipt.State -ceq 'EMPTY' -and
+          @($normalReceipt.Directories).Count -eq 0 -and
+          @($normalReceipt.Files).Count -eq 0 -and
+          @($normalReceipt.RegistryKeys).Count -eq 0 -and
+          @($normalReceipt.RegistryValues).Count -eq 0 -and
+          @($normalReceipt.Users).Count -eq 0 -and
+          @($normalReceipt.Profiles).Count -eq 0) `
+        'normal supervisor did not produce a typed authenticated empty-state receipt'
+      $normalCleanup = Invoke-WorkflowCleanupController `
+        $normalManifest $normalRunId $normalStateDirectory
+      Assert-True ($normalCleanup.ExitCode -eq 0 -and
+          $normalCleanup.ReportedExitCode -eq 0 -and
+          $normalCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
+        'always cleanup did not accept the normal already-cleaned receipt'
+      Assert-True (!(Test-Path -LiteralPath $normalManifest)) `
+        'always cleanup did not consume the normal empty-state receipt'
+    } finally {
+      if (!$normalSupervisor.HasExited) { try { $normalSupervisor.Kill($true) } catch {} }
+      $normalSupervisor.Dispose()
+    }
+
     foreach ($manifestCase in @('MISSING','MALFORMED','STALE')) {
       $badRunId = [Guid]::NewGuid().ToString('N')
       $badManifest = Join-Path ([IO.Path]::GetTempPath()) `
@@ -649,13 +712,15 @@ function Test-PreExistingCleanupOwnership {
       } elseif ($manifestCase -eq 'STALE') {
         $createdTicks = [DateTime]::UtcNow.AddHours(-4).Ticks
         $staleManifest = [ordered]@{
-          SchemaVersion = 1; RunId = $badRunId
+          SchemaVersion = 2
+          ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'; State = 'ACTIVE'
+          RunId = $badRunId
           CreatedUtcTicks = $createdTicks
           ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
           InstallerPath = $dummyInstaller; Fixture = $true
           FixtureRoot = $workflowStateDirectory; BaselineClean = $false
           InstallAttempted = $false; Directories = @(); Files = @()
-          RegistryKeys = @(); Users = @(); Profiles = @()
+          RegistryKeys = @(); RegistryValues = @(); Users = @(); Profiles = @()
         }
         [IO.File]::WriteAllText(
           $badManifest,
@@ -667,6 +732,10 @@ function Test-PreExistingCleanupOwnership {
         $badManifest $badRunId $workflowStateDirectory
       Assert-True ($failedCleanup.ExitCode -ne 0) `
         "$manifestCase workflow manifest did not fail closed"
+      Assert-True ($failedCleanup.ExitCode -eq 20 -and
+          $failedCleanup.ReportedExitCode -eq 20 -and
+          $failedCleanup.ControllerStatus -ceq 'MANIFEST_VALIDATION_FAILURE') `
+        "$manifestCase workflow manifest did not report fixed validation status"
       Assert-Contains $failedCleanup.Output `
         'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED' `
         "$manifestCase workflow manifest did not emit fixed failure evidence"
@@ -773,12 +842,21 @@ function Test-PreExistingAppPathsAuthority {
       "propr-installed-app-ownership-$mismatchRunId.json"
     $createdTicks = [DateTime]::UtcNow.Ticks
     $mismatchState = [ordered]@{
-      SchemaVersion = 1; RunId = $mismatchRunId
+      SchemaVersion = 2
+      ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'; State = 'ACTIVE'
+      RunId = $mismatchRunId
       CreatedUtcTicks = $createdTicks
       ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
       InstallerPath = $dummyInstaller; Fixture = $false; FixtureRoot = $null
       BaselineClean = $true; InstallAttempted = $true
       Directories = @(); Files = @(); Users = @(); Profiles = @()
+      RegistryValues = @([ordered]@{
+        Kind = 'HKCU_INSTALLED'
+        Path = 'Registry::HKEY_CURRENT_USER\Software\ProPR\Desktop'
+        Name = 'installed'; Owned = $false; Provisional = $false
+        BaselineKeyExisted = $false; BaselineValueExisted = $false
+        BaselineValueKind = $null; BaselineValueData = $null; KeyCreatedByRun = $false
+      })
       RegistryKeys = @(
         [ordered]@{
           Kind = 'PROTOCOL'; Path = $protocol; Owned = $true; Token = $null
@@ -799,6 +877,10 @@ function Test-PreExistingAppPathsAuthority {
       $mismatchManifest $mismatchRunId ''
     Assert-True ($mismatchCleanup.ExitCode -ne 0) `
       'mismatched App Paths ownership identity did not fail closed'
+    Assert-True ($mismatchCleanup.ExitCode -eq 20 -and
+        $mismatchCleanup.ReportedExitCode -eq 20 -and
+        $mismatchCleanup.ControllerStatus -ceq 'MANIFEST_VALIDATION_FAILURE') `
+      'mismatched App Paths ownership did not report fixed validation status'
     Assert-Contains $mismatchCleanup.Output `
       'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED' `
       'mismatched App Paths ownership did not emit fixed failure evidence'
@@ -824,6 +906,128 @@ function Test-PreExistingAppPathsAuthority {
   [Console]::Out.Flush()
 }
 
+function Test-HkcuInstalledValueOwnership {
+  $desktopKey = 'Registry::HKEY_CURRENT_USER\Software\ProPR\Desktop'
+  $installedName = 'installed'
+  $sentinelInstalled = 'pre-existing-installed'
+  $sentinelUnrelated = 'preserve-unrelated'
+  Assert-True (!(Test-Path -LiteralPath $desktopKey)) `
+    'HKCU installed-value fixture baseline was not clean'
+
+  function New-HkcuManifest(
+    [bool]$BaselineKeyExisted,
+    [bool]$BaselineValueExisted,
+    [AllowNull()][string]$BaselineKind,
+    [AllowNull()][string]$BaselineData,
+    [bool]$KeyCreatedByRun
+  ) {
+    $runId = [Guid]::NewGuid().ToString('N')
+    $path = Join-Path ([IO.Path]::GetTempPath()) `
+      "propr-installed-app-ownership-$runId.json"
+    $createdTicks = [DateTime]::UtcNow.Ticks
+    $manifest = [ordered]@{
+      SchemaVersion = 2
+      ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
+      State = 'ACTIVE'
+      RunId = $runId
+      CreatedUtcTicks = $createdTicks
+      ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
+      InstallerPath = $dummyInstaller
+      Fixture = $false
+      FixtureRoot = $null
+      BaselineClean = $false
+      InstallAttempted = $false
+      Directories = @()
+      Files = @()
+      RegistryKeys = @()
+      RegistryValues = @([ordered]@{
+        Kind = 'HKCU_INSTALLED'; Path = $desktopKey; Name = $installedName
+        Owned = $true; Provisional = $false
+        BaselineKeyExisted = $BaselineKeyExisted
+        BaselineValueExisted = $BaselineValueExisted
+        BaselineValueKind = $BaselineKind
+        BaselineValueData = $BaselineData
+        KeyCreatedByRun = $KeyCreatedByRun
+      })
+      Users = @()
+      Profiles = @()
+    }
+    [IO.File]::WriteAllText(
+      $path,
+      ($manifest | ConvertTo-Json -Depth 6 -Compress),
+      [Text.Encoding]::UTF8
+    )
+    return [PSCustomObject]@{ RunId = $runId; Path = $path }
+  }
+
+  try {
+    [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
+    (Get-Item -LiteralPath $desktopKey).SetValue(
+      $installedName, $sentinelInstalled, [Microsoft.Win32.RegistryValueKind]::String)
+    (Get-Item -LiteralPath $desktopKey).SetValue(
+      'Unrelated', $sentinelUnrelated, [Microsoft.Win32.RegistryValueKind]::String)
+    $baselineData = [Convert]::ToBase64String(
+      [Text.Encoding]::UTF8.GetBytes($sentinelInstalled))
+    (Get-Item -LiteralPath $desktopKey).SetValue(
+      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $restoreManifest = New-HkcuManifest $true $true 'String' $baselineData $false
+    $restore = Invoke-WorkflowCleanupController $restoreManifest.Path $restoreManifest.RunId ''
+    Assert-True ($restore.ExitCode -eq 0 -and
+        $restore.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
+      'pre-existing HKCU installed value restoration did not complete'
+    $restoredKey = Get-Item -LiteralPath $desktopKey -ErrorAction Stop
+    Assert-True ($restoredKey.GetValueKind($installedName).ToString() -ceq 'String' -and
+        [string]$restoredKey.GetValue($installedName) -ceq $sentinelInstalled) `
+      'pre-existing HKCU installed value was not restored exactly'
+    Assert-True ([string]$restoredKey.GetValue('Unrelated') -ceq $sentinelUnrelated) `
+      'unrelated HKCU value was changed during baseline restoration'
+
+    Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
+    [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
+    (Get-Item -LiteralPath $desktopKey).SetValue(
+      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    (Get-Item -LiteralPath $desktopKey).SetValue(
+      'Unrelated', $sentinelUnrelated, [Microsoft.Win32.RegistryValueKind]::String)
+    $nonemptyManifest = New-HkcuManifest $false $false $null $null $true
+    $nonempty = Invoke-WorkflowCleanupController $nonemptyManifest.Path $nonemptyManifest.RunId ''
+    Assert-True ($nonempty.ExitCode -eq 0) `
+      'run-owned HKCU value cleanup with unrelated values failed'
+    $nonemptyKey = Get-Item -LiteralPath $desktopKey -ErrorAction Stop
+    Assert-True (@($nonemptyKey.GetValueNames()) -cnotcontains $installedName -and
+        [string]$nonemptyKey.GetValue('Unrelated') -ceq $sentinelUnrelated) `
+      'run-owned HKCU cleanup removed its nonempty key or unrelated value'
+
+    Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
+    [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
+    (Get-Item -LiteralPath $desktopKey).SetValue(
+      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $emptyManifest = New-HkcuManifest $false $false $null $null $true
+    $empty = Invoke-WorkflowCleanupController $emptyManifest.Path $emptyManifest.RunId ''
+    Assert-True ($empty.ExitCode -eq 0 -and !(Test-Path -LiteralPath $desktopKey)) `
+      'run-created empty HKCU key was not removed'
+
+    [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
+    (Get-Item -LiteralPath $desktopKey).SetValue(
+      $installedName, 'foreign-conflict', [Microsoft.Win32.RegistryValueKind]::String)
+    $conflictManifest = New-HkcuManifest $false $false $null $null $true
+    $conflict = Invoke-WorkflowCleanupController `
+      $conflictManifest.Path $conflictManifest.RunId ''
+    Assert-True ($conflict.ExitCode -eq 21 -and
+        $conflict.ReportedExitCode -eq 21 -and
+        $conflict.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
+      'conflicting HKCU installed value did not fail with fixed resource-cleanup status'
+    $conflictingKey = Get-Item -LiteralPath $desktopKey -ErrorAction Stop
+    Assert-True ([string]$conflictingKey.GetValue($installedName) -ceq 'foreign-conflict') `
+      'conflicting HKCU installed value was removed or changed'
+  } finally {
+    if (Test-Path -LiteralPath $desktopKey) {
+      Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+  Write-Host 'PROPR_WINDOWS_SUPERVISOR_OWNERSHIP:HKCU_INSTALLED_VALUE:PRESERVED'
+  [Console]::Out.Flush()
+}
+
 if (![OperatingSystem]::IsWindows()) { throw 'supervisor behavior tests require Windows' }
 $actualArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
 Assert-True ($actualArchitecture -ceq $Architecture) `
@@ -838,6 +1042,7 @@ try {
   Test-LiveCancellationAndRedaction
   Test-PreExistingCleanupOwnership
   Test-PreExistingAppPathsAuthority
+  Test-HkcuInstalledValueOwnership
   Write-Host "PROPR_WINDOWS_SUPERVISOR_TESTS:${Architecture}:PASSED"
   [Console]::Out.Flush()
 } finally {

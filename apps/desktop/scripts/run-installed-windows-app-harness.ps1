@@ -27,6 +27,7 @@ $watchdogSubstages = @(
   'APPLICATION_IMAGE',
   'PROTOCOL_ASSERTION',
   'APP_PATH_ASSERTION',
+  'HKCU_INSTALLED_ASSERTION',
   'SHORTCUT_ASSERTION',
   'USER_CREATE',
   'USER_SID',
@@ -40,6 +41,7 @@ $watchdogSubstages = @(
   'INSTALL_TREE_ASSERTION',
   'PROTOCOL_ABSENCE_ASSERTION',
   'APP_PATH_ABSENCE_ASSERTION',
+  'HKCU_INSTALLED_ABSENCE_ASSERTION',
   'SHORTCUT_FILE_ASSERTION',
   'SHORTCUT_FOLDER_ASSERTION',
   'SHORTCUT_ABSENCE_PROBE',
@@ -51,6 +53,7 @@ $watchdogSubstages = @(
   'INSTALL_ROOT_FALLBACK',
   'PROTOCOL_FALLBACK',
   'APP_PATH_FALLBACK',
+  'HKCU_INSTALLED_FALLBACK',
   'SHORTCUT_FALLBACK'
 )
 $markerName = "propr-installed-app-watchdog-$([Guid]::NewGuid().ToString('N')).marker"
@@ -337,7 +340,9 @@ function Write-InitialOwnershipManifest(
     'propr-installed-app-ownership-'.Length)
   $createdUtcTicks = [DateTime]::UtcNow.Ticks
   $manifest = [ordered]@{
-    SchemaVersion = 1
+    SchemaVersion = 2
+    ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
+    State = 'ACTIVE'
     RunId = $runId
     CreatedUtcTicks = $createdUtcTicks
     ExpiresUtcTicks = $createdUtcTicks + ([TimeSpan]::TicksPerHour * 3)
@@ -349,6 +354,7 @@ function Write-InitialOwnershipManifest(
     Directories = @()
     Files = @()
     RegistryKeys = @()
+    RegistryValues = @()
     Users = @()
     Profiles = @()
   }
