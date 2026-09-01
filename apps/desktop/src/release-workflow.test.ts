@@ -232,6 +232,20 @@ describe('desktop trusted release workflow', () => {
     assert.equal(normalizedFixture, workflow);
   });
 
+  test('gives only the required renderer predecessor the real Chromium opt-in', () => {
+    const predecessor = job('renderer-axe-boundary', 'package');
+    const packages = job('package', 'finalize');
+    assert.match(
+      predecessor,
+      /- name: Run focused renderer metric and existing-target axe regressions\n\s+# This required predecessor step exclusively owns the real-browser opt-in\.\n\s+env:\n\s+PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY: '1'\n\s+run: node --test --test-name-pattern='packaged acceptance renderer variants'/,
+    );
+    assert.equal(workflow.match(/^\s+PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY:/gm)?.length, 1);
+    assert.match(packages, /needs: \[validation-version, renderer-axe-boundary\]/);
+    assert.equal(packages.match(platformArchitecturePattern)?.length, 6);
+    assert.match(packages, /npm run desktop:test/);
+    assert.ok(!packages.includes('PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY'));
+  });
+
   test('runs and uploads fail-closed visual acceptance only from Linux x64 packages', () => {
     for (const section of [job('package', 'finalize'), job('release-package', 'release-finalize')]) {
       assert.match(section, /if: matrix\.platform == 'linux' && matrix\.arch == 'x64'[\s\S]*npm run desktop:acceptance/);

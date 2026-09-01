@@ -63,6 +63,9 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Run focused renderer metric and existing-target axe regressions
+        # This required predecessor step exclusively owns the real-browser opt-in.
+        env:
+          PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY: '1'
         run: node --test --test-name-pattern='packaged acceptance renderer variants' apps/desktop/scripts/packaged-acceptance-renderer.test.mjs
 
   package:

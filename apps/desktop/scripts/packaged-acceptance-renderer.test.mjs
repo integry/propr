@@ -17,6 +17,18 @@ const browserFixture = context => Object.assign(new EventEmitter(), {
   contexts: () => [context],
   isConnected: () => true,
 });
+const REAL_CHROMIUM_BOUNDARY_ENVIRONMENT = 'PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY';
+const REAL_CHROMIUM_BOUNDARY_OPT_IN = '1';
+const realChromiumBoundaryEnabled = value => {
+  if (value === undefined) return false;
+  if (value !== REAL_CHROMIUM_BOUNDARY_OPT_IN) {
+    throw new Error(`${REAL_CHROMIUM_BOUNDARY_ENVIRONMENT} must be unset or exactly "${REAL_CHROMIUM_BOUNDARY_OPT_IN}"`);
+  }
+  return true;
+};
+const runRealChromiumBoundary = realChromiumBoundaryEnabled(
+  process.env[REAL_CHROMIUM_BOUNDARY_ENVIRONMENT],
+);
 const installedChromium = () => [
   chromium.executablePath(),
   '/usr/bin/chromium',
@@ -138,6 +150,17 @@ describe('packaged acceptance renderer discovery', () => {
 });
 
 describe('packaged acceptance renderer variants', () => {
+  it('fails closed unless the real Chromium boundary has its exact explicit opt-in', () => {
+    assert.equal(realChromiumBoundaryEnabled(undefined), false);
+    assert.equal(realChromiumBoundaryEnabled(REAL_CHROMIUM_BOUNDARY_OPT_IN), true);
+    for (const malformed of ['', '0', 'true', ' 1', '1 ']) {
+      assert.throws(
+        () => realChromiumBoundaryEnabled(malformed),
+        new RegExp(`${REAL_CHROMIUM_BOUNDARY_ENVIRONMENT} must be unset or exactly`),
+      );
+    }
+  });
+
   it('configures and captures all five variants when Browser.getWindowForTarget is unavailable', async () => {
     const { commands, cdp, page } = rendererVariantFixture();
     const captures = [];
@@ -197,7 +220,11 @@ describe('packaged acceptance renderer variants', () => {
   });
 
   describe('real Chromium existing-target axe boundary', {
-    skip: process.platform !== 'linux' || process.arch !== 'x64' ? 'Linux x64 packaged acceptance boundary' : false,
+    skip: !runRealChromiumBoundary
+      ? `Real Chromium is owned by the required predecessor (${REAL_CHROMIUM_BOUNDARY_ENVIRONMENT}=1)`
+      : process.platform !== 'linux' || process.arch !== 'x64'
+        ? 'Linux x64 packaged acceptance boundary'
+        : false,
   }, () => {
     let browser;
     let cdp;
