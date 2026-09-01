@@ -25,9 +25,14 @@ const manifestPath = fileURLToPath(new URL('../docker/launcher/manifest.json', i
 function vapidKeyPair() {
   const ecdh = createECDH('prime256v1');
   ecdh.generateKeys();
+  const privateKey = ecdh.getPrivateKey();
+  const canonicalPrivateKey = Buffer.alloc(32);
+  // OpenSSL may omit leading zero bytes from the generated P-256 scalar.
+  // VAPID encodes that scalar at its fixed 32-byte width.
+  privateKey.copy(canonicalPrivateKey, canonicalPrivateKey.length - privateKey.length);
   return {
     publicKey: ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url'),
-    privateKey: ecdh.getPrivateKey().toString('base64url'),
+    privateKey: canonicalPrivateKey.toString('base64url'),
   };
 }
 
@@ -101,6 +106,30 @@ test('resolveHostConfig honors stack .env values for ports and docs', () => {
     cfg.managedCredentialsDir,
     join(homedir(), '.propr', 'agent-credentials'),
   );
+});
+
+test('anchored config reads keep every Docker path on the stable runtime root', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'propr-orch-fixed-root-'));
+  const stableRoot = join(parent, 'app-data', 'desktop', 'local-stack');
+  const readRoot = join(parent, 'descriptor-root');
+  mkdirSync(stableRoot, { recursive: true, mode: 0o700 });
+  mkdirSync(readRoot, { mode: 0o700 });
+  writeFileSync(join(stableRoot, '.env'), 'API_PORT=attacker-value\n', { mode: 0o600 });
+  writeFileSync(join(readRoot, '.env'), 'API_PORT=4401\nDOCS_ENABLED=true\n', { mode: 0o600 });
+
+  const cfg = resolveHostConfig({ rootDir: stableRoot, readRootDir: readRoot, env: {}, manifestPath });
+  assert.equal(cfg.apiPort, '4401');
+  assert.equal(cfg.docsEnabled, true);
+  assert.equal(cfg.envFileLocal, join(stableRoot, '.env'));
+  assert.equal(cfg.envFileHost, join(stableRoot, '.env'));
+  assert.equal(cfg.hostData, join(stableRoot, 'data'));
+  assert.equal(cfg.hostLogs, join(stableRoot, 'logs'));
+  assert.equal(cfg.hostRepos, join(stableRoot, 'repos'));
+  for (const service of ['daemon', 'worker', 'api']) {
+    const serialized = JSON.stringify(buildServiceSpec(cfg, service));
+    assert.doesNotMatch(serialized, new RegExp(readRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(serialized, /\/proc\/[0-9]+\/fd\/|\/dev\/fd\//);
+  }
 });
 
 test('api service receives the configured stack env file', () => {

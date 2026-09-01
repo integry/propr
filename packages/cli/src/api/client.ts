@@ -123,6 +123,7 @@ export class ApiClient {
       headers: customHeaders = {},
       params,
       timeout = this.defaultTimeout,
+      signal,
     } = options;
 
     // Build the full URL
@@ -156,19 +157,25 @@ export class ApiClient {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       // Each retry receives its own timeout window and abort signal.
       const controller = new AbortController();
-      fetchOptions.signal = controller.signal;
+      signal?.throwIfAborted();
+      fetchOptions.signal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
       try {
         const response = await fetch(url, fetchOptions);
         clearTimeout(timeoutId);
+        signal?.throwIfAborted();
 
         // Handle error responses
         if (!response.ok) {
           let errorResponse: ApiErrorResponse | undefined;
           try {
             errorResponse = await response.json() as ApiErrorResponse;
-          } catch {
+            signal?.throwIfAborted();
+          } catch (error) {
+            if (signal?.aborted) throw signal.reason;
+            if ((error as { name?: unknown; code?: unknown } | null)?.name === "AbortError"
+              || (error as { code?: unknown } | null)?.code === "ABORT_ERR") throw error;
             // Response body is not JSON or empty
           }
           throw createApiError(response.status, errorResponse);
@@ -183,6 +190,7 @@ export class ApiClient {
           // Handle non-JSON responses
           data = await response.text() as unknown as T;
         }
+        signal?.throwIfAborted();
 
         return {
           data,
@@ -197,6 +205,7 @@ export class ApiClient {
           throw error;
         }
 
+        if (signal?.aborted) throw signal.reason;
         const retryableError = error instanceof Error && error.name === "AbortError"
           ? new TimeoutError("Request timed out.", timeout)
           : error instanceof TypeError

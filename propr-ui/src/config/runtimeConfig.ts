@@ -31,6 +31,7 @@
 //     authority, even if sessionStorage was copied from an existing tab.
 
 import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl, proprInstanceProxyUrl } from '@propr/shared';
+import { normalizeApiBaseUrl } from '@propr/client';
 
 export interface ProprRuntimeConfig {
   /** Base URL for REST and Socket.IO. Empty string means same-origin. */
@@ -61,6 +62,7 @@ const WINDOW_NAME_CONTEXT_PREFIX = 'propr-hosted-flow-context:';
 const WINDOW_NAME_CONTEXT_SEPARATOR = '|';
 
 let activeHostedTunnelFlowId: string | null = null;
+let desktopApiBaseUrl: string | null = null;
 
 /**
  * Hostname of the managed hosted UI (e.g. `app.propr.dev`), derived from the
@@ -97,8 +99,7 @@ export const isHostedOAuthCompletionRoute = (
  */
 export const isValidHttpUrl = (value: string): boolean => {
   try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
+    return normalizeApiBaseUrl(value, { allowInsecureHttp: true }) !== '';
   } catch {
     return false;
   }
@@ -421,13 +422,14 @@ export const resolveApiBaseUrl = (
   const storedApiBaseUrl = readStoredHostedTunnelApiBaseUrl(hostname, flowId, storage, contextId);
   if (!queryApiBaseUrl && storedApiBaseUrl) activeHostedTunnelFlowId = flowId;
 
-  return (
+  const selectedApiBaseUrl = (
     queryApiBaseUrl ||
     storedApiBaseUrl ||
     config?.apiBaseUrl?.trim() ||
     buildTimeApiBaseUrl?.trim() ||
     ''
-  ).replace(/\/+$/, '');
+  );
+  return normalizeApiBaseUrl(selectedApiBaseUrl);
 };
 /* eslint-enable max-params */
 
@@ -501,6 +503,8 @@ export const getApiBaseUrl = (): string => {
     return '';
   }
 
+  if (desktopApiBaseUrl !== null) return desktopApiBaseUrl;
+
   return resolveApiBaseUrl(
     typeof window !== 'undefined' ? window.location.hostname : '',
     typeof window !== 'undefined' ? window.location.search : '',
@@ -508,4 +512,15 @@ export const getApiBaseUrl = (): string => {
     import.meta.env.VITE_API_BASE_URL,
     storageForWindow()
   );
+};
+
+/** Set by the desktop presentation boundary after a profile has passed its probe. */
+export const setDesktopApiBaseUrl = (value: string | null): void => {
+  if (value === null) {
+    desktopApiBaseUrl = null;
+    return;
+  }
+  const normalized = value.trim().replace(/\/+$/, '');
+  if (normalized && !isValidHttpUrl(normalized)) throw new Error('Desktop API base URL must use http(s).');
+  desktopApiBaseUrl = normalized;
 };

@@ -59,6 +59,24 @@ export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
 export { MIN_SESSION_SECRET_LENGTH, validateSessionSecret } from './sessionSecret.js';
 
 export {
+  canonicalProprHttpUrlOrigin,
+  isProprLoopbackHostname,
+  normalizeProprApiOrigin,
+  PROPR_API_ORIGIN_PARITY_CASES,
+  type NormalizeProprApiOriginOptions,
+} from './apiOrigin.js';
+
+export {
+  DESKTOP_REVOCATION_BINDING_HEADER,
+  DESKTOP_TOKEN_REVOCATION_ENDPOINT,
+  DESKTOP_TOKEN_REVOCATION_SCHEMA,
+  DESKTOP_TOKEN_REVOCATION_VERSION,
+  DESKTOP_TOKEN_TERMINAL_CODES,
+  type DesktopTokenTerminalCode,
+  type DesktopTokenTerminalRevocation,
+} from './desktopTokenRevocation.js';
+
+export {
   INSTANCE_PERMISSIONS,
   type AuthenticatedInstanceUser,
   type InstanceAuthorizationSource,
@@ -92,6 +110,9 @@ export {
   DEFAULT_PROPR_ROUTING_URL,
   DEFAULT_PROPR_GH_RELAY_URL,
   DEFAULT_PROPR_UI_ORIGIN,
+  DESKTOP_RENDERER_ORIGIN,
+  DESKTOP_TRANSPORT_SCOPE_HEADER,
+  DESKTOP_TRANSPORT_SCOPE_QUERY,
   PROPR_UI_PROXY_SUFFIX,
   PROPR_UI_PROXY_LABEL_PREFIX,
   DEFAULT_CLOUDFLARED_IMAGE,
@@ -147,6 +168,7 @@ export {
   getProprCompatibilityMetadata,
   evaluateProprApiCompatibility,
   type ProprCompatibilityMetadata,
+  type ProprDesktopAuthenticationCapabilities,
   type ProprApiCompatibilityInput,
   type ProprApiCompatibilityResult,
 } from './proprCompatibility.js';

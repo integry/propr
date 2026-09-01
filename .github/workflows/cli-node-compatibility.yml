@@ -6,6 +6,7 @@ on:
       - '.github/workflows/cli-node-compatibility.yml'
       - 'package-lock.json'
       - 'packages/cli/**'
+      - 'packages/local-setup/**'
       - 'packages/shared/**'
 
 concurrency:
@@ -37,8 +38,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build shared dependency
-        run: npm run build -w @propr/shared
+      - name: Build workspace dependencies
+        run: |
+          npm run build -w @propr/shared
+          npm run build -w @propr/local-setup
 
       - name: Run project option regressions
         run: >-

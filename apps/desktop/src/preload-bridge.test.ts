@@ -1,0 +1,204 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { createDesktopBridge, createDesktopRendererBridge, probeDesktopProfile, type PreloadIpc } from './preload-bridge';
+import { IPC_CHANNELS } from './shared/contract';
+import { PROPR_API_COMPATIBILITY } from '@propr/shared';
+
+class FakeIpc implements PreloadIpc {
+  readonly invocations: Array<{ channel: string; args: unknown[] }> = [];
+  readonly listeners = new Map<string, (event: unknown, value: any) => void>();
+
+  async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+    this.invocations.push({ channel, args });
+    return undefined;
+  }
+
+  on(channel: string, listener: (event: unknown, value: any) => void): void {
+    this.listeners.set(channel, listener);
+  }
+
+  removeListener(channel: string, listener: (event: unknown, value: any) => void): void {
+    if (this.listeners.get(channel) === listener) this.listeners.delete(channel);
+  }
+}
+
+const setupRequest = {
+  sessionId: '00000000-0000-4000-8000-000000000000', root: { mode: 'default' as const }, reinitialize: false, agents: [],
+  github: { mode: 'demo' as const }, intake: { mode: 'keep' as const }, whitelist: null, repository: null,
+};
+
+describe('desktop preload bridge', () => {
+  it('exposes only the narrow frozen namespaces', () => {
+    const bridge = createDesktopBridge(new FakeIpc(), 'linux');
+    assert.deepEqual(Object.keys(bridge).sort(), [
+      'app', 'auth', 'authentication', 'connection', 'external', 'lifecycle', 'profiles', 'storage',
+    ]);
+    assert.equal(Object.isFrozen(bridge), true);
+    assert.equal(Object.values(bridge).every(Object.isFrozen), true);
+    assert.equal('fs' in bridge, false);
+    assert.equal('exec' in bridge, false);
+  });
+
+  for (const platform of ['darwin', 'win32'] as const) {
+    it(`does not expose legacy local lifecycle authority on ${platform}`, async () => {
+      const ipc = new FakeIpc();
+      const bridge = createDesktopBridge(ipc, platform);
+      assert.equal('lifecycle' in bridge, false);
+      assert.equal('docker' in bridge, false);
+      assert.deepEqual(ipc.invocations, []);
+    });
+  }
+
+  it('maps profile operations to fixed channels without a credential namespace', async () => {
+    const ipc = new FakeIpc();
+    const bridge = createDesktopBridge(ipc, 'linux');
+    await bridge.auth.logout('http://localhost:4000');
+    await bridge.profiles.save({ label: 'Local', apiBaseUrl: 'http://localhost:4000' });
+    assert.ok(bridge.lifecycle);
+    await bridge.lifecycle.start();
+    assert.deepEqual(ipc.invocations, [
+      { channel: IPC_CHANNELS.authLogout, args: ['http://localhost:4000'] },
+      {
+        channel: IPC_CHANNELS.profilesSave,
+        args: [{ label: 'Local', apiBaseUrl: 'http://localhost:4000' }],
+      },
+      { channel: IPC_CHANNELS.lifecycleStart, args: [] },
+    ]);
+  });
+
+  it('exposes setup through fixed invocations and strips Electron events from progress', async () => {
+    const ipc = new FakeIpc();
+    const bridge = createDesktopRendererBridge(ipc, 'linux');
+    const received: unknown[] = [];
+    bridge.localSetup.onProgress(snapshot => received.push(snapshot));
+    await bridge.localSetup.start(setupRequest);
+    ipc.listeners.get(IPC_CHANNELS.setupProgress)?.(
+      { sender: 'must-not-leak' },
+      { phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: setupRequest.sessionId, logs: [] },
+    );
+
+    assert.deepEqual(ipc.invocations, [{ channel: IPC_CHANNELS.setupStart, args: [setupRequest] }]);
+    assert.deepEqual(received, [{ phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: setupRequest.sessionId, logs: [] }]);
+    assert.equal('invoke' in bridge, false);
+  });
+
+  it('does not expose Electron event objects to deep-link listeners', () => {
+    const ipc = new FakeIpc();
+    const bridge = createDesktopBridge(ipc);
+    const received: string[] = [];
+    const unsubscribe = bridge.app.onDeepLink(value => received.push(value));
+    ipc.listeners.get(IPC_CHANNELS.deepLink)?.({ sender: 'must-not-leak' }, 'propr://open?path=%2Ftasks');
+    assert.deepEqual(received, ['propr://open?path=%2Ftasks']);
+    unsubscribe();
+    assert.equal(ipc.listeners.has(IPC_CHANNELS.deepLink), true);
+  });
+
+  it('probes completed local profiles through the injectable connection boundary', async () => {
+    const profile = { id: 'local', name: 'This computer', baseUrl: 'http://127.0.0.1:4000', kind: 'local' as const };
+    const requests: string[] = [];
+    const result = await probeDesktopProfile(profile, async input => {
+      requests.push(input.toString());
+      return new Response(JSON.stringify({ apiCompatibility: PROPR_API_COMPATIBILITY, version: '0.8.15' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    assert.deepEqual(requests, ['http://127.0.0.1:4000/api/compatibility']);
+    assert.equal(result.status, 'ready');
+
+    const injected = async () => ({ status: 'ready' as const, version: 'injected' });
+    const bridge = createDesktopRendererBridge(new FakeIpc(), 'linux', injected);
+    assert.deepEqual(await bridge.connection.probe(profile), { status: 'ready', version: 'injected' });
+  });
+
+  it('keeps remote probing out of the local setup lane and bounds local failures', async () => {
+    const remoteRequests: string[] = [];
+    const remote = await probeDesktopProfile({ id: 'remote', name: 'Remote', baseUrl: 'https://example.com', kind: 'remote' }, async input => {
+      remoteRequests.push(input.toString());
+      return new Response(JSON.stringify({ apiCompatibility: PROPR_API_COMPATIBILITY, version: '0.8.15' }), { status: 200 });
+    });
+    assert.equal(remote.status, 'ready');
+    assert.deepEqual(remoteRequests, ['https://example.com/api/compatibility']);
+    const local = await probeDesktopProfile({ id: 'local', name: 'Local', baseUrl: 'http://localhost:4000', kind: 'local' }, async () => {
+      throw new Error(`/home/alice/secret ${'x'.repeat(10_000)}`);
+    });
+    assert.equal(local.status, 'offline');
+    assert.ok((local.message?.length ?? 0) < 200);
+    assert.doesNotMatch(local.message ?? '', /alice|secret|home/);
+  });
+
+  for (const platform of ['darwin', 'win32'] as const) {
+    it(`keeps ${platform} remote-only while supporting production remote activation and browser sign-in`, async () => {
+      const ipc = new FakeIpc();
+      const bridge = createDesktopRendererBridge(ipc, platform);
+      const remote = { id: 'remote-1', name: 'Team server', baseUrl: 'https://team.example.com', kind: 'remote' as const };
+
+      assert.equal((await bridge.localSetup.status()).capability.kind, 'remote-only');
+      await assert.rejects(bridge.localSetup.start(setupRequest), /Local setup is unavailable/);
+      await bridge.profiles.setActiveId(remote.id);
+      await bridge.authentication.authenticate(remote);
+      await bridge.connection.probe(remote);
+      await bridge.connection.activate('activation-ticket');
+
+      assert.deepEqual(ipc.invocations, [
+        { channel: IPC_CHANNELS.profilesSetActive, args: [remote.id] },
+        {
+          channel: IPC_CHANNELS.authenticationPair,
+          args: [{ id: remote.id, label: remote.name, apiBaseUrl: remote.baseUrl }],
+        },
+        {
+          channel: IPC_CHANNELS.connectionProbe,
+          args: [{ id: remote.id, label: remote.name, apiBaseUrl: remote.baseUrl }],
+        },
+        { channel: IPC_CHANNELS.connectionActivate, args: ['activation-ticket'] },
+      ]);
+      assert.equal(ipc.listeners.has(IPC_CHANNELS.setupProgress), false);
+      assert.equal('lifecycle' in bridge, false);
+      assert.equal('docker' in bridge, false);
+    });
+  }
+
+  it('buffers startup and second-instance deep links until the renderer subscribes', () => {
+    const ipc = new FakeIpc();
+    const bridge = createDesktopBridge(ipc);
+    const receiveDeepLink = ipc.listeners.get(IPC_CHANNELS.deepLink);
+    assert.ok(receiveDeepLink, 'preload must register its IPC listener eagerly');
+
+    receiveDeepLink({}, 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000');
+    receiveDeepLink({}, 'propr://open?path=%2Ftasks');
+
+    const received: string[] = [];
+    bridge.app.onDeepLink(value => received.push(value));
+    assert.deepEqual(received, [
+      'propr://connect?api=http%3A%2F%2Flocalhost%3A4000',
+      'propr://open?path=%2Ftasks',
+    ]);
+  });
+
+  it('routes the typed renderer bridge through the ordered host buffer across remounts', () => {
+    const ipc = new FakeIpc();
+    const host = createDesktopBridge(ipc);
+    const renderer = createDesktopRendererBridge(ipc, 'linux', undefined, host.app.onDeepLink);
+    const receiveDeepLink = ipc.listeners.get(IPC_CHANNELS.deepLink);
+    assert.ok(receiveDeepLink);
+
+    receiveDeepLink({}, 'propr://connect?api=https%3A%2F%2Ffirst.example');
+    receiveDeepLink({}, 'propr://open?path=%2Ftasks');
+    const received: string[] = [];
+    const unsubscribe = renderer.app.onDeepLink(value => received.push(value));
+    assert.deepEqual(received, [
+      'propr://connect?api=https%3A%2F%2Ffirst.example',
+      'propr://open?path=%2Ftasks',
+    ]);
+
+    unsubscribe();
+    receiveDeepLink({}, 'propr://connect?api=https%3A%2F%2Fsecond.example');
+    const unsubscribeAfterRemount = renderer.app.onDeepLink(value => received.push(value));
+    assert.deepEqual(received, [
+      'propr://connect?api=https%3A%2F%2Ffirst.example',
+      'propr://open?path=%2Ftasks',
+      'propr://connect?api=https%3A%2F%2Fsecond.example',
+    ]);
+    unsubscribeAfterRemount();
+  });
+});

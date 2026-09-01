@@ -436,12 +436,14 @@ export async function getSettings(client?: ApiClient): Promise<GetSettingsRespon
  */
 export async function updateSettings(
   settings: UpdateSettingsOptions,
-  client?: ApiClient
+  client?: ApiClient,
+  signal?: AbortSignal
 ): Promise<UpdateSettingsResponse> {
   const apiClient = client ?? (await createApiClient());
 
   const response = await apiClient.post<UpdateSettingsResponse>("/api/config/settings", {
     body: { settings },
+    signal,
   });
 
   return response.data;
@@ -467,10 +469,11 @@ export async function updateSettings(
 export async function updateSetting(
   key: SettingKey,
   value: number | string | string[] | boolean,
-  client?: ApiClient
+  client?: ApiClient,
+  signal?: AbortSignal
 ): Promise<UpdateSettingsResponse> {
   const settings: UpdateSettingsOptions = { [key]: value };
-  return updateSettings(settings, client);
+  return updateSettings(settings, client, signal);
 }
 
 export async function getConfigValue<

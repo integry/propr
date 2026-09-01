@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
+import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import cors from 'cors';
 import express from 'express';
+import { Server as SocketIOServer } from 'socket.io';
 import { corsRejectionHandler, createCorsOriginValidator } from '../corsValidation.js';
 
 // Helper that runs the validator synchronously and reports whether the origin
@@ -39,21 +42,39 @@ test('CORS allows requests with no origin', () => {
   assert.equal(isAllowed(validate, undefined), true);
 });
 
-test('CORS allows localhost for development', () => {
+test('CORS allows only the exact packaged desktop renderer custom origin', () => {
+  const validate = createCorsOriginValidator('https://app.propr.dev', undefined);
+
+  assert.equal(isAllowed(validate, DESKTOP_RENDERER_ORIGIN), true);
+  assert.equal(isAllowed(validate, `${DESKTOP_RENDERER_ORIGIN}.evil.example`), false);
+  assert.equal(isAllowed(validate, 'propr-app://other-renderer'), false);
+  assert.equal(isAllowed(validate, 'null'), false);
+});
+
+test('CORS allows HTTP(S) loopback origins for development', () => {
   const validate = createCorsOriginValidator('https://app.propr.dev', undefined);
 
   assert.equal(isAllowed(validate, 'http://localhost:5173'), true);
+  assert.equal(isAllowed(validate, 'http://api.dev.localhost:5173'), true);
   assert.equal(isAllowed(validate, 'http://127.0.0.1:5173'), true);
+  assert.equal(isAllowed(validate, 'http://127.42.7.9:5173'), true);
+  assert.equal(isAllowed(validate, 'http://[::1]:5173'), true);
   assert.equal(isAllowed(validate, 'https://localhost:5173'), true);
+  assert.equal(isAllowed(validate, 'https://[::1]:5173'), true);
 });
 
-test('CORS rejects non-http(s) localhost schemes', () => {
-  // Only http/https localhost origins are trusted; an unusual scheme that still
-  // parses with a localhost hostname must not be allowed.
+test('CORS rejects unsafe schemes and non-loopback hosts', () => {
+  // Only http/https loopback origins are trusted; an unusual scheme that still
+  // parses with a loopback hostname must not be allowed.
   const validate = createCorsOriginValidator('https://app.propr.dev', undefined);
 
   assert.equal(isAllowed(validate, 'chrome-extension://localhost'), false);
   assert.equal(isAllowed(validate, 'file://localhost'), false);
+  assert.equal(isAllowed(validate, 'file://[::1]/tmp/propr'), false);
+  assert.equal(isAllowed(validate, 'http://[2001:db8::1]:5173'), false);
+  assert.equal(isAllowed(validate, 'http://127.1:5173'), false);
+  assert.equal(isAllowed(validate, 'http://0177.0.0.1:5173'), false);
+  assert.equal(isAllowed(validate, 'http://localhost.:5173'), false);
 });
 
 test('CORS allows COOKIE_DOMAIN subdomains for preview environments', () => {
@@ -132,6 +153,7 @@ for (const runtimeMode of ['development', 'production'] as const) {
         'https://app.propr.dev',
         'https://pr-17.preview.example.com',
         'http://localhost:5173',
+        'http://[::1]:5173',
       ]) {
         const response = await fetch(`${baseUrl}/api/protected`, { headers: { Origin: origin } });
         assert.equal(response.status, 401, `expected ${origin} to reach authentication`);
@@ -142,19 +164,52 @@ for (const runtimeMode of ['development', 'production'] as const) {
       assert.equal(noOrigin.status, 401);
 
       const compatibility = await fetch(`${baseUrl}/api/compatibility`, {
-        headers: { Origin: 'https://app.propr.dev' },
+        headers: { Origin: DESKTOP_RENDERER_ORIGIN },
       });
       assert.equal(compatibility.status, 200);
+      assert.equal(compatibility.headers.get('access-control-allow-origin'), DESKTOP_RENDERER_ORIGIN);
 
       const allowedPreflight = await fetch(`${baseUrl}/api/protected`, {
         method: 'OPTIONS',
         headers: {
-          Origin: 'https://app.propr.dev',
+          Origin: DESKTOP_RENDERER_ORIGIN,
           'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'X-ProPR-Desktop-Transport-Scope, Content-Type',
         },
       });
       assert.equal(allowedPreflight.status, 204);
-      assert.equal(allowedPreflight.headers.get('access-control-allow-origin'), 'https://app.propr.dev');
+      // This is the browser's real preflight shape: the requested desktop
+      // marker is named here, but the marker value itself is not sent on OPTIONS.
+      assert.equal(allowedPreflight.headers.get('access-control-allow-origin'), DESKTOP_RENDERER_ORIGIN);
+      assert.equal(
+        allowedPreflight.headers.get('access-control-allow-headers'),
+        'X-ProPR-Desktop-Transport-Scope, Content-Type',
+      );
     });
   });
 }
+
+test('Socket.IO applies the shared CORS validator to the packaged desktop renderer', async () => {
+  const server = createServer();
+  const io = new SocketIOServer(server, {
+    cors: {
+      origin: createCorsOriginValidator('https://app.propr.dev', undefined),
+      credentials: true,
+    },
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address() as AddressInfo;
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/socket.io/?EIO=4&transport=polling`, {
+      headers: { Origin: DESKTOP_RENDERER_ORIGIN },
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('access-control-allow-origin'), DESKTOP_RENDERER_ORIGIN);
+    assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
+  } finally {
+    await new Promise<void>(resolve => io.close(() => resolve()));
+  }
+});

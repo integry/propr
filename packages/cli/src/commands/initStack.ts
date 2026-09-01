@@ -53,6 +53,14 @@ export interface DetectedCred {
   path: string;
 }
 
+let configuredStackTemplatePath: string | undefined;
+
+/** Configure an application-packaged stack template before scaffolding. */
+export function configureStackTemplatePath(path: string): void {
+  if (!isAbsolute(path) || !existsSync(path)) throw new Error("The configured stack template path is invalid");
+  configuredStackTemplatePath = path;
+}
+
 // Mirrors the launcher's HOST_VIBE_PROMPT_CACHE_DIR default in
 // docker/launcher/orchestrator.mjs. Keep it per-user and private because prompt
 // files can contain task/repository context.
@@ -84,6 +92,7 @@ export function ensureVibePromptCacheDir(cacheDir: string | undefined): string |
 
 /** Resolve the bundled .env.example, falling back to a repo checkout. */
 function resolveEnvExample(): string | undefined {
+  if (configuredStackTemplatePath) return configuredStackTemplatePath;
   const here = dirname(fileURLToPath(import.meta.url));
   // Bundled copy is renamed to avoid npm's .env* exclusion from tarballs.
   const bundled = join(here, "..", "assets", "env.example.txt");
@@ -120,6 +129,7 @@ function detectCredentials(): DetectedCred[] {
 export interface InitStackOptions {
   root?: string;
   force?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface InitStackResult {
@@ -165,10 +175,12 @@ export async function scaffoldStack(
     pendingCredentials: [],
   };
 
-  mkdirSync(rootDir, { recursive: true });
+  options.signal?.throwIfAborted();
+  mkdirSync(rootDir, { recursive: true, mode: 0o700 });
 
   // 1. data/logs/repos directories
   for (const sub of ["data", "logs", "repos"]) {
+    options.signal?.throwIfAborted();
     const dir = join(rootDir, sub);
     const created = !existsSync(dir);
     ensurePrivateDirectory(dir);
@@ -204,7 +216,7 @@ export async function scaffoldStack(
     if (options.force && envExists) {
       secureExistingPrivateFile(envPath);
       const bakPath = `${envPath}.bak`;
-      writePrivateFileAtomic(bakPath, readFileSync(envPath), { secureParent: false });
+      writePrivateFileAtomic(bakPath, readFileSync(envPath), { secureParent: false, signal: options.signal });
       result.envBackedUp = true;
     }
     shouldWriteEnv = true;
@@ -234,7 +246,7 @@ export async function scaffoldStack(
   result.pendingCredentials = toAppend;
 
   if (shouldWriteEnv) {
-    writePrivateFileAtomic(envPath, envContent, { secureParent: false });
+    writePrivateFileAtomic(envPath, envContent, { secureParent: false, signal: options.signal });
     result.envCreated = true;
   }
 
@@ -256,6 +268,7 @@ export async function scaffoldStack(
   }
 
   // 4. Persist the stack root so other commands can find it.
+  options.signal?.throwIfAborted();
   await dependencies.persistStackRoot(rootDir);
 
   return result;
