@@ -228,7 +228,7 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
           return json({
             pairingId: `dpr_${'A'.repeat(22)}`,
             deviceSecret: 'B'.repeat(43),
-            approvalUrl: `${origin}/approve`,
+            approvalUrl: `${origin}/api/desktop/pairings/dpr_${'A'.repeat(22)}/browser`,
             expiresAt,
             interval: 1,
           }, 201);
