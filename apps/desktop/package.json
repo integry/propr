@@ -42,7 +42,6 @@
     "@propr/shared": "*"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.10.2",
     "@electron-forge/cli": "8.0.0-alpha.10",
     "@electron-forge/maker-deb": "8.0.0-alpha.10",
     "@electron-forge/maker-rpm": "8.0.0-alpha.10",
@@ -53,6 +52,7 @@
     "@electron/windows-sign": "2.0.6",
     "@types/node": "^22.10.0",
     "@vitejs/plugin-react": "^4.6.0",
+    "axe-core": "4.10.3",
     "electron": "^44.0.0",
     "playwright": "^1.62.1",
     "tsx": "^4.21.0",

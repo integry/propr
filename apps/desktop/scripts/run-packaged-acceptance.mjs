@@ -7,7 +7,6 @@ import { access, lstat, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
-import AxeBuilder from '@axe-core/playwright';
 import { Server as SocketIOServer } from 'socket.io';
 import { DESKTOP_RENDERER_ORIGIN, PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY } from '@propr/shared';
 import {
@@ -27,6 +26,7 @@ import {
   verifyAcceptanceArtifacts,
   writeAcceptanceManifest,
 } from './acceptance-artifacts.mjs';
+import { analyzeExistingElectronRenderer } from './packaged-acceptance-axe.mjs';
 import {
   captureElectronRendererScreenshot,
   forEachElectronRendererVariant,
@@ -424,10 +424,9 @@ const collectRendererSurface = async (page, journey, name) => {
 };
 
 const inspectAccessibility = async (page, journey, variant, config, metrics, name) => {
-  const result = await new AxeBuilder({ page }).analyze();
-  const seriousFindings = result.violations.filter(violation => violation.impact === 'serious' || violation.impact === 'critical');
+  const seriousFindings = await analyzeExistingElectronRenderer(page);
   for (const violation of seriousFindings) {
-    axeFindings.push({ name, journey, variant, id: violation.id, impact: violation.impact, nodes: violation.nodes.length });
+    axeFindings.push({ name, journey, variant, id: violation.id, impact: violation.impact, nodes: violation.nodes });
   }
   const deterministic = await page.evaluate(({ expectedReducedMotion, fixedTime }) => {
     const visibleControls = [...document.querySelectorAll('button, a[href], input, select, textarea')].filter(element => {

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { describe, it } from 'node:test';
+import { chromium } from 'playwright';
 import { ACCEPTANCE_VARIANTS } from './acceptance-artifacts.mjs';
+import { analyzeExistingElectronRenderer } from './packaged-acceptance-axe.mjs';
 import {
   captureElectronRendererScreenshot,
   forEachElectronRendererVariant,
@@ -13,6 +16,14 @@ const browserFixture = context => Object.assign(new EventEmitter(), {
   contexts: () => [context],
   isConnected: () => true,
 });
+const installedChromium = () => [
+  chromium.executablePath(),
+  '/usr/bin/chromium',
+  '/usr/bin/google-chrome',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+].find(candidate => existsSync(candidate));
 
 describe('packaged acceptance renderer discovery', () => {
   it('waits deterministically when CDP precedes the first Electron renderer page', async () => {
@@ -139,5 +150,67 @@ describe('packaged acceptance renderer variants', () => {
     assert.equal(commands.filter(command => command.method === 'Emulation.setPageScaleFactor').length, 5);
     assert.equal(commands.filter(command => command.method === 'Page.getLayoutMetrics').length, 5);
     assert.equal(commands.filter(command => command.method === 'Page.captureScreenshot').length, 5);
+  });
+
+  it('runs injected axe in the existing renderer for all five variants when new targets are unsupported', {
+    timeout: 30_000,
+    skip: process.platform !== 'linux' || process.arch !== 'x64' ? 'Linux x64 packaged acceptance boundary' : false,
+  }, async () => {
+    const executablePath = installedChromium();
+    assert.ok(executablePath, 'A Chromium executable is required for the in-renderer axe boundary regression');
+    const browser = await chromium.launch({ executablePath, headless: true });
+    try {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      await page.setContent(`<!doctype html>
+        <html lang="en"><head><title>Acceptance boundary</title></head>
+        <body><main><h1>Acceptance boundary</h1><div id="shadow-host"></div></main>
+        <script>
+          document.querySelector('#shadow-host').attachShadow({ mode: 'open' }).innerHTML = '<button></button>';
+        </script></body></html>`);
+
+      let newPageAttempts = 0;
+      Object.defineProperty(context, 'newPage', {
+        configurable: true,
+        value: async () => {
+          newPageAttempts += 1;
+          throw new Error('Target.createTarget is unsupported');
+        },
+      });
+      const session = await context.newCDPSession(page);
+      let createTargetAttempts = 0;
+      const cdp = {
+        send: async (method, params) => {
+          if (method === 'Target.createTarget') {
+            createTargetAttempts += 1;
+            throw new Error('Target.createTarget is unsupported');
+          }
+          return session.send(method, params);
+        },
+      };
+
+      await assert.rejects(context.newPage(), /Target\.createTarget is unsupported/);
+      await assert.rejects(cdp.send('Target.createTarget', { url: 'about:blank' }), /Target\.createTarget is unsupported/);
+
+      const checks = [];
+      await forEachElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS, async ({ variant }) => {
+        const violations = await analyzeExistingElectronRenderer(page);
+        checks.push({ variant, violations });
+        assert.equal(await page.evaluate(() => typeof globalThis.axe), 'undefined');
+      }, { settle: async () => undefined });
+
+      assert.deepEqual(checks.map(check => check.variant), Object.keys(ACCEPTANCE_VARIANTS));
+      assert.equal(checks.length, 5);
+      for (const check of checks) {
+        assert.ok(check.violations.some(violation => violation.id === 'button-name'
+          && violation.impact === 'critical' && violation.nodes === 1));
+      }
+      assert.equal(newPageAttempts, 1);
+      assert.equal(createTargetAttempts, 1);
+      assert.equal(page.isClosed(), false);
+      await session.detach();
+    } finally {
+      await browser.close();
+    }
   });
 });
