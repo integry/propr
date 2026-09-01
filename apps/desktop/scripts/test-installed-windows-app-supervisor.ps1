@@ -303,6 +303,205 @@ function Get-SanitizedSupervisorMarkerDiagnostic($Result) {
     $postTerminationOutcome, $subphase, $cleanupChildExit, $cleanupValidationPhase
 }
 
+function Get-SanitizedCriticalCancellationDiagnostic($Result) {
+  $processExit = 0
+  if (![int]::TryParse(
+      [string]$Result.ExitCode,
+      [Globalization.NumberStyles]::AllowLeadingSign,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [ref]$processExit
+    )) {
+    $processExit = [int]::MinValue
+  }
+
+  $msiTransaction = 'INVALID'
+  $postTerminationCleanup = 'INVALID'
+  $authorityState = 'INVALID'
+  $output = [string]$Result.Output
+  $outputByteLimit = 4096
+  $outputLineLimit = 32
+  $outputLineByteLimit = 192
+  $protocolValid = [Text.Encoding]::UTF8.GetByteCount($output) -le $outputByteLimit
+  $lines = [Collections.Generic.List[string]]::new()
+  if ($protocolValid) {
+    $rawLines = @([regex]::Split($output, '\r?\n'))
+    $lineCount = $rawLines.Count
+    if ($lineCount -gt 0 -and $rawLines[$lineCount - 1] -ceq '') {
+      $lineCount--
+    }
+    if ($lineCount -gt $outputLineLimit) {
+      $protocolValid = $false
+    } else {
+      for ($index = 0; $index -lt $lineCount; $index++) {
+        $line = [string]$rawLines[$index]
+        if ([string]::IsNullOrEmpty($line) -or
+            $line.IndexOf("`r", [StringComparison]::Ordinal) -ge 0 -or
+            [Text.Encoding]::ASCII.GetByteCount($line) -gt $outputLineByteLimit -or
+            [regex]::IsMatch($line, '[^\x20-\x7e]')) {
+          $protocolValid = $false
+          break
+        }
+        $lines.Add($line)
+      }
+    }
+  }
+
+  if ($protocolValid) {
+    $msiEvents = [Collections.Generic.List[string]]::new()
+    $cleanupEvents = [Collections.Generic.List[string]]::new()
+    $authorityEvents = [Collections.Generic.List[string]]::new()
+    $msiPrefix = 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:'
+    $cleanupPrefix =
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:'
+    $lastValidPrefix = 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:'
+    $lastValidPattern =
+      '^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:' +
+      '(INITIALIZATION|INSTALL|VALIDATION|USER_SETUP|APP_LAUNCH|APP_EXIT|UNINSTALL|CLEANUP):' +
+      '(PATHS|BASELINE|MSI_INSTALL|OWNERSHIP_CAPTURE|INSTALL_TREE_SCAN|' +
+      'APPLICATION_IMAGE|PROTOCOL_ASSERTION|APP_PATH_ASSERTION|' +
+      'HKCU_INSTALLED_ASSERTION|SHORTCUT_ASSERTION|USER_CREATE|USER_SID|' +
+      'SMOKE_DATA_CREATE|SHORTCUT_PRESENT_PROBE|ALTERNATE_USER_START|' +
+      'APPLICATION_WAIT|STREAM_DRAIN|EVIDENCE_INSPECTION|MSI_UNINSTALL|' +
+      'INSTALL_TREE_ASSERTION|PROTOCOL_ABSENCE_ASSERTION|' +
+      'APP_PATH_ABSENCE_ASSERTION|HKCU_INSTALLED_ABSENCE_ASSERTION|' +
+      'SHORTCUT_FILE_ASSERTION|SHORTCUT_FOLDER_ASSERTION|' +
+      'SHORTCUT_ABSENCE_PROBE|SMOKE_DATA_REMOVE|PROFILE_LOOKUP|' +
+      'PROFILE_REMOVE|USER_LOOKUP|USER_REMOVE|INSTALL_ROOT_FALLBACK|' +
+      'PROTOCOL_FALLBACK|APP_PATH_FALLBACK|HKCU_INSTALLED_FALLBACK|' +
+      'SHORTCUT_FALLBACK):(BEGIN|COMPLETE|FAILED)$'
+
+    foreach ($line in $lines) {
+      if ($line.StartsWith($msiPrefix, [StringComparison]::Ordinal)) {
+        $match = [regex]::Match(
+          $line,
+          '^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:' +
+            '(GRACE|COMMITTED|ROLLED_BACK_CLEAN|UNPROVEN)$'
+        )
+        if (!$match.Success) { $protocolValid = $false; break }
+        $msiEvents.Add($match.Groups[1].Value)
+      } elseif ($line.StartsWith($cleanupPrefix, [StringComparison]::Ordinal)) {
+        $match = [regex]::Match(
+          $line,
+          '^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:' +
+            'POST_TERMINATION_CLEANUP:(COMPLETE|FAILED|TIMED_OUT)$'
+        )
+        if (!$match.Success) { $protocolValid = $false; break }
+        $cleanupEvents.Add($match.Groups[1].Value)
+      } elseif ($line.StartsWith($lastValidPrefix, [StringComparison]::Ordinal)) {
+        if ($line -ceq ($lastValidPrefix + 'NONE')) {
+          $authorityEvents.Add('NONE')
+          continue
+        }
+        $match = [regex]::Match($line, $lastValidPattern)
+        if (!$match.Success) { $protocolValid = $false; break }
+        if ($match.Groups[1].Value -ceq 'INSTALL' -and
+            $match.Groups[2].Value -ceq 'OWNERSHIP_CAPTURE') {
+          $authorityEvents.Add((switch ($match.Groups[3].Value) {
+            'BEGIN' { 'PROVISIONAL' }
+            'COMPLETE' { 'NONPROVISIONAL' }
+            'FAILED' { 'FAILED' }
+          }))
+        } else {
+          $authorityEvents.Add('OTHER')
+        }
+      }
+    }
+
+    if ($protocolValid) {
+      if ($msiEvents.Count -eq 0) {
+        $msiTransaction = 'NONE'
+      } elseif ($msiEvents.Count -eq 1 -and $msiEvents[0] -ceq 'GRACE') {
+        $msiTransaction = 'GRACE'
+      } elseif ($msiEvents.Count -eq 2 -and $msiEvents[0] -ceq 'GRACE' -and
+          $msiEvents[1] -cin @('COMMITTED','ROLLED_BACK_CLEAN','UNPROVEN')) {
+        $msiTransaction = $msiEvents[1]
+      }
+      if ($cleanupEvents.Count -eq 0) {
+        $postTerminationCleanup = 'NONE'
+      } elseif ($cleanupEvents.Count -eq 1) {
+        $postTerminationCleanup = $cleanupEvents[0]
+      }
+      if ($authorityEvents.Count -eq 0) {
+        $authorityState = 'ABSENT'
+      } elseif ($authorityEvents.Count -eq 1) {
+        $authorityState = $authorityEvents[0]
+      }
+    }
+  }
+
+  $diagnostic = ('PROCESS_EXIT:{0}:MSI_TRANSACTION:{1}:' +
+    'POST_TERMINATION_CLEANUP:{2}:AUTHORITY_STATE:{3}') -f `
+    $processExit.ToString([Globalization.CultureInfo]::InvariantCulture),
+    $msiTransaction, $postTerminationCleanup, $authorityState
+  if ($diagnostic.IndexOf("`r", [StringComparison]::Ordinal) -ge 0 -or
+      $diagnostic.IndexOf("`n", [StringComparison]::Ordinal) -ge 0 -or
+      [Text.Encoding]::ASCII.GetByteCount($diagnostic) -gt 192) {
+    return ('PROCESS_EXIT:{0}:MSI_TRANSACTION:INVALID:' +
+      'POST_TERMINATION_CLEANUP:INVALID:AUTHORITY_STATE:INVALID') -f `
+      $processExit.ToString([Globalization.CultureInfo]::InvariantCulture)
+  }
+  return $diagnostic
+}
+
+function Get-SanitizedWorkflowCleanupResultDiagnostic($Result) {
+  $processExit = 0
+  if (![int]::TryParse(
+      [string]$Result.ExitCode,
+      [Globalization.NumberStyles]::AllowLeadingSign,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [ref]$processExit
+    )) {
+    $processExit = [int]::MinValue
+  }
+  $reportedExitCode = 0
+  if (![int]::TryParse(
+      [string]$Result.ReportedExitCode,
+      [Globalization.NumberStyles]::None,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [ref]$reportedExitCode
+    ) -or $reportedExitCode -notin @(0,20,21,122,123,124,125)) {
+    $reportedExitCode = -1
+  }
+  $resultName = if ([string]$Result.Result -cin @('COMPLETE','FAILED','TIMED_OUT')) {
+    [string]$Result.Result
+  } else { 'INVALID' }
+  $fixedStatuses = @(
+    'CONTROLLER_FAILURE','TIMEOUT','TERMINATION_FAILURE',
+    'ACTIVE_PROCESS_AFTER_ROOT_EXIT','EMPTY_OR_CLEANED',
+    'MANIFEST_VALIDATION_FAILURE','OWNED_RESOURCE_CLEANUP_FAILURE',
+    'PROCESS_FINALIZATION_TIMEOUT','PROCESS_FINALIZATION_FAILURE',
+    'STREAM_DRAIN_TIMEOUT','CHILD_STDERR_LIMIT','CHILD_STDERR',
+    'CHILD_STDOUT_LIMIT','CHILD_STDOUT','STREAM_DRAIN_FAILURE',
+    'RESOURCE_FINALIZATION_FAILURE','AUTHORITY_FINALIZATION_FAILURE',
+    'STARTUP_FAILURE'
+  )
+  $controllerStatus = [string]$Result.ControllerStatus
+  if ($controllerStatus -cnotin $fixedStatuses -and
+      $controllerStatus -cnotmatch (
+        '^CONTROLLER_(INITIALIZATION|PARAMETER_VALIDATION|PATH_VALIDATION|' +
+        'PROCESS_START|PROCESS_WAIT|PROCESS_FINALIZATION|STREAM_FINALIZATION|' +
+        'RESOURCE_FINALIZATION|AUTHORITY_FINALIZATION|RESULT_EMISSION)_' +
+        '(TYPE_LOAD|PARAMETERS|PATHS|START|WAIT|TERMINATE|DRAIN|DISPOSE|' +
+        'AUTHORITY|EMIT)_(AUTHENTICATION|CLOSE|INVALID_ARGUMENT|INVALID_DATA|' +
+        'INVALID_OPERATION|LIMIT|NOT_ENABLED|NOT_FOUND|OPEN|STOPPED|' +
+        'PERMISSION|READ|BUSY|UNAVAILABLE|SECURITY|WRITE|UNCLASSIFIED)$')) {
+    $controllerStatus = 'INVALID'
+  }
+  $diagnostic = ('EXIT_CODE:{0}:RESULT:{1}:CONTROLLER_STATUS:{2}:' +
+    'REPORTED_EXIT_CODE:{3}') -f `
+    $processExit.ToString([Globalization.CultureInfo]::InvariantCulture),
+    $resultName, $controllerStatus,
+    $reportedExitCode.ToString([Globalization.CultureInfo]::InvariantCulture)
+  if ($diagnostic.IndexOf("`r", [StringComparison]::Ordinal) -ge 0 -or
+      $diagnostic.IndexOf("`n", [StringComparison]::Ordinal) -ge 0 -or
+      [Text.Encoding]::ASCII.GetByteCount($diagnostic) -gt 256) {
+    return ('EXIT_CODE:{0}:RESULT:INVALID:CONTROLLER_STATUS:INVALID:' +
+      'REPORTED_EXIT_CODE:-1') -f `
+      $processExit.ToString([Globalization.CultureInfo]::InvariantCulture)
+  }
+  return $diagnostic
+}
+
 function Assert-OwnedResourcesGone($Owned) {
   foreach ($ownedPath in @(
     $Owned.OwnedRoot, $Owned.InstallRoot, $Owned.ShortcutFolder,
@@ -705,14 +904,15 @@ function Test-MsiTransactionInterruptionGates {
     'DURING_MSI rollback did not retain the exact clean fixture baseline'
 
   $duringCapture = Invoke-CriticalCancellationScenario 'DURING_OWNERSHIP_CAPTURE'
+  $duringCaptureDiagnostic = Get-SanitizedCriticalCancellationDiagnostic $duringCapture
   Assert-True ($duringCapture.ExitCode -eq 125) `
-    'DURING_OWNERSHIP_CAPTURE cancellation did not preserve cancellation status'
+    "DURING_OWNERSHIP_CAPTURE cancellation did not preserve cancellation status:$duringCaptureDiagnostic"
   Assert-Contains $duringCapture.Output `
     'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:COMMITTED' `
-    'DURING_OWNERSHIP_CAPTURE did not publish durable nonprovisional authority'
+    "DURING_OWNERSHIP_CAPTURE did not publish durable nonprovisional authority:$duringCaptureDiagnostic"
   Assert-Contains $duringCapture.Output `
     'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
-    'DURING_OWNERSHIP_CAPTURE durable authority did not complete cleanup'
+    "DURING_OWNERSHIP_CAPTURE durable authority did not complete cleanup:$duringCaptureDiagnostic"
   $capturedOwned = Read-FixtureResourceState $duringCapture.StateDirectory
   Assert-OwnedResourcesGone $capturedOwned
 }
@@ -1072,9 +1272,11 @@ function Test-PreExistingCleanupOwnership {
     Restore-ReplacedFixtureAuthority $replacementOwned
     $replacementRetry = Invoke-WorkflowCleanupController `
       $replacementOwned.ManifestPath $replacementOwned.RunId $replacementStateDirectory
+    $replacementRetryDiagnostic =
+      Get-SanitizedWorkflowCleanupResultDiagnostic $replacementRetry
     Assert-True ($replacementRetry.ExitCode -eq 0 -and
         $replacementRetry.Result -ceq 'COMPLETE') `
-      'standalone cleanup did not retry to exact success after authority restoration'
+      "standalone cleanup did not retry to exact success after authority restoration:$replacementRetryDiagnostic"
     Assert-OwnedResourcesGone $replacementOwned
     Assert-True (!(Test-Path -LiteralPath $replacementOwned.ManifestPath)) `
       'successful standalone cleanup retry did not consume recovery authority'

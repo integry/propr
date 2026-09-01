@@ -1022,6 +1022,37 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisorBehaviorTest,
       /POST_TERMINATION_CLEANUP:\{3\}:SUBPHASE:\{4\}:CLEANUP_CHILD_EXIT:\{5\}/,
     );
+    const laterNativeDiagnostics = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Get-SanitizedCriticalCancellationDiagnostic',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Assert-OwnedResourcesGone'),
+    );
+    assert.match(laterNativeDiagnostics, /\$outputByteLimit = 4096/);
+    assert.match(laterNativeDiagnostics, /\$outputLineLimit = 32/);
+    assert.match(laterNativeDiagnostics, /\$outputLineByteLimit = 192/);
+    assert.match(
+      laterNativeDiagnostics,
+      /MSI_TRANSACTION:\{1\}:' \+\s*'POST_TERMINATION_CLEANUP:\{2\}:AUTHORITY_STATE:\{3\}/,
+    );
+    assert.match(
+      laterNativeDiagnostics,
+      /'GRACE','ROLLED_BACK_CLEAN'|GRACE\|COMMITTED\|ROLLED_BACK_CLEAN\|UNPROVEN/,
+    );
+    assert.match(laterNativeDiagnostics, /'PROVISIONAL'[\s\S]*'NONPROVISIONAL'/);
+    assert.match(
+      laterNativeDiagnostics,
+      /EXIT_CODE:\{0\}:RESULT:\{1\}:CONTROLLER_STATUS:\{2\}:' \+\s*'REPORTED_EXIT_CODE:\{3\}/,
+    );
+    assert.match(laterNativeDiagnostics, /ASCII\.GetByteCount\(\$diagnostic\) -gt 256/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /did not publish durable nonprovisional authority:\$duringCaptureDiagnostic/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /standalone cleanup did not retry to exact success after authority restoration:\$replacementRetryDiagnostic/,
+    );
     assert.match(
       installedWindowsAppSupervisor,
       /FIXTURE_FINALIZATION:' \+\s*'WORKER_TREE_TERMINATION:\{0\}'\) -f/,
