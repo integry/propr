@@ -164,9 +164,13 @@ describe('packaged smoke child environment', () => {
           '--disable-gpu',
           '--propr-smoke-test',
           `--user-data-dir=${userDataPath}`,
+          '--password-store=gnome-libsecret',
           connectDeepLink,
         ]);
-        assert.deepEqual(launch.childEnvironment, baseEnvironment);
+        assert.deepEqual(launch.childEnvironment, {
+          ...baseEnvironment,
+          DBUS_SESSION_BUS_ADDRESS: dbusSessionAddress,
+        });
         assert.deepEqual(launch.requiredMarkers, [
           ...commonMarkers,
           'desktop.renderer.profile_api.ready',

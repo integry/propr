@@ -60,12 +60,12 @@ export const createPackagedSmokeLaunch = ({
     '--disable-gpu',
     '--propr-smoke-test',
     `--user-data-dir=${userDataPath}`,
-    ...(transport && platform === 'linux' ? ['--password-store=gnome-libsecret'] : []),
+    ...(platform === 'linux' ? ['--password-store=gnome-libsecret'] : []),
     ...(!transport ? [CONNECT_DEEP_LINK] : []),
   ];
   const childEnvironment = {
     ...baseChildEnvironment,
-    ...(transport && platform === 'linux' ? { DBUS_SESSION_BUS_ADDRESS: dbusSessionAddress } : {}),
+    ...(platform === 'linux' ? { DBUS_SESSION_BUS_ADDRESS: dbusSessionAddress } : {}),
     ...(transport ? {
       PROPR_DESKTOP_SMOKE_FIRST_ORIGIN: firstOrigin,
       PROPR_DESKTOP_SMOKE_SECOND_ORIGIN: secondOrigin,

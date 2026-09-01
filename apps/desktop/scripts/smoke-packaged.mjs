@@ -310,12 +310,12 @@ const launch = async mode => {
     profileApiUrl: transport ? first.origin : profileApiOrigin,
   });
   const dbusSessionAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
-  if (transport && process.platform === 'linux' && (
+  if (process.platform === 'linux' && (
     typeof dbusSessionAddress !== 'string'
     || dbusSessionAddress.length > 4096
     || !/^unix:path=\/[^\0\r\n,]+(?:,guid=[0-9a-f]{32})?$/.test(dbusSessionAddress)
   )) {
-    throw new Error('Packaged Linux transport smoke requires one validated D-Bus session address');
+    throw new Error('Packaged Linux smoke requires one validated D-Bus session address');
   }
   const launchPlan = createPackagedSmokeLaunch({
     mode,
