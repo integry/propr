@@ -192,10 +192,57 @@ describe('packaged acceptance renderer variants', () => {
       await assert.rejects(context.newPage(), /Target\.createTarget is unsupported/);
       await assert.rejects(cdp.send('Target.createTarget', { url: 'about:blank' }), /Target\.createTarget is unsupported/);
 
+      const evaluateRenderer = page.evaluate.bind(page);
+      await evaluateRenderer(() => {
+        globalThis.__acceptanceAxeCleanup = { completed: 0, started: 0, callbackBased: 0 };
+      });
+      let injectionMode = 'success';
+      page.evaluate = async (pageFunction, argument) => {
+        const result = await evaluateRenderer(pageFunction, argument);
+        if (typeof pageFunction === 'string') {
+          await evaluateRenderer(mode => {
+            if (mode === 'timeout') {
+              globalThis.axe.cleanup = () => undefined;
+              return;
+            }
+            if (mode === 'combined-failure') {
+              globalThis.axe.run = async () => { throw new Error('specific axe execution failure'); };
+              globalThis.axe.cleanup = (_resolve, reject) => {
+                setTimeout(() => reject(new Error('asynchronous axe cleanup failure')), 25);
+              };
+              return;
+            }
+            const cleanupState = globalThis.__acceptanceAxeCleanup;
+            const cleanup = globalThis.axe.cleanup.bind(globalThis.axe);
+            globalThis.axe.cleanup = (resolve, reject) => {
+              cleanupState.started += 1;
+              if (typeof resolve === 'function' && typeof reject === 'function') {
+                cleanupState.callbackBased += 1;
+              }
+              cleanup(
+                value => setTimeout(() => {
+                  cleanupState.completed += 1;
+                  if (typeof resolve === 'function') resolve(value);
+                }, 25),
+                error => setTimeout(() => {
+                  cleanupState.completed += 1;
+                  if (typeof reject === 'function') reject(error);
+                }, 25),
+              );
+            };
+          }, injectionMode);
+        }
+        return result;
+      };
+
       const checks = [];
       await forEachElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS, async ({ variant }) => {
         const violations = await analyzeExistingElectronRenderer(page);
-        checks.push({ variant, violations });
+        const cleanupState = await evaluateRenderer(() => ({ ...globalThis.__acceptanceAxeCleanup }));
+        checks.push({ variant, violations, cleanupState });
+        assert.equal(cleanupState.started, checks.length);
+        assert.equal(cleanupState.callbackBased, checks.length);
+        assert.equal(cleanupState.completed, checks.length);
         assert.equal(await page.evaluate(() => typeof globalThis.axe), 'undefined');
       }, { settle: async () => undefined });
 
@@ -205,6 +252,29 @@ describe('packaged acceptance renderer variants', () => {
         assert.ok(check.violations.some(violation => violation.id === 'button-name'
           && violation.impact === 'critical' && violation.nodes === 1));
       }
+      injectionMode = 'timeout';
+      await assert.rejects(
+        analyzeExistingElectronRenderer(page),
+        error => error?.message === 'Packaged accessibility axe-core cleanup failed'
+          && /cleanup timed out after 5000ms/.test(error.cause?.message),
+      );
+      assert.equal(await evaluateRenderer(() => typeof globalThis.axe), 'object');
+      await evaluateRenderer(() => Reflect.deleteProperty(globalThis, 'axe'));
+
+      injectionMode = 'combined-failure';
+      let combinedFailure;
+      try {
+        await analyzeExistingElectronRenderer(page);
+      } catch (error) {
+        combinedFailure = error;
+      }
+      assert.ok(combinedFailure instanceof AggregateError);
+      assert.equal(combinedFailure.message, 'Packaged accessibility axe-core execution or result validation failed');
+      assert.equal(combinedFailure.errors.length, 2);
+      assert.match(combinedFailure.errors[0].message, /execution or result validation failed/);
+      assert.match(combinedFailure.errors[1].message, /axe-core cleanup failed/);
+      assert.match(combinedFailure.errors[1].cause?.message, /asynchronous axe cleanup failure/);
+      assert.equal(await evaluateRenderer(() => typeof globalThis.axe), 'object');
       assert.equal(newPageAttempts, 1);
       assert.equal(createTargetAttempts, 1);
       assert.equal(page.isClosed(), false);

@@ -8,6 +8,7 @@ const axePackage = require('axe-core/package.json');
 export const PACKAGED_AXE_VERSION = '4.10.3';
 export const PACKAGED_AXE_SOURCE_SHA256 = '5248a3ce82beae19e2bbd73dc209055747cda599e59a02f3272045206904254f';
 export const PACKAGED_AXE_FRAME_POLICY = 'reject-all-child-frames';
+export const PACKAGED_AXE_CLEANUP_TIMEOUT_MS = 5_000;
 
 const axeSource = axeCore?.source;
 const axeSourceSha256 = typeof axeSource === 'string'
@@ -119,18 +120,51 @@ export const analyzeExistingElectronRenderer = async page => {
   } finally {
     if (injected) {
       let cleaned = false;
+      let cleanupError;
       try {
-        cleaned = await page.evaluate(() => {
-          globalThis.axe?.cleanup();
+        cleaned = await page.evaluate(async cleanupTimeoutMs => {
+          const engine = globalThis.axe;
+          if (!engine || typeof engine.cleanup !== 'function') {
+            throw new Error('axe-core cleanup is unavailable');
+          }
+          // axe-core 4.10.3 cleanup completes through these callbacks after
+          // its plugin/frame queue drains; its direct return value is not completion.
+          await new Promise((resolve, reject) => {
+            let settled = false;
+            let timeout;
+            const settle = callback => value => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timeout);
+              callback(value);
+            };
+            const resolveCleanup = settle(resolve);
+            const rejectCleanup = settle(reject);
+            timeout = setTimeout(
+              () => rejectCleanup(new Error(`axe-core cleanup timed out after ${cleanupTimeoutMs}ms`)),
+              cleanupTimeoutMs,
+            );
+            try {
+              engine.cleanup(resolveCleanup, rejectCleanup);
+            } catch (error) {
+              rejectCleanup(error);
+            }
+          });
           return Reflect.deleteProperty(globalThis, 'axe') && typeof globalThis.axe === 'undefined';
-        });
+        }, PACKAGED_AXE_CLEANUP_TIMEOUT_MS);
       } catch (error) {
-        if (!primaryError) {
-          throw new Error('Packaged accessibility axe-core cleanup failed', { cause: error });
-        }
+        cleanupError = new Error('Packaged accessibility axe-core cleanup failed', { cause: error });
       }
-      if (!cleaned && !primaryError) {
-        throw new Error('Packaged accessibility axe-core cleanup failed');
+      if (!cleaned && !cleanupError) {
+        cleanupError = new Error('Packaged accessibility axe-core cleanup failed');
+      }
+      if (cleanupError) {
+        if (!primaryError) throw cleanupError;
+        throw new AggregateError(
+          [primaryError, cleanupError],
+          primaryError instanceof Error ? primaryError.message : String(primaryError),
+          { cause: primaryError },
+        );
       }
     }
   }
