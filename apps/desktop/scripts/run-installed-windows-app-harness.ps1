@@ -77,6 +77,9 @@ $terminateOwnedTree = $false
 $workerStarted = $false
 $supervisorOutcomeComplete = $false
 $postTerminationCleanupAuthorized = $true
+$fixtureNoMarkerDiagnostic = $false
+$fixtureWorkerTreeTerminationOutcome = 'FAILED'
+$fixtureCleanupChildExitCategory = 'OTHER'
 
 Add-Type -TypeDefinition @'
 using System;
@@ -736,6 +739,10 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
       Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:TIMED_OUT'
       return $false
     }
+    $script:fixtureCleanupChildExitCategory = if ($cleanupProcess.ExitCode -in @(0,20,21)) {
+      ([int]$cleanupProcess.ExitCode).ToString(
+        [Globalization.CultureInfo]::InvariantCulture)
+    } else { 'OTHER' }
     if ($cleanupProcess.ExitCode -ne 0) {
       Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
       return $false
@@ -784,6 +791,8 @@ try {
   if ($FixtureCleanupRoot) {
     if ($usingProductionWorker) { throw 'production worker cannot use a fixture cleanup scope' }
     $FixtureCleanupRoot = (Resolve-Path -LiteralPath $FixtureCleanupRoot -ErrorAction Stop).Path
+    $fixtureNoMarkerDiagnostic =
+      [string]$env:PROPR_SUPERVISOR_FIXTURE_SCENARIO -ceq 'NO_MARKER'
   } elseif (!$usingProductionWorker) {
     throw 'injected workers require a fixture cleanup scope'
   }
@@ -952,6 +961,11 @@ try {
     # Job Object API requires a valid uint32, so finalization always uses this
     # fixed supervisor-owned termination code instead of casting worker status.
     $workerTreeTerminated = Stop-OwnedWorker 125
+    if ($fixtureNoMarkerDiagnostic) {
+      $fixtureWorkerTreeTerminationOutcome = if ($workerTreeTerminated) {
+        'COMPLETE'
+      } else { 'FAILED' }
+    }
     if ($workerTreeTerminated -and $postTerminationCleanupAuthorized) {
       $fixedCleanupResult = Invoke-PostTerminationCleanup $installerPath $FixtureCleanupRoot
     } else {
@@ -959,6 +973,17 @@ try {
       $fixedCleanupResult = $false
     }
     if ($fixedCleanupResult -ne $true) { $exitCode = 125 }
+  }
+
+  if ($fixtureNoMarkerDiagnostic) {
+    Write-WatchdogLine ((
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:FIXTURE_FINALIZATION:' +
+      'WORKER_TREE_TERMINATION:{0}') -f $fixtureWorkerTreeTerminationOutcome)
+    if ($fixtureWorkerTreeTerminationOutcome -ceq 'COMPLETE') {
+      Write-WatchdogLine ((
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:FIXTURE_FINALIZATION:' +
+        'CLEANUP_CHILD_EXIT:{0}') -f $fixtureCleanupChildExitCategory)
+    }
   }
 
   try {

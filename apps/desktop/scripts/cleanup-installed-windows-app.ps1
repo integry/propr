@@ -1290,6 +1290,26 @@ try {
     throw 'fixture ownership manifest was not authorized'
   }
 
+  # A worker that is terminated before its first marker cannot promote any
+  # resource authority. Accept only the exact supervisor-created fixture state:
+  # authenticated schema-v3 ACTIVE authority, no baseline or install attempt,
+  # transaction NONE, and no resource records. Revalidate the durable installer
+  # authority before atomically converting it to the ordinary EMPTY receipt.
+  $initialActiveFixtureManifest = $manifest.Fixture -and
+    [string]$manifest.State -ceq 'ACTIVE' -and
+    !$manifest.BaselineClean -and !$manifest.InstallAttempted -and
+    [string]$manifest.MsiTransactionState -ceq 'NONE' -and
+    @($manifest.Directories).Count -eq 0 -and @($manifest.Files).Count -eq 0 -and
+    @($manifest.RegistryKeys).Count -eq 0 -and
+    @($manifest.RegistryValues).Count -eq 0 -and @($manifest.Users).Count -eq 0 -and
+    @($manifest.Profiles).Count -eq 0
+  if ($initialActiveFixtureManifest) {
+    $manifestValidated = $true
+    Assert-InstallerArtifactAuthority $manifest
+    Write-EmptyOwnershipReceipt $manifestPath $manifest
+    exit 0
+  }
+
   if ([string]$manifest.State -ceq 'EMPTY') {
     if ($manifest.BaselineClean -or $manifest.InstallAttempted -or
         [string]$manifest.MsiTransactionState -cne 'NONE' -or

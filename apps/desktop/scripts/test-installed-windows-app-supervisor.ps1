@@ -247,18 +247,47 @@ function Assert-ProcessTreeGone($State) {
 }
 
 function Get-SanitizedSupervisorMarkerDiagnostic($Result) {
-  $lastValidPresent = [regex]::IsMatch(
+  $bootstrapTimedOutPresent = [regex]::IsMatch(
     [string]$Result.Output,
-    '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:(?:NONE|[A-Z_]+:[A-Z_]+:(?:BEGIN|COMPLETE|FAILED))\r?$'
+    '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:BOOTSTRAP:TIMED_OUT\r?$'
   )
-  $postTerminationPresent = [regex]::IsMatch(
+  $lastValidNonePresent = [regex]::IsMatch(
     [string]$Result.Output,
-    '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:(?:COMPLETE|FAILED|TIMED_OUT)\r?$'
+    '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:NONE\r?$'
   )
+  $postTerminationMatch = [regex]::Match(
+    [string]$Result.Output,
+    '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:' +
+      'POST_TERMINATION_CLEANUP:(COMPLETE|FAILED|TIMED_OUT)\r?$'
+  )
+  $postTerminationOutcome = if ($postTerminationMatch.Success) {
+    $postTerminationMatch.Groups[1].Value
+  } else { 'NONE' }
+  $workerTreeMatch = [regex]::Match(
+    [string]$Result.Output,
+    '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:FIXTURE_FINALIZATION:' +
+      'WORKER_TREE_TERMINATION:(COMPLETE|FAILED)\r?$'
+  )
+  $cleanupChildMatch = [regex]::Match(
+    [string]$Result.Output,
+    '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:FIXTURE_FINALIZATION:' +
+      'CLEANUP_CHILD_EXIT:(0|20|21|OTHER)\r?$'
+  )
+  $subphase = if ($workerTreeMatch.Success -and
+      $workerTreeMatch.Groups[1].Value -ceq 'FAILED') {
+    'WORKER_TREE_TERMINATION'
+  } elseif ($cleanupChildMatch.Success) {
+    'CLEANUP_CHILD_EXIT'
+  } else { 'NONE' }
+  $cleanupChildExit = if ($cleanupChildMatch.Success) {
+    $cleanupChildMatch.Groups[1].Value
+  } else { 'OTHER' }
   $signedExit = ([int]$Result.ExitCode).ToString(
     [Globalization.CultureInfo]::InvariantCulture)
-  return 'SUPERVISOR_EXIT:{0}:LAST_VALID:{1}:POST_TERMINATION:{2}' -f `
-    $signedExit, ([int]$lastValidPresent), ([int]$postTerminationPresent)
+  return ('SUPERVISOR_EXIT:{0}:BOOTSTRAP_TIMED_OUT:{1}:LAST_VALID_NONE:{2}:' +
+    'POST_TERMINATION_CLEANUP:{3}:SUBPHASE:{4}:CLEANUP_CHILD_EXIT:{5}') -f `
+    $signedExit, ([int]$bootstrapTimedOutPresent), ([int]$lastValidNonePresent),
+    $postTerminationOutcome, $subphase, $cleanupChildExit
 }
 
 function Assert-OwnedResourcesGone($Owned) {
@@ -675,7 +704,9 @@ function Test-MsiTransactionInterruptionGates {
 
 function Test-BootstrapTimeout {
   $result = Invoke-FixtureScenario 'NO_MARKER'
-  Assert-True ($result.ExitCode -eq 124) 'missing-marker bootstrap did not fail with the watchdog code'
+  $diagnostic = Get-SanitizedSupervisorMarkerDiagnostic $result
+  Assert-True ($result.ExitCode -eq 124) `
+    "missing-marker bootstrap did not fail with the watchdog code:$diagnostic"
   Assert-True ($result.ElapsedMilliseconds -ge 9000) 'bootstrap timeout ignored the injected deadline'
   Assert-True ($result.ElapsedMilliseconds -lt 60000) 'missing-marker bootstrap completion was not bounded'
   Assert-Contains $result.Output `
@@ -684,6 +715,17 @@ function Test-BootstrapTimeout {
   Assert-Contains $result.Output `
     'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:NONE' `
     'missing-marker bootstrap did not emit the fixed empty last-stage line'
+  Assert-Contains $result.Output `
+    ('PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:FIXTURE_FINALIZATION:' +
+      'WORKER_TREE_TERMINATION:COMPLETE') `
+    'missing-marker bootstrap did not verify worker-tree termination'
+  Assert-Contains $result.Output `
+    ('PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:FIXTURE_FINALIZATION:' +
+      'CLEANUP_CHILD_EXIT:0') `
+    'missing-marker bootstrap cleanup child did not consume the empty authority'
+  Assert-Contains $result.Output `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+    'missing-marker bootstrap did not complete bounded cleanup'
 }
 
 function Test-OperationDeadlineAndTreeTermination {

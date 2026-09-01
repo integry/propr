@@ -900,7 +900,24 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SanitizedSupervisorMarkerDiagnostic/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /SUPERVISOR_EXIT:\{0\}:LAST_VALID:\{1\}:POST_TERMINATION:\{2\}/,
+      /SUPERVISOR_EXIT:\{0\}:BOOTSTRAP_TIMED_OUT:\{1\}:LAST_VALID_NONE:\{2\}/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /POST_TERMINATION_CLEANUP:\{3\}:SUBPHASE:\{4\}:CLEANUP_CHILD_EXIT:\{5\}/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /FIXTURE_FINALIZATION:' \+\s*'WORKER_TREE_TERMINATION:\{0\}'\) -f/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /FIXTURE_FINALIZATION:' \+\s*'CLEANUP_CHILD_EXIT:\{0\}'\) -f/,
+    );
+    assert.match(installedWindowsAppCleanup, /\$initialActiveFixtureManifest/);
+    assert.match(
+      installedWindowsAppCleanup,
+      /Write-EmptyOwnershipReceipt \$manifestPath \$manifest/,
     );
     const primaryFallbackFixture = installedWindowsAppSupervisorFixture.slice(
       installedWindowsAppSupervisorFixture.indexOf('function Test-PrimaryFallbackForeignDescendants'),
