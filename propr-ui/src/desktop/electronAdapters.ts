@@ -85,6 +85,7 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
   let publishedProfile: { id: string; origin: string; identityEpoch: string } | null = null;
   return {
   platform: platform(navigator.platform || navigator.userAgent),
+  app: { onDeepLink: listener => bridge.app.onDeepLink(listener) },
   profiles: {
     async list() {
       return (await bridge.profiles.list()).profiles.map(fromStoredProfile);
