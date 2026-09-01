@@ -396,11 +396,17 @@ function Get-SanitizedCriticalCancellationDiagnostic($Result) {
         if (!$match.Success) { $protocolValid = $false; break }
         if ($match.Groups[1].Value -ceq 'INSTALL' -and
             $match.Groups[2].Value -ceq 'OWNERSHIP_CAPTURE') {
-          $authorityEvents.Add((switch ($match.Groups[3].Value) {
+          $authorityEvent = @(switch ($match.Groups[3].Value) {
             'BEGIN' { 'PROVISIONAL' }
             'COMPLETE' { 'NONPROVISIONAL' }
             'FAILED' { 'FAILED' }
-          }))
+          })
+          if ($authorityEvent.Count -ne 1 -or
+              $authorityEvent[0] -cnotin @('PROVISIONAL','NONPROVISIONAL','FAILED')) {
+            $protocolValid = $false
+            break
+          }
+          $authorityEvents.Add([string]$authorityEvent[0])
         } else {
           $authorityEvents.Add('OTHER')
         }
