@@ -67,6 +67,13 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+const renderConnectedExperience = (adapters: DesktopAdapters, content?: string) => render(
+  <DesktopExperience adapters={adapters}>
+    <DesktopTitleBar />
+    {content && <div>{content}</div>}
+  </DesktopExperience>
+);
+
 describe('DesktopExperience', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -246,11 +253,7 @@ describe('DesktopExperience', () => {
 
   it('opens instance management with the desktop shortcut and exposes connection status', async () => {
     const adapters = adaptersFor([localProfile], localProfile.id);
-    render(
-      <DesktopExperience adapters={adapters}>
-        <DesktopTitleBar />
-      </DesktopExperience>
-    );
+    renderConnectedExperience(adapters);
 
     expect(await screen.findByRole('button', { name: 'Connected: This computer' })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: ',', ctrlKey: true });
@@ -261,11 +264,7 @@ describe('DesktopExperience', () => {
 
   it('traps modal focus, makes the app inert, and restores focus to the opener', async () => {
     const adapters = adaptersFor([localProfile], localProfile.id);
-    render(
-      <DesktopExperience adapters={adapters}>
-        <DesktopTitleBar />
-      </DesktopExperience>
-    );
+    renderConnectedExperience(adapters);
 
     const opener = await screen.findByRole('button', { name: 'Connected: This computer' });
     opener.focus();
@@ -294,7 +293,7 @@ describe('DesktopExperience', () => {
 
   it('connects a new instance added from the manager', async () => {
     const adapters = adaptersFor([localProfile], localProfile.id);
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+    renderConnectedExperience(adapters, 'Connected app');
 
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
     vi.clearAllMocks();
@@ -323,7 +322,7 @@ describe('DesktopExperience', () => {
       .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' })
       .mockImplementationOnce(() => pendingProbe.promise);
     const adapters = adaptersFor([localProfile], localProfile.id, probe);
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+    renderConnectedExperience(adapters, 'Connected app');
 
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
     await waitFor(() => {
@@ -352,11 +351,11 @@ describe('DesktopExperience', () => {
 
   it('reconnects an edited active instance but saves an inactive edit without connecting', async () => {
     const adapters = adaptersFor([localProfile, remoteProfile], localProfile.id);
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+    renderConnectedExperience(adapters, 'Connected app');
 
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
     vi.clearAllMocks();
-    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connected: This computer' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Edit This computer' }));
     fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://active.example.com/' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -368,7 +367,7 @@ describe('DesktopExperience', () => {
     expect(apiMock.setApiBaseUrl).toHaveBeenLastCalledWith('https://active.example.com');
 
     vi.clearAllMocks();
-    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connected: This computer' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Team server' }));
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Renamed team server' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -384,11 +383,11 @@ describe('DesktopExperience', () => {
       .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' })
       .mockResolvedValueOnce({ status: 'offline', message: 'The updated server is unavailable.' });
     const adapters = adaptersFor([localProfile], localProfile.id, probe);
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+    renderConnectedExperience(adapters, 'Connected app');
 
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
     vi.clearAllMocks();
-    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connected: This computer' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Edit This computer' }));
     fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://unavailable.example.com/' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -406,10 +405,10 @@ describe('DesktopExperience', () => {
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error('Profile storage is locked.'))
       .mockResolvedValueOnce(undefined);
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+    renderConnectedExperience(adapters, 'Connected app');
 
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
-    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connected: This computer' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Team server' }));
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Retryable edit' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
