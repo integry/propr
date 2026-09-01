@@ -12,31 +12,29 @@ import {
 
 const windowsIt = process.platform === 'win32' ? it : it.skip;
 
-const getAclDiagnosticCategories = new Map([
-  [44, 'unclassified'],
-  [51, 'command-module-unavailable'],
-  [52, 'item-provider-not-found'],
-  [53, 'unauthorized-security'],
-  [54, 'platform-not-supported'],
-  [55, 'other'],
-]);
-
 const exactDaclProofSource = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 try {
   $entryKind=$env:PROPR_FIXTURE_ACL_KIND
   $entryPath=$env:PROPR_FIXTURE_ACL_PATH
-  if(($entryKind -ne 'directory' -and $entryKind -ne 'file') -or [String]::IsNullOrEmpty($entryPath)){exit 70}
+  $proofKind=$env:PROPR_FIXTURE_ACL_PROOF
+  if(($entryKind -ne 'directory' -and $entryKind -ne 'file') -or
+    ($proofKind -ne 'owner' -and $proofKind -ne 'exact') -or
+    [String]::IsNullOrEmpty($entryPath)){exit 70}
 } catch { exit 70 }
 try {
-  $acl=Get-Acl -LiteralPath $entryPath
+  $sections=[System.Security.AccessControl.AccessControlSections]::Access -bor [System.Security.AccessControl.AccessControlSections]::Owner
+  $acl=if($entryKind -eq 'directory'){
+    [System.IO.Directory]::GetAccessControl($entryPath,$sections)
+  }else{[System.IO.File]::GetAccessControl($entryPath,$sections)}
 } catch { exit 71 }
 try {
   $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
   $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier])
   if($null -eq $current -or $null -eq $owner -or $owner.Value -ne $current.Value){exit 72}
 } catch { exit 72 }
+if($proofKind -eq 'owner'){exit 0}
 try {
   $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
   if(-not $acl.AreAccessRulesProtected -or -not $acl.AreAccessRulesCanonical -or
@@ -70,7 +68,7 @@ const assertPowerShellStreamEmpty = (stream, category) => {
   }
 };
 
-const assertExactDacl = (powershell, entry) => {
+const assertAclProof = (powershell, entry, proofKind) => {
   const result = spawnSync(powershell, [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedExactDaclProof,
   ], {
@@ -81,6 +79,7 @@ const assertExactDacl = (powershell, entry) => {
       ...process.env,
       PROPR_FIXTURE_ACL_KIND: entry.kind,
       PROPR_FIXTURE_ACL_PATH: entry.path,
+      PROPR_FIXTURE_ACL_PROOF: proofKind,
     },
   });
   assert.ifError(result.error);
@@ -89,12 +88,12 @@ const assertExactDacl = (powershell, entry) => {
   assertPowerShellStreamEmpty(result.stderr, 'dacl-proof-stderr');
   const category = new Map([
     [70, 'input'],
-    [71, 'get-acl'],
+    [71, 'access-control-read'],
     [72, 'owner'],
     [73, 'protection'],
     [74, 'rules'],
   ]).get(result.status) ?? 'unexpected-exit';
-  assert.equal(result.status, 0, `${entry.kind} exact DACL proof failed [category=${category}]`);
+  assert.equal(result.status, 0, `${entry.kind} ${proofKind} ACL proof failed [category=${category}]`);
 };
 
 windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and byte-empty', t => {
@@ -136,6 +135,12 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
     for (const category of [...normalizationCategories].sort()) {
       t.diagnostic(`PS5.1 path normalization category=${category}`);
     }
+
+    const ownerBaselineEntries = [
+      { kind: 'directory', path: canonicalDirectory.path },
+      { kind: 'file', path: canonicalFile.path },
+    ];
+    for (const entry of ownerBaselineEntries) assertAclProof(powershell, entry, 'owner');
 
     const entries = [
       { label: 'relative path', kind: 'directory', path: 'data', status: 40 },
@@ -188,10 +193,8 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
       assert.equal(result.signal, null);
       assertPowerShellStreamEmpty(result.stdout, 'powershell-stdout');
       assertPowerShellStreamEmpty(result.stderr, 'powershell-stderr');
-      const getAclCategory = getAclDiagnosticCategories.get(result.status);
-      if (getAclCategory) t.diagnostic(`PS5.1 Get-Acl category=${getAclCategory}`);
       assert.equal(result.status, entry.status, `${entry.label} returned the wrong redacted phase code`);
-      if (entry.status === 0) assertExactDacl(powershell, entry);
+      if (entry.status === 0) assertAclProof(powershell, entry, 'exact');
     }
   } finally {
     rmSync(fixture, { recursive: true, force: true });

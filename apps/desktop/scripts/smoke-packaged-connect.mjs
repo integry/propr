@@ -222,7 +222,7 @@ const protectWindowsEntries = entries => {
       [41, 'item-type'],
       [42, 'current-sid-lookup'],
       [43, 'sid-construction'],
-      [44, 'get-acl'],
+      [44, 'access-control-read'],
       [45, 'dacl-protection'],
       [46, 'rule-create'],
       [47, 'rule-apply'],
