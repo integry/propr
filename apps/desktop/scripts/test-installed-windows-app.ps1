@@ -109,10 +109,13 @@ $appPathsCreatedByRun = $false
 $protocolOwnedIdentity = $null
 $appPathsOwnedIdentity = $null
 $installRootOwnedIdentity = $null
+$installRootOwnedTreeIdentity = $null
 $shortcutFolderOwnedIdentity = $null
+$shortcutFolderOwnedTreeIdentity = $null
 $hkcuInstalledOwnedKind = $null
 $hkcuInstalledOwnedData = $null
 $shortcutOwnedIdentity = $null
+$shortcutOwnedEntryIdentity = $null
 $hkcuDesktopKeyCreatedByRun = $false
 $msiTimeoutMilliseconds = 10 * 60 * 1000
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
@@ -378,6 +381,71 @@ function Get-FileSystemEntryIdentity([string]$Path, [bool]$Directory) {
     throw 'file-system object identity is invalid'
   }
   return [ProPRDirectoryIdentity]::ReadEntry($item.FullName, $Directory)
+}
+
+function Get-FileSystemTreeIdentity([string]$Path) {
+  $root = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (!$root.PSIsContainer -or
+      ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'file-system tree root identity is invalid'
+  }
+  $rootPath = $root.FullName.TrimEnd('\')
+  $records = [Collections.Generic.List[string]]::new()
+  $records.Add(('D||{0}' -f (Get-FileSystemEntryIdentity $rootPath $true)))
+  foreach ($entry in @(Get-ChildItem -LiteralPath $rootPath -Recurse -Force -ErrorAction Stop)) {
+    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'file-system tree contains a reparse point'
+    }
+    $relativePath = $entry.FullName.Substring($rootPath.Length).TrimStart('\')
+    if (!$relativePath -or [IO.Path]::IsPathRooted($relativePath)) {
+      throw 'file-system tree relative path is invalid'
+    }
+    $kind = if ($entry.PSIsContainer) { 'D' } else { 'F' }
+    $relative = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($relativePath))
+    $identity = Get-FileSystemEntryIdentity $entry.FullName ([bool]$entry.PSIsContainer)
+    $records.Add(('{0}|{1}|{2}' -f $kind, $relative, $identity))
+  }
+  $recordArray = $records.ToArray()
+  [Array]::Sort($recordArray, [StringComparer]::Ordinal)
+  $payload = [Text.Encoding]::UTF8.GetBytes(($recordArray -join "`n"))
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($sha256.ComputeHash($payload)).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
+function Assert-MsiManagedFileSystemAuthority {
+  if (Test-Path -LiteralPath $installRoot) {
+    if (!$installRootCreatedByRun -or
+        [string]$installRootOwnedIdentity -notmatch '^[a-f0-9]{24}$' -or
+        [string]$installRootOwnedTreeIdentity -notmatch '^[a-f0-9]{64}$' -or
+        (Get-DirectoryIdentity $installRoot) -cne $installRootOwnedIdentity -or
+        (Get-FileSystemTreeIdentity $installRoot) -cne $installRootOwnedTreeIdentity) {
+      throw 'refusing to uninstall over an install tree with mismatched ownership identity'
+    }
+  }
+  if (Test-Path -LiteralPath $startMenuShortcutFolder) {
+    if (!$startMenuShortcutFolderCreatedByRun -or
+        [string]$shortcutFolderOwnedIdentity -notmatch '^[a-f0-9]{24}$' -or
+        [string]$shortcutFolderOwnedTreeIdentity -notmatch '^[a-f0-9]{64}$' -or
+        (Get-DirectoryIdentity $startMenuShortcutFolder) -cne $shortcutFolderOwnedIdentity -or
+        (Get-FileSystemTreeIdentity $startMenuShortcutFolder) -cne
+          $shortcutFolderOwnedTreeIdentity) {
+      throw 'refusing to uninstall over a shortcut folder with mismatched ownership identity'
+    }
+  }
+  if (Test-Path -LiteralPath $startMenuShortcut) {
+    if (!$startMenuShortcutCreatedByRun -or
+        [string]$shortcutOwnedIdentity -notmatch '^[a-f0-9]{64}$' -or
+        [string]$shortcutOwnedEntryIdentity -notmatch '^[a-f0-9]{24}$' -or
+        (Get-FileIdentity $startMenuShortcut) -cne $shortcutOwnedIdentity -or
+        (Get-FileSystemEntryIdentity $startMenuShortcut $false) -cne
+          $shortcutOwnedEntryIdentity) {
+      throw 'refusing to uninstall over a shortcut with mismatched ownership identity'
+    }
+  }
 }
 
 function Get-RegistryTreeIdentity([string]$Path) {
@@ -1490,16 +1558,17 @@ try {
     $ownershipState.Directories = @(
       [ordered]@{
         Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true
-        Token = $null; Identity = $null; Provisional = $true
+        Token = $null; Identity = $null; TreeIdentity = $null; Provisional = $true
       },
       [ordered]@{
         Kind = 'SHORTCUT_FOLDER'; Path = $startMenuShortcutFolder
-        Owned = $true; Token = $null; Identity = $null; Provisional = $true
+        Owned = $true; Token = $null; Identity = $null; TreeIdentity = $null
+        Provisional = $true
       }
     )
     $ownershipState.Files = @([ordered]@{
       Kind = 'SHORTCUT_FILE'; Path = $startMenuShortcut; Owned = $true
-      Token = $null; Identity = $null; Provisional = $true
+      Token = $null; Identity = $null; EntryIdentity = $null; Provisional = $true
     })
     $ownershipState.RegistryKeys = @(
       [ordered]@{
@@ -1560,35 +1629,44 @@ try {
           $ownedDirectories = @()
           if ($script:installRootCreatedByRun) {
             $script:installRootOwnedIdentity = Get-DirectoryIdentity $installRoot
-            if (!$script:installRootOwnedIdentity) {
+            $script:installRootOwnedTreeIdentity = Get-FileSystemTreeIdentity $installRoot
+            if (!$script:installRootOwnedIdentity -or !$script:installRootOwnedTreeIdentity) {
               throw 'installed tree identity could not be captured'
             }
             $ownedDirectories += [ordered]@{
               Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true
               Token = $null; Identity = $script:installRootOwnedIdentity
+              TreeIdentity = $script:installRootOwnedTreeIdentity
               Provisional = $false
             }
           }
           if ($script:startMenuShortcutFolderCreatedByRun) {
             $script:shortcutFolderOwnedIdentity = Get-DirectoryIdentity $startMenuShortcutFolder
-            if (!$script:shortcutFolderOwnedIdentity) {
+            $script:shortcutFolderOwnedTreeIdentity =
+              Get-FileSystemTreeIdentity $startMenuShortcutFolder
+            if (!$script:shortcutFolderOwnedIdentity -or
+                !$script:shortcutFolderOwnedTreeIdentity) {
               throw 'installed shortcut folder identity could not be captured'
             }
             $ownedDirectories += [ordered]@{
               Kind = 'SHORTCUT_FOLDER'; Path = $startMenuShortcutFolder
               Owned = $true; Token = $null; Identity = $script:shortcutFolderOwnedIdentity
+              TreeIdentity = $script:shortcutFolderOwnedTreeIdentity
               Provisional = $false
             }
           }
           $ownershipState.Directories = $ownedDirectories
           $ownershipState.Files = if ($script:startMenuShortcutCreatedByRun) {
             $script:shortcutOwnedIdentity = Get-FileIdentity $startMenuShortcut
-            if (!$script:shortcutOwnedIdentity) {
+            $script:shortcutOwnedEntryIdentity =
+              Get-FileSystemEntryIdentity $startMenuShortcut $false
+            if (!$script:shortcutOwnedIdentity -or !$script:shortcutOwnedEntryIdentity) {
               throw 'installed shortcut identity could not be captured'
             }
             @([ordered]@{
               Kind = 'SHORTCUT_FILE'; Path = $startMenuShortcut; Owned = $true
               Token = $null; Identity = $script:shortcutOwnedIdentity
+              EntryIdentity = $script:shortcutOwnedEntryIdentity
               Provisional = $false
             })
           } else { @() }
@@ -1879,6 +1957,7 @@ try {
       Invoke-BoundedExternalOperation `
         'UNINSTALL' 'MSI_UNINSTALL' `
         ($msiTimeoutMilliseconds + $terminationTimeoutMilliseconds + 5000) {
+          Assert-MsiManagedFileSystemAuthority
           if ($protocolCreatedByRun -and (Test-Path -LiteralPath $protocolRegistryPath) -and
               (!$protocolOwnedIdentity -or
                 (Get-RegistryTreeIdentity $protocolRegistryPath) -cne $protocolOwnedIdentity)) {

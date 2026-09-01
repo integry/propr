@@ -693,7 +693,10 @@ try {
     !$supervisorOutcomeComplete
   $fixedCleanupResult = $null
   if ($cleanupRequired -and $installerPath -and $ownershipRunId) {
-    $workerTreeTerminated = Stop-OwnedWorker ([uint32]$exitCode)
+    # Process.ExitCode is signed and can be negative after a native crash. The
+    # Job Object API requires a valid uint32, so finalization always uses this
+    # fixed supervisor-owned termination code instead of casting worker status.
+    $workerTreeTerminated = Stop-OwnedWorker 125
     if ($workerTreeTerminated) {
       $fixedCleanupResult = Invoke-PostTerminationCleanup $installerPath $FixtureCleanupRoot
     } else {

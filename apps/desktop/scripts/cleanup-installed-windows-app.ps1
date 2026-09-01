@@ -146,6 +146,122 @@ function Get-FileSystemEntryIdentity([string]$Path, [bool]$Directory) {
   return [ProPRDirectoryIdentity]::ReadEntry($item.FullName, $Directory)
 }
 
+function Get-FileSystemTreeIdentity([string]$Path) {
+  $root = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (!$root.PSIsContainer -or
+      ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'file-system tree root identity is invalid'
+  }
+  $rootPath = $root.FullName.TrimEnd('\')
+  $records = [Collections.Generic.List[string]]::new()
+  $records.Add(('D||{0}' -f (Get-FileSystemEntryIdentity $rootPath $true)))
+  foreach ($entry in @(Get-ChildItem -LiteralPath $rootPath -Recurse -Force -ErrorAction Stop)) {
+    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'file-system tree contains a reparse point'
+    }
+    $relativePath = $entry.FullName.Substring($rootPath.Length).TrimStart('\')
+    if (!$relativePath -or [IO.Path]::IsPathRooted($relativePath)) {
+      throw 'file-system tree relative path is invalid'
+    }
+    $kind = if ($entry.PSIsContainer) { 'D' } else { 'F' }
+    $relative = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($relativePath))
+    $identity = Get-FileSystemEntryIdentity $entry.FullName ([bool]$entry.PSIsContainer)
+    $records.Add(('{0}|{1}|{2}' -f $kind, $relative, $identity))
+  }
+  $recordArray = $records.ToArray()
+  [Array]::Sort($recordArray, [StringComparer]::Ordinal)
+  $payload = [Text.Encoding]::UTF8.GetBytes(($recordArray -join "`n"))
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($sha256.ComputeHash($payload)).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
+function Assert-MsiManagedFileSystemAuthority($Manifest) {
+  $installRootPath = if ($FixtureRoot) { $null } else {
+    Join-Path $env:ProgramFiles 'ProPR Desktop'
+  }
+  $installRoot = if ($FixtureRoot) {
+    @($Manifest.Directories | Where-Object {
+      $_.Owned -and [string]$_.Kind -ceq 'INSTALL_ROOT'
+    })
+  } else {
+    @($Manifest.Directories | Where-Object {
+      $_.Owned -and [string]$_.Kind -ceq 'INSTALL_ROOT' -and
+        (Test-SamePath ([string]$_.Path) $installRootPath)
+    })
+  }
+  $shortcutFolderPath = if ($FixtureRoot) { $null } else {
+    Join-Path ([Environment]::GetFolderPath(
+      [Environment+SpecialFolder]::CommonPrograms)) 'ProPR Desktop'
+  }
+  $shortcutFolder = if ($FixtureRoot) {
+    @($Manifest.Directories | Where-Object {
+      $_.Owned -and [string]$_.Kind -ceq 'SHORTCUT_FOLDER'
+    })
+  } else {
+    @($Manifest.Directories | Where-Object {
+      $_.Owned -and [string]$_.Kind -ceq 'SHORTCUT_FOLDER' -and
+        (Test-SamePath ([string]$_.Path) $shortcutFolderPath)
+    })
+  }
+  $shortcutPath = if ($FixtureRoot) { $null } else {
+    Join-Path $shortcutFolderPath 'ProPR Desktop.lnk'
+  }
+  $shortcut = if ($FixtureRoot) {
+    @($Manifest.Files | Where-Object {
+      $_.Owned -and [string]$_.Kind -ceq 'SHORTCUT_FILE'
+    })
+  } else {
+    @($Manifest.Files | Where-Object {
+      $_.Owned -and [string]$_.Kind -ceq 'SHORTCUT_FILE' -and
+        (Test-SamePath ([string]$_.Path) $shortcutPath)
+    })
+  }
+
+  foreach ($candidate in @(
+      [PSCustomObject]@{
+        Records = $installRoot; Path = $installRootPath; Directory = $true; Tree = $true
+      },
+      [PSCustomObject]@{
+        Records = $shortcutFolder; Path = $shortcutFolderPath; Directory = $true; Tree = $true
+      },
+      [PSCustomObject]@{
+        Records = $shortcut; Path = $shortcutPath; Directory = $false; Tree = $false
+      }
+    )) {
+    $candidatePath = if ($FixtureRoot -and $candidate.Records.Count -eq 1) {
+      [string]$candidate.Records[0].Path
+    } else { [string]$candidate.Path }
+    if (!$candidatePath -or !(Test-Path -LiteralPath $candidatePath)) { continue }
+    if ($candidate.Records.Count -ne 1) {
+      throw 'MSI-managed file-system authority is missing or ambiguous'
+    }
+    $record = $candidate.Records[0]
+    $entryIdentity = if ($candidate.Directory) {
+      [string]$record.Identity
+    } else { [string]$record.EntryIdentity }
+    if ([bool]$record.Provisional -or
+        $entryIdentity -notmatch '^[a-f0-9]{24}$' -or
+        (Get-FileSystemEntryIdentity $candidatePath $candidate.Directory) -cne
+          $entryIdentity) {
+      throw 'MSI-managed file-system object identity does not match'
+    }
+    if ($candidate.Tree) {
+      if ([string]$record.TreeIdentity -notmatch '^[a-f0-9]{64}$' -or
+          (Get-FileSystemTreeIdentity $candidatePath) -cne
+            [string]$record.TreeIdentity) {
+        throw 'MSI-managed file-system tree identity does not match'
+      }
+    } elseif ([string]$record.Identity -notmatch '^[a-f0-9]{64}$' -or
+        (Get-FileIdentity $candidatePath) -cne [string]$record.Identity) {
+      throw 'MSI-managed shortcut content identity does not match'
+    }
+  }
+}
+
 function Get-RegistryTreeIdentity([string]$Path) {
   if (!(Test-Path -LiteralPath $Path)) { return $null }
   $root = Get-Item -LiteralPath $Path -ErrorAction Stop
@@ -1080,10 +1196,14 @@ try {
       $cleanupFailed = $true
     }
   }
+  if ([bool]$manifest.InstallAttempted) {
+    Assert-MsiManagedFileSystemAuthority $manifest
+  }
   if ($allowProvisionalMsiUninstall -and !$cleanupFailed) {
     $msiExitCode = 1618
     for ($attempt = 0; $attempt -lt 12 -and $msiExitCode -eq 1618; $attempt += 1) {
       if ($attempt -ne 0) { Start-Sleep -Seconds 2 }
+      Assert-MsiManagedFileSystemAuthority $manifest
       $msi = Start-Process msiexec.exe -ArgumentList @(
         '/x', "`"$resolvedInstaller`"", '/qn', '/norestart'
       ) -PassThru -WindowStyle Hidden -ErrorAction Stop

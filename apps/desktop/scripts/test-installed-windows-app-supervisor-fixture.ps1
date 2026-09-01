@@ -8,7 +8,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-Add-Type -TypeDefinition @'
+function Initialize-FixtureDirectoryIdentity {
+  Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
@@ -37,7 +38,7 @@ public static class ProPRFixtureDirectoryIdentity
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetFileInformationByHandle(
         SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
-    public static string Read(string path)
+    public static string ReadEntry(string path, bool expectDirectory)
     {
         using (SafeFileHandle handle = CreateFile(
             path, 0x80, 0x7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero))
@@ -47,15 +48,18 @@ public static class ProPRFixtureDirectoryIdentity
             BY_HANDLE_FILE_INFORMATION information;
             if (!GetFileInformationByHandle(handle, out information))
                 throw new Win32Exception(Marshal.GetLastWin32Error());
+            bool isDirectory = (information.FileAttributes & 0x10) != 0;
             if ((information.FileAttributes & 0x400) != 0 ||
-                (information.FileAttributes & 0x10) == 0)
-                throw new InvalidOperationException("fixture directory identity changed");
+                isDirectory != expectDirectory)
+                throw new InvalidOperationException("fixture entry identity changed");
             return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
                 information.FileIndexHigh, information.FileIndexLow);
         }
     }
+    public static string Read(string path) { return ReadEntry(path, true); }
 }
 '@
+}
 $scenario = $env:PROPR_SUPERVISOR_FIXTURE_SCENARIO
 $stateDirectory = $env:PROPR_SUPERVISOR_FIXTURE_STATE_DIRECTORY
 if ($scenario -notin @(
@@ -65,6 +69,7 @@ if ($scenario -notin @(
     'TORN_MARKER',
     'STALE_MARKER',
     'INACCESSIBLE_MARKER',
+    'NEGATIVE_EXIT',
     'CANCELLATION',
     'OWNED_RESOURCES_NORMAL_SUCCESS',
     'OWNED_RESOURCES_FOR_INTERRUPTION',
@@ -75,6 +80,8 @@ if ($scenario -notin @(
     'SMOKE_TOKEN_MISMATCH_THEN_DEADLINE',
     'PRIMARY_FALLBACK_FOREIGN_DESCENDANTS',
     'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE',
+    'OWNED_EXECUTABLE_REPLACED_THEN_DEADLINE',
+    'OWNED_SHORTCUT_REPLACED_THEN_DEADLINE',
     'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
     'OWNED_RESOURCES_THEN_DEADLINE'
   )) {
@@ -153,6 +160,43 @@ function Get-FixtureFileIdentity([string]$Path) {
   }
 }
 
+function Get-FixtureEntryIdentity([string]$Path, [bool]$Directory) {
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if ($item.PSIsContainer -ne $Directory -or
+      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'fixture file-system object identity is invalid'
+  }
+  return [ProPRFixtureDirectoryIdentity]::ReadEntry($item.FullName, $Directory)
+}
+
+function Get-FixtureTreeIdentity([string]$Path) {
+  $root = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (!$root.PSIsContainer -or
+      ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'fixture tree root identity is invalid'
+  }
+  $rootPath = $root.FullName.TrimEnd('\')
+  $records = [Collections.Generic.List[string]]::new()
+  $records.Add(('D||{0}' -f (Get-FixtureEntryIdentity $rootPath $true)))
+  foreach ($entry in @(Get-ChildItem -LiteralPath $rootPath -Recurse -Force -ErrorAction Stop)) {
+    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'fixture tree contains a reparse point'
+    }
+    $relativePath = $entry.FullName.Substring($rootPath.Length).TrimStart('\')
+    $kind = if ($entry.PSIsContainer) { 'D' } else { 'F' }
+    $relative = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($relativePath))
+    $identity = Get-FixtureEntryIdentity $entry.FullName ([bool]$entry.PSIsContainer)
+    $records.Add(('{0}|{1}|{2}' -f $kind, $relative, $identity))
+  }
+  $recordArray = $records.ToArray()
+  [Array]::Sort($recordArray, [StringComparer]::Ordinal)
+  $payload = [Text.Encoding]::UTF8.GetBytes(($recordArray -join "`n"))
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($sha256.ComputeHash($payload)).Replace('-', '').ToLowerInvariant()
+  } finally { $sha256.Dispose() }
+}
+
 function Set-FixtureSmokeAcl([string]$Path, [string]$UserSid) {
   $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
   $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
@@ -193,6 +237,7 @@ function New-OwnedFixtureResources(
   [ValidateSet('BEFORE_PROMOTION','AFTER_PROMOTION','AFTER_ARTIFACTS')]
     [string]$SmokeCheckpoint = 'AFTER_ARTIFACTS'
 ) {
+  Initialize-FixtureDirectoryIdentity
   $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
     ConvertFrom-Json -ErrorAction Stop
   if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 2 -or
@@ -203,6 +248,7 @@ function New-OwnedFixtureResources(
   $token = [Guid]::NewGuid().ToString('N')
   $ownedRoot = Join-Path $stateDirectory 'owned'
   $installRoot = Join-Path $ownedRoot 'install-tree'
+  $executable = Join-Path $installRoot 'propr-desktop.exe'
   $shortcutFolder = Join-Path $ownedRoot 'shortcut-folder'
   $shortcut = Join-Path $shortcutFolder 'ProPR Desktop.lnk'
   $smokeDirectory = Join-Path $ownedRoot 'smoke-data'
@@ -212,7 +258,7 @@ function New-OwnedFixtureResources(
     [void](New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop)
     Write-FixtureOwnershipToken (Join-Path $directory '.propr-installed-app-owner') $token
   }
-  [IO.File]::WriteAllText((Join-Path $installRoot 'installed.txt'), 'owned', [Text.Encoding]::ASCII)
+  [IO.File]::WriteAllText($executable, 'owned-executable', [Text.Encoding]::ASCII)
   [IO.File]::WriteAllText($shortcut, 'owned-shortcut', [Text.Encoding]::ASCII)
 
   $registryPath = "Registry::HKEY_LOCAL_MACHINE\Software\ProPRSupervisorFixture\$($manifest.RunId)\owned"
@@ -275,8 +321,16 @@ function New-OwnedFixtureResources(
 
   $ownedDirectories = @(
     [ordered]@{ Kind = 'FIXTURE_ROOT'; Path = $ownedRoot; Owned = $true; Token = $token },
-    [ordered]@{ Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true; Token = $token },
-    [ordered]@{ Kind = 'SHORTCUT_FOLDER'; Path = $shortcutFolder; Owned = $true; Token = $token },
+    [ordered]@{
+      Kind = 'INSTALL_ROOT'; Path = $installRoot; Owned = $true; Token = $token
+      Identity = (Get-FixtureEntryIdentity $installRoot $true)
+      TreeIdentity = (Get-FixtureTreeIdentity $installRoot); Provisional = $false
+    },
+    [ordered]@{
+      Kind = 'SHORTCUT_FOLDER'; Path = $shortcutFolder; Owned = $true; Token = $token
+      Identity = (Get-FixtureEntryIdentity $shortcutFolder $true)
+      TreeIdentity = (Get-FixtureTreeIdentity $shortcutFolder); Provisional = $false
+    },
     $smokeRecord
   )
   $conflictingDirectories = @(
@@ -287,14 +341,17 @@ function New-OwnedFixtureResources(
   $manifest.Directories = @($ownedDirectories) + @($conflictingDirectories)
   $manifest.Files = @(
     [ordered]@{
-      Kind = 'FIXTURE_FILE'; Path = (Join-Path $installRoot 'installed.txt')
+      Kind = 'FIXTURE_FILE'; Path = $executable
       Owned = $true; Token = $null
-      Identity = (Get-FixtureFileIdentity (Join-Path $installRoot 'installed.txt'))
+      Identity = (Get-FixtureFileIdentity $executable)
+      EntryIdentity = (Get-FixtureEntryIdentity $executable $false)
       Provisional = $false
     },
     [ordered]@{
       Kind = 'SHORTCUT_FILE'; Path = $shortcut; Owned = $true; Token = $token
-      Identity = (Get-FixtureFileIdentity $shortcut); Provisional = $false
+      Identity = (Get-FixtureFileIdentity $shortcut)
+      EntryIdentity = (Get-FixtureEntryIdentity $shortcut $false)
+      Provisional = $false
     }
   )
   if ($env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_SHORTCUT) {
@@ -322,6 +379,7 @@ function New-OwnedFixtureResources(
     }
   }
   $manifest.Profiles = @()
+  $manifest.InstallAttempted = $true
   if ($env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_PROFILE_SID) {
     $manifest.Profiles += [ordered]@{
       Sid = $env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_PROFILE_SID
@@ -371,6 +429,7 @@ function New-OwnedFixtureResources(
   $resourceState = [ordered]@{
     OwnedRoot = $ownedRoot
     InstallRoot = $installRoot
+    Executable = $executable
     ShortcutFolder = $shortcutFolder
     Shortcut = $shortcut
     SmokeDirectory = $smokeDirectory
@@ -391,6 +450,7 @@ function New-SmokeCheckpointFixtureResources(
   [ValidateSet('BEFORE_PROMOTION','AFTER_PROMOTION','AFTER_ARTIFACTS')]
     [string]$Checkpoint
 ) {
+  Initialize-FixtureDirectoryIdentity
   $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
     ConvertFrom-Json -ErrorAction Stop
   if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 2 -or
@@ -482,16 +542,45 @@ function Replace-FixtureOwnedResources {
       [Text.Encoding]::ASCII
     )
   }
-  Remove-Item -LiteralPath $state.InstallRoot -Recurse -Force -ErrorAction Stop
+  $installRootBackup = Join-Path $stateDirectory 'original-install-tree'
+  $shortcutBackup = Join-Path $stateDirectory 'original-shortcut.lnk'
+  Move-Item -LiteralPath $state.InstallRoot -Destination $installRootBackup -ErrorAction Stop
   [void](New-Item -ItemType Directory -Path $state.InstallRoot -ErrorAction Stop)
   [IO.File]::WriteAllText(
     (Join-Path $state.InstallRoot 'foreign.txt'),
     'foreign-install-tree',
     [Text.Encoding]::ASCII
   )
+  Move-Item -LiteralPath $state.Shortcut -Destination $shortcutBackup -ErrorAction Stop
   [IO.File]::WriteAllText($state.Shortcut, 'foreign-shortcut', [Text.Encoding]::ASCII)
   Set-ItemProperty -LiteralPath $state.RegistryPath `
     -Name 'ProPRInstalledAppOwner' -Value 'foreign-owner'
+  $state | Add-Member -NotePropertyName InstallRootBackup -NotePropertyValue $installRootBackup
+  $state | Add-Member -NotePropertyName ShortcutBackup -NotePropertyValue $shortcutBackup
+  $state | ConvertTo-Json -Compress | Set-Content -LiteralPath `
+    (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
+}
+
+function Replace-FixtureExecutable {
+  $state = Get-Content -LiteralPath (Join-Path $stateDirectory 'resources.json') `
+    -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
+  $backup = Join-Path $stateDirectory 'original-executable.exe'
+  Move-Item -LiteralPath $state.Executable -Destination $backup -ErrorAction Stop
+  [IO.File]::WriteAllText($state.Executable, 'foreign-executable', [Text.Encoding]::ASCII)
+  $state | Add-Member -NotePropertyName ExecutableBackup -NotePropertyValue $backup
+  $state | ConvertTo-Json -Compress | Set-Content -LiteralPath `
+    (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
+}
+
+function Replace-FixtureShortcut {
+  $state = Get-Content -LiteralPath (Join-Path $stateDirectory 'resources.json') `
+    -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
+  $backup = Join-Path $stateDirectory 'original-shortcut.lnk'
+  Move-Item -LiteralPath $state.Shortcut -Destination $backup -ErrorAction Stop
+  [IO.File]::WriteAllText($state.Shortcut, 'foreign-shortcut', [Text.Encoding]::ASCII)
+  $state | Add-Member -NotePropertyName ShortcutBackup -NotePropertyValue $backup
+  $state | ConvertTo-Json -Compress | Set-Content -LiteralPath `
+    (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
 }
 
 function Add-FixtureForeignChild {
@@ -526,6 +615,7 @@ function Add-FixtureForeignSmokeDescendant {
 }
 
 function Test-PrimaryFallbackForeignDescendants {
+  Initialize-FixtureDirectoryIdentity
   $installRoot = Join-Path $stateDirectory 'primary-install-root'
   $shortcutFolder = Join-Path $stateDirectory 'primary-shortcut-folder'
   [void](New-Item -ItemType Directory -Path $installRoot -ErrorAction Stop)
@@ -650,6 +740,11 @@ switch ($scenario) {
       [DateTime]::UtcNow.AddSeconds(10).Ticks)
     Start-Sleep -Seconds 300
   }
+  'NEGATIVE_EXIT' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(10).Ticks)
+    Start-Sleep -Milliseconds 500
+    exit -1
+  }
   'OWNED_RESOURCES_THEN_DEADLINE' {
     Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
     New-OwnedFixtureResources
@@ -717,6 +812,22 @@ switch ($scenario) {
     Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
     New-OwnedFixtureResources
     Replace-FixtureOwnedResources
+    Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'OWNED_EXECUTABLE_REPLACED_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-OwnedFixtureResources
+    Replace-FixtureExecutable
+    Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
+      [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'OWNED_SHORTCUT_REPLACED_THEN_DEADLINE' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-OwnedFixtureResources
+    Replace-FixtureShortcut
     Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
       [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
     Start-Sleep -Seconds 300

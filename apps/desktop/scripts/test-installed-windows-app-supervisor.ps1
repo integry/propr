@@ -172,21 +172,25 @@ function Restore-ReplacedFixtureAuthority($Owned) {
     [string]$Owned.Token,
     [Text.Encoding]::ASCII
   )
-  if (Test-Path -LiteralPath $Owned.InstallRoot) {
+  if ($Owned.PSObject.Properties['InstallRootBackup']) {
     Remove-Item -LiteralPath $Owned.InstallRoot -Recurse -Force -ErrorAction Stop
+    Move-Item -LiteralPath $Owned.InstallRootBackup -Destination $Owned.InstallRoot `
+      -ErrorAction Stop
+  } elseif ($Owned.PSObject.Properties['ExecutableBackup']) {
+    Remove-Item -LiteralPath $Owned.Executable -Force -ErrorAction Stop
+    Move-Item -LiteralPath $Owned.ExecutableBackup -Destination $Owned.Executable `
+      -ErrorAction Stop
   }
-  [void](New-Item -ItemType Directory -Path $Owned.InstallRoot -ErrorAction Stop)
-  [IO.File]::WriteAllText(
-    (Join-Path $Owned.InstallRoot '.propr-installed-app-owner'),
-    [string]$Owned.Token,
-    [Text.Encoding]::ASCII
-  )
   [IO.File]::WriteAllText(
     (Join-Path $Owned.ShortcutFolder '.propr-installed-app-owner'),
     [string]$Owned.Token,
     [Text.Encoding]::ASCII
   )
-  [IO.File]::WriteAllText($Owned.Shortcut, 'owned-shortcut', [Text.Encoding]::ASCII)
+  if ($Owned.PSObject.Properties['ShortcutBackup']) {
+    Remove-Item -LiteralPath $Owned.Shortcut -Force -ErrorAction Stop
+    Move-Item -LiteralPath $Owned.ShortcutBackup -Destination $Owned.Shortcut `
+      -ErrorAction Stop
+  }
   Set-ItemProperty -LiteralPath $Owned.RegistryPath `
     -Name 'ProPRInstalledAppOwner' -Value ([string]$Owned.Token)
 }
@@ -200,6 +204,28 @@ function Assert-ReplacedFixtureResourcesSurvive($Owned) {
   Assert-True ((Get-ItemPropertyValue -LiteralPath $Owned.RegistryPath `
       -Name 'ProPRInstalledAppOwner') -ceq 'foreign-owner') `
     'replacement registry authority was removed or changed'
+}
+
+function Assert-ReplacedExecutableSurvives($Owned) {
+  Assert-True ((Get-Content -LiteralPath $Owned.Executable -Raw).Trim() -ceq
+      'foreign-executable') 'replacement executable was removed or changed'
+}
+
+function Assert-ReplacedShortcutSurvives($Owned) {
+  Assert-True ((Get-Content -LiteralPath $Owned.Shortcut -Raw).Trim() -ceq
+      'foreign-shortcut') 'replacement shortcut was removed or changed'
+}
+
+function Assert-MsiPreflightPreservedResources($Owned) {
+  foreach ($path in @(
+      $Owned.OwnedRoot, $Owned.InstallRoot, $Owned.ShortcutFolder,
+      $Owned.Shortcut, $Owned.SmokeDirectory, $Owned.RegistryPath
+    )) {
+    Assert-True (Test-Path -LiteralPath $path) `
+      'MSI file-system preflight failure mutated a run resource'
+  }
+  Assert-True ($null -ne (Get-LocalUser -Name $Owned.UserName -ErrorAction SilentlyContinue)) `
+    'MSI file-system preflight failure removed the run-owned user'
 }
 
 function Invoke-WorkflowCleanupController(
@@ -235,27 +261,36 @@ function Invoke-WorkflowCleanupController(
     $output = $process.StandardOutput.ReadToEnd()
     $errorOutput = $process.StandardError.ReadToEnd()
     Assert-True ($output.Length -le 512) 'workflow cleanup fixture output exceeded its fixed bound'
-    if ($errorOutput.Length -ne 0) {
-      $stderrCode = if ($errorOutput.Length -gt 4096) {
-        'PROPR_WORKFLOW_CLEANUP_FIXTURE:CONTROLLER_STDERR_LIMIT'
-      } else { 'PROPR_WORKFLOW_CLEANUP_FIXTURE:CONTROLLER_STDERR_PRESENT' }
-      throw $stderrCode
-    }
     $outputLines = @($output -split '\r?\n' | Where-Object { $_ })
     Assert-True ($outputLines.Count -eq 2) `
       'workflow cleanup fixture did not emit exactly two fixed result lines'
-    Assert-True ($outputLines[0] -match
-      '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:(COMPLETE|FAILED|TIMED_OUT)$') `
+    $resultMatch = [regex]::Match(
+      $outputLines[0],
+      '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:(COMPLETE|FAILED|TIMED_OUT)$'
+    )
+    Assert-True $resultMatch.Success `
       'workflow cleanup fixture emitted an invalid fixed result'
-    $resultName = $Matches[1]
-    Assert-True ($outputLines[1] -match
-      '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):EXIT_CODE:([0-9]+)$') `
+    $resultName = $resultMatch.Groups[1].Value
+    $statusMatch = [regex]::Match(
+      $outputLines[1],
+      '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):EXIT_CODE:([0-9]+)$'
+    )
+    Assert-True $statusMatch.Success `
       'workflow cleanup fixture emitted an invalid fixed status'
+    $controllerStatus = $statusMatch.Groups[1].Value
+    $reportedExitCode = [int]$statusMatch.Groups[2].Value
+    if ($errorOutput.Length -ne 0) {
+      $stderrCode = if ($errorOutput.Length -gt 4096) {
+        'CONTROLLER_STDERR_LIMIT'
+      } else { 'CONTROLLER_STDERR_PRESENT' }
+      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:{0}:STATUS:{1}:EXIT_CODE:{2}' -f `
+        $stderrCode, $controllerStatus, $reportedExitCode)
+    }
     return [PSCustomObject]@{
       ExitCode = $process.ExitCode
       Result = $resultName
-      ControllerStatus = $Matches[1]
-      ReportedExitCode = [int]$Matches[2]
+      ControllerStatus = $controllerStatus
+      ReportedExitCode = $reportedExitCode
       Output = $output
     }
   } finally {
@@ -335,6 +370,8 @@ function Invoke-FixtureScenario(
     } elseif ($Scenario -in @(
         'OWNED_RESOURCES_THEN_DEADLINE',
         'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
+        'OWNED_EXECUTABLE_REPLACED_THEN_DEADLINE',
+        'OWNED_SHORTCUT_REPLACED_THEN_DEADLINE',
         'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE',
         'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE',
         'SMOKE_AFTER_PROMOTION_THEN_DEADLINE',
@@ -389,6 +426,18 @@ function Test-OperationDeadlineAndTreeTermination {
   Assert-Contains $result.Output `
     'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:INSTALL:MSI_INSTALL:BEGIN:TIMED_OUT' `
     'operation deadline did not emit the fixed redacted timeout line'
+}
+
+function Test-NegativeWorkerExitFinalization {
+  $result = Invoke-FixtureScenario 'NEGATIVE_EXIT'
+  Assert-True ($result.ExitCode -eq -1) `
+    'negative worker exit status was not preserved after bounded finalization'
+  Assert-Contains $result.Output `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:ACCEPTED:INITIALIZATION:PATHS:BEGIN' `
+    'negative-exit fixture did not publish a valid marker before crashing'
+  Assert-Contains $result.Output `
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+    'negative worker exit did not enter bounded tree termination and cleanup'
 }
 
 function Test-FailClosedMarkers {
@@ -679,6 +728,46 @@ function Test-PreExistingCleanupOwnership {
     Assert-OwnedResourcesGone $replacementOwned
     Assert-True (!(Test-Path -LiteralPath $replacementOwned.ManifestPath)) `
       'successful standalone cleanup retry did not consume recovery authority'
+
+    foreach ($replacementCase in @(
+        [PSCustomObject]@{
+          Scenario = 'OWNED_EXECUTABLE_REPLACED_THEN_DEADLINE'
+          Directory = 'replaced-executable'
+          Label = 'executable'
+        },
+        [PSCustomObject]@{
+          Scenario = 'OWNED_SHORTCUT_REPLACED_THEN_DEADLINE'
+          Directory = 'replaced-shortcut'
+          Label = 'shortcut'
+        }
+      )) {
+      $replacedStateDirectory = New-StateDirectory $replacementCase.Directory
+      $replacedResult = Invoke-FixtureScenario `
+        $replacementCase.Scenario $replacedStateDirectory
+      Assert-True ($replacedResult.ExitCode -eq 125) `
+        "replacement $($replacementCase.Label) did not fail before cleanup"
+      Assert-Contains $replacedResult.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED' `
+        "replacement $($replacementCase.Label) did not emit fixed cleanup failure evidence"
+      $replacedOwned = Read-FixtureResourceState $replacedStateDirectory
+      if ($replacementCase.Label -ceq 'executable') {
+        Assert-ReplacedExecutableSurvives $replacedOwned
+      } else {
+        Assert-ReplacedShortcutSurvives $replacedOwned
+      }
+      Assert-MsiPreflightPreservedResources $replacedOwned
+      $replacedManifest = Get-Content -LiteralPath $replacedOwned.ManifestPath `
+        -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+      Assert-True ($replacedManifest.State -ceq 'ACTIVE') `
+        "replacement $($replacementCase.Label) discarded ACTIVE recovery authority"
+      Restore-ReplacedFixtureAuthority $replacedOwned
+      $replacedRetry = Invoke-WorkflowCleanupController `
+        $replacedOwned.ManifestPath $replacedOwned.RunId $replacedStateDirectory
+      Assert-True ($replacedRetry.ExitCode -eq 0 -and
+          $replacedRetry.Result -ceq 'COMPLETE') `
+        "replacement $($replacementCase.Label) authority did not retry to success"
+      Assert-OwnedResourcesGone $replacedOwned
+    }
 
     $foreignChildStateDirectory = New-StateDirectory 'in-place-foreign-child'
     $foreignChildResult = Invoke-FixtureScenario `
@@ -1432,6 +1521,7 @@ Assert-True ($actualArchitecture -ceq $Architecture) `
 try {
   Test-BootstrapTimeout
   Test-OperationDeadlineAndTreeTermination
+  Test-NegativeWorkerExitFinalization
   Test-FailClosedMarkers
   Test-LiveCancellationAndRedaction
   Test-PrimaryWorkerFallbackForeignDescendants

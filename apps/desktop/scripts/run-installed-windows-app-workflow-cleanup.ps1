@@ -112,6 +112,11 @@ trap {
 
 $controllerBodyActive = $true
 :controllerBody do {
+# The controller has a fixed stdout protocol and maps every caught failure to
+# that protocol. Suppress the host's architecture-specific raw error rendering
+# before cold type load; child stdout/stderr remain separately pumped, bounded,
+# and classified below.
+[Console]::SetError([IO.TextWriter]::Null)
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
