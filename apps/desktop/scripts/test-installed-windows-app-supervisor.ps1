@@ -167,6 +167,21 @@ function Assert-ProcessTreeGone($State) {
   throw 'owned worker process tree survived supervisor completion'
 }
 
+function Get-SanitizedSupervisorMarkerDiagnostic($Result) {
+  $lastValidPresent = [regex]::IsMatch(
+    [string]$Result.Output,
+    '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:(?:NONE|[A-Z_]+:[A-Z_]+:(?:BEGIN|COMPLETE|FAILED))\r?$'
+  )
+  $postTerminationPresent = [regex]::IsMatch(
+    [string]$Result.Output,
+    '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:(?:COMPLETE|FAILED|TIMED_OUT)\r?$'
+  )
+  $signedExit = ([int]$Result.ExitCode).ToString(
+    [Globalization.CultureInfo]::InvariantCulture)
+  return 'SUPERVISOR_EXIT:{0}:LAST_VALID:{1}:POST_TERMINATION:{2}' -f `
+    $signedExit, ([int]$lastValidPresent), ([int]$postTerminationPresent)
+}
+
 function Assert-OwnedResourcesGone($Owned) {
   foreach ($ownedPath in @(
     $Owned.OwnedRoot, $Owned.InstallRoot, $Owned.ShortcutFolder,
@@ -252,6 +267,44 @@ function Assert-MsiPreflightPreservedResources($Owned) {
     'MSI file-system preflight failure removed the run-owned user'
 }
 
+function Get-SanitizedControllerStartupDiagnostic(
+  [string]$ErrorText,
+  [int]$ProcessExitCode
+) {
+  $classification = if ($ErrorText -match
+      '(?im)\bParserError\b|\bMissingEndCurlyBrace\b|\bUnexpectedToken\b|\bParseException\b') {
+    'PARSER'
+  } elseif ($ErrorText -match
+      '(?im)\bParameterBinding(?:Exception|ValidationException)?\b|cannot bind (?:argument|parameter)|parameter cannot be processed') {
+    'PARAMETER_BINDING'
+  } elseif ($ErrorText -match
+      '(?im)\bAdd-Type\b|\bTypeNotFound\b|unable to find type|error CS[0-9]{4}') {
+    'TYPE_LOAD'
+  } else {
+    'OTHER'
+  }
+  $lineNumber = 0
+  $lineMatch = [regex]::Match(
+    $ErrorText,
+    '(?im)^\s*at .+?:(\d+)\s+char:\d+\s*$'
+  )
+  if (!$lineMatch.Success) {
+    $lineMatch = [regex]::Match($ErrorText, '(?im)\bline\s+(\d+)\b')
+  }
+  if ($lineMatch.Success) {
+    [void]([int]::TryParse(
+      $lineMatch.Groups[1].Value,
+      [Globalization.NumberStyles]::None,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [ref]$lineNumber
+    ))
+  }
+  $signedExit = $ProcessExitCode.ToString([Globalization.CultureInfo]::InvariantCulture)
+  $numericLine = $lineNumber.ToString([Globalization.CultureInfo]::InvariantCulture)
+  return 'STARTUP_CLASS:{0}:PROCESS_EXIT:{1}:LINE:{2}' -f `
+    $classification, $signedExit, $numericLine
+}
+
 function Invoke-WorkflowCleanupController(
   [string]$ManifestPath,
   [string]$RunId,
@@ -292,16 +345,20 @@ function Invoke-WorkflowCleanupController(
     $lineCount = if ($outputLines.Count -ge 3) { '3+' } else { [string]$outputLines.Count }
     $stderrCount = [Math]::Min(4096, $errorOutput.Length)
     if ($output.Length -gt 512 -or $outputLines.Count -ne 2) {
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}' -f `
-        $lineCount, $stderrCount)
+      $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
+        $errorOutput ([int]$process.ExitCode)
+      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}:{2}' -f `
+        $lineCount, $stderrCount, $startupDiagnostic)
     }
     $resultMatch = [regex]::Match(
       $outputLines[0],
       '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:(COMPLETE|FAILED|TIMED_OUT)$'
     )
     if (!$resultMatch.Success) {
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}' -f `
-        $lineCount, $stderrCount)
+      $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
+        $errorOutput ([int]$process.ExitCode)
+      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}:{2}' -f `
+        $lineCount, $stderrCount, $startupDiagnostic)
     }
     $resultName = $resultMatch.Groups[1].Value
     $statusMatch = [regex]::Match(
@@ -309,8 +366,10 @@ function Invoke-WorkflowCleanupController(
       '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):EXIT_CODE:([0-9]+)$'
     )
     if (!$statusMatch.Success) {
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}' -f `
-        $lineCount, $stderrCount)
+      $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
+        $errorOutput ([int]$process.ExitCode)
+      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}:{2}' -f `
+        $lineCount, $stderrCount, $startupDiagnostic)
     }
     $controllerStatus = $statusMatch.Groups[1].Value
     $reportedExitCode = [int]$statusMatch.Groups[2].Value
@@ -918,6 +977,25 @@ function Test-PreExistingCleanupOwnership {
           [string]$profileMismatchOwned.MismatchedProfilePath,
           [StringComparison]::OrdinalIgnoreCase
         )) 'mismatched durable profile record was silently re-authorized'
+
+    # A canonical profile belonging to another direct child is still not an
+    # owned path: its leaf is not the authenticated run username.
+    $ownedProfileRecords[0].LocalPath = $runnerProfileBefore.CanonicalLocalPath
+    Write-TestOwnershipManifest $profileMismatchOwned.ManifestPath $profileMismatchManifest
+    $alternateLeafCleanup = Invoke-WorkflowCleanupController `
+      $profileMismatchOwned.ManifestPath $profileMismatchOwned.RunId $profileMismatchDirectory
+    Assert-True ($alternateLeafCleanup.ExitCode -eq 21 -and
+        $alternateLeafCleanup.Result -ceq 'FAILED') `
+      'alternate ProfilesDirectory leaf did not fail closed'
+    $alternateLeafProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+      Where-Object { $_.SID -ceq [string]$profileMismatchOwned.UserSid })
+    Assert-True ($alternateLeafProfiles.Count -eq 1) `
+      'alternate ProfilesDirectory leaf selected the owned profile for deletion'
+    $alternateLeafManifest = Get-Content -LiteralPath $profileMismatchOwned.ManifestPath `
+      -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    Assert-True ($alternateLeafManifest.State -ceq 'ACTIVE') `
+      'alternate ProfilesDirectory leaf discarded ACTIVE recovery authority'
+
     $ownedProfileRecords[0].LocalPath = [string]$profileMismatchOwned.ProfilePath
     Write-TestOwnershipManifest $profileMismatchOwned.ManifestPath $profileMismatchManifest
     $profileMismatchRetry = Invoke-WorkflowCleanupController `
@@ -1321,8 +1399,9 @@ function Test-SmokePromotionInterruptionAuthority {
 function Test-PrimaryWorkerFallbackForeignDescendants {
   $stateDirectory = New-StateDirectory 'primary-fallback-foreign-descendants'
   $result = Invoke-FixtureScenario 'PRIMARY_FALLBACK_FOREIGN_DESCENDANTS' $stateDirectory
+  $diagnostic = Get-SanitizedSupervisorMarkerDiagnostic $result
   Assert-True ($result.ExitCode -eq 0) `
-    'primary worker fallback foreign-descendant fixture did not complete'
+    "primary worker fallback foreign-descendant fixture did not complete:$diagnostic"
   $state = Get-Content -LiteralPath (Join-Path $stateDirectory 'primary-fallback.json') `
     -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
   Assert-True ((Get-Content -LiteralPath $state.InstallForeign -Raw).Trim() -ceq `

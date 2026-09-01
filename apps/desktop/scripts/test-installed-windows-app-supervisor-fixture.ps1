@@ -709,7 +709,6 @@ function Add-FixtureForeignSmokeDescendant {
 }
 
 function Test-PrimaryFallbackForeignDescendants {
-  Initialize-FixtureDirectoryIdentity
   $installRoot = Join-Path $stateDirectory 'primary-install-root'
   $shortcutFolder = Join-Path $stateDirectory 'primary-shortcut-folder'
   [void](New-Item -ItemType Directory -Path $installRoot -ErrorAction Stop)
@@ -719,9 +718,10 @@ function Test-PrimaryFallbackForeignDescendants {
   [IO.File]::WriteAllText($installForeign, 'foreign-install', [Text.Encoding]::ASCII)
   [IO.File]::WriteAllText($shortcutForeign, 'foreign-shortcut', [Text.Encoding]::ASCII)
   foreach ($directory in @($installRoot, $shortcutFolder)) {
-    $identity = [ProPRFixtureDirectoryIdentity]::Read($directory)
-    if ([ProPRFixtureDirectoryIdentity]::Read($directory) -cne $identity) {
-      throw 'primary fallback directory identity changed'
+    $item = Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+    if (!$item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'primary fallback fixture directory is invalid'
     }
     if (@(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop).Count -eq 0) {
       Remove-Item -LiteralPath $directory -Force -ErrorAction Stop

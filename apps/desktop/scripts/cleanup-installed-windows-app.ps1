@@ -140,19 +140,60 @@ function Test-SamePath([string]$Left, [string]$Right) {
   )
 }
 
-function Resolve-CanonicalProfileLocalPath([string]$LocalPath) {
-  if ([string]::IsNullOrWhiteSpace($LocalPath) -or
-      ![IO.Path]::IsPathRooted($LocalPath)) {
-    throw 'profile local path is invalid'
+function Resolve-CanonicalNonReparseDirectory([string]$Path, [string]$Label) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or ![IO.Path]::IsPathRooted($Path)) {
+    throw "$Label path is invalid"
   }
-  $fullPath = [IO.Path]::GetFullPath($LocalPath).TrimEnd('\')
+  $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+  $pathRoot = [IO.Path]::GetPathRoot($fullPath)
+  if ([string]::IsNullOrWhiteSpace($pathRoot)) { throw "$Label path root is invalid" }
+  $rootItem = Get-Item -LiteralPath $pathRoot -Force -ErrorAction Stop
+  if (!$rootItem.PSIsContainer -or
+      ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "$Label path root is invalid"
+  }
+  $currentPath = $pathRoot
+  $components = @($fullPath.Substring($pathRoot.Length) -split '\\' |
+    Where-Object { $_.Length -ne 0 })
+  foreach ($component in $components) {
+    $currentPath = Join-Path $currentPath $component
+    $item = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop
+    if (!$item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "$Label path has invalid ancestry"
+    }
+  }
   $resolved = (Resolve-Path -LiteralPath $fullPath -ErrorAction Stop).ProviderPath.TrimEnd('\')
-  $item = Get-Item -LiteralPath $resolved -Force -ErrorAction Stop
-  if (!$item.PSIsContainer -or
-      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-    throw 'profile local path is not a canonical directory'
+  if (![string]::Equals(
+      [IO.Path]::GetFullPath($resolved).TrimEnd('\'),
+      $fullPath,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw "$Label path is not canonical"
   }
-  return [IO.Path]::GetFullPath($resolved).TrimEnd('\')
+  return $fullPath
+}
+
+function Resolve-SystemProfilesDirectory {
+  $profileListPath = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+  $configured = [string](Get-ItemPropertyValue -LiteralPath $profileListPath `
+    -Name 'ProfilesDirectory' -ErrorAction Stop)
+  $expanded = [Environment]::ExpandEnvironmentVariables($configured)
+  return Resolve-CanonicalNonReparseDirectory $expanded 'system profiles directory'
+}
+
+function Resolve-ValidatedOwnedProfilePath([string]$LocalPath, [string]$UserName) {
+  if ($UserName -notmatch '^(?:propr-ci-|prpr)[a-f0-9]{8}$') {
+    throw 'owned profile username is invalid'
+  }
+  $profilesDirectory = Resolve-SystemProfilesDirectory
+  $canonicalLocalPath = Resolve-CanonicalNonReparseDirectory $LocalPath 'profile local'
+  $parent = Split-Path -Parent $canonicalLocalPath
+  $leaf = Split-Path -Leaf $canonicalLocalPath
+  if (!(Test-SamePath $parent $profilesDirectory) -or $leaf -cne $UserName) {
+    throw 'profile local path is not the exact owned direct child of ProfilesDirectory'
+  }
+  return $canonicalLocalPath
 }
 
 function Test-PathWithin([string]$Path, [string]$Root) {
@@ -1019,7 +1060,8 @@ function Promote-UncapturedOwnedProfiles($UserRecord, $Manifest) {
     if ([string]$profile.SID -cne $sid) {
       throw 'profile SID changed during ownership promotion'
     }
-    $canonicalLocalPath = Resolve-CanonicalProfileLocalPath ([string]$profile.LocalPath)
+    $canonicalLocalPath = Resolve-ValidatedOwnedProfilePath `
+      ([string]$profile.LocalPath) $name
     if (@($promoted | Where-Object {
         Test-SamePath ([string]$_.LocalPath) $canonicalLocalPath
       }).Count -ne 0) {
@@ -1054,13 +1096,33 @@ function Remove-OwnedProfiles($UserRecord, $ProfileRecords) {
     if ($profiles.Count -eq 0) { return }
     try {
       foreach ($profile in $profiles) {
-        $canonicalLocalPath = Resolve-CanonicalProfileLocalPath ([string]$profile.LocalPath)
-        $matchingRecords = @($ProfileRecords | Where-Object {
-          $_.Owned -and [string]$_.Sid -ceq $sid -and
-            (Test-SamePath ([string]$_.LocalPath) $canonicalLocalPath)
-        })
-        if ([string]$profile.SID -cne $sid -or $matchingRecords.Count -ne 1) {
+        if ([string]$profile.SID -cne $sid) {
           throw 'profile lacks exact durable SID and path ownership'
+        }
+        $canonicalLocalPath = Resolve-ValidatedOwnedProfilePath `
+          ([string]$profile.LocalPath) $name
+        $matchingRecords = @()
+        foreach ($record in @($ProfileRecords | Where-Object {
+            $_.Owned -and [string]$_.Sid -ceq $sid
+          })) {
+          $canonicalRecordPath = Resolve-ValidatedOwnedProfilePath `
+            ([string]$record.LocalPath) $name
+          if (Test-SamePath $canonicalRecordPath $canonicalLocalPath) {
+            $matchingRecords += $record
+          }
+        }
+        if ($matchingRecords.Count -ne 1) {
+          throw 'profile lacks exact durable SID and path ownership'
+        }
+        # Re-resolve the live path and its one durable record at the deletion
+        # boundary so a changed root, ancestor, depth, leaf, SID, or path fails closed.
+        $canonicalLocalPath = Resolve-ValidatedOwnedProfilePath `
+          ([string]$profile.LocalPath) $name
+        $canonicalRecordPath = Resolve-ValidatedOwnedProfilePath `
+          ([string]$matchingRecords[0].LocalPath) $name
+        if ([string]$profile.SID -cne $sid -or
+            !(Test-SamePath $canonicalRecordPath $canonicalLocalPath)) {
+          throw 'profile ownership changed immediately before deletion'
         }
         Remove-CimInstance -InputObject $profile -ErrorAction Stop
       }
@@ -1072,22 +1134,32 @@ function Remove-OwnedProfiles($UserRecord, $ProfileRecords) {
   throw 'owned profile cleanup did not complete'
 }
 
-function Remove-ExplicitOwnedProfile($Record) {
+function Remove-ExplicitOwnedProfile($Record, $UserRecord) {
   if (!$Record.Owned) { return }
   $sid = [string]$Record.Sid
   $localPath = [string]$Record.LocalPath
-  if ($sid -notmatch '^S-\d+(?:-\d+)+$' -or ![IO.Path]::IsPathRooted($localPath)) {
+  $name = [string]$UserRecord.Name
+  if (!$UserRecord.Owned -or [string]$UserRecord.Sid -cne $sid -or
+      $sid -notmatch '^S-\d+(?:-\d+)+$' -or ![IO.Path]::IsPathRooted($localPath)) {
     throw 'profile cleanup identity is invalid'
   }
   $profiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
     $_.SID -ceq $sid
   })
   foreach ($profile in $profiles) {
-    $canonicalRecordPath = Resolve-CanonicalProfileLocalPath $localPath
-    $canonicalCurrentPath = Resolve-CanonicalProfileLocalPath ([string]$profile.LocalPath)
+    $canonicalRecordPath = Resolve-ValidatedOwnedProfilePath $localPath $name
+    $canonicalCurrentPath = Resolve-ValidatedOwnedProfilePath `
+      ([string]$profile.LocalPath) $name
     if ($profile.SID -cne $sid -or
         !(Test-SamePath $canonicalCurrentPath $canonicalRecordPath)) {
       throw 'profile path ownership changed'
+    }
+    $canonicalRecordPath = Resolve-ValidatedOwnedProfilePath $localPath $name
+    $canonicalCurrentPath = Resolve-ValidatedOwnedProfilePath `
+      ([string]$profile.LocalPath) $name
+    if ($profile.SID -cne $sid -or
+        !(Test-SamePath $canonicalCurrentPath $canonicalRecordPath)) {
+      throw 'profile ownership changed immediately before deletion'
     }
     Remove-CimInstance -InputObject $profile -ErrorAction Stop
   }
@@ -1474,7 +1546,15 @@ try {
   }
   $profileCleanupFailed = $false
   foreach ($record in @($manifest.Profiles)) {
-    try { Remove-ExplicitOwnedProfile $record } catch {
+    try {
+      $profileOwners = @($manifest.Users | Where-Object {
+        $_.Owned -and [string]$_.Sid -ceq [string]$record.Sid
+      })
+      if ($record.Owned -and $profileOwners.Count -ne 1) {
+        throw 'profile durable owner identity is ambiguous'
+      }
+      if ($record.Owned) { Remove-ExplicitOwnedProfile $record $profileOwners[0] }
+    } catch {
       $profileCleanupFailed = $true
       $cleanupFailed = $true
     }

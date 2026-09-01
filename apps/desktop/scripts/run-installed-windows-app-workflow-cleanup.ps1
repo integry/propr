@@ -98,10 +98,7 @@ function Set-CaughtControllerFailure($ErrorRecord) {
   $script:fixedExitCode = 125
 }
 
-# The ordinary outer catch covers cold type loading and every controller-body
-# phase. It consumes PowerShell error records without host rendering and maps
-# them to the fixed protocol before bounded finalization runs.
-try {
+$invokeController = {
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -466,6 +463,13 @@ $TerminationTimeoutMilliseconds = $terminationTimeout
       $fixedExitCode = 21
     }
   }
+}
+
+# Keep the top-level launcher syntactically small and stable. Dot-sourcing the
+# body preserves script scope while the catch consumes type-load and body errors
+# without allowing the host to render raw diagnostics.
+try {
+  . $invokeController
 } catch {
   Set-CaughtControllerFailure $_
 }

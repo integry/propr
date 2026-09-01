@@ -639,11 +639,28 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppCleanup, /Promote-UncapturedOwnedProfiles/);
     assert.match(
       installedWindowsAppCleanup,
-      /\$matchingRecords = @\(\$ProfileRecords[\s\S]*Test-SamePath[\s\S]*\$matchingRecords\.Count -ne 1[\s\S]*Remove-CimInstance/,
+      /\$matchingRecords = @\(\)[\s\S]*Resolve-ValidatedOwnedProfilePath[\s\S]*\$matchingRecords\.Count -ne 1[\s\S]*Remove-CimInstance/,
     );
+    for (const script of [installedWindowsAppTest, installedWindowsAppCleanup]) {
+      assert.match(script, /Resolve-SystemProfilesDirectory/);
+      assert.match(script, /-Name 'ProfilesDirectory' -ErrorAction Stop/);
+      assert.match(script, /Resolve-CanonicalNonReparseDirectory/);
+      assert.match(script, /FileAttributes\]::ReparsePoint/);
+      assert.match(script, /Split-Path -Parent \$canonicalLocalPath/);
+      assert.match(script, /Split-Path -Leaf \$canonicalLocalPath/);
+      assert.match(script, /profile local path is not the exact owned direct child of ProfilesDirectory/);
+      assert.match(
+        script,
+        /Resolve-ValidatedOwnedProfilePath[\s\S]*profile ownership changed immediately before deletion[\s\S]*Remove-CimInstance/,
+      );
+    }
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /mismatched durable profile path did not fail closed[\s\S]*mismatched profile path discarded ACTIVE recovery authority/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /alternate ProfilesDirectory leaf did not fail closed[\s\S]*alternate ProfilesDirectory leaf discarded ACTIVE recovery authority/,
     );
     assert.match(installedWindowsAppCleanup, /Remove-OwnedRegistryKey/);
     assert.match(installedWindowsAppCleanup, /Remove-OwnedDirectory/);
@@ -743,7 +760,7 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /Write-Host/);
     assert.match(
       installedWindowsAppWorkflowCleanup,
-      /try \{\nAdd-Type -TypeDefinition @'[\s\S]*\$controllerPhase = 'PROCESS_WAIT'[\s\S]*\} catch \{\n\s+Set-CaughtControllerFailure \$_\n\}/,
+      /\$invokeController = \{\nAdd-Type -TypeDefinition @'[\s\S]*\$controllerPhase = 'PROCESS_WAIT'[\s\S]*\n\}\n\n#[^\n]+[\s\S]*try \{\n\s+\. \$invokeController\n\} catch \{\n\s+Set-CaughtControllerFailure \$_\n\}/,
     );
     assert.match(installedWindowsAppWorkflowCleanup, /CancelAndFinish/);
     assert.doesNotMatch(
@@ -793,6 +810,15 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisorBehaviorTest,
       /PROPR_WORKFLOW_CLEANUP_FIXTURE:\{0\}:STATUS:\{1\}:EXIT_CODE:\{2\}/,
     );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SanitizedControllerStartupDiagnostic/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /STARTUP_CLASS:\{0\}:PROCESS_EXIT:\{1\}:LINE:\{2\}/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /'PARSER'[\s\S]*'PARAMETER_BINDING'[\s\S]*'TYPE_LOAD'[\s\S]*'OTHER'/,
+    );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE/,
@@ -813,6 +839,16 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorFixture, /PRIMARY_FALLBACK_FOREIGN_DESCENDANTS/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /primary install fallback removed or changed/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /primary shortcut fallback removed or changed/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SanitizedSupervisorMarkerDiagnostic/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /SUPERVISOR_EXIT:\{0\}:LAST_VALID:\{1\}:POST_TERMINATION:\{2\}/,
+    );
+    const primaryFallbackFixture = installedWindowsAppSupervisorFixture.slice(
+      installedWindowsAppSupervisorFixture.indexOf('function Test-PrimaryFallbackForeignDescendants'),
+      installedWindowsAppSupervisorFixture.indexOf('function Start-FixtureDescendant'),
+    );
+    assert.doesNotMatch(primaryFallbackFixture, /Initialize-FixtureDirectoryIdentity|Add-Type/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /CONTROLLER_PARAMETER_VALIDATION_PARAMETERS_/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /InjectTerminationFailure/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /termination failure discarded authenticated recovery authority/);
@@ -1014,7 +1050,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppTest,
-      /\$matchingRecords = @\(\$ownedProfileRecords[\s\S]*\$matchingRecords\.Count -ne 1[\s\S]*Remove-CimInstance -InputObject \$profile/,
+      /\$matchingRecords = @\(\)[\s\S]*foreach \(\$record in \$ownedProfileRecords\)[\s\S]*\$matchingRecords\.Count -ne 1[\s\S]*Remove-CimInstance -InputObject \$profile/,
     );
     assert.match(
       installedWindowsAppTest,

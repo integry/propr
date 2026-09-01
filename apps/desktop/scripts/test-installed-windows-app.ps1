@@ -275,19 +275,67 @@ function Write-OwnershipManifest {
   [IO.File]::Move($temporaryManifest, $ownershipManifestPath, $true)
 }
 
-function Resolve-CanonicalProfileLocalPath([string]$LocalPath) {
-  if ([string]::IsNullOrWhiteSpace($LocalPath) -or
-      ![IO.Path]::IsPathRooted($LocalPath)) {
-    throw 'profile local path is invalid'
+function Test-SamePath([string]$Left, [string]$Right) {
+  return [string]::Equals(
+    [IO.Path]::GetFullPath($Left).TrimEnd('\'),
+    [IO.Path]::GetFullPath($Right).TrimEnd('\'),
+    [StringComparison]::OrdinalIgnoreCase
+  )
+}
+
+function Resolve-CanonicalNonReparseDirectory([string]$Path, [string]$Label) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or ![IO.Path]::IsPathRooted($Path)) {
+    throw "$Label path is invalid"
   }
-  $fullPath = [IO.Path]::GetFullPath($LocalPath).TrimEnd('\')
+  $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+  $pathRoot = [IO.Path]::GetPathRoot($fullPath)
+  if ([string]::IsNullOrWhiteSpace($pathRoot)) { throw "$Label path root is invalid" }
+  $rootItem = Get-Item -LiteralPath $pathRoot -Force -ErrorAction Stop
+  if (!$rootItem.PSIsContainer -or
+      ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "$Label path root is invalid"
+  }
+  $currentPath = $pathRoot
+  $components = @($fullPath.Substring($pathRoot.Length) -split '\\' |
+    Where-Object { $_.Length -ne 0 })
+  foreach ($component in $components) {
+    $currentPath = Join-Path $currentPath $component
+    $item = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop
+    if (!$item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "$Label path has invalid ancestry"
+    }
+  }
   $resolved = (Resolve-Path -LiteralPath $fullPath -ErrorAction Stop).ProviderPath.TrimEnd('\')
-  $item = Get-Item -LiteralPath $resolved -Force -ErrorAction Stop
-  if (!$item.PSIsContainer -or
-      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-    throw 'profile local path is not a canonical directory'
+  if (![string]::Equals(
+      [IO.Path]::GetFullPath($resolved).TrimEnd('\'),
+      $fullPath,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw "$Label path is not canonical"
   }
-  return [IO.Path]::GetFullPath($resolved).TrimEnd('\')
+  return $fullPath
+}
+
+function Resolve-SystemProfilesDirectory {
+  $profileListPath = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+  $configured = [string](Get-ItemPropertyValue -LiteralPath $profileListPath `
+    -Name 'ProfilesDirectory' -ErrorAction Stop)
+  $expanded = [Environment]::ExpandEnvironmentVariables($configured)
+  return Resolve-CanonicalNonReparseDirectory $expanded 'system profiles directory'
+}
+
+function Resolve-ValidatedOwnedProfilePath([string]$LocalPath, [string]$UserName) {
+  if ($UserName -notmatch '^(?:propr-ci-|prpr)[a-f0-9]{8}$') {
+    throw 'owned profile username is invalid'
+  }
+  $profilesDirectory = Resolve-SystemProfilesDirectory
+  $canonicalLocalPath = Resolve-CanonicalNonReparseDirectory $LocalPath 'profile local'
+  if (!(Test-SamePath (Split-Path -Parent $canonicalLocalPath) $profilesDirectory) -or
+      (Split-Path -Leaf $canonicalLocalPath) -cne $UserName) {
+    throw 'profile local path is not the exact owned direct child of ProfilesDirectory'
+  }
+  return $canonicalLocalPath
 }
 
 function Write-DurableOwnershipToken([string]$Path, [string]$Token) {
@@ -2282,7 +2330,8 @@ try {
           }
           $ownershipState.Profiles = @($ownershipState.Profiles) + @([ordered]@{
             Sid = $testUserSid.Value
-            LocalPath = Resolve-CanonicalProfileLocalPath ([string]$profile.LocalPath)
+            LocalPath = Resolve-ValidatedOwnedProfilePath `
+              ([string]$profile.LocalPath) $testUser
             Owned = $true
           })
         }
@@ -2294,19 +2343,33 @@ try {
       Invoke-BoundedExternalOperation `
         'CLEANUP' 'PROFILE_REMOVE' $recursiveOperationTimeoutMilliseconds {
           foreach ($profile in $profiles) {
-            $canonicalLocalPath = Resolve-CanonicalProfileLocalPath `
-              ([string]$profile.LocalPath)
-            $matchingRecords = @($ownedProfileRecords | Where-Object {
-              $_.Owned -and [string]$_.Sid -ceq $testUserSid.Value -and
-                [string]::Equals(
-                  [IO.Path]::GetFullPath([string]$_.LocalPath).TrimEnd('\'),
-                  $canonicalLocalPath,
-                  [StringComparison]::OrdinalIgnoreCase
-                )
-            })
-            if ([string]$profile.SID -cne $testUserSid.Value -or
-                $matchingRecords.Count -ne 1) {
+            if ([string]$profile.SID -cne $testUserSid.Value) {
               throw 'refusing to remove a profile without exact durable SID and path ownership'
+            }
+            $canonicalLocalPath = Resolve-ValidatedOwnedProfilePath `
+              ([string]$profile.LocalPath) $testUser
+            $matchingRecords = @()
+            foreach ($record in $ownedProfileRecords) {
+              if (!$record.Owned -or [string]$record.Sid -cne $testUserSid.Value) {
+                continue
+              }
+              $canonicalRecordPath = Resolve-ValidatedOwnedProfilePath `
+                ([string]$record.LocalPath) $testUser
+              if (Test-SamePath $canonicalRecordPath $canonicalLocalPath) {
+                $matchingRecords += $record
+              }
+            }
+            if ($matchingRecords.Count -ne 1) {
+              throw 'refusing to remove a profile without exact durable SID and path ownership'
+            }
+            # Repeat every live/durable path check at the deletion boundary.
+            $canonicalLocalPath = Resolve-ValidatedOwnedProfilePath `
+              ([string]$profile.LocalPath) $testUser
+            $canonicalRecordPath = Resolve-ValidatedOwnedProfilePath `
+              ([string]$matchingRecords[0].LocalPath) $testUser
+            if ([string]$profile.SID -cne $testUserSid.Value -or
+                !(Test-SamePath $canonicalRecordPath $canonicalLocalPath)) {
+              throw 'profile ownership changed immediately before deletion'
             }
             Remove-CimInstance -InputObject $profile -ErrorAction Stop
           }
