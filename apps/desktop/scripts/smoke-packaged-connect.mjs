@@ -10,6 +10,11 @@ import {
   encodedWindowsFixtureAcl,
   windowsPowerShell51Path,
 } from './windows-fixture-acl.mjs';
+import {
+  classifyWindowsArtifactFailure,
+  validateWindowsStagedPackage,
+  WindowsArtifactFailure,
+} from './windows-packaged-connect-staging.mjs';
 
 if (!['darwin', 'linux', 'win32'].includes(process.platform)) {
   throw new Error('Packaged Connect discovery smoke requires Darwin, Linux, or Windows');
@@ -18,14 +23,14 @@ if (process.arch !== 'x64' && process.arch !== 'arm64') {
   throw new Error('Packaged Connect discovery smoke requires x64 or arm64');
 }
 
-const artifactRoot = resolve('out', `propr-desktop-${process.platform}-${process.arch}`);
-const binaryPath = process.platform === 'darwin'
+let artifactRoot = resolve('out', `propr-desktop-${process.platform}-${process.arch}`);
+let binaryPath = process.platform === 'darwin'
   ? join(artifactRoot, 'propr-desktop.app', 'Contents', 'MacOS', 'propr-desktop')
   : join(artifactRoot, process.platform === 'linux' ? 'propr-desktop' : 'propr-desktop.exe');
-const resourcesPath = process.platform === 'darwin'
+let resourcesPath = process.platform === 'darwin'
   ? join(artifactRoot, 'propr-desktop.app', 'Contents', 'Resources')
   : join(artifactRoot, 'resources');
-const unpackedNative = join(resourcesPath, 'app.asar.unpacked', '.vite', 'native', 'prebuilds');
+let unpackedNative = join(resourcesPath, 'app.asar.unpacked', '.vite', 'native', 'prebuilds');
 const readyEvent = 'desktop.renderer.connect_discovery.ready';
 const endpoint = 'https://t-packaged123.propr.dev';
 const identity = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -98,6 +103,22 @@ const childDiagnosticCategories = new Set([
   'type-mismatch',
   'unexpected',
 ]);
+
+if (process.platform === 'win32') {
+  try {
+    const staged = await validateWindowsStagedPackage({ expectedArchitecture: process.arch });
+    artifactRoot = staged.root;
+    binaryPath = staged.executable;
+    resourcesPath = staged.resources;
+    unpackedNative = join(resourcesPath, 'app.asar.unpacked', '.vite', 'native', 'prebuilds');
+  } catch (error) {
+    process.stderr.write(`${JSON.stringify({
+      event: 'packaged_connect.artifact_failed',
+      category: classifyWindowsArtifactFailure(error),
+    })}\n`);
+    process.exit(1);
+  }
+}
 
 const childRecords = output => output.split(/\r?\n/).flatMap(line => {
   try {
@@ -277,27 +298,34 @@ try {
 
   let output = '';
   const sensitiveNeedles = [
-    ...secrets, fixture, configRoot, stackRoot, identity,
+    ...secrets, fixture, configRoot, stackRoot, identity, artifactRoot, binaryPath,
+    ...(process.platform === 'win32' ? [
+      process.env.PROPR_DESKTOP_CONNECT_STAGING_PARENT,
+      process.env.PROPR_DESKTOP_CONNECT_STAGING_LEAF,
+    ] : []),
     'S-1-5-', 'volumeSerialNumber', 'fileId', 'authorityDiagnostic',
-  ];
+  ].filter(value => typeof value === 'string' && value.length > 0);
   const maximumNeedleLength = Math.max(...sensitiveNeedles.map(value => value.length));
   const capturedChunks = [];
   let capturedBytes = 0;
   let captureTruncated = false;
   let scanTail = '';
   let sensitiveOutputObserved = false;
+  const childEnvironment = {
+    ...process.env,
+    PROPR_DESKTOP_CONNECT_SMOKE_TEST: '1',
+    PROPR_DESKTOP_CONNECT_SMOKE_CONFIG_ROOT: configRoot,
+    PROPR_CONNECTOR_TOKEN: secrets[1],
+    PROPR_RELAY_TOKEN: secrets[2],
+    GITHUB_TOKEN: secrets[3],
+  };
+  delete childEnvironment.PROPR_DESKTOP_CONNECT_STAGING_PARENT;
+  delete childEnvironment.PROPR_DESKTOP_CONNECT_STAGING_LEAF;
   const child = spawn(binaryPath, ['--disable-gpu', `--user-data-dir=${userDataPath}`], {
     shell: false,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      PROPR_DESKTOP_CONNECT_SMOKE_TEST: '1',
-      PROPR_DESKTOP_CONNECT_SMOKE_CONFIG_ROOT: configRoot,
-      PROPR_CONNECTOR_TOKEN: secrets[1],
-      PROPR_RELAY_TOKEN: secrets[2],
-      GITHUB_TOKEN: secrets[3],
-    },
+    env: childEnvironment,
   });
   const capture = chunk => {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -317,7 +345,10 @@ try {
     const timeout = setTimeout(() => {
       child.kill('SIGKILL'); reject(new Error('Packaged Connect discovery smoke timed out'));
     }, 300_000);
-    child.once('error', error => { clearTimeout(timeout); reject(error); });
+    child.once('error', () => {
+      clearTimeout(timeout);
+      reject(new WindowsArtifactFailure('spawn-failed'));
+    });
     child.once('close', (code, signal) => {
       clearTimeout(timeout); resolveResult({ code, signal });
     });
@@ -345,6 +376,13 @@ try {
     || proof.rendererSchemaValid !== true) throw new Error('Packaged Connect discovery proof was incomplete');
   if (relative(canonicalTemp, configRoot).startsWith('..')) throw new Error('Connect smoke config escaped its fixed root');
   process.stdout.write(`Packaged Connect discovery passed for ${process.platform}-${process.arch}: ${expectedMechanism}.\n`);
+} catch (error) {
+  if (process.platform !== 'win32') throw error;
+  process.stderr.write(`${JSON.stringify({
+    event: 'packaged_connect.artifact_failed',
+    category: classifyWindowsArtifactFailure(error),
+  })}\n`);
+  process.exitCode = 1;
 } finally {
   await rm(fixture, { recursive: true, force: true });
 }
