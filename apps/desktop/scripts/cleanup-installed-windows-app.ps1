@@ -414,38 +414,39 @@ function Get-RegistryTreeIdentity([string]$Path) {
   finally { $sha256.Dispose() }
 }
 
-function Get-MsiProductCode([string]$Path) {
-  $installerCom = $null
-  $database = $null
-  $view = $null
-  $record = $null
+function Get-InstallerSha256([string]$Path) {
+  $stream = [IO.File]::Open(
+    $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  $sha256 = [Security.Cryptography.SHA256]::Create()
   try {
-    $installerCom = New-Object -ComObject WindowsInstaller.Installer
-    $database = $installerCom.OpenDatabase($Path, 0)
-    $view = $database.OpenView(
-      "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ProductCode'")
-    $view.Execute()
-    $record = $view.Fetch()
-    $productCode = if ($null -eq $record) { $null } else { [string]$record.StringData(1) }
-    if ($productCode -notmatch '^\{[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}\}$') {
-      throw 'MSI product identity is invalid'
-    }
-    return $productCode.ToUpperInvariant()
+    return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
   } finally {
-    foreach ($resource in @($record, $view, $database, $installerCom)) {
-      if ($null -ne $resource -and [Runtime.InteropServices.Marshal]::IsComObject($resource)) {
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($resource)
-      }
-    }
+    $sha256.Dispose()
+    $stream.Dispose()
   }
 }
 
-function Assert-MsiProductIsUnregistered([string]$Path) {
+function Assert-InstallerArtifactAuthority($Manifest) {
+  $path = [string]$Manifest.InstallerPath
+  if ([string]$Manifest.InstallerEntryIdentity -notmatch '^[a-f0-9]{24}$' -or
+      [string]$Manifest.InstallerSha256 -notmatch '^[a-f0-9]{64}$' -or
+      [string]$Manifest.InstallerProductCode -notmatch
+        '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$' -or
+      (Get-FileSystemEntryIdentity $path $false) -cne
+        [string]$Manifest.InstallerEntryIdentity -or
+      (Get-InstallerSha256 $path) -cne [string]$Manifest.InstallerSha256) {
+    throw 'installer artifact no longer matches durable authority'
+  }
+}
+
+function Assert-MsiProductIsUnregistered([string]$ProductCode) {
   $installerCom = $null
   try {
-    $productCode = Get-MsiProductCode $Path
+    if ($ProductCode -notmatch '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$') {
+      throw 'MSI product identity is invalid'
+    }
     $installerCom = New-Object -ComObject WindowsInstaller.Installer
-    if ([int]$installerCom.ProductState($productCode) -ne -1) {
+    if ([int]$installerCom.ProductState($ProductCode) -ne -1) {
       throw 'Windows Installer product registration is not at the clean baseline'
     }
   } finally {
@@ -490,7 +491,8 @@ function Assert-MsiRolledBackCleanBaseline($Manifest) {
   if (!$matchesBaseline -or !$keyMatchesBaseline) {
     throw 'MSI rollback did not restore the exact current-user baseline'
   }
-  Assert-MsiProductIsUnregistered ([string]$Manifest.InstallerPath)
+  Assert-InstallerArtifactAuthority $Manifest
+  Assert-MsiProductIsUnregistered ([string]$Manifest.InstallerProductCode)
 }
 
 function Convert-RegistryValueToBytes(
@@ -1229,7 +1231,7 @@ try {
   $manifestKeys = @($manifest.PSObject.Properties | ForEach-Object { $_.Name })
   $expectedManifestKeys = @(
     'SchemaVersion','ManifestType','State','RunId','CreatedUtcTicks','ExpiresUtcTicks',
-    'InstallerPath','Fixture',
+    'InstallerPath','InstallerEntryIdentity','InstallerSha256','InstallerProductCode','Fixture',
     'FixtureRoot','BaselineClean','InstallAttempted','MsiTransactionState',
     'Directories','Files','RegistryKeys',
     'RegistryValues','Users','Profiles'
@@ -1241,10 +1243,14 @@ try {
       [string]$manifest.MsiTransactionState -notin @(
         'NONE','PENDING','COMMITTED','ROLLED_BACK_CLEAN'
       ) -or
-      $manifest.SchemaVersion -ne 2 -or
+      $manifest.SchemaVersion -ne 3 -or
       [string]$manifest.ManifestType -cne 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -or
       [string]$manifest.State -notin @('ACTIVE','EMPTY') -or
-      [string]$manifest.RunId -notmatch '^[a-f0-9]{32}$') {
+      [string]$manifest.RunId -notmatch '^[a-f0-9]{32}$' -or
+      [string]$manifest.InstallerEntryIdentity -notmatch '^[a-f0-9]{24}$' -or
+      [string]$manifest.InstallerSha256 -notmatch '^[a-f0-9]{64}$' -or
+      [string]$manifest.InstallerProductCode -notmatch
+        '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$') {
     throw 'ownership manifest schema is invalid'
   }
   if (!$manifest.Fixture -and (
@@ -1479,6 +1485,10 @@ try {
     }
   }
   $manifestValidated = $true
+  # ACTIVE authority is inseparable from the exact installer entry captured by
+  # the supervisor. A same-path replacement blocks every cleanup mutation,
+  # including fixture/manual fallbacks that do not otherwise need Windows Installer.
+  Assert-InstallerArtifactAuthority $manifest
   if (!$manifest.Fixture) {
     if ([string]$manifest.MsiTransactionState -ceq 'PENDING') {
       throw 'MSI transaction has no durable cleanup authority receipt'
@@ -1522,8 +1532,9 @@ try {
     for ($attempt = 0; $attempt -lt 12 -and $msiExitCode -eq 1618; $attempt += 1) {
       if ($attempt -ne 0) { Start-Sleep -Seconds 2 }
       Assert-MsiManagedFileSystemAuthority $manifest
+      Assert-InstallerArtifactAuthority $manifest
       $msi = Start-Process msiexec.exe -ArgumentList @(
-        '/x', "`"$resolvedInstaller`"", '/qn', '/norestart'
+        '/x', [string]$manifest.InstallerProductCode, '/qn', '/norestart'
       ) -PassThru -WindowStyle Hidden -ErrorAction Stop
       try {
         [void]$msi.WaitForExit()

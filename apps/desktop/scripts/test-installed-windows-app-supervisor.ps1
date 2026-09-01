@@ -20,6 +20,9 @@ $conflictingFixtureProfilePath = $null
 $conflictingFixtureDirectories = $null
 $conflictingFixtureShortcut = $null
 $conflictingFixtureRegistryPath = $null
+$dummyInstallerProductCode = ('{' + [Guid]::NewGuid().ToString().ToUpperInvariant() + '}')
+$dummyInstallerEntryIdentity = $null
+$dummyInstallerSha256 = $null
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (!$Condition) { throw $Message }
@@ -58,6 +61,82 @@ function Write-TestOwnershipManifest([string]$Path, $Manifest) {
     $stream.Dispose()
   }
   [IO.File]::Move($temporaryPath, $Path, $true)
+}
+
+function Initialize-TestInstaller {
+  $installerCom = $null
+  $database = $null
+  $view = $null
+  try {
+    $installerCom = New-Object -ComObject WindowsInstaller.Installer
+    $database = $installerCom.OpenDatabase($dummyInstaller, 3)
+    $view = $database.OpenView(
+      'CREATE TABLE `Property` (`Property` CHAR(72) NOT NULL, ' +
+      '`Value` CHAR(0) LOCALIZABLE PRIMARY KEY `Property`)')
+    $view.Execute()
+    [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view)
+    $view = $null
+    $view = $database.OpenView(
+      "INSERT INTO ``Property`` (``Property``, ``Value``) VALUES ('ProductCode', '$dummyInstallerProductCode')")
+    $view.Execute()
+    $database.Commit()
+  } finally {
+    foreach ($resource in @($view, $database, $installerCom)) {
+      if ($null -ne $resource -and [Runtime.InteropServices.Marshal]::IsComObject($resource)) {
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($resource)
+      }
+    }
+  }
+
+  if (-not ('ProPRSupervisorInstallerIdentity' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class ProPRSupervisorInstallerIdentity
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(string path, uint access, uint share,
+        IntPtr security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
+    public static string Read(string path)
+    {
+        using (SafeFileHandle handle = CreateFile(
+            path, 0x80, 0x7, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero))
+        {
+            if (handle == null || handle.IsInvalid)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            BY_HANDLE_FILE_INFORMATION information;
+            if (!GetFileInformationByHandle(handle, out information))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
+                information.FileIndexHigh, information.FileIndexLow);
+        }
+    }
+}
+'@
+  }
+  $script:dummyInstallerEntryIdentity =
+    [ProPRSupervisorInstallerIdentity]::Read($dummyInstaller)
+  $script:dummyInstallerSha256 =
+    (Get-FileHash -LiteralPath $dummyInstaller -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
 }
 
 function New-SupervisorStartInfo(
@@ -310,7 +389,8 @@ function Invoke-WorkflowCleanupController(
   [string]$RunId,
   [string]$FixtureRoot,
   [object]$CleanupTimeoutMilliseconds = 30000,
-  [bool]$FixtureEarlyInitializationChild = $false
+  [bool]$FixtureEarlyInitializationChild = $false,
+  [string]$StartupFailureClass = ''
 ) {
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
@@ -333,6 +413,10 @@ function Invoke-WorkflowCleanupController(
   }
   if ($FixtureEarlyInitializationChild) {
     $startInfo.ArgumentList.Add('-FixtureEarlyInitializationChild')
+  }
+  if ($StartupFailureClass) {
+    $startInfo.ArgumentList.Add('-StartupFailureClass')
+    $startInfo.ArgumentList.Add($StartupFailureClass)
   }
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
@@ -363,7 +447,10 @@ function Invoke-WorkflowCleanupController(
     $resultName = $resultMatch.Groups[1].Value
     $statusMatch = [regex]::Match(
       $outputLines[1],
-      '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):EXIT_CODE:([0-9]+)$'
+      ('^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):' +
+        'EXIT_CODE:([0-9]+)(?::STARTUP_CLASS:' +
+        '(PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):PROCESS_EXIT:(-?[0-9]+):' +
+        'LINE:([0-9]+))?$')
     )
     if (!$statusMatch.Success) {
       $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
@@ -386,12 +473,33 @@ function Invoke-WorkflowCleanupController(
       Result = $resultName
       ControllerStatus = $controllerStatus
       ReportedExitCode = $reportedExitCode
+      StartupClass = [string]$statusMatch.Groups[3].Value
+      StartupProcessExit = [string]$statusMatch.Groups[4].Value
+      StartupLine = [string]$statusMatch.Groups[5].Value
       Output = $output
     }
   } finally {
     if (!$process.HasExited) { try { $process.Kill($true) } catch {} }
     $process.Dispose()
   }
+}
+
+function Test-WorkflowCleanupStartupProtocol {
+  foreach ($failureClass in @('PARSER','PARAMETER_BINDING','TYPE_LOAD','OTHER')) {
+    $result = Invoke-WorkflowCleanupController `
+      $dummyInstaller $([Guid]::NewGuid().ToString('N')) $testRoot 30000 $false `
+      $failureClass
+    Assert-True ($result.ExitCode -eq 125 -and
+        $result.ReportedExitCode -eq 125 -and
+        $result.Result -ceq 'FAILED' -and
+        $result.ControllerStatus -ceq 'STARTUP_FAILURE' -and
+        $result.StartupClass -ceq $failureClass -and
+        $result.StartupProcessExit -match '^-?[0-9]+$' -and
+        $result.StartupLine -match '^[0-9]+$') `
+      "native $failureClass startup fixture did not emit the fixed two-line protocol"
+  }
+  Write-Host 'PROPR_WINDOWS_SUPERVISOR_CONTROLLER_STARTUP:FIXED_PROTOCOL:PASSED'
+  [Console]::Out.Flush()
 }
 
 function Start-ExternallyInterruptibleSupervisor([string]$StateDirectory) {
@@ -1158,6 +1266,42 @@ function Test-PreExistingCleanupOwnership {
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'timed-out workflow cleanup discarded authenticated recovery authority'
 
+      $installerBackup = Join-Path $testRoot 'fixture-owned-entry.msi'
+      Move-Item -LiteralPath $dummyInstaller -Destination $installerBackup -ErrorAction Stop
+      [IO.File]::WriteAllBytes($dummyInstaller, [Text.Encoding]::ASCII.GetBytes(
+        'foreign same-path MSI replacement must never be consulted'))
+      $foreignInstallerDigest =
+        (Get-FileHash -LiteralPath $dummyInstaller -Algorithm SHA256).Hash
+      try {
+        $replacedInstallerCleanup = Invoke-WorkflowCleanupController `
+          $workflowManifest $workflowRunId $workflowStateDirectory
+        Assert-True ($replacedInstallerCleanup.ExitCode -eq 21 -and
+            $replacedInstallerCleanup.ReportedExitCode -eq 21 -and
+            $replacedInstallerCleanup.Result -ceq 'FAILED' -and
+            $replacedInstallerCleanup.ControllerStatus -ceq
+              'OWNED_RESOURCE_CLEANUP_FAILURE') `
+          'same-path installer replacement did not fail closed'
+        Assert-MsiPreflightPreservedResources $workflowOwned
+        $retainedAuthority = Get-Content -LiteralPath $workflowManifest -Raw -Encoding UTF8 |
+          ConvertFrom-Json -ErrorAction Stop
+        Assert-True ($retainedAuthority.State -ceq 'ACTIVE') `
+          'same-path installer replacement discarded ACTIVE recovery authority'
+        Assert-True ((Get-FileHash -LiteralPath $dummyInstaller -Algorithm SHA256).Hash -ceq
+            $foreignInstallerDigest) `
+          'foreign same-path installer was executed or changed'
+      } finally {
+        if (Test-Path -LiteralPath $dummyInstaller) {
+          Remove-Item -LiteralPath $dummyInstaller -Force -ErrorAction SilentlyContinue
+        }
+        Move-Item -LiteralPath $installerBackup -Destination $dummyInstaller -ErrorAction Stop
+      }
+      Assert-True (
+        [ProPRSupervisorInstallerIdentity]::Read($dummyInstaller) -ceq
+          $dummyInstallerEntryIdentity -and
+        (Get-FileHash -LiteralPath $dummyInstaller -Algorithm SHA256).Hash.ToLowerInvariant() -ceq
+          $dummyInstallerSha256
+      ) 'exact installer authority was not restored for cleanup retry'
+
       Set-ItemProperty -LiteralPath $workflowOwned.RegistryPath `
         -Name 'ProPRInstalledAppOwner' -Value 'foreign-owner'
       $failedWorkflowCleanup = Invoke-WorkflowCleanupController `
@@ -1212,9 +1356,12 @@ function Test-PreExistingCleanupOwnership {
         'normal supervisor did not preserve its empty ownership receipt'
       $normalReceipt = Get-Content -LiteralPath $normalManifest -Raw -Encoding UTF8 |
         ConvertFrom-Json -ErrorAction Stop
-      Assert-True ($normalReceipt.SchemaVersion -eq 2 -and
+      Assert-True ($normalReceipt.SchemaVersion -eq 3 -and
           $normalReceipt.ManifestType -ceq 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -and
           $normalReceipt.State -ceq 'EMPTY' -and
+          $normalReceipt.InstallerEntryIdentity -ceq $dummyInstallerEntryIdentity -and
+          $normalReceipt.InstallerSha256 -ceq $dummyInstallerSha256 -and
+          $normalReceipt.InstallerProductCode -ceq $dummyInstallerProductCode -and
           @($normalReceipt.Directories).Count -eq 0 -and
           @($normalReceipt.Files).Count -eq 0 -and
           @($normalReceipt.RegistryKeys).Count -eq 0 -and
@@ -1244,12 +1391,16 @@ function Test-PreExistingCleanupOwnership {
       } elseif ($manifestCase -eq 'STALE') {
         $createdTicks = [DateTime]::UtcNow.AddHours(-4).Ticks
         $staleManifest = [ordered]@{
-          SchemaVersion = 2
+          SchemaVersion = 3
           ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'; State = 'ACTIVE'
           RunId = $badRunId
           CreatedUtcTicks = $createdTicks
           ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
-          InstallerPath = $dummyInstaller; Fixture = $true
+          InstallerPath = $dummyInstaller
+          InstallerEntryIdentity = $dummyInstallerEntryIdentity
+          InstallerSha256 = $dummyInstallerSha256
+          InstallerProductCode = $dummyInstallerProductCode
+          Fixture = $true
           FixtureRoot = $workflowStateDirectory; BaselineClean = $false
           InstallAttempted = $false; MsiTransactionState = 'NONE'
           Directories = @(); Files = @()
@@ -1462,12 +1613,16 @@ function Test-PreExistingAppPathsAuthority {
       "propr-installed-app-ownership-$mismatchRunId.json"
     $createdTicks = [DateTime]::UtcNow.Ticks
     $mismatchState = [ordered]@{
-      SchemaVersion = 2
+      SchemaVersion = 3
       ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'; State = 'ACTIVE'
       RunId = $mismatchRunId
       CreatedUtcTicks = $createdTicks
       ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
-      InstallerPath = $dummyInstaller; Fixture = $false; FixtureRoot = $null
+      InstallerPath = $dummyInstaller
+      InstallerEntryIdentity = $dummyInstallerEntryIdentity
+      InstallerSha256 = $dummyInstallerSha256
+      InstallerProductCode = $dummyInstallerProductCode
+      Fixture = $false; FixtureRoot = $null
       BaselineClean = $true; InstallAttempted = $true
       MsiTransactionState = 'COMMITTED'
       Directories = @(); Files = @(); Users = @(); Profiles = @()
@@ -1552,13 +1707,16 @@ function Test-HkcuInstalledValueOwnership {
     $installedIdentityData = [Convert]::ToBase64String(
       [BitConverter]::GetBytes([int32]1))
     $manifest = [ordered]@{
-      SchemaVersion = 2
+      SchemaVersion = 3
       ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
       State = 'ACTIVE'
       RunId = $runId
       CreatedUtcTicks = $createdTicks
       ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
       InstallerPath = $dummyInstaller
+      InstallerEntryIdentity = $dummyInstallerEntryIdentity
+      InstallerSha256 = $dummyInstallerSha256
+      InstallerProductCode = $dummyInstallerProductCode
       Fixture = $false
       FixtureRoot = $null
       BaselineClean = $InstallAttempted
@@ -1700,13 +1858,16 @@ function Test-ProvisionalUserMarkerOwnership {
       "propr-installed-app-ownership-$runId.json"
     $createdTicks = [DateTime]::UtcNow.Ticks
     $manifest = [ordered]@{
-      SchemaVersion = 2
+      SchemaVersion = 3
       ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
       State = 'ACTIVE'
       RunId = $runId
       CreatedUtcTicks = $createdTicks
       ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
       InstallerPath = $dummyInstaller
+      InstallerEntryIdentity = $dummyInstallerEntryIdentity
+      InstallerSha256 = $dummyInstallerSha256
+      InstallerProductCode = $dummyInstallerProductCode
       Fixture = $true
       FixtureRoot = $testRoot
       BaselineClean = $false
@@ -1793,8 +1954,9 @@ Assert-True ($actualArchitecture -ceq $Architecture) `
   "supervisor behavior tests expected $Architecture but are running on $actualArchitecture"
 
 [void](New-Item -ItemType Directory -Path $testRoot -ErrorAction Stop)
-[IO.File]::WriteAllBytes($dummyInstaller, [byte[]](0))
+Initialize-TestInstaller
 try {
+  Test-WorkflowCleanupStartupProtocol
   Test-BootstrapTimeout
   Test-OperationDeadlineAndTreeTermination
   Test-NegativeWorkerExitFinalization

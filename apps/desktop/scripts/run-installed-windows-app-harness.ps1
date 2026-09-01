@@ -227,6 +227,50 @@ public sealed class ProPRKillOnCloseJob : IDisposable
     }
 }
 
+public static class ProPRInstallerEntryIdentity
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string path, uint access, uint share, IntPtr security, uint creation,
+        uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
+
+    public static string Read(string path)
+    {
+        using (SafeFileHandle handle = CreateFile(
+            path, 0x80, 0x7, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero))
+        {
+            if (handle == null || handle.IsInvalid)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "installer identity open failed");
+            BY_HANDLE_FILE_INFORMATION information;
+            if (!GetFileInformationByHandle(handle, out information))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "installer identity read failed");
+            if ((information.FileAttributes & (0x10 | 0x400)) != 0)
+                throw new InvalidOperationException("installer entry is not an ordinary file");
+            return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
+                information.FileIndexHigh, information.FileIndexLow);
+        }
+    }
+}
+
 public enum ProPRMarkerReadState
 {
     Missing,
@@ -311,6 +355,89 @@ public static class ProPRBoundedMarkerReader
     }
 }
 '@
+
+function Get-InstallerSha256([string]$Path) {
+  $stream = [IO.File]::Open(
+    $Path,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read
+  )
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+  }
+}
+
+function Get-MsiProductCode([string]$Path) {
+  $installerCom = $null
+  $database = $null
+  $view = $null
+  $record = $null
+  try {
+    $installerCom = New-Object -ComObject WindowsInstaller.Installer
+    $database = $installerCom.OpenDatabase($Path, 0)
+    $view = $database.OpenView(
+      "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ProductCode'")
+    $view.Execute()
+    $record = $view.Fetch()
+    $productCode = if ($null -eq $record) { $null } else { [string]$record.StringData(1) }
+    if ($productCode -notmatch '^\{[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}\}$') {
+      throw 'MSI product identity is invalid'
+    }
+    return $productCode.ToUpperInvariant()
+  } finally {
+    foreach ($resource in @($record, $view, $database, $installerCom)) {
+      if ($null -ne $resource -and [Runtime.InteropServices.Marshal]::IsComObject($resource)) {
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($resource)
+      }
+    }
+  }
+}
+
+function Get-InstallerAuthority([string]$Path) {
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if ($item.PSIsContainer -or
+      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'installer artifact is not an ordinary file'
+  }
+  $canonicalPath = (Resolve-Path -LiteralPath $item.FullName -ErrorAction Stop).ProviderPath
+  $entryIdentity = [ProPRInstallerEntryIdentity]::Read($canonicalPath)
+  $sha256 = Get-InstallerSha256 $canonicalPath
+  if ([ProPRInstallerEntryIdentity]::Read($canonicalPath) -cne $entryIdentity -or
+      (Get-InstallerSha256 $canonicalPath) -cne $sha256) {
+    throw 'installer artifact changed before product identity capture'
+  }
+  $productCode = Get-MsiProductCode $canonicalPath
+  if ([ProPRInstallerEntryIdentity]::Read($canonicalPath) -cne $entryIdentity -or
+      (Get-InstallerSha256 $canonicalPath) -cne $sha256) {
+    throw 'installer artifact changed during authority capture'
+  }
+  return [PSCustomObject]@{
+    Path = $canonicalPath
+    EntryIdentity = $entryIdentity
+    Sha256 = $sha256
+    ProductCode = $productCode
+  }
+}
+
+function Test-InstallerArtifactAuthority($Record) {
+  try {
+    return [string]$Record.InstallerEntryIdentity -match '^[a-f0-9]{24}$' -and
+      [string]$Record.InstallerSha256 -match '^[a-f0-9]{64}$' -and
+      [string]$Record.InstallerProductCode -match
+        '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$' -and
+      [ProPRInstallerEntryIdentity]::Read([string]$Record.InstallerPath) -ceq
+        [string]$Record.InstallerEntryIdentity -and
+      (Get-InstallerSha256 ([string]$Record.InstallerPath)) -ceq
+        [string]$Record.InstallerSha256
+  } catch {
+    return $false
+  }
+}
 
 function Write-WatchdogLine([string]$Line) {
   Write-Host $Line
@@ -399,7 +526,7 @@ function Stop-OwnedWorker([uint32]$TerminationExitCode) {
 
 function Write-InitialOwnershipManifest(
   [string]$Path,
-  [string]$InstallerPath,
+  $InstallerAuthority,
   [bool]$Fixture,
   [string]$AuthorizedFixtureRoot
 ) {
@@ -407,13 +534,16 @@ function Write-InitialOwnershipManifest(
     'propr-installed-app-ownership-'.Length)
   $createdUtcTicks = [DateTime]::UtcNow.Ticks
   $manifest = [ordered]@{
-    SchemaVersion = 2
+    SchemaVersion = 3
     ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
     State = 'ACTIVE'
     RunId = $runId
     CreatedUtcTicks = $createdUtcTicks
     ExpiresUtcTicks = $createdUtcTicks + ([TimeSpan]::TicksPerHour * 3)
-    InstallerPath = $InstallerPath
+    InstallerPath = [string]$InstallerAuthority.Path
+    InstallerEntryIdentity = [string]$InstallerAuthority.EntryIdentity
+    InstallerSha256 = [string]$InstallerAuthority.Sha256
+    InstallerProductCode = [string]$InstallerAuthority.ProductCode
     Fixture = $Fixture
     FixtureRoot = if ($Fixture) { $AuthorizedFixtureRoot } else { $null }
     BaselineClean = $false
@@ -478,7 +608,20 @@ function Get-DurableMsiTransactionReceipt {
     $manifest = ConvertFrom-Json `
       -InputObject ([Text.UTF8Encoding]::new($false, $true).GetString($bytes)) `
       -ErrorAction Stop
-    if ([string]$manifest.RunId -cne $ownershipRunId -or
+    $manifestKeys = @($manifest.PSObject.Properties | ForEach-Object { $_.Name })
+    $expectedManifestKeys = @(
+      'SchemaVersion','ManifestType','State','RunId','CreatedUtcTicks','ExpiresUtcTicks',
+      'InstallerPath','InstallerEntryIdentity','InstallerSha256','InstallerProductCode',
+      'Fixture','FixtureRoot','BaselineClean','InstallAttempted','MsiTransactionState',
+      'Directories','Files','RegistryKeys','RegistryValues','Users','Profiles'
+    )
+    if ($manifestKeys.Count -ne $expectedManifestKeys.Count -or
+        @($expectedManifestKeys | Where-Object {
+          $manifestKeys -cnotcontains $_
+        }).Count -ne 0 -or
+        $manifest.SchemaVersion -ne 3 -or
+        [string]$manifest.RunId -cne $ownershipRunId -or
+        !(Test-InstallerArtifactAuthority $manifest) -or
         [string]$manifest.State -notin @('ACTIVE','EMPTY')) { return 'UNAVAILABLE' }
     if ([string]$manifest.State -ceq 'EMPTY' -and
         [string]$manifest.MsiTransactionState -ceq 'NONE' -and
@@ -610,7 +753,8 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
 }
 
 try {
-  $installerPath = (Resolve-Path -LiteralPath $Installer -ErrorAction Stop).Path
+  $installerAuthority = Get-InstallerAuthority $Installer
+  $installerPath = [string]$installerAuthority.Path
   if ($OwnershipManifest -or $ExpectedRunId) {
     if (!$OwnershipManifest -or $ExpectedRunId -notmatch '^[a-f0-9]{32}$') {
       throw 'workflow ownership authority is invalid'
@@ -657,7 +801,7 @@ try {
     $cancellationEvent = [Threading.EventWaitHandle]::OpenExisting($CancellationEventName)
   }
   Write-InitialOwnershipManifest `
-    $ownershipManifestPath $installerPath (!$usingProductionWorker) $FixtureCleanupRoot
+    $ownershipManifestPath $installerAuthority (!$usingProductionWorker) $FixtureCleanupRoot
 
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath

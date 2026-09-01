@@ -254,7 +254,11 @@ function New-OwnedFixtureResources(
   Initialize-FixtureDirectoryIdentity
   $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
     ConvertFrom-Json -ErrorAction Stop
-  if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 2 -or
+  if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 3 -or
+      [string]$manifest.InstallerEntryIdentity -notmatch '^[a-f0-9]{24}$' -or
+      [string]$manifest.InstallerSha256 -notmatch '^[a-f0-9]{64}$' -or
+      [string]$manifest.InstallerProductCode -notmatch
+        '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$' -or
       $manifest.ManifestType -cne 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -or
       $manifest.State -cne 'ACTIVE') {
     throw 'fixture ownership manifest was not initialized'
@@ -510,7 +514,11 @@ function New-SmokeCheckpointFixtureResources(
   Initialize-FixtureDirectoryIdentity
   $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
     ConvertFrom-Json -ErrorAction Stop
-  if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 2 -or
+  if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 3 -or
+      [string]$manifest.InstallerEntryIdentity -notmatch '^[a-f0-9]{24}$' -or
+      [string]$manifest.InstallerSha256 -notmatch '^[a-f0-9]{64}$' -or
+      [string]$manifest.InstallerProductCode -notmatch
+        '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$' -or
       $manifest.State -cne 'ACTIVE') {
     throw 'smoke checkpoint manifest was not initialized'
   }

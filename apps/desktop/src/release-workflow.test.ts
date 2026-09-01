@@ -50,8 +50,12 @@ const installedWindowsAppCleanup = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/cleanup-installed-windows-app.ps1', import.meta.url)),
   'utf8',
 ));
-const installedWindowsAppWorkflowCleanup = normalizeWorkflowText(readFileSync(
+const installedWindowsAppWorkflowCleanupWrapper = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/run-installed-windows-app-workflow-cleanup.ps1', import.meta.url)),
+  'utf8',
+));
+const installedWindowsAppWorkflowCleanup = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/run-installed-windows-app-workflow-cleanup-body.ps1', import.meta.url)),
   'utf8',
 ));
 const installedWindowsAppSupervisorBehaviorTest = normalizeWorkflowText(readFileSync(
@@ -553,7 +557,7 @@ describe('desktop trusted release workflow', () => {
 
     assert.match(
       installedWindowsAppTest,
-      /\} catch \{\n\s+\$primaryFailure = \$_\n\s+throw\n\} finally \{\n\s+\$cleanupFailed = \$false[\s\S]*Invoke-Msi @\('\/x'[\s\S]*Remove-SmokeUserDataDirectory \$smokeOwnershipRecord/,
+      /\} catch \{\n\s+\$primaryFailure = \$_\n\s+throw\n\} finally \{\n\s+\$cleanupFailed = \$false[\s\S]*Assert-InstallerArtifactAuthority[\s\S]*Invoke-Msi @\([\s\S]*'\/x', \[string\]\$ownershipState\.InstallerProductCode[\s\S]*Remove-SmokeUserDataDirectory \$smokeOwnershipRecord/,
     );
     assert.match(installedWindowsAppTest, /Get-CimInstance -ClassName Win32_UserProfile/);
     assert.match(installedWindowsAppTest, /Remove-LocalUser -Name \$testUser -ErrorAction Stop/);
@@ -675,7 +679,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppCleanup, /Assert-MsiManagedFileSystemAuthority/);
     assert.match(
       installedWindowsAppCleanup,
-      /Assert-MsiManagedFileSystemAuthority \$manifest\n\s+\$msi = Start-Process msiexec\.exe/,
+      /Assert-MsiManagedFileSystemAuthority \$manifest\n\s+Assert-InstallerArtifactAuthority \$manifest\n\s+\$msi = Start-Process msiexec\.exe/,
     );
     assert.doesNotMatch(installedWindowsAppCleanup, /AllowProvisionalProductOwnership/);
     assert.doesNotMatch(installedWindowsAppCleanup, /allowProvisionalMsiUninstall/);
@@ -694,7 +698,10 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /MsiTransactionState = 'ROLLED_BACK_CLEAN'/);
     assert.match(installedWindowsAppTest, /MsiTransactionState = 'COMMITTED'/);
     assert.match(installedWindowsAppTest, /Assert-ExactCleanMsiBaselineAfterRollback/);
-    assert.match(installedWindowsAppTest, /Assert-MsiProductIsUnregistered \$installerPath/);
+    assert.match(
+      installedWindowsAppTest,
+      /Assert-MsiProductIsUnregistered \(\[string\]\$ownershipState\.InstallerProductCode\)/,
+    );
     assert.match(installedWindowsAppCleanup, /Assert-MsiProductIsUnregistered/);
     assert.match(installedWindowsAppSupervisor, /Wait-MsiCriticalTransactionReceipt/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /DURING_MSI/);
@@ -714,12 +721,41 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /typed authenticated empty-state receipt/);
     assert.match(
       installedWindowsAppTest,
-      /Get-RegistryTreeIdentity \$appPathsRegistryPath[\s\S]*refusing to uninstall over executable metadata[\s\S]*Invoke-Msi @\('\/x'/,
+      /Get-RegistryTreeIdentity \$appPathsRegistryPath[\s\S]*refusing to uninstall over executable metadata[\s\S]*Invoke-Msi @\([\s\S]*'\/x', \[string\]\$ownershipState\.InstallerProductCode/,
     );
     assert.match(
       installedWindowsAppTest,
-      /Assert-MsiManagedFileSystemAuthority[\s\S]*Invoke-Msi @\('\/x'/,
+      /Assert-MsiManagedFileSystemAuthority[\s\S]*Assert-InstallerArtifactAuthority[\s\S]*Invoke-Msi @\([\s\S]*'\/x', \[string\]\$ownershipState\.InstallerProductCode/,
     );
+    assert.match(installedWindowsAppSupervisor, /Get-InstallerAuthority \$Installer/);
+    assert.ok(
+      installedWindowsAppSupervisor.indexOf('Get-InstallerAuthority $Installer')
+        < installedWindowsAppSupervisor.indexOf('if (!$worker.Start())'),
+      'installer authority must be captured before the worker starts',
+    );
+    for (const field of [
+      'InstallerEntryIdentity', 'InstallerSha256', 'InstallerProductCode',
+    ]) {
+      assert.match(installedWindowsAppSupervisor, new RegExp(field));
+      assert.match(installedWindowsAppTest, new RegExp(field));
+      assert.match(installedWindowsAppCleanup, new RegExp(field));
+    }
+    assert.match(installedWindowsAppSupervisor, /SchemaVersion = 3/);
+    assert.match(installedWindowsAppTest, /SchemaVersion = 3/);
+    assert.match(installedWindowsAppCleanup, /SchemaVersion -ne 3/);
+    assert.doesNotMatch(
+      installedWindowsAppCleanup,
+      /Start-Process msiexec\.exe[\s\S]{0,180}`"\$resolvedInstaller`"/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /Start-Process msiexec\.exe -ArgumentList @\(\n\s+'\/x', \[string\]\$manifest\.InstallerProductCode/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /same-path installer replacement did not fail closed/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /ACTIVE recovery authority/);
     assert.match(installedWindowsAppTest, /TreeIdentity = \$script:installRootOwnedTreeIdentity/);
     assert.match(installedWindowsAppTest, /EntryIdentity = \$script:shortcutOwnedEntryIdentity/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /mismatched App Paths ownership identity did not fail closed/);
@@ -760,7 +796,29 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /Write-Host/);
     assert.match(
       installedWindowsAppWorkflowCleanup,
-      /\$invokeController = \{\nAdd-Type -TypeDefinition @'[\s\S]*\$controllerPhase = 'PROCESS_WAIT'[\s\S]*\n\}\n\n#[^\n]+[\s\S]*try \{\n\s+\. \$invokeController\n\} catch \{\n\s+Set-CaughtControllerFailure \$_\n\}/,
+      /Add-Type -TypeDefinition @'[\s\S]*'@\n\ntry \{\n\$controllerPhase = 'PARAMETER_VALIDATION'[\s\S]*\$controllerPhase = 'PROCESS_WAIT'[\s\S]*\n\} catch \{\n\s+Set-CaughtControllerFailure \$_\n\}/,
+    );
+    assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /\$invokeController|StartupFailureClass/);
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /run-installed-windows-app-workflow-cleanup-body\.ps1/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /\[object\]\$OwnershipManifest[\s\S]*\[object\]\$Installer[\s\S]*\[object\]\$ExpectedRunId/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /'PARSER'[\s\S]*'PARAMETER_BINDING'[\s\S]*'TYPE_LOAD'[\s\S]*'OTHER'/,
+    );
+    assert.match(installedWindowsAppWorkflowCleanupWrapper, /Write-StartupFailure \$_/);
+    assert.equal(
+      installedWindowsAppWorkflowCleanupWrapper.match(/\[Console\]::Out\.WriteLine/g)?.length,
+      2,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /Console\]::SetError|Write-(?:Error|Host)|\btrap\b/,
     );
     assert.match(installedWindowsAppWorkflowCleanup, /CancelAndFinish/);
     assert.doesNotMatch(

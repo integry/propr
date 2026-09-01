@@ -92,6 +92,7 @@ $passwordText = $null
 $credential = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$testUser", $password)
 $installAttempted = $false
 $msiInstallCompleted = $false
+$installerArtifactAuthorityValid = $true
 $testUserCreatedByRun = $false
 $testUserSid = $null
 $smokeUserDataDirectory = $null
@@ -220,7 +221,18 @@ try {
 $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $initialOwnershipState = ConvertFrom-Json `
   -InputObject $strictUtf8.GetString($initialManifestBytes) -ErrorAction Stop
-if ($initialOwnershipState.SchemaVersion -ne 2 -or
+$initialManifestKeys = @($initialOwnershipState.PSObject.Properties | ForEach-Object { $_.Name })
+$expectedInitialManifestKeys = @(
+  'SchemaVersion','ManifestType','State','RunId','CreatedUtcTicks','ExpiresUtcTicks',
+  'InstallerPath','InstallerEntryIdentity','InstallerSha256','InstallerProductCode',
+  'Fixture','FixtureRoot','BaselineClean','InstallAttempted','MsiTransactionState',
+  'Directories','Files','RegistryKeys','RegistryValues','Users','Profiles'
+)
+if ($initialManifestKeys.Count -ne $expectedInitialManifestKeys.Count -or
+    @($expectedInitialManifestKeys | Where-Object {
+      $initialManifestKeys -cnotcontains $_
+    }).Count -ne 0 -or
+    $initialOwnershipState.SchemaVersion -ne 3 -or
     [string]$initialOwnershipState.ManifestType -cne
       'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -or
     [string]$initialOwnershipState.State -cne 'ACTIVE' -or
@@ -229,18 +241,38 @@ if ($initialOwnershipState.SchemaVersion -ne 2 -or
       [IO.Path]::GetFullPath([string]$initialOwnershipState.InstallerPath),
       $installerPath,
       [StringComparison]::OrdinalIgnoreCase
-    )) {
+    ) -or
+    [string]$initialOwnershipState.InstallerEntryIdentity -notmatch '^[a-f0-9]{24}$' -or
+    [string]$initialOwnershipState.InstallerSha256 -notmatch '^[a-f0-9]{64}$' -or
+    [string]$initialOwnershipState.InstallerProductCode -notmatch
+      '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$' -or
+    $initialOwnershipState.Fixture -isnot [bool] -or $initialOwnershipState.Fixture -or
+    $null -ne $initialOwnershipState.FixtureRoot -or
+    $initialOwnershipState.BaselineClean -isnot [bool] -or
+    $initialOwnershipState.BaselineClean -or
+    $initialOwnershipState.InstallAttempted -isnot [bool] -or
+    $initialOwnershipState.InstallAttempted -or
+    [string]$initialOwnershipState.MsiTransactionState -cne 'NONE' -or
+    @($initialOwnershipState.Directories).Count -ne 0 -or
+    @($initialOwnershipState.Files).Count -ne 0 -or
+    @($initialOwnershipState.RegistryKeys).Count -ne 0 -or
+    @($initialOwnershipState.RegistryValues).Count -ne 0 -or
+    @($initialOwnershipState.Users).Count -ne 0 -or
+    @($initialOwnershipState.Profiles).Count -ne 0) {
   throw 'initial ownership manifest identity is invalid'
 }
 $ownershipToken = [Guid]::NewGuid().ToString('N')
 $ownershipState = [ordered]@{
-  SchemaVersion = 2
+  SchemaVersion = 3
   ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
   State = 'ACTIVE'
   RunId = $ownershipRunId
   CreatedUtcTicks = [int64]$initialOwnershipState.CreatedUtcTicks
   ExpiresUtcTicks = [int64]$initialOwnershipState.ExpiresUtcTicks
   InstallerPath = $installerPath
+  InstallerEntryIdentity = [string]$initialOwnershipState.InstallerEntryIdentity
+  InstallerSha256 = [string]$initialOwnershipState.InstallerSha256
+  InstallerProductCode = [string]$initialOwnershipState.InstallerProductCode
   Fixture = $false
   FixtureRoot = $null
   BaselineClean = $false
@@ -600,38 +632,44 @@ function Get-RegistryValueSnapshot([string]$Path, [string]$Name) {
   }
 }
 
-function Get-MsiProductCode([string]$Path) {
-  $installerCom = $null
-  $database = $null
-  $view = $null
-  $record = $null
+function Get-InstallerSha256([string]$Path) {
+  $stream = [IO.File]::Open(
+    $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  $sha256 = [Security.Cryptography.SHA256]::Create()
   try {
-    $installerCom = New-Object -ComObject WindowsInstaller.Installer
-    $database = $installerCom.OpenDatabase($Path, 0)
-    $view = $database.OpenView(
-      "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ProductCode'")
-    $view.Execute()
-    $record = $view.Fetch()
-    $productCode = if ($null -eq $record) { $null } else { [string]$record.StringData(1) }
-    if ($productCode -notmatch '^\{[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}\}$') {
-      throw 'MSI product identity is invalid'
-    }
-    return $productCode.ToUpperInvariant()
+    return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
   } finally {
-    foreach ($resource in @($record, $view, $database, $installerCom)) {
-      if ($null -ne $resource -and [Runtime.InteropServices.Marshal]::IsComObject($resource)) {
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($resource)
-      }
-    }
+    $sha256.Dispose()
+    $stream.Dispose()
   }
 }
 
-function Assert-MsiProductIsUnregistered([string]$Path) {
+function Assert-InstallerArtifactAuthority {
+  $matches = $false
+  try {
+    $matches = (Test-SamePath $installerPath ([string]$ownershipState.InstallerPath)) -and
+      [string]$ownershipState.InstallerEntryIdentity -match '^[a-f0-9]{24}$' -and
+      [string]$ownershipState.InstallerSha256 -match '^[a-f0-9]{64}$' -and
+      [string]$ownershipState.InstallerProductCode -match
+        '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$' -and
+      (Get-FileSystemEntryIdentity $installerPath $false) -ceq
+        [string]$ownershipState.InstallerEntryIdentity -and
+      (Get-InstallerSha256 $installerPath) -ceq [string]$ownershipState.InstallerSha256
+  } catch {}
+  if (!$matches) {
+    $script:installerArtifactAuthorityValid = $false
+    throw 'installer artifact no longer matches durable authority'
+  }
+}
+
+function Assert-MsiProductIsUnregistered([string]$ProductCode) {
   $installerCom = $null
   try {
-    $productCode = Get-MsiProductCode $Path
+    if ($ProductCode -notmatch '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$') {
+      throw 'MSI product identity is invalid'
+    }
     $installerCom = New-Object -ComObject WindowsInstaller.Installer
-    if ([int]$installerCom.ProductState($productCode) -ne -1) {
+    if ([int]$installerCom.ProductState($ProductCode) -ne -1) {
       throw 'Windows Installer product registration is not at the clean baseline'
     }
   } finally {
@@ -663,7 +701,8 @@ function Assert-ExactCleanMsiBaselineAfterRollback {
   if (!$valueMatches -or !$keyMatches) {
     throw 'Windows Installer rollback did not restore the exact current-user baseline'
   }
-  Assert-MsiProductIsUnregistered $installerPath
+  Assert-InstallerArtifactAuthority
+  Assert-MsiProductIsUnregistered ([string]$ownershipState.InstallerProductCode)
 }
 
 function Wait-ExactCleanMsiBaselineAfterRollback {
@@ -879,7 +918,8 @@ try {
       $startMenuShortcutExistedBeforeInstall -or $startMenuShortcutFolderExistedBeforeInstall) {
     throw 'installed-app harness requires an unowned clean machine baseline'
   }
-  Assert-MsiProductIsUnregistered $installerPath
+  Assert-InstallerArtifactAuthority
+  Assert-MsiProductIsUnregistered ([string]$ownershipState.InstallerProductCode)
   $ownershipState.BaselineClean = $true
   Write-OwnershipManifest
   Write-WatchdogMarker 'INITIALIZATION' 'BASELINE' $externalOperationTimeoutMilliseconds 'COMPLETE'
@@ -1750,6 +1790,7 @@ try {
         -Substage 'MSI_INSTALL' `
         -TimeoutMilliseconds ($msiTimeoutMilliseconds + $terminationTimeoutMilliseconds + 5000) `
         -Operation {
+          Assert-InstallerArtifactAuthority
           Invoke-Msi @('/i', "`"$installerPath`"", '/qn', '/norestart') 'machine install'
           $script:msiInstallCompleted = $true
         }
@@ -2139,6 +2180,8 @@ try {
 } finally {
   $cleanupFailed = $false
   $profileCleanupFailed = $false
+  if ($installerArtifactAuthorityValid) {
+  Assert-InstallerArtifactAuthority
   if ($installAttempted -and
       [string]$ownershipState.MsiTransactionState -ceq 'COMMITTED') {
     Write-Stage 'UNINSTALL' 'BEGIN'
@@ -2163,12 +2206,18 @@ try {
           if (!(Test-MsiInstalledValue $hkcuDesktopRegistryPath $hkcuInstalledValueName)) {
             throw 'refusing to uninstall over current-user metadata with mismatched ownership'
           }
-          Invoke-Msi @('/x', "`"$installerPath`"", '/qn', '/norestart') 'machine uninstall'
+          Assert-InstallerArtifactAuthority
+          Invoke-Msi @(
+            '/x', [string]$ownershipState.InstallerProductCode, '/qn', '/norestart'
+          ) 'machine uninstall'
         }
       Write-CleanupSubstage 'UNINSTALL' 'MSI_UNINSTALL' 'COMPLETE'
     } catch {
       Write-CleanupSubstage 'UNINSTALL' 'MSI_UNINSTALL' 'FAILED'
       $uninstallFailed = $true
+    }
+    if (!$installerArtifactAuthorityValid) {
+      throw 'installer authority changed before uninstall; ACTIVE recovery authority retained'
     }
 
     Write-CleanupSubstage 'UNINSTALL' 'INSTALL_TREE' 'BEGIN'
@@ -2547,5 +2596,6 @@ try {
     Write-OwnershipManifest
     Write-CleanupSubstage 'CLEANUP' 'FINAL_AGGREGATION' 'COMPLETE'
     Write-Stage 'CLEANUP' 'COMPLETE'
+  }
   }
 }
