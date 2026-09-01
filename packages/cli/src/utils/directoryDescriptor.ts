@@ -213,7 +213,7 @@ function openNativeAuthorityDirectory(directory: string): number {
 
   let directoryFd: number | undefined;
   try {
-    directoryFd = openSync(directory, constants.O_RDONLY);
+    directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY);
     nativeDirectoryOpenTestHook?.("after-fallback-open", directory);
     const opened = fstatSync(directoryFd);
     nativeDirectoryOpenTestHook?.("after-fallback-fstat", directory);
