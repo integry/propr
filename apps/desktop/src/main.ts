@@ -170,20 +170,22 @@ const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<stri
     const deadline = performance.now() + 5000;
     let elements;
     do {
-      const card = document.querySelector('.desktop-connection-card');
-      const form = card?.querySelector('form');
+      const card = document.querySelector('.desktop-welcome-card');
+      const form = card?.querySelector(':scope > .desktop-profile-form');
       const labels = form ? Array.from(form.querySelectorAll(':scope > label')) : [];
       elements = {
-        titlebar: document.querySelector('.desktop-titlebar'),
-        logo: document.querySelector('.desktop-titlebar img[alt="ProPR"]'),
         card,
+        brand: card?.querySelector(':scope > .desktop-brand'),
+        logo: card?.querySelector(':scope > .desktop-brand img'),
+        form,
+        back: form?.querySelector(':scope > .desktop-back-button'),
+        heading: form?.querySelector(':scope > h2'),
+        notice: form?.querySelector(':scope > .desktop-version-note'),
         connectionName: labels[0]?.querySelector('input'),
         apiUrl: labels[1]?.querySelector('input'),
-        apiHelp: labels[1]?.querySelector('span'),
         submit: form?.querySelector(':scope > button[type="submit"]'),
-        footer: card?.lastElementChild,
       };
-      if (Object.values(elements).every(Boolean) && elements.footer.textContent.includes('Runtime:')) break;
+      if (Object.values(elements).every(Boolean) && elements.apiUrl.value === 'https://connect.propr.dev') break;
       await new Promise(resolve => setTimeout(resolve, 25));
     } while (performance.now() < deadline);
 
@@ -205,6 +207,12 @@ const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<stri
       screen: { height: window.screen.height, width: window.screen.width },
       workArea: { height: window.screen.availHeight, width: window.screen.availWidth },
       viewport: { height: window.innerHeight, width: window.innerWidth },
+      state: {
+        candidateApiUrl: elements.apiUrl.value,
+        connectLabel: elements.submit.textContent?.trim(),
+        noticeText: elements.notice.textContent?.trim(),
+        runtimeFooterPresent: Array.from(card.querySelectorAll('*')).some(element => element.textContent?.trim().startsWith('Runtime:')),
+      },
       ...Object.fromEntries(Object.entries(elements).map(([name, element]) => [name, bounds(element)])),
     };
   })()`);
@@ -332,13 +340,18 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
         await new Promise(resolve => setTimeout(resolve, 25));
       } while (performance.now() < deadline);
       const profiles = await bridge.profiles.list();
+      const setup = await bridge.localSetup.status();
       return {
         noPersistedCandidate: profiles.profiles.length === 0,
         noActiveCandidate: profiles.activeProfileId === null,
+        noLifecycleOrDockerAuthority: !('lifecycle' in bridge) && !('docker' in bridge),
+        remoteOnlySetup: setup.phase === 'unsupported' && setup.capability?.kind === 'remote-only',
         stagedConnectCandidate,
       };
     })()`);
-    if (!profileFlow?.noPersistedCandidate || !profileFlow?.noActiveCandidate || !profileFlow?.stagedConnectCandidate) {
+    if (!profileFlow?.noPersistedCandidate || !profileFlow?.noActiveCandidate
+      || !profileFlow?.noLifecycleOrDockerAuthority || !profileFlow?.remoteOnlySetup
+      || !profileFlow?.stagedConnectCandidate) {
       throw new Error('Packaged desktop staged Connect flow failed');
     }
     log('info', 'desktop.renderer.mvp_flows.ready', { connectCandidateStaged: true });
@@ -410,7 +423,7 @@ if (!hasSingleInstanceLock) {
     );
     setupController = new DesktopSetupController({
       actions: localHost?.actions ?? inertSetupActions,
-      platform: process.platform,
+      platform: packagedSmokeTest ? 'darwin' : process.platform,
       appDataDir: app.getPath('userData'),
       statePath: join(app.getPath('userData'), 'desktop', 'setup-state.json'),
       defaultRootDir,

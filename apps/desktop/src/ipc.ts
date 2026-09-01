@@ -6,6 +6,7 @@ import type { DesktopOperationCoordinator } from './operation-coordinator';
 import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
 import type { DesktopSetupController } from './setup-controller';
+import { openRemoteAuthentication } from './remote-authentication';
 import { isSafeExternalUrl, isTrustedRendererUrl } from './security';
 import { IPC_CHANNELS } from './shared/contract';
 
@@ -52,6 +53,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
     packaged: options.app.isPackaged,
   }));
   handle(IPC_CHANNELS.authLogout, (_event, apiBaseUrl) => logoutDesktopSession(options.desktopSession, apiBaseUrl));
+  handle(IPC_CHANNELS.remoteAuthenticate, (_event, request) => openRemoteAuthentication(request, url => shell.openExternal(url)));
   handle(IPC_CHANNELS.openExternal, async (_event, value: unknown) => {
     if (typeof value !== 'string' || !isSafeExternalUrl(value)) throw new Error('External URL is not allowed');
     await shell.openExternal(value);

@@ -3,6 +3,7 @@ export const DESKTOP_PROTOCOL = 'propr';
 export const IPC_CHANNELS = Object.freeze({
   appMetadata: 'desktop:app-metadata',
   authLogout: 'desktop:auth-logout',
+  remoteAuthenticate: 'desktop:remote-authenticate',
   openExternal: 'desktop:open-external',
   storageSecurity: 'desktop:storage-security',
   profilesList: 'desktop:profiles-list',
@@ -46,6 +47,11 @@ export interface DesktopProfile {
 export interface DesktopProfileInput {
   id?: string;
   label: string;
+  apiBaseUrl: string;
+}
+
+export interface DesktopRemoteAuthenticationRequest {
+  profileId: string;
   apiBaseUrl: string;
 }
 

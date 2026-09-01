@@ -59,7 +59,11 @@ const fakeActions = (): SetupActions => {
   };
 };
 
-describe('desktop local setup controller', () => {
+describe('desktop local setup controller', {
+  skip: process.platform === 'win32'
+    ? 'Linux local-setup controller fixtures require POSIX modes and directory-descriptor authority.'
+    : false,
+}, () => {
   it('runs the injected host adapter, redacts progress, persists resume state, and registers the healthy profile', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-setup-'));
     const statePath = join(directory, 'setup.json');
@@ -514,7 +518,11 @@ describe('desktop local setup controller', () => {
     assert.doesNotMatch(await readFile(mountedPath, 'utf8'), /REPLACEMENT/);
   });
 
-  it('keeps an atomic env commit descriptor-relative when the fixed root is renamed and replaced', async () => {
+  it('keeps an atomic env commit descriptor-relative when the fixed root is renamed and replaced', {
+    skip: process.platform !== 'linux'
+      ? 'This rename/swap proof intentionally exercises Linux /proc/<pid>/fd descriptor semantics.'
+      : false,
+  }, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-root-commit-'));
     const selectedRoot = join(directory, 'fixed');
     const originalRoot = join(directory, 'fixed-original');

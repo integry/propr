@@ -129,14 +129,31 @@ export const createDesktopRendererBridge = (
   connectionProbe: (profile: DesktopProfileView) => Promise<DesktopConnectionResult> = probeDesktopProfile,
   onDeepLink: DesktopBridge['app']['onDeepLink'] = () => () => undefined,
 ): DesktopRendererBridge => {
+  const platformName = platformView(platform);
   const progressListeners = new Set<(snapshot: DesktopSetupSnapshot) => void>();
-  ipc.on(IPC_CHANNELS.setupProgress, (_event, snapshot: DesktopSetupSnapshot) => {
-    progressListeners.forEach(listener => listener(snapshot));
+  if (platformName === 'linux') {
+    ipc.on(IPC_CHANNELS.setupProgress, (_event, snapshot: DesktopSetupSnapshot) => {
+      progressListeners.forEach(listener => listener(snapshot));
+    });
+  }
+  const remoteOnlySnapshot = (): DesktopSetupSnapshot => ({
+    phase: 'unsupported',
+    capability: {
+      supported: false,
+      kind: 'remote-only',
+      platform,
+      reason: 'Local setup is available only on Linux. Connect to a remote ProPR instance.',
+    },
+    sessionId: '00000000-0000-4000-8000-000000000000',
+    logs: [],
   });
+  const localSetupUnavailable = async (): Promise<never> => {
+    throw new Error('Local setup is unavailable on this platform. Connect to a remote ProPR instance.');
+  };
 
   const bridge: DesktopRendererBridge = {
     isDesktop: true,
-    platform: platformView(platform),
+    platform: platformName,
     app: { onDeepLink: listener => onDeepLink(listener) },
     profiles: {
       list: async () => {
@@ -155,9 +172,17 @@ export const createDesktopRendererBridge = (
       setActiveId: (profileId) => invoke(ipc, IPC_CHANNELS.profilesSetActive, profileId),
     },
     discovery: { discover: () => invoke(ipc, IPC_CHANNELS.discovery) },
-    authentication: { authenticate: async () => { throw new Error('Remote pairing is not included in local setup.'); } },
+    authentication: {
+      authenticate: async profile => {
+        const apiBaseUrl = normalizeApiBaseUrl(profile.baseUrl);
+        if (profile.kind !== 'remote' || !apiBaseUrl || apiBaseUrl !== profile.baseUrl) {
+          throw new Error('Remote sign-in requires a canonical remote profile.');
+        }
+        await invoke(ipc, IPC_CHANNELS.remoteAuthenticate, { profileId: profile.id, apiBaseUrl });
+      },
+    },
     externalBrowser: { open: (url) => invoke(ipc, IPC_CHANNELS.openExternal, url) },
-    localSetup: {
+    localSetup: platformName === 'linux' ? {
       status: () => invoke(ipc, IPC_CHANNELS.setupStatus),
       start: (request) => invoke(ipc, IPC_CHANNELS.setupStart, request),
       retry: (request) => invoke(ipc, IPC_CHANNELS.setupRetry, request),
@@ -168,6 +193,14 @@ export const createDesktopRendererBridge = (
         progressListeners.add(listener);
         return () => progressListeners.delete(listener);
       },
+    } : {
+      status: async () => remoteOnlySnapshot(),
+      start: localSetupUnavailable,
+      retry: localSetupUnavailable,
+      cancel: localSetupUnavailable,
+      selectPrivateKey: localSetupUnavailable,
+      acquireWebhookSecret: localSetupUnavailable,
+      onProgress: () => () => undefined,
     },
     connection: { probe: connectionProbe },
   };

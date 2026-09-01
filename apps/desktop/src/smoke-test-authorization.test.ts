@@ -164,5 +164,8 @@ describe('packaged smoke profile authorization', () => {
     assert.match(smokeFlow, /stagedConnectCandidate/);
     assert.match(smokeFlow, /profiles\.profiles\.length === 0/);
     assert.match(smokeFlow, /profiles\.activeProfileId === null/);
+    assert.match(smokeFlow, /noLifecycleOrDockerAuthority/);
+    assert.match(smokeFlow, /setup\.phase === 'unsupported'/);
+    assert.match(smokeFlow, /setup\.capability\?\.kind === 'remote-only'/);
   });
 });

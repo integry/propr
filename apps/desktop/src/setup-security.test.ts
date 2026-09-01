@@ -36,7 +36,11 @@ describe('desktop setup request schema', () => {
   });
 });
 
-describe('desktop setup filesystem capabilities', () => {
+describe('desktop setup filesystem capabilities', {
+  skip: process.platform === 'win32'
+    ? 'Private-key filesystem capabilities require POSIX mode bits and symbolic-link semantics.'
+    : false,
+}, () => {
   it('binds an exact canonical private key to one session and rejects replay or path switching', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'propr-capability-'));
     const selected = join(parent, 'selected.pem');

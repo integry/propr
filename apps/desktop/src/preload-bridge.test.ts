@@ -22,6 +22,11 @@ class FakeIpc implements PreloadIpc {
   }
 }
 
+const setupRequest = {
+  sessionId: '00000000-0000-4000-8000-000000000000', root: { mode: 'default' as const }, reinitialize: false, agents: [],
+  github: { mode: 'demo' as const }, intake: { mode: 'keep' as const }, whitelist: null, repository: null,
+};
+
 describe('desktop preload bridge', () => {
   it('exposes only the narrow frozen namespaces', () => {
     const bridge = createDesktopBridge(new FakeIpc());
@@ -53,18 +58,14 @@ describe('desktop preload bridge', () => {
     const bridge = createDesktopRendererBridge(ipc, 'linux');
     const received: unknown[] = [];
     bridge.localSetup.onProgress(snapshot => received.push(snapshot));
-    const request = {
-      sessionId: '00000000-0000-4000-8000-000000000000', root: { mode: 'default' as const }, reinitialize: false, agents: [],
-      github: { mode: 'demo' as const }, intake: { mode: 'keep' as const }, whitelist: null, repository: null,
-    };
-    await bridge.localSetup.start(request);
+    await bridge.localSetup.start(setupRequest);
     ipc.listeners.get(IPC_CHANNELS.setupProgress)?.(
       { sender: 'must-not-leak' },
-      { phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: request.sessionId, logs: [] },
+      { phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: setupRequest.sessionId, logs: [] },
     );
 
-    assert.deepEqual(ipc.invocations, [{ channel: IPC_CHANNELS.setupStart, args: [request] }]);
-    assert.deepEqual(received, [{ phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: request.sessionId, logs: [] }]);
+    assert.deepEqual(ipc.invocations, [{ channel: IPC_CHANNELS.setupStart, args: [setupRequest] }]);
+    assert.deepEqual(received, [{ phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: setupRequest.sessionId, logs: [] }]);
     assert.equal('invoke' in bridge, false);
   });
 
@@ -112,6 +113,30 @@ describe('desktop preload bridge', () => {
     assert.ok((local.message?.length ?? 0) < 200);
     assert.doesNotMatch(local.message ?? '', /alice|secret|home/);
   });
+
+  for (const platform of ['darwin', 'win32'] as const) {
+    it(`keeps ${platform} remote-only while supporting production remote activation and browser sign-in`, async () => {
+      const ipc = new FakeIpc();
+      const bridge = createDesktopRendererBridge(ipc, platform);
+      const remote = { id: 'remote-1', name: 'Team server', baseUrl: 'https://team.example.com', kind: 'remote' as const };
+
+      assert.equal((await bridge.localSetup.status()).capability.kind, 'remote-only');
+      await assert.rejects(bridge.localSetup.start(setupRequest), /Local setup is unavailable/);
+      await bridge.profiles.setActiveId(remote.id);
+      await bridge.authentication.authenticate(remote);
+
+      assert.deepEqual(ipc.invocations, [
+        { channel: IPC_CHANNELS.profilesSetActive, args: [remote.id] },
+        {
+          channel: IPC_CHANNELS.remoteAuthenticate,
+          args: [{ profileId: remote.id, apiBaseUrl: remote.baseUrl }],
+        },
+      ]);
+      assert.equal(ipc.listeners.has(IPC_CHANNELS.setupProgress), false);
+      assert.equal('lifecycle' in bridge, false);
+      assert.equal('docker' in bridge, false);
+    });
+  }
 
   it('buffers startup and second-instance deep links until the renderer subscribes', () => {
     const ipc = new FakeIpc();
