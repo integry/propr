@@ -37,10 +37,11 @@ function Write-StartupFailure($ErrorRecord) {
     if ($candidateLine -ge 0 -and $candidateLine -le 999999) { $line = $candidateLine }
   } catch {}
   [Console]::Out.WriteLine('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED')
-  [Console]::Out.WriteLine(
+  [Console]::Out.WriteLine((
     ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:' +
       'EXIT_CODE:125:STARTUP_CLASS:{0}:PROCESS_EXIT:125:LINE:{1}') -f `
-      $failureClass, $line)
+      $failureClass, $line
+  ))
   [Console]::Out.Flush()
 }
 
