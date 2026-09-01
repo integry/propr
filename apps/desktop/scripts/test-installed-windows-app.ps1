@@ -80,6 +80,9 @@ try {
 }
 $installRoot = Join-Path $env:ProgramFiles 'ProPR Desktop'
 $application = Join-Path $installRoot 'propr-desktop.exe'
+$protocolRegistryPath = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
+$appPathsRegistryPath = `
+  'Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\propr-desktop.exe'
 $testUser = "propr-ci-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 $passwordText = "P!$([Guid]::NewGuid().ToString('N'))a7"
 $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
@@ -91,8 +94,12 @@ $testUserSid = $null
 $smokeUserDataDirectory = $null
 $installRootExistedBeforeInstall = $false
 $protocolExistedBeforeInstall = $false
+$appPathsExistedBeforeInstall = $false
 $installRootCreatedByRun = $false
 $protocolCreatedByRun = $false
+$appPathsCreatedByRun = $false
+$protocolOwnedIdentity = $null
+$appPathsOwnedIdentity = $null
 $msiTimeoutMilliseconds = 10 * 60 * 1000
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
@@ -153,7 +160,8 @@ $startMenuShortcutFolder = Join-Path $commonPrograms 'ProPR Desktop'
 $startMenuShortcut = Join-Path $startMenuShortcutFolder 'ProPR Desktop.lnk'
 $installRootExistedBeforeInstall = Test-Path -LiteralPath $installRoot
 $protocolExistedBeforeInstall =
-  Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
+  Test-Path -LiteralPath $protocolRegistryPath
+$appPathsExistedBeforeInstall = Test-Path -LiteralPath $appPathsRegistryPath
 $startMenuShortcutExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcut
 $startMenuShortcutFolderExistedBeforeInstall = Test-Path -LiteralPath $startMenuShortcutFolder
 $startMenuShortcutCreatedByRun = $false
@@ -161,10 +169,53 @@ $startMenuShortcutFolderCreatedByRun = $false
 $shortcutFileByteCap = 64 * 1024
 $ownershipRunId = [IO.Path]::GetFileNameWithoutExtension($ownershipManifestPath).Substring(
   'propr-installed-app-ownership-'.Length)
+$initialManifestItem = Get-Item -LiteralPath $ownershipManifestPath -Force -ErrorAction Stop
+if (($initialManifestItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+    $initialManifestItem.Length -le 0 -or $initialManifestItem.Length -gt 65536) {
+  throw 'initial ownership manifest metadata is invalid'
+}
+$initialManifestBytes = [byte[]]::new([int]$initialManifestItem.Length)
+$initialManifestStream = [IO.File]::Open(
+  $ownershipManifestPath,
+  [IO.FileMode]::Open,
+  [IO.FileAccess]::Read,
+  [IO.FileShare]::Read
+)
+try {
+  $initialManifestOffset = 0
+  while ($initialManifestOffset -lt $initialManifestBytes.Length) {
+    $read = $initialManifestStream.Read(
+      $initialManifestBytes,
+      $initialManifestOffset,
+      $initialManifestBytes.Length - $initialManifestOffset
+    )
+    if ($read -eq 0) { throw 'initial ownership manifest read was incomplete' }
+    $initialManifestOffset += $read
+  }
+  if ($initialManifestStream.ReadByte() -ne -1) {
+    throw 'initial ownership manifest changed during read'
+  }
+} finally {
+  $initialManifestStream.Dispose()
+}
+$strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+$initialOwnershipState = ConvertFrom-Json `
+  -InputObject $strictUtf8.GetString($initialManifestBytes) -ErrorAction Stop
+if ($initialOwnershipState.SchemaVersion -ne 1 -or
+    [string]$initialOwnershipState.RunId -cne $ownershipRunId -or
+    ![string]::Equals(
+      [IO.Path]::GetFullPath([string]$initialOwnershipState.InstallerPath),
+      $installerPath,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+  throw 'initial ownership manifest identity is invalid'
+}
 $ownershipToken = [Guid]::NewGuid().ToString('N')
 $ownershipState = [ordered]@{
   SchemaVersion = 1
   RunId = $ownershipRunId
+  CreatedUtcTicks = [int64]$initialOwnershipState.CreatedUtcTicks
+  ExpiresUtcTicks = [int64]$initialOwnershipState.ExpiresUtcTicks
   InstallerPath = $installerPath
   Fixture = $false
   FixtureRoot = $null
@@ -216,6 +267,53 @@ function Write-DurableOwnershipToken([string]$Path, [string]$Token) {
   }
 }
 
+function Get-RegistryTreeIdentity([string]$Path) {
+  if (!(Test-Path -LiteralPath $Path)) { return $null }
+  $root = Get-Item -LiteralPath $Path -ErrorAction Stop
+  $records = [Collections.Generic.List[string]]::new()
+  $pending = [Collections.Generic.Queue[object]]::new()
+  $pending.Enqueue([PSCustomObject]@{ Key = $root; Relative = '' })
+  while ($pending.Count -ne 0) {
+    $entry = $pending.Dequeue()
+    $records.Add(('K|{0}' -f [Convert]::ToBase64String(
+      [Text.Encoding]::UTF8.GetBytes([string]$entry.Relative))))
+    foreach ($valueName in @($entry.Key.GetValueNames() | Sort-Object -CaseSensitive)) {
+      $value = $entry.Key.GetValue(
+        $valueName,
+        $null,
+        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+      )
+      $valueBytes = if ($value -is [byte[]]) {
+        $value
+      } elseif ($value -is [string[]]) {
+        [Text.Encoding]::UTF8.GetBytes(($value | ConvertTo-Json -Compress))
+      } else {
+        [Text.Encoding]::UTF8.GetBytes([Convert]::ToString(
+          $value,
+          [Globalization.CultureInfo]::InvariantCulture
+        ))
+      }
+      $records.Add(('V|{0}|{1}|{2}' -f
+        [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$valueName)),
+        $entry.Key.GetValueKind($valueName).ToString(),
+        [Convert]::ToBase64String($valueBytes)))
+    }
+    foreach ($child in @(Get-ChildItem -LiteralPath $entry.Key.PSPath -ErrorAction Stop |
+        Sort-Object -Property PSChildName -CaseSensitive)) {
+      $relative = if ($entry.Relative) {
+        '{0}\{1}' -f $entry.Relative, $child.PSChildName
+      } else { [string]$child.PSChildName }
+      $pending.Enqueue([PSCustomObject]@{ Key = $child; Relative = $relative })
+    }
+  }
+  $payload = [Text.Encoding]::UTF8.GetBytes(($records -join "`n"))
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($sha256.ComputeHash($payload)).Replace('-', '').ToLowerInvariant()
+  }
+  finally { $sha256.Dispose() }
+}
+
 Write-OwnershipManifest
 
 function Write-WatchdogMarker(
@@ -229,6 +327,7 @@ function Write-WatchdogMarker(
     'INSTALL_TREE_SCAN',
     'APPLICATION_IMAGE',
     'PROTOCOL_ASSERTION',
+    'APP_PATH_ASSERTION',
     'SHORTCUT_ASSERTION',
     'USER_CREATE',
     'USER_SID',
@@ -241,6 +340,7 @@ function Write-WatchdogMarker(
     'MSI_UNINSTALL',
     'INSTALL_TREE_ASSERTION',
     'PROTOCOL_ABSENCE_ASSERTION',
+    'APP_PATH_ABSENCE_ASSERTION',
     'SHORTCUT_FILE_ASSERTION',
     'SHORTCUT_FOLDER_ASSERTION',
     'SHORTCUT_ABSENCE_PROBE',
@@ -251,6 +351,7 @@ function Write-WatchdogMarker(
     'USER_REMOVE',
     'INSTALL_ROOT_FALLBACK',
     'PROTOCOL_FALLBACK',
+    'APP_PATH_FALLBACK',
     'SHORTCUT_FALLBACK'
   )][string]$Substage,
   [int]$TimeoutMilliseconds,
@@ -329,6 +430,7 @@ Write-WatchdogMarker 'INITIALIZATION' 'PATHS' $bootstrapWatchdogTimeoutMilliseco
 Write-WatchdogMarker 'INITIALIZATION' 'BASELINE' $externalOperationTimeoutMilliseconds 'BEGIN'
 try {
   if ($installRootExistedBeforeInstall -or $protocolExistedBeforeInstall -or
+      $appPathsExistedBeforeInstall -or
       $startMenuShortcutExistedBeforeInstall -or $startMenuShortcutFolderExistedBeforeInstall) {
     throw 'installed-app harness requires an unowned clean machine baseline'
   }
@@ -354,6 +456,7 @@ function Write-CleanupSubstage(
     'MSI_UNINSTALL',
     'INSTALL_TREE',
     'PROTOCOL',
+    'APP_PATH',
     'SHORTCUT_FILE',
     'SHORTCUT_FOLDER',
     'ORDINARY_USER_ABSENCE_PROBE',
@@ -362,6 +465,7 @@ function Write-CleanupSubstage(
     'USER',
     'INSTALL_ROOT_FALLBACK',
     'PROTOCOL_FALLBACK',
+    'APP_PATH_FALLBACK',
     'SHORTCUT_FALLBACK',
     'FINAL_AGGREGATION'
   )][string]$Substage,
@@ -973,10 +1077,16 @@ try {
     $ownershipState.Files = @([ordered]@{
       Kind = 'SHORTCUT_FILE'; Path = $startMenuShortcut; Owned = $true; Token = $null
     })
-    $ownershipState.RegistryKeys = @([ordered]@{
-      Kind = 'PROTOCOL'; Path = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
-      Owned = $true; Token = $null
-    })
+    $ownershipState.RegistryKeys = @(
+      [ordered]@{
+        Kind = 'PROTOCOL'; Path = $protocolRegistryPath
+        Owned = $true; Token = $null; Identity = $null; Provisional = $true
+      },
+      [ordered]@{
+        Kind = 'APP_PATH'; Path = $appPathsRegistryPath
+        Owned = $true; Token = $null; Identity = $null; Provisional = $true
+      }
+    )
     Write-OwnershipManifest
     try {
       Invoke-BoundedExternalOperation `
@@ -996,7 +1106,9 @@ try {
             !$installRootExistedBeforeInstall -and (Test-Path -LiteralPath $installRoot)
           $script:protocolCreatedByRun =
             !$protocolExistedBeforeInstall -and
-              (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr')
+              (Test-Path -LiteralPath $protocolRegistryPath)
+          $script:appPathsCreatedByRun =
+            !$appPathsExistedBeforeInstall -and (Test-Path -LiteralPath $appPathsRegistryPath)
           $script:startMenuShortcutCreatedByRun =
             !$startMenuShortcutExistedBeforeInstall -and (Test-Path -LiteralPath $startMenuShortcut)
           $script:startMenuShortcutFolderCreatedByRun =
@@ -1020,12 +1132,24 @@ try {
               Kind = 'SHORTCUT_FILE'; Path = $startMenuShortcut; Owned = $true; Token = $null
             })
           } else { @() }
-          $ownershipState.RegistryKeys = if ($script:protocolCreatedByRun) {
-            @([ordered]@{
-              Kind = 'PROTOCOL'; Path = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
-              Owned = $true; Token = $null
-            })
-          } else { @() }
+          $ownedRegistryKeys = @()
+          if ($script:protocolCreatedByRun) {
+            $script:protocolOwnedIdentity = Get-RegistryTreeIdentity $protocolRegistryPath
+            $ownedRegistryKeys += [ordered]@{
+              Kind = 'PROTOCOL'; Path = $protocolRegistryPath
+              Owned = $true; Token = $null; Identity = $script:protocolOwnedIdentity
+              Provisional = $false
+            }
+          }
+          if ($script:appPathsCreatedByRun) {
+            $script:appPathsOwnedIdentity = Get-RegistryTreeIdentity $appPathsRegistryPath
+            $ownedRegistryKeys += [ordered]@{
+              Kind = 'APP_PATH'; Path = $appPathsRegistryPath
+              Owned = $true; Token = $null; Identity = $script:appPathsOwnedIdentity
+              Provisional = $false
+            }
+          }
+          $ownershipState.RegistryKeys = $ownedRegistryKeys
           Write-OwnershipManifest
         }
     }
@@ -1069,9 +1193,17 @@ try {
     Invoke-BoundedExternalOperation 'VALIDATION' 'PROTOCOL_ASSERTION' `
       $externalOperationTimeoutMilliseconds {
         $protocolCommand = (Get-Item -LiteralPath `
-          'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr\shell\open\command').GetValue('')
+          "$protocolRegistryPath\shell\open\command").GetValue('')
         if ($protocolCommand -cne "`"$application`" `"%1`"") {
           throw 'machine installer did not register canonical ProPR Connect protocol discovery'
+        }
+      }
+
+    Invoke-BoundedExternalOperation 'VALIDATION' 'APP_PATH_ASSERTION' `
+      $externalOperationTimeoutMilliseconds {
+        $appPathApplication = (Get-Item -LiteralPath $appPathsRegistryPath).GetValue('')
+        if ($appPathApplication -cne $application) {
+          throw 'machine installer did not register canonical executable discovery'
         }
       }
 
@@ -1251,6 +1383,16 @@ try {
       Invoke-BoundedExternalOperation `
         'UNINSTALL' 'MSI_UNINSTALL' `
         ($msiTimeoutMilliseconds + $terminationTimeoutMilliseconds + 5000) {
+          if ($protocolCreatedByRun -and (Test-Path -LiteralPath $protocolRegistryPath) -and
+              (!$protocolOwnedIdentity -or
+                (Get-RegistryTreeIdentity $protocolRegistryPath) -cne $protocolOwnedIdentity)) {
+            throw 'refusing to uninstall over protocol metadata with a mismatched ownership identity'
+          }
+          if ($appPathsCreatedByRun -and (Test-Path -LiteralPath $appPathsRegistryPath) -and
+              (!$appPathsOwnedIdentity -or
+                (Get-RegistryTreeIdentity $appPathsRegistryPath) -cne $appPathsOwnedIdentity)) {
+            throw 'refusing to uninstall over executable metadata with a mismatched ownership identity'
+          }
           Invoke-Msi @('/x', "`"$installerPath`"", '/qn', '/norestart') 'machine uninstall'
         }
       Write-CleanupSubstage 'UNINSTALL' 'MSI_UNINSTALL' 'COMPLETE'
@@ -1277,13 +1419,27 @@ try {
     try {
       Invoke-BoundedExternalOperation `
         'UNINSTALL' 'PROTOCOL_ABSENCE_ASSERTION' $externalOperationTimeoutMilliseconds {
-          if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr') {
+          if (Test-Path -LiteralPath $protocolRegistryPath) {
             throw 'machine uninstall left protocol discovery metadata behind'
           }
         }
       Write-CleanupSubstage 'UNINSTALL' 'PROTOCOL' 'COMPLETE'
     } catch {
       Write-CleanupSubstage 'UNINSTALL' 'PROTOCOL' 'FAILED'
+      $uninstallFailed = $true
+    }
+
+    Write-CleanupSubstage 'UNINSTALL' 'APP_PATH' 'BEGIN'
+    try {
+      Invoke-BoundedExternalOperation `
+        'UNINSTALL' 'APP_PATH_ABSENCE_ASSERTION' $externalOperationTimeoutMilliseconds {
+          if (Test-Path -LiteralPath $appPathsRegistryPath) {
+            throw 'machine uninstall left executable discovery metadata behind'
+          }
+        }
+      Write-CleanupSubstage 'UNINSTALL' 'APP_PATH' 'COMPLETE'
+    } catch {
+      Write-CleanupSubstage 'UNINSTALL' 'APP_PATH' 'FAILED'
       $uninstallFailed = $true
     }
 
@@ -1432,16 +1588,35 @@ try {
   try {
     Invoke-BoundedExternalOperation `
       'CLEANUP' 'PROTOCOL_FALLBACK' $externalOperationTimeoutMilliseconds {
-        if ($protocolCreatedByRun -and
-            (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr')) {
-          Remove-Item -LiteralPath `
-            'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr' `
-            -Recurse -Force -ErrorAction Stop
+        if ($protocolCreatedByRun -and (Test-Path -LiteralPath $protocolRegistryPath)) {
+          if (!$protocolOwnedIdentity -or
+              (Get-RegistryTreeIdentity $protocolRegistryPath) -cne $protocolOwnedIdentity) {
+            throw 'refusing to remove protocol metadata with a mismatched ownership identity'
+          }
+          Remove-Item -LiteralPath $protocolRegistryPath -Recurse -Force -ErrorAction Stop
         }
       }
     Write-CleanupSubstage 'CLEANUP' 'PROTOCOL_FALLBACK' 'COMPLETE'
   } catch {
     Write-CleanupSubstage 'CLEANUP' 'PROTOCOL_FALLBACK' 'FAILED'
+    $cleanupFailed = $true
+  }
+
+  Write-CleanupSubstage 'CLEANUP' 'APP_PATH_FALLBACK' 'BEGIN'
+  try {
+    Invoke-BoundedExternalOperation `
+      'CLEANUP' 'APP_PATH_FALLBACK' $externalOperationTimeoutMilliseconds {
+        if ($appPathsCreatedByRun -and (Test-Path -LiteralPath $appPathsRegistryPath)) {
+          if (!$appPathsOwnedIdentity -or
+              (Get-RegistryTreeIdentity $appPathsRegistryPath) -cne $appPathsOwnedIdentity) {
+            throw 'refusing to remove executable metadata with a mismatched ownership identity'
+          }
+          Remove-Item -LiteralPath $appPathsRegistryPath -Recurse -Force -ErrorAction Stop
+        }
+      }
+    Write-CleanupSubstage 'CLEANUP' 'APP_PATH_FALLBACK' 'COMPLETE'
+  } catch {
+    Write-CleanupSubstage 'CLEANUP' 'APP_PATH_FALLBACK' 'FAILED'
     $cleanupFailed = $true
   }
 
@@ -1487,6 +1662,14 @@ try {
       throw 'installed Windows cleanup did not complete'
     }
   } else {
+    $ownershipState.BaselineClean = $false
+    $ownershipState.InstallAttempted = $false
+    $ownershipState.Directories = @()
+    $ownershipState.Files = @()
+    $ownershipState.RegistryKeys = @()
+    $ownershipState.Users = @()
+    $ownershipState.Profiles = @()
+    Write-OwnershipManifest
     Write-CleanupSubstage 'CLEANUP' 'FINAL_AGGREGATION' 'COMPLETE'
     Write-Stage 'CLEANUP' 'COMPLETE'
   }

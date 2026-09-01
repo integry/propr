@@ -8,7 +8,9 @@ param(
   [ValidateRange(1000,600000)][int]$PostTerminationCleanupMilliseconds = 4 * 60 * 1000,
   [ValidateRange(1,5000)][int]$MarkerReadTimeoutMilliseconds = 250,
   [string]$CancellationEventName,
-  [string]$FixtureCleanupRoot
+  [string]$FixtureCleanupRoot,
+  [string]$OwnershipManifest,
+  [string]$ExpectedRunId
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,6 +26,7 @@ $watchdogSubstages = @(
   'INSTALL_TREE_SCAN',
   'APPLICATION_IMAGE',
   'PROTOCOL_ASSERTION',
+  'APP_PATH_ASSERTION',
   'SHORTCUT_ASSERTION',
   'USER_CREATE',
   'USER_SID',
@@ -36,6 +39,7 @@ $watchdogSubstages = @(
   'MSI_UNINSTALL',
   'INSTALL_TREE_ASSERTION',
   'PROTOCOL_ABSENCE_ASSERTION',
+  'APP_PATH_ABSENCE_ASSERTION',
   'SHORTCUT_FILE_ASSERTION',
   'SHORTCUT_FOLDER_ASSERTION',
   'SHORTCUT_ABSENCE_PROBE',
@@ -46,12 +50,15 @@ $watchdogSubstages = @(
   'USER_REMOVE',
   'INSTALL_ROOT_FALLBACK',
   'PROTOCOL_FALLBACK',
+  'APP_PATH_FALLBACK',
   'SHORTCUT_FALLBACK'
 )
 $markerName = "propr-installed-app-watchdog-$([Guid]::NewGuid().ToString('N')).marker"
 $markerPath = Join-Path ([IO.Path]::GetTempPath()) $markerName
-$ownershipManifestName = "propr-installed-app-ownership-$([Guid]::NewGuid().ToString('N')).json"
+$generatedRunId = [Guid]::NewGuid().ToString('N')
+$ownershipManifestName = "propr-installed-app-ownership-$generatedRunId.json"
 $ownershipManifestPath = Join-Path ([IO.Path]::GetTempPath()) $ownershipManifestName
+$workflowManagedManifest = $false
 $ownershipReadyEventName = "Local\ProPRInstalledApp-$([Guid]::NewGuid().ToString('N'))"
 $productionWorkerPath = Join-Path $PSScriptRoot 'test-installed-windows-app.ps1'
 $cleanupWorkerPath = Join-Path $PSScriptRoot 'cleanup-installed-windows-app.ps1'
@@ -62,6 +69,8 @@ $cancellationEvent = $null
 $lastValidMarker = $null
 $exitCode = 125
 $terminateOwnedTree = $false
+$workerStarted = $false
+$supervisorOutcomeComplete = $false
 
 Add-Type -TypeDefinition @'
 using System;
@@ -326,9 +335,12 @@ function Write-InitialOwnershipManifest(
 ) {
   $runId = [IO.Path]::GetFileNameWithoutExtension($Path).Substring(
     'propr-installed-app-ownership-'.Length)
+  $createdUtcTicks = [DateTime]::UtcNow.Ticks
   $manifest = [ordered]@{
     SchemaVersion = 1
     RunId = $runId
+    CreatedUtcTicks = $createdUtcTicks
+    ExpiresUtcTicks = $createdUtcTicks + ([TimeSpan]::TicksPerHour * 3)
     InstallerPath = $InstallerPath
     Fixture = $Fixture
     FixtureRoot = if ($Fixture) { $AuthorizedFixtureRoot } else { $null }
@@ -379,6 +391,7 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
       '-File', $cleanupWorkerPath,
       '-OwnershipManifest', $ownershipManifestPath,
       '-Installer', $InstallerPath,
+      '-ExpectedRunId', $ownershipRunId,
       '-OwnershipReadyEvent', $cleanupReadyEventName
     )) {
       $cleanupStartInfo.ArgumentList.Add($argument)
@@ -423,6 +436,27 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
 
 try {
   $installerPath = (Resolve-Path -LiteralPath $Installer -ErrorAction Stop).Path
+  if ($OwnershipManifest -or $ExpectedRunId) {
+    if (!$OwnershipManifest -or $ExpectedRunId -notmatch '^[a-f0-9]{32}$') {
+      throw 'workflow ownership authority is invalid'
+    }
+    $candidateManifestPath = [IO.Path]::GetFullPath($OwnershipManifest)
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    if ((Split-Path -Leaf $candidateManifestPath) -cne
+          "propr-installed-app-ownership-$ExpectedRunId.json" -or
+        ![string]::Equals(
+          (Split-Path -Parent $candidateManifestPath).TrimEnd('\'),
+          $tempRoot,
+          [StringComparison]::OrdinalIgnoreCase
+        )) {
+      throw 'workflow ownership manifest path is invalid'
+    }
+    $ownershipManifestPath = $candidateManifestPath
+    $ownershipRunId = $ExpectedRunId
+    $workflowManagedManifest = $true
+  } else {
+    $ownershipRunId = $generatedRunId
+  }
   $selectedWorkerPath = if ($WorkerPath) { $WorkerPath } else { $productionWorkerPath }
   $selectedWorkerPath = (Resolve-Path -LiteralPath $selectedWorkerPath -ErrorAction Stop).Path
   $cleanupWorkerPath = (Resolve-Path -LiteralPath $cleanupWorkerPath -ErrorAction Stop).Path
@@ -473,6 +507,7 @@ try {
   $worker = [Diagnostics.Process]::new()
   $worker.StartInfo = $startInfo
   if (!$worker.Start()) { throw 'installed-app worker did not start' }
+  $workerStarted = $true
   $bootstrapStopwatch = [Diagnostics.Stopwatch]::StartNew()
   try {
     $job.AddProcess($worker.Handle)
@@ -561,6 +596,7 @@ try {
 
     if ($workerExited) {
       $exitCode = $worker.ExitCode
+      $supervisorOutcomeComplete = $exitCode -eq 0
       break
     }
   }
@@ -569,9 +605,17 @@ try {
   $exitCode = 125
   $terminateOwnedTree = $true
 } finally {
-  if ($terminateOwnedTree) {
+  $workerLive = $false
+  if ($workerStarted -and $null -ne $worker) {
+    try { $workerLive = !$worker.HasExited } catch { $workerLive = $true }
+  }
+  $cleanupRequired = $terminateOwnedTree -or $workerStarted -or $workerLive -or
+    !$supervisorOutcomeComplete
+  $fixedCleanupResult = $null
+  if ($cleanupRequired -and $installerPath -and $ownershipRunId) {
     Stop-OwnedWorker ([uint32]$exitCode)
-    if (!(Invoke-PostTerminationCleanup $installerPath $FixtureCleanupRoot)) { $exitCode = 125 }
+    $fixedCleanupResult = Invoke-PostTerminationCleanup $installerPath $FixtureCleanupRoot
+    if (!$fixedCleanupResult) { $exitCode = 125 }
   }
 
   try {
@@ -595,8 +639,10 @@ try {
   try {
     if ([IO.File]::Exists($markerPath)) { [IO.File]::Delete($markerPath) }
   } catch {}
-  foreach ($path in @($ownershipManifestPath, "$ownershipManifestPath.new")) {
-    try { if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } } catch {}
+  if ($null -ne $fixedCleanupResult -and !$workflowManagedManifest) {
+    foreach ($path in @($ownershipManifestPath, "$ownershipManifestPath.new")) {
+      try { if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } } catch {}
+    }
   }
 }
 

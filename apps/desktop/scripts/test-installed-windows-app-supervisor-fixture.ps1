@@ -17,6 +17,7 @@ if ($scenario -notin @(
     'STALE_MARKER',
     'INACCESSIBLE_MARKER',
     'CANCELLATION',
+    'OWNED_RESOURCES_FOR_INTERRUPTION',
     'OWNED_RESOURCES_THEN_DEADLINE'
   )) {
   throw 'fixture scenario is invalid'
@@ -264,8 +265,8 @@ switch ($scenario) {
   }
   'VALID_THEN_DEADLINE' {
     Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(10).Ticks)
-    Start-Sleep -Milliseconds 300
-    Write-FixtureMarker ('{0}|INSTALL|MSI_INSTALL|BEGIN' -f [DateTime]::UtcNow.AddMilliseconds(350).Ticks)
+    Start-Sleep -Milliseconds 500
+    Write-FixtureMarker ('{0}|INSTALL|MSI_INSTALL|BEGIN' -f [DateTime]::UtcNow.AddMilliseconds(2500).Ticks)
     Start-Sleep -Seconds 300
   }
   'MALFORMED_MARKER' {
@@ -311,6 +312,13 @@ switch ($scenario) {
     New-OwnedFixtureResources
     Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
       [DateTime]::UtcNow.AddMilliseconds(500).Ticks)
+    Start-Sleep -Seconds 300
+  }
+  'OWNED_RESOURCES_FOR_INTERRUPTION' {
+    Write-FixtureMarker ('{0}|INITIALIZATION|PATHS|BEGIN' -f [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    New-OwnedFixtureResources
+    Write-FixtureMarker ('{0}|CLEANUP|SMOKE_DATA_REMOVE|BEGIN' -f `
+      [DateTime]::UtcNow.AddSeconds(60).Ticks)
     Start-Sleep -Seconds 300
   }
 }

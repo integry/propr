@@ -4,6 +4,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $supervisorPath = Join-Path $PSScriptRoot 'run-installed-windows-app-harness.ps1'
+$workflowCleanupPath = Join-Path $PSScriptRoot 'run-installed-windows-app-workflow-cleanup.ps1'
 $fixtureWorkerPath = Join-Path $PSScriptRoot 'test-installed-windows-app-supervisor-fixture.ps1'
 $hostPath = (Get-Process -Id $PID -ErrorAction Stop).Path
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) `
@@ -42,7 +43,9 @@ function New-SupervisorStartInfo(
   [string]$Scenario,
   [string]$StateDirectory,
   [string]$CancellationEventName,
-  [bool]$UseProductionWorker
+  [bool]$UseProductionWorker,
+  [string]$WorkflowManifest = '',
+  [string]$ExpectedRunId = ''
 ) {
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
@@ -95,6 +98,12 @@ function New-SupervisorStartInfo(
     $startInfo.ArgumentList.Add('-CancellationEventName')
     $startInfo.ArgumentList.Add($CancellationEventName)
   }
+  if ($WorkflowManifest) {
+    $startInfo.ArgumentList.Add('-OwnershipManifest')
+    $startInfo.ArgumentList.Add($WorkflowManifest)
+    $startInfo.ArgumentList.Add('-ExpectedRunId')
+    $startInfo.ArgumentList.Add($ExpectedRunId)
+  }
   return $startInfo
 }
 
@@ -112,8 +121,13 @@ function Read-FixtureProcessState([string]$StateDirectory) {
 
 function Read-FixtureResourceState([string]$StateDirectory) {
   $statePath = Join-Path $StateDirectory 'resources.json'
-  Assert-True (Test-Path -LiteralPath $statePath -PathType Leaf) `
-    'fixture did not publish owned resource state'
+  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
+    if ($stopwatch.ElapsedMilliseconds -ge 45000) {
+      throw 'fixture did not publish owned resource state'
+    }
+    Start-Sleep -Milliseconds 25
+  }
   return Get-Content -LiteralPath $statePath -Raw -Encoding ASCII | ConvertFrom-Json
 }
 
@@ -126,6 +140,116 @@ function Assert-ProcessTreeGone($State) {
     Start-Sleep -Milliseconds 25
   } while ($stopwatch.ElapsedMilliseconds -lt 3000)
   throw 'owned worker process tree survived supervisor completion'
+}
+
+function Assert-OwnedResourcesGone($Owned) {
+  foreach ($ownedPath in @(
+    $Owned.OwnedRoot, $Owned.InstallRoot, $Owned.ShortcutFolder,
+    $Owned.Shortcut, $Owned.SmokeDirectory
+  )) {
+    Assert-True (!(Test-Path -LiteralPath $ownedPath)) `
+      'external cleanup left a run-owned file-system resource behind'
+  }
+  Assert-True (!(Test-Path -LiteralPath $Owned.RegistryPath)) `
+    'external cleanup left a run-owned registry resource behind'
+  Assert-True (!(Test-Path -LiteralPath $Owned.RegistryRoot)) `
+    'external cleanup left the run-owned registry root behind'
+  Assert-True ($null -eq (Get-LocalUser -Name $Owned.UserName -ErrorAction SilentlyContinue)) `
+    'external cleanup left the run-owned local user behind'
+  $ownedProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+    Where-Object { $_.SID -ceq $Owned.UserSid })
+  Assert-True ($ownedProfiles.Count -eq 0) `
+    'external cleanup left the run-owned profile behind'
+}
+
+function Invoke-WorkflowCleanupController(
+  [string]$ManifestPath,
+  [string]$RunId,
+  [string]$FixtureRoot
+) {
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $hostPath
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  foreach ($argument in @(
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $workflowCleanupPath,
+    '-OwnershipManifest', $ManifestPath,
+    '-Installer', $dummyInstaller,
+    '-ExpectedRunId', $RunId,
+    '-CleanupTimeoutMilliseconds', '30000',
+    '-TerminationTimeoutMilliseconds', '3000'
+  )) {
+    $startInfo.ArgumentList.Add($argument)
+  }
+  if ($FixtureRoot) {
+    $startInfo.ArgumentList.Add('-FixtureRoot')
+    $startInfo.ArgumentList.Add($FixtureRoot)
+  }
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  try {
+    if (!$process.Start()) { throw 'workflow cleanup fixture did not start' }
+    Assert-True ($process.WaitForExit(40000)) 'workflow cleanup fixture exceeded its bound'
+    return [PSCustomObject]@{
+      ExitCode = $process.ExitCode
+      Output = $process.StandardOutput.ReadToEnd()
+      Error = $process.StandardError.ReadToEnd()
+    }
+  } finally {
+    if (!$process.HasExited) { try { $process.Kill($true) } catch {} }
+    $process.Dispose()
+  }
+}
+
+function Start-ExternallyInterruptibleSupervisor([string]$StateDirectory) {
+  $scriptText = @'
+param($SupervisorPath, $Installer, $Architecture, $FixtureWorker, $Scenario,
+  $StateDirectory, $Secret, $OwnedUser, $OwnedPassword,
+  $ConflictUser, $ConflictUserSid, $ConflictProfileSid, $ConflictProfilePath,
+  $ConflictDirectories, $ConflictShortcut, $ConflictRegistry)
+$env:PROPR_SUPERVISOR_FIXTURE_SCENARIO = $Scenario
+$env:PROPR_SUPERVISOR_FIXTURE_STATE_DIRECTORY = $StateDirectory
+$env:PROPR_SUPERVISOR_FIXTURE_SECRET = $Secret
+$env:PROPR_SUPERVISOR_FIXTURE_OWNED_USER = $OwnedUser
+$env:PROPR_SUPERVISOR_FIXTURE_OWNED_PASSWORD = $OwnedPassword
+$env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_USER = $ConflictUser
+$env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_USER_SID = $ConflictUserSid
+$env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_PROFILE_SID = $ConflictProfileSid
+$env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_PROFILE_PATH = $ConflictProfilePath
+$env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_DIRECTORIES = $ConflictDirectories
+$env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_SHORTCUT = $ConflictShortcut
+$env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_REGISTRY = $ConflictRegistry
+& $SupervisorPath -Installer $Installer -Architecture $Architecture `
+  -WorkerPath $FixtureWorker -FixtureCleanupRoot $StateDirectory `
+  -BootstrapTimeoutMilliseconds 2000 -WatchdogPollMilliseconds 25 `
+  -WatchdogTerminationMilliseconds 3000 -PostTerminationCleanupMilliseconds 30000 `
+  -MarkerReadTimeoutMilliseconds 200
+'@
+  $pipeline = [Management.Automation.PowerShell]::Create()
+  [void]$pipeline.AddScript($scriptText)
+  foreach ($argument in @(
+    $supervisorPath,
+    $dummyInstaller,
+    $Architecture,
+    $fixtureWorkerPath,
+    'OWNED_RESOURCES_FOR_INTERRUPTION',
+    $StateDirectory,
+    $secretNeedle,
+    $ownedFixtureUserName,
+    $ownedFixturePassword,
+    $conflictingFixtureUserName,
+    $conflictingFixtureUserSid,
+    $conflictingFixtureProfileSid,
+    $conflictingFixtureProfilePath,
+    $conflictingFixtureDirectories,
+    $conflictingFixtureShortcut,
+    $conflictingFixtureRegistryPath
+  )) {
+    [void]$pipeline.AddArgument($argument)
+  }
+  $asyncResult = $pipeline.BeginInvoke()
+  return [PSCustomObject]@{ Pipeline = $pipeline; AsyncResult = $asyncResult }
 }
 
 function Invoke-FixtureScenario([string]$Scenario, [string]$ExistingStateDirectory = '') {
@@ -177,6 +301,10 @@ function Test-BootstrapTimeout {
 function Test-OperationDeadlineAndTreeTermination {
   $result = Invoke-FixtureScenario 'VALID_THEN_DEADLINE'
   Assert-True ($result.ExitCode -eq 124) 'operation deadline did not fail with the watchdog code'
+  Assert-True ($result.ElapsedMilliseconds -ge 2200) `
+    'operation deadline did not retain the injected observable interval'
+  Assert-True ($result.ElapsedMilliseconds -lt 10000) `
+    'operation deadline completion was not bounded'
   Assert-Contains $result.Output `
     'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:ACCEPTED:INSTALL:MSI_INSTALL:BEGIN' `
     'operation transition was not accepted and flushed by the supervisor'
@@ -466,6 +594,92 @@ function Test-PreExistingCleanupOwnership {
       Where-Object { $_.SID -ceq $userSid.Value })
     Assert-True ($fixtureUserProfiles.Count -eq 0) `
       'pre-existing local user fixture unexpectedly acquired a profile'
+
+    $gracefulStateDirectory = New-StateDirectory 'graceful-interruption'
+    $graceful = Start-ExternallyInterruptibleSupervisor $gracefulStateDirectory
+    try {
+      $gracefulProcessState = Read-FixtureProcessState $gracefulStateDirectory
+      $gracefulOwned = Read-FixtureResourceState $gracefulStateDirectory
+      $graceful.Pipeline.Stop()
+      try { [void]$graceful.Pipeline.EndInvoke($graceful.AsyncResult) } catch {}
+      Assert-ProcessTreeGone $gracefulProcessState
+      Assert-OwnedResourcesGone $gracefulOwned
+    } finally {
+      $graceful.Pipeline.Dispose()
+    }
+
+    $workflowStateDirectory = New-StateDirectory 'workflow-cleanup'
+    $workflowRunId = [Guid]::NewGuid().ToString('N')
+    $workflowManifest = Join-Path ([IO.Path]::GetTempPath()) `
+      "propr-installed-app-ownership-$workflowRunId.json"
+    $workflowSupervisor = [Diagnostics.Process]::new()
+    $workflowSupervisor.StartInfo = New-SupervisorStartInfo `
+      'OWNED_RESOURCES_FOR_INTERRUPTION' $workflowStateDirectory '' $false `
+      $workflowManifest $workflowRunId
+    try {
+      if (!$workflowSupervisor.Start()) { throw 'workflow supervisor fixture did not start' }
+      $workflowProcessState = Read-FixtureProcessState $workflowStateDirectory
+      $workflowOwned = Read-FixtureResourceState $workflowStateDirectory
+      $workflowSupervisor.Kill($false)
+      Assert-True ($workflowSupervisor.WaitForExit(5000)) `
+        'killed workflow supervisor did not exit within the bound'
+      Assert-ProcessTreeGone $workflowProcessState
+      Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
+        'killed supervisor did not preserve the durable ownership manifest'
+      $workflowCleanup = Invoke-WorkflowCleanupController `
+        $workflowManifest $workflowRunId $workflowStateDirectory
+      Assert-True ($workflowCleanup.ExitCode -eq 0) 'workflow cleanup controller failed'
+      Assert-Contains $workflowCleanup.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:COMPLETE' `
+        'workflow cleanup controller did not emit fixed completion evidence'
+      Assert-OwnedResourcesGone $workflowOwned
+      Assert-True (!(Test-Path -LiteralPath $workflowManifest)) `
+        'workflow cleanup did not consume the ownership manifest'
+    } finally {
+      if (!$workflowSupervisor.HasExited) { try { $workflowSupervisor.Kill($true) } catch {} }
+      $workflowSupervisor.Dispose()
+    }
+
+    foreach ($manifestCase in @('MISSING','MALFORMED','STALE')) {
+      $badRunId = [Guid]::NewGuid().ToString('N')
+      $badManifest = Join-Path ([IO.Path]::GetTempPath()) `
+        "propr-installed-app-ownership-$badRunId.json"
+      if ($manifestCase -eq 'MALFORMED') {
+        [IO.File]::WriteAllText($badManifest, '{not-json', [Text.Encoding]::UTF8)
+      } elseif ($manifestCase -eq 'STALE') {
+        $createdTicks = [DateTime]::UtcNow.AddHours(-4).Ticks
+        $staleManifest = [ordered]@{
+          SchemaVersion = 1; RunId = $badRunId
+          CreatedUtcTicks = $createdTicks
+          ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
+          InstallerPath = $dummyInstaller; Fixture = $true
+          FixtureRoot = $workflowStateDirectory; BaselineClean = $false
+          InstallAttempted = $false; Directories = @(); Files = @()
+          RegistryKeys = @(); Users = @(); Profiles = @()
+        }
+        [IO.File]::WriteAllText(
+          $badManifest,
+          ($staleManifest | ConvertTo-Json -Depth 6 -Compress),
+          [Text.Encoding]::UTF8
+        )
+      }
+      $failedCleanup = Invoke-WorkflowCleanupController `
+        $badManifest $badRunId $workflowStateDirectory
+      Assert-True ($failedCleanup.ExitCode -ne 0) `
+        "$manifestCase workflow manifest did not fail closed"
+      Assert-Contains $failedCleanup.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED' `
+        "$manifestCase workflow manifest did not emit fixed failure evidence"
+    }
+
+    Assert-True ((Get-Content -LiteralPath (Join-Path $conflictInstallRoot 'pre-existing.txt') -Raw).Trim() -ceq `
+      'owned-before-run') 'external cleanup changed the pre-existing install tree'
+    Assert-True ((Get-ItemPropertyValue -LiteralPath $conflictRegistryPath -Name 'PreExisting') -ceq `
+      'owned-before-run') 'external cleanup changed the pre-existing registry tree'
+    Assert-True ((Get-Content -LiteralPath $conflictShortcut -Raw).Trim() -ceq `
+      'owned-before-run') 'external cleanup changed the pre-existing shortcut'
+    Assert-True ((Get-LocalUser -Name $userName -ErrorAction Stop).SID.Equals($userSid)) `
+      'external cleanup changed the pre-existing local user'
   } finally {
     $script:conflictingFixtureUserName = $null
     $script:conflictingFixtureUserSid = $null
@@ -507,6 +721,109 @@ function Test-PreExistingCleanupOwnership {
   [Console]::Out.Flush()
 }
 
+function Test-PreExistingAppPathsAuthority {
+  $appPaths = `
+    'Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\App Paths\propr-desktop.exe'
+  $protocol = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr'
+  $sentinelApplication = 'C:\pre-existing\propr-desktop.exe'
+  $sentinelProtocol = 'pre-existing-protocol'
+  Assert-True (!(Test-Path -LiteralPath $appPaths)) `
+    'pre-existing App Paths fixture baseline was not clean'
+  Assert-True (!(Test-Path -LiteralPath $protocol)) `
+    'pre-existing protocol fixture baseline was not clean'
+  try {
+    [void](New-Item -Path $appPaths -Force -ErrorAction Stop)
+    Set-Item -LiteralPath $appPaths -Value $sentinelApplication
+    Set-ItemProperty -LiteralPath $appPaths -Name 'Path' -Value 'C:\pre-existing'
+    [void](New-Item -Path $protocol -Force -ErrorAction Stop)
+    Set-Item -LiteralPath $protocol -Value $sentinelProtocol
+    Set-ItemProperty -LiteralPath $protocol -Name 'URL Protocol' -Value 'do-not-remove'
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = New-SupervisorStartInfo `
+      'PRE_EXISTING_APP_PATHS' $testRoot '' $true
+    try {
+      if (!$process.Start()) { throw 'pre-existing registry supervisor did not start' }
+      Assert-True ($process.WaitForExit(20000)) `
+        'pre-existing registry supervisor exceeded its bound'
+      $output = $process.StandardOutput.ReadToEnd()
+      $errorOutput = $process.StandardError.ReadToEnd()
+      Assert-True ($process.ExitCode -ne 0) `
+        'pre-existing App Paths authority was not rejected'
+      Assert-Contains $output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+        'pre-existing App Paths rejection did not finish bounded cleanup'
+      Assert-NotContains "$output`n$errorOutput" $sentinelApplication `
+        'pre-existing App Paths evidence was not redacted'
+    } finally {
+      if (!$process.HasExited) { try { $process.Kill($true) } catch {} }
+      $process.Dispose()
+    }
+    Assert-True ((Get-Item -LiteralPath $appPaths).GetValue('') -ceq $sentinelApplication) `
+      'pre-existing App Paths executable was removed or changed'
+    Assert-True ((Get-Item -LiteralPath $appPaths).GetValue('Path') -ceq 'C:\pre-existing') `
+      'pre-existing App Paths values were removed or changed'
+    Assert-True ((Get-Item -LiteralPath $protocol).GetValue('') -ceq $sentinelProtocol) `
+      'pre-existing protocol key was removed or changed'
+    Assert-True ((Get-Item -LiteralPath $protocol).GetValue('URL Protocol') -ceq 'do-not-remove') `
+      'pre-existing protocol values were removed or changed'
+
+    $mismatchRunId = [Guid]::NewGuid().ToString('N')
+    $mismatchManifest = Join-Path ([IO.Path]::GetTempPath()) `
+      "propr-installed-app-ownership-$mismatchRunId.json"
+    $createdTicks = [DateTime]::UtcNow.Ticks
+    $mismatchState = [ordered]@{
+      SchemaVersion = 1; RunId = $mismatchRunId
+      CreatedUtcTicks = $createdTicks
+      ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
+      InstallerPath = $dummyInstaller; Fixture = $false; FixtureRoot = $null
+      BaselineClean = $true; InstallAttempted = $true
+      Directories = @(); Files = @(); Users = @(); Profiles = @()
+      RegistryKeys = @(
+        [ordered]@{
+          Kind = 'PROTOCOL'; Path = $protocol; Owned = $true; Token = $null
+          Identity = ('0' * 64); Provisional = $false
+        },
+        [ordered]@{
+          Kind = 'APP_PATH'; Path = $appPaths; Owned = $true; Token = $null
+          Identity = ('0' * 64); Provisional = $false
+        }
+      )
+    }
+    [IO.File]::WriteAllText(
+      $mismatchManifest,
+      ($mismatchState | ConvertTo-Json -Depth 6 -Compress),
+      [Text.Encoding]::UTF8
+    )
+    $mismatchCleanup = Invoke-WorkflowCleanupController `
+      $mismatchManifest $mismatchRunId ''
+    Assert-True ($mismatchCleanup.ExitCode -ne 0) `
+      'mismatched App Paths ownership identity did not fail closed'
+    Assert-Contains $mismatchCleanup.Output `
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED' `
+      'mismatched App Paths ownership did not emit fixed failure evidence'
+    Assert-True ((Get-Item -LiteralPath $appPaths).GetValue('') -ceq $sentinelApplication) `
+      'mismatched App Paths ownership removed the pre-existing executable value'
+    Assert-True ((Get-Item -LiteralPath $appPaths).GetValue('Path') -ceq 'C:\pre-existing') `
+      'mismatched App Paths ownership removed pre-existing values'
+    Assert-True ((Get-Item -LiteralPath $protocol).GetValue('') -ceq $sentinelProtocol) `
+      'mismatched protocol ownership removed the pre-existing key'
+    Assert-True ((Get-Item -LiteralPath $protocol).GetValue('URL Protocol') -ceq 'do-not-remove') `
+      'mismatched protocol ownership removed pre-existing values'
+  } finally {
+    if ((Test-Path -LiteralPath $appPaths) -and
+        (Get-Item -LiteralPath $appPaths).GetValue('') -ceq $sentinelApplication) {
+      Remove-Item -LiteralPath $appPaths -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ((Test-Path -LiteralPath $protocol) -and
+        (Get-Item -LiteralPath $protocol).GetValue('') -ceq $sentinelProtocol) {
+      Remove-Item -LiteralPath $protocol -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+  Write-Host 'PROPR_WINDOWS_SUPERVISOR_OWNERSHIP:APP_PATHS_PRE_EXISTING:PRESERVED'
+  [Console]::Out.Flush()
+}
+
 if (![OperatingSystem]::IsWindows()) { throw 'supervisor behavior tests require Windows' }
 $actualArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
 Assert-True ($actualArchitecture -ceq $Architecture) `
@@ -520,6 +837,7 @@ try {
   Test-FailClosedMarkers
   Test-LiveCancellationAndRedaction
   Test-PreExistingCleanupOwnership
+  Test-PreExistingAppPathsAuthority
   Write-Host "PROPR_WINDOWS_SUPERVISOR_TESTS:${Architecture}:PASSED"
   [Console]::Out.Flush()
 } finally {

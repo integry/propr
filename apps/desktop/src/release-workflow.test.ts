@@ -50,6 +50,10 @@ const installedWindowsAppCleanup = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/cleanup-installed-windows-app.ps1', import.meta.url)),
   'utf8',
 ));
+const installedWindowsAppWorkflowCleanup = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/run-installed-windows-app-workflow-cleanup.ps1', import.meta.url)),
+  'utf8',
+));
 const installedWindowsAppSupervisorBehaviorTest = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/test-installed-windows-app-supervisor.ps1', import.meta.url)),
   'utf8',
@@ -556,6 +560,10 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /- platform: win32\n\s+arch: arm64\n/);
       assert.equal(section.match(/run-installed-windows-app-harness\.ps1/g)?.length, 1);
       assert.equal(section.match(/test-installed-windows-app-supervisor\.ps1/g)?.length, 1);
+      assert.equal(section.match(/run-installed-windows-app-workflow-cleanup\.ps1/g)?.length, 1);
+      assert.match(section, /if: always\(\) && matrix\.platform == 'win32'/);
+      assert.match(section, /-OwnershipManifest \$env:PROPR_WINDOWS_INSTALLED_APP_MANIFEST/);
+      assert.match(section, /-ExpectedRunId \$env:PROPR_WINDOWS_INSTALLED_APP_RUN_ID/);
     }
   });
 
@@ -565,6 +573,9 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-FailClosedMarkers/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-LiveCancellationAndRedaction/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingCleanupOwnership/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Start-ExternallyInterruptibleSupervisor/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Invoke-WorkflowCleanupController/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingAppPathsAuthority/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-ProcessTreeGone/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /WindowsIdentity\]::GetCurrent\(\)/);
     assert.match(
@@ -595,11 +606,12 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(installedWindowsAppTest, /\$ownershipHandshakeTimeoutMilliseconds = 5 \* 1000/);
     assert.match(installedWindowsAppTest, /\$ownershipReady\.WaitOne\(\$ownershipHandshakeTimeoutMilliseconds\)/);
-    assert.match(installedWindowsAppSupervisor, /if \(!\$worker\.Start\(\)\)[^\n]+\n\s+\$bootstrapStopwatch = \[Diagnostics\.Stopwatch\]::StartNew\(\)/);
+    assert.match(installedWindowsAppSupervisor, /if \(!\$worker\.Start\(\)\)[^\n]+\n\s+\$workerStarted = \$true\n\s+\$bootstrapStopwatch = \[Diagnostics\.Stopwatch\]::StartNew\(\)/);
     assert.match(installedWindowsAppSupervisor, /\[ProPRBoundedMarkerReader\]::ReadAsync\(\$Path\)/);
     assert.match(installedWindowsAppSupervisor, /\$readTask\.Wait\(\$TimeoutMilliseconds\)/);
     assert.match(installedWindowsAppSupervisor, /\$job\.Terminate\(\$TerminationExitCode\)/);
     assert.match(installedWindowsAppSupervisor, /Invoke-PostTerminationCleanup/);
+    assert.match(installedWindowsAppSupervisor, /\$cleanupRequired = \$terminateOwnedTree -or \$workerStarted/);
     assert.match(
       installedWindowsAppSupervisor,
       /PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE/,
@@ -607,6 +619,27 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppCleanup, /Remove-OwnedProfiles/);
     assert.match(installedWindowsAppCleanup, /Remove-OwnedRegistryKey/);
     assert.match(installedWindowsAppCleanup, /Remove-OwnedDirectory/);
+    assert.match(installedWindowsAppCleanup, /APP_PATH/);
+    assert.match(installedWindowsAppCleanup, /Get-RegistryTreeIdentity/);
+    assert.match(
+      installedWindowsAppTest,
+      /Registry::HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\propr-desktop\.exe/,
+    );
+    assert.match(installedWindowsAppTest, /APP_PATH_ASSERTION/);
+    assert.match(installedWindowsAppTest, /APP_PATH_ABSENCE_ASSERTION/);
+    assert.match(installedWindowsAppTest, /APP_PATH_FALLBACK/);
+    assert.match(
+      installedWindowsAppTest,
+      /Get-RegistryTreeIdentity \$appPathsRegistryPath[\s\S]*refusing to uninstall over executable metadata[\s\S]*Invoke-Msi @\('\/x'/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /mismatched App Paths ownership identity did not fail closed/);
+    assert.match(installedWindowsAppWorkflowCleanup, /ProPRWorkflowCleanupJob/);
+    for (const result of ['COMPLETE', 'FAILED', 'TIMED_OUT']) {
+      assert.match(
+        installedWindowsAppWorkflowCleanup,
+        new RegExp(`PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:\\$Result|["']${result}["']`),
+      );
+    }
     assert.match(installedWindowsAppSupervisor, /exit \$exitCode/);
     assert.match(installedWindowsAppSupervisor, /if \(\$null -ne \$job\) \{ \$job\.Dispose\(\) \}/);
 
@@ -663,6 +696,7 @@ describe('desktop trusted release workflow', () => {
       'INSTALL_TREE_SCAN',
       'APPLICATION_IMAGE',
       'PROTOCOL_ASSERTION',
+      'APP_PATH_ASSERTION',
       'SHORTCUT_ASSERTION',
       'USER_CREATE',
       'USER_SID',
@@ -675,6 +709,7 @@ describe('desktop trusted release workflow', () => {
       'MSI_UNINSTALL',
       'INSTALL_TREE_ASSERTION',
       'PROTOCOL_ABSENCE_ASSERTION',
+      'APP_PATH_ABSENCE_ASSERTION',
       'SHORTCUT_FILE_ASSERTION',
       'SHORTCUT_FOLDER_ASSERTION',
       'SHORTCUT_ABSENCE_PROBE',
@@ -685,6 +720,7 @@ describe('desktop trusted release workflow', () => {
       'USER_REMOVE',
       'INSTALL_ROOT_FALLBACK',
       'PROTOCOL_FALLBACK',
+      'APP_PATH_FALLBACK',
       'SHORTCUT_FALLBACK',
     ]);
     for (const operation of operations) {
@@ -708,7 +744,7 @@ describe('desktop trusted release workflow', () => {
   test('supplementary lint retains fail-closed installed-app cleanup guards', () => {
     assert.match(
       installedWindowsAppTest,
-      /if \(\$installRootExistedBeforeInstall -or \$protocolExistedBeforeInstall -or[\s\S]*\$startMenuShortcutFolderExistedBeforeInstall\) \{\n\s+throw 'installed-app harness requires an unowned clean machine baseline'/,
+      /if \(\$installRootExistedBeforeInstall -or \$protocolExistedBeforeInstall -or[\s\S]*\$appPathsExistedBeforeInstall -or[\s\S]*\$startMenuShortcutFolderExistedBeforeInstall\) \{\n\s+throw 'installed-app harness requires an unowned clean machine baseline'/,
     );
     assert.match(installedWindowsAppTest, /\$script:testUserCreatedByRun = \$true/);
     assert.match(
@@ -725,7 +761,11 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppTest,
-      /if \(\$protocolCreatedByRun -and[\s\S]*Remove-Item -LiteralPath `[\s\S]*Registry::HKEY_LOCAL_MACHINE\\Software\\Classes\\propr/,
+      /if \(\$protocolCreatedByRun -and[\s\S]*Get-RegistryTreeIdentity \$protocolRegistryPath[\s\S]*Remove-Item -LiteralPath \$protocolRegistryPath -Recurse/,
+    );
+    assert.match(
+      installedWindowsAppTest,
+      /if \(\$appPathsCreatedByRun -and[\s\S]*Get-RegistryTreeIdentity \$appPathsRegistryPath[\s\S]*Remove-Item -LiteralPath \$appPathsRegistryPath -Recurse/,
     );
     assert.match(
       installedWindowsAppTest,
@@ -867,6 +907,7 @@ describe('desktop trusted release workflow', () => {
       'MSI_UNINSTALL',
       'INSTALL_TREE',
       'PROTOCOL',
+      'APP_PATH',
       'SHORTCUT_FILE',
       'SHORTCUT_FOLDER',
       'ORDINARY_USER_ABSENCE_PROBE',
@@ -875,6 +916,7 @@ describe('desktop trusted release workflow', () => {
       'USER',
       'INSTALL_ROOT_FALLBACK',
       'PROTOCOL_FALLBACK',
+      'APP_PATH_FALLBACK',
       'SHORTCUT_FALLBACK',
       'FINAL_AGGREGATION',
     ]);
@@ -898,7 +940,7 @@ describe('desktop trusted release workflow', () => {
       assert.ok(substages.includes(substage));
       assert.ok(['BEGIN', 'COMPLETE', 'FAILED', 'SKIPPED'].includes(status));
     }
-    for (const substage of ['MSI_UNINSTALL', 'INSTALL_TREE', 'PROTOCOL', 'SHORTCUT_FILE', 'SHORTCUT_FOLDER']) {
+    for (const substage of ['MSI_UNINSTALL', 'INSTALL_TREE', 'PROTOCOL', 'APP_PATH', 'SHORTCUT_FILE', 'SHORTCUT_FOLDER']) {
       for (const status of ['BEGIN', 'COMPLETE', 'FAILED']) {
         assert.ok(cleanupCalls.some(match => match[1] === 'UNINSTALL' && match[2] === substage && match[3] === status));
       }
@@ -914,6 +956,7 @@ describe('desktop trusted release workflow', () => {
       'USER',
       'INSTALL_ROOT_FALLBACK',
       'PROTOCOL_FALLBACK',
+      'APP_PATH_FALLBACK',
       'SHORTCUT_FALLBACK',
       'FINAL_AGGREGATION',
     ]) {
