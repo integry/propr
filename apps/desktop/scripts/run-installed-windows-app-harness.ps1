@@ -939,9 +939,10 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
         [Globalization.CultureInfo]::InvariantCulture)
     } else { 'OTHER' }
     if ($fixtureNoMarkerDiagnostic) {
-      # The fixture protocol permits exactly one bounded phase line for exit 20.
-      # Exit 0 is the explicitly defined zero-byte success protocol. Any other
-      # child output leaves recovery authority in place and fails closed.
+      # The fixture protocol permits exactly one bounded phase line for
+      # validation exit 20 or post-validation exit 21. Exit 0 is the explicitly
+      # defined zero-byte success protocol. Any other child output leaves
+      # recovery authority in place and fails closed.
       $diagnosticDrainResult = $cleanupDiagnosticDrain.Finish(
         $WatchdogTerminationMilliseconds)
       if ($null -eq $diagnosticDrainResult -or
@@ -960,7 +961,7 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
           Write-WatchdogLine 'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:FAILED'
           return $false
         }
-      } elseif ($cleanupProcess.ExitCode -eq 20) {
+      } elseif ($cleanupProcess.ExitCode -in @(20,21)) {
         $diagnosticBytes = [byte[]]$diagnosticDrainResult.StandardOutput
         if ($diagnosticDrainResult.StandardOutputLines -ne 1 -or
             @($diagnosticBytes | Where-Object { $_ -gt 0x7f }).Count -ne 0) {
@@ -974,7 +975,8 @@ function Invoke-PostTerminationCleanup([string]$InstallerPath, [string]$Authoriz
             'BOOLEAN_TYPES|TRANSACTION_ENUM|SCHEMA_TYPE_STATE|' +
             'RUN_ID_FORMAT|INSTALLER_ENTRY_ID_FORMAT|INSTALLER_SHA256_FORMAT|' +
             'INSTALLER_PRODUCT_CODE_FORMAT|LIFETIME|RUN_ID|INSTALLER_PATH|FIXTURE_SCOPE|' +
-            'INITIAL_ACTIVE_MATCH)\r?\n\z'),
+            'INITIAL_ACTIVE_MATCH|INITIAL_INSTALLER_AUTHORITY_RECHECK|' +
+            'EMPTY_RECEIPT_WRITE)\r?\n\z'),
           [Text.RegularExpressions.RegexOptions]::CultureInvariant
         )
         if (!$diagnosticMatch.Success) {

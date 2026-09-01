@@ -753,7 +753,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppCleanup,
-      /HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',[\s\S]*'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','RUN_ID_FORMAT',[\s\S]*'INSTALLER_ENTRY_ID_FORMAT','INSTALLER_SHA256_FORMAT','INSTALLER_PRODUCT_CODE_FORMAT',[\s\S]*'INITIAL_ACTIVE_MATCH'/,
+      /HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',[\s\S]*'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','RUN_ID_FORMAT',[\s\S]*'INSTALLER_ENTRY_ID_FORMAT','INSTALLER_SHA256_FORMAT','INSTALLER_PRODUCT_CODE_FORMAT',[\s\S]*'INITIAL_ACTIVE_MATCH',[\s\S]*'INITIAL_INSTALLER_AUTHORITY_RECHECK','EMPTY_RECEIPT_WRITE'/,
     );
     assert.match(
       installedWindowsAppCleanup,
@@ -769,11 +769,19 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppCleanup,
+      /if \(\$PSVersionTable\.PSEdition -ceq 'Core'\) \{[\s\S]*\[IO\.File\]::Move\(\$temporaryPath, \$Path, \$true\)[\s\S]*\} else \{[\s\S]*\[IO\.File\]::Replace\(\$temporaryPath, \$Path, \$null, \$true\)/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
       /\[IO\.File\]::Replace\(\$temporaryPath, \$Path, \$null, \$true\)/,
     );
-    assert.doesNotMatch(
+    assert.match(
       installedWindowsAppCleanup,
       /\[IO\.File\]::Move\(\$temporaryPath, \$Path, \$true\)/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /\$emptyReceipt = \$Manifest\.PSObject\.Copy\(\)[\s\S]*\$emptyReceipt\.State = 'EMPTY'[\s\S]*Write-DurableOwnershipManifest \$Path \$emptyReceipt/,
     );
     assert.match(
       installedWindowsAppSupervisor,
@@ -800,7 +808,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisor, /StandardErrorLineLimit = 0/);
     assert.match(
       installedWindowsAppSupervisor,
-      /\\ACLEANUP_VALIDATION_PHASE:[\s\S]*INITIAL_ACTIVE_MATCH\)\\r\?\\n\\z/,
+      /\\ACLEANUP_VALIDATION_PHASE:[\s\S]*INITIAL_INSTALLER_AUTHORITY_RECHECK\|[\s\S]*EMPTY_RECEIPT_WRITE\)\\r\?\\n\\z/,
     );
     assert.match(installedWindowsAppSupervisor, /\$cleanupHostPath = \$hostPath/);
     assert.match(
@@ -830,7 +838,19 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /CLEANUP_VALIDATION_PHASE:[\s\S]*HANDSHAKE\|FILE_AUTHORITY\|UTF8_DECODE\|JSON_PARSE\|EXACT_KEY_SET\|[\s\S]*BOOLEAN_TYPES\|TRANSACTION_ENUM\|SCHEMA_TYPE_STATE\|RUN_ID_FORMAT\|[\s\S]*INSTALLER_ENTRY_ID_FORMAT\|INSTALLER_SHA256_FORMAT\|INSTALLER_PRODUCT_CODE_FORMAT\|/,
+      /CLEANUP_VALIDATION_PHASE:[\s\S]*HANDSHAKE\|FILE_AUTHORITY\|UTF8_DECODE\|JSON_PARSE\|EXACT_KEY_SET\|[\s\S]*BOOLEAN_TYPES\|TRANSACTION_ENUM\|SCHEMA_TYPE_STATE\|RUN_ID_FORMAT\|[\s\S]*INSTALLER_ENTRY_ID_FORMAT\|INSTALLER_SHA256_FORMAT\|INSTALLER_PRODUCT_CODE_FORMAT\|[\s\S]*INITIAL_INSTALLER_AUTHORITY_RECHECK\|EMPTY_RECEIPT_WRITE/,
+    );
+    assert.match(
+      installedWindowsAppSupervisor,
+      /\$cleanupProcess\.ExitCode -in @\(20,21\)/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /\$cleanupValidationPhase = 'INITIAL_INSTALLER_AUTHORITY_RECHECK'\n\s+Assert-InstallerArtifactAuthority \$manifest\n\s+\$manifestValidated = \$true\n\s+\$cleanupValidationPhase = 'EMPTY_RECEIPT_WRITE'\n\s+Write-EmptyOwnershipReceipt/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /earlier split identifier-format evidence came from this PS5\.1 cleanup[\s\S]*Current NO_MARKER exit-21 evidence belongs to the principal native/,
     );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-WindowsPowerShellCleanupCompatibility/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /NO_MARKER_WINDOWS_POWERSHELL/);

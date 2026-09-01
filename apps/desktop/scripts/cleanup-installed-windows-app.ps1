@@ -20,7 +20,8 @@ $cleanupValidationPhases = @(
   'HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',
   'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','RUN_ID_FORMAT',
   'INSTALLER_ENTRY_ID_FORMAT','INSTALLER_SHA256_FORMAT','INSTALLER_PRODUCT_CODE_FORMAT',
-  'LIFETIME','RUN_ID','INSTALLER_PATH','FIXTURE_SCOPE','INITIAL_ACTIVE_MATCH'
+  'LIFETIME','RUN_ID','INSTALLER_PATH','FIXTURE_SCOPE','INITIAL_ACTIVE_MATCH',
+  'INITIAL_INSTALLER_AUTHORITY_RECHECK','EMPTY_RECEIPT_WRITE'
 )
 
 function Write-FixtureCleanupValidationPhase([string]$Phase) {
@@ -28,8 +29,9 @@ function Write-FixtureCleanupValidationPhase([string]$Phase) {
       $cleanupValidationPhases -cnotcontains $Phase) {
     return
   }
-  # Diagnostic success is deliberately silent; only validation exit 20 emits
-  # this single bounded child-protocol line for supervisor parsing.
+  # Diagnostic success is deliberately silent; validation exit 20 and
+  # post-validation exit 21 emit this single bounded child-protocol line for
+  # supervisor parsing.
   [Console]::Out.WriteLine(
     'CLEANUP_VALIDATION_PHASE:' + $Phase
   )
@@ -1025,24 +1027,32 @@ function Write-DurableOwnershipManifest([string]$Path, $Manifest) {
   } finally {
     $stream.Dispose()
   }
-  # File.Move(source, destination, overwrite) is not available on the .NET
-  # Framework used by Windows PowerShell 5.1. The canonical manifest exists,
-  # so File.Replace retains the same atomic same-volume replacement contract.
-  [IO.File]::Replace($temporaryPath, $Path, $null, $true)
+  if ($PSVersionTable.PSEdition -ceq 'Core') {
+    # Native pwsh provides the atomic same-directory overwrite overload.
+    [IO.File]::Move($temporaryPath, $Path, $true)
+  } else {
+    # File.Move(source, destination, overwrite) is not available on the .NET
+    # Framework used by Windows PowerShell 5.1. The canonical manifest exists,
+    # so File.Replace retains the same atomic same-volume replacement contract.
+    [IO.File]::Replace($temporaryPath, $Path, $null, $true)
+  }
 }
 
 function Write-EmptyOwnershipReceipt([string]$Path, $Manifest) {
-  $Manifest.State = 'EMPTY'
-  $Manifest.BaselineClean = $false
-  $Manifest.InstallAttempted = $false
-  $Manifest.MsiTransactionState = 'NONE'
-  $Manifest.Directories = @()
-  $Manifest.Files = @()
-  $Manifest.RegistryKeys = @()
-  $Manifest.RegistryValues = @()
-  $Manifest.Users = @()
-  $Manifest.Profiles = @()
-  Write-DurableOwnershipManifest $Path $Manifest
+  # Build the final receipt independently. If serialization or replacement
+  # fails, the caller and canonical pathname both retain ACTIVE authority.
+  $emptyReceipt = $Manifest.PSObject.Copy()
+  $emptyReceipt.State = 'EMPTY'
+  $emptyReceipt.BaselineClean = $false
+  $emptyReceipt.InstallAttempted = $false
+  $emptyReceipt.MsiTransactionState = 'NONE'
+  $emptyReceipt.Directories = @()
+  $emptyReceipt.Files = @()
+  $emptyReceipt.RegistryKeys = @()
+  $emptyReceipt.RegistryValues = @()
+  $emptyReceipt.Users = @()
+  $emptyReceipt.Profiles = @()
+  Write-DurableOwnershipManifest $Path $emptyReceipt
 }
 
 function Resolve-ProvisionalOwnedUser($Record) {
@@ -1434,8 +1444,10 @@ try {
     throw 'initial fixture ownership authority does not match'
   }
   if ($initialActiveFixtureManifest) {
-    $manifestValidated = $true
+    $cleanupValidationPhase = 'INITIAL_INSTALLER_AUTHORITY_RECHECK'
     Assert-InstallerArtifactAuthority $manifest
+    $manifestValidated = $true
+    $cleanupValidationPhase = 'EMPTY_RECEIPT_WRITE'
     Write-EmptyOwnershipReceipt $manifestPath $manifest
     exit 0
   }
@@ -1745,8 +1757,8 @@ try {
 }
 
 if ($cleanupFailed) {
-  if ($manifestValidated) { exit 21 }
   Write-FixtureCleanupValidationPhase $cleanupValidationPhase
+  if ($manifestValidated) { exit 21 }
   exit 20
 }
 exit 0

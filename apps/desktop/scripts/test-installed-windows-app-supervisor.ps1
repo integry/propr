@@ -288,7 +288,8 @@ function Get-SanitizedSupervisorMarkerDiagnostic($Result) {
       '(HANDSHAKE|FILE_AUTHORITY|UTF8_DECODE|JSON_PARSE|EXACT_KEY_SET|' +
       'BOOLEAN_TYPES|TRANSACTION_ENUM|SCHEMA_TYPE_STATE|RUN_ID_FORMAT|' +
       'INSTALLER_ENTRY_ID_FORMAT|INSTALLER_SHA256_FORMAT|INSTALLER_PRODUCT_CODE_FORMAT|' +
-      'LIFETIME|RUN_ID|INSTALLER_PATH|FIXTURE_SCOPE|INITIAL_ACTIVE_MATCH)\r?$'
+      'LIFETIME|RUN_ID|INSTALLER_PATH|FIXTURE_SCOPE|INITIAL_ACTIVE_MATCH|' +
+      'INITIAL_INSTALLER_AUTHORITY_RECHECK|EMPTY_RECEIPT_WRITE)\r?$'
   )
   $cleanupValidationPhase = if ($cleanupValidationPhaseMatch.Success) {
     $cleanupValidationPhaseMatch.Groups[1].Value
@@ -745,6 +746,9 @@ function Test-BootstrapTimeout {
 }
 
 function Test-WindowsPowerShellCleanupCompatibility {
+  # The earlier split identifier-format evidence came from this PS5.1 cleanup
+  # child. Current NO_MARKER exit-21 evidence belongs to the principal native
+  # pwsh supervisor/cleanup path exercised by Test-BootstrapTimeout.
   $result = Invoke-FixtureScenario 'NO_MARKER_WINDOWS_POWERSHELL'
   $diagnostic = Get-SanitizedSupervisorMarkerDiagnostic $result
   Assert-True ([string]::IsNullOrEmpty([string]$result.Error)) `
