@@ -36,6 +36,7 @@ import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
 import { authorizePackagedAcceptanceTest } from './acceptance-test-authorization';
+import { registerPackagedAcceptanceZoomIpc } from './acceptance-zoom';
 import { AcceptanceSetupController } from './acceptance-setup-controller';
 import {
   createBrowserWindowOptions,
@@ -310,6 +311,12 @@ const createMainWindow = async (smoke: PackagedTransportSmoke | null = null): Pr
   const window = new BrowserWindow(
     createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged, workArea),
   );
+  const disposeAcceptanceZoomIpc = registerPackagedAcceptanceZoomIpc({
+    authorized: packagedAcceptanceTest,
+    ipcMain,
+    webContents: window.webContents,
+  });
+  window.once('closed', disposeAcceptanceZoomIpc);
   const readyToShow = new Promise<void>(resolveReady => window.once('ready-to-show', resolveReady));
 
   window.webContents.setWindowOpenHandler(({ url }) => {

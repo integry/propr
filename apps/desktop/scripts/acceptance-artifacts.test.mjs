@@ -57,21 +57,34 @@ const pngHeader = (width, height) => {
 };
 
 const viewportMetricEvidenceFor = config => ({
-  layoutViewport: { ...config.viewport },
-  cdpVisualViewport: { ...config.viewport, scale: config.zoom },
-  rendererVisualViewport: {
+  requestedViewport: { ...config.viewport },
+  playwrightViewport: { ...config.viewport },
+  rendererViewport: {
     width: config.viewport.width / config.zoom,
     height: config.viewport.height / config.zoom,
-    scale: config.zoom,
   },
+  layoutViewport: { width: config.viewport.width / config.zoom, height: config.viewport.height / config.zoom },
+  cdpVisualViewport: { width: config.viewport.width / config.zoom, height: config.viewport.height / config.zoom, scale: 1 },
+  rendererVisualViewport: { width: config.viewport.width / config.zoom, height: config.viewport.height / config.zoom, scale: 1 },
   effectiveVisibleCssSpan: {
     width: config.viewport.width / config.zoom,
     height: config.viewport.height / config.zoom,
   },
+  geometryZoom: { width: config.zoom, height: config.zoom },
+  requestedDeviceScaleFactor: config.deviceScaleFactor,
+  rendererDevicePixelRatio: config.deviceScaleFactor * config.zoom,
+  requestedZoomFactor: config.zoom,
+  appliedZoomFactor: config.zoom,
+  zoomResetFactor: 1,
+  zoomMechanism: 'electron-web-frame',
+  physicalPngDimensions: {
+    width: config.viewport.width * config.deviceScaleFactor,
+    height: config.viewport.height * config.deviceScaleFactor,
+  },
 });
 
 const accessibilityFor = () => ({
-  schemaVersion: 3,
+  schemaVersion: 4,
   generatedAt: FIXED_TIME,
   serious: 0,
   critical: 0,
@@ -79,8 +92,7 @@ const accessibilityFor = () => ({
   checks: ACCEPTANCE_JOURNEYS.flatMap(journey => Object.entries(ACCEPTANCE_VARIANTS).map(([variant, config]) => ({
     name: screenshotName(journey, variant), journey, variant, serious: 0, critical: 0, accessibleNames: true,
     locale: DETERMINISTIC_INPUTS.locale, timezone: DETERMINISTIC_INPUTS.timezone, fontLoaded: true,
-    reducedMotion: config.reducedMotion, viewport: config.viewport, deviceScaleFactor: config.deviceScaleFactor,
-    zoom: config.zoom, animationsDisabled: true, rendererTime: FIXED_TIME,
+    reducedMotion: config.reducedMotion, animationsDisabled: true, rendererTime: FIXED_TIME,
     ...viewportMetricEvidenceFor(config),
   }))),
   keyboardOrder: true,
@@ -130,14 +142,15 @@ const createCompleteArtifactSet = async root => {
   for (const journey of ACCEPTANCE_JOURNEYS) {
     for (const [variant, config] of Object.entries(ACCEPTANCE_VARIANTS)) {
       const name = screenshotName(journey, variant);
-      const bytes = pngHeader(config.viewport.width * config.deviceScaleFactor, config.viewport.height * config.deviceScaleFactor);
+      const bytes = Buffer.concat([
+        pngHeader(config.viewport.width * config.deviceScaleFactor, config.viewport.height * config.deviceScaleFactor),
+        Buffer.from(`${journey}:${variant}`),
+      ]);
       await writeFile(join(root, 'screenshots', name), bytes);
       metadata.push({
         name, journey, variant,
         width: config.viewport.width * config.deviceScaleFactor,
         height: config.viewport.height * config.deviceScaleFactor,
-        deviceScaleFactor: config.deviceScaleFactor,
-        zoom: config.zoom,
         reducedMotion: config.reducedMotion,
         ...viewportMetricEvidenceFor(config),
         locale: DETERMINISTIC_INPUTS.locale,
@@ -185,7 +198,7 @@ describe('packaged acceptance artifact contract', () => {
       const evidence = await createCompleteArtifactSet(root);
       assert.equal(evidence.manifest.screenshots.length, 60);
       assert.deepEqual(evidence.manifest.screenshots.map(entry => entry.name), expectedScreenshotNames());
-      assert.ok(evidence.manifest.screenshots.every(entry => entry.bytes === 24 && entry.sha256 === entry.repeatabilitySha256));
+      assert.ok(evidence.manifest.screenshots.every(entry => entry.bytes > 24 && entry.sha256 === entry.repeatabilitySha256));
       assert.deepEqual(evidence.manifest.supporting.map(entry => entry.name), [
         'accessibility.json', 'sanitized-summary.json', 'sanitized-log.json', 'sanitized-trace.zip',
       ]);
@@ -230,12 +243,24 @@ describe('packaged acceptance artifact contract', () => {
       );
       const relabeledManifest = structuredClone(evidence.manifest);
       const zoomEntry = relabeledManifest.screenshots.find(entry => entry.variant === 'zoom-200');
-      zoomEntry.cdpVisualViewport.scale = 1;
-      zoomEntry.rendererVisualViewport.scale = 1;
+      zoomEntry.appliedZoomFactor = 1;
+      zoomEntry.rendererDevicePixelRatio = 1;
+      zoomEntry.geometryZoom = { width: 1, height: 1 };
       zoomEntry.effectiveVisibleCssSpan = { width: 1280, height: 820 };
       assert.throws(
         () => validateAcceptanceEvidence(evidence.accessibility, relabeledManifest, evidence.summary, evidence.sanitizedLog),
         /zoom-200.*viewport metric evidence changed/,
+      );
+      const duplicateManifest = structuredClone(evidence.manifest);
+      const duplicateZoom = duplicateManifest.screenshots.find(entry => entry.variant === 'zoom-200');
+      const matchingHighDpi = duplicateManifest.screenshots.find(entry => (
+        entry.journey === duplicateZoom.journey && entry.variant === 'high-dpi'
+      ));
+      duplicateZoom.sha256 = matchingHighDpi.sha256;
+      duplicateZoom.repeatabilitySha256 = matchingHighDpi.sha256;
+      assert.throws(
+        () => validateAcceptanceEvidence(evidence.accessibility, duplicateManifest, evidence.summary, evidence.sanitizedLog),
+        /zoom-200 screenshot is not visually distinct/,
       );
       const screenshotPath = join(root, 'screenshots', expectedScreenshotNames()[0]);
       await writeFile(screenshotPath, pngHeader(1, 1));

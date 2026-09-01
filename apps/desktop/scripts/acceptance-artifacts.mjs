@@ -57,7 +57,7 @@ export const DETERMINISTIC_INPUTS = Object.freeze({
   colorScheme: 'light',
   viewports: 'manifest-per-screenshot',
   scales: 'manifest-per-screenshot',
-  zoom: 'manifest-per-screenshot',
+  zoom: 'authenticated-electron-web-frame-per-screenshot',
   reducedMotion: 'manifest-per-screenshot',
   animations: 'disabled',
   repeatability: 'byte-identical-double-capture',
@@ -89,26 +89,35 @@ const assertViewportMetricEvidence = (evidence, config, description) => {
     width: config.viewport.width / config.zoom,
     height: config.viewport.height / config.zoom,
   };
+  const expectedPhysical = {
+    width: config.viewport.width * config.deviceScaleFactor,
+    height: config.viewport.height * config.deviceScaleFactor,
+  };
+  assertExactKeys(evidence.requestedViewport, ['width', 'height'], `${description} requested viewport`);
+  assertExactKeys(evidence.playwrightViewport, ['width', 'height'], `${description} Playwright viewport`);
+  assertExactKeys(evidence.rendererViewport, ['width', 'height'], `${description} renderer viewport`);
   assertExactKeys(evidence.layoutViewport, ['width', 'height'], `${description} layout viewport`);
   assertExactKeys(evidence.cdpVisualViewport, ['width', 'height', 'scale'], `${description} CDP visual viewport`);
   assertExactKeys(evidence.rendererVisualViewport, ['width', 'height', 'scale'], `${description} renderer visual viewport`);
   assertExactKeys(evidence.effectiveVisibleCssSpan, ['width', 'height'], `${description} effective visible CSS span`);
-  if (JSON.stringify(evidence.layoutViewport) !== JSON.stringify(config.viewport)
-    // The real packaged Electron target reports the raw layout-sized span here;
-    // scale is what makes its effective visible CSS span smaller at zoom-200.
-    || evidence.cdpVisualViewport.width !== config.viewport.width
-    || evidence.cdpVisualViewport.height !== config.viewport.height
-    || evidence.cdpVisualViewport.scale !== config.zoom
-    || evidence.rendererVisualViewport.scale !== config.zoom
-    || JSON.stringify(evidence.effectiveVisibleCssSpan) !== JSON.stringify(expectedEffective)) {
+  assertExactKeys(evidence.geometryZoom, ['width', 'height'], `${description} renderer geometry zoom`);
+  assertExactKeys(evidence.physicalPngDimensions, ['width', 'height'], `${description} physical PNG dimensions`);
+  if (JSON.stringify(evidence.requestedViewport) !== JSON.stringify(config.viewport)
+    || JSON.stringify(evidence.playwrightViewport) !== JSON.stringify(config.viewport)
+    || JSON.stringify(evidence.rendererViewport) !== JSON.stringify(expectedEffective)
+    || JSON.stringify(evidence.layoutViewport) !== JSON.stringify(expectedEffective)
+    || evidence.cdpVisualViewport.width !== expectedEffective.width
+    || evidence.cdpVisualViewport.height !== expectedEffective.height
+    || evidence.cdpVisualViewport.scale !== 1
+    || JSON.stringify(evidence.rendererVisualViewport) !== JSON.stringify({ ...expectedEffective, scale: 1 })
+    || JSON.stringify(evidence.effectiveVisibleCssSpan) !== JSON.stringify(expectedEffective)
+    || evidence.geometryZoom.width !== config.zoom || evidence.geometryZoom.height !== config.zoom
+    || evidence.requestedDeviceScaleFactor !== config.deviceScaleFactor
+    || evidence.rendererDevicePixelRatio !== config.deviceScaleFactor * config.zoom
+    || evidence.requestedZoomFactor !== config.zoom || evidence.appliedZoomFactor !== config.zoom
+    || evidence.zoomResetFactor !== 1 || evidence.zoomMechanism !== 'electron-web-frame'
+    || JSON.stringify(evidence.physicalPngDimensions) !== JSON.stringify(expectedPhysical)) {
     throw new Error(`${description} viewport metric evidence changed`);
-  }
-  const rendererReportsLayoutSpan = evidence.rendererVisualViewport.width === config.viewport.width
-    && evidence.rendererVisualViewport.height === config.viewport.height;
-  const rendererReportsEffectiveSpan = evidence.rendererVisualViewport.width === expectedEffective.width
-    && evidence.rendererVisualViewport.height === expectedEffective.height;
-  if (!rendererReportsLayoutSpan && !rendererReportsEffectiveSpan) {
-    throw new Error(`${description} renderer visual viewport metric evidence changed`);
   }
 };
 
@@ -336,8 +345,11 @@ const expectedArtifactFiles = () => new Set([
 
 const validateScreenshotEntry = (entry, expectedName) => {
   assertExactKeys(entry, [
-    'name', 'journey', 'variant', 'width', 'height', 'deviceScaleFactor', 'zoom', 'reducedMotion',
-    'layoutViewport', 'cdpVisualViewport', 'rendererVisualViewport', 'effectiveVisibleCssSpan',
+    'name', 'journey', 'variant', 'width', 'height', 'physicalPngDimensions', 'reducedMotion',
+    'requestedViewport', 'playwrightViewport', 'rendererViewport', 'layoutViewport',
+    'cdpVisualViewport', 'rendererVisualViewport', 'effectiveVisibleCssSpan', 'geometryZoom',
+    'requestedDeviceScaleFactor', 'rendererDevicePixelRatio', 'requestedZoomFactor',
+    'appliedZoomFactor', 'zoomResetFactor', 'zoomMechanism',
     'locale', 'timezone', 'font', 'colorScheme', 'rendererTime', 'originPolicy', 'visibleData',
     'animations', 'bytes', 'sha256', 'repeatabilitySha256',
   ], `Acceptance screenshot ${expectedName}`);
@@ -347,7 +359,6 @@ const validateScreenshotEntry = (entry, expectedName) => {
   if (entry.name !== expectedName || entry.journey !== journey || entry.variant !== variant
     || entry.width !== config.viewport.width * config.deviceScaleFactor
     || entry.height !== config.viewport.height * config.deviceScaleFactor
-    || entry.deviceScaleFactor !== config.deviceScaleFactor || entry.zoom !== config.zoom
     || entry.reducedMotion !== config.reducedMotion || entry.locale !== DETERMINISTIC_INPUTS.locale
     || entry.timezone !== DETERMINISTIC_INPUTS.timezone || entry.font !== DETERMINISTIC_INPUTS.font
     || entry.colorScheme !== DETERMINISTIC_INPUTS.colorScheme || entry.rendererTime !== FIXED_TIME
@@ -364,7 +375,7 @@ const validateAccessibility = accessibility => {
     'schemaVersion', 'generatedAt', 'serious', 'critical', 'findings', 'checks', 'keyboardOrder',
     'visibleFocus', 'modalFocusTrap', 'modalFocusRestore', 'accessibleNames', 'liveAnnouncements',
   ], 'Acceptance accessibility report');
-  if (accessibility.schemaVersion !== 3 || accessibility.generatedAt !== FIXED_TIME
+  if (accessibility.schemaVersion !== 4 || accessibility.generatedAt !== FIXED_TIME
     || accessibility.serious !== 0 || accessibility.critical !== 0 || accessibility.findings?.length !== 0
     || accessibility.keyboardOrder !== true || accessibility.visibleFocus !== true
     || accessibility.modalFocusTrap !== true || accessibility.modalFocusRestore !== true
@@ -383,15 +394,16 @@ const validateAccessibility = accessibility => {
     const name = expectedScreenshotNames()[index];
     assertExactKeys(check, [
       'name', 'journey', 'variant', 'serious', 'critical', 'accessibleNames', 'locale', 'timezone',
-      'fontLoaded', 'reducedMotion', 'viewport', 'deviceScaleFactor', 'zoom', 'animationsDisabled', 'rendererTime',
-      'layoutViewport', 'cdpVisualViewport', 'rendererVisualViewport', 'effectiveVisibleCssSpan',
+      'fontLoaded', 'reducedMotion', 'animationsDisabled', 'rendererTime', 'physicalPngDimensions',
+      'requestedViewport', 'playwrightViewport', 'rendererViewport', 'layoutViewport',
+      'cdpVisualViewport', 'rendererVisualViewport', 'effectiveVisibleCssSpan', 'geometryZoom',
+      'requestedDeviceScaleFactor', 'rendererDevicePixelRatio', 'requestedZoomFactor',
+      'appliedZoomFactor', 'zoomResetFactor', 'zoomMechanism',
     ], `Acceptance accessibility check ${name}`);
     const [journey, variantWithExtension] = name.split('--');
     const variant = variantWithExtension.slice(0, -4);
     const config = ACCEPTANCE_VARIANTS[variant];
     if (check.name !== name || check.journey !== journey || check.variant !== variant
-      || JSON.stringify(check.viewport) !== JSON.stringify(config.viewport)
-      || check.deviceScaleFactor !== config.deviceScaleFactor || check.zoom !== config.zoom
       || check.reducedMotion !== config.reducedMotion || check.locale !== DETERMINISTIC_INPUTS.locale
       || check.timezone !== DETERMINISTIC_INPUTS.timezone || check.rendererTime !== FIXED_TIME) {
       throw new Error(`Acceptance accessibility metadata changed for ${name}`);
@@ -452,7 +464,7 @@ export const validateAcceptanceEvidence = (accessibility, manifest, summary, san
     'schemaVersion', 'generatedAt', 'platform', 'arch', 'executableBoundary', 'deterministicInputs',
     'nativePackageCoverage', 'screenshots', 'supporting',
   ], 'Acceptance manifest');
-  if (manifest.schemaVersion !== 3 || manifest.platform !== 'linux' || manifest.arch !== 'x64'
+  if (manifest.schemaVersion !== 4 || manifest.platform !== 'linux' || manifest.arch !== 'x64'
     || manifest.generatedAt !== FIXED_TIME || manifest.executableBoundary !== 'packaged-electron-main-preload-renderer'
     || manifest.screenshots?.length !== expectedScreenshotNames().length) {
     throw new Error('Acceptance manifest is incomplete or non-deterministic');
@@ -467,6 +479,15 @@ export const validateAcceptanceEvidence = (accessibility, manifest, summary, san
     'win32-arm64': 'structural-runtime-only',
   }, 'Acceptance native package coverage');
   manifest.screenshots.forEach((entry, index) => validateScreenshotEntry(entry, expectedScreenshotNames()[index]));
+  for (const journey of ACCEPTANCE_JOURNEYS) {
+    const entries = Object.fromEntries(manifest.screenshots
+      .filter(entry => entry.journey === journey)
+      .map(entry => [entry.variant, entry]));
+    if (entries['zoom-200']?.sha256 === entries.standard?.sha256
+      || entries['zoom-200']?.sha256 === entries['high-dpi']?.sha256) {
+      throw new Error(`Acceptance zoom-200 screenshot is not visually distinct for ${journey}`);
+    }
+  }
   if (!Array.isArray(manifest.supporting) || manifest.supporting.length !== 4) throw new Error('Acceptance supporting manifest is incomplete');
   const expectedSupporting = ['accessibility.json', 'sanitized-summary.json', 'sanitized-log.json', 'sanitized-trace.zip'];
   manifest.supporting.forEach((entry, index) => {
@@ -543,7 +564,7 @@ export const writeAcceptanceManifest = async (outputDirectory, screenshotMetadat
     supporting.push({ name, bytes: bytes.length, sha256: sha256(bytes) });
   }
   const manifest = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     generatedAt: FIXED_TIME,
     platform: 'linux',
     arch: 'x64',

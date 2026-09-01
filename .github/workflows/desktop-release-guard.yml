@@ -42,7 +42,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   renderer-axe-boundary:
-    name: Prove renderer metrics and existing-target axe boundary
+    name: Prove stock Chromium existing-target axe boundary
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -62,7 +62,7 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Run focused renderer metric and existing-target axe regressions
+      - name: Run focused stock Chromium existing-target axe regressions
         # This required predecessor step exclusively owns the real-browser opt-in.
         env:
           PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY: '1'

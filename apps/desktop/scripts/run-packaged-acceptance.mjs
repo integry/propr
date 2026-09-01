@@ -306,6 +306,10 @@ const launchApplication = async (scenario, initialDeepLink) => {
       rendererOrigin: `${location.protocol}//${location.host}`,
       preloadBridge: typeof window.proprDesktop === 'object' && window.proprDesktop !== null
         && typeof window.__PROPR_DESKTOP__ === 'object' && window.__PROPR_DESKTOP__ !== null,
+      acceptanceZoomBridge: typeof window.__PROPR_PACKAGED_ACCEPTANCE__ === 'object'
+        && window.__PROPR_PACKAGED_ACCEPTANCE__ !== null
+        && Object.keys(window.__PROPR_PACKAGED_ACCEPTANCE__).join('\n') === 'setZoomFactor'
+        && typeof window.__PROPR_PACKAGED_ACCEPTANCE__.setZoomFactor === 'function',
       fontLoaded: document.fonts.check('12px "Liberation Sans"'),
       locale: navigator.language,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -313,6 +317,7 @@ const launchApplication = async (scenario, initialDeepLink) => {
       fixedMarker: document.documentElement.dataset.acceptanceFixedTime === fixedTime,
     }), FIXED_TIME);
     if (initialization.rendererOrigin !== 'propr-app://renderer' || !initialization.preloadBridge
+      || !initialization.acceptanceZoomBridge
       || !initialization.fontLoaded || initialization.locale !== DETERMINISTIC_INPUTS.locale
       || initialization.timezone !== DETERMINISTIC_INPUTS.timezone || initialization.rendererTime !== FIXED_TIME
       || !initialization.fixedMarker) {
@@ -456,7 +461,7 @@ const inspectAccessibility = async (page, journey, variant, config, metrics, nam
     || !deterministic.animationsDisabled) {
     throw new Error(`Acceptance deterministic renderer inputs changed for ${name}: ${JSON.stringify(deterministic)}`);
   }
-  accessibilityChecks.push({
+  return {
     name, journey, variant,
     serious: seriousFindings.filter(finding => finding.impact === 'serious').length,
     critical: seriousFindings.filter(finding => finding.impact === 'critical').length,
@@ -465,16 +470,23 @@ const inspectAccessibility = async (page, journey, variant, config, metrics, nam
     timezone: deterministic.timezone,
     fontLoaded: deterministic.fontLoaded,
     reducedMotion: deterministic.reducedMotion,
-    viewport: metrics.viewport,
+    requestedViewport: metrics.requestedViewport,
+    playwrightViewport: metrics.playwrightViewport,
+    rendererViewport: metrics.rendererViewport,
     layoutViewport: metrics.layoutViewport,
     cdpVisualViewport: metrics.cdpVisualViewport,
     rendererVisualViewport: metrics.rendererVisualViewport,
     effectiveVisibleCssSpan: metrics.effectiveVisibleCssSpan,
-    deviceScaleFactor: metrics.deviceScaleFactor,
-    zoom: metrics.zoom,
+    geometryZoom: metrics.geometryZoom,
+    requestedDeviceScaleFactor: metrics.requestedDeviceScaleFactor,
+    rendererDevicePixelRatio: metrics.rendererDevicePixelRatio,
+    requestedZoomFactor: metrics.requestedZoomFactor,
+    appliedZoomFactor: metrics.appliedZoomFactor,
+    zoomResetFactor: metrics.zoomResetFactor,
+    zoomMechanism: metrics.zoomMechanism,
     animationsDisabled: deterministic.animationsDisabled,
     rendererTime: deterministic.rendererTime,
-  });
+  };
 };
 
 const captureVariants = async (page, journey) => {
@@ -482,7 +494,7 @@ const captureVariants = async (page, journey) => {
   try {
     await forEachElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS, async ({ variant, config, metrics }) => {
       const name = screenshotName(journey, variant);
-      await inspectAccessibility(page, journey, variant, config, metrics, name);
+      const accessibilityCheck = await inspectAccessibility(page, journey, variant, config, metrics, name);
       await collectRendererSurface(page, journey, name);
       const first = await captureElectronRendererScreenshot(cdp);
       const second = await captureElectronRendererScreenshot(cdp);
@@ -490,24 +502,35 @@ const captureVariants = async (page, journey) => {
       if (!first.equals(second)) throw new Error(`Acceptance screenshot was not repeatable for ${name}`);
       const dimensions = readPngDimensions(first);
       const expectedDimensions = {
-        width: metrics.viewport.width * metrics.deviceScaleFactor,
-        height: metrics.viewport.height * metrics.deviceScaleFactor,
+        width: metrics.requestedViewport.width * metrics.requestedDeviceScaleFactor,
+        height: metrics.requestedViewport.height * metrics.requestedDeviceScaleFactor,
       };
       if (dimensions.width !== expectedDimensions.width || dimensions.height !== expectedDimensions.height) {
         throw new Error(`Acceptance screenshot dimensions changed for ${name}: ${JSON.stringify(dimensions)}`);
       }
+      const physicalPngDimensions = { ...dimensions };
+      accessibilityChecks.push({ ...accessibilityCheck, physicalPngDimensions });
       await writeFile(join(outputDirectory, 'screenshots', name), first, { mode: 0o600 });
       screenshotMetadata.push({
         name, journey, variant,
         width: dimensions.width,
         height: dimensions.height,
-        deviceScaleFactor: metrics.deviceScaleFactor,
-        zoom: metrics.zoom,
+        physicalPngDimensions,
+        requestedDeviceScaleFactor: metrics.requestedDeviceScaleFactor,
+        rendererDevicePixelRatio: metrics.rendererDevicePixelRatio,
+        requestedZoomFactor: metrics.requestedZoomFactor,
+        appliedZoomFactor: metrics.appliedZoomFactor,
+        zoomResetFactor: metrics.zoomResetFactor,
+        zoomMechanism: metrics.zoomMechanism,
         reducedMotion: metrics.reducedMotion,
+        requestedViewport: metrics.requestedViewport,
+        playwrightViewport: metrics.playwrightViewport,
+        rendererViewport: metrics.rendererViewport,
         layoutViewport: metrics.layoutViewport,
         cdpVisualViewport: metrics.cdpVisualViewport,
         rendererVisualViewport: metrics.rendererVisualViewport,
         effectiveVisibleCssSpan: metrics.effectiveVisibleCssSpan,
+        geometryZoom: metrics.geometryZoom,
         locale: DETERMINISTIC_INPUTS.locale,
         timezone: DETERMINISTIC_INPUTS.timezone,
         font: DETERMINISTIC_INPUTS.font,
@@ -678,7 +701,7 @@ try {
   const serious = axeFindings.filter(finding => finding.impact === 'serious').length;
   const critical = axeFindings.filter(finding => finding.impact === 'critical').length;
   const accessibility = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     generatedAt: FIXED_TIME,
     serious,
     critical,

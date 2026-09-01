@@ -1,6 +1,7 @@
 const defaultSleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 const closeEnough = (actual, expected) => Number.isFinite(actual) && Math.abs(actual - expected) < 0.01;
+const ELECTRON_ZOOM_MECHANISM = 'electron-web-frame';
 
 const assertRendererMetrics = (actual, expected, description) => {
   if (!closeEnough(actual, expected)) {
@@ -8,34 +9,56 @@ const assertRendererMetrics = (actual, expected, description) => {
   }
 };
 
-const measureEffectiveVisibleCssSpan = (rawViewport, layoutViewport, scale, description) => {
-  const effective = {
-    width: layoutViewport.width / scale,
-    height: layoutViewport.height / scale,
-  };
-  const reportsLayoutSpan = closeEnough(rawViewport?.width, layoutViewport.width)
-    && closeEnough(rawViewport?.height, layoutViewport.height);
-  const reportsEffectiveSpan = closeEnough(rawViewport?.width, effective.width)
-    && closeEnough(rawViewport?.height, effective.height);
-  if (!reportsLayoutSpan && !reportsEffectiveSpan) {
-    throw new Error(
-      `Packaged Electron ${description} changed: expected raw layout span ${layoutViewport.width}x${layoutViewport.height}`
-      + ` or raw effective span ${effective.width}x${effective.height}, received ${rawViewport?.width}x${rawViewport?.height}`,
-    );
+const assertExactKeys = (value, keys, description) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).sort().join('\n') !== [...keys].sort().join('\n')) {
+    throw new Error(`Packaged Electron ${description} acknowledgement is malformed`);
   }
+};
 
-  const derived = reportsLayoutSpan
-    ? { width: rawViewport.width / scale, height: rawViewport.height / scale }
-    : { width: rawViewport.width, height: rawViewport.height };
-  assertRendererMetrics(derived.width, effective.width, `${description} effective width`);
-  assertRendererMetrics(derived.height, effective.height, `${description} effective height`);
-  return derived;
+const measureRenderer = async (page, cdp) => {
+  const [layout, renderer] = await Promise.all([
+    cdp.send('Page.getLayoutMetrics'),
+    page.evaluate(() => ({
+      width: window.innerWidth,
+      height: window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio,
+      reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      visualViewport: window.visualViewport && {
+        width: window.visualViewport.width,
+        height: window.visualViewport.height,
+        scale: window.visualViewport.scale,
+      },
+    })),
+  ]);
+  return { layout, renderer };
+};
+
+const waitForStableRendererMeasurement = async (
+  page,
+  cdp,
+  { settle, settleMs, measurementTimeoutMs, stableMeasurements },
+) => {
+  const deadline = Date.now() + measurementTimeoutMs;
+  let previous;
+  let stable = 0;
+  let measurement;
+  do {
+    measurement = await measureRenderer(page, cdp);
+    const serialized = JSON.stringify(measurement);
+    stable = serialized === previous ? stable + 1 : 1;
+    previous = serialized;
+    if (stable >= stableMeasurements) return measurement;
+    await settle(settleMs);
+  } while (Date.now() <= deadline);
+  throw new Error(`Packaged Electron renderer zoom metrics did not stabilize within ${measurementTimeoutMs}ms`);
 };
 
 /**
  * Configure the visible Electron renderer without relying on Browser-domain
  * commands on a target-scoped CDP session. Playwright owns the viewport/window
- * resize, while CDP Emulation owns the target's DPR and page scale.
+ * resize and target DPR. The authenticated context-isolated preload bridge is
+ * the sole zoom authority; CDP page scale is intentionally not used.
  */
 export const configureElectronRendererVariant = async (
   page,
@@ -44,14 +67,18 @@ export const configureElectronRendererVariant = async (
   {
     colorScheme = 'light',
     settle = defaultSleep,
-    settleMs = 75,
+    settleMs = 25,
+    measurementTimeoutMs = 3_000,
+    stableMeasurements = 3,
   } = {},
 ) => {
   const { viewport, deviceScaleFactor, zoom, reducedMotion } = config || {};
   if (!Number.isInteger(viewport?.width) || viewport.width <= 0
     || !Number.isInteger(viewport?.height) || viewport.height <= 0
     || !Number.isFinite(deviceScaleFactor) || deviceScaleFactor <= 0
-    || !Number.isFinite(zoom) || zoom <= 0 || typeof reducedMotion !== 'boolean') {
+    || (zoom !== 1 && zoom !== 2) || typeof reducedMotion !== 'boolean'
+    || !Number.isInteger(measurementTimeoutMs) || measurementTimeoutMs <= 0
+    || !Number.isInteger(stableMeasurements) || stableMeasurements < 2) {
     throw new Error('Packaged Electron renderer variant configuration is invalid');
   }
 
@@ -68,36 +95,55 @@ export const configureElectronRendererVariant = async (
     screenWidth: viewport.width,
     screenHeight: viewport.height,
   });
-  await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: zoom });
-  await settle(settleMs);
+  const zoomAcknowledgement = await page.evaluate(async requestedFactor => {
+    const bridge = globalThis.__PROPR_PACKAGED_ACCEPTANCE__;
+    if (!bridge || typeof bridge !== 'object' || typeof bridge.setZoomFactor !== 'function') {
+      throw new Error('Packaged acceptance Electron zoom bridge is unavailable');
+    }
+    return bridge.setZoomFactor(requestedFactor);
+  }, zoom);
+  assertExactKeys(
+    zoomAcknowledgement,
+    ['requestedFactor', 'resetFactor', 'appliedFactor', 'mechanism'],
+    'zoom bridge',
+  );
+  if (zoomAcknowledgement.requestedFactor !== zoom || zoomAcknowledgement.resetFactor !== 1
+    || zoomAcknowledgement.appliedFactor !== zoom || zoomAcknowledgement.mechanism !== ELECTRON_ZOOM_MECHANISM) {
+    throw new Error(`Packaged Electron zoom bridge acknowledgement changed: ${JSON.stringify(zoomAcknowledgement)}`);
+  }
 
   const playwrightViewport = page.viewportSize();
-  const layout = await cdp.send('Page.getLayoutMetrics');
-  const renderer = await page.evaluate(() => ({
-    width: window.innerWidth,
-    height: window.innerHeight,
-    deviceScaleFactor: window.devicePixelRatio,
-    reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-    screenWidth: window.screen.width,
-    screenHeight: window.screen.height,
-    visualViewport: window.visualViewport && {
-      width: window.visualViewport.width,
-      height: window.visualViewport.height,
-      scale: window.visualViewport.scale,
-    },
-  }));
+  const { layout, renderer } = await waitForStableRendererMeasurement(page, cdp, {
+    settle, settleMs, measurementTimeoutMs, stableMeasurements,
+  });
+  const effectiveVisibleCssSpan = {
+    width: renderer?.width,
+    height: renderer?.height,
+  };
+  const geometryZoom = {
+    width: playwrightViewport?.width / effectiveVisibleCssSpan.width,
+    height: playwrightViewport?.height / effectiveVisibleCssSpan.height,
+  };
+  const expectedEffective = {
+    width: viewport.width / zoom,
+    height: viewport.height / zoom,
+  };
 
   assertRendererMetrics(playwrightViewport?.width, viewport.width, 'Playwright viewport width');
   assertRendererMetrics(playwrightViewport?.height, viewport.height, 'Playwright viewport height');
-  assertRendererMetrics(layout?.cssLayoutViewport?.clientWidth, viewport.width, 'layout viewport width');
-  assertRendererMetrics(layout?.cssLayoutViewport?.clientHeight, viewport.height, 'layout viewport height');
-  assertRendererMetrics(layout?.cssVisualViewport?.scale, zoom, 'page scale');
-  assertRendererMetrics(renderer?.width, viewport.width, 'renderer viewport width');
-  assertRendererMetrics(renderer?.height, viewport.height, 'renderer viewport height');
-  assertRendererMetrics(renderer?.deviceScaleFactor, deviceScaleFactor, 'device scale factor');
-  assertRendererMetrics(renderer?.screenWidth, viewport.width, 'renderer screen width');
-  assertRendererMetrics(renderer?.screenHeight, viewport.height, 'renderer screen height');
-  assertRendererMetrics(renderer?.visualViewport?.scale, zoom, 'renderer page scale');
+  assertRendererMetrics(layout?.cssLayoutViewport?.clientWidth, expectedEffective.width, 'layout viewport width');
+  assertRendererMetrics(layout?.cssLayoutViewport?.clientHeight, expectedEffective.height, 'layout viewport height');
+  assertRendererMetrics(layout?.cssVisualViewport?.clientWidth, expectedEffective.width, 'CDP visual viewport width');
+  assertRendererMetrics(layout?.cssVisualViewport?.clientHeight, expectedEffective.height, 'CDP visual viewport height');
+  assertRendererMetrics(layout?.cssVisualViewport?.scale, 1, 'raw CDP page scale');
+  assertRendererMetrics(renderer?.width, expectedEffective.width, 'renderer viewport width');
+  assertRendererMetrics(renderer?.height, expectedEffective.height, 'renderer viewport height');
+  assertRendererMetrics(renderer?.devicePixelRatio, deviceScaleFactor * zoom, 'renderer device pixel ratio');
+  assertRendererMetrics(renderer?.visualViewport?.width, expectedEffective.width, 'renderer visual viewport width');
+  assertRendererMetrics(renderer?.visualViewport?.height, expectedEffective.height, 'renderer visual viewport height');
+  assertRendererMetrics(renderer?.visualViewport?.scale, 1, 'raw renderer page scale');
+  assertRendererMetrics(geometryZoom.width, zoom, 'measured renderer geometry width ratio');
+  assertRendererMetrics(geometryZoom.height, zoom, 'measured renderer geometry height ratio');
   const layoutViewport = {
     width: layout.cssLayoutViewport.clientWidth,
     height: layout.cssLayoutViewport.clientHeight,
@@ -112,32 +158,25 @@ export const configureElectronRendererVariant = async (
     height: renderer.visualViewport.height,
     scale: renderer.visualViewport.scale,
   };
-  const effectiveVisibleCssSpan = measureEffectiveVisibleCssSpan(
-    cdpVisualViewport,
-    layoutViewport,
-    cdpVisualViewport.scale,
-    'CDP visual viewport',
-  );
-  const rendererEffectiveVisibleCssSpan = measureEffectiveVisibleCssSpan(
-    rendererVisualViewport,
-    layoutViewport,
-    rendererVisualViewport.scale,
-    'renderer visual viewport',
-  );
-  assertRendererMetrics(rendererEffectiveVisibleCssSpan.width, effectiveVisibleCssSpan.width, 'effective visible CSS width');
-  assertRendererMetrics(rendererEffectiveVisibleCssSpan.height, effectiveVisibleCssSpan.height, 'effective visible CSS height');
   if (renderer?.reducedMotion !== reducedMotion) {
     throw new Error(`Packaged Electron reduced-motion emulation changed: expected ${reducedMotion}, received ${renderer?.reducedMotion}`);
   }
 
   return {
-    viewport: { width: renderer.width, height: renderer.height },
+    requestedViewport: { ...viewport },
+    playwrightViewport: { ...playwrightViewport },
+    rendererViewport: { width: renderer.width, height: renderer.height },
     layoutViewport,
     cdpVisualViewport,
     rendererVisualViewport,
     effectiveVisibleCssSpan,
-    deviceScaleFactor: renderer.deviceScaleFactor,
-    zoom: renderer.visualViewport.scale,
+    geometryZoom,
+    requestedDeviceScaleFactor: deviceScaleFactor,
+    rendererDevicePixelRatio: renderer.devicePixelRatio,
+    requestedZoomFactor: zoom,
+    appliedZoomFactor: zoomAcknowledgement.appliedFactor,
+    zoomResetFactor: zoomAcknowledgement.resetFactor,
+    zoomMechanism: zoomAcknowledgement.mechanism,
     reducedMotion: renderer.reducedMotion,
   };
 };

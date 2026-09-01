@@ -56,9 +56,11 @@ packaged Linux binary, and refuses the default Electron profile.
 The mandatory artifact contains screenshots for first run, endpoint and Connect confirmation, pairing, local setup
 prerequisites/progress/recovery/completion, dashboard profile management, offline, revoked, and incompatible states.
 Every state is captured at standard, narrow, high-DPI, 200% zoom, and reduced-motion configurations. The manifest
-records fixed locale/time/theme inputs, dimensions, hashes, and native coverage. Accessibility evidence fails for any
-serious or critical axe finding or missing keyboard order, visible focus, dialog trap/restore, accessible name, or
-live announcement proof. Finalization rejects missing, duplicate, unexpected, incorrectly sized, or secret-bearing
+records fixed locale/time/theme inputs, dimensions, hashes, and native coverage. The 200% variant uses an
+acceptance-only, main-authorized preload bridge to Electron `webFrame` zoom and records its read-back alongside raw
+CDP/renderer viewports, independently measured geometry, DPR, and physical PNG dimensions. Accessibility evidence
+fails for any serious or critical axe finding or missing keyboard order, visible focus, dialog trap/restore,
+accessible name, or live announcement proof. Finalization rejects missing, duplicate, unexpected, incorrectly sized, or secret-bearing
 output. Sentinel coverage includes renderer DOM, process output, URLs, local/session storage, persisted profile/config
 data, screenshots and metadata, and every decompressed Playwright trace entry.
 
