@@ -36,7 +36,53 @@ function Set-ProprFixtureAcl {
   } catch { exit 43 }
   try {
     $acl=Get-Acl -LiteralPath $canonicalPath
-  } catch { exit 44 }
+  } catch {
+    $exception=$_.Exception
+    $commandOrModuleUnavailable=$false
+    $itemOrProviderNotFound=$false
+    $unauthorizedOrSecurity=$false
+    $platformOrNotSupported=$false
+    $otherAllowlisted=$false
+    for($depth=0;$null -ne $exception -and $depth -lt 8;$depth++){
+      $typeName=$exception.GetType().FullName
+      if($exception -is [System.Management.Automation.CommandNotFoundException] -or
+        $typeName -eq 'System.Management.Automation.CouldNotAutoloadMatchingModuleException' -or
+        $typeName -eq 'Microsoft.PowerShell.Commands.ModuleNotFoundException'){
+        $commandOrModuleUnavailable=$true
+      }
+      if($exception -is [System.Management.Automation.ItemNotFoundException] -or
+        $exception -is [System.Management.Automation.ProviderNotFoundException] -or
+        $exception -is [System.Management.Automation.DriveNotFoundException] -or
+        $exception -is [System.IO.FileNotFoundException] -or
+        $exception -is [System.IO.DirectoryNotFoundException]){
+        $itemOrProviderNotFound=$true
+      }
+      if($exception -is [System.UnauthorizedAccessException] -or
+        $exception -is [System.Security.SecurityException] -or
+        $exception -is [System.Security.AccessControl.PrivilegeNotHeldException]){
+        $unauthorizedOrSecurity=$true
+      }
+      if($exception -is [System.PlatformNotSupportedException] -or
+        $exception -is [System.NotSupportedException] -or
+        $typeName -eq 'System.Management.Automation.PSNotSupportedException'){
+        $platformOrNotSupported=$true
+      }
+      if($typeName -eq 'System.Management.Automation.CmdletInvocationException' -or
+        $typeName -eq 'System.Management.Automation.PSInvalidOperationException' -or
+        $typeName -eq 'System.Management.Automation.RuntimeException' -or
+        $typeName -eq 'System.InvalidOperationException' -or
+        $typeName -eq 'System.IO.IOException'){
+        $otherAllowlisted=$true
+      }
+      $exception=$exception.InnerException
+    }
+    if($commandOrModuleUnavailable){exit 51}
+    if($itemOrProviderNotFound){exit 52}
+    if($unauthorizedOrSecurity){exit 53}
+    if($platformOrNotSupported){exit 54}
+    if($otherAllowlisted){exit 55}
+    exit 44
+  }
   try {
     $null=$acl.SetAccessRuleProtection($true,$false)
     foreach($existing in @($acl.Access)){$null=$acl.RemoveAccessRuleSpecific($existing)}
