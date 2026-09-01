@@ -111,6 +111,7 @@ describe('packaged smoke profile authorization', () => {
 
   it('registers one-shot lifecycle shutdown before smoke window creation and preserves required evidence order', () => {
     const main = readFileSync(fileURLToPath(new URL('./main.ts', import.meta.url)), 'utf8');
+    const shutdownSource = readFileSync(fileURLToPath(new URL('./shutdown.ts', import.meta.url)), 'utf8');
     const installedWindowsAppTest = readFileSync(
       fileURLToPath(new URL('../scripts/test-installed-windows-app.ps1', import.meta.url)),
       'utf8',
@@ -120,28 +121,35 @@ describe('packaged smoke profile authorization', () => {
     const authorized = main.indexOf("packagedSmokeEvidence?.write('desktop.smoke.authorized')");
     const appReady = main.indexOf("log('info', 'desktop.app.ready'");
     const beforeQuit = main.indexOf("app.on('before-quit'");
-    const createWindow = main.indexOf('mainWindow = await createMainWindow()');
+    const shutdownCoordinator = main.indexOf('createDesktopShutdownCoordinator({');
+    const createWindow = main.indexOf('mainWindow = await createMainWindow(transportSmoke)');
     const mvpReady = main.indexOf("log('info', 'desktop.renderer.mvp_flows.ready'");
     const layoutReady = main.indexOf("log('info', PACKAGED_LAYOUT_READY_EVENT");
     const reducedWindowReady = main.indexOf("log('info', PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT");
     const rendererReady = main.indexOf("log('info', 'desktop.renderer.ready'");
-    const shutdownGuard = main.indexOf('if (shutdownStarted) return;', beforeQuit);
-    const preventQuit = main.indexOf('event.preventDefault();', beforeQuit);
-    const startShutdown = main.indexOf('shutdownStarted = true;', beforeQuit);
-    const lifecycleShutdown = main.indexOf('lifecycle.shutdown()', beforeQuit);
-    const shutdown = main.indexOf("log('info', 'desktop.app.shutdown'", beforeQuit);
-    const finalQuit = main.indexOf('app.quit();', shutdown);
+    const startShutdown = main.indexOf('onStarted: () => { shutdownStarted = true; }', shutdownCoordinator);
+    const preventQuit = shutdownSource.indexOf('event.preventDefault();');
+    const closeIpc = shutdownSource.indexOf('options.ipc.close();', preventQuit);
+    const closeSession = shutdownSource.indexOf('options.sessionSecurity.close();', closeIpc);
+    const closeProtocol = shutdownSource.indexOf('options.disposeRendererProtocol();', closeSession);
+    const drainCredentials = shutdownSource.indexOf('options.credentials.dispose();', closeProtocol);
+    const drainOperations = shutdownSource.indexOf('options.operations.shutdown(localDrain)', drainCredentials);
+    const drainIpc = shutdownSource.indexOf('options.ipc.awaitIdle();', drainOperations);
+    const closeProfiles = shutdownSource.indexOf('options.profiles.close()', drainIpc);
+    const shutdown = shutdownSource.indexOf("options.log('info', 'desktop.app.shutdown'", closeProfiles);
+    const finalQuit = shutdownSource.indexOf('options.quit();', shutdown);
     const willQuit = main.indexOf("app.on('will-quit'");
     const sinkClose = main.indexOf('packagedSmokeEvidence?.close()', willQuit);
     const requiredEvents = installedWindowsAppTest.match(/\$requiredSmokeEvents = @\(([\s\S]*?)\r?\n\)/)?.[1];
 
     assert.ok(isolation < sink && sink < authorized);
-    assert.ok(authorized < appReady && appReady < beforeQuit && beforeQuit < createWindow);
+    assert.ok(authorized < appReady && appReady < shutdownCoordinator && shutdownCoordinator < beforeQuit && beforeQuit < createWindow);
     assert.ok(mvpReady < layoutReady && layoutReady < reducedWindowReady && reducedWindowReady < rendererReady);
-    assert.ok(beforeQuit < shutdownGuard && shutdownGuard < preventQuit && preventQuit < startShutdown);
-    assert.ok(startShutdown < lifecycleShutdown && lifecycleShutdown < shutdown && shutdown < finalQuit);
-    assert.ok(finalQuit < willQuit && willQuit < sinkClose);
-    assert.equal(main.match(/lifecycle\.shutdown\(\)/g)?.length, 1);
+    assert.ok(shutdownCoordinator < startShutdown && preventQuit < closeIpc && closeIpc < closeSession);
+    assert.ok(closeSession < closeProtocol && closeProtocol < drainCredentials && drainCredentials < drainOperations);
+    assert.ok(drainOperations < drainIpc && drainIpc < closeProfiles && closeProfiles < shutdown && shutdown < finalQuit);
+    assert.ok(beforeQuit < willQuit && willQuit < sinkClose);
+    assert.equal(shutdownSource.match(/options\.lifecycle\.shutdown\(\)/g)?.length, 1);
     assert.deepEqual(Array.from(requiredEvents?.matchAll(/'([^']+)'/g) ?? [], match => match[1]), [
       'desktop.smoke.authorized',
       'desktop.app.ready',
@@ -151,5 +159,24 @@ describe('packaged smoke profile authorization', () => {
       'desktop.renderer.ready',
       'desktop.app.shutdown',
     ]);
+  });
+
+  it('keeps packaged smoke inert while proving the staged Connect candidate', () => {
+    const main = readFileSync(fileURLToPath(new URL('./main.ts', import.meta.url)), 'utf8');
+    const smokeFlowStart = main.indexOf('const profileFlow = await window.webContents.executeJavaScript');
+    const smokeFlowEnd = main.indexOf("log('info', 'desktop.renderer.mvp_flows.ready'", smokeFlowStart);
+    const smokeFlow = main.slice(smokeFlowStart, smokeFlowEnd);
+
+    assert.match(main, /process\.platform === 'linux' && !packagedSmokeTest\s*\? await createDesktopLocalHost/);
+    assert.doesNotMatch(smokeFlow, /lifecycle\.(?:start|stop|restart)|localSetup\.(?:start|retry|cancel)/);
+    assert.match(smokeFlow, /stagedConnectCandidate/);
+    assert.match(smokeFlow, /window\.__PROPR_DESKTOP__/);
+    assert.match(smokeFlow, /profiles\.length === 0/);
+    assert.match(smokeFlow, /activeProfileId === null/);
+    assert.match(smokeFlow, /noLifecycleOrDockerAuthority/);
+    assert.match(smokeFlow, /legacyRemoteOnlyLifecycleInvariant/);
+    assert.match(smokeFlow, /!\('lifecycle' in legacyBridge\)/);
+    assert.match(smokeFlow, /setup\.phase === 'unsupported'/);
+    assert.match(smokeFlow, /setup\.capability\?\.kind === 'remote-only'/);
   });
 });

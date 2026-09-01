@@ -122,12 +122,15 @@ export interface DockerCommandResult {
   status: number | null;
   stdout: string;
   stderr: string;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
   error?: Error & { code?: string };
   signal?: NodeJS.Signals | null;
 }
 
 export interface ResolveHostConfigOptions {
   rootDir?: string;
+  readRootDir?: string;
   env?: NodeJS.ProcessEnv;
   manifestPath?: string;
   cliOverrides?: Record<string, unknown>;
@@ -149,10 +152,11 @@ export interface OrchestratorModule {
 
   dockerAvailable(): boolean;
   inspectImageFreshness(tag: string, opts?: { skipRemoteCheck?: boolean }): ImageFreshnessResult;
-  inspectImageFreshnessAsync(tag: string, opts?: { skipRemoteCheck?: boolean }): Promise<ImageFreshnessResult>;
+  inspectImageFreshnessAsync(tag: string, opts?: { skipRemoteCheck?: boolean; signal?: AbortSignal }): Promise<ImageFreshnessResult>;
   tagAgentLatest(key: string, imageTag: string): void;
+  tagAgentLatestAsync(key: string, imageTag: string, signal?: AbortSignal): Promise<void>;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
-  ensureNetworkAsync(cfg: OrchestratorConfig, onLog?: (line: string) => void): Promise<void>;
+  ensureNetworkAsync(cfg: OrchestratorConfig, onLog?: (line: string) => void, opts?: { signal?: AbortSignal; beforeMutation?: () => void }): Promise<void>;
   ensureServiceImage(
     cfg: OrchestratorConfig,
     service: string,
@@ -169,7 +173,10 @@ export interface OrchestratorModule {
   readonly TOGGLE_SERVICES: readonly string[];
 
   isStackRunning(cfg: OrchestratorConfig): boolean;
-  isStackRunningAsync(cfg: OrchestratorConfig): Promise<boolean>;
+  isStackRunningAsync(cfg: OrchestratorConfig, signal?: AbortSignal): Promise<boolean>;
+  isLifecycleStackRunningAsync(cfg: OrchestratorConfig, opts?: { signal?: AbortSignal; assertRootAuthority?: () => void }): Promise<boolean>;
+  recoverStackAsync(cfg: OrchestratorConfig, opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; signal?: AbortSignal; onLog?: (line: string) => void; assertRootAuthority?: () => void }): Promise<{ recovered: boolean }>;
+  stopLifecycleStackAsync(cfg: OrchestratorConfig, opts?: { signal?: AbortSignal; onLog?: (line: string) => void; assertRootAuthority?: () => void }): Promise<{ failed: string[] }>;
 
   startService(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): ServiceState | undefined;
   startServiceAsync(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): Promise<ServiceState | undefined>;
@@ -188,7 +195,7 @@ export interface OrchestratorModule {
   ): StackStatus;
   startStackAsync(
     cfg: OrchestratorConfig,
-    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void }
+    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void; signal?: AbortSignal; beforeLaunch?: () => void }
   ): Promise<StackStatus>;
   stopStack(
     cfg: OrchestratorConfig,
@@ -209,5 +216,5 @@ export interface OrchestratorModule {
 
   containerExists(cfg: OrchestratorConfig, name: string): boolean;
   docker(args: string[], opts?: DockerCommandOptions): DockerCommandResult;
-  dockerAsync(args: string[], opts?: { timeout?: number }): Promise<DockerCommandResult>;
+  dockerAsync(args: string[], opts?: { timeout?: number; signal?: AbortSignal; maxOutputBytes?: number }): Promise<DockerCommandResult>;
 }

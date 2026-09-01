@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PROPR_API_COMPATIBILITY } from '@propr/shared';
+import { PROPR_API_COMPATIBILITY, PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import {
   ProprClient,
   ProprClientError,
@@ -9,9 +9,17 @@ import {
 } from '../src/index.js';
 
 describe('Propr API base URLs and instance profiles', () => {
+  it('matches the shared canonical origin parity table', () => {
+    for (const [name, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      if (expected === null) assert.throws(() => normalizeApiBaseUrl(input), ProprClientError, name);
+      else assert.equal(normalizeApiBaseUrl(input), expected, name);
+    }
+  });
   it('supports browser same-origin, loopback, and secure remote instances', () => {
     assert.equal(normalizeApiBaseUrl(), '');
-    assert.equal(normalizeApiBaseUrl('  http://localhost:4000///  '), 'http://localhost:4000');
+    assert.equal(normalizeApiBaseUrl('  http://localhost:4000/  '), 'http://localhost:4000');
+    assert.equal(normalizeApiBaseUrl('http://api.dev.localhost:3000'), 'http://api.dev.localhost:3000');
+    assert.equal(normalizeApiBaseUrl('http://127.42.7.9:3000'), 'http://127.42.7.9:3000');
     assert.equal(normalizeApiBaseUrl('http://127.0.0.1:3000'), 'http://127.0.0.1:3000');
     assert.equal(normalizeApiBaseUrl('http://[::1]:3000'), 'http://[::1]:3000');
     assert.equal(normalizeApiBaseUrl('https://propr.example.com/'), 'https://propr.example.com');
@@ -34,6 +42,12 @@ describe('Propr API base URLs and instance profiles', () => {
       'https://propr.example.com/api',
       'https://propr.example.com?token=secret',
       'http://propr.example.com',
+      'http://localhost.:3000',
+      'http://127.1:3000',
+      'http://0177.0.0.1:3000',
+      'http://0x7f000001:3000',
+      'http://[::ffff:127.0.0.1]:3000',
+      'https://propr.example.com///',
     ]) {
       assert.throws(() => normalizeApiBaseUrl(value), ProprClientError);
     }
@@ -52,10 +66,11 @@ describe('ProprClient REST transport', () => {
       },
     });
 
-    await client.request('/api/status');
+    await client.request('/api/status', { credentials: 'include' });
 
     assert.equal(calls[0][0], 'https://propr.example.com/api/status');
     assert.equal(new Headers(calls[0][1]?.headers).get('Authorization'), 'Bearer secret-token');
+    assert.equal(calls[0][1]?.credentials, 'omit');
     assert.doesNotMatch(String(calls[0][0]), /secret-token/);
   });
 

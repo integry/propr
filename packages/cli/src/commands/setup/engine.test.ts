@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyBackendAccessError, runSetup, type SetupActions, type SetupPrompts } from "./engine.js";
+import { classifyBackendAccessError, retrySetup, runSetup, type SetupActions, type SetupPrompts } from "./engine.js";
 import type { ChecksOutcome } from "../checkCommands.js";
 import type { AuthorizedInstallation } from "../../api/relay.js";
 import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthModeResult } from "@propr/shared";
@@ -1361,6 +1361,58 @@ test("whitelist falls back to .env when the backend is not running", async () =>
   assert.equal(statusOf(result.state, "whitelist"), "done");
 });
 
+test("whitelist abort is cancellation and never falls back to an env commit", async () => {
+  const controller = new AbortController();
+  let envCommitted = false;
+  const result = await runSetup({
+    root: "/stack",
+    signal: controller.signal,
+    prompts: { configureWhitelist: async () => ["erin"] },
+    actions: mockActions({
+      isStackRunning: async () => true,
+      saveWhitelistSetting: async (_root, _users, signal) => {
+        controller.abort();
+        signal?.throwIfAborted();
+      },
+      applyEnvSelection: (_root, vars) => {
+        if ("GITHUB_USER_WHITELIST" in vars) envCommitted = true;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(result.cancelled, true);
+  assert.equal(result.errors[0]?.code, "cancelled");
+  assert.equal(envCommitted, false);
+});
+
+test("relay boundary abort never writes the minted token or continues classification", async () => {
+  const controller = new AbortController();
+  let wroteRelayToken = false;
+  let started = false;
+  const result = await runSetup({
+    root: "/stack",
+    signal: controller.signal,
+    prompts: { configureGithubAuth: async () => ({ mode: "relay", enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL } }) },
+    actions: mockActions({
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [{ installation_id: 42, account_login: "octocat", account_type: "User" }] }),
+      enrollRelay: async () => {
+        controller.abort();
+        return { relayUrl: DEFAULT_PROPR_GH_RELAY_URL, token: "must-not-be-written" };
+      },
+      applyEnvSelection: (_root, vars) => {
+        if (vars.PROPR_GH_RELAY_TOKEN) wroteRelayToken = true;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+      startStack: async () => { started = true; },
+    }),
+  });
+  assert.equal(result.cancelled, true);
+  assert.equal(wroteRelayToken, false);
+  assert.equal(started, false);
+});
+
 test("prompts drive a full unattended run to completion", async () => {
   const seen: string[] = [];
   const prompts: SetupPrompts = {
@@ -1386,3 +1438,13 @@ test("prompts drive a full unattended run to completion", async () => {
     ["check", "init-stack", "pull-images", "configure-agents", "github-auth", "intake", "start-stack", "enable-agents", "whitelist", "repo", "launch-ui"]
   );
 });
+
+for (const platform of ["darwin", "win32"] as const) {
+  test(`CLI setup and retry reject ${platform} before host actions`, async () => {
+    let actions = 0;
+    const overrides = { runChecks: async () => { actions += 1; throw new Error("not called"); } };
+    await assert.rejects(runSetup({ root: "/stack", platform, actions: overrides }), /not supported/);
+    await assert.rejects(retrySetup({ rootDir: "/stack" } as never, { platform, actions: overrides }), /not supported/);
+    assert.equal(actions, 0);
+  });
+}

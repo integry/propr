@@ -1,6 +1,6 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import type { Server as SocketIOServer, Socket } from 'socket.io';
+import type { Namespace, Server as SocketIOServer, Socket } from 'socket.io';
 import {
   SocketAuthenticationError,
   type SocketPrincipal,
@@ -24,6 +24,23 @@ interface PassportSessionData {
 }
 
 const DEFAULT_REVALIDATION_INTERVAL_MS = 60_000;
+
+/**
+ * Return a stable snapshot of every namespace registered at this instant.
+ *
+ * Socket.IO has no public namespace iterator. Keep its typed namespace registry
+ * access contained here, and use the public accessor for the root namespace, so
+ * a future Socket.IO registry change has one fail-closed integration point.
+ */
+function registeredSocketNamespaces(io: SocketIOServer): readonly Namespace[] {
+  const rootNamespace = io.of('/');
+  const registeredNamespaces = io._nsps;
+  if (!(registeredNamespaces instanceof Map)) {
+    throw new Error('Socket.IO namespace registry is unavailable');
+  }
+
+  return [...new Set<Namespace>([rootNamespace, ...registeredNamespaces.values()])];
+}
 
 interface SocketAuthenticationFailure extends Error {
   data?: { code: string };
@@ -116,8 +133,34 @@ export function configureSocketAuthentication(
     });
   }
 
-  io.use(async (socket, next) => {
-    const request = socket.request as unknown as Request;
+  const authenticateSocket = async (socket: Socket, next: (error?: Error) => void) => {
+    const transportRequest = socket.request as unknown as Request;
+    const handshakeToken = (socket.handshake.auth as { token?: unknown } | undefined)?.token;
+    const synthesizedAuthorization = !transportRequest.headers.authorization
+      && typeof handshakeToken === 'string'
+      && handshakeToken.trim()
+      && !/[\r\n]/.test(handshakeToken)
+      ? `Bearer ${handshakeToken.trim()}`
+      : undefined;
+    const immutableHeaders = Object.freeze(Object.fromEntries(
+      Object.entries(transportRequest.headers).map(([name, value]) => [
+        name,
+        Array.isArray(value) ? Object.freeze([...value]) : value,
+      ]),
+    ));
+    // Socket.IO namespaces on one transport share socket.request. Keep the
+    // credential on a socket-specific facade so authentication and later
+    // revalidation can never rewrite another namespace's request context.
+    const request = Object.create(transportRequest) as Request;
+    Object.defineProperty(request, 'headers', {
+      configurable: false,
+      enumerable: true,
+      value: Object.freeze({
+        ...immutableHeaders,
+        ...(synthesizedAuthorization ? { authorization: synthesizedAuthorization } : {}),
+      }),
+      writable: false,
+    });
     const usesPassportSession = Boolean(request.isAuthenticated?.() && request.user);
     try {
       const initialPrincipal = await options.authenticate(request);
@@ -154,6 +197,7 @@ export function configureSocketAuthentication(
               `[SocketAuthentication] Disconnecting socket ${socket.id} after revalidation failed (${code})`,
             );
             delete data.principal;
+            socket.emit('authentication:error', { code });
             socket.disconnect(true);
             return false;
           }
@@ -172,5 +216,17 @@ export function configureSocketAuthentication(
     } catch (error) {
       next(socketAuthenticationFailure(error));
     }
-  });
+  };
+
+  const configuredNamespaces = new WeakSet<Namespace>();
+  const configureNamespace = (namespace: Namespace) => {
+    if (configuredNamespaces.has(namespace)) return;
+    configuredNamespaces.add(namespace);
+    namespace.use(authenticateSocket);
+  };
+
+  // Subscribe first so a namespace registered during configuration cannot fall
+  // between the existing-namespace snapshot and future registration listener.
+  io.on('new_namespace', configureNamespace);
+  for (const namespace of registeredSocketNamespaces(io)) configureNamespace(namespace);
 }

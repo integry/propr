@@ -22,6 +22,12 @@
  */
 
 import { AGENT_DEFAULTS, type AgentType } from "@propr/shared";
+import { rethrowCancellation } from "./cancellation.js";
+
+export interface RootOperationBoundary {
+  rootOperationsDir?: string;
+  assertRootAuthority?(): void;
+}
 
 /** Minimal backend agent shape needed by the setup engine. */
 export interface AgentConfig {
@@ -59,15 +65,15 @@ export interface AgentConnectivityResult {
  */
 export interface AgentSetupActions {
   /** List the agents currently configured in the running backend. */
-  listAgents(rootDir: string): Promise<AgentConfig[]>;
+  listAgents(rootDir: string, signal?: AbortSignal, root?: RootOperationBoundary): Promise<AgentConfig[]>;
   /** Add a new agent to the backend configuration. */
-  addAgent(rootDir: string, options: AddAgentOptions): Promise<void>;
+  addAgent(rootDir: string, options: AddAgentOptions, signal?: AbortSignal, root?: RootOperationBoundary): Promise<void>;
   /** Agent types that support an interactive image login (have a login plan). */
-  loginableAgents(): Promise<string[]>;
+  loginableAgents(signal?: AbortSignal): Promise<string[]>;
   /** Authenticate one agent through its image; interactive (inherits stdio). */
-  loginAgent(rootDir: string, type: string): Promise<AgentLoginResult>;
+  loginAgent(rootDir: string, type: string, signal?: AbortSignal, root?: RootOperationBoundary): Promise<AgentLoginResult>;
   /** Run a live, image-only request that mirrors the worker credential mount. */
-  validateAgents(rootDir: string, types: string[]): Promise<AgentConnectivityResult[]>;
+  validateAgents(rootDir: string, types: string[], signal?: AbortSignal, root?: RootOperationBoundary): Promise<AgentConnectivityResult[]>;
 }
 
 /** Inputs for {@link runAgentSetup}. */
@@ -82,6 +88,7 @@ export interface AgentSetupParams {
    */
   confirmLogin?(ctx: { candidates: string[]; rootDir: string }): Promise<string[]>;
   onLog?(line: string): void;
+  signal?: AbortSignal;
 }
 
 /** What the agent-setup step did, for the caller to render as a step status. */
@@ -111,7 +118,7 @@ export interface AgentSetupOutcome {
  * the caller can settle the step as a warning rather than aborting setup.
  */
 export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetupOutcome> {
-  const { rootDir, selectedAgents, actions, confirmLogin, onLog } = params;
+  const { rootDir, selectedAgents, actions, confirmLogin, onLog, signal } = params;
   const outcome: AgentSetupOutcome = {
     added: [],
     alreadyConfigured: [],
@@ -129,8 +136,10 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
   //    which agents are new, so a read failure stops here (nothing was changed).
   let existing: AgentConfig[];
   try {
-    existing = await actions.listAgents(rootDir);
+    existing = await actions.listAgents(rootDir, signal);
+    signal?.throwIfAborted();
   } catch (error) {
+    rethrowCancellation(error);
     outcome.errors.push(`could not read backend agents: ${(error as Error).message}`);
     return outcome;
   }
@@ -140,6 +149,7 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
   //    agents (enabled or not) are left exactly as they are.
   const configuredTypes = new Set(existing.map((agent) => agent.type));
   for (const type of selectedAgents) {
+    signal?.throwIfAborted();
     if (configuredTypes.has(type as AgentType)) {
       outcome.alreadyConfigured.push(type);
       continue;
@@ -156,10 +166,12 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
         type: type as AgentType,
         models: defaults.defaultModels,
         enabled: true,
-      });
+      }, signal);
+      signal?.throwIfAborted();
       outcome.added.push(type);
       configuredTypes.add(type as AgentType);
     } catch (error) {
+      rethrowCancellation(error);
       outcome.errors.push(`could not enable ${type}: ${(error as Error).message}`);
     }
   }
@@ -167,9 +179,12 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
   // 3. Image-based authentication — only for selected agents that actually have
   //    a login plan, and only for the ones the user confirms.
   let loginable: Set<string>;
+  signal?.throwIfAborted();
   try {
-    loginable = new Set(await actions.loginableAgents());
+    loginable = new Set(await actions.loginableAgents(signal));
+    signal?.throwIfAborted();
   } catch (error) {
+    rethrowCancellation(error);
     outcome.errors.push(`could not determine which agents support image login: ${(error as Error).message}`);
     loginable = new Set();
   }
@@ -179,6 +194,7 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
     try {
       chosen = await confirmLogin({ candidates, rootDir });
     } catch (error) {
+      rethrowCancellation(error);
       // A failed/cancelled prompt must not abort the whole run — validation and
       // exact recovery commands are still useful.
       outcome.errors.push(`agent login prompt failed: ${(error as Error).message}`);
@@ -187,13 +203,16 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
     // Iterate the candidate order (not the user's), so logins run in a stable order.
     for (const type of candidates) {
       if (!chosenSet.has(type)) continue;
+      signal?.throwIfAborted();
       try {
         onLog?.(`authenticating ${type} through its image…`);
-        const result = await actions.loginAgent(rootDir, type);
+        const result = await actions.loginAgent(rootDir, type, signal);
+        signal?.throwIfAborted();
         if (result.detail) onLog?.(result.detail);
         if (result.available && result.success) outcome.authenticated.push(type);
         else outcome.authFailed.push(type);
       } catch (error) {
+        rethrowCancellation(error);
         outcome.authFailed.push(type);
         outcome.errors.push(`login for ${type} failed: ${(error as Error).message}`);
       }
@@ -204,9 +223,11 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
   // worker uses. This is one live call per agent (host calls are deliberately
   // skipped), so setup catches a successful host login that was not mounted into
   // Docker without doubling subscription usage.
+  signal?.throwIfAborted();
   try {
     onLog?.(`checking agent connectivity through worker image${selectedAgents.length === 1 ? "" : "s"}…`);
-    const checks = await actions.validateAgents(rootDir, selectedAgents);
+    const checks = await actions.validateAgents(rootDir, selectedAgents, signal);
+    signal?.throwIfAborted();
     for (const check of checks) {
       onLog?.(`${check.type}: ${check.detail}`);
       if (check.status === "ok") {
@@ -218,6 +239,7 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
       outcome.nextCommands.push(`propr check agents --agents ${check.type}`);
     }
   } catch (error) {
+    rethrowCancellation(error);
     outcome.errors.push(`could not validate agent connectivity: ${(error as Error).message}`);
     for (const type of selectedAgents) {
       if (loginable.has(type)) outcome.nextCommands.push(`propr agent login ${type}`);

@@ -62,6 +62,7 @@ function fakeConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
 function fakeOrchestrator(): OrchestratorModule {
   return {
     docker: () => ({ status: 0, stdout: "image-id\n", stderr: "" }),
+    dockerAsync: async () => ({ status: 0, stdout: "image-id\n", stderr: "" }),
     validateDockerBindPath: (name, value) => (!value || value.startsWith("/") ? null : `${name} must be absolute`),
   } as unknown as OrchestratorModule;
 }

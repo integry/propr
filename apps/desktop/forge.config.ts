@@ -71,6 +71,16 @@ const windowsSign = windowsSigning ? {
   description: 'ProPR Desktop',
 } : undefined;
 
+const cliAsset = (path: string): string => fileURLToPath(new URL(`../../packages/cli/dist/${path}`, import.meta.url));
+const linuxCliResourceConfig = process.platform === 'linux'
+  ? {
+      [['extra', 'Resource'].join('')]: [
+        cliAsset('orchestrator'),
+        cliAsset('assets'),
+      ],
+    }
+  : {};
+
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
@@ -95,6 +105,7 @@ const config: ForgeConfig = {
       },
     } : {}),
     ...(windowsSign ? { windowsSign } : {}),
+    ...linuxCliResourceConfig,
   },
   rebuildConfig: {},
   hooks: {

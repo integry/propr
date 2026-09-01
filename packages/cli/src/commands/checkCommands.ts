@@ -124,6 +124,7 @@ export interface RunChecksOptions {
   verify?: boolean;
   agents?: string[];
   skipRemoteImageCheck?: boolean;
+  signal?: AbortSignal;
   /** Fired when a slow check begins, so a live UI can show a pending row. */
   onPending?: (slot: { name: string; group?: CheckGroup }) => void;
   /** Fired as each result is finalized, so a live UI can update incrementally. */
@@ -215,13 +216,15 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     options.onResult?.(result);
   };
   const configManager = await createConfigManager();
+  options.signal?.throwIfAborted();
   const skipRemoteImageCheck = Boolean(options.skipRemoteImageCheck || envSkipsRemoteImageCheck());
+  const { orch, cfg, rootDir } = await getHostConfig({ configManager, root: options.root });
 
   // 0. CLI version (local-only; `propr check` should not phone home by default).
   runCliChecks(emit);
 
   // 1. Docker installed
-  const dockerVersion = spawnSync("docker", ["--version"], { encoding: "utf-8" });
+  const dockerVersion = await orch.dockerAsync(["--version"], { signal: options.signal });
   if (dockerVersion.status === 0) {
     emit({ name: "Docker installed", status: "ok", detail: dockerVersion.stdout.trim(), group: "Docker" });
   } else {
@@ -234,10 +237,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     });
   }
 
-  const { orch, cfg, rootDir } = await getHostConfig({ configManager, root: options.root });
-
   // 2. Docker daemon running
-  const daemonUp = orch.dockerAvailable();
+  const daemonUp = (await orch.dockerAsync(["info"], { signal: options.signal })).status === 0;
+  options.signal?.throwIfAborted();
   emit(
     daemonUp
       ? { name: "Docker daemon", status: "ok", detail: "daemon is reachable", group: "Docker" }
@@ -315,14 +317,14 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     const computeImageResult = async (key: string, tag: string): Promise<CheckResult> => {
       // Presence-only for third-party images and when remote checks are skipped.
       if (skipRemoteImageCheck || !isProprPublished(tag)) {
-        if (!imagePresent(orch, tag)) return missingImageResult(key, tag);
+        if (!(await imagePresent(orch, tag, options.signal))) return missingImageResult(key, tag);
         const detail = skipRemoteImageCheck ? `${tag} (local; remote check skipped)` : `${tag} (present)`;
         return { name: `Image ${key}`, status: "ok", detail, group: "Images" };
       }
 
       let freshnessPromise = freshnessByTag.get(tag);
       if (!freshnessPromise) {
-        freshnessPromise = orch.inspectImageFreshnessAsync(tag);
+        freshnessPromise = orch.inspectImageFreshnessAsync(tag, { signal: options.signal });
         freshnessByTag.set(tag, freshnessPromise);
       }
       const freshness = await freshnessPromise;
@@ -405,7 +407,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   // 6b. Agent Tank (optional subscription-usage monitor). Presence only — the
   // actual usage refresh (slow PTY /usage calls) runs in `propr check agents`.
-  if (spawnSync("which", ["agent-tank"], { encoding: "utf-8" }).status === 0) {
+  if (!options.signal && spawnSync("which", ["agent-tank"], { encoding: "utf-8" }).status === 0) {
     const ver = spawnSync("agent-tank", ["--version"], { encoding: "utf-8", timeout: 10000 });
     const version = `${ver.stdout ?? ""}${ver.stderr ?? ""}`.match(/\d+\.\d+\.\d+/)?.[0];
     emit({ name: "Agent Tank", status: "ok", detail: version ? `agent-tank ${version} installed` : "installed", group: "Agents" });
@@ -472,7 +474,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       if (verifiedCliKeys.has(cliKey)) continue;
       verifiedCliKeys.add(cliKey);
       const tag = cfg.images[agent.imageKey];
-      if (!tag || !imagePresent(orch, tag)) {
+      if (!tag || !(await imagePresent(orch, tag, options.signal))) {
         emit({
           name: `Verify: ${agent.type}`,
           status: "warn",
@@ -499,8 +501,8 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   return { results, cfg, rootDir, anyFail };
 }
 
-function imagePresent(orch: OrchestratorModule, tag: string): boolean {
-  const res = orch.docker(["images", "-q", tag], { capture: true });
+async function imagePresent(orch: OrchestratorModule, tag: string, signal?: AbortSignal): Promise<boolean> {
+  const res = await orch.dockerAsync(["images", "-q", tag], { signal });
   return res.stdout.trim().length > 0;
 }
 

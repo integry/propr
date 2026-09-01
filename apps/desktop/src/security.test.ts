@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   deepLinkFromArguments,
   applyDevelopmentRendererCsp,
+  connectApiBaseUrlFromDeepLink,
   dashboardPathFromDeepLink,
   isSafeExternalUrl,
   isTrustedRendererUrl,
@@ -15,7 +16,7 @@ import {
 
 describe('desktop URL security', () => {
   it('only accepts HTTPS and loopback HTTP API endpoints', () => {
-    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), 'https://propr.example.com');
+    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), null);
     assert.equal(normalizeApiBaseUrl('http://localhost:4000/'), 'http://localhost:4000');
     assert.equal(normalizeApiBaseUrl('http://127.0.0.1:4000'), 'http://127.0.0.1:4000');
     assert.equal(normalizeApiBaseUrl('http://[::1]:4000/'), 'http://[::1]:4000');
@@ -73,6 +74,10 @@ describe('desktop URL security', () => {
     assert.equal(normalizeDeepLink('propr://delete-everything'), null);
     assert.equal(normalizeDeepLink('https://propr.example.com'), null);
     assert.equal(normalizeDeepLink('propr://user:secret@connect'), null);
+    assert.equal(connectApiBaseUrlFromDeepLink(link), 'https://propr.example.com');
+    assert.equal(normalizeDeepLink('propr://connect?api=http%3A%2F%2Fexample.com'), null);
+    assert.equal(normalizeDeepLink('propr://connect?api=https%3A%2F%2Fpropr.example.com&token=secret'), null);
+    assert.equal(normalizeDeepLink('propr://connect?api=https%3A%2F%2Fuser%3Asecret%40propr.example.com'), null);
   });
 
   it('accepts a normal internal dashboard route from an open deep link', () => {
@@ -150,8 +155,7 @@ describe('desktop URL security', () => {
     assert.match(policy, /frame-src 'none'/);
     assert.doesNotMatch(policy, /unsafe-eval/);
     assert.match(policy, /script-src 'self'(?:;|$)/);
-    assert.match(policy, /http:\/\/\[::1\]:\*/);
-    assert.match(policy, /ws:\/\/\[::1\]:\*/);
+    assert.match(policy, /connect-src 'self' https: http: ws: wss:/);
   });
 
   it('relaxes inline scripts only while Vite serves the development renderer', () => {

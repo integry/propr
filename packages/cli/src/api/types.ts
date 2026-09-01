@@ -37,6 +37,7 @@ export interface RequestOptions {
    * Request timeout in milliseconds. Defaults to 30000 (30 seconds).
    */
   timeout?: number;
+  signal?: AbortSignal;
 }
 
 /**

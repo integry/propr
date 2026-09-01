@@ -108,6 +108,30 @@ test('resolveHostConfig honors stack .env values for ports and docs', () => {
   );
 });
 
+test('anchored config reads keep every Docker path on the stable runtime root', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'propr-orch-fixed-root-'));
+  const stableRoot = join(parent, 'app-data', 'desktop', 'local-stack');
+  const readRoot = join(parent, 'descriptor-root');
+  mkdirSync(stableRoot, { recursive: true, mode: 0o700 });
+  mkdirSync(readRoot, { mode: 0o700 });
+  writeFileSync(join(stableRoot, '.env'), 'API_PORT=attacker-value\n', { mode: 0o600 });
+  writeFileSync(join(readRoot, '.env'), 'API_PORT=4401\nDOCS_ENABLED=true\n', { mode: 0o600 });
+
+  const cfg = resolveHostConfig({ rootDir: stableRoot, readRootDir: readRoot, env: {}, manifestPath });
+  assert.equal(cfg.apiPort, '4401');
+  assert.equal(cfg.docsEnabled, true);
+  assert.equal(cfg.envFileLocal, join(stableRoot, '.env'));
+  assert.equal(cfg.envFileHost, join(stableRoot, '.env'));
+  assert.equal(cfg.hostData, join(stableRoot, 'data'));
+  assert.equal(cfg.hostLogs, join(stableRoot, 'logs'));
+  assert.equal(cfg.hostRepos, join(stableRoot, 'repos'));
+  for (const service of ['daemon', 'worker', 'api']) {
+    const serialized = JSON.stringify(buildServiceSpec(cfg, service));
+    assert.doesNotMatch(serialized, new RegExp(readRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(serialized, /\/proc\/[0-9]+\/fd\/|\/dev\/fd\//);
+  }
+});
+
 test('api service receives the configured stack env file', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
   const envFile = join(rootDir, '.env');

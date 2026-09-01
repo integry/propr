@@ -1,5 +1,6 @@
 import {
   runSetup as runLocalSetup,
+  getLocalSetupCapability,
   retrySetup as retryLocalSetup,
   resolveSetupRoot,
   type RunSetupOptions as LocalRunSetupOptions,
@@ -21,6 +22,8 @@ export interface RunSetupOptions extends Omit<LocalRunSetupOptions, "actions" | 
 
 export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunResult> {
   const { configManager, actions: overrides, root, ...portable } = options;
+  const capability = getLocalSetupCapability(portable.platform);
+  if (!capability.supported) throw new Error(capability.reason);
   const actions = { ...createDefaultActions(configManager), ...overrides } as SetupActions;
   return runLocalSetup({
     ...portable,
@@ -31,6 +34,8 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
 
 export function retrySetup(previous: SetupRunResult, options: Omit<RunSetupOptions, "root"> = {}): Promise<SetupRunResult> {
   const { configManager, actions: overrides, ...portable } = options;
+  const capability = getLocalSetupCapability(portable.platform);
+  if (!capability.supported) return Promise.reject(new Error(capability.reason));
   const actions = { ...createDefaultActions(configManager), ...overrides } as SetupActions;
   return retryLocalSetup(previous, { ...portable, actions });
 }
