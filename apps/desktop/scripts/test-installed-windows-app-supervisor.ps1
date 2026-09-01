@@ -300,7 +300,7 @@ function Get-SanitizedSupervisorMarkerDiagnostic($Result) {
     [string]$Result.Output,
     '(?m)^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:CLEANUP_VALIDATION_PHASE:' +
       '(HANDSHAKE|FILE_AUTHORITY|UTF8_DECODE|JSON_PARSE|EXACT_KEY_SET|' +
-      'BOOLEAN_TYPES|TRANSACTION_ENUM|SCHEMA_TYPE_STATE|RUN_ID_FORMAT|' +
+      'GENERATION|BOOLEAN_TYPES|TRANSACTION_ENUM|SCHEMA_TYPE_STATE|RUN_ID_FORMAT|' +
       'INSTALLER_ENTRY_ID_FORMAT|INSTALLER_SHA256_FORMAT|INSTALLER_PRODUCT_CODE_FORMAT|' +
       'LIFETIME|RUN_ID|INSTALLER_PATH|FIXTURE_SCOPE|INITIAL_ACTIVE_MATCH|' +
       'INITIAL_INSTALLER_AUTHORITY_RECHECK|EMPTY_RECEIPT_WRITE)\r?$'
@@ -372,6 +372,7 @@ function Get-SanitizedCriticalCancellationDiagnostic($Result) {
       '^PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:LAST_VALID:' +
       '(INITIALIZATION|INSTALL|VALIDATION|USER_SETUP|APP_LAUNCH|APP_EXIT|UNINSTALL|CLEANUP):' +
       '(PATHS|BASELINE|MSI_INSTALL|OWNERSHIP_CAPTURE|INSTALL_TREE_SCAN|' +
+      'AUTHORITY_PUBLICATION|' +
       'APPLICATION_IMAGE|PROTOCOL_ASSERTION|APP_PATH_ASSERTION|' +
       'HKCU_INSTALLED_ASSERTION|SHORTCUT_ASSERTION|USER_CREATE|USER_SID|' +
       'SMOKE_DATA_CREATE|SHORTCUT_PRESENT_PROBE|ALTERNATE_USER_START|' +
@@ -411,7 +412,9 @@ function Get-SanitizedCriticalCancellationDiagnostic($Result) {
         if ($match.Groups[1].Value -ceq 'INSTALL' -and
             $match.Groups[2].Value -ceq 'OWNERSHIP_CAPTURE') {
           $authorityEvent = @(switch ($match.Groups[3].Value) {
-            'BEGIN' { 'PROVISIONAL' }
+            # OWNERSHIP_CAPTURE is now published only after the complete
+            # authority generation was durably replaced and re-read.
+            'BEGIN' { 'NONPROVISIONAL' }
             'COMPLETE' { 'NONPROVISIONAL' }
             'FAILED' { 'FAILED' }
           })
@@ -1772,6 +1775,8 @@ function Test-PreExistingCleanupOwnership {
       Assert-True ($normalReceipt.SchemaVersion -eq 3 -and
           $normalReceipt.ManifestType -ceq 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -and
           $normalReceipt.State -ceq 'EMPTY' -and
+          $normalReceipt.Generation -is [long] -and $normalReceipt.Generation -gt 0 -and
+          $normalReceipt.AuthorityState -ceq 'NONPROVISIONAL' -and
           $normalReceipt.InstallerEntryIdentity -ceq $dummyInstallerEntryIdentity -and
           $normalReceipt.InstallerSha256 -ceq $dummyInstallerSha256 -and
           $normalReceipt.InstallerProductCode -ceq $dummyInstallerProductCode -and
@@ -1795,17 +1800,23 @@ function Test-PreExistingCleanupOwnership {
       $normalSupervisor.Dispose()
     }
 
-    foreach ($manifestCase in @('MISSING','MALFORMED','STALE')) {
+    foreach ($manifestCase in @('MISSING','MALFORMED','STALE','STALE_GENERATION')) {
       $badRunId = [Guid]::NewGuid().ToString('N')
       $badManifest = Join-Path ([IO.Path]::GetTempPath()) `
         "propr-installed-app-ownership-$badRunId.json"
       if ($manifestCase -eq 'MALFORMED') {
         [IO.File]::WriteAllText($badManifest, '{not-json', [Text.Encoding]::UTF8)
-      } elseif ($manifestCase -eq 'STALE') {
-        $createdTicks = [DateTime]::UtcNow.AddHours(-4).Ticks
+      } elseif ($manifestCase -in @('STALE','STALE_GENERATION')) {
+        $createdTicks = if ($manifestCase -eq 'STALE') {
+          [DateTime]::UtcNow.AddHours(-4).Ticks
+        } else { [DateTime]::UtcNow.Ticks }
         $staleManifest = [ordered]@{
           SchemaVersion = 3
           ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'; State = 'ACTIVE'
+          Generation = if ($manifestCase -eq 'STALE_GENERATION') {
+            [int64]-1
+          } else { [int64]0 }
+          AuthorityState = 'PROVISIONAL'
           RunId = $badRunId
           CreatedUtcTicks = $createdTicks
           ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
@@ -1842,6 +1853,87 @@ function Test-PreExistingCleanupOwnership {
         Remove-Item -LiteralPath $badManifest -Force -ErrorAction Stop
       }
     }
+
+    # A same-directory replacement collision must retain the authenticated
+    # generation. Once the untrusted/partial candidate is removed, the exact
+    # same cleanup request must be retryable to a durable EMPTY receipt.
+    $collisionRunId = [Guid]::NewGuid().ToString('N')
+    $collisionManifest = Join-Path ([IO.Path]::GetTempPath()) `
+      "propr-installed-app-ownership-$collisionRunId.json"
+    $collisionCreatedTicks = [DateTime]::UtcNow.Ticks
+    $collisionAuthority = [ordered]@{
+      SchemaVersion = 3
+      ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'; State = 'ACTIVE'
+      Generation = [int64]0; AuthorityState = 'PROVISIONAL'
+      RunId = $collisionRunId
+      CreatedUtcTicks = $collisionCreatedTicks
+      ExpiresUtcTicks = $collisionCreatedTicks + ([TimeSpan]::TicksPerHour * 3)
+      InstallerPath = $dummyInstaller
+      InstallerEntryIdentity = $dummyInstallerEntryIdentity
+      InstallerSha256 = $dummyInstallerSha256
+      InstallerProductCode = $dummyInstallerProductCode
+      Fixture = $true; FixtureRoot = $workflowStateDirectory
+      BaselineClean = $false; InstallAttempted = $false; MsiTransactionState = 'NONE'
+      Directories = @(); Files = @(); RegistryKeys = @(); RegistryValues = @()
+      Users = @(); Profiles = @()
+    }
+    Write-TestOwnershipManifest $collisionManifest $collisionAuthority
+    [IO.File]::WriteAllText(
+      "$collisionManifest.new", '{"partial":', [Text.Encoding]::UTF8)
+    $collisionCleanup = Invoke-WorkflowCleanupController `
+      $collisionManifest $collisionRunId $workflowStateDirectory
+    Assert-True ($collisionCleanup.ExitCode -eq 21 -and
+        $collisionCleanup.ReportedExitCode -eq 21 -and
+        $collisionCleanup.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
+      'replacement collision did not fail closed after manifest validation'
+    $retainedCollisionAuthority = Get-Content -LiteralPath $collisionManifest `
+      -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    Assert-True ($retainedCollisionAuthority.Generation -eq 0 -and
+        $retainedCollisionAuthority.State -ceq 'ACTIVE') `
+      'replacement collision changed the authenticated generation'
+    Remove-Item -LiteralPath "$collisionManifest.new" -Force -ErrorAction Stop
+    $collisionRetry = Invoke-WorkflowCleanupController `
+      $collisionManifest $collisionRunId $workflowStateDirectory
+    Assert-True ($collisionRetry.ExitCode -eq 0 -and
+        $collisionRetry.ReportedExitCode -eq 0 -and
+        $collisionRetry.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
+      'cleanup retry did not complete after the invalid collision was cleared'
+    Assert-True (!(Test-Path -LiteralPath $collisionManifest)) `
+      'cleanup retry retained its consumed empty receipt'
+
+    $resumeRunId = [Guid]::NewGuid().ToString('N')
+    $resumeManifest = Join-Path ([IO.Path]::GetTempPath()) `
+      "propr-installed-app-ownership-$resumeRunId.json"
+    $resumeAuthority = $collisionAuthority.Clone()
+    $resumeAuthority.RunId = $resumeRunId
+    $resumeAuthority.CreatedUtcTicks = [DateTime]::UtcNow.Ticks
+    $resumeAuthority.ExpiresUtcTicks = $resumeAuthority.CreatedUtcTicks + `
+      ([TimeSpan]::TicksPerHour * 3)
+    Write-TestOwnershipManifest $resumeManifest $resumeAuthority
+    $flushedReceipt = $resumeAuthority.Clone()
+    $flushedReceipt.State = 'EMPTY'
+    $flushedReceipt.Generation = [int64]1
+    $flushedReceipt.AuthorityState = 'NONPROVISIONAL'
+    $flushedReceipt.BaselineClean = $false
+    $flushedReceipt.InstallAttempted = $false
+    $flushedReceipt.MsiTransactionState = 'NONE'
+    $flushedReceipt.Directories = @(); $flushedReceipt.Files = @()
+    $flushedReceipt.RegistryKeys = @(); $flushedReceipt.RegistryValues = @()
+    $flushedReceipt.Users = @(); $flushedReceipt.Profiles = @()
+    [IO.File]::WriteAllText(
+      "$resumeManifest.new",
+      ($flushedReceipt | ConvertTo-Json -Depth 6 -Compress),
+      [Text.Encoding]::UTF8
+    )
+    $resumeCleanup = Invoke-WorkflowCleanupController `
+      $resumeManifest $resumeRunId $workflowStateDirectory
+    Assert-True ($resumeCleanup.ExitCode -eq 0 -and
+        $resumeCleanup.ReportedExitCode -eq 0 -and
+        $resumeCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
+      'cleanup did not resume a byte-identical flushed next-generation receipt'
+    Assert-True (!(Test-Path -LiteralPath $resumeManifest) -and
+        !(Test-Path -LiteralPath "$resumeManifest.new")) `
+      'resumed cleanup retained receipt publication files'
 
     Assert-True ((Get-Content -LiteralPath (Join-Path $conflictInstallRoot 'pre-existing.txt') -Raw).Trim() -ceq `
       'owned-before-run') 'external cleanup changed the pre-existing install tree'
@@ -2028,6 +2120,7 @@ function Test-PreExistingAppPathsAuthority {
     $mismatchState = [ordered]@{
       SchemaVersion = 3
       ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'; State = 'ACTIVE'
+      Generation = [int64]0; AuthorityState = 'NONPROVISIONAL'
       RunId = $mismatchRunId
       CreatedUtcTicks = $createdTicks
       ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
@@ -2123,6 +2216,8 @@ function Test-HkcuInstalledValueOwnership {
       SchemaVersion = 3
       ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
       State = 'ACTIVE'
+      Generation = [int64]0
+      AuthorityState = 'PROVISIONAL'
       RunId = $runId
       CreatedUtcTicks = $createdTicks
       ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)
@@ -2274,6 +2369,8 @@ function Test-ProvisionalUserMarkerOwnership {
       SchemaVersion = 3
       ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
       State = 'ACTIVE'
+      Generation = [int64]0
+      AuthorityState = 'PROVISIONAL'
       RunId = $runId
       CreatedUtcTicks = $createdTicks
       ExpiresUtcTicks = $createdTicks + ([TimeSpan]::TicksPerHour * 3)

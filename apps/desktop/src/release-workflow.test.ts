@@ -734,6 +734,7 @@ describe('desktop trusted release workflow', () => {
       'installer authority must be captured before the worker starts',
     );
     for (const field of [
+      'Generation', 'AuthorityState',
       'InstallerEntryIdentity', 'InstallerSha256', 'InstallerProductCode',
     ]) {
       assert.match(installedWindowsAppSupervisor, new RegExp(field));
@@ -753,7 +754,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppCleanup,
-      /HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',[\s\S]*'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','RUN_ID_FORMAT',[\s\S]*'INSTALLER_ENTRY_ID_FORMAT','INSTALLER_SHA256_FORMAT','INSTALLER_PRODUCT_CODE_FORMAT',[\s\S]*'INITIAL_ACTIVE_MATCH',[\s\S]*'INITIAL_INSTALLER_AUTHORITY_RECHECK','EMPTY_RECEIPT_WRITE'/,
+      /HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',[\s\S]*'GENERATION','BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','RUN_ID_FORMAT',[\s\S]*'INSTALLER_ENTRY_ID_FORMAT','INSTALLER_SHA256_FORMAT','INSTALLER_PRODUCT_CODE_FORMAT',[\s\S]*'INITIAL_ACTIVE_MATCH',[\s\S]*'INITIAL_INSTALLER_AUTHORITY_RECHECK','EMPTY_RECEIPT_WRITE'/,
     );
     assert.match(
       installedWindowsAppCleanup,
@@ -769,20 +770,19 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppCleanup,
-      /if \(\$PSVersionTable\.PSEdition -ceq 'Core'\) \{[\s\S]*\[IO\.File\]::Move\(\$temporaryPath, \$Path, \$true\)[\s\S]*\} else \{[\s\S]*\[ProPRAtomicFile\]::ReplaceSameDirectory\(\$temporaryPath, \$Path\)/,
+      /\[IO\.FileMode\]::CreateNew[\s\S]*\$current\.Generation[\s\S]*-ne \$previousGeneration[\s\S]*\[ProPRAtomicFile\]::ReplaceSameDirectory\(\$temporaryPath, \$Path\)[\s\S]*ownership receipt durable publication re-read failed/,
     );
     assert.match(
       installedWindowsAppCleanup,
       /class ProPRAtomicFile[\s\S]*String\.Equals\(temporaryDirectory, destinationDirectory,[\s\S]*StringComparison\.OrdinalIgnoreCase\)[\s\S]*MoveFileExW\(temporaryFullPath, destinationFullPath,[\s\S]*MOVEFILE_REPLACE_EXISTING \| MOVEFILE_WRITE_THROUGH\)[\s\S]*Marshal\.GetLastWin32Error\(\)[\s\S]*new Win32Exception\(error/,
     );
     assert.doesNotMatch(installedWindowsAppCleanup, /\[IO\.File\]::Replace\(/);
+    assert.doesNotMatch(installedWindowsAppCleanup, /\[IO\.File\]::Move\(\$temporaryPath/);
+    assert.match(installedWindowsAppCleanup, /MOVEFILE_WRITE_THROUGH/);
+    assert.match(installedWindowsAppTest, /AUTHORITY_PUBLICATION/);
     assert.match(
-      installedWindowsAppCleanup,
-      /\[IO\.File\]::Move\(\$temporaryPath, \$Path, \$true\)/,
-    );
-    assert.match(
-      installedWindowsAppCleanup,
-      /\$replacementCompleted = \$false[\s\S]*\$replacementCompleted = \$true\n\s+\} finally \{\n\s+if \(!\$replacementCompleted\) \{ \[IO\.File\]::Delete\(\$temporaryPath\) \}/,
+      installedWindowsAppTest,
+      /AuthorityState = 'NONPROVISIONAL'[\s\S]*Assert-CompleteMsiOwnershipAuthority[\s\S]*Write-OwnershipManifest[\s\S]*Substage 'OWNERSHIP_CAPTURE'[\s\S]*Assert-PublishedMsiOwnershipAuthority 'COMMITTED'/,
     );
     assert.match(
       installedWindowsAppCleanup,
@@ -843,7 +843,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /CLEANUP_VALIDATION_PHASE:[\s\S]*HANDSHAKE\|FILE_AUTHORITY\|UTF8_DECODE\|JSON_PARSE\|EXACT_KEY_SET\|[\s\S]*BOOLEAN_TYPES\|TRANSACTION_ENUM\|SCHEMA_TYPE_STATE\|RUN_ID_FORMAT\|[\s\S]*INSTALLER_ENTRY_ID_FORMAT\|INSTALLER_SHA256_FORMAT\|INSTALLER_PRODUCT_CODE_FORMAT\|[\s\S]*INITIAL_INSTALLER_AUTHORITY_RECHECK\|EMPTY_RECEIPT_WRITE/,
+      /CLEANUP_VALIDATION_PHASE:[\s\S]*HANDSHAKE\|FILE_AUTHORITY\|UTF8_DECODE\|JSON_PARSE\|EXACT_KEY_SET\|[\s\S]*GENERATION\|BOOLEAN_TYPES\|TRANSACTION_ENUM\|SCHEMA_TYPE_STATE\|RUN_ID_FORMAT\|[\s\S]*INSTALLER_ENTRY_ID_FORMAT\|INSTALLER_SHA256_FORMAT\|INSTALLER_PRODUCT_CODE_FORMAT\|[\s\S]*INITIAL_INSTALLER_AUTHORITY_RECHECK\|EMPTY_RECEIPT_WRITE/,
     );
     assert.match(
       installedWindowsAppSupervisor,
@@ -1233,6 +1233,7 @@ describe('desktop trusted release workflow', () => {
       'PATHS',
       'BASELINE',
       'MSI_INSTALL',
+      'AUTHORITY_PUBLICATION',
       'OWNERSHIP_CAPTURE',
       'INSTALL_TREE_SCAN',
       'APPLICATION_IMAGE',

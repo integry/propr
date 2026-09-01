@@ -59,6 +59,32 @@ public static class ProPRFixtureDirectoryIdentity
     }
     public static string Read(string path) { return ReadEntry(path, true); }
 }
+
+public static class ProPRFixtureAtomicFile
+{
+    private const uint MOVEFILE_REPLACE_EXISTING = 0x1;
+    private const uint MOVEFILE_WRITE_THROUGH = 0x8;
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true,
+        EntryPoint = "MoveFileExW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool MoveFileExW(
+        string existingFileName, string newFileName, uint flags);
+    public static void ReplaceSameDirectory(string temporaryPath, string destinationPath)
+    {
+        string temporaryFullPath = System.IO.Path.GetFullPath(temporaryPath);
+        string destinationFullPath = System.IO.Path.GetFullPath(destinationPath);
+        if (!String.Equals(System.IO.Path.GetDirectoryName(temporaryFullPath),
+                System.IO.Path.GetDirectoryName(destinationFullPath),
+                StringComparison.OrdinalIgnoreCase) ||
+            !System.IO.File.Exists(temporaryFullPath) ||
+            !System.IO.File.Exists(destinationFullPath))
+            throw new InvalidOperationException("fixture ownership publication precondition failed");
+        if (!MoveFileExW(temporaryFullPath, destinationFullPath,
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "fixture ownership publication replacement failed");
+    }
+}
 '@
 }
 $scenario = $env:PROPR_SUPERVISOR_FIXTURE_SCENARIO
@@ -118,23 +144,66 @@ function Write-FixtureMarker([string]$Record) {
 }
 
 function Write-FixtureOwnershipManifest($Manifest) {
+  Initialize-FixtureDirectoryIdentity
   $temporaryManifest = "$OwnershipManifest.new"
-  $bytes = [Text.Encoding]::UTF8.GetBytes(($Manifest | ConvertTo-Json -Depth 6 -Compress))
-  $stream = [IO.FileStream]::new(
-    $temporaryManifest,
-    [IO.FileMode]::Create,
-    [IO.FileAccess]::Write,
-    [IO.FileShare]::None,
-    4096,
-    [IO.FileOptions]::WriteThrough
+  $expectedKeys = @(
+    'SchemaVersion','ManifestType','State','Generation','AuthorityState',
+    'RunId','CreatedUtcTicks','ExpiresUtcTicks','InstallerPath',
+    'InstallerEntryIdentity','InstallerSha256','InstallerProductCode','Fixture',
+    'FixtureRoot','BaselineClean','InstallAttempted','MsiTransactionState',
+    'Directories','Files','RegistryKeys','RegistryValues','Users','Profiles'
   )
-  try {
-    $stream.Write($bytes, 0, $bytes.Length)
-    $stream.Flush($true)
-  } finally {
-    $stream.Dispose()
+  $keys = @($Manifest.PSObject.Properties | ForEach-Object { $_.Name })
+  if ($keys.Count -ne $expectedKeys.Count -or
+      @($expectedKeys | Where-Object { $keys -cnotcontains $_ }).Count -ne 0 -or
+      ($Manifest.Generation -isnot [long] -and $Manifest.Generation -isnot [int]) -or
+      $Manifest.Generation -lt 0 -or
+      [string]$Manifest.AuthorityState -cnotin @('PROVISIONAL','NONPROVISIONAL')) {
+    throw 'fixture ownership publication envelope is invalid'
   }
-  [IO.File]::Move($temporaryManifest, $OwnershipManifest, $true)
+  $previousGeneration = [int64]$Manifest.Generation
+  if ($previousGeneration -eq [int64]::MaxValue) {
+    throw 'fixture ownership publication generation is exhausted'
+  }
+  $Manifest.Generation = $previousGeneration + 1
+  try {
+    $json = $Manifest | ConvertTo-Json -Depth 6 -Compress
+    $roundTrip = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+    if (($roundTrip.Generation -isnot [long] -and
+          $roundTrip.Generation -isnot [int]) -or
+        [int64]$roundTrip.Generation -ne [int64]$Manifest.Generation -or
+        [string]$roundTrip.AuthorityState -cne [string]$Manifest.AuthorityState) {
+      throw 'fixture ownership publication round trip failed'
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    $stream = [IO.FileStream]::new(
+      $temporaryManifest, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+      [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    try {
+      $stream.Write($bytes, 0, $bytes.Length)
+      $stream.Flush($true)
+    } finally {
+      $stream.Dispose()
+    }
+    $current = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
+      ConvertFrom-Json -ErrorAction Stop
+    if (($current.Generation -isnot [long] -and $current.Generation -isnot [int]) -or
+        [int64]$current.Generation -ne $previousGeneration) {
+      throw 'fixture ownership publication generation is stale'
+    }
+    [ProPRFixtureAtomicFile]::ReplaceSameDirectory(
+      $temporaryManifest, $OwnershipManifest)
+    $publishedJson = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8)
+    $published = ConvertFrom-Json -InputObject $publishedJson -ErrorAction Stop
+    if ($publishedJson -cne $json -or
+        ($published.Generation -isnot [long] -and $published.Generation -isnot [int]) -or
+        [int64]$published.Generation -ne [int64]$Manifest.Generation) {
+      throw 'fixture ownership durable publication re-read failed'
+    }
+  } catch {
+    $Manifest.Generation = $previousGeneration
+    throw
+  }
 }
 
 function Write-FixtureCriticalGate([string]$Name) {
@@ -256,6 +325,9 @@ function New-OwnedFixtureResources(
   $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
     ConvertFrom-Json -ErrorAction Stop
   if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 3 -or
+      ($manifest.Generation -isnot [long] -and $manifest.Generation -isnot [int]) -or
+      $manifest.Generation -lt 0 -or
+      [string]$manifest.AuthorityState -cnotin @('PROVISIONAL','NONPROVISIONAL') -or
       [string]$manifest.InstallerEntryIdentity -notmatch '^[a-f0-9]{24}$' -or
       [string]$manifest.InstallerSha256 -notmatch '^[a-f0-9]{64}$' -or
       [string]$manifest.InstallerProductCode -notmatch
@@ -399,7 +471,10 @@ function New-OwnedFixtureResources(
   }
   $manifest.Profiles = @()
   $manifest.InstallAttempted = $true
-  if ($PublishCommittedReceipt) { $manifest.MsiTransactionState = 'COMMITTED' }
+  if ($PublishCommittedReceipt) {
+    $manifest.MsiTransactionState = 'COMMITTED'
+    $manifest.AuthorityState = 'NONPROVISIONAL'
+  }
   if ($env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_PROFILE_SID) {
     $manifest.Profiles += [ordered]@{
       Sid = $env:PROPR_SUPERVISOR_FIXTURE_CONFLICT_PROFILE_SID
@@ -516,6 +591,9 @@ function New-SmokeCheckpointFixtureResources(
   $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
     ConvertFrom-Json -ErrorAction Stop
   if (!$manifest.Fixture -or $manifest.SchemaVersion -ne 3 -or
+      ($manifest.Generation -isnot [long] -and $manifest.Generation -isnot [int]) -or
+      $manifest.Generation -lt 0 -or
+      [string]$manifest.AuthorityState -cnotin @('PROVISIONAL','NONPROVISIONAL') -or
       [string]$manifest.InstallerEntryIdentity -notmatch '^[a-f0-9]{24}$' -or
       [string]$manifest.InstallerSha256 -notmatch '^[a-f0-9]{64}$' -or
       [string]$manifest.InstallerProductCode -notmatch
@@ -862,6 +940,7 @@ switch ($scenario) {
     $manifest.RegistryKeys = @()
     $manifest.RegistryValues = @()
     $manifest.MsiTransactionState = 'ROLLED_BACK_CLEAN'
+    $manifest.AuthorityState = 'NONPROVISIONAL'
     Write-FixtureOwnershipManifest $manifest
     Write-FixtureMarker ('{0}|INSTALL|OWNERSHIP_CAPTURE|COMPLETE' -f `
       [DateTime]::UtcNow.AddSeconds(60).Ticks)
@@ -876,15 +955,20 @@ switch ($scenario) {
     $manifest.InstallAttempted = $true
     $manifest.MsiTransactionState = 'PENDING'
     Write-FixtureOwnershipManifest $manifest
-    Write-FixtureMarker ('{0}|INSTALL|OWNERSHIP_CAPTURE|BEGIN' -f `
+    Write-FixtureMarker ('{0}|INSTALL|AUTHORITY_PUBLICATION|BEGIN' -f `
       [DateTime]::UtcNow.AddSeconds(60).Ticks)
-    Write-FixtureCriticalGate 'DURING_OWNERSHIP_CAPTURE'
-    Start-Sleep -Milliseconds 750
     New-OwnedFixtureResources -PublishCommittedReceipt $false
     $manifest = [IO.File]::ReadAllText($OwnershipManifest, [Text.Encoding]::UTF8) |
       ConvertFrom-Json -ErrorAction Stop
     $manifest.MsiTransactionState = 'COMMITTED'
+    $manifest.AuthorityState = 'NONPROVISIONAL'
     Write-FixtureOwnershipManifest $manifest
+    Write-FixtureMarker ('{0}|INSTALL|AUTHORITY_PUBLICATION|COMPLETE' -f `
+      [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    Write-FixtureMarker ('{0}|INSTALL|OWNERSHIP_CAPTURE|BEGIN' -f `
+      [DateTime]::UtcNow.AddSeconds(60).Ticks)
+    Write-FixtureCriticalGate 'DURING_OWNERSHIP_CAPTURE'
+    Start-Sleep -Milliseconds 750
     Write-FixtureMarker ('{0}|INSTALL|OWNERSHIP_CAPTURE|COMPLETE' -f `
       [DateTime]::UtcNow.AddSeconds(60).Ticks)
     Start-Sleep -Seconds 300

@@ -18,7 +18,7 @@ $authorizedRunId = $null
 $cleanupValidationPhase = 'HANDSHAKE'
 $cleanupValidationPhases = @(
   'HANDSHAKE','FILE_AUTHORITY','UTF8_DECODE','JSON_PARSE','EXACT_KEY_SET',
-  'BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','RUN_ID_FORMAT',
+  'GENERATION','BOOLEAN_TYPES','TRANSACTION_ENUM','SCHEMA_TYPE_STATE','RUN_ID_FORMAT',
   'INSTALLER_ENTRY_ID_FORMAT','INSTALLER_SHA256_FORMAT','INSTALLER_PRODUCT_CODE_FORMAT',
   'LIFETIME','RUN_ID','INSTALLER_PATH','FIXTURE_SCOPE','INITIAL_ACTIVE_MATCH',
   'INITIAL_INSTALLER_AUTHORITY_RECHECK','EMPTY_RECEIPT_WRITE'
@@ -1049,37 +1049,67 @@ function Restore-OwnedRegistryValue($Record) {
 
 function Write-DurableOwnershipManifest([string]$Path, $Manifest) {
   $temporaryPath = "$Path.new"
-  $replacementCompleted = $false
+  $previousGeneration = [int64]$Manifest.Generation
+  if ($previousGeneration -lt 0 -or $previousGeneration -eq [int64]::MaxValue) {
+    throw 'ownership receipt generation cannot advance'
+  }
+  $Manifest.Generation = $previousGeneration + 1
   try {
-    $bytes = [Text.Encoding]::UTF8.GetBytes((
-      $Manifest | ConvertTo-Json -Depth 6 -Compress
-    ))
-    $stream = [IO.FileStream]::new(
-      $temporaryPath,
-      [IO.FileMode]::Create,
-      [IO.FileAccess]::Write,
-      [IO.FileShare]::None,
-      4096,
-      [IO.FileOptions]::WriteThrough
-    )
-    try {
-      $stream.Write($bytes, 0, $bytes.Length)
-      $stream.Flush($true)
-    } finally {
-      $stream.Dispose()
+    $json = $Manifest | ConvertTo-Json -Depth 6 -Compress
+    $roundTrip = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+    if (($roundTrip.Generation -isnot [long] -and
+          $roundTrip.Generation -isnot [int]) -or
+        [int64]$roundTrip.Generation -ne [int64]$Manifest.Generation -or
+        [string]$roundTrip.AuthorityState -cnotin @('PROVISIONAL','NONPROVISIONAL')) {
+      throw 'ownership receipt generation round trip failed'
     }
-    if ($PSVersionTable.PSEdition -ceq 'Core') {
-      # Native pwsh provides the atomic same-directory overwrite overload.
-      [IO.File]::Move($temporaryPath, $Path, $true)
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    if (Test-Path -LiteralPath $temporaryPath) {
+      # A prior cleanup may have died after FlushFileBuffers but before rename.
+      # Resume only the byte-identical next-generation candidate; a partial,
+      # malformed, foreign, or stale collision remains retained and fail closed.
+      $candidate = Get-Item -LiteralPath $temporaryPath -Force -ErrorAction Stop
+      if ($candidate.PSIsContainer -or
+          ($candidate.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+          $candidate.Length -ne $bytes.Length -or
+          [IO.File]::ReadAllText($temporaryPath, [Text.Encoding]::UTF8) -cne $json) {
+        throw 'ownership receipt replacement collision is invalid'
+      }
     } else {
-      # .NET Framework File.Replace is unsuitable for the real PS5.1 reader
-      # flow. Use one same-directory Windows rename with no cross-volume-copy
-      # flag, replacing the existing pathname and waiting for durable completion.
-      [ProPRAtomicFile]::ReplaceSameDirectory($temporaryPath, $Path)
+      $stream = [IO.FileStream]::new(
+        $temporaryPath,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::None,
+        4096,
+        [IO.FileOptions]::WriteThrough
+      )
+      try {
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+      } finally {
+        $stream.Dispose()
+      }
     }
-    $replacementCompleted = $true
-  } finally {
-    if (!$replacementCompleted) { [IO.File]::Delete($temporaryPath) }
+    $currentJson = [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8)
+    $current = ConvertFrom-Json -InputObject $currentJson -ErrorAction Stop
+    if (($current.Generation -isnot [long] -and $current.Generation -isnot [int]) -or
+        [int64]$current.Generation -ne $previousGeneration) {
+      throw 'ownership receipt generation is stale'
+    }
+    # MoveFileEx with REPLACE_EXISTING and WRITE_THROUGH gives both PowerShell
+    # hosts the same atomic, same-directory durable publication boundary.
+    [ProPRAtomicFile]::ReplaceSameDirectory($temporaryPath, $Path)
+    $publishedJson = [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8)
+    $published = ConvertFrom-Json -InputObject $publishedJson -ErrorAction Stop
+    if ($publishedJson -cne $json -or
+        ($published.Generation -isnot [long] -and $published.Generation -isnot [int]) -or
+        [int64]$published.Generation -ne [int64]$Manifest.Generation) {
+      throw 'ownership receipt durable publication re-read failed'
+    }
+  } catch {
+    $Manifest.Generation = $previousGeneration
+    throw
   }
 }
 
@@ -1088,6 +1118,7 @@ function Write-EmptyOwnershipReceipt([string]$Path, $Manifest) {
   # fails, the caller and canonical pathname both retain ACTIVE authority.
   $emptyReceipt = $Manifest.PSObject.Copy()
   $emptyReceipt.State = 'EMPTY'
+  $emptyReceipt.AuthorityState = 'NONPROVISIONAL'
   $emptyReceipt.BaselineClean = $false
   $emptyReceipt.InstallAttempted = $false
   $emptyReceipt.MsiTransactionState = 'NONE'
@@ -1343,7 +1374,8 @@ try {
   $cleanupValidationPhase = 'EXACT_KEY_SET'
   $manifestKeys = @($manifest.PSObject.Properties | ForEach-Object { $_.Name })
   $expectedManifestKeys = @(
-    'SchemaVersion','ManifestType','State','RunId','CreatedUtcTicks','ExpiresUtcTicks',
+    'SchemaVersion','ManifestType','State','Generation','AuthorityState',
+    'RunId','CreatedUtcTicks','ExpiresUtcTicks',
     'InstallerPath','InstallerEntryIdentity','InstallerSha256','InstallerProductCode','Fixture',
     'FixtureRoot','BaselineClean','InstallAttempted','MsiTransactionState',
     'Directories','Files','RegistryKeys',
@@ -1355,6 +1387,14 @@ try {
       }).Count -ne 0) {
     throw 'ownership manifest key set is invalid'
   }
+
+  $cleanupValidationPhase = 'GENERATION'
+  if (($manifest.Generation -isnot [long] -and $manifest.Generation -isnot [int]) -or
+      $manifest.Generation -lt 0 -or
+      [string]$manifest.AuthorityState -cnotin @('PROVISIONAL','NONPROVISIONAL')) {
+    throw 'ownership manifest generation or authority state is invalid'
+  }
+  $manifest.Generation = [int64]$manifest.Generation
 
   $cleanupValidationPhase = 'BOOLEAN_TYPES'
   # Windows PowerShell 5.1 can retain an incidental PSObject wrapper around a
@@ -1374,6 +1414,14 @@ try {
       'NONE','PENDING','COMMITTED','ROLLED_BACK_CLEAN'
     )) {
     throw 'ownership manifest transaction enum is invalid'
+  }
+  if (([string]$manifest.MsiTransactionState -in @('COMMITTED','ROLLED_BACK_CLEAN') -and
+        [string]$manifest.AuthorityState -cne 'NONPROVISIONAL') -or
+      ([string]$manifest.MsiTransactionState -ceq 'PENDING' -and
+        [string]$manifest.AuthorityState -cne 'PROVISIONAL') -or
+      ([string]$manifest.State -ceq 'EMPTY' -and
+        [string]$manifest.AuthorityState -cne 'NONPROVISIONAL')) {
+    throw 'ownership manifest publication state is inconsistent'
   }
 
   $cleanupValidationPhase = 'SCHEMA_TYPE_STATE'
