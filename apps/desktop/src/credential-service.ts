@@ -680,6 +680,18 @@ export class DesktopCredentialService {
     try {
       discovery = await discoveryClient.discoverDesktop(8_000, operation.signal);
     } catch (error) {
+      // The generic auth guard in releases that predate desktop discovery
+      // answers an unknown /api/desktop/discovery route with 401. Signing in
+      // cannot make those releases pairable: discovery and pairing bootstrap
+      // must both be public protocol endpoints. Classify that stable legacy
+      // response as incompatible instead of presenting a transient outage or
+      // sending the user into an authentication loop.
+      if (error instanceof ProprClientError && error.kind === 'http' && error.status === 401) {
+        return {
+          status: 'incompatible',
+          message: 'This instance does not support secure desktop connections. Update ProPR on the instance, then try again.',
+        };
+      }
       return {
         status: 'offline',
         message: error instanceof Error

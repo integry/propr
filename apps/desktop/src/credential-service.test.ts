@@ -122,6 +122,42 @@ afterEach(async () => {
 });
 
 describe('main-process desktop credential service', () => {
+  it('classifies a pre-desktop discovery 401 as incompatible without attempting authentication', async () => {
+    const store = await createStore();
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    const service = createCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openPairingBrowser: async () => undefined,
+      fetch: async (input, init) => {
+        requests.push({
+          url: input.toString(),
+          authorization: new Headers(init?.headers).get('Authorization'),
+        });
+        return json({
+          code: 'AUTHENTICATION_REQUIRED',
+          error: 'private legacy authentication detail',
+        }, 401);
+      },
+    });
+
+    const result = await service.probe({
+      id: 'legacy-remote',
+      label: 'Legacy remote',
+      apiBaseUrl: 'https://legacy.example.test',
+    });
+
+    assert.deepEqual(result, {
+      status: 'incompatible',
+      message: 'This instance does not support secure desktop connections. Update ProPR on the instance, then try again.',
+    });
+    assert.deepEqual(requests, [{
+      url: 'https://legacy.example.test/api/desktop/discovery',
+      authorization: null,
+    }]);
+    assert.doesNotMatch(JSON.stringify(result), /private legacy authentication detail|AUTHENTICATION_REQUIRED/);
+  });
+
   it('injects the active bearer only for its bound profile origin and strips renderer identity', async () => {
     const store = await createStore();
     const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
