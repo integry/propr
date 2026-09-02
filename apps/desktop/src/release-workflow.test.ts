@@ -902,6 +902,14 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisorBehaviorTest,
       /PROPR_WINDOWS_SUPERVISOR_OWNERSHIP:PRE_EXISTING_AUTHORITIES:PRESERVED/,
     );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Initialize-HkcuDesktopFixtureBoundary[\s\S]*Get-SupervisorFixtureRegistryDigest \(\[string\]\$Boundary\.DesktopKey\)[\s\S]*\[Guid\]::NewGuid\(\)\.ToString\('D'\)[\s\S]*Assert-True \(!\(Test-Path -LiteralPath \$Boundary\.BackupPath\)\)[\s\S]*Rename-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Assert-True \(!\(Test-Path -LiteralPath \$Boundary\.DesktopKey\)\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Restore-HkcuDesktopFixtureBoundary[\s\S]*Get-SupervisorFixtureRegistryDigest \(\[string\]\$Boundary\.BackupPath\)[\s\S]*Assert-True \$TargetOwnedByFixture[\s\S]*Remove-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Assert-True \(!\(Test-Path -LiteralPath \$Boundary\.DesktopKey\)\)[\s\S]*Rename-Item -LiteralPath \$Boundary\.BackupPath[\s\S]*Assert-True \(\$restoredDigest -ceq \[string\]\$Boundary\.BaselineDigest\)/,
+    );
     assert.doesNotMatch(
       installedWindowsAppSupervisorBehaviorTest,
       /CreateProfile|DeleteProfile|userenv\.dll/,
@@ -1024,7 +1032,31 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       hkcuInstalledValueOwnership,
-      /Invoke-SupervisorAttributedOperation\s+`\n\s+-Scenario 'HKCU_BASELINE_RESTORE'\s+`\n\s+-Phase 'FIXTURE_SETUP'\s+`\n\s+-Callsite 'HKCU_BASELINE_STATE'\s+`\n\s+-Field 'REGISTRY_PATH'\s+`\n\s+-Action \{\n\s+Assert-True \(!\(Test-Path -LiteralPath \$desktopKey\)\)/,
+      /Test-HkcuDesktopFixtureBoundaryRegression[\s\S]*\$hkcuBoundary = New-HkcuDesktopFixtureBoundaryState \$desktopKey[\s\S]*\$desktopKeyFixtureOwned = \$false[\s\S]*try \{[\s\S]*Initialize-HkcuDesktopFixtureBoundary \$hkcuBoundary[\s\S]*\} finally \{[\s\S]*Restore-HkcuDesktopFixtureBoundary \$hkcuBoundary \$desktopKeyFixtureOwned/,
+    );
+    assert.doesNotMatch(
+      hkcuInstalledValueOwnership,
+      /HKCU installed-value fixture baseline was not clean/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Test-HkcuDesktopFixtureBoundaryRegression[\s\S]*Set-HkcuFixtureBoundaryValueKinds \$presentDesktop[\s\S]*\(Get-SupervisorFixtureRegistryDigest \$presentBoundary\.BackupPath\) -ceq[\s\S]*Assert-HkcuFixtureBoundaryValueKinds \$presentDesktop[\s\S]*!\$absentBoundary\.BaselinePresent[\s\S]*\[string\]::IsNullOrWhiteSpace\(\[string\]\$absentBoundary\.BackupPath\)[\s\S]*Restore-HkcuDesktopFixtureBoundary \$failureBoundary \$false[\s\S]*Test-Path -LiteralPath \$failureBoundary\.BackupPath/,
+    );
+    for (const valueKind of [
+      'StringValue',
+      'ExpandStringValue',
+      'BinaryValue',
+      'DWordValue',
+      'QWordValue',
+      'MultiStringValue',
+      'NoneValue',
+      'NestedValue',
+    ]) {
+      assert.match(installedWindowsAppSupervisorBehaviorTest, new RegExp(valueKind));
+    }
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Get-HkcuFixtureBoundaryDiagnostic[\s\S]*HKCU_INSTALLED_VALUE_OWNERSHIP[\s\S]*HKCU_BASELINE_RESTORE[\s\S]*FIXTURE_SETUP[\s\S]*HKCU_BASELINE_STATE[\s\S]*REGISTRY_PATH/,
     );
     for (const scenario of [
       'HKCU_BASELINE_RESTORE',
