@@ -114,7 +114,9 @@ describe('packaged acceptance authorization', () => {
       'networkPermissions: networkPermissionSummary(journey)',
       'currentUserCategory: currentUserValidationFailureCategory(journey)',
       'rendererLifecycleCategory: rendererLifecycleCategory(journey)',
+      'rendererLifecycle: rendererLifecycleDiagnosticSummary(journey)',
       'surfacePhase: await rendererSurfacePhase(page)',
+      'uiState: await rendererUiStateSummary(page)',
       'rendererErrors: rendererErrorCountSummary(journey)',
     ]) assert.ok(dashboardJourney.includes(boundedField), boundedField);
     assert.doesNotMatch(diagnosticCatch, /error\.(?:message|stack)|record\.(?:text|arguments|location|url)/);
@@ -127,6 +129,59 @@ describe('packaged acceptance authorization', () => {
     assert.match(acceptanceRunner, /if \(document\.querySelector\('\.desktop-app'\)\) return 'app'/);
     assert.match(acceptanceRunner, /if \(document\.querySelector\('\.desktop-entry'\)\) return 'entry'/);
     assert.match(acceptanceRunner, /return 'loading'/);
+
+    const uiSummaryStart = acceptanceRunner.indexOf('const rendererUiStateSummary = async page =>');
+    const uiSummaryEnd = acceptanceRunner.indexOf('\nconst rendererSurfacePhase', uiSummaryStart);
+    assert.notEqual(uiSummaryStart, -1);
+    assert.notEqual(uiSummaryEnd, -1);
+    const uiSummary = acceptanceRunner.slice(uiSummaryStart, uiSummaryEnd);
+    for (const status of ["'ready'", "'offline'", "'incompatible'", "'unknown'", "'absent'"]) {
+      assert.ok(uiSummary.includes(status), status);
+    }
+    for (const labelCategory of [
+      "'Connected: Operations'",
+      "'Offline: Operations'",
+      "'Update required: Operations'",
+      "'other'",
+    ]) assert.ok(uiSummary.includes(labelCategory), labelCategory);
+    for (const booleanField of [
+      'connectionPillPresent',
+      'navigatorOnline',
+      'desktopTitleBarPresent',
+      'routeLayoutPresent',
+      'loadingSpinnerPresent',
+      'validatedCurrentUserMarkerPresent',
+      'dashboardMarkerPresent',
+    ]) assert.ok(uiSummary.includes(booleanField), booleanField);
+    assert.match(uiSummary, /document\.querySelector\('\.desktop-connection-pill'\)/);
+    assert.match(uiSummary, /document\.querySelector\('\.desktop-titlebar'\)/);
+    assert.match(uiSummary, /main\.mobile-content-clearance/);
+    assert.match(uiSummary, /a\[href="\/admin\/members"\]/);
+    assert.doesNotMatch(uiSummary, /outerHTML|innerHTML|document\.body\.textContent/);
+
+    assert.match(
+      acceptanceRunner,
+      /const rendererLifecycleDiagnosticSummary = journey => \(\{[\s\S]*?recordCount:[\s\S]*?evidenceInvalid:[\s\S]*?invalidCategory:/,
+    );
+    assert.match(
+      acceptanceRunner,
+      /recordCount: rendererLifecycleRecords\.filter\(record => record\.journey === journey\)\.length/,
+    );
+    assert.match(acceptanceRunner, /rendererLifecycleInvalidCategories\.add\('schema-shape'\)/);
+    assert.match(acceptanceRunner, /rendererLifecycleInvalidCategories\.add\('overflow'\)/);
+    assert.match(acceptanceRunner, /if \(schemaShape && overflow\) return 'multiple'/);
+
+    const errorSummaryStart = acceptanceRunner.indexOf('const rendererConsoleErrorCategory = record =>');
+    const errorSummaryEnd = acceptanceRunner.indexOf('\nconst rendererLifecycleInvalidCategory', errorSummaryStart);
+    assert.notEqual(errorSummaryStart, -1);
+    assert.notEqual(errorSummaryEnd, -1);
+    const errorSummary = acceptanceRunner.slice(errorSummaryStart, errorSummaryEnd);
+    for (const category of ['currentUserSync', 'apiLoad', 'socketContext', 'reactRuntime', 'other']) {
+      assert.ok(errorSummary.includes(category), category);
+    }
+    assert.match(errorSummary, /consoleErrorCategoryCounts: rendererConsoleErrorCategoryCounts\(rendererConsoleErrors\)/);
+    assert.match(errorSummary, /counts\[category\] = Math\.min\(counts\[category\] \+ 1, 9\)/);
+    assert.doesNotMatch(errorSummary, /arguments|location|stack|url/);
   });
 
   it('keeps the shared clock subject to exact pairing expiry validation', () => {

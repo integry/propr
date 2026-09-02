@@ -85,6 +85,7 @@ let modalFocusTrap = false;
 let modalFocusRestore = false;
 let traceWritten = false;
 let rendererLifecycleEvidenceInvalid = false;
+const rendererLifecycleInvalidCategories = new Set();
 let currentUserEvidenceInvalid = false;
 let networkPermissionEvidenceInvalidCount = 0;
 
@@ -292,11 +293,14 @@ const captureRendererLifecycleEvidence = (argumentsValue, journey) => {
     evidence.disabledByCurrentUserLoading,
     evidence.disabledByCurrentUserAbsent,
   ].some(Boolean);
-  if (!exactKeys || evidence.schemaVersion !== 2 || !RENDERER_LIFECYCLE_PHASES.has(evidence.phase)
+  const schemaOrShapeInvalid = !exactKeys || evidence.schemaVersion !== 2 || !RENDERER_LIFECYCLE_PHASES.has(evidence.phase)
     || !['unknown', 'available', 'unavailable'].includes(evidence.connectionScope)
-    || !booleans || !counts || !disableReasonsConsistent
-    || rendererLifecycleRecords.filter(record => record.journey === journey).length >= 12) {
+    || !booleans || !counts || !disableReasonsConsistent;
+  const overflow = rendererLifecycleRecords.filter(record => record.journey === journey).length >= 12;
+  if (schemaOrShapeInvalid || overflow) {
     rendererLifecycleEvidenceInvalid = true;
+    if (schemaOrShapeInvalid) rendererLifecycleInvalidCategories.add('schema-shape');
+    if (overflow) rendererLifecycleInvalidCategories.add('overflow');
     return;
   }
   rendererLifecycleRecords.push({ journey, ...evidence });
@@ -982,15 +986,113 @@ const settlePendingRendererConsoleCaptures = async () => {
 
 const boundedAcceptanceDiagnosticCount = records => Math.min(records.length, 9);
 
+const rendererConsoleErrorCategory = record => {
+  if (record.text.startsWith('Failed to refresh instance authorization:')
+    || record.text.startsWith('Failed to synchronize instance authorization:')) return 'currentUserSync';
+  if (record.text.startsWith('[SocketContext]')) return 'socketContext';
+  if (record.text.startsWith('Failed to load or render a route:')
+    || record.text.startsWith('Root container missing in index.html')
+    || record.text.startsWith('Uncaught ')
+    || record.text.startsWith('Error: Minified React error')
+    || record.text.startsWith('Warning: React')) return 'reactRuntime';
+  if (record.text.startsWith('Failed to fetch ')
+    || record.text.startsWith('Failed to load ')
+    || record.text.startsWith('Error fetching ')
+    || record.text.startsWith('Silent refresh failed:')
+    || record.text.startsWith('[useGenerationPolling] Poll error:')) return 'apiLoad';
+  return 'other';
+};
+
+const rendererConsoleErrorCategoryCounts = records => {
+  const counts = { currentUserSync: 0, apiLoad: 0, socketContext: 0, reactRuntime: 0, other: 0 };
+  for (const record of records) {
+    const category = rendererConsoleErrorCategory(record);
+    counts[category] = Math.min(counts[category] + 1, 9);
+  }
+  return counts;
+};
+
 const rendererErrorCountSummary = journey => {
   const rendererConsole = consoleRecords.filter(record => record.journey === journey);
   const rendererPageErrors = pageErrorRecords.filter(record => record.journey === journey);
+  const rendererConsoleErrors = rendererConsole.filter(record => record.type === 'error');
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     console: boundedAcceptanceDiagnosticCount(rendererConsole),
-    consoleErrors: boundedAcceptanceDiagnosticCount(rendererConsole.filter(record => record.type === 'error')),
+    consoleErrors: boundedAcceptanceDiagnosticCount(rendererConsoleErrors),
     pageErrors: boundedAcceptanceDiagnosticCount(rendererPageErrors),
+    consoleErrorCategoryCounts: rendererConsoleErrorCategoryCounts(rendererConsoleErrors),
   };
+};
+
+const rendererLifecycleInvalidCategory = () => {
+  const schemaShape = rendererLifecycleInvalidCategories.has('schema-shape');
+  const overflow = rendererLifecycleInvalidCategories.has('overflow');
+  if (schemaShape && overflow) return 'multiple';
+  if (schemaShape) return 'schema-shape';
+  if (overflow) return 'overflow';
+  return 'none';
+};
+
+const rendererLifecycleDiagnosticSummary = journey => ({
+  schemaVersion: 1,
+  recordCount: rendererLifecycleRecords.filter(record => record.journey === journey).length,
+  evidenceInvalid: rendererLifecycleEvidenceInvalid,
+  invalidCategory: rendererLifecycleInvalidCategory(),
+});
+
+const rendererUiStateSummary = async page => {
+  const absent = {
+    schemaVersion: 1,
+    connectionPillPresent: false,
+    connectionStatus: 'absent',
+    accessibleLabelCategory: 'other',
+    navigatorOnline: false,
+    desktopTitleBarPresent: false,
+    routeLayoutPresent: false,
+    loadingSpinnerPresent: false,
+    validatedCurrentUserMarkerPresent: false,
+    dashboardMarkerPresent: false,
+  };
+  try {
+    return await page.evaluate(() => {
+      const pill = document.querySelector('.desktop-connection-pill');
+      const classStatuses = ['ready', 'offline', 'incompatible'].filter(status =>
+        pill?.classList.contains(`desktop-connection-${status}`));
+      const connectionStatus = pill === null
+        ? 'absent'
+        : classStatuses.length === 1 ? classStatuses[0] : 'unknown';
+      const label = pill?.getAttribute('aria-label');
+      const accessibleLabelCategory = label === 'Connected: Operations'
+        ? 'Connected: Operations'
+        : label === 'Offline: Operations'
+          ? 'Offline: Operations'
+          : label === 'Update required: Operations' ? 'Update required: Operations' : 'other';
+      const routeLayout = document.querySelector(
+        '.desktop-shell .desktop-shell-content main.mobile-content-clearance',
+      );
+      const loadingSpinner = document.querySelector(
+        '[class~="h-screen"][class~="w-full"] [class~="h-12"][class~="w-12"][class~="animate-spin"]',
+      );
+      const validatedCurrentUserMarker = document.querySelector('a[href="/admin/members"]');
+      const dashboardMarker = [...document.querySelectorAll('main h3')]
+        .some(element => element.textContent?.trim() === 'Recent Activity');
+      return {
+        schemaVersion: 1,
+        connectionPillPresent: pill !== null,
+        connectionStatus,
+        accessibleLabelCategory,
+        navigatorOnline: navigator.onLine,
+        desktopTitleBarPresent: document.querySelector('.desktop-titlebar') !== null,
+        routeLayoutPresent: routeLayout !== null,
+        loadingSpinnerPresent: loadingSpinner !== null,
+        validatedCurrentUserMarkerPresent: validatedCurrentUserMarker !== null,
+        dashboardMarkerPresent: dashboardMarker,
+      };
+    });
+  } catch {
+    return absent;
+  }
 };
 
 const rendererSurfacePhase = async page => {
@@ -1276,12 +1378,14 @@ try {
       await settlePendingRendererConsoleCaptures();
       const journey = 'dashboard-profile-manager';
       const diagnostic = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         currentUserPhases: currentUserPhaseSummary(journey),
         networkPermissions: networkPermissionSummary(journey),
         currentUserCategory: currentUserValidationFailureCategory(journey),
         rendererLifecycleCategory: rendererLifecycleCategory(journey),
+        rendererLifecycle: rendererLifecycleDiagnosticSummary(journey),
         surfacePhase: await rendererSurfacePhase(page),
+        uiState: await rendererUiStateSummary(page),
         rendererErrors: rendererErrorCountSummary(journey),
       };
       throw new Error(`Acceptance dashboard Connected control timed out: ${JSON.stringify(diagnostic)}`);
