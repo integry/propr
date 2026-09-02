@@ -13,7 +13,6 @@ const bounds = (left: number, top: number, width: number, height: number) => ({
 });
 
 const completePackagedLayout = () => ({
-  missing: [],
   screen: { height: 1080, width: 1920 },
   viewport: { height: 780, width: 1280 },
   entry: bounds(0, 0, 1280, 780),
@@ -37,18 +36,22 @@ describe('desktop logger field schemas', () => {
       { layout: inspectedLayout },
       '2026-09-02T00:00:00.000Z',
     );
-    const expectedLayout = { ...inspectedLayout };
-    delete (expectedLayout as { missing?: unknown }).missing;
     assert.equal(record, JSON.stringify({
       timestamp: '2026-09-02T00:00:00.000Z',
       level: 'info',
       event: 'desktop.renderer.layout.ready',
-      layout: expectedLayout,
+      layout: inspectedLayout,
     }));
 
     const parsedLayout = parseEventLayout(`Chromium prefix\n${record}\n`, 'desktop.renderer.layout.ready');
-    assert.deepEqual(parsedLayout, expectedLayout);
+    assert.deepEqual(parsedLayout, inspectedLayout);
     assert.doesNotThrow(() => assertPackagedLayout(parsedLayout, 'linux'));
+    assert.deepEqual(
+      sanitizeDesktopLogFields('desktop.renderer.layout.ready', {
+        layout: { ...inspectedLayout, missing: [] },
+      }),
+      { layout: inspectedLayout },
+    );
   });
 
   it('preserves the exact reduced native window geometry schema', () => {
@@ -63,7 +66,6 @@ describe('desktop logger field schemas', () => {
 
   it('redacts malformed, secret, path-bearing, array, error, and over-broad layouts', () => {
     const valid = completePackagedLayout();
-    delete (valid as { missing?: unknown }).missing;
     const rejectedLayouts: unknown[] = [
       { ...valid, unknown: { width: 1, height: 1 } },
       { ...valid, windowBounds: { ...valid.windowBounds, width: '1280' } },
@@ -86,6 +88,24 @@ describe('desktop logger field schemas', () => {
       const serialized = JSON.stringify(sanitized);
       assert.doesNotMatch(serialized, /secret-SENTINEL|private\/path-SENTINEL|connectDescription/u);
     }
+  });
+
+  it('redacts a non-empty missing-selector result and leaves layout assertion failed closed', () => {
+    const record = formatDesktopLogRecord(
+      'info',
+      'desktop.renderer.layout.ready',
+      { layout: { missing: ['connectButton', 'connectDescription'] } },
+      '2026-09-02T00:00:00.000Z',
+    );
+    assert.doesNotMatch(record, /connectButton|connectDescription/u);
+    assert.match(record, /DETAIL_REDACTED/u);
+
+    const parsedLayout = parseEventLayout(record, 'desktop.renderer.layout.ready');
+    assert.deepEqual(parsedLayout, { code: 'DETAIL_REDACTED' });
+    assert.throws(
+      () => assertPackagedLayout(parsedLayout, 'linux'),
+      /does not have positive bounds/,
+    );
   });
 
   it('does not weaken general object or error redaction', () => {
