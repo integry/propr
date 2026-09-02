@@ -113,7 +113,7 @@ export const installPackagedTransportSmokeHarness = (): void => {
         transports: ['websocket'],
         forceNew: true,
         reconnection: true,
-        auth: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: scope.transportScope },
+        withCredentials: false,
         query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: scope.transportScope },
       });
       const id = nextSocketId++;

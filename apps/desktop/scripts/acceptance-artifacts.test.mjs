@@ -121,7 +121,7 @@ const accessibilityFor = () => ({
 });
 
 const summaryFor = () => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   generatedAt: FIXED_TIME,
   status: 'passed',
   journeys: ACCEPTANCE_JOURNEYS.length,
@@ -130,7 +130,30 @@ const summaryFor = () => ({
   console: { records: 3, errors: 0 },
   services: {
     rest: { requestCount: 12, authenticatedRequestCount: 3, journeys: ['dashboard-profile-manager'] },
-    socketIo: { authenticatedConnections: 1, events: 1, journeys: ['dashboard-profile-manager'] },
+    socketIo: {
+      authenticatedConnections: 1,
+      events: 1,
+      journeys: ['dashboard-profile-manager'],
+      handshake: {
+        mainAttempts: 1,
+        fixtureAttempts: 1,
+        scopeQueryPresent: true,
+        scopeQueryCount: 1,
+        scopeEqualsActivatedBinding: true,
+        activeBindingPresent: true,
+        profileGenerationCurrent: true,
+        originEqualsActivatedBinding: true,
+        path: 'socket-io',
+        transport: 'websocket',
+        resource: 'websocket',
+        rendererBearerPresent: false,
+        rendererCookiePresent: false,
+        authorizationHeaderPresent: true,
+        authorizationHeaderExactlyMainInjected: true,
+        rendererObservedApplicationEvent: true,
+        rejectionCategory: 'none',
+      },
+    },
     pairing: { started: 1, polled: 1, activated: 1, journeys: ['dashboard-profile-manager'] },
     connect: { confirmedRequests: 1, journeys: ['connect-confirmation'] },
   },
@@ -265,6 +288,22 @@ describe('packaged acceptance artifact contract', () => {
         }, evidence.sanitizedLog),
         /not observed/,
       );
+      for (const mutateHandshake of [
+        handshake => { handshake.scopeQueryPresent = false; handshake.scopeQueryCount = 0; },
+        handshake => { handshake.scopeQueryCount = 2; },
+        handshake => { handshake.scopeEqualsActivatedBinding = false; handshake.rejectionCategory = 'stale-scope'; },
+        handshake => { handshake.rejectionCategory = 'wrong-origin'; },
+        handshake => { handshake.rendererBearerPresent = true; },
+      ]) {
+        const invalidSummary = structuredClone(evidence.summary);
+        mutateHandshake(invalidSummary.services.socketIo.handshake);
+        assert.throws(
+          () => validateAcceptanceEvidence(
+            evidence.accessibility, evidence.manifest, invalidSummary, evidence.sanitizedLog,
+          ),
+          /not observed/,
+        );
+      }
       const relabeledManifest = structuredClone(evidence.manifest);
       const zoomEntry = relabeledManifest.screenshots.find(entry => entry.variant === 'zoom-200');
       zoomEntry.appliedZoomFactor = 1;

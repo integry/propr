@@ -12,6 +12,7 @@ import {
   authorizePackagedAcceptanceTest,
   packagedAcceptancePairingTiming,
 } from './acceptance-test-authorization';
+import { redactDesktopValue } from './secret-redaction';
 
 const acceptanceUserData = resolve('/tmp/propr-desktop-acceptance-a1');
 const defaultUserData = resolve('/tmp/default');
@@ -73,6 +74,8 @@ describe('packaged acceptance authorization', () => {
       /packagedAcceptancePairingTiming\(packagedAcceptanceUserDataDirectory\)/,
     );
     assert.match(main, /acceptancePairingTiming \? \{ pairingTiming: acceptancePairingTiming \} : \{\}/);
+    assert.match(main, /packagedAcceptanceTest \? \{\s*reportWebSocketHandshake:/);
+    assert.match(main, /desktop\.acceptance\.websocket_handshake/);
   });
 
   it('keeps the shared clock subject to exact pairing expiry validation', () => {
@@ -95,5 +98,29 @@ describe('packaged acceptance authorization', () => {
       expiresAt: PACKAGED_ACCEPTANCE_TIME,
     }, 'https://propr.example.test', timing.now), (error: unknown) =>
       error instanceof ProprClientError && error.kind === 'invalid_response');
+  });
+
+  it('preserves only fixed secret-free handshake booleans through protected logging', () => {
+    const evidence = {
+      schemaVersion: 1,
+      path: 'socket-io',
+      transport: 'websocket',
+      resource: 'websocket',
+      scopeQueryPresent: true,
+      scopeQueryCount: 1,
+      scopeEqualsActive: true,
+      activeBindingPresent: true,
+      profileGenerationCurrent: true,
+      originEqualsActive: true,
+      rendererBearerPresent: false,
+      rendererCookiePresent: false,
+      outboundBearerPresent: true,
+      bearerMainInjected: true,
+      accepted: true,
+      rejectionCategory: 'none',
+    };
+    assert.deepEqual(redactDesktopValue(evidence), evidence);
+    assert.equal(JSON.stringify(evidence).includes('http'), false);
+    assert.equal(JSON.stringify(evidence).includes('Bearer '), false);
   });
 });

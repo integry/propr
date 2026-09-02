@@ -51,6 +51,41 @@ export interface CredentialServiceDependencies {
     code: 'network' | 'http' | 'local-cleanup';
     status?: number;
   }): void;
+  /** Fixed, secret-free evidence for the packaged acceptance boundary. */
+  reportWebSocketHandshake?(evidence: DesktopWebSocketHandshakeEvidence): void;
+}
+
+export type DesktopWebSocketRejectionCategory =
+  | 'none'
+  | 'untrusted-http-origin'
+  | 'wrong-path'
+  | 'wrong-transport'
+  | 'wrong-resource-type'
+  | 'scope-missing'
+  | 'scope-duplicate'
+  | 'scope-malformed'
+  | 'no-active-binding'
+  | 'stale-generation'
+  | 'wrong-origin'
+  | 'stale-scope';
+
+export interface DesktopWebSocketHandshakeEvidence {
+  schemaVersion: 1;
+  path: 'socket-io' | 'other';
+  transport: 'websocket' | 'other';
+  resource: 'websocket' | 'other';
+  scopeQueryPresent: boolean;
+  scopeQueryCount: number;
+  scopeEqualsActive: boolean;
+  activeBindingPresent: boolean;
+  profileGenerationCurrent: boolean;
+  originEqualsActive: boolean;
+  rendererBearerPresent: boolean;
+  rendererCookiePresent: boolean;
+  outboundBearerPresent: boolean;
+  bearerMainInjected: boolean;
+  accepted: boolean;
+  rejectionCategory: DesktopWebSocketRejectionCategory;
 }
 
 export interface CredentialServiceInitialization {
@@ -338,6 +373,7 @@ export class DesktopCredentialService {
   readonly #pairingTiming: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
   readonly #pairingProtocol: PairingProtocolRequestOptions;
   readonly #reportRevocationFailure: NonNullable<CredentialServiceDependencies['reportRevocationFailure']>;
+  readonly #reportWebSocketHandshake: NonNullable<CredentialServiceDependencies['reportWebSocketHandshake']>;
   readonly #revocationDeadlines: RevocationDeadlines;
   readonly #internalRequestKey = randomBytes(32).toString('base64url');
   readonly #lifecycleController = new AbortController();
@@ -369,6 +405,7 @@ export class DesktopCredentialService {
     this.#pairingTiming = dependencies.pairingTiming ?? {};
     this.#pairingProtocol = dependencies.pairingProtocol ?? {};
     this.#reportRevocationFailure = dependencies.reportRevocationFailure ?? (() => undefined);
+    this.#reportWebSocketHandshake = dependencies.reportWebSocketHandshake ?? (() => undefined);
     this.#revocationDeadlines = boundedRevocationDeadlines(dependencies.revocationDeadlines);
   }
 
@@ -1052,10 +1089,6 @@ export class DesktopCredentialService {
   ): DesktopRequestDecision {
     if (this.#closed) return { cancel: true };
     const headers = { ...originalHeaders };
-    if (/^(?:https?|wss?):/i.test(url)) {
-      const httpUrl = url.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
-      if (!canonicalProprHttpUrlOrigin(httpUrl)) return { cancel: true };
-    }
     const internalHeader = headerName(headers, 'x-propr-desktop-main-request');
     const trustedMainRequest = internalHeader !== undefined
       && headers[internalHeader] === this.#internalRequestKey;
@@ -1067,11 +1100,69 @@ export class DesktopCredentialService {
     // The packaged renderer has no cookie identity on any remote HTTP(S) or
     // WS(S) origin. It also cannot supply its own bearer. Main-process bearer
     // requests are distinguished by the per-process secret marker above.
+    const target = requestOrigin(url);
+    const rendererAuthorizationPresent = !trustedMainRequest && headerValues(originalHeaders, 'authorization').length > 0;
+    const rendererCookiePresent = !trustedMainRequest && headerValues(originalHeaders, 'cookie').length > 0;
+    const path = target?.pathname === '/socket.io/' ? 'socket-io' : 'other';
+    const transportValues = target?.url.searchParams.getAll('transport') ?? [];
+    const transport = transportValues.length === 1 && transportValues[0] === 'websocket' ? 'websocket' : 'other';
+    // Electron documents `webSocket`; normalizing the comparison also covers
+    // Chromium's lower-case serialization without accepting another resource.
+    const resource = details.resourceType?.toLowerCase() === 'websocket'
+      || headerValues(originalHeaders, 'upgrade').some(value => value.toLowerCase() === 'websocket')
+      ? 'websocket'
+      : 'other';
+    const queryScopes = target?.url.searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY) ?? [];
+    const active = this.#active;
+    const activeGenerationCurrent = active !== null
+      && this.#generation(active.profileId) === active.profileGeneration
+      && this.#selectionGeneration === active.selectionGeneration;
+    const scopeEqualsActive = queryScopes.length === 1
+      && active !== null
+      && queryScopes[0] === active.transportScope;
+    const isHandshakeCandidate = path === 'socket-io' || queryScopes.length > 0;
+    const reportHandshake = (
+      accepted: boolean,
+      rejectionCategory: DesktopWebSocketRejectionCategory,
+      authorizationMainInjected = false,
+    ): void => {
+      if (!isHandshakeCandidate || trustedMainRequest) return;
+      try {
+        this.#reportWebSocketHandshake({
+          schemaVersion: 1,
+          path,
+          transport,
+          resource,
+          scopeQueryPresent: queryScopes.length > 0,
+          scopeQueryCount: queryScopes.length,
+          scopeEqualsActive,
+          activeBindingPresent: active !== null,
+          profileGenerationCurrent: activeGenerationCurrent,
+          originEqualsActive: target !== null && active !== null && target.origin === active.origin,
+          rendererBearerPresent: rendererAuthorizationPresent,
+          rendererCookiePresent,
+          outboundBearerPresent: headerValues(headers, 'authorization').length > 0,
+          bearerMainInjected: authorizationMainInjected,
+          accepted,
+          rejectionCategory,
+        });
+      } catch {
+        // Diagnostics cannot change the request authorization decision.
+      }
+    };
+
     removeHeader(headers, 'cookie');
     if (!trustedMainRequest) removeHeader(headers, 'authorization');
 
-    const target = requestOrigin(url);
+    if (/^(?:https?|wss?):/i.test(url)) {
+      const httpUrl = url.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
+      if (!canonicalProprHttpUrlOrigin(httpUrl)) {
+        reportHandshake(false, 'untrusted-http-origin');
+        return { cancel: true };
+      }
+    }
     if (target && target.url.protocol === 'http:' && !normalizeApiBaseUrl(target.origin)) {
+      reportHandshake(false, 'untrusted-http-origin');
       return { cancel: true };
     }
     if (trustedMainRequest) return { requestHeaders: headers };
@@ -1084,22 +1175,51 @@ export class DesktopCredentialService {
       && (target.pathname.startsWith('/api/desktop/pairings')
         || target.pathname.startsWith('/api/desktop/tokens'))) return { cancel: true };
 
-    const active = this.#active;
-    const activeIsCurrent = active !== null
-      && this.#generation(active.profileId) === active.profileGeneration
-      && this.#selectionGeneration === active.selectionGeneration;
+    const activeIsCurrent = activeGenerationCurrent;
     const isApiRequest = target?.pathname.startsWith('/api/') === true;
-    const isSocketUpgrade = target?.pathname === '/socket.io/'
-      && target.url.searchParams.get('transport') === 'websocket'
-      && (details.resourceType === 'webSocket'
-        || headerValues(originalHeaders, 'upgrade').some(value => value.toLowerCase() === 'websocket'));
+    const isSocketUpgrade = path === 'socket-io' && transport === 'websocket' && resource === 'websocket';
+
+    if (isHandshakeCandidate && !isSocketUpgrade) {
+      const category = path !== 'socket-io'
+        ? 'wrong-path'
+        : transport !== 'websocket'
+          ? 'wrong-transport'
+          : 'wrong-resource-type';
+      reportHandshake(false, category);
+      return { cancel: true };
+    }
 
     if (isSocketUpgrade && target) {
-      const queryScopes = target.url.searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
-      if (queryScopes.length !== 1 || !TRANSPORT_SCOPE_PATTERN.test(queryScopes[0])
-        || !activeIsCurrent || target.origin !== active.origin
-        || queryScopes[0] !== active.transportScope) return { cancel: true };
+      if (queryScopes.length === 0) {
+        reportHandshake(false, 'scope-missing');
+        return { cancel: true };
+      }
+      if (queryScopes.length !== 1) {
+        reportHandshake(false, 'scope-duplicate');
+        return { cancel: true };
+      }
+      if (!TRANSPORT_SCOPE_PATTERN.test(queryScopes[0])) {
+        reportHandshake(false, 'scope-malformed');
+        return { cancel: true };
+      }
+      if (!active) {
+        reportHandshake(false, 'no-active-binding');
+        return { cancel: true };
+      }
+      if (!activeGenerationCurrent) {
+        reportHandshake(false, 'stale-generation');
+        return { cancel: true };
+      }
+      if (target.origin !== active.origin) {
+        reportHandshake(false, 'wrong-origin');
+        return { cancel: true };
+      }
+      if (!scopeEqualsActive) {
+        reportHandshake(false, 'stale-scope');
+        return { cancel: true };
+      }
       headers.Authorization = `Bearer ${active.token}`;
+      reportHandshake(true, 'none', true);
       return { requestHeaders: headers };
     }
 

@@ -6,7 +6,7 @@ import type { Rectangle } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import type { SetupActions } from '@propr/local-setup';
 import { DeepLinkDelivery } from './deep-link-delivery';
-import { DesktopCredentialService } from './credential-service';
+import { DesktopCredentialService, type DesktopWebSocketHandshakeEvidence } from './credential-service';
 import { createDesktopLocalHost } from './desktop-host';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
@@ -489,6 +489,11 @@ if (!hasSingleInstanceLock) {
       reportRevocationFailure: diagnostic => {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
       },
+      ...(packagedAcceptanceTest ? {
+        reportWebSocketHandshake: (evidence: DesktopWebSocketHandshakeEvidence) => {
+          log('info', 'desktop.acceptance.websocket_handshake', { ...evidence });
+        },
+      } : {}),
       ...(acceptancePairingTiming ? { pairingTiming: acceptancePairingTiming } : {}),
     });
     const sessionSecurity = configureSessionSecurity(credentials);

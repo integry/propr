@@ -49,7 +49,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       autoConnect: true,
       path: '/socket.io/',
       forceNew: true,
-      ...(desktopScope ? { query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope } } : {}),
+      ...(desktopScope ? {
+        // The renderer contributes only the opaque binding query. Browser
+        // cookies and Socket.IO auth payloads are never desktop credentials;
+        // Electron main adds the active bearer to the exact WS upgrade.
+        withCredentials: false,
+        query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope },
+      } : {}),
     });
     let disposed = false;
     const isCurrentScope = (): boolean => {

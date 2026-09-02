@@ -439,7 +439,7 @@ const validateAccessibility = accessibility => {
 
 const validateSummary = summary => {
   assertExactKeys(summary, ['schemaVersion', 'generatedAt', 'status', 'journeys', 'screenshots', 'boundary', 'console', 'services', 'redaction'], 'Acceptance summary');
-  if (summary.schemaVersion !== 2 || summary.generatedAt !== FIXED_TIME || summary.status !== 'passed'
+  if (summary.schemaVersion !== 3 || summary.generatedAt !== FIXED_TIME || summary.status !== 'passed'
     || summary.journeys !== ACCEPTANCE_JOURNEYS.length || summary.screenshots !== expectedScreenshotNames().length
     || summary.redaction !== 'Full raw surfaces were scanned; published logs retain only source, level, byte count, and digest.') {
     throw new Error('Acceptance sanitized summary is invalid');
@@ -455,11 +455,29 @@ const validateSummary = summary => {
   assertExactKeys(summary.services, ['rest', 'socketIo', 'pairing', 'connect'], 'Acceptance service summary');
   const { rest, socketIo, pairing, connect } = summary.services;
   assertExactKeys(rest, ['requestCount', 'authenticatedRequestCount', 'journeys'], 'Acceptance REST summary');
-  assertExactKeys(socketIo, ['authenticatedConnections', 'events', 'journeys'], 'Acceptance Socket.IO summary');
+  assertExactKeys(socketIo, ['authenticatedConnections', 'events', 'journeys', 'handshake'], 'Acceptance Socket.IO summary');
   assertExactKeys(pairing, ['started', 'polled', 'activated', 'journeys'], 'Acceptance pairing summary');
   assertExactKeys(connect, ['confirmedRequests', 'journeys'], 'Acceptance Connect summary');
+  assertExactKeys(socketIo.handshake, [
+    'mainAttempts', 'fixtureAttempts', 'scopeQueryPresent', 'scopeQueryCount',
+    'scopeEqualsActivatedBinding', 'activeBindingPresent', 'profileGenerationCurrent',
+    'originEqualsActivatedBinding', 'path', 'transport', 'resource',
+    'rendererBearerPresent', 'rendererCookiePresent', 'authorizationHeaderPresent',
+    'authorizationHeaderExactlyMainInjected', 'rendererObservedApplicationEvent', 'rejectionCategory',
+  ], 'Acceptance Socket.IO handshake summary');
+  const handshake = socketIo.handshake;
   if (rest.requestCount <= 0 || rest.authenticatedRequestCount <= 0 || !rest.journeys.includes('dashboard-profile-manager')
-    || socketIo.authenticatedConnections <= 0 || socketIo.events <= 0 || !socketIo.journeys.includes('dashboard-profile-manager')
+    || socketIo.authenticatedConnections !== 1 || socketIo.events <= 0 || !socketIo.journeys.includes('dashboard-profile-manager')
+    || handshake.mainAttempts !== 1 || handshake.fixtureAttempts !== 1
+    || handshake.scopeQueryPresent !== true || handshake.scopeQueryCount !== 1
+    || handshake.scopeEqualsActivatedBinding !== true
+    || handshake.activeBindingPresent !== true || handshake.profileGenerationCurrent !== true
+    || handshake.originEqualsActivatedBinding !== true
+    || handshake.path !== 'socket-io' || handshake.transport !== 'websocket' || handshake.resource !== 'websocket'
+    || handshake.rendererBearerPresent !== false || handshake.rendererCookiePresent !== false
+    || handshake.authorizationHeaderPresent !== true || handshake.authorizationHeaderExactlyMainInjected !== true
+    || handshake.rendererObservedApplicationEvent !== true
+    || handshake.rejectionCategory !== 'none'
     || pairing.started <= 0 || pairing.polled <= 0 || pairing.activated <= 0 || !pairing.journeys.includes('dashboard-profile-manager')
     || connect.confirmedRequests <= 0 || connect.journeys.join('\n') !== 'connect-confirmation') {
     throw new Error('Acceptance claimed service journey was not observed');

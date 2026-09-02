@@ -13,7 +13,7 @@ import {
   PROPR_API_COMPATIBILITY,
   PROPR_UI_COMPATIBILITY,
 } from '@propr/shared';
-import { DesktopCredentialService } from './credential-service';
+import { DesktopCredentialService, type DesktopWebSocketHandshakeEvidence } from './credential-service';
 import { ProfileStore, type EncryptionProvider, type StoredCredential } from './profile-store';
 
 const temporaryDirectories: string[] = [];
@@ -645,6 +645,93 @@ describe('main-process desktop credential service', () => {
         'Access-Control-Request-Headers': 'X-ProPR-Desktop-Transport-Scope, Content-Type',
       },
     });
+  });
+
+  it('reports deterministic secret-free WebSocket decisions for positive and adversarial handshakes', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+    const evidence: DesktopWebSocketHandshakeEvidence[] = [];
+    const service = createCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async input => input.toString().endsWith('/api/desktop/discovery')
+        ? json(discovery)
+        : json({ username: 'octocat' }),
+      reportWebSocketHandshake: record => evidence.push(record),
+    });
+    const ready = await service.probe(profile);
+    assert.equal(ready.status, 'ready');
+    if (ready.status !== 'ready') return;
+    const activated = await service.activate(ready.activationTicket);
+    const socketUrl = (scope = activated.transportScope, origin = profile.apiBaseUrl) =>
+      `${origin.replace(/^http/, 'ws')}/socket.io/?EIO=4&transport=websocket&proprDesktopTransportScope=${scope}`;
+
+    assert.deepEqual(service.prepareRequest(socketUrl(), {
+      Authorization: 'Bearer renderer-controlled',
+      Cookie: 'renderer=session',
+    }, { resourceType: 'websocket' }).requestHeaders, { Authorization: `Bearer ${token('A')}` });
+    assert.deepEqual(evidence.at(-1), {
+      schemaVersion: 1,
+      path: 'socket-io',
+      transport: 'websocket',
+      resource: 'websocket',
+      scopeQueryPresent: true,
+      scopeQueryCount: 1,
+      scopeEqualsActive: true,
+      activeBindingPresent: true,
+      profileGenerationCurrent: true,
+      originEqualsActive: true,
+      rendererBearerPresent: true,
+      rendererCookiePresent: true,
+      outboundBearerPresent: true,
+      bearerMainInjected: true,
+      accepted: true,
+      rejectionCategory: 'none',
+    });
+
+    assert.deepEqual(service.prepareRequest(
+      `${profile.apiBaseUrl.replace(/^http/, 'ws')}/socket.io/?EIO=4&transport=websocket`,
+      {}, { resourceType: 'webSocket' },
+    ), { cancel: true });
+    assert.deepEqual({
+      present: evidence.at(-1)?.scopeQueryPresent,
+      count: evidence.at(-1)?.scopeQueryCount,
+      equal: evidence.at(-1)?.scopeEqualsActive,
+      category: evidence.at(-1)?.rejectionCategory,
+    }, { present: false, count: 0, equal: false, category: 'scope-missing' });
+    assert.deepEqual(service.prepareRequest(`${socketUrl()}&proprDesktopTransportScope=${activated.transportScope}`, {}, {
+      resourceType: 'webSocket',
+    }), { cancel: true });
+    assert.deepEqual({
+      present: evidence.at(-1)?.scopeQueryPresent,
+      count: evidence.at(-1)?.scopeQueryCount,
+      equal: evidence.at(-1)?.scopeEqualsActive,
+      category: evidence.at(-1)?.rejectionCategory,
+    }, { present: true, count: 2, equal: false, category: 'scope-duplicate' });
+    assert.deepEqual(service.prepareRequest(socketUrl('S'.repeat(22)), {}, { resourceType: 'webSocket' }), { cancel: true });
+    assert.deepEqual({
+      count: evidence.at(-1)?.scopeQueryCount,
+      equal: evidence.at(-1)?.scopeEqualsActive,
+      category: evidence.at(-1)?.rejectionCategory,
+    }, { count: 1, equal: false, category: 'stale-scope' });
+    assert.deepEqual(service.prepareRequest(socketUrl(activated.transportScope, 'https://b.example.test'), {}, {
+      resourceType: 'webSocket',
+    }), { cancel: true });
+    assert.deepEqual({
+      equal: evidence.at(-1)?.scopeEqualsActive,
+      originEqual: evidence.at(-1)?.originEqualsActive,
+      injected: evidence.at(-1)?.bearerMainInjected,
+      category: evidence.at(-1)?.rejectionCategory,
+    }, { equal: true, originEqual: false, injected: false, category: 'wrong-origin' });
+    assert.deepEqual(service.prepareRequest(socketUrl(), {}, { resourceType: 'xhr' }), { cancel: true });
+    assert.equal(evidence.at(-1)?.rejectionCategory, 'wrong-resource-type');
+
+    assert.equal(JSON.stringify(evidence).includes(activated.transportScope), false);
+    assert.equal(JSON.stringify(evidence).includes(token('A')), false);
+    assert.equal(JSON.stringify(evidence).includes('renderer-controlled'), false);
+    assert.equal(JSON.stringify(evidence).includes(profile.apiBaseUrl), false);
   });
 
   it('rotates scope on every same-profile reprobe and rejects a cold reconnect from the old activation', async () => {

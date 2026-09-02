@@ -8,7 +8,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { Server as SocketIOServer } from 'socket.io';
-import { DESKTOP_RENDERER_ORIGIN, PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY } from '@propr/shared';
+import {
+  DESKTOP_RENDERER_ORIGIN,
+  DESKTOP_TRANSPORT_SCOPE_QUERY,
+  PROPR_API_COMPATIBILITY,
+  PROPR_UI_COMPATIBILITY,
+  QUEUE_STATS_UPDATE,
+} from '@propr/shared';
 import {
   ACCEPTANCE_JOURNEYS,
   ACCEPTANCE_PROFILE_PREFIX,
@@ -53,6 +59,8 @@ const pageErrorRecords = [];
 const processRecords = [];
 const requestRecords = [];
 const socketRecords = [];
+const fixtureHandshakeRecords = [];
+const mainHandshakeRecords = [];
 const screenshotMetadata = [];
 const accessibilityChecks = [];
 const axeFindings = [];
@@ -69,6 +77,61 @@ let traceWritten = false;
 const digest = value => createHash('sha256').update(value).digest('hex');
 const unique = values => [...new Set(values)].sort((a, b) => ACCEPTANCE_JOURNEYS.indexOf(a) - ACCEPTANCE_JOURNEYS.indexOf(b));
 const sleep = milliseconds => new Promise(resolveValue => setTimeout(resolveValue, milliseconds));
+const MAIN_HANDSHAKE_EVENT = 'desktop.acceptance.websocket_handshake';
+const MAIN_HANDSHAKE_CATEGORIES = new Set([
+  'none', 'untrusted-http-origin', 'wrong-path', 'wrong-transport', 'wrong-resource-type',
+  'scope-missing', 'scope-duplicate', 'scope-malformed', 'no-active-binding',
+  'stale-generation', 'wrong-origin', 'stale-scope',
+]);
+
+const captureMainHandshakeEvidence = (line, journey) => {
+  if (!line.includes(MAIN_HANDSHAKE_EVENT)) return;
+  try {
+    const record = JSON.parse(line.slice(line.indexOf('{')));
+    const evidence = {
+      schemaVersion: record.schemaVersion,
+      path: record.path,
+      transport: record.transport,
+      resource: record.resource,
+      scopeQueryPresent: record.scopeQueryPresent,
+      scopeQueryCount: record.scopeQueryCount,
+      scopeEqualsActive: record.scopeEqualsActive,
+      activeBindingPresent: record.activeBindingPresent,
+      profileGenerationCurrent: record.profileGenerationCurrent,
+      originEqualsActive: record.originEqualsActive,
+      rendererBearerPresent: record.rendererBearerPresent,
+      rendererCookiePresent: record.rendererCookiePresent,
+      outboundBearerPresent: record.outboundBearerPresent,
+      bearerMainInjected: record.bearerMainInjected,
+      accepted: record.accepted,
+      rejectionCategory: record.rejectionCategory,
+    };
+    const valid = record.event === MAIN_HANDSHAKE_EVENT
+      && evidence.schemaVersion === 1
+      && ['socket-io', 'other'].includes(evidence.path)
+      && ['websocket', 'other'].includes(evidence.transport)
+      && ['websocket', 'other'].includes(evidence.resource)
+      && Number.isSafeInteger(evidence.scopeQueryCount) && evidence.scopeQueryCount >= 0
+      && MAIN_HANDSHAKE_CATEGORIES.has(evidence.rejectionCategory)
+      && [
+        evidence.scopeQueryPresent,
+        evidence.scopeEqualsActive,
+        evidence.activeBindingPresent,
+        evidence.profileGenerationCurrent,
+        evidence.originEqualsActive,
+        evidence.rendererBearerPresent,
+        evidence.rendererCookiePresent,
+        evidence.outboundBearerPresent,
+        evidence.bearerMainInjected,
+        evidence.accepted,
+      ].every(value => typeof value === 'boolean');
+    mainHandshakeRecords.push(valid
+      ? { journey, ...evidence }
+      : { journey, accepted: false, rejectionCategory: 'invalid-main-evidence' });
+  } catch {
+    mainHandshakeRecords.push({ journey, accepted: false, rejectionCategory: 'invalid-main-evidence' });
+  }
+};
 
 await access(binaryPath, fsConstants.X_OK);
 const binaryStats = await lstat(binaryPath);
@@ -89,6 +152,19 @@ const json = (response, status, value, extra = {}) => {
 };
 
 const fixtures = [];
+const fixtureHandshakeCategory = evidence => {
+  if (evidence.path !== 'socket-io') return 'wrong-path';
+  if (evidence.transport !== 'websocket') return 'wrong-transport';
+  if (evidence.resource !== 'websocket-upgrade') return 'wrong-resource-type';
+  if (evidence.scopeQueryCount === 0) return 'scope-missing';
+  if (evidence.scopeQueryCount !== 1) return 'scope-duplicate';
+  if (!evidence.scopeQueryWellFormed) return 'scope-malformed';
+  if (evidence.cookiePresent) return 'cookie-present';
+  if (!evidence.authorizationPresent) return 'authorization-missing';
+  if (!evidence.authorizationMatchesActivatedBearer) return 'authorization-mismatch';
+  return 'none';
+};
+
 const createFixture = async (mode, fixedOrigin) => {
   const expectedUrl = new URL(fixedOrigin);
   let binding = null;
@@ -162,12 +238,65 @@ const createFixture = async (mode, fixedOrigin) => {
     if (request.url?.startsWith('/api/')) return json(response, 200, { agents: [], repositories: [], items: [], count: 0 });
     return json(response, 404, { code: 'NOT_FOUND' });
   });
-  const io = new SocketIOServer(server, { path: '/socket.io/', cors: { origin: DESKTOP_RENDERER_ORIGIN, credentials: false } });
-  io.use((socket, next) => socket.handshake.headers.authorization === `Bearer ${INSTANCE_TOKEN}` ? next() : next(new Error('INVALID_INSTANCE_TOKEN')));
+  const io = new SocketIOServer(server, {
+    path: '/socket.io/',
+    transports: ['websocket'],
+    cors: { origin: DESKTOP_RENDERER_ORIGIN, credentials: false },
+  });
+  io.engine.use((request, _response, next) => {
+    const requestUrl = new URL(request.url || '/', 'http://fixture.invalid');
+    const queryScopes = requestUrl.searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
+    const evidence = {
+      journey: activeJourney,
+      mode,
+      path: requestUrl.pathname === '/socket.io/' ? 'socket-io' : 'other',
+      transport: requestUrl.searchParams.getAll('transport').length === 1
+        && requestUrl.searchParams.get('transport') === 'websocket' ? 'websocket' : 'other',
+      resource: request.method === 'GET' && request.headers.upgrade?.toLowerCase() === 'websocket'
+        ? 'websocket-upgrade' : 'other',
+      scopeQueryPresent: queryScopes.length > 0,
+      scopeQueryCount: queryScopes.length,
+      scopeQueryWellFormed: queryScopes.length === 1 && /^[A-Za-z0-9_-]{22}$/.test(queryScopes[0]),
+      authorizationPresent: typeof request.headers.authorization === 'string',
+      authorizationMatchesActivatedBearer: request.headers.authorization === `Bearer ${INSTANCE_TOKEN}`,
+      cookiePresent: typeof request.headers.cookie === 'string',
+      accepted: false,
+      rejectionCategory: 'none',
+    };
+    evidence.rejectionCategory = fixtureHandshakeCategory(evidence);
+    evidence.accepted = evidence.rejectionCategory === 'none';
+    fixtureHandshakeRecords.push(evidence);
+    if (!evidence.accepted) {
+      next(new Error('PACKAGED_ACCEPTANCE_SOCKET_REJECTED'));
+      return;
+    }
+    next();
+  });
+  io.use((socket, next) => {
+    const queryScopes = new URL(socket.handshake.url, 'http://fixture.invalid').searchParams
+      .getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
+    if (socket.handshake.headers.authorization !== `Bearer ${INSTANCE_TOKEN}` || queryScopes.length !== 1) {
+      next(new Error('PACKAGED_ACCEPTANCE_SOCKET_REJECTED'));
+      return;
+    }
+    next();
+  });
   io.on('connection', socket => {
     const journey = activeJourney;
     socketRecords.push({ journey, mode, event: 'connection', authenticated: socket.handshake.headers.authorization === `Bearer ${INSTANCE_TOKEN}` });
-    socket.onAny(event => socketRecords.push({ journey, mode, event, authenticated: true }));
+    socket.emit(QUEUE_STATS_UPDATE, {
+      eventType: QUEUE_STATS_UPDATE,
+      stats: { waiting: 0, active: 0, completed: 12, failed: 0, delayed: 0, total: 12 },
+      timestamp: FIXED_TIME,
+    });
+    socketRecords.push({
+      journey,
+      mode,
+      event: QUEUE_STATS_UPDATE,
+      authenticated: true,
+      direction: 'fixture-to-renderer',
+      genuineApplicationEvent: true,
+    });
   });
   server.listen(Number(expectedUrl.port), expectedUrl.hostname);
   await Promise.race([
@@ -253,14 +382,20 @@ const launchApplication = async (scenario, initialDeepLink) => {
     let resolveEndpoint;
     let rejectEndpoint;
     const endpoint = new Promise((resolveValue, rejectValue) => { resolveEndpoint = resolveValue; rejectEndpoint = rejectValue; });
-    const capture = chunk => {
-      const text = chunk.toString();
-      output += text;
-      const match = text.match(/DevTools listening on (ws:\/\/[^\s]+)/);
-      if (match) resolveEndpoint(match[1]);
+    const capture = () => {
+      let remainder = '';
+      return chunk => {
+        const text = chunk.toString();
+        output += text;
+        const match = text.match(/DevTools listening on (ws:\/\/[^\s]+)/);
+        if (match) resolveEndpoint(match[1]);
+        const lines = `${remainder}${text}`.split(/\r?\n/);
+        remainder = lines.pop() || '';
+        lines.forEach(line => captureMainHandshakeEvidence(line, activeJourney));
+      };
     };
-    child.stdout.on('data', capture);
-    child.stderr.on('data', capture);
+    child.stdout.on('data', capture());
+    child.stderr.on('data', capture());
     child.once('error', rejectEndpoint);
     child.once('close', code => rejectEndpoint(new Error(`Packaged Electron exited before CDP startup (${code ?? 'signal'})`)));
     const timeout = setTimeout(() => rejectEndpoint(new Error('Packaged Electron CDP endpoint did not start')), 20_000);
@@ -574,23 +709,111 @@ const waitForObserved = async (predicate, description) => {
   }
 };
 
+const socketHandshakeFailureCategory = journey => {
+  const rejectedMain = mainHandshakeRecords.find(record => record.journey === journey && !record.accepted);
+  if (rejectedMain) return `main-${rejectedMain.rejectionCategory}`;
+  const rejectedFixture = fixtureHandshakeRecords.find(record => record.journey === journey && !record.accepted);
+  if (rejectedFixture) return `fixture-${rejectedFixture.rejectionCategory}`;
+  const mainAccepted = mainHandshakeRecords.filter(record => record.journey === journey && record.accepted);
+  const fixtureAccepted = fixtureHandshakeRecords.filter(record => record.journey === journey && record.accepted);
+  const connected = socketRecords.filter(record => record.journey === journey
+    && record.event === 'connection' && record.authenticated);
+  if (mainAccepted.length > 1) return 'duplicate-main-upgrade';
+  if (fixtureAccepted.length > 1) return 'duplicate-fixture-upgrade';
+  if (connected.length > 1) return 'duplicate-authenticated-connection';
+  if (mainAccepted.length === 1 && fixtureAccepted.length === 0) return 'fixture-not-reached';
+  if (fixtureAccepted.length === 1 && connected.length === 0) return 'namespace-not-connected';
+  if (connected.length === 1 && !socketRecords.some(record => record.journey === journey
+    && record.genuineApplicationEvent === true)) return 'application-event-not-produced';
+  if (connected.length === 1) return 'renderer-application-event-not-observed';
+  return 'renderer-upgrade-not-produced';
+};
+
+const waitForAuthenticatedSocket = async journey => {
+  const deadline = Date.now() + 15_000;
+  while (true) {
+    const mainAccepted = mainHandshakeRecords.filter(record => record.journey === journey && record.accepted);
+    const fixtureAccepted = fixtureHandshakeRecords.filter(record => record.journey === journey && record.accepted);
+    const connected = socketRecords.filter(record => record.journey === journey
+      && record.event === 'connection' && record.authenticated);
+    const applicationEvents = socketRecords.filter(record => record.journey === journey
+      && record.genuineApplicationEvent === true && record.direction === 'fixture-to-renderer');
+    const rendererObservedApplicationEvent = consoleRecords.some(record => record.journey === journey
+      && record.text.startsWith('[SocketContext] Received queue stats update:'));
+    if (mainAccepted.length === 1 && fixtureAccepted.length === 1
+      && connected.length === 1 && applicationEvents.length >= 1 && rendererObservedApplicationEvent) return;
+    const category = socketHandshakeFailureCategory(journey);
+    if (category.startsWith('main-') || category.startsWith('fixture-') || category.startsWith('duplicate-')) {
+      throw new Error(`Acceptance Socket.IO handshake failed: ${category}`);
+    }
+    if (Date.now() >= deadline) throw new Error(`Acceptance Socket.IO handshake failed: ${category}`);
+    await sleep(50);
+  }
+};
+
 const observedServiceSummary = () => {
   const restRequests = requestRecords.filter(record => record.method !== 'OPTIONS' && record.url.startsWith('/api/'));
   const authenticatedRequests = restRequests.filter(record => record.hasAuthorization);
   const socketConnections = socketRecords.filter(record => record.event === 'connection' && record.authenticated);
-  const socketEvents = socketRecords.filter(record => record.event !== 'connection');
+  const socketEvents = socketRecords.filter(record => record.genuineApplicationEvent === true
+    && record.direction === 'fixture-to-renderer');
+  const mainHandshakes = mainHandshakeRecords.filter(record => record.journey === 'dashboard-profile-manager' && record.accepted);
+  const fixtureHandshakes = fixtureHandshakeRecords.filter(record => record.journey === 'dashboard-profile-manager' && record.accepted);
+  const mainHandshake = mainHandshakes[0];
+  const fixtureHandshake = fixtureHandshakes[0];
+  const rendererObservedApplicationEvent = consoleRecords.some(record => record.journey === 'dashboard-profile-manager'
+    && record.text.startsWith('[SocketContext] Received queue stats update:'));
   const pairingStarted = requestRecords.filter(record => record.method === 'POST' && record.url === '/api/desktop/pairings');
   const pairingPolled = requestRecords.filter(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/poll`);
   const pairingActivated = requestRecords.filter(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/activate`);
   const connectConfirmed = requestRecords.filter(record => record.journey === 'connect-confirmation' && record.url === '/api/desktop/discovery');
   const services = {
     rest: { requestCount: restRequests.length, authenticatedRequestCount: authenticatedRequests.length, journeys: unique(restRequests.map(record => record.journey)) },
-    socketIo: { authenticatedConnections: socketConnections.length, events: socketEvents.length, journeys: unique(socketRecords.map(record => record.journey)) },
+    socketIo: {
+      authenticatedConnections: socketConnections.length,
+      events: socketEvents.length,
+      journeys: unique(socketRecords.map(record => record.journey)),
+      handshake: {
+        mainAttempts: mainHandshakes.length,
+        fixtureAttempts: fixtureHandshakes.length,
+        scopeQueryPresent: mainHandshake?.scopeQueryPresent === true && fixtureHandshake?.scopeQueryPresent === true,
+        scopeQueryCount: mainHandshake?.scopeQueryCount ?? 0,
+        scopeEqualsActivatedBinding: mainHandshake?.scopeEqualsActive === true,
+        activeBindingPresent: mainHandshake?.activeBindingPresent === true,
+        profileGenerationCurrent: mainHandshake?.profileGenerationCurrent === true,
+        originEqualsActivatedBinding: mainHandshake?.originEqualsActive === true,
+        path: mainHandshake?.path ?? 'other',
+        transport: mainHandshake?.transport ?? 'other',
+        resource: mainHandshake?.resource ?? 'other',
+        rendererBearerPresent: mainHandshake?.rendererBearerPresent ?? false,
+        rendererCookiePresent: mainHandshake?.rendererCookiePresent ?? false,
+        authorizationHeaderPresent: fixtureHandshake?.authorizationPresent ?? false,
+        authorizationHeaderExactlyMainInjected: mainHandshake?.bearerMainInjected === true
+          && fixtureHandshake?.authorizationMatchesActivatedBearer === true,
+        rendererObservedApplicationEvent,
+        rejectionCategory: mainHandshake?.rejectionCategory ?? socketHandshakeFailureCategory('dashboard-profile-manager'),
+      },
+    },
     pairing: { started: pairingStarted.length, polled: pairingPolled.length, activated: pairingActivated.length, journeys: unique([...pairingStarted, ...pairingPolled, ...pairingActivated].map(record => record.journey)) },
     connect: { confirmedRequests: connectConfirmed.length, journeys: unique(connectConfirmed.map(record => record.journey)) },
   };
   if (services.rest.requestCount <= 0 || services.rest.authenticatedRequestCount <= 0
-    || services.socketIo.authenticatedConnections <= 0 || services.socketIo.events <= 0
+    || services.socketIo.authenticatedConnections !== 1 || services.socketIo.events <= 0
+    || services.socketIo.handshake.mainAttempts !== 1 || services.socketIo.handshake.fixtureAttempts !== 1
+    || !services.socketIo.handshake.scopeQueryPresent || services.socketIo.handshake.scopeQueryCount !== 1
+    || !services.socketIo.handshake.scopeEqualsActivatedBinding
+    || !services.socketIo.handshake.activeBindingPresent
+    || !services.socketIo.handshake.profileGenerationCurrent
+    || !services.socketIo.handshake.originEqualsActivatedBinding
+    || services.socketIo.handshake.path !== 'socket-io'
+    || services.socketIo.handshake.transport !== 'websocket'
+    || services.socketIo.handshake.resource !== 'websocket'
+    || services.socketIo.handshake.rendererBearerPresent
+    || services.socketIo.handshake.rendererCookiePresent
+    || !services.socketIo.handshake.authorizationHeaderPresent
+    || !services.socketIo.handshake.authorizationHeaderExactlyMainInjected
+    || !services.socketIo.handshake.rendererObservedApplicationEvent
+    || services.socketIo.handshake.rejectionCategory !== 'none'
     || services.pairing.started <= 0 || services.pairing.polled <= 0 || services.pairing.activated <= 0
     || services.connect.confirmedRequests <= 0) {
     throw new Error(`Acceptance packaged-renderer service journeys were incomplete: ${JSON.stringify(services)}`);
@@ -665,8 +888,7 @@ try {
         && journeyRequests.some(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/poll`)
         && journeyRequests.some(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/activate`);
     }, `the complete pairing flow for ${PAIRING_ID}`);
-    await waitForObserved(() => socketRecords.some(record => record.journey === 'dashboard-profile-manager' && record.authenticated), 'an authenticated Socket.IO connection');
-    await waitForObserved(() => socketRecords.some(record => record.journey === 'dashboard-profile-manager' && record.event !== 'connection'), 'an authenticated renderer Socket.IO event');
+    await waitForAuthenticatedSocket('dashboard-profile-manager');
     await application.context.tracing.start({ screenshots: true, snapshots: true, sources: false });
     await opener.focus();
     await opener.click();
@@ -725,7 +947,7 @@ try {
 
   const services = observedServiceSummary();
   const sanitizedSummary = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     generatedAt: FIXED_TIME,
     status: 'passed',
     journeys: ACCEPTANCE_JOURNEYS.length,
@@ -758,6 +980,8 @@ try {
     surfaces.push({ kind: 'renderer-page-errors', records: pageErrorRecords });
     surfaces.push({ kind: 'service-urls', records: requestRecords });
     surfaces.push({ kind: 'socket-events', records: socketRecords });
+    surfaces.push({ kind: 'socket-main-handshakes', records: mainHandshakeRecords });
+    surfaces.push({ kind: 'socket-fixture-handshakes', records: fixtureHandshakeRecords });
     surfaces.push({ kind: 'screenshot-metadata', records: screenshotMetadata });
     surfaces.push({ kind: 'accessibility-metadata', value: accessibility });
     await writeFile(join(scanRoot, 'complete-renderer-process-network-and-metadata-surfaces.json'), JSON.stringify(surfaces), { mode: 0o600 });

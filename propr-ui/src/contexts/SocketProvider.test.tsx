@@ -14,7 +14,7 @@ const sockets = vi.hoisted(() => [] as Array<{
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
 }>);
-const connectSocketMock = vi.hoisted(() => vi.fn(() => {
+const connectSocketMock = vi.hoisted(() => vi.fn((_options?: Record<string, unknown>) => {
   const handlers = new Map<string, Handler>();
   const socket = {
     handlers,
@@ -90,8 +90,13 @@ describe('SocketProvider', () => {
     expect(connectSocketMock).toHaveBeenCalledOnce();
     expect(connectSocketMock).toHaveBeenCalledWith(expect.objectContaining({
       forceNew: true,
+      withCredentials: false,
       query: { proprDesktopTransportScope: 'AAAAAAAAAAAAAAAAAAAAAA' },
     }));
+    const options = connectSocketMock.mock.calls[0][0];
+    expect(Object.prototype.hasOwnProperty.call(options, 'auth')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(options, 'extraHeaders')).toBe(false);
+    expect(JSON.stringify(options)).not.toMatch(/bearer|authorization|cookie/i);
   });
 
   it.each([

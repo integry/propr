@@ -163,7 +163,6 @@ const listenTransportFixture = async name => {
   io.of('/').use((socket, next) => {
     const queryScopes = new URL(socket.handshake.url, 'http://fixture.invalid').searchParams
       .getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
-    const activationScope = socket.handshake.auth?.[DESKTOP_TRANSPORT_SCOPE_QUERY];
     const record = {
       fixture: name,
       method: 'SOCKET.IO',
@@ -177,7 +176,8 @@ const listenTransportFixture = async name => {
     };
     requests.push(record);
     if (!/^Bearer propr_it_[A-Za-z0-9_-]{43}$/.test(record.authorization ?? '')
-      || queryScopes.length !== 1 || typeof activationScope !== 'string' || activationScope !== queryScopes[0]) {
+      || queryScopes.length !== 1 || !/^[A-Za-z0-9_-]{22}$/.test(queryScopes[0])
+      || Object.keys(socket.handshake.auth).length !== 0) {
       const error = new Error(INVALID_INSTANCE_TOKEN);
       error.data = { code: INVALID_INSTANCE_TOKEN };
       next(error);
