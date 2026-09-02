@@ -348,23 +348,23 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
 
     const run = worker.runOnce();
     await started;
-    await database('push_subscriptions')
-      .where({ subscription_id: subscription.id })
-      .update({
-        p256dh_key: refreshedPublicKey,
-        auth_key: refreshedAuthKey,
-      });
-    const refreshed = await database('push_subscriptions')
-      .where({ subscription_id: subscription.id })
-      .first();
-    assert.notEqual(refreshed.updated_at, original.updated_at);
-    assert.equal(refreshed.p256dh_key, refreshedPublicKey);
-    assert.equal(refreshed.auth_key, refreshedAuthKey);
-    returnStaleResponse();
+    try {
+      await database('push_subscriptions')
+        .where({ subscription_id: subscription.id })
+        .update({
+          p256dh_key: refreshedPublicKey,
+          auth_key: refreshedAuthKey,
+        });
+    } finally {
+      // Never strand the dispatcher behind the test gate when the concurrent
+      // database update fails; teardown would otherwise wait for it forever.
+      returnStaleResponse();
+    }
     assert.equal(await run, 1);
     const stored = await database('push_subscriptions')
       .where({ subscription_id: subscription.id })
       .first();
+    assert.notEqual(stored.updated_at, original.updated_at);
     assert.equal(stored.revoked_at, null);
     assert.equal(stored.p256dh_key, refreshedPublicKey);
     assert.equal(stored.auth_key, refreshedAuthKey);

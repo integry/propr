@@ -30,11 +30,15 @@ import path from 'path';
 import { randomBytes } from 'node:crypto';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
+import { buildAntigravityContainerName } from './utils/antigravityContainerName.js';
 import {
     buildAntigravityRepositoryScoutMcpConfig,
     buildAntigravityRepositoryScoutPermissions,
     REPOSITORY_SCOUT_CONTAINER_ROOT,
 } from './utils/repositoryScoutMcpServer.js';
+import {
+    readBoundedProviderOutputFile,
+} from './utils/boundedProviderOutput.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -80,12 +84,17 @@ function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyW
     }
 }
 
+function antigravityConfigMountTarget(executionMode: 'task' | 'goal'): string {
+    return executionMode === 'goal' ? '/home/node/.gemini' : ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH;
+}
+
 function getAntigravityTranscriptRoot(): string {
     return process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT || DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT;
 }
 
 export class AntigravityAgent implements Agent {
     readonly config: AgentConfig;
+    readonly goalCapable = true;
     private readonly timeoutMs: number;
 
     constructor(config: AgentConfig) {
@@ -95,10 +104,6 @@ export class AntigravityAgent implements Agent {
 
     private getRuntimeName(): 'antigravity' {
         return 'antigravity';
-    }
-
-    private getContainerConfigPath(): string {
-        return ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH;
     }
 
     private getCliCommand(): string {
@@ -123,7 +128,7 @@ export class AntigravityAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, environment, taskId, prNumber } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, environment, taskId, prNumber, executionMode = 'task', resumeSessionId, resumeConversationId } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const transcriptPath = this.createTransientTranscriptPath(taskId);
@@ -134,10 +139,10 @@ export class AntigravityAgent implements Agent {
         }, isRetry ? 'Starting Antigravity agent execution (RETRY)...' : 'Starting Antigravity agent execution...');
 
         try {
-            const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
+            const prompt = executionMode === 'goal' ? customPrompt : this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId, transcriptPath });
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId, transcriptPath, executionMode, resumeConversationId: resumeConversationId || resumeSessionId });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
@@ -148,7 +153,7 @@ export class AntigravityAgent implements Agent {
             );
 
             const executionTime = Date.now() - startTime;
-            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath });
+            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath });
         } catch (error) {
             return this.handleExecutionError(error, Date.now() - startTime, issueRef, effectiveModel);
         } finally {
@@ -166,15 +171,14 @@ export class AntigravityAgent implements Agent {
     private async processExecutionResult(opts: {
         result: { stdout: string; stderr: string; exitCode: number | null; timedOut?: boolean }; executionTime: number;
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined;
-        prompt: string; worktreePath: string; worktreeGitContent: string | null; onSessionId?: (sessionId: string, conversationId?: string) => void;
+        prompt: string; worktreePath: string; worktreeGitContent: string | null;
         taskId?: string; prNumber?: number; isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
         transcriptPath?: string;
     }): Promise<AgentExecutionResult> {
-        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath } = opts;
+        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath } = opts;
         logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Antigravity agent execution completed');
 
-        const parsed = this.resolveSessionOutput(result.stdout, transcriptPath, onSessionId);
-        const { response } = await parsed;
+        const { response } = await this.resolveSessionOutput(result.stdout, transcriptPath);
 
         const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
         const modelIdentity = resolveAntigravityModelIdentity(response.modelUsed, effectiveModel, response.hasStreamEnvelopes); const resolvedModel = modelIdentity.modelUsed;
@@ -184,7 +188,8 @@ export class AntigravityAgent implements Agent {
         const agentResult: AgentExecutionResult = {
             success, executionTimeMs: executionTime,
             logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
-            exitCode: result.exitCode, rawOutput: result.stdout, modelUsed: resolvedModel, modifiedFiles: [],
+            exitCode: result.exitCode, rawOutput: result.stdout, modelUsed: resolvedModel,
+            providerModel: response.modelUsed, modifiedFiles: [],
             commitMessage: null, summary: response.summary ?? undefined, prompt, sessionId: response.sessionId, conversationId: response.conversationId, conversationLog: response.conversationLog,
             tokenUsage: finalTokenUsage, usageMetrics: usageMetrics ?? undefined,
             error: success ? undefined : result.stderr || executionError || 'Antigravity execution failed',
@@ -198,7 +203,7 @@ export class AntigravityAgent implements Agent {
         return agentResult;
     }
 
-    private async resolveSessionOutput(stdout: string, transcriptPath?: string, onSessionId?: (sessionId: string, conversationId?: string) => void) {
+    private async resolveSessionOutput(stdout: string, transcriptPath?: string) {
         const parsedOutput = parseAntigravityJsonl(stdout);
         const sessionOutput = await this.readTransientSessionOutput(transcriptPath, parsedOutput.sessionId);
         const sessionId = sessionOutput.sessionId || parsedOutput.sessionId;
@@ -211,7 +216,6 @@ export class AntigravityAgent implements Agent {
         const evidenceConflict = resolveAntigravityEvidenceConflict(parsedOutput.modelUsed, sessionOutput.modelUsed, parsedOutput.conversationId, sessionOutput.conversationId); const modelUsed = evidenceConflict ? undefined : parsedOutput.modelUsed || sessionOutput.modelUsed;
         const terminalStatus: 'success' | 'error' | undefined = parsedOutput.terminalStatus === 'error' || sessionOutput.terminalStatus === 'error' ? 'error' : parsedOutput.terminalStatus || sessionOutput.terminalStatus;
         const protocolError = resolveAntigravityProtocolError(parsedOutput.terminalStatus, parsedOutput.protocolError, parsedOutput.hasStreamEnvelopes) ?? resolveAntigravityProtocolError(sessionOutput.terminalStatus, sessionOutput.protocolError, sessionOutput.hasStreamEnvelopes) ?? evidenceConflict; const hasStreamEnvelopes = parsedOutput.hasStreamEnvelopes || sessionOutput.hasStreamEnvelopes;
-        if (sessionId && onSessionId) onSessionId(sessionId, conversationId);
         // rawConversationLog (full agentic trace: file views, searches, command
         // output, code edits) is kept for token estimation; conversationLog is
         // filtered and converted to the Claude-shaped representation consumed by
@@ -237,7 +241,7 @@ export class AntigravityAgent implements Agent {
     private async readTransientSessionOutput(transcriptPath: string | undefined, parsedSessionId?: string): Promise<{ sessionId: string | undefined; conversationId?: string; summary: string | undefined; conversationLog: AntigravityOutputEvent[]; tokenUsage?: TokenUsage; modelUsed?: string; terminalStatus?: 'success' | 'error'; protocolError?: string; hasStreamEnvelopes: boolean }> {
         if (!transcriptPath) return { sessionId: parsedSessionId, summary: undefined, conversationLog: [], hasStreamEnvelopes: false };
         try {
-            const transcript = await fs.promises.readFile(transcriptPath, 'utf8');
+            const transcript = await readBoundedProviderOutputFile(transcriptPath);
             const parsed = parseAntigravityJsonl(transcript);
             return {
                 sessionId: parsed.sessionId || parsedSessionId,
@@ -433,24 +437,26 @@ export class AntigravityAgent implements Agent {
         return ['set -e', `exec ${this.getCliCommand()} ${safetyArgs} "$@"`].join('\n');
     }
 
-    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean }): string[] {
-        const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false } = params;
+    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string }): string[] {
+        const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false, executionMode = 'task', resumeConversationId } = params;
         assertRepositoryInspectionMode(repositoryInspection, readOnlyWorkspace);
         const configPath = this.getHostConfigPath();
+        const configMountTarget = antigravityConfigMountTarget(executionMode);
         const envVars = buildAgentEnvironmentArgs(repositoryInspection, this.config.envVars, environment);
         const shortTaskId = createContainerExecutionId(taskId);
-        const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
+        const taskType = executionMode === 'goal' ? 'goal' : executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
         const runtimeName = this.getRuntimeName();
-        const containerName = this.buildContainerName(this.config.alias || runtimeName, taskType, shortTaskId, modelName);
+        const containerName = buildAntigravityContainerName(this.config.alias || runtimeName, taskType, shortTaskId, modelName);
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
             ...(repositoryInspection ? [] : ['-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`]),
-            '-v', `${configPath}:${this.getContainerConfigPath()}:rw`,
+            '-v', `${configPath}:${configMountTarget}:rw`,
             ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
             '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true',
             ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
-            '-e', 'PROPR_EPHEMERAL_STATE=1', '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${this.getContainerConfigPath()}`,
+            ...(executionMode === 'task' ? ['-e', 'PROPR_EPHEMERAL_STATE=1'] : []),
+            '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${configMountTarget}`,
             ...(repositoryInspection ? [
                 '-e', 'PROPR_REPOSITORY_INSPECTION=1',
                 '-e', `PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG=${buildAntigravityRepositoryScoutMcpConfig()}`,
@@ -471,18 +477,9 @@ export class AntigravityAgent implements Agent {
             dockerArgs.push('--model', cleanModelName);
             logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Antigravity agent');
         } else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Antigravity agent will use default'); }
+        if (executionMode === 'goal' && resumeConversationId) dockerArgs.push('--conversation', resumeConversationId);
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Antigravity agent');
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, runtimeName);
-    }
-
-    private buildContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
-        const suffix = `-${shortTaskId}`;
-        const rawPrefix = modelName
-            ? `${alias}-${taskType}-${modelName}`
-            : `${alias}-${taskType}`;
-        const maxPrefixLength = Math.max(1, 120 - suffix.length);
-        const sanitizedPrefix = rawPrefix.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, maxPrefixLength).replace(/[^a-zA-Z0-9]+$/, '');
-        return `${sanitizedPrefix || 'antigravity'}${suffix}`.slice(0, 128);
     }
 
 }

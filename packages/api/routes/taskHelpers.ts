@@ -83,6 +83,9 @@ export async function getTasksFromDb(
   `;
 
   const baseQuery = db('tasks as t')
+    .where(function() {
+      this.whereNull('t.task_type').orWhereNot('t.task_type', 'goal');
+    })
     .join(latestHistorySubquery, function() {
       this.on('t.task_id', '=', 'h.task_id').andOn('h.rn', '=', db!.raw('?', [1]));
     })

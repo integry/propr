@@ -10,6 +10,15 @@ import { parseVibeTranscriptOutput, processVibeEvent } from './redisOutputParser
 /** Result from parsing Redis output */
 export interface ParsedRedisOutput {
   events: ConversationEvent[]; todos: TodoItem[]; currentTask: string | null; tokenUsage: TokenUsageInfo | null; totalEventCount: number;
+  nativeGoal: NativeGoalProjection | null;
+}
+
+export interface NativeGoalProjection {
+  objective: string;
+  status: string;
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
 }
 
 export interface RedisOutputParseOptions {
@@ -32,6 +41,7 @@ interface ParseState {
   emittedAntigravityToolUseIds: Set<string>;
   emittedOpenCodeToolUseIds: Set<string>;
   emittedOpenCodeToolResultIds: Set<string>;
+  nativeGoal: NativeGoalProjection | null;
 }
 
 interface OpenCodeRedisEventUsage {
@@ -70,6 +80,20 @@ interface CodexItem {
   exit_code?: number;
   changes?: Array<{ kind: string; path: string }>;
   items?: Array<{ text: string; completed: boolean }>;
+}
+
+interface CodexAppServerEvent {
+  id?: number;
+  method?: string;
+  error?: { message?: string };
+  params?: {
+    item?: Record<string, unknown>;
+    plan?: Array<{ step?: string; status?: string }>;
+    tokenUsage?: Record<string, unknown>;
+    usage?: Record<string, unknown>;
+    message?: string;
+    goal?: Record<string, unknown>;
+  };
 }
 
 /** Max content length for truncation */
@@ -223,6 +247,89 @@ function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseSta
     default:
       return false;
   }
+}
+
+function appServerUsage(event: CodexAppServerEvent): ParseState['tokenUsage'] | null {
+  const params = event.params ?? {};
+  const outer = (params.tokenUsage ?? params.usage ?? {}) as Record<string, unknown>;
+  const usage = (outer.total ?? outer) as Record<string, unknown>;
+  const normalized = {
+    input_tokens: Number(usage.inputTokens ?? usage.input_tokens ?? 0),
+    output_tokens: Number(usage.outputTokens ?? usage.output_tokens ?? 0),
+    cache_creation_input_tokens: Number(usage.cacheCreationInputTokens ?? usage.cache_creation_input_tokens ?? 0),
+    cache_read_input_tokens: Number(usage.cachedInputTokens ?? usage.cache_read_input_tokens ?? 0),
+  };
+  return hasRedisTokenUsage(normalized) ? normalized : null;
+}
+
+function processAppServerItem(item: Record<string, unknown>, timestamp: string, state: ParseState): void {
+  const type = item.type;
+  if (type === 'agentMessage' && typeof item.text === 'string') {
+    state.events.push({ type: 'thought', content: truncateContent(item.text), timestamp });
+    return;
+  }
+  if (type === 'reasoning') {
+    const summary = Array.isArray(item.summary) ? item.summary.join('\n') : textFromValue(item.summary);
+    if (summary) state.events.push({ type: 'thought', content: truncateContent(summary), timestamp });
+    return;
+  }
+  if (type === 'commandExecution') {
+    state.events.push({ type: 'tool_use', toolName: 'Bash', input: { command: item.command }, timestamp });
+    if (typeof item.aggregatedOutput === 'string') {
+      state.events.push({ type: 'tool_result', result: truncateContent(item.aggregatedOutput), isError: Number(item.exitCode ?? 0) !== 0, timestamp });
+    }
+    return;
+  }
+  if (type === 'fileChange' && Array.isArray(item.changes)) {
+    state.events.push({ type: 'tool_use', toolName: 'FileChange', input: { changes: item.changes }, timestamp });
+    return;
+  }
+  if (type === 'mcpToolCall' || type === 'dynamicToolCall' || type === 'collabToolCall') {
+    const toolName = String(item.tool ?? item.server ?? type);
+    state.events.push({ type: 'tool_use', toolName, input: (item.arguments ?? {}) as Record<string, unknown>, timestamp });
+    if (item.result || item.error) state.events.push({ type: 'tool_result', result: item.result ?? item.error, isError: Boolean(item.error), timestamp });
+  }
+}
+
+function processAppServerPlan(event: CodexAppServerEvent, state: ParseState): void {
+  state.todos = (event.params?.plan ?? []).map((entry, index) => ({
+      id: `plan-${index}`,
+      content: entry.step || `Step ${index + 1}`,
+      status: entry.status === 'completed' ? 'completed' : entry.status === 'inProgress' ? 'in_progress' : 'pending',
+  }));
+}
+
+function processAppServerGoal(event: CodexAppServerEvent, state: ParseState): void {
+  const goal = event.params?.goal;
+  if (typeof goal?.objective !== 'string' || typeof goal.status !== 'string') return;
+  state.nativeGoal = {
+    objective: goal.objective,
+    status: goal.status,
+    tokenBudget: typeof goal.tokenBudget === 'number' ? goal.tokenBudget : null,
+    tokensUsed: Number(goal.tokensUsed ?? 0),
+    timeUsedSeconds: Number(goal.timeUsedSeconds ?? 0),
+  };
+}
+
+function processAppServerDiagnostic(event: CodexAppServerEvent, timestamp: string, state: ParseState): void {
+  const content = event.error?.message || event.params?.message;
+  if (content) {
+    state.events.push({ type: 'tool_result', result: content, isError: event.method === 'error', timestamp });
+  }
+}
+
+function processCodexAppServerEvent(event: CodexAppServerEvent, timestamp: string, state: ParseState): boolean {
+  if (!event.method) return typeof event.id === 'number';
+  if (event.method === 'turn/plan/updated') processAppServerPlan(event, state);
+  else if (event.method === 'item/completed' && event.params?.item) processAppServerItem(event.params.item, timestamp, state);
+  else if (event.method === 'thread/tokenUsage/updated') {
+    const usage = appServerUsage(event);
+    if (usage) mergeRedisTokenUsageByMax(state.tokenUsage, usage);
+  } else if (event.method === 'thread/goal/updated') processAppServerGoal(event, state);
+  else if (event.method === 'error' || event.method === 'warning') processAppServerDiagnostic(event, timestamp, state);
+  return event.method === 'error' || event.method === 'warning'
+    || event.method.startsWith('thread/') || event.method.startsWith('turn/')
+    || event.method.startsWith('item/') || event.method.startsWith('model/');
 }
 
 /**
@@ -651,6 +758,8 @@ function parseLine(line: string, state: ParseState): void {
       ? normalizeOpenCodeTimestamp(rawTimestamp)
       : rawTimestamp || getNextSyntheticTimestamp(state);
 
+    if (processCodexAppServerEvent(event, timestamp, state)) return;
+
     // Session-qualified OpenCode events overlap with Antigravity's tool
     // envelopes, so preserve their stronger identity before generic routing.
     if (shouldProcessOpenCodeBeforeCodex(event) && processOpenCodeEvent(event, timestamp, state)) return;
@@ -708,7 +817,8 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
     seenEventFingerprints: new Set(),
     emittedAntigravityToolUseIds: new Set(),
     emittedOpenCodeToolUseIds: new Set(),
-    emittedOpenCodeToolResultIds: new Set()
+    emittedOpenCodeToolResultIds: new Set(),
+    nativeGoal: null,
   };
 
   if (parseVibeTranscriptOutput(lines.join('\n'), state)) {
@@ -718,7 +828,8 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
       todos: state.todos,
       currentTask: null,
       tokenUsage: hasTokens ? state.tokenUsage : null,
-      totalEventCount: state.events.length
+      totalEventCount: state.events.length,
+      nativeGoal: state.nativeGoal,
     };
   }
 
@@ -733,5 +844,12 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
   const inProgressTask = state.todos.find(t => t.status === 'in_progress');
   const hasTokens = hasRedisTokenUsage(state.tokenUsage);
 
-  return { events: state.events, todos: state.todos, currentTask: inProgressTask ? inProgressTask.content : null, tokenUsage: hasTokens ? state.tokenUsage : null, totalEventCount: state.events.length };
+  return {
+    events: state.events,
+    todos: state.todos,
+    currentTask: inProgressTask ? inProgressTask.content : null,
+    tokenUsage: hasTokens ? state.tokenUsage : null,
+    totalEventCount: state.events.length,
+    nativeGoal: state.nativeGoal,
+  };
 }

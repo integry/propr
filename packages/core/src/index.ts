@@ -312,8 +312,8 @@ export {
 export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 
 // Agent abstraction exports
-export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
-export type { AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
+export { AgentRegistry, getAgentRegistry, type AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
+export * from './goalExports.js';
 export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason } from './agents/termination.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';

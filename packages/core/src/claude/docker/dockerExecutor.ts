@@ -1,4 +1,5 @@
 import { spawn, execFileSync, SpawnOptions, ChildProcess } from 'child_process';
+import { StringDecoder } from 'node:string_decoder';
 import fs from 'fs';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
@@ -16,6 +17,11 @@ import {
     scheduleForceKill,
     setupAbortChecker,
 } from './dockerAbortController.js';
+import {
+    BoundedProviderRecordBuffer,
+    boundedProviderDiagnostic,
+    boundedProviderOutput,
+} from '../../agents/impl/utils/boundedProviderOutput.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
 export {
@@ -56,7 +62,43 @@ export interface DockerCommandOptions {
     signal?: AbortSignal;
 }
 
-interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
+interface JsonLineMessage { type?: string; event?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; thread_id?: string; init?: { conversation_id?: string }; }
+
+interface SessionLineInspectionContext {
+    messageTimestamps: Map<string, string>;
+    state: { sessionIdDetected: boolean };
+    onSessionId?: (sessionId: string, conversationId?: string) => void | Promise<void>;
+    invokeExecutionCallback: (callback: () => void | Promise<void>) => void;
+}
+
+function resolveSessionId(message: JsonLineMessage): string | undefined {
+    if (message.session_id) return message.session_id;
+    if (message.thread_id) return message.thread_id;
+    if (message.event !== 'init') return undefined;
+    return message.conversation_id || message.init?.conversation_id;
+}
+
+function inspectSessionMessageLine(
+    line: string,
+    timestamp: string,
+    context: SessionLineInspectionContext,
+): void {
+    if (!line.trim()) return;
+    try {
+        const message: JsonLineMessage = JSON.parse(line);
+        if (message.type === 'assistant' || message.type === 'user') {
+            const messageId = message.message?.id
+                || `${message.type}-${JSON.stringify(message).substring(0, 100)}`;
+            context.messageTimestamps.set(messageId, timestamp);
+        }
+        const detectedSessionId = resolveSessionId(message);
+        if (!context.state.sessionIdDetected && context.onSessionId && detectedSessionId) {
+            context.state.sessionIdDetected = true;
+            const conversationId = message.conversation_id || message.init?.conversation_id;
+            context.invokeExecutionCallback(() => context.onSessionId!(detectedSessionId, conversationId));
+        }
+    } catch { /* non-JSON provider output */ }
+}
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
@@ -171,7 +213,10 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
         const child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData);
 
-        let stdout = '', stderr = '';
+        let stdout = '', stderr = '', sessionLineBuffer = '';
+        const stdoutBuffer = new BoundedProviderRecordBuffer();
+        const stdoutDecoder = new StringDecoder('utf8');
+        const stderrDecoder = new StringDecoder('utf8');
         const state = createDockerExecutionState();
         let ownershipFailure: unknown;
         let hasOwnershipFailure = false;
@@ -215,6 +260,22 @@ export function executeDockerCommand(command: string, args: string[], options: D
             pendingCallbacks.add(callbackPromise);
             void callbackPromise.finally(() => pendingCallbacks.delete(callbackPromise));
         };
+        const sessionInspectionContext: SessionLineInspectionContext = {
+            messageTimestamps,
+            state,
+            onSessionId,
+            invokeExecutionCallback,
+        };
+        const inspectSessionLines = (chunk: string, timestamp: string, flush = false): void => {
+            sessionLineBuffer = boundedProviderOutput(sessionLineBuffer + chunk);
+            const lines = sessionLineBuffer.split('\n');
+            const remainder = lines.pop() ?? '';
+            sessionLineBuffer = flush ? '' : remainder;
+            if (flush && remainder) lines.push(remainder);
+            for (const line of lines) {
+                inspectSessionMessageLine(line, timestamp, sessionInspectionContext);
+            }
+        };
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
         const timeoutHandle = setTimeout(() => {
             state.timedOut = true;
@@ -240,9 +301,11 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 try { extraOutput = streamExtraOutput(); }
                 catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to read extra streaming output'); }
             }
-            return extraOutput ? `${primaryOutput}${primaryOutput ? '\n' : ''}${extraOutput}` : primaryOutput;
+            return boundedProviderOutput(
+                extraOutput ? `${primaryOutput}${primaryOutput ? '\n' : ''}${extraOutput}` : primaryOutput,
+            );
         };
-        const redisState = { client: null as Redis | null, interval: null as ReturnType<typeof setInterval> | null, lastLen: 0 };
+        const redisState = { client: null as Redis | null, interval: null as ReturnType<typeof setInterval> | null, lastOutput: '' };
         if (streamToRedis && taskId) initRedisStreaming(taskId, stripAnsi, getRedisOutput, redisState);
         if (command === 'docker' && args[0] === 'run' && worktreePath) {
             containerDetectionTimer = detectContainerId(
@@ -254,24 +317,20 @@ export function executeDockerCommand(command: string, args: string[], options: D
         }
 
         child.stdout?.on('data', (data: Buffer) => {
-            const chunk = data.toString(), ts = new Date().toISOString();
-            stdout += chunk;
-            for (const line of chunk.split('\n')) {
-                if (!line.trim()) continue;
-                try {
-                    const j: JsonLineMessage = JSON.parse(line);
-                    if (j.type === 'assistant' || j.type === 'user') messageTimestamps.set(j.message?.id || `${j.type}-${JSON.stringify(j).substring(0, 100)}`, ts);
-                    if (!state.sessionIdDetected && onSessionId && j.session_id) {
-                        state.sessionIdDetected = true;
-                        invokeExecutionCallback(() => onSessionId(j.session_id!, j.conversation_id));
-                    }
-                } catch { /* skip */ }
-            }
+            const chunk = stdoutDecoder.write(data), ts = new Date().toISOString();
+            stdout = stdoutBuffer.append(chunk);
+            inspectSessionLines(chunk, ts);
         });
-        child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+        child.stderr?.on('data', (data: Buffer) => {
+            stderr = boundedProviderDiagnostic(stderr + stderrDecoder.write(data));
+        });
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
+            const finalStdout = stdoutDecoder.end();
+            if (finalStdout) stdout = stdoutBuffer.append(finalStdout);
+            stderr = boundedProviderDiagnostic(stderr + stderrDecoder.end());
+            inspectSessionLines(finalStdout, new Date().toISOString(), true);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
             if (abortChecker) await abortChecker.close();
             await Promise.allSettled([...pendingCallbacks]);
@@ -302,6 +361,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         });
         child.on('error', async (error: Error) => {
             clearTimeout(timeoutHandle);
+            inspectSessionLines('', new Date().toISOString(), true);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
             if (abortChecker) await abortChecker.close();
@@ -314,15 +374,15 @@ export function executeDockerCommand(command: string, args: string[], options: D
     });
 }
 
-function initRedisStreaming(taskId: string, stripAnsi: boolean | undefined, getStdout: () => string, state: { client: Redis | null; interval: ReturnType<typeof setInterval> | null; lastLen: number }): void {
+function initRedisStreaming(taskId: string, stripAnsi: boolean | undefined, getStdout: () => string, state: { client: Redis | null; interval: ReturnType<typeof setInterval> | null; lastOutput: string }): void {
     (async () => {
         try {
             state.client = new Redis({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
             const redisKey = `agent:output:${taskId}`;
             state.interval = setInterval(async () => {
                 const stdout = getStdout();
-                if (stdout.length > state.lastLen && state.client) {
-                    try { await state.client.setex(redisKey, 3600, stripAnsi ? stripAnsiCodes(stdout) : stdout); state.lastLen = stdout.length; }
+                if (stdout !== state.lastOutput && state.client) {
+                    try { await state.client.setex(redisKey, 3600, stripAnsi ? stripAnsiCodes(stdout) : stdout); state.lastOutput = stdout; }
                     catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to stream output to Redis'); }
                 }
             }, 2000);

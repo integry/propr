@@ -1,0 +1,72 @@
+/**
+ * Operational fencing and steering for the single provider-owned goal session.
+ * These records are transport state, not a ProPR planning graph.
+ */
+export async function up(knex) {
+  await knex.schema.alterTable('goals', table => {
+    table.uuid('run_claim');
+    table.timestamp('claimed_at');
+    table.timestamp('attempt_heartbeat_at');
+    table.string('active_turn_id', 255);
+    table.timestamp('pause_confirmed_at');
+    table.boolean('resume_requested').notNullable().defaultTo(false);
+    table.string('create_idempotency_key', 255);
+    table.string('create_idempotency_operation', 100);
+    table.string('create_payload_hash', 64);
+    table.integer('control_generation').notNullable().defaultTo(0);
+    table.integer('control_ack_generation').notNullable().defaultTo(0);
+    table.timestamp('task_reconciled_at');
+    table.text('failure_reason');
+    table.json('artifact_stats').defaultTo('{}');
+    table.timestamp('artifacts_checked_at');
+    table.unique(['owner_id', 'create_idempotency_key']);
+    table.index(['desired_state', 'result_state', 'attempt_heartbeat_at']);
+  });
+
+  await knex.schema.createTable('goal_inputs', table => {
+    table.increments('sequence').primary();
+    table.uuid('input_id').notNullable().unique();
+    table.uuid('goal_id').notNullable().references('goal_id').inTable('goals').onDelete('CASCADE');
+    table.string('owner_id', 255).notNullable();
+    table.string('idempotency_key', 255).notNullable();
+    table.string('operation', 100).notNullable();
+    table.string('payload_hash', 64).notNullable();
+    table.string('kind', 20).notNullable().defaultTo('input');
+    table.text('message').notNullable();
+    table.string('state', 20).notNullable().defaultTo('pending');
+    table.integer('delivered_generation');
+    table.string('delivered_claim', 255);
+    table.string('delivered_turn_id', 255);
+    table.timestamp('created_at').defaultTo(knex.fn.now()).notNullable();
+    table.timestamp('delivered_at');
+    table.text('delivery_error');
+
+    table.unique(['owner_id', 'idempotency_key']);
+    table.index(['goal_id', 'state', 'sequence']);
+  });
+}
+
+export async function down(knex) {
+  await knex.schema.dropTableIfExists('goal_inputs');
+  await knex.schema.alterTable('goals', table => {
+    table.dropUnique(['owner_id', 'create_idempotency_key']);
+    table.dropIndex(['desired_state', 'result_state', 'attempt_heartbeat_at']);
+    table.dropColumns(
+      'run_claim',
+      'claimed_at',
+      'attempt_heartbeat_at',
+      'active_turn_id',
+      'pause_confirmed_at',
+      'resume_requested',
+      'create_idempotency_key',
+      'create_idempotency_operation',
+      'create_payload_hash',
+      'control_generation',
+      'control_ack_generation',
+      'task_reconciled_at',
+      'failure_reason',
+      'artifact_stats',
+      'artifacts_checked_at',
+    );
+  });
+}

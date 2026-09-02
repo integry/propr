@@ -263,7 +263,7 @@ async function loadStoredExecutionOutput(redisClient: RedisClientType, sessionId
   const output = await fs.readFile(outputPath, 'utf8');
   return parseStoredOutputContent(output);
 }
-async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex, taskId: string): Promise<ConversationResult | null> {
+async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex, taskId: string): Promise<(ConversationResult & { nativeGoal?: ReturnType<typeof parseRedisOutput>['nativeGoal'] }) | null> {
   const output = await redisClient.get(`agent:output:${taskId}`);
   if (!output?.trim()) return null;
   const executionStartTimestamp = await findExecutionStartTimestamp(redisClient, db, taskId);
@@ -279,7 +279,8 @@ async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex
       }) as unknown as Array<Record<string, unknown>>,
       todos: redisParsed.todos,
       currentTask: redisParsed.currentTask,
-      tokenUsage: redisParsed.tokenUsage
+      tokenUsage: redisParsed.tokenUsage,
+      nativeGoal: redisParsed.nativeGoal,
     };
   }
   const parsedOutput = parseStoredOutputContent(output);
@@ -287,6 +288,36 @@ async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex
   return result
     ? withStableResultEventIds(taskId, 'redis', executionStartTimestamp ?? taskId, result)
     : null;
+}
+
+/** Provider-aware local projection shared by task details and goal summaries. */
+export async function projectTaskLiveDetails(
+  redisClient: RedisClientType,
+  db: Knex,
+  taskId: string,
+  sessionId?: string | null,
+): Promise<(ConversationResult & { nativeGoal?: ReturnType<typeof parseRedisOutput>['nativeGoal'] }) | null> {
+  const active = await parseActiveExecutionOutput(redisClient, db, taskId);
+  if (active) return active;
+  try {
+    const details = sessionId ? await parseExecutionDetailsFromDb(db, taskId, sessionId) : null;
+    if (details) return details;
+    const history = await db('task_history').where({ task_id: taskId })
+      .orderBy('timestamp', 'desc').limit(20).select('metadata');
+    const records = history.reverse().flatMap(entry => {
+      try {
+        const metadata = typeof entry.metadata === 'string' ? JSON.parse(entry.metadata) : entry.metadata;
+        return Array.isArray(metadata?.goalOutputRecords)
+          ? metadata.goalOutputRecords.filter((value: unknown): value is string => typeof value === 'string')
+          : [];
+      } catch { return []; }
+    });
+    if (records.length === 0) return null;
+    const stored = parseStoredOutputContent(records.join('\n'));
+    return stored.parsed ?? stored.rawFallback;
+  } catch {
+    return null;
+  }
 }
 export function parseStoredOutputContent(output: string): ParsedStoredOutput {
   if (!output.trim()) return { parsed: null, rawFallback: null, format: 'unknown' };

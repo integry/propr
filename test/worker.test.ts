@@ -42,6 +42,7 @@ function createProcessorMocks(result: object = { status: 'complete' }) {
         processTaskImportJob: mock.fn(async () => result),
         processSystemTaskJob: mock.fn(async () => result),
         processMergeConflictJob: mock.fn(async () => result),
+        processGoalJob: mock.fn(async () => result),
     };
 }
 
@@ -96,6 +97,7 @@ describe('worker behavioral contracts', () => {
             ['processTaskImport', 'processTaskImportJob'],
             ['processSystemTask', 'processSystemTaskJob'],
             ['processMergeConflict', 'processMergeConflictJob'],
+            ['processGoal', 'processGoalJob'],
         ] as const;
 
         for (const [jobName, processorName] of names) {

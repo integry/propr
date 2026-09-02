@@ -21,6 +21,7 @@ import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJo
 import { processTaskImportJob } from './jobs/processTaskImportJob.js';
 import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
+import { processGoalJob } from './jobs/processGoalJob.js';
 import { createConfiguredMainWorker } from './workerFactory.js';
 import type { MainWorker } from './workerFactory.js';
 import {
@@ -28,6 +29,7 @@ import {
     type PRCommentTaskStateFinalizers,
 } from './jobs/prCommentTaskStateFinalizers.js';
 import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
+import { recoverNonterminalGoals } from './goalRecovery.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -310,6 +312,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             processTaskImportJob,
             processSystemTaskJob,
             processMergeConflictJob,
+            processGoalJob,
         },
         beforeRun: configuredWorker => {
             taskStateFinalizers = attachPRCommentTaskStateFinalizers(configuredWorker, stateManager);
@@ -317,7 +320,10 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
     if (!taskStateFinalizers) throw new Error('PR comment task state finalizers were not attached');
     const attachedTaskStateFinalizers = taskStateFinalizers;
-    const taskStateRecovery = await startWorkerTaskStateRecovery({ stateManager });
+    const taskStateRecovery = await startWorkerTaskStateRecovery({
+        stateManager,
+        recoverGoals: () => recoverNonterminalGoals(),
+    });
 
     const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
         AGENT_RUNTIME_BUILD_QUEUE_NAME,
@@ -375,7 +381,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     return { worker, runtimeBuildWorker, close };
 }
 
-export { processGitHubIssueJob, processPullRequestCommentJob, processTaskImportJob, processSystemTaskJob, processMergeConflictJob, startWorker };
+export { processGitHubIssueJob, processPullRequestCommentJob, processTaskImportJob, processSystemTaskJob, processMergeConflictJob, processGoalJob, startWorker };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     const options = parseArguments();

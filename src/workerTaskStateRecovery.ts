@@ -44,6 +44,8 @@ export interface WorkerTaskStateRecoveryOptions {
     staleMs?: number;
     batchSize?: number;
     timeBudgetMs?: number;
+    /** Additional native-goal reconciliation under the same process-wide lease. */
+    recoverGoals?: () => Promise<unknown>;
 }
 
 class RecoveryOperationTimeoutError extends Error {
@@ -260,6 +262,15 @@ export async function startWorkerTaskStateRecovery(
             cursor = result.nextCursor;
             backlog = result.backlog ?? [];
             logger.info(result.summary, 'Reconciled stale PR comment task states');
+            if (options.recoverGoals) {
+                const goalResult = await runWithinDeadline(
+                    'Native goal recovery',
+                    options.recoverGoals,
+                    deadline - leaseReleaseBudgetMs,
+                    controller.signal,
+                );
+                logger.info(goalResult, 'Reconciled nonterminal native goals');
+            }
             return true;
         } catch (error) {
             if (!closed) {

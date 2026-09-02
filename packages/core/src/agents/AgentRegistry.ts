@@ -16,15 +16,10 @@ import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 import { loadAgentRuntimePackageState, resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
 import { AGENT_DEFAULTS } from '../config/modelDefinitions.js';
+import { GoalCapabilityProbe, type GoalCapability } from './goalCapabilities.js';
+import type { AgentRegistryOperationalStatus } from './agentRegistryTypes.js';
 
-export interface AgentRegistryOperationalStatus {
-    unifiedAgentImage: {
-        status: 'ready' | 'unavailable';
-        imageTag?: string;
-        error?: string;
-        recordedAt?: string;
-    };
-}
+export type { AgentRegistryOperationalStatus } from './agentRegistryTypes.js';
 
 const RUNTIME_PACKAGE_STATE_CHECK_INTERVAL_MS = 5000;
 const UNIFIED_AGENT_IMAGE_RETRY_INTERVAL_MS = 60_000;
@@ -46,6 +41,7 @@ export class AgentRegistry {
     private pendingBackgroundRefresh: Promise<void> | null = null;
     private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
     private unifiedAgentImageRetryTimer: NodeJS.Timeout | null = null;
+    private goalCapabilityProbe = new GoalCapabilityProbe();
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -85,6 +81,7 @@ export class AgentRegistry {
             // Clear existing maps
             this.agents.clear();
             this.agentsByAlias.clear();
+            this.goalCapabilityProbe.clear();
 
             if (configs.length === 0) {
                 // Fallback: Create default Claude agent from ENV vars if no config exists
@@ -221,6 +218,14 @@ export class AgentRegistry {
      */
     getAllAgents(): Agent[] {
         return Array.from(this.agents.values());
+    }
+
+    /**
+     * Capability-probes the exact configured image instead of assuming a
+     * provider name implies support. Results are cached until registry refresh.
+     */
+    async getGoalCapabilities(): Promise<GoalCapability[]> {
+        return this.goalCapabilityProbe.getAll(this.getAllAgents());
     }
 
     /**
