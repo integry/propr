@@ -67,7 +67,14 @@ const positiveHostNodeProducerSubphases = Object.freeze([
   'host-node-command-type',
   'host-node-source',
 ]);
-const hostileDiagnosticPattern = /[A-Z]:\\|\\\\|S-1-5-|\bPATH\b|account-name|stdout|stderr|exception|native-text|environment-secret/iu;
+const hostileDiagnosticPattern = /[A-Z]:\\|\\\\|S-1-5-|account-name|stdout|stderr|exception|native-text|environment-secret/iu;
+const uppercasePathDiagnosticPattern = /\bPATH\b/u;
+const hasHostileDiagnosticEvidence = value => hostileDiagnosticPattern.test(value)
+  || uppercasePathDiagnosticPattern.test(value);
+const assertNoHostileDiagnosticEvidence = value => {
+  assert.doesNotMatch(value, hostileDiagnosticPattern);
+  assert.doesNotMatch(value, uppercasePathDiagnosticPattern);
+};
 
 const parent = String.raw`C:\runner-temp\propr-connect-packaged-stage`;
 const leaf = 'propr-connect-package-0123456789abcdef0123456789abcdef';
@@ -211,7 +218,7 @@ const assertLauncherAuthorityRejected = (result, category, subphase) => {
     && result.stderr.length <= 512 ? result.stderr.toString('utf8').trim() : '';
   if (result.error || result.signal !== null || result.status !== 1
       || !Buffer.isBuffer(result.stdout) || result.stdout.length !== 0
-      || diagnostic !== expected || hostileDiagnosticPattern.test(diagnostic)) {
+      || diagnostic !== expected || hasHostileDiagnosticEvidence(diagnostic)) {
     const error = new Error(
       `PROPR_WINDOWS_PACKAGED_CONNECT_LAUNCHER_AUTHORITY_TEST:rejection-diagnostic-failed`
         + `:category=${category}:phase=ordinary-user-preflight:subphase=${subphase}`,
@@ -230,7 +237,7 @@ const failAcceptedLauncherCase = (caseName, result) => {
     const diagnostic = result.stderr.toString('utf8').trim();
     const match = /^PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=(artifact-missing|artifact-inaccessible|artifact-type|architecture-mismatch|spawn-failed):phase=(ordinary-user-preflight):subphase=([a-z-]+):cleanup=none$/u.exec(diagnostic);
     if (match && launcherInvocationSubphases.includes(match[3])
-        && !hostileDiagnosticPattern.test(diagnostic)) {
+        && !hasHostileDiagnosticEvidence(diagnostic)) {
       evidence = `category=${match[1]}:phase=${match[2]}:subphase=${match[3]}`;
     }
   }
@@ -261,7 +268,7 @@ const failPositiveHostNodeProducer = result => {
     const diagnostic = result.stderr.toString('utf8').trim();
     const match = /^PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=(artifact-inaccessible|artifact-type):phase=(ordinary-user-preflight):subphase=([a-z-]+):cleanup=none$/u.exec(diagnostic);
     if (match && positiveHostNodeProducerSubphases.includes(match[3])
-        && !hostileDiagnosticPattern.test(diagnostic)) {
+        && !hasHostileDiagnosticEvidence(diagnostic)) {
       evidence = `category=${match[1]}:phase=${match[2]}:subphase=${match[3]}`;
     }
   }
@@ -329,7 +336,17 @@ test('positive host Node producer failures expose only fixed allowlisted evidenc
       { message: fallback },
     );
   }
-  assert.doesNotMatch(fallback, hostileDiagnosticPattern);
+  assertNoHostileDiagnosticEvidence(fallback);
+});
+
+test('hostile diagnostics reject uppercase PATH without matching fixed path subphases', () => {
+  assert.equal(
+    hasHostileDiagnosticEvidence(
+      'category=artifact-type:phase=ordinary-user-preflight:subphase=host-node-path-binding',
+    ),
+    false,
+  );
+  assert.equal(hasHostileDiagnosticEvidence('PATH'), true);
 });
 
 const validationOptions = overrides => ({
@@ -436,7 +453,7 @@ describe('packaged Windows Connect staging contract', () => {
           diagnostic,
           '{"event":"packaged_connect.artifact_failed","category":"artifact-inaccessible","phase":"ordinary-user-preflight","subphase":"preflight-invocation"}',
         );
-        assert.doesNotMatch(`${error.message}\n${diagnostic}`, hostileDiagnosticPattern);
+        assertNoHostileDiagnosticEvidence(`${error.message}\n${diagnostic}`);
         return true;
       },
     );
@@ -616,10 +633,7 @@ describe('packaged Windows Connect staging contract', () => {
         'authority-contract',
       ],
     );
-    assert.doesNotMatch(
-      diagnostics.join('\n'),
-      hostileDiagnosticPattern,
-    );
+    assertNoHostileDiagnosticEvidence(diagnostics.join('\n'));
   });
 
   test('scopes staged-root and executable leak needles to Windows', () => {
@@ -693,7 +707,7 @@ test('the workflow stages before alternate credentials and the harness preflight
     orchestrator.indexOf('function Stop-SpawnedProcess'),
   );
   const producerTransitions = [
-    ['host-node-command-cardinality', 'Get-Command node.exe -CommandType Application'],
+    ['host-node-command-cardinality', 'Get-Command node.exe'],
     ['host-node-command-type', '$candidate -is [System.Management.Automation.ApplicationInfo]'],
     ['host-node-source', '@($candidate.Source)'],
   ];
@@ -709,10 +723,11 @@ test('the workflow stages before alternate credentials and the harness preflight
     assert.ok(transition >= 0 && transition < operationIndex && operationIndex < nextTransition,
       `${subphase} must cover exactly its producer operation boundary`);
   }
-  assert.match(hostNodeProducer, /\$commandResults\.Count -lt 1[\s\S]*?host-node-command-type[\s\S]*?foreach \(\$candidate in \$commandResults\)[\s\S]*?System\.Management\.Automation\.ApplicationInfo/u);
+  assert.match(hostNodeProducer, /Get-Command node\.exe[\s\S]*?-CommandType Application[\s\S]*?-TotalCount 1[\s\S]*?-ErrorAction Stop/u);
+  assert.match(hostNodeProducer, /\$commandResults\.Count -ne 1[\s\S]*?host-node-command-type[\s\S]*?\$candidate = \$commandResults\[0\][\s\S]*?System\.Management\.Automation\.ApplicationInfo/u);
   assert.match(hostNodeProducer, /\$sourceResults\.Count -ne 1[\s\S]*?\$sourceResults\[0\] -is \[string\]/u);
-  assert.match(hostNodeProducer, /\$validatedSources\.Add\(\$sourceResults\[0\]\)[\s\S]*?StringComparison\]::Ordinal[\s\S]*?StringComparison\]::OrdinalIgnoreCase/u);
-  assert.match(hostNodeProducer, /return \$selectedSource/u);
+  assert.match(hostNodeProducer, /return \$sourceResults\[0\]/u);
+  assert.doesNotMatch(hostNodeProducer, /validatedSources|StringComparison|foreach \(\$candidate in \$commandResults\)/u);
   assert.doesNotMatch(hostNodeProducer, /PSObject\.Properties\['Source'\]/u);
   assert.doesNotMatch(hostNodeProducer, /\$env:PATH|Select-Object\s+-First|where(?:\.exe)?/iu);
   assert.doesNotMatch(orchestrator, /\$node\s*=\s*['"]node(?:\.exe)?['"]/iu);
@@ -837,13 +852,15 @@ windowsTest('each host preflight failure transition emits one fixed redacted sub
       `PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-inaccessible:phase=ordinary-user-preflight:subphase=${subphase}:cleanup=none`,
     );
     assert.equal((diagnostic.match(/:subphase=/gu) ?? []).length, 1);
-    assert.doesNotMatch(diagnostic, hostileDiagnosticPattern);
+    assertNoHostileDiagnosticEvidence(diagnostic);
   }
 });
 
 for (const [testCase, subphase] of [
   ['zero', 'host-node-command-cardinality'],
+  ['duplicate', 'host-node-command-cardinality'],
   ['multiple', 'host-node-command-cardinality'],
+  ['mixed-types', 'host-node-command-cardinality'],
   ['case-collision', 'host-node-command-cardinality'],
   ['non-application', 'host-node-command-type'],
   ['missing-source', 'host-node-source'],
@@ -862,13 +879,9 @@ for (const [testCase, subphase] of [
         + `:phase=ordinary-user-preflight:subphase=${subphase}:cleanup=none`,
     );
     assert.equal((diagnostic.match(/:subphase=/gu) ?? []).length, 1);
-    assert.doesNotMatch(diagnostic, hostileDiagnosticPattern);
+    assertNoHostileDiagnosticEvidence(diagnostic);
   });
 }
-
-windowsTest('the PS5.1 host Node producer accepts only exact duplicate application authorities', () => {
-  assertPositiveHostNodeProducer(runHostNodeProducerTest('duplicate'));
-});
 
 windowsTest('the PS5.1 host Node producer returns one validated scalar Source', () => {
   const result = runHostNodeProducerTest('positive');

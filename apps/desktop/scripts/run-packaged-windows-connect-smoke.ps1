@@ -37,7 +37,7 @@ param(
   )]
   [string]$DiagnosticTestSubphase = 'host-node-command-cardinality',
   [ValidateSet(
-    'positive','zero','duplicate','multiple','case-collision',
+    'positive','zero','duplicate','multiple','mixed-types','case-collision',
     'non-application','missing-source','non-scalar-source'
   )]
   [string]$HostNodeProducerTestCase = 'positive',
@@ -195,55 +195,35 @@ function Get-ValidatedHostNodePath {
   if ($UseTestOnlyCommandResults) {
     $commandResults = @($TestOnlyCommandResults)
   } else {
-    $commandResults = @(Get-Command node.exe -CommandType Application -ErrorAction Stop)
+    $commandResults = @(
+      Get-Command node.exe `
+        -CommandType Application `
+        -TotalCount 1 `
+        -ErrorAction Stop
+    )
   }
-  if ($commandResults.Count -lt 1) {
+  if ($commandResults.Count -ne 1) {
     Stop-PackagedConnect 'artifact-type'
   }
 
   Set-OrdinaryUserPreflightSubphase 'host-node-command-type'
-  foreach ($candidate in $commandResults) {
-    if (!($candidate -is [System.Management.Automation.ApplicationInfo])) {
-      Stop-PackagedConnect 'artifact-type'
-    }
+  $candidate = $commandResults[0]
+  if (!($candidate -is [System.Management.Automation.ApplicationInfo])) {
+    Stop-PackagedConnect 'artifact-type'
   }
 
   Set-OrdinaryUserPreflightSubphase 'host-node-source'
-  $validatedSources = [Collections.Generic.List[string]]::new()
-  foreach ($candidate in $commandResults) {
-    if ($null -eq $TestOnlySourceProducer) {
-      $sourceResults = @($candidate.Source)
-    } else {
-      $sourceResults = @(& $TestOnlySourceProducer $candidate)
-    }
-    if ($sourceResults.Count -ne 1 -or
-        !($sourceResults[0] -is [string]) -or
-        [String]::IsNullOrEmpty($sourceResults[0])) {
-      Stop-PackagedConnect 'artifact-type'
-    }
-    $null = $validatedSources.Add($sourceResults[0])
+  if ($null -eq $TestOnlySourceProducer) {
+    $sourceResults = @($candidate.Source)
+  } else {
+    $sourceResults = @(& $TestOnlySourceProducer $candidate)
   }
-
-  Set-OrdinaryUserPreflightSubphase 'host-node-command-cardinality'
-  # Repeated exact Sources are one authority; distinct or case-colliding Sources are ambiguous.
-  $selectedSource = $validatedSources[0]
-  for ($index = 1; $index -lt $validatedSources.Count; $index++) {
-    if (![String]::Equals(
-      $selectedSource,
-      $validatedSources[$index],
-      [StringComparison]::Ordinal
-    )) {
-      if ([String]::Equals(
-        $selectedSource,
-        $validatedSources[$index],
-        [StringComparison]::OrdinalIgnoreCase
-      )) {
-        Stop-PackagedConnect 'artifact-type'
-      }
-      Stop-PackagedConnect 'artifact-type'
-    }
+  if ($sourceResults.Count -ne 1 -or
+      !($sourceResults[0] -is [string]) -or
+      [String]::IsNullOrEmpty($sourceResults[0])) {
+    Stop-PackagedConnect 'artifact-type'
   }
-  return $selectedSource
+  return $sourceResults[0]
 }
 
 function Stop-SpawnedProcess {
@@ -978,6 +958,7 @@ if ($LifecycleTestMode -eq 'host-node-producer') {
       $knownApplications = @(Get-Command `
         -Name ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) `
         -CommandType Application `
+        -TotalCount 1 `
         -ErrorAction Stop)
       if ($knownApplications.Count -ne 1) {
         Set-OrdinaryUserPreflightSubphase 'host-node-command-cardinality'
@@ -992,17 +973,24 @@ if ($LifecycleTestMode -eq 'host-node-producer') {
         $node = Get-ValidatedHostNodePath `
           -UseTestOnlyCommandResults `
           -TestOnlyCommandResults ([object[]]@(
-            $knownApplication,
             [PSCustomObject]@{ Source = 'C:\hostile\node.exe' }
           ))
       } elseif ($HostNodeProducerTestCase -eq 'duplicate') {
         $node = Get-ValidatedHostNodePath `
           -UseTestOnlyCommandResults `
           -TestOnlyCommandResults ([object[]]@($knownApplication, $knownApplication))
+      } elseif ($HostNodeProducerTestCase -eq 'mixed-types') {
+        $node = Get-ValidatedHostNodePath `
+          -UseTestOnlyCommandResults `
+          -TestOnlyCommandResults ([object[]]@(
+            $knownApplication,
+            [PSCustomObject]@{ Source = 'C:\hostile\node.exe' }
+          ))
       } elseif ($HostNodeProducerTestCase -in @('multiple','case-collision')) {
         $otherApplications = @(Get-Command `
           -Name $taskkillExecutable `
           -CommandType Application `
+          -TotalCount 1 `
           -ErrorAction Stop)
         if ($otherApplications.Count -ne 1) {
           Set-OrdinaryUserPreflightSubphase 'host-node-command-cardinality'
