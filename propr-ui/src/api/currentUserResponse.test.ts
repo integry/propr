@@ -66,17 +66,30 @@ describe('current-user response schema', () => {
     }));
   });
 
-  it('bypasses caches and dispatches one active-scope validation request', async () => {
-    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(validUser), {
+  it('uses a generation cache key without introducing a fetch cache mode or cache headers', async () => {
+    apiFetch.mockImplementation(async () => new Response(JSON.stringify(validUser), {
       status: 200, headers: { 'Content-Type': 'application/json' },
     }));
 
     await expect(getCurrentUser({ scopeGeneration: 4, activeScopePresent: true })).resolves.toEqual(validUser);
+    await expect(getCurrentUser({ scopeGeneration: 5, activeScopePresent: true })).resolves.toEqual(validUser);
+    await expect(getCurrentUser({
+      scopeGeneration: Number.MAX_SAFE_INTEGER + 1,
+      activeScopePresent: true,
+    })).resolves.toEqual(validUser);
 
-    expect(apiFetch).toHaveBeenCalledOnce();
-    expect(apiFetch).toHaveBeenCalledWith('https://example.test/api/auth/user', {
-      credentials: 'include',
-      cache: 'no-store',
-    });
+    expect(apiFetch).toHaveBeenCalledTimes(3);
+    expect(apiFetch.mock.calls.map(([url]) => url)).toEqual([
+      'https://example.test/api/auth/user?proprDesktopScopeGeneration=4',
+      'https://example.test/api/auth/user?proprDesktopScopeGeneration=5',
+      'https://example.test/api/auth/user?proprDesktopScopeGeneration=0',
+    ]);
+    for (const [, init] of apiFetch.mock.calls) {
+      expect(init).toEqual({ credentials: 'include' });
+      expect(init).not.toHaveProperty('cache');
+      const headers = new Headers(init?.headers);
+      expect(headers.has('Cache-Control')).toBe(false);
+      expect(headers.has('Pragma')).toBe(false);
+    }
   });
 });

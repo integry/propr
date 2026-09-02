@@ -80,6 +80,22 @@ describe('packaged current-user acceptance correlation', () => {
     assert.equal(classify(acceptedMain), 'none');
   });
 
+  it('correlates main evidence by journey and upstream evidence by renderer request origin', () => {
+    assert.equal(currentUserValidationFailureCategory({
+      journey,
+      evidenceInvalid: false,
+      rendererRecords,
+      mainRecords: [
+        { ...acceptedMain, journey: 'another-journey', accepted: false, rejectionCategory: 'stale-scope' },
+        acceptedMain,
+      ],
+      fixtureRecords: [
+        { ...fixtureRecords[0], source: 'main', authorizationMatchesActivatedBearer: false },
+        fixtureRecords[0],
+      ],
+    }), 'none');
+  });
+
   it('diagnoses upstream bearer custody after correlating the fixture record', () => {
     assert.equal(currentUserValidationFailureCategory({
       journey,

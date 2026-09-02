@@ -250,6 +250,8 @@ export interface CurrentUserValidationOptions {
   activeScopePresent?: boolean;
 }
 
+const CURRENT_USER_SCOPE_GENERATION_QUERY = 'proprDesktopScopeGeneration';
+
 const isNullableString = (value: unknown): value is string | null => value === null || typeof value === 'string';
 
 export const isCurrentUserResponse = (value: unknown): value is CurrentUser => {
@@ -286,11 +288,15 @@ const currentUserResponseClassification = async (
 };
 
 export const getCurrentUser = async (options: CurrentUserValidationOptions = {}): Promise<CurrentUser> => {
-  const scopeGeneration = options.scopeGeneration ?? 0;
+  const requestedScopeGeneration = options.scopeGeneration;
+  const scopeGeneration = typeof requestedScopeGeneration === 'number'
+    && Number.isSafeInteger(requestedScopeGeneration) && requestedScopeGeneration >= 0
+    ? requestedScopeGeneration
+    : 0;
   const activeScopePresent = options.activeScopePresent === true;
-  const response = await apiFetch(`${API_BASE_URL}/api/auth/user`, {
+  const currentUserUrl = `${API_BASE_URL}/api/auth/user?${CURRENT_USER_SCOPE_GENERATION_QUERY}=${scopeGeneration}`;
+  const response = await apiFetch(currentUserUrl, {
     credentials: 'include',
-    cache: 'no-store',
   });
   const classification = await currentUserResponseClassification(response);
   if (activeScopePresent) {

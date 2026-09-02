@@ -306,6 +306,7 @@ const createFixture = async (mode, fixedOrigin) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const bodyText = Buffer.concat(chunks).toString('utf8');
+    const requestUrl = new URL(request.url || '/', fixedOrigin);
     let body = {};
     try { body = bodyText ? JSON.parse(bodyText) : {}; } catch { body = {}; }
     requestRecords.push({
@@ -351,7 +352,7 @@ const createFixture = async (mode, fixedOrigin) => {
       return json(response, 200, { status: 'cancelled', cancelledAt: FIXED_TIME });
     }
     if (request.method === 'DELETE' && request.url === '/api/desktop/tokens/current') return json(response, 204, {});
-    if (request.url === '/api/auth/user') {
+    if (request.method === 'GET' && requestUrl.pathname === '/api/auth/user') {
       authChecks += 1;
       const source = request.headers.origin === DESKTOP_RENDERER_ORIGIN ? 'renderer' : 'main';
       const record = {
