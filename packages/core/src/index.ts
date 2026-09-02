@@ -109,7 +109,6 @@ export type {
     IssueJobData,
     CommentJobData,
     TaskImportJobData,
-    GoalJobData,
     AnalysisJobData,
     SystemTaskJobData,
     IndexingJobData,
@@ -313,12 +312,8 @@ export {
 export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 
 // Agent abstraction exports
-export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
-export type { AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
-export { helpAdvertisesNativeGoal, GOAL_CAPABILITY_COMMANDS } from './agents/goalCapabilities.js';
-export type { GoalCapability } from './agents/goalCapabilities.js';
-export { buildNativeGoalCommand, buildGoalPolicyEnvironment, goalJobId, GOAL_CONTINUE_INPUT } from './goals.js';
-export type { GoalDesiredState, GoalResultState } from './goals.js';
+export { AgentRegistry, getAgentRegistry, type AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
+export * from './goalExports.js';
 export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason } from './agents/termination.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';

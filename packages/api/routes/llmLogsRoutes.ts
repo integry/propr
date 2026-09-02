@@ -79,6 +79,21 @@ function applyGoalOwnershipFilter<T extends Knex.QueryBuilder>(query: T, ownerId
   }) as T;
 }
 
+function buildLlmLogQueries(
+  db: Knex,
+  selectColumns: string[],
+  hasGoalsTable: boolean,
+  ownerId?: string,
+): { baseQuery: Knex.QueryBuilder; countQuery: Knex.QueryBuilder } {
+  const baseQuery = db('llm_logs').select(...selectColumns);
+  const countQuery = db('llm_logs').count('* as count');
+  if (!hasGoalsTable) return { baseQuery, countQuery };
+  return {
+    baseQuery: applyGoalOwnershipFilter(baseQuery, ownerId),
+    countQuery: applyGoalOwnershipFilter(countQuery, ownerId),
+  };
+}
+
 interface UsageMetricRecordRow {
   id: number;
   llm_log_id: number;
@@ -348,10 +363,7 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         : baseColumns;
 
       const ownerId = req.user?.id ? String(req.user.id) : undefined;
-      const rawBaseQuery = db('llm_logs').select(...selectColumns);
-      const rawCountQuery = db('llm_logs').count('* as count');
-      const baseQuery = hasGoalsTable ? applyGoalOwnershipFilter(rawBaseQuery, ownerId) : rawBaseQuery;
-      const countQuery = hasGoalsTable ? applyGoalOwnershipFilter(rawCountQuery, ownerId) : rawCountQuery;
+      const { baseQuery, countQuery } = buildLlmLogQueries(db, selectColumns, hasGoalsTable, ownerId);
 
       // If work_type filter is requested but the column doesn't exist, return empty results
       if (!hasWorkRefColumns && workType) {

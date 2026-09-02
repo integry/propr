@@ -49,11 +49,44 @@ export interface CodexDockerArgsParams {
     resumeSessionId?: string;
 }
 
+function resolveTaskType(params: CodexDockerArgsParams): string {
+    if (params.executionMode === 'goal') return 'goal';
+    return params.executionType || (params.issueNumber === 0 ? 'analysis' : `issue-${params.issueNumber}`);
+}
+
+function buildCodexCliArgs(params: CodexDockerArgsParams): string[] {
+    const {
+        executionMode = 'task',
+        jsonOutput = true,
+        reasoningLevel,
+        repositoryInspection = false,
+        resumeSessionId,
+    } = params;
+    const isGoalResume = executionMode === 'goal' && !!resumeSessionId;
+    return [
+        'codex', 'exec',
+        ...(executionMode === 'task' ? ['--ephemeral'] : []),
+        ...(isGoalResume ? ['resume'] : []),
+        ...(jsonOutput ? ['--json'] : []),
+        ...(repositoryInspection
+            ? buildCodexRepositoryScoutArgs()
+            : [
+                '--dangerously-bypass-approvals-and-sandbox',
+                // Normal tasks retain their one-shot single-agent contract.
+                ...(executionMode === 'task' ? ['--config', 'features.multi_agent=false'] : []),
+            ]),
+        ...(reasoningLevel ? ['--config', `model_reasoning_effort="${reasoningLevel}"`] : []),
+        '--skip-git-repo-check',
+        '--cd', '/home/node/workspace',
+        ...(isGoalResume ? [resumeSessionId] : []),
+        '-',
+    ];
+}
+
 export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArgsParams): string[] {
     const {
-        worktreePath, githubToken, modelName, issueNumber, jsonOutput = true, environment,
-        taskId, executionType, reasoningLevel, readOnlyWorkspace = false, repositoryInspection = false,
-        executionMode = 'task', resumeSessionId,
+        worktreePath, githubToken, modelName, issueNumber, environment,
+        taskId, readOnlyWorkspace = false, repositoryInspection = false,
     } = params;
     if (repositoryInspection && !readOnlyWorkspace) {
         throw new Error('Repository inspection requires a read-only workspace');
@@ -63,7 +96,7 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
     const configPath = resolveConfigPath(config.configPath);
     const envVars = buildEnvironmentVariableArgs([config.envVars, environment], repositoryInspection);
     const shortTaskId = createContainerExecutionId(taskId);
-    const taskType = executionMode === 'goal' ? 'goal' : executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
+    const taskType = resolveTaskType(params);
     const containerName = `${config.alias || 'codex'}-${taskType}-${shortTaskId}`;
     const workspaceTarget = repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace';
     const dockerArgs: string[] = [
@@ -83,24 +116,7 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
         ...envVars,
         '-w', '/home/node/workspace',
         dockerImage,
-        'codex', 'exec',
-        ...(executionMode === 'task' ? ['--ephemeral'] : []),
-        ...(executionMode === 'goal' && resumeSessionId ? ['resume'] : []),
-        ...(jsonOutput ? ['--json'] : []),
-        ...(repositoryInspection
-            ? buildCodexRepositoryScoutArgs()
-            : [
-                '--dangerously-bypass-approvals-and-sandbox',
-                // Normal ProPR tasks retain their one-shot single-agent
-                // contract. Native goals leave decomposition and subagents to
-                // Codex itself.
-                ...(executionMode === 'task' ? ['--config', 'features.multi_agent=false'] : []),
-            ]),
-        ...(reasoningLevel ? ['--config', `model_reasoning_effort="${reasoningLevel}"`] : []),
-        '--skip-git-repo-check',
-        '--cd', '/home/node/workspace',
-        ...(executionMode === 'goal' && resumeSessionId ? [resumeSessionId] : []),
-        '-'
+        ...buildCodexCliArgs(params),
     ];
 
     if (modelName) {

@@ -30,6 +30,7 @@ import path from 'path';
 import { randomBytes } from 'node:crypto';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
+import { buildAntigravityContainerName } from './utils/antigravityContainerName.js';
 import {
     buildAntigravityRepositoryScoutMcpConfig,
     buildAntigravityRepositoryScoutPermissions,
@@ -442,7 +443,7 @@ export class AntigravityAgent implements Agent {
         const shortTaskId = createContainerExecutionId(taskId);
         const taskType = executionMode === 'goal' ? 'goal' : executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
         const runtimeName = this.getRuntimeName();
-        const containerName = this.buildContainerName(this.config.alias || runtimeName, taskType, shortTaskId, modelName);
+        const containerName = buildAntigravityContainerName(this.config.alias || runtimeName, taskType, shortTaskId, modelName);
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
@@ -476,16 +477,6 @@ export class AntigravityAgent implements Agent {
         if (executionMode === 'goal' && resumeConversationId) dockerArgs.push('--conversation', resumeConversationId);
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Antigravity agent');
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, runtimeName);
-    }
-
-    private buildContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
-        const suffix = `-${shortTaskId}`;
-        const rawPrefix = modelName
-            ? `${alias}-${taskType}-${modelName}`
-            : `${alias}-${taskType}`;
-        const maxPrefixLength = Math.max(1, 120 - suffix.length);
-        const sanitizedPrefix = rawPrefix.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, maxPrefixLength).replace(/[^a-zA-Z0-9]+$/, '');
-        return `${sanitizedPrefix || 'antigravity'}${suffix}`.slice(0, 128);
     }
 
 }

@@ -58,6 +58,42 @@ export interface DockerCommandOptions {
 
 interface JsonLineMessage { type?: string; event?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; thread_id?: string; init?: { conversation_id?: string }; }
 
+interface SessionLineInspectionContext {
+    messageTimestamps: Map<string, string>;
+    state: { sessionIdDetected: boolean };
+    onSessionId?: (sessionId: string, conversationId?: string) => void | Promise<void>;
+    invokeExecutionCallback: (callback: () => void | Promise<void>) => void;
+}
+
+function resolveSessionId(message: JsonLineMessage): string | undefined {
+    if (message.session_id) return message.session_id;
+    if (message.thread_id) return message.thread_id;
+    if (message.event !== 'init') return undefined;
+    return message.conversation_id || message.init?.conversation_id;
+}
+
+function inspectSessionMessageLine(
+    line: string,
+    timestamp: string,
+    context: SessionLineInspectionContext,
+): void {
+    if (!line.trim()) return;
+    try {
+        const message: JsonLineMessage = JSON.parse(line);
+        if (message.type === 'assistant' || message.type === 'user') {
+            const messageId = message.message?.id
+                || `${message.type}-${JSON.stringify(message).substring(0, 100)}`;
+            context.messageTimestamps.set(messageId, timestamp);
+        }
+        const detectedSessionId = resolveSessionId(message);
+        if (!context.state.sessionIdDetected && context.onSessionId && detectedSessionId) {
+            context.state.sessionIdDetected = true;
+            const conversationId = message.conversation_id || message.init?.conversation_id;
+            context.invokeExecutionCallback(() => context.onSessionId!(detectedSessionId, conversationId));
+        }
+    } catch { /* non-JSON provider output */ }
+}
+
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
 
@@ -215,6 +251,12 @@ export function executeDockerCommand(command: string, args: string[], options: D
             pendingCallbacks.add(callbackPromise);
             void callbackPromise.finally(() => pendingCallbacks.delete(callbackPromise));
         };
+        const sessionInspectionContext: SessionLineInspectionContext = {
+            messageTimestamps,
+            state,
+            onSessionId,
+            invokeExecutionCallback,
+        };
         const inspectSessionLines = (chunk: string, timestamp: string, flush = false): void => {
             sessionLineBuffer += chunk;
             const lines = sessionLineBuffer.split('\n');
@@ -222,19 +264,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             sessionLineBuffer = flush ? '' : remainder;
             if (flush && remainder) lines.push(remainder);
             for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const message: JsonLineMessage = JSON.parse(line);
-                    if (message.type === 'assistant' || message.type === 'user') {
-                        messageTimestamps.set(message.message?.id || `${message.type}-${JSON.stringify(message).substring(0, 100)}`, timestamp);
-                    }
-                    const detectedSessionId = message.session_id || message.thread_id
-                        || (message.event === 'init' ? message.conversation_id || message.init?.conversation_id : undefined);
-                    if (!state.sessionIdDetected && onSessionId && detectedSessionId) {
-                        state.sessionIdDetected = true;
-                        invokeExecutionCallback(() => onSessionId(detectedSessionId, message.conversation_id || message.init?.conversation_id));
-                    }
-                } catch { /* non-JSON provider output */ }
+                inspectSessionMessageLine(line, timestamp, sessionInspectionContext);
             }
         };
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
