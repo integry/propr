@@ -61,6 +61,10 @@ const launcherInvocationSubphases = Object.freeze([
   'host-node-path-binding',
   ...launcherAuthoritySubphases,
 ]);
+const positiveHostNodeProducerSubphases = Object.freeze([
+  'host-node-command-result',
+  'host-node-source',
+]);
 const hostileDiagnosticPattern = /[A-Z]:\\|S-1-5-|account-name|stdout|stderr|exception|environment-secret/iu;
 
 const parent = String.raw`C:\runner-temp\propr-connect-packaged-stage`;
@@ -244,6 +248,88 @@ const assertLauncherAuthorityAccepted = (result, caseName) => {
     failAcceptedLauncherCase(caseName, result);
   }
 };
+
+const failPositiveHostNodeProducer = result => {
+  const fallback = 'category=artifact-inaccessible:phase=ordinary-user-preflight'
+    + ':subphase=host-node-command-result';
+  let evidence = fallback;
+  if (!result.error && result.signal === null && result.status === 1
+      && Buffer.isBuffer(result.stdout) && result.stdout.length === 0
+      && Buffer.isBuffer(result.stderr) && result.stderr.length <= 512) {
+    const diagnostic = result.stderr.toString('utf8').trim();
+    const match = /^PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=(artifact-inaccessible|artifact-type):phase=(ordinary-user-preflight):subphase=([a-z-]+):cleanup=none$/u.exec(diagnostic);
+    if (match && positiveHostNodeProducerSubphases.includes(match[3])
+        && !hostileDiagnosticPattern.test(diagnostic)) {
+      evidence = `category=${match[1]}:phase=${match[2]}:subphase=${match[3]}`;
+    }
+  }
+  const error = new Error(
+    `PROPR_WINDOWS_PACKAGED_CONNECT_HOST_NODE_PRODUCER_TEST:positive-case-failed:${evidence}`,
+  );
+  error.stack = error.message;
+  throw error;
+};
+
+const assertPositiveHostNodeProducer = result => {
+  if (result.error || result.signal !== null || result.status !== 0
+      || !Buffer.isBuffer(result.stdout) || !Buffer.isBuffer(result.stderr)
+      || result.stdout.toString('utf8').trim()
+        !== 'PROPR_WINDOWS_PACKAGED_CONNECT_HOST_NODE_PRODUCER_TEST:accepted'
+      || result.stderr.length !== 0) {
+    failPositiveHostNodeProducer(result);
+  }
+};
+
+test('positive host Node producer failures expose only fixed allowlisted evidence', () => {
+  for (const [category, subphase] of [
+    ['artifact-inaccessible', 'host-node-command-result'],
+    ['artifact-type', 'host-node-source'],
+  ]) {
+    const result = {
+      error: undefined,
+      signal: null,
+      status: 1,
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.from(
+        `PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=${category}`
+          + `:phase=ordinary-user-preflight:subphase=${subphase}:cleanup=none`,
+      ),
+    };
+    assert.throws(
+      () => failPositiveHostNodeProducer(result),
+      {
+        message: 'PROPR_WINDOWS_PACKAGED_CONNECT_HOST_NODE_PRODUCER_TEST'
+          + `:positive-case-failed:category=${category}`
+          + `:phase=ordinary-user-preflight:subphase=${subphase}`,
+      },
+    );
+  }
+
+  const fallback = 'PROPR_WINDOWS_PACKAGED_CONNECT_HOST_NODE_PRODUCER_TEST'
+    + ':positive-case-failed:category=artifact-inaccessible'
+    + ':phase=ordinary-user-preflight:subphase=host-node-command-result';
+  for (const stderr of [
+    'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=spawn-failed'
+      + ':phase=ordinary-user-preflight:subphase=host-node-source:cleanup=none',
+    'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+      + ':phase=application-spawn:subphase=host-node-source:cleanup=none',
+    'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+      + ':phase=ordinary-user-preflight:subphase=host-node-path-binding:cleanup=none',
+    String.raw`C:\hostile\node.exe PATH account-name S-1-5-21 stdout stderr exception environment-secret`,
+  ]) {
+    assert.throws(
+      () => failPositiveHostNodeProducer({
+        error: undefined,
+        signal: null,
+        status: 1,
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.from(stderr),
+      }),
+      { message: fallback },
+    );
+  }
+  assert.doesNotMatch(fallback, hostileDiagnosticPattern);
+});
 
 const validationOptions = overrides => ({
   environment,
@@ -607,7 +693,7 @@ test('the workflow stages before alternate credentials and the harness preflight
   );
   const producerTransitions = [
     ['host-node-command-result', 'Get-Command node.exe -CommandType Application'],
-    ['host-node-source', "$sourceProperty = $command.PSObject.Properties['Source']"],
+    ['host-node-source', '@($command.Source)'],
   ];
   for (let index = 0; index < producerTransitions.length; index += 1) {
     const [subphase, operation] = producerTransitions[index];
@@ -623,7 +709,9 @@ test('the workflow stages before alternate credentials and the harness preflight
   }
   assert.match(hostNodeProducer, /\$commandResults\.Count -ne 1[\s\S]*?Management\.Automation\.ApplicationInfo/u);
   assert.match(hostNodeProducer, /\$command = \$commandResults\[0\]/u);
-  assert.match(hostNodeProducer, /\$null -eq \$sourceProperty[\s\S]*?\$source -is \[string\]/u);
+  assert.match(hostNodeProducer, /\$sourceResults\.Count -ne 1[\s\S]*?\$sourceResults\[0\] -is \[string\]/u);
+  assert.match(hostNodeProducer, /return \$sourceResults\[0\]/u);
+  assert.doesNotMatch(hostNodeProducer, /PSObject\.Properties\['Source'\]/u);
   assert.doesNotMatch(orchestrator, /\$node\s*=\s*['"]node(?:\.exe)?['"]/iu);
   const hostBoundary = orchestrator.slice(
     orchestrator.indexOf('$node = Get-ValidatedHostNodePath', orchestrator.indexOf("Set-FailurePhase 'staging-acl'")),
@@ -776,14 +864,7 @@ for (const [testCase, subphase] of [
 
 windowsTest('the PS5.1 host Node producer returns one validated scalar Source', () => {
   const result = runHostNodeProducerTest('positive');
-  assert.ifError(result.error);
-  assert.equal(result.signal, null);
-  assert.equal(result.status, 0);
-  assert.equal(
-    result.stdout.toString('utf8').trim(),
-    'PROPR_WINDOWS_PACKAGED_CONNECT_HOST_NODE_PRODUCER_TEST:accepted',
-  );
-  assert.equal(result.stderr.length, 0);
+  assertPositiveHostNodeProducer(result);
 });
 
 windowsTest('the host launcher accepts only a stable final ordinary-file identity', async context => {

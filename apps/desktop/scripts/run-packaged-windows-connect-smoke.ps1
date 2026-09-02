@@ -199,18 +199,17 @@ function Get-ValidatedHostNodePath {
 
   Set-OrdinaryUserPreflightSubphase 'host-node-source'
   $command = $commandResults[0]
-  $sourceProperty = $command.PSObject.Properties['Source']
-  if ($null -eq $sourceProperty) { Stop-PackagedConnect 'artifact-type' }
-  $source = if ($null -eq $TestOnlySourceProducer) {
-    $sourceProperty.Value
+  if ($null -eq $TestOnlySourceProducer) {
+    $sourceResults = @($command.Source)
   } else {
-    & $TestOnlySourceProducer $command
+    $sourceResults = @(& $TestOnlySourceProducer $command)
   }
-  if ($null -eq $source -or !($source -is [string]) -or
-      [String]::IsNullOrEmpty($source)) {
+  if ($sourceResults.Count -ne 1 -or
+      !($sourceResults[0] -is [string]) -or
+      [String]::IsNullOrEmpty($sourceResults[0])) {
     Stop-PackagedConnect 'artifact-type'
   }
-  return $source
+  return $sourceResults[0]
 }
 
 function Stop-SpawnedProcess {
