@@ -7,6 +7,7 @@ import {
   subscribeDesktopConnectionScope,
 } from '../api/apiClient';
 import { currentUiPathname, isDesktopRuntime } from '../config/runtimeMode';
+import { reportPackagedAcceptanceCurrentUser } from '../desktop/packagedAcceptanceCurrentUserValidation';
 
 const AUTHORIZATION_REFRESH_INTERVAL_MS = 60_000;
 
@@ -25,6 +26,7 @@ interface CurrentUserBootstrapResult {
 
 interface RefreshRequest {
   configurationKey: string;
+  scopeGeneration: number;
   promise: Promise<void>;
 }
 
@@ -45,41 +47,94 @@ export const useCurrentUserBootstrap = ({
   );
   const currentConfigurationKey = desktopRuntime ? socketConfigurationKey : 'browser';
   const currentConfigurationKeyRef = useRef(currentConfigurationKey);
+  const scopeGenerationRef = useRef({ configurationKey: currentConfigurationKey, generation: 0 });
+  if (scopeGenerationRef.current.configurationKey !== currentConfigurationKey) {
+    scopeGenerationRef.current = {
+      configurationKey: currentConfigurationKey,
+      generation: scopeGenerationRef.current.generation + 1,
+    };
+  }
   currentConfigurationKeyRef.current = currentConfigurationKey;
 
   const [isInitialLoading, setIsInitialLoading] = useState(currentUiPathname() !== '/login');
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [validatedConfigurationKey, setValidatedConfigurationKey] = useState<string | null>(null);
-  const [refreshingConfigurationKey, setRefreshingConfigurationKey] = useState<string | null>(null);
+  const [validatedScopeGeneration, setValidatedScopeGeneration] = useState<number | null>(null);
+  const [refreshingScope, setRefreshingScope] = useState<{
+    configurationKey: string;
+    scopeGeneration: number;
+  } | null>(null);
   const refreshRequestRef = useRef<RefreshRequest | null>(null);
 
   const refreshCurrentUser = useCallback((): Promise<void> => {
     const configurationKey = currentConfigurationKeyRef.current;
+    const scopeGeneration = scopeGenerationRef.current.generation;
+    const activeScopePresent = desktopRuntime && getDesktopConnectionScope() !== null;
     const existing = refreshRequestRef.current;
-    if (existing?.configurationKey === configurationKey) return existing.promise;
+    if (existing?.configurationKey === configurationKey && existing.scopeGeneration === scopeGeneration) {
+      return existing.promise;
+    }
 
-    setRefreshingConfigurationKey(configurationKey);
+    setRefreshingScope({ configurationKey, scopeGeneration });
+    if (activeScopePresent) {
+      reportPackagedAcceptanceCurrentUser({
+        phase: 'request-issued', scopeGeneration, activeScopePresent,
+        responseStatus: 0, classification: 'pending', schemaAccepted: false,
+      });
+    }
     const request = Promise.resolve()
-      .then(() => getCurrentUser())
+      .then(() => getCurrentUser({ scopeGeneration, activeScopePresent }))
       .then(user => {
-        if (currentConfigurationKeyRef.current !== configurationKey) return;
+        if (currentConfigurationKeyRef.current !== configurationKey
+          || scopeGenerationRef.current.generation !== scopeGeneration) {
+          if (activeScopePresent) {
+            reportPackagedAcceptanceCurrentUser({
+              phase: 'stale-scope-rejected', scopeGeneration, activeScopePresent,
+              responseStatus: 200, classification: 'success', schemaAccepted: true,
+            });
+          }
+          return;
+        }
         setCurrentUser(user);
         setValidatedConfigurationKey(configurationKey);
+        setValidatedScopeGeneration(scopeGeneration);
+        if (activeScopePresent) {
+          reportPackagedAcceptanceCurrentUser({
+            phase: 'active-scope-accepted', scopeGeneration, activeScopePresent,
+            responseStatus: 200, classification: 'success', schemaAccepted: true,
+          });
+        }
       })
       .catch(error => {
-        if (currentConfigurationKeyRef.current === configurationKey) {
+        const currentScope = currentConfigurationKeyRef.current === configurationKey
+          && scopeGenerationRef.current.generation === scopeGeneration;
+        if (currentScope) {
           setCurrentUser(null);
           setValidatedConfigurationKey(null);
+          setValidatedScopeGeneration(null);
+        }
+        if (activeScopePresent) {
+          reportPackagedAcceptanceCurrentUser({
+            phase: currentScope
+              ? (getDesktopConnectionScope() === null ? 'revoked-scope-rejected' : 'active-scope-rejected')
+              : 'stale-scope-rejected',
+            scopeGeneration,
+            activeScopePresent,
+            responseStatus: 0,
+            classification: getDesktopConnectionScope() === null ? 'revoked' : 'network-error',
+            schemaAccepted: false,
+          });
         }
         throw error;
       })
       .finally(() => {
         if (refreshRequestRef.current?.promise === request) refreshRequestRef.current = null;
-        setRefreshingConfigurationKey(current => current === configurationKey ? null : current);
+        setRefreshingScope(current => current?.configurationKey === configurationKey
+          && current.scopeGeneration === scopeGeneration ? null : current);
       });
-    refreshRequestRef.current = { configurationKey, promise: request };
+    refreshRequestRef.current = { configurationKey, scopeGeneration, promise: request };
     return request;
-  }, []);
+  }, [desktopRuntime]);
 
   useEffect(() => {
     if (isDemoModeLoading) return;
@@ -143,9 +198,12 @@ export const useCurrentUserBootstrap = ({
     };
   }, [isDemoMode, refreshCurrentUser]);
 
-  const validatedCurrentUser = validatedConfigurationKey === currentConfigurationKey ? currentUser : null;
+  const currentScopeGeneration = scopeGenerationRef.current.generation;
+  const validatedCurrentUser = validatedConfigurationKey === currentConfigurationKey
+    && validatedScopeGeneration === currentScopeGeneration ? currentUser : null;
   const currentUserLoading = validatedCurrentUser === null
-    && (isInitialLoading || refreshingConfigurationKey === currentConfigurationKey);
+    && (isInitialLoading || (refreshingScope?.configurationKey === currentConfigurationKey
+      && refreshingScope.scopeGeneration === currentScopeGeneration));
 
   return {
     currentUser: validatedCurrentUser,

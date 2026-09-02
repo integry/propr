@@ -439,7 +439,7 @@ const validateAccessibility = accessibility => {
 
 const validateSummary = summary => {
   assertExactKeys(summary, ['schemaVersion', 'generatedAt', 'status', 'journeys', 'screenshots', 'boundary', 'console', 'services', 'redaction'], 'Acceptance summary');
-  if (summary.schemaVersion !== 4 || summary.generatedAt !== FIXED_TIME || summary.status !== 'passed'
+  if (summary.schemaVersion !== 5 || summary.generatedAt !== FIXED_TIME || summary.status !== 'passed'
     || summary.journeys !== ACCEPTANCE_JOURNEYS.length || summary.screenshots !== expectedScreenshotNames().length
     || summary.redaction !== 'Full raw surfaces were scanned; published logs retain only source, level, byte count, and digest.') {
     throw new Error('Acceptance sanitized summary is invalid');
@@ -454,7 +454,13 @@ const validateSummary = summary => {
   }
   assertExactKeys(summary.services, ['rest', 'socketIo', 'pairing', 'connect'], 'Acceptance service summary');
   const { rest, socketIo, pairing, connect } = summary.services;
-  assertExactKeys(rest, ['requestCount', 'authenticatedRequestCount', 'journeys'], 'Acceptance REST summary');
+  assertExactKeys(rest, ['requestCount', 'authenticatedRequestCount', 'journeys', 'currentUserValidation'], 'Acceptance REST summary');
+  assertExactKeys(rest.currentUserValidation, [
+    'correlation', 'rendererRequestIssued', 'rendererScopeGeneration', 'mainProxyObserved', 'mainActiveScopeGeneration',
+    'activeScopeAccepted', 'mainOnlyBearerInjection', 'upstreamRequestArrived', 'responseStatus',
+    'responseClassification', 'parsedUserSchemaAccepted', 'rendererActiveScopeAccepted',
+    'firstFailedPredicate',
+  ], 'Acceptance current-user validation summary');
   assertExactKeys(socketIo, ['authenticatedConnections', 'events', 'journeys', 'handshake'], 'Acceptance Socket.IO summary');
   assertExactKeys(pairing, ['started', 'polled', 'activated', 'journeys'], 'Acceptance pairing summary');
   assertExactKeys(connect, ['confirmedRequests', 'journeys'], 'Acceptance Connect summary');
@@ -474,7 +480,21 @@ const validateSummary = summary => {
     'desktopRuntime', 'connectionScope', 'socketConstructionInvocations', 'socketConstructions',
     'connectInvocations',
   ], 'Acceptance renderer Socket.IO lifecycle summary');
+  const currentUserValidation = rest.currentUserValidation;
   if (rest.requestCount <= 0 || rest.authenticatedRequestCount <= 0 || !rest.journeys.includes('dashboard-profile-manager')
+    || currentUserValidation.correlation !== 'current-scope-user-validation'
+    || currentUserValidation.rendererRequestIssued !== true
+    || !isInteger(currentUserValidation.rendererScopeGeneration) || currentUserValidation.rendererScopeGeneration <= 0
+    || currentUserValidation.mainProxyObserved !== true
+    || !isInteger(currentUserValidation.mainActiveScopeGeneration) || currentUserValidation.mainActiveScopeGeneration < 0
+    || currentUserValidation.activeScopeAccepted !== true
+    || currentUserValidation.mainOnlyBearerInjection !== true
+    || currentUserValidation.upstreamRequestArrived !== true
+    || currentUserValidation.responseStatus !== 200
+    || currentUserValidation.responseClassification !== 'success'
+    || currentUserValidation.parsedUserSchemaAccepted !== true
+    || currentUserValidation.rendererActiveScopeAccepted !== true
+    || currentUserValidation.firstFailedPredicate !== 'none'
     || socketIo.authenticatedConnections !== 1 || socketIo.events <= 0 || !socketIo.journeys.includes('dashboard-profile-manager')
     || handshake.mainAttempts !== 1 || handshake.fixtureAttempts !== 1
     || handshake.scopeQueryPresent !== true || handshake.scopeQueryCount !== 1

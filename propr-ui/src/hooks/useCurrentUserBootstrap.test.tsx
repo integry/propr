@@ -128,10 +128,46 @@ describe('desktop current-user bootstrap', () => {
     expect(getCurrentUser).toHaveBeenCalledTimes(2);
   });
 
+  it('rejects an ABA response when the same scope key is republished at a newer generation', async () => {
+    const initial = deferred<CurrentUser>();
+    const oldA = deferred<CurrentUser>();
+    const scopeB = deferred<CurrentUser>();
+    const currentA = deferred<CurrentUser>();
+    getCurrentUser
+      .mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(oldA.promise)
+      .mockReturnValueOnce(scopeB.promise)
+      .mockReturnValueOnce(currentA.promise);
+    const { result } = renderHook(() => useCurrentUserBootstrap({
+      isDemoMode: false,
+      isDemoModeLoading: false,
+    }));
+    await waitFor(() => expect(getCurrentUser).toHaveBeenCalledOnce());
+
+    publishScope(activeScope);
+    await waitFor(() => expect(getCurrentUser).toHaveBeenCalledTimes(2));
+    publishScope({ ...activeScope, profileId: 'profile-b', transportScope: 'BBBBBBBBBBBBBBBBBBBBBB' });
+    await waitFor(() => expect(getCurrentUser).toHaveBeenCalledTimes(3));
+    publishScope(activeScope);
+    await waitFor(() => expect(getCurrentUser).toHaveBeenCalledTimes(4));
+
+    oldA.resolve(user);
+    await act(async () => { await oldA.promise; });
+    expect(result.current.currentUser).toBeNull();
+
+    currentA.resolve(user);
+    await waitFor(() => expect(result.current.currentUser).toEqual(user));
+    initial.reject(new Error('Desktop authentication is required.'));
+    scopeB.reject(new Error('Desktop authentication is required.'));
+    await act(async () => { await Promise.allSettled([initial.promise, scopeB.promise]); });
+    expect(result.current.currentUser).toEqual(user);
+  });
+
   it('constructs once after activated validation and removes that Manager when revalidation fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     getCurrentUser
       .mockRejectedValueOnce(new Error('Desktop authentication is required.'))
+      .mockResolvedValueOnce(user)
       .mockResolvedValueOnce(user)
       .mockRejectedValueOnce(new Error('This desktop connection was revoked or expired.'));
 
@@ -164,6 +200,12 @@ describe('desktop current-user bootstrap', () => {
 
     act(() => { window.dispatchEvent(new Event('propr:instance-authorization-changed')); });
     await waitFor(() => expect(getCurrentUser).toHaveBeenCalledTimes(3));
+    expect(connectSocket).toHaveBeenCalledOnce();
+    expect(sockets[0].connect).toHaveBeenCalledOnce();
+    expect(sockets[0].disconnect).not.toHaveBeenCalled();
+
+    act(() => { window.dispatchEvent(new Event('propr:instance-authorization-changed')); });
+    await waitFor(() => expect(getCurrentUser).toHaveBeenCalledTimes(4));
     await waitFor(() => expect(sockets[0].disconnect).toHaveBeenCalledOnce());
     expect(connectSocket).toHaveBeenCalledOnce();
   });

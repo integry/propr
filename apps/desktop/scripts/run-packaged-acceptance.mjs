@@ -62,6 +62,9 @@ const socketRecords = [];
 const fixtureHandshakeRecords = [];
 const mainHandshakeRecords = [];
 const rendererLifecycleRecords = [];
+const rendererCurrentUserRecords = [];
+const mainCurrentUserRecords = [];
+const fixtureCurrentUserRecords = [];
 const screenshotMetadata = [];
 const accessibilityChecks = [];
 const axeFindings = [];
@@ -75,12 +78,15 @@ let modalFocusTrap = false;
 let modalFocusRestore = false;
 let traceWritten = false;
 let rendererLifecycleEvidenceInvalid = false;
+let currentUserEvidenceInvalid = false;
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const unique = values => [...new Set(values)].sort((a, b) => ACCEPTANCE_JOURNEYS.indexOf(a) - ACCEPTANCE_JOURNEYS.indexOf(b));
 const sleep = milliseconds => new Promise(resolveValue => setTimeout(resolveValue, milliseconds));
 const MAIN_HANDSHAKE_EVENT = 'desktop.acceptance.websocket_handshake';
+const MAIN_CURRENT_USER_EVENT = 'desktop.acceptance.current_user_proxy';
 const RENDERER_LIFECYCLE_PREFIX = '[ProPR Acceptance Renderer Lifecycle]';
+const RENDERER_CURRENT_USER_PREFIX = '[ProPR Acceptance Current User]';
 const RENDERER_LIFECYCLE_PHASES = new Set([
   'profile-activation-published', 'socket-provider-mounted', 'socket-effect-disabled',
   'socket-effect-scope-unavailable', 'socket-effect-ready', 'socket-construction-invoked', 'socket-constructed',
@@ -96,6 +102,18 @@ const MAIN_HANDSHAKE_CATEGORIES = new Set([
   'none', 'untrusted-http-origin', 'wrong-path', 'wrong-transport', 'wrong-resource-type',
   'scope-missing', 'scope-duplicate', 'scope-malformed', 'no-active-binding',
   'stale-generation', 'wrong-origin', 'stale-scope',
+]);
+const CURRENT_USER_PROXY_CATEGORIES = new Set([
+  'none', 'scope-missing', 'scope-duplicate', 'scope-malformed', 'no-active-binding',
+  'stale-generation', 'wrong-origin', 'stale-scope',
+]);
+const CURRENT_USER_RENDERER_PHASES = new Set([
+  'request-issued', 'response-completed', 'parsed-user-accepted', 'parsed-user-rejected',
+  'active-scope-accepted', 'stale-scope-rejected', 'revoked-scope-rejected', 'active-scope-rejected',
+]);
+const CURRENT_USER_CLASSIFICATIONS = new Set([
+  'pending', 'success', 'unauthenticated', 'revoked', 'forbidden', 'server-error',
+  'network-error', 'invalid-schema',
 ]);
 
 const captureMainHandshakeEvidence = (line, journey) => {
@@ -147,6 +165,47 @@ const captureMainHandshakeEvidence = (line, journey) => {
   }
 };
 
+const captureMainCurrentUserEvidence = (line, journey) => {
+  if (!line.includes(MAIN_CURRENT_USER_EVENT)) return;
+  try {
+    const record = JSON.parse(line.slice(line.indexOf('{')));
+    const evidence = {
+      schemaVersion: record.schemaVersion,
+      correlation: record.correlation,
+      requestObserved: record.requestObserved,
+      method: record.method,
+      scopeHeaderCount: record.scopeHeaderCount,
+      activeBindingPresent: record.activeBindingPresent,
+      activeScopeGeneration: record.activeScopeGeneration,
+      profileGenerationCurrent: record.profileGenerationCurrent,
+      scopeEqualsActive: record.scopeEqualsActive,
+      originEqualsActive: record.originEqualsActive,
+      rendererBearerPresent: record.rendererBearerPresent,
+      rendererCookiePresent: record.rendererCookiePresent,
+      outboundBearerPresent: record.outboundBearerPresent,
+      bearerMainInjected: record.bearerMainInjected,
+      accepted: record.accepted,
+      rejectionCategory: record.rejectionCategory,
+    };
+    const valid = record.event === MAIN_CURRENT_USER_EVENT
+      && evidence.schemaVersion === 1 && evidence.correlation === 'current-scope-user-validation'
+      && evidence.requestObserved === true && evidence.method === 'get'
+      && Number.isSafeInteger(evidence.scopeHeaderCount) && evidence.scopeHeaderCount >= 0 && evidence.scopeHeaderCount <= 2
+      && Number.isSafeInteger(evidence.activeScopeGeneration) && evidence.activeScopeGeneration >= 0
+      && CURRENT_USER_PROXY_CATEGORIES.has(evidence.rejectionCategory)
+      && [
+        evidence.activeBindingPresent, evidence.profileGenerationCurrent, evidence.scopeEqualsActive,
+        evidence.originEqualsActive, evidence.rendererBearerPresent, evidence.rendererCookiePresent,
+        evidence.outboundBearerPresent, evidence.bearerMainInjected, evidence.accepted,
+      ].every(value => typeof value === 'boolean')
+      && mainCurrentUserRecords.filter(item => item.journey === journey).length < 4;
+    if (!valid) currentUserEvidenceInvalid = true;
+    else mainCurrentUserRecords.push({ journey, ...evidence });
+  } catch {
+    currentUserEvidenceInvalid = true;
+  }
+};
+
 const captureRendererLifecycleEvidence = (argumentsValue, journey) => {
   if (argumentsValue[0] !== RENDERER_LIFECYCLE_PREFIX) return;
   const evidence = argumentsValue[1];
@@ -176,6 +235,28 @@ const captureRendererLifecycleEvidence = (argumentsValue, journey) => {
   rendererLifecycleRecords.push({ journey, ...evidence });
 };
 
+const captureRendererCurrentUserEvidence = (argumentsValue, journey) => {
+  if (argumentsValue[0] !== RENDERER_CURRENT_USER_PREFIX) return;
+  const evidence = argumentsValue[1];
+  const expectedKeys = [
+    'activeScopePresent', 'classification', 'correlation', 'phase', 'responseStatus', 'schemaAccepted',
+    'schemaVersion', 'scopeGeneration',
+  ].sort();
+  const valid = evidence && typeof evidence === 'object' && !Array.isArray(evidence)
+    && Object.keys(evidence).sort().join('\n') === expectedKeys.join('\n')
+    && evidence.schemaVersion === 1
+    && evidence.correlation === 'current-scope-user-validation'
+    && CURRENT_USER_RENDERER_PHASES.has(evidence.phase)
+    && CURRENT_USER_CLASSIFICATIONS.has(evidence.classification)
+    && Number.isSafeInteger(evidence.scopeGeneration) && evidence.scopeGeneration >= 0
+    && Number.isSafeInteger(evidence.responseStatus) && evidence.responseStatus >= 0 && evidence.responseStatus <= 599
+    && typeof evidence.activeScopePresent === 'boolean'
+    && typeof evidence.schemaAccepted === 'boolean'
+    && rendererCurrentUserRecords.filter(item => item.journey === journey).length < 10;
+  if (!valid) currentUserEvidenceInvalid = true;
+  else rendererCurrentUserRecords.push({ journey, ...evidence });
+};
+
 await access(binaryPath, fsConstants.X_OK);
 const binaryStats = await lstat(binaryPath);
 if (!binaryStats.isFile() || binaryStats.isSymbolicLink()) throw new Error('Packaged acceptance binary must be an executable non-link file');
@@ -187,6 +268,7 @@ const json = (response, status, value, extra = {}) => {
     'Access-Control-Allow-Headers': 'Content-Type, X-ProPR-Desktop-Transport-Scope',
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Origin': DESKTOP_RENDERER_ORIGIN,
+    'Access-Control-Allow-Private-Network': 'true',
     'Cache-Control': 'no-store',
     'Content-Type': 'application/json',
     ...extra,
@@ -212,6 +294,13 @@ const createFixture = async (mode, fixedOrigin) => {
   const expectedUrl = new URL(fixedOrigin);
   let binding = null;
   let authChecks = 0;
+  const recordCurrentUserFixture = record => {
+    if (fixtureCurrentUserRecords.filter(item => item.journey === activeJourney).length >= 4) {
+      currentUserEvidenceInvalid = true;
+      return;
+    }
+    fixtureCurrentUserRecords.push(record);
+  };
   const server = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -263,8 +352,31 @@ const createFixture = async (mode, fixedOrigin) => {
     if (request.method === 'DELETE' && request.url === '/api/desktop/tokens/current') return json(response, 204, {});
     if (request.url === '/api/auth/user') {
       authChecks += 1;
-      if (mode === 'revoked' && authChecks >= 1) return json(response, 401, { code: 'INSTANCE_TOKEN_REVOKED' });
-      if (request.headers.authorization !== `Bearer ${INSTANCE_TOKEN}`) return json(response, 401, { code: 'INVALID_INSTANCE_TOKEN' });
+      const source = request.headers.origin === DESKTOP_RENDERER_ORIGIN ? 'renderer' : 'main';
+      const record = {
+        journey: activeJourney,
+        correlation: 'current-scope-user-validation',
+        source,
+        requestArrived: true,
+        authorizationPresent: typeof request.headers.authorization === 'string',
+        authorizationMatchesActivatedBearer: request.headers.authorization === `Bearer ${INSTANCE_TOKEN}`,
+        cookiePresent: typeof request.headers.cookie === 'string',
+        responseStatus: 200,
+        classification: 'success',
+      };
+      if (mode === 'revoked' && authChecks >= 1) {
+        record.responseStatus = 401;
+        record.classification = 'revoked';
+        recordCurrentUserFixture(record);
+        return json(response, 401, { code: 'INSTANCE_TOKEN_REVOKED' });
+      }
+      if (request.headers.authorization !== `Bearer ${INSTANCE_TOKEN}`) {
+        record.responseStatus = 401;
+        record.classification = 'unauthenticated';
+        recordCurrentUserFixture(record);
+        return json(response, 401, { code: 'INVALID_INSTANCE_TOKEN' });
+      }
+      recordCurrentUserFixture(record);
       return json(response, 200, {
         id: 'acceptance-user', login: 'acceptance-admin', username: 'acceptance-admin', displayName: 'Acceptance Admin',
         email: null, avatarUrl: null, role: 'admin',
@@ -434,7 +546,10 @@ const launchApplication = async (scenario, initialDeepLink) => {
         if (match) resolveEndpoint(match[1]);
         const lines = `${remainder}${text}`.split(/\r?\n/);
         remainder = lines.pop() || '';
-        lines.forEach(line => captureMainHandshakeEvidence(line, activeJourney));
+        lines.forEach(line => {
+          captureMainHandshakeEvidence(line, activeJourney);
+          captureMainCurrentUserEvidence(line, activeJourney);
+        });
       };
     };
     child.stdout.on('data', capture());
@@ -462,6 +577,7 @@ const launchApplication = async (scenario, initialDeepLink) => {
         };
         consoleRecords.push(record);
         captureRendererLifecycleEvidence(record.arguments, journey);
+        captureRendererCurrentUserEvidence(record.arguments, journey);
       });
       pendingConsoleRecords.push(pending);
     });
@@ -756,7 +872,55 @@ const waitForObserved = async (predicate, description) => {
   }
 };
 
+const currentUserValidationFailureCategory = journey => {
+  if (currentUserEvidenceInvalid) return 'current-user-evidence-invalid';
+  const renderer = rendererCurrentUserRecords.filter(record => record.journey === journey
+    && record.activeScopePresent && record.scopeGeneration > 0);
+  const issued = renderer.filter(record => record.phase === 'request-issued');
+  if (issued.length === 0) return 'current-user-renderer-request-not-issued';
+  if (issued.length !== 1) return 'current-user-renderer-request-duplicate';
+  const generation = issued[0].scopeGeneration;
+  const main = mainCurrentUserRecords.filter(record => record.journey === journey
+    && record.scopeHeaderCount === 1 && record.activeBindingPresent);
+  if (main.length === 0) return 'current-user-main-proxy-not-observed';
+  if (main.length !== 1) return 'current-user-main-proxy-duplicate';
+  if (!main[0].accepted) return `current-user-main-${main[0].rejectionCategory}`;
+  if (!main[0].profileGenerationCurrent || !main[0].scopeEqualsActive || !main[0].originEqualsActive) {
+    return 'current-user-main-active-scope-rejected';
+  }
+  if (main[0].rendererBearerPresent || main[0].rendererCookiePresent
+    || !main[0].outboundBearerPresent || !main[0].bearerMainInjected) {
+    return 'current-user-main-bearer-custody-invalid';
+  }
+  const fixture = fixtureCurrentUserRecords.filter(record => record.journey === journey
+    && record.source === 'renderer' && record.authorizationMatchesActivatedBearer);
+  if (fixture.length === 0) return 'current-user-upstream-request-not-arrived';
+  if (fixture.length !== 1) return 'current-user-upstream-request-duplicate';
+  if (!fixture[0].authorizationPresent || !fixture[0].authorizationMatchesActivatedBearer
+    || fixture[0].cookiePresent) return 'current-user-upstream-bearer-custody-invalid';
+  if (fixture[0].responseStatus !== 200) return `current-user-response-http-${fixture[0].responseStatus}`;
+  const completed = renderer.filter(record => record.scopeGeneration === generation
+    && record.phase === 'response-completed');
+  if (completed.length === 0) return 'current-user-renderer-response-not-completed';
+  if (completed.length !== 1 || completed[0].responseStatus !== 200
+    || completed[0].classification !== 'success') return 'current-user-renderer-response-rejected';
+  const parsed = renderer.filter(record => record.scopeGeneration === generation
+    && (record.phase === 'parsed-user-accepted' || record.phase === 'parsed-user-rejected'));
+  if (parsed.length === 0) return 'current-user-parsed-schema-not-observed';
+  if (parsed.length !== 1 || parsed[0].phase !== 'parsed-user-accepted' || !parsed[0].schemaAccepted) {
+    return 'current-user-parsed-schema-rejected';
+  }
+  const accepted = renderer.filter(record => record.scopeGeneration === generation
+    && record.phase === 'active-scope-accepted');
+  if (accepted.length !== 1) return accepted.length === 0
+    ? 'current-user-active-scope-not-accepted'
+    : 'current-user-active-scope-accepted-duplicate';
+  return 'none';
+};
+
 const socketHandshakeFailureCategory = journey => {
+  const currentUserCategory = currentUserValidationFailureCategory(journey);
+  if (currentUserCategory !== 'none') return currentUserCategory;
   const rejectedMain = mainHandshakeRecords.find(record => record.journey === journey && !record.accepted);
   if (rejectedMain) return `main-${rejectedMain.rejectionCategory}`;
   const rejectedFixture = fixtureHandshakeRecords.find(record => record.journey === journey && !record.accepted);
@@ -844,8 +1008,38 @@ const observedServiceSummary = () => {
   const pairingPolled = requestRecords.filter(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/poll`);
   const pairingActivated = requestRecords.filter(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/activate`);
   const connectConfirmed = requestRecords.filter(record => record.journey === 'connect-confirmation' && record.url === '/api/desktop/discovery');
+  const currentUserCategory = currentUserValidationFailureCategory('dashboard-profile-manager');
+  const currentUserIssued = rendererCurrentUserRecords.find(record => record.journey === 'dashboard-profile-manager'
+    && record.activeScopePresent && record.phase === 'request-issued');
+  const currentUserMain = mainCurrentUserRecords.find(record => record.journey === 'dashboard-profile-manager'
+    && record.accepted);
+  const currentUserFixture = fixtureCurrentUserRecords.find(record => record.journey === 'dashboard-profile-manager'
+    && record.source === 'renderer' && record.authorizationMatchesActivatedBearer);
   const services = {
-    rest: { requestCount: restRequests.length, authenticatedRequestCount: authenticatedRequests.length, journeys: unique(restRequests.map(record => record.journey)) },
+    rest: {
+      requestCount: restRequests.length,
+      authenticatedRequestCount: authenticatedRequests.length,
+      journeys: unique(restRequests.map(record => record.journey)),
+      currentUserValidation: {
+        correlation: 'current-scope-user-validation',
+        rendererRequestIssued: Boolean(currentUserIssued),
+        rendererScopeGeneration: currentUserIssued?.scopeGeneration ?? 0,
+        mainProxyObserved: Boolean(currentUserMain),
+        mainActiveScopeGeneration: currentUserMain?.activeScopeGeneration ?? 0,
+        activeScopeAccepted: currentUserMain?.accepted === true,
+        mainOnlyBearerInjection: currentUserMain?.rendererBearerPresent === false
+          && currentUserMain?.rendererCookiePresent === false
+          && currentUserMain?.bearerMainInjected === true,
+        upstreamRequestArrived: currentUserFixture?.requestArrived === true,
+        responseStatus: currentUserFixture?.responseStatus ?? 0,
+        responseClassification: currentUserFixture?.classification ?? 'not-observed',
+        parsedUserSchemaAccepted: rendererCurrentUserRecords.some(record => record.journey === 'dashboard-profile-manager'
+          && record.activeScopePresent && record.phase === 'parsed-user-accepted' && record.schemaAccepted),
+        rendererActiveScopeAccepted: rendererCurrentUserRecords.some(record => record.journey === 'dashboard-profile-manager'
+          && record.activeScopePresent && record.phase === 'active-scope-accepted'),
+        firstFailedPredicate: currentUserCategory,
+      },
+    },
     socketIo: {
       authenticatedConnections: socketConnections.length,
       events: socketEvents.length,
@@ -890,6 +1084,7 @@ const observedServiceSummary = () => {
     connect: { confirmedRequests: connectConfirmed.length, journeys: unique(connectConfirmed.map(record => record.journey)) },
   };
   if (services.rest.requestCount <= 0 || services.rest.authenticatedRequestCount <= 0
+    || currentUserCategory !== 'none'
     || services.socketIo.authenticatedConnections !== 1 || services.socketIo.events <= 0
     || services.socketIo.handshake.mainAttempts !== 1 || services.socketIo.handshake.fixtureAttempts !== 1
     || !services.socketIo.handshake.scopeQueryPresent || services.socketIo.handshake.scopeQueryCount !== 1
@@ -1052,7 +1247,7 @@ try {
 
   const services = observedServiceSummary();
   const sanitizedSummary = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     generatedAt: FIXED_TIME,
     status: 'passed',
     journeys: ACCEPTANCE_JOURNEYS.length,
@@ -1087,6 +1282,9 @@ try {
     surfaces.push({ kind: 'socket-events', records: socketRecords });
     surfaces.push({ kind: 'socket-main-handshakes', records: mainHandshakeRecords });
     surfaces.push({ kind: 'socket-fixture-handshakes', records: fixtureHandshakeRecords });
+    surfaces.push({ kind: 'current-user-renderer-validation', records: rendererCurrentUserRecords });
+    surfaces.push({ kind: 'current-user-main-proxy', records: mainCurrentUserRecords });
+    surfaces.push({ kind: 'current-user-fixture-responses', records: fixtureCurrentUserRecords });
     surfaces.push({ kind: 'screenshot-metadata', records: screenshotMetadata });
     surfaces.push({ kind: 'accessibility-metadata', value: accessibility });
     await writeFile(join(scanRoot, 'complete-renderer-process-network-and-metadata-surfaces.json'), JSON.stringify(surfaces), { mode: 0o600 });

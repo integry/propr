@@ -13,10 +13,14 @@ import {
   PROPR_API_COMPATIBILITY,
   PROPR_UI_COMPATIBILITY,
 } from '@propr/shared';
-import { DesktopCredentialService, type DesktopWebSocketHandshakeEvidence } from './credential-service';
+import {
+  DesktopCredentialService,
+  type DesktopCurrentUserProxyEvidence,
+  type DesktopWebSocketHandshakeEvidence,
+} from './credential-service';
 import { ProfileStore, type EncryptionProvider, type StoredCredential } from './profile-store';
 
-export const NATIVE_DURABILITY_EXPECTED_TESTS = 70 as const;
+export const NATIVE_DURABILITY_EXPECTED_TESTS = 71 as const;
 
 const temporaryDirectories: string[] = [];
 const credentialServices: DesktopCredentialService[] = [];
@@ -647,6 +651,59 @@ describe('main-process desktop credential service', () => {
         'Access-Control-Request-Headers': 'X-ProPR-Desktop-Transport-Scope, Content-Type',
       },
     });
+  });
+
+  it('reports fixed current-user proxy acceptance and stale-scope rejection with main-only bearer custody', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+    const evidence: DesktopCurrentUserProxyEvidence[] = [];
+    const service = createCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async input => input.toString().endsWith('/api/desktop/discovery')
+        ? json(discovery)
+        : json({ username: 'octocat' }),
+      reportCurrentUserValidation: record => evidence.push(record),
+    });
+    const ready = await service.probe(profile);
+    assert.equal(ready.status, 'ready');
+    if (ready.status !== 'ready') return;
+    const activated = await service.activate(ready.activationTicket);
+
+    assert.deepEqual(service.prepareRequest(`${profile.apiBaseUrl}/api/auth/user`, {
+      ...transportHeaders(activated.transportScope),
+    }, { method: 'GET', resourceType: 'xhr' }).requestHeaders, {
+      Authorization: `Bearer ${token('A')}`,
+    });
+    assert.deepEqual(evidence.at(-1), {
+      schemaVersion: 1,
+      correlation: 'current-scope-user-validation',
+      requestObserved: true,
+      method: 'get',
+      scopeHeaderCount: 1,
+      activeBindingPresent: true,
+      activeScopeGeneration: 0,
+      profileGenerationCurrent: true,
+      scopeEqualsActive: true,
+      originEqualsActive: true,
+      rendererBearerPresent: false,
+      rendererCookiePresent: false,
+      outboundBearerPresent: true,
+      bearerMainInjected: true,
+      accepted: true,
+      rejectionCategory: 'none',
+    });
+    assert.deepEqual(service.prepareRequest(`${profile.apiBaseUrl}/api/auth/user`, {
+      ...transportHeaders('Z'.repeat(22)),
+    }, { method: 'GET', resourceType: 'xhr' }), { cancel: true });
+    assert.deepEqual({
+      accepted: evidence.at(-1)?.accepted,
+      rejectionCategory: evidence.at(-1)?.rejectionCategory,
+      bearerMainInjected: evidence.at(-1)?.bearerMainInjected,
+    }, { accepted: false, rejectionCategory: 'stale-scope', bearerMainInjected: false });
+    assert.doesNotMatch(JSON.stringify(evidence), /profile-a|example\.test|propr_it_/);
   });
 
   it('reports deterministic secret-free WebSocket decisions for positive and adversarial handshakes', async () => {

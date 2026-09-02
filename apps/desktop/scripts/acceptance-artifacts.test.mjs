@@ -121,7 +121,7 @@ const accessibilityFor = () => ({
 });
 
 const summaryFor = () => ({
-  schemaVersion: 4,
+  schemaVersion: 5,
   generatedAt: FIXED_TIME,
   status: 'passed',
   journeys: ACCEPTANCE_JOURNEYS.length,
@@ -129,7 +129,26 @@ const summaryFor = () => ({
   boundary: { packagedExecutable: true, rendererOrigin: 'propr-app://renderer', preloadBridge: true, journeys: ACCEPTANCE_JOURNEYS },
   console: { records: 3, errors: 0 },
   services: {
-    rest: { requestCount: 12, authenticatedRequestCount: 3, journeys: ['dashboard-profile-manager'] },
+    rest: {
+      requestCount: 12,
+      authenticatedRequestCount: 3,
+      journeys: ['dashboard-profile-manager'],
+      currentUserValidation: {
+        correlation: 'current-scope-user-validation',
+        rendererRequestIssued: true,
+        rendererScopeGeneration: 1,
+        mainProxyObserved: true,
+        mainActiveScopeGeneration: 0,
+        activeScopeAccepted: true,
+        mainOnlyBearerInjection: true,
+        upstreamRequestArrived: true,
+        responseStatus: 200,
+        responseClassification: 'success',
+        parsedUserSchemaAccepted: true,
+        rendererActiveScopeAccepted: true,
+        firstFailedPredicate: 'none',
+      },
+    },
     socketIo: {
       authenticatedConnections: 1,
       events: 1,

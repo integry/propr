@@ -6,7 +6,11 @@ import type { Rectangle } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import type { SetupActions } from '@propr/local-setup';
 import { DeepLinkDelivery } from './deep-link-delivery';
-import { DesktopCredentialService, type DesktopWebSocketHandshakeEvidence } from './credential-service';
+import {
+  DesktopCredentialService,
+  type DesktopCurrentUserProxyEvidence,
+  type DesktopWebSocketHandshakeEvidence,
+} from './credential-service';
 import { createDesktopLocalHost } from './desktop-host';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
@@ -500,6 +504,9 @@ if (!hasSingleInstanceLock) {
       ...(packagedAcceptanceTest ? {
         reportWebSocketHandshake: (evidence: DesktopWebSocketHandshakeEvidence) => {
           log('info', 'desktop.acceptance.websocket_handshake', { ...evidence });
+        },
+        reportCurrentUserValidation: (evidence: DesktopCurrentUserProxyEvidence) => {
+          log('info', 'desktop.acceptance.current_user_proxy', { ...evidence });
         },
       } : {}),
       ...(packagedSmokeTest ? {

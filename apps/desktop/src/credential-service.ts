@@ -53,6 +53,8 @@ export interface CredentialServiceDependencies {
   }): void;
   /** Fixed, secret-free evidence for the packaged acceptance boundary. */
   reportWebSocketHandshake?(evidence: DesktopWebSocketHandshakeEvidence): void;
+  /** Fixed, secret-free evidence for scoped renderer current-user validation. */
+  reportCurrentUserValidation?(evidence: DesktopCurrentUserProxyEvidence): void;
 }
 
 export type DesktopWebSocketRejectionCategory =
@@ -86,6 +88,35 @@ export interface DesktopWebSocketHandshakeEvidence {
   bearerMainInjected: boolean;
   accepted: boolean;
   rejectionCategory: DesktopWebSocketRejectionCategory;
+}
+
+export type DesktopCurrentUserProxyRejectionCategory =
+  | 'none'
+  | 'scope-missing'
+  | 'scope-duplicate'
+  | 'scope-malformed'
+  | 'no-active-binding'
+  | 'stale-generation'
+  | 'wrong-origin'
+  | 'stale-scope';
+
+export interface DesktopCurrentUserProxyEvidence {
+  schemaVersion: 1;
+  correlation: 'current-scope-user-validation';
+  requestObserved: true;
+  method: 'get';
+  scopeHeaderCount: number;
+  activeBindingPresent: boolean;
+  activeScopeGeneration: number;
+  profileGenerationCurrent: boolean;
+  scopeEqualsActive: boolean;
+  originEqualsActive: boolean;
+  rendererBearerPresent: boolean;
+  rendererCookiePresent: boolean;
+  outboundBearerPresent: boolean;
+  bearerMainInjected: boolean;
+  accepted: boolean;
+  rejectionCategory: DesktopCurrentUserProxyRejectionCategory;
 }
 
 export interface CredentialServiceInitialization {
@@ -374,6 +405,7 @@ export class DesktopCredentialService {
   readonly #pairingProtocol: PairingProtocolRequestOptions;
   readonly #reportRevocationFailure: NonNullable<CredentialServiceDependencies['reportRevocationFailure']>;
   readonly #reportWebSocketHandshake: NonNullable<CredentialServiceDependencies['reportWebSocketHandshake']>;
+  readonly #reportCurrentUserValidation: NonNullable<CredentialServiceDependencies['reportCurrentUserValidation']>;
   readonly #revocationDeadlines: RevocationDeadlines;
   readonly #internalRequestKey = randomBytes(32).toString('base64url');
   readonly #lifecycleController = new AbortController();
@@ -406,6 +438,7 @@ export class DesktopCredentialService {
     this.#pairingProtocol = dependencies.pairingProtocol ?? {};
     this.#reportRevocationFailure = dependencies.reportRevocationFailure ?? (() => undefined);
     this.#reportWebSocketHandshake = dependencies.reportWebSocketHandshake ?? (() => undefined);
+    this.#reportCurrentUserValidation = dependencies.reportCurrentUserValidation ?? (() => undefined);
     this.#revocationDeadlines = boundedRevocationDeadlines(dependencies.revocationDeadlines);
   }
 
@@ -1121,6 +1154,9 @@ export class DesktopCredentialService {
       && active !== null
       && queryScopes[0] === active.transportScope;
     const isHandshakeCandidate = path === 'socket-io' || queryScopes.length > 0;
+    const isCurrentUserRequest = !trustedMainRequest
+      && target?.pathname === '/api/auth/user'
+      && (details.method ?? 'GET').toUpperCase() === 'GET';
     const reportHandshake = (
       accepted: boolean,
       rejectionCategory: DesktopWebSocketRejectionCategory,
@@ -1150,6 +1186,36 @@ export class DesktopCredentialService {
         // Diagnostics cannot change the request authorization decision.
       }
     };
+    const reportCurrentUser = (
+      accepted: boolean,
+      rejectionCategory: DesktopCurrentUserProxyRejectionCategory,
+      authorizationMainInjected = false,
+    ): void => {
+      if (!isCurrentUserRequest || scopeValues.length === 0) return;
+      try {
+        this.#reportCurrentUserValidation({
+          schemaVersion: 1,
+          correlation: 'current-scope-user-validation',
+          requestObserved: true,
+          method: 'get',
+          scopeHeaderCount: scopeValues.length,
+          activeBindingPresent: active !== null,
+          activeScopeGeneration: active?.profileGeneration ?? 0,
+          profileGenerationCurrent: activeGenerationCurrent,
+          scopeEqualsActive: scopeValues.length === 1 && active !== null
+            && scopeValues[0] === active.transportScope,
+          originEqualsActive: target !== null && active !== null && target.origin === active.origin,
+          rendererBearerPresent: rendererAuthorizationPresent,
+          rendererCookiePresent: rendererCookiePresent,
+          outboundBearerPresent: headerValues(headers, 'authorization').length > 0,
+          bearerMainInjected: authorizationMainInjected,
+          accepted,
+          rejectionCategory,
+        });
+      } catch {
+        // Diagnostics cannot change the request authorization decision.
+      }
+    };
 
     removeHeader(headers, 'cookie');
     if (!trustedMainRequest) removeHeader(headers, 'authorization');
@@ -1169,6 +1235,7 @@ export class DesktopCredentialService {
 
     const markedRestRequest = scopeValues.length > 0;
     if (markedRestRequest && (scopeValues.length !== 1 || !TRANSPORT_SCOPE_PATTERN.test(scopeValues[0]))) {
+      reportCurrentUser(false, scopeValues.length !== 1 ? 'scope-duplicate' : 'scope-malformed');
       return { cancel: true };
     }
     if (!trustedMainRequest && target
@@ -1223,11 +1290,29 @@ export class DesktopCredentialService {
       return { requestHeaders: headers };
     }
 
-    if (!markedRestRequest) return { requestHeaders: headers };
-    if (!target || !isApiRequest || !activeIsCurrent || target.origin !== active.origin
-      || scopeValues[0] !== active.transportScope) return { cancel: true };
+    if (!markedRestRequest) {
+      reportCurrentUser(false, 'scope-missing');
+      return { requestHeaders: headers };
+    }
+    if (!active) {
+      reportCurrentUser(false, 'no-active-binding');
+      return { cancel: true };
+    }
+    if (!activeIsCurrent) {
+      reportCurrentUser(false, 'stale-generation');
+      return { cancel: true };
+    }
+    if (!target || !isApiRequest || target.origin !== active.origin) {
+      reportCurrentUser(false, 'wrong-origin');
+      return { cancel: true };
+    }
+    if (scopeValues[0] !== active.transportScope) {
+      reportCurrentUser(false, 'stale-scope');
+      return { cancel: true };
+    }
     if (details.method?.toUpperCase() === 'OPTIONS') return { requestHeaders: headers };
     headers.Authorization = `Bearer ${active.token}`;
+    reportCurrentUser(true, 'none', true);
     return { requestHeaders: headers };
   }
 

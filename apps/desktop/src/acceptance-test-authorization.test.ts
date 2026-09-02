@@ -76,6 +76,11 @@ describe('packaged acceptance authorization', () => {
     assert.match(main, /acceptancePairingTiming \? \{ pairingTiming: acceptancePairingTiming \} : \{\}/);
     assert.match(main, /packagedAcceptanceTest \? \{\s*reportWebSocketHandshake:/);
     assert.match(main, /desktop\.acceptance\.websocket_handshake/);
+    assert.match(main, /desktop\.acceptance\.current_user_proxy/);
+    const acceptanceRunner = readFileSync(fileURLToPath(new URL('../scripts/run-packaged-acceptance.mjs', import.meta.url)), 'utf8');
+    assert.match(acceptanceRunner, /'Access-Control-Allow-Private-Network': 'true'/);
+    assert.match(acceptanceRunner, /current-user-upstream-request-not-arrived/);
+    assert.match(acceptanceRunner, /current-user-parsed-schema-rejected/);
   });
 
   it('keeps the shared clock subject to exact pairing expiry validation', () => {
