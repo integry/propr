@@ -41,6 +41,23 @@ export function isValidRepoName(value: string): boolean {
   return /^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/.test(value);
 }
 
+export function withDefaultRepoAutoFollowup(repo: RepoToMonitor): RepoToMonitor {
+  return { ...repo, autoFollowupOnFailedCi: repo.autoFollowupOnFailedCi === true };
+}
+
+export function preserveRepoAutoFollowup(
+  previousRepos: RepoToMonitor[],
+  normalizedRepos: RepoToMonitor[],
+  incomingRepos: unknown[]
+): RepoToMonitor[] {
+  return normalizedRepos.map((repo, index) => {
+    const incomingRepo = incomingRepos[index] as Partial<RepoToMonitor>;
+    if (incomingRepo.autoFollowupOnFailedCi !== undefined) return repo;
+    const previousRepo = previousRepos.find(candidate => candidate.id === repo.id);
+    return { ...repo, autoFollowupOnFailedCi: previousRepo?.autoFollowupOnFailedCi === true };
+  });
+}
+
 export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonitor> {
   const candidateResult = parseRepoObject(repo);
   if (!candidateResult.ok) return candidateResult;
@@ -58,11 +75,15 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
   if (!baseBranch.ok) return baseBranch;
   const defaultBranch = normalizeOptionalBranchName(candidate.defaultBranch, 'defaultBranch', name);
   if (!defaultBranch.ok) return defaultBranch;
+  if (candidate.autoFollowupOnFailedCi !== undefined && typeof candidate.autoFollowupOnFailedCi !== 'boolean') {
+    return failure(`Invalid autoFollowupOnFailedCi format for ${name}: must be a boolean`);
+  }
 
   return success({
     id: candidate.id?.trim() || randomUUID(),
     name,
     enabled,
+    autoFollowupOnFailedCi: candidate.autoFollowupOnFailedCi ?? false,
     alias: alias.value,
     baseBranch: baseBranch.value,
     defaultBranch: defaultBranch.value

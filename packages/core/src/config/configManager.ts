@@ -17,6 +17,7 @@ export interface RepoToMonitor {
     id: string;              // UUID, required for uniqueness
     name: string;            // owner/repo
     enabled: boolean;
+    autoFollowupOnFailedCi?: boolean; // Defaults to false for legacy configurations
     alias?: string;          // Optional display name
     baseBranch?: string;     // Optional specific branch to monitor
     defaultBranch?: string;  // Optional repository default branch for demo metadata

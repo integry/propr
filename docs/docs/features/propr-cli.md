@@ -249,12 +249,17 @@ durations are integer milliseconds.
 ```bash
 propr repo list                              # Monitored repositories
 propr repo add owner/repo -a "Alias" -b dev  # Add with alias and base branch
+propr repo add owner/repo --auto-ci-followup # Enable automatic follow-up for failed CI
 propr repo remove owner/repo
 propr repo toggle owner/repo --enable        # Enable/disable monitoring
+propr repo toggle owner/repo --auto-ci-followup     # Enable failed-CI follow-up
+propr repo toggle owner/repo --no-auto-ci-followup  # Disable failed-CI follow-up
 propr repo index owner/repo                  # Full reindex
 propr repo index owner/repo --incremental    # Incremental reindex
 propr repo status                            # Indexing status for all repos
 ```
+
+Automatic CI follow-up is configured per repository and is **off by default**. Enable it only for repositories whose CI failures are high-quality, trusted signals; noisy or flaky checks can otherwise create unnecessary follow-up work. `propr repo list` shows the current setting for every monitored repository.
 
 ## Agents
 
