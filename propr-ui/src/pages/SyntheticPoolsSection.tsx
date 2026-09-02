@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Layers3, Plus, Trash2, X } from 'lucide-react';
-import type {
-  SyntheticAgentConfig,
-  SyntheticModelConfig,
-  SyntheticModelMember,
+import { Github, Layers3, Plus, Trash2, X } from 'lucide-react';
+import {
+  buildDynamicLlmLabel,
+  type SyntheticAgentConfig,
+  type SyntheticModelConfig,
+  type SyntheticModelMember,
 } from '@propr/shared';
 import type { AgentConfig } from '../api/proprApi';
 import Alert from './SettingsPage/Alert';
@@ -84,6 +85,26 @@ const inputClass = 'w-full rounded border border-slate-300 bg-white px-2 py-1.5 
 const FieldError: React.FC<{ message?: string }> = ({ message }) => message
   ? <p className="mt-1 text-xs text-red-600">{message}</p>
   : null;
+
+const GitHubLabel: React.FC<{
+  agentAlias: string;
+  modelId: string;
+  className?: string;
+}> = ({ agentAlias, modelId, className = '' }) => {
+  if (!agentAlias || !modelId) return null;
+  const label = buildDynamicLlmLabel(agentAlias, modelId);
+
+  return (
+    <span
+      aria-label={`GitHub model label: ${label}`}
+      className={`inline-flex max-w-full items-center gap-1 rounded bg-purple-100 px-2 py-0.5 font-mono text-[10px] font-normal text-purple-700 ${className}`}
+      title="GitHub model label"
+    >
+      <Github className="h-3 w-3 shrink-0" />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+};
 
 const Toggle: React.FC<{
   checked: boolean;
@@ -199,6 +220,9 @@ const PoolEditor: React.FC<EditorProps> = ({
                 <Toggle label="Enabled" checked={model.enabled} disabled={readOnly} onChange={enabled => updateModel(modelIndex, current => ({ ...current, enabled }))} />
                 <Toggle label="Default" checked={draft.defaultModel === model.id} disabled={readOnly || !model.enabled} onChange={() => setDraft({ ...draft, defaultModel: model.id })} />
                 <button type="button" disabled={readOnly || draft.models.length === 1} onClick={() => setDraft(current => ({ ...current, models: current.models.filter((_, index) => index !== modelIndex) }))} className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30" aria-label={`Delete virtual model ${model.id}`}><Trash2 className="h-4 w-4" /></button>
+                <div className="basis-full">
+                  <GitHubLabel agentAlias={draft.alias} modelId={model.id} />
+                </div>
               </div>
 
               <div className="space-y-3 p-3">
@@ -326,7 +350,12 @@ const SyntheticPoolsSection: React.FC<SyntheticPoolsSectionProps> = ({
                 </div>
               </div>
               <div className="ml-9 mt-2 flex flex-wrap gap-1.5">
-                {pool.models.map(model => <span key={model.id} className={`rounded-full border px-2 py-0.5 text-[10px] ${model.enabled ? 'border-slate-200 bg-white text-slate-600' : 'border-slate-100 bg-slate-50 text-slate-400'}`}>{model.displayName || model.id} · {model.strategy === 'round_robin' ? 'Round robin' : 'Usage based'} · {model.members.length} members</span>)}
+                {pool.models.map(model => (
+                  <span key={model.id} className={`inline-flex flex-wrap items-center gap-1 rounded-md border px-2 py-1 text-[10px] ${model.enabled ? 'border-slate-200 bg-white text-slate-600' : 'border-slate-100 bg-slate-50 text-slate-400'}`}>
+                    <span>{model.displayName || model.id} · {model.strategy === 'round_robin' ? 'Round robin' : 'Usage based'} · {model.members.length} members</span>
+                    <GitHubLabel agentAlias={pool.alias} modelId={model.id} className={model.enabled ? '' : 'opacity-60'} />
+                  </span>
+                ))}
               </div>
             </div>
           ))}

@@ -283,6 +283,39 @@ describe('AiAgentsPage model selection', () => {
     expect(modelId).toHaveValue('balanced-next');
   });
 
+  it('shows each synthetic model GitHub label and updates the editor preview', async () => {
+    const labeledPool: SyntheticAgentConfig = {
+      ...syntheticPool,
+      alias: 'balanced-pool',
+      models: [
+        syntheticPool.models[0],
+        {
+          ...syntheticPool.models[0],
+          id: 'review',
+          displayName: 'Review',
+          members: [{
+            ...syntheticPool.models[0].members[0],
+            id: '33333333-3333-4333-8333-333333333333',
+          }],
+        },
+      ],
+    };
+    apiMocks.getSyntheticAgents.mockResolvedValue({ synthetic_agents: [labeledPool] });
+
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Synthetic Pools' }));
+    expect(await screen.findByText('llm-balanced-pool~balanced')).toBeInTheDocument();
+    expect(screen.getByText('llm-balanced-pool~review')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('balanced-pool').closest('button')!);
+    fireEvent.change(screen.getByLabelText('Alias'), { target: { value: 'routing-pool' } });
+    fireEvent.change(screen.getAllByLabelText('Virtual model ID')[0], { target: { value: 'primary' } });
+
+    expect(screen.getByText('llm-routing-pool~primary')).toBeInTheDocument();
+    expect(screen.getByText('llm-routing-pool~review')).toBeInTheDocument();
+  });
+
   it.each([
     [true, false],
     [false, true],
