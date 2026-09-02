@@ -97,6 +97,7 @@ const MAIN_CURRENT_USER_EVENT = 'desktop.acceptance.current_user_proxy';
 const NETWORK_PERMISSION_EVENT = 'desktop.acceptance.network_permission';
 const RENDERER_LIFECYCLE_PREFIX = '[ProPR Acceptance Renderer Lifecycle]';
 const RENDERER_CURRENT_USER_PREFIX = '[ProPR Acceptance Current User]';
+const QUEUE_STATS_SUBSCRIBE_EVENT = 'subscribe:queue:stats';
 const RENDERER_LIFECYCLE_PHASES = new Set([
   'profile-activation-published', 'socket-provider-mounted', 'socket-effect-disabled',
   'socket-effect-scope-unavailable', 'socket-effect-ready', 'socket-construction-invoked', 'socket-constructed',
@@ -543,19 +544,32 @@ const createFixture = async (mode, fixedOrigin) => {
   });
   io.on('connection', socket => {
     const journey = activeJourney;
-    socketRecords.push({ journey, mode, event: 'connection', authenticated: socket.handshake.headers.authorization === `Bearer ${INSTANCE_TOKEN}` });
-    socket.emit(QUEUE_STATS_UPDATE, {
-      eventType: QUEUE_STATS_UPDATE,
-      stats: { waiting: 0, active: 0, completed: 12, failed: 0, delayed: 0, total: 12 },
-      timestamp: FIXED_TIME,
-    });
-    socketRecords.push({
+    const authenticated = socket.handshake.headers.authorization === `Bearer ${INSTANCE_TOKEN}`;
+    const recordApplicationSubscription = () => socketRecords.push({
       journey,
       mode,
-      event: QUEUE_STATS_UPDATE,
-      authenticated: true,
-      direction: 'fixture-to-renderer',
-      genuineApplicationEvent: true,
+      event: QUEUE_STATS_SUBSCRIBE_EVENT,
+      authenticated,
+      direction: 'client-to-fixture',
+      genuineApplicationSubscription: true,
+    });
+    socketRecords.push({ journey, mode, event: 'connection', authenticated });
+    socket.once(QUEUE_STATS_SUBSCRIBE_EVENT, () => {
+      recordApplicationSubscription();
+      socket.once(QUEUE_STATS_SUBSCRIBE_EVENT, recordApplicationSubscription);
+      socket.emit(QUEUE_STATS_UPDATE, {
+        eventType: QUEUE_STATS_UPDATE,
+        stats: { waiting: 0, active: 0, completed: 12, failed: 0, delayed: 0, total: 12 },
+        timestamp: FIXED_TIME,
+      });
+      socketRecords.push({
+        journey,
+        mode,
+        event: QUEUE_STATS_UPDATE,
+        authenticated,
+        direction: 'fixture-to-renderer',
+        genuineApplicationEvent: true,
+      });
     });
   });
   server.listen(Number(expectedUrl.port), expectedUrl.hostname);
@@ -1145,14 +1159,27 @@ const socketHandshakeFailureCategory = journey => {
   const fixtureAccepted = fixtureHandshakeRecords.filter(record => record.journey === journey && record.accepted);
   const connected = socketRecords.filter(record => record.journey === journey
     && record.event === 'connection' && record.authenticated);
+  const subscriptions = socketRecords.filter(record => record.journey === journey
+    && record.event === QUEUE_STATS_SUBSCRIBE_EVENT && record.authenticated
+    && record.genuineApplicationSubscription === true && record.direction === 'client-to-fixture');
+  const applicationEvents = socketRecords.filter(record => record.journey === journey
+    && record.event === QUEUE_STATS_UPDATE && record.authenticated
+    && record.genuineApplicationEvent === true && record.direction === 'fixture-to-renderer');
+  const rendererObservedApplicationEvents = consoleRecords.filter(record => record.journey === journey
+    && record.text.startsWith('[SocketContext] Received queue stats update:'));
   if (mainAccepted.length > 1) return 'duplicate-main-upgrade';
   if (fixtureAccepted.length > 1) return 'duplicate-fixture-upgrade';
   if (connected.length > 1) return 'duplicate-authenticated-connection';
+  if (subscriptions.length > 1) return 'duplicate-application-subscription';
+  if (applicationEvents.length > 1) return 'duplicate-application-event';
+  if (rendererObservedApplicationEvents.length > 1) return 'duplicate-renderer-application-event';
   if (mainAccepted.length === 1 && fixtureAccepted.length === 0) return 'fixture-not-reached';
   if (fixtureAccepted.length === 1 && connected.length === 0) return 'namespace-not-connected';
-  if (connected.length === 1 && !socketRecords.some(record => record.journey === journey
-    && record.genuineApplicationEvent === true)) return 'application-event-not-produced';
-  if (connected.length === 1) return 'renderer-application-event-not-observed';
+  if (connected.length === 1 && subscriptions.length === 0) return 'application-subscription-not-observed';
+  if (subscriptions.length === 1 && applicationEvents.length === 0) return 'application-event-not-produced';
+  if (applicationEvents.length === 1 && rendererObservedApplicationEvents.length === 0) {
+    return 'renderer-application-event-not-observed';
+  }
   const lifecycleCategory = rendererLifecycleCategory(journey);
   return lifecycleCategory === 'none'
     ? 'renderer-connect-invoked-upgrade-not-produced'
@@ -1189,13 +1216,18 @@ const waitForAuthenticatedSocket = async journey => {
     const fixtureAccepted = fixtureHandshakeRecords.filter(record => record.journey === journey && record.accepted);
     const connected = socketRecords.filter(record => record.journey === journey
       && record.event === 'connection' && record.authenticated);
+    const applicationSubscriptions = socketRecords.filter(record => record.journey === journey
+      && record.event === QUEUE_STATS_SUBSCRIBE_EVENT && record.authenticated
+      && record.genuineApplicationSubscription === true && record.direction === 'client-to-fixture');
     const applicationEvents = socketRecords.filter(record => record.journey === journey
+      && record.event === QUEUE_STATS_UPDATE && record.authenticated
       && record.genuineApplicationEvent === true && record.direction === 'fixture-to-renderer');
-    const rendererObservedApplicationEvent = consoleRecords.some(record => record.journey === journey
+    const rendererObservedApplicationEvents = consoleRecords.filter(record => record.journey === journey
       && record.text.startsWith('[SocketContext] Received queue stats update:'));
     const rendererLifecycle = rendererLifecycleCategory(journey);
     if (mainAccepted.length === 1 && fixtureAccepted.length === 1
-      && connected.length === 1 && applicationEvents.length >= 1 && rendererObservedApplicationEvent
+      && connected.length === 1 && applicationSubscriptions.length === 1
+      && applicationEvents.length === 1 && rendererObservedApplicationEvents.length === 1
       && rendererLifecycle === 'none') return;
     const category = socketHandshakeFailureCategory(journey);
     if (category.startsWith('main-') || category.startsWith('fixture-') || category.startsWith('duplicate-')) {
@@ -1212,13 +1244,17 @@ const observedServiceSummary = () => {
   const restRequests = requestRecords.filter(record => record.method !== 'OPTIONS' && record.url.startsWith('/api/'));
   const authenticatedRequests = restRequests.filter(record => record.hasAuthorization);
   const socketConnections = socketRecords.filter(record => record.event === 'connection' && record.authenticated);
-  const socketEvents = socketRecords.filter(record => record.genuineApplicationEvent === true
+  const socketSubscriptions = socketRecords.filter(record => record.event === QUEUE_STATS_SUBSCRIBE_EVENT
+    && record.authenticated && record.genuineApplicationSubscription === true
+    && record.direction === 'client-to-fixture');
+  const socketEvents = socketRecords.filter(record => record.event === QUEUE_STATS_UPDATE
+    && record.authenticated && record.genuineApplicationEvent === true
     && record.direction === 'fixture-to-renderer');
   const mainHandshakes = mainHandshakeRecords.filter(record => record.journey === 'dashboard-profile-manager' && record.accepted);
   const fixtureHandshakes = fixtureHandshakeRecords.filter(record => record.journey === 'dashboard-profile-manager' && record.accepted);
   const mainHandshake = mainHandshakes[0];
   const fixtureHandshake = fixtureHandshakes[0];
-  const rendererObservedApplicationEvent = consoleRecords.some(record => record.journey === 'dashboard-profile-manager'
+  const rendererObservedApplicationEvents = consoleRecords.filter(record => record.journey === 'dashboard-profile-manager'
     && record.text.startsWith('[SocketContext] Received queue stats update:'));
   const rendererLifecycle = rendererLifecycleRecords
     .filter(record => record.journey === 'dashboard-profile-manager').at(-1);
@@ -1278,7 +1314,7 @@ const observedServiceSummary = () => {
         authorizationHeaderPresent: fixtureHandshake?.authorizationPresent ?? false,
         authorizationHeaderExactlyMainInjected: mainHandshake?.bearerMainInjected === true
           && fixtureHandshake?.authorizationMatchesActivatedBearer === true,
-        rendererObservedApplicationEvent,
+        rendererObservedApplicationEvent: rendererObservedApplicationEvents.length === 1,
         rendererLifecycle: rendererLifecycle ? {
           phase: rendererLifecycle.phase,
           profileActivationPublished: rendererLifecycle.profileActivationPublished,
@@ -1302,7 +1338,8 @@ const observedServiceSummary = () => {
   };
   if (services.rest.requestCount <= 0 || services.rest.authenticatedRequestCount <= 0
     || currentUserCategory !== 'none'
-    || services.socketIo.authenticatedConnections !== 1 || services.socketIo.events <= 0
+    || services.socketIo.authenticatedConnections !== 1 || socketSubscriptions.length !== 1
+    || services.socketIo.events !== 1 || rendererObservedApplicationEvents.length !== 1
     || services.socketIo.handshake.mainAttempts !== 1 || services.socketIo.handshake.fixtureAttempts !== 1
     || !services.socketIo.handshake.scopeQueryPresent || services.socketIo.handshake.scopeQueryCount !== 1
     || !services.socketIo.handshake.scopeEqualsActivatedBinding
