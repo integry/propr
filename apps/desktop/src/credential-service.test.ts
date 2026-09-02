@@ -708,8 +708,26 @@ describe('main-process desktop credential service', () => {
     });
 
     assert.equal(result.status, 'authentication-required');
-    assert.equal(requests.filter(request => request.url.startsWith('https://attacker.example.test'))
-      .every(request => request.authorization === null), true);
+    assert.equal(requests.length, 1);
+    const request = requests.at(0);
+    assert.ok(request);
+    const requestUrl = new URL(request.url);
+    assert.deepEqual({
+      origin: requestUrl.origin,
+      hostname: requestUrl.hostname,
+      pathname: requestUrl.pathname,
+      search: requestUrl.search,
+      authorization: request.authorization,
+    }, {
+      origin: 'https://attacker.example.test',
+      hostname: 'attacker.example.test',
+      pathname: '/api/desktop/discovery',
+      search: '',
+      authorization: null,
+    });
+    const lookalikeUrl = new URL('https://attacker.example.test.evil.invalid/api/desktop/discovery');
+    assert.notEqual(lookalikeUrl.origin, requestUrl.origin);
+    assert.notEqual(lookalikeUrl.hostname, requestUrl.hostname);
     assert.equal(requests.some(request => request.url === 'https://a.example.test/api/desktop/tokens/current'), false);
     assert.deepEqual(await store.readCredential(profile.id), credential(profile.id, profile.apiBaseUrl, 'A'));
   });
