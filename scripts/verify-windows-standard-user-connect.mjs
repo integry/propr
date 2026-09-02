@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, constants, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -87,7 +87,7 @@ const scenarioAllowlist = Object.freeze([
   "authority-missing-system-root", "authority-mismatched-system-root", "authority-untrusted-system-root",
 ]);
 const assertionStageAllowlist = Object.freeze([
-  "native-timing", "authority-probe", "scaffold", "identity-assertion", "config-init", "config-save",
+  "authority-probe", "scaffold", "identity-assertion", "config-init", "config-save",
   "config-assertion",
   "write-env", "spawn", "signal", "exit", "bounds", "schema", "status", "endpoint",
   "identity", "reasons", "api-ready", "restart", "stderr", "sentinel", "api-spawn",
@@ -106,7 +106,6 @@ const reasonCodeAllowlist = Object.freeze([
 const nativeStageAllowlist = Object.freeze([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
   "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr", "spawn:cleanup",
-  "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
   "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose", "broker:entry-format",
@@ -114,23 +113,18 @@ const nativeStageAllowlist = Object.freeze([
   "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
   "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ]);
-const probeMilestoneAllowlist = Object.freeze([
-  "none", "entry-ps51-desktop-x64", "constant-json", "reflection-emit", "harmless-win32",
-  "standard-handle-identity",
-]);
-const probeTimingAllowlist = Object.freeze([
-  "under-5s", "5-to-15s", "15-to-30s", "30-to-45s", "45-to-60s", "at-least-60s",
-]);
+const WINDOWS_PRODUCT_AUTHORITY_TIMEOUT_MS = 60_000;
 const WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT = 2;
 const WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS = 15_000;
+const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = (
+  WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT * WINDOWS_PRODUCT_AUTHORITY_TIMEOUT_MS
+) + WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;
 const scenarioNames = new Set(scenarioAllowlist);
 const assertionStages = new Set(assertionStageAllowlist);
 const statusKinds = new Set(statusKindAllowlist);
 const diagnosticStatuses = new Set([null, ...statusKindAllowlist]);
 const reasonCodes = new Set(reasonCodeAllowlist);
 const nativeStages = new Set(nativeStageAllowlist);
-const probeMilestones = new Set(probeMilestoneAllowlist);
-const probeTimings = new Set(probeTimingAllowlist);
 
 function parseBoundedFailureStatus(stdout) {
   if (typeof stdout !== "string" || stdout.length === 0 || Buffer.byteLength(stdout, "utf8") >= 2048) return null;
@@ -148,25 +142,18 @@ function parseBoundedFailureStatus(stdout) {
   }
 }
 
-function createFailureDiagnostic(scenario, stage, failureStatus, nativeStage, probe) {
+function createFailureDiagnostic(scenario, stage, failureStatus, nativeStage) {
   const status = failureStatus?.status ?? null;
   const codes = failureStatus?.reasonCodes ?? [];
   if (!scenarioNames.has(scenario) || !assertionStages.has(stage) || !diagnosticStatuses.has(status)
     || (nativeStage !== null && !nativeStages.has(nativeStage))
-    || (probe.milestone !== null && !probeMilestones.has(probe.milestone))
-    || (probe.timing !== null && !probeTimings.has(probe.timing))
     || !Array.isArray(codes) || codes.length > reasonCodes.size
     || new Set(codes).size !== codes.length || codes.some((code) => !reasonCodes.has(code))) {
     return {
       scenario: "ready", stage: "write-env", nativeStage: null, status: null, reasonCodes: [],
-      probeMilestone: null, probeTiming: null,
     };
   }
-  return {
-    scenario, stage, nativeStage, status, reasonCodes: [...codes],
-    probeMilestone: probe.milestone,
-    probeTiming: probe.timing,
-  };
+  return { scenario, stage, nativeStage, status, reasonCodes: [...codes] };
 }
 
 function extractNativeDiagnostic(stderr) {
@@ -220,46 +207,13 @@ let currentScenario = "ready";
 let currentStage = "write-env";
 let failureStatus = null;
 let currentNativeStage = null;
-const nativeProbe = { milestone: null, timing: null, evidence: null };
 try {
   assert.ok(expectedUser && actualUser.toLowerCase() === expectedUser.toLowerCase(), "proof did not run as the limited user");
-  currentStage = "native-timing";
-  const nativeAuthority = await import(windowsAuthorityModule);
-  const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = (
-    WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT * nativeAuthority.WINDOWS_INSPECTION_TIMEOUT_MS
-  ) + WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;
-  const probeFd = openSync(
-    fixture,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
-  try {
-    try {
-      const proof = nativeAuthority.runWindowsNativeTimingProbe(probeFd);
-      assert.equal(proof.version, 1);
-      nativeProbe.milestone = proof.lastMilestone;
-      nativeProbe.timing = proof.timingBucket;
-      if (proof.outcome === "timeout") currentNativeStage = "spawn:timeout";
-      assert.equal(proof.outcome, "complete");
-      assert.deepEqual(proof.milestones.map(({ milestone }) => milestone), [
-        "entry-ps51-desktop-x64", "constant-json", "reflection-emit", "harmless-win32",
-        "standard-handle-identity",
-      ]);
-      assert.ok(proof.milestones.every(({ milestone, timingBucket }) => (
-        probeMilestones.has(milestone) && probeTimings.has(timingBucket)
-      )));
-      nativeProbe.evidence = proof.milestones.map(
-        ({ milestone, timingBucket }) => `${milestone}:${timingBucket}`,
-      ).join(",");
-    } catch (error) {
-      currentNativeStage = nativeStages.has(error?.stage)
-        ? error.stage
-        : (currentNativeStage ?? "parent:json-shape");
-      throw error;
-    }
-  } finally {
-    closeSync(probeFd);
-  }
   currentStage = "authority-probe";
+  // Keep the diagnostic timing probe out of this gate: the first PowerShell
+  // cold start must belong to a production status/authority scenario.
+  const nativeAuthority = await import(windowsAuthorityModule);
+  assert.equal(nativeAuthority.WINDOWS_INSPECTION_TIMEOUT_MS, WINDOWS_PRODUCT_AUTHORITY_TIMEOUT_MS);
   const authority = await import(authorityModule);
   await assert.rejects(
     authority.protectWindowsSetupEntries([{ path: root, kind: "directory" }]),
@@ -464,10 +418,10 @@ try {
   const fail = [...api.stdout.matchAll(/^# fail (\d+)$/gm)].at(-1);
   assert.ok(pass && Number(pass[1]) > 0, "API discovery tests did not report passes");
   assert.equal(Number(fail?.[1]), 0, "API discovery tests reported failures");
-  process.stdout.write(`Windows ordinary-user discovery proof: ready=standard-handle-passed native-timing=${nativeProbe.evidence};total:${nativeProbe.timing} cli=${cases.length} api=${pass[1]} authority=${authorityFailures.length}\n`);
+  process.stdout.write(`Windows ordinary-user discovery proof: ready=standard-handle-passed cli=${cases.length} api=${pass[1]} authority=${authorityFailures.length}\n`);
 } catch {
   const diagnostic = createFailureDiagnostic(
-    currentScenario, currentStage, failureStatus, currentNativeStage, nativeProbe,
+    currentScenario, currentStage, failureStatus, currentNativeStage,
   );
   process.stderr.write(`Windows ordinary-user discovery assertion failed: ${JSON.stringify(
     diagnostic,

@@ -16,6 +16,7 @@ const harness = readFileSync('scripts/verify-windows-standard-user-connect.mjs',
 const processMock = readFileSync('test/fixtures/windowsConnectProcessMock.mjs', 'utf8');
 const windowsAuthority = readFileSync('packages/cli/src/connectWindowsAuthority.ts', 'utf8');
 const connectCommand = readFileSync('packages/cli/src/commands/connectCommand.ts', 'utf8');
+const packagedConnectLifecycle = readFileSync('apps/desktop/scripts/packaged-connect-lifecycle.mjs', 'utf8');
 
 function diagnosticDefinitions(): {
   scenarioAllowlist: string[];
@@ -23,14 +24,11 @@ function diagnosticDefinitions(): {
   statusKindAllowlist: string[];
   reasonCodeAllowlist: string[];
   nativeStageAllowlist: string[];
-  probeMilestoneAllowlist: string[];
-  probeTimingAllowlist: string[];
   createFailureDiagnostic: (
     scenario: string,
     stage: string,
     failureStatus: { status?: unknown; reasonCodes?: unknown } | null,
     nativeStage: string | null,
-    probe: { milestone: string | null; timing: string | null },
   ) => Record<string, unknown>;
 } {
   const start = harness.indexOf('const scenarioAllowlist =');
@@ -43,8 +41,6 @@ function diagnosticDefinitions(): {
     statusKindAllowlist,
     reasonCodeAllowlist,
     nativeStageAllowlist,
-    probeMilestoneAllowlist,
-    probeTimingAllowlist,
     createFailureDiagnostic,
   })`) as ReturnType<typeof diagnosticDefinitions>;
 }
@@ -342,7 +338,7 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'authority-missing-system-root', 'authority-mismatched-system-root', 'authority-untrusted-system-root',
   ]);
   assert.deepEqual([...definitions.assertionStageAllowlist], [
-    'native-timing', 'authority-probe', 'scaffold', 'identity-assertion', 'config-init', 'config-save',
+    'authority-probe', 'scaffold', 'identity-assertion', 'config-init', 'config-save',
     'config-assertion',
     'write-env', 'spawn', 'signal', 'exit', 'bounds', 'schema', 'status', 'endpoint',
     'identity', 'reasons', 'api-ready', 'restart', 'stderr', 'sentinel', 'api-spawn',
@@ -361,20 +357,12 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
   assert.deepEqual([...definitions.nativeStageAllowlist], [
     'resolver:env', 'resolver:canonical', 'resolver:global-open', 'resolver:global-id',
     'spawn:create', 'spawn:error', 'spawn:timeout', 'spawn:status', 'spawn:stderr', 'spawn:cleanup',
-    'probe:entry', 'probe:baseline', 'probe:reflection-emit', 'probe:win32', 'probe:standard-handle', 'probe:output',
     'broker:ps-version', 'broker:job', 'broker:fd', 'broker:fd-duplicate', 'broker:index-info-initial',
     'broker:security-info', 'broker:acl', 'broker:json', 'broker:current-user-sid',
     'broker:index-info-revalidation', 'broker:index-info-decode', 'broker:index-info-compose', 'broker:entry-format',
     'broker:entry-flags', 'broker:entry-rules', 'broker:entry-build', 'broker:control',
     'parent:utf8', 'parent:json-parse', 'parent:json-canonical', 'parent:document-shape',
     'parent:entry-count', 'parent:entry-shape', 'parent:json-shape', 'parent:descriptor-bind', 'parent:post-bind',
-  ]);
-  assert.deepEqual([...definitions.probeMilestoneAllowlist], [
-    'none', 'entry-ps51-desktop-x64', 'constant-json', 'reflection-emit', 'harmless-win32',
-    'standard-handle-identity',
-  ]);
-  assert.deepEqual([...definitions.probeTimingAllowlist], [
-    'under-5s', '5-to-15s', '15-to-30s', '30-to-45s', '45-to-60s', 'at-least-60s',
   ]);
   const assignedStages = [...harness.matchAll(/currentStage = "([^"]+)";/g)]
     .map((match) => match[1]);
@@ -393,12 +381,9 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     identity: 'identity-SENTINEL',
     endpoint: 'endpoint-SENTINEL',
     secret: 'secret-SENTINEL',
-  } as { status: string; reasonCodes: string[] }, 'broker:fd', {
-    milestone: 'standard-handle-identity', timing: '15-to-30s',
-  });
+  } as { status: string; reasonCodes: string[] }, 'broker:fd');
   assert.deepEqual(Object.keys(diagnostic), [
     'scenario', 'stage', 'nativeStage', 'status', 'reasonCodes',
-    'probeMilestone', 'probeTiming',
   ]);
   assert.deepEqual(JSON.parse(JSON.stringify(diagnostic)), {
     scenario: 'ready',
@@ -406,30 +391,14 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     nativeStage: 'broker:fd',
     status: 'ready',
     reasonCodes: ['ACL_DIAGNOSTIC_UNAVAILABLE'],
-    probeMilestone: 'standard-handle-identity',
-    probeTiming: '15-to-30s',
   });
   assert.equal(JSON.stringify(diagnostic).includes('SENTINEL'), false);
-
-  assert.deepEqual(JSON.parse(JSON.stringify(definitions.createFailureDiagnostic(
-    'ready', 'native-timing', null, 'spawn:timeout',
-    { milestone: 'reflection-emit', timing: 'at-least-60s' },
-  ))), {
-    scenario: 'ready',
-    stage: 'native-timing',
-    nativeStage: 'spawn:timeout',
-    status: null,
-    reasonCodes: [],
-    probeMilestone: 'reflection-emit',
-    probeTiming: 'at-least-60s',
-  });
 
   const rejected = definitions.createFailureDiagnostic(
     'private-scenario-SENTINEL',
     'raw-output-SENTINEL',
     { status: 'secret-status-SENTINEL', reasonCodes: ['secret-reason-SENTINEL'] },
     'raw-native-stage-SENTINEL',
-    { milestone: 'secret-SENTINEL', timing: '12345ms-SENTINEL' },
   );
   assert.deepEqual(JSON.parse(JSON.stringify(rejected)), {
     scenario: 'ready',
@@ -437,24 +406,19 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     nativeStage: null,
     status: null,
     reasonCodes: [],
-    probeMilestone: null,
-    probeTiming: null,
   });
 
   const catchStart = harness.lastIndexOf('} catch {');
   const catchEnd = harness.indexOf('} finally {', catchStart);
   const catchBody = harness.slice(catchStart, catchEnd);
-  assert.match(catchBody, /createFailureDiagnostic\(\s*currentScenario, currentStage, failureStatus, currentNativeStage, nativeProbe,/);
+  assert.match(catchBody, /createFailureDiagnostic\(\s*currentScenario, currentStage, failureStatus, currentNativeStage,/);
   assert.match(catchBody, /JSON\.stringify\(\s*diagnostic,\s*\)/);
   assert.doesNotMatch(catchBody, /(?:result|api|error)\.(?:stdout|stderr|message|path|argv|env|config)/i);
 });
 
-test('the staged probe uses stdin while production inherits a fixed multi-handle fd table', () => {
+test('the ordinary-user path skips the isolated timing probe and production inherits a fixed multi-handle fd table', () => {
   assert.doesNotMatch(windowsAuthority, /AssignProcessToJobObject|CreateJobObject/);
-  assert.match(harness, /runWindowsNativeTimingProbe\(probeFd\)/);
-  assert.match(harness, /openSync\(\s*fixture,\s*constants\.O_RDONLY \| constants\.O_DIRECTORY \| constants\.O_NOFOLLOW,\s*\)/);
-  assert.match(harness, /native-timing=\$\{nativeProbe\.evidence\}/);
-  assert.match(harness, /;total:\$\{nativeProbe\.timing\}/);
+  assert.doesNotMatch(harness, /runWindowsNativeTimingProbe|native-timing|nativeProbe|probeMilestone|probeTiming/);
   assert.match(harness, /ready=standard-handle-passed/);
 
   const productionSourceStart = windowsAuthority.indexOf('export const WINDOWS_INSPECTION_SOURCE');
@@ -515,7 +479,7 @@ test('the staged probe accepts only ordered milestone tokens and coarse timing b
   assert.match(windowsAuthority, /GetFileInformationByHandle/);
 });
 
-test('the diagnostic allowance precedes two bounded one-broker authority generations', () => {
+test('the fixed product contracts run ready and malformed authority scenarios without a timing-probe gate', () => {
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS, 60_000);
   assert.equal(WINDOWS_INSPECTION_TIMEOUT_MS, 60_000);
   assert.equal(WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS, 5_000);
@@ -525,9 +489,10 @@ test('the diagnostic allowance precedes two bounded one-broker authority generat
   );
   assert.match(harness, /const WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT = 2;/);
   assert.match(harness, /const WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS = 15_000;/);
+  assert.match(harness, /const WINDOWS_PRODUCT_AUTHORITY_TIMEOUT_MS = 60_000;/);
   assert.match(
     harness,
-    /const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = \(\s*WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT \* nativeAuthority\.WINDOWS_INSPECTION_TIMEOUT_MS\s*\) \+ WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;/,
+    /const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = \(\s*WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT \* WINDOWS_PRODUCT_AUTHORITY_TIMEOUT_MS\s*\) \+ WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;/,
   );
   const windowsProductScenarioTimeoutMs = (
     2 * WINDOWS_INSPECTION_TIMEOUT_MS
@@ -535,6 +500,7 @@ test('the diagnostic allowance precedes two bounded one-broker authority generat
   assert.equal(windowsProductScenarioTimeoutMs, 135_000);
   assert.equal(Number.isFinite(windowsProductScenarioTimeoutMs), true);
   assert.equal(Number.isSafeInteger(windowsProductScenarioTimeoutMs), true);
+  assert.match(packagedConnectLifecycle, /readyTimeoutMs = 240_000,/u);
   assert.ok(WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS < WINDOWS_INSPECTION_TIMEOUT_MS);
   assert.match(windowsAuthority, /startBroker: \(\) => child/u);
   assert.match(windowsAuthority, /const deadlineTimer = setTimeout\(\(\) => \{\s*deadlineExpired = true;/u);
@@ -550,10 +516,23 @@ test('the diagnostic allowance precedes two bounded one-broker authority generat
     windowsAuthority.indexOf('function probeFailureStage'),
   );
   assert.doesNotMatch(productionInspection, /spawnSync|windowsInspectionTimeoutForElapsed/u);
-  const probeCall = harness.indexOf('runWindowsNativeTimingProbe(probeFd)');
-  const productionMatrix = harness.indexOf('for (const scenario of cases)', probeCall);
+  assert.doesNotMatch(harness, /runWindowsNativeTimingProbe/);
+  assert.equal(fixtureScenarios()[0]?.name, 'ready');
+  assert.match(harness, /\{ name: "authority-malformed", mode: "malformed", nativeStage: "parent:json-parse" \}/);
+  const productionMatrix = harness.indexOf('for (const scenario of cases)');
   const productionSpawn = harness.indexOf('const result = spawnSync(process.execPath', productionMatrix);
-  assert.ok(probeCall < productionMatrix && productionMatrix < productionSpawn);
+  const authorityMatrix = harness.indexOf('for (const scenario of authorityFailures)', productionSpawn);
+  const authoritySpawn = harness.indexOf('const result = spawnSync(process.execPath', authorityMatrix);
+  assert.ok(productionMatrix < productionSpawn && productionSpawn < authorityMatrix && authorityMatrix < authoritySpawn);
+  const productScenarioLoop = harness.slice(productionMatrix, authorityMatrix);
+  assert.match(productScenarioLoop, /currentScenario = scenario\.name;[\s\S]*assert\.equal\(document\.status, scenario\.status, scenario\.name\);/u);
+  assert.match(productScenarioLoop, /const expectedStderr = scenario\.status === "ready" \? "" : `ProPR Connect discovery: \$\{scenario\.status\}\.\\n`;/u);
+  assert.match(productScenarioLoop, /assert\.equal\(nativeDiagnostic\.applicationStderr, expectedStderr, scenario\.name\);/u);
+  const authorityScenarioLoop = harness.slice(authorityMatrix, harness.indexOf('currentScenario = "api"', authorityMatrix));
+  assert.match(authorityScenarioLoop, /assert\.equal\(currentNativeStage, scenario\.nativeStage, scenario\.name\);/u);
+  assert.match(authorityScenarioLoop, /assert\.equal\(document\.status, "invalidConfig", scenario\.name\);/u);
+  assert.match(authorityScenarioLoop, /scenario\.reason \?\? "ACL_DIAGNOSTIC_UNAVAILABLE"/u);
+  assert.match(authorityScenarioLoop, /assert\.equal\(nativeDiagnostic\.applicationStderr, "ProPR Connect discovery: invalidConfig\.\\n", scenario\.name\);/u);
   const probeStart = windowsAuthority.indexOf('export function runWindowsNativeTimingProbe');
   const probeEnd = windowsAuthority.indexOf('\n}\n\nexport function windowsInspectionEntryKind', probeStart);
   const probe = windowsAuthority.slice(probeStart, probeEnd);
