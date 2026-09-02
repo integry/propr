@@ -647,6 +647,25 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisorBehaviorTest,
       /Assert-SupervisorInvocationDiagnosticBounded[\s\S]*Cannot bind argument[\s\S]*LiteralPath[\s\S]*Registry::[\s\S]*stdout[\s\S]*stderr/,
     );
+    const fixtureProcessStateReader = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Read-FixtureProcessState'),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Read-FixtureResourceState'),
+    );
+    for (const callsite of [
+      'PROCESS_STATE_DIRECTORY_INPUT',
+      'PROCESS_STATE_PATH_CONSTRUCTION',
+      'PROCESS_STATE_PUBLICATION_WAIT',
+      'PROCESS_STATE_READ_PARSE',
+      'PROCESS_STATE_WORKER_PID',
+      'PROCESS_STATE_DESCENDANT_PID',
+    ]) {
+      assert.match(fixtureProcessStateReader, new RegExp(callsite));
+      assert.match(installedWindowsAppSupervisorBehaviorTest, new RegExp(`'${callsite}'`));
+    }
+    assert.doesNotMatch(
+      fixtureProcessStateReader,
+      /throw 'fixture did not publish process state'/,
+    );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingAppPathsAuthority/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-ProcessTreeGone/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-OwnedFixtureAuthorityComplete/);
@@ -990,7 +1009,7 @@ describe('desktop trusted release workflow', () => {
       /workflow-cleanup-early-processes\.json/,
     );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /'WorkerPid','DescendantPid'/);
-    assert.match(installedWindowsAppSupervisorBehaviorTest, /\$pidValue -gt 0/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /\$processStatePidValue -gt 0/);
     assert.match(installedWindowsAppCleanup, /workflow-cleanup-early-processes\.json/);
     assert.match(installedWindowsAppWorkflowCleanup, /MANIFEST_VALIDATION_FAILURE/);
     assert.match(installedWindowsAppWorkflowCleanup, /OWNED_RESOURCE_CLEANUP_FAILURE/);

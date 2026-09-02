@@ -641,52 +641,97 @@ function New-SupervisorStartInfo(
 }
 
 function Read-FixtureProcessState([string]$StateDirectory) {
-  Set-SupervisorInvocationContext `
-    $script:currentSupervisorInvocationTest `
-    $script:currentSupervisorInvocationScenario `
-    'PROCESS_STATE' `
-    'PROCESS_STATE_PATH' `
-    'STATE_DIRECTORY'
-  Assert-True (![string]::IsNullOrWhiteSpace($StateDirectory)) `
-    (Get-SanitizedSupervisorInvocationDiagnostic `
-      $script:currentSupervisorInvocationTest `
-      $script:currentSupervisorInvocationScenario `
-      'PROCESS_STATE' `
-      'PROCESS_STATE_PATH' `
-      'STATE_DIRECTORY')
-  $statePath = Join-Path $StateDirectory 'processes.json'
-  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
-  while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
-    if ($stopwatch.ElapsedMilliseconds -ge 15000) {
-      throw 'fixture did not publish process state'
+  $processStateScenario = $script:currentSupervisorInvocationScenario
+  $processStateDirectory = $StateDirectory
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $processStateScenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'PROCESS_STATE_DIRECTORY_INPUT' `
+    -Field 'STATE_DIRECTORY' `
+    -Action {
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$processStateDirectory)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $processStateScenario `
+          'PROCESS_STATE' `
+          'PROCESS_STATE_DIRECTORY_INPUT' `
+          'STATE_DIRECTORY')
     }
-    Start-Sleep -Milliseconds 25
+  $processStatePath = Invoke-SupervisorAttributedOperation `
+    -Scenario $processStateScenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'PROCESS_STATE_PATH_CONSTRUCTION' `
+    -Field 'PROCESS_STATE_PATH' `
+    -Action {
+      $constructedProcessStatePath = Join-Path $processStateDirectory 'processes.json'
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$constructedProcessStatePath)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $processStateScenario `
+          'PROCESS_STATE' `
+          'PROCESS_STATE_PATH_CONSTRUCTION' `
+          'PROCESS_STATE_PATH')
+      $constructedProcessStatePath
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $processStateScenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'PROCESS_STATE_PUBLICATION_WAIT' `
+    -Field 'PROCESS_STATE_PATH' `
+    -Action {
+      $processStateWait = [Diagnostics.Stopwatch]::StartNew()
+      while (!(Test-Path -LiteralPath $processStatePath -PathType Leaf)) {
+        if ($processStateWait.ElapsedMilliseconds -ge 15000) {
+          Assert-True $false `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              $processStateScenario `
+              'PROCESS_STATE' `
+              'PROCESS_STATE_PUBLICATION_WAIT' `
+              'PROCESS_STATE_PATH')
+        }
+        Start-Sleep -Milliseconds 25
+      }
+    }
+  $processState = Invoke-SupervisorAttributedOperation `
+    -Scenario $processStateScenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'PROCESS_STATE_READ_PARSE' `
+    -Field 'PROCESS_STATE_PATH' `
+    -Action {
+      Get-Content -LiteralPath $processStatePath -Raw -Encoding ASCII |
+        ConvertFrom-Json -ErrorAction Stop
+    }
+  foreach ($processStatePidCase in @(
+      @{ Property = 'WorkerPid'; Callsite = 'PROCESS_STATE_WORKER_PID'; Field = 'WORKER_PID' },
+      @{ Property = 'DescendantPid'; Callsite = 'PROCESS_STATE_DESCENDANT_PID'; Field = 'DESCENDANT_PID' }
+    )) {
+    $processStatePropertyName = [string]$processStatePidCase.Property
+    $processStateCallsiteToken = [string]$processStatePidCase.Callsite
+    $processStateFieldToken = [string]$processStatePidCase.Field
+    Invoke-SupervisorAttributedOperation `
+      -Scenario $processStateScenario `
+      -Phase 'PROCESS_STATE' `
+      -Callsite $processStateCallsiteToken `
+      -Field $processStateFieldToken `
+      -Action {
+        $processStateProperty = $processState.PSObject.Properties[$processStatePropertyName]
+        $processStatePidValue = 0
+        Assert-True ($null -ne $processStateProperty -and [int]::TryParse(
+            [string]$processStateProperty.Value,
+            [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$processStatePidValue
+          ) -and $processStatePidValue -gt 0) `
+          (Get-SanitizedSupervisorInvocationDiagnostic `
+            $script:currentSupervisorInvocationTest `
+            $processStateScenario `
+            'PROCESS_STATE' `
+            $processStateCallsiteToken `
+            $processStateFieldToken)
+      }
   }
-  Set-SupervisorInvocationContext `
-    $script:currentSupervisorInvocationTest `
-    $script:currentSupervisorInvocationScenario `
-    'PROCESS_STATE' `
-    'PROCESS_STATE_READ' `
-    'PROCESS_STATE_PATH'
-  $state = Get-Content -LiteralPath $statePath -Raw -Encoding ASCII |
-    ConvertFrom-Json -ErrorAction Stop
-  foreach ($field in @('WorkerPid','DescendantPid')) {
-    $property = $state.PSObject.Properties[$field]
-    $pidValue = 0
-    Assert-True ($null -ne $property -and [int]::TryParse(
-        [string]$property.Value,
-        [Globalization.NumberStyles]::None,
-        [Globalization.CultureInfo]::InvariantCulture,
-        [ref]$pidValue
-      ) -and $pidValue -gt 0) `
-      (Get-SanitizedSupervisorInvocationDiagnostic `
-        $script:currentSupervisorInvocationTest `
-        $script:currentSupervisorInvocationScenario `
-        'PROCESS_STATE' `
-        'PROCESS_STATE_READ' `
-        (($field -creplace '([a-z])([A-Z])', '$1_$2').ToUpperInvariant()))
-  }
-  return $state
+  return $processState
 }
 
 function Read-FixtureResourceState([string]$StateDirectory) {
@@ -1480,6 +1525,12 @@ function Get-SupervisorInvocationCallsites {
     'CRITICAL_GATE_READ',
     'PROCESS_STATE_PATH',
     'PROCESS_STATE_READ',
+    'PROCESS_STATE_DIRECTORY_INPUT',
+    'PROCESS_STATE_PATH_CONSTRUCTION',
+    'PROCESS_STATE_PUBLICATION_WAIT',
+    'PROCESS_STATE_READ_PARSE',
+    'PROCESS_STATE_WORKER_PID',
+    'PROCESS_STATE_DESCENDANT_PID',
     'PROCESS_TREE_ASSERTION',
     'CONTROLLER_INVOCATION_INPUT',
     'CONTROLLER_PROTOCOL_PARSE',
@@ -1651,6 +1702,12 @@ function Get-SupervisorAttributionTotalityCases {
     'CALLSITE_CRITICAL_GATE_PATH',
     'CALLSITE_CRITICAL_GATE_READ',
     'CALLSITE_PROCESS_STATE_READ',
+    'CALLSITE_FIXTURE_PROCESS_STATE_DIRECTORY_INPUT',
+    'CALLSITE_FIXTURE_PROCESS_STATE_PATH_CONSTRUCTION',
+    'CALLSITE_FIXTURE_PROCESS_STATE_PUBLICATION_WAIT',
+    'CALLSITE_FIXTURE_PROCESS_STATE_READ_PARSE',
+    'CALLSITE_FIXTURE_PROCESS_STATE_WORKER_PID',
+    'CALLSITE_FIXTURE_PROCESS_STATE_DESCENDANT_PID',
     'CALLSITE_PROCESS_TREE_ASSERTION',
     'CALLSITE_CONTROLLER_INPUT_MANIFEST',
     'CALLSITE_CONTROLLER_INPUT_RUN_ID',
@@ -2641,6 +2698,36 @@ function Test-SupervisorInvocationAttributionTotality {
         CaseId='CALLSITE_PROCESS_STATE_READ'
         Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
         Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_READ'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_DIRECTORY_INPUT'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_DIRECTORY_INPUT'; Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_PATH_CONSTRUCTION'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_PATH_CONSTRUCTION'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_PUBLICATION_WAIT'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_PUBLICATION_WAIT'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_READ_PARSE'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_READ_PARSE'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_WORKER_PID'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_WORKER_PID'; Field='WORKER_PID'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_DESCENDANT_PID'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_DESCENDANT_PID'; Field='DESCENDANT_PID'
       },
       [PSCustomObject]@{
         CaseId='CALLSITE_PROCESS_TREE_ASSERTION'
