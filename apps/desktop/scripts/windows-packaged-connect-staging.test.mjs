@@ -241,6 +241,16 @@ const runCaptureParserTest = (
   env: { ...process.env, ...environmentOverrides },
 });
 
+const runCaptureRedirectionTest = () => spawnSync(windowsPowerShell51Path(), [
+  '-NoLogo', '-NoProfile', '-NonInteractive', '-File', orchestratorPath,
+  '-Architecture', process.arch,
+  '-LifecycleTestMode', 'capture-redirection',
+], {
+  shell: false,
+  windowsHide: true,
+  timeout: 45_000,
+});
+
 const assertLauncherAuthorityRejected = (result, category, subphase) => {
   const expected = `PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=${category}`
     + `:phase=ordinary-user-preflight:subphase=${subphase}:cleanup=none`;
@@ -910,17 +920,50 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(captureAuthority, /\$captureLength -lt 1 -or \$captureLength -gt 65536/u);
   assert.match(captureParser, /\$diagnosticRecords\.Count -gt 20/u);
   assert.match(captureAuthority, /\$ownerValues -cnotcontains \$owner\.Value/u);
+  assert.match(captureAuthority, /\$acl\.AreAccessRulesProtected/u);
   assert.match(captureAuthority, /\$acl\.AreAccessRulesCanonical/u);
   assert.match(captureAuthority, /\$authorizedWriters\.Contains\(\$rule\.IdentityReference\.Value\)/u);
+  assert.match(captureAuthority, /function Initialize-PrivilegedCaptureFile/u);
+  assert.match(captureAuthority, /GetSecurityDescriptorSddlForm\(\$sections\)/u);
+  assert.match(
+    captureAuthority,
+    /SecurityDescriptor = \(Get-CaptureAuthorityDescriptor \$Path\)[\s\S]*?Get-CaptureAuthorityDescriptor \$Authority\.Path\) -cne \$Authority\.SecurityDescriptor/u,
+  );
+  assert.match(captureAuthority, /SetAccessRuleProtection\(\$true, \$false\)/u);
+  assert.match(captureAuthority, /SetOwner\(\$CapturePrivilegedSid\)/u);
+  assert.match(
+    captureAuthority,
+    /foreach \(\$identity in @\(\$CapturePrivilegedSid, \$administratorsSid, \$systemSid\)\)/u,
+  );
+  assert.match(
+    captureAuthority,
+    /\[IO\.FileStream\]::new\([\s\S]*?FileMode\]::CreateNew[\s\S]*?\$captureAcl/u,
+  );
+  assert.doesNotMatch(captureAuthority, /S-1-1-0|S-1-5-11|S-1-5-32-545/u);
   assert.match(captureAuthority, /GetLinkCount\(\$captureHandle\) -ne 1/u);
   assert.match(captureAuthority, /GetIdentity\(\$captureHandle\)[\s\S]*?GetIdentity\(\$captureReopenHandle\)/u);
   assert.match(captureAuthority, /ReadBounded\(\$captureReopenHandle, 65536\)/u);
   assert.doesNotMatch(captureAuthority, /ReadAllBytes\(\$Path\)/u);
   assert.match(orchestrator, /public static SafeFileHandle OpenCapture[\s\S]*?GENERIC_READ \| READ_CONTROL/u);
+  assert.match(
+    orchestrator,
+    /public static SafeFileHandle OpenRedirectCaptureAuthority[\s\S]*?FILE_SHARE_READ \| FILE_SHARE_WRITE,[\s\S]*?OPEN_EXISTING/u,
+  );
   assert.match(orchestrator, /public static uint GetLinkCount/u);
+  assert.match(
+    orchestrator,
+    /Initialize-PrivilegedCaptureFile \$stdout \$privilegedSid[\s\S]*?Initialize-PrivilegedCaptureFile \$stderr \$privilegedSid[\s\S]*?Start-Process/u,
+  );
+  assert.match(
+    orchestrator,
+    /Start-Process[\s\S]*?Assert-PrivilegedCaptureIdentity \$stdoutAuthority \$privilegedSid[\s\S]*?Assert-PrivilegedCaptureIdentity \$stderrAuthority \$privilegedSid/u,
+  );
   assert.match(captureParser, /Set-LifecycleFailureSubphase \$failureRecord\.category[\s\S]*?return 'spawn-failed'/u);
   assert.match(captureParser, /\$script:failurePhase = \$failureRecord\.phase/u);
-  assert.match(orchestrator, /Read-PackagedConnectSmokeFailure \$stderr[\s\S]*?Stop-PackagedConnect \$childFailureCategory/u);
+  assert.match(
+    orchestrator,
+    /Read-PackagedConnectSmokeFailure[\s\S]*?-Path \$stderr[\s\S]*?-ExpectedCaptureIdentity \$stderrAuthority\.Identity[\s\S]*?Stop-PackagedConnect \$childFailureCategory/u,
+  );
   assert.match(orchestrator, /catch \{\s*Set-PrimaryFailureFromException \$_\.Exception\s*\}/u);
   assert.match(orchestrator, /\$primaryPhase -ceq 'ordinary-user-preflight'[\s\S]*?\$primarySubphase = 'host-state-contract'/u);
   assert.match(orchestrator, /\$subphaseEvidence = ":subphase=\$primarySubphase"/u);
@@ -1126,8 +1169,8 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
   })}\n`;
   const expectedAccepted = 'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
     + ':phase=staged-contract:subphase=parent-to-runner-binding:cleanup=none';
-  const expectedRejected = 'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
-    + ':phase=capture-parse:subphase=capture-authority:cleanup=none';
+  const expectedRejected = predicate => 'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+    + `:phase=capture-parse:subphase=capture-authority:predicate=${predicate}:cleanup=none`;
   const trackedPaths = [];
   context.after(async () => {
     await Promise.all(trackedPaths.map(path => rm(path, { force: true, recursive: true })));
@@ -1156,23 +1199,44 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
     assertResult(authorityCase, runCaptureParserTest(path, authorityCase), expectedAccepted);
   }
 
-  for (const authorityCase of [
-    'foreign-owner', 'ordinary-owner', 'ordinary-write', 'broad-write',
+  for (const [authorityCase, predicate] of [
+    ['foreign-owner', 'capture-owner'],
+    ['ordinary-owner', 'capture-owner'],
+    ['ordinary-write', 'unauthorized-writer'],
+    ['broad-write', 'unauthorized-writer'],
+    ['unprotected-dacl', 'dacl-canonicality'],
   ]) {
     const path = await newCapturePath();
-    assertResult(authorityCase, runCaptureParserTest(path, authorityCase), expectedRejected);
+    assertResult(authorityCase, runCaptureParserTest(path, authorityCase), expectedRejected(predicate));
   }
+
+  const foreignOwnerParent = await mkdtemp(join(runnerTemp, 'propr-capture-parent-owner-'));
+  trackedPaths.push(foreignOwnerParent);
+  const foreignParentCapture = await newCapturePath(foreignOwnerParent);
+  assertResult(
+    'foreign-parent-owner',
+    runCaptureParserTest(
+      foreignParentCapture,
+      'foreign-parent-owner',
+      { RUNNER_TEMP: foreignOwnerParent },
+    ),
+    expectedRejected('parent-owner'),
+  );
 
   const wrongLeaf = await newCapturePath(
     runnerTemp,
     `propr-connect-${randomBytes(16).toString('hex')}.txt`,
   );
-  assertResult('wrong-leaf', runCaptureParserTest(wrongLeaf), expectedRejected);
+  assertResult('wrong-leaf', runCaptureParserTest(wrongLeaf), expectedRejected('link-path-type'));
 
   const escapeParent = await mkdtemp(join(runnerTemp, 'propr-capture-escape-'));
   trackedPaths.push(escapeParent);
   const escapedCapture = await newCapturePath(escapeParent);
-  assertResult('parent-escape', runCaptureParserTest(escapedCapture), expectedRejected);
+  assertResult(
+    'parent-escape',
+    runCaptureParserTest(escapedCapture),
+    expectedRejected('link-path-type'),
+  );
 
   const hardlinkCapture = await newCapturePath();
   const hardlinkAlias = join(
@@ -1181,7 +1245,11 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
   );
   await link(hardlinkCapture, hardlinkAlias);
   trackedPaths.push(hardlinkAlias);
-  assertResult('hardlink', runCaptureParserTest(hardlinkAlias, 'existing'), expectedRejected);
+  assertResult(
+    'hardlink',
+    runCaptureParserTest(hardlinkAlias, 'existing'),
+    expectedRejected('link-path-type'),
+  );
 
   const directoryCapture = join(
     runnerTemp,
@@ -1189,7 +1257,11 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
   );
   await mkdir(directoryCapture);
   trackedPaths.push(directoryCapture);
-  assertResult('non-regular-file', runCaptureParserTest(directoryCapture), expectedRejected);
+  assertResult(
+    'non-regular-file',
+    runCaptureParserTest(directoryCapture),
+    expectedRejected('link-path-type'),
+  );
 
   const reparseTarget = await newCapturePath(
     runnerTemp,
@@ -1201,7 +1273,11 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
   );
   await symlink(reparseTarget, reparseCapture, 'file');
   trackedPaths.push(reparseCapture);
-  assertResult('reparse-file', runCaptureParserTest(reparseCapture, 'existing'), expectedRejected);
+  assertResult(
+    'reparse-file',
+    runCaptureParserTest(reparseCapture, 'existing'),
+    expectedRejected('link-path-type'),
+  );
 
   const reparseParentTarget = await mkdtemp(join(runnerTemp, 'propr-capture-parent-target-'));
   trackedPaths.push(reparseParentTarget);
@@ -1215,7 +1291,7 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
   assertResult(
     'reparse-parent',
     runCaptureParserTest(captureThroughReparseParent, 'existing', { RUNNER_TEMP: reparseParent }),
-    expectedRejected,
+    expectedRejected('link-path-type'),
   );
 
   const identityChangeCapture = await newCapturePath();
@@ -1223,8 +1299,20 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
   assertResult(
     'identity-change',
     runCaptureParserTest(identityChangeCapture, 'identity-change'),
-    expectedRejected,
+    expectedRejected('identity-replacement'),
   );
+});
+
+windowsTest('Start-Process preserves each protected precreated capture authority', () => {
+  const result = runCaptureRedirectionTest();
+  assert.ifError(result.error);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 0);
+  assert.equal(
+    result.stdout.toString('utf8').trim(),
+    'PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST:accepted',
+  );
+  assert.equal(result.stderr.length, 0);
 });
 
 windowsTest('each host preflight failure transition emits one fixed redacted subphase', () => {

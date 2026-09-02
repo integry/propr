@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory=$true)]
   [ValidateSet('x64','arm64')]
   [string]$Architecture,
-  [ValidateSet('none','terminate-tree','cleanup-timeout','diagnostic-subphase','host-node-producer','launcher-authority','capture-parser')]
+  [ValidateSet('none','terminate-tree','cleanup-timeout','diagnostic-subphase','host-node-producer','launcher-authority','capture-parser','capture-redirection')]
   [string]$LifecycleTestMode = 'none',
   [ValidateRange(0,2147483647)]
   [int]$LifecycleTestProcessId = 0,
@@ -48,7 +48,8 @@ param(
   [string]$CaptureParserTestPath = '',
   [ValidateSet(
     'administrators-owner','current-owner','foreign-owner','ordinary-owner',
-    'ordinary-write','broad-write','identity-change','existing'
+    'ordinary-write','broad-write','unprotected-dacl','foreign-parent-owner',
+    'identity-change','existing'
   )]
   [string]$CaptureParserAuthorityTestCase = 'existing'
 )
@@ -139,6 +140,14 @@ $captureParseSubphases = @(
   'capture-lifecycle-subphase',
   'capture-redaction'
 )
+$captureAuthorityPredicates = @(
+  'parent-owner',
+  'capture-owner',
+  'dacl-canonicality',
+  'unauthorized-writer',
+  'link-path-type',
+  'identity-replacement'
+)
 $lifecycleFailureSubphases = @(
   'fixture-setup',
   'package-validation',
@@ -178,10 +187,13 @@ $stageRoot = $null
 $stageLeaf = $null
 $stdout = $null
 $stderr = $null
+$stdoutAuthority = $null
+$stderrAuthority = $null
 $privilegedSid = $null
 $launcherAuthority = $null
 $plainPassword = $null
 $handoffArgument = $null
+$captureAuthorityPredicate = $null
 
 function Stop-PackagedConnect {
   param([Parameter(Mandatory=$true)][ValidateSet(
@@ -219,6 +231,14 @@ function Set-CaptureParseSubphase {
   }
   $script:failurePhase = 'capture-parse'
   $script:failureSubphase = $Subphase
+}
+
+function Set-CaptureAuthorityPredicate {
+  param([Parameter(Mandatory=$true)][string]$Predicate)
+  if ($captureAuthorityPredicates -cnotcontains $Predicate) {
+    throw [InvalidOperationException]::new('invalid-fixed-capture-authority-predicate')
+  }
+  $script:captureAuthorityPredicate = $Predicate
 }
 
 function Set-LifecycleFailureSubphase {
@@ -472,6 +492,7 @@ function Assert-CaptureAuthorityAcl {
     [Parameter(Mandatory=$true)]
     [Security.Principal.SecurityIdentifier]$CapturePrivilegedSid
   )
+  Set-CaptureAuthorityPredicate 'capture-owner'
   try {
     $sections = [Security.AccessControl.AccessControlSections]::Access -bor
       [Security.AccessControl.AccessControlSections]::Owner
@@ -484,8 +505,11 @@ function Assert-CaptureAuthorityAcl {
   $ownerValues = @($CapturePrivilegedSid.Value, $administratorsSid.Value)
   if ($null -eq $owner -or
       $ownerValues -cnotcontains $owner.Value -or
-      ($null -ne $testUserSid -and $owner.Value -ceq $testUserSid.Value) -or
-      !$acl.AreAccessRulesCanonical) {
+      ($null -ne $testUserSid -and $owner.Value -ceq $testUserSid.Value)) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  Set-CaptureAuthorityPredicate 'dacl-canonicality'
+  if (!$acl.AreAccessRulesProtected -or !$acl.AreAccessRulesCanonical) {
     Stop-PackagedConnect 'artifact-type'
   }
 
@@ -499,6 +523,7 @@ function Assert-CaptureAuthorityAcl {
     [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
     [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
     [Security.AccessControl.FileSystemRights]::TakeOwnership
+  Set-CaptureAuthorityPredicate 'unauthorized-writer'
   foreach ($rule in $rules) {
     if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
         ($rule.FileSystemRights -band $mutationRights) -ne 0 -and
@@ -508,12 +533,165 @@ function Assert-CaptureAuthorityAcl {
   }
 }
 
+function Assert-PrivilegedCaptureFile {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [Parameter(Mandatory=$true)][Microsoft.Win32.SafeHandles.SafeFileHandle]$AuthorityHandle,
+    [Parameter(Mandatory=$true)][Security.Principal.SecurityIdentifier]$CapturePrivilegedSid,
+    [string]$ExpectedIdentity = '',
+    [switch]$SkipAcl
+  )
+  Set-CaptureAuthorityPredicate 'link-path-type'
+  $attributes = [ProprHostLauncherNative]::GetAttributes($AuthorityHandle)
+  $finalPath = Get-BoundedAbsoluteWindowsPath (
+    ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($AuthorityHandle))
+  )
+  if ([ProprHostLauncherNative]::GetHandleType($AuthorityHandle) -ne
+        [ProprHostLauncherNative]::FILE_TYPE_DISK -or
+      ($attributes -band (
+        [ProprHostLauncherNative]::FILE_ATTRIBUTE_DIRECTORY -bor
+        [ProprHostLauncherNative]::FILE_ATTRIBUTE_DEVICE -bor
+        [ProprHostLauncherNative]::FILE_ATTRIBUTE_REPARSE_POINT
+      )) -ne 0 -or
+      [ProprHostLauncherNative]::GetLinkCount($AuthorityHandle) -ne 1 -or
+      ![String]::Equals($finalPath, $Path, [StringComparison]::OrdinalIgnoreCase)) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  $identity = [ProprHostLauncherNative]::GetIdentity($AuthorityHandle)
+  Set-CaptureAuthorityPredicate 'identity-replacement'
+  if (![String]::IsNullOrEmpty($ExpectedIdentity) -and
+      ![String]::Equals($identity, $ExpectedIdentity, [StringComparison]::Ordinal)) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  if (!$SkipAcl) { Assert-CaptureAuthorityAcl $Path $CapturePrivilegedSid }
+  return $identity
+}
+
+function Get-CaptureAuthorityDescriptor {
+  param([Parameter(Mandatory=$true)][string]$Path)
+  $sections = [Security.AccessControl.AccessControlSections]::Access -bor
+    [Security.AccessControl.AccessControlSections]::Owner
+  return [IO.File]::GetAccessControl($Path, $sections).GetSecurityDescriptorSddlForm($sections)
+}
+
+function Initialize-PrivilegedCaptureFile {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [Parameter(Mandatory=$true)][Security.Principal.SecurityIdentifier]$CapturePrivilegedSid,
+    [switch]$NormalizeExisting
+  )
+  $authorityHandle = $null
+  try {
+    Set-CaptureAuthorityPredicate 'link-path-type'
+    if ([String]::IsNullOrEmpty($authenticatedRunnerTemp) -or
+        ![IO.Path]::IsPathRooted($authenticatedRunnerTemp) -or
+        [IO.Path]::GetFullPath($authenticatedRunnerTemp).TrimEnd('\') -cne $authenticatedRunnerTemp -or
+        [IO.Path]::GetDirectoryName($Path) -cne $authenticatedRunnerTemp -or
+        [IO.Path]::GetFileName($Path) -cnotmatch '^propr-connect-[a-f0-9]{32}\.(stdout|stderr)$' -or
+        [IO.Path]::GetFullPath($Path) -cne $Path) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    Initialize-HostLauncherNative
+    if ($NormalizeExisting) {
+      $authorityHandle = [ProprHostLauncherNative]::OpenRedirectCaptureAuthority($Path)
+      $null = Assert-PrivilegedCaptureFile `
+        $Path $authorityHandle $CapturePrivilegedSid -SkipAcl
+    } elseif (Test-Path -LiteralPath $Path) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $captureAcl = [Security.AccessControl.FileSecurity]::new()
+    $captureAcl.SetAccessRuleProtection($true, $false)
+    $captureAcl.SetOwner($CapturePrivilegedSid)
+    foreach ($identity in @($CapturePrivilegedSid, $administratorsSid, $systemSid)) {
+      $null = $captureAcl.AddAccessRule(
+        [Security.AccessControl.FileSystemAccessRule]::new(
+          $identity,
+          [Security.AccessControl.FileSystemRights]::FullControl,
+          [Security.AccessControl.AccessControlType]::Allow
+        )
+      )
+    }
+
+    if ($NormalizeExisting) {
+      [IO.File]::SetAccessControl($Path, $captureAcl)
+      $authorityHandle.Dispose()
+      $authorityHandle = $null
+    } else {
+      $captureStream = [IO.FileStream]::new(
+        $Path,
+        [IO.FileMode]::CreateNew,
+        [Security.AccessControl.FileSystemRights]::FullControl,
+        [IO.FileShare]::Read,
+        4096,
+        [IO.FileOptions]::None,
+        $captureAcl
+      )
+      $captureStream.Dispose()
+    }
+
+    $authorityHandle = [ProprHostLauncherNative]::OpenRedirectCaptureAuthority($Path)
+    $identity = Assert-PrivilegedCaptureFile $Path $authorityHandle $CapturePrivilegedSid
+    $result = [PSCustomObject]@{
+      Path = $Path
+      Identity = $identity
+      SecurityDescriptor = (Get-CaptureAuthorityDescriptor $Path)
+      Handle = $authorityHandle
+    }
+    $authorityHandle = $null
+    return $result
+  } catch {
+    if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
+    Stop-PackagedConnect 'artifact-inaccessible'
+  } finally {
+    if ($null -ne $authorityHandle) { $authorityHandle.Dispose() }
+  }
+}
+
+function Assert-PrivilegedCaptureIdentity {
+  param(
+    [Parameter(Mandatory=$true)]$Authority,
+    [Parameter(Mandatory=$true)][Security.Principal.SecurityIdentifier]$CapturePrivilegedSid
+  )
+  $reopenHandle = $null
+  try {
+    Set-CaptureAuthorityPredicate 'identity-replacement'
+    if ($null -eq $Authority -or !($Authority.Path -is [string]) -or
+        !($Authority.Identity -is [string]) -or
+        !($Authority.SecurityDescriptor -is [string]) -or
+        !($Authority.Handle -is [Microsoft.Win32.SafeHandles.SafeFileHandle]) -or
+        $Authority.Handle.IsInvalid -or $Authority.Handle.IsClosed -or
+        ![String]::Equals(
+          [ProprHostLauncherNative]::GetIdentity($Authority.Handle),
+          $Authority.Identity,
+          [StringComparison]::Ordinal
+        )) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $reopenHandle = [ProprHostLauncherNative]::OpenRedirectCaptureAuthority($Authority.Path)
+    $null = Assert-PrivilegedCaptureFile `
+      $Authority.Path $reopenHandle $CapturePrivilegedSid $Authority.Identity
+    Set-CaptureAuthorityPredicate 'dacl-canonicality'
+    if ((Get-CaptureAuthorityDescriptor $Authority.Path) -cne $Authority.SecurityDescriptor) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+  } catch {
+    if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
+    Stop-PackagedConnect 'artifact-inaccessible'
+  } finally {
+    if ($null -ne $reopenHandle) { $reopenHandle.Dispose() }
+  }
+}
+
 function Read-AuthorizedCaptureBytes {
   param(
     [Parameter(Mandatory=$true)][string]$Path,
     [scriptblock]$TestOnlyBeforeReopen,
     [switch]$TestOnlyAllowReplacement,
-    [Security.Principal.SecurityIdentifier]$TestOnlyCapturePrivilegedSid
+    [Security.Principal.SecurityIdentifier]$TestOnlyCapturePrivilegedSid,
+    [string]$ExpectedCaptureIdentity = ''
   )
   $parentHandle = $null
   $parentReopenHandle = $null
@@ -522,6 +700,7 @@ function Read-AuthorizedCaptureBytes {
   $captureFinalHandle = $null
   try {
     Set-CaptureParseSubphase 'capture-authority'
+    Set-CaptureAuthorityPredicate 'link-path-type'
     $capturePrivilegedSid = if ($null -eq $TestOnlyCapturePrivilegedSid) {
       $privilegedSid
     } else {
@@ -563,12 +742,14 @@ function Read-AuthorizedCaptureBytes {
     } catch {
       Stop-PackagedConnect 'artifact-inaccessible'
     }
+    Set-CaptureAuthorityPredicate 'parent-owner'
     if ($null -eq $parentOwner -or @(
         $privilegedSid.Value, $administratorsSid.Value, 'S-1-5-18'
       ) -cnotcontains $parentOwner.Value) {
       Stop-PackagedConnect 'artifact-type'
     }
 
+    Set-CaptureAuthorityPredicate 'link-path-type'
     $captureHandle = [ProprHostLauncherNative]::OpenCapture(
       $Path, !$TestOnlyAllowReplacement.IsPresent
     )
@@ -586,6 +767,11 @@ function Read-AuthorizedCaptureBytes {
       Stop-PackagedConnect 'artifact-type'
     }
     $captureIdentity = [ProprHostLauncherNative]::GetIdentity($captureHandle)
+    Set-CaptureAuthorityPredicate 'identity-replacement'
+    if (![String]::IsNullOrEmpty($ExpectedCaptureIdentity) -and
+        ![String]::Equals($captureIdentity, $ExpectedCaptureIdentity, [StringComparison]::Ordinal)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
     Assert-CaptureAuthorityAcl $Path $capturePrivilegedSid
 
     if ($null -ne $TestOnlyBeforeReopen) { & $TestOnlyBeforeReopen }
@@ -595,6 +781,7 @@ function Read-AuthorizedCaptureBytes {
     $captureReopenFinalPath = Get-BoundedAbsoluteWindowsPath (
       ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($captureReopenHandle))
     )
+    Set-CaptureAuthorityPredicate 'link-path-type'
     if ([ProprHostLauncherNative]::GetHandleType($captureReopenHandle) -ne
           [ProprHostLauncherNative]::FILE_TYPE_DISK -or
         ($captureReopenAttributes -band (
@@ -603,8 +790,11 @@ function Read-AuthorizedCaptureBytes {
           [ProprHostLauncherNative]::FILE_ATTRIBUTE_REPARSE_POINT
         )) -ne 0 -or
         [ProprHostLauncherNative]::GetLinkCount($captureReopenHandle) -ne 1 -or
-        ![String]::Equals($captureIdentity, $captureReopenIdentity, [StringComparison]::Ordinal) -or
         ![String]::Equals($captureFinalPath, $captureReopenFinalPath, [StringComparison]::OrdinalIgnoreCase)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    Set-CaptureAuthorityPredicate 'identity-replacement'
+    if (![String]::Equals($captureIdentity, $captureReopenIdentity, [StringComparison]::Ordinal)) {
       Stop-PackagedConnect 'artifact-type'
     }
     Assert-CaptureAuthorityAcl $Path $capturePrivilegedSid
@@ -620,6 +810,7 @@ function Read-AuthorizedCaptureBytes {
     if ($captureBytes.Length -ne $captureLength) { Stop-PackagedConnect 'artifact-type' }
 
     Set-CaptureParseSubphase 'capture-authority'
+    Set-CaptureAuthorityPredicate 'identity-replacement'
     if (![String]::Equals(
         $captureReopenIdentity,
         [ProprHostLauncherNative]::GetIdentity($captureReopenHandle),
@@ -663,14 +854,16 @@ function Read-PackagedConnectSmokeFailure {
     [Parameter(Mandatory=$true)][string]$Path,
     [scriptblock]$TestOnlyBeforeReopen,
     [switch]$TestOnlyAllowReplacement,
-    [Security.Principal.SecurityIdentifier]$TestOnlyCapturePrivilegedSid
+    [Security.Principal.SecurityIdentifier]$TestOnlyCapturePrivilegedSid,
+    [string]$ExpectedCaptureIdentity = ''
   )
 
   $captureBytes = Read-AuthorizedCaptureBytes `
     -Path $Path `
     -TestOnlyBeforeReopen $TestOnlyBeforeReopen `
     -TestOnlyAllowReplacement:$TestOnlyAllowReplacement `
-    -TestOnlyCapturePrivilegedSid $TestOnlyCapturePrivilegedSid
+    -TestOnlyCapturePrivilegedSid $TestOnlyCapturePrivilegedSid `
+    -ExpectedCaptureIdentity $ExpectedCaptureIdentity
 
   Set-CaptureParseSubphase 'capture-utf8'
   try {
@@ -1034,6 +1227,24 @@ public static class ProprHostLauncherNative {
       path,
       GENERIC_READ | READ_CONTROL,
       share,
+      IntPtr.Zero,
+      OPEN_EXISTING,
+      FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+      IntPtr.Zero
+    );
+    if (handle.IsInvalid) {
+      int error = Marshal.GetLastWin32Error();
+      handle.Dispose();
+      throw new Win32Exception(error);
+    }
+    return handle;
+  }
+
+  public static SafeFileHandle OpenRedirectCaptureAuthority(string path) {
+    SafeFileHandle handle = CreateFileW(
+      path,
+      FILE_READ_ATTRIBUTES | READ_CONTROL,
+      FILE_SHARE_READ | FILE_SHARE_WRITE,
       IntPtr.Zero,
       OPEN_EXISTING,
       FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
@@ -1584,6 +1795,77 @@ function Invoke-BoundedCleanup {
 $authenticatedRunnerTemp = $null
 $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 
+if ($LifecycleTestMode -eq 'capture-redirection') {
+  $redirectionProcess = $null
+  $redirectionAccepted = $false
+  try {
+    Set-OrdinaryUserPreflightSubphase 'host-capture-contract'
+    if ([String]::IsNullOrEmpty($env:RUNNER_TEMP) -or ![IO.Path]::IsPathRooted($env:RUNNER_TEMP)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $authenticatedRunnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')
+    if ($authenticatedRunnerTemp -cne $env:RUNNER_TEMP.TrimEnd('\')) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $privilegedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $stdout = Join-Path $authenticatedRunnerTemp (
+      'propr-connect-' + [Guid]::NewGuid().ToString('N') + '.stdout'
+    )
+    $stderr = Join-Path $authenticatedRunnerTemp (
+      'propr-connect-' + [Guid]::NewGuid().ToString('N') + '.stderr'
+    )
+    $stdoutAuthority = Initialize-PrivilegedCaptureFile $stdout $privilegedSid
+    $stderrAuthority = Initialize-PrivilegedCaptureFile $stderr $privilegedSid
+    $captureProducerSource = "[Console]::Out.Write('capture-stdout');[Console]::Error.Write('capture-stderr')"
+    $captureProducerArgument = [Convert]::ToBase64String(
+      [Text.Encoding]::Unicode.GetBytes($captureProducerSource)
+    )
+    $redirectionProcess = Start-Process `
+      -FilePath (Join-Path $PSHOME 'powershell.exe') `
+      -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',$captureProducerArgument) `
+      -PassThru `
+      -RedirectStandardOutput $stdout `
+      -RedirectStandardError $stderr `
+      -ErrorAction Stop
+    Assert-PrivilegedCaptureIdentity $stdoutAuthority $privilegedSid
+    Assert-PrivilegedCaptureIdentity $stderrAuthority $privilegedSid
+    if (!$redirectionProcess.WaitForExit($terminationTimeoutMilliseconds) -or
+        $redirectionProcess.ExitCode -ne 0) {
+      Stop-PackagedConnect 'spawn-failed'
+    }
+    Assert-PrivilegedCaptureIdentity $stdoutAuthority $privilegedSid
+    Assert-PrivilegedCaptureIdentity $stderrAuthority $privilegedSid
+    if ([IO.File]::ReadAllText($stdout) -cne 'capture-stdout' -or
+        [IO.File]::ReadAllText($stderr) -cne 'capture-stderr') {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $redirectionAccepted = $true
+  } catch {
+    Set-PrimaryFailureFromException $_.Exception
+  } finally {
+    if ($null -ne $redirectionProcess) {
+      try {
+        if (!$redirectionProcess.HasExited) { Stop-SpawnedProcess $redirectionProcess }
+      } catch {}
+      $redirectionProcess.Dispose()
+    }
+    foreach ($authority in @($stdoutAuthority, $stderrAuthority)) {
+      if ($null -ne $authority -and $null -ne $authority.Handle) {
+        $authority.Handle.Dispose()
+      }
+    }
+    foreach ($capture in @($stdout, $stderr)) {
+      if (![String]::IsNullOrEmpty($capture) -and (Test-Path -LiteralPath $capture)) {
+        Remove-Item -LiteralPath $capture -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
+  if ($redirectionAccepted) {
+    [Console]::Out.WriteLine('PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST:accepted')
+    exit 0
+  }
+}
+
 if ($LifecycleTestMode -eq 'capture-parser') {
   try {
     if ([String]::IsNullOrEmpty($env:RUNNER_TEMP) -or ![IO.Path]::IsPathRooted($env:RUNNER_TEMP)) {
@@ -1600,6 +1882,12 @@ if ($LifecycleTestMode -eq 'capture-parser') {
       'S-1-5-21-42424242-42424242-42424242-1001'
     )
     $stderr = $CaptureParserTestPath
+    Set-CaptureParseSubphase 'capture-authority'
+    $fixtureAuthority = Initialize-PrivilegedCaptureFile `
+      -Path $stderr `
+      -CapturePrivilegedSid $privilegedSid `
+      -NormalizeExisting
+    $fixtureAuthority.Handle.Dispose()
     $beforeCaptureReopen = $null
     $allowCaptureReplacement = $false
     $captureExpectedPrivilegedSid = $null
@@ -1636,6 +1924,16 @@ if ($LifecycleTestMode -eq 'capture-parser') {
         )
       )
       [IO.File]::SetAccessControl($stderr, $captureAcl)
+    } elseif ($CaptureParserAuthorityTestCase -eq 'unprotected-dacl') {
+      $captureAcl = [IO.File]::GetAccessControl($stderr)
+      $captureAcl.SetAccessRuleProtection($false, $true)
+      [IO.File]::SetAccessControl($stderr, $captureAcl)
+    } elseif ($CaptureParserAuthorityTestCase -eq 'foreign-parent-owner') {
+      $parentAcl = [IO.Directory]::GetAccessControl($authenticatedRunnerTemp)
+      $parentAcl.SetOwner(
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+      )
+      [IO.Directory]::SetAccessControl($authenticatedRunnerTemp, $parentAcl)
     } elseif ($CaptureParserAuthorityTestCase -eq 'identity-change') {
       $allowCaptureReplacement = $true
       $beforeCaptureReopen = {
@@ -1824,7 +2122,9 @@ if ($LifecycleTestMode -eq 'launcher-authority') {
   }
 }
 
-if ($LifecycleTestMode -in @('diagnostic-subphase','host-node-producer','launcher-authority','capture-parser')) {
+if ($LifecycleTestMode -in @(
+    'diagnostic-subphase','host-node-producer','launcher-authority','capture-parser','capture-redirection'
+  )) {
   # The shared final diagnostic below emits the injected fixed state.
 } elseif ($LifecycleTestMode -eq 'cleanup-timeout') {
   $cleanupTimeoutMilliseconds = 750
@@ -1966,6 +2266,8 @@ try {
     if ((Test-Path -LiteralPath $stdout) -or (Test-Path -LiteralPath $stderr)) {
       Stop-PackagedConnect 'artifact-type'
     }
+    $stdoutAuthority = Initialize-PrivilegedCaptureFile $stdout $privilegedSid
+    $stderrAuthority = Initialize-PrivilegedCaptureFile $stderr $privilegedSid
     Set-OrdinaryUserPreflightSubphase 'host-staging-handoff'
     $handoffText = [String]::Join("`n", [string[]]@($authenticatedRunnerTemp, $stageParent, $stageLeaf))
     $handoffBytes = [Text.Encoding]::UTF8.GetBytes($handoffText)
@@ -1986,11 +2288,15 @@ try {
           -RedirectStandardOutput $stdout `
           -RedirectStandardError $stderr `
           -ErrorAction Stop
+        Set-CaptureParseSubphase 'capture-authority'
+        Assert-PrivilegedCaptureIdentity $stdoutAuthority $privilegedSid
+        Assert-PrivilegedCaptureIdentity $stderrAuthority $privilegedSid
       } finally {
         $launcherAuthority.Handle.Dispose()
         $launcherAuthority = $null
       }
     } catch {
+      if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
       Stop-PackagedConnect 'spawn-failed'
     }
     Set-FailurePhase 'application-runtime'
@@ -2004,9 +2310,14 @@ try {
       if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
       Stop-PackagedConnect 'spawn-failed'
     }
+    Set-CaptureParseSubphase 'capture-authority'
+    Assert-PrivilegedCaptureIdentity $stdoutAuthority $privilegedSid
+    Assert-PrivilegedCaptureIdentity $stderrAuthority $privilegedSid
     if ($process.ExitCode -ne 0) {
       try {
-        $childFailureCategory = Read-PackagedConnectSmokeFailure $stderr
+        $childFailureCategory = Read-PackagedConnectSmokeFailure `
+          -Path $stderr `
+          -ExpectedCaptureIdentity $stderrAuthority.Identity
         Stop-PackagedConnect $childFailureCategory
       } catch {
         if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
@@ -2031,6 +2342,11 @@ try {
   if ($null -ne $launcherAuthority) {
     try { $launcherAuthority.Handle.Dispose() } catch {}
     $launcherAuthority = $null
+  }
+  foreach ($authority in @($stdoutAuthority, $stderrAuthority)) {
+    if ($null -ne $authority -and $null -ne $authority.Handle) {
+      try { $authority.Handle.Dispose() } catch {}
+    }
   }
   if ($null -ne $authenticatedRunnerTemp -and $null -ne $privilegedSid) {
     $cleanupResult = Invoke-BoundedCleanup
@@ -2062,6 +2378,11 @@ if ($null -ne $primaryFailure) {
   } elseif ($primaryPhase -ceq 'capture-parse' -and
       $captureParseSubphases -ccontains $primarySubphase) {
     $subphaseEvidence = ":subphase=$primarySubphase"
+    if ($LifecycleTestMode -ceq 'capture-parser' -and
+        $primarySubphase -ceq 'capture-authority' -and
+        $captureAuthorityPredicates -ccontains $captureAuthorityPredicate) {
+      $subphaseEvidence += ":predicate=$captureAuthorityPredicate"
+    }
   } elseif ($primaryPhase -ceq 'application-runtime' -and
       $lifecycleFailureSubphases -ccontains $primarySubphase) {
     $subphaseEvidence = ":subphase=$primarySubphase"
