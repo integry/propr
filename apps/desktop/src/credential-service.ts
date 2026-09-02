@@ -1151,7 +1151,7 @@ export class DesktopCredentialService {
   prepareRequest(
     url: string,
     originalHeaders: RequestHeaders,
-    details: { method?: string; resourceType?: string } = {},
+    details: { method?: string; rendererOwned?: boolean; resourceType?: string } = {},
   ): DesktopRequestDecision {
     if (this.#closed) return { cancel: true };
     const headers = { ...originalHeaders };
@@ -1285,6 +1285,16 @@ export class DesktopCredentialService {
     const isApiRequest = target?.pathname.startsWith('/api/') === true;
     const isSocketUpgrade = path === 'socket-io' && transport === 'websocket' && resource === 'websocket';
 
+    // All WebContents in the desktop share this Electron session. Only the
+    // live main renderer, identified by session-security from webContentsId,
+    // may use the active credential binding. Foreign isolated fixtures may
+    // load ordinary credentialless resources, but no marker they supply can
+    // authorize REST or Socket.IO transport or trigger bearer injection.
+    if (details.rendererOwned !== true) {
+      if (markedRestRequest || isHandshakeCandidate) return { cancel: true };
+      return { requestHeaders: headers };
+    }
+
     if (isHandshakeCandidate && !isSocketUpgrade) {
       const category = path !== 'socket-io'
         ? 'wrong-path'
@@ -1330,9 +1340,9 @@ export class DesktopCredentialService {
     }
 
     // Electron's Local Network Access permission can remain cached after the
-    // renderer binding is discarded or revoked. Every renderer HTTP(S)/WS(S)
-    // request therefore needs a current binding and the exact active origin
-    // before even sanitized, unmarked traffic may leave the custom origin.
+    // main renderer binding is discarded or revoked. Every main-renderer
+    // HTTP(S)/WS(S) request therefore needs a current binding and the exact
+    // active origin before even sanitized, unmarked traffic may leave it.
     if (target) {
       if (!active) {
         reportCurrentUser(false, 'no-active-binding');

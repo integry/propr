@@ -181,8 +181,13 @@ export const configureDesktopSessionSecurity = ({
     ));
   });
   desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const mainRenderer = getMainRenderer();
+    const rendererOwned = mainRenderer !== null
+      && !mainRenderer.isDestroyed()
+      && details.webContentsId === mainRenderer.id;
     callback(credentials.prepareRequest(details.url, details.requestHeaders, {
       method: details.method,
+      rendererOwned,
       resourceType: details.resourceType,
     }));
   });

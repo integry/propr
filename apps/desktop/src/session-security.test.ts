@@ -80,7 +80,7 @@ describe('production desktop session security', () => {
     }), false);
   });
 
-  it('limits granted renderer network access to the active origin through the production interceptor', async () => {
+  it('limits credential transport to the exact live main renderer and active origin', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-session-security-'));
     const store = new ProfileStore(directory, encryption);
     const mainEvidence: DesktopCurrentUserProxyEvidence[] = [];
@@ -111,7 +111,6 @@ describe('production desktop session security', () => {
       const probed = await service.probe({ id: profile.id, label: profile.label, apiBaseUrl: REACT_FIXTURE_ORIGIN });
       assert.equal(probed.status, 'ready');
       if (probed.status !== 'ready' || !probed.activationTicket) return;
-      const activated = await service.activate(probed.activationTicket);
 
       type PermissionCheck = (
         webContents: WebContents | null,
@@ -131,6 +130,7 @@ describe('production desktop session security', () => {
           method: string;
           resourceType: string;
           requestHeaders: Record<string, string>;
+          webContentsId: number;
         },
         callback: (decision: Record<string, unknown>) => void,
       ) => void;
@@ -152,8 +152,13 @@ describe('production desktop session security', () => {
           onHeadersReceived: (_listener: unknown) => undefined,
         },
       } as unknown as Session;
-      const mainRenderer = { getURL: () => RENDERER_URL } as unknown as WebContents;
-      const otherRenderer = { getURL: () => RENDERER_URL } as unknown as WebContents;
+      let mainRendererDestroyed = false;
+      const mainRenderer = {
+        id: 41,
+        getURL: () => RENDERER_URL,
+        isDestroyed: () => mainRendererDestroyed,
+      } as unknown as WebContents;
+      const otherRenderer = { id: 42, getURL: () => RENDERER_URL } as unknown as WebContents;
       const configured = configureDesktopSessionSecurity({
         contentSecurityPolicy: () => "default-src 'self'",
         credentials: service,
@@ -162,6 +167,42 @@ describe('production desktop session security', () => {
         isTrustedRendererUrl: value => value === RENDERER_URL,
         reportNetworkPermissionDecision: evidence => permissionEvidence.push(evidence),
       });
+
+      const beforeActivation = async (
+        url: string,
+        headers: Record<string, string>,
+        webContentsId: number,
+        resourceType = 'xhr',
+      ) => await new Promise<Record<string, unknown>>(resolve => beforeSendHeaders({
+        url,
+        method: 'GET',
+        resourceType,
+        requestHeaders: headers,
+        webContentsId,
+      }, resolve));
+      assert.deepEqual(await beforeActivation(
+        'http://127.0.0.1:41731/smoke-sw.js',
+        {
+          Accept: 'application/javascript',
+          Authorization: 'Bearer foreign-controlled',
+          Cookie: 'foreign=session',
+        },
+        otherRenderer.id,
+        'script',
+      ), {
+        requestHeaders: { Accept: 'application/javascript' },
+      });
+      assert.deepEqual(await beforeActivation(`${REACT_FIXTURE_ORIGIN}/api/side-effect`, {
+        Origin: DESKTOP_RENDERER_ORIGIN,
+      }, mainRenderer.id), { cancel: true });
+      mainRendererDestroyed = true;
+      assert.deepEqual(await beforeActivation('http://127.0.0.1:41731/storage-fixture.html', {
+        Authorization: 'Bearer destroyed-renderer',
+        Cookie: 'destroyed=session',
+      }, mainRenderer.id), { requestHeaders: {} });
+      mainRendererDestroyed = false;
+
+      const activated = await service.activate(probed.activationTicket);
 
       // Electron documents a nullable WebContents for permission checks. The
       // trusted main-frame authority remains sufficient without fabricating it.
@@ -249,12 +290,14 @@ describe('production desktop session security', () => {
         method: 'OPTIONS' | 'GET',
         headers: Record<string, string>,
         resourceType = 'xhr',
+        webContentsId = mainRenderer.id,
       ) => {
         return await new Promise<Record<string, unknown>>(resolve => beforeSendHeaders({
           url,
           method,
           resourceType,
           requestHeaders: headers,
+          webContentsId,
         }, resolve));
       };
       const unrelatedTargets = [
@@ -270,6 +313,13 @@ describe('production desktop session security', () => {
       }
 
       const currentUserUrl = `${REACT_FIXTURE_ORIGIN}/api/auth/user?proprDesktopScopeGeneration=1`;
+      assert.deepEqual(await intercepted(currentUserUrl, 'GET', {
+        Origin: DESKTOP_RENDERER_ORIGIN,
+        Referer: RENDERER_URL,
+        Authorization: 'Bearer foreign-controlled',
+        Cookie: 'foreign=session',
+        [DESKTOP_TRANSPORT_SCOPE_HEADER]: activated.transportScope,
+      }, 'xhr', otherRenderer.id), { cancel: true });
       const preflight = await intercepted(currentUserUrl, 'OPTIONS', {
         Origin: DESKTOP_RENDERER_ORIGIN,
         'Access-Control-Request-Method': 'GET',
@@ -301,6 +351,12 @@ describe('production desktop session security', () => {
 
       const socketUrl = `${REACT_FIXTURE_ORIGIN.replace(/^http/, 'ws')}/socket.io/`
         + `?EIO=4&transport=websocket&proprDesktopTransportScope=${activated.transportScope}`;
+      assert.deepEqual(await intercepted(socketUrl, 'GET', {
+        Origin: DESKTOP_RENDERER_ORIGIN,
+        Referer: RENDERER_URL,
+        Authorization: 'Bearer foreign-controlled',
+        Cookie: 'foreign=session',
+      }, 'webSocket', otherRenderer.id), { cancel: true });
       const socket = await intercepted(socketUrl, 'GET', {
         Origin: DESKTOP_RENDERER_ORIGIN,
         Cookie: 'renderer=must-not-cross',
@@ -323,6 +379,19 @@ describe('production desktop session security', () => {
       assert.deepEqual(await intercepted(socketUrl, 'GET', {
         Origin: DESKTOP_RENDERER_ORIGIN,
       }, 'webSocket'), { cancel: true });
+
+      const revokedReady = await service.probe(profile);
+      assert.equal(revokedReady.status, 'ready');
+      if (revokedReady.status !== 'ready') return;
+      const revoked = await service.activate(revokedReady.activationTicket);
+      assert.deepEqual(await service.invalidate({
+        profileId: profile.id,
+        transportScope: revoked.transportScope,
+        code: 'INSTANCE_TOKEN_REVOKED',
+      }), { invalidated: true });
+      assert.deepEqual(await intercepted(`${REACT_FIXTURE_ORIGIN}/api/side-effect`, 'GET', {
+        Origin: DESKTOP_RENDERER_ORIGIN,
+      }), { cancel: true });
       configured.dispose();
     } finally {
       await service.dispose();

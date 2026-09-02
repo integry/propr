@@ -115,10 +115,26 @@ const createStore = async (): Promise<ProfileStore> => {
   return new ProfileStore(directory, encryption);
 };
 
+class MainRendererCredentialService extends DesktopCredentialService {
+  override prepareRequest(
+    url: Parameters<DesktopCredentialService['prepareRequest']>[0],
+    originalHeaders: Parameters<DesktopCredentialService['prepareRequest']>[1],
+    details: Parameters<DesktopCredentialService['prepareRequest']>[2] = {},
+  ) {
+    return super.prepareRequest(url, originalHeaders, {
+      rendererOwned: true,
+      ...details,
+    });
+  }
+}
+
 const createCredentialService = (
   dependencies: ConstructorParameters<typeof DesktopCredentialService>[0],
 ): DesktopCredentialService => {
-  const service = new DesktopCredentialService(dependencies);
+  // Existing service tests exercise requests already proven to belong to the
+  // live main renderer. Ownership-source behavior is covered through the real
+  // session interceptor in session-security.test.ts.
+  const service = new MainRendererCredentialService(dependencies);
   credentialServices.push(service);
   return service;
 };
@@ -198,7 +214,7 @@ describe('main-process desktop credential service', () => {
         // Simulate a session cookie Electron might otherwise append after the
         // main-process fetch has applied its unforgeable request marker.
         requestHeaders.Cookie = 'main-process=session';
-        const decision = service.prepareRequest(url, requestHeaders);
+        const decision = service.prepareRequest(url, requestHeaders, { rendererOwned: false });
         assert.equal(decision.cancel, undefined);
         wireRequests.push({ url, headers: decision.requestHeaders ?? {} });
         return url.endsWith('/api/desktop/discovery') ? json(discovery) : json({ username: 'octocat' });
