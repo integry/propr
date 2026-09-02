@@ -15,10 +15,6 @@ interface SocketRecord {
   transportScope: string;
 }
 
-interface SocketConnectionError extends Error {
-  data?: { code?: unknown };
-}
-
 interface PackagedTransportSmokeHarness {
   activate(profile: DesktopProfile): Promise<{
     profileId: string;
@@ -29,7 +25,10 @@ interface PackagedTransportSmokeHarness {
   rest(): Promise<void>;
   connectSocket(): Promise<number>;
   reconnectSocket(id: number): Promise<void>;
-  expectSocketRejected(id: number): Promise<void>;
+  expectSocketRejected(id: number): Promise<{
+    transportRejected: true;
+    freshManagerConnected: true;
+  }>;
   disconnectSocket(id: number): void;
   handleStaleInvalidation(profileId: string, transportScope: string): Promise<string>;
   rendererEvidence(): unknown;
@@ -40,8 +39,6 @@ declare global {
     __proprPackagedTransportSmoke?: PackagedTransportSmokeHarness;
   }
 }
-
-const INVALID_INSTANCE_TOKEN = 'INVALID_INSTANCE_TOKEN';
 
 const rendererSocketOptions = (transportScope: string) => ({
   transports: ['websocket'] as ['websocket'],
@@ -73,12 +70,10 @@ const waitForSocket = (socket: Socket, expected: 'connect' | 'connect_error'): P
       if (expected === 'connect') resolve();
       else reject(new Error('Stale Socket.IO scope unexpectedly connected'));
     };
-    const failed = (error: SocketConnectionError) => {
+    const failed = () => {
       cleanup();
       if (expected !== 'connect_error') {
-        reject(new Error(`Packaged Socket.IO connection failed: ${error.message}`));
-      } else if (error.message !== INVALID_INSTANCE_TOKEN || error.data?.code !== INVALID_INSTANCE_TOKEN) {
-        reject(new Error('Packaged stale Socket.IO rejection was not INVALID_INSTANCE_TOKEN'));
+        reject(new Error('Packaged Socket.IO connection failed'));
       } else {
         resolve();
       }
@@ -170,6 +165,7 @@ export const installPackagedTransportSmokeHarness = (): void => {
       } finally {
         freshSocket.disconnect();
       }
+      return { transportRejected: true, freshManagerConnected: true };
     },
     disconnectSocket(id) { sockets.get(id)?.socket.disconnect(); },
     handleStaleInvalidation(profileId, transportScope) {

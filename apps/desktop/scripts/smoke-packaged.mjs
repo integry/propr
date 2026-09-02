@@ -51,6 +51,20 @@ const parseEventLayout = (output, expectedEvent) => {
   return undefined;
 };
 
+const parseEventRecords = (output, expectedEvent) => {
+  const records = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.includes(expectedEvent)) continue;
+    try {
+      const record = JSON.parse(line.slice(line.indexOf('{')));
+      if (record.event === expectedEvent) records.push(record);
+    } catch {
+      // Chromium may emit unrelated non-JSON diagnostics containing an event name.
+    }
+  }
+  return records;
+};
+
 await access(binaryPath);
 const expectedFuses = new Map([
   [FuseV1Options.RunAsNode, FuseState.DISABLE],
@@ -112,6 +126,7 @@ const discovery = JSON.stringify({
 const requests = [];
 const fixtures = [];
 const listenTransportFixture = async name => {
+  const socketBoundary = { authenticationAttempts: 0, rejectedAuthenticationAttempts: 0, connections: 0 };
   const server = createServer((request, response) => {
     const record = {
       fixture: name,
@@ -161,6 +176,7 @@ const listenTransportFixture = async name => {
     path: '/socket.io/', transports: ['websocket'], cors: { origin: DESKTOP_RENDERER_ORIGIN, credentials: false },
   });
   io.of('/').use((socket, next) => {
+    socketBoundary.authenticationAttempts += 1;
     const queryScopes = new URL(socket.handshake.url, 'http://fixture.invalid').searchParams
       .getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
     const record = {
@@ -178,6 +194,7 @@ const listenTransportFixture = async name => {
     if (!/^Bearer propr_it_[A-Za-z0-9_-]{43}$/.test(record.authorization ?? '')
       || queryScopes.length !== 1 || !/^[A-Za-z0-9_-]{22}$/.test(queryScopes[0])
       || Object.keys(socket.handshake.auth).length !== 0) {
+      socketBoundary.rejectedAuthenticationAttempts += 1;
       const error = new Error(INVALID_INSTANCE_TOKEN);
       error.data = { code: INVALID_INSTANCE_TOKEN };
       next(error);
@@ -185,12 +202,15 @@ const listenTransportFixture = async name => {
     }
     next();
   });
-  io.of('/').on('connection', socket => socket.emit('packaged-smoke:connected', { ok: true }));
+  io.of('/').on('connection', socket => {
+    socketBoundary.connections += 1;
+    socket.emit('packaged-smoke:connected', { ok: true });
+  });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error(`Packaged ${name} fixture did not bind`);
-  const fixture = { server, io, origin: `http://127.0.0.1:${address.port}` };
+  const fixture = { server, io, origin: `http://127.0.0.1:${address.port}`, socketBoundary };
   fixtures.push(fixture);
   return fixture;
 };
@@ -269,6 +289,7 @@ const shutdownSteps = [
 const launch = async mode => {
   const smokeProfile = await createPrivateSmokeProfile();
   const requestStart = requests.length;
+  const socketBoundaryStart = new Map(fixtures.map(fixture => [fixture, { ...fixture.socketBoundary }]));
   let output = '';
   try {
     const launchArguments = [
@@ -323,6 +344,22 @@ const launch = async mode => {
     if (!output.includes(`"storageBackend":"${expectedBackend}"`)) {
       throw new Error(`Packaged desktop did not use ${expectedBackend} production credential protection`);
     }
+    const staleBoundaryRecords = parseEventRecords(output, 'desktop.transport_smoke.stale_socket_boundary');
+    if (staleBoundaryRecords.length !== 1) {
+      throw new Error(`Packaged ${mode} smoke missed exact main stale-socket boundary evidence`);
+    }
+    const staleBoundary = staleBoundaryRecords[0];
+    if (staleBoundary.schemaVersion !== 1 || staleBoundary.mainAttempts !== 2
+      || staleBoundary.staleRejectedByMain !== true || staleBoundary.staleRejectionCategory !== 'stale-scope'
+      || staleBoundary.freshAcceptedByMain !== true || staleBoundary.exactPath !== true
+      || staleBoundary.exactTransport !== true || staleBoundary.exactResource !== true
+      || staleBoundary.queryCount !== 1 || staleBoundary.activeBindingPresent !== true
+      || staleBoundary.profileGenerationCurrent !== true || staleBoundary.originEqualsActive !== true
+      || staleBoundary.rendererBearerPresent !== false || staleBoundary.rendererCookiePresent !== false
+      || staleBoundary.staleOutboundBearerPresent !== false || staleBoundary.staleBearerMainInjected !== false
+      || staleBoundary.freshBearerMainInjected !== true) {
+      throw new Error(`Packaged ${mode} smoke main stale-socket boundary evidence was invalid`);
+    }
     let previousStep = -1;
     for (const step of shutdownSteps) {
       const marker = `"step":"${step}"`;
@@ -347,11 +384,31 @@ const launch = async mode => {
     const secrets = [...new Set(authenticated.map(request => request.authorization.slice('Bearer '.length)))];
     if (secrets.length !== 2) throw new Error(`Expected two ${mode} activation credentials, observed ${secrets.length}`);
     for (const name of ['first', 'second']) {
+      const fixture = name === 'first' ? first : second;
+      const boundaryStart = socketBoundaryStart.get(fixture);
+      const fixtureBoundaryAttempts = boundaryStart
+        ? fixture.socketBoundary.authenticationAttempts - boundaryStart.authenticationAttempts
+        : -1;
+      const fixtureBoundaryRejections = boundaryStart
+        ? fixture.socketBoundary.rejectedAuthenticationAttempts - boundaryStart.rejectedAuthenticationAttempts
+        : -1;
+      const fixtureBoundaryConnections = boundaryStart
+        ? fixture.socketBoundary.connections - boundaryStart.connections
+        : -1;
+      if (!boundaryStart
+        || fixtureBoundaryAttempts < (name === 'second' ? 2 : 1)
+        || fixtureBoundaryRejections !== 0
+        || fixtureBoundaryConnections !== fixtureBoundaryAttempts) {
+        throw new Error(`Packaged ${mode} ${name} fixture observed an unexpected Socket.IO boundary count`);
+      }
       const fixtureRequests = authenticated.filter(request => request.fixture === name);
       const namespaceConnections = fixtureRequests.filter(request => request.socketIo);
+      const allNamespaceAttempts = runRequests.filter(request => request.fixture === name && request.socketIo);
       if (!fixtureRequests.some(request => request.url === '/api/auth/user')
         || !fixtureRequests.some(request => request.url === '/api/smoke/rest')
         || namespaceConnections.length < (name === 'second' ? 2 : 1)
+        || allNamespaceAttempts.length !== namespaceConnections.length
+        || allNamespaceAttempts.length !== fixtureBoundaryAttempts
         || namespaceConnections.some(request => request.namespace !== '/' || request.engineProtocol !== 4)) {
         throw new Error(`Packaged ${mode} ${name} fixture missed REST, Engine.IO, namespace auth, or reconnect proof`);
       }

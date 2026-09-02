@@ -34,7 +34,11 @@ import {
 import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
-import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
+import {
+  createPackagedSmokeEvidenceSink,
+  PACKAGED_SMOKE_HANDSHAKE_EVIDENCE_LIMIT,
+  type PackagedSmokeHandshakeEvidenceBuffer,
+} from './smoke-test-evidence';
 import {
   authorizePackagedAcceptanceTest,
   packagedAcceptancePairingTiming,
@@ -96,6 +100,10 @@ try {
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 const packagedAcceptanceTest = packagedAcceptanceUserDataDirectory !== null;
+const packagedSmokeHandshakeEvidence: PackagedSmokeHandshakeEvidenceBuffer = {
+  records: [],
+  overflowed: false,
+};
 const acceptancePairingTiming = packagedAcceptancePairingTiming(packagedAcceptanceUserDataDirectory);
 const transportSmoke = packagedTransportSmoke(packagedSmokeTest);
 const inertSetupActions = new Proxy({} as SetupActions, {
@@ -494,6 +502,15 @@ if (!hasSingleInstanceLock) {
           log('info', 'desktop.acceptance.websocket_handshake', { ...evidence });
         },
       } : {}),
+      ...(packagedSmokeTest ? {
+        reportWebSocketHandshake: (evidence: DesktopWebSocketHandshakeEvidence) => {
+          if (packagedSmokeHandshakeEvidence.records.length >= PACKAGED_SMOKE_HANDSHAKE_EVIDENCE_LIMIT) {
+            packagedSmokeHandshakeEvidence.overflowed = true;
+            return;
+          }
+          packagedSmokeHandshakeEvidence.records.push(evidence);
+        },
+      } : {}),
       ...(acceptancePairingTiming ? { pairingTiming: acceptancePairingTiming } : {}),
     });
     const sessionSecurity = configureSessionSecurity(credentials);
@@ -601,6 +618,7 @@ if (!hasSingleInstanceLock) {
         credentials,
         desktopSession: session.defaultSession,
         smoke: transportSmoke,
+        handshakeEvidence: packagedSmokeHandshakeEvidence,
         log: (event, fields) => log('info', event, fields),
       });
     }

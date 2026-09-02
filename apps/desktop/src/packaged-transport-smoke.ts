@@ -5,6 +5,10 @@ import type { DesktopCredentialService } from './credential-service';
 import { clearDesktopInstanceCookies } from './desktop-session';
 import type { ProfileStore } from './profile-store';
 import { normalizeApiBaseUrl } from './security';
+import {
+  validatePackagedStaleSocketBoundaryEvidence,
+  type PackagedSmokeHandshakeEvidenceBuffer,
+} from './smoke-test-evidence';
 
 export interface PackagedTransportSmoke {
   firstOrigin: string;
@@ -40,6 +44,7 @@ interface RunPackagedTransportSmokeOptions {
   credentials: DesktopCredentialService;
   desktopSession: Session;
   smoke: PackagedTransportSmoke;
+  handshakeEvidence: PackagedSmokeHandshakeEvidenceBuffer;
   log(event: string, fields: Record<string, unknown>): void;
 }
 
@@ -50,6 +55,7 @@ export const runPackagedTransportSmoke = async ({
   credentials,
   desktopSession,
   smoke,
+  handshakeEvidence,
   log,
 }: RunPackagedTransportSmokeOptions): Promise<void> => {
   const profileId = 'packaged-transport-smoke';
@@ -134,10 +140,6 @@ export const runPackagedTransportSmoke = async ({
         });
         staleRestRejected = !response.ok;
       } catch { staleRestRejected = true; }
-      await smoke.expectSocketRejected(socketId);
-      await smoke.rest();
-      localStorage.setItem('packaged-smoke-local', 'non-secret sentinel');
-      sessionStorage.setItem('packaged-smoke-session', 'non-secret sentinel');
       return { first, rotated, socketId, staleRestRejected, rendererOrigin: location.origin };
     })()`);
     if (first?.rendererOrigin !== DESKTOP_RENDERER_ORIGIN || first?.first?.profileId !== profileId
@@ -146,6 +148,26 @@ export const runPackagedTransportSmoke = async ({
       || first?.staleRestRejected !== true) {
       throw new Error('Packaged renderer protocol or first transport proof failed');
     }
+    const staleAttemptEvidenceStart = handshakeEvidence.records.length;
+    const staleAttemptResult = await window.webContents.executeJavaScript(`
+      window.__proprPackagedTransportSmoke.expectSocketRejected(${JSON.stringify(first.socketId)})
+    `);
+    const staleAttemptEvidence = handshakeEvidence.records.slice(staleAttemptEvidenceStart);
+    const staleBoundarySummary = validatePackagedStaleSocketBoundaryEvidence(
+      staleAttemptEvidence,
+      handshakeEvidence.overflowed,
+    );
+    if (staleAttemptResult?.transportRejected !== true
+      || staleAttemptResult?.freshManagerConnected !== true) {
+      throw new Error('Packaged stale Socket.IO renderer-boundary evidence failed');
+    }
+    log('desktop.transport_smoke.stale_socket_boundary', { ...staleBoundarySummary });
+    await window.webContents.executeJavaScript(`(async () => {
+      const smoke = window.__proprPackagedTransportSmoke;
+      await smoke.rest();
+      localStorage.setItem('packaged-smoke-local', 'non-secret sentinel');
+      sessionStorage.setItem('packaged-smoke-session', 'non-secret sentinel');
+    })()`);
     await seedStorage();
     if (!await storageState('present')) throw new Error('Packaged origin storage fixture was incomplete');
 
