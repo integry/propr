@@ -67,11 +67,22 @@ describe('GoalsPage', () => {
     expect(await screen.findByText('Goal detail')).toBeInTheDocument();
   });
 
-  it('gates creation when the pinned provider lacks a goal-session capability', async () => {
-    vi.mocked(goalsApi.getGoalCapabilities).mockResolvedValue({ agents: [{ ...capability, goalCapable: false, reason: 'No /goal' }] });
+  it('shows each unsupported provider reason, gates creation, and can recheck runtimes', async () => {
+    vi.mocked(goalsApi.getGoalCapabilities)
+      .mockResolvedValueOnce({ agents: [
+        { ...capability, goalCapable: false, reason: 'Codex schema lacks thread/goal/clear' },
+        { ...capability, agentId: 'agent-2', agentAlias: 'antigravity', agentType: 'antigravity', goalCapable: false, reason: 'Antigravity lacks --conversation' },
+      ] })
+      .mockResolvedValueOnce({ agents: [capability] });
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
-    expect(await screen.findByText(/No pinned coding-agent runtime/)).toBeInTheDocument();
+    expect(await screen.findByText('Codex schema lacks thread/goal/clear')).toBeInTheDocument();
+    expect(screen.getByText('Antigravity lacks --conversation')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start goal' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Recheck runtimes' }));
+    await waitFor(() => expect(goalsApi.getGoalCapabilities).toHaveBeenCalledWith(true));
+    await waitFor(() => expect(screen.queryByText('Codex schema lacks thread/goal/clear')).not.toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Ship the dashboard' } });
+    expect(screen.getByRole('button', { name: 'Start goal' })).toBeEnabled();
   });
 
   it('projects native checklist, time, token, and repository artifact stats in the goal list', async () => {

@@ -225,12 +225,9 @@ export class AgentRegistry {
         return Array.from(this.agents.values());
     }
 
-    /**
-     * Capability-probes the exact configured image instead of assuming a
-     * provider name implies support. Results are cached until registry refresh.
-     */
-    async getGoalCapabilities(): Promise<GoalCapability[]> {
-        return this.goalCapabilityProbe.getAll(this.getAllAgents());
+    /** Capability-probes the exact configured image using non-inference introspection. */
+    async getGoalCapabilities(options: { force?: boolean } = {}): Promise<GoalCapability[]> {
+        return this.goalCapabilityProbe.getAll(this.getAllAgents(), options);
     }
 
     /**

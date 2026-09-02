@@ -1,7 +1,4 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { executeDockerCommand } from '../claude/docker/dockerExecutor.js';
-import { resolveConfigPath } from '../config/configManager.js';
+import { executeDockerCommand, type ExecutionResult } from '../claude/docker/dockerExecutor.js';
 import { parseAntigravityJsonl } from './impl/utils/antigravityOutputParser.js';
 import type { Agent, AgentType } from './types.js';
 
@@ -24,6 +21,19 @@ export interface GoalCapability {
     reason?: string;
 }
 
+type DockerExecutor = (
+    command: string,
+    args: string[],
+    options?: Parameters<typeof executeDockerCommand>[2],
+) => Promise<ExecutionResult>;
+
+const REQUIRED_CODEX_GOAL_METHODS = [
+    'thread/goal/get',
+    'thread/goal/set',
+    'thread/goal/clear',
+] as const;
+const FAILURE_CACHE_TTL_MS = 30_000;
+
 function controlsFor(agent: Agent): GoalCapability['controls'] {
     return agent.config.type === 'codex'
         ? { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true }
@@ -34,6 +44,17 @@ function lifecycleFor(agent: Agent): NonNullable<GoalCapability['lifecycle']> {
     return agent.config.type === 'codex'
         ? { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' }
         : { launch: 'goal-prompt', resume: 'whole-session', runningInput: 'safe-boundary-resume' };
+}
+
+function supportedCapability(agent: Agent): GoalCapability {
+    return {
+        agentId: agent.config.id,
+        agentAlias: agent.config.alias,
+        agentType: agent.config.type,
+        goalCapable: true,
+        lifecycle: lifecycleFor(agent),
+        controls: controlsFor(agent),
+    };
 }
 
 export const GOAL_CAPABILITY_COMMANDS: Partial<Record<AgentType, string>> = {
@@ -47,7 +68,6 @@ interface JsonMessage {
     type?: string;
     subtype?: string;
     session_id?: string;
-    is_error?: boolean;
     result?: unknown;
     error?: { code?: number; message?: string };
 }
@@ -60,6 +80,7 @@ function parseJsonLines(output: string): JsonMessage[] {
     return messages;
 }
 
+/** Retained for consumers that inspect recorded legacy handshakes. New probes use the schema. */
 export function codexHandshakeSupportsNativeGoal(output: string): boolean {
     const messages = parseJsonLines(output);
     const initialized = messages.some(message => message.id === 1 && message.result !== undefined && !message.error);
@@ -69,14 +90,52 @@ export function codexHandshakeSupportsNativeGoal(output: string): boolean {
         && !/method not found|unknown method/i.test(probe?.error?.message || ''));
 }
 
+function collectJsonStrings(value: unknown, strings: Set<string>): void {
+    if (typeof value === 'string') {
+        strings.add(value);
+        return;
+    }
+    if (Array.isArray(value)) {
+        for (const item of value) collectJsonStrings(item, strings);
+        return;
+    }
+    if (value && typeof value === 'object') {
+        for (const item of Object.values(value as Record<string, unknown>)) collectJsonStrings(item, strings);
+    }
+}
+
+/** Verify all native goal methods from Codex's generated experimental protocol schema. */
+export function codexSchemaSupportsNativeGoal(output: string): boolean {
+    try {
+        const strings = new Set<string>();
+        collectJsonStrings(JSON.parse(output), strings);
+        return REQUIRED_CODEX_GOAL_METHODS.every(method => strings.has(method));
+    } catch {
+        return false;
+    }
+}
+
+function cliHelpHasOption(output: string, option: string): boolean {
+    const escaped = option.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^\\s*(?:-[^\\s,]+,?\\s+)?${escaped}(?:[\\s=<\\[]|$)`, 'm').test(output);
+}
+
+/** Claude goal mode needs persisted noninteractive sessions and exact-session resume. */
+export function claudeHelpSupportsWholeSession(output: string): boolean {
+    return ['--print', '--resume', '--output-format', '--no-session-persistence']
+        .every(option => cliHelpHasOption(output, option));
+}
+
+/** Antigravity goal mode needs noninteractive output and exact-conversation resume. */
+export function antigravityHelpSupportsWholeSession(output: string): boolean {
+    return ['--print', '--conversation', '--output-format', '--disable-slash-commands']
+        .every(option => cliHelpHasOption(output, option));
+}
+
 export function claudeSessionIdentity(output: string): string | undefined {
     const init = parseJsonLines(output).find(message =>
         message.type === 'system' && message.subtype === 'init');
     return init?.session_id;
-}
-
-function claudeInvocationSucceeded(output: string): boolean {
-    return parseJsonLines(output).some(message => message.type === 'result' && message.is_error !== true);
 }
 
 export function antigravityConversationIdentity(output: string): string | undefined {
@@ -98,107 +157,89 @@ function unsupportedCapability(agent: Agent, reason: string): GoalCapability {
     };
 }
 
-function dockerConfigMount(agent: Agent): string[] {
-    const configPath = resolveConfigPath(agent.config.configPath);
-    const target = agent.config.type === 'codex' ? '/home/node/.codex' : '/home/node/.claude';
-    return ['-v', `${configPath}:${target}:rw`];
+function introspectionOutput(result: ExecutionResult): string {
+    return `${result.stdout}\n${result.stderr}`;
 }
 
-async function probeCodex(agent: Agent): Promise<GoalCapability> {
-    const probeThreadId = '00000000-0000-0000-0000-000000000000';
-    const handshake = [
-        JSON.stringify({ method: 'initialize', id: 1, params: { clientInfo: { name: 'propr', title: 'ProPR', version: '1' } } }),
-        JSON.stringify({ method: 'initialized', params: {} }),
-        JSON.stringify({ method: 'thread/goal/get', id: 2, params: { threadId: probeThreadId } }),
-        JSON.stringify({ method: 'thread/goal/set', id: 3, params: { threadId: probeThreadId, status: 'paused' } }),
-        JSON.stringify({ method: 'thread/goal/set', id: 4, params: { threadId: probeThreadId, status: 'active' } }),
-        JSON.stringify({ method: 'thread/goal/clear', id: 5, params: { threadId: probeThreadId } }),
-        '',
-    ].join('\n');
-    const result = await executeDockerCommand('docker', [
-        'run', '--rm', '-i', '--entrypoint', 'codex',
-        ...dockerConfigMount(agent), agent.config.dockerImage, 'app-server',
-    ], { timeout: 30_000, stdinData: handshake });
-    return result.exitCode === 0 && codexHandshakeSupportsNativeGoal(result.stdout)
-        ? { agentId: agent.config.id, agentAlias: agent.config.alias, agentType: agent.config.type, goalCapable: true, lifecycle: lifecycleFor(agent), controls: controlsFor(agent) }
-        : unsupportedCapability(agent, 'Pinned Codex App Server did not expose native goal get/pause/resume/clear controls');
+async function probeCodex(agent: Agent, executor: DockerExecutor): Promise<GoalCapability> {
+    const schemaCommand = [
+        'set -eu',
+        'schema_dir="$(mktemp -d)"',
+        'codex app-server generate-json-schema --experimental --out "$schema_dir" >/dev/null',
+        'cat "$schema_dir/ClientRequest.json"',
+    ].join('; ');
+    const result = await executor('docker', [
+        'run', '--rm', '--network', 'none', '--entrypoint', '/bin/sh',
+        agent.config.dockerImage, '-c', schemaCommand,
+    ], { timeout: 30_000 });
+    return result.exitCode === 0 && codexSchemaSupportsNativeGoal(result.stdout)
+        ? supportedCapability(agent)
+        : unsupportedCapability(agent, 'Pinned Codex App Server schema does not expose native goal get, set, and clear methods');
 }
 
-async function probeClaude(agent: Agent): Promise<GoalCapability> {
-    const baseArgs = ['run', '--rm', '-i', '--entrypoint', 'claude', ...dockerConfigMount(agent), agent.config.dockerImage];
-    const initial = await executeDockerCommand('docker', [
-        ...baseArgs, '-p', '-', '--output-format', 'stream-json', '--verbose', '--max-turns', '1',
-    ], { timeout: 120_000, stdinData: '/goal Reply with GOAL_OK only.' });
-    const sessionId = claudeSessionIdentity(initial.stdout);
-    if (initial.exitCode !== 0 || !sessionId || !claudeInvocationSucceeded(initial.stdout)) {
-        return unsupportedCapability(agent, 'Pinned Claude runtime did not persist its initial goal session identity');
-    }
-
-    const resumed = await executeDockerCommand('docker', [
-        ...baseArgs, '-p', '-', '--resume', sessionId,
-        '--output-format', 'stream-json', '--verbose', '--max-turns', '1',
-    ], { timeout: 120_000, stdinData: 'Reply with OK only.' });
-    const resumedSessionId = claudeSessionIdentity(resumed.stdout);
-    return resumed.exitCode === 0 && resumedSessionId === sessionId && claudeInvocationSucceeded(resumed.stdout)
-        ? { agentId: agent.config.id, agentAlias: agent.config.alias, agentType: agent.config.type, goalCapable: true, lifecycle: lifecycleFor(agent), controls: controlsFor(agent) }
-        : unsupportedCapability(agent, 'Pinned Claude runtime did not resume the exact noninteractive session');
+async function probeClaude(agent: Agent, executor: DockerExecutor): Promise<GoalCapability> {
+    const result = await executor('docker', [
+        'run', '--rm', '--network', 'none', '--entrypoint', 'claude',
+        agent.config.dockerImage, '--help',
+    ], { timeout: 30_000 });
+    return result.exitCode === 0 && claudeHelpSupportsWholeSession(introspectionOutput(result))
+        ? supportedCapability(agent)
+        : unsupportedCapability(agent, 'Pinned Claude runtime does not expose persisted noninteractive sessions with exact --resume support');
 }
 
-async function probeAntigravity(agent: Agent): Promise<GoalCapability> {
-    const configuredPath = resolveConfigPath(agent.config.configPath);
-    const siblingGeminiPath = configuredPath.endsWith(`${path.sep}.antigravity`)
-        ? path.join(path.dirname(configuredPath), '.gemini')
-        : configuredPath;
-    const configPath = fs.existsSync(siblingGeminiPath) ? siblingGeminiPath : configuredPath;
-    const baseArgs = [
-        'run', '--rm', '-i', '--user', '0:0',
-        '-v', `${configPath}:/home/node/.gemini:rw`,
-        '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true',
-        agent.config.dockerImage, 'agy', '--dangerously-skip-permissions', '--output-format', 'stream-json',
-    ];
-    const initial = await executeDockerCommand('docker', baseArgs, {
-        timeout: 120_000,
-        stdinData: '/goal Reply with GOAL_OK only.',
-    });
-    const conversationId = antigravityConversationIdentity(initial.stdout);
-    if (initial.exitCode !== 0 || !conversationId) {
-        return unsupportedCapability(agent, 'Pinned Antigravity runtime did not persist its initial goal conversation identity');
-    }
-    const resumed = await executeDockerCommand('docker', [...baseArgs, '--conversation', conversationId], {
-        timeout: 120_000,
-        stdinData: 'Reply with RESUME_OK only.',
-    });
-    return resumed.exitCode === 0 && antigravityConversationIdentity(resumed.stdout) === conversationId
-        ? { agentId: agent.config.id, agentAlias: agent.config.alias, agentType: agent.config.type, goalCapable: true, lifecycle: lifecycleFor(agent), controls: controlsFor(agent) }
-        : unsupportedCapability(agent, 'Pinned Antigravity runtime did not resume the exact whole conversation');
+async function probeAntigravity(agent: Agent, executor: DockerExecutor): Promise<GoalCapability> {
+    const result = await executor('docker', [
+        'run', '--rm', '--network', 'none', '--entrypoint', 'agy',
+        agent.config.dockerImage, '--help',
+    ], { timeout: 30_000 });
+    return result.exitCode === 0 && antigravityHelpSupportsWholeSession(introspectionOutput(result))
+        ? supportedCapability(agent)
+        : unsupportedCapability(agent, 'Pinned Antigravity runtime does not expose noninteractive --conversation resume and slash-command support');
 }
 
-/** Capability-probe the configured runtime using each provider's real protocol. */
-export async function probeGoalCapability(agent: Agent): Promise<GoalCapability> {
+/** Capability-probe the configured runtime without authentication or provider inference. */
+export async function probeGoalCapability(
+    agent: Agent,
+    executor: DockerExecutor = executeDockerCommand,
+): Promise<GoalCapability> {
     if (!agent.goalCapable) return unsupportedCapability(agent, 'Provider does not implement goal-session mode');
     try {
-        if (agent.config.type === 'codex') return await probeCodex(agent);
-        if (agent.config.type === 'claude') return await probeClaude(agent);
-        if (agent.config.type === 'antigravity') return await probeAntigravity(agent);
+        if (agent.config.type === 'codex') return await probeCodex(agent, executor);
+        if (agent.config.type === 'claude') return await probeClaude(agent, executor);
+        if (agent.config.type === 'antigravity') return await probeAntigravity(agent, executor);
         return unsupportedCapability(agent, 'Provider has no proven goal-session transport');
     } catch (error) {
-        return unsupportedCapability(agent, `Capability handshake failed: ${(error as Error).message}`);
+        return unsupportedCapability(agent, `Capability introspection failed: ${(error as Error).message}`);
     }
+}
+
+interface CachedGoalCapability {
+    capability: GoalCapability;
+    expiresAt: number;
 }
 
 export class GoalCapabilityProbe {
-    private cache = new Map<string, GoalCapability>();
+    private cache = new Map<string, CachedGoalCapability>();
+
+    constructor(
+        private readonly failureCacheTtlMs = FAILURE_CACHE_TTL_MS,
+        private readonly now: () => number = Date.now,
+        private readonly probe: (agent: Agent) => Promise<GoalCapability> = probeGoalCapability,
+    ) {}
 
     clear(): void {
         this.cache.clear();
     }
 
-    async getAll(agents: Agent[]): Promise<GoalCapability[]> {
+    async getAll(agents: Agent[], options: { force?: boolean } = {}): Promise<GoalCapability[]> {
         return Promise.all(agents.map(async agent => {
             const cached = this.cache.get(agent.config.id);
-            if (cached) return cached;
-            const capability = await probeGoalCapability(agent);
-            this.cache.set(agent.config.id, capability);
+            if (!options.force && cached && cached.expiresAt > this.now()) return cached.capability;
+            const capability = await this.probe(agent);
+            this.cache.set(agent.config.id, {
+                capability,
+                expiresAt: capability.goalCapable ? Number.POSITIVE_INFINITY : this.now() + this.failureCacheTtlMs,
+            });
             return capability;
         }));
     }

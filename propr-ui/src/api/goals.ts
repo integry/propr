@@ -92,8 +92,8 @@ const idempotentMutation = (method: string, body?: unknown): RequestInit => ({
   headers: { 'Idempotency-Key': crypto.randomUUID() },
 });
 
-export const getGoalCapabilities = async () =>
-  request<{ agents: GoalCapability[] }>('/api/goals/capabilities');
+export const getGoalCapabilities = async (recheck = false) =>
+  request<{ agents: GoalCapability[] }>(`/api/goals/capabilities${recheck ? '?recheck=true' : ''}`);
 export const listGoals = async () => request<{ goals: Goal[] }>('/api/goals');
 export const getGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`);
 export const createGoal = async (body: { repository: string; objective: string; launchStrategy: GoalLaunchStrategy; agentId: string; model: string; baseBranch?: string; maxParallelTasks?: number; ultrafix?: boolean }) =>
