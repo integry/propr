@@ -153,6 +153,38 @@ describe('desktop instance protocol', () => {
     })));
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(abortedBodyCancelled, 1);
+
+    const preAborted = new AbortController();
+    preAborted.abort('already cancelled');
+    let preAbortedRequests = 0;
+    await assert.rejects(new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async () => {
+        preAbortedRequests += 1;
+        return json(discovery);
+      },
+    }).discoverDesktop(1_000, preAborted.signal), (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'aborted');
+    assert.equal(preAbortedRequests, 0);
+
+    const synchronouslyCancelled = new AbortController();
+    let synchronousBodyCancelled = 0;
+    const synchronousCancellation = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async () => {
+        synchronouslyCancelled.abort('cancelled during fetch');
+        return new Response(new ReadableStream<Uint8Array>({
+          start(streamController) { streamController.enqueue(new Uint8Array([1])); },
+          cancel() { synchronousBodyCancelled += 1; },
+        }));
+      },
+    }).discoverDesktop(1_000, synchronouslyCancelled.signal);
+    await assert.rejects(synchronousCancellation, (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'aborted');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(synchronousBodyCancelled, 1);
   });
 
   it('discovers capabilities, opens approval, and polls to a single opaque token', async () => {

@@ -93,28 +93,52 @@ const createDesktopDiscoveryDeadline = (timeoutMs: number, callerSignal?: AbortS
   const controller = new AbortController();
   let rejectDeadline!: (reason: unknown) => void;
   let timedOut = false;
+  let deadlineSettled = false;
+  let deadlineReason: unknown;
   const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+  // A caller may already be aborted before any operation is raced.
+  void deadline.catch(() => undefined);
   const timeoutReason = new Error('desktop discovery timed out');
   const abortReason = new Error('desktop discovery was cancelled');
+  const settleDeadline = (reason: unknown): boolean => {
+    if (deadlineSettled) return false;
+    deadlineSettled = true;
+    deadlineReason = reason;
+    rejectDeadline(reason);
+    return true;
+  };
   const timeout = setTimeout(() => {
+    if (!settleDeadline(timeoutReason)) return;
     timedOut = true;
     controller.abort(timeoutReason);
-    rejectDeadline(timeoutReason);
   }, Math.max(1, timeoutMs));
   const onAbort = (): void => {
+    if (!settleDeadline(abortReason)) return;
     controller.abort(callerSignal?.reason);
-    rejectDeadline(abortReason);
   };
   if (callerSignal?.aborted) onAbort();
   else callerSignal?.addEventListener('abort', onAbort, { once: true });
   return {
     signal: controller.signal,
-    race: <T>(operation: Promise<T>, disposeLateValue?: (value: T) => void): Promise<T> =>
-      new Promise<T>((resolve, reject) => {
+    race: <T>(operation: Promise<T>, disposeLateValue?: (value: T) => void): Promise<T> => {
+      const observed = Promise.resolve(operation);
+      if (deadlineSettled) {
+        observed.then(
+          value => { try { disposeLateValue?.(value); } catch { /* best-effort ownership cleanup */ } },
+          () => undefined,
+        );
+        return Promise.reject(deadlineReason);
+      }
+      return new Promise<T>((resolve, reject) => {
         let settled = false;
-        Promise.resolve(operation).then(
+        deadline.catch(error => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        });
+        observed.then(
           value => {
-            if (settled) {
+            if (settled || deadlineSettled) {
               try { disposeLateValue?.(value); } catch { /* best-effort ownership cleanup */ }
               return;
             }
@@ -127,12 +151,8 @@ const createDesktopDiscoveryDeadline = (timeoutMs: number, callerSignal?: AbortS
             reject(error);
           },
         );
-        deadline.catch(error => {
-          if (settled) return;
-          settled = true;
-          reject(error);
-        });
-      }),
+      });
+    },
     timedOut: (): boolean => timedOut,
     dispose: (): void => {
       clearTimeout(timeout);
@@ -289,6 +309,12 @@ export class ProprClient {
 
   async discoverDesktop(timeoutMs = 8000, signal?: AbortSignal): Promise<ProprDesktopDiscovery> {
     const deadline = createDesktopDiscoveryDeadline(timeoutMs, signal);
+    if (signal?.aborted) {
+      deadline.dispose();
+      throw new ProprClientError('Desktop discovery was cancelled.', {
+        kind: 'aborted', cause: signal.reason,
+      });
+    }
     let response: Response;
     try {
       response = await deadline.race(
