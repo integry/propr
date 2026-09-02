@@ -16,6 +16,7 @@ interface SyntheticPoolsSectionProps {
   error: string | null;
   warning: string | null;
   success: string | null;
+  agentTankAvailable: boolean | null;
   readOnly?: boolean;
   readOnlyMessage?: string;
   editorActive?: boolean;
@@ -108,13 +109,14 @@ interface EditorProps {
   agents: AgentConfig[];
   saving: boolean;
   readOnly: boolean;
+  agentTankAvailable: boolean | null;
   fieldErrors: Map<string, string>;
   onCancel: () => void;
   onSave: (draft: SyntheticAgentConfig) => Promise<boolean>;
 }
 
 const PoolEditor: React.FC<EditorProps> = ({
-  initial, poolIndex, agents, saving, readOnly, fieldErrors, onCancel, onSave,
+  initial, poolIndex, agents, saving, readOnly, agentTankAvailable, fieldErrors, onCancel, onSave,
 }) => {
   const [draft, setDraft] = useState(() => structuredClone(initial));
   const [attemptedSave, setAttemptedSave] = useState(false);
@@ -167,7 +169,7 @@ const PoolEditor: React.FC<EditorProps> = ({
           </div>
 
           {draft.models.map((model, modelIndex) => (
-            <section key={`${model.id}:${modelIndex}`} className="rounded-lg border border-slate-200">
+            <section key={model.members[0]?.id ?? modelIndex} className="rounded-lg border border-slate-200">
               <div className="flex flex-wrap items-end gap-3 border-b border-slate-200 bg-slate-50 p-3">
                 <label className="min-w-40 flex-1 text-xs font-medium text-slate-700">
                   Virtual model ID
@@ -249,7 +251,7 @@ const PoolEditor: React.FC<EditorProps> = ({
             setDraft(current => ({ ...current, models: [...current.models, newModel(agents, `model-${suffix}`)] }));
           }} className="inline-flex items-center gap-1 text-sm font-medium text-teal-700 hover:text-teal-900 disabled:text-slate-400"><Plus className="h-4 w-4" /> Add virtual model</button>
 
-          {draft.models.some(model => model.members.some(member => member.usageLimits?.sessionMaxPercent !== undefined || member.usageLimits?.weeklyMaxPercent !== undefined)) && (
+          {agentTankAvailable === false && draft.models.some(model => model.members.some(member => member.usageLimits?.sessionMaxPercent !== undefined || member.usageLimits?.weeklyMaxPercent !== undefined)) && (
             <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
               Usage caps require fresh Agent Tank data for the exact direct-agent alias. A capped member becomes ineligible when that alias-specific data is unavailable, refreshing, or stale; uncapped members do not require Agent Tank.
             </div>
@@ -267,7 +269,7 @@ const PoolEditor: React.FC<EditorProps> = ({
 };
 
 const SyntheticPoolsSection: React.FC<SyntheticPoolsSectionProps> = ({
-  agents, pools, loading, saving, error, warning, success, readOnly = false, readOnlyMessage, editorActive = true,
+  agents, pools, loading, saving, error, warning, success, agentTankAvailable, readOnly = false, readOnlyMessage, editorActive = true,
   addRequested = 0, onAddRequestConsumed, onSave,
 }) => {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -339,6 +341,7 @@ const SyntheticPoolsSection: React.FC<SyntheticPoolsSectionProps> = ({
           agents={agents}
           saving={saving}
           readOnly={readOnly}
+          agentTankAvailable={agentTankAvailable}
           fieldErrors={fieldErrors}
           onCancel={() => { setCreating(false); setEditingIndex(null); }}
           onSave={saveDraft}

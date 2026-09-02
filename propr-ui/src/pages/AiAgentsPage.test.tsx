@@ -14,7 +14,12 @@ const apiMocks = vi.hoisted(() => ({
   saveSyntheticAgents: vi.fn(),
 }));
 
+const agentTankApiMocks = vi.hoisted(() => ({
+  getAgentTankStatus: vi.fn(),
+}));
+
 vi.mock('../api/proprApi', () => apiMocks);
+vi.mock('../api/revertApi', () => agentTankApiMocks);
 
 vi.mock('react-resizable-panels', () => ({
   Panel: ({ children }: PropsWithChildren) => <div>{children}</div>,
@@ -82,6 +87,7 @@ describe('AiAgentsPage model selection', () => {
     apiMocks.saveAgents.mockResolvedValue({ success: true, agents });
     apiMocks.getSyntheticAgents.mockResolvedValue({ synthetic_agents: [syntheticPool] });
     apiMocks.saveSyntheticAgents.mockResolvedValue({ success: true, synthetic_agents: [syntheticPool] });
+    agentTankApiMocks.getAgentTankStatus.mockResolvedValue({ available: true });
   });
 
   it('replaces Playground selections with the exact enabled agent/model pair and opens the mobile Playground', async () => {
@@ -261,5 +267,48 @@ describe('AiAgentsPage model selection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Synthetic Pools' }));
 
     expect(screen.queryByRole('dialog', { name: 'Synthetic pool editor' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the virtual model ID focused while it is edited', async () => {
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Synthetic Pools' }));
+    fireEvent.click((await screen.findByText('Balanced Pool')).closest('button')!);
+
+    const modelId = screen.getByLabelText('Virtual model ID');
+    modelId.focus();
+    fireEvent.change(modelId, { target: { value: 'balanced-next' } });
+
+    expect(modelId).toHaveFocus();
+    expect(modelId).toHaveValue('balanced-next');
+  });
+
+  it.each([
+    [true, false],
+    [false, true],
+  ])('shows the usage-cap warning only when Agent Tank availability is %s', async (available, warningExpected) => {
+    agentTankApiMocks.getAgentTankStatus.mockResolvedValue({ available });
+    apiMocks.getSyntheticAgents.mockResolvedValue({
+      synthetic_agents: [{
+        ...syntheticPool,
+        models: [{
+          ...syntheticPool.models[0],
+          members: [{
+            ...syntheticPool.models[0].members[0],
+            usageLimits: { weeklyMaxPercent: 80 },
+          }],
+        }],
+      }],
+    });
+
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Synthetic Pools' }));
+    fireEvent.click((await screen.findByText('Balanced Pool')).closest('button')!);
+    await waitFor(() => expect(agentTankApiMocks.getAgentTankStatus).toHaveBeenCalled());
+
+    const warning = screen.queryByText(/Usage caps require fresh Agent Tank data/);
+    if (warningExpected) expect(warning).toBeInTheDocument();
+    else expect(warning).not.toBeInTheDocument();
   });
 });

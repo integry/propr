@@ -14,6 +14,7 @@ import AgentsListSection from './SettingsPage/AgentsListSection';
 import ChatPanel, { type AgentModelSelection } from '../components/AgentChat/ChatPanel';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { isCommittedConfigWriteError } from '../api/apiClient';
+import { getAgentTankStatus } from '../api/revertApi';
 import { useDesktopLayout } from '../hooks/useDesktopLayout';
 import SyntheticPoolsSection from './SyntheticPoolsSection';
 
@@ -41,6 +42,7 @@ const AiAgentsPage: React.FC = () => {
   const [syntheticWarning, setSyntheticWarning] = useState<string | null>(null);
   const [syntheticSuccess, setSyntheticSuccess] = useState<string | null>(null);
   const [syntheticReloadRequired, setSyntheticReloadRequired] = useState(true);
+  const [agentTankAvailable, setAgentTankAvailable] = useState<boolean | null>(null);
   const [configView, setConfigView] = useState<'direct' | 'synthetic'>('direct');
   const [addPoolRequest, setAddPoolRequest] = useState<AddPoolRequest | null>(null);
   const addPoolRequestId = useRef(0);
@@ -85,6 +87,12 @@ const AiAgentsPage: React.FC = () => {
       }
     };
     void loadPools();
+  }, []);
+
+  useEffect(() => {
+    getAgentTankStatus()
+      .then(status => setAgentTankAvailable(status.available))
+      .catch(() => setAgentTankAvailable(false));
   }, []);
 
   const handleSaveSyntheticAgents = async (updated: SyntheticAgentConfig[]): Promise<SyntheticAgentConfig[] | undefined> => {
@@ -249,6 +257,7 @@ const AiAgentsPage: React.FC = () => {
         error={syntheticError}
         success={syntheticSuccess}
         warning={syntheticWarning}
+        agentTankAvailable={agentTankAvailable}
         readOnly={isDemoMode || syntheticReloadRequired}
         readOnlyMessage={syntheticReloadRequired ? 'Synthetic pool changes are blocked because the saved configuration could not be reloaded. Reload this page to continue.' : undefined}
         editorActive={layout === (isDesktopLayout ? 'desktop' : 'mobile')}
