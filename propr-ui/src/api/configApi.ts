@@ -5,6 +5,7 @@ import type {
   RepoConfigResponse,
   SystemSettings,
 } from './proprTypes';
+import type { SyntheticAgentConfig } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 async function getJson<T>(path: string): Promise<T> {
@@ -95,6 +96,23 @@ export interface SaveAgentsResponse {
 export const getAgents = (): Promise<{ agents: AgentConfig[] }> => getJson('/api/config/agents');
 export const saveAgents = (agents: AgentConfig[]): Promise<SaveAgentsResponse> =>
   postJson('/api/config/agents', { agents });
+
+export interface SyntheticAgentsResponse {
+  synthetic_agents: SyntheticAgentConfig[];
+}
+
+export interface SaveSyntheticAgentsResponse extends SyntheticAgentsResponse {
+  success: boolean;
+  warnings?: string[];
+}
+
+export const getSyntheticAgents = (): Promise<SyntheticAgentsResponse> =>
+  getJson('/api/config/synthetic-agents');
+
+export const saveSyntheticAgents = (
+  syntheticAgents: SyntheticAgentConfig[],
+): Promise<SaveSyntheticAgentsResponse> =>
+  postJson('/api/config/synthetic-agents', { synthetic_agents: syntheticAgents });
 export const getOpenCodeModels = (agentId?: string): Promise<{ models: string[] }> => {
   const params = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
   return getJson(`/api/agents/opencode/models${params}`);

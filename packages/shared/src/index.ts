@@ -76,6 +76,26 @@ export {
   type InstanceCatalogResponse,
 } from './instanceCatalog.js';
 
+export {
+  SYNTHETIC_SELECTION_STRATEGIES,
+  syntheticUsageLimitsSchema,
+  syntheticModelMemberSchema,
+  syntheticModelConfigSchema,
+  syntheticAgentConfigSchema,
+  syntheticAgentConfigsSchema,
+  parseSyntheticAgentConfigs,
+  validateSyntheticAgentReferences,
+  validateExecutableSyntheticDefault,
+  findSyntheticReferencesToDirectAgent,
+  type SyntheticSelectionStrategy,
+  type SyntheticUsageLimits,
+  type SyntheticModelMember,
+  type SyntheticModelConfig,
+  type SyntheticAgentConfig,
+  type SyntheticDirectAgentReference,
+  type SyntheticReferenceValidationResult,
+} from './syntheticAgents.js';
+
 // Export user whitelist helpers
 export {
   getGithubUserWhitelist,

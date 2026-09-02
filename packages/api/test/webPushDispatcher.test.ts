@@ -273,14 +273,21 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
   });
 
   test('paginates past a quiet-hour prefix larger than the scan window', async () => {
+    const fixtureBaseTime = Date.now() - 30_000;
+    let fixtureTick = 0;
+    const fixtureService = new NotificationService({
+      database,
+      now: () => new Date(fixtureBaseTime + fixtureTick++),
+    });
     const quietUsers: string[] = [];
     for (let index = 0; index < 21; index += 1) {
       const queued = await queuedEvent({
+        service: fixtureService,
         quietHours: { start: '00:00', end: '23:59', timezone: 'UTC' },
       });
       quietUsers.push(queued.userId);
     }
-    const eligible = await queuedEvent();
+    const eligible = await queuedEvent({ service: fixtureService });
     const dispatchAt = new Date();
     const currentMinute = dispatchAt.getUTCHours() * 60 + dispatchAt.getUTCMinutes();
     const formatMinute = (minute: number) => {
@@ -303,6 +310,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
       },
     }, {
       batchSize: 1,
+      leaseMs: 30_000,
       now: () => dispatchAt,
     });
 
@@ -558,15 +566,17 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
 
   test('skips network I/O when the claim expires during delivery preparation', async () => {
     await queuedEvent();
-    const baseTime = Date.now() - 4_000;
+    const baseTime = Date.now() - 1_000;
+    const leaseMs = 30_000;
     let nowCalls = 0;
     let sends = 0;
     const worker = dispatcher({
       sendNotification: async () => { sends += 1; return success; },
     }, {
-      leaseMs: 5_000,
-      requestTimeoutMs: 4_999,
-      now: () => new Date(baseTime + nowCalls++ * 2_000),
+      leaseMs,
+      requestTimeoutMs: leaseMs - 1,
+      // Keep the initial claim ahead of SQLite's real clock, then expire it before renewal.
+      now: () => new Date(baseTime + (nowCalls++ >= 3 ? leaseMs + 1_000 : 0)),
     });
 
     assert.equal(await worker.runOnce(), 1);

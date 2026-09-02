@@ -1,6 +1,7 @@
 import React from 'react';
 import { Cpu, Layers } from 'lucide-react';
-import { AGENT_MODELS, AGENT_DISPLAY, AGENT_DISPLAY_ORDER, ModelInfo, AgentType } from '../../config/modelDefinitions';
+import { AGENT_MODELS, AGENT_DISPLAY, AGENT_DISPLAY_ORDER, MODEL_INFO_MAP, ModelInfo, AgentType } from '../../config/modelDefinitions';
+import type { InstanceCatalogAgent } from '@propr/shared';
 
 // Context level configuration
 type ContextLevelType = 'focused' | 'expanded' | 'fullscan';
@@ -63,6 +64,8 @@ export interface ModelContextSelectorProps {
   disabled?: boolean;
   /** Optional className for styling */
   className?: string;
+  /** Operational catalog entries, including synthetic virtual models. */
+  agents?: InstanceCatalogAgent[];
 }
 
 /**
@@ -79,6 +82,7 @@ const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
   onContextLevelChange,
   disabled = false,
   className = '',
+  agents,
 }) => {
   // Get current context level type
   const getContextLevelType = (value: number): ContextLevelType => {
@@ -116,6 +120,8 @@ const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
         return agent ? getAgentModelFormat(agent, selectedModel) : selectedModel;
       })();
 
+  const catalogAgents = agents?.filter(agent => agent.enabled) || [];
+
   return (
     <div className={`flex min-w-0 flex-col gap-2 bg-white px-3 py-2 sm:flex-row sm:items-center sm:gap-3 sm:px-4 border-b border-slate-200 ${className}`}>
       {/* Small screens get a wrapped two-line control bar so long model names cannot widen the panel. */}
@@ -131,15 +137,28 @@ const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
           }`}
         >
           <option value="">Use configured context model</option>
-          {AGENT_DISPLAY_ORDER.map((agentType) => (
-            <optgroup key={agentType} label={AGENT_DISPLAY[agentType].label}>
-              {AGENT_MODELS[agentType].map((model: ModelInfo) => (
-                <option key={model.id} value={getAgentModelFormat(agentType, model.id)}>
-                  {model.shortName}
-                </option>
+          {catalogAgents.length > 0
+            ? catalogAgents.map(agent => (
+                <optgroup
+                  key={agent.id || agent.alias}
+                  label={agent.kind === 'synthetic' ? `${agent.alias} (Synthetic pool)` : agent.alias}
+                >
+                  {agent.supportedModels.map(modelId => (
+                    <option key={modelId} value={`${agent.alias}:${modelId}`}>
+                      {MODEL_INFO_MAP[modelId]?.shortName || modelId}
+                    </option>
+                  ))}
+                </optgroup>
+              ))
+            : AGENT_DISPLAY_ORDER.map((agentType) => (
+                <optgroup key={agentType} label={AGENT_DISPLAY[agentType].label}>
+                  {AGENT_MODELS[agentType].map((model: ModelInfo) => (
+                    <option key={model.id} value={getAgentModelFormat(agentType, model.id)}>
+                      {model.shortName}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
-            </optgroup>
-          ))}
         </select>
         {selectedModelInfo && (
           <span className="flex-shrink-0 rounded bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-400">

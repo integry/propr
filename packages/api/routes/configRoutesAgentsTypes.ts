@@ -34,6 +34,7 @@ export interface AgentPreparationDeps {
 
 export interface AgentConfigStore {
   loadAgents: typeof configManager.loadAgents;
+  loadSyntheticAgents?: typeof configManager.loadSyntheticAgents;
   loadSettings: typeof configManager.loadSettings;
   loadSettingsRecord?: () => Promise<Record<string, unknown>>;
   loadModelReasoningLevel?: typeof configManager.loadModelReasoningLevel;

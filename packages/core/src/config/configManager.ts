@@ -256,6 +256,12 @@ export {
     saveAgentTankSettings
 } from './configManagerAgents.js';
 
+export {
+    SYNTHETIC_AGENTS_CONFIG_KEY,
+    loadSyntheticAgents,
+    saveSyntheticAgents
+} from './configManagerSyntheticAgents.js';
+
 // --- Auto Resolve Merge Conflicts ---
 
 /**

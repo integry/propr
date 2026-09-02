@@ -82,6 +82,7 @@ const sidebars: SidebarsConfig = {
       label: 'Reference',
       items: [
         'features/agents-and-models',
+        'features/synthetic-pools',
         'features/propr-cli',
       ],
     },

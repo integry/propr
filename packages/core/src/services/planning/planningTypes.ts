@@ -8,6 +8,7 @@ import { CODEX_CLI_CONTEXT_LIMIT } from '../../config/modelLimits.js';
 import type { ContextLevel } from '../../config/modelLimits.js';
 import type { Attachment } from '../attachmentService.js';
 import type { StepStatus } from '@propr/shared';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 /** Reserved overhead for system prompts, XML structure, etc. */
 export const RESERVED_OVERHEAD_TOKENS = 5000;
@@ -197,6 +198,7 @@ export interface FindFilesOptions {
   autoFiles: string[];
   correlationId?: string;
   contextModel?: string;
+  routingSession?: SyntheticRoutingSession;
 }
 
 export interface TaskDraftForFind {
