@@ -80,10 +80,14 @@ if ($FixtureEarlyInitializationChild) {
     $fixtureChild = [Diagnostics.Process]::new()
     $fixtureChild.StartInfo = $fixtureChildStartInfo
     if (!$fixtureChild.Start()) { exit 1 }
+    if ($PID -le 0 -or $fixtureChild.Id -le 0) { exit 1 }
     $fixtureStatePath = Join-Path $fixtureEarlyRoot 'workflow-cleanup-early-processes.json'
     $fixtureStateTemporaryPath = "$fixtureStatePath.$PID.new"
     $fixtureStateBytes = [Text.Encoding]::ASCII.GetBytes((
-      [ordered]@{ WorkerPid = $PID; DescendantPid = $fixtureChild.Id } |
+      [ordered]@{
+        WorkerPid = [int]$PID
+        DescendantPid = [int]$fixtureChild.Id
+      } |
         ConvertTo-Json -Compress
     ))
     $fixtureStateStream = [IO.FileStream]::new(

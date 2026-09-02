@@ -722,6 +722,82 @@ function Assert-ProcessTreeGone($State) {
   throw 'owned worker process tree survived supervisor completion'
 }
 
+function Read-EarlyWorkflowCleanupProcessState(
+  [string]$Scenario,
+  [string]$StateDirectory
+) {
+  $statePath = Invoke-SupervisorAttributedOperation `
+    -Scenario $Scenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'EARLY_PROCESS_STATE_PATH' `
+    -Field 'STATE_DIRECTORY' `
+    -Action {
+      Assert-True (![string]::IsNullOrWhiteSpace($StateDirectory)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $Scenario `
+          'PROCESS_STATE' `
+          'EARLY_PROCESS_STATE_PATH' `
+          'STATE_DIRECTORY')
+      Join-Path $StateDirectory 'workflow-cleanup-early-processes.json'
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $Scenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'EARLY_PROCESS_STATE_PATH' `
+    -Field 'PROCESS_STATE_PATH' `
+    -Action {
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$statePath)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $Scenario `
+          'PROCESS_STATE' `
+          'EARLY_PROCESS_STATE_PATH' `
+          'PROCESS_STATE_PATH')
+      Assert-True (Test-Path -LiteralPath $statePath -PathType Leaf) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $Scenario `
+          'PROCESS_STATE' `
+          'EARLY_PROCESS_STATE_PATH' `
+          'PROCESS_STATE_PATH')
+    }
+  $state = Invoke-SupervisorAttributedOperation `
+    -Scenario $Scenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'EARLY_PROCESS_STATE_READ' `
+    -Field 'PROCESS_STATE_PATH' `
+    -Action {
+      Get-Content -LiteralPath $statePath -Raw -Encoding ASCII |
+        ConvertFrom-Json -ErrorAction Stop
+    }
+  foreach ($earlyStatePropertyName in @('WorkerPid','DescendantPid')) {
+    $earlyStateFieldToken = Convert-FixtureAuthorityFieldToken $earlyStatePropertyName
+    Invoke-SupervisorAttributedOperation `
+      -Scenario $Scenario `
+      -Phase 'PROCESS_STATE' `
+      -Callsite 'EARLY_PROCESS_STATE_READ' `
+      -Field $earlyStateFieldToken `
+      -Action {
+        $property = $state.PSObject.Properties[$earlyStatePropertyName]
+        $pidValue = 0
+        Assert-True ($null -ne $property -and [int]::TryParse(
+            [string]$property.Value,
+            [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$pidValue
+          ) -and $pidValue -gt 0) `
+          (Get-SanitizedSupervisorInvocationDiagnostic `
+            $script:currentSupervisorInvocationTest `
+            $Scenario `
+            'PROCESS_STATE' `
+            'EARLY_PROCESS_STATE_READ' `
+            $earlyStateFieldToken)
+      }
+  }
+  return $state
+}
+
 function Get-SanitizedSupervisorMarkerDiagnostic($Result) {
   $bootstrapTimedOutPresent = [regex]::IsMatch(
     [string]$Result.Output,
@@ -1405,6 +1481,12 @@ function Get-SupervisorInvocationCallsites {
     'PROCESS_STATE_PATH',
     'PROCESS_STATE_READ',
     'PROCESS_TREE_ASSERTION',
+    'CONTROLLER_INVOCATION_INPUT',
+    'CONTROLLER_PROTOCOL_PARSE',
+    'CONTROLLER_RESULT_FIELD',
+    'EARLY_PROCESS_STATE_PATH',
+    'EARLY_PROCESS_STATE_READ',
+    'MANIFEST_PRESERVATION',
     'RESOURCE_FIELD_VALIDATION',
     'REPLACEMENT_SURVIVAL_READ',
     'AUTHORITY_RESTORE_WRITE',
@@ -1425,6 +1507,10 @@ function Get-SupervisorInvocationFields {
     'WORKER_PID',
     'DESCENDANT_PID',
     'PROCESS_TREE',
+    'PROTOCOL',
+    'EXIT_CODE',
+    'REPORTED_EXIT_CODE',
+    'RESULT',
     'OWNED_ROOT',
     'INSTALL_ROOT',
     'SHORTCUT_FOLDER',
@@ -1527,6 +1613,19 @@ function Get-SupervisorAttributionTotalityCases {
     'CALLSITE_CRITICAL_GATE_READ',
     'CALLSITE_PROCESS_STATE_READ',
     'CALLSITE_PROCESS_TREE_ASSERTION',
+    'CALLSITE_CONTROLLER_INPUT_MANIFEST',
+    'CALLSITE_CONTROLLER_INPUT_RUN_ID',
+    'CALLSITE_CONTROLLER_INPUT_STATE_DIRECTORY',
+    'CALLSITE_CONTROLLER_PROTOCOL_PARSE',
+    'CALLSITE_CONTROLLER_RESULT_EXIT_CODE',
+    'CALLSITE_CONTROLLER_RESULT_REPORTED_EXIT_CODE',
+    'CALLSITE_CONTROLLER_RESULT_RESULT',
+    'CALLSITE_EARLY_PROCESS_STATE_PATH',
+    'CALLSITE_EARLY_PROCESS_STATE_READ',
+    'CALLSITE_EARLY_WORKER_PID',
+    'CALLSITE_EARLY_DESCENDANT_PID',
+    'CALLSITE_EARLY_PROCESS_TREE_ASSERTION',
+    'CALLSITE_EARLY_MANIFEST_PRESERVATION',
     'CALLSITE_REPLACEMENT_SURVIVAL_READ',
     'FIELD_EXECUTABLE_BACKUP',
     'FIELD_MANIFEST_PATH',
@@ -1624,6 +1723,22 @@ function Invoke-SupervisorAttributedTest(
     -Test $Test `
     -Scenario 'TEST' `
     -Phase 'TEST' `
+    -Action $Action
+}
+
+function Invoke-SupervisorAttributedOperation(
+  [string]$Scenario,
+  [string]$Phase,
+  [string]$Callsite,
+  [string]$Field,
+  [scriptblock]$Action
+) {
+  Invoke-SupervisorAttributedBoundary `
+    -Test $script:currentSupervisorInvocationTest `
+    -Scenario $Scenario `
+    -Phase $Phase `
+    -Callsite $Callsite `
+    -Field $Field `
     -Action $Action
 }
 
@@ -1782,6 +1897,53 @@ function Invoke-WorkflowCleanupController(
     $script:currentSupervisorInvocationTest `
     $InvocationIdentifier `
     'WORKFLOW_CLEANUP_CONTROLLER'
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $InvocationIdentifier `
+    'WORKFLOW_CLEANUP_CONTROLLER' `
+    'CONTROLLER_INVOCATION_INPUT' `
+    'MANIFEST_PATH'
+  Assert-True (![string]::IsNullOrWhiteSpace([string]$ManifestPath)) `
+    (Get-SanitizedSupervisorInvocationDiagnostic `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'MANIFEST_PATH')
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $InvocationIdentifier `
+    'WORKFLOW_CLEANUP_CONTROLLER' `
+    'CONTROLLER_INVOCATION_INPUT' `
+    'RUN_ID'
+  Assert-True (![string]::IsNullOrWhiteSpace([string]$RunId)) `
+    (Get-SanitizedSupervisorInvocationDiagnostic `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'RUN_ID')
+  if ($FixtureRoot) {
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'STATE_DIRECTORY'
+    Assert-True (![string]::IsNullOrWhiteSpace([string]$FixtureRoot)) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        $script:currentSupervisorInvocationTest `
+        $InvocationIdentifier `
+        'WORKFLOW_CLEANUP_CONTROLLER' `
+        'CONTROLLER_INVOCATION_INPUT' `
+        'STATE_DIRECTORY')
+  }
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $InvocationIdentifier `
+    'WORKFLOW_CLEANUP_CONTROLLER' `
+    'CONTROLLER_PROTOCOL_PARSE' `
+    'PROTOCOL'
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
   $startInfo.UseShellExecute = $false
@@ -1798,10 +1960,22 @@ function Invoke-WorkflowCleanupController(
     $startInfo.ArgumentList.Add($argument)
   }
   if ($FixtureRoot) {
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'STATE_DIRECTORY'
     $startInfo.ArgumentList.Add('-FixtureRoot')
     $startInfo.ArgumentList.Add($FixtureRoot)
   }
   if ($FixtureEarlyInitializationChild) {
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'STATE_DIRECTORY'
     $startInfo.ArgumentList.Add('-FixtureEarlyInitializationChild')
   }
   if ($FixtureResultEmissionFailure) {
@@ -1822,8 +1996,20 @@ function Invoke-WorkflowCleanupController(
       [Globalization.CultureInfo]::InvariantCulture,
       [ref]$invocationTimeout
     ) -or $invocationTimeout -lt 1 -or $invocationTimeout -gt 40000) {
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'STATE_DIRECTORY'
     throw 'workflow cleanup invocation timeout is invalid'
   }
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $InvocationIdentifier `
+    'WORKFLOW_CLEANUP_CONTROLLER' `
+    'CONTROLLER_PROTOCOL_PARSE' `
+    'PROTOCOL'
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
   $job = $null
@@ -2419,6 +2605,97 @@ function Test-SupervisorInvocationAttributionTotality {
         CaseId='CALLSITE_PROCESS_TREE_ASSERTION'
         Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
         Phase='PROCESS_STATE'; Callsite='PROCESS_TREE_ASSERTION'; Field='PROCESS_TREE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_INPUT_MANIFEST'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_INVOCATION_INPUT'; Field='MANIFEST_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_INPUT_RUN_ID'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_INVOCATION_INPUT'; Field='RUN_ID'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_INPUT_STATE_DIRECTORY'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_INVOCATION_INPUT'; Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_PROTOCOL_PARSE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_PROTOCOL_PARSE'; Field='PROTOCOL'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_RESULT_EXIT_CODE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_RESULT_FIELD'; Field='EXIT_CODE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_RESULT_REPORTED_EXIT_CODE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_RESULT_FIELD'; Field='REPORTED_EXIT_CODE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_RESULT_RESULT'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_RESULT_FIELD'; Field='RESULT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_PROCESS_STATE_PATH'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='PROCESS_STATE'
+        Callsite='EARLY_PROCESS_STATE_PATH'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_PROCESS_STATE_READ'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='PROCESS_STATE'
+        Callsite='EARLY_PROCESS_STATE_READ'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_WORKER_PID'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='PROCESS_STATE'
+        Callsite='EARLY_PROCESS_STATE_READ'; Field='WORKER_PID'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_DESCENDANT_PID'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='PROCESS_STATE'
+        Callsite='EARLY_PROCESS_STATE_READ'; Field='DESCENDANT_PID'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_PROCESS_TREE_ASSERTION'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='PROCESS_STATE'
+        Callsite='PROCESS_TREE_ASSERTION'; Field='PROCESS_TREE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_MANIFEST_PRESERVATION'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='MANIFEST_ASSERTION'
+        Callsite='MANIFEST_PRESERVATION'; Field='MANIFEST_PATH'
       },
       [PSCustomObject]@{
         CaseId='CALLSITE_REPLACEMENT_SURVIVAL_READ'
@@ -3684,19 +3961,82 @@ function Test-PreExistingCleanupOwnership {
           )) 'controller parameter failure was not caught and phase-classified'
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'controller parameter failure discarded authenticated recovery authority'
-      $earlyInitializationTimeout = Invoke-WorkflowCleanupController `
-        'EARLY_INITIALIZATION_TIMEOUT' $workflowManifest $workflowRunId `
-        $workflowStateDirectory 5000 $true
-      Assert-True ($earlyInitializationTimeout.ExitCode -eq 124 -and
-          $earlyInitializationTimeout.ReportedExitCode -eq 124 -and
-          $earlyInitializationTimeout.Result -ceq 'TIMED_OUT') `
-        'early-initialization child cleanup did not report its fixed timeout'
-      $earlyInitializationState = Get-Content -LiteralPath `
-        (Join-Path $workflowStateDirectory 'workflow-cleanup-early-processes.json') `
-        -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
-      Assert-ProcessTreeGone $earlyInitializationState
-      Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
-        'early-initialization timeout discarded authenticated recovery authority'
+      $earlyInitializationTimeout = Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_PROTOCOL_PARSE' `
+        -Field 'PROTOCOL' `
+        -Action {
+          Invoke-WorkflowCleanupController `
+            'EARLY_INITIALIZATION_TIMEOUT' $workflowManifest $workflowRunId `
+            $workflowStateDirectory 5000 $true
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_RESULT_FIELD' `
+        -Field 'EXIT_CODE' `
+        -Action {
+          Assert-True ($earlyInitializationTimeout.ExitCode -eq 124) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'EARLY_INITIALIZATION_TIMEOUT' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'EXIT_CODE')
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_RESULT_FIELD' `
+        -Field 'REPORTED_EXIT_CODE' `
+        -Action {
+          Assert-True ($earlyInitializationTimeout.ReportedExitCode -eq 124) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'EARLY_INITIALIZATION_TIMEOUT' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'REPORTED_EXIT_CODE')
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_RESULT_FIELD' `
+        -Field 'RESULT' `
+        -Action {
+          Assert-True ($earlyInitializationTimeout.Result -ceq 'TIMED_OUT') `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'EARLY_INITIALIZATION_TIMEOUT' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'RESULT')
+        }
+      $earlyInitializationState = Read-EarlyWorkflowCleanupProcessState `
+        'EARLY_INITIALIZATION_TIMEOUT' $workflowStateDirectory
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'PROCESS_STATE' `
+        -Callsite 'PROCESS_TREE_ASSERTION' `
+        -Field 'PROCESS_TREE' `
+        -Action {
+          Assert-ProcessTreeGone $earlyInitializationState
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'MANIFEST_ASSERTION' `
+        -Callsite 'MANIFEST_PRESERVATION' `
+        -Field 'MANIFEST_PATH' `
+        -Action {
+          Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'EARLY_INITIALIZATION_TIMEOUT' `
+              'MANIFEST_ASSERTION' `
+              'MANIFEST_PRESERVATION' `
+              'MANIFEST_PATH')
+        }
       $timedOutCleanup = Invoke-WorkflowCleanupController `
         'CLEANUP_TIMEOUT' $workflowManifest $workflowRunId $workflowStateDirectory 1
       Assert-True ($timedOutCleanup.ExitCode -eq 124 -and

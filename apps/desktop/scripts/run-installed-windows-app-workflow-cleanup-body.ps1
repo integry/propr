@@ -497,6 +497,22 @@ if ($FixtureResultEmissionFailure -and !$FixtureRoot) {
     $outputDrain = [ProPRWorkflowCleanupOutputDrain]::new()
     $outputDrain.Start($cleanupProcess)
     [void]$cleanupReadyEvent.Set()
+    if ($FixtureEarlyInitializationChild) {
+      $controllerPhase = 'PROCESS_WAIT'
+      $controllerLine = 'WAIT'
+      # This fixture's timeout covers cleanup of the published early tree, not
+      # native host cold-start time before the PID state exists.
+      $fixtureEarlyStatePath = Join-Path `
+        $FixtureRoot 'workflow-cleanup-early-processes.json'
+      $fixtureEarlyStateWatch = [Diagnostics.Stopwatch]::StartNew()
+      while (![IO.File]::Exists($fixtureEarlyStatePath)) {
+        if ($cleanupProcess.HasExited) { break }
+        if ($fixtureEarlyStateWatch.ElapsedMilliseconds -ge 15000) {
+          throw 'early initialization fixture did not publish process state'
+        }
+        [Threading.Thread]::Sleep(25)
+      }
+    }
   } catch {
     try {
       $cleanupTreeZeroVerified = $cleanupJob.TerminateAndWait(
