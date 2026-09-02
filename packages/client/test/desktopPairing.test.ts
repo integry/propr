@@ -100,17 +100,25 @@ describe('desktop instance protocol', () => {
 
   it('bounds discovery headers and body with one deadline and preserves caller cancellation', async () => {
     let headerSignal: AbortSignal | null = null;
+    let resolveLateTimeout!: (response: Response) => void;
     const stalledHeaders = new ProprClient({
       baseUrl: 'https://propr.example.test',
       authentication: { type: 'none' },
       fetch: async (_input, init) => {
         headerSignal = init?.signal ?? null;
-        return new Promise<Response>(() => undefined);
+        return new Promise<Response>(resolve => { resolveLateTimeout = resolve; });
       },
     });
     await assert.rejects(bounded(stalledHeaders.discoverDesktop(20), 500), (error: unknown) =>
       error instanceof ProprClientError && error.kind === 'timeout');
     assert.equal(headerSignal?.aborted, true);
+    let timedOutBodyCancelled = 0;
+    resolveLateTimeout(new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([1])); },
+      cancel() { timedOutBodyCancelled += 1; },
+    })));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(timedOutBodyCancelled, 1);
 
     let bodyCancelled = 0;
     const stalledBody = new ProprClient({
@@ -129,14 +137,22 @@ describe('desktop instance protocol', () => {
     assert.equal(bodyCancelled, 1);
 
     const controller = new AbortController();
+    let resolveLateCancellation!: (response: Response) => void;
     const cancelled = new ProprClient({
       baseUrl: 'https://propr.example.test',
       authentication: { type: 'none' },
-      fetch: async () => new Promise<Response>(() => undefined),
+      fetch: async () => new Promise<Response>(resolve => { resolveLateCancellation = resolve; }),
     }).discoverDesktop(1_000, controller.signal);
     controller.abort('caller cancelled');
     await assert.rejects(bounded(cancelled, 500), (error: unknown) =>
       error instanceof ProprClientError && error.kind === 'aborted');
+    let abortedBodyCancelled = 0;
+    resolveLateCancellation(new Response(new ReadableStream<Uint8Array>({
+      start(streamController) { streamController.enqueue(new Uint8Array([1])); },
+      cancel() { abortedBodyCancelled += 1; },
+    })));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(abortedBodyCancelled, 1);
   });
 
   it('discovers capabilities, opens approval, and polls to a single opaque token', async () => {
