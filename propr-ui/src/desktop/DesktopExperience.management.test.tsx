@@ -17,14 +17,38 @@ describe('DesktopExperience profile management', () => {
 
   afterEach(() => vi.restoreAllMocks());
 
-  it('opens instance management with the desktop shortcut and exposes connection status', async () => {
-    const adapters = adaptersFor([localProfile], localProfile.id);
+  it('keeps Ctrl+, Cmd+, and reconnect immediately usable across connected-state rerenders with one listener', async () => {
+    const reconnect = deferred<DesktopConnectionResult>();
+    const probe = vi.fn()
+      .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' })
+      .mockImplementationOnce(() => reconnect.promise);
+    const addEventListener = vi.spyOn(document, 'addEventListener');
+    const removeEventListener = vi.spyOn(document, 'removeEventListener');
+    const adapters = adaptersFor([localProfile], localProfile.id, probe);
     renderConnectedExperience(adapters);
     expect(await screen.findByRole('button', { name: 'Connected: This computer' })).toBeInTheDocument();
+
+    const keyboardRegistrations = () => addEventListener.mock.calls.filter(([type]) => type === 'keydown');
+    const keyboardRemovals = () => removeEventListener.mock.calls.filter(([type]) => type === 'keydown');
+    expect(keyboardRegistrations()).toHaveLength(1);
+    expect(keyboardRemovals()).toHaveLength(0);
+
+    vi.mocked(adapters.connection.probe).mockClear();
+    fireEvent.keyDown(document, { key: 'r', ctrlKey: true, shiftKey: true });
+    expect(adapters.connection.probe).toHaveBeenCalledOnce();
+    expect(screen.getByRole('heading', { name: 'Connecting to This computer' })).toBeInTheDocument();
+    await act(async () => { reconnect.resolve({ status: 'ready', version: '0.8.15' }); });
+    expect(await screen.findByRole('button', { name: 'Connected: This computer' })).toBeInTheDocument();
+    expect(keyboardRegistrations()).toHaveLength(1);
+    expect(keyboardRemovals()).toHaveLength(0);
+
     fireEvent.keyDown(document, { key: ',', ctrlKey: true });
-    expect(await screen.findByRole('dialog', { name: 'Manage instances' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Manage instances' })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    fireEvent.keyDown(document, { key: ',', metaKey: true });
+    expect(screen.getByRole('dialog', { name: 'Manage instances' })).toBeInTheDocument();
   });
 
   it('traps modal focus, makes the app inert, and restores focus to the opener', async () => {

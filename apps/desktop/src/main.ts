@@ -6,7 +6,11 @@ import type { Rectangle } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import type { SetupActions } from '@propr/local-setup';
 import { DeepLinkDelivery } from './deep-link-delivery';
-import { DesktopCredentialService } from './credential-service';
+import {
+  DesktopCredentialService,
+  type DesktopCurrentUserProxyEvidence,
+  type DesktopWebSocketHandshakeEvidence,
+} from './credential-service';
 import { createDesktopLocalHost } from './desktop-host';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
@@ -34,7 +38,23 @@ import {
 import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
-import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
+import {
+  createPackagedSmokeEvidenceSink,
+  PACKAGED_SMOKE_CURRENT_USER_EVIDENCE_LIMIT,
+  PACKAGED_SMOKE_HANDSHAKE_EVIDENCE_LIMIT,
+  type PackagedSmokeCurrentUserEvidenceBuffer,
+  type PackagedSmokeHandshakeEvidenceBuffer,
+} from './smoke-test-evidence';
+import {
+  authorizePackagedAcceptanceTest,
+  packagedAcceptancePairingTiming,
+} from './acceptance-test-authorization';
+import { registerPackagedAcceptanceZoomIpc } from './acceptance-zoom';
+import { AcceptanceSetupController } from './acceptance-setup-controller';
+import {
+  configureDesktopSessionSecurity,
+  type DesktopNetworkPermissionEvidence,
+} from './session-security';
 import {
   createBrowserWindowOptions,
   MINIMUM_BROWSER_WINDOW_SIZE,
@@ -51,8 +71,16 @@ const PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_windo
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 let packagedSmokeUserDataDirectory: string | null = null;
+let packagedAcceptanceUserDataDirectory: string | null = null;
 let packagedSmokeEvidence: ReturnType<typeof createPackagedSmokeEvidenceSink> = null;
 try {
+  packagedAcceptanceUserDataDirectory = authorizePackagedAcceptanceTest({
+    argv: process.argv,
+    defaultUserDataDirectory: join(app.getPath('appData'), app.name),
+    environmentTriggered: process.env.PROPR_DESKTOP_ACCEPTANCE_TEST === '1',
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+  });
   packagedSmokeUserDataDirectory = authorizePackagedSmokeTest({
     argv: process.argv,
     defaultUserDataDirectory: join(app.getPath('appData'), app.name),
@@ -69,10 +97,28 @@ try {
     packagedSmokeEvidence = createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory);
     packagedSmokeEvidence?.write('desktop.smoke.authorized');
   }
+  if (packagedAcceptanceUserDataDirectory) {
+    if (packagedSmokeUserDataDirectory) throw new Error('Desktop test modes are mutually exclusive');
+    const stats = lstatSync(packagedAcceptanceUserDataDirectory);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error('Packaged desktop acceptance --user-data-dir must be an existing non-link directory');
+    }
+    app.setPath('userData', packagedAcceptanceUserDataDirectory);
+  }
 } catch {
   process.exit(1);
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
+const packagedAcceptanceTest = packagedAcceptanceUserDataDirectory !== null;
+const packagedSmokeHandshakeEvidence: PackagedSmokeHandshakeEvidenceBuffer = {
+  records: [],
+  overflowed: false,
+};
+const packagedSmokeCurrentUserEvidence: PackagedSmokeCurrentUserEvidenceBuffer = {
+  records: [],
+  overflowed: false,
+};
+const acceptancePairingTiming = packagedAcceptancePairingTiming(packagedAcceptanceUserDataDirectory);
 const transportSmoke = packagedTransportSmoke(packagedSmokeTest);
 const inertSetupActions = new Proxy({} as SetupActions, {
   get() {
@@ -87,7 +133,7 @@ const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
 );
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
-let setupController: DesktopSetupController | null = null;
+let setupController: DesktopSetupController | AcceptanceSetupController | null = null;
 const operationCoordinator = new DesktopOperationCoordinator();
 
 if (process.platform === 'win32') {
@@ -127,41 +173,6 @@ const registerProtocolClient = (): void => {
 
 const deliverDeepLink = (value: string): void => {
   deepLinkDelivery.deliver(value);
-};
-
-const configureSessionSecurity = (credentials: DesktopCredentialService): {
-  close(): void;
-  dispose(): void;
-} => {
-  const desktopSession = session.defaultSession;
-  desktopSession.setPermissionCheckHandler(() => false);
-  desktopSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    callback(credentials.prepareRequest(details.url, details.requestHeaders, {
-      method: details.method,
-      resourceType: details.resourceType,
-    }));
-  });
-  desktopSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...credentials.sanitizeResponseHeaders(details.url, details.responseHeaders ?? {}),
-        'Content-Security-Policy': [rendererContentSecurityPolicy(!app.isPackaged)],
-      },
-    });
-  });
-  return {
-    close() {
-      desktopSession.webRequest.onBeforeSendHeaders((_details, callback) => callback({ cancel: true }));
-      desktopSession.webRequest.onHeadersReceived((_details, callback) => callback({ cancel: true }));
-    },
-    dispose() {
-      desktopSession.setPermissionCheckHandler(null);
-      desktopSession.setPermissionRequestHandler(null);
-      desktopSession.webRequest.onBeforeSendHeaders(null);
-      desktopSession.webRequest.onHeadersReceived(null);
-    },
-  };
 };
 
 const configurePackagedRendererProtocol = (): (() => void) => {
@@ -291,6 +302,12 @@ const createMainWindow = async (smoke: PackagedTransportSmoke | null = null): Pr
   const window = new BrowserWindow(
     createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged, workArea),
   );
+  const disposeAcceptanceZoomIpc = registerPackagedAcceptanceZoomIpc({
+    authorized: packagedAcceptanceTest,
+    ipcMain,
+    webContents: window.webContents,
+  });
+  window.once('closed', disposeAcceptanceZoomIpc);
   const readyToShow = new Promise<void>(resolveReady => window.once('ready-to-show', resolveReady));
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -451,13 +468,52 @@ if (!hasSingleInstanceLock) {
     const credentials = new DesktopCredentialService({
       profiles,
       fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
-      openExternal: async url => { await shell.openExternal(url); },
+      openExternal: async url => {
+        if (packagedAcceptanceTest) return;
+        await shell.openExternal(url);
+      },
       clientName: `ProPR Desktop (${process.platform})`,
       reportRevocationFailure: diagnostic => {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
       },
+      ...(packagedAcceptanceTest ? {
+        reportWebSocketHandshake: (evidence: DesktopWebSocketHandshakeEvidence) => {
+          log('info', 'desktop.acceptance.websocket_handshake', { ...evidence });
+        },
+        reportCurrentUserValidation: (evidence: DesktopCurrentUserProxyEvidence) => {
+          log('info', 'desktop.acceptance.current_user_proxy', { ...evidence });
+        },
+      } : {}),
+      ...(packagedSmokeTest ? {
+        reportWebSocketHandshake: (evidence: DesktopWebSocketHandshakeEvidence) => {
+          if (packagedSmokeHandshakeEvidence.records.length >= PACKAGED_SMOKE_HANDSHAKE_EVIDENCE_LIMIT) {
+            packagedSmokeHandshakeEvidence.overflowed = true;
+            return;
+          }
+          packagedSmokeHandshakeEvidence.records.push(evidence);
+        },
+        reportCurrentUserValidation: (evidence: DesktopCurrentUserProxyEvidence) => {
+          if (packagedSmokeCurrentUserEvidence.records.length >= PACKAGED_SMOKE_CURRENT_USER_EVIDENCE_LIMIT) {
+            packagedSmokeCurrentUserEvidence.overflowed = true;
+            return;
+          }
+          packagedSmokeCurrentUserEvidence.records.push(evidence);
+        },
+      } : {}),
+      ...(acceptancePairingTiming ? { pairingTiming: acceptancePairingTiming } : {}),
     });
-    const sessionSecurity = configureSessionSecurity(credentials);
+    const sessionSecurity = configureDesktopSessionSecurity({
+      contentSecurityPolicy: () => rendererContentSecurityPolicy(!app.isPackaged),
+      credentials,
+      desktopSession: session.defaultSession,
+      getMainRenderer: () => mainWindow?.webContents ?? null,
+      isTrustedRendererUrl: value => isTrustedRendererUrl(value, devServerUrl, packagedRendererUrl),
+      ...(packagedAcceptanceTest ? {
+        reportNetworkPermissionDecision: (evidence: DesktopNetworkPermissionEvidence) => {
+          log('info', 'desktop.acceptance.network_permission', { ...evidence });
+        },
+      } : {}),
+    });
     const credentialInitialization = await credentials.initialize();
     if (credentialInitialization.status === 'degraded') {
       log('warn', 'desktop.credential_revocation.startup_degraded', {
@@ -465,14 +521,24 @@ if (!hasSingleInstanceLock) {
       });
     }
     const defaultRootDir = join(app.getPath('userData'), 'desktop', 'local-stack');
-    const localHost = process.platform === 'linux' && !packagedSmokeTest
+    const localHost = process.platform === 'linux' && !packagedSmokeTest && !packagedAcceptanceTest
       ? await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined, defaultRootDir, app.getPath('userData'))
       : null;
     const lifecycle = new LocalLifecycleController(
       localHost?.lifecycle,
       (event, fields) => log('error', event, fields),
     );
-    setupController = new DesktopSetupController({
+    const emitSetupSnapshot = (snapshot: import('./shared/contract').DesktopSetupSnapshot) => {
+      const target = mainWindow;
+      if (target && !target.isDestroyed()) target.webContents.send(IPC_CHANNELS.setupProgress, snapshot);
+    };
+    setupController = packagedAcceptanceTest
+      ? new AcceptanceSetupController({
+          rootDir: defaultRootDir,
+          scenario: process.env.PROPR_DESKTOP_ACCEPTANCE_SCENARIO,
+          emit: emitSetupSnapshot,
+        })
+      : new DesktopSetupController({
       actions: localHost?.actions ?? inertSetupActions,
       platform: packagedSmokeTest ? 'darwin' : process.platform,
       appDataDir: app.getPath('userData'),
@@ -504,10 +570,7 @@ if (!hasSingleInstanceLock) {
           lastConnectedAt: saved.updatedAt,
         };
       },
-      emit(snapshot) {
-        const target = mainWindow;
-        if (target && !target.isDestroyed()) target.webContents.send(IPC_CHANNELS.setupProgress, snapshot);
-      },
+      emit: emitSetupSnapshot,
       diagnose(event, fields) { log('error', event, fields); },
     });
     const registeredIpc = registerIpcHandlers({
@@ -522,7 +585,10 @@ if (!hasSingleInstanceLock) {
       devServerUrl,
       packagedRendererUrl,
       coordinator: operationCoordinator,
-      openExternal: async url => { await shell.openExternal(url); },
+      openExternal: async url => {
+        if (packagedAcceptanceTest) return;
+        await shell.openExternal(url);
+      },
     });
 
     const shutdownLifecycle = transportSmoke?.shutdownMode === 'forced-timeout'
@@ -552,6 +618,8 @@ if (!hasSingleInstanceLock) {
         credentials,
         desktopSession: session.defaultSession,
         smoke: transportSmoke,
+        handshakeEvidence: packagedSmokeHandshakeEvidence,
+        currentUserEvidence: packagedSmokeCurrentUserEvidence,
         log: (event, fields) => log('info', event, fields),
       });
     }
@@ -571,7 +639,7 @@ if (!hasSingleInstanceLock) {
           windowsSignerPins: __PROPR_DESKTOP_WINDOWS_SIGNER_PINS__,
         }
       : undefined;
-    if (app.isPackaged && process.platform !== 'win32' && updateConfig && !packagedSmokeTest) {
+    if (app.isPackaged && process.platform !== 'win32' && updateConfig && !packagedSmokeTest && !packagedAcceptanceTest) {
       const runUpdateCheck = () => {
         void checkForSignedUpdates({
           config: updateConfig,

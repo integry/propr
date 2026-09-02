@@ -18,12 +18,14 @@ import {
   createSmokeChildEnvironment,
   removePrivateSmokeProfile,
 } from './packaged-smoke-support.mjs';
+import { classifyCurrentUserRequestShape } from './packaged-acceptance-current-user.mjs';
 
 const READY_EVENT = 'desktop.renderer.ready';
 const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
 const PROFILE_API_PROOF = 'desktop.renderer.profile_api.ready';
 const MVP_FLOWS_PROOF = 'desktop.renderer.mvp_flows.ready';
 const TRANSPORT_PROOF = 'desktop.renderer.transport_smoke.ready';
+const CURRENT_USER_BOUNDARY_PROOF = 'desktop.renderer.transport_smoke.current_user';
 const LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_window.ready';
 const MAIN_PROCESS_ERROR_MARKERS = [
@@ -49,6 +51,20 @@ const parseEventLayout = (output, expectedEvent) => {
     }
   }
   return undefined;
+};
+
+const parseEventRecords = (output, expectedEvent) => {
+  const records = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.includes(expectedEvent)) continue;
+    try {
+      const record = JSON.parse(line.slice(line.indexOf('{')));
+      if (record.event === expectedEvent) records.push(record);
+    } catch {
+      // Chromium may emit unrelated non-JSON diagnostics containing an event name.
+    }
+  }
+  return records;
 };
 
 await access(binaryPath);
@@ -109,10 +125,32 @@ const discovery = JSON.stringify({
     socketIoBearerAuthentication: true,
   },
 });
+const currentUser = JSON.stringify({
+  id: 'packaged-smoke-user',
+  login: 'packaged-smoke',
+  username: 'packaged-smoke',
+  displayName: 'Packaged Smoke',
+  email: null,
+  avatarUrl: null,
+  role: 'admin',
+  permissions: [
+    'instance.manage_agents',
+    'instance.manage_members',
+    'instance.manage_runtime',
+    'instance.manage_settings',
+  ],
+  authorizationSource: 'local',
+});
 const requests = [];
 const fixtures = [];
 const listenTransportFixture = async name => {
+  const socketBoundary = { authenticationAttempts: 0, rejectedAuthenticationAttempts: 0, connections: 0 };
   const server = createServer((request, response) => {
+    const currentUserShape = classifyCurrentUserRequestShape(
+      request.method,
+      request.url,
+      request.headers.origin,
+    );
     const record = {
       fixture: name,
       method: request.method,
@@ -121,6 +159,8 @@ const listenTransportFixture = async name => {
       cookie: request.headers.cookie ?? null,
       origin: request.headers.origin ?? null,
       socketIo: false,
+      currentUserSource: currentUserShape?.source ?? null,
+      currentUserScopeGeneration: currentUserShape?.scopeGeneration ?? null,
     };
     requests.push(record);
     if (request.method === 'OPTIONS') {
@@ -148,10 +188,10 @@ const listenTransportFixture = async name => {
       response.end();
       return;
     }
-    if ((request.url === '/api/auth/user' || request.url === '/api/smoke/rest')
+    if ((currentUserShape !== null || request.url === '/api/smoke/rest')
       && /^Bearer propr_it_[A-Za-z0-9_-]{43}$/.test(record.authorization ?? '')) {
       response.writeHead(200, { ...corsHeaders, 'Set-Cookie': 'remote=must-not-persist; HttpOnly; SameSite=None' });
-      response.end(request.url === '/api/auth/user' ? '{"username":"packaged-smoke"}' : '{"ok":true}');
+      response.end(currentUserShape !== null ? currentUser : '{"ok":true}');
       return;
     }
     response.writeHead(401, corsHeaders);
@@ -161,9 +201,9 @@ const listenTransportFixture = async name => {
     path: '/socket.io/', transports: ['websocket'], cors: { origin: DESKTOP_RENDERER_ORIGIN, credentials: false },
   });
   io.of('/').use((socket, next) => {
+    socketBoundary.authenticationAttempts += 1;
     const queryScopes = new URL(socket.handshake.url, 'http://fixture.invalid').searchParams
       .getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
-    const activationScope = socket.handshake.auth?.[DESKTOP_TRANSPORT_SCOPE_QUERY];
     const record = {
       fixture: name,
       method: 'SOCKET.IO',
@@ -177,7 +217,9 @@ const listenTransportFixture = async name => {
     };
     requests.push(record);
     if (!/^Bearer propr_it_[A-Za-z0-9_-]{43}$/.test(record.authorization ?? '')
-      || queryScopes.length !== 1 || typeof activationScope !== 'string' || activationScope !== queryScopes[0]) {
+      || queryScopes.length !== 1 || !/^[A-Za-z0-9_-]{22}$/.test(queryScopes[0])
+      || Object.keys(socket.handshake.auth).length !== 0) {
+      socketBoundary.rejectedAuthenticationAttempts += 1;
       const error = new Error(INVALID_INSTANCE_TOKEN);
       error.data = { code: INVALID_INSTANCE_TOKEN };
       next(error);
@@ -185,12 +227,15 @@ const listenTransportFixture = async name => {
     }
     next();
   });
-  io.of('/').on('connection', socket => socket.emit('packaged-smoke:connected', { ok: true }));
+  io.of('/').on('connection', socket => {
+    socketBoundary.connections += 1;
+    socket.emit('packaged-smoke:connected', { ok: true });
+  });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error(`Packaged ${name} fixture did not bind`);
-  const fixture = { server, io, origin: `http://127.0.0.1:${address.port}` };
+  const fixture = { server, io, origin: `http://127.0.0.1:${address.port}`, socketBoundary };
   fixtures.push(fixture);
   return fixture;
 };
@@ -269,6 +314,7 @@ const shutdownSteps = [
 const launch = async mode => {
   const smokeProfile = await createPrivateSmokeProfile();
   const requestStart = requests.length;
+  const socketBoundaryStart = new Map(fixtures.map(fixture => [fixture, { ...fixture.socketBoundary }]));
   let output = '';
   try {
     const launchArguments = [
@@ -323,6 +369,41 @@ const launch = async mode => {
     if (!output.includes(`"storageBackend":"${expectedBackend}"`)) {
       throw new Error(`Packaged desktop did not use ${expectedBackend} production credential protection`);
     }
+    const staleBoundaryRecords = parseEventRecords(output, 'desktop.transport_smoke.stale_socket_boundary');
+    if (staleBoundaryRecords.length !== 1) {
+      throw new Error(`Packaged ${mode} smoke missed exact main stale-socket boundary evidence`);
+    }
+    const staleBoundary = staleBoundaryRecords[0];
+    if (staleBoundary.schemaVersion !== 1 || staleBoundary.mainAttempts !== 2
+      || staleBoundary.staleRejectedByMain !== true || staleBoundary.staleRejectionCategory !== 'stale-scope'
+      || staleBoundary.freshAcceptedByMain !== true || staleBoundary.exactPath !== true
+      || staleBoundary.exactTransport !== true || staleBoundary.exactResource !== true
+      || staleBoundary.queryCount !== 1 || staleBoundary.activeBindingPresent !== true
+      || staleBoundary.profileGenerationCurrent !== true || staleBoundary.originEqualsActive !== true
+      || staleBoundary.rendererBearerPresent !== false || staleBoundary.rendererCookiePresent !== false
+      || staleBoundary.staleOutboundBearerPresent !== false || staleBoundary.staleBearerMainInjected !== false
+      || staleBoundary.freshBearerMainInjected !== true) {
+      throw new Error(`Packaged ${mode} smoke main stale-socket boundary evidence was invalid`);
+    }
+    const currentUserBoundaryRecords = parseEventRecords(output, CURRENT_USER_BOUNDARY_PROOF);
+    if (currentUserBoundaryRecords.length !== 1) {
+      throw new Error(`Packaged ${mode} smoke missed exact current-user main-boundary evidence`);
+    }
+    const currentUserBoundary = currentUserBoundaryRecords[0];
+    if (currentUserBoundary.schemaVersion !== 2 || currentUserBoundary.rendererValidations !== 3
+      || JSON.stringify(currentUserBoundary.rendererScopeGenerations) !== '[1,2,3]'
+      || currentUserBoundary.exactGet !== true || currentUserBoundary.scopeHeaderCount !== 1
+      || currentUserBoundary.activeBindingPresent !== true
+      || currentUserBoundary.profileGenerationCurrent !== true
+      || currentUserBoundary.scopeEqualsActive !== true
+      || currentUserBoundary.originEqualsActive !== true
+      || currentUserBoundary.rendererBearerPresent !== false
+      || currentUserBoundary.rendererCookiePresent !== false
+      || currentUserBoundary.outboundBearerPresent !== true
+      || currentUserBoundary.bearerMainInjected !== true
+      || currentUserBoundary.accepted !== true) {
+      throw new Error(`Packaged ${mode} smoke current-user main-boundary evidence was invalid`);
+    }
     let previousStep = -1;
     for (const step of shutdownSteps) {
       const marker = `"step":"${step}"`;
@@ -346,21 +427,84 @@ const launch = async mode => {
     const authenticated = runRequests.filter(request => request.authorization?.startsWith('Bearer propr_it_'));
     const secrets = [...new Set(authenticated.map(request => request.authorization.slice('Bearer '.length)))];
     if (secrets.length !== 2) throw new Error(`Expected two ${mode} activation credentials, observed ${secrets.length}`);
+    const rendererScopeGenerations = [];
     for (const name of ['first', 'second']) {
+      const fixture = name === 'first' ? first : second;
+      const boundaryStart = socketBoundaryStart.get(fixture);
+      const fixtureBoundaryAttempts = boundaryStart
+        ? fixture.socketBoundary.authenticationAttempts - boundaryStart.authenticationAttempts
+        : -1;
+      const fixtureBoundaryRejections = boundaryStart
+        ? fixture.socketBoundary.rejectedAuthenticationAttempts - boundaryStart.rejectedAuthenticationAttempts
+        : -1;
+      const fixtureBoundaryConnections = boundaryStart
+        ? fixture.socketBoundary.connections - boundaryStart.connections
+        : -1;
+      if (!boundaryStart
+        || fixtureBoundaryAttempts < (name === 'second' ? 2 : 1)
+        || fixtureBoundaryRejections !== 0
+        || fixtureBoundaryConnections !== fixtureBoundaryAttempts) {
+        throw new Error(`Packaged ${mode} ${name} fixture observed an unexpected Socket.IO boundary count`);
+      }
       const fixtureRequests = authenticated.filter(request => request.fixture === name);
+      const currentUserRequests = runRequests.filter(request => {
+        if (request.fixture !== name || request.method === 'OPTIONS') return false;
+        try {
+          return new URL(request.url, 'http://fixture.invalid').pathname === '/api/auth/user';
+        } catch {
+          return false;
+        }
+      });
+      const expectedActivations = name === 'first' ? 2 : 1;
+      const mainCurrentUserRequests = currentUserRequests.filter(request => request.currentUserSource === 'main');
+      const rendererCurrentUserRequests = currentUserRequests.filter(request => request.currentUserSource === 'renderer');
+      rendererScopeGenerations.push(...rendererCurrentUserRequests.map(request => request.currentUserScopeGeneration));
+      const currentUserSequence = currentUserRequests.map(request => request.currentUserSource);
+      const expectedCurrentUserSequence = Array.from(
+        { length: expectedActivations },
+        () => ['main', 'renderer'],
+      ).flat();
       const namespaceConnections = fixtureRequests.filter(request => request.socketIo);
-      if (!fixtureRequests.some(request => request.url === '/api/auth/user')
+      const allNamespaceAttempts = runRequests.filter(request => request.fixture === name && request.socketIo);
+      if (mainCurrentUserRequests.length !== expectedActivations
+        || rendererCurrentUserRequests.length !== expectedActivations
+        || currentUserRequests.some(request => request.currentUserSource === null)
+        || currentUserSequence.some((source, index) => source !== expectedCurrentUserSequence[index])
+        || currentUserRequests.some(request => request.authorization === null || request.cookie !== null)
+        || rendererCurrentUserRequests.some(request => request.origin !== DESKTOP_RENDERER_ORIGIN)
+        || mainCurrentUserRequests.some(request => request.origin === DESKTOP_RENDERER_ORIGIN)
+        || new Set(rendererCurrentUserRequests.map(request => request.currentUserScopeGeneration)).size !== expectedActivations
+        || rendererCurrentUserRequests.some(request => !Number.isSafeInteger(request.currentUserScopeGeneration)
+          || request.currentUserScopeGeneration < 1)
+        || expectedCurrentUserSequence.length !== currentUserSequence.length
         || !fixtureRequests.some(request => request.url === '/api/smoke/rest')
         || namespaceConnections.length < (name === 'second' ? 2 : 1)
+        || allNamespaceAttempts.length !== namespaceConnections.length
+        || allNamespaceAttempts.length !== fixtureBoundaryAttempts
         || namespaceConnections.some(request => request.namespace !== '/' || request.engineProtocol !== 4)) {
         throw new Error(`Packaged ${mode} ${name} fixture missed REST, Engine.IO, namespace auth, or reconnect proof`);
       }
       if (new Set(fixtureRequests.map(request => request.authorization)).size !== 1) {
         throw new Error(`Packaged ${mode} ${name} fixture observed cross-generation bearer use`);
       }
+      if (currentUserRequests.some(request => request.authorization !== fixtureRequests[0]?.authorization)) {
+        throw new Error(`Packaged ${mode} ${name} current-user proof lost main-only bearer custody`);
+      }
+    }
+    if (rendererScopeGenerations.length !== 3
+      || rendererScopeGenerations.some((generation, index) => generation !== index + 1)) {
+      throw new Error(`Packaged ${mode} current-user validation generations were not exact and activation-scoped`);
     }
     if (runRequests.some(request => request.cookie !== null)
-      || runRequests.some(request => secrets.some(secret => request.url?.includes(secret)))) {
+      || runRequests.some(request => secrets.some(secret => {
+        if (request.url?.includes(secret)) return true;
+        try {
+          return [...new URL(request.url, 'http://fixture.invalid').searchParams]
+            .some(([key, value]) => key.includes(secret) || value.includes(secret));
+        } catch {
+          return false;
+        }
+      }))) {
       throw new Error('Packaged renderer transport sent cookies or placed a credential in a URL');
     }
     if (secrets.some(secret => output.includes(secret) || launchArguments.some(argument => argument.includes(secret)))) {

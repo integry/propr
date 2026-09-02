@@ -15,7 +15,8 @@ interface RegisterIpcOptions {
   profiles: ProfileStore;
   credentials: DesktopCredentialService;
   lifecycle: LocalLifecycleController;
-  setup?: DesktopSetupController;
+  setup?: Pick<DesktopSetupController,
+    'status' | 'start' | 'retry' | 'cancel' | 'selectPrivateKey' | 'acquireWebhookSecret'>;
   logger: DesktopLogger;
   desktopSession: Session;
   devServerUrl: string | undefined;

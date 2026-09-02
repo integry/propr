@@ -6,17 +6,15 @@ import {
   handleDesktopAccessCode,
   proprClient,
 } from '../api/apiClient';
+import { getCurrentUser } from '../api/proprApi';
 import { createElectronDesktopAdapters } from './electronAdapters';
+import type { DesktopRendererBridge } from '../../../apps/desktop/src/shared/contract';
 import type { DesktopProfile } from './types';
 
 interface SocketRecord {
   socket: Socket;
   profileId: string;
   transportScope: string;
-}
-
-interface SocketConnectionError extends Error {
-  data?: { code?: unknown };
 }
 
 interface PackagedTransportSmokeHarness {
@@ -29,7 +27,10 @@ interface PackagedTransportSmokeHarness {
   rest(): Promise<void>;
   connectSocket(): Promise<number>;
   reconnectSocket(id: number): Promise<void>;
-  expectSocketRejected(id: number): Promise<void>;
+  expectSocketRejected(id: number): Promise<{
+    transportRejected: true;
+    freshManagerConnected: true;
+  }>;
   disconnectSocket(id: number): void;
   handleStaleInvalidation(profileId: string, transportScope: string): Promise<string>;
   rendererEvidence(): unknown;
@@ -41,7 +42,24 @@ declare global {
   }
 }
 
-const INVALID_INSTANCE_TOKEN = 'INVALID_INSTANCE_TOKEN';
+const rendererSocketOptions = (transportScope: string) => ({
+  transports: ['websocket'] as ['websocket'],
+  forceNew: true,
+  reconnection: true,
+  withCredentials: false,
+  query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: transportScope },
+});
+
+/** Keep the rejected reconnect bound to the immutable scope recorded for that Manager. */
+export const staleReconnectQuery = (
+  recordedTransportScope: string,
+  currentTransportScope: string,
+): Record<string, string> => {
+  if (recordedTransportScope === currentTransportScope) {
+    throw new Error('Packaged stale Socket.IO activation was not rotated');
+  }
+  return { [DESKTOP_TRANSPORT_SCOPE_QUERY]: recordedTransportScope };
+};
 
 const waitForSocket = (socket: Socket, expected: 'connect' | 'connect_error'): Promise<void> =>
   new Promise((resolve, reject) => {
@@ -54,12 +72,10 @@ const waitForSocket = (socket: Socket, expected: 'connect' | 'connect_error'): P
       if (expected === 'connect') resolve();
       else reject(new Error('Stale Socket.IO scope unexpectedly connected'));
     };
-    const failed = (error: SocketConnectionError) => {
+    const failed = () => {
       cleanup();
       if (expected !== 'connect_error') {
-        reject(new Error(`Packaged Socket.IO connection failed: ${error.message}`));
-      } else if (error.message !== INVALID_INSTANCE_TOKEN || error.data?.code !== INVALID_INSTANCE_TOKEN) {
-        reject(new Error('Packaged stale Socket.IO rejection was not INVALID_INSTANCE_TOKEN'));
+        reject(new Error('Packaged Socket.IO connection failed'));
       } else {
         resolve();
       }
@@ -74,12 +90,13 @@ const waitForSocket = (socket: Socket, expected: 'connect' | 'connect_error'): P
   });
 
 /** Packaged-only E2E driver composed from the production renderer adapters. */
-export const installPackagedTransportSmokeHarness = (): void => {
-  const bridge = window.__PROPR_DESKTOP__;
-  if (!bridge) throw new Error('Packaged renderer bridge is unavailable');
+export const createPackagedTransportSmokeHarness = (
+  bridge: DesktopRendererBridge,
+): PackagedTransportSmokeHarness => {
   const adapters = createElectronDesktopAdapters(bridge);
   const sockets = new Map<number, SocketRecord>();
   let nextSocketId = 1;
+  let nextCurrentUserScopeGeneration = 1;
 
   const harness: PackagedTransportSmokeHarness = {
     async activate(profile) {
@@ -93,6 +110,9 @@ export const installPackagedTransportSmokeHarness = (): void => {
         throw new Error('Packaged desktop activation failed');
       }
       adapters.connection.publishActivation(profile, activated);
+      const scopeGeneration = nextCurrentUserScopeGeneration;
+      nextCurrentUserScopeGeneration += 1;
+      await getCurrentUser({ scopeGeneration, activeScopePresent: true });
       return {
         profileId: activated.profileId,
         transportScope: activated.transportScope,
@@ -109,13 +129,7 @@ export const installPackagedTransportSmokeHarness = (): void => {
     async connectSocket() {
       const scope = getDesktopConnectionScope();
       if (!scope) throw new Error('Packaged Socket.IO scope is unavailable');
-      const socket = proprClient.connectSocket({
-        transports: ['websocket'],
-        forceNew: true,
-        reconnection: true,
-        auth: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: scope.transportScope },
-        query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: scope.transportScope },
-      });
+      const socket = proprClient.connectSocket(rendererSocketOptions(scope.transportScope));
       const id = nextSocketId++;
       sockets.set(id, { socket, profileId: scope.profileId, transportScope: scope.transportScope });
       await waitForSocket(socket, 'connect');
@@ -137,7 +151,10 @@ export const installPackagedTransportSmokeHarness = (): void => {
         throw new Error('Packaged stale Socket.IO activation was not rotated');
       }
       record.socket.disconnect();
-      record.socket.io.opts.query = { [DESKTOP_TRANSPORT_SCOPE_QUERY]: currentScope.transportScope };
+      record.socket.io.opts.query = staleReconnectQuery(
+        record.transportScope,
+        currentScope.transportScope,
+      );
       const rejected = waitForSocket(record.socket, 'connect_error');
       try {
         record.socket.connect();
@@ -145,6 +162,16 @@ export const installPackagedTransportSmokeHarness = (): void => {
       } finally {
         record.socket.disconnect();
       }
+
+      // A distinct Manager carrying only the newly activated opaque scope must
+      // still succeed after main rejects the recorded stale scope above.
+      const freshSocket = proprClient.connectSocket(rendererSocketOptions(currentScope.transportScope));
+      try {
+        await waitForSocket(freshSocket, 'connect');
+      } finally {
+        freshSocket.disconnect();
+      }
+      return { transportRejected: true, freshManagerConnected: true };
     },
     disconnectSocket(id) { sockets.get(id)?.socket.disconnect(); },
     handleStaleInvalidation(profileId, transportScope) {
@@ -161,6 +188,13 @@ export const installPackagedTransportSmokeHarness = (): void => {
       };
     },
   };
+  return harness;
+};
+
+export const installPackagedTransportSmokeHarness = (): void => {
+  const bridge = window.__PROPR_DESKTOP__;
+  if (!bridge) throw new Error('Packaged renderer bridge is unavailable');
+  const harness = createPackagedTransportSmokeHarness(bridge);
   Object.defineProperty(window, '__proprPackagedTransportSmoke', {
     configurable: false,
     enumerable: false,

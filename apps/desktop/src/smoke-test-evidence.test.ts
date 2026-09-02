@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   createPackagedSmokeEvidenceSink,
+  validatePackagedCurrentUserBoundaryEvidence,
   PACKAGED_SMOKE_EVIDENCE_EVENTS,
   PACKAGED_SMOKE_EVIDENCE_FILE,
+  validatePackagedStaleSocketBoundaryEvidence,
 } from './smoke-test-evidence';
 
 const withSmokeDirectory = (run: (directory: string) => void): void => {
@@ -46,6 +48,132 @@ describe('packaged smoke evidence', () => {
         { event: 'desktop.renderer.ready' },
       ]);
       assert.doesNotMatch(contents, /timestamp|path|url|error|exception|credential|secret|raw/i);
+
+      const base = {
+        schemaVersion: 1 as const,
+        path: 'socket-io' as const,
+        transport: 'websocket' as const,
+        resource: 'websocket' as const,
+        scopeQueryPresent: true,
+        scopeQueryCount: 1,
+        activeBindingPresent: true,
+        profileGenerationCurrent: true,
+        originEqualsActive: true,
+        rendererBearerPresent: false,
+        rendererCookiePresent: false,
+      };
+      const summary = validatePackagedStaleSocketBoundaryEvidence([
+        {
+          ...base,
+          scopeEqualsActive: false,
+          outboundBearerPresent: false,
+          bearerMainInjected: false,
+          accepted: false,
+          rejectionCategory: 'stale-scope',
+        },
+        {
+          ...base,
+          scopeEqualsActive: true,
+          outboundBearerPresent: true,
+          bearerMainInjected: true,
+          accepted: true,
+          rejectionCategory: 'none',
+        },
+      ], false);
+      assert.deepEqual(summary, {
+        schemaVersion: 1,
+        mainAttempts: 2,
+        staleRejectedByMain: true,
+        staleRejectionCategory: 'stale-scope',
+        freshAcceptedByMain: true,
+        exactPath: true,
+        exactTransport: true,
+        exactResource: true,
+        queryCount: 1,
+        activeBindingPresent: true,
+        profileGenerationCurrent: true,
+        originEqualsActive: true,
+        rendererBearerPresent: false,
+        rendererCookiePresent: false,
+        staleOutboundBearerPresent: false,
+        staleBearerMainInjected: false,
+        freshBearerMainInjected: true,
+      });
+      assert.throws(
+        () => validatePackagedStaleSocketBoundaryEvidence([], false),
+        /main-boundary evidence failed/,
+      );
+      assert.throws(
+        () => validatePackagedStaleSocketBoundaryEvidence([
+          {
+            ...base,
+            scopeEqualsActive: false,
+            outboundBearerPresent: false,
+            bearerMainInjected: false,
+            accepted: false,
+            rejectionCategory: 'stale-scope',
+          },
+          {
+            ...base,
+            scopeEqualsActive: true,
+            outboundBearerPresent: true,
+            bearerMainInjected: true,
+            accepted: true,
+            rejectionCategory: 'none',
+          },
+        ], true),
+        /main-boundary evidence failed/,
+      );
+
+      const currentUserEvidence = {
+        schemaVersion: 2 as const,
+        correlation: 'current-scope-user-validation' as const,
+        requestObserved: true as const,
+        method: 'get' as const,
+        rendererScopeGeneration: 1,
+        scopeGenerationQueryCount: 1 as const,
+        scopeGenerationQueryValid: true,
+        scopeHeaderCount: 1 as const,
+        activeBindingPresent: true,
+        activeScopeGeneration: 0,
+        profileGenerationCurrent: true,
+        scopeEqualsActive: true,
+        originEqualsActive: true,
+        rendererBearerPresent: false,
+        rendererCookiePresent: false,
+        outboundBearerPresent: true,
+        bearerMainInjected: true,
+        accepted: true,
+        rejectionCategory: 'none' as const,
+      };
+      assert.deepEqual(validatePackagedCurrentUserBoundaryEvidence([
+        currentUserEvidence,
+        { ...currentUserEvidence, rendererScopeGeneration: 2, activeScopeGeneration: 1 },
+        { ...currentUserEvidence, rendererScopeGeneration: 3, activeScopeGeneration: 2 },
+      ], false), {
+        schemaVersion: 2,
+        rendererValidations: 3,
+        rendererScopeGenerations: [1, 2, 3],
+        exactGet: true,
+        scopeHeaderCount: 1,
+        activeBindingPresent: true,
+        profileGenerationCurrent: true,
+        scopeEqualsActive: true,
+        originEqualsActive: true,
+        rendererBearerPresent: false,
+        rendererCookiePresent: false,
+        outboundBearerPresent: true,
+        bearerMainInjected: true,
+        accepted: true,
+      });
+      assert.throws(
+        () => validatePackagedCurrentUserBoundaryEvidence([
+          currentUserEvidence,
+          { ...currentUserEvidence, rendererScopeGeneration: 2 },
+          { ...currentUserEvidence, rendererScopeGeneration: 3, rendererBearerPresent: true },
+        ], false),
+        /current-user main-boundary evidence failed/,
+      );
     });
   });
 

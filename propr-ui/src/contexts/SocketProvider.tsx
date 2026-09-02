@@ -10,13 +10,38 @@ import {
   subscribeDesktopConnectionScope,
 } from '../api/apiClient';
 import { isDesktopRuntime } from '../config/runtimeMode';
+import {
+  reportPackagedAcceptanceRendererLifecycle,
+  reportPackagedAcceptanceSocketConnectInvocation,
+  reportPackagedAcceptanceSocketConstructed,
+  reportPackagedAcceptanceSocketConstructionInvocation,
+} from '../desktop/packagedAcceptanceRendererLifecycle';
 
 interface SocketProviderProps {
   children: React.ReactNode;
   disabled?: boolean;
+  disableReasons?: SocketProviderDisableReasons;
 }
 
-export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabled = false }) => {
+export interface SocketProviderDisableReasons {
+  demoModeLoading: boolean;
+  demoMode: boolean;
+  currentUserLoading: boolean;
+  currentUserAbsent: boolean;
+}
+
+const noDisableReasons: SocketProviderDisableReasons = {
+  demoModeLoading: false,
+  demoMode: false,
+  currentUserLoading: false,
+  currentUserAbsent: false,
+};
+
+export const SocketProvider: React.FC<SocketProviderProps> = ({
+  children,
+  disabled = false,
+  disableReasons = noDisableReasons,
+}) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const taskUpdateCallbacksRef = useRef<Set<(payload: TaskUpdatePayload) => void>>(new Set());
@@ -29,9 +54,31 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     getDesktopSocketConfigurationKey,
     getDesktopSocketConfigurationKey,
   );
+  const {
+    demoModeLoading,
+    demoMode,
+    currentUserLoading,
+    currentUserAbsent,
+  } = disableReasons;
+  useEffect(() => {
+    reportPackagedAcceptanceRendererLifecycle('socket-provider-mounted', {
+      socketProviderMounted: true,
+    });
+  }, []);
 
   useEffect(() => {
+    const disableReasonEvidence = {
+      disabledByDemoModeLoading: demoModeLoading,
+      disabledByDemoMode: demoMode,
+      disabledByCurrentUserLoading: currentUserLoading,
+      disabledByCurrentUserAbsent: currentUserAbsent,
+    };
     if (disabled) {
+      reportPackagedAcceptanceRendererLifecycle('socket-effect-disabled', {
+        providerDisabled: true,
+        desktopRuntime: Boolean(isDesktopRuntime()),
+        ...disableReasonEvidence,
+      });
       setSocket(null);
       setIsConnected(false);
       return;
@@ -39,18 +86,38 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
 
     const desktopScope = getDesktopConnectionScope();
     if (isDesktopRuntime() && !desktopScope) {
+      reportPackagedAcceptanceRendererLifecycle('socket-effect-scope-unavailable', {
+        providerDisabled: false,
+        desktopRuntime: true,
+        connectionScope: 'unavailable',
+        ...disableReasonEvidence,
+      });
       setSocket(null);
       setIsConnected(false);
       return;
     }
     setIsConnected(false);
+    reportPackagedAcceptanceRendererLifecycle('socket-effect-ready', {
+      providerDisabled: false,
+      desktopRuntime: Boolean(isDesktopRuntime()),
+      connectionScope: desktopScope ? 'available' : 'unavailable',
+      ...disableReasonEvidence,
+    });
+    reportPackagedAcceptanceSocketConstructionInvocation();
     const newSocket = proprClient.connectSocket({
       transports: ['websocket'],
-      autoConnect: true,
+      autoConnect: false,
       path: '/socket.io/',
       forceNew: true,
-      ...(desktopScope ? { query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope } } : {}),
+      ...(desktopScope ? {
+        // The renderer contributes only the opaque binding query. Browser
+        // cookies and Socket.IO auth payloads are never desktop credentials;
+        // Electron main adds the active bearer to the exact WS upgrade.
+        withCredentials: false,
+        query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope },
+      } : {}),
     });
+    reportPackagedAcceptanceSocketConstructed();
     let disposed = false;
     const isCurrentScope = (): boolean => {
       if (disposed) return false;
@@ -136,6 +203,14 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     newSocket.on(TASK_LIVE_UPDATE, taskLiveUpdated);
 
     setSocket(newSocket);
+    reportPackagedAcceptanceRendererLifecycle('socket-constructed', {
+      providerDisabled: false,
+      desktopRuntime: Boolean(isDesktopRuntime()),
+      connectionScope: desktopScope ? 'available' : 'unavailable',
+      ...disableReasonEvidence,
+    });
+    reportPackagedAcceptanceSocketConnectInvocation();
+    newSocket.connect();
 
     return () => {
       console.log('[SocketContext] Cleaning up socket connection');
@@ -152,7 +227,14 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       newSocket.off(TASK_LIVE_UPDATE, taskLiveUpdated);
       newSocket.disconnect();
     };
-  }, [disabled, socketConfigurationKey]);
+  }, [
+    currentUserAbsent,
+    currentUserLoading,
+    demoMode,
+    demoModeLoading,
+    disabled,
+    socketConfigurationKey,
+  ]);
 
   const subscribeToTask = useCallback((taskId: string) => {
     if (socket && isConnected) {

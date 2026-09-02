@@ -232,6 +232,33 @@ describe('desktop trusted release workflow', () => {
     assert.equal(normalizedFixture, workflow);
   });
 
+  test('gives only the required stock-Chromium axe predecessor the real-browser opt-in', () => {
+    const predecessor = job('renderer-axe-boundary', 'package');
+    const packages = job('package', 'finalize');
+    assert.match(
+      predecessor,
+      /name: Prove stock Chromium existing-target axe boundary[\s\S]*- name: Run focused stock Chromium existing-target axe regressions\n\s+# This required predecessor step exclusively owns the real-browser opt-in\.\n\s+env:\n\s+PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY: '1'\n\s+run: node --test --test-name-pattern='packaged acceptance renderer variants'/,
+    );
+    assert.equal(workflow.match(/^\s+PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY:/gm)?.length, 1);
+    assert.match(packages, /needs: \[validation-version, renderer-axe-boundary\]/);
+    assert.equal(packages.match(platformArchitecturePattern)?.length, 6);
+    assert.match(packages, /npm run desktop:test/);
+    assert.ok(!packages.includes('PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY'));
+  });
+
+  test('runs and uploads fail-closed visual acceptance only from Linux x64 packages', () => {
+    for (const section of [job('package', 'finalize'), job('release-package', 'release-finalize')]) {
+      assert.match(section, /if: matrix\.platform == 'linux' && matrix\.arch == 'x64'[\s\S]*npm run desktop:acceptance/);
+      assert.match(section, /npm run desktop:acceptance:verify/);
+      assert.match(section, /if-no-files-found: error/);
+      assert.match(section, /path: desktop-acceptance-artifacts/);
+      assert.match(section, /dbus-run-session[\s\S]*gnome-keyring-daemon[\s\S]*xvfb-run/);
+    }
+    assert.equal(workflow.match(/npm run desktop:acceptance$/gm)?.length, 2);
+    assert.equal(workflow.match(/npm run desktop:acceptance:verify/g)?.length, 2);
+    assert.equal(workflow.match(/path: desktop-acceptance-artifacts/g)?.length, 2);
+  });
+
   test('runs the native DMG layout suite on both macOS architectures', () => {
     for (const [jobName, section] of [
       ['unsigned validation', job('package', 'finalize')],

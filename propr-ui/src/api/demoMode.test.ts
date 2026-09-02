@@ -4,6 +4,7 @@ import {
   apiFetch,
   CommittedConfigWriteError,
   getDemoModeStatus,
+  getCurrentUser,
   handleApiResponse,
   handleDesktopAccessCode,
   INSTANCE_AUTHORIZATION_CHANGED_EVENT,
@@ -229,6 +230,60 @@ describe('demo mode API helpers', () => {
     await apiFetch('/api/auth/user', { credentials: 'include' });
 
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('preserves hosted current-user cache bypass without a desktop query or scope header', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'user-1',
+      login: 'operator',
+      username: 'operator',
+      displayName: 'Operations',
+      email: null,
+      avatarUrl: null,
+      role: 'admin',
+      permissions: ['instance.manage_settings'],
+      authorizationSource: 'local',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    await getCurrentUser();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [input, init] = fetchMock.mock.calls[0];
+    expect(input).toBe('/api/auth/user');
+    expect(init).toEqual({ credentials: 'include', cache: 'no-store' });
+    expect(new URLSearchParams(String(input).split('?')[1])).toEqual(new URLSearchParams());
+    expect(new Headers(init?.headers).has('X-ProPR-Desktop-Transport-Scope')).toBe(false);
+  });
+
+  it('sends scoped current-user GETs without browser cache-control inputs', async () => {
+    setApiBaseUrl('https://example.test');
+    setDesktopConnectionScope({
+      bridge: {} as never,
+      profileId: 'profile-a',
+      transportScope: 'SSSSSSSSSSSSSSSSSSSSSS',
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'user-1',
+      login: 'operator',
+      username: 'operator',
+      displayName: 'Operations',
+      email: null,
+      avatarUrl: null,
+      role: 'admin',
+      permissions: ['instance.manage_settings'],
+      authorizationSource: 'local',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    await getCurrentUser({ scopeGeneration: 7, activeScopePresent: true });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [input, init] = fetchMock.mock.calls[0];
+    expect(input).toBe('https://example.test/api/auth/user?proprDesktopScopeGeneration=7');
+    expect(init?.cache).toBeUndefined();
+    const headers = new Headers(init?.headers);
+    expect(headers.get('X-ProPR-Desktop-Transport-Scope')).toBe('SSSSSSSSSSSSSSSSSSSSSS');
+    expect(headers.has('Cache-Control')).toBe(false);
+    expect(headers.has('Pragma')).toBe(false);
   });
 
   it('converts demo read-only 405 responses into a clear error', async () => {

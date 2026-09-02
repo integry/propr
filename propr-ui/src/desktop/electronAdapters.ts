@@ -2,6 +2,7 @@ import { normalizeApiBaseUrl } from '@propr/client';
 import type { DesktopRendererBridge } from '../../../apps/desktop/src/shared/contract';
 import { getDesktopConnectionScope, setDesktopConnectionScope } from '../api/apiClient';
 import type { DesktopAdapters } from './types';
+import { reportPackagedAcceptanceRendererLifecycle } from './packagedAcceptanceRendererLifecycle';
 
 const snapshotStorage = (storage: Storage): [string, string][] => {
   const snapshot: [string, string][] = [];
@@ -127,6 +128,10 @@ export const createElectronDesktopAdapters = (bridge: DesktopRendererBridge): De
           profileId: result.profileId,
           transportScope: result.transportScope,
         }, profile.baseUrl);
+        reportPackagedAcceptanceRendererLifecycle('profile-activation-published', {
+          profileActivationPublished: true,
+          connectionScope: 'available',
+        });
         publishedProfile = {
           id: profile.id,
           origin: normalizeApiBaseUrl(profile.baseUrl),

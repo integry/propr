@@ -5,6 +5,12 @@ import type { DesktopCredentialService } from './credential-service';
 import { clearDesktopInstanceCookies } from './desktop-session';
 import type { ProfileStore } from './profile-store';
 import { normalizeApiBaseUrl } from './security';
+import {
+  validatePackagedCurrentUserBoundaryEvidence,
+  validatePackagedStaleSocketBoundaryEvidence,
+  type PackagedSmokeCurrentUserEvidenceBuffer,
+  type PackagedSmokeHandshakeEvidenceBuffer,
+} from './smoke-test-evidence';
 
 export interface PackagedTransportSmoke {
   firstOrigin: string;
@@ -40,6 +46,8 @@ interface RunPackagedTransportSmokeOptions {
   credentials: DesktopCredentialService;
   desktopSession: Session;
   smoke: PackagedTransportSmoke;
+  handshakeEvidence: PackagedSmokeHandshakeEvidenceBuffer;
+  currentUserEvidence: PackagedSmokeCurrentUserEvidenceBuffer;
   log(event: string, fields: Record<string, unknown>): void;
 }
 
@@ -50,6 +58,8 @@ export const runPackagedTransportSmoke = async ({
   credentials,
   desktopSession,
   smoke,
+  handshakeEvidence,
+  currentUserEvidence,
   log,
 }: RunPackagedTransportSmokeOptions): Promise<void> => {
   const profileId = 'packaged-transport-smoke';
@@ -59,6 +69,15 @@ export const runPackagedTransportSmoke = async ({
   if (!security.available || security.backend === 'basic_text') {
     throw new Error('Packaged transport smoke requires the production OS credential backend');
   }
+  const waitForCurrentUserEvidence = async (expected: number): Promise<void> => {
+    const deadline = Date.now() + 5_000;
+    while (currentUserEvidence.records.length < expected && Date.now() < deadline) {
+      await new Promise(resolveWait => setTimeout(resolveWait, 20));
+    }
+    if (currentUserEvidence.records.length !== expected || currentUserEvidence.overflowed) {
+      throw new Error('Packaged current-user main-boundary evidence count was invalid');
+    }
+  };
   const profileA = await profiles.save({
     id: profileId, label: 'Packaged transport A', apiBaseUrl: smoke.firstOrigin,
   });
@@ -67,17 +86,19 @@ export const runPackagedTransportSmoke = async ({
   });
   if (!storedA.stored) throw new Error('Production credential encryption was unavailable');
 
-  const storageWindows = await Promise.all([smoke.firstOrigin, smoke.secondOrigin].map(async origin => {
+  const storageWindows = await Promise.all([
+    { name: 'first' as const, origin: smoke.firstOrigin },
+    { name: 'second' as const, origin: smoke.secondOrigin },
+  ].map(async fixture => {
     const storageWindow = new BrowserWindow({
       show: false,
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
     });
-    await storageWindow.loadURL(`${origin}/smoke-storage`);
-    return { origin, window: storageWindow };
+    await storageWindow.loadURL(`${fixture.origin}/smoke-storage`);
+    return { ...fixture, window: storageWindow };
   }));
   const seedStorage = async (): Promise<void> => {
     await Promise.all(storageWindows.map(item => item.window.webContents.executeJavaScript(`(async () => {
-      document.cookie = 'packaged-smoke-cookie=present; SameSite=Lax';
       localStorage.setItem('packaged-smoke-local', 'present');
       await new Promise((resolve, reject) => {
         const request = indexedDB.open('packaged-smoke-indexeddb', 1);
@@ -87,12 +108,20 @@ export const runPackagedTransportSmoke = async ({
       });
       const cache = await caches.open('packaged-smoke-cache');
       await cache.put('/packaged-smoke-cache-entry', new Response('present'));
-      await navigator.serviceWorker.register('/smoke-sw.js');
-      await navigator.serviceWorker.ready;
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      if (!registrations.some(registration => registration.scope.startsWith(location.origin))) {
+        await navigator.serviceWorker.register('/smoke-sw.js');
+        await navigator.serviceWorker.ready;
+      }
+      document.cookie = 'packaged-smoke-cookie=present; SameSite=Lax';
       return true;
     })()`)));
   };
-  const storageState = async (expected: 'present' | 'absent'): Promise<boolean> => {
+  type StoragePresence = 'present' | 'absent';
+  type StorageType = 'cookie' | 'localStorage' | 'indexedDB' | 'cacheStorage' | 'serviceWorker';
+  type OriginStorageExpectation = Readonly<Record<StorageType, StoragePresence>>;
+  type StorageExpectation = Readonly<Record<'first' | 'second', OriginStorageExpectation>>;
+  const storageState = async (expected: StorageExpectation): Promise<boolean> => {
     const states = await Promise.all(storageWindows.map(async item => {
       const rendererState = await item.window.webContents.executeJavaScript(`(async () => ({
         cookie: document.cookie.includes('packaged-smoke-cookie=present'),
@@ -102,12 +131,62 @@ export const runPackagedTransportSmoke = async ({
         serviceWorker: (await navigator.serviceWorker.getRegistrations()).some(registration => registration.scope.startsWith(location.origin)),
       }))()`);
       const cookies = await desktopSession.cookies.get({ url: item.origin });
-      return { ...rendererState, cookie: rendererState.cookie || cookies.length > 0 } as Record<string, boolean>;
+      const expectedState = expected[item.name];
+      const cookieExpectedPresent = expectedState.cookie === 'present';
+      const cookieMatches = cookieExpectedPresent
+        ? rendererState.cookie === true
+          && cookies.some(cookie => cookie.name === 'packaged-smoke-cookie' && cookie.value === 'present')
+        : rendererState.cookie === false && cookies.length === 0;
+      return cookieMatches
+        && (['localStorage', 'indexedDB', 'cacheStorage', 'serviceWorker'] as const)
+          .every(storageType => rendererState[storageType] === (expectedState[storageType] === 'present'));
     }));
-    return states.every(state => Object.values(state).every(value => value === (expected === 'present')));
+    return states.every(Boolean);
+  };
+  const allStoragePresent: OriginStorageExpectation = {
+    cookie: 'present',
+    localStorage: 'present',
+    indexedDB: 'present',
+    cacheStorage: 'present',
+    serviceWorker: 'present',
+  };
+  const allStorageAbsent: OriginStorageExpectation = {
+    cookie: 'absent',
+    localStorage: 'absent',
+    indexedDB: 'absent',
+    cacheStorage: 'absent',
+    serviceWorker: 'absent',
+  };
+  const bothOriginsPresent: StorageExpectation = {
+    first: allStoragePresent,
+    second: allStoragePresent,
+  };
+  // Chromium cookies are shared by host across these fixture ports; the
+  // remaining stores are scoped to each complete origin.
+  const activationCleanupSplit: StorageExpectation = {
+    first: allStorageAbsent,
+    second: {
+      cookie: 'absent',
+      localStorage: 'present',
+      indexedDB: 'present',
+      cacheStorage: 'present',
+      serviceWorker: 'present',
+    },
+  };
+  const bothOriginsAbsent: StorageExpectation = {
+    first: allStorageAbsent,
+    second: allStorageAbsent,
   };
 
   try {
+    // Both fixture origins must be populated while no renderer credential
+    // binding is active. Once activation publishes a binding, production
+    // correctly restricts renderer network traffic to that exact origin.
+    await seedStorage();
+    if (!await storageState(bothOriginsPresent)) {
+      throw new Error('Packaged preactivation origin storage fixture was incomplete');
+    }
+
     await window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
       const started = Date.now();
       const poll = () => {
@@ -134,10 +213,6 @@ export const runPackagedTransportSmoke = async ({
         });
         staleRestRejected = !response.ok;
       } catch { staleRestRejected = true; }
-      await smoke.expectSocketRejected(socketId);
-      await smoke.rest();
-      localStorage.setItem('packaged-smoke-local', 'non-secret sentinel');
-      sessionStorage.setItem('packaged-smoke-session', 'non-secret sentinel');
       return { first, rotated, socketId, staleRestRejected, rendererOrigin: location.origin };
     })()`);
     if (first?.rendererOrigin !== DESKTOP_RENDERER_ORIGIN || first?.first?.profileId !== profileId
@@ -146,8 +221,37 @@ export const runPackagedTransportSmoke = async ({
       || first?.staleRestRejected !== true) {
       throw new Error('Packaged renderer protocol or first transport proof failed');
     }
+    await waitForCurrentUserEvidence(2);
+    const staleAttemptEvidenceStart = handshakeEvidence.records.length;
+    const staleAttemptResult = await window.webContents.executeJavaScript(`
+      window.__proprPackagedTransportSmoke.expectSocketRejected(${JSON.stringify(first.socketId)})
+    `);
+    const staleAttemptEvidence = handshakeEvidence.records.slice(staleAttemptEvidenceStart);
+    const staleBoundarySummary = validatePackagedStaleSocketBoundaryEvidence(
+      staleAttemptEvidence,
+      handshakeEvidence.overflowed,
+    );
+    if (staleAttemptResult?.transportRejected !== true
+      || staleAttemptResult?.freshManagerConnected !== true) {
+      throw new Error('Packaged stale Socket.IO renderer-boundary evidence failed');
+    }
+    log('desktop.transport_smoke.stale_socket_boundary', { ...staleBoundarySummary });
+    await window.webContents.executeJavaScript(`(async () => {
+      const smoke = window.__proprPackagedTransportSmoke;
+      await smoke.rest();
+      localStorage.setItem('packaged-smoke-local', 'non-secret sentinel');
+      sessionStorage.setItem('packaged-smoke-session', 'non-secret sentinel');
+    })()`);
+    if (!await storageState(activationCleanupSplit)) {
+      throw new Error('Packaged activation did not clear only the activated origin storage');
+    }
+
+    // These isolated fixture WebContents are not the trusted main renderer, so
+    // they can reseed both foreign origins without receiving renderer credentials.
     await seedStorage();
-    if (!await storageState('present')) throw new Error('Packaged origin storage fixture was incomplete');
+    if (!await storageState(bothOriginsPresent)) {
+      throw new Error('Packaged credentialless origin storage reseed was incomplete');
+    }
 
     let cleanupFailed = false;
     try {
@@ -160,7 +264,7 @@ export const runPackagedTransportSmoke = async ({
     const rollback = await profiles.readProfileCredential(profileId);
     if (!cleanupFailed || rollback.profile?.apiBaseUrl !== smoke.firstOrigin
       || rollback.credential?.origin !== smoke.firstOrigin || rollback.credential.token !== tokenA
-      || !await storageState('present')) {
+      || !await storageState(bothOriginsPresent)) {
       throw new Error('Origin cleanup failure did not preserve complete durable A');
     }
     let precommitStorageCleared = false;
@@ -168,10 +272,10 @@ export const runPackagedTransportSmoke = async ({
       id: profileId, label: 'Packaged transport B', apiBaseUrl: smoke.secondOrigin,
     }, async (previousOrigin, nextOrigin) => {
       await clearDesktopInstanceCookies(desktopSession, [previousOrigin, nextOrigin]);
-      precommitStorageCleared = await storageState('absent');
+      precommitStorageCleared = await storageState(bothOriginsAbsent);
       if (!precommitStorageCleared) throw new Error('Complete origin storage was not cleared before commit');
     });
-    if (!precommitStorageCleared || !await storageState('absent')) {
+    if (!precommitStorageCleared || !await storageState(bothOriginsAbsent)) {
       throw new Error('Same-ID URL edit did not clear both complete Electron origin stores');
     }
     const storedB = await profiles.writeCredential({
@@ -210,6 +314,13 @@ export const runPackagedTransportSmoke = async ({
       || second?.rendererPersistenceContainsSecret !== false || secretInMainMetadata) {
       throw new Error('Packaged replacement scope or secret-custody proof failed');
     }
+    await waitForCurrentUserEvidence(3);
+    log('desktop.renderer.transport_smoke.current_user', {
+      ...validatePackagedCurrentUserBoundaryEvidence(
+        currentUserEvidence.records,
+        currentUserEvidence.overflowed,
+      ),
+    });
     log('desktop.renderer.transport_smoke.ready', {
       customProtocol: true,
       restBearer: true,

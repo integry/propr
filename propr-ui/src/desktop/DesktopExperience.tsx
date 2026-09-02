@@ -245,18 +245,19 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
-      if (state.phase !== 'connected') return;
+      const currentState = stateRef.current;
+      if (currentState.phase !== 'connected') return;
       if ((event.metaKey || event.ctrlKey) && event.key === ',') {
         event.preventDefault();
         openManager();
       } else if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'r') {
         event.preventDefault();
-        void connect(state.profile);
+        void connect(currentState.profile);
       }
     };
     document.addEventListener('keydown', handleKeyboard);
     return () => document.removeEventListener('keydown', handleKeyboard);
-  }, [connect, openManager, state]);
+  }, [connect, openManager]);
 
   const removeProfile = async (profile: DesktopProfile) => {
     if (!window.confirm(`Remove “${profile.name}” from this computer?`)) return;

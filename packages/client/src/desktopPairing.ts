@@ -278,13 +278,16 @@ export const completeDesktopPairing = async (
       const remainingBeforeSleep = requireRemainingLifetime();
       const delay = safeDelay(Math.min(intervalSeconds * 1000, remainingBeforeSleep));
       await raceLifetime(sleep(delay, lifetimeController.signal));
-      const remaining = requireRemainingLifetime();
+      requireRemainingLifetime();
 
       let value: unknown;
       try {
         // The pairing reader owns cancellation through body drain/cancel. Do
         // not race it with a faster outer rejection: completion here is the
-        // operation's guarantee that no response task survives this poll.
+        // operation's guarantee that no response task survives this poll. The
+        // lifetime controller is the sole pairing-deadline owner; giving the
+        // transport its fixed per-request budget avoids a same-tick race that
+        // could misclassify pairing expiry as a request timeout.
         value = await client.requestDesktopPairing(
           `/api/desktop/pairings/${encodeURIComponent(start.pairingId)}/poll`,
           {
@@ -294,7 +297,7 @@ export const completeDesktopPairing = async (
             redirect: 'manual',
             signal: lifetimeController.signal,
           },
-          Math.min(PAIRING_REQUEST_TIMEOUT_MS, safeDelay(remaining)),
+          PAIRING_REQUEST_TIMEOUT_MS,
         );
       } catch (error) {
         if (terminal || remainingLifetime() <= 0) {
