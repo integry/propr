@@ -201,7 +201,7 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
 };
 
 export const getInstanceCatalog = async (): Promise<InstanceCatalogResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/catalog`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/instance/catalog`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
