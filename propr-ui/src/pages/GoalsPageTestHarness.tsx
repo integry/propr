@@ -34,9 +34,9 @@ vi.mock('../contexts/useSocket', () => ({
 
 export const goal: GoalListItem = {
   goalId: 'goal-1', objective: 'Durable orchestration', repository: 'integry/propr', state: 'running', agent: 'codex',
-  requestedModel: 'requested', effectiveModel: 'effective', maxActiveTasks: 3, mergePolicy: 'manual',
-  ultrafixEnabled: false, ultrafixGoal: null, ultrafixMaxCycles: null, version: 2, nodeCount: 4,
-  activeNodeCount: 1, latestSequence: 8, projection: { status: 'not-yet-projected' },
+  requestedModel: 'requested', effectiveModel: 'effective',
+  maxActiveTasks: 3, mergePolicy: 'manual', ultrafixEnabled: false, ultrafixGoal: null, ultrafixMaxCycles: null, version: 2,
+  latestSequence: 8, projection: { status: 'not-yet-projected' },
   createdAt: '2026-08-31T00:00:00Z', updatedAt: '2026-08-31T01:00:00Z',
 };
 

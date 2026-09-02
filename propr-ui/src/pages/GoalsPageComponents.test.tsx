@@ -12,26 +12,26 @@ const goal: GoalListItem = {
   agent: 'codex',
   requestedModel: 'gpt-requested',
   effectiveModel: 'gpt-effective',
-  maxActiveTasks: 4,
-  mergePolicy: 'auto_squash',
-  ultrafixEnabled: true,
-  ultrafixGoal: 8,
-  ultrafixMaxCycles: 10,
+  maxActiveTasks: 4, mergePolicy: 'manual', ultrafixEnabled: true, ultrafixGoal: 8, ultrafixMaxCycles: 10,
   version: 4,
-  nodeCount: 8,
-  activeNodeCount: 2,
   latestSequence: 19,
   createdAt: '2026-08-31T00:00:00Z',
   updatedAt: '2026-08-31T01:00:00Z',
   projection: {
     status: 'ready',
-    checklist: { total: 8, completed: 3 },
-    issues: { total: 9, ready: 3, active: 2, processed: 6, failed: 1, blocked: 1 },
-    pullRequests: { open: 2, reviewPending: 1, ultrafixPending: 0, mergeReady: 1, merged: 4 },
-    tokens: { total: 12_500 },
-    time: { elapsedSeconds: 7_500, activeSeconds: 6_900, pausedSeconds: 300 },
+    provider: { status: 'working', statusDetail: 'Implementing', updatedAt: '2026-08-31T01:00:00Z' },
+    plan: { total: 8, completed: 3 },
+    stats: {
+      tokens: { total: 12_500, byProviderModel: [] },
+      time: { elapsedSeconds: 7_500, activeSeconds: 6_900, pausedSeconds: 300 },
+      messages: { queued: 2, oldestQueuedSeconds: 30 },
+      artifacts: {
+        issues: { total: 9, open: 3, closed: 6 },
+        pullRequests: { total: 6, open: 2, merged: 4, draft: 1 },
+        finalPullRequest: { number: 2002, url: 'https://github.com/integry/propr/pull/2002', draft: true },
+      },
+    },
     latestEvent: 'Implementation PR opened',
-    epicPrUrl: 'https://github.com/integry/propr/pull/2002',
     connectionState: 'connected',
   },
 };
@@ -52,12 +52,11 @@ describe('GoalsPageComponents', () => {
 
     expect(screen.getByText('Requested: gpt-requested')).toBeInTheDocument();
     expect(screen.getByText('Effective: gpt-effective')).toBeInTheDocument();
-    expect(screen.getByText('2 active work items · 8 total')).toBeInTheDocument();
-    expect(screen.getByText(/9 total · 3 ready · 2 active · 6 processed · 1 failed · 1 blocked/)).toBeInTheDocument();
+    expect(screen.getByText('9 associated issues · 6 associated PRs')).toBeInTheDocument();
     expect(screen.getByText('12.5K tokens')).toBeInTheDocument();
     expect(screen.getByText('2h 5m elapsed · 1h 55m active · 5m paused')).toBeInTheDocument();
-    expect(screen.getByText('Concurrency: 4')).toBeInTheDocument();
-    expect(screen.getByText('Ultrafix · goal 8/10 · max 10')).toBeInTheDocument();
+    expect(screen.getByText('Parallelism preference: 4')).toBeInTheDocument();
+    expect(screen.getByText('Ultrafix preference · goal 8/10 · max 10')).toBeInTheDocument();
     expect(screen.getByRole('progressbar', { name: '3 of 8 checklist items completed' })).toHaveAttribute('aria-valuenow', '3');
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuetext', '38% complete');
   });
@@ -69,13 +68,13 @@ describe('GoalsPageComponents', () => {
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
 
-  it('navigates goal rows to the operator page without hijacking the epic PR link', () => {
+  it('navigates goal rows to the operator page without hijacking the passive final PR link', () => {
     render(<MemoryRouter initialEntries={['/goals']}><GoalRow goal={goal} /><Location /></MemoryRouter>);
-    const epicLink = screen.getByRole('link', { name: `Open epic pull request for ${goal.objective}` });
+    const finalPrLink = screen.getByRole('link', { name: `Open associated final pull request for ${goal.objective}` });
     expect(screen.getByRole('link', { name: `Open goal: ${goal.objective}` })).toBeInTheDocument();
     fireEvent.click(screen.getByText(goal.objective));
     expect(screen.getByTestId('location')).toHaveTextContent('/goals/goal-1');
-    fireEvent.click(epicLink);
+    fireEvent.click(finalPrLink);
     expect(screen.getByTestId('location')).toHaveTextContent('/goals/goal-1');
   });
 
@@ -87,15 +86,15 @@ describe('GoalsPageComponents', () => {
     ['https://', false],
     ['http://github.com/integry/propr/pull/2002', false],
     ['https://github.com/integry/propr/pull/2002', true],
-  ])('renders list epicPrUrl %s only when it is absolute HTTPS', (epicPrUrl, allowed) => {
+  ])('renders an associated final PR URL %s only when it is absolute HTTPS', (finalPrUrl, allowed) => {
     if (goal.projection.status !== 'ready') throw new Error('ready projection fixture required');
-    render(<MemoryRouter><GoalRow goal={{ ...goal, projection: { ...goal.projection, epicPrUrl } }} /></MemoryRouter>);
-    const link = screen.queryByRole('link', { name: `Open epic pull request for ${goal.objective}` });
+    render(<MemoryRouter><GoalRow goal={{ ...goal, projection: { ...goal.projection, stats: { ...goal.projection.stats, artifacts: { ...goal.projection.stats.artifacts, finalPullRequest: { number: 2002, url: finalPrUrl, draft: true } } } } }} /></MemoryRouter>);
+    const link = screen.queryByRole('link', { name: `Open associated final pull request for ${goal.objective}` });
     if (!allowed) {
       expect(link).not.toBeInTheDocument();
       return;
     }
-    expect(link).toHaveAttribute('href', epicPrUrl);
+    expect(link).toHaveAttribute('href', finalPrUrl);
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });

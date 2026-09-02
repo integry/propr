@@ -74,12 +74,56 @@ export {
 
 export {
   getGoalCapableModels,
+  getGoalModelCatalog,
   isGoalCapableCatalogAgent,
+  goalCapabilitiesForAgentType,
   type GoalCapableCatalogAgent,
+  type GoalCatalogModel,
   type InstanceCatalogAgent,
   type InstanceCatalogRepository,
   type InstanceCatalogResponse,
 } from './instanceCatalog.js';
+
+export {
+  GOAL_STATES,
+  GOAL_CANNED_ACTIONS,
+  GOAL_MESSAGE_STATES,
+  GOAL_CONTROL_APPLICATIONS,
+  type GoalState,
+  type GoalCannedAction,
+  type GoalMessageState,
+  type GoalControlApplication,
+  type GoalControlCapability,
+  type GoalProviderCapabilities,
+  type GoalPolicyPreferences,
+  type CreateGoalRequest,
+  type PublicGoalDto,
+  type GoalPlanItemStatus,
+  type GoalPlanItem,
+  type GoalPlanProjection,
+  type GoalNativeProviderState,
+  type GoalTokenBreakdown,
+  type GoalPassiveArtifacts,
+  type GoalStats,
+  type PublicGoalMessageDto,
+  type GoalInfrastructureState,
+  type PublicGoalDetailDto,
+  type GoalSummaryProjection,
+  type GoalSummaryView,
+  type GoalListResponse,
+  type GoalEventPage,
+  type GoalJsonValue,
+} from './goals.js';
+
+export {
+  GOAL_EVENT_SCHEMA_VERSION,
+  GOAL_EVENT_KINDS,
+  GOAL_EVENT_TYPES,
+  GOAL_DETAIL_REFRESH_EVENT_TYPES,
+  type GoalEventKind,
+  type GoalEventType,
+  type GoalEventEnvelope,
+} from './goalEvents.js';
 
 // Export user whitelist helpers
 export {

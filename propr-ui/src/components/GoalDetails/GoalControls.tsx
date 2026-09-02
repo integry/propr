@@ -18,9 +18,15 @@ interface GoalControlsProps {
 }
 
 const stateTone: Record<GoalMessage['state'], string> = {
-  pending: 'bg-amber-100 text-amber-800', delivered: 'bg-blue-100 text-blue-800', acknowledged: 'bg-teal-100 text-teal-800',
+  queued: 'bg-amber-100 text-amber-800', delivering: 'bg-violet-100 text-violet-800', delivered: 'bg-blue-100 text-blue-800', acknowledged: 'bg-teal-100 text-teal-800',
   failed: 'bg-red-100 text-red-800', cancelled: 'bg-gray-100 text-gray-600',
 };
+
+const applicationLabel = (application: 'immediate' | 'next_turn' | 'safe_boundary' | null): string =>
+  application === 'immediate' ? 'applies immediately'
+    : application === 'next_turn' ? 'applies on the next provider turn'
+      : application === 'safe_boundary' ? 'applies at a provider safe boundary'
+        : 'not supported by this provider';
 
 const GOAL_MESSAGE_MAX_LENGTH = GOAL_TEXT_MAX_CODE_POINTS;
 
@@ -58,7 +64,7 @@ function CancelConfirmation({ busy, returnFocus, fallbackFocus, onClose, onConfi
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
       <div ref={dialogRef} role="alertdialog" aria-modal="true" aria-labelledby="cancel-goal-title" aria-describedby="cancel-goal-description" onKeyDown={handleKeyDown} className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
         <h2 id="cancel-goal-title" className="text-lg font-semibold text-slate-900">Cancel this goal?</h2>
-        <p id="cancel-goal-description" className="mt-2 text-sm text-slate-600">Cancellation is terminal and distinct from pausing. Active work will be stopped at the controller boundary.</p>
+        <p id="cancel-goal-description" className="mt-2 text-sm text-slate-600">Cancellation is terminal and distinct from pausing. The coding agent will be asked to stop its native goal session.</p>
         <label className="mt-4 block text-sm font-medium text-slate-700">Cancellation reason<input ref={reasonRef} value={reason} maxLength={1000} onChange={event => setReason(event.target.value)} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-500" /></label>
         <div className="mt-5 flex justify-end gap-2"><button ref={cancelRef} type="button" onClick={onClose} disabled={busy} className="rounded border border-slate-300 px-3 py-2 text-sm">Keep running</button><button ref={confirmRef} type="button" onClick={() => onConfirm(reason.trim())} disabled={busy || !reason.trim()} className="rounded bg-red-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{busy ? 'Cancelling…' : 'Cancel goal'}</button></div>
       </div>
@@ -66,8 +72,8 @@ function CancelConfirmation({ busy, returnFocus, fallbackFocus, onClose, onConfi
   );
 }
 
-function GoalMessages({ messages, disabled, busy, onSend, onRetry, onCancel }: {
-  messages: GoalMessage[]; disabled: boolean; busy: boolean;
+function GoalMessages({ messages, disabled, busy, application, onSend, onRetry, onCancel }: {
+  messages: GoalMessage[]; disabled: boolean; busy: boolean; application: 'immediate' | 'next_turn' | 'safe_boundary' | null;
   onSend: (params: SendGoalMessageParams) => Promise<boolean>;
   onRetry: (message: GoalMessage) => Promise<boolean>;
   onCancel: (messageId: string) => Promise<void>;
@@ -83,12 +89,13 @@ function GoalMessages({ messages, disabled, busy, onSend, onRetry, onCancel }: {
   return (
     <section aria-labelledby="goal-messages-title" className="mt-4 border-t border-slate-200 pt-4">
       <h3 id="goal-messages-title" className="text-sm font-semibold text-slate-800">Steer the goal</h3>
+      <p className="mt-1 text-[11px] text-slate-500">Provider input · {applicationLabel(application)}. Replies appear as ordinary provider output.</p>
       <div className="mt-2 flex flex-wrap gap-2">
-        <button type="button" onClick={() => void onSend({ body: "Summarize what's done.", predefinedKind: 'whats_done' })} disabled={disabled || busy} className="rounded border border-slate-300 px-2.5 py-1.5 text-xs disabled:opacity-50">What’s done?</button>
-        <button type="button" onClick={() => void onSend({ body: "Summarize what's left.", predefinedKind: 'whats_left' })} disabled={disabled || busy} className="rounded border border-slate-300 px-2.5 py-1.5 text-xs disabled:opacity-50">What’s left?</button>
+        <button type="button" onClick={() => void onSend({ cannedAction: 'whats_done' })} disabled={disabled || busy} className="rounded border border-slate-300 px-2.5 py-1.5 text-xs disabled:opacity-50">What’s done?</button>
+        <button type="button" onClick={() => void onSend({ cannedAction: 'whats_left' })} disabled={disabled || busy} className="rounded border border-slate-300 px-2.5 py-1.5 text-xs disabled:opacity-50">What’s left?</button>
       </div>
       <form className="mt-2" onSubmit={event => { event.preventDefault(); void submitDraft(); }}>
-        <label htmlFor="goal-message" className="sr-only">Message to the goal controller</label>
+        <label htmlFor="goal-message" className="sr-only">Message to the coding agent</label>
         <textarea id="goal-message" value={body} onChange={event => setBody(event.target.value)} disabled={disabled || busy} rows={3} placeholder="Send guidance at the next safe boundary…" aria-invalid={bodyOverLimit} aria-describedby={bodyOverLimit ? 'goal-message-error goal-message-count' : 'goal-message-count'} className="w-full resize-y rounded border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:bg-slate-100" />
         <div className="mt-1 flex items-start justify-between gap-3"><span id="goal-message-count" className={`text-[10px] ${bodyOverLimit ? 'font-medium text-red-600' : 'text-slate-400'}`}>{canonicalBody.codePointLength}/{GOAL_MESSAGE_MAX_LENGTH}</span><button type="submit" disabled={disabled || busy || !canonicalBody.value || bodyOverLimit} className="rounded bg-teal-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{busy ? 'Sending…' : 'Send message'}</button></div>
         {bodyOverLimit && <p id="goal-message-error" role="alert" className="mt-1 text-xs text-red-600">Message must be at most {GOAL_MESSAGE_MAX_LENGTH} characters after trimming. Remove at least {canonicalBody.codePointLength - GOAL_MESSAGE_MAX_LENGTH} {canonicalBody.codePointLength - GOAL_MESSAGE_MAX_LENGTH === 1 ? 'character' : 'characters'}.</p>}
@@ -96,17 +103,18 @@ function GoalMessages({ messages, disabled, busy, onSend, onRetry, onCancel }: {
       <ol aria-label="Goal messages" className="mt-3 max-h-72 space-y-2 overflow-y-auto">
         {messages.map(message => <li key={message.messageId} className="rounded border border-slate-200 p-2 text-xs">
           <div className="flex items-start gap-2"><p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-slate-700">{message.body}</p><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${stateTone[message.state]}`}>{message.state}</span></div>
-          {message.response && <p className="mt-1 rounded bg-slate-50 p-1.5 text-slate-600"><span className="font-medium capitalize">{message.responseSource} response:</span> {message.response}</p>}
           {message.error && <p className="mt-1 text-red-700">{message.error}</p>}
-          {(message.state === 'failed' || message.state === 'pending') && <div className="mt-1.5 flex gap-2">{message.state === 'failed' && <button type="button" onClick={() => void onRetry(message)} disabled={disabled || busy} className="font-medium text-teal-700 disabled:opacity-50">Retry</button>}{message.state === 'pending' && <button type="button" onClick={() => void onCancel(message.messageId)} disabled={disabled || busy} className="font-medium text-slate-500 disabled:opacity-50">Cancel pending message</button>}</div>}
+          {(message.state === 'failed' || message.state === 'queued') && <div className="mt-1.5 flex gap-2">{message.state === 'failed' && <button type="button" onClick={() => void onRetry(message)} disabled={disabled || busy} className="font-medium text-teal-700 disabled:opacity-50">Retry</button>}{message.state === 'queued' && <button type="button" onClick={() => void onCancel(message.messageId)} disabled={disabled || busy} className="font-medium text-slate-500 disabled:opacity-50">Cancel queued message</button>}</div>}
         </li>)}
       </ol>
     </section>
   );
 }
 
-function LifecycleControls({ state, disabled, pendingAction, cancelTriggerRef, onPause, onResume, onOpenCancel }: {
+function LifecycleControls({ state, disabled, pendingAction, pauseSupported, pauseApplication, resumeSupported, resumeApplication, cancelTriggerRef, onPause, onResume, onOpenCancel }: {
   state: GoalDetail['goal']['state']; disabled: boolean; pendingAction: string | null;
+  pauseSupported: boolean; pauseApplication: 'immediate' | 'next_turn' | 'safe_boundary' | null;
+  resumeSupported: boolean; resumeApplication: 'immediate' | 'next_turn' | 'safe_boundary' | null;
   cancelTriggerRef: RefObject<HTMLButtonElement | null>;
   onPause: () => Promise<boolean>; onResume: () => Promise<boolean>; onOpenCancel: () => void;
 }) {
@@ -114,8 +122,8 @@ function LifecycleControls({ state, disabled, pendingAction, cancelTriggerRef, o
   const pausable = state === 'running' || state === 'planning' || state === 'recovering' || state === 'pausing';
   return (
     <div className="mt-3 flex flex-wrap gap-2">
-      {pausable && <button type="button" onClick={() => void onPause()} disabled={disabled || state === 'pausing'} title={state === 'pausing' ? 'Waiting for the runtime safe boundary' : undefined} className="rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 disabled:opacity-50">{state === 'pausing' ? 'Pausing…' : pendingAction === 'pause' ? 'Requesting pause…' : 'Pause'}</button>}
-      {state === 'paused' && <button type="button" onClick={() => void onResume()} disabled={disabled} className="rounded bg-teal-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{pendingAction === 'resume' ? 'Resuming…' : 'Resume'}</button>}
+      {pausable && <button type="button" onClick={() => void onPause()} disabled={disabled || state === 'pausing' || !pauseSupported} title={applicationLabel(pauseApplication)} className="rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 disabled:opacity-50">{state === 'pausing' ? 'Pausing…' : pendingAction === 'pause' ? 'Requesting pause…' : 'Pause'}</button>}
+      {state === 'paused' && <button type="button" onClick={() => void onResume()} disabled={disabled || !resumeSupported} title={applicationLabel(resumeApplication)} className="rounded bg-teal-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{pendingAction === 'resume' ? 'Resuming…' : 'Resume'}</button>}
       {!terminal && <button ref={cancelTriggerRef} type="button" onClick={onOpenCancel} disabled={disabled} className="rounded border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 disabled:opacity-50">Cancel goal…</button>}
     </div>
   );
@@ -129,18 +137,20 @@ export default function GoalControls(props: GoalControlsProps) {
   const [selectedModel, setSelectedModel] = useState(detail.goal.requestedModel);
   const terminal = GOAL_TERMINAL_STATES.has(detail.goal.state);
   const controlsDisabled = readOnly || terminal || pendingAction !== null;
+  const capabilities = detail.provider.capabilities;
   useEffect(() => { setSelectedModel(detail.goal.requestedModel); }, [detail.goal.requestedModel]);
   return (
     <section ref={controlsRegionRef} tabIndex={-1} aria-labelledby="goal-controls-title" className="rounded-lg border border-slate-200 bg-white p-3">
       <h2 id="goal-controls-title" className="text-sm font-semibold text-slate-800">Controls</h2>
+      <p className="mt-1 text-[11px] text-slate-500">Native goal capability: <strong>{capabilities.nativeGoal ? 'available' : 'unavailable'}</strong> · pause {applicationLabel(capabilities.pause.application)} · resume {applicationLabel(capabilities.resume.application)}</p>
       {(readOnly || terminal) && <p className="mt-1 text-xs text-amber-700">{readOnly ? 'Controls are unavailable in demo/read-only mode or after access loss.' : 'This goal is terminal. Lifecycle, model, and steering operations no longer apply.'}</p>}
-      <LifecycleControls state={detail.goal.state} disabled={controlsDisabled} pendingAction={pendingAction} cancelTriggerRef={cancelTriggerRef} onPause={onPause} onResume={onResume} onOpenCancel={() => setConfirmCancel(true)} />
+      <LifecycleControls state={detail.goal.state} disabled={controlsDisabled} pendingAction={pendingAction} pauseSupported={capabilities.pause.supported} pauseApplication={capabilities.pause.application} resumeSupported={capabilities.resume.supported} resumeApplication={capabilities.resume.application} cancelTriggerRef={cancelTriggerRef} onPause={onPause} onResume={onResume} onOpenCancel={() => setConfirmCancel(true)} />
       <div className="mt-4 border-t border-slate-200 pt-3">
         <label htmlFor="goal-model" className="text-xs font-medium text-slate-700">Requested model</label>
-        <div className="mt-1 flex gap-2"><select id="goal-model" value={selectedModel} onChange={event => setSelectedModel(event.target.value)} disabled={controlsDisabled || models.length === 0} className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1.5 text-xs disabled:bg-slate-100">{models.length === 0 && <option value={detail.goal.requestedModel}>{detail.goal.requestedModel}</option>}{models.map(model => <option key={model}>{model}</option>)}</select><button type="button" onClick={() => void onChangeModel(selectedModel)} disabled={controlsDisabled || selectedModel === detail.goal.requestedModel || !models.includes(selectedModel)} className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium disabled:opacity-50">Request change</button></div>
-        <p className="mt-1 text-[11px] text-slate-500">Effective: <span className="font-medium">{detail.goal.effectiveModel}</span>{detail.goal.requestedModel !== detail.goal.effectiveModel && <span className="ml-1 text-blue-700">· {detail.goal.requestedModel} requested, awaiting runtime acknowledgement</span>}</p>
+        <div className="mt-1 flex gap-2"><select id="goal-model" value={selectedModel} onChange={event => setSelectedModel(event.target.value)} disabled={controlsDisabled || models.length === 0 || !capabilities.modelChange.supported} className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1.5 text-xs disabled:bg-slate-100">{models.length === 0 && <option value={detail.goal.requestedModel}>{detail.goal.requestedModel}</option>}{models.map(model => <option key={model}>{model}</option>)}</select><button type="button" onClick={() => void onChangeModel(selectedModel)} disabled={controlsDisabled || !capabilities.modelChange.supported || selectedModel === detail.goal.requestedModel || !models.includes(selectedModel)} title={applicationLabel(capabilities.modelChange.application)} className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium disabled:opacity-50">Request change</button></div>
+        <p className="mt-1 text-[11px] text-slate-500">Effective: <span className="font-medium">{detail.goal.effectiveModel}</span> · {applicationLabel(capabilities.modelChange.application)}{detail.goal.requestedModel !== detail.goal.effectiveModel && <span className="ml-1 text-blue-700">· {detail.goal.requestedModel} requested, awaiting provider acknowledgement</span>}</p>
       </div>
-      <GoalMessages messages={detail.messages} disabled={controlsDisabled} busy={pendingAction === 'message' || pendingAction === 'cancel-message'} onSend={props.onSend} onRetry={props.onRetryMessage} onCancel={props.onCancelMessage} />
+      <GoalMessages messages={detail.messages} disabled={controlsDisabled || !capabilities.steer.supported} busy={pendingAction === 'message' || pendingAction === 'cancel-message'} application={capabilities.steer.application} onSend={props.onSend} onRetry={props.onRetryMessage} onCancel={props.onCancelMessage} />
       {confirmCancel && <CancelConfirmation busy={pendingAction === 'cancel'} returnFocus={cancelTriggerRef} fallbackFocus={controlsRegionRef} onClose={() => setConfirmCancel(false)} onConfirm={reason => { void onCancel(reason).then(success => { if (success) setConfirmCancel(false); }); }} />}
     </section>
   );

@@ -39,7 +39,8 @@ vi.mock('./pages/useGoalCreateForm', () => ({
   useGoalCreateForm: () => ({ catalogLoading: true, catalogError: null, cancel: vi.fn() }),
 }));
 vi.mock('./components/GoalDetails/GoalControls', () => ({ default: () => <section>Controls</section> }));
-vi.mock('./components/GoalDetails/GoalHierarchy', () => ({ default: () => <section>Hierarchy</section> }));
+vi.mock('./components/GoalDetails/GoalPlan', () => ({ default: () => <section>Provider plan</section> }));
+vi.mock('./components/GoalDetails/GoalArtifacts', () => ({ default: () => <section>Artifacts</section> }));
 vi.mock('./components/GoalDetails/GoalStats', () => ({ default: () => <section>Statistics</section> }));
 vi.mock('./components/GoalDetails/GoalTerminal', () => ({ default: () => <section>Terminal</section> }));
 vi.mock('./components/GoalDetails/useGoalDetail', () => ({
@@ -51,11 +52,10 @@ vi.mock('./components/GoalDetails/useGoalDetail', () => ({
     detail: {
       goal: {
         goalId: 'goal-123', objective: 'One landmark goal', repository: 'integry/propr', state: 'running',
-        agent: 'codex', requestedModel: 'gpt', effectiveModel: 'gpt', version: 1,
+        agent: 'codex', requestedModel: 'gpt', effectiveModel: 'gpt', version: 1, maxActiveTasks: 1, mergePolicy: 'manual', ultrafixEnabled: false, ultrafixGoal: null, ultrafixMaxCycles: null,
       },
-      hierarchy: { nodes: [], dependencies: [] }, providerTodos: [],
-      stats: {}, recovery: { state: 'healthy', attempt: 0, reason: null },
-      epicPrUrl: null, completionBlockers: [],
+      provider: { sessionId: 'session-1', generation: 1, status: 'working', statusDetail: null }, plan: { status: 'not-reported' },
+      stats: { artifacts: { finalPullRequest: null } }, infrastructure: { recovery: { state: 'healthy', attempt: 0, reason: null }, warnings: [] },
     },
   }),
 }));

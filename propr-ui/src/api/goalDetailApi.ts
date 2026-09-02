@@ -1,7 +1,7 @@
 import { API_BASE_URL, apiFetch } from './apiClient';
 import type { GoalDetailV1, GoalEventsPageV1, GoalMessageV1, GoalRecordV1 } from './goalContracts';
 import { GoalContractError, GoalMutationUncertainError, handleGoalResponse } from './goalApiErrors';
-import { boundedInteger, decodeEventsPage, decodeGoalDetail, decodeGoalMessage, decodeGoalRecord, integer } from './goalDecoders';
+import { boundedInteger, decodeEventsPage, decodeGoalDetail, decodeGoalMessage, decodeGoalRecord } from './goalDecoders';
 import { canonicalGoalText, GOAL_TEXT_MAX_CODE_POINTS } from '../utils/canonicalGoalText';
 
 const GOAL_IDEMPOTENCY_KEY_MAX_LENGTH = 255;
@@ -21,21 +21,21 @@ export const getGoal = async (goalId: string, options: GoalRequestOptions = {}):
 };
 
 export interface GetGoalEventsOptions extends GoalRequestOptions {
-  afterSequence?: number;
-  beforeSequence?: number;
+  afterCursor?: string;
+  beforeCursor?: string;
   limit?: number;
 }
 
 export const getGoalEvents = async (goalId: string, options: GetGoalEventsOptions = {}): Promise<GoalEventsPageV1> => {
-  if (options.afterSequence !== undefined && options.beforeSequence !== undefined) {
-    throw new GoalContractError('event cursor', 'only one of afterSequence or beforeSequence');
+  if (options.afterCursor !== undefined && options.beforeCursor !== undefined) {
+    throw new GoalContractError('event cursor', 'only one of afterCursor or beforeCursor');
   }
-  if (options.afterSequence !== undefined) integer(options.afterSequence, 'query.afterSequence');
-  if (options.beforeSequence !== undefined) integer(options.beforeSequence, 'query.beforeSequence');
+  if (options.afterCursor !== undefined && !options.afterCursor) throw new GoalContractError('query.afterCursor', 'a non-empty opaque cursor');
+  if (options.beforeCursor !== undefined && !options.beforeCursor) throw new GoalContractError('query.beforeCursor', 'a non-empty opaque cursor');
   if (options.limit !== undefined) boundedInteger(options.limit, 'query.limit', 1, 500);
   const query = new URLSearchParams();
-  if (options.afterSequence !== undefined) query.set('afterSequence', String(options.afterSequence));
-  if (options.beforeSequence !== undefined) query.set('beforeSequence', String(options.beforeSequence));
+  if (options.afterCursor !== undefined) query.set('afterCursor', options.afterCursor);
+  if (options.beforeCursor !== undefined) query.set('beforeCursor', options.beforeCursor);
   if (options.limit !== undefined) query.set('limit', String(options.limit));
   const suffix = query.toString();
   const response = await apiFetch(
@@ -79,11 +79,9 @@ export const cancelGoal = (goalId: string, expectedVersion: number, reason: stri
 export const requestGoalModel = (goalId: string, expectedVersion: number, model: string, idempotencyKey: string) =>
   goalMutation(goalId, 'model', { expectedVersion, model }, idempotencyKey);
 
-export interface SendGoalMessageParams {
-  body: string;
-  predefinedKind?: 'whats_done' | 'whats_left';
-  retryOfMessageId?: string;
-}
+export type SendGoalMessageParams =
+  | { body: string; cannedAction?: never; retryOfMessageId?: string }
+  | { cannedAction: 'whats_done' | 'whats_left'; body?: never; retryOfMessageId?: string };
 
 export const sendGoalMessage = async (
   goalId: string,
@@ -91,11 +89,13 @@ export const sendGoalMessage = async (
   idempotencyKey: string
 ): Promise<GoalMessageV1> => {
   validateIdempotencyKey(idempotencyKey);
-  const canonicalBody = canonicalGoalText(params.body);
-  if (canonicalBody.codePointLength > GOAL_TEXT_MAX_CODE_POINTS || (!canonicalBody.value && !params.predefinedKind)) {
+  const canonicalBody = canonicalGoalText(params.body ?? '');
+  if ('body' in params && (canonicalBody.codePointLength > GOAL_TEXT_MAX_CODE_POINTS || !canonicalBody.value)) {
     throw new GoalContractError('message.body', `a non-empty message no longer than ${GOAL_TEXT_MAX_CODE_POINTS} characters`);
   }
-  const canonicalParams = { ...params, body: canonicalBody.value };
+  const canonicalParams = 'cannedAction' in params
+    ? { cannedAction: params.cannedAction, ...(params.retryOfMessageId ? { retryOfMessageId: params.retryOfMessageId } : {}) }
+    : { body: canonicalBody.value, ...(params.retryOfMessageId ? { retryOfMessageId: params.retryOfMessageId } : {}) };
   const response = await apiFetch(`${API_BASE_URL}/api/goals/${encodeURIComponent(goalId)}/messages`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
     credentials: 'include', body: JSON.stringify(canonicalParams),

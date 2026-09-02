@@ -257,6 +257,14 @@ describe('instance catalog', () => {
                     supportedModels: ['gpt-5.4'],
                     defaultModel: 'gpt-5.4',
                     envVars: { SECRET_TOKEN: 'secret' }
+                }, {
+                    id: 'agent-2', type: 'claude', alias: 'claude', enabled: true,
+                    dockerImage: 'private.registry/claude:secret', configPath: '/home/operator/.claude',
+                    supportedModels: ['claude-sonnet-5'], defaultModel: 'claude-sonnet-5', envVars: {}
+                }, {
+                    id: 'agent-3', type: 'antigravity', alias: 'antigravity', enabled: true,
+                    dockerImage: 'private.registry/antigravity:secret', configPath: '/home/operator/.antigravity',
+                    supportedModels: ['antigravity-gemini-3.7-flash-high'], defaultModel: 'antigravity-gemini-3.7-flash-high', envVars: {}
                 }],
                 loadRepositories: async () => [
                     { id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'main' },
@@ -276,11 +284,46 @@ describe('instance catalog', () => {
         assert.deepEqual(record.body, {
             agents: [{
                 alias: 'default',
+                type: 'codex',
                 enabled: true,
                 supportedModels: ['gpt-5.4'],
-                goalCapable: false,
-                goalCapableModels: [],
+                goalCapable: true,
+                goalCapableModels: ['gpt-5.4'],
+                goalModelCatalog: [{ id: 'gpt-5.4', displayName: 'GPT-5.4', goalCapable: true }],
+                goalCapabilities: {
+                    nativeGoal: true,
+                    pause: { supported: true, application: 'safe_boundary' },
+                    resume: { supported: true, application: 'immediate' },
+                    steer: { supported: true, application: 'next_turn' },
+                    modelChange: { supported: true, application: 'next_turn' }
+                },
                 defaultModel: 'gpt-5.4'
+            }, {
+                alias: 'claude', type: 'claude', enabled: true,
+                supportedModels: ['claude-sonnet-5'], goalCapable: true,
+                goalCapableModels: ['claude-sonnet-5'],
+                goalModelCatalog: [{ id: 'claude-sonnet-5', displayName: 'Claude Sonnet 5', goalCapable: true }],
+                goalCapabilities: {
+                    nativeGoal: true,
+                    pause: { supported: true, application: 'safe_boundary' },
+                    resume: { supported: true, application: 'immediate' },
+                    steer: { supported: true, application: 'next_turn' },
+                    modelChange: { supported: true, application: 'safe_boundary' }
+                },
+                defaultModel: 'claude-sonnet-5'
+            }, {
+                alias: 'antigravity', type: 'antigravity', enabled: true,
+                supportedModels: ['antigravity-gemini-3.7-flash-high'], goalCapable: true,
+                goalCapableModels: ['antigravity-gemini-3.7-flash-high'],
+                goalModelCatalog: [{ id: 'antigravity-gemini-3.7-flash-high', displayName: 'Antigravity Gemini 3.7 Flash High', goalCapable: true }],
+                goalCapabilities: {
+                    nativeGoal: true,
+                    pause: { supported: true, application: 'safe_boundary' },
+                    resume: { supported: true, application: 'immediate' },
+                    steer: { supported: true, application: 'next_turn' },
+                    modelChange: { supported: true, application: 'safe_boundary' }
+                },
+                defaultModel: 'antigravity-gemini-3.7-flash-high'
             }],
             repositories: [{
                 name: 'integry/propr',
@@ -291,6 +334,9 @@ describe('instance catalog', () => {
         });
         const serialized = JSON.stringify(record.body);
         assert.doesNotMatch(serialized, /private\.registry|operator|SECRET_TOKEN|private-user|private-disabled/);
+        assert.deepEqual((record.body as { agents: Array<{ type: string }> }).agents.map(agent => agent.type), [
+            'codex', 'claude', 'antigravity'
+        ]);
     });
 
     test('projects indexing status only for enabled repository and branch entries', async () => {

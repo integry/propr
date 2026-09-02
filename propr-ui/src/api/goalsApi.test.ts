@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { GoalEventEnvelope } from '@propr/shared';
 import * as goalsApi from './goalsApi';
 
 const wireGoal = {
@@ -10,34 +11,34 @@ const wireGoal = {
   requestedModel: 'gpt-requested',
   effectiveModel: 'gpt-effective',
   maxActiveTasks: 4,
-  mergePolicy: 'auto',
+  mergePolicy: 'manual',
   ultrafixEnabled: true,
   ultrafixGoal: 8,
   ultrafixMaxCycles: 10,
   version: 3,
+  terminalReason: null,
   createdAt: '2026-08-31T00:00:00.000Z',
   updatedAt: '2026-08-31T01:00:00.000Z',
 };
 
+const { terminalReason: _terminalReason, ...wireGoalSummary } = wireGoal;
 const wireSummary = {
-  ...wireGoal,
-  nodeCount: 6,
-  activeNodeCount: 2,
+  ...wireGoalSummary,
   latestSequence: 12,
+  projection: { status: 'not-yet-projected' },
 };
 
 const wireDetail = {
-  goal: { ...wireGoal, terminalReason: null },
-  hierarchy: { nodes: [], dependencies: [] },
-  providerTodos: [], messages: [],
+  goal: wireGoal,
+  provider: { sessionId: 'session-1', generation: 1, eventSequence: 0, status: 'working', statusDetail: null, updatedAt: wireGoal.updatedAt, checkpoint: null, capabilities: { nativeGoal: true, pause: { supported: true, application: 'safe_boundary' }, resume: { supported: true, application: 'immediate' }, steer: { supported: true, application: 'next_turn' }, modelChange: { supported: true, application: 'safe_boundary' } } },
+  plan: { status: 'not-reported' }, messages: [],
   stats: {
-    issues: { total: 0, ready: 0, active: 0, processed: 0, failed: 0, blocked: 0 },
-    pullRequests: { open: 0, reviewPending: 0, ultrafixPending: 0, mergeReady: 0, merged: 0 },
-    tokens: { total: 0, byModel: [] },
-    time: { elapsedSeconds: 10, activeSeconds: 8, pausedSeconds: 1, recoverySeconds: 1 },
+    tokens: { total: 0, byProviderModel: [] },
+    time: { elapsedSeconds: 10, activeSeconds: 8, pausedSeconds: 1 },
+    messages: { queued: 0, oldestQueuedSeconds: null },
+    artifacts: { issues: { total: 0, open: 0, closed: 0 }, pullRequests: { total: 0, open: 0, merged: 0, draft: 0 }, finalPullRequest: null },
   },
-  recovery: { state: 'healthy', attempt: 0, reason: null },
-  epicPrUrl: null, completionBlockers: [], latestSequence: 0,
+  infrastructure: { recovery: { state: 'healthy', attempt: 0, reason: null }, warnings: [] }, latestSequence: 0, latestCursor: null,
 };
 
 const jsonResponse = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
@@ -71,7 +72,7 @@ describe('goalsApi', () => {
       { credentials: 'include', signal: undefined }
     );
     expect(result).toEqual({
-      goals: [{ ...wireSummary, projection: { status: 'not-yet-projected' } }],
+      goals: [wireSummary],
       nextCursor: 'bmV4dA',
     });
     expect(result).not.toHaveProperty('total');
@@ -82,7 +83,7 @@ describe('goalsApi', () => {
     [{ limit: 0 }, 'query.limit'],
     [{ limit: 101 }, 'query.limit'],
     [{ search: '🚀'.repeat(201) }, 'query.search'],
-    [{ cursor: 'not+a+base64url' }, 'query.cursor'],
+    [{ cursor: '' }, 'query.cursor'],
   ])('rejects an invalid bounded query before sending it: %j', async (options, path) => {
     await expect(goalsApi.getGoals(options)).rejects.toThrow(path);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -101,7 +102,7 @@ describe('goalsApi', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('/api/goals');
   });
 
-  it.each(['bad+cursor', 'bad/cursor', 'bad=cursor', '', 'x'.repeat(1025)])(
+  it.each(['', 'x'.repeat(1025)])(
     'rejects malformed response nextCursor %j at the response boundary',
     async nextCursor => {
       fetchMock.mockResolvedValue(jsonResponse({ goals: [wireSummary], nextCursor }));
@@ -116,7 +117,7 @@ describe('goalsApi', () => {
     ['objective', undefined, 'response.goals[0].objective'],
     ['state', 'active', 'response.goals[0].state'],
     ['updatedAt', '', 'response.goals[0].updatedAt'],
-    ['nodeCount', undefined, 'response.goals[0].nodeCount'],
+    ['maxActiveTasks', undefined, 'response.goals[0].maxActiveTasks'],
   ])('rejects malformed or missing %s instead of creating a plausible goal', async (field, value, path) => {
     fetchMock.mockResolvedValue(jsonResponse({ goals: [{ ...wireSummary, [field]: value }], nextCursor: null }));
     await expect(goalsApi.getGoals()).rejects.toThrow(path);
@@ -124,35 +125,32 @@ describe('goalsApi', () => {
 
   it('requires a complete ready statistics projection and never fills missing values with zero', async () => {
     fetchMock.mockResolvedValue(jsonResponse({
-      goals: [{ ...wireSummary, projection: { status: 'ready', checklist: { total: 4, completed: 1 } } }],
+      goals: [{ ...wireSummary, projection: { status: 'ready', plan: { total: 4, completed: 1 } } }],
       nextCursor: null,
     }));
-    await expect(goalsApi.getGoals()).rejects.toThrow('projection.issues');
+    await expect(goalsApi.getGoals()).rejects.toThrow('projection.provider');
   });
 
   it('strictly decodes authoritative active time in a ready projection', async () => {
     const projection = {
       status: 'ready',
-      checklist: { total: 4, completed: 1 },
-      issues: { total: 5, ready: 2, active: 1, processed: 3, failed: 0, blocked: 1 },
-      pullRequests: { open: 1, reviewPending: 0, ultrafixPending: 0, mergeReady: 1, merged: 2 },
-      tokens: { total: 100 },
-      time: { elapsedSeconds: 900, activeSeconds: 610, pausedSeconds: 200 },
+      provider: { status: 'working', statusDetail: null, updatedAt: wireGoal.updatedAt },
+      plan: { total: 4, completed: 1 },
+      stats: { tokens: { total: 100, byProviderModel: [] }, time: { elapsedSeconds: 900, activeSeconds: 610, pausedSeconds: 200 }, messages: { queued: 0, oldestQueuedSeconds: null }, artifacts: { issues: { total: 5, open: 2, closed: 3 }, pullRequests: { total: 3, open: 1, merged: 2, draft: 1 }, finalPullRequest: null } },
       latestEvent: null,
       connectionState: 'connected',
-      epicPrUrl: null,
     };
     fetchMock.mockResolvedValueOnce(jsonResponse({ goals: [{ ...wireSummary, projection }], nextCursor: null }));
     await expect(goalsApi.getGoals()).resolves.toMatchObject({
-      goals: [{ projection: { time: { elapsedSeconds: 900, activeSeconds: 610, pausedSeconds: 200 } } }],
+      goals: [{ projection: { stats: { time: { elapsedSeconds: 900, activeSeconds: 610, pausedSeconds: 200 } } } }],
     });
 
-    const { activeSeconds: _activeSeconds, ...missingActiveTime } = projection.time;
+    const { activeSeconds: _activeSeconds, ...missingActiveTime } = projection.stats.time;
     fetchMock.mockResolvedValueOnce(jsonResponse({
-      goals: [{ ...wireSummary, projection: { ...projection, time: missingActiveTime } }],
+      goals: [{ ...wireSummary, projection: { ...projection, stats: { ...projection.stats, time: missingActiveTime } } }],
       nextCursor: null,
     }));
-    await expect(goalsApi.getGoals()).rejects.toThrow('projection.time.activeSeconds');
+    await expect(goalsApi.getGoals()).rejects.toThrow('projection.stats.time.activeSeconds');
   });
 
   it('requires the typed list envelope including nextCursor', async () => {
@@ -169,11 +167,7 @@ describe('goalsApi', () => {
       repository: wireGoal.repository,
       agent: 'codex',
       model: 'gpt-requested',
-      maxActiveTasks: 4,
-      mergePolicy: 'auto',
-      ultrafixEnabled: true,
-      ultrafixGoal: 8,
-      ultrafixMaxCycles: 10,
+      maxActiveTasks: 4, mergePolicy: 'manual', ultrafixEnabled: true, ultrafixGoal: 8, ultrafixMaxCycles: 10,
     };
 
     await expect(goalsApi.createGoal(params, 'goal-create-key')).resolves.toEqual(wireGoal);
@@ -195,11 +189,7 @@ describe('goalsApi', () => {
       repository: wireGoal.repository,
       agent: 'codex',
       model: 'gpt-requested',
-      maxActiveTasks: 4,
-      mergePolicy: 'manual',
-      ultrafixEnabled: false,
-      ultrafixGoal: null,
-      ultrafixMaxCycles: null,
+      maxActiveTasks: 4, mergePolicy: 'manual', ultrafixEnabled: false, ultrafixGoal: null, ultrafixMaxCycles: null,
     };
     expect(Array.from(canonicalObjective)).toHaveLength(4000);
     fetchMock.mockResolvedValue(jsonResponse({ goal: { ...wireGoal, objective: canonicalObjective } }, 201));
@@ -222,11 +212,7 @@ describe('goalsApi', () => {
       repository: wireGoal.repository,
       agent: 'codex',
       model: 'gpt-requested',
-      maxActiveTasks: 4,
-      mergePolicy: 'manual',
-      ultrafixEnabled: false,
-      ultrafixGoal: null,
-      ultrafixMaxCycles: null,
+      maxActiveTasks: 4, mergePolicy: 'manual', ultrafixEnabled: false, ultrafixGoal: null, ultrafixMaxCycles: null,
     };
     await expect(goalsApi.createGoal(params, 'conflicting-key')).rejects.toMatchObject({
       code: 'goal_idempotency_conflict',
@@ -273,8 +259,8 @@ describe('goalsApi', () => {
   });
 
   it.each([
-    ['providerTodos', (value: typeof wireDetail) => { delete (value as Partial<typeof wireDetail>).providerTodos; }, 'response.providerTodos'],
-    ['issues.ready', (value: typeof wireDetail) => { delete (value.stats.issues as Partial<typeof value.stats.issues>).ready; }, 'response.stats.issues.ready'],
+    ['provider', (value: typeof wireDetail) => { delete (value as Partial<typeof wireDetail>).provider; }, 'response.provider'],
+    ['artifacts.issues.open', (value: typeof wireDetail) => { delete (value.stats.artifacts.issues as Partial<typeof value.stats.artifacts.issues>).open; }, 'response.stats.artifacts.issues.open'],
     ['latestSequence', (value: typeof wireDetail) => { delete (value as Partial<typeof wireDetail>).latestSequence; }, 'response.latestSequence'],
   ])('rejects a detail response missing canonical %s', async (_field, mutate, path) => {
     const malformed = JSON.parse(JSON.stringify(wireDetail)) as typeof wireDetail;
@@ -284,38 +270,34 @@ describe('goalsApi', () => {
   });
 
   it('pages replay history with mutually exclusive cursors and one canonical event envelope', async () => {
+    const wireEvent = { schemaVersion: 1, goalId: 'goal-1', sequence: 8, eventType: 'provider.output', kind: 'output', payload: { stream: 'stderr', outputType: 'text', chunk: '<b>inert</b>' }, createdAt: wireGoal.updatedAt, cursor: 'opaque/event/8==' } satisfies GoalEventEnvelope;
     fetchMock.mockResolvedValue(jsonResponse({
-      events: [{ goalId: 'goal-1', sequence: 8, type: 'stderr', source: 'output', content: '<b>inert</b>', payload: { streamId: 'stderr' }, timestamp: wireGoal.updatedAt, turnId: null }],
-      previousCursor: 8, nextCursor: 8, hasMoreBefore: true,
+      schemaVersion: 1, events: [wireEvent], previousCursor: 'opaque/before/8', nextCursor: 'opaque/after/8', hasMoreBefore: true, asOfSequence: 8,
     }));
-    await expect(goalsApi.getGoalEvents('goal-1', { afterSequence: 7, limit: 200 })).resolves.toEqual({
-      events: [{ goalId: 'goal-1', sequence: 8, type: 'stderr', source: 'output', content: '<b>inert</b>', payload: { streamId: 'stderr' }, timestamp: wireGoal.updatedAt, turnId: null }],
-      previousCursor: 8, nextCursor: 8, hasMoreBefore: true,
+    await expect(goalsApi.getGoalEvents('goal-1', { afterCursor: 'opaque/event/7==', limit: 200 })).resolves.toEqual({
+      schemaVersion: 1, events: [wireEvent], previousCursor: 'opaque/before/8', nextCursor: 'opaque/after/8', hasMoreBefore: true, asOfSequence: 8,
     });
-    expect(fetchMock).toHaveBeenCalledWith('/api/goals/goal-1/events?afterSequence=7&limit=200', { credentials: 'include', signal: undefined });
-    await expect(goalsApi.getGoalEvents('goal-1', { afterSequence: 7, beforeSequence: 8 })).rejects.toThrow('event cursor');
+    expect(fetchMock).toHaveBeenCalledWith('/api/goals/goal-1/events?afterCursor=opaque%2Fevent%2F7%3D%3D&limit=200', { credentials: 'include', signal: undefined });
+    await expect(goalsApi.getGoalEvents('goal-1', { afterCursor: 'a', beforeCursor: 'b' })).rejects.toThrow('event cursor');
   });
 
   it.each([
-    ['type', { eventType: 'stderr' }],
-    ['source', { kind: 'output' }],
-    ['timestamp', { createdAt: wireGoal.updatedAt }],
-    ['type', { payload: { type: 'stderr' } }],
-    ['type', { payload: { stream: 'stderr' } }],
-    ['content', {}],
-    ['payload', {}],
-    ['turnId', {}],
+    ['schemaVersion', { version: 1 }],
+    ['eventType', { type: 'provider.output' }],
+    ['kind', { source: 'provider' }],
+    ['createdAt', { timestamp: wireGoal.updatedAt }],
+    ['cursor', { sequenceCursor: 'opaque-8' }],
   ])('rejects event aliases or omission at canonical field %s', async (field, alias) => {
-    const canonical = { goalId: 'goal-1', sequence: 8, type: 'stderr', source: 'output', content: 'line', payload: null, timestamp: wireGoal.updatedAt, turnId: null };
+    const canonical = { schemaVersion: 1, goalId: 'goal-1', sequence: 8, eventType: 'provider.output', kind: 'output', payload: { stream: 'stdout', outputType: 'text', chunk: 'line' }, createdAt: wireGoal.updatedAt, cursor: 'opaque-8' };
     const malformed = { ...canonical, [field]: undefined, ...alias };
-    fetchMock.mockResolvedValue(jsonResponse({ events: [malformed], previousCursor: 8, nextCursor: 8, hasMoreBefore: false }));
+    fetchMock.mockResolvedValue(jsonResponse({ schemaVersion: 1, events: [malformed], previousCursor: 'before', nextCursor: 'after', hasMoreBefore: false, asOfSequence: 8 }));
     await expect(goalsApi.getGoalEvents('goal-1')).rejects.toThrow(`response.events[0].${field}`);
   });
 
-  it('rejects queued as a non-canonical durable message state', async () => {
+  it('rejects pending as a non-canonical FIFO message state', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ message: {
-      messageId: 'message-1', sequence: 9, body: 'Status?', predefinedKind: null, state: 'queued', responseSource: null,
-      response: null, error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt,
+      messageId: 'message-1', sequence: 9, body: 'Status?', cannedAction: null, state: 'pending',
+      error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt,
     } }, 201));
     await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?' }, 'message-key')).rejects.toMatchObject({
       name: 'GoalMutationUncertainError',
@@ -335,7 +317,7 @@ describe('goalsApi', () => {
   it('validates and sends the same canonical trimmed Unicode message', async () => {
     const canonicalBody = `${'🚀'.repeat(3998)}e\u0301`;
     const rawBody = ` \n${canonicalBody}\t `;
-    const wireMessage = { messageId: 'message-1', sequence: 9, body: canonicalBody, predefinedKind: null, state: 'delivered', responseSource: null, response: null, error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
+    const wireMessage = { messageId: 'message-1', sequence: 9, body: canonicalBody, cannedAction: null, state: 'delivered', error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
     expect(Array.from(canonicalBody)).toHaveLength(4000);
     fetchMock.mockResolvedValue(jsonResponse({ message: wireMessage }, 201));
 
@@ -350,17 +332,17 @@ describe('goalsApi', () => {
   });
 
   it('requires an idempotency key for steering and exposes all durable message states', async () => {
-    const wireMessage = { messageId: 'message-1', sequence: 9, body: 'Status?', predefinedKind: 'whats_done', state: 'failed', responseSource: 'controller', response: 'Still running', error: 'Provider unavailable', createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
+    const wireMessage = { messageId: 'message-1', sequence: 9, body: "What's done?", cannedAction: 'whats_done', state: 'failed', error: 'Provider unavailable', createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
     await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?' }, '')).rejects.toThrow('Idempotency-Key');
     fetchMock.mockResolvedValue(jsonResponse({ message: wireMessage }, 201));
-    await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?', predefinedKind: 'whats_done' }, 'message-key')).resolves.toEqual(wireMessage);
+    await expect(goalsApi.sendGoalMessage('goal-1', { cannedAction: 'whats_done' }, 'message-key')).resolves.toEqual(wireMessage);
     expect(fetchMock).toHaveBeenCalledWith('/api/goals/goal-1/messages', expect.objectContaining({
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'message-key' },
+      method: 'POST', body: JSON.stringify({ cannedAction: 'whats_done' }), headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'message-key' },
     }));
   });
 
   it('replays steering after token refresh with the exact payload and idempotency key', async () => {
-    const wireMessage = { messageId: 'message-1', sequence: 9, body: 'Status?', predefinedKind: null, state: 'delivered', responseSource: null, response: null, error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
+    const wireMessage = { messageId: 'message-1', sequence: 9, body: 'Status?', cannedAction: null, state: 'delivered', error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
     fetchMock.mockResolvedValueOnce(jsonResponse({ code: 'TOKEN_REFRESHED' }, 401)).mockResolvedValueOnce(jsonResponse({ message: wireMessage }, 201));
     const params = { body: 'Status?' };
     await expect(goalsApi.sendGoalMessage('goal-1', params, 'stable-message-key')).resolves.toEqual(wireMessage);
@@ -370,10 +352,10 @@ describe('goalsApi', () => {
     });
   });
 
-  it.each(['body', 'predefinedKind', 'responseSource', 'response', 'error', 'createdAt', 'updatedAt'])(
+  it.each(['body', 'cannedAction', 'error', 'createdAt', 'updatedAt'])(
     'rejects a durable message missing canonical %s',
     async field => {
-      const malformed: Record<string, unknown> = { messageId: 'message-1', sequence: 9, body: 'Status?', predefinedKind: null, state: 'pending', responseSource: null, response: null, error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
+      const malformed: Record<string, unknown> = { messageId: 'message-1', sequence: 9, body: 'Status?', cannedAction: null, state: 'queued', error: null, createdAt: wireGoal.createdAt, updatedAt: wireGoal.updatedAt };
       delete malformed[field];
       fetchMock.mockResolvedValue(jsonResponse({ message: malformed }, 201));
       await expect(goalsApi.sendGoalMessage('goal-1', { body: 'Status?' }, 'message-key')).rejects.toMatchObject({

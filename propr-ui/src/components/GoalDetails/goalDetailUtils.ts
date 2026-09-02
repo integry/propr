@@ -1,4 +1,4 @@
-import type { GoalEventV1 as GoalEvent, GoalHierarchyNodeV1 } from '../../api/goalContracts';
+import type { GoalEventV1 as GoalEvent, GoalJsonValue } from '../../api/goalContracts';
 
 export const GOAL_TERMINAL_STATES = new Set(['completed', 'failed', 'cancelled']);
 export const GOAL_EVENT_RETENTION_LIMIT = 1_000;
@@ -60,26 +60,38 @@ export const mergeGoalEvents = (
   return [...selected.values()].sort((left, right) => left.sequence - right.sequence);
 };
 
-export const hierarchyChildren = (
-  nodes: GoalHierarchyNodeV1[]
-): Map<string | null, GoalHierarchyNodeV1[]> => {
-  const result = new Map<string | null, GoalHierarchyNodeV1[]>();
-  for (const node of nodes) {
-    const siblings = result.get(node.parentNodeId) ?? [];
-    siblings.push(node);
-    result.set(node.parentNodeId, siblings);
-  }
-  for (const siblings of result.values()) siblings.sort((left, right) => left.orderIndex - right.orderIndex);
-  return result;
-};
-
 export const makeGoalIntentKey = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   return `goal-intent-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 };
 
+const payloadRecord = (payload: GoalJsonValue): Record<string, GoalJsonValue> | null =>
+  payload !== null && typeof payload === 'object' && !Array.isArray(payload) ? payload : null;
+
+export const eventContent = (event: GoalEvent): string => {
+  const payload = payloadRecord(event.payload);
+  for (const field of ['chunk', 'content', 'text', 'message', 'detail']) {
+    if (typeof payload?.[field] === 'string') return payload[field] as string;
+  }
+  if (event.payload === null) return '';
+  if (typeof event.payload === 'string') return event.payload;
+  return JSON.stringify(event.payload, null, 2);
+};
+
+export const eventSource = (event: GoalEvent): string => {
+  const payload = payloadRecord(event.payload);
+  return typeof payload?.provider === 'string' ? payload.provider
+    : typeof payload?.source === 'string' ? payload.source
+      : event.kind;
+};
+
+export const eventTurnId = (event: GoalEvent): string | null => {
+  const payload = payloadRecord(event.payload);
+  return typeof payload?.turnId === 'string' ? payload.turnId : null;
+};
+
 export const eventSearchText = (event: GoalEvent): string =>
-  `${event.type} ${event.source} ${event.turnId ?? ''} ${event.content}`.toLocaleLowerCase();
+  `${event.eventType} ${event.kind} ${eventSource(event)} ${eventTurnId(event) ?? ''} ${eventContent(event)}`.toLocaleLowerCase();
 
 export const sanitizeTerminalText = (value: string): string => value
   .replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, '')

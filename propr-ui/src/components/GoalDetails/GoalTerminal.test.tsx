@@ -16,8 +16,9 @@ describe('GoalTerminal', () => {
     expect(document.querySelector('script')).toBeNull();
     expect(screen.getByText('<script>alert(1)</script>')).toBeInTheDocument();
     expect(sanitizeTerminalText('\u001b[31mred\u001b[0m')).toBe('red');
-    fireEvent.click(screen.getByRole('button', { name: 'stdout' }));
-    expect(screen.getByText('<script>alert(1)</script>')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'provider.output' }));
+    expect(screen.queryByText('<script>alert(1)</script>')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'provider.output' }));
     fireEvent.click(screen.getByRole('button', { name: 'Copy visible terminal output' }));
     await waitFor(() => expect(clipboard.writeText).toHaveBeenCalledWith(expect.not.stringContaining('\u001b')));
     expect(screen.getByText('Visible terminal output copied')).toBeInTheDocument();
@@ -28,8 +29,11 @@ describe('GoalTerminal', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
     const malicious = {
       ...event(1, 'stdout', '<img src=x onerror=alert(1)>'),
-      source: '\u001b[31mcodex\n[forged source]\u0007',
-      turnId: 'turn-1\r\n[forged turn]\u009B31m',
+      payload: {
+        provider: '\u001b[31mcodex\n[forged source]\u0007',
+        turnId: 'turn-1\r\n[forged turn]\u009B31m',
+        chunk: '<img src=x onerror=alert(1)>',
+      },
     };
     render(<GoalTerminal events={[malicious]} connectionState="connected" hasMoreBefore={false} loadingOlder={false} onLoadOlder={vi.fn()} />);
     expect(document.querySelector('img')).toBeNull();

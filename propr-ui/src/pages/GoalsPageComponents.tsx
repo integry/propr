@@ -5,7 +5,6 @@ import {
   Clock,
   Cpu,
   ExternalLink,
-  GitMerge,
   Target,
   Zap,
 } from 'lucide-react';
@@ -45,16 +44,16 @@ const ProjectedStats = ({ goal }: { goal: GoalListItem }) => {
   if (goal.projection.status === 'not-yet-projected') {
     return <span className="text-slate-400">Detailed statistics are not yet projected.</span>;
   }
-  const { issues, pullRequests, time, tokens } = goal.projection;
+  const { time, tokens, messages, artifacts } = goal.projection.stats;
   return (
     <>
-      <span>{issues.total} total · {issues.ready} ready · {issues.active} active · {issues.processed} processed · {issues.failed} failed · {issues.blocked} blocked</span>
-      <span>{pullRequests.open} open PRs · {pullRequests.mergeReady} merge-ready · {pullRequests.merged} merged</span>
+      <span>{artifacts.issues.total} associated issues · {artifacts.pullRequests.total} associated PRs</span>
       <span className="flex items-center gap-1"><Cpu className="h-3 w-3" aria-hidden="true" />{formatTokens(tokens.total)} tokens</span>
       <span className="flex items-center gap-1">
         <Clock className="h-3 w-3" aria-hidden="true" />
         {formatDuration(time.elapsedSeconds)} elapsed · {formatDuration(time.activeSeconds)} active · {formatDuration(time.pausedSeconds)} paused
       </span>
+      <span>{messages.queued} queued message{messages.queued === 1 ? '' : 's'}{messages.oldestQueuedSeconds === null ? '' : ` · ${formatDuration(messages.oldestQueuedSeconds)} oldest lag`}</span>
     </>
   );
 };
@@ -62,17 +61,15 @@ const ProjectedStats = ({ goal }: { goal: GoalListItem }) => {
 const GoalStats = ({ goal }: { goal: GoalListItem }) => (
   <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
     <GoalModels goal={goal} />
-    <span>{goal.activeNodeCount} active work items · {goal.nodeCount} total</span>
     <ProjectedStats goal={goal} />
-    {goal.mergePolicy !== 'manual' && <span className="flex items-center gap-1"><GitMerge className="h-3 w-3" aria-hidden="true" />{goal.mergePolicy}</span>}
-    <span>Concurrency: {goal.maxActiveTasks}</span>
-    {goal.ultrafixEnabled && <span>Ultrafix · goal {goal.ultrafixGoal}/10 · max {goal.ultrafixMaxCycles}</span>}
+    <span>Parallelism preference: {goal.maxActiveTasks}</span>
+    {goal.ultrafixEnabled && <span>Ultrafix preference · goal {goal.ultrafixGoal}/10 · max {goal.ultrafixMaxCycles}</span>}
   </div>
 );
 
 const ChecklistProgress = ({ goal }: { goal: GoalListItem }) => {
-  if (goal.projection.status !== 'ready' || goal.projection.checklist.total === 0) return null;
-  const { completed, total } = goal.projection.checklist;
+  if (goal.projection.status !== 'ready' || !goal.projection.plan || goal.projection.plan.total === 0) return null;
+  const { completed, total } = goal.projection.plan;
   const percent = Math.round((completed / total) * 100);
   const label = `${completed} of ${total} checklist items completed`;
   return (
@@ -96,7 +93,7 @@ const ChecklistProgress = ({ goal }: { goal: GoalListItem }) => {
 
 export const GoalRow = ({ goal, returnTarget = '/goals' }: { goal: GoalListItem; returnTarget?: string }) => {
   const projection = goal.projection.status === 'ready' ? goal.projection : null;
-  const epicPrUrl = absoluteHttpsUrl(projection?.epicPrUrl ?? null);
+  const finalPrUrl = absoluteHttpsUrl(projection?.stats.artifacts.finalPullRequest?.url ?? null);
   return (
     <article className="border-b border-slate-100 bg-white last:border-0">
       <div className="px-4 py-4 sm:px-6">
@@ -107,8 +104,8 @@ export const GoalRow = ({ goal, returnTarget = '/goals' }: { goal: GoalListItem;
           </div>
           <div className="flex flex-shrink-0 items-center gap-2">
             <GoalStateBadge state={goal.state} />
-            {epicPrUrl && (
-              <a href={epicPrUrl} target="_blank" rel="noopener noreferrer" className="rounded p-1 text-gray-400 hover:text-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500" aria-label={`Open epic pull request for ${goal.objective}`}>
+            {finalPrUrl && (
+              <a href={finalPrUrl} target="_blank" rel="noopener noreferrer" className="rounded p-1 text-gray-400 hover:text-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500" aria-label={`Open associated final pull request for ${goal.objective}`}>
                 <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
               </a>
             )}
@@ -116,6 +113,7 @@ export const GoalRow = ({ goal, returnTarget = '/goals' }: { goal: GoalListItem;
         </div>
         <ChecklistProgress goal={goal} />
         <GoalStats goal={goal} />
+        {projection?.provider.status && <p className="mt-1 text-xs text-violet-700">Provider status: {projection.provider.status}{projection.provider.statusDetail ? ` · ${projection.provider.statusDetail}` : ''}</p>}
         {projection?.latestEvent && <p className="mt-1.5 truncate text-xs text-gray-400">{projection.latestEvent}</p>}
         {(goal.state === 'recovering' || projection?.connectionState === 'disconnected' || projection?.connectionState === 'recovering') && (
           <p className="mt-1 text-xs text-amber-700">{goal.state === 'recovering' || projection?.connectionState === 'recovering' ? 'Recovering from interrupted run…' : 'Connection lost, retrying…'}</p>
@@ -140,7 +138,7 @@ export const EmptyGoalsState = ({ type, searchQuery, onCreateGoal, onClearFilter
       <div className="mx-4 my-4 rounded-lg border border-dashed border-gray-300 bg-gray-50 py-12 text-center sm:mx-0 sm:my-6 sm:py-20">
         <Target className="mx-auto mb-3 h-10 w-10 text-gray-300" aria-hidden="true" />
         <h2 className="mb-1 text-sm font-semibold text-gray-700">No goals yet</h2>
-        <p className="mx-auto mb-4 max-w-xs text-sm text-gray-500">Goals coordinate an agent across long-running repository work.</p>
+        <p className="mx-auto mb-4 max-w-xs text-sm text-gray-500">Goals host one coding agent&apos;s native long-running goal session.</p>
         <button type="button" onClick={onCreateGoal} disabled={createDisabled} className="inline-flex items-center gap-1.5 rounded-md bg-teal-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"><Target className="h-4 w-4" aria-hidden="true" />Create first goal</button>
       </div>
     );

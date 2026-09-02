@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, Copy, Search } from 'lucide-react';
-import type { GoalEvent, GoalEventType } from '../../api/goalsApi';
-import { eventSearchText, sanitizeTerminalLabel, sanitizeTerminalText, type GoalViewportAnchor } from './goalDetailUtils';
+import { GOAL_EVENT_TYPES, type GoalEvent, type GoalEventType } from '../../api/goalsApi';
+import { eventContent, eventSearchText, eventSource, eventTurnId, sanitizeTerminalLabel, sanitizeTerminalText, type GoalViewportAnchor } from './goalDetailUtils';
 
-const EVENT_TYPES: GoalEventType[] = ['stdout', 'stderr', 'assistant', 'tool', 'checkpoint', 'usage', 'message', 'lifecycle'];
+const EVENT_TYPES: GoalEventType[] = [...GOAL_EVENT_TYPES];
 const MOUNT_LIMIT = 250;
 
 const eventLabel = (event: GoalEvent): string => {
-  const time = new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const source = sanitizeTerminalLabel(event.source) || 'unknown source';
-  const turnId = event.turnId ? sanitizeTerminalLabel(event.turnId) : '';
+  const time = new Date(event.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const source = sanitizeTerminalLabel(eventSource(event)) || 'unknown source';
+  const rawTurnId = eventTurnId(event);
+  const turnId = rawTurnId ? sanitizeTerminalLabel(rawTurnId) : '';
   return `${time} · ${source}${turnId ? ` · turn ${turnId}` : ''}`;
 };
 
@@ -64,7 +65,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
 
   const filtered = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    return events.filter(event => enabledTypes.has(event.type)
+    return events.filter(event => enabledTypes.has(event.eventType)
       && (!normalizedQuery || eventSearchText(event).includes(normalizedQuery)));
   }, [enabledTypes, events, query]);
   const latestStart = Math.max(0, filtered.length - MOUNT_LIMIT);
@@ -212,7 +213,7 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
   };
 
   const copyVisible = async () => {
-    const text = mounted.map(event => `[${eventLabel(event)}] ${event.type}: ${sanitizeTerminalText(event.content)}`).join('\n');
+    const text = mounted.map(event => `[${eventLabel(event)}] ${event.eventType}: ${sanitizeTerminalText(eventContent(event))}`).join('\n');
     try {
       if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') throw new Error('Clipboard unavailable');
       await navigator.clipboard.writeText(text);
@@ -275,14 +276,14 @@ export default function GoalTerminal({ events, connectionState, hasMoreBefore, l
         <ol className="divide-y divide-zinc-900">
           {mounted.map((event, index) => {
             const previous = mounted[index - 1];
-            const newTurn = index > 0 && previous.turnId !== event.turnId;
+            const newTurn = index > 0 && eventTurnId(previous) !== eventTurnId(event);
             return (
               <li key={event.sequence} data-event-sequence={event.sequence} className={`${newTurn ? 'border-t border-zinc-700' : ''} px-3 py-2`}>
                 <div className="mb-1 flex flex-wrap items-center gap-x-2 text-[10px] text-zinc-500">
-                  <span className={`uppercase ${event.type === 'stderr' ? 'text-red-400' : event.type === 'assistant' ? 'text-cyan-400' : 'text-zinc-400'}`}>{event.type}</span>
+                  <span className={`uppercase ${event.eventType === 'provider.output' && eventContent(event).toLowerCase().includes('error') ? 'text-red-400' : event.eventType === 'provider.output' ? 'text-cyan-400' : 'text-zinc-400'}`}>{event.eventType}</span>
                   <span>#{event.sequence}</span><span>{eventLabel(event)}</span>
                 </div>
-                <pre className="m-0 max-w-full whitespace-pre-wrap break-words font-mono leading-5 text-zinc-200">{sanitizeTerminalText(event.content)}</pre>
+                <pre className="m-0 max-w-full whitespace-pre-wrap break-words font-mono leading-5 text-zinc-200">{sanitizeTerminalText(eventContent(event))}</pre>
               </li>
             );
           })}

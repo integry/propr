@@ -1,17 +1,20 @@
 import { useState } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { GoalDetail } from '../../api/goalsApi';
+import type { GoalDetail, GoalEvent } from '../../api/goalsApi';
 import GoalControls from './GoalControls';
-import GoalHierarchy from './GoalHierarchy';
+import GoalPlan from './GoalPlan';
 import GoalStats from './GoalStats';
-import { GOAL_EVENT_RETENTION_LIMIT, hierarchyChildren, mergeGoalEvents, scopedGoalKey } from './goalDetailUtils';
-import { goalDetail as detail, goalEvent as event, goalMessage as message, timestamp } from './goalDetailsTestFixtures';
+import { GOAL_EVENT_RETENTION_LIMIT, mergeGoalEvents, scopedGoalKey } from './goalDetailUtils';
+import { projectGoalEvent } from './goalEventProjection';
+import { detail as makeDetail, event, message, timestamp } from './goalDetailsTestFixtures';
+
+const detail = makeDetail();
 
 describe('goal detail utilities', () => {
   it('deduplicates replayed sequences, sorts gaps, and rejects cross-goal cache pollution', () => {
-    expect(mergeGoalEvents([event(2)], [event(1), event(2, 'stderr'), { ...event(3), goalId: 'other' }], 'goal-1'))
-      .toEqual([event(1), event(2, 'stderr')]);
+    expect(mergeGoalEvents([event(2)], [event(1), event(2, 'provider.status'), { ...event(3), goalId: 'other' }], 'goal-1'))
+      .toEqual([event(1), event(2, 'provider.status')]);
     expect(scopedGoalKey('owner-a', 'integry/propr', 'goal-1')).not.toBe(scopedGoalKey('owner-b', 'integry/propr', 'goal-1'));
   });
 
@@ -22,9 +25,9 @@ describe('goal detail utilities', () => {
     expect(tail[0].sequence).toBe(501);
     expect(tail.at(-1)?.sequence).toBe(1_500);
 
-    const withDuplicate = mergeGoalEvents(tail, [event(1_500, 'stderr'), event(1_501)], 'goal-1');
+    const withDuplicate = mergeGoalEvents(tail, [event(1_500, 'provider.status'), event(1_501)], 'goal-1');
     expect(withDuplicate).toHaveLength(GOAL_EVENT_RETENTION_LIMIT);
-    expect(withDuplicate.find(item => item.sequence === 1_500)?.type).toBe('stderr');
+    expect(withDuplicate.find(item => item.sequence === 1_500)?.eventType).toBe('provider.status');
     expect(withDuplicate.at(-1)?.sequence).toBe(1_501);
 
     const older = mergeGoalEvents(withDuplicate, Array.from({ length: 700 }, (_, index) => event(index - 699)), 'goal-1', { ingestion: 'older' });
@@ -33,31 +36,39 @@ describe('goal detail utilities', () => {
     expect(older.at(-1)?.sequence).toBe(1_501);
   });
 
-  it('builds nested hierarchy buckets without flattening sub-epics', () => {
-    const base = { kind: 'root_epic', title: 'Root', state: 'active', orderIndex: 0, externalRef: null, externalUrl: null, blockedReason: null, ci: 'running', review: 'pending', ultrafix: 'pending', merge: 'pending' } as const;
-    const nodes: GoalDetail['hierarchy']['nodes'] = [
-      { ...base, nodeId: 'root', parentNodeId: null },
-      { ...base, kind: 'sub_epic', nodeId: 'child', parentNodeId: 'root' },
-    ];
-    expect(hierarchyChildren(nodes).get('root')?.[0]?.nodeId).toBe('child');
-  });
 });
-describe('goal hierarchy and statistics', () => {
-  it('renders nested blocked dependencies and keeps provider todos visibly advisory', () => {
-    const root = { nodeId: 'root', parentNodeId: null, kind: 'root_epic', title: 'Root epic', state: 'active', orderIndex: 0, externalRef: '#1', externalUrl: 'https://github.com/integry/propr/issues/1', blockedReason: null, ci: 'running', review: 'pending', ultrafix: 'pending', merge: 'pending' } as const;
-    const sub = { ...root, nodeId: 'sub', parentNodeId: 'root', kind: 'sub_epic', title: 'Sub epic', state: 'blocked', blockedReason: 'Waiting for API' } as const;
-    render(<GoalHierarchy nodes={[root, sub]} dependencies={[{ nodeId: 'sub', dependsOnNodeId: 'root' }]} providerTodos={[{ todoId: 'todo-1', provider: 'Codex', content: 'Inspect files', status: 'in_progress', updatedAt: timestamp }]} />);
-    expect(screen.getAllByRole('treeitem')[0]).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByText(/Blocked by Root epic: Waiting for API/)).toBeInTheDocument();
-    expect(screen.getByText('Provider advisory todos')).toBeInTheDocument();
-    expect(screen.getByText(/Advisory only/)).toBeInTheDocument();
-    expect(within(screen.getByLabelText('Goal work hierarchy')).queryByText('Inspect files')).not.toBeInTheDocument();
+describe('provider plan and statistics', () => {
+  it('projects canonical provider-native events without rewriting their envelopes', () => {
+    const events: GoalEvent[] = [
+      { ...event(6, 'provider.plan'), payload: { items: [{ id: 'native-1', text: 'Inspect canonical DTOs', status: 'in_progress' }] } },
+      { ...event(7, 'provider.status'), payload: { status: 'working', detail: 'Inspecting' } },
+      { ...event(8, 'provider.model'), payload: { requestedModel: 'gpt-next', effectiveModel: 'gpt-next' } },
+      { ...event(9, 'usage.reported'), payload: { provider: 'openai', model: 'gpt-next', occurrenceId: 'turn-1', inputTokens: 12, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 1, reasoningTokens: 3 } },
+      { ...event(10, 'checkpoint.saved'), payload: { checkpointId: 'checkpoint-10', label: 'Tests green' } },
+      { ...event(11, 'provider.completed'), payload: { status: 'completed', summary: 'Native goal complete' } },
+    ];
+    const projected = events.reduce(projectGoalEvent, detail);
+
+    expect(projected.plan).toMatchObject({ status: 'reported', sessionId: 'session-1', generation: 1, eventSequence: 6, items: [{ itemId: 'native-1' }] });
+    expect(projected.provider).toMatchObject({ status: 'completed', statusDetail: 'Native goal complete', eventSequence: 11, checkpoint: { checkpointId: 'checkpoint-10', eventSequence: 10 } });
+    expect(projected.goal).toMatchObject({ requestedModel: 'gpt-next', effectiveModel: 'gpt-next' });
+    expect(projected.stats.tokens.total).toBe(198);
+    expect(projected.stats.tokens.byProviderModel).toEqual(expect.arrayContaining([{ provider: 'openai', model: 'gpt-next', input: 12, output: 5, cacheRead: 2, cacheWrite: 1, reasoning: 3, total: 23 }]));
+    expect(events[0]).toMatchObject({ eventType: 'provider.plan', kind: 'domain', payload: { items: [{ id: 'native-1' }] } });
   });
 
-  it('shows authoritative token dimensions and active, paused, and recovery timing', () => {
+  it('renders the provider-native checklist with its session/generation/event fence', () => {
+    render(<GoalPlan plan={{ status: 'reported', provider: 'codex', sessionId: 'session-1', generation: 2, eventSequence: 19, title: 'Native plan', items: [{ itemId: 'todo-1', text: 'Inspect files', status: 'in_progress', detail: null }], updatedAt: timestamp }} />);
+    expect(screen.getByText('Coding agent plan')).toBeInTheDocument();
+    expect(screen.getByText(/Authoritative provider projection.*session session-1.*generation 2.*event 19/)).toBeInTheDocument();
+    expect(within(screen.getByLabelText('Coding agent checklist')).getByText('Inspect files')).toBeInTheDocument();
+    expect(screen.queryByText(/ProPR checklist|advisory/i)).not.toBeInTheDocument();
+  });
+
+  it('shows token dimensions, active/paused timing, message lag, and passive artifacts', () => {
     render(<GoalStats stats={detail.stats} />);
-    expect(screen.getByText('5 total · 2 ready · 1 active · 3 processed · 1 failed · 1 blocked')).toBeInTheDocument();
-    expect(screen.getByText('1m elapsed · 1m active · 20s paused · 10s recovery')).toBeInTheDocument();
+    expect(screen.getByText('1h elapsed · 50m active · 8m paused')).toBeInTheDocument();
+    expect(screen.getByText('2 issues · 1 pull requests')).toBeInTheDocument();
     expect(screen.getByRole('table')).toHaveTextContent('openai / gpt-old');
     expect(screen.getByRole('table')).toHaveTextContent('175');
   });
@@ -73,12 +84,12 @@ describe('GoalControls', () => {
   it('covers pause acknowledgement, resume, cancellation confirmation, and pending model visibility', async () => {
     const handlers = props();
     const { rerender } = render(<GoalControls {...handlers} />);
-    expect(screen.getByText(/gpt-new requested, awaiting runtime acknowledgement/)).toBeInTheDocument();
+    expect(screen.getByText(/gpt-new requested, awaiting provider acknowledgement/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Requested model'), { target: { value: 'gpt-next' } });
     fireEvent.click(screen.getByRole('button', { name: 'Request change' }));
     expect(handlers.onChangeModel).toHaveBeenCalledWith('gpt-next');
     rerender(<GoalControls {...handlers} detail={{ ...detail, goal: { ...detail.goal, requestedModel: 'gpt-next', effectiveModel: 'gpt-next' } }} />);
-    expect(screen.queryByText(/awaiting runtime acknowledgement/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/awaiting provider acknowledgement/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
     expect(handlers.onPause).toHaveBeenCalledOnce();
     rerender(<GoalControls {...handlers} detail={{ ...detail, goal: { ...detail.goal, state: 'pausing' } }} />);
@@ -137,21 +148,20 @@ describe('GoalControls', () => {
     expect(screen.queryByRole('button', { name: 'Cancel goal…' })).not.toBeInTheDocument();
   });
 
-  it('renders every message state and supports failed retry and pending cancellation', () => {
+  it('renders every FIFO delivery state and supports failed retry and queued cancellation', () => {
     const handlers = props();
-    const messages = (['pending', 'delivered', 'acknowledged', 'failed', 'cancelled'] as const).map((state, index) => message(index + 1, state));
+    const messages = (['queued', 'delivering', 'delivered', 'acknowledged', 'failed', 'cancelled'] as const).map((state, index) => message(index + 1, state));
     render(<GoalControls {...handlers} detail={{ ...detail, messages }} />);
-    for (const state of ['pending', 'delivered', 'acknowledged', 'failed', 'cancelled']) expect(screen.getByText(state)).toBeInTheDocument();
-    expect(screen.getByText(/Provider response/)).toBeInTheDocument();
+    for (const state of ['queued', 'delivering', 'delivered', 'acknowledged', 'failed', 'cancelled']) expect(screen.getByText(state)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(handlers.onRetryMessage).toHaveBeenCalledWith(messages[3]);
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel pending message' }));
+    expect(handlers.onRetryMessage).toHaveBeenCalledWith(messages[4]);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel queued message' }));
     expect(handlers.onCancelMessage).toHaveBeenCalledWith('message-1');
   });
 
   it('preserves full message drafts through prepend, middle, append, and composition edits', () => {
     render(<GoalControls {...props()} />);
-    const draft = screen.getByRole('textbox', { name: 'Message to the goal controller' });
+    const draft = screen.getByRole('textbox', { name: 'Message to the coding agent' });
     expect(draft).not.toHaveAttribute('maxlength');
     const full = `${'a'.repeat(3998)}YZ`;
     const insertions = [
@@ -180,7 +190,7 @@ describe('GoalControls', () => {
   it('preserves an over-limit message paste and recovers after editing under the limit', async () => {
     const handlers = props();
     render(<GoalControls {...handlers} />);
-    const draft = screen.getByRole('textbox', { name: 'Message to the goal controller' });
+    const draft = screen.getByRole('textbox', { name: 'Message to the coding agent' });
     const pastedDraft = 'x'.repeat(4001);
 
     fireEvent.paste(draft, { clipboardData: { getData: () => pastedDraft } });
@@ -202,7 +212,7 @@ describe('GoalControls', () => {
     const handlers = props();
     handlers.onSend.mockResolvedValue(false);
     render(<GoalControls {...handlers} />);
-    const draft = screen.getByRole('textbox', { name: 'Message to the goal controller' });
+    const draft = screen.getByRole('textbox', { name: 'Message to the coding agent' });
 
     const astralDraft = `  ${'🚀'.repeat(4000)}  `;
     fireEvent.change(draft, { target: { value: astralDraft } });
@@ -224,22 +234,22 @@ describe('GoalControls', () => {
 
   it('disables every mutation for each pending action without unmounting the draft', () => {
     const handlers = props();
-    const messages = [message(1, 'pending'), message(2, 'failed')];
+    const messages = [message(1, 'queued'), message(2, 'failed')];
     const view = render(<GoalControls {...handlers} detail={{ ...detail, messages }} />);
-    const draft = screen.getByRole('textbox', { name: 'Message to the goal controller' });
+    const draft = screen.getByRole('textbox', { name: 'Message to the coding agent' });
     fireEvent.change(draft, { target: { value: 'Preserve this mounted draft' } });
     fireEvent.change(screen.getByLabelText('Requested model'), { target: { value: 'gpt-next' } });
 
     for (const pendingAction of ['pause', 'resume', 'cancel', 'model', 'message', 'cancel-message']) {
       view.rerender(<GoalControls {...handlers} detail={{ ...detail, messages }} pendingAction={pendingAction} />);
-      for (const name of ['Cancel goal…', 'Request change', 'What’s done?', 'What’s left?', 'Retry', 'Cancel pending message']) {
+      for (const name of ['Cancel goal…', 'Request change', 'What’s done?', 'What’s left?', 'Retry', 'Cancel queued message']) {
         expect(screen.getByRole('button', { name })).toBeDisabled();
       }
       expect(screen.getByRole('button', { name: /^(Pause|Requesting pause…)$/ })).toBeDisabled();
       expect(screen.getByRole('button', { name: /^(Send message|Sending…)$/ })).toBeDisabled();
       expect(screen.getByLabelText('Requested model')).toBeDisabled();
-      expect(screen.getByRole('textbox', { name: 'Message to the goal controller' })).toBeDisabled();
-      expect(screen.getByRole('textbox', { name: 'Message to the goal controller' })).toHaveValue('Preserve this mounted draft');
+      expect(screen.getByRole('textbox', { name: 'Message to the coding agent' })).toBeDisabled();
+      expect(screen.getByRole('textbox', { name: 'Message to the coding agent' })).toHaveValue('Preserve this mounted draft');
     }
   });
 

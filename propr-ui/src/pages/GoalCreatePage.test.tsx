@@ -8,6 +8,14 @@ import GoalCreatePage from './GoalCreatePage';
 
 const mocks = vi.hoisted(() => ({ demoMode: false, addToast: vi.fn() }));
 
+const goalCapabilities = {
+  nativeGoal: true,
+  pause: { supported: true, application: 'safe_boundary' as const },
+  resume: { supported: true, application: 'immediate' as const },
+  steer: { supported: true, application: 'next_turn' as const },
+  modelChange: { supported: true, application: 'safe_boundary' as const },
+};
+
 vi.mock('../api/goalsApi', async importOriginal => ({
   ...await importOriginal<typeof import('../api/goalsApi')>(),
   createGoal: vi.fn(),
@@ -26,11 +34,26 @@ const catalog = {
     { alias: 'disabled-goal', enabled: false, goalCapable: true, supportedModels: ['disabled-model'], goalCapableModels: ['disabled-model'] },
     {
       alias: 'codex',
+      type: 'codex',
       enabled: true,
       goalCapable: true,
       supportedModels: ['not-for-goals', 'goal-model'],
       goalCapableModels: ['goal-model', 'not-in-supported-catalog'],
+      goalModelCatalog: [{ id: 'goal-model', displayName: 'GPT Goal', goalCapable: true }],
+      goalCapabilities,
       defaultModel: 'not-for-goals',
+    },
+    {
+      alias: 'claude', type: 'claude', enabled: true, goalCapable: true,
+      supportedModels: ['claude-goal'], goalCapableModels: ['claude-goal'],
+      goalModelCatalog: [{ id: 'claude-goal', displayName: 'Claude Goal', goalCapable: true }],
+      goalCapabilities,
+    },
+    {
+      alias: 'antigravity', type: 'antigravity', enabled: true, goalCapable: true,
+      supportedModels: ['antigravity-goal'], goalCapableModels: ['antigravity-goal'],
+      goalModelCatalog: [{ id: 'antigravity-goal', displayName: 'Antigravity Goal', goalCapable: true }],
+      goalCapabilities,
     },
   ],
   repositories: [
@@ -47,12 +70,9 @@ const createdGoal: GoalRecordV1 = {
   agent: 'codex',
   requestedModel: 'goal-model',
   effectiveModel: 'goal-model',
-  maxActiveTasks: 3,
-  mergePolicy: 'manual',
-  ultrafixEnabled: false,
-  ultrafixGoal: null,
-  ultrafixMaxCycles: null,
+  maxActiveTasks: 3, mergePolicy: 'manual', ultrafixEnabled: false, ultrafixGoal: null, ultrafixMaxCycles: null,
   version: 0,
+  terminalReason: null,
   createdAt: '2026-08-31T00:00:00Z',
   updatedAt: '2026-08-31T00:00:00Z',
 };
@@ -95,9 +115,15 @@ describe('GoalCreatePage', () => {
     renderPage();
     expect(screen.getByRole('status', { name: 'Loading goal catalog' })).toBeInTheDocument();
     const agent = await screen.findByLabelText(/^Agent/);
-    expect(within(agent).getAllByRole('option').map(option => option.textContent)).toEqual(['codex']);
+    expect(within(agent).getAllByRole('option').map(option => option.textContent)).toEqual(['codex', 'claude', 'antigravity']);
     expect(screen.getByLabelText(/^Requested model/)).toHaveValue('goal-model');
-    expect(within(screen.getByLabelText(/^Requested model/)).getAllByRole('option').map(option => option.textContent)).toEqual(['goal-model']);
+    expect(within(screen.getByLabelText(/^Requested model/)).getAllByRole('option').map(option => option.textContent)).toEqual(['GPT Goal']);
+    fireEvent.change(agent, { target: { value: 'claude' } });
+    expect(screen.getByLabelText(/^Requested model/)).toHaveValue('claude-goal');
+    expect(screen.getByRole('option', { name: 'Claude Goal' })).toBeInTheDocument();
+    fireEvent.change(agent, { target: { value: 'antigravity' } });
+    expect(screen.getByLabelText(/^Requested model/)).toHaveValue('antigravity-goal');
+    expect(screen.getByRole('option', { name: 'Antigravity Goal' })).toBeInTheDocument();
     expect(screen.getByLabelText(/^Repository/)).toHaveValue('integry/propr');
   });
 
@@ -105,8 +131,8 @@ describe('GoalCreatePage', () => {
     renderPage();
     await screen.findByRole('form', { name: 'Create goal' });
     setValidObjective('1234567890');
-    fireEvent.change(screen.getByLabelText(/^Maximum concurrent tasks/), { target: { value: '' } });
-    fireEvent.click(screen.getByLabelText('Run Ultrafix after each pull request'));
+    fireEvent.change(screen.getByLabelText(/^Parallelism preference/), { target: { value: '' } });
+    fireEvent.click(screen.getByLabelText('Ask the coding agent to apply the Ultrafix preference'));
     fireEvent.change(screen.getByLabelText(/Review goal/), { target: { value: '' } });
     fireEvent.change(screen.getByLabelText(/Maximum cycles/), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
@@ -122,13 +148,13 @@ describe('GoalCreatePage', () => {
     renderPage();
     await screen.findByRole('form', { name: 'Create goal' });
     setValidObjective('1234567890');
-    fireEvent.change(screen.getByLabelText(/^Maximum concurrent tasks/), { target: { value: '1' } });
-    fireEvent.click(screen.getByLabelText('Run Ultrafix after each pull request'));
+    fireEvent.change(screen.getByLabelText(/^Parallelism preference/), { target: { value: '1' } });
+    fireEvent.click(screen.getByLabelText('Ask the coding agent to apply the Ultrafix preference'));
     fireEvent.change(screen.getByLabelText(/Review goal/), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText(/Maximum cycles/), { target: { value: '20' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
     await waitFor(() => expect(createGoal).toHaveBeenCalledWith(expect.objectContaining({
-      objective: '1234567890', maxActiveTasks: 1, ultrafixGoal: 1, ultrafixMaxCycles: 20,
+      objective: '1234567890', maxActiveTasks: 1, mergePolicy: 'manual', ultrafixEnabled: true, ultrafixGoal: 1, ultrafixMaxCycles: 20,
     }), expect.any(String)));
   });
 
@@ -251,7 +277,7 @@ describe('GoalCreatePage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
     await screen.findByText('Uncertain result');
     const firstKey = vi.mocked(createGoal).mock.calls[0][1];
-    fireEvent.change(screen.getByLabelText(/^Maximum concurrent tasks/), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText(/^Parallelism preference/), { target: { value: '5' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
     await waitFor(() => expect(createGoal).toHaveBeenCalledTimes(2));
     expect(vi.mocked(createGoal).mock.calls[1][1]).not.toBe(firstKey);
@@ -268,7 +294,7 @@ describe('GoalCreatePage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
     await screen.findByText('Uncertain result');
     const firstKey = vi.mocked(createGoal).mock.calls[0][1];
-    const concurrency = screen.getByLabelText(/^Maximum concurrent tasks/);
+    const concurrency = screen.getByLabelText(/^Parallelism preference/);
     fireEvent.change(concurrency, { target: { value: '5' } });
     fireEvent.change(concurrency, { target: { value: '3' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create Goal' }));
@@ -292,10 +318,10 @@ describe('GoalCreatePage', () => {
     expect(vi.mocked(createGoal).mock.calls[1][1]).not.toBe(conflictKey);
   });
 
-  it('keeps demo mode read-only and explains epic/sub-epic/leaf PR output', async () => {
+  it('keeps demo mode read-only and explains provider-owned planning', async () => {
     mocks.demoMode = true;
     renderPage();
-    expect(await screen.findByText(/Every completed goal yields an epic pull request/)).toHaveTextContent('optional sub-epic pull requests and leaf issue pull requests');
+    expect(await screen.findByText(/agent owns its plan.*observes those artifacts without scheduling them/i)).toBeInTheDocument();
     expect(screen.getByText(/Goal creation is disabled in demo mode/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create Goal' })).toBeDisabled();
   });

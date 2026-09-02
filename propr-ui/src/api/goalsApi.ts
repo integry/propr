@@ -4,7 +4,7 @@ import { GoalContractError, handleGoalResponse } from './goalApiErrors';
 import { boundedInteger, decodeGoalRecord, decodeListResponse, isBoundedCursor } from './goalDecoders';
 import { canonicalGoalText, GOAL_TEXT_MAX_CODE_POINTS } from '../utils/canonicalGoalText';
 
-export { GOAL_STATES } from './goalContracts';
+export { GOAL_STATES, GOAL_EVENT_TYPES } from './goalContracts';
 export { GoalApiError, GoalContractError, GoalMutationUncertainError, isGoalApiErrorCode } from './goalApiErrors';
 export { decodeGoalEvent } from './goalDecoders';
 export {
@@ -24,7 +24,6 @@ export type {
   GoalEventsPageV1 as GoalEventsPage,
   GoalEventType,
   GoalEventV1 as GoalEvent,
-  GoalMergePolicy,
   GoalMessageV1 as GoalMessage,
   GoalRecordV1,
   GoalsListResponseV1 as GoalsListResponse,

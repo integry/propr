@@ -15,7 +15,7 @@ describe('useGoalDetail replay and authorization', () => {
     render(<Harness />);
     await waitFor(() => expect(screen.getByTestId('connection')).toHaveTextContent('connected'));
     mocks.getGoal.mockRejectedValueOnce(new GoalApiError('goal_access_denied', 403, 'Forbidden'));
-    act(() => mocks.listeners.get('goal:event')?.forEach(callback => callback({ ownerId: 'owner-a', repository: 'integry/propr', goalId: 'goal-1', event: { ...event(6), type: 'lifecycle' } })));
+    act(() => mocks.listeners.get('goal:event')?.forEach(callback => callback({ ownerId: 'owner-a', repository: 'integry/propr', goalId: 'goal-1', event: { ...event(6), eventType: 'lifecycle.state_changed', kind: 'lifecycle' } })));
     await waitFor(() => expect(screen.getByTestId('detail')).toHaveTextContent('empty'));
     expect(screen.getByTestId('events')).toBeEmptyDOMElement();
     expect(mocks.socket.emit).toHaveBeenCalledWith('unsubscribe:goal', expect.objectContaining({ goalId: 'goal-1' }));
@@ -52,9 +52,9 @@ describe('useGoalDetail replay and authorization', () => {
         probeAdvanced = true;
         return Promise.resolve({ ...detail, latestSequence: 6 });
       });
-    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number }) => {
-      if (options.afterSequence === 5) return Promise.resolve(page(probeAdvanced ? [event(6)] : []));
-      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterCursor?: string }) => {
+      if (options.afterCursor === 'cursor:5') return Promise.resolve(page(probeAdvanced ? [event(6)] : []));
+      if (options.afterCursor !== undefined) return Promise.resolve(page([]));
       return Promise.resolve(page([event(4), event(5)], true));
     });
 
@@ -65,7 +65,7 @@ describe('useGoalDetail replay and authorization', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
 
     expect(screen.getByTestId('events')).toHaveTextContent('4,5,6');
-    expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 5 }));
+    expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterCursor: 'cursor:5' }));
   });
 
   it('does not let a delayed healthy probe overwrite a successful mutation', async () => {
@@ -103,8 +103,8 @@ describe('useGoalDetail replay and authorization', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     const goalTwo = { ...detail, goal: { ...detail.goal, goalId: 'goal-2', repository: 'integry/goal-two' } };
     mocks.getGoal.mockImplementation((goalId: string) => Promise.resolve(goalId === 'goal-2' ? goalTwo : detail));
-    mocks.getGoalEvents.mockImplementation((goalId: string, options: { afterSequence?: number }) => {
-      if (options.afterSequence !== undefined) return Promise.resolve(page([], false));
+    mocks.getGoalEvents.mockImplementation((goalId: string, options: { afterCursor?: string }) => {
+      if (options.afterCursor !== undefined) return Promise.resolve(page([], false));
       return Promise.resolve(page([event(4, goalId), event(5, goalId)], false));
     });
     view.rerender(<Harness goalId="goal-2" />);
@@ -126,21 +126,22 @@ describe('useGoalDetail replay and authorization', () => {
     const stalePage = new Promise<GoalEventsPage>(resolve => { resolveStalePage = resolve; });
     const goalTwo = { ...detail, goal: { ...detail.goal, goalId: 'goal-2', repository: 'integry/goal-two' } };
     mocks.getGoal.mockImplementation((goalId: string) => Promise.resolve(goalId === 'goal-2' ? goalTwo : detail));
-    mocks.getGoalEvents.mockImplementation((goalId: string, options: { afterSequence?: number }) => {
-      if (goalId === 'goal-1' && options.afterSequence === 5) return stalePage;
-      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+    mocks.getGoalEvents.mockImplementation((goalId: string, options: { afterCursor?: string }) => {
+      if (goalId === 'goal-1' && options.afterCursor === 'cursor:5') return stalePage;
+      if (options.afterCursor !== undefined) return Promise.resolve(page([]));
       return Promise.resolve(page([event(4, goalId), event(5, goalId)], false));
     });
     act(() => mocks.listeners.get('goal:event')?.forEach(callback => callback({
       ownerId: 'owner-a', repository: 'integry/propr', goalId: 'goal-1', event: event(1_205),
     })));
-    await waitFor(() => expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterSequence: 5 })));
+    await waitFor(() => expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ afterCursor: 'cursor:5' })));
 
     view.rerender(<Harness goalId="goal-2" />);
     await waitFor(() => expect(screen.getByTestId('detail')).toHaveTextContent('integry/goal-two'));
     await act(async () => {
       resolveStalePage(page(Array.from({ length: 200 }, (_, index) => ({
-        ...event(index + 6), type: index === 0 ? 'lifecycle' as const : 'stdout' as const,
+        ...event(index + 6), eventType: index === 0 ? 'lifecycle.state_changed' as const : 'provider.output' as const,
+        kind: index === 0 ? 'lifecycle' as const : 'output' as const,
       }))));
     });
 
@@ -150,26 +151,26 @@ describe('useGoalDetail replay and authorization', () => {
   });
 
   it('uses authoritative backward cursors across sparse and empty pages', async () => {
-    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
-      if (options.beforeSequence === 20) return Promise.resolve(page([], true, 10));
-      if (options.beforeSequence === 10) return Promise.resolve(page([event(2)], false, 1));
-      if (options.afterSequence !== undefined) return Promise.resolve(page([], false));
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterCursor?: string; beforeCursor?: string }) => {
+      if (options.beforeCursor === 'cursor:20') return Promise.resolve(page([], true, 10));
+      if (options.beforeCursor === 'cursor:10') return Promise.resolve(page([event(2)], false, 1));
+      if (options.afterCursor !== undefined) return Promise.resolve(page([], false));
       return Promise.resolve(page([event(4), event(5)], true, 20));
     });
     render(<Harness />);
     await screen.findByText('integry/propr');
     fireEvent.click(screen.getByRole('button', { name: 'older' }));
-    await waitFor(() => expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ beforeSequence: 20 })));
+    await waitFor(() => expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ beforeCursor: 'cursor:20' })));
     expect(screen.getByTestId('events')).toHaveTextContent('4,5');
     fireEvent.click(screen.getByRole('button', { name: 'older' }));
-    await waitFor(() => expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ beforeSequence: 10 })));
+    await waitFor(() => expect(mocks.getGoalEvents).toHaveBeenCalledWith('goal-1', expect.objectContaining({ beforeCursor: 'cursor:10' })));
     expect(screen.getByTestId('events')).toHaveTextContent('2,4,5');
   });
 
   it('stops older pagination when an authoritative cursor makes no progress', async () => {
-    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
-      if (options.beforeSequence === 20) return Promise.resolve(page([], true, 20));
-      if (options.afterSequence !== undefined) return Promise.resolve(page([], false));
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterCursor?: string; beforeCursor?: string }) => {
+      if (options.beforeCursor === 'cursor:20') return Promise.resolve(page([], true, 20));
+      if (options.afterCursor !== undefined) return Promise.resolve(page([], false));
       return Promise.resolve(page([event(4), event(5)], true, 20));
     });
     render(<Harness />);
@@ -177,14 +178,14 @@ describe('useGoalDetail replay and authorization', () => {
     fireEvent.click(screen.getByRole('button', { name: 'older' }));
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/repeated or omitted/));
     fireEvent.click(screen.getByRole('button', { name: 'older' }));
-    expect(mocks.getGoalEvents.mock.calls.filter(([, options]) => options.beforeSequence === 20)).toHaveLength(1);
+    expect(mocks.getGoalEvents.mock.calls.filter(([, options]) => options.beforeCursor === 'cursor:20')).toHaveLength(1);
   });
 
   it('never commits a deferred load-older response after the authorization identity changes', async () => {
     let resolveOlder!: (value: GoalEventsPage) => void;
-    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterSequence?: number; beforeSequence?: number }) => {
-      if (options.beforeSequence === 20) return new Promise(resolve => { resolveOlder = resolve; });
-      if (options.afterSequence !== undefined) return Promise.resolve(page([]));
+    mocks.getGoalEvents.mockImplementation((_goalId: string, options: { afterCursor?: string; beforeCursor?: string }) => {
+      if (options.beforeCursor === 'cursor:20') return new Promise(resolve => { resolveOlder = resolve; });
+      if (options.afterCursor !== undefined) return Promise.resolve(page([]));
       return Promise.resolve(page([event(4), event(5)], true, 20));
     });
     const view = render(<Harness />);

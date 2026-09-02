@@ -8,10 +8,13 @@ import {
   type RepoToMonitor,
   type RepositoryIndexingStatus,
 } from '@propr/core';
-import type {
-  InstanceCatalogAgent,
-  InstanceCatalogRepository,
-  InstanceCatalogResponse,
+import {
+  MODEL_INFO_MAP,
+  goalCapabilitiesForAgentType,
+  type GoalCatalogModel,
+  type InstanceCatalogAgent,
+  type InstanceCatalogRepository,
+  type InstanceCatalogResponse,
 } from '@propr/shared';
 
 interface InstanceCatalogServices {
@@ -26,14 +29,23 @@ interface InstanceCatalogRoutesDeps {
 }
 
 function catalogAgent(agent: AgentConfig): InstanceCatalogAgent {
+  const goalCapabilities = goalCapabilitiesForAgentType(agent.type);
+  const goalModelCatalog: GoalCatalogModel[] = goalCapabilities
+    ? agent.supportedModels.map(model => ({
+        id: model,
+        displayName: MODEL_INFO_MAP[model]?.name ?? model,
+        goalCapable: true,
+      }))
+    : [];
   return {
     alias: agent.alias,
+    type: agent.type,
     enabled: true,
     supportedModels: [...agent.supportedModels],
-    // The goal-control integration replaces these fail-closed values with its
-    // explicit agent discriminator and model-catalog intersection.
-    goalCapable: false,
-    goalCapableModels: [],
+    goalCapable: goalCapabilities !== null,
+    goalCapableModels: goalModelCatalog.map(model => model.id),
+    goalModelCatalog,
+    ...(goalCapabilities ? { goalCapabilities } : {}),
     ...(agent.defaultModel ? { defaultModel: agent.defaultModel } : {}),
   };
 }

@@ -11,6 +11,7 @@ import { useDemoMode } from '../../contexts/DemoModeContext';
 import { useSocket } from '../../contexts/useSocket';
 import { makeGoalIntentKey, mergeGoalEvents, scopedGoalKey, type GoalViewportAnchor } from './goalDetailUtils';
 import { drainGoalEventGap, goalEventChangesDetail } from './goalReplay';
+import { projectGoalEvent } from './goalEventProjection';
 
 const PAGE_SIZE = 200; const POLL_INTERVAL_MS = 3_000;
 const AUTHORIZATION_PROBE_INTERVAL_MS = 30_000;
@@ -26,8 +27,8 @@ const isAccessLoss = (error: unknown): boolean => error instanceof GoalApiError 
 const isDefinitiveMessageResult = (error: unknown): boolean =>
   error instanceof GoalContractError || (error instanceof GoalApiError && error.status >= 400 && error.status < 500);
 const messageFingerprint = (params: SendGoalMessageParams): string => JSON.stringify({
-  body: params.body,
-  predefinedKind: params.predefinedKind ?? null,
+  body: params.body ?? null,
+  cannedAction: params.cannedAction ?? null,
   retryOfMessageId: params.retryOfMessageId ?? null,
 });
 
@@ -62,7 +63,7 @@ export function useGoalDetail(goalId: string) {
   const controllersRef = useRef(new Set<AbortController>());
   const subscriptionCleanupRef = useRef<(() => void) | null>(null);
   const recoveryPromiseRef = useRef<Promise<GoalRecoveryResult> | null>(null); const reconciledRecoveryRef = useRef<GoalRecoveryResult | null>(null);
-  const recoveryTargetRef = useRef(0); const previousCursorRef = useRef<number | null>(null);
+  const recoveryTargetRef = useRef(0); const previousCursorRef = useRef<string | null>(null);
   const refreshControllerRef = useRef<AbortController | null>(null);
   const loadOlderControllerRef = useRef<AbortController | null>(null);
   const actionInFlightRef = useRef<symbol | null>(null);
@@ -84,24 +85,22 @@ export function useGoalDetail(goalId: string) {
   const release = useCallback((value: AbortController): void => { controllersRef.current.delete(value); }, []);
   const abortRequests = useCallback(() => {
     for (const active of controllersRef.current) active.abort();
-    controllersRef.current.clear();
-    refreshControllerRef.current = null;
-    loadOlderControllerRef.current = null;
+    controllersRef.current.clear(); refreshControllerRef.current = null; loadOlderControllerRef.current = null;
     recoveryPromiseRef.current = null; reconciledRecoveryRef.current = null;
   }, []);
 
-  const commitEvents = useCallback((nextEvents: GoalEvent[]) => {
-    eventsRef.current = nextEvents; setEvents(nextEvents);
+  const commitEvents = useCallback((nextEvents: GoalEvent[]) => { eventsRef.current = nextEvents; setEvents(nextEvents); }, []);
+
+  const projectEvents = useCallback((projectedEvents: GoalEvent[]) => {
+    const active = detailRef.current;
+    if (!active || projectedEvents.length === 0) return;
+    const projected = projectedEvents.reduce(projectGoalEvent, active); if (projected !== active) { detailRef.current = projected; setDetail(projected); }
   }, []);
 
   const invalidateAccess = useCallback((request?: RequestToken) => {
     if (request && !current(request)) return;
-    generationRef.current += 1;
-    abortRequests();
-    subscriptionCleanupRef.current?.();
-    subscriptionCleanupRef.current = null;
-    detailRef.current = null;
-    eventsRef.current = [];
+    generationRef.current += 1; abortRequests(); subscriptionCleanupRef.current?.();
+    subscriptionCleanupRef.current = null; detailRef.current = null; eventsRef.current = [];
     previousCursorRef.current = null;
     recoveryTargetRef.current = 0; actionInFlightRef.current = null;
     messagePromiseRef.current = null; messageIntentRef.current = null; viewportAnchorRef.current = null;
@@ -195,13 +194,15 @@ export function useGoalDetail(goalId: string) {
         recoveryTargetRef.current = Math.max(recoveryTargetRef.current, detailRef.current?.latestSequence ?? 0);
         let probedCurrentTail = false;
         while (current(request, recoveryController) && !probedCurrentTail) {
-          const tail = eventsRef.current.at(-1)?.sequence ?? 0;
+          const tailEvent = eventsRef.current.at(-1);
+          const tail = tailEvent?.sequence ?? 0;
           const wanted = recoveryTargetRef.current;
-          const replay = await drainGoalEventGap(goalId, tail, tail < wanted ? wanted : null, recoveryController.signal);
+          const replay = await drainGoalEventGap(goalId, tailEvent?.cursor ?? null, tail, tail < wanted ? wanted : null, recoveryController.signal);
           detailChanged ||= replay.detailChanged;
           if (!current(request, recoveryController)) return { recovered: false, detailChanged: false };
           commitEvents(mergeGoalEvents(eventsRef.current, replay.events, goalId, { viewportAnchorSequence: viewportAnchorRef.current?.sequence }));
-          probedCurrentTail = replay.cursor >= recoveryTargetRef.current;
+          projectEvents(replay.events);
+          probedCurrentTail = replay.sequence >= recoveryTargetRef.current;
         }
         if (!current(request, recoveryController)) return { recovered: false, detailChanged: false };
         setFallbackRequired(!transportConnectedRef.current);
@@ -219,12 +220,12 @@ export function useGoalDetail(goalId: string) {
     })();
     recoveryPromiseRef.current = recovery;
     return recovery;
-  }, [commitEvents, controller, current, goalId, handleAsyncError, release, token]);
+  }, [commitEvents, controller, current, goalId, handleAsyncError, projectEvents, release, token]);
 
   useEffect(() => {
     if (!authorizedRepository || !userId || !socket || !isConnected || !replayReady) return;
     const request = token(); if (!request) return;
-    const room = { ownerId: userId, repository: authorizedRepository, goalId, afterSequence: eventsRef.current.at(-1)?.sequence ?? 0 };
+    const room = { ownerId: userId, repository: authorizedRepository, goalId, afterCursor: eventsRef.current.at(-1)?.cursor ?? null };
     const expectedScope = scopedGoalKey(userId, authorizedRepository, goalId);
     let subscribed = true;
     const recoverAndRefresh = async (target?: number) => {
@@ -258,7 +259,8 @@ export function useGoalDetail(goalId: string) {
           setConnectionState('recovering'); void recoverAndRefresh(event.sequence); return;
         }
         commitEvents(mergeGoalEvents(eventsRef.current, [event], goalId, { viewportAnchorSequence: viewportAnchorRef.current?.sequence }));
-        if (event.type === 'lifecycle' || event.type === 'message' || event.type === 'usage') void refreshDetail();
+        projectEvents([event]);
+        if (goalEventChangesDetail(event)) void refreshDetail();
       } catch {
         setConnectionState('recovering'); void recoverAndRefresh();
       }
@@ -268,7 +270,7 @@ export function useGoalDetail(goalId: string) {
     setConnectionState('recovering');
     void recoverAndRefresh(detailRef.current?.latestSequence ?? 0);
     return () => { unsubscribe(); if (subscriptionCleanupRef.current === unsubscribe) subscriptionCleanupRef.current = null; };
-  }, [authorizedRepository, commitEvents, current, goalId, isConnected, refreshDetail, recoverTail, replayReady, socket, token, userId]);
+  }, [authorizedRepository, commitEvents, current, goalId, isConnected, projectEvents, refreshDetail, recoverTail, replayReady, socket, token, userId]);
 
   useEffect(() => {
     if (!authorizedGoalId || !replayReady || (isConnected && !fallbackRequired)) return;
@@ -298,16 +300,16 @@ export function useGoalDetail(goalId: string) {
   }, [authorizedGoalId, fallbackRequired, isConnected, recoverTail, refreshDetail, replayReady]);
 
   const loadOlder = useCallback(async () => {
-    const beforeSequence = previousCursorRef.current;
-    if (beforeSequence === null || loadingOlder || !hasMoreBefore) return;
+    const beforeCursor = previousCursorRef.current;
+    if (beforeCursor === null || loadingOlder || !hasMoreBefore) return;
     const request = token(); if (!request) return;
     loadOlderControllerRef.current?.abort();
     const olderController = controller(); loadOlderControllerRef.current = olderController;
     setLoadingOlder(true);
     try {
-      const page = await getGoalEvents(goalId, { beforeSequence, limit: PAGE_SIZE, signal: olderController.signal });
+      const page = await getGoalEvents(goalId, { beforeCursor, limit: PAGE_SIZE, signal: olderController.signal });
       if (!current(request, olderController)) return;
-      const cursorMadeProgress = page.previousCursor !== null && page.previousCursor !== beforeSequence;
+      const cursorMadeProgress = page.previousCursor !== null && page.previousCursor !== beforeCursor;
       previousCursorRef.current = page.previousCursor;
       commitEvents(mergeGoalEvents(eventsRef.current, page.events, goalId, { ingestion: 'older', viewportAnchorSequence: viewportAnchorRef.current?.sequence }));
       setHasMoreBefore(page.hasMoreBefore && cursorMadeProgress);
@@ -402,8 +404,7 @@ export function useGoalDetail(goalId: string) {
 
   const goalModels = useMemo(() => {
     if (!identityAuthorized) return [];
-    const agent = agents.find(item => item.alias === detail?.goal.agent);
-    return agent ? getGoalCapableModels(agent) : [];
+    const agent = agents.find(item => item.alias === detail?.goal.agent); return agent ? getGoalCapableModels(agent) : [];
   }, [agents, detail?.goal.agent, identityAuthorized]);
 
   const setViewportAnchor = useCallback((anchor: GoalViewportAnchor | null) => { viewportAnchorRef.current = anchor; }, []);
@@ -411,14 +412,14 @@ export function useGoalDetail(goalId: string) {
   return {
     detail: identityAuthorized ? detail : null, events: identityAuthorized ? events : [],
     loading: loading || (requestIdentity !== null && !identityAuthorized && error === null),
-    error, actionError, pendingAction, connectionState, hasMoreBefore, loadingOlder, goalModels,
-    readOnly: isDemoMode || !userId || !identityAuthorized, loadOlder, setViewportAnchor,
+    error, actionError, pendingAction, connectionState, hasMoreBefore, loadingOlder, goalModels, readOnly: isDemoMode || !userId || !identityAuthorized, loadOlder, setViewportAnchor,
     pause: () => runMutation('pause', (version, key) => pauseGoal(goalId, version, key)),
     resume: () => runMutation('resume', (version, key) => resumeGoal(goalId, version, key)),
     cancel: (reason: string) => runMutation('cancel', (version, key) => cancelGoal(goalId, version, reason, key)),
     changeModel: (model: string) => runMutation('model', (version, key) => requestGoalModel(goalId, version, model, key)),
-    sendMessage,
-    retryMessage: (message: GoalMessage) => sendMessage({ body: message.body, predefinedKind: message.predefinedKind ?? undefined, retryOfMessageId: message.messageId }),
+    sendMessage, retryMessage: (message: GoalMessage) => message.cannedAction
+      ? sendMessage({ cannedAction: message.cannedAction, retryOfMessageId: message.messageId })
+      : sendMessage({ body: message.body, retryOfMessageId: message.messageId }),
     cancelMessage,
   };
 }

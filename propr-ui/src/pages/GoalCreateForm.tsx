@@ -1,10 +1,9 @@
 import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertCircle, ChevronLeft, HelpCircle, Loader2, Target } from 'lucide-react';
-import { getGoalCapableModels, type InstanceCatalogAgent, type InstanceCatalogRepository } from '@propr/shared';
+import { getGoalCapableModels, getGoalModelCatalog, type InstanceCatalogAgent, type InstanceCatalogRepository } from '@propr/shared';
 import { canonicalGoalText } from '../utils/canonicalGoalText';
 import {
-  AUTO_MERGE_OPTIONS,
   MAX_CONCURRENT_TASKS_MAX,
   MAX_CONCURRENT_TASKS_MIN,
   OBJECTIVE_MAX_LENGTH,
@@ -63,7 +62,9 @@ export const AgentModelPicker = ({
   onModelChange,
 }: AgentModelPickerProps) => {
   const selectedAgent = agents.find(agent => agent.alias === values.agent);
-  const models = selectedAgent ? getGoalCapableModels(selectedAgent) : [];
+  const modelIds = selectedAgent ? getGoalCapableModels(selectedAgent) : [];
+  const modelMetadata = selectedAgent ? getGoalModelCatalog(selectedAgent) : [];
+  const models = modelIds.map(id => ({ id, displayName: modelMetadata.find(model => model.id === id)?.displayName ?? id }));
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div>
@@ -101,7 +102,7 @@ export const AgentModelPicker = ({
           className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 disabled:bg-gray-50"
         >
           {models.length === 0 && <option value="">Select a goal-capable agent</option>}
-          {models.map(model => <option key={model} value={model}>{model}</option>)}
+          {models.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}
         </select>
         {errors.model
           ? <FieldError id="goal-model-error" message={errors.model} />
@@ -217,42 +218,30 @@ export const GoalCreateForm = ({
         )}
 
         <div>
-          <FieldLabel htmlFor="goal-concurrency" label="Maximum concurrent tasks" hint="The maximum tasks this goal may run in parallel." required />
+          <FieldLabel htmlFor="goal-concurrency" label="Parallelism preference" hint="Passed to the coding agent as a policy preference; ProPR does not schedule goal work." required />
           <input
             id="goal-concurrency"
             type="number"
             min={MAX_CONCURRENT_TASKS_MIN}
             max={MAX_CONCURRENT_TASKS_MAX}
             step={1}
-            value={values.maxActiveTasks}
-            onChange={event => setField('maxActiveTasks', Number(event.target.value))}
+            value={values.maxParallelism}
+            onChange={event => setField('maxParallelism', Number(event.target.value))}
             disabled={submitting}
             required
-            aria-invalid={Boolean(errors.maxActiveTasks)}
-            aria-describedby={errors.maxActiveTasks ? 'goal-concurrency-error' : 'goal-concurrency-hint'}
+            aria-invalid={Boolean(errors.maxParallelism)}
+            aria-describedby={errors.maxParallelism ? 'goal-concurrency-error' : 'goal-concurrency-hint'}
             className="w-24 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
           />
-          <span id="goal-concurrency-hint" className="ml-3 text-xs text-gray-500">{MAX_CONCURRENT_TASKS_MIN}–{MAX_CONCURRENT_TASKS_MAX} tasks</span>
-          {errors.maxActiveTasks && <FieldError id="goal-concurrency-error" message={errors.maxActiveTasks} />}
+          <span id="goal-concurrency-hint" className="ml-3 text-xs text-gray-500">{MAX_CONCURRENT_TASKS_MIN}–{MAX_CONCURRENT_TASKS_MAX} · coding-agent preference</span>
+          {errors.maxParallelism && <FieldError id="goal-concurrency-error" message={errors.maxParallelism} />}
         </div>
 
         <fieldset>
-          <legend className="mb-2 text-sm font-medium text-gray-700">Merge policy</legend>
-          <div className="space-y-2">
-            {AUTO_MERGE_OPTIONS.map(option => (
-              <label key={option.value} className="flex cursor-pointer items-start gap-3 rounded-lg border border-gray-200 p-3 has-[:checked]:border-teal-500 has-[:checked]:bg-teal-50">
-                <input type="radio" name="merge-policy" value={option.value} checked={values.mergePolicy === option.value} onChange={() => setField('mergePolicy', option.value)} disabled={submitting} className="mt-0.5" />
-                <span><span className="block text-sm font-medium text-gray-800">{option.label}</span><span className="text-xs text-gray-500">{option.description}</span></span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <fieldset>
-          <legend className="text-sm font-medium text-gray-700">Ultrafix</legend>
+          <legend className="text-sm font-medium text-gray-700">Ultrafix policy preference</legend>
           <label className="mt-2 flex items-center gap-2 text-sm text-gray-700">
             <input type="checkbox" checked={values.ultrafixEnabled} onChange={event => setField('ultrafixEnabled', event.target.checked)} disabled={submitting} />
-            Run Ultrafix after each pull request
+            Ask the coding agent to apply the Ultrafix preference
           </label>
           {values.ultrafixEnabled && (
             <div className="mt-3 grid grid-cols-1 gap-4 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-2">

@@ -44,7 +44,7 @@ const GoalCreatePage = () => {
           )}
           <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
             <p className="mb-1 font-medium">What is a Goal?</p>
-            <p>A goal coordinates a goal-capable agent over a repository until its objective is completed, paused, cancelled, or fails. Every completed goal yields an epic pull request, with optional sub-epic pull requests and leaf issue pull requests when the work is decomposed.</p>
+            <p>A goal hosts one coding agent&apos;s native goal session until it completes, pauses, is cancelled, or fails. The agent owns its plan and may create GitHub artifacts; ProPR observes those artifacts without scheduling them.</p>
           </div>
           <GoalCreateForm {...form} />
         </div>
