@@ -64,6 +64,28 @@ describe('desktop logger field schemas', () => {
     assert.deepEqual(sanitizeDesktopLogFields('desktop.native.reduced_window.ready', { layout }), { layout });
   });
 
+  it('requires own layout and geometry keys despite inherited keys and a shadowed hasOwnProperty', () => {
+    const valid = completePackagedLayout();
+    const { workArea, ...layoutWithoutOwnWorkArea } = valid;
+    const inheritedLayoutKey = Object.assign(Object.create({ workArea }), layoutWithoutOwnWorkArea);
+    const inheritedGeometryKey = Object.assign(
+      Object.create({ width: valid.windowBounds.width }) as Record<string, unknown>,
+      { x: 0, y: 0, height: valid.windowBounds.height, visible: true },
+    );
+    Object.defineProperty(inheritedGeometryKey, 'hasOwnProperty', {
+      value: () => true,
+    });
+
+    for (const layout of [
+      inheritedLayoutKey,
+      { ...valid, windowBounds: inheritedGeometryKey },
+    ]) {
+      assert.deepEqual(sanitizeDesktopLogFields('desktop.renderer.layout.ready', { layout }), {
+        layout: { code: 'DETAIL_REDACTED' },
+      });
+    }
+  });
+
   it('redacts malformed, secret, path-bearing, array, error, and over-broad layouts', () => {
     const valid = completePackagedLayout();
     const rejectedLayouts: unknown[] = [

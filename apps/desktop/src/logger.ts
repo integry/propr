@@ -84,7 +84,9 @@ const boundedLayout = (
       if (!validNumber && !validBoolean) return null;
       safeGeometry[key] = measurement;
     }
-    if ([...expectedNumberKeys].some(key => !Object.hasOwn(safeGeometry, key))) return null;
+    if ([...expectedNumberKeys].some(
+      key => !Object.prototype.hasOwnProperty.call(safeGeometry, key),
+    )) return null;
     result[name] = safeGeometry;
   }
   return result;
