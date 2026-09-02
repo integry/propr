@@ -7,7 +7,8 @@ param(
   [ValidateRange(0,2147483647)]
   [int]$LifecycleTestProcessId = 0,
   [ValidateSet(
-    'host-node-command-result',
+    'host-node-command-cardinality',
+    'host-node-command-type',
     'host-node-source',
     'host-node-path-binding',
     'host-node-launcher-return-authority',
@@ -34,8 +35,11 @@ param(
     'host-capture-contract',
     'host-environment-publication'
   )]
-  [string]$DiagnosticTestSubphase = 'host-node-command-result',
-  [ValidateSet('positive','zero','multiple','non-application','missing-source','non-scalar-source')]
+  [string]$DiagnosticTestSubphase = 'host-node-command-cardinality',
+  [ValidateSet(
+    'positive','zero','duplicate','multiple','case-collision',
+    'non-application','missing-source','non-scalar-source'
+  )]
   [string]$HostNodeProducerTestCase = 'positive',
   [ValidateSet('normal','alias','retarget-alias','identity-mismatch')]
   [string]$LauncherAuthorityTestCase = 'normal',
@@ -71,7 +75,8 @@ $failurePhases = @(
   'cleanup'
 )
 $hostFailureSubphases = @(
-  'host-node-command-result',
+  'host-node-command-cardinality',
+  'host-node-command-type',
   'host-node-source',
   'host-node-path-binding',
   'host-node-launcher-return-authority',
@@ -186,30 +191,59 @@ function Get-ValidatedHostNodePath {
     [AllowNull()][AllowEmptyCollection()][object[]]$TestOnlyCommandResults,
     [scriptblock]$TestOnlySourceProducer
   )
-  Set-OrdinaryUserPreflightSubphase 'host-node-command-result'
+  Set-OrdinaryUserPreflightSubphase 'host-node-command-cardinality'
   if ($UseTestOnlyCommandResults) {
     $commandResults = @($TestOnlyCommandResults)
   } else {
     $commandResults = @(Get-Command node.exe -CommandType Application -ErrorAction Stop)
   }
-  if ($commandResults.Count -ne 1 -or
-      !($commandResults[0] -is [Management.Automation.ApplicationInfo])) {
+  if ($commandResults.Count -lt 1) {
     Stop-PackagedConnect 'artifact-type'
   }
 
+  Set-OrdinaryUserPreflightSubphase 'host-node-command-type'
+  foreach ($candidate in $commandResults) {
+    if (!($candidate -is [System.Management.Automation.ApplicationInfo])) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+  }
+
   Set-OrdinaryUserPreflightSubphase 'host-node-source'
-  $command = $commandResults[0]
-  if ($null -eq $TestOnlySourceProducer) {
-    $sourceResults = @($command.Source)
-  } else {
-    $sourceResults = @(& $TestOnlySourceProducer $command)
+  $validatedSources = [Collections.Generic.List[string]]::new()
+  foreach ($candidate in $commandResults) {
+    if ($null -eq $TestOnlySourceProducer) {
+      $sourceResults = @($candidate.Source)
+    } else {
+      $sourceResults = @(& $TestOnlySourceProducer $candidate)
+    }
+    if ($sourceResults.Count -ne 1 -or
+        !($sourceResults[0] -is [string]) -or
+        [String]::IsNullOrEmpty($sourceResults[0])) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $null = $validatedSources.Add($sourceResults[0])
   }
-  if ($sourceResults.Count -ne 1 -or
-      !($sourceResults[0] -is [string]) -or
-      [String]::IsNullOrEmpty($sourceResults[0])) {
-    Stop-PackagedConnect 'artifact-type'
+
+  Set-OrdinaryUserPreflightSubphase 'host-node-command-cardinality'
+  # Repeated exact Sources are one authority; distinct or case-colliding Sources are ambiguous.
+  $selectedSource = $validatedSources[0]
+  for ($index = 1; $index -lt $validatedSources.Count; $index++) {
+    if (![String]::Equals(
+      $selectedSource,
+      $validatedSources[$index],
+      [StringComparison]::Ordinal
+    )) {
+      if ([String]::Equals(
+        $selectedSource,
+        $validatedSources[$index],
+        [StringComparison]::OrdinalIgnoreCase
+      )) {
+        Stop-PackagedConnect 'artifact-type'
+      }
+      Stop-PackagedConnect 'artifact-type'
+    }
   }
-  return $sourceResults[0]
+  return $selectedSource
 }
 
 function Stop-SpawnedProcess {
@@ -940,24 +974,65 @@ if ($LifecycleTestMode -eq 'host-node-producer') {
       $node = Get-ValidatedHostNodePath `
         -UseTestOnlyCommandResults `
         -TestOnlyCommandResults ([object[]]@())
-    } elseif ($HostNodeProducerTestCase -eq 'non-application') {
-      $node = Get-ValidatedHostNodePath `
-        -UseTestOnlyCommandResults `
-        -TestOnlyCommandResults ([object[]]@([PSCustomObject]@{ Source = 'C:\hostile\node.exe' }))
     } else {
       $knownApplications = @(Get-Command `
         -Name ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) `
         -CommandType Application `
         -ErrorAction Stop)
-      $knownApplication = $knownApplications[0]
-      if (!($knownApplication -is [Management.Automation.ApplicationInfo])) {
-        Set-OrdinaryUserPreflightSubphase 'host-node-command-result'
+      if ($knownApplications.Count -ne 1) {
+        Set-OrdinaryUserPreflightSubphase 'host-node-command-cardinality'
         Stop-PackagedConnect 'artifact-type'
       }
-      if ($HostNodeProducerTestCase -eq 'multiple') {
+      $knownApplication = $knownApplications[0]
+      if (!($knownApplication -is [System.Management.Automation.ApplicationInfo])) {
+        Set-OrdinaryUserPreflightSubphase 'host-node-command-type'
+        Stop-PackagedConnect 'artifact-type'
+      }
+      if ($HostNodeProducerTestCase -eq 'non-application') {
+        $node = Get-ValidatedHostNodePath `
+          -UseTestOnlyCommandResults `
+          -TestOnlyCommandResults ([object[]]@(
+            $knownApplication,
+            [PSCustomObject]@{ Source = 'C:\hostile\node.exe' }
+          ))
+      } elseif ($HostNodeProducerTestCase -eq 'duplicate') {
         $node = Get-ValidatedHostNodePath `
           -UseTestOnlyCommandResults `
           -TestOnlyCommandResults ([object[]]@($knownApplication, $knownApplication))
+      } elseif ($HostNodeProducerTestCase -in @('multiple','case-collision')) {
+        $otherApplications = @(Get-Command `
+          -Name $taskkillExecutable `
+          -CommandType Application `
+          -ErrorAction Stop)
+        if ($otherApplications.Count -ne 1) {
+          Set-OrdinaryUserPreflightSubphase 'host-node-command-cardinality'
+          Stop-PackagedConnect 'artifact-type'
+        }
+        $otherApplication = $otherApplications[0]
+        if (!($otherApplication -is [System.Management.Automation.ApplicationInfo])) {
+          Set-OrdinaryUserPreflightSubphase 'host-node-command-type'
+          Stop-PackagedConnect 'artifact-type'
+        }
+        if ($HostNodeProducerTestCase -eq 'multiple') {
+          $node = Get-ValidatedHostNodePath `
+            -UseTestOnlyCommandResults `
+            -TestOnlyCommandResults ([object[]]@($knownApplication, $otherApplication))
+        } else {
+          $node = Get-ValidatedHostNodePath `
+            -UseTestOnlyCommandResults `
+            -TestOnlyCommandResults ([object[]]@($knownApplication, $otherApplication)) `
+            -TestOnlySourceProducer {
+              if ([String]::Equals(
+                $args[0].Source,
+                $knownApplication.Source,
+                [StringComparison]::Ordinal
+              )) {
+                'C:\hostile\node.exe'
+              } else {
+                'c:\hostile\node.exe'
+              }
+            }
+        }
       } elseif ($HostNodeProducerTestCase -eq 'missing-source') {
         $node = Get-ValidatedHostNodePath `
           -UseTestOnlyCommandResults `
