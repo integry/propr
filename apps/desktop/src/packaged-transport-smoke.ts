@@ -117,7 +117,11 @@ export const runPackagedTransportSmoke = async ({
       return true;
     })()`)));
   };
-  const storageState = async (expected: Readonly<Record<'first' | 'second', 'present' | 'absent'>>): Promise<boolean> => {
+  type StoragePresence = 'present' | 'absent';
+  type StorageType = 'cookie' | 'localStorage' | 'indexedDB' | 'cacheStorage' | 'serviceWorker';
+  type OriginStorageExpectation = Readonly<Record<StorageType, StoragePresence>>;
+  type StorageExpectation = Readonly<Record<'first' | 'second', OriginStorageExpectation>>;
+  const storageState = async (expected: StorageExpectation): Promise<boolean> => {
     const states = await Promise.all(storageWindows.map(async item => {
       const rendererState = await item.window.webContents.executeJavaScript(`(async () => ({
         cookie: document.cookie.includes('packaged-smoke-cookie=present'),
@@ -127,20 +131,52 @@ export const runPackagedTransportSmoke = async ({
         serviceWorker: (await navigator.serviceWorker.getRegistrations()).some(registration => registration.scope.startsWith(location.origin)),
       }))()`);
       const cookies = await desktopSession.cookies.get({ url: item.origin });
-      const expectedPresent = expected[item.name] === 'present';
-      const cookieMatches = expectedPresent
+      const expectedState = expected[item.name];
+      const cookieExpectedPresent = expectedState.cookie === 'present';
+      const cookieMatches = cookieExpectedPresent
         ? rendererState.cookie === true
           && cookies.some(cookie => cookie.name === 'packaged-smoke-cookie' && cookie.value === 'present')
         : rendererState.cookie === false && cookies.length === 0;
       return cookieMatches
-        && ['localStorage', 'indexedDB', 'cacheStorage', 'serviceWorker']
-          .every(storageType => rendererState[storageType] === expectedPresent);
+        && (['localStorage', 'indexedDB', 'cacheStorage', 'serviceWorker'] as const)
+          .every(storageType => rendererState[storageType] === (expectedState[storageType] === 'present'));
     }));
     return states.every(Boolean);
   };
-  const bothOriginsPresent = { first: 'present', second: 'present' } as const;
-  const activationCleanupSplit = { first: 'absent', second: 'present' } as const;
-  const bothOriginsAbsent = { first: 'absent', second: 'absent' } as const;
+  const allStoragePresent: OriginStorageExpectation = {
+    cookie: 'present',
+    localStorage: 'present',
+    indexedDB: 'present',
+    cacheStorage: 'present',
+    serviceWorker: 'present',
+  };
+  const allStorageAbsent: OriginStorageExpectation = {
+    cookie: 'absent',
+    localStorage: 'absent',
+    indexedDB: 'absent',
+    cacheStorage: 'absent',
+    serviceWorker: 'absent',
+  };
+  const bothOriginsPresent: StorageExpectation = {
+    first: allStoragePresent,
+    second: allStoragePresent,
+  };
+  // Chromium cookies are shared by host across these fixture ports; the
+  // remaining stores are scoped to each complete origin.
+  const activationCleanupSplit: StorageExpectation = {
+    first: allStorageAbsent,
+    second: {
+      cookie: 'absent',
+      localStorage: 'present',
+      indexedDB: 'present',
+      cacheStorage: 'present',
+      serviceWorker: 'present',
+    },
+  };
+  const bothOriginsAbsent: StorageExpectation = {
+    first: allStorageAbsent,
+    second: allStorageAbsent,
+  };
 
   try {
     // Both fixture origins must be populated while no renderer credential
