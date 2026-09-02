@@ -473,6 +473,8 @@ const inspectAccessibility = async (page, journey, variant, config, metrics, nam
     requestedViewport: metrics.requestedViewport,
     playwrightViewport: metrics.playwrightViewport,
     rendererViewport: metrics.rendererViewport,
+    documentClientViewport: metrics.documentClientViewport,
+    scrollbarInsets: metrics.scrollbarInsets,
     layoutViewport: metrics.layoutViewport,
     cdpVisualViewport: metrics.cdpVisualViewport,
     rendererVisualViewport: metrics.rendererVisualViewport,
@@ -526,6 +528,8 @@ const captureVariants = async (page, journey) => {
         requestedViewport: metrics.requestedViewport,
         playwrightViewport: metrics.playwrightViewport,
         rendererViewport: metrics.rendererViewport,
+        documentClientViewport: metrics.documentClientViewport,
+        scrollbarInsets: metrics.scrollbarInsets,
         layoutViewport: metrics.layoutViewport,
         cdpVisualViewport: metrics.cdpVisualViewport,
         rendererVisualViewport: metrics.rendererVisualViewport,
@@ -701,7 +705,7 @@ try {
   const serious = axeFindings.filter(finding => finding.impact === 'serious').length;
   const critical = axeFindings.filter(finding => finding.impact === 'critical').length;
   const accessibility = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     generatedAt: FIXED_TIME,
     serious,
     critical,

@@ -41,7 +41,10 @@ const installedChromium = () => [
 const rendererVariantFixture = ({
   acknowledgement,
   appliedFactor,
+  cdpVisualWidthAdjustment = 0,
+  layoutWidthAdjustment = 0,
   rendererSpan = 'effective',
+  scrollbarInsets = { width: 0, height: 0 },
   unstable = false,
 } = {}) => {
   let viewport;
@@ -53,7 +56,11 @@ const rendererVariantFixture = ({
     if (span === 'invalid') return { width: viewport.width - 17, height: viewport.height - 11 };
     if (unstable) measurement += 1;
     const adjustment = unstable ? measurement % 2 : 0;
-    return { width: viewport.width / metrics.zoom + adjustment, height: viewport.height / metrics.zoom };
+    const effective = { width: viewport.width / metrics.zoom + adjustment, height: viewport.height / metrics.zoom };
+    if (span === 'document') {
+      return { width: effective.width - scrollbarInsets.width, height: effective.height - scrollbarInsets.height };
+    }
+    return effective;
   };
   const page = {
     emulateMedia: async media => { reducedMotion = media.reducedMotion === 'reduce'; },
@@ -72,6 +79,7 @@ const rendererVariantFixture = ({
       const dimensions = dimensionsFor(rendererSpan);
       return {
         ...dimensions,
+        documentClientViewport: dimensionsFor('document'),
         devicePixelRatio: metrics.deviceScaleFactor * metrics.zoom + (unstable ? measurement / 1_000 : 0),
         reducedMotion,
         visualViewport: { ...dimensions, scale: 1 },
@@ -87,11 +95,15 @@ const rendererVariantFixture = ({
         return {};
       }
       if (method === 'Page.getLayoutMetrics') {
+        const documentClientViewport = dimensionsFor('document');
         const rawVisualViewport = dimensionsFor('effective');
         return {
-          cssLayoutViewport: { clientWidth: rawVisualViewport.width, clientHeight: rawVisualViewport.height },
+          cssLayoutViewport: {
+            clientWidth: documentClientViewport.width + layoutWidthAdjustment,
+            clientHeight: documentClientViewport.height,
+          },
           cssVisualViewport: {
-            clientWidth: rawVisualViewport.width,
+            clientWidth: rawVisualViewport.width + cdpVisualWidthAdjustment,
             clientHeight: rawVisualViewport.height,
             scale: 1,
           },
@@ -184,6 +196,8 @@ describe('packaged acceptance renderer variants', () => {
       assert.deepEqual(actual.requestedViewport, config.viewport);
       assert.deepEqual(actual.playwrightViewport, config.viewport);
       assert.deepEqual(actual.rendererViewport, effective);
+      assert.deepEqual(actual.documentClientViewport, effective);
+      assert.deepEqual(actual.scrollbarInsets, { width: 0, height: 0 });
       assert.deepEqual(actual.layoutViewport, effective);
       assert.deepEqual(actual.cdpVisualViewport, {
         width: config.viewport.width / config.zoom,
@@ -213,14 +227,16 @@ describe('packaged acceptance renderer variants', () => {
   });
 
   it('proves packaged Electron zoom-200 from webFrame acknowledgement and independent renderer geometry', async () => {
-    const { commands, cdp, page } = rendererVariantFixture();
+    const { commands, cdp, page } = rendererVariantFixture({ scrollbarInsets: { width: 8, height: 0 } });
     const config = ACCEPTANCE_VARIANTS['zoom-200'];
 
     const actual = await configureElectronRendererVariant(page, cdp, config, { settle: async () => undefined });
 
     assert.deepEqual(actual.requestedViewport, { width: 1280, height: 820 });
     assert.deepEqual(actual.rendererViewport, { width: 640, height: 410 });
-    assert.deepEqual(actual.layoutViewport, { width: 640, height: 410 });
+    assert.deepEqual(actual.documentClientViewport, { width: 632, height: 410 });
+    assert.deepEqual(actual.scrollbarInsets, { width: 8, height: 0 });
+    assert.deepEqual(actual.layoutViewport, { width: 632, height: 410 });
     assert.deepEqual(actual.cdpVisualViewport, { width: 640, height: 410, scale: 1 });
     assert.deepEqual(actual.rendererVisualViewport, { width: 640, height: 410, scale: 1 });
     assert.deepEqual(actual.effectiveVisibleCssSpan, { width: 640, height: 410 });
@@ -262,6 +278,37 @@ describe('packaged acceptance renderer variants', () => {
         settle: async () => undefined, measurementTimeoutMs: 1,
       }),
       /did not stabilize within 1ms/,
+    );
+  });
+
+  it('fails closed on arbitrary layout spans, invalid scrollbar insets, and exact CDP visual mismatches', async () => {
+    const arbitraryLayout = rendererVariantFixture({
+      layoutWidthAdjustment: 1,
+      scrollbarInsets: { width: 8, height: 0 },
+    });
+    await assert.rejects(
+      configureElectronRendererVariant(arbitraryLayout.page, arbitraryLayout.cdp, ACCEPTANCE_VARIANTS['zoom-200'], { settle: async () => undefined }),
+      /layout viewport width versus document client width changed: expected exactly 632, received 633/,
+    );
+
+    for (const width of [-1, 65]) {
+      const invalidScrollbar = rendererVariantFixture({ scrollbarInsets: { width, height: 0 } });
+      await assert.rejects(
+        configureElectronRendererVariant(invalidScrollbar.page, invalidScrollbar.cdp, ACCEPTANCE_VARIANTS['zoom-200'], { settle: async () => undefined }),
+        /width scrollbar inset is invalid/,
+      );
+    }
+
+    const visualMismatch = rendererVariantFixture({
+      cdpVisualWidthAdjustment: -8,
+      scrollbarInsets: { width: 8, height: 0 },
+    });
+    await assert.rejects(
+      configureElectronRendererVariant(visualMismatch.page, visualMismatch.cdp, ACCEPTANCE_VARIANTS['zoom-200'], { settle: async () => undefined }),
+      error => /CDP visual viewport width changed: expected 640, received 632/.test(error?.message)
+        && /"documentClientViewport":\{"width":632,"height":410\}/.test(error.message)
+        && /"cdpVisualViewport":\{"width":632,"height":410,"scale":1\}/.test(error.message)
+        && !error.message.includes('propr-app://'),
     );
   });
 

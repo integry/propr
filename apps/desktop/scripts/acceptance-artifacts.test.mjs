@@ -56,35 +56,42 @@ const pngHeader = (width, height) => {
   return bytes;
 };
 
-const viewportMetricEvidenceFor = config => ({
-  requestedViewport: { ...config.viewport },
-  playwrightViewport: { ...config.viewport },
-  rendererViewport: {
+const viewportMetricEvidenceFor = config => {
+  const rendererViewport = {
     width: config.viewport.width / config.zoom,
     height: config.viewport.height / config.zoom,
-  },
-  layoutViewport: { width: config.viewport.width / config.zoom, height: config.viewport.height / config.zoom },
-  cdpVisualViewport: { width: config.viewport.width / config.zoom, height: config.viewport.height / config.zoom, scale: 1 },
-  rendererVisualViewport: { width: config.viewport.width / config.zoom, height: config.viewport.height / config.zoom, scale: 1 },
-  effectiveVisibleCssSpan: {
-    width: config.viewport.width / config.zoom,
-    height: config.viewport.height / config.zoom,
-  },
-  geometryZoom: { width: config.zoom, height: config.zoom },
-  requestedDeviceScaleFactor: config.deviceScaleFactor,
-  rendererDevicePixelRatio: config.deviceScaleFactor * config.zoom,
-  requestedZoomFactor: config.zoom,
-  appliedZoomFactor: config.zoom,
-  zoomResetFactor: 1,
-  zoomMechanism: 'electron-web-frame',
-  physicalPngDimensions: {
-    width: config.viewport.width * config.deviceScaleFactor,
-    height: config.viewport.height * config.deviceScaleFactor,
-  },
-});
+  };
+  const scrollbarInsets = config.zoom === 2 ? { width: 8, height: 0 } : { width: 0, height: 0 };
+  const documentClientViewport = {
+    width: rendererViewport.width - scrollbarInsets.width,
+    height: rendererViewport.height - scrollbarInsets.height,
+  };
+  return {
+    requestedViewport: { ...config.viewport },
+    playwrightViewport: { ...config.viewport },
+    rendererViewport,
+    documentClientViewport,
+    scrollbarInsets,
+    layoutViewport: { ...documentClientViewport },
+    cdpVisualViewport: { ...rendererViewport, scale: 1 },
+    rendererVisualViewport: { ...rendererViewport, scale: 1 },
+    effectiveVisibleCssSpan: { ...rendererViewport },
+    geometryZoom: { width: config.zoom, height: config.zoom },
+    requestedDeviceScaleFactor: config.deviceScaleFactor,
+    rendererDevicePixelRatio: config.deviceScaleFactor * config.zoom,
+    requestedZoomFactor: config.zoom,
+    appliedZoomFactor: config.zoom,
+    zoomResetFactor: 1,
+    zoomMechanism: 'electron-web-frame',
+    physicalPngDimensions: {
+      width: config.viewport.width * config.deviceScaleFactor,
+      height: config.viewport.height * config.deviceScaleFactor,
+    },
+  };
+};
 
 const accessibilityFor = () => ({
-  schemaVersion: 4,
+  schemaVersion: 5,
   generatedAt: FIXED_TIME,
   serious: 0,
   critical: 0,
@@ -197,6 +204,8 @@ describe('packaged acceptance artifact contract', () => {
     try {
       const evidence = await createCompleteArtifactSet(root);
       assert.equal(evidence.manifest.screenshots.length, 60);
+      assert.equal(evidence.manifest.schemaVersion, 5);
+      assert.equal(evidence.accessibility.schemaVersion, 5);
       assert.deepEqual(evidence.manifest.screenshots.map(entry => entry.name), expectedScreenshotNames());
       assert.ok(evidence.manifest.screenshots.every(entry => entry.bytes > 24 && entry.sha256 === entry.repeatabilitySha256));
       assert.deepEqual(evidence.manifest.supporting.map(entry => entry.name), [
@@ -251,6 +260,22 @@ describe('packaged acceptance artifact contract', () => {
         () => validateAcceptanceEvidence(evidence.accessibility, relabeledManifest, evidence.summary, evidence.sanitizedLog),
         /zoom-200.*viewport metric evidence changed/,
       );
+      for (const mutate of [
+        entry => { entry.layoutViewport.width += 1; },
+        entry => { entry.scrollbarInsets.width += 1; },
+        entry => {
+          entry.documentClientViewport.width = entry.rendererViewport.width - 65;
+          entry.layoutViewport.width = entry.documentClientViewport.width;
+          entry.scrollbarInsets.width = 65;
+        },
+      ]) {
+        const invalidScrollbarManifest = structuredClone(evidence.manifest);
+        mutate(invalidScrollbarManifest.screenshots.find(entry => entry.variant === 'zoom-200'));
+        assert.throws(
+          () => validateAcceptanceEvidence(evidence.accessibility, invalidScrollbarManifest, evidence.summary, evidence.sanitizedLog),
+          /zoom-200.*viewport metric evidence changed/,
+        );
+      }
       const duplicateManifest = structuredClone(evidence.manifest);
       const duplicateZoom = duplicateManifest.screenshots.find(entry => entry.variant === 'zoom-200');
       const matchingHighDpi = duplicateManifest.screenshots.find(entry => (

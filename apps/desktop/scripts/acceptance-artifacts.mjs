@@ -72,6 +72,7 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const canonicalRelative = (root, path) => relative(root, path).split(sep).join('/');
 const isSha256 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const isInteger = value => Number.isInteger(value) && value >= 0;
+const MAX_SCROLLBAR_INSET_CSS_PIXELS = 64;
 
 const assertExactKeys = (value, expected, description) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${description} must be an object`);
@@ -96,16 +97,26 @@ const assertViewportMetricEvidence = (evidence, config, description) => {
   assertExactKeys(evidence.requestedViewport, ['width', 'height'], `${description} requested viewport`);
   assertExactKeys(evidence.playwrightViewport, ['width', 'height'], `${description} Playwright viewport`);
   assertExactKeys(evidence.rendererViewport, ['width', 'height'], `${description} renderer viewport`);
+  assertExactKeys(evidence.documentClientViewport, ['width', 'height'], `${description} document client viewport`);
+  assertExactKeys(evidence.scrollbarInsets, ['width', 'height'], `${description} scrollbar insets`);
   assertExactKeys(evidence.layoutViewport, ['width', 'height'], `${description} layout viewport`);
   assertExactKeys(evidence.cdpVisualViewport, ['width', 'height', 'scale'], `${description} CDP visual viewport`);
   assertExactKeys(evidence.rendererVisualViewport, ['width', 'height', 'scale'], `${description} renderer visual viewport`);
   assertExactKeys(evidence.effectiveVisibleCssSpan, ['width', 'height'], `${description} effective visible CSS span`);
   assertExactKeys(evidence.geometryZoom, ['width', 'height'], `${description} renderer geometry zoom`);
   assertExactKeys(evidence.physicalPngDimensions, ['width', 'height'], `${description} physical PNG dimensions`);
+  const scrollbarInsetsAreValid = ['width', 'height'].every(axis => (
+    Number.isFinite(evidence.scrollbarInsets[axis])
+    && evidence.scrollbarInsets[axis] >= 0
+    && evidence.scrollbarInsets[axis] <= MAX_SCROLLBAR_INSET_CSS_PIXELS
+    && evidence.scrollbarInsets[axis]
+      === evidence.rendererViewport[axis] - evidence.documentClientViewport[axis]
+  ));
   if (JSON.stringify(evidence.requestedViewport) !== JSON.stringify(config.viewport)
     || JSON.stringify(evidence.playwrightViewport) !== JSON.stringify(config.viewport)
     || JSON.stringify(evidence.rendererViewport) !== JSON.stringify(expectedEffective)
-    || JSON.stringify(evidence.layoutViewport) !== JSON.stringify(expectedEffective)
+    || !scrollbarInsetsAreValid
+    || JSON.stringify(evidence.layoutViewport) !== JSON.stringify(evidence.documentClientViewport)
     || evidence.cdpVisualViewport.width !== expectedEffective.width
     || evidence.cdpVisualViewport.height !== expectedEffective.height
     || evidence.cdpVisualViewport.scale !== 1
@@ -346,7 +357,8 @@ const expectedArtifactFiles = () => new Set([
 const validateScreenshotEntry = (entry, expectedName) => {
   assertExactKeys(entry, [
     'name', 'journey', 'variant', 'width', 'height', 'physicalPngDimensions', 'reducedMotion',
-    'requestedViewport', 'playwrightViewport', 'rendererViewport', 'layoutViewport',
+    'requestedViewport', 'playwrightViewport', 'rendererViewport', 'documentClientViewport',
+    'scrollbarInsets', 'layoutViewport',
     'cdpVisualViewport', 'rendererVisualViewport', 'effectiveVisibleCssSpan', 'geometryZoom',
     'requestedDeviceScaleFactor', 'rendererDevicePixelRatio', 'requestedZoomFactor',
     'appliedZoomFactor', 'zoomResetFactor', 'zoomMechanism',
@@ -375,7 +387,7 @@ const validateAccessibility = accessibility => {
     'schemaVersion', 'generatedAt', 'serious', 'critical', 'findings', 'checks', 'keyboardOrder',
     'visibleFocus', 'modalFocusTrap', 'modalFocusRestore', 'accessibleNames', 'liveAnnouncements',
   ], 'Acceptance accessibility report');
-  if (accessibility.schemaVersion !== 4 || accessibility.generatedAt !== FIXED_TIME
+  if (accessibility.schemaVersion !== 5 || accessibility.generatedAt !== FIXED_TIME
     || accessibility.serious !== 0 || accessibility.critical !== 0 || accessibility.findings?.length !== 0
     || accessibility.keyboardOrder !== true || accessibility.visibleFocus !== true
     || accessibility.modalFocusTrap !== true || accessibility.modalFocusRestore !== true
@@ -395,7 +407,8 @@ const validateAccessibility = accessibility => {
     assertExactKeys(check, [
       'name', 'journey', 'variant', 'serious', 'critical', 'accessibleNames', 'locale', 'timezone',
       'fontLoaded', 'reducedMotion', 'animationsDisabled', 'rendererTime', 'physicalPngDimensions',
-      'requestedViewport', 'playwrightViewport', 'rendererViewport', 'layoutViewport',
+      'requestedViewport', 'playwrightViewport', 'rendererViewport', 'documentClientViewport',
+      'scrollbarInsets', 'layoutViewport',
       'cdpVisualViewport', 'rendererVisualViewport', 'effectiveVisibleCssSpan', 'geometryZoom',
       'requestedDeviceScaleFactor', 'rendererDevicePixelRatio', 'requestedZoomFactor',
       'appliedZoomFactor', 'zoomResetFactor', 'zoomMechanism',
@@ -464,7 +477,7 @@ export const validateAcceptanceEvidence = (accessibility, manifest, summary, san
     'schemaVersion', 'generatedAt', 'platform', 'arch', 'executableBoundary', 'deterministicInputs',
     'nativePackageCoverage', 'screenshots', 'supporting',
   ], 'Acceptance manifest');
-  if (manifest.schemaVersion !== 4 || manifest.platform !== 'linux' || manifest.arch !== 'x64'
+  if (manifest.schemaVersion !== 5 || manifest.platform !== 'linux' || manifest.arch !== 'x64'
     || manifest.generatedAt !== FIXED_TIME || manifest.executableBoundary !== 'packaged-electron-main-preload-renderer'
     || manifest.screenshots?.length !== expectedScreenshotNames().length) {
     throw new Error('Acceptance manifest is incomplete or non-deterministic');
@@ -564,7 +577,7 @@ export const writeAcceptanceManifest = async (outputDirectory, screenshotMetadat
     supporting.push({ name, bytes: bytes.length, sha256: sha256(bytes) });
   }
   const manifest = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     generatedAt: FIXED_TIME,
     platform: 'linux',
     arch: 'x64',
