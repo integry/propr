@@ -29,6 +29,28 @@ const hostPreflightSubphases = Object.freeze([
   'host-capture-contract',
   'host-environment-publication',
 ]);
+const launcherAuthoritySubphases = Object.freeze([
+  'host-launcher-native-initialization',
+  'host-launcher-selected-path',
+  'host-launcher-source-open',
+  'host-launcher-source-type',
+  'host-launcher-source-identity',
+  'host-launcher-source-final-path',
+  'host-launcher-final-open',
+  'host-launcher-final-type',
+  'host-launcher-final-identity',
+  'host-launcher-final-path',
+  'host-launcher-final-match',
+  'host-launcher-source-reopen',
+  'host-launcher-source-reopen-type',
+  'host-launcher-source-reopen-identity',
+  'host-launcher-source-reopen-final-path',
+  'host-launcher-source-reopen-match',
+]);
+const fixedHostDiagnosticSubphases = Object.freeze([
+  ...hostPreflightSubphases,
+  ...launcherAuthoritySubphases,
+]);
 const hostileDiagnosticPattern = /[A-Z]:\\|S-1-5-|account-name|stdout|stderr|exception|environment-secret/iu;
 
 const parent = String.raw`C:\runner-temp\propr-connect-packaged-stage`;
@@ -148,17 +170,51 @@ const runLauncherAuthorityTest = (path, testCase = 'normal', retargetPath) => {
   });
 };
 
-const assertLauncherAuthorityRejected = (result, category) => {
-  assert.ifError(result.error);
-  assert.equal(result.signal, null);
-  assert.equal(result.status, 1);
-  assert.equal(result.stdout.length, 0);
-  const diagnostic = result.stderr.toString('utf8').trim();
-  assert.equal(
-    diagnostic,
-    `PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=${category}:phase=ordinary-user-preflight:subphase=host-node-canonical-authority:cleanup=none`,
+const assertLauncherAuthorityRejected = (result, category, subphase) => {
+  const expected = `PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=${category}`
+    + `:phase=ordinary-user-preflight:subphase=${subphase}:cleanup=none`;
+  const diagnostic = Buffer.isBuffer(result.stderr)
+    && result.stderr.length <= 512 ? result.stderr.toString('utf8').trim() : '';
+  if (result.error || result.signal !== null || result.status !== 1
+      || !Buffer.isBuffer(result.stdout) || result.stdout.length !== 0
+      || diagnostic !== expected || hostileDiagnosticPattern.test(diagnostic)) {
+    const error = new Error(
+      `PROPR_WINDOWS_PACKAGED_CONNECT_LAUNCHER_AUTHORITY_TEST:rejection-diagnostic-failed`
+        + `:category=${category}:phase=ordinary-user-preflight:subphase=${subphase}`,
+    );
+    error.stack = error.message;
+    throw error;
+  }
+};
+
+const failAcceptedLauncherCase = (caseName, result) => {
+  const fallback = 'category=artifact-inaccessible:phase=ordinary-user-preflight:subphase=host-state-contract';
+  let evidence = fallback;
+  if (!result.error && result.signal === null && result.status === 1
+      && Buffer.isBuffer(result.stdout) && result.stdout.length === 0
+      && Buffer.isBuffer(result.stderr) && result.stderr.length <= 512) {
+    const diagnostic = result.stderr.toString('utf8').trim();
+    const match = /^PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=(artifact-missing|artifact-inaccessible|artifact-type|architecture-mismatch|spawn-failed):phase=(ordinary-user-preflight):subphase=([a-z-]+):cleanup=none$/u.exec(diagnostic);
+    if (match && launcherAuthoritySubphases.includes(match[3])
+        && !hostileDiagnosticPattern.test(diagnostic)) {
+      evidence = `category=${match[1]}:phase=${match[2]}:subphase=${match[3]}`;
+    }
+  }
+  const error = new Error(
+    `PROPR_WINDOWS_PACKAGED_CONNECT_LAUNCHER_AUTHORITY_TEST:accepted-case-failed:case=${caseName}:${evidence}`,
   );
-  assert.doesNotMatch(diagnostic, hostileDiagnosticPattern);
+  error.stack = error.message;
+  throw error;
+};
+
+const assertLauncherAuthorityAccepted = (result, caseName) => {
+  if (result.error || result.signal !== null || result.status !== 0
+      || !Buffer.isBuffer(result.stdout) || !Buffer.isBuffer(result.stderr)
+      || result.stdout.toString('utf8').trim()
+        !== 'PROPR_WINDOWS_PACKAGED_CONNECT_LAUNCHER_AUTHORITY_TEST:accepted'
+      || result.stderr.length !== 0) {
+    failAcceptedLauncherCase(caseName, result);
+  }
 };
 
 const validationOptions = overrides => ({
@@ -542,6 +598,14 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(orchestrator, /\$node = \$launcherAuthority\.Path[\s\S]*?-FilePath \$node/u);
   assert.match(orchestrator, /Start-Process[\s\S]*?finally \{\s*\$launcherAuthority\.Handle\.Dispose\(\)/u);
   assert.match(orchestrator, /FILE_FLAG_OPEN_REPARSE_POINT/u);
+  assert.match(
+    orchestrator,
+    /\[DllImport\("kernel32\.dll", CharSet = CharSet\.Unicode, ExactSpelling = true, SetLastError = true\)\]\s*private static extern SafeFileHandle CreateFileW/u,
+  );
+  assert.match(
+    orchestrator,
+    /\[DllImport\("kernel32\.dll", CharSet = CharSet\.Unicode, ExactSpelling = true, SetLastError = true\)\]\s*private static extern uint GetFinalPathNameByHandleW/u,
+  );
   assert.match(orchestrator, /FILE_ID_INFO[\s\S]*?GetFileInformationByHandleEx[\s\S]*?FileIdInfo = 18/u);
   assert.match(orchestrator, /FILE_SHARE_READ\s*\n\s*: FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE/u);
   assert.match(orchestrator, /\$Path\.Length -gt 259[\s\S]*?\[\\x00-\\x1f\\x7f\]/u);
@@ -566,6 +630,8 @@ test('the workflow stages before alternate credentials and the harness preflight
   const preflight = harness.indexOf('const staged = await validateWindowsStagedPackage');
   const spawn = harness.indexOf("const child = spawn(binaryPath, ['--disable-gpu'");
   assert.ok(preflight >= 0 && preflight < spawn, 'ordinary-user package preflight must complete before spawn');
+  assert.equal((harness.match(/await validateWindowsStagedPackage\(/gu) ?? []).length, 1);
+  assert.equal((harness.match(/await runPackagedConnectLifecycle\(/gu) ?? []).length, 1);
   assert.match(harness, /shell: false/u);
   assert.match(harness, /delete childEnvironment\.PROPR_DESKTOP_CONNECT_STAGING_PARENT/u);
   assert.match(harness, /delete childEnvironment\.PROPR_DESKTOP_CONNECT_STAGING_LEAF/u);
@@ -576,7 +642,7 @@ test('the workflow stages before alternate credentials and the harness preflight
 });
 
 windowsTest('each host preflight failure transition emits one fixed redacted subphase', () => {
-  for (const subphase of hostPreflightSubphases) {
+  for (const subphase of fixedHostDiagnosticSubphases) {
     const result = spawnSync(windowsPowerShell51Path(), [
       '-NoLogo',
       '-NoProfile',
@@ -629,32 +695,43 @@ windowsTest('the host launcher accepts only a stable final ordinary-file identit
   await symlink(target, retargetedAlias, 'file');
   await mkdir(directory);
 
-  for (const acceptedPath of [target, alias]) {
-    const result = runLauncherAuthorityTest(acceptedPath);
-    assert.ifError(result.error);
-    assert.equal(result.signal, null);
-    assert.equal(result.status, 0);
-    assert.equal(
-      result.stdout.toString('utf8').trim(),
-      'PROPR_WINDOWS_PACKAGED_CONNECT_LAUNCHER_AUTHORITY_TEST:accepted',
-    );
-    assert.equal(result.stderr.length, 0);
+  for (const [caseName, acceptedPath] of [['normal', target], ['alias', alias]]) {
+    const result = runLauncherAuthorityTest(acceptedPath, caseName);
+    assertLauncherAuthorityAccepted(result, caseName);
   }
 
-  assertLauncherAuthorityRejected(runLauncherAuthorityTest(brokenAlias), 'artifact-missing');
+  assertLauncherAuthorityRejected(
+    runLauncherAuthorityTest(brokenAlias),
+    'artifact-missing',
+    'host-launcher-source-open',
+  );
   assertLauncherAuthorityRejected(
     runLauncherAuthorityTest(retargetedAlias, 'retarget-alias', otherTarget),
     'artifact-type',
+    'host-launcher-source-reopen-match',
   );
   assertLauncherAuthorityRejected(
     runLauncherAuthorityTest(identityTarget, 'identity-mismatch'),
     'artifact-type',
+    'host-launcher-final-match',
   );
-  assertLauncherAuthorityRejected(runLauncherAuthorityTest(directory), 'artifact-type');
-  assertLauncherAuthorityRejected(runLauncherAuthorityTest(String.raw`\\.\NUL`), 'artifact-type');
-  assertLauncherAuthorityRejected(runLauncherAuthorityTest('node.exe'), 'artifact-type');
-  assertLauncherAuthorityRejected(runLauncherAuthorityTest(`${root}\\${'x'.repeat(260)}`), 'artifact-type');
-  assertLauncherAuthorityRejected(runLauncherAuthorityTest(`${root}\\control-${String.fromCharCode(1)}.exe`), 'artifact-type');
+  assertLauncherAuthorityRejected(
+    runLauncherAuthorityTest(directory),
+    'artifact-type',
+    'host-launcher-source-type',
+  );
+  for (const rejectedPath of [
+    String.raw`\\.\NUL`,
+    'node.exe',
+    `${root}\\${'x'.repeat(260)}`,
+    `${root}\\control-${String.fromCharCode(1)}.exe`,
+  ]) {
+    assertLauncherAuthorityRejected(
+      runLauncherAuthorityTest(rejectedPath),
+      'artifact-type',
+      'host-launcher-selected-path',
+    );
+  }
 });
 
 test('the bounded cleanup source requires proven child exit and bounded stream closure', async () => {

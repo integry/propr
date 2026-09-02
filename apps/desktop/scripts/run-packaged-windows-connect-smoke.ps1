@@ -9,11 +9,27 @@ param(
   [ValidateSet(
     'host-node-resolution',
     'host-node-canonical-authority',
+    'host-launcher-native-initialization',
+    'host-launcher-selected-path',
+    'host-launcher-source-open',
+    'host-launcher-source-type',
+    'host-launcher-source-identity',
+    'host-launcher-source-final-path',
+    'host-launcher-final-open',
+    'host-launcher-final-type',
+    'host-launcher-final-identity',
+    'host-launcher-final-path',
+    'host-launcher-final-match',
+    'host-launcher-source-reopen',
+    'host-launcher-source-reopen-type',
+    'host-launcher-source-reopen-identity',
+    'host-launcher-source-reopen-final-path',
+    'host-launcher-source-reopen-match',
     'host-capture-contract',
     'host-environment-publication'
   )]
   [string]$DiagnosticTestSubphase = 'host-node-resolution',
-  [ValidateSet('normal','retarget-alias','identity-mismatch')]
+  [ValidateSet('normal','alias','retarget-alias','identity-mismatch')]
   [string]$LauncherAuthorityTestCase = 'normal',
   [string]$LauncherAuthorityTestPath = '',
   [string]$LauncherAuthorityTestRetargetPath = ''
@@ -49,6 +65,22 @@ $failurePhases = @(
 $hostFailureSubphases = @(
   'host-node-resolution',
   'host-node-canonical-authority',
+  'host-launcher-native-initialization',
+  'host-launcher-selected-path',
+  'host-launcher-source-open',
+  'host-launcher-source-type',
+  'host-launcher-source-identity',
+  'host-launcher-source-final-path',
+  'host-launcher-final-open',
+  'host-launcher-final-type',
+  'host-launcher-final-identity',
+  'host-launcher-final-path',
+  'host-launcher-final-match',
+  'host-launcher-source-reopen',
+  'host-launcher-source-reopen-type',
+  'host-launcher-source-reopen-identity',
+  'host-launcher-source-reopen-final-path',
+  'host-launcher-source-reopen-match',
   'host-capture-contract',
   'host-environment-publication',
   'host-state-contract'
@@ -262,7 +294,7 @@ public static class ProprHostLauncherNative {
     public FILE_ID_128 FileId;
   }
 
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
   private static extern SafeFileHandle CreateFileW(
     string fileName,
     uint desiredAccess,
@@ -290,7 +322,7 @@ public static class ProprHostLauncherNative {
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern uint GetFileType(SafeFileHandle file);
 
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
   private static extern uint GetFinalPathNameByHandleW(
     SafeFileHandle file,
     StringBuilder path,
@@ -429,34 +461,50 @@ function Get-TrustedHostLauncher {
   $sourceReopenHandle = $null
   $authorityTransferred = $false
   try {
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-native-initialization'
     Initialize-HostLauncherNative
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-selected-path'
     $selectedPath = Get-BoundedAbsoluteWindowsPath $Path
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-source-open'
     $sourceHandle = [ProprHostLauncherNative]::Open($selectedPath, $false)
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-source-type'
     Assert-OrdinaryHostLauncherHandle $sourceHandle
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-source-identity'
     $sourceIdentity = [ProprHostLauncherNative]::GetIdentity($sourceHandle)
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-source-final-path'
     $finalPath = Get-BoundedAbsoluteWindowsPath (
       ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($sourceHandle))
     )
 
     if ($null -ne $TestOnlyBeforeFinalReopen) { & $TestOnlyBeforeFinalReopen }
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-final-open'
     $authorityHandle = [ProprHostLauncherNative]::Open($finalPath, $true)
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-final-type'
     Assert-OrdinaryHostLauncherHandle $authorityHandle
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-final-identity'
     $authorityIdentity = [ProprHostLauncherNative]::GetIdentity($authorityHandle)
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-final-path'
     $authorityFinalPath = Get-BoundedAbsoluteWindowsPath (
       ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($authorityHandle))
     )
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-final-match'
     if (![String]::Equals($sourceIdentity, $authorityIdentity, [StringComparison]::Ordinal) -or
         ![String]::Equals($finalPath, $authorityFinalPath, [StringComparison]::OrdinalIgnoreCase)) {
       Stop-PackagedConnect 'artifact-type'
     }
 
     if ($null -ne $TestOnlyBeforeSourceReopen) { & $TestOnlyBeforeSourceReopen }
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-source-reopen'
     $sourceReopenHandle = [ProprHostLauncherNative]::Open($selectedPath, $false)
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-source-reopen-type'
     Assert-OrdinaryHostLauncherHandle $sourceReopenHandle
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-source-reopen-identity'
     $sourceReopenIdentity = [ProprHostLauncherNative]::GetIdentity($sourceReopenHandle)
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-source-reopen-final-path'
     $sourceReopenFinalPath = Get-BoundedAbsoluteWindowsPath (
       ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($sourceReopenHandle))
     )
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-source-reopen-match'
     if (![String]::Equals($authorityIdentity, $sourceReopenIdentity, [StringComparison]::Ordinal) -or
         ![String]::Equals($finalPath, $sourceReopenFinalPath, [StringComparison]::OrdinalIgnoreCase)) {
       Stop-PackagedConnect 'artifact-type'
