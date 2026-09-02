@@ -16,7 +16,7 @@ import {
   FuseVersion,
   getCurrentFuseWire,
 } from '@electron/fuses';
-import { assertPackagedLayout } from './packaged-layout.mjs';
+import { assertPackagedLayout, parseEventLayout } from './packaged-layout.mjs';
 import {
   createPackagedSmokeLaunch,
   LAYOUT_READY_EVENT,
@@ -57,20 +57,6 @@ if (process.platform === 'win32') {
     throw new Error('Packaged Windows MVP contains a deferred update authority resource');
   }
 }
-
-const parseEventRecord = (smokeOutput, expectedEvent) => {
-  for (const line of smokeOutput.split(/\r?\n/)) {
-    if (!line.includes(expectedEvent)) continue;
-    try {
-      const record = JSON.parse(line.slice(line.indexOf('{')));
-      if (record.event === expectedEvent) return record;
-    } catch {
-      // Ignore non-JSON Chromium output that happens to mention the event name.
-    }
-  }
-  return undefined;
-};
-const parseEventLayout = (smokeOutput, expectedEvent) => parseEventRecord(smokeOutput, expectedEvent)?.layout;
 
 await access(binaryPath);
 

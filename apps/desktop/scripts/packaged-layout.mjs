@@ -1,6 +1,23 @@
 const EXPECTED_WINDOW_SIZE = { width: 1280, height: 820 };
 const MINIMUM_WINDOW_SIZE = { width: 880, height: 620 };
 
+const parseEventRecord = (smokeOutput, expectedEvent) => {
+  for (const line of smokeOutput.split(/\r?\n/)) {
+    if (!line.includes(expectedEvent)) continue;
+    try {
+      const record = JSON.parse(line.slice(line.indexOf('{')));
+      if (record.event === expectedEvent) return record;
+    } catch {
+      // Ignore non-JSON Chromium output that happens to mention the event name.
+    }
+  }
+  return undefined;
+};
+
+export const parseEventLayout = (smokeOutput, expectedEvent) => (
+  parseEventRecord(smokeOutput, expectedEvent)?.layout
+);
+
 const fail = message => {
   throw new Error(message);
 };
