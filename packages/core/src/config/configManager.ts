@@ -17,6 +17,7 @@ export interface RepoToMonitor {
     id: string;              // UUID, required for uniqueness
     name: string;            // owner/repo
     enabled: boolean;
+    autoFollowupOnFailedCi?: boolean; // Defaults to false for legacy configurations
     alias?: string;          // Optional display name
     baseBranch?: string;     // Optional specific branch to monitor
     defaultBranch?: string;  // Optional repository default branch for demo metadata
@@ -254,6 +255,12 @@ export {
     loadAgentTankSettings,
     saveAgentTankSettings
 } from './configManagerAgents.js';
+
+export {
+    SYNTHETIC_AGENTS_CONFIG_KEY,
+    loadSyntheticAgents,
+    saveSyntheticAgents
+} from './configManagerSyntheticAgents.js';
 
 // --- Auto Resolve Merge Conflicts ---
 

@@ -5,6 +5,7 @@ process.env.PROPR_DEMO_MODE = 'true';
 
 const {
     getReposFromEnv,
+    isAutoCiFollowupEnabledForRepository,
     isMonitoredRepository,
     resolveMonitoredRepositories,
 } = await import('../packages/core/src/daemon/configLoader.js');
@@ -51,4 +52,32 @@ test('repository matching is case-insensitive and empty configuration fails clos
     assert.equal(isMonitoredRepository('Owner/Repo', ['owner/repo']), true);
     assert.equal(isMonitoredRepository('owner/other', ['owner/repo']), false);
     assert.equal(isMonitoredRepository('owner/repo', []), false);
+});
+
+test('automatic CI follow-up aggregates duplicate branch configurations independent of order', async () => {
+    const disabledBranch = {
+        id: 'repo-main',
+        name: 'owner/repo',
+        enabled: true,
+        baseBranch: 'main',
+        autoFollowupOnFailedCi: false,
+    };
+    const enabledBranch = {
+        id: 'repo-release',
+        name: 'OWNER/REPO',
+        enabled: true,
+        baseBranch: 'release',
+        autoFollowupOnFailedCi: true,
+    };
+
+    assert.equal(await isAutoCiFollowupEnabledForRepository(
+        'owner',
+        'repo',
+        async () => [disabledBranch, enabledBranch],
+    ), true);
+    assert.equal(await isAutoCiFollowupEnabledForRepository(
+        'owner',
+        'repo',
+        async () => [enabledBranch, disabledBranch],
+    ), true);
 });

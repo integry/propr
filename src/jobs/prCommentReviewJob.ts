@@ -79,6 +79,56 @@ export interface JobResult {
     [key: string]: unknown;
 }
 
+type ReviewRoutingOutcome = { status: 'routed'; assignment: ReviewAssignment }
+    | { status: 'failed'; result: ReviewResult };
+
+async function routeReviewAssignments(
+    registry: AgentRegistry, assignments: ReviewAssignment[], pullRequestNumber: number, correlatedLogger: Logger,
+): Promise<ReviewRoutingOutcome[]> {
+    return Promise.all(assignments.map(async assignment => {
+        try {
+            const routingSession = registry.beginRoutingSession({ requestedAgentAlias: assignment.agentAlias, requestedModel: assignment.model });
+            const selection = await routingSession.select();
+            return {
+                status: 'routed' as const,
+                assignment: { ...assignment, routingSession,
+                    physicalAgentAlias: selection.physicalAgentAlias,
+                    physicalModel: selection.physicalModel },
+            };
+        } catch (routingError) {
+            const error = `Failed to route review assignment '${assignment.label}': ${(routingError as Error).message}`;
+            correlatedLogger.warn({ pullRequestNumber, agentAlias: assignment.agentAlias,
+                model: assignment.model, error: (routingError as Error).message,
+            }, 'Review assignment unavailable; continuing with remaining reviewers');
+            return {
+                status: 'failed' as const,
+                result: { assignment,
+                    analysisResult: { response: '', modelUsed: assignment.model,
+                        executionTimeMs: 0, success: false, error }, error },
+            };
+        }
+    }));
+}
+
+async function runReviewRoutingOutcomes(
+    routingOutcomes: ReviewRoutingOutcome[], reviewCtx: RunReviewsContext, firstFindingNumber: number,
+): Promise<ReviewResult[]> {
+    const reviewResults: ReviewResult[] = [];
+    let nextFindingNumber = firstFindingNumber;
+    for (const outcome of routingOutcomes) {
+        if (outcome.status === 'failed') {
+            reviewResults.push(outcome.result);
+            continue;
+        }
+        const result = await runSingleReview(outcome.assignment, {
+            ...reviewCtx, findingStartNumber: nextFindingNumber,
+        });
+        reviewResults.push(result);
+        nextFindingNumber += result.findingCount ?? 0;
+    }
+    return reviewResults;
+}
+
 export async function resolveReviewAssignments(
     requestedModels: string[] | undefined,
     llm: string | null | undefined,
@@ -244,7 +294,14 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         fastAnalysisModel,
         configuredReviewMaxContextTokens,
     } = await loadReviewRuntimeSettings(correlatedLogger);
-    const reviewBudgetModels = assignments.map(assignment => `${assignment.agentAlias}:${assignment.model}`);
+    // Route each available physical reviewer before deriving the shared diff/prompt budget.
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+    const routingOutcomes = await routeReviewAssignments(registry, assignments, pullRequestNumber, correlatedLogger);
+    const routedAssignments = routingOutcomes.flatMap(outcome =>
+        outcome.status === 'routed' ? [outcome.assignment] : []
+    );
+    const reviewBudgetModels = routedAssignments.map(assignment => `${assignment.physicalAgentAlias}:${assignment.physicalModel}`);
     const reviewMaxContextTokens = resolveReviewContextTokenBudget(
         reviewBudgetModels,
         configuredReviewMaxContextTokens,
@@ -295,9 +352,6 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
     });
 
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
     let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
     if (job.data.ultrafixMeta) {
         originalTaskSpec = await retainOriginalScope(redisClient, {
@@ -314,7 +368,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         try {
             relatedContext = await prepareRelatedReviewContext({
                 registry,
-                fallbackAssignment: assignments[0],
+                fallbackAssignment: routedAssignments[0] ?? assignments[0],
                 configuredModel: reviewContextModel,
                 fastAnalysisModel,
                 state,
@@ -359,19 +413,11 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         correlatedLogger,
     };
 
-    const reviewResults: ReviewResult[] = [];
-    let nextFindingNumber = getNextAuthenticatedActionableFindingNumber(
-        allComments,
-        state.startingWorkComment.data.user?.login,
+    const reviewResults = await runReviewRoutingOutcomes(
+        routingOutcomes,
+        reviewCtx,
+        getNextAuthenticatedActionableFindingNumber(allComments, state.startingWorkComment.data.user?.login),
     );
-    for (const assignment of assignments) {
-        const result = await runSingleReview(assignment, {
-            ...reviewCtx,
-            findingStartNumber: nextFindingNumber,
-        });
-        reviewResults.push(result);
-        nextFindingNumber += result.findingCount ?? 0;
-    }
 
     await recordReviewMetrics(reviewResults, { pullRequestNumber, repoOwner, repoName, correlationId, taskId });
     await updateReviewCompletionComment(state, reviewResults, { repoOwner, repoName, taskUrl, correlatedLogger });

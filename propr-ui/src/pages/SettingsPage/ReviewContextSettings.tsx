@@ -1,6 +1,5 @@
 import React from 'react';
-import type { AgentConfig } from '../../api/proprApi';
-import { buildPrReviewOptions } from './modelSelectionHelpers';
+import { buildPrReviewOptions, type ModelSelectionAgent } from './modelSelectionHelpers';
 
 interface ReviewContextSettingsProps {
   settings: {
@@ -8,7 +7,7 @@ interface ReviewContextSettingsProps {
     pr_review_context_model: string;
     pr_review_max_context_tokens: number;
   };
-  agents: AgentConfig[];
+  agents: ModelSelectionAgent[];
   onSettingChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   onEnabledChange: (enabled: boolean) => void;
   onMaxContextTokensChange: (value: number) => void;

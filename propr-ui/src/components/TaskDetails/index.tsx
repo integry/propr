@@ -174,6 +174,7 @@ const TaskDetails: React.FC = () => {
     duration: totalDuration,
     tokenUsage,
     usageMetricRecords: taskData.usageMetricRecords,
+    synthetic: taskData.history.some(item => item.metadata?.syntheticRouting !== undefined),
   };
   const actionBarProps = {
     currentStatus: derivedData.currentStatus,

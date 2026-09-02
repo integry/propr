@@ -348,7 +348,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
                 await enqueueConfigReload();
 
                 // 2. Handle specific update types
-                if (event.subtype === 'agents_update') {
+                if (event.subtype === 'agents_update' || event.subtype === 'synthetic_agents_update') {
                     logger.info('Refreshing AgentRegistry...');
                     try {
                         await AgentRegistry.getInstance().refresh();

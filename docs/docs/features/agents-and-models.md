@@ -21,6 +21,8 @@ Use routing when you want to:
 - Fall back to another provider when rate limits or quota are tight
 - Preserve the same PR follow-up workflow across providers
 
+For virtual routing across several configured direct agents, see [Synthetic Pools](./synthetic-pools.md).
+
 ## Supported Agents
 
 | Agent | Type | Docker image | Existing host credentials |

@@ -51,4 +51,5 @@ export interface PersistLogsParams {
     prNumber?: number;
     reasoningLevel?: string;
     usageMetrics?: UsageTrackingMetrics | null;
+    metadata?: Record<string, unknown>;
 }

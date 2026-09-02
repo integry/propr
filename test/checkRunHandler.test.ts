@@ -131,7 +131,7 @@ const {
     resetUltrafixStateRedisForTests
 } = await import('../packages/core/src/webhook/checkRunHelpers.js');
 
-const { handleCheckRunEvent, shouldAutoMergePR } = await import('../packages/core/src/webhook/checkRunHandler.js');
+const { handleCheckRunEvent, handleStatusEvent, shouldAutoMergePR } = await import('../packages/core/src/webhook/checkRunHandler.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 import type { PRMergeContext } from '../packages/core/src/webhook/checkRunHandler.js';
@@ -989,13 +989,56 @@ describe('handleCheckRunEvent', () => {
         assert.strictEqual(mockOctokit.request.mock.calls.length, 0);
     });
 
-    test('skips when conclusion is failure', async () => {
+    test('skips a failed check run when the PR has moved to a newer head', async () => {
         resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('/pulls/')) {
+                return { data: { head: { sha: 'newer-sha' } } };
+            }
+            throw new Error(`Unexpected GitHub request: ${endpoint}`);
+        });
 
-        const payload = createMockCheckRunPayload({ conclusion: 'failure' });
+        const payload = createMockCheckRunPayload({ conclusion: 'failure', headSha: 'stale-sha' });
         await handleCheckRunEvent(payload, 'test-correlation-id');
 
-        assert.strictEqual(mockOctokit.request.mock.calls.length, 0);
+        assert.strictEqual(mockOctokit.request.mock.calls.length, 1);
+        assert.match(mockOctokit.request.mock.calls[0].arguments[0] as string, /\/pulls\/\{pull_number\}/);
+        assert.equal(
+            mockOctokit.request.mock.calls.some(call => (call.arguments[0] as string).startsWith('POST ')),
+            false,
+        );
+    });
+
+    test('skips a failed legacy status when the associated PR has moved to a newer head', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('/commits/{commit_sha}/pulls')) {
+                return { data: [{ number: 42, state: 'open' }] };
+            }
+            if (endpoint.includes('/pulls/{pull_number}')) {
+                return { data: { head: { sha: 'newer-sha' } } };
+            }
+            throw new Error(`Unexpected GitHub request: ${endpoint}`);
+        });
+
+        await handleStatusEvent({
+            sha: 'stale-sha',
+            state: 'failure',
+            context: 'legacy-ci',
+            repository: { full_name: 'test-owner/test-repo' },
+        }, 'test-correlation-id');
+
+        assert.deepStrictEqual(
+            mockOctokit.request.mock.calls.map(call => call.arguments[0]),
+            [
+                'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+                'GET /repos/{owner}/{repo}/pulls/{pull_number}',
+            ],
+        );
+        assert.equal(
+            mockOctokit.request.mock.calls.some(call => (call.arguments[0] as string).startsWith('POST ')),
+            false,
+        );
     });
 
     test('skips when conclusion is cancelled', async () => {

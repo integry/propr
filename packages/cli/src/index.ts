@@ -73,6 +73,15 @@ export {
   TimeoutError,
   createApiError,
 } from "./api/index.js";
+export {
+  listSyntheticAgents,
+  saveSyntheticAgents,
+  deleteSyntheticAgent,
+} from "./api/index.js";
+export type {
+  SyntheticAgentsResponse,
+  SaveSyntheticAgentsResponse,
+} from "./api/index.js";
 export type {
   HttpMethod,
   RequestOptions,
@@ -162,7 +171,7 @@ Command Groups:
   Implementation: issue [implement]
   Tasks:          task [inspect|list|get|stop|delete|followup|import|revert]
   Repositories:   repo [list|add|remove|toggle|index|status]
-  Agents:         agent [list|add|enable|disable|delete]
+  Agents:         agent [list|add|enable|disable|delete|pool]
   Settings:       setting [get|update|reindex-summaries]
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]

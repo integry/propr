@@ -167,6 +167,11 @@ export interface MonitoredRepo {
   enabled: boolean;
 
   /**
+   * Whether failed CI should trigger automatic follow-up work for this repository.
+   */
+  autoFollowupOnFailedCi: boolean;
+
+  /**
    * Optional display alias for the repository.
    */
   alias?: string;
@@ -205,6 +210,11 @@ export interface AddRepoOptions {
    * Whether monitoring is enabled. Defaults to true.
    */
   enabled?: boolean;
+
+  /**
+   * Whether failed CI should trigger automatic follow-up work. Defaults to false.
+   */
+  autoFollowupOnFailedCi?: boolean;
 }
 
 /**
@@ -225,6 +235,11 @@ export interface UpdateRepoOptions {
    * Optional new enabled state.
    */
   enabled?: boolean;
+
+  /**
+   * Optional new automatic failed-CI follow-up state.
+   */
+  autoFollowupOnFailedCi?: boolean;
 }
 
 /**
@@ -308,6 +323,7 @@ export async function addRepo(
     id: crypto.randomUUID(),
     name: fullName,
     enabled: options.enabled ?? true,
+    autoFollowupOnFailedCi: options.autoFollowupOnFailedCi ?? false,
     alias: options.alias?.trim() || undefined,
     baseBranch: options.baseBranch?.trim() || undefined,
   };
@@ -366,6 +382,7 @@ export async function updateRepo(
   const updatedRepo: MonitoredRepo = {
     ...existingRepo,
     ...(updates.enabled !== undefined && { enabled: updates.enabled }),
+    ...(updates.autoFollowupOnFailedCi !== undefined && { autoFollowupOnFailedCi: updates.autoFollowupOnFailedCi }),
     ...(updates.alias !== undefined && { alias: updates.alias?.trim() || undefined }),
     ...(updates.baseBranch !== undefined && { baseBranch: updates.baseBranch?.trim() || undefined }),
   };

@@ -59,7 +59,7 @@ export class VibeAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, taskId, prNumber } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -153,7 +153,7 @@ export class VibeAgent implements Agent {
                 draftId: taskId,
                 repository,
                 agentAlias: this.config.alias,
-                metadata: buildLogMetadata({ isRetry, retryReason }, result, !success),
+                metadata: { ...metadata, ...buildLogMetadata({ isRetry, retryReason }, result, !success) },
                 usageMetrics: usage.metrics,
                 usageMetricRecords: usage.records,
                 workRef: buildTaskWorkRef(taskId, issueRef.number, repository, prNumber),

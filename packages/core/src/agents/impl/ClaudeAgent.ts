@@ -94,7 +94,7 @@ export class ClaudeAgent implements Agent {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
             onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber, reasoningLevel,
-            executionMode = 'task', resumeSessionId
+            executionMode = 'task', resumeSessionId, metadata
         } = options;
 
         const startTime = Date.now();
@@ -146,7 +146,7 @@ export class ClaudeAgent implements Agent {
             await this.persistExecutionLogs({
                 result, prompt, issueRef, modelUsed, isRetry, retryReason,
                 executionTime, correctedTokenUsage, taskId, prNumber,
-                reasoningLevel: effectiveReasoningLevel || undefined, usageMetrics
+                reasoningLevel: effectiveReasoningLevel || undefined, usageMetrics, metadata
             });
 
             if (!response.success) {
@@ -311,7 +311,7 @@ export class ClaudeAgent implements Agent {
     private async persistExecutionLogs(params: PersistLogsParams): Promise<void> {
         const {
             result, prompt, issueRef, modelUsed, isRetry, retryReason, executionTime,
-            correctedTokenUsage, taskId, prNumber, reasoningLevel, usageMetrics
+            correctedTokenUsage, taskId, prNumber, reasoningLevel, usageMetrics, metadata
         } = params;
         const claudeOutput = parseStreamJsonOutput(result);
 
@@ -326,7 +326,7 @@ export class ClaudeAgent implements Agent {
             sessionId: claudeOutput.sessionId ?? undefined, draftId: taskId, repository,
             agentAlias: this.config.alias,
             reasoningLevel,
-            metadata: { isRetry, retryReason, conversationId: claudeOutput.conversationId },
+            metadata: { ...metadata, isRetry, retryReason, conversationId: claudeOutput.conversationId },
             usageMetrics: usageMetrics ? {
                 preCall: usageMetrics.preCall, postCall: usageMetrics.postCall,
                 delta: usageMetrics.delta, timestamp: usageMetrics.timestamp, agent: usageMetrics.agent
