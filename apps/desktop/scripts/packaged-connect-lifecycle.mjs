@@ -1,10 +1,14 @@
 import { spawn as nodeSpawn } from 'node:child_process';
-import { lstat, realpath, rm } from 'node:fs/promises';
+import { lstat, open, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative } from 'node:path';
 import { TextDecoder } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import {
+  CONNECT_READY_EVENT,
+  isExactConnectReadyRecord,
+} from './packaged-connect-ready.mjs';
 
-export const CONNECT_READY_EVENT = 'desktop.renderer.connect_discovery.ready';
+export { CONNECT_READY_EVENT };
 export const CHILD_CAPTURE_MAX_BYTES = 64 * 1024;
 export const CHILD_DIAGNOSTIC_MAX_RECORDS = 20;
 
@@ -60,6 +64,13 @@ const diagnosticCategories = new Set([
   'type-mismatch',
   'unexpected',
 ]);
+const failureMilestones = new Map([
+  ['desktop.app.ready', 'app-ready'],
+  ['desktop.renderer.ready', 'renderer-ready'],
+  ['desktop.renderer.connect_discovery.proof', 'connect-proof'],
+  [CONNECT_READY_EVENT, 'ready-publication'],
+]);
+const allowedFailureMilestones = new Set(failureMilestones.values());
 
 export const boundedChildDiagnostics = records => records.flatMap(record => {
   if (!record || typeof record !== 'object' || !diagnosticEvents.has(record.event)) return [];
@@ -81,25 +92,41 @@ export const boundedChildDiagnostics = records => records.flatMap(record => {
   }];
 }).slice(0, CHILD_DIAGNOSTIC_MAX_RECORDS);
 
-const exactKeys = (record, expected) => {
-  const actual = Object.keys(record).sort();
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
-};
+export const isExactReadyRecord = isExactConnectReadyRecord;
 
-export const isExactReadyRecord = (record, { platform, arch, authorityMechanism }) => {
-  if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
-  if (!exactKeys(record, [
-    'authorityMechanism', 'event', 'level', 'rendererSchemaValid',
-    'selectedArch', 'selectedPlatform', 'timestamp',
-  ])) return false;
-  return record.event === CONNECT_READY_EVENT
-    && record.level === 'info'
-    && typeof record.timestamp === 'string'
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(record.timestamp)
-    && record.selectedPlatform === platform
-    && record.selectedArch === arch
-    && record.authorityMechanism === authorityMechanism
-    && record.rendererSchemaValid === true;
+export const readPackagedConnectFailureMilestone = async evidencePath => {
+  if (typeof evidencePath !== 'string' || !isAbsolute(evidencePath)) return undefined;
+  let handle;
+  try {
+    handle = await open(evidencePath, 'r');
+    const before = await handle.stat();
+    if (!before.isFile() || before.size <= 0 || before.size > CHILD_CAPTURE_MAX_BYTES) return undefined;
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const result = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
+      if (!Number.isSafeInteger(result.bytesRead) || result.bytesRead <= 0) return undefined;
+      offset += result.bytesRead;
+    }
+    const after = await handle.stat();
+    if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size) return undefined;
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (!text.endsWith('\n')) return undefined;
+    let lastMilestone;
+    for (const line of text.slice(0, -1).split('\n')) {
+      let record;
+      try { record = JSON.parse(line); } catch { continue; }
+      if (!record || typeof record !== 'object' || Array.isArray(record)
+        || Object.keys(record).length !== 1 || typeof record.event !== 'string') continue;
+      const milestone = failureMilestones.get(record.event);
+      if (milestone) lastMilestone = milestone;
+    }
+    return lastMilestone;
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 };
 
 const createRecordCapture = ({ sensitiveNeedles, onRecord, onSensitiveOutput }) => {
@@ -366,11 +393,13 @@ export const runPackagedConnectLifecycle = async ({
   terminationTimeoutMs = 10_000,
   streamDrainTimeoutMs = 5_000,
   requestShutdown = () => undefined,
+  readFailureMilestone,
 }) => {
   const records = [];
   const first = deferred();
   let firstSettled = false;
   let invalidReadyObserved = false;
+  let readyRecordCount = 0;
   let child;
   const settleFirst = value => {
     if (firstSettled) return;
@@ -383,6 +412,7 @@ export const runPackagedConnectLifecycle = async ({
     onRecord: record => {
       if (records.length < RECORD_MAX_COUNT) records.push(record);
       if (record.event !== CONNECT_READY_EVENT) return;
+      readyRecordCount += 1;
       const valid = isExactReadyRecord(record, { platform, arch, authorityMechanism });
       if (!valid) invalidReadyObserved = true;
       settleFirst(valid ? { category: 'ready' } : { category: 'ready-validation' });
@@ -432,11 +462,9 @@ export const runPackagedConnectLifecycle = async ({
       });
       close = await waitForClose(child, streamDrainTimeoutMs);
       streamsDrained = await drainChildStreams(child, streamDrainTimeoutMs);
-      primary = closeIsClean(close) && streamsDrained
-        ? 'ready-clean-exit'
-        : terminationSucceeded && close.closed && streamsDrained
-          ? 'ready-forced-exit'
-          : 'tree-termination';
+      primary = terminationSucceeded && close.closed && streamsDrained
+        ? 'child-remained-alive'
+        : 'tree-termination';
     }
   } else if (primary === 'child-exit') {
     primary = 'child-exit-before-ready';
@@ -454,10 +482,12 @@ export const runPackagedConnectLifecycle = async ({
   if (!streamsDrained) streamsDrained = await drainChildStreams(child, streamDrainTimeoutMs);
   capture.finish();
   const captureResult = capture.result();
-  if (primary === 'ready-clean-exit' || primary === 'ready-forced-exit') {
+  if (primary === 'ready-clean-exit') {
     if (captureResult.sensitiveOutput || captureResult.capture === 'truncated') {
       primary = 'output-rejected';
-    } else if (invalidReadyObserved) primary = 'ready-validation';
+    } else if (invalidReadyObserved) {
+      primary = 'ready-validation';
+    } else if (readyRecordCount !== 1) primary = 'ready-duplicate';
   }
   const secondary = [];
   if (terminationAttempted && !terminationSucceeded && primary !== 'ready-clean-exit') {
@@ -470,11 +500,27 @@ export const runPackagedConnectLifecycle = async ({
     child.stderr?.destroy();
     child.unref?.();
   }
+  let lastMilestone;
+  const failureDiagnosticsAuthorized = primary !== 'ready-clean-exit'
+    && close?.closed
+    && streamsDrained
+    && (!terminationAttempted || terminationSucceeded);
+  if (failureDiagnosticsAuthorized && typeof readFailureMilestone === 'function') {
+    try {
+      const boundedMilestone = await withTimeout(
+        Promise.resolve().then(() => readFailureMilestone()),
+        streamDrainTimeoutMs,
+      );
+      const candidate = boundedMilestone.timedOut ? undefined : boundedMilestone.value;
+      if (allowedFailureMilestones.has(candidate)) lastMilestone = candidate;
+    } catch { /* Diagnostic attribution cannot replace the primary lifecycle result. */ }
+  }
   return {
-    ok: primary === 'ready-clean-exit' || primary === 'ready-forced-exit',
+    ok: primary === 'ready-clean-exit',
     category: primary,
     capture: captureResult.capture,
     records: boundedChildDiagnostics(records),
+    ...(lastMilestone ? { lastMilestone } : {}),
     ...(secondary.length ? { secondary } : {}),
   };
 };

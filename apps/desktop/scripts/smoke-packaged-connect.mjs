@@ -7,9 +7,11 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import {
   preservePrimaryWithCleanup,
+  readPackagedConnectFailureMilestone,
   removeAuthorizedConnectFixture,
   runPackagedConnectLifecycle,
 } from './packaged-connect-lifecycle.mjs';
+import { verifyNativeWindowsReadyPipeRegression } from './packaged-connect-ready-regression.mjs';
 import {
   canonicalizeWindowsFixtureEntry,
   encodedWindowsFixtureAcl,
@@ -229,6 +231,8 @@ try {
   failurePhase = 'package-validation';
   await assertPackageAuthority();
   const treeKillerPath = await windowsTreeKiller();
+  failurePhase = 'ready-pipe-regression';
+  await verifyNativeWindowsReadyPipeRegression({ treeKillerPath });
   const sensitiveNeedles = [
     ...secrets, fixture, configRoot, stackRoot, identity,
     'S-1-5-', 'volumeSerialNumber', 'fileId', 'authorityDiagnostic',
@@ -242,6 +246,9 @@ try {
     authorityMechanism: authorityMechanism(),
     sensitiveNeedles,
     treeKillerPath,
+    readFailureMilestone: () => readPackagedConnectFailureMilestone(
+      join(userDataPath, 'application.smoke-evidence.jsonl'),
+    ),
     env: {
       ...process.env,
       PROPR_DESKTOP_CONNECT_SMOKE_TEST: '1',
@@ -273,6 +280,7 @@ try {
       category: outcome.category,
       capture: outcome.capture,
       records: outcome.records,
+      ...(outcome.lastMilestone ? { lastMilestone: outcome.lastMilestone } : {}),
       ...(outcome.secondary?.length ? { secondary: outcome.secondary } : {}),
     })}\n`);
     process.exitCode = 1;

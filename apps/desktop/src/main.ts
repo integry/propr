@@ -38,6 +38,11 @@ import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
 import {
+  CONNECT_READY_EVENT,
+  createConnectReadyPublisher,
+  createConnectReadyRecord,
+} from '../scripts/packaged-connect-ready.mjs';
+import {
   createBrowserWindowOptions,
   MINIMUM_BROWSER_WINDOW_SIZE,
   selectInitialWindowWorkArea,
@@ -83,6 +88,7 @@ const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
 );
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
+const packagedConnectReadyPublisher = createConnectReadyPublisher();
 if (process.platform === 'win32') {
   app.setAppUserModelId('dev.propr.desktop');
 }
@@ -364,16 +370,21 @@ const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<
     || candidate.apiBaseUrl !== 'https://t-packaged123.propr.dev') {
     throw new Error('Packaged Connect renderer discovery proof was invalid');
   }
-  log('info', 'desktop.renderer.connect_discovery.ready', {
-    selectedPlatform: process.platform,
-    selectedArch: process.arch,
-    authorityMechanism: process.platform === 'darwin'
-      ? 'packaged-broker'
-      : process.platform === 'linux'
-        ? 'in-process-native-addon'
-        : 'inherited-standard-handle',
-    rendererSchemaValid: true,
-  });
+  packagedSmokeEvidence?.write('desktop.renderer.connect_discovery.proof');
+  const authorityMechanism = process.platform === 'darwin'
+    ? 'packaged-broker'
+    : process.platform === 'linux'
+      ? 'in-process-native-addon'
+      : 'inherited-standard-handle';
+  const expected = { platform: process.platform, arch: process.arch, authorityMechanism };
+  const publication = packagedConnectReadyPublisher.publish(
+    createConnectReadyRecord(expected),
+    expected,
+  );
+  if (!publication.ok) {
+    throw new Error(`Packaged Connect READY publication failed: ${publication.category}`);
+  }
+  packagedSmokeEvidence?.write(CONNECT_READY_EVENT);
 };
 
 const runPackagedTransportSmoke = async (

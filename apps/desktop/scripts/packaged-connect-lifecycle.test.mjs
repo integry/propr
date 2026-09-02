@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { lstat, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -10,6 +10,7 @@ import {
   CONNECT_READY_EVENT,
   isExactReadyRecord,
   preservePrimaryWithCleanup,
+  readPackagedConnectFailureMilestone,
   removeAuthorizedConnectFixture,
   runPackagedConnectLifecycle,
 } from './packaged-connect-lifecycle.mjs';
@@ -106,7 +107,7 @@ describe('packaged Connect bounded child lifecycle', () => {
     assert.equal(invocations.length, 1);
   });
 
-  test('forces a ready app with a hung descendant through an exact bounded taskkill invocation', async () => {
+  test('terminates but rejects a ready app that remains alive past the shutdown bound', async () => {
     const { result, invocations } = await run({
       onApp: app => app.write(readyRecord()),
       onKiller: (killer, app) => {
@@ -114,8 +115,8 @@ describe('packaged Connect bounded child lifecycle', () => {
         killer.close(0, null);
       },
     });
-    assert.equal(result.ok, true);
-    assert.equal(result.category, 'ready-forced-exit');
+    assert.equal(result.ok, false);
+    assert.equal(result.category, 'child-remained-alive');
     assert.equal(invocations.length, 2);
     assert.deepEqual(invocations[1].args, ['/PID', '4242', '/T', '/F']);
     assert.equal(invocations[1].options.shell, false);
@@ -159,7 +160,7 @@ describe('packaged Connect bounded child lifecycle', () => {
     assert.equal(result.ok, false);
   });
 
-  test('accepts a clean post-proof close racing a taskkill no-process result', async () => {
+  test('rejects a post-bound close racing a taskkill no-process result', async () => {
     const { result } = await run({
       onApp: app => app.write(readyRecord()),
       onKiller: (killer, app) => {
@@ -167,12 +168,9 @@ describe('packaged Connect bounded child lifecycle', () => {
         killer.close(128, null);
       },
     });
-    assert.deepEqual(result, {
-      ok: true,
-      category: 'ready-clean-exit',
-      capture: 'complete',
-      records: [{ event: CONNECT_READY_EVENT }],
-    });
+    assert.equal(result.ok, false);
+    assert.equal(result.category, 'tree-termination');
+    assert.deepEqual(result.secondary, ['tree-termination-failed']);
   });
 
   test('rejects malformed, partial, truncated, and extra-field ready records', async () => {
@@ -206,6 +204,22 @@ describe('packaged Connect bounded child lifecycle', () => {
     assert.equal(result.ok, false);
     assert.equal(result.category, 'ready-validation');
     assert.deepEqual(result.records, [{ event: CONNECT_READY_EVENT }]);
+  });
+
+  test('rejects duplicate exact READY records after a clean close', async () => {
+    const { result } = await run({
+      onApp: app => {
+        app.write(readyRecord());
+        app.write(readyRecord({ timestamp: '2026-09-01T22:00:01.000Z' }));
+        queueMicrotask(() => app.close(0, null));
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.category, 'ready-duplicate');
+    assert.deepEqual(result.records, [
+      { event: CONNECT_READY_EVENT },
+      { event: CONNECT_READY_EVENT },
+    ]);
   });
 
   test('fails after proof when Windows tree termination cannot be proven', async () => {
@@ -334,6 +348,67 @@ describe('packaged Connect bounded child lifecycle', () => {
     assert.equal(result.capture, 'truncated');
     assert.deepEqual(result.records, [{ event: CONNECT_READY_EVENT }]);
     assert.doesNotMatch(JSON.stringify(result), /private-user|private-path-SENTINEL/u);
+  });
+});
+
+describe('packaged Connect fixed failure milestone attribution', () => {
+  test('reads only the last allowlisted event-only milestone from bounded evidence', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-connect-milestone-'));
+    const evidence = join(directory, 'application.smoke-evidence.jsonl');
+    try {
+      await writeFile(evidence, [
+        JSON.stringify({ event: 'desktop.app.ready' }),
+        JSON.stringify({ event: 'desktop.renderer.ready' }),
+        JSON.stringify({ event: 'desktop.renderer.connect_discovery.proof' }),
+        JSON.stringify({ event: CONNECT_READY_EVENT, path: privateWindowsPath }),
+        JSON.stringify({ event: 'untrusted.event' }),
+        '',
+      ].join('\n'));
+      assert.equal(await readPackagedConnectFailureMilestone(evidence), 'connect-proof');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('reads diagnostics only after failed lifecycle termination and stream drain', async () => {
+    let diagnosticReads = 0;
+    const { result } = await run({
+      onKiller: (killer, app) => {
+        app.close(null, 'SIGKILL');
+        killer.close(0, null);
+      },
+      readFailureMilestone: async () => {
+        diagnosticReads += 1;
+        return 'connect-proof';
+      },
+    });
+    assert.equal(diagnosticReads, 1);
+    assert.equal(result.category, 'timeout-before-ready');
+    assert.equal(result.lastMilestone, 'connect-proof');
+  });
+
+  test('does not read evidence after success or unproven tree termination', async () => {
+    let diagnosticReads = 0;
+    const readFailureMilestone = async () => {
+      diagnosticReads += 1;
+      return privateWindowsPath;
+    };
+    const success = await run({
+      onApp: app => {
+        app.write(readyRecord());
+        queueMicrotask(() => app.close(0, null));
+      },
+      readFailureMilestone,
+    });
+    assert.equal(success.result.ok, true);
+    const failedTermination = await run({
+      onKiller: killer => killer.close(1, null),
+      readFailureMilestone,
+    });
+    assert.equal(failedTermination.result.category, 'timeout-before-ready');
+    assert.equal(diagnosticReads, 0);
+    assert.equal(failedTermination.result.lastMilestone, undefined);
+    assert.doesNotMatch(JSON.stringify(failedTermination.result), /private-user|SENTINEL/u);
   });
 });
 
