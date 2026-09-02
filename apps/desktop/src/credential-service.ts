@@ -105,7 +105,8 @@ export interface DesktopCurrentUserProxyEvidence {
   correlation: 'current-scope-user-validation';
   requestObserved: true;
   method: 'get';
-  scopeHeaderCount: number;
+  /** Exact for zero/one; two means two or more, keeping adversarial evidence bounded. */
+  scopeHeaderCount: 0 | 1 | 2;
   activeBindingPresent: boolean;
   activeScopeGeneration: number;
   profileGenerationCurrent: boolean;
@@ -1191,14 +1192,14 @@ export class DesktopCredentialService {
       rejectionCategory: DesktopCurrentUserProxyRejectionCategory,
       authorizationMainInjected = false,
     ): void => {
-      if (!isCurrentUserRequest || scopeValues.length === 0) return;
+      if (!isCurrentUserRequest) return;
       try {
         this.#reportCurrentUserValidation({
           schemaVersion: 1,
           correlation: 'current-scope-user-validation',
           requestObserved: true,
           method: 'get',
-          scopeHeaderCount: scopeValues.length,
+          scopeHeaderCount: Math.min(scopeValues.length, 2) as 0 | 1 | 2,
           activeBindingPresent: active !== null,
           activeScopeGeneration: active?.profileGeneration ?? 0,
           profileGenerationCurrent: activeGenerationCurrent,

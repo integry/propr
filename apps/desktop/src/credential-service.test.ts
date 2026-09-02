@@ -7,6 +7,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   DESKTOP_RENDERER_ORIGIN,
   DESKTOP_REVOCATION_BINDING_HEADER,
+  DESKTOP_TRANSPORT_SCOPE_HEADER,
   DESKTOP_TOKEN_REVOCATION_ENDPOINT,
   DESKTOP_TOKEN_REVOCATION_SCHEMA,
   DESKTOP_TOKEN_REVOCATION_VERSION,
@@ -653,7 +654,7 @@ describe('main-process desktop credential service', () => {
     });
   });
 
-  it('reports fixed current-user proxy acceptance and stale-scope rejection with main-only bearer custody', async () => {
+  it('reports every exact current-user proxy decision with bounded secret-free evidence', async () => {
     const store = await createStore();
     const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
     await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
@@ -667,12 +668,66 @@ describe('main-process desktop credential service', () => {
         : json({ username: 'octocat' }),
       reportCurrentUserValidation: record => evidence.push(record),
     });
+
+    const currentUserUrl = `${profile.apiBaseUrl}/api/auth/user`;
+    assert.deepEqual(service.prepareRequest(currentUserUrl, {
+      ...transportHeaders('N'.repeat(22)),
+    }, { method: 'GET', resourceType: 'xhr' }), { cancel: true });
+    assert.deepEqual(evidence.at(-1), {
+      schemaVersion: 1,
+      correlation: 'current-scope-user-validation',
+      requestObserved: true,
+      method: 'get',
+      scopeHeaderCount: 1,
+      activeBindingPresent: false,
+      activeScopeGeneration: 0,
+      profileGenerationCurrent: false,
+      scopeEqualsActive: false,
+      originEqualsActive: false,
+      rendererBearerPresent: false,
+      rendererCookiePresent: false,
+      outboundBearerPresent: false,
+      bearerMainInjected: false,
+      accepted: false,
+      rejectionCategory: 'no-active-binding',
+    });
+
     const ready = await service.probe(profile);
     assert.equal(ready.status, 'ready');
     if (ready.status !== 'ready') return;
     const activated = await service.activate(ready.activationTicket);
 
-    assert.deepEqual(service.prepareRequest(`${profile.apiBaseUrl}/api/auth/user`, {
+    assert.deepEqual(service.prepareRequest(currentUserUrl, {}, {
+      method: 'GET', resourceType: 'xhr',
+    }).requestHeaders, {});
+    assert.deepEqual({
+      count: evidence.at(-1)?.scopeHeaderCount,
+      accepted: evidence.at(-1)?.accepted,
+      rejectionCategory: evidence.at(-1)?.rejectionCategory,
+      outboundBearerPresent: evidence.at(-1)?.outboundBearerPresent,
+    }, { count: 0, accepted: false, rejectionCategory: 'scope-missing', outboundBearerPresent: false });
+
+    assert.deepEqual(service.prepareRequest(currentUserUrl, {
+      [DESKTOP_TRANSPORT_SCOPE_HEADER]: [activated.transportScope, activated.transportScope, activated.transportScope],
+    }, { method: 'GET', resourceType: 'xhr' }), { cancel: true });
+    assert.deepEqual({
+      count: evidence.at(-1)?.scopeHeaderCount,
+      accepted: evidence.at(-1)?.accepted,
+      rejectionCategory: evidence.at(-1)?.rejectionCategory,
+      bearerMainInjected: evidence.at(-1)?.bearerMainInjected,
+    }, { count: 2, accepted: false, rejectionCategory: 'scope-duplicate', bearerMainInjected: false });
+
+    assert.deepEqual(service.prepareRequest(currentUserUrl, {
+      ...transportHeaders('Z'.repeat(22)),
+    }, { method: 'GET', resourceType: 'xhr' }), { cancel: true });
+    assert.deepEqual({
+      count: evidence.at(-1)?.scopeHeaderCount,
+      accepted: evidence.at(-1)?.accepted,
+      rejectionCategory: evidence.at(-1)?.rejectionCategory,
+      bearerMainInjected: evidence.at(-1)?.bearerMainInjected,
+    }, { count: 1, accepted: false, rejectionCategory: 'stale-scope', bearerMainInjected: false });
+
+    assert.deepEqual(service.prepareRequest(currentUserUrl, {
       ...transportHeaders(activated.transportScope),
     }, { method: 'GET', resourceType: 'xhr' }).requestHeaders, {
       Authorization: `Bearer ${token('A')}`,
@@ -695,14 +750,7 @@ describe('main-process desktop credential service', () => {
       accepted: true,
       rejectionCategory: 'none',
     });
-    assert.deepEqual(service.prepareRequest(`${profile.apiBaseUrl}/api/auth/user`, {
-      ...transportHeaders('Z'.repeat(22)),
-    }, { method: 'GET', resourceType: 'xhr' }), { cancel: true });
-    assert.deepEqual({
-      accepted: evidence.at(-1)?.accepted,
-      rejectionCategory: evidence.at(-1)?.rejectionCategory,
-      bearerMainInjected: evidence.at(-1)?.bearerMainInjected,
-    }, { accepted: false, rejectionCategory: 'stale-scope', bearerMainInjected: false });
+    assert.equal(evidence.length, 5);
     assert.doesNotMatch(JSON.stringify(evidence), /profile-a|example\.test|propr_it_/);
   });
 

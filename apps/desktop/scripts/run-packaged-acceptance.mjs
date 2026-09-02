@@ -34,6 +34,7 @@ import {
 } from './acceptance-artifacts.mjs';
 import { PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS } from './packaged-acceptance-clock.mjs';
 import { analyzeExistingElectronRenderer } from './packaged-acceptance-axe.mjs';
+import { currentUserValidationFailureCategory as classifyCurrentUserValidation } from './packaged-acceptance-current-user.mjs';
 import {
   captureElectronRendererScreenshot,
   forEachElectronRendererVariant,
@@ -873,49 +874,13 @@ const waitForObserved = async (predicate, description) => {
 };
 
 const currentUserValidationFailureCategory = journey => {
-  if (currentUserEvidenceInvalid) return 'current-user-evidence-invalid';
-  const renderer = rendererCurrentUserRecords.filter(record => record.journey === journey
-    && record.activeScopePresent && record.scopeGeneration > 0);
-  const issued = renderer.filter(record => record.phase === 'request-issued');
-  if (issued.length === 0) return 'current-user-renderer-request-not-issued';
-  if (issued.length !== 1) return 'current-user-renderer-request-duplicate';
-  const generation = issued[0].scopeGeneration;
-  const main = mainCurrentUserRecords.filter(record => record.journey === journey
-    && record.scopeHeaderCount === 1 && record.activeBindingPresent);
-  if (main.length === 0) return 'current-user-main-proxy-not-observed';
-  if (main.length !== 1) return 'current-user-main-proxy-duplicate';
-  if (!main[0].accepted) return `current-user-main-${main[0].rejectionCategory}`;
-  if (!main[0].profileGenerationCurrent || !main[0].scopeEqualsActive || !main[0].originEqualsActive) {
-    return 'current-user-main-active-scope-rejected';
-  }
-  if (main[0].rendererBearerPresent || main[0].rendererCookiePresent
-    || !main[0].outboundBearerPresent || !main[0].bearerMainInjected) {
-    return 'current-user-main-bearer-custody-invalid';
-  }
-  const fixture = fixtureCurrentUserRecords.filter(record => record.journey === journey
-    && record.source === 'renderer' && record.authorizationMatchesActivatedBearer);
-  if (fixture.length === 0) return 'current-user-upstream-request-not-arrived';
-  if (fixture.length !== 1) return 'current-user-upstream-request-duplicate';
-  if (!fixture[0].authorizationPresent || !fixture[0].authorizationMatchesActivatedBearer
-    || fixture[0].cookiePresent) return 'current-user-upstream-bearer-custody-invalid';
-  if (fixture[0].responseStatus !== 200) return `current-user-response-http-${fixture[0].responseStatus}`;
-  const completed = renderer.filter(record => record.scopeGeneration === generation
-    && record.phase === 'response-completed');
-  if (completed.length === 0) return 'current-user-renderer-response-not-completed';
-  if (completed.length !== 1 || completed[0].responseStatus !== 200
-    || completed[0].classification !== 'success') return 'current-user-renderer-response-rejected';
-  const parsed = renderer.filter(record => record.scopeGeneration === generation
-    && (record.phase === 'parsed-user-accepted' || record.phase === 'parsed-user-rejected'));
-  if (parsed.length === 0) return 'current-user-parsed-schema-not-observed';
-  if (parsed.length !== 1 || parsed[0].phase !== 'parsed-user-accepted' || !parsed[0].schemaAccepted) {
-    return 'current-user-parsed-schema-rejected';
-  }
-  const accepted = renderer.filter(record => record.scopeGeneration === generation
-    && record.phase === 'active-scope-accepted');
-  if (accepted.length !== 1) return accepted.length === 0
-    ? 'current-user-active-scope-not-accepted'
-    : 'current-user-active-scope-accepted-duplicate';
-  return 'none';
+  return classifyCurrentUserValidation({
+    journey,
+    evidenceInvalid: currentUserEvidenceInvalid,
+    rendererRecords: rendererCurrentUserRecords,
+    mainRecords: mainCurrentUserRecords,
+    fixtureRecords: fixtureCurrentUserRecords,
+  });
 };
 
 const socketHandshakeFailureCategory = journey => {
@@ -1011,10 +976,9 @@ const observedServiceSummary = () => {
   const currentUserCategory = currentUserValidationFailureCategory('dashboard-profile-manager');
   const currentUserIssued = rendererCurrentUserRecords.find(record => record.journey === 'dashboard-profile-manager'
     && record.activeScopePresent && record.phase === 'request-issued');
-  const currentUserMain = mainCurrentUserRecords.find(record => record.journey === 'dashboard-profile-manager'
-    && record.accepted);
+  const currentUserMain = mainCurrentUserRecords.find(record => record.journey === 'dashboard-profile-manager');
   const currentUserFixture = fixtureCurrentUserRecords.find(record => record.journey === 'dashboard-profile-manager'
-    && record.source === 'renderer' && record.authorizationMatchesActivatedBearer);
+    && record.source === 'renderer');
   const services = {
     rest: {
       requestCount: restRequests.length,
