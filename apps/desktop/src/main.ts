@@ -364,7 +364,7 @@ const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<
     || candidate.apiBaseUrl !== 'https://t-packaged123.propr.dev') {
     throw new Error('Packaged Connect renderer discovery proof was invalid');
   }
-  log('info', 'desktop.renderer.connect_discovery.ready', {
+  const readyFields = {
     selectedPlatform: process.platform,
     selectedArch: process.arch,
     authorityMechanism: process.platform === 'darwin'
@@ -373,6 +373,18 @@ const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<
         ? 'in-process-native-addon'
         : 'inherited-standard-handle',
     rendererSchemaValid: true,
+  } as const;
+  log('info', 'desktop.renderer.connect_discovery.ready', readyFields);
+  await new Promise<void>((resolveReady, rejectReady) => {
+    process.stdout.write(`${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'info',
+      event: 'desktop.renderer.connect_discovery.ready',
+      ...readyFields,
+    })}\n`, error => {
+      if (error) rejectReady(new Error('Packaged Connect READY publication failed'));
+      else resolveReady();
+    });
   });
 };
 

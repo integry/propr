@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
@@ -740,6 +741,7 @@ test('the workflow stages before alternate credentials and the harness preflight
   const workflow = await readFile(new URL('../../../.github/workflows/desktop-connect-discovery-guard.yml', import.meta.url), 'utf8');
   const orchestrator = await readFile(new URL('./run-packaged-windows-connect-smoke.ps1', import.meta.url), 'utf8');
   const harness = await readFile(new URL('./smoke-packaged-connect.mjs', import.meta.url), 'utf8');
+  const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
   assert.match(workflow, /run-packaged-windows-connect-smoke\.ps1\s+-Architecture '\$\{\{ matrix\.arch \}\}'/u);
   assert.doesNotMatch(workflow, /Start-Process|Get-Content|New-LocalUser/u);
 
@@ -875,8 +877,18 @@ test('the workflow stages before alternate credentials and the harness preflight
   }
   assert.match(orchestrator, /function Get-CanonicalItem[\s\S]*?FileAttributes\]::ReparsePoint/u);
   assert.match(orchestrator, /function Assert-PackageTreeTypes[\s\S]*?FileAttributes\]::ReparsePoint/u);
-  assert.match(orchestrator, /\$childFailureSubphases -cnotcontains \$record\.subphase/u);
-  assert.match(orchestrator, /\$childStagedContractSubphases -cnotcontains \$record\.subphase/u);
+  const captureParser = orchestrator.slice(
+    orchestrator.indexOf('function Read-PackagedConnectSmokeFailure'),
+    orchestrator.indexOf('$hostLauncherNativeSource'),
+  );
+  assert.match(captureParser, /packaged_connect\.smoke_failed/u);
+  assert.doesNotMatch(captureParser, /packaged_connect\.(?:artifact_failed|child_failed)/u);
+  assert.match(captureParser, /Test-UniqueJsonPropertyNames \$jsonLine/u);
+  assert.match(captureParser, /\[Text\.UTF8Encoding\]::new\(\$false, \$true\)/u);
+  assert.match(captureParser, /\$captureItem\.Length -lt 1 -or \$captureItem\.Length -gt 65536/u);
+  assert.match(captureParser, /\$diagnosticRecords\.Count -gt 20/u);
+  assert.match(captureParser, /\$captureOwner\.Value -cne \$privilegedSid\.Value/u);
+  assert.match(orchestrator, /Set-LifecycleFailureSubphase \$lifecycleFailure[\s\S]*?Stop-PackagedConnect 'spawn-failed'/u);
   assert.match(orchestrator, /catch \{\s*Set-PrimaryFailureFromException \$_\.Exception\s*\}/u);
   assert.match(orchestrator, /\$primaryPhase -ceq 'ordinary-user-preflight'[\s\S]*?\$primarySubphase = 'host-state-contract'/u);
   assert.match(orchestrator, /\$subphaseEvidence = ":subphase=\$primarySubphase"/u);
@@ -905,6 +917,102 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(harness, /packagedConnectArtifactSensitiveNeedles\(\{\s*platform: process\.platform,\s*artifactRoot,\s*binaryPath,/u);
   assert.doesNotMatch(harness, /identity, artifactRoot, binaryPath,/u);
   assert.doesNotMatch(harness, /child\.once\('error', error/u);
+  const readyProducer = main.slice(
+    main.indexOf('const runPackagedConnectDiscoverySmoke'),
+    main.indexOf('const runPackagedTransportSmoke'),
+  );
+  assert.match(readyProducer, /await window\.webContents\.executeJavaScript/u);
+  assert.match(readyProducer, /process\.stdout\.write\(`\$\{JSON\.stringify\(\{/u);
+  assert.match(readyProducer, /const readyFields = \{[\s\S]*?selectedPlatform: process\.platform[\s\S]*?selectedArch: process\.arch[\s\S]*?authorityMechanism:[\s\S]*?rendererSchemaValid: true/u);
+  assert.match(readyProducer, /timestamp: new Date\(\)\.toISOString\(\)[\s\S]*?level: 'info'[\s\S]*?event: 'desktop\.renderer\.connect_discovery\.ready'[\s\S]*?\.\.\.readyFields/u);
+  assert.ok(
+    readyProducer.indexOf("throw new Error('Packaged Connect renderer discovery proof was invalid')")
+      < readyProducer.indexOf('process.stdout.write'),
+    'READY must be emitted only after the renderer discovery proof succeeds',
+  );
+});
+
+windowsTest('the PS5.1 smoke-failure parser accepts only the exact bounded producer schema', async context => {
+  const runnerTemp = process.env.RUNNER_TEMP;
+  assert.equal(typeof runnerTemp, 'string');
+  const baseRecord = {
+    event: 'packaged_connect.smoke_failed',
+    category: 'timeout-before-ready',
+    capture: 'complete',
+    records: [{
+      event: 'desktop.renderer.connect_discovery.phase',
+      phase: 'config-read',
+      code: 'FAILED',
+      substep: 'directory-open',
+      category: 'access-denied',
+    }],
+    secondary: ['tree-termination-failed'],
+  };
+  const validLine = `${JSON.stringify(baseRecord)}\n`;
+  const cases = [
+    ['valid', validLine,
+      'category=spawn-failed:phase=application-runtime:subphase=timeout-before-ready'],
+    ['malformed', '{"event":\n',
+      'category=artifact-type:phase=capture-parse:subphase=capture-json'],
+    ['duplicate-field', validLine.replace(
+      '{"event":"packaged_connect.smoke_failed",',
+      '{"event":"packaged_connect.smoke_failed","event":"packaged_connect.smoke_failed",',
+    ), 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['extra-field', `${JSON.stringify({ ...baseRecord, detail: 'fixed' })}\n`,
+      'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['missing-field', `${JSON.stringify({
+      event: baseRecord.event, category: baseRecord.category, records: baseRecord.records,
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['duplicate-line', `${validLine}${validLine}`,
+      'category=artifact-type:phase=capture-parse:subphase=capture-line-cardinality'],
+    ['oversized', Buffer.alloc(65_537, 0x61),
+      'category=artifact-type:phase=capture-parse:subphase=capture-size'],
+    ['wrong-event', `${JSON.stringify({ ...baseRecord, event: 'packaged_connect.artifact_failed' })}\n`,
+      'category=artifact-type:phase=capture-parse:subphase=capture-event-cardinality'],
+    ['wrong-category', `${JSON.stringify({ ...baseRecord, category: 'arbitrary-runtime-error' })}\n`,
+      'category=artifact-type:phase=capture-parse:subphase=capture-lifecycle-category'],
+    ['wrong-record-category', `${JSON.stringify({
+      ...baseRecord,
+      records: [{ ...baseRecord.records[0], category: 'arbitrary-category' }],
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-lifecycle-subphase'],
+    ['sensitive', `${JSON.stringify({ ...baseRecord, detail: 'environment-secret-SENTINEL' })}\n`,
+      'category=artifact-type:phase=capture-parse:subphase=capture-redaction'],
+    ['invalid-utf8', Buffer.from([0xc3, 0x28, 0x0a]),
+      'category=artifact-type:phase=capture-parse:subphase=capture-utf8'],
+  ];
+
+  for (let index = 0; index < cases.length; index += 1) {
+    const [name, content, evidence] = cases[index];
+    const capturePath = join(
+      runnerTemp,
+      `propr-connect-${randomBytes(16).toString('hex')}.stderr`,
+    );
+    await writeFile(capturePath, content, { flag: 'wx' });
+    context.after(() => rm(capturePath, { force: true }));
+    const result = spawnSync(windowsPowerShell51Path(), [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-File', orchestratorPath,
+      '-Architecture', process.arch,
+      '-LifecycleTestMode', 'capture-parser',
+      '-CaptureParserTestPath', capturePath,
+    ], {
+      shell: false,
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    assert.ifError(result.error, name);
+    assert.equal(result.signal, null, name);
+    assert.equal(result.status, 1, name);
+    assert.equal(result.stdout.length, 0, name);
+    const diagnostic = result.stderr.toString('utf8').trim();
+    assert.equal(
+      diagnostic,
+      `PROPR_WINDOWS_PACKAGED_CONNECT:failed:${evidence}:cleanup=none`,
+      name,
+    );
+    assert.ok(diagnostic.length <= 256, name);
+    assertNoHostileDiagnosticEvidence(diagnostic);
+    assert.doesNotMatch(diagnostic, /SENTINEL|arbitrary|fixed/iu, name);
+  }
 });
 
 windowsTest('each host preflight failure transition emits one fixed redacted subphase', () => {

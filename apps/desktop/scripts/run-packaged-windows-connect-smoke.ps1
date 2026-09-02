@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory=$true)]
   [ValidateSet('x64','arm64')]
   [string]$Architecture,
-  [ValidateSet('none','terminate-tree','cleanup-timeout','diagnostic-subphase','host-node-producer','launcher-authority')]
+  [ValidateSet('none','terminate-tree','cleanup-timeout','diagnostic-subphase','host-node-producer','launcher-authority','capture-parser')]
   [string]$LifecycleTestMode = 'none',
   [ValidateRange(0,2147483647)]
   [int]$LifecycleTestProcessId = 0,
@@ -44,7 +44,8 @@ param(
   [ValidateSet('normal','alias','retarget-alias','identity-mismatch')]
   [string]$LauncherAuthorityTestCase = 'normal',
   [string]$LauncherAuthorityTestPath = '',
-  [string]$LauncherAuthorityTestRetargetPath = ''
+  [string]$LauncherAuthorityTestRetargetPath = '',
+  [string]$CaptureParserTestPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -119,7 +120,41 @@ $childStagedContractSubphases = @(
   'generated-stage-leaf',
   'derived-root-to-parent-binding'
 )
-$failureSubphases = @($hostFailureSubphases + $childFailureSubphases + $childStagedContractSubphases)
+$captureParseSubphases = @(
+  'capture-authority',
+  'capture-size',
+  'capture-read',
+  'capture-utf8',
+  'capture-json',
+  'capture-line-cardinality',
+  'capture-event-cardinality',
+  'capture-schema-cardinality',
+  'capture-lifecycle-category',
+  'capture-lifecycle-phase',
+  'capture-lifecycle-subphase',
+  'capture-redaction'
+)
+$lifecycleFailureSubphases = @(
+  'fixture-setup',
+  'package-validation',
+  'lifecycle-internal',
+  'spawn-error',
+  'output-rejected',
+  'ready-validation',
+  'timeout-before-ready',
+  'child-exit-before-ready',
+  'child-exit-after-ready',
+  'tree-termination',
+  'ready-clean-exit',
+  'ready-forced-exit'
+)
+$failureSubphases = @(
+  $hostFailureSubphases +
+  $childFailureSubphases +
+  $childStagedContractSubphases +
+  $captureParseSubphases +
+  $lifecycleFailureSubphases
+)
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
 $cleanupTimeoutMilliseconds = 60 * 1000
@@ -140,6 +175,8 @@ $stdout = $null
 $stderr = $null
 $privilegedSid = $null
 $launcherAuthority = $null
+$plainPassword = $null
+$handoffArgument = $null
 
 function Stop-PackagedConnect {
   param([Parameter(Mandatory=$true)][ValidateSet(
@@ -165,9 +202,27 @@ function Set-FailurePhase {
     throw [InvalidOperationException]::new('invalid-fixed-failure-phase')
   }
   $script:failurePhase = $Phase
-  if ($Phase -cnotin @('staged-contract','ordinary-user-preflight')) {
+  if ($Phase -cnotin @('staged-contract','ordinary-user-preflight','capture-parse','application-runtime')) {
     $script:failureSubphase = $null
   }
+}
+
+function Set-CaptureParseSubphase {
+  param([Parameter(Mandatory=$true)][string]$Subphase)
+  if ($captureParseSubphases -cnotcontains $Subphase) {
+    throw [InvalidOperationException]::new('invalid-fixed-capture-subphase')
+  }
+  $script:failurePhase = 'capture-parse'
+  $script:failureSubphase = $Subphase
+}
+
+function Set-LifecycleFailureSubphase {
+  param([Parameter(Mandatory=$true)][string]$Subphase)
+  if ($lifecycleFailureSubphases -cnotcontains $Subphase) {
+    throw [InvalidOperationException]::new('invalid-fixed-lifecycle-subphase')
+  }
+  $script:failurePhase = 'application-runtime'
+  $script:failureSubphase = $Subphase
 }
 
 function Set-StagedContractSubphase {
@@ -201,6 +256,12 @@ function Set-PrimaryFailureFromException {
     }
   } elseif ($script:primaryPhase -ceq 'staged-contract' -and
       $childStagedContractSubphases -ccontains $failureSubphase) {
+    $script:primarySubphase = $failureSubphase
+  } elseif ($script:primaryPhase -ceq 'capture-parse' -and
+      $captureParseSubphases -ccontains $failureSubphase) {
+    $script:primarySubphase = $failureSubphase
+  } elseif ($script:primaryPhase -ceq 'application-runtime' -and
+      $lifecycleFailureSubphases -ccontains $failureSubphase) {
     $script:primarySubphase = $failureSubphase
   }
 }
@@ -326,6 +387,292 @@ function Get-CanonicalItem {
     Stop-PackagedConnect 'artifact-type'
   }
   return $item
+}
+
+function Test-ExactJsonProperties {
+  param(
+    [AllowNull()][object]$Object,
+    [Parameter(Mandatory=$true)][string[]]$Expected
+  )
+  if ($null -eq $Object -or $Object -is [Array] -or $Object -is [string] -or
+      $Object -is [ValueType]) {
+    return $false
+  }
+  $actual = @($Object.PSObject.Properties | ForEach-Object { $_.Name })
+  if ($actual.Count -ne $Expected.Count) { return $false }
+  foreach ($name in $Expected) {
+    if ($actual -cnotcontains $name) { return $false }
+  }
+  return $true
+}
+
+function Test-UniqueJsonPropertyNames {
+  param([Parameter(Mandatory=$true)][string]$Text)
+  $objectKeys = [Collections.ArrayList]::new()
+  $index = 0
+  while ($index -lt $Text.Length) {
+    $character = $Text[$index]
+    if ($character -ceq '{') {
+      $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+      $null = $objectKeys.Add($keys)
+      $index++
+      continue
+    }
+    if ($character -ceq '}') {
+      if ($objectKeys.Count -eq 0) { return $true }
+      $objectKeys.RemoveAt($objectKeys.Count - 1)
+      $index++
+      continue
+    }
+    if ($character -cne '"') {
+      $index++
+      continue
+    }
+    $start = $index + 1
+    $escaped = $false
+    $containsEscape = $false
+    $index++
+    while ($index -lt $Text.Length) {
+      $stringCharacter = $Text[$index]
+      if ($escaped) {
+        $escaped = $false
+      } elseif ($stringCharacter -ceq '\') {
+        $escaped = $true
+        $containsEscape = $true
+      } elseif ($stringCharacter -ceq '"') {
+        break
+      }
+      $index++
+    }
+    if ($index -ge $Text.Length) { return $true }
+    $end = $index
+    $lookahead = $index + 1
+    while ($lookahead -lt $Text.Length -and [Char]::IsWhiteSpace($Text[$lookahead])) {
+      $lookahead++
+    }
+    if ($lookahead -lt $Text.Length -and $Text[$lookahead] -ceq ':') {
+      if ($objectKeys.Count -eq 0 -or $containsEscape) { return $false }
+      $propertyName = $Text.Substring($start, $end - $start)
+      $keys = $objectKeys[$objectKeys.Count - 1]
+      if (!$keys.Add($propertyName)) { return $false }
+    }
+    $index++
+  }
+  return $true
+}
+
+function Read-PackagedConnectSmokeFailure {
+  param([Parameter(Mandatory=$true)][string]$Path)
+
+  Set-CaptureParseSubphase 'capture-authority'
+  if ([IO.Path]::GetDirectoryName($Path) -cne $authenticatedRunnerTemp -or
+      [IO.Path]::GetFileName($Path) -cnotmatch '^propr-connect-[a-f0-9]{32}\.stderr$') {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  $captureItem = Get-CanonicalItem $Path 'file'
+  try {
+    $captureAcl = [IO.File]::GetAccessControl(
+      $Path,
+      [Security.AccessControl.AccessControlSections]::Owner
+    )
+    $captureOwner = $captureAcl.GetOwner([Security.Principal.SecurityIdentifier])
+  } catch {
+    Stop-PackagedConnect 'artifact-inaccessible'
+  }
+  if ($null -eq $privilegedSid -or $null -eq $captureOwner -or
+      $captureOwner.Value -cne $privilegedSid.Value) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  Set-CaptureParseSubphase 'capture-size'
+  if ($captureItem.Length -lt 1 -or $captureItem.Length -gt 65536) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  Set-CaptureParseSubphase 'capture-read'
+  try {
+    $captureBytes = [IO.File]::ReadAllBytes($Path)
+  } catch {
+    Stop-PackagedConnect 'artifact-inaccessible'
+  }
+  if ($captureBytes.Length -ne $captureItem.Length) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  Set-CaptureParseSubphase 'capture-utf8'
+  try {
+    $captureText = [Text.UTF8Encoding]::new($false, $true).GetString($captureBytes)
+  } catch {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  Set-CaptureParseSubphase 'capture-redaction'
+  $sensitiveValues = @(
+    $stageRoot, $stageParent, $stageLeaf, $stdout, $stderr, $testUser,
+    $plainPassword, $handoffArgument, 'S-1-5-', 'SENTINEL'
+  )
+  foreach ($sensitiveValue in $sensitiveValues) {
+    if ($sensitiveValue -is [string] -and $sensitiveValue.Length -gt 0 -and
+        $captureText.IndexOf($sensitiveValue, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+  }
+
+  Set-CaptureParseSubphase 'capture-line-cardinality'
+  if (!$captureText.EndsWith("`n", [StringComparison]::Ordinal) -or
+      $captureText.IndexOf("`r", [StringComparison]::Ordinal) -ge 0) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  $jsonLine = $captureText.Substring(0, $captureText.Length - 1)
+  if ($jsonLine.Length -eq 0 -or $jsonLine.IndexOf("`n", [StringComparison]::Ordinal) -ge 0) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  Set-CaptureParseSubphase 'capture-schema-cardinality'
+  if (!(Test-UniqueJsonPropertyNames $jsonLine)) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  Set-CaptureParseSubphase 'capture-json'
+  try {
+    $failureRecord = ConvertFrom-Json -InputObject $jsonLine -ErrorAction Stop
+  } catch {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  Set-CaptureParseSubphase 'capture-schema-cardinality'
+  $hasSecondary = $null -ne $failureRecord -and
+    $null -ne $failureRecord.PSObject.Properties['secondary']
+  $topLevelProperties = @('event','category','capture','records')
+  if ($hasSecondary) { $topLevelProperties += 'secondary' }
+  if (!(Test-ExactJsonProperties $failureRecord $topLevelProperties) -or
+      !($failureRecord.category -is [string]) -or
+      !($failureRecord.capture -is [string]) -or
+      !($failureRecord.records -is [Array])) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  Set-CaptureParseSubphase 'capture-event-cardinality'
+  if (!($failureRecord.event -is [string]) -or
+      $failureRecord.event -cne 'packaged_connect.smoke_failed') {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  Set-CaptureParseSubphase 'capture-lifecycle-category'
+  if ($lifecycleFailureSubphases -cnotcontains $failureRecord.category) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  if ($failureRecord.capture -cnotin @('complete','truncated')) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  $diagnosticRecords = @($failureRecord.records)
+  if ($diagnosticRecords.Count -gt 20) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  $diagnosticEvents = @(
+    'desktop.app.ready',
+    'desktop.app.start_failed',
+    'desktop.log.write_failed',
+    'desktop.main_process.uncaught_exception',
+    'desktop.renderer.connect_discovery.ready',
+    'desktop.renderer.connect_discovery.phase',
+    'desktop.renderer.connect_discovery.status',
+    'desktop.renderer.gone',
+    'desktop.renderer.ready'
+  )
+  $diagnosticCodes = @(
+    'CONNECT_STATUS_INCOMPATIBLE','CONNECT_STATUS_INTERNAL_FAILURE',
+    'CONNECT_STATUS_INVALID_CONFIG','CONNECT_STATUS_NOT_READY','CONNECT_STATUS_READY',
+    'CONNECT_STATUS_TIMEOUT','DETAIL_REDACTED','LOG_WRITE_FAILED','OPERATION_FAILED',
+    'UNCAUGHT_EXCEPTION'
+  )
+  $diagnosticPhases = @(
+    'config-read','addon-integrity-type','addon-load','descriptor-operation',
+    'authority-inspection','status-resolution'
+  )
+  $diagnosticSubsteps = @('directory-open','addon-open','fstat-type')
+  $diagnosticCategories = @(
+    'access-denied','invalid-argument','io-failure','missing-entry','not-directory',
+    'symlink-refused','type-mismatch','unexpected'
+  )
+  foreach ($diagnosticRecord in $diagnosticRecords) {
+    Set-CaptureParseSubphase 'capture-schema-cardinality'
+    if ($null -eq $diagnosticRecord -or $diagnosticRecord -is [Array] -or
+        $diagnosticRecord -is [string] -or $diagnosticRecord -is [ValueType]) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $hasCode = $null -ne $diagnosticRecord.PSObject.Properties['code']
+    $hasPhase = $null -ne $diagnosticRecord.PSObject.Properties['phase']
+    $hasSubstep = $null -ne $diagnosticRecord.PSObject.Properties['substep']
+    $hasCategory = $null -ne $diagnosticRecord.PSObject.Properties['category']
+    $expectedProperties = @('event')
+    if ($hasCode) { $expectedProperties += 'code' }
+    if ($hasPhase) { $expectedProperties += 'phase' }
+    if ($hasSubstep) { $expectedProperties += 'substep' }
+    if ($hasCategory) { $expectedProperties += 'category' }
+    if (!(Test-ExactJsonProperties $diagnosticRecord $expectedProperties)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    Set-CaptureParseSubphase 'capture-event-cardinality'
+    if (!($diagnosticRecord.event -is [string]) -or
+        $diagnosticEvents -cnotcontains $diagnosticRecord.event) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    Set-CaptureParseSubphase 'capture-lifecycle-phase'
+    if ($hasPhase) {
+      if (!$hasCode -or !($diagnosticRecord.phase -is [string]) -or
+          $diagnosticPhases -cnotcontains $diagnosticRecord.phase -or
+          !($diagnosticRecord.code -is [string]) -or
+          $diagnosticRecord.code -cnotin @('STARTED','PASSED','FAILED')) {
+        Stop-PackagedConnect 'artifact-type'
+      }
+    } elseif ($hasCode) {
+      if (!($diagnosticRecord.code -is [string]) -or
+          $diagnosticCodes -cnotcontains $diagnosticRecord.code) {
+        Stop-PackagedConnect 'artifact-type'
+      }
+    }
+
+    Set-CaptureParseSubphase 'capture-lifecycle-subphase'
+    if (($hasSubstep -or $hasCategory) -and
+        (!$hasPhase -or $diagnosticRecord.code -cne 'FAILED')) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    if ($hasSubstep -and (!($diagnosticRecord.substep -is [string]) -or
+        $diagnosticSubsteps -cnotcontains $diagnosticRecord.substep)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    if ($hasCategory -and (!($diagnosticRecord.category -is [string]) -or
+        $diagnosticCategories -cnotcontains $diagnosticRecord.category)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+  }
+
+  Set-CaptureParseSubphase 'capture-lifecycle-subphase'
+  if ($hasSecondary) {
+    if (!($failureRecord.secondary -is [Array])) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $secondaryValues = @($failureRecord.secondary)
+    if ($secondaryValues.Count -lt 1 -or $secondaryValues.Count -gt 5) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $allowedSecondary = @(
+      'tree-termination-failed','child-close-unconfirmed','stream-drain-failed',
+      'fixture-cleanup-failed','fixture-cleanup-authorization-failed'
+    )
+    $uniqueSecondary = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($secondaryValue in $secondaryValues) {
+      if (!($secondaryValue -is [string]) -or
+          $allowedSecondary -cnotcontains $secondaryValue -or
+          !$uniqueSecondary.Add($secondaryValue)) {
+        Stop-PackagedConnect 'artifact-type'
+      }
+    }
+  }
+  return $failureRecord.category
 }
 
 $hostLauncherNativeSource = @'
@@ -936,6 +1283,23 @@ function Invoke-BoundedCleanup {
 $authenticatedRunnerTemp = $null
 $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 
+if ($LifecycleTestMode -eq 'capture-parser') {
+  try {
+    if ([String]::IsNullOrEmpty($env:RUNNER_TEMP) -or ![IO.Path]::IsPathRooted($env:RUNNER_TEMP)) {
+      Set-CaptureParseSubphase 'capture-authority'
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $authenticatedRunnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')
+    $privilegedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $stderr = $CaptureParserTestPath
+    $lifecycleFailure = Read-PackagedConnectSmokeFailure $stderr
+    Set-LifecycleFailureSubphase $lifecycleFailure
+    Stop-PackagedConnect 'spawn-failed'
+  } catch {
+    Set-PrimaryFailureFromException $_.Exception
+  }
+}
+
 if ($LifecycleTestMode -eq 'diagnostic-subphase') {
   Set-OrdinaryUserPreflightSubphase $DiagnosticTestSubphase
   try {
@@ -1104,7 +1468,7 @@ if ($LifecycleTestMode -eq 'launcher-authority') {
   }
 }
 
-if ($LifecycleTestMode -in @('diagnostic-subphase','host-node-producer','launcher-authority')) {
+if ($LifecycleTestMode -in @('diagnostic-subphase','host-node-producer','launcher-authority','capture-parser')) {
   # The shared final diagnostic below emits the injected fixed state.
 } elseif ($LifecycleTestMode -eq 'cleanup-timeout') {
   $cleanupTimeoutMilliseconds = 750
@@ -1285,45 +1649,10 @@ try {
       Stop-PackagedConnect 'spawn-failed'
     }
     if ($process.ExitCode -ne 0) {
-      Set-FailurePhase 'capture-parse'
       try {
-        $failureCapture = Get-CanonicalItem $stderr 'file'
-        if ($failureCapture.Length -lt 1 -or $failureCapture.Length -gt 65536) {
-          Stop-PackagedConnect 'spawn-failed'
-        }
-        $failureLines = @([IO.File]::ReadAllLines($stderr) | Where-Object { $_.Length -gt 0 })
-        if ($failureLines.Count -lt 1 -or $failureLines.Count -gt 4) {
-          Stop-PackagedConnect 'spawn-failed'
-        }
-        $reportedCategories = @()
-        foreach ($line in $failureLines) {
-          $record = ConvertFrom-Json -InputObject $line -ErrorAction Stop
-          if ($record.event -ceq 'packaged_connect.artifact_failed' -and
-              $failureCategories -ccontains $record.category -and
-              $failurePhases -ccontains $record.phase) {
-            if ($record.phase -ceq 'staged-contract') {
-              if ($childStagedContractSubphases -cnotcontains $record.subphase) {
-                Stop-PackagedConnect 'artifact-type'
-              }
-              Set-StagedContractSubphase $record.subphase
-            } elseif ($record.phase -ceq 'ordinary-user-preflight') {
-              if ($childFailureSubphases -cnotcontains $record.subphase) {
-                Stop-PackagedConnect 'artifact-type'
-              }
-              Set-OrdinaryUserPreflightSubphase $record.subphase
-            } elseif ($null -ne $record.subphase) {
-              Stop-PackagedConnect 'artifact-type'
-            }
-            $reportedCategories += $record.category
-            if ($record.phase -cne 'ordinary-user-preflight') {
-              Set-FailurePhase $record.phase
-            }
-          } elseif ($record.event -cne 'packaged_connect.child_failed') {
-            Stop-PackagedConnect 'artifact-type'
-          }
-        }
-        if ($reportedCategories.Count -ne 1) { Stop-PackagedConnect 'artifact-type' }
-        Stop-PackagedConnect $reportedCategories[0]
+        $lifecycleFailure = Read-PackagedConnectSmokeFailure $stderr
+        Set-LifecycleFailureSubphase $lifecycleFailure
+        Stop-PackagedConnect 'spawn-failed'
       } catch {
         if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
         Stop-PackagedConnect 'artifact-type'
@@ -1374,6 +1703,12 @@ if ($null -ne $primaryFailure) {
     $subphaseEvidence = ":subphase=$primarySubphase"
   } elseif ($primaryPhase -ceq 'staged-contract' -and
       $childStagedContractSubphases -ccontains $primarySubphase) {
+    $subphaseEvidence = ":subphase=$primarySubphase"
+  } elseif ($primaryPhase -ceq 'capture-parse' -and
+      $captureParseSubphases -ccontains $primarySubphase) {
+    $subphaseEvidence = ":subphase=$primarySubphase"
+  } elseif ($primaryPhase -ceq 'application-runtime' -and
+      $lifecycleFailureSubphases -ccontains $primarySubphase) {
     $subphaseEvidence = ":subphase=$primarySubphase"
   }
   [Console]::Error.WriteLine("PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=$primaryFailure`:phase=$primaryPhase$subphaseEvidence`:cleanup=$cleanupSecondary")
