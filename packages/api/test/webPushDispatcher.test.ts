@@ -35,10 +35,14 @@ function createDatabase(): Knex {
 function vapidConfiguration() {
   const ecdh = createECDH('prime256v1');
   ecdh.generateKeys();
+  const generatedPrivateKey = ecdh.getPrivateKey();
+  // Node omits leading zero bytes; VAPID private keys use a fixed 32-byte encoding.
+  const privateKey = Buffer.alloc(32);
+  generatedPrivateKey.copy(privateKey, privateKey.length - generatedPrivateKey.length);
   return {
     subject: 'mailto:notifications@example.com',
     publicKey: ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url'),
-    privateKey: ecdh.getPrivateKey().toString('base64url'),
+    privateKey: privateKey.toString('base64url'),
   };
 }
 
