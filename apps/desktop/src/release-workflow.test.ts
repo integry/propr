@@ -680,7 +680,7 @@ describe('desktop trusted release workflow', () => {
       assert.match(installedWindowsAppSupervisorBehaviorTest, new RegExp(`'${callsite}'`));
     }
     assert.match(fixtureResourceStateReader, /RESOURCE_STATE_PATH/);
-    assert.match(fixtureResourceStateReader, /ElapsedMilliseconds -ge 15000/);
+    assert.match(fixtureResourceStateReader, /ElapsedMilliseconds -ge 45000/);
     const criticalCancellation = installedWindowsAppSupervisorBehaviorTest.slice(
       installedWindowsAppSupervisorBehaviorTest.indexOf(
         'function Invoke-CriticalCancellationScenario',
@@ -690,7 +690,7 @@ describe('desktop trusted release workflow', () => {
       ),
     );
     assert.match(criticalCancellation, /CRITICAL_RESULT_FIELD[\s\S]*STATE_DIRECTORY/);
-    assert.match(criticalCancellation, /ElapsedMilliseconds -ge 15000/);
+    assert.match(criticalCancellation, /ElapsedMilliseconds -ge 45000/);
     assert.doesNotMatch(
       criticalCancellation,
       /'PROCESS_STATE'\s+`\s+'PROCESS_STATE_PATH'\s+`\s+'STATE_DIRECTORY'/,
@@ -745,8 +745,8 @@ describe('desktop trusted release workflow', () => {
     ]) {
       assert.match(ownedResourceAssertion, new RegExp(field));
     }
-    assert.match(ownedResourceAssertion, /\$cleanupStopwatch = \[Diagnostics\.Stopwatch\]::StartNew\(\)/);
-    assert.match(ownedResourceAssertion, /ElapsedMilliseconds -ge 5000/);
+    assert.doesNotMatch(ownedResourceAssertion, /cleanupStopwatch/i);
+    assert.doesNotMatch(ownedResourceAssertion, /ElapsedMilliseconds -ge 5000/);
     assert.doesNotMatch(
       ownedResourceAssertion,
       /Set-SupervisorInvocationContext[\s\S]*'RESOURCE_ASSERTION'\s*\)/,

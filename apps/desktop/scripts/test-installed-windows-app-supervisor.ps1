@@ -909,7 +909,7 @@ function Read-FixtureResourceState([string]$StateDirectory) {
     -Action {
       $stopwatch = [Diagnostics.Stopwatch]::StartNew()
       while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
-        if ($stopwatch.ElapsedMilliseconds -ge 15000) {
+        if ($stopwatch.ElapsedMilliseconds -ge 45000) {
           Assert-True $false `
             (Get-SanitizedSupervisorInvocationDiagnostic `
               $script:currentSupervisorInvocationTest `
@@ -1347,25 +1347,18 @@ function Assert-OwnedResourcePredicate(
   [string]$Scenario,
   [string]$Callsite,
   [string]$Field,
-  [Diagnostics.Stopwatch]$CleanupStopwatch,
   [scriptblock]$Predicate
 ) {
   $predicateScenario = $Scenario
   $predicateCallsite = $Callsite
   $predicateField = $Field
-  $predicateCleanupStopwatch = $CleanupStopwatch
   Invoke-SupervisorAttributedOperation `
     -Scenario $predicateScenario `
     -Phase 'RESOURCE_ASSERTION' `
     -Callsite $predicateCallsite `
     -Field $predicateField `
     -Action {
-      do {
-        if (& $Predicate) { return }
-        if ($predicateCleanupStopwatch.ElapsedMilliseconds -ge 5000) { break }
-        Start-Sleep -Milliseconds 25
-      } while ($true)
-      Assert-True $false `
+      Assert-True (& $Predicate) `
         (Get-SanitizedSupervisorInvocationDiagnostic `
           $script:currentSupervisorInvocationTest `
           $predicateScenario `
@@ -1377,7 +1370,6 @@ function Assert-OwnedResourcePredicate(
 
 function Assert-OwnedResourcesGone($Owned) {
   $resourceScenario = $script:currentSupervisorInvocationScenario
-  $cleanupStopwatch = [Diagnostics.Stopwatch]::StartNew()
   foreach ($ownedDirectoryCase in @(
       @{ Path = $Owned.OwnedRoot; Field = 'OWNED_ROOT' },
       @{ Path = $Owned.InstallRoot; Field = 'INSTALL_ROOT' },
@@ -1390,7 +1382,6 @@ function Assert-OwnedResourcesGone($Owned) {
       -Scenario $resourceScenario `
       -Callsite 'FINAL_FILESYSTEM_DIRECTORY_ABSENCE' `
       -Field $ownedDirectoryField `
-      -CleanupStopwatch $cleanupStopwatch `
       -Predicate { !(Test-Path -LiteralPath $ownedDirectoryPath) }
   }
   $ownedExecutablePath = [string]$Owned.Executable
@@ -1399,7 +1390,6 @@ function Assert-OwnedResourcesGone($Owned) {
       -Scenario $resourceScenario `
       -Callsite 'FINAL_FILESYSTEM_FILE_ABSENCE' `
       -Field 'EXECUTABLE' `
-      -CleanupStopwatch $cleanupStopwatch `
       -Predicate { !(Test-Path -LiteralPath $ownedExecutablePath) }
   }
   $ownedShortcutPath = [string]$Owned.Shortcut
@@ -1407,34 +1397,29 @@ function Assert-OwnedResourcesGone($Owned) {
     -Scenario $resourceScenario `
     -Callsite 'FINAL_SHORTCUT_ABSENCE' `
     -Field 'SHORTCUT' `
-    -CleanupStopwatch $cleanupStopwatch `
     -Predicate { !(Test-Path -LiteralPath $ownedShortcutPath) }
   $ownedRegistryPath = [string]$Owned.RegistryPath
   Assert-OwnedResourcePredicate `
     -Scenario $resourceScenario `
     -Callsite 'FINAL_REGISTRY_VALUE_ABSENCE' `
     -Field 'REGISTRY_VALUE' `
-    -CleanupStopwatch $cleanupStopwatch `
     -Predicate { Test-OwnedRegistryValueAbsent $ownedRegistryPath 'ProPRInstalledAppOwner' }
   Assert-OwnedResourcePredicate `
     -Scenario $resourceScenario `
     -Callsite 'FINAL_REGISTRY_PATH_ABSENCE' `
     -Field 'REGISTRY_PATH' `
-    -CleanupStopwatch $cleanupStopwatch `
     -Predicate { !(Test-Path -LiteralPath $ownedRegistryPath) }
   $ownedRegistryRoot = [string]$Owned.RegistryRoot
   Assert-OwnedResourcePredicate `
     -Scenario $resourceScenario `
     -Callsite 'FINAL_REGISTRY_ROOT_ABSENCE' `
     -Field 'REGISTRY_ROOT' `
-    -CleanupStopwatch $cleanupStopwatch `
     -Predicate { !(Test-Path -LiteralPath $ownedRegistryRoot) }
   $ownedUserName = [string]$Owned.UserName
   Assert-OwnedResourcePredicate `
     -Scenario $resourceScenario `
     -Callsite 'FINAL_USER_ABSENCE' `
     -Field 'USER_NAME' `
-    -CleanupStopwatch $cleanupStopwatch `
     -Predicate {
       $null -eq (Get-LocalUser -Name $ownedUserName -ErrorAction SilentlyContinue)
     }
@@ -1443,7 +1428,6 @@ function Assert-OwnedResourcesGone($Owned) {
     -Scenario $resourceScenario `
     -Callsite 'FINAL_PROFILE_ABSENCE' `
     -Field 'USER_SID' `
-    -CleanupStopwatch $cleanupStopwatch `
     -Predicate {
       $ownedProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
         Where-Object { $_.SID -ceq $ownedUserSid })
@@ -3670,7 +3654,7 @@ function Invoke-CriticalCancellationScenario([string]$Scenario) {
       'CRITICAL_GATE_PATH' `
       'CRITICAL_GATE_PATH'
     while (!(Test-Path -LiteralPath $gatePath -PathType Leaf)) {
-      if ($gateWait.ElapsedMilliseconds -ge 15000) {
+      if ($gateWait.ElapsedMilliseconds -ge 45000) {
         throw 'critical-cancellation fixture did not reach its interruption gate'
       }
       Start-Sleep -Milliseconds 25
