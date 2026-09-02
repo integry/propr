@@ -425,8 +425,7 @@ export type { NotificationCursor } from './services/notificationPagination.js';
 
 // Repository migration (rename/move detection)
 export {
-    detectRepositoryRename,
-    migrateRepositoryReferences,
+    detectRepositoryRename, migrateRepositoryReferences,
     checkAndMigrateRepository,
     detectRenameFromResponse,
     scheduleRepositoryRenameCheck
