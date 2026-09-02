@@ -98,6 +98,47 @@ describe('desktop instance protocol', () => {
     }
   });
 
+  it('bounds discovery headers and body with one deadline and preserves caller cancellation', async () => {
+    let headerSignal: AbortSignal | null = null;
+    const stalledHeaders = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async (_input, init) => {
+        headerSignal = init?.signal ?? null;
+        return new Promise<Response>(() => undefined);
+      },
+    });
+    await assert.rejects(bounded(stalledHeaders.discoverDesktop(20), 500), (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'timeout');
+    assert.equal(headerSignal?.aborted, true);
+
+    let bodyCancelled = 0;
+    const stalledBody = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"schemaVersion":1'));
+        },
+        cancel() { bodyCancelled += 1; },
+      }), { headers: { 'Content-Type': 'application/json' } }),
+    });
+    await assert.rejects(bounded(stalledBody.discoverDesktop(20), 500), (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'timeout');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(bodyCancelled, 1);
+
+    const controller = new AbortController();
+    const cancelled = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async () => new Promise<Response>(() => undefined),
+    }).discoverDesktop(1_000, controller.signal);
+    controller.abort('caller cancelled');
+    await assert.rejects(bounded(cancelled, 500), (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'aborted');
+  });
+
   it('discovers capabilities, opens approval, and polls to a single opaque token', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     let polls = 0;

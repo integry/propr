@@ -67,7 +67,6 @@ export class DesktopConnectDiscoveryService {
     publicInstanceIdentity: string;
     generation: number;
   }>();
-  #discoveryGeneration = 0;
   #identityClaimGeneration = 0;
   readonly #claimIntentGenerations = new Map<string, number>();
   readonly #pendingClaimIntents = new Map<string, number>();
@@ -85,18 +84,21 @@ export class DesktopConnectDiscoveryService {
 
   async discover(): Promise<DesktopDiscoveryCandidate[]> {
     if (!this.source.supported) throw new Error('Connect discovery is unavailable');
-    const intentGeneration = this.#beginClaimIntent('propr-connect-discovered');
-    const pendingCommit = this.#waitForClaimCommit('propr-connect-discovered');
-    if (pendingCommit) await pendingCommit;
-    const generation = ++this.#discoveryGeneration;
-    const status = await this.source.discover();
-    const candidate = candidateFromStatus(status);
-    if (generation !== this.#discoveryGeneration
-      || !this.#claimIntentIsCurrent('propr-connect-discovered', intentGeneration)) return [];
-    if (candidate) this.#publishIdentityClaim(
-      candidate.id, candidate.apiBaseUrl, status.publicInstanceIdentity!, intentGeneration,
-    );
-    return candidate ? [candidate] : [];
+    const profileId = 'propr-connect-discovered';
+    const intentGeneration = this.#beginClaimIntent(profileId);
+    try {
+      const pendingCommit = this.#waitForClaimCommit(profileId);
+      if (pendingCommit) await pendingCommit;
+      const status = await this.source.discover();
+      const candidate = candidateFromStatus(status);
+      if (!this.#claimIntentIsCurrent(profileId, intentGeneration)) return [];
+      if (candidate) this.#publishIdentityClaim(
+        candidate.id, candidate.apiBaseUrl, status.publicInstanceIdentity!, intentGeneration,
+      );
+      return candidate ? [candidate] : [];
+    } finally {
+      this.#finishClaimIntent(profileId, intentGeneration);
+    }
   }
 
   async rediscover(profileId: unknown): Promise<DesktopDiscoveryCandidate | null> {
@@ -104,31 +106,33 @@ export class DesktopConnectDiscoveryService {
       throw new Error('Connect rediscovery is unavailable');
     }
     const intentGeneration = this.#beginClaimIntent(profileId);
-    const pendingCommit = this.#waitForClaimCommit(profileId);
-    if (pendingCommit) await pendingCommit;
-    const generation = ++this.#discoveryGeneration;
-    const current = (await this.profiles.list()).profiles.find(profile => profile.id === profileId);
-    const currentEndpoint = current ? parseProprConnectEndpoint(current.apiBaseUrl) : null;
-    if (!current || !currentEndpoint) return null;
-    const status = await this.source.discover();
-    const candidate = candidateFromStatus(status);
-    if (!candidate) return null;
-    const revalidated = (await this.profiles.list()).profiles.find(profile => profile.id === profileId);
-    const revalidatedEndpoint = revalidated ? parseProprConnectEndpoint(revalidated.apiBaseUrl) : null;
-    if (!revalidated
-      || !revalidatedEndpoint
-      || revalidatedEndpoint.origin !== currentEndpoint.origin
-      || !sameRediscoveryProfile(current, revalidated)
-      || generation !== this.#discoveryGeneration
-      || !this.#claimIntentIsCurrent(profileId, intentGeneration)) return null;
-    this.#publishIdentityClaim(
-      current.id, candidate.apiBaseUrl, status.publicInstanceIdentity!, intentGeneration,
-    );
-    return {
-      id: current.id,
-      label: current.label,
-      apiBaseUrl: candidate.apiBaseUrl,
-    };
+    try {
+      const pendingCommit = this.#waitForClaimCommit(profileId);
+      if (pendingCommit) await pendingCommit;
+      const current = (await this.profiles.list()).profiles.find(profile => profile.id === profileId);
+      const currentEndpoint = current ? parseProprConnectEndpoint(current.apiBaseUrl) : null;
+      if (!current || !currentEndpoint) return null;
+      const status = await this.source.discover();
+      const candidate = candidateFromStatus(status);
+      if (!candidate) return null;
+      const revalidated = (await this.profiles.list()).profiles.find(profile => profile.id === profileId);
+      const revalidatedEndpoint = revalidated ? parseProprConnectEndpoint(revalidated.apiBaseUrl) : null;
+      if (!revalidated
+        || !revalidatedEndpoint
+        || revalidatedEndpoint.origin !== currentEndpoint.origin
+        || !sameRediscoveryProfile(current, revalidated)
+        || !this.#claimIntentIsCurrent(profileId, intentGeneration)) return null;
+      this.#publishIdentityClaim(
+        current.id, candidate.apiBaseUrl, status.publicInstanceIdentity!, intentGeneration,
+      );
+      return {
+        id: current.id,
+        label: current.label,
+        apiBaseUrl: candidate.apiBaseUrl,
+      };
+    } finally {
+      this.#finishClaimIntent(profileId, intentGeneration);
+    }
   }
 
   snapshotIdentityClaim(profileId: string, origin: string): DesktopConnectIdentityClaimSnapshot {
@@ -188,6 +192,12 @@ export class DesktopConnectDiscoveryService {
   #claimIntentIsCurrent(profileId: string, generation: number): boolean {
     return this.#claimIntentGeneration(profileId) === generation
       && this.#pendingClaimIntents.get(profileId) === generation;
+  }
+
+  #finishClaimIntent(profileId: string, generation: number): void {
+    if (this.#pendingClaimIntents.get(profileId) === generation) {
+      this.#pendingClaimIntents.delete(profileId);
+    }
   }
 
   #waitForClaimCommit(profileId: string): Promise<void> | null {
