@@ -46,6 +46,7 @@ jobs:
     if: github.event_name == 'pull_request'
     needs: validation-version
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.release_target == false }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -54,21 +55,39 @@ jobs:
           - platform: linux
             arch: x64
             runner: ubuntu-24.04
+            release_target: true
+            release_profile: macos-linux-v1
+            artifact_group: canonical
           - platform: linux
             arch: arm64
             runner: ubuntu-24.04-arm
+            release_target: true
+            release_profile: macos-linux-v1
+            artifact_group: canonical
           - platform: darwin
             arch: x64
             runner: macos-15-intel
+            release_target: true
+            release_profile: macos-linux-v1
+            artifact_group: canonical
           - platform: darwin
             arch: arm64
             runner: macos-15
+            release_target: true
+            release_profile: macos-linux-v1
+            artifact_group: canonical
           - platform: win32
             arch: x64
             runner: windows-2025
+            release_target: false
+            release_profile: macos-linux-windows-v1
+            artifact_group: optional-windows
           - platform: win32
             arch: arm64
             runner: windows-11-arm
+            release_target: false
+            release_profile: macos-linux-windows-v1
+            artifact_group: optional-windows
     env:
       PROPR_DESKTOP_VERSION: ${{ needs.validation-version.outputs.version }}
     steps:
@@ -227,6 +246,7 @@ jobs:
         run: |
           node apps/desktop/scripts/release-artifacts.mjs probe-dmg-private-snapshot-isolation \
             --version "$PROPR_DESKTOP_VERSION" \
+            --profile "${{ matrix.release_profile }}" \
             --make-directory apps/desktop/out/make \
             --arch "${{ matrix.arch }}"
 
@@ -235,6 +255,7 @@ jobs:
         run: |
           node apps/desktop/scripts/release-artifacts.mjs stage \
             --version "$PROPR_DESKTOP_VERSION" \
+            --profile "${{ matrix.release_profile }}" \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
             --make-directory apps/desktop/out/make \
@@ -243,7 +264,7 @@ jobs:
       - name: Upload unsigned validation target
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: propr-desktop-validation-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}
+          name: propr-desktop-validation-${{ matrix.artifact_group }}-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}
           path: desktop-release-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 14
@@ -273,13 +294,12 @@ jobs:
       - name: Install cross-format inspection tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio msitools p7zip-full rpm
-          test -x /usr/bin/msiextract
+          sudo apt-get install --yes cpio p7zip-full rpm
 
       - name: Download all unsigned native artifacts
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
-          pattern: propr-desktop-validation-*-${{ github.run_id }}
+          pattern: propr-desktop-validation-canonical-*-${{ github.run_id }}
           path: desktop-release-fragments
 
       - name: Verify architecture, matrix completeness, and checksums
@@ -288,6 +308,7 @@ jobs:
         run: |
           node apps/desktop/scripts/release-artifacts.mjs finalize \
             --version "$RELEASE_VERSION" \
+            --profile macos-linux-v1 \
             --input desktop-release-fragments \
             --output desktop-release-final
           (cd desktop-release-final && sha256sum --check SHA256SUMS)
@@ -366,22 +387,15 @@ jobs:
           - platform: darwin
             arch: arm64
             runner: macos-15
-          - platform: win32
-            arch: x64
-            runner: windows-2025
-          - platform: win32
-            arch: arm64
-            runner: windows-11-arm
     env:
       PROPR_DESKTOP_VERSION: ${{ needs.preflight.outputs.version }}
       PROPR_DESKTOP_PRODUCTION_RELEASE: '1'
       PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS: '1'
+      PROPR_DESKTOP_RELEASE_PROFILE: macos-linux-v1
       UPDATE_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_UPDATE_PUBLIC_KEY }}
       UPDATE_MANIFEST_URL: ${{ vars.PROPR_DESKTOP_UPDATE_MANIFEST_URL }}
       UPDATE_MAC_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_MAC_SIGNING_IDENTITY }}
       UPDATE_MAC_TEAM_ID: ${{ vars.PROPR_DESKTOP_MAC_TEAM_ID }}
-      UPDATE_WINDOWS_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY }}
-      UPDATE_WINDOWS_SIGNER_PINS: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNER_PINS }}
     steps:
       - name: Revalidate immutable tag before checkout
         shell: bash
@@ -431,37 +445,6 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Provision pinned WiX 3.14.1 binaries for Windows ARM64
-        if: matrix.platform == 'win32' && matrix.arch == 'arm64'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $downloadUrl = 'https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip'
-          $expectedSha256 = '6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31'
-          $archive = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64.zip'
-          $wixDirectory = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64'
-          if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $wixDirectory)) {
-            throw 'Pinned ARM64 WiX runner-temp paths are not fresh'
-          }
-          Invoke-WebRequest -Uri $downloadUrl -OutFile $archive -MaximumRedirection 5 -TimeoutSec 120
-          $archiveItem = Get-Item -LiteralPath $archive -Force
-          if ($archiveItem.PSIsContainer -or ($archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) `
-              -or $archiveItem.Length -le 0 -or $archiveItem.Length -gt 64MB) {
-            throw 'Pinned ARM64 WiX archive is not a regular file'
-          }
-          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedSha256) {
-            throw 'Pinned ARM64 WiX archive digest mismatch'
-          }
-          New-Item -ItemType Directory -Path $wixDirectory | Out-Null
-          Expand-Archive -LiteralPath $archive -DestinationPath $wixDirectory
-          Remove-Item -LiteralPath $archive -Force
-          "PROPR_DESKTOP_WIX_DIRECTORY=$wixDirectory" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Probe canonical WiX 3.14.1 compiler
-        if: matrix.platform == 'win32'
-        shell: pwsh
-        run: node apps/desktop/scripts/build-windows-machine-installer.mjs probe '${{ matrix.arch }}' $env:PROPR_DESKTOP_WIX_DIRECTORY
-
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'
         run: |
@@ -500,61 +483,6 @@ jobs:
           echo "PROPR_DESKTOP_APPLE_API_ISSUER_ID=$APPLE_API_ISSUER_ID" >> "$GITHUB_ENV"
           echo "DESKTOP_PLATFORM_CODE_SIGNED=1" >> "$GITHUB_ENV"
 
-      - name: Configure required Windows signing
-        if: matrix.platform == 'win32'
-        shell: pwsh
-        env:
-          CERTIFICATE_PFX_BASE64: ${{ secrets.PROPR_DESKTOP_WINDOWS_CERTIFICATE_PFX_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          $values = @{
-            CERTIFICATE_PFX_BASE64 = $env:CERTIFICATE_PFX_BASE64
-            CERTIFICATE_PASSWORD = $env:CERTIFICATE_PASSWORD
-            UPDATE_WINDOWS_SIGNING_IDENTITY = $env:UPDATE_WINDOWS_SIGNING_IDENTITY
-            UPDATE_WINDOWS_SIGNER_PINS = $env:UPDATE_WINDOWS_SIGNER_PINS
-          }
-          foreach ($entry in $values.GetEnumerator()) { if (!$entry.Value) { throw "Required production Windows field $($entry.Key) is missing" } }
-          $pins = $env:UPDATE_WINDOWS_SIGNER_PINS -split ','
-          if ($pins.Count -gt 16 -or (($pins | Sort-Object -CaseSensitive -Unique) -join ',') -cne $env:UPDATE_WINDOWS_SIGNER_PINS) {
-            throw 'Windows signer pin allowlist is not sorted and unique'
-          }
-          foreach ($pin in $pins) {
-            if ($pin -cnotmatch '^(certificate|spki)-sha256:[a-f0-9]{64}$') { throw 'Windows signer pin is not canonical' }
-          }
-          $certificate = Join-Path $env:RUNNER_TEMP 'propr-desktop-signing.pfx'
-          [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_PFX_BASE64))
-          $signingCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
-            $certificate,
-            $env:CERTIFICATE_PASSWORD,
-            [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
-          )
-          $codeSigningEku = @($signingCertificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' } |
-            ForEach-Object { $_.EnhancedKeyUsages } | ForEach-Object { $_.Value }) -ccontains '1.3.6.1.5.5.7.3.3'
-          if ($signingCertificate.Subject -cne $env:UPDATE_WINDOWS_SIGNING_IDENTITY
-            -or [DateTime]::Now -lt $signingCertificate.NotBefore
-            -or [DateTime]::Now -gt $signingCertificate.NotAfter
-            -or !$codeSigningEku) {
-            throw 'Windows signing certificate publisher, validity, or code-signing EKU is invalid'
-          }
-          $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
-          $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::Online
-          $chain.ChainPolicy.RevocationFlag = [Security.Cryptography.X509Certificates.X509RevocationFlag]::EntireChain
-          $chain.ChainPolicy.VerificationFlags = [Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
-          $chain.ChainPolicy.UrlRetrievalTimeout = [TimeSpan]::FromSeconds(15)
-          if (!$chain.Build($signingCertificate)) { throw 'Windows signing certificate chain or revocation policy is invalid' }
-          $certificateBase64 = [Convert]::ToBase64String($signingCertificate.RawData)
-          $fingerprints = (node -e 'const {createHash,X509Certificate}=require("node:crypto");const certificate=new X509Certificate(Buffer.from(process.argv[1],"base64"));process.stdout.write(JSON.stringify({certificateSha256:certificate.fingerprint256.replaceAll(":","").toLowerCase(),spkiSha256:createHash("sha256").update(certificate.publicKey.export({format:"der",type:"spki"})).digest("hex")}))' $certificateBase64) | ConvertFrom-Json
-          $actualPins = @("certificate-sha256:$($fingerprints.certificateSha256)", "spki-sha256:$($fingerprints.spkiSha256)")
-          if (@($actualPins | Where-Object { $pins -ccontains $_ }).Count -eq 0) {
-            throw 'Windows signing certificate does not match the configured cryptographic pin policy'
-          }
-          "PROPR_DESKTOP_WINDOWS_CERTIFICATE_FILE=$certificate" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD=$env:CERTIFICATE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PROPR_DESKTOP_WINDOWS_SIGNER_PINS=$env:UPDATE_WINDOWS_SIGNER_PINS" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PROPR_DESKTOP_ACTUAL_WINDOWS_CERTIFICATE_SHA256=$($fingerprints.certificateSha256)" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PROPR_DESKTOP_ACTUAL_WINDOWS_SPKI_SHA256=$($fingerprints.spkiSha256)" | Out-File -FilePath $env:GITHUB_ENV -Append
-          'DESKTOP_PLATFORM_CODE_SIGNED=1' | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - name: Require macOS signed-update runtime configuration
         if: matrix.platform == 'darwin'
         shell: bash
@@ -580,11 +508,6 @@ jobs:
           test ! -e packages/client/dist
           test ! -e apps/desktop/out
           npm run desktop:package
-
-      - name: Assert signed Windows MVP package excludes update authority
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: node apps/desktop/scripts/assert-windows-mvp-package.mjs "$(pwd)/apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}"
 
       - name: Typecheck and test production desktop runtime
         shell: bash
@@ -613,22 +536,6 @@ jobs:
           xcrun stapler validate "$dmg"
           node apps/desktop/scripts/verify-darwin-image.mjs "$dmg"
 
-      - name: Make signed Windows production installer
-        if: matrix.platform == 'win32'
-        shell: pwsh
-        run: npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
-
-      - name: Install and exercise signed ordinary-user Windows application
-        if: matrix.platform == 'win32'
-        shell: pwsh
-        run: |
-          $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
-          if ($installers.Count -ne 1) { throw 'Signed machine-wide Windows installer is missing or ambiguous' }
-          & apps/desktop/scripts/test-installed-windows-app.ps1 `
-            -Installer $installers[0].FullName `
-            -Architecture '${{ matrix.arch }}'
-          "PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - name: Launch packaged Linux application
         if: matrix.platform == 'linux'
         shell: bash
@@ -636,11 +543,6 @@ jobs:
           sudo chown root:root "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
           sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
           xvfb-run --auto-servernum npm run desktop:smoke
-
-      - name: Launch signed packaged Windows application and exercise MVP desktop flows
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: npm run desktop:smoke
 
       - name: Inspect signed and notarized macOS application
         if: matrix.platform == 'darwin'
@@ -665,56 +567,6 @@ jobs:
             echo 'PROPR_EOF'
           } >> "$GITHUB_ENV"
 
-      - name: Inspect signed Windows application and installer payload
-        if: matrix.platform == 'win32'
-        shell: pwsh
-        run: |
-          npm run desktop:smoke:inspect
-          $machineInstallers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
-          $appExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/propr-desktop.exe"
-          node apps/desktop/scripts/assert-windows-mvp-package.mjs (Resolve-Path "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}").Path
-          if ($machineInstallers.Count -ne 1) { throw 'Canonical Windows MSI is missing or ambiguous' }
-          $machineInstaller = $machineInstallers[0]
-          node apps/desktop/scripts/release-architecture.mjs inspect `
-            --path $machineInstaller.FullName `
-            --kind msi `
-            --platform win32 `
-            --arch '${{ matrix.arch }}'
-          function Get-ValidatedSignerEvidence([string]$Path) {
-            $signature = Get-AuthenticodeSignature -LiteralPath $Path
-            if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or !$signature.TimeStamperCertificate) {
-              throw "Windows Authenticode chain or timestamp status is invalid for $Path"
-            }
-            $certificateBase64 = [Convert]::ToBase64String($signature.SignerCertificate.RawData)
-            $fingerprints = (node -e 'const {createHash,X509Certificate}=require("node:crypto");const certificate=new X509Certificate(Buffer.from(process.argv[1],"base64"));process.stdout.write(JSON.stringify({certificateSha256:certificate.fingerprint256.replaceAll(":","").toLowerCase(),spkiSha256:createHash("sha256").update(certificate.publicKey.export({format:"der",type:"spki"})).digest("hex")}))' $certificateBase64) | ConvertFrom-Json
-            [PSCustomObject]@{
-              Subject = $signature.SignerCertificate.Subject
-              CertificateSha256 = $fingerprints.certificateSha256
-              SpkiSha256 = $fingerprints.spkiSha256
-            }
-          }
-          $evidence = @(
-            Get-ValidatedSignerEvidence $machineInstaller.FullName
-            Get-ValidatedSignerEvidence $appExecutable
-          )
-          foreach ($signer in $evidence) {
-            if ($signer.Subject -cne $env:UPDATE_WINDOWS_SIGNING_IDENTITY) { throw 'Windows Authenticode signer does not match the configured exact subject' }
-          }
-          $distinctSigners = @($evidence | ForEach-Object { $_ | ConvertTo-Json -Compress } | Sort-Object -Unique)
-          if ($distinctSigners.Count -ne 1) { throw 'Windows artifacts have mixed Authenticode signers' }
-          $actualPins = @(
-            "certificate-sha256:$($evidence[0].CertificateSha256)"
-            "spki-sha256:$($evidence[0].SpkiSha256)"
-          )
-          $allowedPins = @($env:UPDATE_WINDOWS_SIGNER_PINS -split ',')
-          if (@($actualPins | Where-Object { $allowedPins -ccontains $_ }).Count -eq 0) {
-            throw 'Windows Authenticode signer does not match the configured build pin'
-          }
-          "PROPR_DESKTOP_ACTUAL_SIGNER_TYPE=authenticode-subject" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY=$($evidence[0].Subject)" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PROPR_DESKTOP_ACTUAL_WINDOWS_CERTIFICATE_SHA256=$($evidence[0].CertificateSha256)" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PROPR_DESKTOP_ACTUAL_WINDOWS_SPKI_SHA256=$($evidence[0].SpkiSha256)" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - name: Inspect native Linux production packages
         if: matrix.platform == 'linux'
         shell: bash
@@ -729,6 +581,7 @@ jobs:
         run: |
           node apps/desktop/scripts/release-artifacts.mjs probe-dmg-private-snapshot-isolation \
             --version "$PROPR_DESKTOP_VERSION" \
+            --profile "$PROPR_DESKTOP_RELEASE_PROFILE" \
             --make-directory apps/desktop/out/make \
             --arch "${{ matrix.arch }}"
 
@@ -737,6 +590,7 @@ jobs:
         run: |
           node apps/desktop/scripts/release-artifacts.mjs stage \
             --version "$PROPR_DESKTOP_VERSION" \
+            --profile "$PROPR_DESKTOP_RELEASE_PROFILE" \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
             --make-directory apps/desktop/out/make \
@@ -749,18 +603,6 @@ jobs:
           path: desktop-release-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 14
-
-      - name: Clean pinned Windows ARM64 WiX binaries
-        if: always() && matrix.platform == 'win32' && matrix.arch == 'arm64'
-        shell: pwsh
-        run: |
-          $archive = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64.zip'
-          $wixDirectory = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64'
-          Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
-          Remove-Item -LiteralPath $wixDirectory -Recurse -Force -ErrorAction SilentlyContinue
-          if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $wixDirectory)) {
-            throw 'Pinned ARM64 WiX cleanup failed'
-          }
 
   release-finalize:
     name: Revalidate production architectures and finalize checksums
@@ -778,8 +620,7 @@ jobs:
       - name: Install cross-format inspection tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio msitools p7zip-full rpm
-          test -x /usr/bin/msiextract
+          sudo apt-get install --yes cpio p7zip-full rpm
 
       - name: Download all trusted native artifacts
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
@@ -793,6 +634,7 @@ jobs:
         run: |
           node apps/desktop/scripts/release-artifacts.mjs finalize \
             --version "$RELEASE_VERSION" \
+            --profile macos-linux-v1 \
             --input desktop-release-fragments \
             --output desktop-release-validated
           (cd desktop-release-validated && sha256sum --check SHA256SUMS)
@@ -846,14 +688,14 @@ jobs:
           PROPR_DESKTOP_UPDATE_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_UPDATE_PUBLIC_KEY }}
           PROPR_DESKTOP_UPDATE_MANIFEST_URL: ${{ vars.PROPR_DESKTOP_UPDATE_MANIFEST_URL }}
           PROPR_DESKTOP_MAC_TEAM_ID: ${{ vars.PROPR_DESKTOP_MAC_TEAM_ID }}
-          PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY }}
-          PROPR_DESKTOP_WINDOWS_SIGNER_PINS: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNER_PINS }}
           PROPR_DESKTOP_DARWIN_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_X64_FEED_URL }}
           PROPR_DESKTOP_DARWIN_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_ARM64_FEED_URL }}
+          PROPR_DESKTOP_RELEASE_PROFILE: macos-linux-v1
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           node apps/desktop/scripts/release-artifacts.mjs sign \
             --version "$RELEASE_VERSION" \
+            --profile "$PROPR_DESKTOP_RELEASE_PROFILE" \
             --input desktop-release-validated \
             --output desktop-release-signed
           test -s desktop-release-signed/desktop-release.json.sig
@@ -895,6 +737,7 @@ jobs:
           RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
           TAG_OBJECT_SHA: ${{ needs.preflight.outputs.tag_object_sha }}
           RELEASE_DIRECTORY: desktop-release-final
+          PROPR_DESKTOP_RELEASE_PROFILE: macos-linux-v1
         run: |
           set -euo pipefail
           test -s desktop-release-final/desktop-release.json.sig

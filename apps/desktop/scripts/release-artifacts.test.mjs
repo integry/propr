@@ -8,10 +8,15 @@ import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { promisify } from 'node:util';
 import {
-  finalizeArtifacts,
-  signReleaseMetadata,
+  finalizeArtifacts as finalizeProfileArtifacts,
+  signReleaseMetadata as signProfileMetadata,
   stageArtifacts,
 } from './release-artifacts.mjs';
+import {
+  MACOS_LINUX_RELEASE_PROFILE,
+  WINDOWS_INCLUSIVE_RELEASE_PROFILE,
+  resolveReleaseProfile,
+} from './release-profiles.mjs';
 import {
   createHeldDmgArtifact,
   inspectArtifactArchitecture,
@@ -42,6 +47,7 @@ const expectedDistributableNames = [
   'ProPR-Desktop-1.2.3-windows-x64-Machine-Setup.msi',
   'ProPR-Desktop-1.2.3-windows-arm64-Machine-Setup.msi',
 ];
+const expectedFirstReleaseNames = expectedDistributableNames.filter(name => !name.includes('-windows-'));
 
 const sourceName = kind => kind === 'msi' ? 'Desktop-Machine-Setup.msi' : `desktop.${kind}`;
 const certificateSha256 = '1'.repeat(64);
@@ -118,8 +124,19 @@ const windowsDmgFixtureAuthority = Object.freeze({
 });
 
 const stageFixtureArtifacts = arguments_ => stageArtifacts({
+  profile: WINDOWS_INCLUSIVE_RELEASE_PROFILE,
   ...arguments_,
   privateDmgFixtureAuthority: windowsDmgFixtureAuthority,
+});
+
+const finalizeArtifacts = arguments_ => finalizeProfileArtifacts({
+  profile: WINDOWS_INCLUSIVE_RELEASE_PROFILE,
+  ...arguments_,
+});
+
+const signReleaseMetadata = arguments_ => signProfileMetadata({
+  profile: WINDOWS_INCLUSIVE_RELEASE_PROFILE,
+  ...arguments_,
 });
 
 const signerEnvironment = platform => platform === 'darwin'
@@ -137,9 +154,13 @@ const signerEnvironment = platform => platform === 'darwin'
       }
     : {};
 
-const createFragments = async (root, { signed = false } = {}) => {
+const createFragments = async (root, {
+  signed = false,
+  profile: profileName = WINDOWS_INCLUSIVE_RELEASE_PROFILE,
+} = {}) => {
   const fragments = join(root, 'fragments');
-  for (const [target, targetKinds] of Object.entries(kinds)) {
+  const profile = resolveReleaseProfile(profileName);
+  for (const [target, targetKinds] of profile.targets) {
     const [platform, arch] = target.split('-');
     const makeDirectory = join(root, 'make', target);
     await mkdir(makeDirectory, { recursive: true });
@@ -152,6 +173,7 @@ const createFragments = async (root, { signed = false } = {}) => {
       platform,
       arch,
       version: '1.2.3',
+      profile: profile.name,
       env: {
         ...(signed ? signerEnvironment(platform) : {}),
         ...(platform === 'win32' ? { PROPR_DESKTOP_WINDOWS_INSTALLED_APP: '1' } : {}),
@@ -318,6 +340,112 @@ const storedZip = entries => {
 };
 
 describe('desktop release artifacts', () => {
+  test('dry-runs the canonical macOS/Linux profile through finalize and signed update metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-first-release-test-'));
+    const fragments = await createFragments(root, {
+      signed: true,
+      profile: MACOS_LINUX_RELEASE_PROFILE,
+    });
+    const unsignedDirectory = join(root, 'final');
+    const manifest = await finalizeProfileArtifacts({
+      inputDirectory: fragments,
+      outputDirectory: unsignedDirectory,
+      version: '1.2.3',
+      profile: MACOS_LINUX_RELEASE_PROFILE,
+      inspectArchitecture: architectureInspector,
+    });
+    assert.equal(manifest.releaseProfile, MACOS_LINUX_RELEASE_PROFILE);
+    assert.equal(manifest.artifacts.length, 10);
+    assert.deepEqual(manifest.artifacts.map(artifact => artifact.fileName).sort(), [...expectedFirstReleaseNames].sort());
+    assert.deepEqual(Object.keys(manifest.nativeSigners).sort(), ['darwin-arm64', 'darwin-x64']);
+    assert.ok(!JSON.stringify(manifest).includes('win32'));
+    assert.ok(!JSON.stringify(manifest).includes('windows'));
+
+    const keys = generateKeyPairSync('ed25519');
+    const signedDirectory = join(root, 'signed');
+    const environment = signingEnvironment(keys);
+    delete environment.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY;
+    delete environment.PROPR_DESKTOP_WINDOWS_SIGNER_PINS;
+    const signed = await signProfileMetadata({
+      inputDirectory: unsignedDirectory,
+      outputDirectory: signedDirectory,
+      version: '1.2.3',
+      profile: MACOS_LINUX_RELEASE_PROFILE,
+      env: environment,
+    });
+    assert.equal(signed.artifacts.length, 10);
+    assert.deepEqual(Object.keys(signed.feeds).sort(), ['darwin-arm64', 'darwin-x64']);
+    assert.equal(Object.hasOwn(signed, 'windowsSignerPins'), false);
+    const checksumNames = (await readFile(join(signedDirectory, 'SHA256SUMS'), 'utf8'))
+      .trim().split('\n').map(line => line.slice(line.indexOf('  ') + 2));
+    assert.equal(checksumNames.filter(name => expectedFirstReleaseNames.includes(name)).length, 10);
+    assert.equal(checksumNames.some(name => name.includes('windows')), false);
+  });
+
+  test('fails closed for missing profiles and rejects Windows fragments in the macOS/Linux profile', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-first-release-reject-'));
+    const profile = resolveReleaseProfile(MACOS_LINUX_RELEASE_PROFILE);
+    assert.deepEqual([...profile.targets.keys()], [
+      'linux-x64',
+      'linux-arm64',
+      'darwin-x64',
+      'darwin-arm64',
+    ]);
+    assert.equal(profile.artifactCount, 10);
+    await assert.rejects(
+      stageFixtureArtifacts({
+        makeDirectory: join(root, 'unused'),
+        outputDirectory: join(root, 'unused-output'),
+        platform: 'win32',
+        arch: 'x64',
+        version: '1.2.3',
+        profile: MACOS_LINUX_RELEASE_PROFILE,
+        inspectArchitecture: architectureInspector,
+      }),
+      /Target win32-x64 is not allowed by release profile macos-linux-v1/,
+    );
+    const fragments = await createFragments(root, { profile: MACOS_LINUX_RELEASE_PROFILE });
+    await assert.rejects(
+      finalizeProfileArtifacts({
+        inputDirectory: fragments,
+        outputDirectory: join(root, 'missing-profile'),
+        version: '1.2.3',
+        inspectArchitecture: architectureInspector,
+      }),
+      /missing explicit desktop release profile/,
+    );
+    await writeFile(
+      join(fragments, 'linux-x64', 'ProPR-Desktop-1.2.3-windows-x64-Machine-Setup.msi'),
+      'accidental-windows-artifact',
+    );
+    await assert.rejects(
+      finalizeProfileArtifacts({
+        inputDirectory: fragments,
+        outputDirectory: join(root, 'foreign-file'),
+        version: '1.2.3',
+        profile: MACOS_LINUX_RELEASE_PROFILE,
+        inspectArchitecture: architectureInspector,
+      }),
+      /contains unexpected input artifacts/,
+    );
+    await rm(join(fragments, 'linux-x64', 'ProPR-Desktop-1.2.3-windows-x64-Machine-Setup.msi'));
+    const windowsRoot = await mkdtemp(join(tmpdir(), 'propr-first-release-windows-'));
+    const windowsFragments = await createFragments(windowsRoot);
+    await mkdir(join(fragments, 'unexpected-windows'));
+    const windowsFragment = await readFile(join(windowsFragments, 'win32-x64', 'release-fragment.json'));
+    await writeFile(join(fragments, 'unexpected-windows', 'release-fragment.json'), windowsFragment);
+    await assert.rejects(
+      finalizeProfileArtifacts({
+        inputDirectory: fragments,
+        outputDirectory: join(root, 'unexpected'),
+        version: '1.2.3',
+        profile: MACOS_LINUX_RELEASE_PROFILE,
+        inspectArchitecture: architectureInspector,
+      }),
+      /Expected 4 release fragments, found 5/,
+    );
+  });
+
   test('stages named artifacts and finalizes unsigned validation metadata', async () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-release-test-'));
     const fragments = await createFragments(root);
@@ -330,6 +458,7 @@ describe('desktop release artifacts', () => {
     const output = join(root, 'final');
     const manifest = await finalizeArtifacts({ inputDirectory: fragments, outputDirectory: output, version: '1.2.3', inspectArchitecture: architectureInspector });
     assert.equal(manifest.schemaVersion, 2);
+    assert.equal(manifest.releaseProfile, WINDOWS_INCLUSIVE_RELEASE_PROFILE);
     assert.equal(manifest.artifacts.length, 12);
     assert.equal(manifest.tag, 'desktop-v1.2.3');
     assert.equal(Object.keys(manifest.feeds).length, 0);

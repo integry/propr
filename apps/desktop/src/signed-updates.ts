@@ -83,6 +83,7 @@ export interface SignedUpdateFeed {
 
 export interface SignedUpdateManifest {
   schemaVersion: 2;
+  releaseProfile: 'macos-linux-v1' | 'macos-linux-windows-v1';
   channel: 'stable';
   manifestUrl: string;
   windowsSignerPins: readonly string[];
@@ -284,6 +285,9 @@ export const parseSignedUpdateManifest = (payload: Buffer): SignedUpdateManifest
   if (!isRecord(value) || value.schemaVersion !== 2 || value.channel !== 'stable') {
     throw new Error('Signed update manifest has an unsupported schema or channel');
   }
+  if (value.releaseProfile !== 'macos-linux-v1' && value.releaseProfile !== 'macos-linux-windows-v1') {
+    throw new Error('Signed update manifest release profile is missing or unsupported');
+  }
   if (typeof value.version !== 'string' || !VERSION_PATTERN.test(value.version)) {
     throw new Error('Signed update manifest version is not canonical stable semver');
   }
@@ -298,16 +302,19 @@ export const parseSignedUpdateManifest = (payload: Buffer): SignedUpdateManifest
   if (typeof value.publishedAt !== 'string' || !Number.isFinite(Date.parse(value.publishedAt))) {
     throw new Error('Signed update manifest publishedAt is invalid');
   }
-  if (!Array.isArray(value.windowsSignerPins)
-    || value.windowsSignerPins.some(pin => typeof pin !== 'string')) {
-    throw new Error('Signed update manifest Windows signer pin policy is invalid');
+  const windowsIncluded = value.releaseProfile === 'macos-linux-windows-v1';
+  if ((!windowsIncluded && Object.hasOwn(value, 'windowsSignerPins'))
+    || (windowsIncluded && (!Array.isArray(value.windowsSignerPins)
+      || value.windowsSignerPins.length === 0
+      || value.windowsSignerPins.some(pin => typeof pin !== 'string')))) {
+    throw new Error('Signed update manifest Windows signer pin policy does not match its release profile');
   }
-  const windowsSignerPins = value.windowsSignerPins.length === 0
-    ? []
-    : parseWindowsSignerPins(
-      (value.windowsSignerPins as string[]).join(','),
-      'Signed update manifest Windows signer pin policy',
-    );
+  const windowsSignerPins = windowsIncluded
+    ? parseWindowsSignerPins(
+        (value.windowsSignerPins as string[]).join(','),
+        'Signed update manifest Windows signer pin policy',
+      )
+    : [];
   if (!isRecord(value.feeds)) throw new Error('Signed update manifest feeds are missing');
 
   const feeds: Record<string, SignedUpdateFeed> = {};
@@ -315,8 +322,9 @@ export const parseSignedUpdateManifest = (payload: Buffer): SignedUpdateManifest
     if (!TARGET_PATTERN.test(target)) throw new Error(`Signed update manifest feed ${target} is invalid`);
     feeds[target] = parseFeed(candidate, target, value.version);
   }
-  if (Object.keys(feeds).some(target => target.startsWith('win32-')) && windowsSignerPins.length === 0) {
-    throw new Error('Signed update manifest Windows signer pin policy is required for Windows feeds');
+  const feedTargets = Object.keys(feeds).sort();
+  if (JSON.stringify(feedTargets) !== JSON.stringify(['darwin-arm64', 'darwin-x64'])) {
+    throw new Error('Signed update manifest must contain exactly the two canonical macOS feeds');
   }
   return { ...value, manifestUrl, windowsSignerPins, feeds } as unknown as SignedUpdateManifest;
 };
