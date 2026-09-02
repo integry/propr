@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { closeSync, fstatSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 if (process.platform !== 'win32' || !['x64', 'arm64'].includes(process.arch)) {
@@ -15,31 +15,32 @@ const {
   parseWindowsBrokerDocument,
   runWindowsReadOnlyInspection,
   runWindowsInspectionBrokerBatch,
-  WINDOWS_INSPECTION_SOURCE,
   WindowsNativeStageError,
 } = await import('../../../packages/cli/dist/connectWindowsAuthority.js');
 
 const systemRoot = process.env.SystemRoot;
 assert.match(systemRoot ?? '', /^[A-Za-z]:\\/u);
-const executable = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-const environment = { SystemRoot: systemRoot, WINDIR: systemRoot };
 const directory = mkdtempSync(join(tmpdir(), 'propr-authority-batch-'));
 const descriptors = [];
 const livePids = new Set();
 
-const argumentsFor = source => [
-  '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-  '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64'),
-];
+const portableSupervisorFixture = String.raw`
+const mode=process.argv[1];const value=process.argv[2]??'';const delay=Number(process.argv[3]??0);
+if(mode==='hang'){setInterval(()=>{},60000)}
+else if(mode==='status'){process.exit(70)}
+else setTimeout(()=>{
+  if(mode==='stderr')process.stderr.write('fixed-fixture-stderr');
+  else if(mode==='overflow')process.stdout.write('x'.repeat(2048));
+  else process.stdout.write(value);
+},delay);
+`;
 
-const startPowerShell = (source, fds) => {
-  const inherited = Array.isArray(fds) ? fds : [fds];
-  const child = spawn(executable, argumentsFor(source), {
+const startPortableFixture = (mode, value = '', delay = 0) => {
+  const child = spawn(process.execPath, ['-e', portableSupervisorFixture, mode, String(value), String(delay)], {
     shell: false,
     windowsHide: true,
-    cwd: dirname(executable),
-    env: environment,
-    stdio: ['ignore', 'pipe', 'pipe', ...inherited],
+    env: { SystemRoot: systemRoot },
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   if (Number.isSafeInteger(child.pid)) livePids.add(child.pid);
   child.once('close', () => livePids.delete(child.pid));
@@ -57,23 +58,12 @@ const targetFor = (fd, index) => {
   };
 };
 
-const oneRoundSource = WINDOWS_INSPECTION_SOURCE
-  .replace('__PROPR_ENTRY_COUNT__', '1')
-  .replace('__PROPR_ROUND_COUNT__', '1');
-
 const fixedEvidence = (count, outcome, stage, diagnostics) => ({
   brokers: count,
   outcome,
   stage,
   results: diagnostics,
 });
-
-const canonicalFrame = output => {
-  assert.equal(output.at(-1), 0x0a);
-  const end = output.at(-2) === 0x0d ? output.length - 2 : output.length - 1;
-  assert.equal(output.subarray(0, end).includes(0x0a), false);
-  return output.subarray(0, end);
-};
 
 const assertStage = async (promise, stage) => {
   await assert.rejects(
@@ -92,51 +82,45 @@ try {
 
   // Production proof: 1, 2, and 4 targets each use one cold PowerShell process
   // and remain inside the unchanged single 60-second wall bound.
+  let validEntry;
   for (const count of [1, 2, 4]) {
     const targets = descriptors.slice(0, count).map(targetFor);
     const started = performance.now();
     const inspections = await runWindowsReadOnlyInspection(targets);
     assert.equal(inspections.length, count);
     assert.ok(performance.now() - started < 60_000, `one-broker ${count}-handle batch exceeded its wall bound`);
+    if (count === 1) {
+      const { index: _index, kind: _kind, authorityKind: _authorityKind, ...entry } = inspections[0];
+      validEntry = entry;
+    }
   }
 
-  // Resource evidence remains non-authoritative and total: reproduce 1, 2,
-  // then 4 independent full cold starts, but allow a fixed failure now that
-  // production does not depend on N-process concurrency. No native text enters
-  // the record, and the supervisor still drains every process before return.
+  // Supervisor concurrency is process-level behavior, so prove it with a
+  // deterministic portable child instead of recreating a PS5.1 cold-start
+  // storm after the dedicated sequential native proofs above.
   for (const count of [1, 2, 4]) {
     const diagnostics = [];
-    let outcome = 'passed';
-    let stage = 'ok';
-    try {
-      const outputs = await runWindowsInspectionBrokerBatch({
-        entryCount: count,
-        startBroker: index => startPowerShell(oneRoundSource, descriptors[index]),
-        deadlineMs: 60_000,
-        cleanupTimeoutMs: 5_000,
-        maxOutputBytes: 128 * 1024,
-        onBrokerResult: diagnostic => diagnostics.push(diagnostic),
-      });
-      outputs.forEach(output => parseWindowsBrokerDocument(canonicalFrame(output)));
-    } catch (error) {
-      assert.ok(error instanceof WindowsNativeStageError);
-      outcome = 'failed';
-      stage = error.stage;
-    }
+    const outputs = await runWindowsInspectionBrokerBatch({
+      entryCount: count,
+      startBroker: index => startPortableFixture('output', index, 40 - index),
+      deadlineMs: 10_000,
+      cleanupTimeoutMs: 5_000,
+      maxOutputBytes: 128 * 1024,
+      onBrokerResult: diagnostic => diagnostics.push(diagnostic),
+    });
+    assert.deepEqual(outputs.map(output => output.toString('utf8')), Array.from({ length: count }, (_, i) => String(i)));
     assert.equal(diagnostics.length, count);
-    assert.equal(livePids.size, 0, `${count}-broker evidence left a process alive`);
-    process.stdout.write(`Windows authority concurrency evidence ${JSON.stringify(
-      fixedEvidence(count, outcome, stage, diagnostics),
+    assert.equal(livePids.size, 0, `${count}-child supervisor evidence left a process alive`);
+    process.stdout.write(`Windows authority supervisor evidence ${JSON.stringify(
+      fixedEvidence(count, 'passed', 'ok', diagnostics),
     )}\n`);
   }
 
-  const reorderedSources = [80, 10, 45].map((delay, index) => (
-    `Start-Sleep -Milliseconds ${delay};[Console]::Out.Write('${index}')`
-  ));
+  const reorderedDelays = [80, 10, 45];
   const reordered = await runWindowsInspectionBrokerBatch({
-    entryCount: reorderedSources.length,
-    startBroker: index => startPowerShell(reorderedSources[index], descriptors[index]),
-    deadlineMs: 60_000,
+    entryCount: reorderedDelays.length,
+    startBroker: index => startPortableFixture('output', index, reorderedDelays[index]),
+    deadlineMs: 10_000,
     cleanupTimeoutMs: 5_000,
     maxOutputBytes: 128,
   });
@@ -145,10 +129,7 @@ try {
 
   await assertStage(runWindowsInspectionBrokerBatch({
     entryCount: 2,
-    startBroker: index => startPowerShell(
-      index === 0 ? 'Start-Sleep -Seconds 120' : "[Console]::Out.Write('sibling')",
-      descriptors[index],
-    ),
+    startBroker: index => startPortableFixture(index === 0 ? 'hang' : 'output', 'sibling'),
     deadlineMs: 1_000,
     cleanupTimeoutMs: 5_000,
     maxOutputBytes: 128,
@@ -156,34 +137,30 @@ try {
 
   await assertStage(runWindowsInspectionBrokerBatch({
     entryCount: 3,
-    startBroker: index => startPowerShell(
-      index === 0 ? 'exit 70' : 'Start-Sleep -Seconds 120',
-      descriptors[index],
-    ),
-    deadlineMs: 60_000,
+    startBroker: index => startPortableFixture(index === 0 ? 'status' : 'hang'),
+    deadlineMs: 10_000,
     cleanupTimeoutMs: 5_000,
     maxOutputBytes: 128,
   }), 'spawn:status');
 
   await assertStage(runWindowsInspectionBrokerBatch({
     entryCount: 2,
-    startBroker: index => startPowerShell(
-      index === 0 ? "[Console]::Out.Write(('x'*2048))" : 'Start-Sleep -Seconds 120',
-      descriptors[index],
-    ),
-    deadlineMs: 60_000,
+    startBroker: index => startPortableFixture(index === 0 ? 'overflow' : 'hang'),
+    deadlineMs: 10_000,
     cleanupTimeoutMs: 5_000,
     maxOutputBytes: 1024,
   }), 'parent:utf8');
 
-  const validOutput = await runWindowsInspectionBrokerBatch({
-    entryCount: 1,
-    startBroker: () => startPowerShell(oneRoundSource, descriptors[0]),
-    deadlineMs: 60_000,
+  await assertStage(runWindowsInspectionBrokerBatch({
+    entryCount: 2,
+    startBroker: index => startPortableFixture(index === 0 ? 'stderr' : 'hang'),
+    deadlineMs: 10_000,
     cleanupTimeoutMs: 5_000,
-    maxOutputBytes: 128 * 1024,
-  });
-  const validEntry = parseWindowsBrokerDocument(canonicalFrame(validOutput[0]));
+    maxOutputBytes: 1024,
+  }), 'spawn:stderr');
+
+  assert.ok(validEntry);
+  assert.deepEqual(parseWindowsBrokerDocument(JSON.stringify({ version: 1, entries: [validEntry] })), validEntry);
   for (const entries of [[], [validEntry, validEntry]]) assert.throws(
     () => parseWindowsBrokerDocument(JSON.stringify({ version: 1, entries })),
     error => error instanceof WindowsNativeStageError && error.stage === 'parent:entry-count',

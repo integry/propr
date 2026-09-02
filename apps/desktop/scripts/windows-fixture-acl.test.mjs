@@ -7,6 +7,7 @@ import { it } from 'node:test';
 import {
   canonicalizeWindowsFixtureEntry,
   encodedWindowsFixtureAcl,
+  WINDOWS_FIXTURE_PROCESS_TIMEOUT_MS,
   windowsFixtureAclSource,
   windowsPowerShell51Path,
 } from './windows-fixture-acl.mjs';
@@ -140,7 +141,7 @@ const runAclProof = (powershell, entry, proofKind, ownerCategory = '') => spawnS
   {
     shell: false,
     windowsHide: true,
-    timeout: 30_000,
+    timeout: WINDOWS_FIXTURE_PROCESS_TIMEOUT_MS,
     env: {
       ...process.env,
       PROPR_FIXTURE_ACL_KIND: entry.kind,
@@ -161,9 +162,18 @@ const proofFailureCategory = status => new Map([
   [79, 'owner-category-mismatch'],
 ]).get(status) ?? 'unexpected-exit';
 
-const assertProofProcess = result => {
-  assert.ifError(result.error);
+const assertPowerShellInvocation = (result, category) => {
+  if (result.error) {
+    const reason = result.error.code === 'ETIMEDOUT' ? 'timeout' : 'spawn';
+    const error = new Error(`Windows fixture ACL helper failed [category=${category} reason=${reason}]`);
+    error.stack = error.message;
+    throw error;
+  }
   assert.equal(result.signal, null);
+};
+
+const assertProofProcess = (result, category = 'acl-proof') => {
+  assertPowerShellInvocation(result, category);
   assertPowerShellStreamEmpty(result.stdout, 'dacl-proof-stdout');
   assertPowerShellStreamEmpty(result.stderr, 'dacl-proof-stderr');
 };
@@ -197,12 +207,15 @@ const assertOwnerCategoryMismatch = (powershell, entry, ownerCategory) => {
 };
 
 windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and byte-empty', t => {
+  assert.equal(WINDOWS_FIXTURE_PROCESS_TIMEOUT_MS, 60_000);
   const powershell = windowsPowerShell51Path();
   const version = spawnSync(powershell, [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
     '[Console]::Out.Write($PSVersionTable.PSVersion.ToString(2))',
-  ], { shell: false, windowsHide: true, encoding: 'utf8', timeout: 10_000 });
-  assert.ifError(version.error);
+  ], {
+    shell: false, windowsHide: true, encoding: 'utf8', timeout: WINDOWS_FIXTURE_PROCESS_TIMEOUT_MS,
+  });
+  assertPowerShellInvocation(version, 'version');
   assert.equal(version.status, 0);
   assert.equal(version.stdout, '5.1');
   assert.equal(version.stderr, '');
@@ -221,8 +234,8 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
   const classifierRegression = spawnSync(powershell, [
     '-NoLogo', '-NoProfile', '-NonInteractive',
     '-EncodedCommand', encodedOwnerClassifierRegression,
-  ], { shell: false, windowsHide: true, timeout: 10_000 });
-  assertProofProcess(classifierRegression);
+  ], { shell: false, windowsHide: true, timeout: WINDOWS_FIXTURE_PROCESS_TIMEOUT_MS });
+  assertProofProcess(classifierRegression, 'owner-classifier');
   const classifierCategory = new Map([
     [78, 'unknown-owner'],
     [80, 'allowlisted-owner'],
@@ -308,7 +321,7 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
       ], {
         shell: false,
         windowsHide: true,
-        timeout: 30_000,
+        timeout: WINDOWS_FIXTURE_PROCESS_TIMEOUT_MS,
         env: {
           ...process.env,
           PROPR_FIXTURE_ACL_KIND: entry.kind,
@@ -316,8 +329,7 @@ windowsIt('keeps the encoded Windows PowerShell 5.1 ACL helper fail-closed and b
         },
       });
 
-      assert.ifError(result.error);
-      assert.equal(result.signal, null);
+      assertPowerShellInvocation(result, 'mutation-case');
       assertPowerShellStreamEmpty(result.stdout, 'powershell-stdout');
       assertPowerShellStreamEmpty(result.stderr, 'powershell-stderr');
       assert.equal(result.status, entry.status, `${entry.label} returned the wrong redacted phase code`);

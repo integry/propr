@@ -42,14 +42,31 @@ export type WindowsNativeStageCode = (typeof WINDOWS_NATIVE_STAGE_CODES)[number]
 
 const WINDOWS_NATIVE_STAGE_SET: ReadonlySet<string> = new Set(WINDOWS_NATIVE_STAGE_CODES);
 const WINDOWS_NATIVE_DIAGNOSTIC_HOOK = Symbol.for("propr.test.windowsNativeDiagnostic");
+const WINDOWS_BROKER_ENTRY_FAILURE_BASE = 1_000;
+const WINDOWS_BROKER_ENTRY_FAILURE_STRIDE = 100;
+
+export type WindowsBrokerEntryIndexToken =
+  | "00" | "01" | "02" | "03" | "04" | "05" | "06" | "07"
+  | "08" | "09" | "10" | "11" | "12" | "13" | "14" | "15"
+  | "16" | "17" | "18" | "19" | "20" | "21" | "22" | "23"
+  | "24" | "25" | "26" | "27" | "28" | "29" | "30" | "31";
+
+export type WindowsBrokerEntryOperationToken =
+  | "fd" | "fd-duplicate" | "identity-initial" | "security-info" | "acl"
+  | "identity-revalidation" | "identity-decode" | "identity-compose"
+  | "entry-format" | "entry-flags" | "entry-rules" | "entry-build";
 
 export class WindowsNativeStageError extends Error {
   constructor(
     readonly stage: WindowsNativeStageCode,
     /** The initiating failure retained when cleanup becomes the terminal result. */
     readonly primaryStage: WindowsNativeStageCode = stage,
+    readonly entryIndex: WindowsBrokerEntryIndexToken | null = null,
+    readonly operation: WindowsBrokerEntryOperationToken | null = null,
   ) {
-    super("Windows native authority inspection failed");
+    super(entryIndex === null || operation === null
+      ? "Windows native authority inspection failed"
+      : `Windows native authority inspection failed [entry=${entryIndex} operation=${operation}]`);
     this.name = "WindowsNativeStageError";
   }
 }
@@ -64,8 +81,10 @@ export function reportWindowsNativeStage(stage: WindowsNativeStageCode): void {
 function stageError(
   stage: WindowsNativeStageCode,
   primaryStage: WindowsNativeStageCode = stage,
+  entryIndex: WindowsBrokerEntryIndexToken | null = null,
+  operation: WindowsBrokerEntryOperationToken | null = null,
 ): WindowsNativeStageError {
-  return new WindowsNativeStageError(stage, primaryStage);
+  return new WindowsNativeStageError(stage, primaryStage, entryIndex, operation);
 }
 
 // Each production inspector receives every already-open target in one fixed,
@@ -78,9 +97,17 @@ export const WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false;
 export const WINDOWS_INSPECTOR_WRITES_FILESYSTEM = false;
 export const WINDOWS_INSPECTOR_TRANSPORT = "inherited-fixed-fd-table" as const;
 
+const WINDOWS_BROKER_STAGE_EXIT_SOURCE = String.raw`
+function Exit-ProprStage {
+  if($script:proprEntryIndex-ge 0-and $script:proprEntryIndex-lt 32){
+    exit (${WINDOWS_BROKER_ENTRY_FAILURE_BASE}+($script:proprEntryIndex*${WINDOWS_BROKER_ENTRY_FAILURE_STRIDE})+$stage)
+  }
+  exit $stage
+}`;
+
 export const WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE = String.raw`
 function Read-ProprUInt32([IntPtr]$pointer,[int]$offset){
-  if(-not [BitConverter]::IsLittleEndian){exit $stage}
+  if(-not [BitConverter]::IsLittleEndian){Exit-ProprStage}
   $signed=[int32][Runtime.InteropServices.Marshal]::ReadInt32($pointer,$offset)
   $bytes=[BitConverter]::GetBytes($signed)
   [BitConverter]::ToUInt32($bytes,0)
@@ -88,7 +115,7 @@ function Read-ProprUInt32([IntPtr]$pointer,[int]$offset){
 
 export const WINDOWS_UINT64_COMPOSER_SOURCE = String.raw`
 function Join-ProprUInt64([uint32]$low,[uint32]$high){
-  if(-not [BitConverter]::IsLittleEndian){exit $stage}
+  if(-not [BitConverter]::IsLittleEndian){Exit-ProprStage}
   $bytes=New-Object byte[] 8
   [Array]::Copy([BitConverter]::GetBytes([uint32]$low),0,$bytes,0,4)
   [Array]::Copy([BitConverter]::GetBytes([uint32]$high),0,$bytes,4,4)
@@ -97,19 +124,24 @@ function Join-ProprUInt64([uint32]$low,[uint32]$high){
 
 // Reflection.Emit keeps the fixed P/Invoke surface in memory. Add-Type and its
 // writable compiler workspace are deliberately absent.
+// Two fixed internal spellings are compacted before UTF-16/base64 encoding so
+// this audited source remains below the existing 28k argv bound. They contain
+// no caller-controlled value and do not alter the protocol.
 export const WINDOWS_INSPECTION_SOURCE = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Set-StrictMode -Version 2
+$script:proprEntryIndex=-1
+${WINDOWS_BROKER_STAGE_EXIT_SOURCE}
 ${WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE}
 ${WINDOWS_UINT64_COMPOSER_SOURCE}
 $n=__PROPR_ENTRY_COUNT__
 $r=__PROPR_ROUND_COUNT__
 $stage=71
 try {
-  if($n-lt 1-or $n-gt 32-or ($r-ne 1-and $r-ne 2)){exit $stage}
+  if($n-lt 1-or $n-gt 32-or ($r-ne 1-and $r-ne 2)){Exit-ProprStage}
   if($PSVersionTable.PSVersion.Major-ne 5-or $PSVersionTable.PSVersion.Minor-ne 1-or
-     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){exit $stage}
+     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){Exit-ProprStage}
   $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly(
     (New-Object Reflection.AssemblyName('ProprReadOnlyAuthorityAssembly')),
     [Reflection.Emit.AssemblyBuilderAccess]::Run)
@@ -137,48 +169,49 @@ try {
   $null=$builder.CreateType()
   $stage=72
   $inJob=$false
-  if(-not [ProprReadOnlyAuthority]::IsProcessInJob([ProprReadOnlyAuthority]::GetCurrentProcess(),[IntPtr]::Zero,[ref]$inJob)){exit $stage}
+  if(-not [ProprReadOnlyAuthority]::IsProcessInJob([ProprReadOnlyAuthority]::GetCurrentProcess(),[IntPtr]::Zero,[ref]$inJob)){Exit-ProprStage}
   function Inspect-ProprEntry([int]$i,[string]$currentSid){
+  $script:proprEntryIndex=$i
   $privateHandle=[IntPtr]::Zero
   $before=[IntPtr]::Zero;$after=[IntPtr]::Zero;$aclInfo=[IntPtr]::Zero
   $descriptor=[IntPtr]::Zero
   try {
     $stage=73
     $originalHandle=[ProprReadOnlyAuthority]::_get_osfhandle(3+$i)
-    if($originalHandle-eq [IntPtr](-1)-or $originalHandle-eq [IntPtr](-2)-or $originalHandle-eq [IntPtr]::Zero){exit $stage}
+    if($originalHandle-eq [IntPtr](-1)-or $originalHandle-eq [IntPtr](-2)-or $originalHandle-eq [IntPtr]::Zero){Exit-ProprStage}
     $stage=80
     if(-not [ProprReadOnlyAuthority]::DuplicateHandle(
       [ProprReadOnlyAuthority]::GetCurrentProcess(),$originalHandle,
-      [ProprReadOnlyAuthority]::GetCurrentProcess(),[ref]$privateHandle,0,$false,2)){exit $stage}
-    if($privateHandle-eq [IntPtr](-1)-or $privateHandle-eq [IntPtr](-2)-or $privateHandle-eq [IntPtr]::Zero){exit $stage}
+      [ProprReadOnlyAuthority]::GetCurrentProcess(),[ref]$privateHandle,0,$false,2)){Exit-ProprStage}
+    if($privateHandle-eq [IntPtr](-1)-or $privateHandle-eq [IntPtr](-2)-or $privateHandle-eq [IntPtr]::Zero){Exit-ProprStage}
     $stage=74
     $before=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-    if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$before)){exit $stage}
+    if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$before)){Exit-ProprStage}
     $stage=75
     $owner=[IntPtr]::Zero;$group=[IntPtr]::Zero;$dacl=[IntPtr]::Zero;$sacl=[IntPtr]::Zero
-    if([ProprReadOnlyAuthority]::GetSecurityInfo($privateHandle,1,5,[ref]$owner,[ref]$group,[ref]$dacl,[ref]$sacl,[ref]$descriptor)-ne 0){exit $stage}
-    if($owner-eq [IntPtr]::Zero-or $dacl-eq [IntPtr]::Zero-or $descriptor-eq [IntPtr]::Zero){exit $stage}
+    if([ProprReadOnlyAuthority]::GetSecurityInfo($privateHandle,1,5,[ref]$owner,[ref]$group,[ref]$dacl,[ref]$sacl,[ref]$descriptor)-ne 0){Exit-ProprStage}
+    if($owner-eq [IntPtr]::Zero-or $dacl-eq [IntPtr]::Zero-or $descriptor-eq [IntPtr]::Zero){Exit-ProprStage}
     $ownerSid=(New-Object Security.Principal.SecurityIdentifier($owner)).Value
     $control=[uint16]0;$revision=[uint32]0
-    if(-not [ProprReadOnlyAuthority]::GetSecurityDescriptorControl($descriptor,[ref]$control,[ref]$revision)){exit $stage}
+    if(-not [ProprReadOnlyAuthority]::GetSecurityDescriptorControl($descriptor,[ref]$control,[ref]$revision)){Exit-ProprStage}
     $stage=76
     $aclInfo=[Runtime.InteropServices.Marshal]::AllocHGlobal(12)
-    if(-not [ProprReadOnlyAuthority]::GetAclInformation($dacl,$aclInfo,12,2)){exit $stage}
+    if(-not [ProprReadOnlyAuthority]::GetAclInformation($dacl,$aclInfo,12,2)){Exit-ProprStage}
     $aceCount=Read-ProprUInt32 $aclInfo 0
     $aclBytes=Read-ProprUInt32 $aclInfo 4
-    if($aceCount-gt 128-or $aclBytes-lt 8-or $aclBytes-gt 65535){exit $stage}
+    if($aceCount-gt 128-or $aclBytes-lt 8-or $aclBytes-gt 65535){Exit-ProprStage}
     $aclRevision=[Runtime.InteropServices.Marshal]::ReadByte($dacl,0)
-    if(($aclRevision-ne 2-and $aclRevision-ne 4)-or [Runtime.InteropServices.Marshal]::ReadByte($dacl,1)-ne 0){exit $stage}
+    if(($aclRevision-ne 2-and $aclRevision-ne 4)-or [Runtime.InteropServices.Marshal]::ReadByte($dacl,1)-ne 0){Exit-ProprStage}
     $rules=New-Object Collections.Generic.List[object]
     for($aceIndex=0;$aceIndex-lt $aceCount;$aceIndex++){
       $ace=[IntPtr]::Zero
-      if(-not [ProprReadOnlyAuthority]::GetAce($dacl,$aceIndex,[ref]$ace)-or $ace-eq [IntPtr]::Zero){exit $stage}
+      if(-not [ProprReadOnlyAuthority]::GetAce($dacl,$aceIndex,[ref]$ace)-or $ace-eq [IntPtr]::Zero){Exit-ProprStage}
       $aceType=[Runtime.InteropServices.Marshal]::ReadByte($ace,0);$flags=[Runtime.InteropServices.Marshal]::ReadByte($ace,1)
       $aceSize=[uint16][Runtime.InteropServices.Marshal]::ReadInt16($ace,2)
-      if(($aceType-ne 0-and $aceType-ne 1)-or ($flags-band 0xE0)-ne 0-or $aceSize-lt 16-or $aceSize-gt 4096){exit $stage}
+      if(($aceType-ne 0-and $aceType-ne 1)-or ($flags-band 0xE0)-ne 0-or $aceSize-lt 16-or $aceSize-gt 4096){Exit-ProprStage}
       $mask=Read-ProprUInt32 $ace 4
       $sidPointer=[IntPtr]::Add($ace,8);$sid=New-Object Security.Principal.SecurityIdentifier($sidPointer)
-      if($sid.BinaryLength-gt ($aceSize-8)){exit $stage}
+      if($sid.BinaryLength-gt ($aceSize-8)){Exit-ProprStage}
       $rules.Add([pscustomobject][ordered]@{
         identitySid=$sid.Value;inherited=[bool](($flags-band 0x10)-ne 0)
         accessType=$(if($aceType-eq 0){'allow'}else{'deny'});appliesToSelf=[bool](($flags-band 8)-eq 0)
@@ -187,7 +220,7 @@ try {
     }
     $stage=79
     $after=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-    if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$after)){exit $stage}
+    if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$after)){Exit-ProprStage}
     $stage=81
     $beforeVolume=Read-ProprUInt32 $before 28
     $afterVolume=Read-ProprUInt32 $after 28
@@ -195,27 +228,27 @@ try {
     $afterHigh=Read-ProprUInt32 $after 44;$afterLow=Read-ProprUInt32 $after 48
     $stage=82
     $beforeId=Join-ProprUInt64 $beforeLow $beforeHigh
-    if($beforeId-isnot [uint64]){exit $stage}
+    if($beforeId-isnot [uint64]){Exit-ProprStage}
     $afterId=Join-ProprUInt64 $afterLow $afterHigh
-    if($afterId-isnot [uint64]){exit $stage}
+    if($afterId-isnot [uint64]){Exit-ProprStage}
     $stage=84
     $beforeVolumeDecimal=$beforeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
     $afterVolumeDecimal=$afterVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
     $beforeIdDecimal=$beforeId.ToString([Globalization.CultureInfo]::InvariantCulture)
     $afterIdDecimal=$afterId.ToString([Globalization.CultureInfo]::InvariantCulture)
-    if($beforeVolumeDecimal-isnot [string]-or $beforeVolumeDecimal.Length-eq 0-or $beforeVolumeDecimal.Length-gt 10-or $beforeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
-    if($afterVolumeDecimal-isnot [string]-or $afterVolumeDecimal.Length-eq 0-or $afterVolumeDecimal.Length-gt 10-or $afterVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
-    if($beforeIdDecimal-isnot [string]-or $beforeIdDecimal.Length-eq 0-or $beforeIdDecimal.Length-gt 20-or $beforeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
-    if($afterIdDecimal-isnot [string]-or $afterIdDecimal.Length-eq 0-or $afterIdDecimal.Length-gt 20-or $afterIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
+    if($beforeVolumeDecimal-isnot [string]-or $beforeVolumeDecimal.Length-eq 0-or $beforeVolumeDecimal.Length-gt 10-or $beforeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
+    if($afterVolumeDecimal-isnot [string]-or $afterVolumeDecimal.Length-eq 0-or $afterVolumeDecimal.Length-gt 10-or $afterVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
+    if($beforeIdDecimal-isnot [string]-or $beforeIdDecimal.Length-eq 0-or $beforeIdDecimal.Length-gt 20-or $beforeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
+    if($afterIdDecimal-isnot [string]-or $afterIdDecimal.Length-eq 0-or $afterIdDecimal.Length-gt 20-or $afterIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
     $stage=85
     $daclProtected=[bool](($control-band 0x1000)-ne 0)
     $reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
-    if($daclProtected-isnot [bool]-or $reparsePoint-isnot [bool]){exit $stage}
+    if($daclProtected-isnot [bool]-or $reparsePoint-isnot [bool]){Exit-ProprStage}
     $stage=86
     [object[]]$rulesArray=$rules.ToArray()
-    if($rulesArray-isnot [object[]]-or $rulesArray.Count-ne $rules.Count-or $rulesArray.Count-gt 128){exit $stage}
+    if($rulesArray-isnot [object[]]-or $rulesArray.Count-ne $rules.Count-or $rulesArray.Count-gt 128){Exit-ProprStage}
     for($ruleIndex=0;$ruleIndex-lt $rulesArray.Count;$ruleIndex++){
-      if(-not [object]::ReferenceEquals($rulesArray[$ruleIndex],$rules[$ruleIndex])){exit $stage}
+      if(-not [object]::ReferenceEquals($rulesArray[$ruleIndex],$rules[$ruleIndex])){Exit-ProprStage}
     }
     $stage=83
     return [pscustomobject][ordered]@{
@@ -226,7 +259,7 @@ try {
       verifiedVolumeSerialNumber=$afterVolumeDecimal
       verifiedFileId=$afterIdDecimal;rules=$rulesArray
     }
-  } finally {
+  } catch { Exit-ProprStage } finally {
     if($descriptor-ne [IntPtr]::Zero){$null=[ProprReadOnlyAuthority]::LocalFree($descriptor)};if($aclInfo-ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::FreeHGlobal($aclInfo)}
     if($after-ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::FreeHGlobal($after)};if($before-ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::FreeHGlobal($before)}
     if($privateHandle-ne [IntPtr]::Zero){$null=[ProprReadOnlyAuthority]::CloseHandle($privateHandle)}
@@ -236,26 +269,27 @@ try {
   for($q=0;$q-lt $r;$q++){
     if($q-ne 0){
       $stage=87
-      if([Console]::In.ReadLine()-cne 'PROPR_REVALIDATE_V1'){exit $stage}
+      if([Console]::In.ReadLine()-cne 'PROPR_REVALIDATE_V1'){Exit-ProprStage}
     }
     $stage=78
     $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
-    if($null-eq $current){exit $stage}
+    if($null-eq $current){Exit-ProprStage}
     $entries=New-Object Collections.Generic.List[object]
     for($i=0;$i-lt $n;$i++){
       $entries.Add((Inspect-ProprEntry $i $current.Value))
+      $script:proprEntryIndex=-1
     }
     $stage=77
     [object[]]$entryArray=$entries.ToArray()
-    if($entryArray.Count-ne $n){exit $stage}
+    if($entryArray.Count-ne $n){Exit-ProprStage}
     $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;entries=$entryArray}) -Compress -Depth 5
-    if([Text.Encoding]::UTF8.GetByteCount($json)-gt 131072){exit $stage}
+    if([Text.Encoding]::UTF8.GetByteCount($json)-gt 131072){Exit-ProprStage}
     [Console]::Out.WriteLine($json)
     [Console]::Out.Flush()
   }
   exit 0
-}catch{exit $stage}
-`;
+}catch{Exit-ProprStage}
+`.replaceAll("Exit-ProprStage", "Fail").replaceAll("proprEntryIndex", "e");
 
 export const WINDOWS_NATIVE_PROBE_MILESTONES = Object.freeze([
   "entry-ps51-desktop-x64",
@@ -277,6 +311,8 @@ export const WINDOWS_NATIVE_TIMING_PROBE_SOURCE = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Set-StrictMode -Version 2
+$script:proprEntryIndex=-1
+${WINDOWS_BROKER_STAGE_EXIT_SOURCE}
 ${WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE}
 ${WINDOWS_UINT64_COMPOSER_SOURCE}
 $clock=[Diagnostics.Stopwatch]::StartNew()
@@ -289,11 +325,11 @@ function Write-ProprMilestone([string]$name){
 $stage=91
 try {
   if($PSVersionTable.PSVersion.Major-ne 5-or $PSVersionTable.PSVersion.Minor-ne 1-or
-     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){exit $stage}
+     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){Exit-ProprStage}
   Write-ProprMilestone 'entry-ps51-desktop-x64'
   $stage=92
   $baseline='{"version":1,"baseline":"constant"}'
-  if($baseline-ne '{"version":1,"baseline":"constant"}'){exit $stage}
+  if($baseline-ne '{"version":1,"baseline":"constant"}'){Exit-ProprStage}
   Write-ProprMilestone 'constant-json'
   $stage=93
   $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly(
@@ -314,25 +350,25 @@ try {
   $null=$builder.CreateType()
   Write-ProprMilestone 'reflection-emit'
   $stage=94
-  if([ProprNativeTimingProbe]::GetCurrentProcessId()-eq 0){exit $stage}
+  if([ProprNativeTimingProbe]::GetCurrentProcessId()-eq 0){Exit-ProprStage}
   Write-ProprMilestone 'harmless-win32'
   $stage=95
   $handle=[ProprNativeTimingProbe]::GetStdHandle(-10)
-  if($handle-eq [IntPtr](-1)-or $handle-eq [IntPtr](-2)-or $handle-eq [IntPtr]::Zero){exit $stage}
+  if($handle-eq [IntPtr](-1)-or $handle-eq [IntPtr](-2)-or $handle-eq [IntPtr]::Zero){Exit-ProprStage}
   $info=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-  if(-not [ProprNativeTimingProbe]::GetFileInformationByHandle($handle,$info)){exit $stage}
+  if(-not [ProprNativeTimingProbe]::GetFileInformationByHandle($handle,$info)){Exit-ProprStage}
   $probeVolume=Read-ProprUInt32 $info 28
   $probeHigh=Read-ProprUInt32 $info 44;$probeLow=Read-ProprUInt32 $info 48
   $probeId=Join-ProprUInt64 $probeLow $probeHigh
-  if($probeId-isnot [uint64]){exit $stage}
+  if($probeId-isnot [uint64]){Exit-ProprStage}
   $probeVolumeDecimal=$probeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
   $probeIdDecimal=$probeId.ToString([Globalization.CultureInfo]::InvariantCulture)
-  if($probeVolumeDecimal-isnot [string]-or $probeVolumeDecimal.Length-eq 0-or $probeVolumeDecimal.Length-gt 10-or $probeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
-  if($probeIdDecimal-isnot [string]-or $probeIdDecimal.Length-eq 0-or $probeIdDecimal.Length-gt 20-or $probeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
+  if($probeVolumeDecimal-isnot [string]-or $probeVolumeDecimal.Length-eq 0-or $probeVolumeDecimal.Length-gt 10-or $probeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
+  if($probeIdDecimal-isnot [string]-or $probeIdDecimal.Length-eq 0-or $probeIdDecimal.Length-gt 20-or $probeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
   Write-ProprMilestone 'standard-handle-identity'
   exit 0
-}catch{exit $stage}
-`;
+}catch{Exit-ProprStage}
+`.replaceAll("Exit-ProprStage", "Fail").replaceAll("proprEntryIndex", "e");
 
 interface HeldExecutable {
   readonly path: string;
@@ -457,15 +493,51 @@ export function parseWindowsInspectionDocument(value: Buffer | string): readonly
   return document.entries as WindowsAuthorityInspection[];
 }
 
+const WINDOWS_BROKER_FAILURE_STAGES: Readonly<Record<number, WindowsNativeStageCode>> = {
+  71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info-initial",
+  75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
+  78: "broker:current-user-sid", 79: "broker:index-info-revalidation", 80: "broker:fd-duplicate",
+  81: "broker:index-info-decode", 82: "broker:index-info-compose", 83: "broker:entry-build",
+  84: "broker:entry-format", 85: "broker:entry-flags", 86: "broker:entry-rules", 87: "broker:control",
+};
+
+const WINDOWS_BROKER_ENTRY_OPERATIONS: Readonly<Record<number, WindowsBrokerEntryOperationToken>> = {
+  73: "fd", 74: "identity-initial", 75: "security-info", 76: "acl",
+  79: "identity-revalidation", 80: "fd-duplicate", 81: "identity-decode",
+  82: "identity-compose", 83: "entry-build", 84: "entry-format",
+  85: "entry-flags", 86: "entry-rules",
+};
+
+export interface WindowsBrokerFailureAttribution {
+  readonly stage: WindowsNativeStageCode;
+  readonly entryIndex: WindowsBrokerEntryIndexToken | null;
+  readonly operation: WindowsBrokerEntryOperationToken | null;
+}
+
+export function windowsBrokerFailureAttribution(status: number | null): WindowsBrokerFailureAttribution {
+  if (status !== null && Number.isInteger(status) && status >= WINDOWS_BROKER_ENTRY_FAILURE_BASE) {
+    const encoded = status - WINDOWS_BROKER_ENTRY_FAILURE_BASE;
+    const index = Math.floor(encoded / WINDOWS_BROKER_ENTRY_FAILURE_STRIDE);
+    const operationCode = encoded % WINDOWS_BROKER_ENTRY_FAILURE_STRIDE;
+    const stage = WINDOWS_BROKER_FAILURE_STAGES[operationCode];
+    const operation = WINDOWS_BROKER_ENTRY_OPERATIONS[operationCode];
+    if (index >= 0 && index < WINDOWS_INSPECTION_MAX_ENTRIES && stage && operation) {
+      return Object.freeze({
+        stage,
+        entryIndex: String(index).padStart(2, "0") as WindowsBrokerEntryIndexToken,
+        operation,
+      });
+    }
+  }
+  return Object.freeze({
+    stage: status === null ? "spawn:status" : (WINDOWS_BROKER_FAILURE_STAGES[status] ?? "spawn:status"),
+    entryIndex: null,
+    operation: null,
+  });
+}
+
 export function windowsBrokerFailureStage(status: number | null): WindowsNativeStageCode {
-  const stages: Readonly<Record<number, WindowsNativeStageCode>> = {
-    71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info-initial",
-    75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
-    78: "broker:current-user-sid", 79: "broker:index-info-revalidation", 80: "broker:fd-duplicate",
-    81: "broker:index-info-decode", 82: "broker:index-info-compose", 83: "broker:entry-build",
-    84: "broker:entry-format", 85: "broker:entry-flags", 86: "broker:entry-rules", 87: "broker:control",
-  };
-  return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
+  return windowsBrokerFailureAttribution(status).stage;
 }
 
 /** The fixed inspector receives no caller-controlled executable/module/profile/temp authority. */
@@ -633,6 +705,8 @@ interface InspectionBrokerState {
   stderrEnded: boolean;
   closed: boolean;
   statusStage: WindowsBrokerStatusStage;
+  entryIndex: WindowsBrokerEntryIndexToken | null;
+  operation: WindowsBrokerEntryOperationToken | null;
   diagnosticReported: boolean;
 }
 
@@ -646,6 +720,8 @@ export type WindowsBrokerCleanupState = "not-started" | "contained" | "deadline-
 export interface WindowsBrokerResultDiagnostic {
   readonly brokerIndex: WindowsBrokerIndexBucket;
   readonly statusStage: WindowsBrokerStatusStage;
+  readonly entryIndex: WindowsBrokerEntryIndexToken | null;
+  readonly operation: WindowsBrokerEntryOperationToken | null;
   readonly stderr: WindowsBrokerStreamState;
   readonly stdout: WindowsBrokerStreamState;
   readonly deadline: WindowsBrokerDeadlineState;
@@ -708,6 +784,8 @@ export function runWindowsInspectionBrokerBatch({
         onBrokerResult?.(Object.freeze({
           brokerIndex: windowsBrokerIndexBucket(index),
           statusStage: broker.statusStage,
+          entryIndex: broker.entryIndex,
+          operation: broker.operation,
           stderr: broker.stderrState,
           stdout: broker.stdoutState,
           deadline: deadlineExpired ? "expired" : "active",
@@ -735,9 +813,9 @@ export function runWindowsInspectionBrokerBatch({
         try { broker.child.kill("SIGKILL"); } catch { /* Retain ownership and retry until close/drain. */ }
       }
     };
-    const fail = (stage: WindowsNativeStageCode): void => {
+    const fail = (stageOrError: WindowsNativeStageCode | WindowsNativeStageError): void => {
       if (failure || settled) return;
-      failure = stageError(stage);
+      failure = stageOrError instanceof WindowsNativeStageError ? stageOrError : stageError(stageOrError);
       clearTimeout(deadlineTimer);
       for (const broker of brokers) {
         if (!broker.closed && broker.statusStage === "ok") broker.statusStage = "sibling-termination";
@@ -746,7 +824,12 @@ export function runWindowsInspectionBrokerBatch({
       cleanupTimer = setTimeout(() => {
         if (settled) return;
         cleanupDeadlineExpired = true;
-        failure = stageError("spawn:cleanup", failure!.primaryStage);
+        failure = stageError(
+          "spawn:cleanup",
+          failure!.primaryStage,
+          failure!.entryIndex,
+          failure!.operation,
+        );
         terminateLiveBrokers();
         // A cleanup deadline classifies the eventual fixed failure; it never
         // proves containment. Keep every listener and a referenced retry alive
@@ -796,6 +879,8 @@ export function runWindowsInspectionBrokerBatch({
           stderrEnded: !child.stderr,
           closed: false,
           statusStage: "ok",
+          entryIndex: null,
+          operation: null,
           diagnosticReported: false,
         };
         brokers.push(broker);
@@ -821,12 +906,17 @@ export function runWindowsInspectionBrokerBatch({
             if (signal !== null && !failure) {
               broker.statusStage = "spawn:status";
             } else if (status !== 0) {
-              broker.statusStage = windowsBrokerFailureStage(status);
+              const attribution = windowsBrokerFailureAttribution(status);
+              broker.statusStage = attribution.stage;
+              broker.entryIndex = attribution.entryIndex;
+              broker.operation = attribution.operation;
             }
           }
-          if (!failure && broker.statusStage !== "ok") fail(
-            broker.statusStage === "sibling-termination" ? "spawn:status" : broker.statusStage,
-          );
+          if (!failure && broker.statusStage !== "ok") {
+            fail(broker.statusStage === "sibling-termination"
+              ? "spawn:status"
+              : stageError(broker.statusStage, broker.statusStage, broker.entryIndex, broker.operation));
+          }
           settle();
         });
       }
@@ -899,6 +989,32 @@ interface WindowsInspectionProcess {
   readonly child: ChildProcess;
   readonly terminal: Promise<readonly Buffer[]>;
   readonly firstFrame: Promise<Buffer>;
+}
+
+export function writeWindowsInspectionRevalidationControl(child: ChildProcess): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const input = child.stdin;
+    if (!input || input.destroyed || !input.writable) {
+      reject(stageError("broker:control"));
+      return;
+    }
+    let completed = false;
+    const complete = (error?: Error | null): void => {
+      if (completed) return;
+      completed = true;
+      if (error) reject(stageError("broker:control"));
+      else resolve();
+    };
+    const onError = (): void => complete(stageError("broker:control"));
+    // Keep the listener through the stream's terminal lifetime. Node may invoke
+    // the end callback before emitting its paired EPIPE/error event.
+    input.on("error", onError);
+    try {
+      input.end("PROPR_REVALIDATE_V1\n", "ascii", complete);
+    } catch {
+      complete(stageError("broker:control"));
+    }
+  });
 }
 
 function startWindowsInspectionProcess(
@@ -1024,8 +1140,7 @@ export async function beginWindowsReadOnlyInspectionGeneration(
           revalidateWindowsPowerShell(executable);
           revalidateWindowsTargets(finalTargets);
           if (!sameWindowsInspectionTargets(targets, finalTargets)) throw stageError("parent:post-bind");
-          if (!processState.child.stdin) throw stageError("spawn:create");
-          processState.child.stdin.end("PROPR_REVALIDATE_V1\n", "ascii");
+          await writeWindowsInspectionRevalidationControl(processState.child);
           const outputs = await processState.terminal;
           const frames = splitWindowsBrokerFrames(outputs[0], 2);
           result = bindWindowsInspectionTargets(frames[1], finalTargets);

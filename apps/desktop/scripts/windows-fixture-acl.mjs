@@ -74,6 +74,7 @@ export const encodedWindowsFixtureAcl = Buffer.from(windowsFixtureAclSource, 'ut
 
 const WINDOWS_FIXTURE_PATH_MAX_BYTES = 4 * 1024;
 const WINDOWS_FIXTURE_PROCESS_MAX_BYTES = 8 * 1024;
+export const WINDOWS_FIXTURE_PROCESS_TIMEOUT_MS = 60_000;
 
 const windowsFixtureCanonicalPathSource = String.raw`
 $ErrorActionPreference='Stop'
@@ -160,7 +161,7 @@ export const canonicalizeWindowsFixtureEntry = ({ entryKind, entryPath, powershe
   ], {
     shell: false,
     windowsHide: true,
-    timeout: 10_000,
+    timeout: WINDOWS_FIXTURE_PROCESS_TIMEOUT_MS,
     maxBuffer: WINDOWS_FIXTURE_PROCESS_MAX_BYTES,
     env: {
       ...process.env,

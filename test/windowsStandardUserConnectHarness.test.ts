@@ -476,11 +476,11 @@ test('the production inspector duplicates each fixed fd before split native oper
   const productionSourceStart = windowsAuthority.indexOf('export const WINDOWS_INSPECTION_SOURCE');
   const productionSourceEnd = windowsAuthority.indexOf('export const WINDOWS_NATIVE_PROBE_MILESTONES', productionSourceStart);
   const productionSource = windowsAuthority.slice(productionSourceStart, productionSourceEnd);
-  assert.match(productionSource, /\$stage=80\s+if\(-not \[ProprReadOnlyAuthority\]::DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{exit \$stage\}/);
-  assert.match(productionSource, /\$stage=74\s+\$before=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$privateHandle,\$before\)\)\{exit \$stage\}/);
-  assert.match(productionSource, /\$stage=78\s+\$current=\[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)\.User\s+if\(\$null-eq \$current\)\{exit \$stage\}/);
+  assert.match(productionSource, /\$stage=80\s+if\(-not \[ProprReadOnlyAuthority\]::DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{Exit-ProprStage\}/);
+  assert.match(productionSource, /\$stage=74\s+\$before=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$privateHandle,\$before\)\)\{Exit-ProprStage\}/);
+  assert.match(productionSource, /\$stage=78\s+\$current=\[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)\.User\s+if\(\$null-eq \$current\)\{Exit-ProprStage\}/);
   assert.match(productionSource, /GetSecurityInfo\(\$privateHandle,1,5,\[ref\]\$owner,\[ref\]\$group,\[ref\]\$dacl,\[ref\]\$sacl,\[ref\]\$descriptor\)/);
-  assert.match(productionSource, /\$stage=79\s+\$after=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$privateHandle,\$after\)\)\{exit \$stage\}/);
+  assert.match(productionSource, /\$stage=79\s+\$after=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$privateHandle,\$after\)\)\{Exit-ProprStage\}/);
   assert.equal(productionSource.match(/::CloseHandle\(\$privateHandle\)/g)?.length, 1);
   assert.match(productionSource, /if\(\$privateHandle-ne \[IntPtr\]::Zero\)\{\$null=\[ProprReadOnlyAuthority\]::CloseHandle\(\$privateHandle\)\}/);
   assert.doesNotMatch(productionSource, /CloseHandle\(\$originalHandle\)/);

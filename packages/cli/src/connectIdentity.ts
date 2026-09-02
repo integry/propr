@@ -532,6 +532,7 @@ export async function readTrustedConnectTunnelOverride(
     return parseTrustedTunnelOverride(contents, requestedRoot, platform);
   } catch (error) {
     if (error instanceof TrustedConnectConfigError) throw error;
+    if (error instanceof WindowsAuthorityInspectionError) throw error;
     if (error instanceof WindowsAuthorityPolicyError) {
       throw new TrustedConnectConfigError(`NATIVE_ENTRY_${error.entryIndex}_${error.policyReason}`);
     }

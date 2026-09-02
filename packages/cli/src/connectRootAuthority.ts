@@ -24,6 +24,8 @@ import {
   runWindowsReadOnlyInspection,
   WindowsNativeStageError,
   windowsInspectionEntryKind,
+  type WindowsBrokerEntryIndexToken,
+  type WindowsBrokerEntryOperationToken,
 } from "./connectWindowsAuthority.js";
 import {
   assertCanonicalNativeArtifactParents,
@@ -161,10 +163,23 @@ export class WindowsAuthorityPolicyError extends Error {
 
 /** Fixed, redacted boundary for a failed read-only Windows ACL inspection. */
 export class WindowsAuthorityInspectionError extends Error {
-  constructor() {
-    super("Windows ACL authority inspection is unavailable");
+  constructor(
+    readonly entryIndex: WindowsBrokerEntryIndexToken | null = null,
+    readonly operation: WindowsBrokerEntryOperationToken | null = null,
+  ) {
+    super(entryIndex === null || operation === null
+      ? "Windows ACL authority inspection is unavailable"
+      : `Windows ACL authority inspection is unavailable [entry=${entryIndex} operation=${operation}]`);
     this.name = "WindowsAuthorityInspectionError";
   }
+}
+
+function unavailableWindowsAuthority(error?: unknown): WindowsAuthorityInspectionError {
+  if (error instanceof WindowsNativeStageError) {
+    reportWindowsNativeStage(error.stage);
+    return new WindowsAuthorityInspectionError(error.entryIndex, error.operation);
+  }
+  return new WindowsAuthorityInspectionError();
 }
 
 export function stableAuthorityIdentity(fd: number): StableAuthorityIdentity {
@@ -397,8 +412,7 @@ async function nativeWindowsAcls(
   try {
     return await runWindowsReadOnlyInspection(entries);
   } catch (error) {
-    if (error instanceof WindowsNativeStageError) reportWindowsNativeStage(error.stage);
-    throw new WindowsAuthorityInspectionError();
+    throw unavailableWindowsAuthority(error);
   }
 }
 
@@ -411,20 +425,17 @@ async function beginNativeWindowsAclsGeneration(
       initial: generation.initial,
       revalidate: async (finalEntries) => {
         try { return await generation.revalidate(finalEntries); } catch (error) {
-          if (error instanceof WindowsNativeStageError) reportWindowsNativeStage(error.stage);
-          throw new WindowsAuthorityInspectionError();
+          throw unavailableWindowsAuthority(error);
         }
       },
       abort: async () => {
         try { await generation.abort(); } catch (error) {
-          if (error instanceof WindowsNativeStageError) reportWindowsNativeStage(error.stage);
-          throw new WindowsAuthorityInspectionError();
+          throw unavailableWindowsAuthority(error);
         }
       },
     };
   } catch (error) {
-    if (error instanceof WindowsNativeStageError) reportWindowsNativeStage(error.stage);
-    throw new WindowsAuthorityInspectionError();
+    throw unavailableWindowsAuthority(error);
   }
 }
 
