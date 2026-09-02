@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- native session lifecycle and lease-fenced control must remain coordinated */
 import crypto from 'crypto';
 import {
   GOAL_ERROR_CODES,
@@ -369,6 +370,7 @@ export class GoalSupervisor {
     });
   }
 
+  // eslint-disable-next-line max-params -- the execution, runtime, lease fence, and abort controller form the live control boundary
   private async controlLoop(
     goalId: string,
     initialExecution: GoalRuntimeExecution,
@@ -437,6 +439,7 @@ export class GoalSupervisor {
     }
   }
 
+  // eslint-disable-next-line max-params -- message delivery must carry the exact execution and lease fence together
   private async deliverMessage(
     goalId: string,
     execution: GoalRuntimeExecution,
@@ -488,6 +491,7 @@ export class GoalSupervisor {
     }
   }
 
+  // eslint-disable-next-line max-params -- completion reconciles the exact execution result under its runtime and lease fence
   private async finish(
     goalId: string,
     execution: GoalRuntimeExecution,

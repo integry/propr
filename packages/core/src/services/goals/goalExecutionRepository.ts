@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- execution and artifact mutations share one fenced persistence boundary */
 import crypto from 'crypto';
 import type { Knex } from 'knex';
 import { GOAL_ERROR_CODES } from '@propr/shared';
@@ -185,6 +186,7 @@ export class GoalExecutionRepository {
     }));
   }
 
+  // eslint-disable-next-line max-params -- durable identity, state, lease fence, and optional checkpoint fields are distinct
   updateState(
     goalId: string,
     executionId: string,
