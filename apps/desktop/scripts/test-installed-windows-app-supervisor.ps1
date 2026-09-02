@@ -6241,6 +6241,9 @@ function Test-HkcuFixtureDigestFailureAttributionRegression(
   $recoveryProofBoundary.ForcePostRestoreDigestMismatch = $true
   $recoveryProofBackupPath = [string]$recoveryProofBoundary.BackupPath
   $recoveryProofBadDigest = Get-HkcuFixtureDifferentDigest $recoveryProofDigest
+  $recoveryProofDigestCallOrder =
+    [System.Collections.Generic.List[string]]::new()
+  $recoveryProofBackupDigestReads = @{ Value = 0 }
   $originalHkcuDigestForRecoveryProof =
     (Get-Command Get-HkcuFixtureRegistryDigest -CommandType Function).ScriptBlock
   function Get-HkcuFixtureRegistryDigest([string]$Path) {
@@ -6249,7 +6252,22 @@ function Test-HkcuFixtureDigestFailureAttributionRegression(
         [string]$recoveryProofBackupPath,
         [StringComparison]::OrdinalIgnoreCase
       )) {
-      return $recoveryProofBadDigest
+      $recoveryProofBackupDigestReads.Value =
+        [int]$recoveryProofBackupDigestReads.Value + 1
+      [void]$recoveryProofDigestCallOrder.Add('BackupPath')
+      if ([int]$recoveryProofBackupDigestReads.Value -eq 2) {
+        return $recoveryProofBadDigest
+      }
+      return (& $originalHkcuDigestForRecoveryProof $Path)
+    }
+    if ([string]::Equals(
+        [string]$Path,
+        [string]$recoveryProofBoundary.DesktopKey,
+        [StringComparison]::OrdinalIgnoreCase
+      )) {
+      [void]$recoveryProofDigestCallOrder.Add('DesktopKey')
+    } else {
+      [void]$recoveryProofDigestCallOrder.Add('Other')
     }
     & $originalHkcuDigestForRecoveryProof $Path
   }
@@ -6259,16 +6277,28 @@ function Test-HkcuFixtureDigestFailureAttributionRegression(
     'FIXTURE_SETUP' `
     'RECOVERY_RELOCATE' `
     'REGISTRY_PATH'
+  $actualRecoveryProofFailure = $null
   try {
     Restore-HkcuDesktopFixtureBoundary $recoveryProofBoundary $false
     Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
   } catch {
-    Assert-True ([string]$_.Exception.Message -ceq $expectedRecoveryProofFailure) `
-      (Get-HkcuFixtureBoundaryDiagnostic)
+    $actualRecoveryProofFailure = [string]$_.Exception.Message
   } finally {
     Set-Item -Path Function:\Get-HkcuFixtureRegistryDigest `
       -Value $originalHkcuDigestForRecoveryProof
   }
+  Assert-True ($actualRecoveryProofFailure -ceq $expectedRecoveryProofFailure) `
+    (Get-HkcuFixtureBoundaryDiagnostic)
+  Assert-HkcuDesktopFixtureOperation (
+    [int]$recoveryProofBackupDigestReads.Value -eq 3
+  )
+  Assert-HkcuDesktopFixtureOperation (
+    $recoveryProofDigestCallOrder.Count -eq 4
+  )
+  Assert-HkcuDesktopFixtureOperation (
+    ([string]::Join(',', $recoveryProofDigestCallOrder.ToArray())) -ceq
+      'BackupPath,DesktopKey,BackupPath,BackupPath'
+  )
   Assert-HkcuDesktopFixtureOperation `
     ((Test-Path -LiteralPath $recoveryProofBoundary.BackupPath) -and
       !(Test-Path -LiteralPath $RecoveryProofPath))
@@ -6279,6 +6309,10 @@ function Test-HkcuFixtureDigestFailureAttributionRegression(
       Assert-HkcuDesktopFixtureOperation (
         (Get-HkcuFixtureRegistryDigest $recoveryProofBoundary.BackupPath) -ceq
           $recoveryProofDigest
+      )
+      Assert-HkcuDesktopFixtureOperation (
+        (Get-HkcuFixtureRegistryDigest $recoveryProofBoundary.BackupPath) -ceq
+          [string]$recoveryProofBoundary.BaselineDigest
       )
     }
 

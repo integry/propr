@@ -1135,6 +1135,18 @@ describe('desktop trusted release workflow', () => {
       /function Test-HkcuFixtureDigestFailureAttributionRegression[\s\S]*Initialize-HkcuDesktopFixtureBoundary \$initializeInvalidBoundary[\s\S]*'BASELINE_DIGEST'[\s\S]*Restore-HkcuDesktopFixtureBoundary \$backupEqualityBoundary \$false[\s\S]*'BASELINE_DIGEST'[\s\S]*ForcePostRestoreDigestMismatch = \$true[\s\S]*Restore-HkcuDesktopFixtureBoundary \$postRestoreEqualityBoundary \$false[\s\S]*'BASELINE_DIGEST'[\s\S]*Get-HkcuFixtureRegistryDigest \$postRestoreEqualityBoundary\.BackupPath[\s\S]*ForcePostRestoreDigestMismatch = \$true[\s\S]*\$recoveryProofBadDigest[\s\S]*'RECOVERY_RELOCATE'[\s\S]*Restore-HkcuDesktopFixtureBoundary \$recoveryProofBoundary \$false[\s\S]*\$expectedRecoveryProofFailure[\s\S]*-Callsite 'FINAL_BASELINE_DIGEST'[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryProofBoundary\.BackupPath[\s\S]*'FINAL_BASELINE_DIGEST'/,
     );
     assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /\$recoveryProofBackupDigestReads = @\{ Value = 0 \}[\s\S]*\$recoveryProofBackupDigestReads\.Value =[\s\S]*\[int\]\$recoveryProofBackupDigestReads\.Value \+ 1[\s\S]*if \(\[int\]\$recoveryProofBackupDigestReads\.Value -eq 2\) \{[\s\S]*return \$recoveryProofBadDigest[\s\S]*return \(& \$originalHkcuDigestForRecoveryProof \$Path\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /finally \{[\s\S]*Set-Item -Path Function:\\Get-HkcuFixtureRegistryDigest[\s\S]*-Value \$originalHkcuDigestForRecoveryProof[\s\S]*Assert-True \(\$actualRecoveryProofFailure -ceq \$expectedRecoveryProofFailure\)[\s\S]*\[int\]\$recoveryProofBackupDigestReads\.Value -eq 3[\s\S]*\$recoveryProofDigestCallOrder\.Count -eq 4[\s\S]*'BackupPath,DesktopKey,BackupPath,BackupPath'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /-Callsite 'FINAL_BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryProofBoundary\.BackupPath\) -ceq[\s\S]*\$recoveryProofDigest[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryProofBoundary\.BackupPath\) -ceq[\s\S]*\[string\]\$recoveryProofBoundary\.BaselineDigest/,
+    );
+    assert.match(
       hkcuBoundaryRegression,
       /\$recoveryCollisionDigest = Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryCollisionDesktop/,
     );
