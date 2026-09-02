@@ -412,10 +412,10 @@ export {
     MAX_ACTIVE_PUSH_SUBSCRIPTIONS_PER_USER, MAX_STORED_PUSH_SUBSCRIPTIONS_PER_USER,
     MAX_PUSH_SUBSCRIPTION_ENROLLMENTS_PER_WINDOW, PUSH_SUBSCRIPTION_ENROLLMENT_WINDOW_MS,
     PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS, PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
-    notificationService, createNotificationEvent, assignNotificationRecipients,
-    listNotifications, getUnreadNotificationCount, markNotificationRead, dismissNotification,
-    getNotificationPreferences, updateNotificationPreferences, updateNotificationPreference,
-    upsertPushSubscription, listPushSubscriptions, revokePushSubscription, revokePushSubscriptionById,
+    notificationService, createNotificationEvent, assignNotificationRecipients, listNotifications,
+    getUnreadNotificationCount, markNotificationRead, dismissNotification, dismissAllNotifications, dismissNotificationReceipts,
+    dismissNotificationsForPullRequest, dismissSupersededPullRequestAttentionNotifications, dismissSystemFailureNotifications,
+    getNotificationPreferences, updateNotificationPreferences, updateNotificationPreference, upsertPushSubscription, listPushSubscriptions, revokePushSubscription, revokePushSubscriptionById,
     garbageCollectPushSubscriptions
 } from './services/notificationService.js';
 export type { NotificationRecipientInput, NotificationRecipient, CreateNotificationEventInput, NotificationListOptions, NotificationServiceOptions } from './services/notificationService.js';

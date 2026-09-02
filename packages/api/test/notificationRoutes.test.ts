@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
 import { after, describe, test } from 'node:test';
@@ -62,6 +63,7 @@ function createService(overrides: Partial<NotificationRouteService> = {}): Notif
         getUnreadNotificationCount: async () => 0,
         markNotificationRead: async () => null,
         dismissNotification: async () => null,
+        dismissAllNotifications: async () => ({ unreadCount: 0 }),
         getNotificationPreferences: async () => preferences,
         updateNotificationPreferences: async () => preferences,
         upsertPushSubscription: async () => parsePushSubscription({
@@ -156,6 +158,27 @@ describe('notification routes', () => {
 
         assert.deepEqual(received, ['authenticated-user', 'event-1']);
         assert.equal(status(), 404);
+    });
+
+    test('dismisses all receipts for the authenticated user', async () => {
+        let receivedUserId: string | undefined;
+        const routes = createNotificationRoutes({
+            service: createService({
+                dismissAllNotifications: async userId => {
+                    receivedUserId = userId;
+                    return { unreadCount: 0 };
+                }
+            })
+        });
+        const { response, status, body } = responseRecorder();
+
+        await routes.dismissAll(authenticatedRequest({
+            body: { userId: 'victim-user' }
+        }), response);
+
+        assert.equal(receivedUserId, 'authenticated-user');
+        assert.equal(status(), 200);
+        assert.deepEqual(body(), { unreadCount: 0 });
     });
 
     test('returns 400 for malformed limits, cursors, and history flags', async () => {
