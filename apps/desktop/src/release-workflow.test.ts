@@ -1180,11 +1180,78 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
+      /function Get-HkcuSupervisorFixtureRelativeSubKeyPath[\s\S]*\$providerPrefix = 'Registry::HKEY_CURRENT_USER\\'[\s\S]*\$fixturePrefix = 'Software\\ProPRSupervisorFixture\\'[\s\S]*!\$pathText\.Contains\('\/'\)[\s\S]*StartsWith\(\$providerPrefix, \[StringComparison\]::Ordinal\)[\s\S]*StartsWith\(\$fixturePrefix, \[StringComparison\]::Ordinal\)[\s\S]*!\[string\]::IsNullOrWhiteSpace\(\$fixtureRelativePath\)[\s\S]*\$fixtureRelativePath -ceq \$fixtureRelativePath\.Trim\(\)[\s\S]*\$segment -ceq \$segment\.Trim\(\)[\s\S]*\$segment -cne '\.' -and \$segment -cne '\.\.'[\s\S]*!\$segment\.Contains\(':'\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Open-HkcuSupervisorFixtureWritableSubKey[\s\S]*Get-HkcuSupervisorFixtureRelativeSubKeyPath \$Path[\s\S]*\[Microsoft\.Win32\.Registry\]::CurrentUser\.OpenSubKey\(\$relativePath, \$true\)[\s\S]*Assert-HkcuDesktopFixtureOperation \(\$null -ne \$key\)[\s\S]*return \$key/,
+    );
+    const acceptsHkcuSupervisorFixturePath = (path: string): boolean => {
+      const providerPrefix = 'Registry::HKEY_CURRENT_USER\\';
+      const fixturePrefix = 'Software\\ProPRSupervisorFixture\\';
+      if (!path || path.trim() === '' || path.includes('/')) return false;
+      if (!path.startsWith(providerPrefix)) return false;
+      const relativePath = path.slice(providerPrefix.length);
+      if (!relativePath.startsWith(fixturePrefix)) return false;
+      const fixtureRelativePath = relativePath.slice(fixturePrefix.length);
+      if (!fixtureRelativePath || fixtureRelativePath.trim() !== fixtureRelativePath) {
+        return false;
+      }
+      return fixtureRelativePath.split('\\').every(segment =>
+        segment !== '' &&
+        segment === segment.trim() &&
+        segment !== '.' &&
+        segment !== '..' &&
+        !segment.includes(':'),
+      );
+    };
+    assert.equal(
+      acceptsHkcuSupervisorFixturePath(
+        'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\accepted\\Nested',
+      ),
+      true,
+    );
+    for (const rejectedPath of [
+      'Registry::HKEY_CURRENT_USER',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\',
+      'Registry::HKEY_LOCAL_MACHINE\\Software\\ProPRSupervisorFixture\\foreign',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPR\\Desktop',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\..\\Desktop',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\malformed/child',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\segment\\ child',
+      'registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\lowercase',
+      '',
+    ]) {
+      assert.equal(acceptsHkcuSupervisorFixturePath(rejectedPath), false);
+    }
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
       /function Set-HkcuFixtureBoundaryValueKinds[\s\S]*Callsite 'REGRESSION_ROOT_KEY_SETUP'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_DEFAULT_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_EXPAND_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_BINARY'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_DWORD'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_QWORD'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_MULTI_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_NATIVE_NONE_WRITE'[\s\S]*Field 'NATIVE_RETURN_CODE'[\s\S]*Callsite 'REGRESSION_NESTED_KEY_SETUP'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_NESTED_VALUE_SETUP'[\s\S]*Field 'REGISTRY_VALUE'/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Get-Item -LiteralPath \$Path -ErrorAction Stop/,
+      /Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Open-HkcuSupervisorFixtureWritableSubKey \$Path/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Set-HkcuFixtureBoundaryValueKinds[\s\S]*finally \{\n\s+if \(\$null -ne \$key\) \{ \$key\.Dispose\(\) \}[\s\S]*finally \{\n\s+if \(\$null -ne \$childKeyRef\.Value\) \{ \$childKeyRef\.Value\.Dispose\(\) \}/,
+    );
+    assert.doesNotMatch(
+      hkcuBoundaryRegression,
+      /\(Get-Item -LiteralPath \$[A-Za-z]+\)\.SetValue\(/,
+    );
+    assert.doesNotMatch(
+      hkcuInstalledValueOwnership,
+      /\(Get-Item -LiteralPath \$desktopKey\)\.SetValue\(/,
+    );
+    assert.match(
+      hkcuInstalledValueOwnership,
+      /New-ItemProperty -LiteralPath \$desktopKey -Name \$installedName\s+`\n\s+-Value \$sentinelInstalled -PropertyType String -Force -ErrorAction Stop/,
+    );
+    assert.match(
+      hkcuInstalledValueOwnership,
+      /New-ItemProperty -LiteralPath \$desktopKey -Name \$installedName\s+`\n\s+-Value \(\[int\]1\) -PropertyType DWord -Force -ErrorAction Stop/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,

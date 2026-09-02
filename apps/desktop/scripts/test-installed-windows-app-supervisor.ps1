@@ -1591,6 +1591,38 @@ function Split-HkcuFixtureRegistryPath([string]$Path) {
   }
 }
 
+function Get-HkcuSupervisorFixtureRelativeSubKeyPath([string]$Path) {
+  $providerPrefix = 'Registry::HKEY_CURRENT_USER\'
+  $fixturePrefix = 'Software\ProPRSupervisorFixture\'
+  $pathText = [string]$Path
+  Assert-HkcuDesktopFixtureOperation (![string]::IsNullOrWhiteSpace($pathText))
+  Assert-HkcuDesktopFixtureOperation (!$pathText.Contains('/'))
+  Assert-HkcuDesktopFixtureOperation (
+    $pathText.StartsWith($providerPrefix, [StringComparison]::Ordinal)
+  )
+  $relativePath = $pathText.Substring($providerPrefix.Length)
+  Assert-HkcuDesktopFixtureOperation (
+    $relativePath.StartsWith($fixturePrefix, [StringComparison]::Ordinal)
+  )
+  $fixtureRelativePath = $relativePath.Substring($fixturePrefix.Length)
+  Assert-HkcuDesktopFixtureOperation (![string]::IsNullOrWhiteSpace($fixtureRelativePath))
+  Assert-HkcuDesktopFixtureOperation ($fixtureRelativePath -ceq $fixtureRelativePath.Trim())
+  foreach ($segment in $fixtureRelativePath.Split('\')) {
+    Assert-HkcuDesktopFixtureOperation (![string]::IsNullOrWhiteSpace($segment))
+    Assert-HkcuDesktopFixtureOperation ($segment -ceq $segment.Trim())
+    Assert-HkcuDesktopFixtureOperation ($segment -cne '.' -and $segment -cne '..')
+    Assert-HkcuDesktopFixtureOperation (!$segment.Contains(':'))
+  }
+  return $relativePath
+}
+
+function Open-HkcuSupervisorFixtureWritableSubKey([string]$Path) {
+  $relativePath = Get-HkcuSupervisorFixtureRelativeSubKeyPath $Path
+  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($relativePath, $true)
+  Assert-HkcuDesktopFixtureOperation ($null -ne $key)
+  return $key
+}
+
 function New-HkcuDesktopFixtureBoundaryState([string]$DesktopKey) {
   return [PSCustomObject]@{
     DesktopKey = $DesktopKey
@@ -6016,99 +6048,114 @@ function Set-HkcuFixtureBoundaryValueKinds([string]$Path) {
     -Callsite 'REGRESSION_ROOT_KEY_SETUP' `
     -Field 'REGISTRY_PATH' `
     -Action {
+      [void](Get-HkcuSupervisorFixtureRelativeSubKeyPath $Path)
       [void](New-Item -Path $Path -Force -ErrorAction Stop)
       Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $Path)
     }
-  $key = Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN' `
-    -Field 'REGISTRY_PATH' `
-    -Action {
-      Get-Item -LiteralPath $Path -ErrorAction Stop
-    }
-  Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_VALUE_KIND_DEFAULT_STRING' `
-    -Field 'REGISTRY_VALUE' `
-    -Action {
-      $key.SetValue('', 'default-string', [Microsoft.Win32.RegistryValueKind]::String)
-    }
-  Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_VALUE_KIND_STRING' `
-    -Field 'REGISTRY_VALUE' `
-    -Action {
-      $key.SetValue('StringValue', 'plain-string', [Microsoft.Win32.RegistryValueKind]::String)
-    }
-  Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_VALUE_KIND_EXPAND_STRING' `
-    -Field 'REGISTRY_VALUE' `
-    -Action {
-      $key.SetValue(
-        'ExpandStringValue',
-        '%TEMP%\propr-fixture',
-        [Microsoft.Win32.RegistryValueKind]::ExpandString
-      )
-    }
-  Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_VALUE_KIND_BINARY' `
-    -Field 'REGISTRY_VALUE' `
-    -Action {
-      $key.SetValue(
-        'BinaryValue',
-        [byte[]]@(0, 1, 2, 127, 128, 255),
-        [Microsoft.Win32.RegistryValueKind]::Binary
-      )
-    }
-  Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_VALUE_KIND_DWORD' `
-    -Field 'REGISTRY_VALUE' `
-    -Action {
-      $key.SetValue('DWordValue', [int]305419896, [Microsoft.Win32.RegistryValueKind]::DWord)
-    }
-  Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_VALUE_KIND_QWORD' `
-    -Field 'REGISTRY_VALUE' `
-    -Action {
-      $key.SetValue(
-        'QWordValue',
-        [long]1311768467463790320,
-        [Microsoft.Win32.RegistryValueKind]::QWord
-      )
-    }
-  Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_VALUE_KIND_MULTI_STRING' `
-    -Field 'REGISTRY_VALUE' `
-    -Action {
-      $key.SetValue(
-        'MultiStringValue',
-        [string[]]@('alpha', '', 'omega'),
-        [Microsoft.Win32.RegistryValueKind]::MultiString
-      )
-    }
-  Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_NATIVE_NONE_WRITE' `
-    -Field 'NATIVE_RETURN_CODE' `
-    -Action {
-      $key = Get-Item -LiteralPath $Path -ErrorAction Stop
-      Set-SupervisorFixtureRegistryValueNativeBytes `
-        $key 'NoneValue' 0 ([byte[]]@(9, 8, 7))
-    }
+  $key = $null
+  try {
+    $key = Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN' `
+      -Field 'REGISTRY_PATH' `
+      -Action {
+        Open-HkcuSupervisorFixtureWritableSubKey $Path
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_DEFAULT_STRING' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue('', 'default-string', [Microsoft.Win32.RegistryValueKind]::String)
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_STRING' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue('StringValue', 'plain-string', [Microsoft.Win32.RegistryValueKind]::String)
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_EXPAND_STRING' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue(
+          'ExpandStringValue',
+          '%TEMP%\propr-fixture',
+          [Microsoft.Win32.RegistryValueKind]::ExpandString
+        )
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_BINARY' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue(
+          'BinaryValue',
+          [byte[]]@(0, 1, 2, 127, 128, 255),
+          [Microsoft.Win32.RegistryValueKind]::Binary
+        )
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_DWORD' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue('DWordValue', [int]305419896, [Microsoft.Win32.RegistryValueKind]::DWord)
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_QWORD' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue(
+          'QWordValue',
+          [long]1311768467463790320,
+          [Microsoft.Win32.RegistryValueKind]::QWord
+        )
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_MULTI_STRING' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue(
+          'MultiStringValue',
+          [string[]]@('alpha', '', 'omega'),
+          [Microsoft.Win32.RegistryValueKind]::MultiString
+        )
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_NATIVE_NONE_WRITE' `
+      -Field 'NATIVE_RETURN_CODE' `
+      -Action {
+        Set-SupervisorFixtureRegistryValueNativeBytes `
+          $key 'NoneValue' 0 ([byte[]]@(9, 8, 7))
+      }
+  } finally {
+    if ($null -ne $key) { $key.Dispose() }
+  }
   Invoke-HkcuDesktopFixtureOperation `
     -Callsite 'REGRESSION_NESTED_KEY_SETUP' `
     -Field 'REGISTRY_PATH' `
     -Action {
       $nested = Join-Path $Path 'Nested'
       $child = Join-Path $nested 'Child'
+      [void](Get-HkcuSupervisorFixtureRelativeSubKeyPath $child)
       [void](New-Item -Path $child -Force -ErrorAction Stop)
       Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $child)
     }
-  Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_NESTED_VALUE_SETUP' `
-    -Field 'REGISTRY_VALUE' `
-    -Action {
-      $nested = Join-Path $Path 'Nested'
-      $child = Join-Path $nested 'Child'
-      $childKey = Get-Item -LiteralPath $child -ErrorAction Stop
-      $childKey.SetValue('NestedValue', 'nested-string', [Microsoft.Win32.RegistryValueKind]::String)
-    }
+  $childKeyRef = @{ Value = $null }
+  try {
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_NESTED_VALUE_SETUP' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $nested = Join-Path $Path 'Nested'
+        $child = Join-Path $nested 'Child'
+        $childKeyRef.Value = Open-HkcuSupervisorFixtureWritableSubKey $child
+        $childKeyRef.Value.SetValue(
+          'NestedValue',
+          'nested-string',
+          [Microsoft.Win32.RegistryValueKind]::String
+        )
+      }
+  } finally {
+    if ($null -ne $childKeyRef.Value) { $childKeyRef.Value.Dispose() }
+  }
 }
 
 function Assert-HkcuFixtureBoundaryValueKinds([string]$Path) {
@@ -6188,31 +6235,51 @@ function Test-HkcuFixtureNativeNoneValueReadRegression(
   [string]$BytePath
 ) {
   Set-HkcuFixtureBoundaryValueKinds $TypePath
-  $typeKey = Get-Item -LiteralPath $TypePath -ErrorAction Stop
-  $typeKey.SetValue(
-    'NoneValue',
-    [byte[]]@(9, 8, 7),
-    [Microsoft.Win32.RegistryValueKind]::Binary
-  )
-  Assert-HkcuFixtureNativeNoneValueFailure $typeKey
+  $typeKey = $null
+  try {
+    $typeKey = Open-HkcuSupervisorFixtureWritableSubKey $TypePath
+    $typeKey.SetValue(
+      'NoneValue',
+      [byte[]]@(9, 8, 7),
+      [Microsoft.Win32.RegistryValueKind]::Binary
+    )
+    Assert-HkcuFixtureNativeNoneValueFailure $typeKey
+  } finally {
+    if ($null -ne $typeKey) { $typeKey.Dispose() }
+  }
 
   Set-HkcuFixtureBoundaryValueKinds $LengthPath
-  $lengthKey = Get-Item -LiteralPath $LengthPath -ErrorAction Stop
-  Set-SupervisorFixtureRegistryValueNativeBytes `
-    $lengthKey 'NoneValue' 0 ([byte[]]@(9, 8))
-  Assert-HkcuFixtureNativeNoneValueFailure $lengthKey
+  $lengthKey = $null
+  try {
+    $lengthKey = Open-HkcuSupervisorFixtureWritableSubKey $LengthPath
+    Set-SupervisorFixtureRegistryValueNativeBytes `
+      $lengthKey 'NoneValue' 0 ([byte[]]@(9, 8))
+    Assert-HkcuFixtureNativeNoneValueFailure $lengthKey
+  } finally {
+    if ($null -ne $lengthKey) { $lengthKey.Dispose() }
+  }
 
   Set-HkcuFixtureBoundaryValueKinds $BytePath
-  $byteKey = Get-Item -LiteralPath $BytePath -ErrorAction Stop
-  Set-SupervisorFixtureRegistryValueNativeBytes `
-    $byteKey 'NoneValue' 0 ([byte[]]@(9, 8, 6))
-  Assert-HkcuFixtureNativeNoneValueFailure $byteKey
+  $byteKey = $null
+  try {
+    $byteKey = Open-HkcuSupervisorFixtureWritableSubKey $BytePath
+    Set-SupervisorFixtureRegistryValueNativeBytes `
+      $byteKey 'NoneValue' 0 ([byte[]]@(9, 8, 6))
+    Assert-HkcuFixtureNativeNoneValueFailure $byteKey
+  } finally {
+    if ($null -ne $byteKey) { $byteKey.Dispose() }
+  }
 }
 
 function Test-SupervisorFixtureRegistryDigestAttributionRegression([string]$Path) {
   [void](New-Item -Path $Path -Force -ErrorAction Stop)
-  $key = Get-Item -LiteralPath $Path -ErrorAction Stop
-  $key.SetValue('SyntheticValue', 'value', [Microsoft.Win32.RegistryValueKind]::String)
+  $key = $null
+  try {
+    $key = Open-HkcuSupervisorFixtureWritableSubKey $Path
+    $key.SetValue('SyntheticValue', 'value', [Microsoft.Win32.RegistryValueKind]::String)
+  } finally {
+    if ($null -ne $key) { $key.Dispose() }
+  }
   $originalNativeReader =
     (Get-Command Get-SupervisorFixtureRegistryValueNativeBytes -CommandType Function).ScriptBlock
   function Get-SupervisorFixtureRegistryValueNativeBytes { throw 'synthetic registry read failure' }
@@ -6503,8 +6570,17 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
           }
         [void](New-Item -Path $presentDesktop -Force -ErrorAction Stop)
         $presentFixtureOwned = $true
-        (Get-Item -LiteralPath $presentDesktop).SetValue(
-          'installed', [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $presentWritableKey = $null
+        try {
+          $presentWritableKey = Open-HkcuSupervisorFixtureWritableSubKey $presentDesktop
+          $presentWritableKey.SetValue(
+            'installed',
+            [int]1,
+            [Microsoft.Win32.RegistryValueKind]::DWord
+          )
+        } finally {
+          if ($null -ne $presentWritableKey) { $presentWritableKey.Dispose() }
+        }
         Restore-HkcuDesktopFixtureBoundary $presentBoundary $presentFixtureOwned
         Invoke-HkcuDesktopFixtureOperation `
           -Callsite 'FINAL_BASELINE_DIGEST' `
@@ -6544,8 +6620,20 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
         Assert-True (!$absentForeignBoundary.BaselinePresent) `
           (Get-HkcuFixtureBoundaryDiagnostic)
         [void](New-Item -Path $absentForeignDesktop -Force -ErrorAction Stop)
-        (Get-Item -LiteralPath $absentForeignDesktop).SetValue(
-          'foreign', 'preserve', [Microsoft.Win32.RegistryValueKind]::String)
+        $absentForeignWritableKey = $null
+        try {
+          $absentForeignWritableKey =
+            Open-HkcuSupervisorFixtureWritableSubKey $absentForeignDesktop
+          $absentForeignWritableKey.SetValue(
+            'foreign',
+            'preserve',
+            [Microsoft.Win32.RegistryValueKind]::String
+          )
+        } finally {
+          if ($null -ne $absentForeignWritableKey) {
+            $absentForeignWritableKey.Dispose()
+          }
+        }
         $expectedOwnershipFailure = Get-SanitizedSupervisorInvocationDiagnostic `
           'HKCU_INSTALLED_VALUE_OWNERSHIP' `
           'HKCU_BASELINE_RESTORE' `
@@ -6768,14 +6856,14 @@ function Test-HkcuInstalledValueOwnership {
       'REGISTRY_PATH'
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
     $desktopKeyFixtureOwned = $true
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, $sentinelInstalled, [Microsoft.Win32.RegistryValueKind]::String)
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      'Unrelated', $sentinelUnrelated, [Microsoft.Win32.RegistryValueKind]::String)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value $sentinelInstalled -PropertyType String -Force -ErrorAction Stop)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name 'Unrelated' `
+      -Value $sentinelUnrelated -PropertyType String -Force -ErrorAction Stop)
     $baselineData = [Convert]::ToBase64String(
       [Text.Encoding]::UTF8.GetBytes($sentinelInstalled))
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value ([int]1) -PropertyType DWord -Force -ErrorAction Stop)
     $restoreManifest = New-HkcuManifest $true $true 'String' $baselineData $false
     $restore = Invoke-WorkflowCleanupController `
       'HKCU_BASELINE_RESTORE' $restoreManifest.Path $restoreManifest.RunId ''
@@ -6820,10 +6908,10 @@ function Test-HkcuInstalledValueOwnership {
     $desktopKeyFixtureOwned = $false
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
     $desktopKeyFixtureOwned = $true
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      'Unrelated', $sentinelUnrelated, [Microsoft.Win32.RegistryValueKind]::String)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value ([int]1) -PropertyType DWord -Force -ErrorAction Stop)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name 'Unrelated' `
+      -Value $sentinelUnrelated -PropertyType String -Force -ErrorAction Stop)
     $nonemptyManifest = New-HkcuManifest $false $false $null $null $true
     $nonempty = Invoke-WorkflowCleanupController `
       'HKCU_NONEMPTY' $nonemptyManifest.Path $nonemptyManifest.RunId ''
@@ -6844,8 +6932,8 @@ function Test-HkcuInstalledValueOwnership {
     $desktopKeyFixtureOwned = $false
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
     $desktopKeyFixtureOwned = $true
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value ([int]1) -PropertyType DWord -Force -ErrorAction Stop)
     $emptyManifest = New-HkcuManifest $false $false $null $null $true
     $empty = Invoke-WorkflowCleanupController `
       'HKCU_EMPTY' $emptyManifest.Path $emptyManifest.RunId ''
@@ -6861,8 +6949,8 @@ function Test-HkcuInstalledValueOwnership {
       'REGISTRY_PATH'
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
     $desktopKeyFixtureOwned = $true
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, 'foreign-conflict', [Microsoft.Win32.RegistryValueKind]::String)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value 'foreign-conflict' -PropertyType String -Force -ErrorAction Stop)
     $conflictManifest = New-HkcuManifest $false $false $null $null $true
     $conflict = Invoke-WorkflowCleanupController `
       'HKCU_CONFLICT' $conflictManifest.Path $conflictManifest.RunId ''
@@ -6887,8 +6975,8 @@ function Test-HkcuInstalledValueOwnership {
     $desktopKeyFixtureOwned = $false
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
     $desktopKeyFixtureOwned = $true
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value ([int]1) -PropertyType DWord -Force -ErrorAction Stop)
     $provisionalManifest = New-HkcuManifest $false $false $null $null $true $true
     $provisional = Invoke-WorkflowCleanupController `
       'HKCU_PROVISIONAL' $provisionalManifest.Path $provisionalManifest.RunId ''
