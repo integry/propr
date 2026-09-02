@@ -7,6 +7,7 @@ import type {
     GoalRepositoryInspection,
     GoalProviderFirstEffectPort,
     GoalProviderOperationFence,
+    GoalStartedProviderEffect,
     GoalSessionControlFence,
     GoalSessionControlTransition,
     GoalSessionEvent,
@@ -29,6 +30,7 @@ import {
 } from './inMemoryGoalSessionFences.js';
 import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { assertProviderFirstEffectState } from './providerFirstEffect.js';
+import { assertStartedProviderEffect } from './providerEffectProtocol.js';
 
 export class GoalSessionScopeError extends Error {
     constructor(message = 'A provider session is owned by a different goal') {
@@ -87,10 +89,12 @@ export class InMemoryGoalSessionPorts implements
         };
     }
 
-    async start<T>(fence: GoalProviderOperationFence, effect: () => T): Promise<Awaited<T>> {
+    async start<T>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>): Promise<T> {
         const state = this.states.get(keyOf(fence));
         assertProviderFirstEffectState(state ? clone(state) : null, fence);
-        return effect() as Awaited<T>;
+        const started = effect();
+        assertStartedProviderEffect<T>(started);
+        return started.completion;
     }
 
     async load(identity: GoalSessionIdentity): Promise<GoalSessionState | null> {

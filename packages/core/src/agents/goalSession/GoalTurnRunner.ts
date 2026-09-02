@@ -206,7 +206,9 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             await this.requireProviderGeneration(fence, intent.operationGeneration);
             snapshot = await this.providerResult(
                 () => this.providerFirstEffect(providerRequest.operationFence,
-                    () => this.adapter.resumeSession(providerRequest, persistedSnapshot(state))),
+                    () => this.startedProviderEffect(
+                        this.adapter.resumeSession(providerRequest, persistedSnapshot(state)),
+                    )),
                 value => rebuildProviderSnapshot(value, this.adapter.provider),
             );
         } catch (error) {

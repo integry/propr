@@ -6,10 +6,10 @@ import type {
 } from './contract.js';
 import { fingerprintGoalWorktree, normalizeGitRepositoryIdentity } from './worktreeIdentity.js';
 import path from 'node:path';
+import { isSafeIdentifier } from './safeIdentifier.js';
 
 const SHA = /^[a-f\d]{4,64}$/i;
 const FINGERPRINT = /^[a-f\d]{64}$/i;
-const SAFE_IDENTIFIER = /^[A-Za-z0-9._:-]{1,256}$/;
 const SAFE_BRANCH = /^(?![./])(?!.*(?:\.\.|@\{|\\|\s|[~^:?*]|\[))(?!.*\.$)[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
 
 /** Removes untrusted recovery-port fields before provider or audit boundaries. */
@@ -47,8 +47,8 @@ export function sanitizeContainerInspection(inspection: GoalContainerInspection)
         ? inspection.status : 'daemon_unavailable';
     const identity = inspection.recoveryIdentity;
     const recoveryIdentity = identity
-        && SAFE_IDENTIFIER.test(identity.goalId) && SAFE_IDENTIFIER.test(identity.sessionId)
-        && SAFE_IDENTIFIER.test(identity.turnId) && SAFE_IDENTIFIER.test(identity.attemptId)
+        && isSafeIdentifier(identity.goalId) && isSafeIdentifier(identity.sessionId)
+        && isSafeIdentifier(identity.turnId) && isSafeIdentifier(identity.attemptId)
         && Number.isSafeInteger(identity.executionEpoch) && identity.executionEpoch >= 0
         && FINGERPRINT.test(identity.worktreeFingerprint)
         ? {
@@ -58,8 +58,8 @@ export function sanitizeContainerInspection(inspection: GoalContainerInspection)
         } : undefined;
     return {
         status,
-        containerId: SAFE_IDENTIFIER.test(inspection.containerId ?? '') ? inspection.containerId : undefined,
-        containerName: SAFE_IDENTIFIER.test(inspection.containerName ?? '') ? inspection.containerName : undefined,
+        containerId: isSafeIdentifier(inspection.containerId) ? inspection.containerId : undefined,
+        containerName: isSafeIdentifier(inspection.containerName) ? inspection.containerName : undefined,
         recoveryIdentity,
         reason: inspection.reason ? 'Container inspection did not establish an authoritative runtime' : undefined,
     };

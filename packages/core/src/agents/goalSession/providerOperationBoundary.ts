@@ -67,14 +67,25 @@ export interface GoalProviderOperationFence extends GoalSessionIdentity {
 }
 
 /**
+ * Proof that a provider primitive was synchronously and irrevocably started.
+ * The authoritative transaction is committed after this handle is returned;
+ * only its completion is awaited after the transaction has released its lock.
+ */
+export interface GoalStartedProviderEffect<T> {
+    readonly completion: Promise<T>;
+}
+
+/**
  * Linearizes a provider primitive's first external effect with state invalidation.
  * A production implementation must execute `effect` while holding the same
  * database transaction/serialization lock used by GoalSessionStatePort writes.
- * The callback must start the primitive synchronously, before returning its
- * promise or first iterator-next promise.
+ * The callback must start the primitive synchronously and return an explicit
+ * non-Promise handle. Implementations reject callbacks that escape through an
+ * async return, commit after the handle is obtained, and await completion only
+ * after releasing the authoritative transaction.
  */
 export interface GoalProviderFirstEffectPort {
-    start<T>(fence: GoalProviderOperationFence, effect: () => T): Promise<Awaited<T>>;
+    start<T>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>): Promise<T>;
 }
 
 /** Monotonic provider-visible high-water publication. */

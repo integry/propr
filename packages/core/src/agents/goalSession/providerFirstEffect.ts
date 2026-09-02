@@ -3,6 +3,7 @@ import type {
 } from './contract.js';
 import { StaleGoalSessionFenceError } from './errors.js';
 import { controlOperationId } from './controlOperationIdentity.js';
+import { isSafeIdentifier } from './safeIdentifier.js';
 
 /** Validates the complete serializable provider fence against one locked state row. */
 export function assertProviderFirstEffectState(
@@ -66,7 +67,7 @@ function assertTurnAuthority(state: GoalSessionState, fence: GoalProviderOperati
         ? `${turn.turnId}:${turn.executionId}:${turn.attemptId}` : undefined;
     if (!turn || !['running', 'pause_requested', 'paused'].includes(state.status)
         || fence.kind === 'turn' && fence.operationId !== expectedTurnOperation
-        || fence.kind === 'steer' && !/^[A-Za-z0-9._:-]{1,256}$/.test(fence.operationId)) stale();
+        || fence.kind === 'steer' && !isSafeIdentifier(fence.operationId)) stale();
 }
 
 function assertPauseAuthority(state: GoalSessionState, fence: GoalProviderOperationFence): void {

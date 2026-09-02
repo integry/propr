@@ -4,11 +4,12 @@ import type {
 } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
 import { normalizeCanonicalGoalRepositoryIdentity } from './worktreeIdentity.js';
+import { assertSafeCallerTurnIdentity } from './safeIdentifier.js';
 
-export function validateTurnRequestIdentity(request: { turnId: string; executionId: string }): void {
-    if (!request.turnId.trim() || !request.executionId.trim()) {
-        throw new GoalSessionContractError('turnId and executionId must be non-empty', 'INVALID_TURN');
-    }
+export function validateTurnRequestIdentity(
+    request: { turnId: string; executionId: string; attemptId?: string },
+): void {
+    assertSafeCallerTurnIdentity(request);
 }
 
 export async function credentialFreeRepositoryIdentity(repositoryInput: GoalRepositoryIdentity): Promise<GoalRepositoryIdentity> {

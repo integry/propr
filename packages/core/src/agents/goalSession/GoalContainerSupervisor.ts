@@ -12,6 +12,8 @@ import type {
     GoalSessionFence,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
+import { startedProviderEffect } from './providerEffectProtocol.js';
+import { assertSafeCallerTurnIdentity } from './safeIdentifier.js';
 import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { isSensitiveHostSourcePath } from './worktreeIdentity.js';
 import {
@@ -262,6 +264,11 @@ export class GoalContainerSupervisor {
         request: StartGoalContainerRequest | StartGoalOpenContainerRequest,
         scope: 'turn' | 'open',
     ): Promise<{ layout: GoalContainerLayout; execution: SupervisedDockerExecution }> {
+        assertSafeCallerTurnIdentity({
+            turnId: scope === 'turn' ? (request as StartGoalContainerRequest).turnId : 'open',
+            executionId: request.executionId,
+            attemptId: request.attemptId,
+        });
         const worktreePath = await resolveApprovedSource(
             request.worktreePath,
             new Set(this.isolation.worktreePaths.map(value => path.resolve(value))),
@@ -323,7 +330,9 @@ export class GoalContainerSupervisor {
             request.image,
             ...request.command,
         ];
-        const execution = await this.providerFirstEffects.start(operationFence, () => executeSupervisedDockerCommand(dockerArgs, {
+        const execution = await this.providerFirstEffects.start<SupervisedDockerExecution>(
+            operationFence, () => {
+                const started = executeSupervisedDockerCommand(dockerArgs, {
             goalId: request.goalId,
             sessionId: request.sessionId,
             controllerEpoch: request.controllerEpoch,
@@ -377,7 +386,10 @@ export class GoalContainerSupervisor {
                     if (disposition === 'unsubscribe') observerSubscribed = false;
                 }
             },
-        }));
+                });
+                return startedProviderEffect(Promise.resolve(started));
+            },
+        );
         // Completion notifications are observed and rebuilt; they never create
         // an unhandled rejection or expose a subprocess exception to an adapter.
         void execution.completion.then(async () => {

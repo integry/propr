@@ -6,7 +6,7 @@ import type { GoalProviderCapabilities } from './providerCapabilities.js';
 export type {
     GoalModelChangeHistoryPort, GoalModelChangeHistoryRecord, GoalModelInvocationEvidence,
     GoalProviderBarrierIntent, GoalProviderBarrierPublication, GoalProviderDuplexTransport,
-    GoalProviderFirstEffectPort, GoalProviderOpenContext, GoalProviderOperationFence, GoalUsageAccounting,
+    GoalProviderFirstEffectPort, GoalProviderOpenContext, GoalProviderOperationFence, GoalStartedProviderEffect, GoalUsageAccounting,
 } from './providerOperationBoundary.js';
 export type {
     GoalModelChangeBoundary, GoalNativeSessionIdTiming, GoalPauseBoundary,

@@ -49,7 +49,9 @@ const isolation = {
     providerHomeTargets: ['/home/node/.codex'],
     credentialMounts: [{ source: approvedCredential, target: '/home/node/.creds' }],
 };
-const firstEffects = { start: async <T>(_fence: unknown, effect: () => T): Promise<Awaited<T>> => effect() as Awaited<T> };
+const firstEffects = {
+    start: async <T>(_fence: unknown, effect: () => { completion: Promise<T> }): Promise<T> => effect().completion,
+};
 
 function baseRequest() {
     return {

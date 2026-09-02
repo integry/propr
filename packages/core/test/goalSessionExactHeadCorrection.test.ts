@@ -15,6 +15,7 @@ import {
     rebuildPauseAcknowledgement, rebuildProviderSnapshot, rebuildReconcileResult,
     untrustedProviderResult,
 } from '../src/agents/goalSession/providerResultBoundary.js';
+import { startedProviderEffect } from '../src/agents/goalSession/providerEffectProtocol.js';
 
 const identity = { goalId: 'exact-correction-goal', sessionId: 'exact-correction-session' };
 const repository = { repository: 'integry/propr', worktreePath: '/tmp/exact-correction', branch: 'correction' };
@@ -453,7 +454,7 @@ test('hardened supervisor constructs eager-open transport only under its exact d
         supervisedOpen: {
             repository, requestedModel: 'gpt-5.6-sol', providerHomeTarget: '/home/node/.codex',
             credentialTargets: ['/home/node/.codex/auth.json'],
-            createTransport: async claim => {
+            createTransport: claim => startedProviderEffect(Promise.resolve().then(async () => {
                 factoryCalled = true;
                 const durable = await ports.load(identity);
                 assert.equal(durable?.providerOpenAttemptId, claim.attemptId);
@@ -467,7 +468,7 @@ test('hardened supervisor constructs eager-open transport only under its exact d
                 assert.equal('turnId' in claim, false);
                 assert.match(claim.deterministicOpenKey, /^[A-Za-z0-9._:-]+$/);
                 return transport;
-            },
+            })),
         },
     });
     assert.equal(factoryCalled, true);

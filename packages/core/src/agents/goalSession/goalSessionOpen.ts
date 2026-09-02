@@ -1,6 +1,6 @@
 import type {
     GoalProviderDuplexTransport, GoalProviderOpenContext, GoalProviderOperationFence,
-    GoalRepositoryIdentity, GoalSessionAdapter, GoalSessionIdentity, GoalSessionState,
+    GoalRepositoryIdentity, GoalSessionAdapter, GoalSessionIdentity, GoalSessionState, GoalStartedProviderEffect,
 } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
 import { credentialFreeRepositoryIdentity } from './repositorySecurity.js';
@@ -26,7 +26,7 @@ export interface GoalSupervisedOpenPlan {
     requestedModel: string;
     providerHomeTarget: string;
     credentialTargets: string[];
-    createTransport(claim: Readonly<GoalSupervisedOpenClaim>): Promise<GoalProviderDuplexTransport>;
+    createTransport(claim: Readonly<GoalSupervisedOpenClaim>): GoalStartedProviderEffect<GoalProviderDuplexTransport>;
 }
 
 export async function validateClaimedEagerOpenContext(

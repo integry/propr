@@ -14,6 +14,7 @@ import type {
     GoalModelChangeAcknowledgement,
     GoalModelChangeHistoryRecord,
     GoalProviderOperationFence,
+    GoalStartedProviderEffect,
     GoalSessionRuntimePorts,
     GoalSessionState,
     GoalTerminalCommit,
@@ -21,6 +22,7 @@ import type {
 } from '../src/agents/goalSession/contract.js';
 import { sanitizeGoalSessionEvent } from '../src/agents/goalSession/securityBoundary.js';
 import { assertProviderFirstEffectState } from '../src/agents/goalSession/providerFirstEffect.js';
+import { assertStartedProviderEffect } from '../src/agents/goalSession/providerEffectProtocol.js';
 
 function scope(identity: GoalSessionIdentity): string {
     return `${identity.goalId}\0${identity.sessionId}`;
@@ -122,17 +124,18 @@ export class SqliteGoalSessionTestPorts {
     close(): void { this.database.close(); }
 
     /** Production-shape boundary: locked durable compare and primitive start are one transaction. */
-    async start<T>(fence: GoalProviderOperationFence, effect: () => T): Promise<Awaited<T>> {
-        let result: T | undefined;
+    async start<T>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>): Promise<T> {
+        let started: GoalStartedProviderEffect<T> | undefined;
         this.database.transaction(() => {
             const state = this.readState(fence);
             assertProviderFirstEffectState(state, fence);
             this.database.prepare(
                 'INSERT OR IGNORE INTO goal_provider_effects(scope, operation_id, kind) VALUES (?, ?, ?)',
             ).run(scope(fence), fence.operationId, fence.kind);
-            result = effect();
+            started = effect();
+            assertStartedProviderEffect<T>(started);
         }).immediate();
-        return result as Awaited<T>;
+        return started!.completion;
     }
 
     providerEffectCount(): number {

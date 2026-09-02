@@ -134,7 +134,7 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                     executionId: recovery.execution.executionId, attemptId: recovery.execution.attemptId,
                 },
             );
-            result = await this.providerResult(() => this.providerFirstEffect(operationFence, () => this.adapter.reconcile({
+            result = await this.providerResult(() => this.providerFirstEffect(operationFence, () => this.startedProviderEffect(this.adapter.reconcile({
                 goalId: identity.goalId,
                 sessionId: identity.sessionId,
                 ...recovery.execution,
@@ -147,7 +147,7 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                 persisted: persistedSnapshot(state),
                 container: prepared.container,
                 repository: prepared.repository,
-            })), value => rebuildReconcileResult(value, this.adapter.provider));
+            }))), value => rebuildReconcileResult(value, this.adapter.provider));
         } catch (error) {
             await this.requireLiveRecoveryLease(
                 prepared.fence, recovery.execution, state.recoveryAttempt!.operationToken,

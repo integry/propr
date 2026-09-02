@@ -2,9 +2,9 @@ import type { GoalSessionEvent } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
 import { sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 import type { GoalSessionJsonValue } from './contract.js';
+import { isSafeIdentifier } from './safeIdentifier.js';
 
 const SECRET = /(?:Bearer\s*\S+|gh[oprsu]_|github_pat_|sk-|AKIA|secret|token|password|credential|private.?key|-----BEGIN|https?:\/\/[^\s]*@)/i;
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 const WINDOWS_OR_UNC = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/;
 const URI_OR_ENDPOINT = /^(?:file|https?|ssh|git|docker|podman|unix|tcp):/i;
 const COMMAND_LIKE = /(?:^|\s)(?:sh|bash|zsh|cmd(?:\.exe)?|powershell|docker|podman|sudo)(?:\s|$)|[;&|`$<>]/i;
@@ -57,7 +57,7 @@ function clean<T extends GoalSessionEvent>(value: T): T {
 }
 
 function safeId(value: string): string {
-    if (typeof value !== 'string' || !SAFE_ID.test(value) || SECRET.test(value)) throw new GoalSessionContractError('Provider emitted an unsafe identifier', 'UNSAFE_PROVIDER_VALUE');
+    if (!isSafeIdentifier(value) || SECRET.test(value)) throw new GoalSessionContractError('Provider emitted an unsafe identifier', 'UNSAFE_PROVIDER_VALUE');
     return value;
 }
 

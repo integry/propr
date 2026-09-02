@@ -8,6 +8,7 @@ import type {
 import { GoalSessionContractError } from './errors.js';
 import type { GoalSupervisedOpenPlan } from './goalSessionOpen.js';
 import { createProviderProtocolDuplex } from './providerProtocolDuplex.js';
+import { startedProviderEffect } from './providerEffectProtocol.js';
 
 export interface SupervisedCodexAppServerFactoryOptions {
     repository: GoalRepositoryIdentity;
@@ -35,9 +36,9 @@ export function createSupervisedCodexAppServerFactory(
         requestedModel: SUPERVISED_CODEX_MODEL,
         providerHomeTarget: '/home/node/.codex',
         credentialTargets,
-        async createTransport(claim) {
+        createTransport(claim) {
             const duplex = createProviderProtocolDuplex(options.maxProtocolQueueBytes);
-            const started = await containers.startOpen({
+            const completion = containers.startOpen({
                 goalId: claim.operationFence.goalId,
                 sessionId: claim.operationFence.sessionId,
                 controllerEpoch: claim.operationFence.controllerEpoch,
@@ -53,9 +54,11 @@ export function createSupervisedCodexAppServerFactory(
                 environment: options.environment,
                 credentialMounts: options.credentialMounts,
                 outputObserver: duplex.observer,
+            }).then(started => {
+                duplex.bindExecution(started.execution);
+                return duplex.transport;
             });
-            duplex.bindExecution(started.execution);
-            return duplex.transport;
+            return startedProviderEffect(completion);
         },
     };
     return {

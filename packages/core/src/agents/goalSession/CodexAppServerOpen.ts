@@ -8,6 +8,7 @@ import {
     type CodexThreadResponse0146, type CodexThreadResumeParams0146, type CodexThreadStartParams0146,
 } from './codexAppServer0146Bindings.generated.js';
 import { GoalSessionContractError } from './errors.js';
+import { isSafeIdentifier } from './safeIdentifier.js';
 import { sanitizeNewRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 import { assertExactThreadFields, assertExactThreadResponseFields } from './codexAppServer0146Validation.js';
 
@@ -337,7 +338,7 @@ function validateContext(context: GoalProviderOpenContext): void {
 }
 
 function safeId(value: GoalSessionJsonValue | undefined): string {
-    if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value)) throw new Error('App Server identity is invalid');
+    if (!isSafeIdentifier(value)) throw new Error('App Server identity is invalid');
     return value;
 }
 

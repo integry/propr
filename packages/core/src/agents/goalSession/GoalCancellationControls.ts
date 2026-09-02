@@ -60,9 +60,11 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
             await this.publishProviderOperationBarrier(fence, request.operationGeneration, intent.cancellationId);
             const authoritative = await this.requireControlledStateForBarrier(fence);
             assertCancellationAuthority(authoritative, request);
-            const signal = this.providerFirstEffect(request.operationFence, () => intent.pendingContext
-                ? this.adapter.cancelPending!(request, intent.pendingContext)
-                : this.adapter.cancel(request, persistedSnapshot(state)));
+            const signal = this.providerFirstEffect<void>(request.operationFence, () => this.startedProviderEffect(
+                intent.pendingContext
+                    ? this.adapter.cancelPending!(request, intent.pendingContext)
+                    : this.adapter.cancel(request, persistedSnapshot(state)),
+            ));
             await boundedCancellation(signal);
             return undefined;
         } catch (error) {

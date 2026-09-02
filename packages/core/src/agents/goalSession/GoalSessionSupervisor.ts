@@ -336,7 +336,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 throw new StaleGoalSessionFenceError('Provider open claim was durably replaced');
             }
             const effectiveOpenKey = deterministicOpenKey ?? openContext?.deterministicOpenKey;
-            const snapshot = await this.providerResult(() => this.providerFirstEffect(operationFence, () => this.adapter.openSession({
+            const snapshot = await this.providerResult(() => this.providerFirstEffect(operationFence, () => this.startedProviderEffect(this.adapter.openSession({
                 goalId: request.goalId,
                 sessionId: request.sessionId,
                 provider: request.provider,
@@ -350,7 +350,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                     ...openContext,
                     deterministicOpenKey: effectiveOpenKey,
                 } : undefined,
-            })), value => rebuildProviderSnapshot(value, this.adapter.provider));
+            }))), value => rebuildProviderSnapshot(value, this.adapter.provider));
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata, this.adapter.provider);
             assertProviderIdentity(state, snapshot);
             const preserveIntentModel = this.adapter.capabilities.modelChange === 'next_safe_boundary'

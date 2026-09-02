@@ -10,6 +10,7 @@ import type {
 import { GoalSessionContractError } from './errors.js';
 import { assertSafeProviderIdentifier } from './securityBoundary.js';
 import { sanitizeRecoveryMetadata } from './recoveryMetadata.js';
+import { isSafeIdentifier } from './safeIdentifier.js';
 
 /** Sentinel turn identity used by session-scoped control/audit events. */
 export function controlExecutionIdentity(state: Pick<GoalSessionState, 'sessionId' | 'controllerEpoch'>): GoalExecutionIdentity {
@@ -24,9 +25,8 @@ export function nowIso(): string {
 }
 
 export function validateIdentity(identity: GoalSessionIdentity): void {
-    if (!/^[A-Za-z0-9._:-]{1,256}$/.test(identity.goalId)
-        || !/^[A-Za-z0-9._:-]{1,256}$/.test(identity.sessionId)) {
-        throw new GoalSessionContractError('goalId and sessionId must be non-empty', 'INVALID_IDENTITY');
+    if (!isSafeIdentifier(identity.goalId) || !isSafeIdentifier(identity.sessionId)) {
+        throw new GoalSessionContractError('goalId and sessionId must be safe opaque identifiers', 'INVALID_IDENTITY');
     }
 }
 

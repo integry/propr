@@ -2,6 +2,7 @@ import type {
     GoalModelChangeAcknowledgement, GoalModelChangeIntent, GoalModelChangeRequest, GoalSessionState,
 } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
+import { isSafeIdentifier } from './safeIdentifier.js';
 
 /**
  * Settled generations kept for ambiguous controller retries. Provider-side
@@ -38,7 +39,7 @@ export function requestedImmediateModelIntent(
     state: GoalSessionState,
     request: GoalModelChangeRequest,
 ): { intent?: GoalModelChangeIntent } {
-    if (request.operationId !== undefined && !/^[A-Za-z0-9._:-]{1,256}$/.test(request.operationId)) {
+    if (request.operationId !== undefined && !isSafeIdentifier(request.operationId)) {
         throw new GoalSessionContractError('Model change operationId is invalid', 'INVALID_MODEL_OPERATION_ID');
     }
     let intent = request.operationId

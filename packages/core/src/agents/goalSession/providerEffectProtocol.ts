@@ -1,7 +1,8 @@
 import type {
     GoalProviderFirstEffectPort, GoalProviderOperationFence, GoalProviderResumeRequest,
-    GoalResumeIntent, GoalSessionControlFence,
+    GoalResumeIntent, GoalSessionControlFence, GoalStartedProviderEffect,
 } from './contract.js';
+import { GoalSessionContractError } from './errors.js';
 
 type OperationIdentity = Pick<GoalProviderOperationFence, 'kind' | 'operationId' | 'leaseExpiresAt'>
     & Partial<Pick<GoalProviderOperationFence, 'turnId' | 'executionId' | 'attemptId'>>;
@@ -36,6 +37,27 @@ export function createProviderResumeRequest(
     };
 }
 
+/** Builds the only value accepted from a synchronous first-effect callback. */
+export function startedProviderEffect<T>(completion: Promise<T>): GoalStartedProviderEffect<T> {
+    if (!completion || typeof completion.then !== 'function') {
+        throw new GoalSessionContractError(
+            'Provider first effect must expose Promise completion', 'INVALID_FIRST_EFFECT_HANDLE',
+        );
+    }
+    return Object.freeze({ completion });
+}
+
+/** Runtime guard for untyped embedders and JavaScript callers. */
+export function assertStartedProviderEffect<T>(value: unknown): asserts value is GoalStartedProviderEffect<T> {
+    if (value instanceof Promise || !value || typeof value !== 'object'
+        || typeof (value as Partial<GoalStartedProviderEffect<T>>).completion?.then !== 'function') {
+        throw new GoalSessionContractError(
+            'Provider first-effect callback must synchronously return a started-effect handle',
+            'ASYNC_FIRST_EFFECT_CALLBACK',
+        );
+    }
+}
+
 /** Defers an async iterable's real first effect to its first `next()` call. */
 export function providerFirstEffectStream<T>(
     port: GoalProviderFirstEffectPort,
@@ -51,7 +73,7 @@ export function providerFirstEffectStream<T>(
                 started = true;
                 return port.start(fence, () => {
                     iterator = create()[Symbol.asyncIterator]();
-                    return iterator.next();
+                    return startedProviderEffect(iterator.next());
                 });
             },
             return: async () => iterator?.return ? iterator.return() : { done: true, value: undefined },

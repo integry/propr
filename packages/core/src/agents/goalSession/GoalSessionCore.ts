@@ -13,9 +13,10 @@ import type {
     GoalResumeIntent,
     GoalProviderResumeRequest,
     GoalProviderOperationFence,
+    GoalStartedProviderEffect,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
-import { safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
+import { assertSafeProviderIdentifier, safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { decodeDurableGoalSessionState } from './durableStateSecurity.js';
 import { boundedProviderBoundary, expireResumeLease } from './providerBarrierProtocol.js';
 import { untrustedProviderResult } from './providerResultBoundary.js';
@@ -27,7 +28,7 @@ import {
 import { completesAtAfterTurnPause, needsAfterTurnPauseAudit } from './turnCompletionProtocol.js';
 import { controlOperationId, mintFreshAttemptId } from './controlOperationIdentity.js';
 import {
-    createProviderOperationFence, createProviderResumeRequest, providerFirstEffectStream,
+    createProviderOperationFence, createProviderResumeRequest, providerFirstEffectStream, startedProviderEffect,
 } from './providerEffectProtocol.js';
 
 /**
@@ -153,12 +154,11 @@ export abstract class GoalSessionCore {
     }
 
     /** Starts the primitive while the authoritative state row is transaction-locked. */
-    protected async providerFirstEffect<T>(
-        fence: GoalProviderOperationFence,
-        effect: () => T,
-    ): Promise<Awaited<T>> {
+    protected async providerFirstEffect<T>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>): Promise<T> {
         return this.ports.providerFirstEffects.start(fence, effect);
     }
+
+    protected startedProviderEffect<T>(completion: Promise<T>): GoalStartedProviderEffect<T> { return startedProviderEffect(completion); }
 
     protected providerFirstEffectStream<T>(
         fence: GoalProviderOperationFence,
@@ -229,7 +229,7 @@ export abstract class GoalSessionCore {
 
     /** Loads state for a turn-scoped operation; the fence must own the active turn. */
     protected async requireActiveTurnState(fence: GoalSessionFence): Promise<GoalSessionState> {
-        if (!fence.turnId?.trim()) throw new GoalSessionContractError('turnId must be non-empty', 'INVALID_TURN');
+        assertSafeProviderIdentifier(fence.turnId);
         const state = await this.requireControlledState(fence);
         if (!state.activeTurn || state.activeTurn.turnId !== fence.turnId) {
             throw new StaleGoalSessionFenceError('Turn fence does not own the active session turn');

@@ -6,6 +6,7 @@ import type {
     GoalSessionEvent,
     GoalSessionJsonValue,
 } from './contract.js';
+import { isSafeIdentifier } from './safeIdentifier.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { sanitizeNewRecoveryMetadata } from './recoveryMetadata.js';
 import { safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
@@ -158,7 +159,7 @@ function optionalMethod(value: ClosedRecord, name: string): ((...args: unknown[]
 }
 
 function providerId(value: unknown, name: string): string {
-    if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value)) malformed(name);
+    if (!isSafeIdentifier(value)) malformed(name);
     return value;
 }
 

@@ -18,10 +18,9 @@ import type {
 import { GoalSessionContractError } from './errors.js';
 import { validateStateRelationships } from './durableStateRelationships.js';
 import { sanitizeRecoveryMetadata } from './recoveryMetadata.js';
+import { isSafeIdentifier } from './safeIdentifier.js';
 
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const SECRET = /(?:Bearer\s*\S+|gh[oprsu]_|github_pat_|sk-|AKIA|secret|token|password|credential|private.?key|-----BEGIN|https?:\/\/[^\s]*@)/i;
-const SECRET_ID = /^(?:Bearer|gh[oprsu]_|github_pat_|sk-|AKIA)/i;
 const MAX_COMPLETED_TURNS = 10_000;
 const MAX_MODEL_INTENTS = 512;
 const MAX_USAGE_OCCURRENCES = 256;
@@ -298,7 +297,7 @@ function record<const T extends readonly string[]>(value: unknown, fields: T, na
 }
 
 function id(value: unknown, name: string): string {
-    if (typeof value !== 'string' || !SAFE_ID.test(value) || SECRET_ID.test(value)) invalid(name);
+    if (!isSafeIdentifier(value)) invalid(name);
     return value;
 }
 

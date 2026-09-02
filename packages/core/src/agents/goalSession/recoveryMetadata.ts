@@ -1,10 +1,10 @@
 import type { GoalSessionJsonValue } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
+import { isSafeIdentifier } from './safeIdentifier.js';
 
 export const GOAL_RECOVERY_METADATA_CODEC_VERSION = 2;
 const MAX_ENVELOPE_BYTES = 32 * 1024;
 const MAX_USAGE_COMPONENTS = 32;
-const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const SECRET_VALUE = /(?:Bearer\s*\S+|gh[oprsu]_|github_pat_|sk-|AKIA|secret|token|password|credential|private.?key|https?:\/\/[^\s]*@|ssh:\/\/[^\s]*@|-----BEGIN)/i;
 const SENSITIVE_FIELD = /(?:secret|token|password|credential|authorization|private.?key|api.?key)/i;
 
@@ -186,7 +186,7 @@ function providerName(value: GoalSessionJsonValue): RecoveryProvider {
 }
 
 function safeIdentifier(value: GoalSessionJsonValue | undefined, field: string): string {
-    if (typeof value !== 'string' || !SAFE_IDENTIFIER.test(value) || SECRET_VALUE.test(value)) invalid(`Recovery metadata contains an invalid ${field}`);
+    if (!isSafeIdentifier(value) || SECRET_VALUE.test(value)) invalid(`Recovery metadata contains an invalid ${field}`);
     return value;
 }
 
