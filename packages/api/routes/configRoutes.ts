@@ -11,7 +11,7 @@ import { saveSettingsWithRollback } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
-import { normalizeRepoConfig } from './configRepoValidation.js';
+import { normalizeRepoConfig, preserveRepoAutoFollowup, withDefaultRepoAutoFollowup } from './configRepoValidation.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -183,20 +183,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const getFollowupIgnoreKeywords = createJsonGetHandler(() => configStore.loadFollowupIgnoreKeywords(), followup_ignore_keywords => ({ followup_ignore_keywords }), 'Failed to load followup ignore keywords', '/api/config/followup-ignore-keywords GET');
   const postFollowupIgnoreKeywords = createJsonPostHandler({ lockKey: 'config:ignore-keywords:lock', pickValue: body => body.followup_ignore_keywords, validate: followup_ignore_keywords => parseNormalizedStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'), save: followup_ignore_keywords => configStore.saveFollowupIgnoreKeywords(followup_ignore_keywords), subtype: 'followup_ignore_keywords_update', body: followup_ignore_keywords => ({ followup_ignore_keywords }), committedErrorMessage: 'Follow-up ignore keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.' });
 
-  async function getRepos(_req: Request, res: Response): Promise<void> {
-    try {
-      const repos = await configStore.loadMonitoredReposRaw();
-      res.json({
-        repos_to_monitor: repos.map(repo => ({
-          ...repo,
-          autoFollowupOnFailedCi: repo.autoFollowupOnFailedCi === true
-        }))
-      });
-    } catch (error) {
-      console.error('Error in /api/config/repos GET:', error);
-      res.status(500).json({ error: 'Failed to load repository configuration' });
-    }
-  }
+  const getRepos = createJsonGetHandler(
+    async () => (await configStore.loadMonitoredReposRaw()).map(withDefaultRepoAutoFollowup),
+    repos_to_monitor => ({ repos_to_monitor }),
+    'Failed to load repository configuration',
+    '/api/config/repos GET'
+  );
 
   async function postRepos(req: Request, res: Response): Promise<void> {
     const bodyValidation = validateJsonObjectBody(req.body);
@@ -222,15 +214,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
     const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
       const previousRepos = await configStore.loadMonitoredReposRaw();
-      const processedRepos = validatedRepos.map((repo, index) => {
-        const incomingRepo = repos_to_monitor[index] as Partial<RepoToMonitor>;
-        if (incomingRepo.autoFollowupOnFailedCi !== undefined) return repo;
-        const previousRepo = previousRepos.find(candidate => candidate.id === repo.id);
-        return {
-          ...repo,
-          autoFollowupOnFailedCi: previousRepo?.autoFollowupOnFailedCi === true
-        };
-      });
+      const processedRepos = preserveRepoAutoFollowup(previousRepos, validatedRepos, repos_to_monitor);
       return saveThenPublishConfigUpdate({
         save: async () => {
           await database.transaction(async trx => {
