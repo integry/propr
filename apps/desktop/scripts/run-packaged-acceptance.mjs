@@ -465,7 +465,34 @@ const createFixture = async (mode, fixedOrigin) => {
     if (request.url === '/api/compatibility') return json(response, 200, { apiCompatibility: PROPR_API_COMPATIBILITY, uiCompatibility: PROPR_UI_COMPATIBILITY });
     if (request.url?.startsWith('/api/status')) return json(response, 200, { daemon: 'Running', redis: 'Connected', githubAuth: 'Authenticated', claudeAuth: 'Ready', agents: [], githubEventIntake: 'ProPR Connect', githubEventIntakeStatus: 'Connected' });
     if (request.url?.startsWith('/api/queue/stats')) return json(response, 200, { active: 0, waiting: 0, completed: 12, failed: 0, delayed: 0, paused: 0 });
-    if (request.url?.startsWith('/api/stats/generating-plans')) return json(response, 200, { count: 0 });
+    if (requestUrl.pathname === '/api/stats/generating-plans') return json(response, 200, { count: 0 });
+    if (requestUrl.pathname === '/api/stats/tasks') {
+      return json(response, 200, {
+        dailyCounts: [],
+        statusDistribution: [
+          { status: 'completed', count: 12 },
+          { status: 'failed', count: 0 },
+        ],
+        avgProcessingTime: [],
+        summary: { total: 12, completed: 12, failed: 0 },
+      });
+    }
+    if (requestUrl.pathname === '/api/stats/overview') {
+      return json(response, 200, {
+        tasks: {
+          completed: 12,
+          planned: 0,
+          pr_iterations_avg: 0,
+          merged_prs: 0,
+          total_followups: 0,
+        },
+        usage: { total_tokens: 0, total_cost_usd: 0, models: {} },
+        system: { repos_indexed: 0 },
+      });
+    }
+    if (requestUrl.pathname === '/api/stats/repositories') {
+      return json(response, 200, { repositories: [] });
+    }
     if (request.url?.startsWith('/api/stats/')) return json(response, 200, { total: 12, pending: 0, inProgress: 0, completed: 12, failed: 0, dailyCounts: [] });
     if (request.url?.startsWith('/api/tasks')) return json(response, 200, { tasks: [], total: 0 });
     if (request.url?.startsWith('/api/')) return json(response, 200, { agents: [], repositories: [], items: [], count: 0 });
