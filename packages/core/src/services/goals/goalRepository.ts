@@ -19,11 +19,13 @@ import type {
   GoalLeaseFence,
   GoalMessage,
   GoalMessagePageResult,
+  MessageDeliveryFence,
   GoalNodePageResult,
   GoalStatistics,
   GoalNode,
   OperatorIntentInput,
   GoalProviderSessionRecord,
+  GoalProviderTodo,
   ListGoalsQuery,
   ListGoalsResult,
   ProviderSessionUpdate,
@@ -35,6 +37,7 @@ import { GoalEventRepository } from './goalEventRepository.js';
 import { GoalLeaseRepository } from './goalLeaseRepository.js';
 import { GoalMutationRepository } from './goalMutationRepository.js';
 import { GoalStatisticsRepository } from './goalStatisticsRepository.js';
+import { GoalMessageRepository } from './goalMessageRepository.js';
 
 export { GoalError } from './goalRepositorySupport.js';
 
@@ -45,6 +48,7 @@ export class GoalRepository {
   private readonly leases: GoalLeaseRepository;
   private readonly mutations: GoalMutationRepository;
   private readonly statistics: GoalStatisticsRepository;
+  private readonly messages: GoalMessageRepository;
 
   constructor(private readonly db: Knex) {
     this.reads = new GoalReadRepository(db);
@@ -53,6 +57,7 @@ export class GoalRepository {
     this.leases = new GoalLeaseRepository(db);
     this.mutations = new GoalMutationRepository(db);
     this.statistics = new GoalStatisticsRepository(db);
+    this.messages = new GoalMessageRepository(db);
   }
 
   createGoal(input: CreateGoalInput): Promise<Goal> {
@@ -129,8 +134,9 @@ export class GoalRepository {
     return this.hierarchy.getProviderSession(goalId, agent);
   }
 
-  appendEvent(goalId: string, input: AppendEventInput): Promise<GoalEvent> {
-    return this.events.appendEvent(goalId, input);
+  /** @internal Foundation migration compatibility only; sealed on durable schemas. */
+  private appendEvent(goalId: string, input: AppendEventInput): Promise<GoalEvent> {
+    return this.events.appendMigrationEvent(goalId, input);
   }
 
   appendTypedEvent(goalId: string, input: AppendTypedGoalEventInput | unknown): Promise<GoalEvent> {
@@ -155,40 +161,48 @@ export class GoalRepository {
     return this.events.getLatestSequence(goalId);
   }
 
+  getProviderTodos(goalId: string): Promise<GoalProviderTodo[]> {
+    return this.events.getProviderTodos(goalId);
+  }
+
   enqueueMessage(goalId: string, input: EnqueueMessageInput): Promise<GoalMessage> {
-    return this.events.enqueueMessage(goalId, input);
+    return this.messages.enqueue(goalId, input);
   }
 
   getMessages(goalId: string): Promise<GoalMessage[]> {
-    return this.events.getMessages(goalId);
+    return this.messages.getAll(goalId);
   }
 
   readMessagePage(
     goalId: string,
     options: { cursor?: string | null; limit?: number; state?: string } = {}
   ): Promise<GoalMessagePageResult> {
-    return this.events.readMessagePage(goalId, options);
+    return this.messages.readPage(goalId, options);
   }
 
   claimNextMessage(goalId: string, input: ClaimMessageInput): Promise<GoalMessage | null> {
-    return this.events.claimNextMessage(goalId, input);
+    return this.messages.claim(goalId, input);
   }
 
-  markMessageDelivered(goalId: string, messageId: string, fence: GoalLeaseFence): Promise<void> {
-    return this.events.markMessageDelivered(goalId, messageId, fence);
+  markMessageDelivered(goalId: string, messageId: string, fence: MessageDeliveryFence | GoalLeaseFence): Promise<void> {
+    return this.messages.delivered(goalId, messageId, fence);
   }
 
-  markMessageAcknowledged(goalId: string, messageId: string, fence: GoalLeaseFence): Promise<void> {
-    return this.events.markMessageAcknowledged(goalId, messageId, fence);
+  markMessageAcknowledged(goalId: string, messageId: string, fence: MessageDeliveryFence | GoalLeaseFence): Promise<void> {
+    return this.messages.acknowledged(goalId, messageId, fence);
   }
 
-  // eslint-disable-next-line max-params -- facade preserves the explicit durable message transition contract
-  failMessage(goalId: string, messageId: string, fence: GoalLeaseFence, error: string, retryable = false): Promise<void> {
-    return this.events.failMessage(goalId, messageId, fence, error, retryable);
+  failMessage(
+    goalId: string,
+    messageId: string,
+    fence: MessageDeliveryFence,
+    options: { error: string; retryable?: boolean }
+  ): Promise<void> {
+    return this.messages.fail(goalId, messageId, fence, options);
   }
 
   cancelMessage(goalId: string, messageId: string, authorUserId: string): Promise<GoalMessage> {
-    return this.events.cancelMessage(goalId, messageId, authorUserId);
+    return this.messages.cancel(goalId, messageId, authorUserId);
   }
 
   compactOutput(goalId: string, throughSequence: number, fence: GoalLeaseFence): Promise<void> {

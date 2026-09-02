@@ -65,6 +65,13 @@ async function seedGoal(ownerUserId: string, objective: string) {
   });
 }
 
+function createRoutes() {
+  return createGoalRoutes({
+    db: database,
+    services: { loadRepositories: async () => [{ name: 'octo/repo', enabled: true }] },
+  });
+}
+
 beforeEach(async () => {
   if (database) await database.destroy();
   database = createDatabase();
@@ -82,7 +89,7 @@ after(async () => {
 describe('goal route review blockers', () => {
   test('validates body and If-Match independently and rejects disagreement', async () => {
     const goal = await seedGoal('user-1', 'version contract');
-    const routes = createGoalRoutes({ db: database });
+    const routes = createRoutes();
     const repository = new GoalRepository(database);
     const lease = await repository.claimLease(goal.goalId, 'version-controller', 60_000);
     await repository.transition(goal.goalId, {
@@ -132,7 +139,7 @@ describe('goal route review blockers', () => {
   test('demo list and detail share all owners while normal mode stays isolated', async () => {
     const ownGoal = await seedGoal('user-1', 'owned');
     const otherGoal = await seedGoal('someone-else', 'shared');
-    const routes = createGoalRoutes({ db: database });
+    const routes = createRoutes();
 
     configureDemoMode(true);
     const demoList = response();

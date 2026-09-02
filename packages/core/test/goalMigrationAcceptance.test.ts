@@ -11,6 +11,10 @@ import { GoalLifecycleService } from '../src/services/goals/goalLifecycleService
 import { GoalRepository } from '../src/services/goals/goalRepository.js';
 
 const GOAL_MIGRATION = '20260831000000_create_goal_control_plane.js';
+const DURABLE_MIGRATIONS = new Set([
+  '20260901000000_add_durable_goal_replay.js',
+  '20260901010000_harden_durable_goal_replay.js',
+]);
 const MIGRATIONS_DIRECTORY = join(
   dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -28,7 +32,7 @@ class GoalMigrationSource implements Knex.MigrationSource<string> {
       .sort();
     return this.includeGoalMigration
       ? migrations
-      : migrations.filter((name) => name !== GOAL_MIGRATION);
+      : migrations.filter((name) => name !== GOAL_MIGRATION && !DURABLE_MIGRATIONS.has(name));
   }
 
   getMigrationName(migration: string): string {
@@ -122,8 +126,19 @@ test('real pre-goal Knex chain passes the migration gate, reopen, and rollback',
     await repository.addNode(goal.goalId, {
       kind: 'root_epic', status: 'in_progress', idempotencyKey: 'restart-node', ...fence,
     });
-    await repository.appendEvent(goal.goalId, {
-      kind: 'lifecycle', eventType: 'created', idempotencyKey: 'restart-event', ...fence,
+    await repository.upsertProviderSession(goal.goalId, 'claude', {
+      ...fence, turnId: 'turn-1', executionId: 'execution-1', attemptId: 'attempt-1',
+    });
+    const session = await repository.getProviderSession(goal.goalId, 'claude');
+    assert(session);
+    await repository.appendTypedEvent(goal.goalId, {
+      schemaVersion: 1, type: 'checkpoint.saved', payload: { checkpointId: 'restart' },
+      idempotencyKey: 'restart-event', ...fence,
+      source: {
+        sessionId: session.session_id, turnId: 'turn-1', executionId: 'execution-1',
+        attemptId: 'attempt-1', providerSequence: 1, chunkIndex: 0,
+        leaseGeneration: fence.leaseEpoch,
+      },
     });
     const beforeRestart = (await new GoalLifecycleService(repository).getDetail(goal.goalId)).summary;
 

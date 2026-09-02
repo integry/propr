@@ -11,6 +11,7 @@ export const DURABLE_GOAL_EVENT_TYPES = [
   'lifecycle.state_changed',
   'scheduler.node_changed',
   'provider.output',
+  'provider.output_compacted',
   'provider.todo',
   'usage.reported',
   'checkpoint.saved',
@@ -41,6 +42,13 @@ export interface GoalEventSourceIdentity {
   leaseGeneration: number;
 }
 
+export interface GoalMessageDeliveryIdentity extends GoalEventSourceIdentity {
+  messageId: string;
+  deliveryKey: string;
+  providerIdempotencyKey: string;
+  controllerId: string;
+}
+
 export type GoalOutputStream = 'stdout' | 'stderr' | 'structured';
 export type GoalOutputType = 'text' | 'json';
 
@@ -49,6 +57,7 @@ export interface DurableGoalEventPayloadMap {
     from: string;
     to: string;
     reason?: string;
+    terminalReason?: string;
   };
   'scheduler.node_changed': {
     nodeId: string;
@@ -60,6 +69,11 @@ export interface DurableGoalEventPayloadMap {
     stream: GoalOutputStream;
     outputType: GoalOutputType;
     chunk: string | JsonValue;
+  };
+  'provider.output_compacted': {
+    originalType: 'provider.output';
+    contentDigest: string;
+    payloadBytes: number;
   };
   'provider.todo': {
     items: Array<{ id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }>;
@@ -77,10 +91,10 @@ export interface DurableGoalEventPayloadMap {
   };
   'checkpoint.saved': { checkpointId: string; label?: string };
   'message.enqueued': { messageId: string; queueOrdinal: number; authorUserId: string };
-  'message.claimed': { messageId: string; queueOrdinal: number; turnId: string };
-  'message.delivered': { messageId: string; queueOrdinal: number; turnId: string };
-  'message.acknowledged': { messageId: string; queueOrdinal: number; turnId: string };
-  'message.failed': { messageId: string; queueOrdinal: number; retryable: boolean; error: string };
+  'message.claimed': GoalMessageDeliveryEvidence;
+  'message.delivered': GoalMessageDeliveryEvidence;
+  'message.acknowledged': GoalMessageDeliveryEvidence;
+  'message.failed': GoalMessageDeliveryEvidence & { retryable: boolean; error: string };
   'message.cancelled': { messageId: string; queueOrdinal: number; authorUserId: string };
   'github.entity_changed': {
     entity: 'issue' | 'pull_request'; number: number; status: string; nodeId?: string;
@@ -88,6 +102,21 @@ export interface DurableGoalEventPayloadMap {
   'ci.status_changed': { pullRequestNumber: number; status: string };
   'review.status_changed': { pullRequestNumber: number; status: string };
   'ultrafix.status_changed': { pullRequestNumber: number; status: string; cycle?: number };
+}
+
+export interface GoalMessageDeliveryEvidence {
+  messageId: string;
+  queueOrdinal: number;
+  sessionId: string;
+  turnId: string;
+  executionId: string;
+  attemptId: string;
+  controllerId: string;
+  leaseGeneration: number;
+  deliveryKey: string;
+  providerIdempotencyKey: string;
+  providerSequence: number;
+  providerChunkIndex: number;
 }
 
 export type DurableGoalEventInput = {
@@ -106,8 +135,9 @@ export interface GoalEventEnvelopeV1 {
   schemaVersion: typeof DURABLE_GOAL_EVENT_SCHEMA_VERSION;
   goalId: string;
   sequence: number;
-  type: DurableGoalEventType;
-  payload: DurableGoalEventPayloadMap[DurableGoalEventType];
+  kind: 'lifecycle' | 'output' | 'domain';
+  eventType: string;
+  payload: JsonValue;
   createdAt: string;
   cursor: string;
 }
@@ -121,7 +151,10 @@ interface SchemaDefinition {
 
 /** Runtime registry shared by ingestion and public projection. */
 export const DURABLE_GOAL_EVENT_REGISTRY: Readonly<Record<DurableGoalEventType, SchemaDefinition>> = {
-  'lifecycle.state_changed': { required: { from: 'string', to: 'string' }, optional: { reason: 'string' } },
+  'lifecycle.state_changed': {
+    required: { from: 'string', to: 'string' },
+    optional: { reason: 'string', terminalReason: 'string' },
+  },
   'scheduler.node_changed': {
     required: { nodeId: 'string', status: 'string' },
     optional: { attemptId: 'string', blockedReason: 'string' },
@@ -129,6 +162,10 @@ export const DURABLE_GOAL_EVENT_REGISTRY: Readonly<Record<DurableGoalEventType, 
   'provider.output': {
     required: { stream: 'string', outputType: 'string', chunk: 'output' },
     enum: { stream: ['stdout', 'stderr', 'structured'], outputType: ['text', 'json'] },
+  },
+  'provider.output_compacted': {
+    required: { originalType: 'string', contentDigest: 'string', payloadBytes: 'integer' },
+    enum: { originalType: ['provider.output'] },
   },
   'provider.todo': { required: { items: 'todo-items' } },
   'usage.reported': {
@@ -141,11 +178,11 @@ export const DURABLE_GOAL_EVENT_REGISTRY: Readonly<Record<DurableGoalEventType, 
   },
   'checkpoint.saved': { required: { checkpointId: 'string' }, optional: { label: 'string' } },
   'message.enqueued': { required: { messageId: 'string', queueOrdinal: 'integer', authorUserId: 'string' } },
-  'message.claimed': { required: { messageId: 'string', queueOrdinal: 'integer', turnId: 'string' } },
-  'message.delivered': { required: { messageId: 'string', queueOrdinal: 'integer', turnId: 'string' } },
-  'message.acknowledged': { required: { messageId: 'string', queueOrdinal: 'integer', turnId: 'string' } },
+  'message.claimed': { required: deliveryEvidenceRules() },
+  'message.delivered': { required: deliveryEvidenceRules() },
+  'message.acknowledged': { required: deliveryEvidenceRules() },
   'message.failed': {
-    required: { messageId: 'string', queueOrdinal: 'integer', retryable: 'boolean', error: 'string' },
+    required: { ...deliveryEvidenceRules(), retryable: 'boolean', error: 'string' },
   },
   'message.cancelled': { required: { messageId: 'string', queueOrdinal: 'integer', authorUserId: 'string' } },
   'github.entity_changed': {
@@ -158,6 +195,15 @@ export const DURABLE_GOAL_EVENT_REGISTRY: Readonly<Record<DurableGoalEventType, 
     required: { pullRequestNumber: 'integer', status: 'string' }, optional: { cycle: 'integer' },
   },
 };
+
+function deliveryEvidenceRules(): Readonly<Record<string, FieldRule>> {
+  return {
+    messageId: 'string', queueOrdinal: 'integer', sessionId: 'string', turnId: 'string',
+    executionId: 'string', attemptId: 'string', controllerId: 'string',
+    leaseGeneration: 'integer', deliveryKey: 'string', providerIdempotencyKey: 'string',
+    providerSequence: 'integer', providerChunkIndex: 'integer',
+  };
+}
 
 export interface GoalEventValidationResult {
   ok: boolean;

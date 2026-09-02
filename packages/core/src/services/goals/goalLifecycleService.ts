@@ -22,6 +22,7 @@ import type {
   GoalNode,
   GoalMessage,
   GoalStatistics,
+  GoalProviderTodo,
 } from './goalTypes.js';
 
 export interface GoalMutationOptions {
@@ -42,6 +43,7 @@ export interface GoalDetail {
   messages: GoalMessage[];
   summary: GoalSummaryView;
   stats: GoalStatistics;
+  providerAdvisoryTodos: GoalProviderTodo[];
   messagesNextCursor: string | null;
   checklistNextCursor: string | null;
   asOfVersion: number;
@@ -109,7 +111,7 @@ export class GoalLifecycleService {
     return this.repository.withReadSnapshot(async repository => {
       // The first read establishes the WAL snapshot used by every projection.
       const goal = await repository.requireGoal(goalId);
-      const [nodes, nodeCounts, dependencies, messagePage, latestSequence, stats] =
+      const [nodes, nodeCounts, dependencies, messagePage, latestSequence, stats, providerAdvisoryTodos] =
         await Promise.all([
           repository.readNodePage(goalId),
           repository.getNodeCounts(goalId),
@@ -117,6 +119,7 @@ export class GoalLifecycleService {
           repository.readMessagePage(goalId),
           repository.getLatestSequence(goalId),
           repository.getStatistics(goalId),
+          repository.getProviderTodos(goalId),
         ]);
       return {
         goal,
@@ -127,6 +130,7 @@ export class GoalLifecycleService {
         checklistNextCursor: nodes.nextCursor,
         summary: buildSummary(goal, nodes.nodes, latestSequence, nodeCounts),
         stats,
+        providerAdvisoryTodos,
         asOfVersion: goal.version,
         asOfSequence: latestSequence,
       };

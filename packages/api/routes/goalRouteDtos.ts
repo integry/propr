@@ -69,12 +69,16 @@ const TYPED_EVENT_KEY_NAMES = new Set([
   'from',
   'to',
   'reason',
+  'terminalReason',
   'nodeId',
   'attemptId',
   'blockedReason',
   'stream',
   'outputType',
   'chunk',
+  'originalType',
+  'contentDigest',
+  'payloadBytes',
   'items',
   'id',
   'text',
@@ -92,6 +96,14 @@ const TYPED_EVENT_KEY_NAMES = new Set([
   'queueOrdinal',
   'authorUserId',
   'turnId',
+  'sessionId',
+  'executionId',
+  'controllerId',
+  'leaseGeneration',
+  'deliveryKey',
+  'providerIdempotencyKey',
+  'providerSequence',
+  'providerChunkIndex',
   'retryable',
   'error',
   'entity',
@@ -392,12 +404,14 @@ export function toPublicGoalEvent(event: GoalEvent): PublicGoalEventDto {
     payload = validation.ok ? projectEventPayload(event.payload, TYPED_EVENT_KEY_NAMES) : null;
   }
   return {
+    schemaVersion: 1,
     goalId: event.goalId,
     sequence: event.sequence,
     kind: event.kind,
     eventType: event.eventType,
     payload,
     createdAt: event.createdAt,
+    cursor: event.cursor ?? (() => { throw new Error('Paged goal event is missing its canonical cursor'); })(),
   };
 }
 
@@ -414,6 +428,7 @@ export function toPublicGoalDetail(detail: GoalDetail): PublicGoalDetailDto {
     checklistNextCursor: detail.checklistNextCursor,
     summary: detail.summary,
     stats: detail.stats,
+    providerAdvisoryTodos: detail.providerAdvisoryTodos,
     asOfVersion: detail.asOfVersion,
     asOfSequence: detail.asOfSequence,
   };

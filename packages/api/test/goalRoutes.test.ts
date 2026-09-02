@@ -361,24 +361,22 @@ describe('goal routes', () => {
     assert.equal(state.statusCode, 200);
     configureDemoMode(false);
   });
-
-  test('completed creation replays after its repository is disabled', async () => {
+  test('revoked repository access blocks create replay and subsequent reads', async () => {
     const routes = makeRoutes();
-    const request = () => makeRequest({
-      body: { objective: 'Ship it', repository: 'octo/repo', agent: 'claude', model: 'claude-opus-4-8' },
-      headers: { 'Idempotency-Key': 'create-1' },
-    });
+    const request = () => makeRequest({ body: { objective: 'Ship it', repository: 'octo/repo', agent: 'claude', model: 'claude-opus-4-8' }, headers: { 'Idempotency-Key': 'create-1' } });
     const first = makeResponse();
     await routes.createGoal(request(), first.res);
     const second = makeResponse();
     repositories[0].enabled = false;
-    try { await routes.createGoal(request(), second.res); }
-    finally { repositories[0].enabled = true; }
-    assert.deepEqual(second.state.body, first.state.body);
-    assert.notEqual((first.state.body as { goal: { goalId: string } }).goal.goalId, 'create-1');
+    try { await routes.createGoal(request(), second.res); } finally { repositories[0].enabled = true; }
+    assert.equal(second.state.statusCode, 403); assert.equal((second.state.body as { code: string }).code, 'goal_repository_forbidden');
+    const goalId = (first.state.body as { goal: { goalId: string } }).goal.goalId, read = makeResponse();
+    repositories[0].enabled = false;
+    try { await routes.getGoal(makeRequest({ params: { goalId } }), read.res); } finally { repositories[0].enabled = true; }
+    assert.equal(read.state.statusCode, 403);
+    assert.notEqual(goalId, 'create-1');
     assert.equal(Number((await database('goals').count({ c: '*' }).first())?.c), 1);
   });
-
   test('completed model change replays after its model is removed from the catalog', async () => {
     const created = await createGoalViaApi();
     const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
@@ -398,7 +396,6 @@ describe('goal routes', () => {
     assert.equal(first.state.statusCode, 200);
     assert.deepEqual(retry.state.body, first.state.body);
   });
-
   test('idempotent create rejects payload mismatch and is scoped to the owner', async () => {
     const routes = makeRoutes();
     const first = makeResponse();
@@ -410,7 +407,6 @@ describe('goal routes', () => {
     await routes.createGoal(makeRequest({ user: { id: 'user-2' }, body: { objective: 'two', repository: 'octo/repo', agent: 'claude', model: 'claude-opus-4-8' }, headers: { 'Idempotency-Key': 'owner-key' } }), otherOwner.res);
     assert.equal(otherOwner.state.statusCode, 201);
   });
-
   test('all operator mutations replay their original response and reject mismatches', async () => {
     const created = await createGoalViaApi();
     const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
@@ -424,7 +420,6 @@ describe('goal routes', () => {
     await routes.pauseGoal(makeRequest({ params: { goalId }, body: { reason: 'changed' }, headers: { 'Idempotency-Key': 'pause-key' } }), mismatch.res);
     assert.equal((mismatch.state.body as { code: string }).code, 'goal_idempotency_conflict');
   });
-
   test('rejects model changes once a goal is terminal', async () => {
     const created = await createGoalViaApi();
     const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;

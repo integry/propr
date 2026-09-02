@@ -166,7 +166,7 @@ describe('goal HTTP contract', () => {
     }
     assert.deepEqual(
       Object.keys((events.state.body as { events: Array<Record<string, unknown>> }).events[0]).sort(),
-      ['createdAt', 'eventType', 'goalId', 'kind', 'payload', 'sequence']
+      ['createdAt', 'cursor', 'eventType', 'goalId', 'kind', 'payload', 'schemaVersion', 'sequence']
     );
   });
 

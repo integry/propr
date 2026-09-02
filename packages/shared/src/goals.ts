@@ -9,7 +9,7 @@
 // service) so every consumer agrees on what a valid transition and an
 // actionable conflict look like.
 
-import type { JsonValue } from './notifications.js';
+import type { GoalEventEnvelopeV1 } from './goalEvents.js';
 
 /**
  * Explicit goal lifecycle states. `pausing`/`recovering`/`completing` are
@@ -105,6 +105,10 @@ export const GOAL_CANNED_ACTION_TEXT: Readonly<Record<GoalCannedAction, string>>
   whats_done: "What's done?",
   whats_left: "What's left?",
 };
+export const GOAL_CANNED_ACTION_MEANING: Readonly<Record<GoalCannedAction, string>> = {
+  whats_done: 'Authoritative checklist items currently completed by the controller',
+  whats_left: 'Authoritative checklist items not currently completed by the controller',
+};
 
 /** How a completed goal's pull requests are merged. */
 export const GOAL_MERGE_POLICIES = ['manual', 'auto', 'auto_squash'] as const;
@@ -157,6 +161,8 @@ export const GOAL_ERROR_CODES = {
   invalidEventKind: 'goal_invalid_event_kind',
   terminalState: 'goal_terminal_state',
   messageOrderConflict: 'goal_message_order_conflict',
+  replayItemTooLarge: 'goal_replay_item_too_large',
+  reconnectRequired: 'goal_reconnect_required',
   recoveryMetadataInvalid: 'goal_recovery_metadata_invalid',
 } as const;
 
@@ -301,15 +307,8 @@ export interface PublicGoalMessageDto {
   createdAt: string;
 }
 
-/** Public event envelope without the database identity, fence, or write key. */
-export interface PublicGoalEventDto {
-  goalId: string;
-  sequence: number;
-  kind: GoalEventKind;
-  eventType: string;
-  payload: JsonValue;
-  createdAt: string;
-}
+/** The canonical REST/socket event envelope without database identity or fence. */
+export type PublicGoalEventDto = GoalEventEnvelopeV1;
 
 export interface PublicGoalStatsDto {
   elapsedMs: number;
@@ -341,6 +340,14 @@ export interface PublicGoalDetailDto {
   checklistNextCursor: string | null;
   summary: GoalSummaryView;
   stats: PublicGoalStatsDto;
+  /** Provider suggestions; never authoritative execution checklist state. */
+  providerAdvisoryTodos: Array<{
+    sessionId: string;
+    todoId: string;
+    body: string;
+    status: 'pending' | 'in_progress' | 'completed';
+    eventSequence: number;
+  }>;
   asOfVersion: number;
   asOfSequence: number;
 }

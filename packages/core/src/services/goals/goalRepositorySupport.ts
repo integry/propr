@@ -121,6 +121,7 @@ export function toEvent(row: GoalEventRecord): GoalEvent {
     idempotencyKey: row.idempotency_key, leaseEpoch: row.lease_epoch,
     createdAt: row.created_at,
     schemaVersion: row.schema_version ?? 1,
+    cursor: null,
   };
 }
 
@@ -135,9 +136,16 @@ export function toMessage(row: GoalMessageRecord): GoalMessage {
     cannedAction: row.canned_action ?? null,
     authorUserId: row.author_user_id ?? null,
     claimedBy: row.claimed_by ?? null,
+    claimedControllerId: row.claimed_controller_id ?? null,
     claimedTurnId: row.claimed_turn_id ?? null,
+    claimedExecutionId: row.claimed_execution_id ?? null,
+    claimedAttemptId: row.claimed_attempt_id ?? null,
+    claimedProviderSequence: row.claimed_provider_sequence ?? null,
+    claimedChunkIndex: row.claimed_chunk_index ?? null,
     claimedLeaseGeneration: row.claimed_lease_generation ?? null,
     deliveryKey: row.delivery_key ?? null,
+    providerIdempotencyKey: row.provider_idempotency_key ?? null,
+    claimedAt: row.claimed_at ?? null,
     cancelledAt: row.cancelled_at ?? null,
     failedAt: row.failed_at ?? null,
     retryCount: row.retry_count ?? 0,
@@ -377,7 +385,6 @@ export function encodeCursor(
   return Buffer.from(cursorJson(createdAt, goalId, binding), 'utf8').toString('base64url');
 }
 
-// eslint-disable-next-line complexity -- strict canonical decoding validates every filter-bound cursor field
 export function decodeCursor(
   value: string | null | undefined,
   binding: GoalListCursorBinding
@@ -389,20 +396,28 @@ export function decodeCursor(
     const decoded = Buffer.from(value, 'base64url').toString('utf8');
     if (Buffer.from(decoded, 'utf8').toString('base64url') !== value) invalidCursor();
     const parsed = JSON.parse(decoded) as Record<string, unknown>;
-    if (Object.keys(parsed).join(',') !== 'v,t,o,r,st,q,a,g'
-      || parsed.v !== 1 || parsed.t !== 'goal-list'
-      || parsed.o !== binding.ownerUserId
-      || parsed.r !== (binding.repository ?? null)
-      || parsed.st !== (binding.state ?? null)
-      || parsed.q !== (binding.search ?? null)
-      || !canonicalInstant(parsed.a) || typeof parsed.g !== 'string'
-      || !parsed.g || characterLength(parsed.g) > GOAL_IDENTIFIER_MAX_LENGTH
-      || cursorJson(parsed.a, parsed.g, binding) !== decoded) invalidCursor();
-    return { createdAt: parsed.a, goalId: parsed.g };
+    if (!validListCursorBinding(parsed, binding) || !validListCursorPosition(parsed)
+      || cursorJson(parsed.a as string, parsed.g as string, binding) !== decoded) invalidCursor();
+    return { createdAt: parsed.a as string, goalId: parsed.g as string };
   } catch (error) {
     if (error instanceof GoalError) throw error;
     return invalidCursor();
   }
+}
+
+function validListCursorBinding(
+  parsed: Record<string, unknown>,
+  binding: GoalListCursorBinding
+): boolean {
+  return Object.keys(parsed).join(',') === 'v,t,o,r,st,q,a,g'
+    && parsed.v === 1 && parsed.t === 'goal-list' && parsed.o === binding.ownerUserId
+    && parsed.r === (binding.repository ?? null) && parsed.st === (binding.state ?? null)
+    && parsed.q === (binding.search ?? null);
+}
+
+function validListCursorPosition(parsed: Record<string, unknown>): boolean {
+  return canonicalInstant(parsed.a) && typeof parsed.g === 'string' && Boolean(parsed.g)
+    && characterLength(parsed.g) <= GOAL_IDENTIFIER_MAX_LENGTH;
 }
 
 function invalidCursor(): never {

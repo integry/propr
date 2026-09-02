@@ -10,11 +10,9 @@
 const ISO_NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
 export async function up(knex) {
-  // A migration source may stage this leaf before the foundation branch is
-  // present (serialized merge-order validation). In that ordering this leaf is
-  // an intentional no-op; a fresh/full chain orders the timestamped foundation
-  // first and installs the durable tables below.
-  if (!await knex.schema.hasTable('goal_events')) return;
+  if (!await knex.schema.hasTable('goal_events')) {
+    throw new Error('Durable goal replay requires the #2018 goal control-plane foundation');
+  }
   for (const [column, add] of [
     ['schema_version', table => table.integer('schema_version').notNullable().defaultTo(1)],
     ['source_session_id', table => table.text('source_session_id').nullable()],
@@ -40,6 +38,20 @@ export async function up(knex) {
     )
     WHERE source_session_id IS NOT NULL
   `);
+  await knex.raw(`
+    UPDATE goal_events
+    SET source_session_id = COALESCE(source_session_id, 'migration:event:' || id),
+        source_turn_id = COALESCE(source_turn_id, 'migration:event:' || id),
+        source_execution_id = COALESCE(source_execution_id, 'migration:event:' || id),
+        source_attempt_id = COALESCE(source_attempt_id, 'migration:event:' || id),
+        source_provider_sequence = COALESCE(source_provider_sequence, sequence),
+        source_chunk_index = COALESCE(source_chunk_index, 0),
+        lease_generation = COALESCE(lease_generation, MAX(lease_epoch, 1))
+    WHERE source_session_id IS NULL OR source_turn_id IS NULL
+       OR source_execution_id IS NULL OR source_attempt_id IS NULL
+       OR source_provider_sequence IS NULL OR source_chunk_index IS NULL
+       OR lease_generation IS NULL
+  `);
   await knex('goal_events').where('payload_bytes', 0).whereNotNull('payload_json')
     .update({ payload_bytes: knex.raw('length(CAST(payload_json AS BLOB))') });
 
@@ -54,6 +66,10 @@ export async function up(knex) {
   }
 
   await rebuildMessages(knex);
+  await knex('goal_messages').whereIn('state', ['delivering', 'delivered']).update({
+    state: 'failed', failed_at: knex.ref('created_at'),
+    last_error: 'Migration recovery required: provider acknowledgement identity was not durable',
+  });
 
   await knex.schema.createTable('goal_event_state', table => {
     table.text('goal_id').primary().notNullable();
@@ -101,6 +117,14 @@ export async function up(knex) {
     table.integer('cache_read_tokens').notNullable().defaultTo(0);
     table.integer('cache_write_tokens').notNullable().defaultTo(0);
     table.integer('reasoning_tokens').notNullable().defaultTo(0);
+    table.integer('reported_input_tokens').notNullable().defaultTo(0);
+    table.integer('reported_output_tokens').notNullable().defaultTo(0);
+    table.integer('reported_cache_read_tokens').notNullable().defaultTo(0);
+    table.integer('reported_cache_write_tokens').notNullable().defaultTo(0);
+    table.integer('reported_reasoning_tokens').notNullable().defaultTo(0);
+    table.boolean('cumulative').notNullable().defaultTo(false);
+    table.text('content_digest').notNullable().defaultTo('migration-recovery-required');
+    table.integer('provider_sequence').notNullable().defaultTo(0);
     table.integer('event_sequence').notNullable();
     table.text('created_at').notNullable().defaultTo(knex.raw(`(${ISO_NOW_SQL})`));
     table.unique(
@@ -109,6 +133,10 @@ export async function up(knex) {
     );
     table.foreign('goal_id').references('goal_id').inTable('goals').onDelete('CASCADE');
   });
+  await knex.raw(`
+    CREATE UNIQUE INDEX goal_usage_occurrence_stable_idx
+    ON goal_usage_occurrences (goal_id, session_id, execution_id, attempt_id, occurrence_id)
+  `);
 
   await knex.schema.createTable('goal_usage_watermarks', table => {
     table.text('goal_id').notNullable();
@@ -122,6 +150,11 @@ export async function up(knex) {
     table.integer('cache_read_tokens').notNullable().defaultTo(0);
     table.integer('cache_write_tokens').notNullable().defaultTo(0);
     table.integer('reasoning_tokens').notNullable().defaultTo(0);
+    table.integer('input_tokens_sequence').notNullable().defaultTo(-1);
+    table.integer('output_tokens_sequence').notNullable().defaultTo(-1);
+    table.integer('cache_read_tokens_sequence').notNullable().defaultTo(-1);
+    table.integer('cache_write_tokens_sequence').notNullable().defaultTo(-1);
+    table.integer('reasoning_tokens_sequence').notNullable().defaultTo(-1);
     table.primary(['goal_id', 'provider', 'model', 'session_id', 'execution_id', 'attempt_id']);
     table.foreign('goal_id').references('goal_id').inTable('goals').onDelete('CASCADE');
   });
@@ -185,9 +218,16 @@ async function rebuildMessages(knex) {
     table.text('author_user_id').nullable();
     table.text('state').notNullable().defaultTo('queued');
     table.text('claimed_by').nullable();
+    table.text('claimed_controller_id').nullable();
     table.text('claimed_turn_id').nullable();
+    table.text('claimed_execution_id').nullable();
+    table.text('claimed_attempt_id').nullable();
+    table.integer('claimed_provider_sequence').nullable();
+    table.integer('claimed_chunk_index').nullable();
     table.integer('claimed_lease_generation').nullable();
     table.text('delivery_key').nullable();
+    table.text('provider_idempotency_key').nullable();
+    table.text('claimed_at').nullable();
     table.text('delivered_at').nullable();
     table.text('acknowledged_at').nullable();
     table.text('cancelled_at').nullable();

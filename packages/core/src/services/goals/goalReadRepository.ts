@@ -153,11 +153,14 @@ export class GoalReadRepository {
       search,
     };
     const cursor = decodeCursor(query.cursor, cursorBinding);
+    const latestSequenceSql = await this.db.schema.hasTable('goal_event_state')
+      ? '(SELECT high_watermark FROM goal_event_state s WHERE s.goal_id = goals.goal_id)'
+      : '(SELECT COALESCE(MAX(sequence), 0) FROM goal_events e WHERE e.goal_id = goals.goal_id)';
     let builder = this.db<GoalSummaryRecord>('goals')
       .select('goals.*')
       .select(this.db.raw('(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id) AS node_count'))
       .select(this.db.raw("(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id AND n.status = 'in_progress') AS active_node_count"))
-      .select(this.db.raw('(SELECT COALESCE(MAX(sequence), 0) FROM goal_events e WHERE e.goal_id = goals.goal_id) AS latest_sequence'));
+      .select(this.db.raw(`COALESCE(${latestSequenceSql}, 0) AS latest_sequence`));
     if (ownerUserId !== null) builder = builder.where('owner_user_id', ownerUserId);
     if (repository) builder = builder.andWhere('repository', repository);
     if (query.state) builder = builder.andWhere('state', query.state);

@@ -23,7 +23,6 @@ export function encodeChecklistCursor(binding: Binding, value: ChecklistCursorVa
   return Buffer.from(serialize(binding, value), 'utf8').toString('base64url');
 }
 
-// eslint-disable-next-line complexity -- strict canonical decoding validates every signed cursor field
 export function decodeChecklistCursor(cursor: string | null | undefined, binding: Binding): ChecklistCursorValue | null {
   if (cursor === null || cursor === undefined) return null;
   if (!cursor || characterLength(cursor) > GOAL_CURSOR_MAX_LENGTH || !/^[A-Za-z0-9_-]+$/.test(cursor)) throw invalid();
@@ -31,18 +30,27 @@ export function decodeChecklistCursor(cursor: string | null | undefined, binding
     const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
     if (Buffer.from(decoded, 'utf8').toString('base64url') !== cursor) throw invalid();
     const parsed = JSON.parse(decoded) as Record<string, unknown>;
-    if (Object.keys(parsed).join(',') !== 'v,t,g,o,r,a,i,n'
-      || parsed.v !== 1 || parsed.t !== 'goal-checklist' || parsed.g !== binding.goalId
-      || parsed.o !== binding.ownerUserId || parsed.r !== binding.repository
-      || !canonicalInstant(parsed.a) || !Number.isSafeInteger(parsed.i) || (parsed.i as number) < 0
-      || typeof parsed.n !== 'string' || !parsed.n) throw invalid();
-    const value = { createdAt: parsed.a, orderIndex: parsed.i as number, nodeId: parsed.n };
+    if (!validChecklistBinding(parsed, binding) || !validChecklistPosition(parsed)) throw invalid();
+    const value = {
+      createdAt: parsed.a as string, orderIndex: parsed.i as number, nodeId: parsed.n as string,
+    };
     if (serialize(binding, value) !== decoded) throw invalid();
     return value;
   } catch (error) {
     if (error instanceof GoalError) throw error;
     throw invalid();
   }
+}
+
+function validChecklistBinding(parsed: Record<string, unknown>, binding: Binding): boolean {
+  return Object.keys(parsed).join(',') === 'v,t,g,o,r,a,i,n'
+    && parsed.v === 1 && parsed.t === 'goal-checklist' && parsed.g === binding.goalId
+    && parsed.o === binding.ownerUserId && parsed.r === binding.repository;
+}
+
+function validChecklistPosition(parsed: Record<string, unknown>): boolean {
+  return canonicalInstant(parsed.a) && Number.isSafeInteger(parsed.i) && (parsed.i as number) >= 0
+    && typeof parsed.n === 'string' && Boolean(parsed.n);
 }
 
 function invalid(): GoalError {

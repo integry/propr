@@ -1,4 +1,3 @@
-/* eslint-disable max-lines -- authenticated goal reads and mutations share one ownership-checked route boundary */
 /**
  * Authenticated goal control-plane API under /api/goals.
  *
@@ -28,7 +27,6 @@ import {
   GOAL_ERROR_CODES,
   GOAL_EVENT_MAX_LIMIT,
   GOAL_EVENT_MAX_BYTES,
-  GOAL_IDEMPOTENCY_KEY_MAX_LENGTH,
   GOAL_IDENTIFIER_MAX_LENGTH,
   GOAL_LIST_MAX_LIMIT,
   GOAL_MESSAGE_BODY_MAX_LENGTH,
@@ -55,6 +53,10 @@ import {
   toPublicGoalEvent,
   toPublicGoalMessage,
 } from './goalRouteDtos.js';
+import {
+  boundedOptionalText, parseExpectedVersion, parseLimit, requireUserId,
+  resolveIdempotencyKey, sendGoalError,
+} from './goalRouteRequest.js';
 
 interface GoalRoutesDeps {
   db?: Knex;
@@ -62,98 +64,6 @@ interface GoalRoutesDeps {
     loadAgents?: () => Promise<AgentConfig[]>;
     loadRepositories?: () => Promise<RepoToMonitor[]>;
   };
-}
-
-function requireUserId(req: Request, res: Response): string | null {
-  const userId = req.user?.id;
-  if (!userId) {
-    res.status(401).json({ code: 'unauthenticated', error: 'User not authenticated' });
-    return null;
-  }
-  return userId;
-}
-
-function sendGoalError(res: Response, error: unknown): void {
-  if (error instanceof GoalError) {
-    res.status(error.status).json({ code: error.code, error: error.message });
-    return;
-  }
-  console.error('Goal route failure:', error);
-  res.status(500).json({ code: 'goal_internal_error', error: 'Internal server error' });
-}
-
-/** Canonical header with a documented body fallback for older typed clients. */
-function resolveIdempotencyKey(req: Request): string {
-  const header = req.header('Idempotency-Key');
-  const body = req.body as { idempotencyKey?: unknown } | undefined;
-  const candidate = header !== undefined ? header : body?.idempotencyKey;
-  if (typeof candidate === 'string') {
-    const normalized = candidate.trim();
-    if (normalized && Array.from(normalized).length <= GOAL_IDEMPOTENCY_KEY_MAX_LENGTH) {
-      return normalized;
-    }
-  }
-  throw new GoalError(
-    GOAL_ERROR_CODES.invalidIdempotencyKey,
-    `Idempotency-Key must contain between 1 and ${GOAL_IDEMPOTENCY_KEY_MAX_LENGTH} characters`,
-    400
-  );
-}
-
-function boundedOptionalText(value: unknown, field: string, maxLength: number): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') throw new GoalError(GOAL_ERROR_CODES.validation, `${field} must be a string`, 400);
-  const normalized = value.trim();
-  if (!normalized || Array.from(normalized).length > maxLength) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, `${field} must contain between 1 and ${maxLength} characters`, 400);
-  }
-  return normalized;
-}
-
-function parseLimit(value: unknown, max: number): number | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, `limit must be an integer from 1 to ${max}`, 400);
-  }
-  const limit = Number(value);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > max) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, `limit must be an integer from 1 to ${max}`, 400);
-  }
-  return limit;
-}
-
-function parseExpectedVersion(req: Request): number | undefined {
-  const body = req.body as { expectedVersion?: unknown } | undefined;
-  const header = req.header('If-Match');
-  const bodyVersion = body?.expectedVersion === undefined
-    ? undefined
-    : parseVersionNumber(body.expectedVersion, 'expectedVersion');
-  const headerVersion = header === undefined
-    ? undefined
-    : parseIfMatchVersion(header);
-  if (bodyVersion !== undefined && headerVersion !== undefined && bodyVersion !== headerVersion) {
-    throw new GoalError(
-      GOAL_ERROR_CODES.validation,
-      'expectedVersion and If-Match must agree',
-      400
-    );
-  }
-  return headerVersion ?? bodyVersion;
-}
-
-function parseVersionNumber(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, `${field} must be a positive safe integer`, 400);
-  }
-  return value;
-}
-
-function parseIfMatchVersion(value: string): number {
-  const match = value.match(/^\s*(?:"([1-9]\d*)"|([1-9]\d*))\s*$/);
-  if (!match) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, 'If-Match must contain one positive integer version', 400);
-  }
-  return parseVersionNumber(Number(match[1] ?? match[2]), 'If-Match');
 }
 
 export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
@@ -177,6 +87,10 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
     if (!goal || (!isDemoMode() && goal.ownerUserId !== userId)) {
       throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
     }
+    const repositories = await loadRepositoriesFn();
+    if (!repositories.some(entry => entry.name === goal.repository && entry.enabled)) {
+      throw new GoalError(GOAL_ERROR_CODES.repositoryForbidden, 'Repository access was revoked', 403);
+    }
   }
 
   async function createGoal(req: Request, res: Response): Promise<void> {
@@ -190,16 +104,16 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         return;
       }
       const input = { ...result.input, idempotencyKey };
-      const replay = await repository.readCreateGoalReplay(input);
-      if (replay) {
-        res.status(201).json({ goal: toPublicGoal(replay) });
-        return;
-      }
       const configurationError = await validateCreateGoalConfiguration(result.input, {
         loadAgents: loadAgentsFn, loadRepositories: loadRepositoriesFn,
       });
       if (configurationError) {
         res.status(configurationError.status).json({ code: configurationError.code, error: configurationError.error });
+        return;
+      }
+      const replay = await repository.readCreateGoalReplay(input);
+      if (replay) {
+        res.status(201).json({ goal: toPublicGoal(replay) });
         return;
       }
       const goal = await repository.createGoal(input);
@@ -238,10 +152,15 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
       const search = boundedOptionalText(req.query.search, 'search', GOAL_SEARCH_MAX_LENGTH);
 
       const listOptions = { repository: repositoryFilter, state: stateFilter, search, limit, cursor };
+      const enabledRepositories = new Set((await loadRepositoriesFn())
+        .filter(entry => entry.enabled).map(entry => entry.name));
+      if (repositoryFilter && !enabledRepositories.has(repositoryFilter)) {
+        throw new GoalError(GOAL_ERROR_CODES.repositoryForbidden, 'Repository access was revoked', 403);
+      }
       const result = await (isDemoMode()
         ? repository.listGoals({ visibility: 'all-demo', ...listOptions })
         : repository.listGoals({ visibility: 'owner', ownerUserId: userId, ...listOptions }));
-      res.json(result);
+      res.json({ ...result, goals: result.goals.filter(goal => enabledRepositories.has(goal.repository)) });
     } catch (error) {
       sendGoalError(res, error);
     }
@@ -352,6 +271,9 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
           : (() => { throw new GoalError(GOAL_ERROR_CODES.validation, 'cannedAction is not recognized', 400); })();
       if (!messageBody && !cannedAction) {
         throw new GoalError(GOAL_ERROR_CODES.validation, 'body or cannedAction is required', 400);
+      }
+      if (messageBody && cannedAction) {
+        throw new GoalError(GOAL_ERROR_CODES.validation, 'body and cannedAction are mutually exclusive', 400);
       }
       const idempotencyKey = resolveIdempotencyKey(req);
       const message = await repository.enqueueMessage(req.params.goalId, {

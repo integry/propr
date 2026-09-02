@@ -16,7 +16,6 @@ interface UsageGroup {
 export class GoalStatisticsRepository {
   constructor(private readonly db: Knex) {}
 
-  // eslint-disable-next-line complexity -- the aggregate maps every durable projection into one consistent snapshot
   async get(goalId: string): Promise<GoalStatistics> {
     const goal = await requireGoalRecord(this.db, goalId);
     const timing = await new GoalReadRepository(this.db).getActiveTimeStats(goalId);
@@ -26,60 +25,12 @@ export class GoalStatisticsRepository {
     if (!enhanced) return timing as GoalStatistics;
     const nodes = await this.db<GoalNodeRecord>('goal_nodes').where('goal_id', goalId);
     const dependencies = await this.db('goal_node_dependencies').where('goal_id', goalId);
-    const completed = new Set(nodes.filter(node => node.status === 'completed').map(node => node.node_id));
-    const dependencyMap = new Map<string, string[]>();
-    for (const edge of dependencies) {
-      const current = dependencyMap.get(edge.node_id) ?? [];
-      current.push(edge.depends_on_node_id);
-      dependencyMap.set(edge.node_id, current);
-    }
-    const issues = nodes.filter(node => node.kind === 'implementation_issue');
-    const issueStats = {
-      total: issues.length,
-      ready: issues.filter(node => node.status === 'pending'
-        && (dependencyMap.get(node.node_id) ?? []).every(id => completed.has(id))).length,
-      active: issues.filter(node => node.status === 'in_progress').length,
-      processed: issues.filter(node => node.status === 'completed').length,
-      failed: issues.filter(node => node.status === 'failed').length,
-      blocked: issues.filter(node => node.status === 'blocked').length,
-    };
+    const issueStats = buildIssueStats(nodes, dependencies);
 
     const external = enhanced
       ? await this.db('goal_external_projections').where('goal_id', goalId)
       : [];
-    const pullRequests = new Map<number, string>();
-    const statuses = new Map<string, string>();
-    for (const row of external) {
-      statuses.set(`${row.entity_type}:${row.entity_number}`, row.status);
-      if (row.entity_type === 'pull_request') pullRequests.set(row.entity_number, row.status);
-    }
-    for (const node of nodes.filter(item => item.kind === 'implementation_pr')) {
-      const number = Number(node.external_ref);
-      if (Number.isSafeInteger(number) && !pullRequests.has(number)) {
-        pullRequests.set(number, node.status === 'completed' ? 'merged' : 'open');
-      }
-    }
-    let reviewPending = 0;
-    let ultrafixPending = 0;
-    let mergeReady = 0;
-    for (const [number, status] of pullRequests) {
-      if (status === 'merged') continue;
-      const review = statuses.get(`review:${number}`);
-      const ultrafix = statuses.get(`ultrafix:${number}`);
-      const ci = statuses.get(`ci:${number}`);
-      if (review && !['approved', 'complete', 'passed'].includes(review)) reviewPending += 1;
-      if (ultrafix && !['complete', 'passed', 'not_required'].includes(ultrafix)) ultrafixPending += 1;
-      if (status === 'merge_ready'
-        || ci === 'success' && review === 'approved'
-          && (!ultrafix || ['complete', 'passed', 'not_required'].includes(ultrafix))) mergeReady += 1;
-    }
-    const prStats = {
-      open: [...pullRequests.values()].filter(status => status !== 'merged').length,
-      reviewPending,
-      ultrafixPending,
-      mergeReady,
-      merged: [...pullRequests.values()].filter(status => status === 'merged').length,
-    };
+    const prStats = buildPullRequestStats(nodes, external);
 
     const usage = await this.readUsage(goalId, enhanced);
     const byProviderModel = usage.map(row => ({
@@ -121,4 +72,56 @@ export class GoalStatisticsRepository {
       });
     return rows as UsageGroup[];
   }
+}
+
+function buildIssueStats(nodes: GoalNodeRecord[], dependencies: Array<Record<string, string>>) {
+  const completed = new Set(nodes.filter(node => node.status === 'completed').map(node => node.node_id));
+  const dependencyMap = new Map<string, string[]>();
+  for (const edge of dependencies) {
+    const current = dependencyMap.get(edge.node_id) ?? [];
+    current.push(edge.depends_on_node_id);
+    dependencyMap.set(edge.node_id, current);
+  }
+  const issues = nodes.filter(node => node.kind === 'implementation_issue');
+  return {
+    total: issues.length,
+    ready: issues.filter(node => node.status === 'pending'
+      && (dependencyMap.get(node.node_id) ?? []).every(id => completed.has(id))).length,
+    active: issues.filter(node => node.status === 'in_progress').length,
+    processed: issues.filter(node => node.status === 'completed').length,
+    failed: issues.filter(node => node.status === 'failed').length,
+    blocked: issues.filter(node => node.status === 'blocked').length,
+  };
+}
+
+function buildPullRequestStats(nodes: GoalNodeRecord[], external: Array<Record<string, unknown>>) {
+  const pullRequests = new Map<number, string>();
+  const statuses = new Map<string, string>();
+  for (const row of external) {
+    statuses.set(`${row.entity_type}:${row.entity_number}`, String(row.status));
+    if (row.entity_type === 'pull_request') pullRequests.set(Number(row.entity_number), String(row.status));
+  }
+  for (const node of nodes.filter(item => item.kind === 'implementation_pr')) {
+    const number = Number(node.external_ref);
+    if (Number.isSafeInteger(number) && !pullRequests.has(number)) {
+      pullRequests.set(number, node.status === 'completed' ? 'merged' : 'open');
+    }
+  }
+  const pending = [...pullRequests].filter(([, status]) => status !== 'merged');
+  return {
+    open: pending.length,
+    reviewPending: pending.filter(([number]) => isPending(statuses.get(`review:${number}`))).length,
+    ultrafixPending: pending.filter(([number]) => isPending(statuses.get(`ultrafix:${number}`), true)).length,
+    mergeReady: pending.filter(([number, status]) => status === 'merge_ready'
+      || statuses.get(`ci:${number}`) === 'success' && statuses.get(`review:${number}`) === 'approved'
+        && !isPending(statuses.get(`ultrafix:${number}`), true)).length,
+    merged: [...pullRequests.values()].filter(status => status === 'merged').length,
+  };
+}
+
+function isPending(status: string | undefined, allowNotRequired = false): boolean {
+  const complete = allowNotRequired
+    ? ['complete', 'passed', 'not_required']
+    : ['approved', 'complete', 'passed'];
+  return Boolean(status && !complete.includes(status));
 }

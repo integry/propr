@@ -18,6 +18,7 @@ import type {
   GoalCannedAction,
   DurableGoalEventInput,
   DurableGoalEventType,
+  GoalMessageDeliveryIdentity,
 } from '@propr/shared';
 
 export interface GoalRecord {
@@ -98,9 +99,16 @@ export interface GoalMessageRecord {
   canned_action?: GoalCannedAction | null;
   author_user_id?: string | null;
   claimed_by?: string | null;
+  claimed_controller_id?: string | null;
   claimed_turn_id?: string | null;
+  claimed_execution_id?: string | null;
+  claimed_attempt_id?: string | null;
+  claimed_provider_sequence?: number | null;
+  claimed_chunk_index?: number | null;
   claimed_lease_generation?: number | null;
   delivery_key?: string | null;
+  provider_idempotency_key?: string | null;
+  claimed_at?: string | null;
   cancelled_at?: string | null;
   failed_at?: string | null;
   retry_count?: number;
@@ -187,6 +195,7 @@ export interface GoalEvent {
   leaseEpoch: number;
   createdAt: string;
   schemaVersion: number;
+  cursor: string | null;
 }
 
 export interface GoalMessage {
@@ -206,9 +215,16 @@ export interface GoalMessage {
   cannedAction: GoalCannedAction | null;
   authorUserId: string | null;
   claimedBy: string | null;
+  claimedControllerId: string | null;
   claimedTurnId: string | null;
+  claimedExecutionId: string | null;
+  claimedAttemptId: string | null;
+  claimedProviderSequence: number | null;
+  claimedChunkIndex: number | null;
   claimedLeaseGeneration: number | null;
   deliveryKey: string | null;
+  providerIdempotencyKey: string | null;
+  claimedAt: string | null;
   cancelledAt: string | null;
   failedAt: string | null;
   retryCount: number;
@@ -273,6 +289,14 @@ export interface GoalEventPageResult {
   asOfSequence: number;
 }
 
+export interface GoalProviderTodo {
+  sessionId: string;
+  todoId: string;
+  body: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  eventSequence: number;
+}
+
 export interface GoalMessagePageResult {
   messages: GoalMessage[];
   nextCursor: string | null;
@@ -284,11 +308,9 @@ export interface GoalNodePageResult {
   nextCursor: string | null;
 }
 
-export interface ClaimMessageInput extends GoalLeaseFence {
-  sessionId: string;
-  turnId: string;
-  deliveryKey: string;
-}
+export type ClaimMessageInput = GoalLeaseFence & Omit<GoalMessageDeliveryIdentity, 'leaseGeneration'>;
+
+export type MessageDeliveryFence = GoalLeaseFence & Omit<GoalMessageDeliveryIdentity, 'leaseGeneration'>;
 
 export interface TransitionInput extends GoalLeaseFence {
   toState: GoalState;

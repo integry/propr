@@ -1,10 +1,8 @@
-/* eslint-disable max-lines -- lifecycle and model mutations share optimistic-version and idempotency invariants */
 import type { Knex } from 'knex';
 import {
   GOAL_ERROR_CODES,
   GOAL_TERMINAL_REASONS,
   isTerminalGoalState,
-  isValidGoalTransition,
   type GoalState,
   type GoalTerminalReason,
 } from '@propr/shared';
@@ -29,6 +27,10 @@ import {
   toGoal,
   validateFence,
 } from './goalRepositorySupport.js';
+import {
+  performGoalTransition,
+  type GoalTransitionPolicy as TransitionPolicy,
+} from './goalLifecycleTransition.js';
 
 interface ModelChangeOptions {
   expectedVersion?: number;
@@ -45,11 +47,6 @@ interface InternalTransitionInput {
   terminalReason?: GoalTerminalReason;
   idempotencyKey?: string;
   idempotencyOperation?: string;
-}
-
-interface TransitionPolicy {
-  controllerAuthoritative: boolean;
-  allowedSourceStates?: readonly GoalState[];
 }
 
 const PAUSE_SOURCE_STATES: readonly GoalState[] = [
@@ -127,12 +124,7 @@ export class GoalMutationRepository {
       leaseOwner: policy.controllerAuthoritative ? input.leaseOwner ?? null : null,
       leaseEpoch: policy.controllerAuthoritative ? input.leaseEpoch ?? null : null,
     };
-    const effect = (trx: Knex.Transaction) => this.performTransition(
-      trx,
-      goalId,
-      input,
-      policy
-    );
+    const effect = (trx: Knex.Transaction) => performGoalTransition(trx, goalId, input, policy);
     if (input.idempotencyKey === undefined) return goalTransaction(this.db, effect);
     return runIdempotent({
       db: this.db,
@@ -143,60 +135,6 @@ export class GoalMutationRepository {
       goalId,
       effect,
     });
-  }
-
-  private async performTransition(
-    trx: Knex.Transaction,
-    goalId: string,
-    input: InternalTransitionInput,
-    policy: TransitionPolicy
-  ): Promise<Goal> {
-    const goal = await requireGoalRecord(trx, goalId);
-    if (input.expectedVersion !== undefined && input.expectedVersion !== goal.version) {
-      throw new GoalError(GOAL_ERROR_CODES.versionConflict, `Goal version conflict: expected ${input.expectedVersion}, found ${goal.version}`, 409);
-    }
-    if (policy.allowedSourceStates !== undefined
-      && !policy.allowedSourceStates.includes(goal.state)) {
-      throw new GoalError(GOAL_ERROR_CODES.invalidTransition, `Invalid transition from ${goal.state} to ${input.toState}`, 409);
-    }
-    if (!isValidGoalTransition(goal.state, input.toState)) {
-      throw new GoalError(GOAL_ERROR_CODES.invalidTransition, `Invalid transition from ${goal.state} to ${input.toState}`, 409);
-    }
-    if (isTerminalGoalState(input.toState) && input.terminalReason == null) {
-      throw new GoalError(GOAL_ERROR_CODES.validation, `A terminal reason is required to enter ${input.toState}`, 400);
-    }
-    const now = nowIso();
-    let update = trx('goals').where({ goal_id: goalId, version: goal.version });
-    if (policy.controllerAuthoritative) {
-      const fence = { leaseOwner: input.leaseOwner!, leaseEpoch: input.leaseEpoch! };
-      validateFence(fence);
-      update = update.where({ lease_owner: fence.leaseOwner, lease_epoch: fence.leaseEpoch })
-        .whereNotNull('lease_expires_at').andWhere('lease_expires_at', '>', now);
-    }
-    const affected = await update.update({
-      state: input.toState,
-      version: goal.version + 1,
-      terminal_reason: isTerminalGoalState(input.toState) ? input.terminalReason ?? null : goal.terminal_reason,
-      updated_at: now,
-    });
-    if (affected !== 1) {
-      throw new GoalError(
-        policy.controllerAuthoritative ? GOAL_ERROR_CODES.staleLease : GOAL_ERROR_CODES.versionConflict,
-        policy.controllerAuthoritative ? 'Controller lease is stale or expired' : 'Goal changed concurrently',
-        409
-      );
-    }
-    await trx('goal_state_transitions').insert({
-      goal_id: goalId, from_state: goal.state, to_state: input.toState,
-      reason: input.reason ?? null, lease_epoch: input.leaseEpoch ?? goal.lease_epoch,
-      created_at: now,
-    });
-    if (input.toState === 'paused') {
-      await trx('goal_pause_intervals').insert({ goal_id: goalId, paused_at: now, reason: input.reason ?? null });
-    } else if (goal.state === 'paused') {
-      await trx('goal_pause_intervals').where({ goal_id: goalId }).whereNull('resumed_at').update({ resumed_at: now });
-    }
-    return toGoal(await requireGoalRecord(trx, goalId));
   }
 
   async requestModelChange(
