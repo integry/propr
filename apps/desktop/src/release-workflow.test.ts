@@ -628,6 +628,23 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
+      /Get-SupervisorInvocationFields[\s\S]*'CONTROLLER_STATUS'/,
+    );
+    for (const caseId of [
+      'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_EXIT_CODE',
+      'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_REPORTED_EXIT_CODE',
+      'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_RESULT',
+      'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_CONTROLLER_STATUS',
+      'CALLSITE_RESOURCE_COLLISION_REPLACEMENT_SURVIVAL_READ',
+      'CALLSITE_RESOURCE_COLLISION_MANIFEST_PRESERVATION',
+    ]) {
+      assert.match(
+        installedWindowsAppSupervisorBehaviorTest,
+        new RegExp(`CaseId='${caseId}'`),
+      );
+    }
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
       /Test-CriticalGatePublisherPowerShellCompatibility/,
     );
     assert.doesNotMatch(installedWindowsAppSupervisorBehaviorTest, /-clike 'PROPR_WINDOWS_SUPERVISOR_INVOCATION:\*'/);
@@ -646,6 +663,38 @@ describe('desktop trusted release workflow', () => {
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /Assert-SupervisorInvocationDiagnosticBounded[\s\S]*Cannot bind argument[\s\S]*LiteralPath[\s\S]*Registry::[\s\S]*stdout[\s\S]*stderr/,
+    );
+    const resourceCollisionAssertions = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        "$failedWorkflowCleanup = Invoke-WorkflowCleanupController `\n        'RESOURCE_COLLISION'",
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        "$workflowCleanup = Invoke-WorkflowCleanupController `\n        'WORKFLOW_RETRY'",
+      ),
+    );
+    for (const field of [
+      'EXIT_CODE',
+      'REPORTED_EXIT_CODE',
+      'RESULT',
+      'CONTROLLER_STATUS',
+    ]) {
+      assert.match(
+        resourceCollisionAssertions,
+        new RegExp(
+          "-Scenario 'RESOURCE_COLLISION'[\\s\\S]*" +
+            "-Phase 'WORKFLOW_CLEANUP_CONTROLLER'[\\s\\S]*" +
+            "-Callsite 'CONTROLLER_RESULT_FIELD'[\\s\\S]*" +
+            `-Field '${field}'`,
+        ),
+      );
+    }
+    assert.match(
+      resourceCollisionAssertions,
+      /-Scenario 'RESOURCE_COLLISION'[\s\S]*-Phase 'RESOURCE_ASSERTION'[\s\S]*-Callsite 'REPLACEMENT_SURVIVAL_READ'[\s\S]*-Field 'REGISTRY_VALUE'/,
+    );
+    assert.match(
+      resourceCollisionAssertions,
+      /-Scenario 'RESOURCE_COLLISION'[\s\S]*-Phase 'MANIFEST_ASSERTION'[\s\S]*-Callsite 'MANIFEST_PRESERVATION'[\s\S]*-Field 'MANIFEST_PATH'[\s\S]*\$collisionAuthority\.State -ceq 'ACTIVE'/,
     );
     const fixtureProcessStateReader = installedWindowsAppSupervisorBehaviorTest.slice(
       installedWindowsAppSupervisorBehaviorTest.indexOf('function Read-FixtureProcessState'),
@@ -1434,7 +1483,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /timed-out workflow cleanup discarded authenticated recovery authority[\s\S]*failed workflow cleanup discarded authenticated recovery authority[\s\S]*retry to fixed cleanup success/,
+      /timed-out workflow cleanup discarded authenticated recovery authority[\s\S]*\$collisionAuthority\.State -ceq 'ACTIVE'[\s\S]*retry to fixed cleanup success/,
     );
     const fixedResultWrite = installedWindowsAppWorkflowCleanup.indexOf(
       'Write-FixedResult $fixedResult',
