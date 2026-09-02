@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Notification } from '@propr/shared';
 import {
+  dismissAllNotifications,
   dismissNotification,
   listNotifications,
   markNotificationRead,
@@ -21,9 +22,11 @@ export interface InboxNotificationsState {
   isOnline: boolean;
   hasMore: boolean;
   mutationsEnabled: boolean;
+  clearing: boolean;
   refresh: () => Promise<void>;
   loadMore: () => Promise<void>;
   dismiss: (id: string) => Promise<void>;
+  clearAll: () => Promise<void>;
   open: (id: string) => void;
 }
 
@@ -39,6 +42,7 @@ export function useInboxNotifications(): InboxNotificationsState {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+  const [clearing, setClearing] = useState(false);
   const requestGenerationRef = useRef(0);
   const loadMoreGenerationRef = useRef(0);
   const notificationsRef = useRef(notifications);
@@ -47,6 +51,8 @@ export function useInboxNotifications(): InboxNotificationsState {
   const dismissSnapshotsRef = useRef(new Map<string, Notification>());
   const readOverridesRef = useRef(new Map<string, Notification>());
   const mutationEpochRef = useRef(0);
+  const clearEpochRef = useRef(0);
+  const clearingRef = useRef(false);
   const mountedRef = useRef(true);
   const {
     unreadCount,
@@ -144,6 +150,7 @@ export function useInboxNotifications(): InboxNotificationsState {
 
   const dismiss = useCallback(async (id: string) => {
     if (isDemoMode || dismissingRef.current.has(id)) return;
+    const clearEpoch = clearEpochRef.current;
     mutationEpochRef.current += 1;
     dismissingRef.current.add(id);
     hiddenIdsRef.current.add(id);
@@ -156,11 +163,12 @@ export function useInboxNotifications(): InboxNotificationsState {
     }
     try {
       const response = await dismissNotification(id);
-      commitUnreadCount(response.unreadCount);
-      if (isActiveIdentity()) {
+      if (clearEpoch === clearEpochRef.current) commitUnreadCount(response.unreadCount);
+      if (clearEpoch === clearEpochRef.current && isActiveIdentity()) {
         addToast({ type: 'success', message: 'Notification dismissed.' });
       }
     } catch (dismissError) {
+      if (clearEpoch !== clearEpochRef.current) return;
       hiddenIdsRef.current.delete(id);
       const rollback = removed ?? dismissSnapshotsRef.current.get(id);
       if (mountedRef.current && rollback) {
@@ -181,10 +189,43 @@ export function useInboxNotifications(): InboxNotificationsState {
     }
   }, [addToast, commitUnreadCount, isActiveIdentity, isDemoMode, refreshUnreadCount, unreadCount]);
 
+  const clearAll = useCallback(async () => {
+    if (isDemoMode || clearingRef.current) return;
+    clearingRef.current = true;
+    setClearing(true);
+    mutationEpochRef.current += 1;
+    try {
+      const response = await dismissAllNotifications();
+      clearEpochRef.current += 1;
+      requestGenerationRef.current += 1;
+      loadMoreGenerationRef.current += 1;
+      setNotifications([]);
+      setNextCursor(null);
+      setLoadingMore(false);
+      commitUnreadCount(response.unreadCount);
+      if (isActiveIdentity()) {
+        addToast({ type: 'success', message: 'All notifications cleared.' });
+      }
+    } catch (clearError) {
+      if (isActiveIdentity()) {
+        addToast({
+          type: 'error',
+          message: `Couldn't clear the Inbox. ${messageFrom(clearError)}`,
+        });
+      }
+    } finally {
+      mutationEpochRef.current += 1;
+      clearingRef.current = false;
+      if (mountedRef.current) setClearing(false);
+      void refreshUnreadCount().catch(() => undefined);
+    }
+  }, [addToast, commitUnreadCount, isActiveIdentity, isDemoMode, refreshUnreadCount]);
+
   const open = useCallback((id: string) => {
     const current = notificationsRef.current.find(notification => notification.id === id);
     if (isDemoMode || !current || current.readAt !== null) return;
     mutationEpochRef.current += 1;
+    const clearEpoch = clearEpochRef.current;
     const priorUnreadCount = unreadCount;
     const optimistic = { ...current, readAt: current.createdAt };
     readOverridesRef.current.set(id, optimistic);
@@ -193,6 +234,7 @@ export function useInboxNotifications(): InboxNotificationsState {
       : notification));
     if (priorUnreadCount !== null) commitUnreadCount(Math.max(0, priorUnreadCount - 1));
     void markNotificationRead(id).then(response => {
+      if (clearEpoch !== clearEpochRef.current) return;
       if (mountedRef.current) {
         readOverridesRef.current.set(id, response.notification);
         setNotifications(items => items.map(notification => notification.id === id
@@ -201,6 +243,7 @@ export function useInboxNotifications(): InboxNotificationsState {
       }
       commitUnreadCount(response.unreadCount);
     }).catch(readError => {
+      if (clearEpoch !== clearEpochRef.current) return;
       readOverridesRef.current.delete(id);
       if (mountedRef.current) {
         setNotifications(items => items.map(notification => notification.id === id
@@ -229,9 +272,11 @@ export function useInboxNotifications(): InboxNotificationsState {
     isOnline,
     hasMore: nextCursor !== null,
     mutationsEnabled: !isDemoMode,
+    clearing,
     refresh,
     loadMore,
     dismiss,
+    clearAll,
     open,
   };
 }

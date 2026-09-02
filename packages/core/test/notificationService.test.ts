@@ -356,6 +356,38 @@ describe('notification service', { concurrency: false }, () => {
         assert.equal(await service.dismissNotification('user-b', 'event-a'), null);
     });
 
+    test('dismisses every active Inbox receipt for only the requested user', async () => {
+        await createEvent('event-a', '2026-08-02T07:00:00.000Z', ['user-a', 'user-b']);
+        await createEvent('event-b', '2026-08-02T08:00:00.000Z', ['user-a', 'user-b']);
+        await createEvent('event-push-only', '2026-08-02T09:00:00.000Z', [{
+            userId: 'user-a', inboxEnabled: false, pushEnabled: true
+        }]);
+        await service.markNotificationRead('user-a', 'event-a');
+
+        assert.deepEqual(await service.dismissAllNotifications('user-a'), { unreadCount: 0 });
+        assert.deepEqual(await service.dismissAllNotifications('user-a'), { unreadCount: 0 });
+        assert.deepEqual((await service.listNotifications('user-a')).notifications, []);
+        assert.deepEqual(
+            (await service.listNotifications('user-a', { includeDismissed: true }))
+                .notifications.map(notification => notification.id),
+            ['event-b', 'event-a']
+        );
+        assert.deepEqual(
+            (await service.listNotifications('user-b')).notifications.map(notification => notification.id),
+            ['event-b', 'event-a']
+        );
+        const pushOnlyReceipt = await database('notification_user_states')
+            .where({ user_id: 'user-a', event_id: 'event-push-only' })
+            .first();
+        assert.equal(pushOnlyReceipt, undefined, 'push-only recipients stay outside the Inbox');
+        assert.equal(
+            await database('notification_events').count('* as count').first()
+                .then(row => Number(row?.count)),
+            3,
+            'immutable event audit rows remain'
+        );
+    });
+
     test('dismisses all PR-related receipts without deleting audit events', async () => {
         const recipients = ['user-a', 'user-b'];
         await service.createNotificationEvent({

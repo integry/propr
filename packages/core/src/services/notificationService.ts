@@ -14,6 +14,7 @@ import {
     parseNotificationPreferencesResponse,
     parseNotificationPreferencesUpdate,
     parseNotificationStateResponse,
+    parseNotificationUnreadCountResponse,
     type ISO8601Timestamp,
     type JsonObject,
     type Notification,
@@ -27,6 +28,7 @@ import {
     type NotificationPreferencesUpdate,
     type NotificationSeverity,
     type NotificationStateResponse,
+    type NotificationUnreadCountResponse,
     type NotificationTargetFor,
     type PushSubscription,
     type PushSubscriptionInput
@@ -777,6 +779,30 @@ export class NotificationService {
         return this.updateInboxTimestamp(userId, eventId, 'dismissed_at');
     }
 
+    /** Dismiss every active Inbox receipt owned by one user. */
+    async dismissAllNotifications(
+        userId: string
+    ): Promise<NotificationUnreadCountResponse> {
+        assertIdentifier(userId, 'notification userId');
+        const timestamp = normalizeISO8601Timestamp(this.now());
+
+        return this.database.transaction(async transaction => {
+            await transaction('notification_user_states')
+                .where({ user_id: userId, inbox_enabled: true })
+                .whereNull('dismissed_at')
+                .update({
+                    dismissed_at: transaction.raw(
+                        'CASE WHEN created_at > ? THEN created_at ELSE ? END',
+                        [timestamp, timestamp]
+                    )
+                });
+
+            return parseNotificationUnreadCountResponse({
+                unreadCount: await unreadCount(transaction, userId)
+            });
+        });
+    }
+
     /** Dismiss every Inbox receipt for one immutable audit event. */
     async dismissNotificationReceipts(eventId: string): Promise<number> {
         assertIdentifier(eventId, 'notification eventId');
@@ -1191,6 +1217,8 @@ export const markNotificationRead = notificationService.markNotificationRead
     .bind(notificationService) as NotificationService['markNotificationRead'];
 export const dismissNotification = notificationService.dismissNotification
     .bind(notificationService) as NotificationService['dismissNotification'];
+export const dismissAllNotifications = notificationService.dismissAllNotifications
+    .bind(notificationService) as NotificationService['dismissAllNotifications'];
 export const dismissNotificationReceipts = notificationService.dismissNotificationReceipts
     .bind(notificationService) as NotificationService['dismissNotificationReceipts'];
 export const dismissNotificationsForPullRequest = notificationService

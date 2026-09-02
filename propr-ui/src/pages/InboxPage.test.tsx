@@ -5,6 +5,7 @@ import { notificationSchema, type Notification } from '@propr/shared';
 import { ToastProvider } from '../components/ui/Toast';
 import InboxPage from './InboxPage';
 import {
+  dismissAllNotifications,
   dismissNotification,
   listNotifications,
   markNotificationRead,
@@ -24,6 +25,7 @@ vi.mock('../contexts/NotificationCenterContext', () => ({
 }));
 vi.mock('../api/notificationApi', () => ({
   listNotifications: vi.fn(),
+  dismissAllNotifications: vi.fn(),
   dismissNotification: vi.fn(),
   markNotificationRead: vi.fn(),
 }));
@@ -84,6 +86,7 @@ function renderInbox(entry = '/inbox') {
 describe('Inbox page', () => {
   beforeEach(() => {
     vi.mocked(listNotifications).mockReset();
+    vi.mocked(dismissAllNotifications).mockReset();
     vi.mocked(dismissNotification).mockReset();
     vi.mocked(markNotificationRead).mockReset();
     vi.mocked(postTaskFollowup).mockReset();
@@ -255,6 +258,53 @@ describe('Inbox page', () => {
     expect(await screen.findByText('Task one failed')).toBeInTheDocument();
     expect(screen.getByText(/Couldn't dismiss the notification/)).toBeInTheDocument();
     expect(refreshUnreadCount).toHaveBeenCalledTimes(1);
+  });
+
+  test('confirms and clears all notifications, including unloaded pages', async () => {
+    const first = item('event-1', 'First task');
+    const second = item('event-2', 'Second task');
+    vi.mocked(listNotifications).mockResolvedValue({
+      notifications: [first, second],
+      unreadCount: 8,
+      nextCursor: 'cursor-with-more-items',
+    });
+    const clearRequest = deferred<Awaited<ReturnType<typeof dismissAllNotifications>>>();
+    vi.mocked(dismissAllNotifications).mockReturnValue(clearRequest.promise);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    renderInbox();
+
+    const clearAll = await screen.findByRole('button', { name: 'Clear all' });
+    fireEvent.click(clearAll);
+    expect(dismissAllNotifications).not.toHaveBeenCalled();
+
+    fireEvent.click(clearAll);
+    expect(dismissAllNotifications).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('button', { name: 'Clearing…' })).toBeDisabled();
+    await act(async () => clearRequest.resolve({ unreadCount: 0 }));
+
+    expect(await screen.findByText('You’re all caught up')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    expect(screen.getByText('All notifications cleared.')).toBeInTheDocument();
+    expect(commitUnreadCount).toHaveBeenCalledWith(0);
+    expect(refreshUnreadCount).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
+  });
+
+  test('keeps notifications visible when clearing the Inbox fails', async () => {
+    const notification = item('event-1', 'Task remains visible');
+    vi.mocked(listNotifications).mockResolvedValue({
+      notifications: [notification], unreadCount: 1, nextCursor: null,
+    });
+    vi.mocked(dismissAllNotifications).mockRejectedValue(new Error('Network unavailable'));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear all' }));
+
+    expect(await screen.findByText(/Couldn't clear the Inbox.*Network unavailable/)).toBeInTheDocument();
+    expect(screen.getByText('Task remains visible')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear all' })).toBeEnabled();
+    confirm.mockRestore();
   });
 
   test('marks an unread card read while following its deep link', async () => {

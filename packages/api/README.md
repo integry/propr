@@ -115,6 +115,7 @@ is intentionally running in the same isolated local-development mode.
 - `GET /api/notifications/config` - Canonical capability route; return Web Push availability and the VAPID public key. The private key is never serialized. `/api/notifications/capabilities` is a compatibility alias.
 - `GET /api/notifications/preferences` - Return the complete category and quiet-hour snapshot.
 - `PATCH /api/notifications/preferences` - Apply a sparse update; omitted categories and channel values remain unchanged.
+- `POST /api/notifications/dismiss-all` - Dismiss every active Inbox notification for the authenticated user without deleting audit events.
 - `GET /api/notifications/push-subscriptions` - List the authenticated user's active browser subscriptions without encryption keys.
 - `POST /api/notifications/push-subscriptions` - Create or refresh the authenticated user's browser subscription by endpoint.
 - `DELETE /api/notifications/push-subscriptions` - Revoke the authenticated user's subscription. Supply `endpoint` only in the JSON body; capability URLs are never accepted in query strings.
