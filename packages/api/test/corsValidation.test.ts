@@ -55,7 +55,9 @@ test('CORS allows HTTP(S) loopback origins for development', () => {
   const validate = createCorsOriginValidator('https://app.propr.dev', undefined);
 
   assert.equal(isAllowed(validate, 'http://localhost:5173'), true);
+  assert.equal(isAllowed(validate, 'http://api.dev.localhost:5173'), true);
   assert.equal(isAllowed(validate, 'http://127.0.0.1:5173'), true);
+  assert.equal(isAllowed(validate, 'http://127.42.7.9:5173'), true);
   assert.equal(isAllowed(validate, 'http://[::1]:5173'), true);
   assert.equal(isAllowed(validate, 'https://localhost:5173'), true);
   assert.equal(isAllowed(validate, 'https://[::1]:5173'), true);
@@ -70,6 +72,9 @@ test('CORS rejects unsafe schemes and non-loopback hosts', () => {
   assert.equal(isAllowed(validate, 'file://localhost'), false);
   assert.equal(isAllowed(validate, 'file://[::1]/tmp/propr'), false);
   assert.equal(isAllowed(validate, 'http://[2001:db8::1]:5173'), false);
+  assert.equal(isAllowed(validate, 'http://127.1:5173'), false);
+  assert.equal(isAllowed(validate, 'http://0177.0.0.1:5173'), false);
+  assert.equal(isAllowed(validate, 'http://localhost.:5173'), false);
 });
 
 test('CORS allows COOKIE_DOMAIN subdomains for preview environments', () => {
@@ -167,12 +172,19 @@ for (const runtimeMode of ['development', 'production'] as const) {
       const allowedPreflight = await fetch(`${baseUrl}/api/protected`, {
         method: 'OPTIONS',
         headers: {
-          Origin: 'https://app.propr.dev',
+          Origin: DESKTOP_RENDERER_ORIGIN,
           'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'X-ProPR-Desktop-Transport-Scope, Content-Type',
         },
       });
       assert.equal(allowedPreflight.status, 204);
-      assert.equal(allowedPreflight.headers.get('access-control-allow-origin'), 'https://app.propr.dev');
+      // This is the browser's real preflight shape: the requested desktop
+      // marker is named here, but the marker value itself is not sent on OPTIONS.
+      assert.equal(allowedPreflight.headers.get('access-control-allow-origin'), DESKTOP_RENDERER_ORIGIN);
+      assert.equal(
+        allowedPreflight.headers.get('access-control-allow-headers'),
+        'X-ProPR-Desktop-Transport-Scope, Content-Type',
+      );
     });
   });
 }

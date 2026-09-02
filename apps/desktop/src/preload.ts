@@ -1,4 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { createDesktopBridge } from './preload-bridge';
+import { createDesktopBridge, createDesktopRendererBridge } from './preload-bridge';
 
-contextBridge.exposeInMainWorld('proprDesktop', createDesktopBridge(ipcRenderer));
+const desktopBridge = createDesktopBridge(ipcRenderer);
+contextBridge.exposeInMainWorld('proprDesktop', desktopBridge);
+contextBridge.exposeInMainWorld(
+  '__PROPR_DESKTOP__',
+  createDesktopRendererBridge(ipcRenderer, process.platform, undefined, desktopBridge.app.onDeepLink),
+);

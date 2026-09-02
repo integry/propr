@@ -257,15 +257,24 @@ export class ConfigManager {
     return this.getActiveProfile()[key];
   }
 
-  private async updateActiveProfile(patch: Partial<RemoteProfile>): Promise<void> {
+  private async updateActiveProfile(patch: Partial<RemoteProfile>, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const name = this.getActiveProfileName();
-    const profiles = { ...(this.config.profiles ?? {}) };
+    const previousProfiles = this.config.profiles;
+    const profiles = { ...(previousProfiles ?? {}) };
     profiles[name] = {
       ...(profiles[name] ?? {}),
       ...patch,
     };
     this.config.profiles = profiles;
-    await this.save();
+    try {
+      await this.save(signal);
+      // A resolved atomic save is the commit point. Do not observe cancellation
+      // again here: disk and memory must remain on the same committed profile.
+    } catch (error) {
+      this.config.profiles = previousProfiles;
+      throw error;
+    }
   }
 
   /**
@@ -273,8 +282,10 @@ export class ConfigManager {
    *
    * @returns A promise that resolves when the configuration is saved.
    */
-  async save(): Promise<void> {
+  async save(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     ensurePrivateDirectory(this.configDir);
+    signal?.throwIfAborted();
 
     // Only write non-undefined values
     const dataToWrite: Record<string, unknown> = {};
@@ -285,7 +296,9 @@ export class ConfigManager {
     }
 
     const content = JSON.stringify(dataToWrite, null, 2);
-    writePrivateFileAtomic(this.configFilePath, content);
+    // writePrivateFileAtomic observes cancellation immediately before rename.
+    // Once it returns successfully, the new configuration is committed.
+    writePrivateFileAtomic(this.configFilePath, content, { signal });
   }
 
   /**
@@ -340,8 +353,9 @@ export class ConfigManager {
    * @param token - The GitHub token to set.
    * @returns A promise that resolves when the token is saved.
    */
-  async setGithubToken(token: string): Promise<void> {
-    await this.updateActiveProfile({ githubToken: token });
+  async setGithubToken(token: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    await this.updateActiveProfile({ githubToken: token }, signal);
   }
 
   /**

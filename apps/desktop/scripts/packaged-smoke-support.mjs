@@ -122,18 +122,18 @@ export const assertPackagedLayout = layout => {
     throw new Error('Packaged renderer viewport does not match the actual native content bounds');
   }
 
-  if (layout.logo.height < 18 || layout.logo.height > 22 || layout.logo.width < 40 || layout.logo.width > 100) {
-    throw new Error(`Packaged title-bar logo has unreasonable bounds: ${JSON.stringify(layout.logo)}`);
+  if (layout.logo.height < 28 || layout.logo.height > 36 || layout.logo.width < 28 || layout.logo.width > 36) {
+    throw new Error(`Packaged welcome-card logo has unreasonable bounds: ${JSON.stringify(layout.logo)}`);
   }
   if (
-    layout.logo.top < layout.titlebar.top
-    || layout.logo.bottom > layout.titlebar.bottom
+    layout.logo.top < layout.brand.top
+    || layout.logo.bottom > layout.brand.bottom
     || layout.card.left < 0
     || layout.card.right > layout.viewport.width
-    || layout.card.top < layout.titlebar.bottom
+    || layout.card.top < 0
     || layout.card.bottom > layout.viewport.height
   ) {
-    throw new Error('Packaged logo or connection card extends outside its layout container');
+    throw new Error('Packaged brand or welcome card extends outside its layout container');
   }
   for (const name of ['connectionName', 'apiUrl', 'submit']) {
     const control = layout[name];
@@ -142,9 +142,15 @@ export const assertPackagedLayout = layout => {
     }
   }
   assertGap(layout.connectionName, layout.apiUrl, 28, 'between connection inputs');
-  assertGap(layout.apiUrl, layout.apiHelp, 6, 'between API input and help text');
-  assertGap(layout.apiHelp, layout.submit, 16, 'between API help and submit button');
-  assertGap(layout.submit, layout.footer, 20, 'between submit button and runtime footer');
+  assertGap(layout.apiUrl, layout.submit, 16, 'between API input and Connect button');
+  if (
+    layout.state?.candidateApiUrl !== 'https://connect.propr.dev'
+    || layout.state?.connectLabel !== 'Connect'
+    || !layout.state?.noticeText?.includes('untrusted instance address')
+    || layout.state?.runtimeFooterPresent !== false
+  ) {
+    throw new Error(`Packaged renderer did not retain the staged shared-UI state: ${JSON.stringify(layout.state)}`);
+  }
 };
 
 const ensurePrivateDirectory = async path => {

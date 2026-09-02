@@ -138,10 +138,11 @@ export interface QueueStats {
  * ```
  */
 export async function getSystemStatus(
-  client?: ApiClient
+  client?: ApiClient,
+  signal?: AbortSignal
 ): Promise<SystemStatus> {
   const apiClient = client ?? (await createApiClient());
-  const response = await apiClient.get<SystemStatus>("/api/status");
+  const response = await apiClient.get<SystemStatus>("/api/status", { signal });
   return response.data;
 }
 

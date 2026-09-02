@@ -158,10 +158,10 @@ export interface SaveAgentsResponse {
  * console.log(`Found ${result.agents.length} agents`);
  * ```
  */
-export async function listAgents(client?: ApiClient): Promise<GetAgentsResponse> {
+export async function listAgents(client?: ApiClient, signal?: AbortSignal): Promise<GetAgentsResponse> {
   const apiClient = client ?? (await createApiClient());
 
-  const response = await apiClient.get<GetAgentsResponse>("/api/config/agents");
+  const response = await apiClient.get<GetAgentsResponse>("/api/config/agents", { signal });
 
   return response.data;
 }
@@ -188,12 +188,13 @@ export async function listAgents(client?: ApiClient): Promise<GetAgentsResponse>
  */
 export async function addAgent(
   options: AddAgentOptions,
-  client?: ApiClient
+  client?: ApiClient,
+  signal?: AbortSignal
 ): Promise<SaveAgentsResponse> {
   const apiClient = client ?? (await createApiClient());
 
   // Fetch existing agents
-  const existingResponse = await apiClient.get<GetAgentsResponse>("/api/config/agents");
+  const existingResponse = await apiClient.get<GetAgentsResponse>("/api/config/agents", { signal });
   const existingAgents = existingResponse.data.agents || [];
 
   // Check if alias already exists
@@ -224,6 +225,7 @@ export async function addAgent(
   // Save the updated list
   const response = await apiClient.post<SaveAgentsResponse>("/api/config/agents", {
     body: { agents: updatedAgents },
+    signal,
   });
 
   return response.data;

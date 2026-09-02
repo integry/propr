@@ -8,6 +8,7 @@ import type {
   ProprDesktopBridge,
 } from './types';
 import { DESKTOP_AUTHENTICATION_COMPLETE_EVENT } from './types';
+import { createElectronDesktopAdapters } from './electronAdapters';
 
 const PROFILES_KEY = 'propr.desktop.profiles';
 const ACTIVE_PROFILE_KEY = 'propr.desktop.activeProfile';
@@ -100,7 +101,7 @@ const probeProfile = async (profile: DesktopProfile): Promise<DesktopConnectionR
   }
 };
 
-const authenticateBrowserFixture = (profile: DesktopProfile): Promise<void> => new Promise((resolve, reject) => {
+const authenticateFixture = (profile: DesktopProfile): Promise<void> => new Promise((resolve, reject) => {
   const complete = (event: Event) => {
     const detail = (event as CustomEvent<DesktopAuthenticationCompleteEventDetail>).detail;
     if (detail?.profileId !== profile.id) return;
@@ -117,22 +118,11 @@ const authenticateBrowserFixture = (profile: DesktopProfile): Promise<void> => n
   };
 
   window.addEventListener(DESKTOP_AUTHENTICATION_COMPLETE_EVENT, complete);
-  const redirect = new URL('propr://authentication-complete');
-  redirect.searchParams.set('profile_id', profile.id);
-  try {
-    window.open(
-      `${normalizeBaseUrl(profile.baseUrl)}/api/auth/github?redirect_to=${encodeURIComponent(redirect.toString())}`,
-      '_blank',
-      'noopener,noreferrer'
-    );
-  } catch (error) {
-    cleanup();
-    reject(error);
-  }
 });
 
 const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters => ({
   platform: detectPlatform(),
+  app: { onDeepLink: () => () => undefined },
   profiles: {
     async list() {
       if (fixture === 'first-run') return [];
@@ -161,13 +151,18 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
   discovery: { async discover() { return fixture ? [fixtureProfile] : []; } },
   externalBrowser: { async open(url) { window.open(url, '_blank', 'noopener,noreferrer'); } },
   authentication: {
-    authenticate: authenticateBrowserFixture,
+    authenticate: authenticateFixture,
   },
   localSetup: {
-    async setup() {
-      if (fixture) return fixtureProfile;
-      throw new Error('Local setup will be available when the desktop host adapter is connected.');
+    async status() {
+      return { phase: 'idle', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: '00000000-0000-4000-8000-000000000000', logs: [] };
     },
+    async start() { throw new Error('Local setup requires the Electron desktop host.'); },
+    async retry() { throw new Error('Local setup requires the Electron desktop host.'); },
+    async cancel() { return { phase: 'cancelled', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: '00000000-0000-4000-8000-000000000000', logs: [] }; },
+    async selectPrivateKey() { throw new Error('Private-key selection requires the Electron desktop host.'); },
+    async acquireWebhookSecret() { throw new Error('Webhook-secret entry requires the Electron desktop host.'); },
+    onProgress() { return () => undefined; },
   },
   connection: {
     async probe(profile) {
@@ -181,7 +176,7 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
 
 export const resolveDesktopAdapters = (): DesktopAdapters | null => {
   const bridge: ProprDesktopBridge | undefined = window.__PROPR_DESKTOP__;
-  if (bridge?.isDesktop) return bridge;
+  if (bridge?.isDesktop) return createElectronDesktopAdapters(bridge);
   const fixture = import.meta.env.DEV ? fixtureFromLocation() : null;
   return fixture ? createBrowserAdapters(fixture) : null;
 };

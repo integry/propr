@@ -51,7 +51,9 @@ import {
 import {
   runAgentSetup,
   type AgentSetupActions,
+  type RootOperationBoundary,
 } from "./agents.js";
+import { isSetupCancellation } from "./cancellation.js";
 import {
   createSetupState,
   getStep,
@@ -340,6 +342,10 @@ export interface InitStackResult {
 
 export interface PullImagesParams {
   rootDir: string;
+  /** Descriptor-anchored root used only to read configuration. */
+  rootOperationsDir?: string;
+  /** Revalidate fixed-root identity at every external mutation boundary. */
+  assertRootAuthority?(): void;
   /** Agent types whose images should be pulled (in addition to core images). */
   agentTypes: string[];
   onLog?: (line: string) => void;
@@ -357,14 +363,20 @@ export interface PullImagesResult {
 
 export interface StartStackParams {
   rootDir: string;
+  /** Main-process-only anchored path used to read setup files, never mounted. */
+  rootOperationsDir?: string;
   ui?: boolean;
   docs?: boolean;
   onLog?: (line: string) => void;
   signal?: AbortSignal;
+  /** Main-process authority check invoked at each Docker container handoff. */
+  assertRootAuthority?(): void;
 }
 
 export interface BackendHealthParams {
   rootDir: string;
+  rootOperationsDir?: string;
+  assertRootAuthority?(): void;
   timeoutMs?: number;
   signal?: AbortSignal;
 }
@@ -401,9 +413,9 @@ export function classifyBackendAccessError(error: unknown): BackendHealth | unde
  */
 export interface SetupActions extends AgentSetupActions {
   runChecks(options: RunChecksOptions): Promise<ChecksOutcome>;
-  inspectStackInit(rootDir: string): StackInitState;
+  inspectStackInit(rootDir: string, signal?: AbortSignal): StackInitState;
   /** Inspect the configured datastore's durable administrator state without modifying it. */
-  inspectDatastoreAdministrators(rootDir: string): Promise<DatastoreAdminInspection>;
+  inspectDatastoreAdministrators(rootDir: string, signal?: AbortSignal): Promise<DatastoreAdminInspection>;
   scaffoldStack(options: InitStackOptions): Promise<InitStackResult>;
   /**
    * Persist the resolved stack root to the CLI config so later `propr start` /
@@ -412,36 +424,37 @@ export interface SetupActions extends AgentSetupActions {
    * already-initialized root that setup leaves untouched), which would otherwise
    * leave config pointing at a stale root or the cwd. A no-op without a config.
    */
-  persistStackRoot(rootDir: string): Promise<void>;
-  readEnvVars(rootDir: string): Record<string, string>;
-  applyEnvSelection(rootDir: string, vars: Record<string, string>, opts?: { overwrite?: boolean }): EnvSelectionResult;
+  persistStackRoot(rootDir: string, signal?: AbortSignal): Promise<void>;
+  readEnvVars(rootDir: string, signal?: AbortSignal): Record<string, string>;
+  applyEnvSelection(rootDir: string, vars: Record<string, string>, opts?: { overwrite?: boolean }, signal?: AbortSignal): EnvSelectionResult;
   /** Remove keys from `.env` entirely (used to clear a value, not blank it). */
-  clearEnvKeys(rootDir: string, keys: string[]): void;
-  detectGithubAuthMode(rootDir: string): GithubAuthModeResult;
+  clearEnvKeys(rootDir: string, keys: string[], signal?: AbortSignal): void;
+  detectGithubAuthMode(rootDir: string, signal?: AbortSignal): GithubAuthModeResult;
   /** Ensure a selected agent's host credential path is a directory, creating it securely when absent. */
-  prepareAgentCredentialDir(path: string): void;
+  prepareAgentCredentialDir(path: string, signal?: AbortSignal): void;
   pullImages(params: PullImagesParams): Promise<PullImagesResult>;
-  isStackRunning(rootDir: string): Promise<boolean>;
+  isStackRunning(rootDir: string, signal?: AbortSignal, root?: RootOperationBoundary): Promise<boolean>;
   startStack(params: StartStackParams): Promise<void>;
   checkBackendHealth(params: BackendHealthParams): Promise<BackendHealth>;
-  addRepository(selection: RepoSelection, rootDir: string): Promise<void>;
-  resolveUiUrl(rootDir: string): Promise<string>;
+  addRepository(selection: RepoSelection, rootDir: string, signal?: AbortSignal, root?: RootOperationBoundary): Promise<void>;
+  resolveUiUrl(rootDir: string, signal?: AbortSignal, root?: RootOperationBoundary): Promise<string>;
   /** Open `url` in the host's default browser (best-effort; may reject). */
-  openUrl(url: string): Promise<void>;
+  openUrl(url: string, signal?: AbortSignal): Promise<void>;
   /**
    * Save the user whitelist through the running backend's settings API. A
    * partial update — only the whitelist key is sent, so unrelated settings are
    * left intact.
    */
-  saveWhitelistSetting(rootDir: string, users: string[]): Promise<void>;
+  saveWhitelistSetting(rootDir: string, users: string[], signal?: AbortSignal, root?: RootOperationBoundary): Promise<void>;
   /** True when a GitHub user token is stored (relay enrollment and protected local API calls need it). */
-  hasGithubToken(): boolean;
+  hasGithubToken(signal?: AbortSignal): boolean;
   /**
    * List the relay installations the stored GitHub identity can access (drives
    * auto-select / the picker during relay enrollment). Throws if not logged in.
    */
   fetchRelayInstallations(params: {
     relayUrl?: string;
+    signal?: AbortSignal;
   }): Promise<{ username: string; installations: AuthorizedInstallation[] }>;
   /**
    * Mint a relay token for `installationId`, returning the token and the relay
@@ -451,11 +464,12 @@ export interface SetupActions extends AgentSetupActions {
     relayUrl?: string;
     installationId: string;
     label?: string;
+    signal?: AbortSignal;
   }): Promise<{ relayUrl: string; token: string }>;
   /** Authenticate with GitHub via the interactive `gh` CLI and store the token. */
-  loginWithGithub(params?: { onLog?: (line: string) => void }): Promise<boolean>;
+  loginWithGithub(params?: { onLog?: (line: string) => void; signal?: AbortSignal }): Promise<boolean>;
   /** Host preference used to select managed browser authentication. */
-  getTunnelEnabled?(rootDir: string): boolean | undefined;
+  getTunnelEnabled?(rootDir: string, signal?: AbortSignal): boolean | undefined;
 }
 
 /** Options for {@link runSetup}. */
@@ -555,7 +569,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     reporter.onProgress?.({ type: "state", state: snapshot });
   };
   const stepOf = (id: SetupStepId): SetupStep => getStep(state, id)!;
-  const begin = (id: SetupStepId): void => {
+  const checkCancelled = (): void => {
     if (options.signal?.aborted) {
       state = {
         ...state,
@@ -565,6 +579,21 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       };
       throw new SetupCancellation(state);
     }
+  };
+  const rethrowIfCancelled = (error: unknown): void => {
+    // A cancelled startup with residual run-owned containers is not a clean
+    // cancellation. Preserve the orchestrator's explicit failure so callers
+    // can require operator attention instead of reporting cancellation done.
+    if (error && typeof error === "object"
+      && (error as { code?: unknown }).code === "PROPR_SETUP_CLEANUP_INCOMPLETE") {
+      throw error;
+    }
+    if (!isSetupCancellation(error)) return;
+    checkCancelled();
+    throw error;
+  };
+  const begin = (id: SetupStepId): void => {
+    checkCancelled();
     state = updateStep(state, id, { status: "active", detail: undefined, nextAction: undefined });
     emit();
     const step = safeStep(stepOf(id));
@@ -622,12 +651,15 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     // 1. A stored GitHub token is required. Offer interactive login when the
     //    renderer supports it. The Ink entry point performs this handoff before
     //    enabling raw mode; the sequential renderer prompts through this hook.
-    if (!actions.hasGithubToken()) {
+    if (!actions.hasGithubToken(options.signal)) {
       const reason = "Relay enrollment needs a GitHub token.";
-      if (prompts.confirmGithubLogin && (await prompts.confirmGithubLogin({ reason }))) {
-        await actions.loginWithGithub({ onLog: log });
+      const loginConfirmed = prompts.confirmGithubLogin ? await prompts.confirmGithubLogin({ reason }) : false;
+      checkCancelled();
+      if (loginConfirmed) {
+        await actions.loginWithGithub({ onLog: log, signal: options.signal });
+        checkCancelled();
       }
-      if (!actions.hasGithubToken()) {
+      if (!actions.hasGithubToken(options.signal)) {
         return {
           note: {
             detail: "relay not enrolled — not logged in to GitHub",
@@ -640,18 +672,24 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     try {
       // 2. Discover installations: auto-select the only one, pick among many,
       //    error when there are none.
-      let { username, installations } = await actions.fetchRelayInstallations({ relayUrl });
+      let { username, installations } = await actions.fetchRelayInstallations({ relayUrl, signal: options.signal });
+      checkCancelled();
       const usingHostedRelay =
         relayUrl.replace(/\/+$/, "") === DEFAULT_PROPR_GH_RELAY_URL.replace(/\/+$/, "");
       if (installations.length === 0 && usingHostedRelay && prompts.confirmGithubAppInstall) {
         const installUrl = DEFAULT_PROPR_GITHUB_APP_INSTALL_URL;
-        if (await prompts.confirmGithubAppInstall({ url: installUrl })) {
-          await actions.openUrl(installUrl);
+        const installConfirmed = await prompts.confirmGithubAppInstall({ url: installUrl });
+        checkCancelled();
+        if (installConfirmed) {
+          await actions.openUrl(installUrl, options.signal);
+          checkCancelled();
           const installed = prompts.confirmGithubAppInstalled
             ? await prompts.confirmGithubAppInstalled({ url: installUrl })
             : false;
+          checkCancelled();
           if (installed) {
-            ({ username, installations } = await actions.fetchRelayInstallations({ relayUrl }));
+            ({ username, installations } = await actions.fetchRelayInstallations({ relayUrl, signal: options.signal }));
+            checkCancelled();
           }
         }
       }
@@ -671,6 +709,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
         log(`relay: using installation ${installationId} (${installations[0].account_login})`);
       } else if (prompts.selectInstallation) {
         installationId = await prompts.selectInstallation({ installations });
+        checkCancelled();
       } else {
         installationId = String(installations[0].installation_id);
       }
@@ -678,8 +717,9 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       // 3. Mint the relay token and write the relay env vars (overwriting only
       //    these keys). PROPR_DEMO_MODE=false ensures the new relay config isn't
       //    shadowed by a leftover demo flag (see detectGithubAuthMode).
-      const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId });
-      const existingEnv = actions.readEnvVars(rootDir);
+      const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId, signal: options.signal });
+      checkCancelled();
+      const existingEnv = actions.readEnvVars(rootDir, options.signal);
       const existingAdminUsers = [...new Set(
         (existingEnv.PROPR_ADMIN_USERS ?? "")
           .split(",")
@@ -698,7 +738,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       const bootstrapWhitelist = seedBootstrapAdmin && !whitelistHasIdentity
         ? [...existingWhitelist, username].join(",")
         : undefined;
-      const tunnelOverride = actions.getTunnelEnabled?.(rootDir);
+      const tunnelOverride = actions.getTunnelEnabled?.(rootDir, options.signal);
       const managedTunnelEnabled = tunnelOverride ?? Boolean(
         existingEnv.PROPR_UI_TUNNEL_TOKEN?.trim() || isTruthyEnvFlag(existingEnv.PROPR_UI_TUNNEL_ENABLED)
       );
@@ -721,6 +761,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       const automaticConnectApplies =
         managedTunnelEnabled ||
         (usesHostedConnect && isSupportedLoopbackCallback(callbackUrl));
+      checkCancelled();
       actions.applyEnvSelection(
         rootDir,
         {
@@ -745,7 +786,8 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
           // identity only when bootstrap enrollment needs it.
           ...(bootstrapWhitelist ? { GITHUB_USER_WHITELIST: bootstrapWhitelist } : {}),
         },
-        { overwrite: true }
+        { overwrite: true },
+        options.signal
       );
       bootstrapAdministratorSeeded = seedBootstrapAdmin;
       const adminDetail = hasExistingAdminUsers
@@ -759,6 +801,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
         detail: `auth mode: relay (installation ${installationId}); ${adminDetail}`,
       };
     } catch (error) {
+      rethrowIfCancelled(error);
       return {
         note: {
           detail: `relay enrollment failed — ${(error as Error).message}`,
@@ -774,7 +817,9 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   begin("check");
   try {
     checks = await actions.runChecks({ root: rootDir, skipRemoteImageCheck, signal: options.signal });
+    checkCancelled();
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("check", {
       status: "failed",
       detail: `could not run environment checks: ${(error as Error).message}`,
@@ -803,14 +848,15 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   begin("init-stack");
   try {
     let initSettlement: SetupStepPatch;
-    let init = actions.inspectStackInit(rootDir);
+    let init = actions.inspectStackInit(rootDir, options.signal);
     let userChoseReinit = false;
     if (prompts.resolveStackRoot) {
       const decision = await prompts.resolveStackRoot({ currentRoot: rootDir, init });
+      checkCancelled();
       if (decision.rootDir && decision.rootDir !== rootDir) {
         rootDir = decision.rootDir;
         state = { ...state, rootDir };
-        init = actions.inspectStackInit(rootDir);
+        init = actions.inspectStackInit(rootDir, options.signal);
       }
       userChoseReinit = decision.reinitialize;
     }
@@ -827,6 +873,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       // No `force`: scaffoldStack creates a fresh `.env` only when absent and
       // otherwise leaves the existing one in place.
       const result = await actions.scaffoldStack({ root: rootDir, signal: options.signal });
+      checkCancelled();
       // Adopt the absolute root scaffoldStack actually resolved. A root typed at
       // the prompt may be relative or have a trailing slash; without this every
       // later step (env writes, health probe, UI URL) would key off the raw
@@ -838,7 +885,8 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       // Persist through the active host as well as its scaffold initializer.
       // Otherwise later setup saves can write stale host config and silently
       // discard the root that scaffolding recorded.
-      await actions.persistStackRoot(rootDir);
+      await actions.persistStackRoot(rootDir, options.signal);
+      checkCancelled();
       const created = [...result.dirsCreated];
       initSettlement = {
         status: "done",
@@ -850,7 +898,8 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       // Reuse path: scaffolding is skipped, so nothing has recorded this root in
       // config. Persist it now so a later `propr start` / `propr status` without
       // --root targets this stack rather than an old saved root or the cwd.
-      await actions.persistStackRoot(rootDir);
+      await actions.persistStackRoot(rootDir, options.signal);
+      checkCancelled();
       initSettlement = { status: "skipped", detail: `using existing stack at ${rootDir} (.env preserved)` };
     }
 
@@ -859,7 +908,8 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     // and follows the runtime's DB_FILENAME/DATA_DIR resolution. Configured
     // paths outside the launcher's data bind mount cannot be safely inspected
     // from the host and remain ineligible (fail closed).
-    datastoreAdminInspection = await actions.inspectDatastoreAdministrators(rootDir);
+    datastoreAdminInspection = await actions.inspectDatastoreAdministrators(rootDir, options.signal);
+    checkCancelled();
     bootstrapIdentityEligible =
       datastoreAdminInspection.status === "absent" || datastoreAdminInspection.status === "no-admin";
     if (datastoreAdminInspection.status === "uninspectable") {
@@ -872,6 +922,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     // mode does not require an instance administrator.
     settle("init-stack", initSettlement);
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("init-stack", {
       status: "failed",
       detail: `could not initialize stack: ${(error as Error).message}`,
@@ -888,6 +939,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     const requested = prompts.selectAgents
       ? await prompts.selectAgents({ available: catalog.map((a) => a.type), detected })
       : detected;
+    checkCancelled();
     // Guard the engine boundary: a renderer may hand back unknown or duplicate
     // agent names. Keep only types we know about, de-duped (first occurrence
     // wins), so unknown names never reach pullImages() and a duplicate can't
@@ -896,6 +948,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     selectedAgents = [...new Set(requested)].filter((type) => known.has(type));
 
     const pull = await actions.pullImages({ rootDir, agentTypes: selectedAgents, onLog: log, signal: options.signal });
+    checkCancelled();
     if (pull.failedCore.length > 0) {
       settle("pull-images", {
         status: "failed",
@@ -915,6 +968,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       settle("pull-images", { status: "done", detail: `pulled ${pulledCount} image(s)` });
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("pull-images", {
       status: "failed",
       detail: `could not pull images: ${(error as Error).message}`,
@@ -935,7 +989,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       });
     } else {
       const vars: Record<string, string> = {};
-      const existingEnv = actions.readEnvVars(rootDir);
+      const existingEnv = actions.readEnvVars(rootDir, options.signal);
       for (const type of selectedAgents) {
         const desc = catalog.find((a) => a.type === type);
         if (!desc) continue;
@@ -947,17 +1001,19 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
           const configuredDir = existingEnv[cred.envKey];
           const effectiveDir = configuredDir?.trim() ? configuredDir : cred.defaultDir;
           assertSafeAgentCredentialDir(effectiveDir, cred.envKey);
-          actions.prepareAgentCredentialDir(effectiveDir);
+          actions.prepareAgentCredentialDir(effectiveDir, options.signal);
           vars[cred.envKey] = effectiveDir;
         }
       }
-      const applied = actions.applyEnvSelection(rootDir, vars, { overwrite: false });
+      checkCancelled();
+      const applied = actions.applyEnvSelection(rootDir, vars, { overwrite: false }, options.signal);
       const detailParts: string[] = [];
       detailParts.push(applied.written.length > 0 ? `recorded ${applied.written.length} credential dir(s)` : "no new credentials to record");
       if (applied.skipped.length > 0) detailParts.push(`${applied.skipped.length} already set`);
       settle("configure-agents", { status: "done", detail: detailParts.join("; ") });
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("configure-agents", {
       status: "failed",
       detail: `could not record agent credentials: ${(error as Error).message}`,
@@ -978,20 +1034,25 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   let relayNote: { detail: string; nextAction?: string } | undefined;
   let relayDoneDetail: string | undefined;
   try {
-    const currentAuth = actions.detectGithubAuthMode(rootDir);
+    const currentAuth = actions.detectGithubAuthMode(rootDir, options.signal);
     let authDecision: GithubAuthDecision | undefined;
-    if (prompts.configureGithubAuth) authDecision = await prompts.configureGithubAuth({ current: currentAuth });
+    if (prompts.configureGithubAuth) {
+      authDecision = await prompts.configureGithubAuth({ current: currentAuth });
+      checkCancelled();
+    }
     if (authDecision?.enrollRelay) {
       const outcome = await enrollRelayForSetup(authDecision.enrollRelay.relayUrl);
       relayNote = outcome.note;
       relayDoneDetail = outcome.detail;
     } else if (authDecision?.vars && Object.keys(authDecision.vars).length > 0) {
-      actions.applyEnvSelection(rootDir, authDecision.vars, { overwrite: true });
+      checkCancelled();
+      actions.applyEnvSelection(rootDir, authDecision.vars, { overwrite: true }, options.signal);
     }
     resolvedAuth = relayDoneDetail
       ? { mode: "relay", warnings: [] }
-      : actions.detectGithubAuthMode(rootDir);
+      : actions.detectGithubAuthMode(rootDir, options.signal);
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("github-auth", {
       status: "failed",
       detail: `could not configure GitHub auth: ${(error as Error).message}`,
@@ -1017,10 +1078,10 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   // identity when the datastore is conclusively empty. On a keep rerun, the
   // same identity can be recovered safely only when the stored GitHub session
   // can access the installation already configured for this stack.
-  const demoModeEnabled = isTruthyEnvFlag(actions.readEnvVars(rootDir).PROPR_DEMO_MODE);
+  const demoModeEnabled = isTruthyEnvFlag(actions.readEnvVars(rootDir, options.signal).PROPR_DEMO_MODE);
   let keptRelayBootstrapIdentity: string | undefined;
   const configuredAdministrators = (): string[] =>
-    (actions.readEnvVars(rootDir).PROPR_ADMIN_USERS ?? "")
+    (actions.readEnvVars(rootDir, options.signal).PROPR_ADMIN_USERS ?? "")
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean);
@@ -1032,15 +1093,17 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     configuredAdministrators().length === 0 &&
     bootstrapIdentityEligible &&
     resolvedAuth.mode === "relay" &&
-    actions.hasGithubToken()
+    actions.hasGithubToken(options.signal)
   ) {
-    const env = actions.readEnvVars(rootDir);
+    const env = actions.readEnvVars(rootDir, options.signal);
     const installationId = env.GH_INSTALLATION_ID?.trim();
     if (installationId) {
       try {
         const identity = await actions.fetchRelayInstallations({
           relayUrl: env.PROPR_GH_RELAY_URL?.trim() || undefined,
+          signal: options.signal,
         });
+        checkCancelled();
         const username = identity.username.trim();
         const ownsConfiguredInstallation = identity.installations.some(
           (installation) => String(installation.installation_id) === installationId
@@ -1061,12 +1124,14 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
                 ? { GITHUB_USER_WHITELIST: [...existingWhitelist, username].join(",") }
                 : {}),
             },
-            { overwrite: true }
+            { overwrite: true },
+            options.signal
           );
           bootstrapAdministratorSeeded = true;
           keptRelayBootstrapIdentity = username;
         }
       } catch (error) {
+      rethrowIfCancelled(error);
         log(`administrator bootstrap: could not verify the configured relay identity: ${(error as Error).message}`);
       }
     }
@@ -1096,12 +1161,15 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   // is protected by bearer auth, so obtain the same user token as `propr login`
   // before making any of those calls. Connect enrollment already guarantees a
   // token; this covers custom-App and GitHub-only demo configurations alike.
-  if (!demoModeEnabled && !actions.hasGithubToken()) {
+  if (!demoModeEnabled && !actions.hasGithubToken(options.signal)) {
     const reason = "Finishing setup requires a GitHub user token for protected backend API steps.";
-    if (prompts.confirmGithubLogin && (await prompts.confirmGithubLogin({ reason }))) {
-      await actions.loginWithGithub({ onLog: log });
+    const loginConfirmed = prompts.confirmGithubLogin ? await prompts.confirmGithubLogin({ reason }) : false;
+    checkCancelled();
+    if (loginConfirmed) {
+      await actions.loginWithGithub({ onLog: log, signal: options.signal });
+      checkCancelled();
     }
-    if (!actions.hasGithubToken()) {
+    if (!actions.hasGithubToken(options.signal)) {
       settle("github-auth", {
         status: "failed",
         detail: `auth mode: ${resolvedAuth.mode}; GitHub user login is required to finish setup`,
@@ -1138,7 +1206,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     if (resolvedAuth.mode === "demo") {
       settle("intake", { status: "skipped", detail: "demo mode — no GitHub events to ingest" });
     } else {
-      const envNow = actions.readEnvVars(rootDir);
+      const envNow = actions.readEnvVars(rootDir, options.signal);
       // Resolve the mode the backend would pick from today's `.env` (unset
       // defaults to routing_websocket, the hosted relay path) so the prompt and
       // any "kept current" message reflect what actually runs.
@@ -1159,6 +1227,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       let decision: GithubIntakeDecision | undefined;
       if (prompts.configureIntake) {
         decision = await prompts.configureIntake({ authMode: resolvedAuth.mode, defaultMode, currentMode });
+        checkCancelled();
       }
       // The mode that will be in effect after this step — the explicit pick, or
       // the current `.env` value when the user keeps it. `effectiveEnv` mirrors
@@ -1171,7 +1240,8 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
         // buildIntakeEnvVars rejects an empty webhook secret — caught below and
         // surfaced as a warning rather than writing a config the API won't boot.
         const vars = buildIntakeEnvVars(decision.mode, { webhookSecret: decision.webhookSecret });
-        actions.applyEnvSelection(rootDir, vars, { overwrite: true });
+        checkCancelled();
+        actions.applyEnvSelection(rootDir, vars, { overwrite: true }, options.signal);
         effectiveMode = decision.mode;
         effectiveEnv = { ...envNow, ...vars };
         detail = `intake: ${intakeModeLabel(decision.mode)}`;
@@ -1205,6 +1275,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       }
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     // An IntakeConfigError (e.g. direct webhooks chosen with no secret) is
     // non-blocking: leave intake as-is and tell the user how to finish it.
     settle("intake", {
@@ -1219,8 +1290,10 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   //    not recreated, so user data and live work are untouched.
   begin("start-stack");
   try {
-    const alreadyRunning = await actions.isStackRunning(rootDir);
+    const alreadyRunning = await actions.isStackRunning(rootDir, options.signal);
+    checkCancelled();
     const startConfirmed = prompts.confirmStartStack ? await prompts.confirmStartStack({ rootDir, alreadyRunning }) : true;
+    checkCancelled();
     if (!startConfirmed) {
       settle("start-stack", {
         status: "skipped",
@@ -1232,8 +1305,10 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
         log("stack already running — leaving it intact");
       } else {
         await actions.startStack({ rootDir, onLog: log, signal: options.signal });
+        checkCancelled();
       }
       const health = await actions.checkBackendHealth({ rootDir, signal: options.signal });
+      checkCancelled();
       if (health.healthy) {
         backendReady = true;
         settle("start-stack", {
@@ -1256,6 +1331,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       }
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("start-stack", {
       status: "failed",
       detail: `could not start the stack: ${(error as Error).message}`,
@@ -1287,7 +1363,9 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       actions,
       confirmLogin: prompts.confirmAgentLogin,
       onLog: log,
+      signal: options.signal,
     });
+    checkCancelled();
     if (selectedAgents.length === 0) {
       settle("enable-agents", {
         status: "skipped",
@@ -1316,6 +1394,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       }
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     // runAgentSetup is built not to throw for expected conditions; anything that
     // escapes is treated as a non-blocking warning so it can't abort setup.
     settle("enable-agents", {
@@ -1329,11 +1408,14 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   // 8. Whitelist — restrict who can trigger ProPR. Written non-destructively.
   begin("whitelist");
   try {
-    const envNow = actions.readEnvVars(rootDir);
+    const envNow = actions.readEnvVars(rootDir, options.signal);
     const currentWhitelist = (envNow.GITHUB_USER_WHITELIST ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     const demoMode = resolvedAuth.mode === "demo";
     let whitelist: string[] | null = null;
-    if (prompts.configureWhitelist) whitelist = await prompts.configureWhitelist({ current: currentWhitelist, demoMode });
+    if (prompts.configureWhitelist) {
+      whitelist = await prompts.configureWhitelist({ current: currentWhitelist, demoMode });
+      checkCancelled();
+    }
     if (whitelist !== null) {
       // Trim, drop blanks, and de-dupe (first occurrence wins) so the value
       // matches saveWhitelist's "cleaned, de-duped usernames" contract — a
@@ -1342,11 +1424,12 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       // Prefer the settings API when the backend is up so the change applies
       // immediately (and never overwrites unrelated settings); always mirror into
       // .env so it survives a restart. Falls back to .env if the API is down.
-      const backendRunning = backendReady && await actions.isStackRunning(rootDir);
+      const backendRunning = backendReady && await actions.isStackRunning(rootDir, options.signal);
+      checkCancelled();
       const saved = await saveWhitelist({
         users: cleaned,
         backendRunning,
-        saveViaSettings: (users) => actions.saveWhitelistSetting(rootDir, users),
+        saveViaSettings: (users) => actions.saveWhitelistSetting(rootDir, users, options.signal),
         saveViaEnv: (users) => {
           // A non-empty list is written; clearing to "none" must *remove* the key
           // rather than blank it. applyEnvSelection ignores blank values (so it
@@ -1354,12 +1437,14 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
           // be skipped and the old list would survive on the next restart — so we
           // delete the key outright instead.
           if (users.length > 0) {
-            actions.applyEnvSelection(rootDir, { GITHUB_USER_WHITELIST: users.join(",") }, { overwrite: true });
+            actions.applyEnvSelection(rootDir, { GITHUB_USER_WHITELIST: users.join(",") }, { overwrite: true }, options.signal);
           } else {
-            actions.clearEnvKeys(rootDir, ["GITHUB_USER_WHITELIST"]);
+            actions.clearEnvKeys(rootDir, ["GITHUB_USER_WHITELIST"], options.signal);
           }
         },
+        signal: options.signal,
       });
+      checkCancelled();
       const where = saved.target === "settings" ? "via settings API" : "in .env";
       const summary = cleaned.length > 0 ? `${cleaned.length} user(s) allowed (${where})` : `whitelist cleared (${where})`;
       if (saved.error) {
@@ -1383,6 +1468,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       });
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("whitelist", {
       status: "failed",
       detail: `could not configure the whitelist: ${(error as Error).message}`,
@@ -1407,13 +1493,16 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     // The prompt itself is part of this optional step — a renderer that throws
     // while collecting the repo must degrade to a warning, not abort the run.
     const repoSelection = prompts.addRepository ? await prompts.addRepository({ rootDir }) : null;
+    checkCancelled();
     if (!repoSelection) {
       settle("repo", { status: "skipped", detail: "no repository added" });
     } else {
       try {
-        await actions.addRepository(repoSelection, rootDir);
+        await actions.addRepository(repoSelection, rootDir, options.signal);
+        checkCancelled();
         settle("repo", { status: "done", detail: `monitoring ${repoSelection.fullName}` });
       } catch (error) {
+      rethrowIfCancelled(error);
         settle("repo", {
           status: "warning",
           detail: `could not add ${repoSelection.fullName}: ${(error as Error).message}`,
@@ -1422,6 +1511,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       }
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("repo", {
       status: "warning",
       detail: `could not collect a repository to add: ${(error as Error).message}`,
@@ -1443,8 +1533,10 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   }
   let uiUrl = "";
   try {
-    uiUrl = await actions.resolveUiUrl(rootDir);
-  } catch {
+    uiUrl = await actions.resolveUiUrl(rootDir, options.signal);
+    checkCancelled();
+  } catch (error) {
+      rethrowIfCancelled(error);
     /* non-fatal: just omit the URL */
   }
   let opened = false;
@@ -1453,16 +1545,20 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     // The prompt only asks *whether* to open; the engine performs the open so
     // both renderers behave identically and neither has to import a launcher.
     const wantsOpen = uiUrl && prompts.launchUi ? await prompts.launchUi({ url: uiUrl }) : false;
+    checkCancelled();
     if (wantsOpen) {
       try {
-        await actions.openUrl(uiUrl);
+        await actions.openUrl(uiUrl, options.signal);
+        checkCancelled();
         opened = true;
-      } catch {
+      } catch (error) {
+      rethrowIfCancelled(error);
         // Headless host, no launcher, etc. — fall back to just printing the URL.
         openFailed = true;
       }
     }
-  } catch {
+  } catch (error) {
+      rethrowIfCancelled(error);
     /* opening the UI is best-effort; a failed launch prompt must not fail setup */
   }
   settle("launch-ui", {
@@ -1481,6 +1577,18 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
 
 /** Run or safely re-run the setup state machine. Existing host state is re-inspected on every call. */
 export async function runSetup(options: RunSetupOptions): Promise<SetupRunResult> {
+  const capability = getLocalSetupCapability(options.platform);
+  if (!capability.supported) {
+    const rootDir = resolve(options.root ?? process.cwd());
+    return {
+      rootDir,
+      state: createSetupState(rootDir),
+      capability,
+      completed: false,
+      cancelled: false,
+      errors: [{ code: "local-unsupported", message: capability.reason, retryable: false }],
+    };
+  }
   try {
     return await runSetupAttempt(options);
   } catch (error) {

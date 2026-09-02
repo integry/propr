@@ -9,8 +9,8 @@ export interface DesktopProfile {
 }
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string }
-  | { status: 'authentication-required'; message?: string }
+  | { status: 'ready'; version?: string; authentication?: string; activationTicket?: string; localActivationTicket?: string; transportScope?: string; profileId?: string; identityEpoch?: string }
+  | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };
 
@@ -33,12 +33,20 @@ export interface DesktopAuthenticationAdapter {
    * Opening the system browser alone is not successful authentication.
    */
   authenticate(profile: DesktopProfile): Promise<void>;
+  cancel?(profileId: string): Promise<void>;
 }
 
 export const DESKTOP_AUTHENTICATION_COMPLETE_EVENT = 'propr:desktop-authentication-complete';
+export const DESKTOP_ACCESS_INVALID_EVENT = 'propr:desktop-access-invalid';
 
 export interface DesktopAuthenticationCompleteEventDetail {
   profileId: string;
+}
+
+export interface DesktopAccessInvalidEventDetail {
+  profileId: string;
+  transportScope: string;
+  code: string;
 }
 
 export interface DesktopExternalBrowserAdapter {
@@ -46,15 +54,31 @@ export interface DesktopExternalBrowserAdapter {
 }
 
 export interface DesktopLocalSetupAdapter {
-  setup(): Promise<DesktopProfile>;
+  status(): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
+  start(request: import('../../../apps/desktop/src/shared/contract').DesktopSetupRequest): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
+  retry(request?: import('../../../apps/desktop/src/shared/contract').DesktopSetupRequest): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
+  cancel(): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
+  selectPrivateKey(): Promise<import('../../../apps/desktop/src/shared/contract').DesktopFilesystemSelection | null>;
+  acquireWebhookSecret(): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSecretSelection | null>;
+  onProgress(listener: (snapshot: import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot) => void): () => void;
 }
 
 export interface DesktopConnectionAdapter {
   probe(profile: DesktopProfile): Promise<DesktopConnectionResult>;
+  activate?(
+    profile: DesktopProfile,
+    result: Extract<DesktopConnectionResult, { status: 'ready' }>,
+    isCurrent?: () => boolean,
+  ): Promise<DesktopConnectionResult>;
+  publishActivation?(profile: DesktopProfile, result: Extract<DesktopConnectionResult, { status: 'ready' }>): void;
+  deactivate?(): void;
 }
 
 export interface DesktopAdapters {
   platform: DesktopPlatform;
+  app: {
+    onDeepLink(listener: (url: string) => void): () => void;
+  };
   profiles: DesktopProfileAdapter;
   discovery: DesktopDiscoveryAdapter;
   authentication: DesktopAuthenticationAdapter;
@@ -67,12 +91,4 @@ export interface DesktopAdapters {
  * Small preload-facing contract. Electron can expose this object through
  * contextBridge without exposing Node or command execution to React.
  */
-export interface ProprDesktopBridge extends DesktopAdapters {
-  isDesktop: true;
-}
-
-declare global {
-  interface Window {
-    __PROPR_DESKTOP__?: ProprDesktopBridge;
-  }
-}
+export type ProprDesktopBridge = import('../../../apps/desktop/src/shared/contract').DesktopRendererBridge;

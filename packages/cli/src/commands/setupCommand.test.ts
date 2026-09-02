@@ -141,11 +141,12 @@ test("--no-skill conflicts with --install-skill", async () => {
 });
 
 for (const platform of ["darwin", "win32"] as const) {
-  test(`setup reaches the agent-skill and engine flow on ${platform}`, { concurrency: false }, async () => {
+  test(`setup rejects ${platform} before agent-skill, config, or engine actions`, { concurrency: false }, async () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
     Object.defineProperty(process, "platform", { ...originalPlatform, value: platform });
     const offeredTargets: Array<string | undefined> = [];
     let sequentialRuns = 0;
+    let configLoads = 0;
     const exitCodes: number[] = [];
 
     try {
@@ -154,7 +155,7 @@ for (const platform of ["darwin", "win32"] as const) {
           offeredTargets.push(options?.explicitTargets);
           return [];
         },
-        createConfig: async () => ({} as never),
+        createConfig: async () => { configLoads += 1; return {} as never; },
         runSequential: async () => {
           sequentialRuns += 1;
           return { completed: true } as never;
@@ -164,9 +165,10 @@ for (const platform of ["darwin", "win32"] as const) {
 
       await command.parseAsync(["node", "propr", "--no-tui", "--install-skill", "codex"]);
 
-      assert.deepEqual(offeredTargets, ["codex"]);
-      assert.equal(sequentialRuns, 1);
-      assert.deepEqual(exitCodes, [0]);
+      assert.deepEqual(offeredTargets, []);
+      assert.equal(configLoads, 0);
+      assert.equal(sequentialRuns, 0);
+      assert.deepEqual(exitCodes, [1]);
     } finally {
       Object.defineProperty(process, "platform", originalPlatform);
     }

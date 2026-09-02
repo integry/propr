@@ -25,8 +25,9 @@ test("platform capabilities support Linux and make macOS/Windows explicitly remo
 });
 
 for (const platform of ["darwin", "win32"] as const) {
-  test(`the setup engine remains platform-neutral on ${platform}`, async () => {
+  test(`the setup engine rejects ${platform} before reporter or host actions`, async () => {
     let checksRun = false;
+    let reports = 0;
     const actions = {
       runChecks: async () => {
         checksRun = true;
@@ -37,12 +38,13 @@ for (const platform of ["darwin", "win32"] as const) {
         };
       },
     } as unknown as SetupActions;
-    const result = await runSetup({ root: "/stack", platform, actions });
+    const result = await runSetup({ root: "/stack", platform, actions, reporter: { onState: () => { reports += 1; } } });
 
-    assert.equal(checksRun, true);
+    assert.equal(checksRun, false);
+    assert.equal(reports, 0);
     assert.equal(result.completed, false);
     assert.equal(result.capability.kind, "remote-only");
-    assert.notEqual(result.errors[0]?.code, "local-unsupported");
+    assert.equal(result.errors[0]?.code, "local-unsupported");
   });
 }
 

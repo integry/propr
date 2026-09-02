@@ -1,5 +1,6 @@
 import type session from 'express-session';
 import type { Request, Response } from 'express';
+import { isProprLoopbackHostname, normalizeProprApiOrigin } from '@propr/shared';
 import { getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
 
@@ -16,9 +17,13 @@ export function getSessionCookieDomain(): string | undefined {
 export function shouldUseSecureSessionCookie(cookieDomain: string | undefined): boolean {
     try {
         if (process.env.API_PUBLIC_URL) {
-            const url = new URL(process.env.API_PUBLIC_URL);
+            const raw = process.env.API_PUBLIC_URL;
+            const url = new URL(raw);
             if (url.protocol === 'https:') return true;
-            if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]')) return false;
+            if (normalizeProprApiOrigin(raw) !== url.origin) {
+                return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
+            }
+            if (url.protocol === 'http:' && isProprLoopbackHostname(url.hostname)) return false;
         }
         return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
     } catch {

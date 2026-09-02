@@ -1,15 +1,12 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { redactDesktopValue } from './secret-redaction';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface DesktopLogger {
   log(level: LogLevel, event: string, fields?: Record<string, unknown>): void;
 }
-
-const serializeError = (value: unknown): unknown => value instanceof Error
-  ? { name: value.name, message: value.message, stack: value.stack }
-  : value;
 
 export const createDesktopLogger = (
   logPath: string,
@@ -21,7 +18,7 @@ export const createDesktopLogger = (
       timestamp: new Date().toISOString(),
       level,
       event,
-      ...Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, serializeError(value)])),
+      ...redactDesktopValue(fields) as Record<string, unknown>,
     });
     const consoleMethod = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
     consoleMethod(record);
@@ -36,7 +33,7 @@ export const createDesktopLogger = (
         } catch {
           // Keep the fixed logger diagnostic available even if the smoke-only sink also fails.
         }
-        console.error(JSON.stringify({ level: 'error', event: 'desktop.log.write_failed', error: serializeError(error) }));
+        console.error(JSON.stringify({ level: 'error', event: 'desktop.log.write_failed', error: redactDesktopValue(error) }));
       });
   };
   return { log };

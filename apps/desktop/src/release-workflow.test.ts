@@ -242,8 +242,8 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /- platform: darwin\n\s+arch: arm64\n\s+runner: macos-15/, `${jobName} is missing native macOS arm64`);
       assert.match(
         section,
-        /- name: Typecheck and test (?:unsigned|production) desktop runtime\n\s+shell: bash\n\s+run: \|\n\s+npm run desktop:typecheck\n\s+npm run desktop:test/,
-        `${jobName} must run the complete desktop tests without a platform condition`,
+        /- name: Typecheck and test (?:unsigned|production) desktop runtime\n\s+shell: bash\n\s+run: \|\n\s+npm run desktop:typecheck\n\s+npm run test:native-durability -w @propr\/desktop\n\s+npm run desktop:test/,
+        `${jobName} must run the native durability gate and complete desktop tests without a platform condition`,
       );
       assert.match(section, /Prove private-snapshot native DMG mounting is available/);
       assert.match(section, /release-artifacts\.mjs probe-dmg-private-snapshot-isolation/);
