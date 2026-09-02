@@ -1559,6 +1559,15 @@ function Get-HkcuFixtureBoundaryDiagnostic {
     'REGISTRY_PATH'
 }
 
+function Get-HkcuFixtureDigestDiagnostic([string]$Callsite) {
+  return Get-SanitizedSupervisorInvocationDiagnostic `
+    'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+    'HKCU_BASELINE_RESTORE' `
+    'FIXTURE_SETUP' `
+    $Callsite `
+    'REGISTRY_ROOT'
+}
+
 function Assert-HkcuDesktopFixtureOperation([bool]$Condition) {
   if (!$Condition) { throw 'hkcu desktop fixture operation failed' }
 }
@@ -1629,9 +1638,10 @@ function Initialize-HkcuDesktopFixtureBoundary($Boundary) {
         -Callsite 'BASELINE_DIGEST' `
         -Field 'REGISTRY_ROOT' `
         -Action {
-          Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+          $digest = Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+          Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
+          $digest
         }
-      Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $baselineDigest)
       $Boundary.BaselineDigest = $baselineDigest
       $Boundary.BackupLeaf = [Guid]::NewGuid().ToString('D')
       $Boundary.BackupPath = Join-Path `
@@ -1676,9 +1686,11 @@ function Restore-HkcuDesktopFixtureBoundary(
         -Callsite 'BASELINE_DIGEST' `
         -Field 'REGISTRY_ROOT' `
         -Action {
-          Get-HkcuFixtureRegistryDigest ([string]$Boundary.BackupPath)
+          $digest = Get-HkcuFixtureRegistryDigest ([string]$Boundary.BackupPath)
+          Assert-HkcuDesktopFixtureOperation `
+            ($digest -ceq [string]$Boundary.BaselineDigest)
+          $digest
         }
-      Assert-HkcuDesktopFixtureOperation ($backupDigest -ceq [string]$Boundary.BaselineDigest)
       if (Test-Path -LiteralPath $Boundary.DesktopKey) {
         Invoke-HkcuDesktopFixtureOperation `
           -Callsite 'TARGET_OWNERSHIP' `
@@ -1692,13 +1704,24 @@ function Restore-HkcuDesktopFixtureBoundary(
       Assert-HkcuDesktopFixtureOperation (!(Test-Path -LiteralPath $Boundary.DesktopKey))
       Rename-Item -LiteralPath $Boundary.BackupPath `
         -NewName ([string]$Boundary.DesktopLeaf) -ErrorAction Stop
-      $restoredDigest = Invoke-HkcuDesktopFixtureOperation `
-        -Callsite 'BASELINE_DIGEST' `
-        -Field 'REGISTRY_ROOT' `
-        -Action {
-          Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
-        }
+      $restoredDigestFailure = $null
+      try {
+        $restoredDigest = Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'BASELINE_DIGEST' `
+          -Field 'REGISTRY_ROOT' `
+          -Action {
+            $digest = Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+            Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
+            Assert-HkcuDesktopFixtureOperation `
+              ($digest -ceq [string]$Boundary.BaselineDigest)
+            $digest
+          }
+      } catch {
+        $restoredDigestFailure = [string]$_.Exception.Message
+        $restoredDigest = 'INVALID'
+      }
       if ($Boundary.ForcePostRestoreDigestMismatch) {
+        $restoredDigestFailure = Get-HkcuFixtureDigestDiagnostic 'BASELINE_DIGEST'
         $restoredDigest = 'INVALID'
       }
       if ($restoredDigest -cne [string]$Boundary.BaselineDigest) {
@@ -1722,7 +1745,6 @@ function Restore-HkcuDesktopFixtureBoundary(
               }
               Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $Boundary.BackupPath)
               Assert-HkcuDesktopFixtureOperation (!(Test-Path -LiteralPath $Boundary.DesktopKey))
-              throw 'post-restore digest mismatch'
             } catch {
               $desktopDigest = if (Test-Path -LiteralPath $Boundary.DesktopKey) {
                 Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
@@ -1735,13 +1757,15 @@ function Restore-HkcuDesktopFixtureBoundary(
                   $backupDigestAfterRecovery -ceq [string]$Boundary.BaselineDigest
               )
               throw
-            }
           }
         }
+        throw $restoredDigestFailure
+      }
       Invoke-HkcuDesktopFixtureOperation `
         -Callsite 'FINAL_BASELINE_DIGEST' `
         -Field 'REGISTRY_ROOT' `
         -Action {
+          Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $restoredDigest)
           Assert-HkcuDesktopFixtureOperation `
             ($restoredDigest -ceq [string]$Boundary.BaselineDigest)
         }
@@ -6045,6 +6069,93 @@ function Test-SupervisorFixtureRegistryDigestAttributionRegression([string]$Path
   }
 }
 
+function Assert-HkcuFixtureDigestFailureAttribution(
+  [scriptblock]$Action,
+  [string]$ExpectedCallsite
+) {
+  $expected = Get-HkcuFixtureDigestDiagnostic $ExpectedCallsite
+  $broadBaseline = Get-HkcuFixtureBoundaryDiagnostic
+  $actual = $null
+  try {
+    & $Action
+    Assert-HkcuDesktopFixtureOperation $false
+  } catch {
+    $actual = [string]$_.Exception.Message
+  }
+  Assert-HkcuDesktopFixtureOperation ($actual -ceq $expected)
+  Assert-HkcuDesktopFixtureOperation ($actual -cne $broadBaseline)
+}
+
+function Get-HkcuFixtureDifferentDigest([string]$Digest) {
+  $zeroDigest = '0' * 64
+  if ([string]$Digest -cne $zeroDigest) { return $zeroDigest }
+  return 'f' * 64
+}
+
+function Test-HkcuFixtureDigestFailureAttributionRegression(
+  [string]$InitializeInvalidPath,
+  [string]$BackupEqualityPath,
+  [string]$PostRestoreEqualityPath,
+  [string]$FinalEqualityPath
+) {
+  Set-HkcuFixtureBoundaryValueKinds $InitializeInvalidPath
+  $originalHkcuDigest =
+    (Get-Command Get-HkcuFixtureRegistryDigest -CommandType Function).ScriptBlock
+  function Get-HkcuFixtureRegistryDigest { return 'INVALID' }
+  try {
+    $initializeInvalidBoundary =
+      New-HkcuDesktopFixtureBoundaryState $InitializeInvalidPath
+    Assert-HkcuFixtureDigestFailureAttribution `
+      { Initialize-HkcuDesktopFixtureBoundary $initializeInvalidBoundary } `
+      'BASELINE_DIGEST'
+    Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $InitializeInvalidPath)
+  } finally {
+    Set-Item -Path Function:\Get-HkcuFixtureRegistryDigest `
+      -Value $originalHkcuDigest
+  }
+
+  Set-HkcuFixtureBoundaryValueKinds $BackupEqualityPath
+  $backupEqualityBoundary = New-HkcuDesktopFixtureBoundaryState $BackupEqualityPath
+  Initialize-HkcuDesktopFixtureBoundary $backupEqualityBoundary
+  $backupEqualityBoundary.BaselineDigest =
+    Get-HkcuFixtureDifferentDigest ([string]$backupEqualityBoundary.BaselineDigest)
+  Assert-HkcuFixtureDigestFailureAttribution `
+    { Restore-HkcuDesktopFixtureBoundary $backupEqualityBoundary $false } `
+    'BASELINE_DIGEST'
+  Assert-HkcuDesktopFixtureOperation `
+    ((Test-Path -LiteralPath $backupEqualityBoundary.BackupPath) -and
+      !(Test-Path -LiteralPath $BackupEqualityPath))
+
+  Set-HkcuFixtureBoundaryValueKinds $PostRestoreEqualityPath
+  $postRestoreEqualityBoundary =
+    New-HkcuDesktopFixtureBoundaryState $PostRestoreEqualityPath
+  Initialize-HkcuDesktopFixtureBoundary $postRestoreEqualityBoundary
+  $postRestoreEqualityBoundary.ForcePostRestoreDigestMismatch = $true
+  Assert-HkcuFixtureDigestFailureAttribution `
+    { Restore-HkcuDesktopFixtureBoundary $postRestoreEqualityBoundary $false } `
+    'BASELINE_DIGEST'
+  Assert-HkcuDesktopFixtureOperation `
+    ((Test-Path -LiteralPath $postRestoreEqualityBoundary.BackupPath) -and
+      !(Test-Path -LiteralPath $PostRestoreEqualityPath))
+
+  Set-HkcuFixtureBoundaryValueKinds $FinalEqualityPath
+  $finalDigest = Get-HkcuFixtureRegistryDigest $FinalEqualityPath
+  $differentFinalDigest = Get-HkcuFixtureDifferentDigest $finalDigest
+  Assert-HkcuFixtureDigestFailureAttribution `
+    {
+      Invoke-HkcuDesktopFixtureOperation `
+        -Callsite 'FINAL_BASELINE_DIGEST' `
+        -Field 'REGISTRY_ROOT' `
+        -Action {
+          Assert-HkcuDesktopFixtureOperation (
+            (Get-HkcuFixtureRegistryDigest $FinalEqualityPath) -ceq
+              $differentFinalDigest
+          )
+        }
+    } `
+    'FINAL_BASELINE_DIGEST'
+}
+
 function Test-HkcuDesktopFixtureBoundaryRegression {
   $root = 'Registry::HKEY_CURRENT_USER\Software\ProPRSupervisorFixture'
   $parent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
@@ -6063,6 +6174,14 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
   $noneLengthPath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
   $noneBytePath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
   $digestAttributionPath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $initializeInvalidParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $initializeInvalidDesktop = Join-Path $initializeInvalidParent 'Desktop'
+  $backupEqualityParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $backupEqualityDesktop = Join-Path $backupEqualityParent 'Desktop'
+  $postRestoreEqualityParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $postRestoreEqualityDesktop = Join-Path $postRestoreEqualityParent 'Desktop'
+  $finalEqualityParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $finalEqualityDesktop = Join-Path $finalEqualityParent 'Desktop'
   Invoke-SupervisorAttributedOperation `
     -Scenario 'HKCU_BASELINE_RESTORE' `
     -Phase 'FIXTURE_SETUP' `
@@ -6073,14 +6192,18 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
         Test-HkcuFixtureNativeNoneValueReadRegression `
           $noneTypePath $noneLengthPath $noneBytePath
         Test-SupervisorFixtureRegistryDigestAttributionRegression $digestAttributionPath
+        Test-HkcuFixtureDigestFailureAttributionRegression `
+          $initializeInvalidDesktop `
+          $backupEqualityDesktop `
+          $postRestoreEqualityDesktop `
+          $finalEqualityDesktop
         Set-HkcuFixtureBoundaryValueKinds $presentDesktop
         $presentDigest = Invoke-HkcuDesktopFixtureOperation `
           -Callsite 'BASELINE_DIGEST' `
           -Field 'REGISTRY_ROOT' `
           -Action {
             $digest = Get-HkcuFixtureRegistryDigest $presentDesktop
-            Assert-True (Test-HkcuFixtureRegistryDigest $digest) `
-              (Get-HkcuFixtureBoundaryDiagnostic)
+            Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
             $digest
           }
         $presentBoundary = New-HkcuDesktopFixtureBoundaryState $presentDesktop
@@ -6094,10 +6217,10 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
           -Callsite 'BASELINE_DIGEST' `
           -Field 'REGISTRY_ROOT' `
           -Action {
-            Assert-True (
+            Assert-HkcuDesktopFixtureOperation (
               (Get-HkcuFixtureRegistryDigest $presentBoundary.BackupPath) -ceq
                 $presentDigest
-            ) (Get-HkcuFixtureBoundaryDiagnostic)
+            )
           }
         [void](New-Item -Path $presentDesktop -Force -ErrorAction Stop)
         $presentFixtureOwned = $true
@@ -6108,8 +6231,9 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
           -Callsite 'FINAL_BASELINE_DIGEST' `
           -Field 'REGISTRY_ROOT' `
           -Action {
-            Assert-True ((Get-HkcuFixtureRegistryDigest $presentDesktop) -ceq
-                $presentDigest) (Get-HkcuFixtureBoundaryDiagnostic)
+            Assert-HkcuDesktopFixtureOperation (
+              (Get-HkcuFixtureRegistryDigest $presentDesktop) -ceq $presentDigest
+            )
           }
         Assert-True (!(Test-Path -LiteralPath $presentBoundary.BackupPath)) `
           (Get-HkcuFixtureBoundaryDiagnostic)
@@ -6118,8 +6242,9 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
           -Callsite 'FINAL_BASELINE_DIGEST' `
           -Field 'REGISTRY_ROOT' `
           -Action {
-            Assert-True ((Get-HkcuFixtureRegistryDigest $presentDesktop) -ceq
-                $presentDigest) (Get-HkcuFixtureBoundaryDiagnostic)
+            Assert-HkcuDesktopFixtureOperation (
+              (Get-HkcuFixtureRegistryDigest $presentDesktop) -ceq $presentDigest
+            )
           }
 
         [void](New-Item -Path $absentParent -Force -ErrorAction Stop)
@@ -6187,8 +6312,7 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
           -Field 'REGISTRY_ROOT' `
           -Action {
             $digest = Get-HkcuFixtureRegistryDigest $recoveryCollisionDesktop
-            Assert-True (Test-HkcuFixtureRegistryDigest $digest) `
-              (Get-HkcuFixtureBoundaryDiagnostic)
+            Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
             $digest
           }
         $recoveryCollisionBoundary =
@@ -6213,9 +6337,11 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
           -Callsite 'FINAL_BASELINE_DIGEST' `
           -Field 'REGISTRY_ROOT' `
           -Action {
-            Assert-True ((Test-Path -LiteralPath $recoveryCollisionDesktop) -and
+            Assert-HkcuDesktopFixtureOperation (
+              (Test-Path -LiteralPath $recoveryCollisionDesktop) -and
                 (Get-HkcuFixtureRegistryDigest $recoveryCollisionDesktop) -ceq
-                  $recoveryCollisionDigest) (Get-HkcuFixtureBoundaryDiagnostic)
+                  $recoveryCollisionDigest
+            )
           }
 
         Set-HkcuFixtureBoundaryValueKinds $recoveryRenameFailureDesktop
@@ -6224,8 +6350,7 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
           -Field 'REGISTRY_ROOT' `
           -Action {
             $digest = Get-HkcuFixtureRegistryDigest $recoveryRenameFailureDesktop
-            Assert-True (Test-HkcuFixtureRegistryDigest $digest) `
-              (Get-HkcuFixtureBoundaryDiagnostic)
+            Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
             $digest
           }
         $recoveryRenameFailureBoundary =
@@ -6250,9 +6375,11 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
           -Callsite 'FINAL_BASELINE_DIGEST' `
           -Field 'REGISTRY_ROOT' `
           -Action {
-            Assert-True ((Test-Path -LiteralPath $recoveryRenameFailureDesktop) -and
+            Assert-HkcuDesktopFixtureOperation (
+              (Test-Path -LiteralPath $recoveryRenameFailureDesktop) -and
                 (Get-HkcuFixtureRegistryDigest $recoveryRenameFailureDesktop) -ceq
-                  $recoveryRenameFailureDigest) (Get-HkcuFixtureBoundaryDiagnostic)
+                  $recoveryRenameFailureDigest
+            )
           }
         Invoke-HkcuDesktopFixtureOperation `
           -Callsite 'FINAL_BACKUP_ABSENCE' `
@@ -6272,7 +6399,11 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
             $noneTypePath,
             $noneLengthPath,
             $noneBytePath,
-            $digestAttributionPath
+            $digestAttributionPath,
+            $initializeInvalidParent,
+            $backupEqualityParent,
+            $postRestoreEqualityParent,
+            $finalEqualityParent
           )) {
           if (Test-Path -LiteralPath $path) {
             Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue

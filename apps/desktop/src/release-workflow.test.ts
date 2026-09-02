@@ -1109,14 +1109,26 @@ describe('desktop trusted release workflow', () => {
       /\$presentDigest = Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'[\s\S]*Get-HkcuFixtureRegistryDigest \$presentDesktop/,
     );
     assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Initialize-HkcuDesktopFixtureBoundary[\s\S]*-Callsite 'BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'\s+`\n\s+-Action \{\n\s+\$digest = Get-HkcuFixtureRegistryDigest \(\[string\]\$Boundary\.DesktopKey\)\n\s+Assert-HkcuDesktopFixtureOperation \(Test-HkcuFixtureRegistryDigest \$digest\)\n\s+\$digest\n\s+\}\n\s+\$Boundary\.BaselineDigest = \$baselineDigest/,
+    );
+    assert.match(
       hkcuBoundaryRegression,
-      /Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'[\s\S]*Get-HkcuFixtureRegistryDigest \$presentBoundary\.BackupPath[\s\S]*\$presentDigest/,
+      /Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'[\s\S]*Assert-HkcuDesktopFixtureOperation \(\n\s+\(Get-HkcuFixtureRegistryDigest \$presentBoundary\.BackupPath\) -ceq\n\s+\$presentDigest\n\s+\)/,
     );
     assert.equal(
       (hkcuBoundaryRegression.match(
-        /Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'FINAL_BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'\s+`\n\s+-Action \{\n\s+Assert-True \(\(Get-HkcuFixtureRegistryDigest \$presentDesktop\) -ceq/g,
+        /Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'FINAL_BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'\s+`\n\s+-Action \{\n\s+Assert-HkcuDesktopFixtureOperation \(\n\s+\(Get-HkcuFixtureRegistryDigest \$presentDesktop\) -ceq \$presentDigest/g,
       ) ?? []).length,
       2,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Assert-HkcuFixtureDigestFailureAttribution[\s\S]*\$actual = \[string\]\$_\.Exception\.Message[\s\S]*Assert-HkcuDesktopFixtureOperation \(\$actual -ceq \$expected\)[\s\S]*Assert-HkcuDesktopFixtureOperation \(\$actual -cne \$broadBaseline\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Test-HkcuFixtureDigestFailureAttributionRegression[\s\S]*Initialize-HkcuDesktopFixtureBoundary \$initializeInvalidBoundary[\s\S]*'BASELINE_DIGEST'[\s\S]*Restore-HkcuDesktopFixtureBoundary \$backupEqualityBoundary \$false[\s\S]*'BASELINE_DIGEST'[\s\S]*ForcePostRestoreDigestMismatch = \$true[\s\S]*Restore-HkcuDesktopFixtureBoundary \$postRestoreEqualityBoundary \$false[\s\S]*'BASELINE_DIGEST'[\s\S]*-Callsite 'FINAL_BASELINE_DIGEST'[\s\S]*'FINAL_BASELINE_DIGEST'/,
     );
     assert.match(
       hkcuBoundaryRegression,
