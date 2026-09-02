@@ -104,6 +104,88 @@ PROPR_DESKTOP_ENABLE_RPM=1 \
 npm run make -w @propr/desktop -- --arch="$(node -p process.arch)"
 ```
 
+### Unsigned internal-RC install and removal (macOS/Linux)
+
+Use the artifact whose final `x64` or `arm64` suffix matches the machine. These commands are for internal release
+candidates only. They do not assert signing or notarization, do not change Gatekeeper policy, and do not use `xattr`,
+`spctl --add`, or another quarantine bypass.
+
+On Debian/Ubuntu, exercise the DEB and remove it with the native package manager:
+
+```sh
+ARCH=x64 # use arm64 on an ARM64 Linux machine
+VERSION=0.8.15
+sudo apt install "./ProPR-Desktop-${VERSION}-linux-${ARCH}.deb"
+propr-desktop
+xdg-open 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000'
+xdg-open 'propr://connect?api=https%3A%2F%2Ft-your-tunnel.propr.dev'
+sudo apt remove propr-desktop
+```
+
+On Fedora/RHEL-family systems, use the RPM. The ZIP is the non-package-manager alternative on either family:
+
+```sh
+ARCH=x64 # use arm64 on an ARM64 Linux machine
+VERSION=0.8.15
+sudo rpm --install "ProPR-Desktop-${VERSION}-linux-${ARCH}.rpm"
+propr-desktop
+sudo rpm --erase propr-desktop
+
+install_root="$(mktemp -d)"
+unzip "ProPR-Desktop-${VERSION}-linux-${ARCH}.zip" -d "$install_root"
+"$install_root/propr-desktop-linux-${ARCH}/propr-desktop"
+rm -r "$install_root"
+```
+
+On either Intel (`x64`) or Apple Silicon (`arm64`) macOS, the DMG flow mounts and copies the app; the ZIP flow uses
+the system archive tool. Quit ProPR Desktop before removal:
+
+```sh
+ARCH=arm64 # use x64 on an Intel Mac
+VERSION=0.8.15
+mount_point="$(mktemp -d)"
+hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" \
+  "ProPR-Desktop-${VERSION}-macos-${ARCH}.dmg"
+ditto "$mount_point/propr-desktop.app" '/Applications/propr-desktop.app'
+hdiutil detach "$mount_point"
+rmdir "$mount_point"
+open '/Applications/propr-desktop.app'
+open 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000'
+open 'propr://connect?api=https%3A%2F%2Ft-your-tunnel.propr.dev'
+osascript -e 'tell application id "dev.propr.desktop" to quit'
+rm -r '/Applications/propr-desktop.app'
+
+install_root="$(mktemp -d)"
+ditto -x -k "ProPR-Desktop-${VERSION}-macos-${ARCH}.zip" "$install_root"
+open "$install_root/propr-desktop.app"
+osascript -e 'tell application id "dev.propr.desktop" to quit'
+rm -r "$install_root"
+```
+
+The pull-request native gate runs on `ubuntu-24.04`/`ubuntu-24.04-arm` and
+`macos-15-intel`/`macos-15`. It consumes the canonical staged bytes: DEB/RPM are extracted with `dpkg-deb`/`rpm2cpio`
+and ZIP with the platform archive tool; DMG is mounted read-only and copied with `ditto`. DMG authority begins as soon
+as attach succeeds, and detach plus an absent-mount postcondition is mandatory before its mount root is removed. Every
+format gets a first launch, clean shutdown, preserved-state relaunch, and owned-root removal. The gate rechecks the executable architecture,
+identity/version, launcher or bundle, safe paths/symlinks, 0700/0600 profile authority, unchanged artifact bytes, and
+absence of default-profile leakage. A fixed non-secret custody probe must either round-trip through OS encryption or be
+refused with no `basic_text`/plaintext fallback; macOS additionally requires the OS-protected Keychain backend.
+Evidence files contain fixed event names only—never endpoints, paths, credentials,
+or process output. Deep-link events are written only after the already-loaded renderer acknowledges the exact consumed
+confirmation or queued navigation state; each dispatch waits for that bounded acknowledgement before the next begins.
+
+Linux DEB/RPM protocol evidence uses an isolated XDG MIME database and a CI-relocated copy of the package's real
+desktop launcher, then dispatches with `gio`; ZIP has no registered launcher, so its single-instance dispatch evidence
+is direct and is reported as that limitation. macOS registers the copied bundle with LaunchServices and dispatches with
+`open -b`; unregister failure or a stale exact copied-bundle record fails cleanup. LaunchServices' database writes are
+OS-managed state, distinct from app-owned profile writes, and are not reported as cleaned while that copied record remains.
+Cold starts for every format are direct executable argv launches, not OS protocol launches; OS protocol dispatch evidence
+is warm-only. The Linux job does not forward its outer session-bus address or provision a scoped Secret Service, so its
+secure-storage result is explicitly fallback-only: `basic_text`/plaintext storage must be refused, and installed
+`libsecret` is not claimed as exercised custody. These checks do
+not claim end-user Gatekeeper approval for unsigned builds, signing, notarization, or behavior on a desktop session that
+the hosted runner cannot provide.
+
 ### CI preflight, signing, and notarization configuration
 
 Repository-ruleset inspection uses a dedicated GitHub App installed only on this repository. Configure the App with

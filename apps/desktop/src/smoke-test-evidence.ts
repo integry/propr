@@ -9,6 +9,10 @@ import {
 import { join } from 'node:path';
 
 export const PACKAGED_SMOKE_EVIDENCE_FILE = 'application.smoke-evidence.jsonl';
+export const NATIVE_SMOKE_EVIDENCE_FILES = Object.freeze({
+  first: 'application.smoke-evidence.first.jsonl',
+  relaunch: 'application.smoke-evidence.relaunch.jsonl',
+});
 
 export const PACKAGED_SMOKE_EVIDENCE_EVENTS = [
   'desktop.smoke.authorized',
@@ -23,9 +27,32 @@ export const PACKAGED_SMOKE_EVIDENCE_EVENTS = [
   'desktop.log.write_failed',
 ] as const;
 
+export const NATIVE_SMOKE_EVIDENCE_EVENTS = [
+  'desktop.deeplink.delivery_failed',
+  'desktop.native.identity_verified',
+  'desktop.native.profile_fresh',
+  'desktop.native.profile_preserved',
+  'desktop.native.secure_storage_enforced',
+  'desktop.native.secure_storage_fallback_refused',
+  'desktop.native.secure_storage_probe.started',
+  'desktop.native.secure_storage_probe.completed',
+  'desktop.deeplink.cold_manual_once',
+  'desktop.deeplink.cold_tunnel_once',
+  'desktop.deeplink.warm_manual_once',
+  'desktop.deeplink.warm_tunnel_once',
+  'desktop.deeplink.warm_open_once',
+  'desktop.deeplink.confirmation_required',
+  'desktop.deeplink.rejected_malformed',
+  'desktop.deeplink.rejected_oversized',
+  'desktop.deeplink.rejected_unsafe_scheme',
+] as const;
+
 export type PackagedSmokeEvidenceEvent = typeof PACKAGED_SMOKE_EVIDENCE_EVENTS[number];
 
-const allowedEvents = new Set<string>(PACKAGED_SMOKE_EVIDENCE_EVENTS);
+const allowedEvents = new Set<string>([
+  ...PACKAGED_SMOKE_EVIDENCE_EVENTS,
+  ...NATIVE_SMOKE_EVIDENCE_EVENTS,
+]);
 
 export interface PackagedSmokeEvidenceSink {
   write(event: string): void;
@@ -34,10 +61,12 @@ export interface PackagedSmokeEvidenceSink {
 
 export const createPackagedSmokeEvidenceSink = (
   authorizedUserDataDirectory: string | null,
+  nativePhase?: keyof typeof NATIVE_SMOKE_EVIDENCE_FILES,
 ): PackagedSmokeEvidenceSink | null => {
   if (authorizedUserDataDirectory === null) return null;
 
-  const evidencePath = join(authorizedUserDataDirectory, PACKAGED_SMOKE_EVIDENCE_FILE);
+  const evidenceFile = nativePhase ? NATIVE_SMOKE_EVIDENCE_FILES[nativePhase] : PACKAGED_SMOKE_EVIDENCE_FILE;
+  const evidencePath = join(authorizedUserDataDirectory, evidenceFile);
   const descriptor = openSync(evidencePath, 'wx', 0o600);
   let closed = false;
   const emitted = new Set<string>();

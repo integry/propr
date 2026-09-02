@@ -166,13 +166,21 @@ export const DesktopRoot = () => {
         const deepLink = new URL(value);
         if (deepLink.hostname === 'connect') {
           const apiUrl = deepLink.searchParams.get('api');
-          if (apiUrl) setInitialApiUrl(apiUrl);
+          if (apiUrl) {
+            setInitialApiUrl(apiUrl);
+            return { kind: 'connect-confirmation', target: apiUrl };
+          }
         } else if (deepLink.hostname === 'open') {
-          deepLinkNavigation.receive(value);
+          const result = deepLinkNavigation.receiveWithState(value);
+          if (result) return {
+            kind: result.state === 'queued' ? 'open-queued' : 'open-navigated',
+            target: result.path,
+          };
         }
       } catch {
         // Main validates protocol input; ignore malformed values defensively.
       }
+      return null;
     });
     void Promise.all([bridge.app.getMetadata(), bridge.storage.security(), bridge.profiles.list()])
       .then(async ([appMetadata, storageSecurity, profiles]) => {
