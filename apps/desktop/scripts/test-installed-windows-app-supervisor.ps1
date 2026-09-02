@@ -1535,6 +1535,8 @@ function Get-SupervisorAttributionTotalityCases {
     'FORGED_PREFIX_SECRET',
     'MISSING_GATE_STATE_DIRECTORY',
     'MISSING_EXECUTABLE_BACKUP',
+    'NESTED_SHADOW_CRITICAL_GATE_PATH',
+    'NESTED_SHADOW_PROCESS_STATE_READ',
     'ALLOWLISTED_TEST_SCENARIO_PHASE',
     'ALLOWLISTED_CALLSITE_FIELD',
     'POWERSHELL_GATE_PUBLICATION'
@@ -2450,20 +2452,24 @@ function Test-SupervisorInvocationAttributionTotality {
       }
     )) {
     $diagnostic = ''
-    $callsite = if ($case.PSObject.Properties['Callsite']) {
+    $caseExpectedTest = [string]$case.Test
+    $caseExpectedScenario = [string]$case.Scenario
+    $caseExpectedPhase = [string]$case.Phase
+    $caseExpectedCallsite = if ($case.PSObject.Properties['Callsite']) {
       [string]$case.Callsite
     } else { 'GENERAL' }
-    $field = if ($case.PSObject.Properties['Field']) {
+    $caseExpectedField = if ($case.PSObject.Properties['Field']) {
       [string]$case.Field
     } else { 'NONE' }
+    $caseExpectedId = [string]$case.CaseId
     try {
-      Invoke-SupervisorAttributedTest -Test $case.Test -Action {
+      Invoke-SupervisorAttributedTest -Test $caseExpectedTest -Action {
         Invoke-SupervisorAttributedBoundary `
-          -Test $case.Test `
-          -Scenario $case.Scenario `
-          -Phase $case.Phase `
-          -Callsite $callsite `
-          -Field $field `
+          -Test $caseExpectedTest `
+          -Scenario $caseExpectedScenario `
+          -Phase $caseExpectedPhase `
+          -Callsite $caseExpectedCallsite `
+          -Field $caseExpectedField `
           -Action {
             throw (
               "Cannot bind argument to parameter 'LiteralPath' because it is null. " +
@@ -2476,15 +2482,79 @@ function Test-SupervisorInvocationAttributionTotality {
       $diagnostic = $_.Exception.Message
     }
     Assert-SupervisorInvocationDiagnosticBounded `
-      $diagnostic $case.Test $case.Scenario $case.Phase $callsite $field `
-      $case.CaseId
+      -Diagnostic $diagnostic `
+      -Test $caseExpectedTest `
+      -Scenario $caseExpectedScenario `
+      -Phase $caseExpectedPhase `
+      -Callsite $caseExpectedCallsite `
+      -Field $caseExpectedField `
+      -CaseId $caseExpectedId
+  }
+  foreach ($nestedShadowCase in @(
+      [PSCustomObject]@{
+        CaseId='NESTED_SHADOW_CRITICAL_GATE_PATH'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'
+        Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'
+        Callsite='CRITICAL_GATE_PATH'
+        Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='NESTED_SHADOW_PROCESS_STATE_READ'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'
+        Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'
+        Callsite='PROCESS_STATE_READ'
+        Field='PROCESS_STATE_PATH'
+      }
+    )) {
+    $nestedShadowDiagnostic = ''
+    $nestedExpectedTest = [string]$nestedShadowCase.Test
+    $nestedExpectedScenario = [string]$nestedShadowCase.Scenario
+    $nestedExpectedPhase = [string]$nestedShadowCase.Phase
+    $nestedExpectedCallsite = [string]$nestedShadowCase.Callsite
+    $nestedExpectedField = [string]$nestedShadowCase.Field
+    $nestedExpectedId = [string]$nestedShadowCase.CaseId
+    try {
+      Invoke-SupervisorAttributedBoundary `
+        -Test 'ATTRIBUTION_TOTALITY' `
+        -Scenario 'PROTOCOL_REGRESSION' `
+        -Phase 'TEST' `
+        -Callsite 'GENERAL' `
+        -Field 'NONE' `
+        -Action {
+          Invoke-SupervisorAttributedBoundary `
+            -Test $nestedExpectedTest `
+            -Scenario $nestedExpectedScenario `
+            -Phase $nestedExpectedPhase `
+            -Callsite $nestedExpectedCallsite `
+            -Field $nestedExpectedField `
+            -Action {
+              throw (
+                "Cannot bind argument to parameter 'LiteralPath' because it is null. " +
+                "$secretNeedle $testRoot Registry::HKEY_LOCAL_MACHINE S-1-5-21 " +
+                'manifest stdout stderr'
+              )
+            }
+        }
+    } catch {
+      $nestedShadowDiagnostic = $_.Exception.Message
+    }
+    Assert-SupervisorInvocationDiagnosticBounded `
+      -Diagnostic $nestedShadowDiagnostic `
+      -Test $nestedExpectedTest `
+      -Scenario $nestedExpectedScenario `
+      -Phase $nestedExpectedPhase `
+      -Callsite $nestedExpectedCallsite `
+      -Field $nestedExpectedField `
+      -CaseId $nestedExpectedId
   }
   $forgedDiagnostic = ''
   try {
     Invoke-SupervisorAttributedBoundary `
-      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
-      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
-      'RESOURCE_ASSERTION' `
+      -Test 'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      -Scenario 'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      -Phase 'RESOURCE_ASSERTION' `
       -Callsite 'RESOURCE_FIELD_VALIDATION' `
       -Field 'EXECUTABLE_BACKUP' `
       -Action {
@@ -2499,74 +2569,76 @@ function Test-SupervisorInvocationAttributionTotality {
     $forgedDiagnostic = $_.Exception.Message
   }
   Assert-SupervisorInvocationDiagnosticBounded `
-    $forgedDiagnostic `
-    'PRE_EXISTING_CLEANUP_OWNERSHIP' `
-    'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
-    'RESOURCE_ASSERTION' `
-    'RESOURCE_FIELD_VALIDATION' `
-    'EXECUTABLE_BACKUP' `
-    'FORGED_PREFIX_SECRET'
+    -Diagnostic $forgedDiagnostic `
+    -Test 'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+    -Scenario 'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+    -Phase 'RESOURCE_ASSERTION' `
+    -Callsite 'RESOURCE_FIELD_VALIDATION' `
+    -Field 'EXECUTABLE_BACKUP' `
+    -CaseId 'FORGED_PREFIX_SECRET'
 
   $missingGateStateDirectoryDiagnostic = ''
   try {
     Set-SupervisorInvocationContext `
-      'MSI_TRANSACTION_INTERRUPTION_GATES' `
-      'DURING_MSI' `
-      'PROCESS_STATE' `
-      'CRITICAL_GATE_PATH' `
-      'STATE_DIRECTORY'
+      -Test 'MSI_TRANSACTION_INTERRUPTION_GATES' `
+      -Scenario 'DURING_MSI' `
+      -Phase 'PROCESS_STATE' `
+      -Callsite 'CRITICAL_GATE_PATH' `
+      -Field 'STATE_DIRECTORY'
     Assert-True (![string]::IsNullOrWhiteSpace('')) `
       (Get-SanitizedSupervisorInvocationDiagnostic `
-        'MSI_TRANSACTION_INTERRUPTION_GATES' `
-        'DURING_MSI' `
-        'PROCESS_STATE' `
-        'CRITICAL_GATE_PATH' `
-        'STATE_DIRECTORY')
+        -Test 'MSI_TRANSACTION_INTERRUPTION_GATES' `
+        -Scenario 'DURING_MSI' `
+        -Phase 'PROCESS_STATE' `
+        -Callsite 'CRITICAL_GATE_PATH' `
+        -Field 'STATE_DIRECTORY')
   } catch {
     $missingGateStateDirectoryDiagnostic = $_.Exception.Message
   }
   Assert-SupervisorInvocationDiagnosticBounded `
-    $missingGateStateDirectoryDiagnostic `
-    'MSI_TRANSACTION_INTERRUPTION_GATES' `
-    'DURING_MSI' `
-    'PROCESS_STATE' `
-    'CRITICAL_GATE_PATH' `
-    'STATE_DIRECTORY' `
-    'MISSING_GATE_STATE_DIRECTORY'
+    -Diagnostic $missingGateStateDirectoryDiagnostic `
+    -Test 'MSI_TRANSACTION_INTERRUPTION_GATES' `
+    -Scenario 'DURING_MSI' `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'CRITICAL_GATE_PATH' `
+    -Field 'STATE_DIRECTORY' `
+    -CaseId 'MISSING_GATE_STATE_DIRECTORY'
 
   $missingExecutableBackupDiagnostic = ''
   try {
     Set-SupervisorInvocationContext `
-      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
-      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
-      'RESOURCE_ASSERTION' `
-      'RESOURCE_FIELD_VALIDATION' `
-      'EXECUTABLE_BACKUP'
+      -Test 'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      -Scenario 'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      -Phase 'RESOURCE_ASSERTION' `
+      -Callsite 'RESOURCE_FIELD_VALIDATION' `
+      -Field 'EXECUTABLE_BACKUP'
     Assert-FixtureStateFieldsComplete `
-      ([PSCustomObject]@{
+      -State ([PSCustomObject]@{
         Executable = 'EXECUTABLE'
         ManifestPath = 'MANIFEST_PATH'
         RunId = 'RUN_ID'
       }) `
-      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
-      'RESOURCE_FIELD_VALIDATION' `
-      @('ExecutableBackup')
+      -Scenario 'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      -Callsite 'RESOURCE_FIELD_VALIDATION' `
+      -Fields @('ExecutableBackup')
   } catch {
     $missingExecutableBackupDiagnostic = $_.Exception.Message
   }
   Assert-SupervisorInvocationDiagnosticBounded `
-    $missingExecutableBackupDiagnostic `
-    'PRE_EXISTING_CLEANUP_OWNERSHIP' `
-    'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
-    'RESOURCE_ASSERTION' `
-    'RESOURCE_FIELD_VALIDATION' `
-    'EXECUTABLE_BACKUP' `
-    'MISSING_EXECUTABLE_BACKUP'
+    -Diagnostic $missingExecutableBackupDiagnostic `
+    -Test 'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+    -Scenario 'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+    -Phase 'RESOURCE_ASSERTION' `
+    -Callsite 'RESOURCE_FIELD_VALIDATION' `
+    -Field 'EXECUTABLE_BACKUP' `
+    -CaseId 'MISSING_EXECUTABLE_BACKUP'
   foreach ($testName in Get-SupervisorInvocationTests) {
     foreach ($scenarioName in Get-SupervisorInvocationScenarios) {
       foreach ($phaseName in Get-SupervisorInvocationPhases) {
         $diagnostic = Get-SanitizedSupervisorInvocationDiagnostic `
-          $testName $scenarioName $phaseName
+          -Test $testName `
+          -Scenario $scenarioName `
+          -Phase $phaseName
         Assert-True ([Text.Encoding]::ASCII.GetByteCount($diagnostic) -le 320) `
           (Get-SupervisorAttributionTotalityAssertionMessage `
             'ALLOWLISTED_TEST_SCENARIO_PHASE' 'exact' 'malformed')
@@ -2584,8 +2656,11 @@ function Test-SupervisorInvocationAttributionTotality {
   foreach ($callsiteName in Get-SupervisorInvocationCallsites) {
     foreach ($fieldName in Get-SupervisorInvocationFields) {
       $diagnostic = Get-SanitizedSupervisorInvocationDiagnostic `
-        'ATTRIBUTION_TOTALITY' 'PROTOCOL_REGRESSION' 'TEST' `
-        $callsiteName $fieldName
+        -Test 'ATTRIBUTION_TOTALITY' `
+        -Scenario 'PROTOCOL_REGRESSION' `
+        -Phase 'TEST' `
+        -Callsite $callsiteName `
+        -Field $fieldName
       Assert-True ([Text.Encoding]::ASCII.GetByteCount($diagnostic) -le 320) `
         (Get-SupervisorAttributionTotalityAssertionMessage `
           'ALLOWLISTED_CALLSITE_FIELD' 'exact' 'malformed')
