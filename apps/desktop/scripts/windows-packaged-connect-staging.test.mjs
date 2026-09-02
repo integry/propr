@@ -1120,11 +1120,24 @@ test('the workflow stages before alternate credentials and the harness preflight
     captureParserTestMode,
     /\[IO\.Directory\]::SetAccessControl\(\$authenticatedRunnerTemp|\$parentAcl\.SetOwner/u,
   );
-  assert.match(orchestrator, /public static SafeFileHandle OpenCapture[\s\S]*?GENERIC_READ \| READ_CONTROL/u);
-  assert.match(
-    orchestrator,
-    /public static SafeFileHandle OpenRedirectCaptureAuthority[\s\S]*?FILE_SHARE_READ \| FILE_SHARE_WRITE,[\s\S]*?OPEN_EXISTING/u,
+  const captureReadOpen = orchestrator.slice(
+    orchestrator.indexOf('public static SafeFileHandle OpenCapture'),
+    orchestrator.indexOf('public static SafeFileHandle OpenRedirectCaptureAuthority'),
   );
+  assert.match(
+    captureReadOpen,
+    /lockAuthority\s*\? FILE_SHARE_READ\s*:\s*FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE/u,
+  );
+  assert.match(captureReadOpen, /GENERIC_READ \| READ_CONTROL/u);
+  const redirectCaptureAuthorityOpen = orchestrator.slice(
+    orchestrator.indexOf('public static SafeFileHandle OpenRedirectCaptureAuthority'),
+    orchestrator.indexOf('public static string GetIdentity'),
+  );
+  assert.match(
+    redirectCaptureAuthorityOpen,
+    /FILE_READ_ATTRIBUTES \| READ_CONTROL,[\s\S]*?FILE_SHARE_READ \| FILE_SHARE_WRITE,[\s\S]*?OPEN_EXISTING/u,
+  );
+  assert.doesNotMatch(redirectCaptureAuthorityOpen, /GENERIC_READ/u);
   assert.match(orchestrator, /public static uint GetLinkCount/u);
   assert.match(
     orchestrator,
@@ -1137,6 +1150,40 @@ test('the workflow stages before alternate credentials and the harness preflight
   const captureRedirectionTestMode = orchestrator.slice(
     orchestrator.indexOf("if ($LifecycleTestMode -eq 'capture-redirection')"),
     orchestrator.indexOf("if ($LifecycleTestMode -eq 'capture-parser')"),
+  );
+  const captureProducerOutputClassifier = orchestrator.slice(
+    orchestrator.indexOf('function Get-TestOnlyCaptureProducerOutputState'),
+    orchestrator.indexOf('function Set-LifecycleFailureSubphase'),
+  );
+  assert.match(
+    captureProducerOutputClassifier,
+    /\$captureReadHandle = \[ProprHostLauncherNative\]::OpenCapture\(\$Authority\.Path, \$true\)/u,
+  );
+  assert.doesNotMatch(
+    captureProducerOutputClassifier,
+    /(?:GetLength|ReadBounded)\(\s*\$Authority\.Handle/u,
+  );
+  assert.match(
+    captureProducerOutputClassifier,
+    /\$maximumAttributedBytes = 256[\s\S]*?GetLength\(\$captureReadHandle\)[\s\S]*?\$length -le \$maximumAttributedBytes[\s\S]*?ReadBounded\(\s*\$captureReadHandle, \$maximumAttributedBytes\s*\)/u,
+  );
+  assert.equal(
+    (captureProducerOutputClassifier.match(/GetIdentity\(\$Authority\.Handle\)/gu) ?? []).length,
+    2,
+    'the retained non-readable authority identity must be unchanged across classification',
+  );
+  assert.equal(
+    (captureProducerOutputClassifier.match(/Assert-PrivilegedCaptureFile/gu) ?? []).length,
+    2,
+    'the temporary read handle must be exact-bound before and after classification',
+  );
+  assert.match(
+    captureProducerOutputClassifier,
+    /Assert-PrivilegedCaptureFile[\s\S]*?\$Authority\.Identity[\s\S]*?Get-CaptureAuthorityDescriptor \$Authority\.Path\) -cne[\s\S]*?\$Authority\.SecurityDescriptor[\s\S]*?ReadBounded[\s\S]*?Assert-PrivilegedCaptureFile[\s\S]*?GetIdentity\(\$Authority\.Handle\)[\s\S]*?\$Authority\.SecurityDescriptor/u,
+  );
+  assert.match(
+    captureProducerOutputClassifier,
+    /finally \{\s*if \(\$null -ne \$captureReadHandle\) \{\s*try \{ \$captureReadHandle\.Dispose\(\) \} catch \{\}\s*\}\s*\}/u,
   );
   for (const predicate of [
     'pre-create',
@@ -1167,6 +1214,14 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(
     captureRedirectionTestMode,
     /\$redirectionProcessHandle = \$redirectionProcess\.Handle[\s\S]*?Set-CaptureAuthorityPredicate 'redirect-timeout'[\s\S]*?WaitForExit\(\$terminationTimeoutMilliseconds\)[\s\S]*?Assert-PrivilegedCaptureIdentity[\s\S]*?Assert-PrivilegedCaptureIdentity[\s\S]*?Get-TestOnlyCaptureProducerOutputState/u,
+  );
+  assert.match(
+    captureRedirectionTestMode,
+    /Get-TestOnlyCaptureProducerOutputState\s*`\s*\$stdoutAuthority \$privilegedSid 'capture-stdout'[\s\S]*?Get-TestOnlyCaptureProducerOutputState\s*`\s*\$stderrAuthority \$privilegedSid 'capture-stderr'/u,
+  );
+  assert.match(
+    captureRedirectionTestMode,
+    /CaptureRedirectionProducerTestCase -cne 'success' -or\s*\$captureProducerExitBucket -cne 'zero'[\s\S]*?\$captureProducerStdoutState -cne 'exact-expected' -or\s*\$captureProducerStderrState -cne 'exact-expected'[\s\S]*?\$redirectionAccepted = \$true/u,
   );
   assert.doesNotMatch(
     captureRedirectionTestMode.slice(
@@ -1554,7 +1609,7 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
   );
 });
 
-windowsTest('the exact PS5.1 capture argv writes both protected captures and exits zero', () => {
+windowsTest('nominal reaches zero with exact protected stdout and stderr capture', () => {
   const result = runCaptureRedirectionTest();
   const accepted = !result.error && result.signal === null && result.status === 0
     && Buffer.isBuffer(result.stdout) && result.stdout.length <= 128

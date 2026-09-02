@@ -262,24 +262,72 @@ function Set-CaptureAuthorityPredicate {
 function Get-TestOnlyCaptureProducerOutputState {
   param(
     [Parameter(Mandatory=$true)]$Authority,
+    [Parameter(Mandatory=$true)]
+    [Security.Principal.SecurityIdentifier]$CapturePrivilegedSid,
     [Parameter(Mandatory=$true)][string]$Expected
   )
   if ($LifecycleTestMode -cne 'capture-redirection') {
     throw [InvalidOperationException]::new('capture-producer-state-outside-test-mode')
   }
+  $captureReadHandle = $null
   try {
     $maximumAttributedBytes = 256
-    $length = [ProprHostLauncherNative]::GetLength($Authority.Handle)
-    if ($length -eq 0) { return 'empty' }
-    if ($length -gt $maximumAttributedBytes) { return 'other-bounded' }
-    $bytes = [ProprHostLauncherNative]::ReadBounded(
-      $Authority.Handle, $maximumAttributedBytes
-    )
-    if ($bytes.Length -ne $length) { return 'other-bounded' }
-    if ([Text.Encoding]::UTF8.GetString($bytes) -ceq $Expected) {
-      return 'exact-expected'
+    if ($null -eq $Authority -or !($Authority.Path -is [string]) -or
+        !($Authority.Identity -is [string]) -or
+        !($Authority.SecurityDescriptor -is [string]) -or
+        !($Authority.Handle -is [Microsoft.Win32.SafeHandles.SafeFileHandle]) -or
+        $Authority.Handle.IsInvalid -or $Authority.Handle.IsClosed -or
+        ![String]::Equals(
+          [ProprHostLauncherNative]::GetIdentity($Authority.Handle),
+          $Authority.Identity,
+          [StringComparison]::Ordinal
+        )) {
+      return 'other-bounded'
     }
+
+    $captureReadHandle = [ProprHostLauncherNative]::OpenCapture($Authority.Path, $true)
+    $null = Assert-PrivilegedCaptureFile `
+      $Authority.Path $captureReadHandle $CapturePrivilegedSid $Authority.Identity `
+      -TestOnlyIdentityPredicate 'capture-content'
+    Set-CaptureAuthorityPredicate 'capture-content'
+    if ((Get-CaptureAuthorityDescriptor $Authority.Path) -cne
+        $Authority.SecurityDescriptor) {
+      return 'other-bounded'
+    }
+
+    $state = 'other-bounded'
+    $length = [ProprHostLauncherNative]::GetLength($captureReadHandle)
+    if ($length -eq 0) {
+      $state = 'empty'
+    } elseif ($length -le $maximumAttributedBytes) {
+      $bytes = [ProprHostLauncherNative]::ReadBounded(
+        $captureReadHandle, $maximumAttributedBytes
+      )
+      if ($bytes.Length -eq $length -and
+          [Text.Encoding]::UTF8.GetString($bytes) -ceq $Expected) {
+        $state = 'exact-expected'
+      }
+    }
+
+    $null = Assert-PrivilegedCaptureFile `
+      $Authority.Path $captureReadHandle $CapturePrivilegedSid $Authority.Identity `
+      -TestOnlyIdentityPredicate 'capture-content'
+    Set-CaptureAuthorityPredicate 'capture-content'
+    if (![String]::Equals(
+          [ProprHostLauncherNative]::GetIdentity($Authority.Handle),
+          $Authority.Identity,
+          [StringComparison]::Ordinal
+        ) -or (Get-CaptureAuthorityDescriptor $Authority.Path) -cne
+          $Authority.SecurityDescriptor) {
+      return 'other-bounded'
+    }
+    return $state
   } catch {}
+  finally {
+    if ($null -ne $captureReadHandle) {
+      try { $captureReadHandle.Dispose() } catch {}
+    }
+  }
   return 'other-bounded'
 }
 
@@ -1940,9 +1988,9 @@ if ($LifecycleTestMode -eq 'capture-redirection') {
     }
     Set-CaptureAuthorityPredicate 'capture-content'
     $captureProducerStdoutState = Get-TestOnlyCaptureProducerOutputState `
-      $stdoutAuthority 'capture-stdout'
+      $stdoutAuthority $privilegedSid 'capture-stdout'
     $captureProducerStderrState = Get-TestOnlyCaptureProducerOutputState `
-      $stderrAuthority 'capture-stderr'
+      $stderrAuthority $privilegedSid 'capture-stderr'
     $captureProducerResultAttributed = $true
     Set-CaptureAuthorityPredicate 'redirect-child-exit'
     if ($CaptureRedirectionProducerTestCase -cne 'success' -or
