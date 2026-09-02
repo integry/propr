@@ -36,6 +36,7 @@ function routeService(
         getUnreadNotificationCount: async () => 0,
         markNotificationRead: async () => null,
         dismissNotification: async () => null,
+        dismissAllNotifications: async () => ({ unreadCount: 0 }),
         getNotificationPreferences: async () => preferences,
         updateNotificationPreferences: async () => preferences,
         upsertPushSubscription: async () => subscription,
