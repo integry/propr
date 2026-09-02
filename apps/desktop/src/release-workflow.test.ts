@@ -596,6 +596,23 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingCleanupOwnership/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Start-ExternallyInterruptibleSupervisor/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Invoke-WorkflowCleanupController/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-SupervisorInvocationAttributionTotality/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:\{0\}:' \+\s*'SCENARIO:\{1\}:PHASE:\{2\}:FAILED/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_WINDOWS_SUPERVISOR_INVOCATION_ATTRIBUTION:TOTAL:PASSED/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Invoke-SupervisorAttributedTest 'BOOTSTRAP_TIMEOUT'[\s\S]*Invoke-SupervisorAttributedTest 'PROVISIONAL_USER_MARKER_OWNERSHIP'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Assert-SupervisorInvocationDiagnosticBounded[\s\S]*Cannot bind argument[\s\S]*LiteralPath[\s\S]*Registry::[\s\S]*stdout[\s\S]*stderr/,
+    );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingAppPathsAuthority/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-ProcessTreeGone/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-OwnedFixtureAuthorityComplete/);

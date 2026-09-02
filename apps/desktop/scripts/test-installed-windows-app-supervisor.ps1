@@ -23,6 +23,9 @@ $conflictingFixtureRegistryPath = $null
 $dummyInstallerProductCode = ('{' + [Guid]::NewGuid().ToString().ToUpperInvariant() + '}')
 $dummyInstallerEntryIdentity = $null
 $dummyInstallerSha256 = $null
+$script:currentSupervisorInvocationTest = 'UNATTRIBUTED'
+$script:currentSupervisorInvocationScenario = 'UNATTRIBUTED'
+$script:currentSupervisorInvocationPhase = 'UNATTRIBUTED'
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (!$Condition) { throw $Message }
@@ -648,6 +651,10 @@ function Read-FixtureProcessState([string]$StateDirectory) {
 }
 
 function Read-FixtureResourceState([string]$StateDirectory) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'RESOURCE_STATE'
   $statePath = Join-Path $StateDirectory 'resources.json'
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
@@ -981,6 +988,10 @@ function Get-WorkflowCleanupControllerStatusMatch([string]$TerminalLine) {
 }
 
 function Assert-OwnedResourcesGone($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'RESOURCE_ASSERTION'
   foreach ($ownedPath in @(
     $Owned.OwnedRoot, $Owned.InstallRoot, $Owned.ShortcutFolder,
     $Owned.Shortcut, $Owned.SmokeDirectory
@@ -1001,6 +1012,10 @@ function Assert-OwnedResourcesGone($Owned) {
 }
 
 function Restore-ReplacedFixtureAuthority($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE'
   [IO.File]::WriteAllText(
     (Join-Path $Owned.OwnedRoot '.propr-installed-app-owner'),
     [string]$Owned.Token,
@@ -1030,6 +1045,10 @@ function Restore-ReplacedFixtureAuthority($Owned) {
 }
 
 function Assert-ReplacedFixtureResourcesSurvive($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'RESOURCE_ASSERTION'
   Assert-True ((Get-Content -LiteralPath (Join-Path $Owned.InstallRoot 'foreign.txt') -Raw).Trim() `
       -ceq 'foreign-install-tree') `
     'replacement install tree was removed or changed'
@@ -1041,6 +1060,10 @@ function Assert-ReplacedFixtureResourcesSurvive($Owned) {
 }
 
 function Assert-ReplacedExecutableSurvives($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'RESOURCE_ASSERTION'
   $expected = if ($Owned.PSObject.Properties['ByteIdenticalReplacement']) {
     'owned-executable'
   } else { 'foreign-executable' }
@@ -1049,11 +1072,19 @@ function Assert-ReplacedExecutableSurvives($Owned) {
 }
 
 function Assert-ReplacedShortcutSurvives($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'RESOURCE_ASSERTION'
   Assert-True ((Get-Content -LiteralPath $Owned.Shortcut -Raw).Trim() -ceq
       'foreign-shortcut') 'replacement shortcut was removed or changed'
 }
 
 function Assert-MsiPreflightPreservedResources($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'RESOURCE_ASSERTION'
   foreach ($path in @(
       $Owned.OwnedRoot, $Owned.InstallRoot, $Owned.ShortcutFolder,
       $Owned.Shortcut, $Owned.SmokeDirectory, $Owned.RegistryPath
@@ -1077,6 +1108,10 @@ function Get-SanitizedFixtureAuthorityDiagnostic($Scenario, $Field) {
 }
 
 function Assert-OwnedFixtureAuthorityComplete($Owned, [string]$Scenario) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $Scenario `
+    'AUTHORITY_ASSERTION'
   foreach ($field in @(
       'OwnedRoot','InstallRoot','ShortcutFolder','Shortcut','SmokeDirectory',
       'RegistryPath','RegistryRoot','UserName','UserSid','ProfilePath',
@@ -1094,6 +1129,211 @@ function Assert-OwnedFixtureAuthorityComplete($Owned, [string]$Scenario) {
       $expectedRegistryRoot,
       [StringComparison]::OrdinalIgnoreCase
     )) (Get-SanitizedFixtureAuthorityDiagnostic $Scenario 'RegistryRoot')
+}
+
+function Get-SupervisorInvocationTests {
+  return @(
+    'UNATTRIBUTED',
+    'BOOTSTRAP_TIMEOUT',
+    'WINDOWS_POWERSHELL_CLEANUP_COMPATIBILITY',
+    'OPERATION_DEADLINE_AND_TREE_TERMINATION',
+    'NEGATIVE_WORKER_EXIT_FINALIZATION',
+    'FAIL_CLOSED_MARKERS',
+    'LIVE_CANCELLATION_AND_REDACTION',
+    'MSI_TRANSACTION_INTERRUPTION_GATES',
+    'PRIMARY_WORKER_FALLBACK_FOREIGN_DESCENDANTS',
+    'PRE_EXISTING_CLEANUP_OWNERSHIP',
+    'SMOKE_PROMOTION_INTERRUPTION_AUTHORITY',
+    'PRE_EXISTING_APP_PATHS_AUTHORITY',
+    'HKCU_INSTALLED_VALUE_OWNERSHIP',
+    'PROVISIONAL_USER_MARKER_OWNERSHIP',
+    'ATTRIBUTION_TOTALITY'
+  )
+}
+
+function Get-SupervisorInvocationScenarios {
+  return @(
+    'UNATTRIBUTED',
+    'TEST',
+    'NO_MARKER',
+    'NO_MARKER_WINDOWS_POWERSHELL',
+    'VALID_THEN_DEADLINE',
+    'NEGATIVE_EXIT',
+    'MALFORMED_MARKER',
+    'TORN_MARKER',
+    'STALE_MARKER',
+    'INACCESSIBLE_MARKER',
+    'CANCELLATION',
+    'DURING_MSI',
+    'DURING_OWNERSHIP_CAPTURE',
+    'PRIMARY_FALLBACK_FOREIGN_DESCENDANTS',
+    'PRE_EXISTING_APP_PATHS',
+    'OWNED_RESOURCES_THEN_DEADLINE',
+    'OWNED_RESOURCES_FOR_INTERRUPTION',
+    'OWNED_RESOURCES_NORMAL_SUCCESS',
+    'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
+    'OWNED_EXECUTABLE_REPLACED_THEN_DEADLINE',
+    'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE',
+    'OWNED_SHORTCUT_REPLACED_THEN_DEADLINE',
+    'OWNED_PROFILE_PATH_MISMATCH_THEN_DEADLINE',
+    'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE',
+    'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE',
+    'SMOKE_AFTER_PROMOTION_THEN_DEADLINE',
+    'SMOKE_AFTER_ARTIFACTS_THEN_DEADLINE',
+    'SMOKE_FOREIGN_DESCENDANT_THEN_DEADLINE',
+    'SMOKE_TOKEN_MISMATCH_THEN_DEADLINE',
+    'STARTUP_PROTOCOL',
+    'REPLACEMENT_RETRY',
+    'REPLACED_ENTRY_RETRY',
+    'PROFILE_ALTERNATE_LEAF',
+    'PROFILE_RETRY',
+    'EXECUTABLE_IDENTITY_RETRY',
+    'FOREIGN_CHILD_RETRY',
+    'TERMINATION_RETRY',
+    'PARAMETER_VALIDATION',
+    'EARLY_INITIALIZATION_TIMEOUT',
+    'CLEANUP_TIMEOUT',
+    'INSTALLER_REPLACEMENT',
+    'RESOURCE_COLLISION',
+    'WORKFLOW_RETRY',
+    'NORMAL_CLEANUP',
+    'MANIFEST_VALIDATION',
+    'SMOKE_PROMOTION_RETRY',
+    'SMOKE_TOKEN_MISSING',
+    'SMOKE_TOKEN_RETRY',
+    'APP_PATH_MISMATCH',
+    'HKCU_BASELINE_RESTORE',
+    'HKCU_PENDING_RECEIPT',
+    'HKCU_NONEMPTY',
+    'HKCU_EMPTY',
+    'HKCU_CONFLICT',
+    'HKCU_PROVISIONAL',
+    'USER_MARKER_OWNED',
+    'USER_MARKER_REPLACEMENT',
+    'PROTOCOL_REGRESSION'
+  )
+}
+
+function Get-SupervisorInvocationPhases {
+  return @(
+    'UNATTRIBUTED',
+    'TEST',
+    'FIXTURE_SETUP',
+    'SUPERVISOR_PROCESS',
+    'PROCESS_START',
+    'PROCESS_WAIT',
+    'PROCESS_OUTPUT',
+    'PROCESS_STATE',
+    'RESOURCE_STATE',
+    'RESOURCE_ASSERTION',
+    'AUTHORITY_ASSERTION',
+    'AUTHORITY_RESTORE',
+    'WORKFLOW_CLEANUP_CONTROLLER',
+    'PIPELINE_START',
+    'PIPELINE_STOP',
+    'MANIFEST_ASSERTION',
+    'CLEANUP_ASSERTION',
+    'HOSTILE_FAILURE',
+    'FINALIZER'
+  )
+}
+
+function Get-SanitizedSupervisorInvocationToken([string]$Token, [string[]]$AllowList) {
+  if ($Token -cin $AllowList) { return $Token }
+  return 'UNATTRIBUTED'
+}
+
+function Get-SanitizedSupervisorInvocationDiagnostic(
+  [string]$Test,
+  [string]$Scenario,
+  [string]$Phase
+) {
+  $testName = Get-SanitizedSupervisorInvocationToken $Test (Get-SupervisorInvocationTests)
+  $scenarioName = Get-SanitizedSupervisorInvocationToken $Scenario (Get-SupervisorInvocationScenarios)
+  $phaseName = Get-SanitizedSupervisorInvocationToken $Phase (Get-SupervisorInvocationPhases)
+  return ('PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:{0}:' +
+    'SCENARIO:{1}:PHASE:{2}:FAILED') -f $testName, $scenarioName, $phaseName
+}
+
+function Set-SupervisorInvocationContext(
+  [string]$Test,
+  [string]$Scenario,
+  [string]$Phase
+) {
+  $script:currentSupervisorInvocationTest =
+    Get-SanitizedSupervisorInvocationToken $Test (Get-SupervisorInvocationTests)
+  $script:currentSupervisorInvocationScenario =
+    Get-SanitizedSupervisorInvocationToken $Scenario (Get-SupervisorInvocationScenarios)
+  $script:currentSupervisorInvocationPhase =
+    Get-SanitizedSupervisorInvocationToken $Phase (Get-SupervisorInvocationPhases)
+}
+
+function Invoke-SupervisorAttributedBoundary(
+  [string]$Test,
+  [string]$Scenario,
+  [string]$Phase,
+  [scriptblock]$Action
+) {
+  $previousTest = $script:currentSupervisorInvocationTest
+  $previousScenario = $script:currentSupervisorInvocationScenario
+  $previousPhase = $script:currentSupervisorInvocationPhase
+  Set-SupervisorInvocationContext $Test $Scenario $Phase
+  try {
+    & $Action
+  } catch {
+    if ($_.Exception.Message -clike 'PROPR_WINDOWS_SUPERVISOR_INVOCATION:*') {
+      throw
+    }
+    throw (Get-SanitizedSupervisorInvocationDiagnostic `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      $script:currentSupervisorInvocationPhase)
+  } finally {
+    $script:currentSupervisorInvocationTest = $previousTest
+    $script:currentSupervisorInvocationScenario = $previousScenario
+    $script:currentSupervisorInvocationPhase = $previousPhase
+  }
+}
+
+function Invoke-SupervisorAttributedTest(
+  [string]$Test,
+  [scriptblock]$Action
+) {
+  Invoke-SupervisorAttributedBoundary $Test 'TEST' 'TEST' $Action
+}
+
+function Assert-SupervisorInvocationDiagnosticBounded(
+  [string]$Diagnostic,
+  [string]$Test,
+  [string]$Scenario,
+  [string]$Phase
+) {
+  $expected = Get-SanitizedSupervisorInvocationDiagnostic $Test $Scenario $Phase
+  Assert-True ($Diagnostic -ceq $expected) `
+    'supervisor invocation attribution was not the exact fixed diagnostic'
+  Assert-True ([Text.Encoding]::ASCII.GetByteCount($Diagnostic) -le 224) `
+    'supervisor invocation attribution exceeded its bounded size'
+  Assert-True ($Diagnostic -cmatch (
+      '^PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:[A-Z_]+:' +
+      'SCENARIO:[A-Z_]+:PHASE:[A-Z_]+:FAILED$'
+    )) 'supervisor invocation attribution used a non-allowlisted token format'
+  foreach ($forbidden in @(
+      $secretNeedle,
+      $testRoot,
+      $dummyInstaller,
+      'Cannot bind argument',
+      'LiteralPath',
+      'Registry::',
+      'S-1-5-',
+      'fixture-user',
+      'credential',
+      'manifest',
+      'stdout',
+      'stderr'
+    )) {
+    Assert-NotContains $Diagnostic $forbidden `
+      'supervisor invocation attribution disclosed raw failure context'
+  }
 }
 
 function Get-WorkflowCleanupProtocolMismatchDiagnostic(
@@ -1181,6 +1421,10 @@ function Invoke-WorkflowCleanupController(
   [bool]$FixtureResultEmissionFailure = $false,
   [string]$ProtocolFixture = ''
 ) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $InvocationIdentifier `
+    'WORKFLOW_CLEANUP_CONTROLLER'
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
   $startInfo.UseShellExecute = $false
@@ -1733,7 +1977,100 @@ function Test-WorkflowCleanupProtocolStateMachine {
   [Console]::Out.Flush()
 }
 
+function Test-SupervisorInvocationAttributionTotality {
+  foreach ($case in @(
+      [PSCustomObject]@{
+        Test='BOOTSTRAP_TIMEOUT'; Scenario='NO_MARKER'; Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        Test='WINDOWS_POWERSHELL_CLEANUP_COMPATIBILITY'
+        Scenario='NO_MARKER_WINDOWS_POWERSHELL'; Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        Test='OPERATION_DEADLINE_AND_TREE_TERMINATION'
+        Scenario='VALID_THEN_DEADLINE'; Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        Test='NEGATIVE_WORKER_EXIT_FINALIZATION'
+        Scenario='NEGATIVE_EXIT'; Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        Test='FAIL_CLOSED_MARKERS'; Scenario='MALFORMED_MARKER'
+        Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        Test='LIVE_CANCELLATION_AND_REDACTION'; Scenario='CANCELLATION'
+        Phase='PROCESS_OUTPUT'
+      },
+      [PSCustomObject]@{
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
+        Phase='PROCESS_WAIT'
+      },
+      [PSCustomObject]@{
+        Test='PRIMARY_WORKER_FALLBACK_FOREIGN_DESCENDANTS'
+        Scenario='PRIMARY_FALLBACK_FOREIGN_DESCENDANTS'; Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_THEN_DEADLINE'; Phase='RESOURCE_STATE'
+      },
+      [PSCustomObject]@{
+        Test='SMOKE_PROMOTION_INTERRUPTION_AUTHORITY'
+        Scenario='SMOKE_BEFORE_PROMOTION_THEN_DEADLINE'; Phase='RESOURCE_STATE'
+      },
+      [PSCustomObject]@{
+        Test='PRE_EXISTING_APP_PATHS_AUTHORITY'; Scenario='PRE_EXISTING_APP_PATHS'
+        Phase='PROCESS_OUTPUT'
+      },
+      [PSCustomObject]@{
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'; Scenario='HKCU_BASELINE_RESTORE'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+      },
+      [PSCustomObject]@{
+        Test='PROVISIONAL_USER_MARKER_OWNERSHIP'; Scenario='USER_MARKER_REPLACEMENT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+      }
+    )) {
+    $diagnostic = ''
+    try {
+      Invoke-SupervisorAttributedTest $case.Test {
+        Invoke-SupervisorAttributedBoundary $case.Test $case.Scenario $case.Phase {
+          throw (
+            "Cannot bind argument to parameter 'LiteralPath' because it is null. " +
+            "$secretNeedle $testRoot Registry::HKEY_LOCAL_MACHINE S-1-5-21 " +
+            'manifest stdout stderr'
+          )
+        }
+      }
+    } catch {
+      $diagnostic = $_.Exception.Message
+    }
+    Assert-SupervisorInvocationDiagnosticBounded `
+      $diagnostic $case.Test $case.Scenario $case.Phase
+  }
+  foreach ($testName in Get-SupervisorInvocationTests) {
+    foreach ($scenarioName in Get-SupervisorInvocationScenarios) {
+      foreach ($phaseName in Get-SupervisorInvocationPhases) {
+        $diagnostic = Get-SanitizedSupervisorInvocationDiagnostic `
+          $testName $scenarioName $phaseName
+        Assert-True ([Text.Encoding]::ASCII.GetByteCount($diagnostic) -le 224) `
+          'an allowlisted supervisor invocation diagnostic exceeded its byte bound'
+        Assert-True ($diagnostic -cmatch (
+            '^PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:[A-Z_]+:' +
+            'SCENARIO:[A-Z_]+:PHASE:[A-Z_]+:FAILED$'
+          )) 'an allowlisted supervisor invocation diagnostic was not token-only'
+      }
+    }
+  }
+  Write-Host 'PROPR_WINDOWS_SUPERVISOR_INVOCATION_ATTRIBUTION:TOTAL:PASSED'
+  [Console]::Out.Flush()
+}
+
 function Start-ExternallyInterruptibleSupervisor([string]$StateDirectory) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    'OWNED_RESOURCES_FOR_INTERRUPTION' `
+    'PIPELINE_START'
   $scriptText = @'
 param($SupervisorPath, $Installer, $Architecture, $FixtureWorker, $Scenario,
   $StateDirectory, $Secret, $OwnedUser, $OwnedPassword,
@@ -1788,6 +2125,8 @@ function Invoke-FixtureScenario(
   [string]$ExistingStateDirectory = '',
   [bool]$InjectTerminationFailure = $false
 ) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest $Scenario 'FIXTURE_SETUP'
   $stateDirectory = if ($ExistingStateDirectory) {
     $ExistingStateDirectory
   } else {
@@ -1797,6 +2136,8 @@ function Invoke-FixtureScenario(
   $process.StartInfo = New-SupervisorStartInfo `
     $Scenario $stateDirectory '' $false '' '' $InjectTerminationFailure
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest $Scenario 'PROCESS_START'
   if (!$process.Start()) { throw 'supervisor test process did not start' }
   try {
     $completionBound = if ($Scenario -in @(
@@ -1817,13 +2158,19 @@ function Invoke-FixtureScenario(
         'SMOKE_FOREIGN_DESCENDANT_THEN_DEADLINE',
         'SMOKE_TOKEN_MISMATCH_THEN_DEADLINE'
       )) { 90000 } else { 20000 }
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_WAIT'
     if (!$process.WaitForExit($completionBound)) {
       try { $process.Kill($true) } catch {}
       throw 'supervisor exceeded the executable test completion bound'
     }
     $stopwatch.Stop()
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_OUTPUT'
     $standardOutput = $process.StandardOutput.ReadToEnd()
     $standardError = $process.StandardError.ReadToEnd()
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_STATE'
     $state = Read-FixtureProcessState $stateDirectory
     Assert-ProcessTreeGone $state
     return [PSCustomObject]@{
@@ -1839,6 +2186,8 @@ function Invoke-FixtureScenario(
 }
 
 function Invoke-CriticalCancellationScenario([string]$Scenario) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest $Scenario 'FIXTURE_SETUP'
   $stateDirectory = New-StateDirectory $Scenario.ToLowerInvariant()
   $eventName = "Local\ProPRInstalledAppCancellation-$([Guid]::NewGuid().ToString('N'))"
   $cancellation = [Threading.EventWaitHandle]::new(
@@ -1847,22 +2196,34 @@ function Invoke-CriticalCancellationScenario([string]$Scenario) {
   $process.StartInfo = New-SupervisorStartInfo `
     $Scenario $stateDirectory $eventName $false
   try {
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_START'
     if (!$process.Start()) { throw 'critical-cancellation supervisor did not start' }
     $gatePath = Join-Path $stateDirectory 'critical-gate.txt'
     $gateWait = [Diagnostics.Stopwatch]::StartNew()
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_WAIT'
     while (!(Test-Path -LiteralPath $gatePath -PathType Leaf)) {
       if ($gateWait.ElapsedMilliseconds -ge 45000) {
         throw 'critical-cancellation fixture did not reach its interruption gate'
       }
       Start-Sleep -Milliseconds 25
     }
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_STATE'
     Assert-True ((Get-Content -LiteralPath $gatePath -Raw -Encoding ASCII) -ceq $Scenario) `
       'critical-cancellation fixture published the wrong interruption gate'
     [void]$cancellation.Set()
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_WAIT'
     Assert-True ($process.WaitForExit(90000)) `
       'critical-cancellation supervisor exceeded its fixed completion bound'
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_OUTPUT'
     $output = $process.StandardOutput.ReadToEnd()
     $errorOutput = $process.StandardError.ReadToEnd()
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_STATE'
     Assert-ProcessTreeGone (Read-FixtureProcessState $stateDirectory)
     return [PSCustomObject]@{
       ExitCode = $process.ExitCode
@@ -1998,6 +2359,8 @@ function Test-FailClosedMarkers {
 }
 
 function Test-LiveCancellationAndRedaction {
+  Set-SupervisorInvocationContext `
+    'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'FIXTURE_SETUP'
   $stateDirectory = New-StateDirectory 'cancellation'
   $eventName = "Local\ProPRInstalledAppCancellation-$([Guid]::NewGuid().ToString('N'))"
   $cancellationEvent = [Threading.EventWaitHandle]::new(
@@ -2009,9 +2372,13 @@ function Test-LiveCancellationAndRedaction {
   $process.StartInfo = New-SupervisorStartInfo 'CANCELLATION' $stateDirectory $eventName $false
   $lines = [Collections.Generic.List[string]]::new()
   try {
+    Set-SupervisorInvocationContext `
+      'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'PROCESS_START'
     if (!$process.Start()) { throw 'cancellation supervisor did not start' }
     $liveAccepted = $false
     $readStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    Set-SupervisorInvocationContext `
+      'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'PROCESS_OUTPUT'
     while (!$liveAccepted -and $readStopwatch.ElapsedMilliseconds -lt 8000) {
       $lineTask = $process.StandardOutput.ReadLineAsync()
       if (!$lineTask.Wait(8000 - [int]$readStopwatch.ElapsedMilliseconds)) { break }
@@ -2025,7 +2392,11 @@ function Test-LiveCancellationAndRedaction {
     Assert-True $liveAccepted 'accepted transition was not observable live before cancellation'
     Assert-True (!$process.HasExited) 'supervisor exited before simulated cancellation'
     [void]$cancellationEvent.Set()
+    Set-SupervisorInvocationContext `
+      'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'PROCESS_WAIT'
     Assert-True ($process.WaitForExit(8000)) 'cancelled supervisor did not complete within the bound'
+    Set-SupervisorInvocationContext `
+      'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'PROCESS_OUTPUT'
     $remainingOutput = $process.StandardOutput.ReadToEnd()
     if ($remainingOutput) { $lines.Add($remainingOutput) }
     $standardError = $process.StandardError.ReadToEnd()
@@ -2041,6 +2412,8 @@ function Test-LiveCancellationAndRedaction {
       Assert-NotContains $output $forbidden 'live supervisor diagnostics were not redacted'
     }
     $state = Read-FixtureProcessState $stateDirectory
+    Set-SupervisorInvocationContext `
+      'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'PROCESS_STATE'
     Assert-ProcessTreeGone $state
     Assert-True ([string]::IsNullOrEmpty($standardError)) 'fixture cancellation wrote unexpected stderr'
   } finally {
@@ -2229,7 +2602,15 @@ function Test-PreExistingCleanupOwnership {
     }
 
     $owned = Read-FixtureResourceState $stateDirectory
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_RESOURCES_THEN_DEADLINE' `
+      'AUTHORITY_ASSERTION'
     Assert-OwnedFixtureAuthorityComplete $owned 'OWNED_RESOURCES_THEN_DEADLINE'
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_RESOURCES_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION'
     foreach ($ownedPath in @(
       $owned.OwnedRoot, $owned.InstallRoot, $owned.ShortcutFolder,
       $owned.Shortcut, $owned.SmokeDirectory
@@ -2489,12 +2870,28 @@ function Test-PreExistingCleanupOwnership {
       'pre-existing local user fixture unexpectedly acquired a profile'
 
     $gracefulStateDirectory = New-StateDirectory 'graceful-interruption'
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_RESOURCES_FOR_INTERRUPTION' `
+      'PIPELINE_START'
     $graceful = Start-ExternallyInterruptibleSupervisor $gracefulStateDirectory
     try {
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'PROCESS_STATE'
       $gracefulProcessState = Read-FixtureProcessState $gracefulStateDirectory
       $gracefulOwned = Read-FixtureResourceState $gracefulStateDirectory
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'PIPELINE_STOP'
       $graceful.Pipeline.Stop()
       try { [void]$graceful.Pipeline.EndInvoke($graceful.AsyncResult) } catch {}
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'RESOURCE_ASSERTION'
       Assert-ProcessTreeGone $gracefulProcessState
       Assert-OwnedResourcesGone $gracefulOwned
     } finally {
@@ -2510,12 +2907,28 @@ function Test-PreExistingCleanupOwnership {
       'OWNED_RESOURCES_FOR_INTERRUPTION' $workflowStateDirectory '' $false `
       $workflowManifest $workflowRunId
     try {
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'PROCESS_START'
       if (!$workflowSupervisor.Start()) { throw 'workflow supervisor fixture did not start' }
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'PROCESS_STATE'
       $workflowProcessState = Read-FixtureProcessState $workflowStateDirectory
       $workflowOwned = Read-FixtureResourceState $workflowStateDirectory
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'PROCESS_WAIT'
       $workflowSupervisor.Kill($false)
       Assert-True ($workflowSupervisor.WaitForExit(5000)) `
         'killed workflow supervisor did not exit within the bound'
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'RESOURCE_ASSERTION'
       Assert-ProcessTreeGone $workflowProcessState
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'killed supervisor did not preserve the durable ownership manifest'
@@ -2630,12 +3043,28 @@ function Test-PreExistingCleanupOwnership {
       'OWNED_RESOURCES_NORMAL_SUCCESS' $normalStateDirectory '' $false `
       $normalManifest $normalRunId
     try {
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_NORMAL_SUCCESS' `
+        'PROCESS_START'
       if (!$normalSupervisor.Start()) { throw 'normal workflow supervisor fixture did not start' }
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_NORMAL_SUCCESS' `
+        'PROCESS_STATE'
       $normalOwned = Read-FixtureResourceState $normalStateDirectory
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_NORMAL_SUCCESS' `
+        'PROCESS_WAIT'
       Assert-True ($normalSupervisor.WaitForExit(40000)) `
         'normal workflow supervisor fixture exceeded its bound'
       Assert-True ($normalSupervisor.ExitCode -eq 0) `
         'normal workflow supervisor fixture did not complete successfully'
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_NORMAL_SUCCESS' `
+        'RESOURCE_ASSERTION'
       Assert-OwnedResourcesGone $normalOwned
       Assert-True (Test-Path -LiteralPath $normalManifest -PathType Leaf) `
         'normal supervisor did not preserve its empty ownership receipt'
@@ -2868,9 +3297,21 @@ function Test-PreExistingAppPathsAuthority {
     $process.StartInfo = New-SupervisorStartInfo `
       'PRE_EXISTING_APP_PATHS' $testRoot '' $true
     try {
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_APP_PATHS_AUTHORITY' `
+        'PRE_EXISTING_APP_PATHS' `
+        'PROCESS_START'
       if (!$process.Start()) { throw 'pre-existing registry supervisor did not start' }
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_APP_PATHS_AUTHORITY' `
+        'PRE_EXISTING_APP_PATHS' `
+        'PROCESS_WAIT'
       Assert-True ($process.WaitForExit(20000)) `
         'pre-existing registry supervisor exceeded its bound'
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_APP_PATHS_AUTHORITY' `
+        'PRE_EXISTING_APP_PATHS' `
+        'PROCESS_OUTPUT'
       $output = $process.StandardOutput.ReadToEnd()
       $errorOutput = $process.StandardError.ReadToEnd()
       Assert-True ($process.ExitCode -ne 0) `
@@ -3246,19 +3687,42 @@ Initialize-TestInstaller
 try {
   Test-WorkflowCleanupStartupProtocol
   Test-WorkflowCleanupProtocolStateMachine
-  Test-BootstrapTimeout
-  Test-WindowsPowerShellCleanupCompatibility
-  Test-OperationDeadlineAndTreeTermination
-  Test-NegativeWorkerExitFinalization
-  Test-FailClosedMarkers
-  Test-LiveCancellationAndRedaction
-  Test-MsiTransactionInterruptionGates
-  Test-PrimaryWorkerFallbackForeignDescendants
-  Test-PreExistingCleanupOwnership
-  Test-SmokePromotionInterruptionAuthority
-  Test-PreExistingAppPathsAuthority
-  Test-HkcuInstalledValueOwnership
-  Test-ProvisionalUserMarkerOwnership
+  Test-SupervisorInvocationAttributionTotality
+  Invoke-SupervisorAttributedTest 'BOOTSTRAP_TIMEOUT' { Test-BootstrapTimeout }
+  Invoke-SupervisorAttributedTest 'WINDOWS_POWERSHELL_CLEANUP_COMPATIBILITY' {
+    Test-WindowsPowerShellCleanupCompatibility
+  }
+  Invoke-SupervisorAttributedTest 'OPERATION_DEADLINE_AND_TREE_TERMINATION' {
+    Test-OperationDeadlineAndTreeTermination
+  }
+  Invoke-SupervisorAttributedTest 'NEGATIVE_WORKER_EXIT_FINALIZATION' {
+    Test-NegativeWorkerExitFinalization
+  }
+  Invoke-SupervisorAttributedTest 'FAIL_CLOSED_MARKERS' { Test-FailClosedMarkers }
+  Invoke-SupervisorAttributedTest 'LIVE_CANCELLATION_AND_REDACTION' {
+    Test-LiveCancellationAndRedaction
+  }
+  Invoke-SupervisorAttributedTest 'MSI_TRANSACTION_INTERRUPTION_GATES' {
+    Test-MsiTransactionInterruptionGates
+  }
+  Invoke-SupervisorAttributedTest 'PRIMARY_WORKER_FALLBACK_FOREIGN_DESCENDANTS' {
+    Test-PrimaryWorkerFallbackForeignDescendants
+  }
+  Invoke-SupervisorAttributedTest 'PRE_EXISTING_CLEANUP_OWNERSHIP' {
+    Test-PreExistingCleanupOwnership
+  }
+  Invoke-SupervisorAttributedTest 'SMOKE_PROMOTION_INTERRUPTION_AUTHORITY' {
+    Test-SmokePromotionInterruptionAuthority
+  }
+  Invoke-SupervisorAttributedTest 'PRE_EXISTING_APP_PATHS_AUTHORITY' {
+    Test-PreExistingAppPathsAuthority
+  }
+  Invoke-SupervisorAttributedTest 'HKCU_INSTALLED_VALUE_OWNERSHIP' {
+    Test-HkcuInstalledValueOwnership
+  }
+  Invoke-SupervisorAttributedTest 'PROVISIONAL_USER_MARKER_OWNERSHIP' {
+    Test-ProvisionalUserMarkerOwnership
+  }
   Write-Host "PROPR_WINDOWS_SUPERVISOR_TESTS:${Architecture}:PASSED"
   [Console]::Out.Flush()
 } finally {
