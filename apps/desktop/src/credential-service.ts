@@ -14,6 +14,7 @@ import {
   DESKTOP_TRANSPORT_SCOPE_HEADER,
   DESKTOP_TRANSPORT_SCOPE_QUERY,
   canonicalProprHttpUrlOrigin,
+  isPublicInstanceIdentity,
 } from '@propr/shared';
 import {
   type DesktopProfileInput,
@@ -50,6 +51,8 @@ export interface CredentialServiceDependencies {
     code: 'network' | 'http' | 'local-cleanup';
     status?: number;
   }): void;
+  /** Main-owned Connect evidence; renderer input can never provide this value. */
+  expectedPublicInstanceIdentity?(profileId: string, origin: string): string | null;
 }
 
 export interface DesktopPairingBrowserRequest {
@@ -328,6 +331,7 @@ export class DesktopCredentialService {
   readonly #pairingProtocol: PairingProtocolRequestOptions;
   readonly #reportRevocationFailure: NonNullable<CredentialServiceDependencies['reportRevocationFailure']>;
   readonly #revocationDeadlines: RevocationDeadlines;
+  readonly #expectedPublicInstanceIdentity: NonNullable<CredentialServiceDependencies['expectedPublicInstanceIdentity']>;
   readonly #internalRequestKey = randomBytes(32).toString('base64url');
   readonly #lifecycleController = new AbortController();
   readonly #profileGenerations = new Map<string, number>();
@@ -356,6 +360,7 @@ export class DesktopCredentialService {
     this.#pairingProtocol = dependencies.pairingProtocol ?? {};
     this.#reportRevocationFailure = dependencies.reportRevocationFailure ?? (() => undefined);
     this.#revocationDeadlines = boundedRevocationDeadlines(dependencies.revocationDeadlines);
+    this.#expectedPublicInstanceIdentity = dependencies.expectedPublicInstanceIdentity ?? (() => null);
   }
 
   async initialize(): Promise<CredentialServiceInitialization> {
@@ -543,6 +548,18 @@ export class DesktopCredentialService {
     const client = this.#client(proposed.apiBaseUrl);
 
     try {
+      const discovery = await client.discoverDesktop(8_000, controller.signal);
+      const claimedIdentity = this.#expectedPublicInstanceIdentity(proposed.id, proposed.apiBaseUrl);
+      if (!discovery.compatibility.compatible
+        || !discovery.desktopAuthentication.browserPairing
+        || !discovery.desktopAuthentication.instanceBearerTokens
+        || !discovery.desktopAuthentication.socketIoBearerAuthentication
+        || (claimedIdentity !== null && claimedIdentity !== discovery.publicInstanceIdentity)) {
+        throw new Error('The ProPR instance identity or desktop protocol changed. Approve the new instance again.');
+      }
+      this.#assertPairingCurrent(
+        proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
+      );
       const completed = await client.pairDesktop(this.#clientName, {
         ...this.#pairingTiming,
         binding: {
@@ -565,9 +582,10 @@ export class DesktopCredentialService {
       });
       provisional = completed;
       transient = {
-        version: 1,
+        version: 2,
         profileId: proposed.id,
         origin: proposed.apiBaseUrl,
+        publicInstanceIdentity: discovery.publicInstanceIdentity,
         token: completed.token,
       };
       const journaled = await this.#profiles.journalPendingRevocation(transient, credentialGeneration);
@@ -680,6 +698,28 @@ export class DesktopCredentialService {
     try {
       discovery = await discoveryClient.discoverDesktop(8_000, operation.signal);
     } catch (error) {
+      if (error instanceof ProprClientError && error.kind === 'invalid_response') {
+        try {
+          const current = await this.#profiles.readProfileCredential(input.id);
+          if (current.profile?.apiBaseUrl === origin && current.credential?.origin === origin) {
+            const removed = await this.#detachIdentityFailedCredential(
+              current.credential,
+              operationGeneration,
+              operationSelection,
+              probeTicket,
+            );
+            if (!removed) {
+              return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
+            }
+          }
+        } catch {
+          return { status: 'offline', message: 'ProPR could not safely invalidate this instance credential.' };
+        }
+        return {
+          status: 'authentication-required',
+          message: 'This endpoint returned invalid identity metadata. Approve it again to continue.',
+        };
+      }
       return {
         status: 'offline',
         message: error instanceof Error
@@ -690,6 +730,16 @@ export class DesktopCredentialService {
     const authentication = authenticationSummary(discovery.desktopAuthentication);
     if (!discovery.compatibility.compatible) {
       return { status: 'incompatible', message: discovery.compatibility.message, version: discovery.version };
+    }
+    if (!discovery.desktopAuthentication.browserPairing
+      || !discovery.desktopAuthentication.instanceBearerTokens
+      || !discovery.desktopAuthentication.socketIoBearerAuthentication) {
+      return {
+        status: 'authentication-required',
+        message: 'This instance does not support the complete secure desktop authentication protocol.',
+        version: discovery.version,
+        authentication,
+      };
     }
     if (!this.#profiles.security().available) {
       return {
@@ -749,6 +799,24 @@ export class DesktopCredentialService {
         authentication,
       };
     }
+    if (!isPublicInstanceIdentity(credential.publicInstanceIdentity)
+      || credential.publicInstanceIdentity !== discovery.publicInstanceIdentity) {
+      const removed = await this.#detachIdentityFailedCredential(
+        credential,
+        operationGeneration,
+        operationSelection,
+        probeTicket,
+      );
+      if (!removed) {
+        return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
+      }
+      return {
+        status: 'authentication-required',
+        message: 'This endpoint now identifies as a different ProPR instance. Approve it again to continue.',
+        version: discovery.version,
+        authentication,
+      };
+    }
 
     let response: Response;
     try {
@@ -771,6 +839,7 @@ export class DesktopCredentialService {
         || current.credential.version !== credential.version
         || current.credential.profileId !== credential.profileId
         || current.credential.origin !== credential.origin
+        || current.credential.publicInstanceIdentity !== credential.publicInstanceIdentity
         || current.credential.token !== credential.token) {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
       }
@@ -922,6 +991,7 @@ export class DesktopCredentialService {
     url: string,
     originalHeaders: RequestHeaders,
     details: { method?: string; resourceType?: string } = {},
+    verifiedSocketCredential?: ActiveCredential,
   ): DesktopRequestDecision {
     if (this.#closed) return { cancel: true };
     const headers = { ...originalHeaders };
@@ -970,7 +1040,7 @@ export class DesktopCredentialService {
     if (isSocketUpgrade && target) {
       const queryScopes = target.url.searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
       if (queryScopes.length !== 1 || !TRANSPORT_SCOPE_PATTERN.test(queryScopes[0])
-        || !activeIsCurrent || target.origin !== active.origin
+        || !activeIsCurrent || active !== verifiedSocketCredential || target.origin !== active.origin
         || queryScopes[0] !== active.transportScope) return { cancel: true };
       headers.Authorization = `Bearer ${active.token}`;
       return { requestHeaders: headers };
@@ -982,6 +1052,50 @@ export class DesktopCredentialService {
     if (details.method?.toUpperCase() === 'OPTIONS') return { requestHeaders: headers };
     headers.Authorization = `Bearer ${active.token}`;
     return { requestHeaders: headers };
+  }
+
+  /** Socket reconnects cross a fresh asynchronous identity gate before main attaches a bearer. */
+  async prepareRequestAsync(
+    url: string,
+    originalHeaders: RequestHeaders,
+    details: { method?: string; resourceType?: string } = {},
+  ): Promise<DesktopRequestDecision> {
+    const target = requestOrigin(url);
+    const isSocketUpgrade = target?.pathname === '/socket.io/'
+      && target.url.searchParams.get('transport') === 'websocket'
+      && (details.resourceType === 'webSocket'
+        || headerValues(originalHeaders, 'upgrade').some(value => value.toLowerCase() === 'websocket'));
+    if (!isSocketUpgrade) return this.prepareRequest(url, originalHeaders, details);
+    const active = this.#active;
+    if (!active || target.origin !== active.origin) return this.prepareRequest(url, originalHeaders, details);
+    try {
+      const discovery = await this.#client(active.origin).discoverDesktop(8_000, this.#lifecycleController.signal);
+      const stillCurrent = this.#active === active
+        && this.#generation(active.profileId) === active.profileGeneration
+        && this.#selectionGeneration === active.selectionGeneration;
+      if (!stillCurrent) return { cancel: true };
+      const supportsRequest = discovery.compatibility.compatible
+        && discovery.desktopAuthentication.instanceBearerTokens
+        && discovery.desktopAuthentication.socketIoBearerAuthentication;
+      if (discovery.publicInstanceIdentity !== active.publicInstanceIdentity || !supportsRequest) {
+        await this.#detachIdentityFailedCredential(
+          active,
+          active.profileGeneration,
+          active.selectionGeneration,
+        );
+        return { cancel: true };
+      }
+      return this.prepareRequest(url, originalHeaders, details, active);
+    } catch (error) {
+      if (error instanceof ProprClientError && error.kind === 'invalid_response' && this.#active === active) {
+        await this.#detachIdentityFailedCredential(
+          active,
+          active.profileGeneration,
+          active.selectionGeneration,
+        ).catch(() => undefined);
+      }
+      return { cancel: true };
+    }
   }
 
   authorizeRequest(url: string, originalHeaders: RequestHeaders): RequestHeaders {
@@ -1109,6 +1223,13 @@ export class DesktopCredentialService {
       this.#revocationDeadlines.recordMs,
     );
     try {
+      try {
+        const discovery = await this.#client(entry.credential.origin)
+          .discoverDesktop(Math.min(8_000, this.#revocationDeadlines.recordMs), record.controller.signal);
+        if (discovery.publicInstanceIdentity !== entry.credential.publicInstanceIdentity) return 'network';
+      } catch {
+        return 'network';
+      }
       const headers = new Headers({
         Authorization: `Bearer ${entry.credential.token}`,
         [DESKTOP_REVOCATION_BINDING_HEADER]: entry.credentialGeneration,
@@ -1243,6 +1364,28 @@ export class DesktopCredentialService {
     if (this.#active?.profileId === credential.profileId
       && this.#active.origin === credential.origin
       && this.#active.token === credential.token) this.#active = null;
+  }
+
+  async #detachIdentityFailedCredential(
+    credential: StoredCredential,
+    expectedProfileGeneration: number,
+    expectedSelectionGeneration: number,
+    expectedProbeTicket?: number,
+  ): Promise<boolean> {
+    if (this.#generation(credential.profileId) !== expectedProfileGeneration
+      || this.#selectionGeneration !== expectedSelectionGeneration
+      || (expectedProbeTicket !== undefined && this.#latestProbeTicket !== expectedProbeTicket)) return false;
+    this.#invalidateProfileOperations(credential.profileId);
+    const invalidationGeneration = this.#generation(credential.profileId);
+    const removed = await this.#profiles.removeCredentialIfCurrent(
+      credential,
+      credential.origin,
+      () => this.#generation(credential.profileId) === invalidationGeneration
+        && this.#selectionGeneration === expectedSelectionGeneration
+        && (expectedProbeTicket === undefined || this.#latestProbeTicket === expectedProbeTicket),
+    );
+    if (removed) this.#schedulePendingRevocationRetry();
+    return removed;
   }
 
   #bumpGeneration(profileId: string): number {

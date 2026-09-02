@@ -9,10 +9,13 @@ const json = (body: unknown, status = 200): Response => new Response(JSON.string
 });
 
 const discovery = {
+  schemaVersion: 1 as const,
   product: 'ProPR',
   version: '0.8.15',
   apiCompatibility: PROPR_API_COMPATIBILITY,
   uiCompatibility: PROPR_UI_COMPATIBILITY,
+  canonicalEndpoint: null,
+  publicInstanceIdentity: '123e4567-e89b-42d3-a456-426614174000',
   desktopAuthentication: {
     protocolVersion: 2 as const,
     browserPairing: true,
@@ -71,6 +74,30 @@ class PairingClock {
 }
 
 describe('desktop instance protocol', () => {
+  it('uses the shared strict wire parser for missing, extra, malformed, duplicate, and oversized discovery', async () => {
+    const valid = JSON.stringify(discovery);
+    const invalidBodies = [
+      JSON.stringify((({ publicInstanceIdentity: _omitted, ...rest }) => rest)(discovery)),
+      JSON.stringify({ ...discovery, account: 'must-not-be-present' }),
+      '{',
+      valid.replace('"product":"ProPR"', '"product":"ProPR","product":"ProPR"'),
+      `${valid}${' '.repeat(8 * 1024)}`,
+      JSON.stringify({ ...discovery, publicInstanceIdentity: discovery.publicInstanceIdentity.toUpperCase() }),
+      JSON.stringify({ ...discovery, desktopAuthentication: {
+        ...discovery.desktopAuthentication, protocolVersion: 1,
+      } }),
+    ];
+    for (const body of invalidBodies) {
+      const client = new ProprClient({
+        baseUrl: 'https://propr.example.test',
+        authentication: { type: 'none' },
+        fetch: async () => new Response(body, { headers: { 'Content-Type': 'application/json' } }),
+      });
+      await assert.rejects(client.discoverDesktop(), (error: unknown) =>
+        error instanceof ProprClientError && error.kind === 'invalid_response');
+    }
+  });
+
   it('discovers capabilities, opens approval, and polls to a single opaque token', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     let polls = 0;

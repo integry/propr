@@ -203,10 +203,10 @@ const configureSessionSecurity = (credentials: DesktopCredentialService): {
   desktopSession.setPermissionCheckHandler(() => false);
   desktopSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    callback(credentials.prepareRequest(details.url, details.requestHeaders, {
+    void credentials.prepareRequestAsync(details.url, details.requestHeaders, {
       method: details.method,
       resourceType: details.resourceType,
-    }));
+    }).then(callback, () => callback({ cancel: true }));
   });
   desktopSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
@@ -442,7 +442,10 @@ const runPackagedTransportSmoke = async (
   const profileA = await profiles.save({
     id: profileId, label: 'Packaged transport A', apiBaseUrl: smoke.firstOrigin,
   });
-  const storedA = await profiles.writeCredential({ version: 1, profileId, origin: smoke.firstOrigin, token: tokenA });
+  const storedA = await profiles.writeCredential({
+    version: 2, profileId, origin: smoke.firstOrigin,
+    publicInstanceIdentity: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', token: tokenA,
+  });
   if (!storedA.stored) throw new Error('Production credential encryption was unavailable');
 
   const storageWindows = await Promise.all([smoke.firstOrigin, smoke.secondOrigin].map(async origin => {
@@ -550,7 +553,10 @@ const runPackagedTransportSmoke = async (
     if (!precommitStorageCleared || !await storageState('absent')) {
       throw new Error('Same-ID URL edit did not clear both complete Electron origin stores');
     }
-    const storedB = await profiles.writeCredential({ version: 1, profileId, origin: smoke.secondOrigin, token: tokenB });
+    const storedB = await profiles.writeCredential({
+      version: 2, profileId, origin: smoke.secondOrigin,
+      publicInstanceIdentity: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', token: tokenB,
+    });
     if (!storedB.stored) throw new Error('Replacement credential encryption was unavailable');
 
     const profileForRendererB = { id: profileId, name: 'Packaged transport B', baseUrl: smoke.secondOrigin, kind: 'local' };
@@ -833,6 +839,8 @@ if (!hasSingleInstanceLock) {
       reportRevocationFailure: diagnostic => {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
       },
+      expectedPublicInstanceIdentity: (profileId, origin) =>
+        connectDiscovery.expectedPublicInstanceIdentity(profileId, origin),
     });
     const sessionSecurity = configureSessionSecurity(credentials);
     const credentialInitialization = await credentials.initialize();

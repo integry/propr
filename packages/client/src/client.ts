@@ -1,5 +1,7 @@
 import {
   evaluateProprApiCompatibility,
+  parseProprDesktopDiscoveryJson,
+  PROPR_CONNECT_DISCOVERY_MAX_BYTES,
   type ProprApiCompatibilityResult,
   type ProprCompatibilityMetadata,
 } from '@propr/shared';
@@ -233,14 +235,95 @@ export class ProprClient {
   }
 
   async discoverDesktop(timeoutMs = 8000, signal?: AbortSignal): Promise<ProprDesktopDiscovery> {
-    const metadata = await this.request<unknown>('/api/desktop/discovery', {
+    const response = await this.fetch(this.url('/api/desktop/discovery'), {
       cache: 'no-store',
+      credentials: 'omit',
+      headers: { Accept: 'application/json' },
+      redirect: 'manual',
       signal,
     }, { timeoutMs });
+    if (!response.ok || response.redirected
+      || response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+      try { void response.body?.cancel().catch(() => undefined); } catch { /* best-effort response disposal */ }
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status,
+      });
+    }
+    const declaredLength = response.headers.get('content-length');
+    if (declaredLength !== null && (!/^(?:0|[1-9]\d*)$/.test(declaredLength)
+      || Number(declaredLength) > PROPR_CONNECT_DISCOVERY_MAX_BYTES)) {
+      try { void response.body?.cancel().catch(() => undefined); } catch { /* best-effort response disposal */ }
+      throw new ProprClientError('The ProPR instance returned oversized desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status,
+      });
+    }
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    let rejectDeadline!: (reason: unknown) => void;
+    let bodyTimedOut = false;
+    const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+    const bodyTimer = setTimeout(
+      () => {
+        bodyTimedOut = true;
+        rejectDeadline(new Error('desktop discovery body timed out'));
+      },
+      Math.max(1, timeoutMs),
+    );
+    const onAbort = (): void => rejectDeadline(signal?.reason ?? new Error('desktop discovery was cancelled'));
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      if (reader) {
+        while (true) {
+          const part = await Promise.race([reader.read(), deadline]);
+          if (part.done) break;
+          received += part.value.byteLength;
+          if (received > PROPR_CONNECT_DISCOVERY_MAX_BYTES) throw new Error('oversized');
+          chunks.push(part.value);
+        }
+      }
+    } catch (cause) {
+      try { void reader?.cancel().catch(() => undefined); } catch { /* best-effort body cancellation */ }
+      if (bodyTimedOut) {
+        throw new ProprClientError('Desktop discovery timed out.', { kind: 'timeout', cause });
+      }
+      if (signal?.aborted) {
+        throw new ProprClientError('Desktop discovery was cancelled.', { kind: 'aborted', cause });
+      }
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status, cause,
+      });
+    } finally {
+      clearTimeout(bodyTimer);
+      signal?.removeEventListener('abort', onAbort);
+      try { reader?.releaseLock(); } catch { /* hostile streams may retain a pending read */ }
+    }
+    const contentEncoding = response.headers.get('content-encoding')?.trim().toLowerCase();
+    if (declaredLength !== null && (!contentEncoding || contentEncoding === 'identity')
+      && Number(declaredLength) !== received) {
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status,
+      });
+    }
+    const bytes = new Uint8Array(received);
+    let cursor = 0;
+    for (const chunk of chunks) { bytes.set(chunk, cursor); cursor += chunk.byteLength; }
+    let contents: string;
+    try { contents = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch (cause) {
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status, cause,
+      });
+    }
+    const metadata = parseProprDesktopDiscoveryJson(contents);
+    if (!metadata) {
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response', status: response.status,
+      });
+    }
     const compatibility = evaluateProprApiCompatibility(
-      metadata && typeof metadata === 'object'
-        ? metadata as Partial<ProprCompatibilityMetadata>
-        : {},
+      metadata,
     );
     return parseDesktopDiscovery(metadata, compatibility);
   }

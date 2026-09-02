@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
+import { PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY } from '@propr/shared';
 import { DesktopCredentialService, type DesktopPairingBrowserRequest } from './credential-service';
 import { openApprovedDesktopPairingUrl } from './pairing-browser';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
@@ -38,6 +39,21 @@ const createService = async (
     openPairingBrowser,
     fetch: async (input, init) => {
       const url = input.toString();
+      if (url === `${origin}/api/desktop/discovery`) return json({
+        schemaVersion: 1,
+        product: 'ProPR',
+        version: '0.8.15',
+        apiCompatibility: PROPR_API_COMPATIBILITY,
+        uiCompatibility: PROPR_UI_COMPATIBILITY,
+        canonicalEndpoint: null,
+        publicInstanceIdentity: '123e4567-e89b-42d3-a456-426614174000',
+        desktopAuthentication: {
+          protocolVersion: 2,
+          browserPairing: true,
+          instanceBearerTokens: true,
+          socketIoBearerAuthentication: true,
+        },
+      });
       if (url === `${origin}/api/desktop/pairings`) {
         const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
         binding = {

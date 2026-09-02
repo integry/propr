@@ -35,6 +35,9 @@ describe('desktop fixed-root Connect discovery', () => {
     }]);
     const serialized = JSON.stringify(candidates);
     assert.doesNotMatch(serialized, /123e4567|root|path|environment|executable|credential|authority/i);
+    assert.equal(service.expectedPublicInstanceIdentity(
+      'propr-connect-discovered', 'https://t-discovered123.propr.dev',
+    ), readyStatus().publicInstanceIdentity);
   });
 
   it('fences rediscovery to an existing managed profile and preserves its id and label', async () => {
@@ -57,6 +60,10 @@ describe('desktop fixed-root Connect discovery', () => {
       label: saved.label,
       apiBaseUrl: 'https://t-recovered456.propr.dev',
     });
+    assert.equal(service.expectedPublicInstanceIdentity(saved.id, saved.apiBaseUrl), null);
+    assert.equal(service.expectedPublicInstanceIdentity(
+      saved.id, 'https://t-recovered456.propr.dev',
+    ), readyStatus().publicInstanceIdentity);
     assert.equal(await service.rediscover('missing-profile'), null);
   });
 

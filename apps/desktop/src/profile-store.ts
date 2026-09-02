@@ -14,6 +14,7 @@ import {
   type FileHandle,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isPublicInstanceIdentity } from '@propr/shared';
 import type {
   DesktopProfile,
   DesktopProfileInput,
@@ -26,9 +27,10 @@ const PROFILE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 const MAX_CREDENTIAL_LENGTH = 65_536;
 
 export interface StoredCredential {
-  version: 1;
+  version: 2;
   profileId: string;
   origin: string;
+  publicInstanceIdentity: string;
   token: string;
 }
 
@@ -451,9 +453,10 @@ export class ProfileStore {
     pendingRevocationId?: string,
   ): Promise<PairedProfileTransaction | null | { stored: false; reason: 'encryption-unavailable' }> {
     const normalized = normalizedProfileInput(input);
-    if (credential.version !== 1
+    if (credential.version !== 2
       || credential.profileId !== normalized.id
       || credential.origin !== normalized.apiBaseUrl
+      || !isPublicInstanceIdentity(credential.publicInstanceIdentity)
       || typeof credential.token !== 'string'
       || credential.token.length > MAX_CREDENTIAL_LENGTH
       || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token)) {
@@ -632,9 +635,10 @@ export class ProfileStore {
       const value = JSON.parse(this.#encryption.decrypt(encrypted)) as unknown;
       if (!value || typeof value !== 'object') return null;
       const credential = value as Record<string, unknown>;
-      if (credential.version !== 1 || credential.profileId !== profileId
+      if (credential.version !== 2 || credential.profileId !== profileId
         || typeof credential.origin !== 'string'
         || normalizeApiBaseUrl(credential.origin) !== credential.origin
+        || !isPublicInstanceIdentity(credential.publicInstanceIdentity)
         || typeof credential.token !== 'string'
         || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token)) return null;
       return credential as unknown as StoredCredential;
@@ -685,6 +689,7 @@ export class ProfileStore {
       && actual.version === expected.version
       && actual.profileId === expected.profileId
       && actual.origin === expected.origin
+      && actual.publicInstanceIdentity === expected.publicInstanceIdentity
       && actual.token === expected.token;
   }
 
@@ -704,7 +709,8 @@ export class ProfileStore {
   async writeCredential(credential: StoredCredential): Promise<{ stored: true } | { stored: false; reason: 'encryption-unavailable' }> {
     const profileId = credential?.profileId;
     assertProfileId(profileId);
-    if (credential.version !== 1 || normalizeApiBaseUrl(credential.origin) !== credential.origin
+    if (credential.version !== 2 || normalizeApiBaseUrl(credential.origin) !== credential.origin
+      || !isPublicInstanceIdentity(credential.publicInstanceIdentity)
       || typeof credential.token !== 'string' || credential.token.length > MAX_CREDENTIAL_LENGTH
       || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token)) {
       throw new Error('Credential must contain 1 to 65536 characters');
@@ -760,6 +766,7 @@ export class ProfileStore {
         || credential.version !== expected.version
         || credential.profileId !== expected.profileId
         || credential.origin !== expected.origin
+        || credential.publicInstanceIdentity !== expected.publicInstanceIdentity
         || credential.token !== expected.token) return false;
       await this.#moveCredentialToPending(state, profileId);
       await this.#writeState(state);
@@ -773,7 +780,8 @@ export class ProfileStore {
   ): Promise<PendingCredentialRevocation | { stored: false; reason: 'encryption-unavailable' }> {
     const profileId = credential?.profileId;
     assertProfileId(profileId);
-    if (credential.version !== 1 || normalizeApiBaseUrl(credential.origin) !== credential.origin
+    if (credential.version !== 2 || normalizeApiBaseUrl(credential.origin) !== credential.origin
+      || !isPublicInstanceIdentity(credential.publicInstanceIdentity)
       || typeof credential.token !== 'string' || credential.token.length > MAX_CREDENTIAL_LENGTH
       || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token)) {
       throw new Error('Invalid desktop credential revocation material');
@@ -1149,20 +1157,27 @@ export class ProfileStore {
         || !/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error(RECOVERY_ERROR);
       const bytes = Buffer.from(encoded, 'base64url');
       if (bytes.toString('base64url') !== encoded) throw new Error(RECOVERY_ERROR);
-      let credential: StoredCredential | null = null;
+      let credential: (StoredCredential & Record<string, unknown>) | Record<string, unknown> | null = null;
       try {
-        credential = JSON.parse(this.#encryption.decrypt(bytes)) as StoredCredential;
+        credential = JSON.parse(this.#encryption.decrypt(bytes)) as Record<string, unknown>;
       } catch {
         if (!this.#wasPreviouslyAuthenticatedSlot(state, slot, encoded)) throw new Error(RECOVERY_ERROR);
       }
       const profileId = SLOT_PATTERN.exec(slot)?.[1];
-      if (credential && (credential.version !== 1 || credential.profileId !== profileId
+      const isLegacyCredential = credential?.version === 1
+        && credential.profileId === profileId
+        && typeof credential.origin === 'string'
+        && normalizeApiBaseUrl(credential.origin) === credential.origin
+        && typeof credential.token === 'string'
+        && /^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token);
+      if (credential && !isLegacyCredential && (credential.version !== 2 || credential.profileId !== profileId
         || typeof credential.origin !== 'string'
         || normalizeApiBaseUrl(credential.origin) !== credential.origin
+        || !isPublicInstanceIdentity(credential.publicInstanceIdentity)
         || typeof credential.token !== 'string'
         || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token))) throw new Error(RECOVERY_ERROR);
       const pending = Object.values(state.pendingRevocations).find(record => record.slot === slot);
-      if (credential && pending
+      if (credential && !isLegacyCredential && pending
         && (pending.profileId !== credential.profileId || pending.origin !== credential.origin)) {
         throw new Error(RECOVERY_ERROR);
       }
@@ -1337,20 +1352,9 @@ export class ProfileStore {
           credentialEpochs: {},
           pendingRevocations: {},
         };
-        const entries = await readdir(this.#credentialsDirectory, { withFileTypes: true });
-        for (const entry of entries) {
-          const match = /^([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})\.bin$/.exec(entry.name);
-          if (!match || !entry.isFile()) continue;
-          const profileId = match[1];
-          const bytes = await readFile(join(this.#credentialsDirectory, entry.name));
-          const slot = `${profileId}.${randomUUID()}.bin`;
-          const slotPath = join(this.#credentialsDirectory, slot);
-          await writeFile(slotPath, bytes, { mode: 0o600 });
-          await this.#fsyncFile(slotPath);
-          state.credentialSlots[profileId] = slot;
-          state.credentialEpochs[profileId] = randomBytes(16).toString('base64url');
-        }
-        await this.#flushDirectoryIfSupported(this.#credentialsDirectory);
+        // Pre-identity credentials cannot safely be presented to any endpoint.
+        // Keep profiles, but deliberately migrate without their bearer slots.
+        state.activeProfileId = null;
         await this.#writeState(state);
       } else if (parsed.version === 2) {
         state = {
@@ -1358,12 +1362,11 @@ export class ProfileStore {
           generation: '0',
           activeProfileId: parsed.activeProfileId,
           profiles: parsed.profiles.map(profile => ({ ...profile })),
-          credentialSlots: { ...parsed.credentialSlots },
-          credentialEpochs: Object.fromEntries(
-            Object.keys(parsed.credentialSlots).map(profileId => [profileId, randomBytes(16).toString('base64url')]),
-          ),
+          credentialSlots: {},
+          credentialEpochs: {},
           pendingRevocations: {},
         };
+        if (Object.keys(parsed.credentialSlots).length > 0) state.activeProfileId = null;
         await this.#writeState(state);
       } else {
         state = parsed;
@@ -1372,6 +1375,31 @@ export class ProfileStore {
         await this.#writeState(state);
       }
     }
+
+    // Version-3 stores created before public identity binding authenticate at
+    // the journal layer, but their credential payloads are intentionally not
+    // usable. Remove those references locally before any caller can read a
+    // bearer; re-pairing creates a fresh identity-bound generation.
+    let removedUnboundCredential = false;
+    for (const [profileId, slot] of Object.entries(state.credentialSlots)) {
+      let credential: StoredCredential | null;
+      try { credential = await this.#readCredentialSlot(slot, profileId); }
+      catch { continue; } // Preserve material while the OS credential backend is temporarily unavailable.
+      if (credential) continue;
+      delete state.credentialSlots[profileId];
+      delete state.credentialEpochs[profileId];
+      if (state.activeProfileId === profileId) state.activeProfileId = null;
+      removedUnboundCredential = true;
+    }
+    for (const [id, pending] of Object.entries(state.pendingRevocations)) {
+      let credential: StoredCredential | null;
+      try { credential = await this.#readCredentialSlot(pending.slot, pending.profileId); }
+      catch { continue; }
+      if (credential) continue;
+      delete state.pendingRevocations[id];
+      removedUnboundCredential = true;
+    }
+    if (removedUnboundCredential) await this.#writeState(state);
 
     const referenced = new Set([
       ...Object.values(state.credentialSlots),

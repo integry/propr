@@ -4,7 +4,7 @@ import {
   PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION,
   canonicalProprProxyUrl,
   evaluateProprApiCompatibility,
-  parseProprDesktopDiscovery,
+  parseProprDesktopDiscoveryJson,
   type ProprDesktopDiscovery,
 } from "@propr/shared";
 import { prepareConnectHostConfig } from "../orchestrator/index.js";
@@ -222,14 +222,7 @@ async function performDiscoveryFetch(
     }
     const bodyResult = await readBoundedBody(response, signal);
     if (bodyResult.kind !== "ok") return { kind: bodyResult.kind };
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(bodyResult.body);
-    } catch {
-      cancelResponseBody(response);
-      return { kind: "invalid" };
-    }
-    const discovery = parseProprDesktopDiscovery(parsed);
+    const discovery = parseProprDesktopDiscoveryJson(bodyResult.body);
     if (!discovery) cancelResponseBody(response);
     return discovery ? { kind: "ok", discovery } : { kind: "invalid" };
   } catch {
