@@ -1,8 +1,13 @@
 export {
     GOAL_CAPABILITY_COMMANDS,
     antigravityConversationIdentity,
+    antigravityHelpSupportsWholeSession,
     claudeSessionIdentity,
+    claudeHelpSupportsWholeSession,
     codexHandshakeSupportsNativeGoal,
+    codexSchemaSupportsNativeGoal,
+    probeGoalCapability,
+    GoalCapabilityProbe,
     type GoalCapability,
 } from './agents/goalCapabilities.js';
 export {

@@ -44,26 +44,41 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
   const [parallelism, setParallelism] = useState('');
   const [ultrafix, setUltrafix] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [rechecking, setRechecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const selectedAgent = agents.find(agent => agent.agentId === agentId);
+  const unsupportedAgents = agents.filter(agent => !agent.goalCapable);
+
+  const applyCapabilities = useCallback((capabilities: GoalCapability[]) => {
+    setAgents(capabilities);
+    setAgentId(current => capabilities.some(agent => agent.agentId === current && agent.goalCapable)
+      ? current
+      : capabilities.find(agent => agent.goalCapable)?.agentId || '');
+  }, []);
 
   useEffect(() => {
     Promise.all([getInstanceCatalog(), getGoalCapabilities()]).then(([catalog, capabilityData]) => {
-      const capable = capabilityData.agents.filter(agent => agent.goalCapable);
       setRepositories(catalog.repositories);
-      setAgents(capabilityData.agents);
+      applyCapabilities(capabilityData.agents);
       setRepository(catalog.repositories[0]?.name || '');
-      const initial = capable[0];
-      if (initial) {
-        setAgentId(initial.agentId);
-        setModel(initial.defaultModel || initial.models[0] || '');
-      }
     }).catch(err => setError((err as Error).message));
-  }, []);
+  }, [applyCapabilities]);
 
   useEffect(() => {
     if (selectedAgent && !selectedAgent.models.includes(model)) setModel(selectedAgent.defaultModel || selectedAgent.models[0] || '');
   }, [model, selectedAgent]);
+
+  const recheckCapabilities = async () => {
+    setRechecking(true);
+    setError(null);
+    try {
+      applyCapabilities((await getGoalCapabilities(true)).agents);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRechecking(false);
+    }
+  };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -84,7 +99,13 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
     <form onSubmit={submit} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold"><Plus className="h-5 w-5" /> Start a goal</h2>
       {error && <p role="alert" className="mb-3 text-sm text-red-600">{error}</p>}
-      {agents.length > 0 && !agents.some(agent => agent.goalCapable) && <p className="mb-3 rounded bg-amber-50 p-3 text-sm text-amber-800">No pinned coding-agent runtime passed its goal/session capability handshake.</p>}
+      {unsupportedAgents.length > 0 && <div className="mb-3 rounded bg-amber-50 p-3 text-sm text-amber-800">
+        <p>{unsupportedAgents.length === agents.length ? 'No configured coding-agent runtime currently supports goals.' : 'Some configured coding-agent runtimes do not support goals.'}</p>
+        <ul className="mt-2 list-disc space-y-1 pl-5">
+          {unsupportedAgents.map(agent => <li key={agent.agentId}><span className="font-medium">{agent.agentAlias}:</span> {agent.reason || 'Required goal/session transport is unavailable'}</li>)}
+        </ul>
+        <button type="button" disabled={rechecking} onClick={recheckCapabilities} className="mt-2 font-medium underline disabled:opacity-50">{rechecking ? 'Rechecking…' : 'Recheck runtimes'}</button>
+      </div>}
       <div className="grid gap-4 md:grid-cols-2">
         <label className="text-sm font-medium text-slate-700">Repository
           <select aria-label="Repository" value={repository} onChange={event => setRepository(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 p-2" required>

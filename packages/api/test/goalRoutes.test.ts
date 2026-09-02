@@ -28,6 +28,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
     const queued: Array<{ name: string; data: Record<string, unknown>; options: { jobId: string } }> = [];
     const stopped: string[] = [];
     const stopAttempts = new Map<string, number>();
+    const capabilityRequests: Array<{ force?: boolean } | undefined> = [];
     try {
         await createGoals(database);
         await hardenGoals(database);
@@ -98,7 +99,10 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
                     ? { success: true, containerStopped: false, removedQueuedJobs: 0, abortSignalled: true } as never
                     : { success: true, containerStopped: true, removedQueuedJobs: 0 } as never;
             },
-            getCapabilities: async () => [],
+            getCapabilities: async options => {
+                capabilityRequests.push(options);
+                return [];
+            },
         });
 
         const listed = response();
@@ -127,6 +131,13 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
             id: agentId, alias: agentId, type: agentId === 'codex-agent' ? 'codex' : 'claude',
             supportedModels: ['gpt-5.6', 'gpt-5.6-fast'],
         } } as never));
+        const recheckRequest = request('owner-1');
+        (recheckRequest as unknown as { query: Record<string, string> }).query = { recheck: 'true' };
+        const rechecked = response();
+        await routes.capabilities(recheckRequest, rechecked.res);
+        assert.equal(rechecked.state.status, 200);
+        assert.deepEqual(capabilityRequests, [{ force: true }]);
+
         const oversizedCodexPrompt = response();
         const oversizedCodexRequest = request('owner-1', {}, {
             repository: 'acme/repo', objective: '😀'.repeat(4_000), agentId: 'codex-agent', model: 'gpt-5.6',

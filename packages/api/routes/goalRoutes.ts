@@ -24,7 +24,7 @@ interface GoalRoutesDeps {
   db: Knex;
   taskQueue: Queue;
   redisClient: RedisClientType;
-  getCapabilities?: () => Promise<GoalCapability[]>;
+  getCapabilities?: (options?: { force?: boolean }) => Promise<GoalCapability[]>;
   stopExecution?: (taskId: string, options: Parameters<typeof stopTaskExecution>[1]) => Promise<StopTaskExecutionResult>;
 }
 
@@ -142,10 +142,10 @@ async function resolveCreationAgent(
 }
 
 export function createGoalRoutes(deps: GoalRoutesDeps) {
-  const getCapabilities = deps.getCapabilities ?? (async () => {
+  const getCapabilities = deps.getCapabilities ?? (async (options?: { force?: boolean }) => {
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
-    return registry.getGoalCapabilities();
+    return registry.getGoalCapabilities(options);
   });
   const stop = deps.stopExecution ?? stopTaskExecution;
 
@@ -177,10 +177,10 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     next();
   };
 
-  const capabilities = async (_req: Request, res: Response) => {
+  const capabilities = async (req: Request, res: Response) => {
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
-    const detected = await getCapabilities();
+    const detected = await getCapabilities({ force: req.query?.recheck === 'true' });
     const agents = detected.map(capability => {
       const agent = registry.getAgentById(capability.agentId);
       return {
