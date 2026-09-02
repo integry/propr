@@ -24,6 +24,7 @@ import type { DesktopDeepLinkConsumption } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
+import { configureNativeSmokeLogsPath } from './smoke-log-path';
 import {
   createBrowserWindowOptions,
   MINIMUM_BROWSER_WINDOW_SIZE,
@@ -69,6 +70,12 @@ try {
       throw new Error('Packaged desktop smoke --user-data-dir must be an existing non-link directory');
     }
     app.setPath('userData', packagedSmokeUserDataDirectory);
+    configureNativeSmokeLogsPath({
+      app,
+      authorizedNativeSmoke: nativeSmokePhase !== undefined,
+      platform: process.platform,
+      userDataDirectory: packagedSmokeUserDataDirectory,
+    });
     packagedSmokeEvidence = nativeSmokePhase
       ? createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory, nativeSmokePhase)
       : createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory);

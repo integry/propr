@@ -101,8 +101,11 @@ describe('packaged smoke profile authorization', () => {
     const main = readFileSync(fileURLToPath(new URL('./main.ts', import.meta.url)), 'utf8');
     const authorization = main.indexOf('authorizePackagedSmokeTest({');
     const isolation = main.indexOf("app.setPath('userData', packagedSmokeUserDataDirectory)");
+    const logsIsolation = main.indexOf('configureNativeSmokeLogsPath({', isolation);
+    const logsRead = main.indexOf("app.getPath('logs')");
     assert.notEqual(authorization, -1);
     assert.ok(authorization < isolation);
+    assert.ok(isolation < logsIsolation && logsIsolation < logsRead);
     assert.ok(isolation < main.indexOf('new ProfileStore('));
     assert.ok(isolation < main.indexOf('new LocalLifecycleController('));
     assert.ok(authorization < main.indexOf('new ProfileStore('));

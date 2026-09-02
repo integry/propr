@@ -865,6 +865,54 @@ export const removeCopiedApplicationWithLaunchServicesAuthority = async ({
   return failures;
 };
 
+const processGroupAbsenceWasProved = cleanupFailures => (
+  !cleanupFailures.some(failure => failure.label === 'process-groups')
+);
+
+export const removeLifecycleRootsWithAuthority = async ({
+  cleanupFailures,
+  installRoot,
+  launchServices,
+  workRoot,
+}, {
+  removeCopiedApplication = removeCopiedApplicationWithLaunchServicesAuthority,
+  removeWorkRoot = path => rm(path, { recursive: true, force: true }),
+  assertWorkRootAbsent = path => assertAbsent(
+    path,
+    'Native lifecycle work root remained after cleanup',
+  ),
+} = {}) => {
+  const failures = [...cleanupFailures];
+  const attempt = async (label, operation) => {
+    try {
+      await operation();
+    } catch (error) {
+      failures.push({ label, error: errorFrom(error, 'Native lifecycle cleanup failed') });
+    }
+  };
+
+  // A copied executable remains the only bounded remediation authority if the owned
+  // process group could still contain a live member. Do not unregister or remove it.
+  if (processGroupAbsenceWasProved(failures)) {
+    failures.push(...await removeCopiedApplication({ installRoot, launchServices }));
+  }
+  const blocksOuterRemoval = failures.some(failure => [
+    'process-groups',
+    'dmg-mount',
+    'mount-postcondition',
+    'profile-authority',
+    'launchservices-unregister',
+    'launchservices-postcondition',
+    'install-root',
+    'install-postcondition',
+  ].includes(failure.label));
+  if (!blocksOuterRemoval) {
+    await attempt('work-root', () => removeWorkRoot(workRoot));
+    await attempt('work-postcondition', () => assertWorkRootAbsent(workRoot));
+  }
+  return failures;
+};
+
 const macProtocolDispatch = async ({ launchServices, link, env }) => {
   await launchServices.register();
   await run('/usr/bin/open', ['-b', APP_ID, link], { env, timeout: 15_000 });
@@ -874,9 +922,21 @@ const macProtocolDispatch = async ({ launchServices, link, env }) => {
 const assertProfileAuthority = async profile => {
   const desktop = join(profile.userData, 'desktop');
   const state = join(desktop, 'profiles.json');
-  const [rootStats, desktopStats, stateStats] = await Promise.all([lstat(profile.root), lstat(desktop), lstat(state)]);
+  const logs = join(profile.userData, 'logs');
+  const logsFromRoot = relative(profile.root, logs);
+  const log = join(logs, 'desktop.jsonl');
+  const [rootStats, desktopStats, stateStats, logsStats, logStats] = await Promise.all([
+    lstat(profile.root),
+    lstat(desktop),
+    lstat(state),
+    lstat(logs),
+    lstat(log),
+  ]);
   if ((rootStats.mode & 0o777) !== 0o700 || (desktopStats.mode & 0o777) !== 0o700
-    || (stateStats.mode & 0o777) !== 0o600 || stateStats.isSymbolicLink()) {
+    || (stateStats.mode & 0o777) !== 0o600 || stateStats.isSymbolicLink()
+    || !logsFromRoot || logsFromRoot.startsWith('..') || isAbsolute(logsFromRoot)
+    || (logsStats.mode & 0o777) !== 0o700 || logsStats.isSymbolicLink()
+    || (logStats.mode & 0o777) !== 0o600 || logStats.isSymbolicLink()) {
     throw new Error('Native profile state did not retain 0700/0600 authority');
   }
   const contents = await readFile(state, 'utf8');
@@ -1095,6 +1155,9 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
     const beforeDigest = await digest(artifact);
     operationStage = 'CREATE_PROFILE';
     profile = await createPrivateSmokeProfile(workRoot);
+    const logsDirectory = join(profile.userData, 'logs');
+    await mkdir(logsDirectory, { mode: 0o700 });
+    await chmod(logsDirectory, 0o700);
     operationStage = 'START_PROFILE_API';
     profileApi = await createProfileApi();
     operationStage = 'BASELINE_BEFORE';
@@ -1255,15 +1318,11 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
   };
   if (profileApi) await cleanup('profile-api', () => closeProfileApi(profileApi));
   if (mountAuthority?.mounted) await cleanup('dmg-mount', () => mountAuthority.detach());
-  if (sandboxPrepared && application) {
+  if (processGroupAbsenceWasProved(cleanupFailures) && sandboxPrepared && application) {
     await cleanup('linux-sandbox', () => run('/usr/bin/sudo', [
       '/bin/rm', '-f', join(application.applicationRoot, 'chrome-sandbox'),
     ]));
   }
-  cleanupFailures.push(...await removeCopiedApplicationWithLaunchServicesAuthority({
-    installRoot,
-    launchServices,
-  }));
   if (!mountAuthority?.mounted) {
     await cleanup('mount-root', () => rm(mountRoot, { recursive: true, force: true }));
     await cleanup('mount-postcondition', () => assertAbsent(mountRoot, 'Native DMG mount root remained after detach'));
@@ -1271,20 +1330,13 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
   if (profile) {
     await cleanup('profile-authority', () => removeAuthorizedProfile(profile));
   }
-  const blocksOuterRemoval = cleanupFailures.some(failure => [
-    'dmg-mount',
-    'mount-postcondition',
-    'profile-authority',
-    'launchservices-unregister',
-    'launchservices-postcondition',
-    'install-root',
-    'install-postcondition',
-  ].includes(failure.label));
-  if (!blocksOuterRemoval) {
-    await cleanup('work-root', () => rm(workRoot, { recursive: true, force: true }));
-    await cleanup('work-postcondition', () => assertAbsent(workRoot, 'Native lifecycle work root remained after cleanup'));
-  }
-  throwCombined(primaryError, cleanupFailures);
+  const finalCleanupFailures = await removeLifecycleRootsWithAuthority({
+    cleanupFailures,
+    installRoot,
+    launchServices,
+    workRoot,
+  });
+  throwCombined(primaryError, finalCleanupFailures);
 };
 
 export const runNativeArtifactLifecycle = async target => {

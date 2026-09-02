@@ -20,6 +20,7 @@ import {
   OwnedProcessGroups,
   parseArguments,
   removeCopiedApplicationWithLaunchServicesAuthority,
+  removeLifecycleRootsWithAuthority,
   removeAuthorizedProfile,
   runningProcessGroupMembersFromPs,
   waitForEvents,
@@ -303,6 +304,29 @@ describe('native staged artifact lifecycle authority', () => {
       assertInstallRootAbsent: async () => { calls.push('install-postcondition'); },
     }), []);
     assert.deepEqual(calls, ['unregister', 'postcondition', 'remove', 'install-postcondition']);
+  });
+
+  test('retains copied install and outer work roots when process-group absence cannot be proved', async () => {
+    const calls = [];
+    const processGroupFailure = {
+      label: 'process-groups',
+      error: new Error('injected process-group postcondition failure'),
+    };
+    const failures = await removeLifecycleRootsWithAuthority({
+      cleanupFailures: [processGroupFailure],
+      installRoot: '/private/work/install',
+      launchServices: { registered: true },
+      workRoot: '/private/work',
+    }, {
+      removeCopiedApplication: async () => {
+        calls.push('remove-copied-application');
+        return [];
+      },
+      removeWorkRoot: async () => { calls.push('remove-work-root'); },
+      assertWorkRootAbsent: async () => { calls.push('work-postcondition'); },
+    });
+    assert.deepEqual(calls, []);
+    assert.deepEqual(failures, [processGroupFailure]);
   });
 
   test('does not mask profile API or private-profile authority cleanup failures', async () => {
