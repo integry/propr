@@ -38,6 +38,7 @@ import {
   WindowsNativeStageError,
   windowsNativeTimingBucket,
   windowsPowerShellEnvironment,
+  type WindowsBrokerResultDiagnostic,
 } from "./connectWindowsAuthority.js";
 
 const USER = "S-1-5-21-100-200-300-1001";
@@ -51,6 +52,10 @@ function fixtureBroker({
   stderr = "",
   status = 0,
   hang = false,
+  killReturns = true,
+  releaseAfterKillMs,
+  closeEventDelayMs = 0,
+  streamDrainDelayMs = 0,
   onStart = () => undefined,
   onClose = () => undefined,
 }: {
@@ -59,6 +64,10 @@ function fixtureBroker({
   stderr?: string;
   status?: number;
   hang?: boolean;
+  killReturns?: boolean;
+  releaseAfterKillMs?: number;
+  closeEventDelayMs?: number;
+  streamDrainDelayMs?: number;
   onStart?: () => void;
   onClose?: () => void;
 } = {}): ChildProcess {
@@ -68,22 +77,31 @@ function fixtureBroker({
   child.pid = fixtureBrokerPid += 1;
   child.exitCode = null;
   child.signalCode = null;
+  let closing = false;
   let closed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const close = (code: number | null, signal: NodeJS.Signals | null): void => {
-    if (closed) return;
-    closed = true;
+    if (closing) return;
+    closing = true;
     if (timer !== undefined) clearTimeout(timer);
     child.exitCode = code;
     child.signalCode = signal;
-    (child.stdout as PassThrough).end();
-    (child.stderr as PassThrough).end();
-    onClose();
-    setImmediate(() => child.emit("close", code, signal));
+    setTimeout(() => {
+      (child.stdout as PassThrough).end();
+      (child.stderr as PassThrough).end();
+    }, streamDrainDelayMs);
+    setTimeout(() => {
+      closed = true;
+      onClose();
+      child.emit("close", code, signal);
+    }, closeEventDelayMs);
   };
   child.kill = (): boolean => {
-    close(null, "SIGKILL");
-    return true;
+    if (killReturns) close(null, "SIGKILL");
+    else if (releaseAfterKillMs !== undefined && !closing) {
+      setTimeout(() => close(null, "SIGKILL"), releaseAfterKillMs);
+    }
+    return killReturns;
   };
   onStart();
   if (!hang) timer = setTimeout(() => {
@@ -294,6 +312,7 @@ test("Windows broker supervisor terminates and drains all siblings on timeout, f
   ): Promise<void> => {
     let active = 0;
     let started = 0;
+    const diagnostics: WindowsBrokerResultDiagnostic[] = [];
     await assert.rejects(
       runWindowsInspectionBrokerBatch({
         entryCount: 3,
@@ -305,12 +324,19 @@ test("Windows broker supervisor terminates and drains all siblings on timeout, f
         deadlineMs: 30,
         cleanupTimeoutMs: 100,
         maxOutputBytes: 32,
+        onBrokerResult: (diagnostic) => diagnostics.push(diagnostic),
         ...overrides,
       }),
       (error) => error instanceof WindowsNativeStageError && error.stage === expectedStage,
     );
     assert.equal(started, 3);
     assert.equal(active, 0);
+    assert.deepEqual(diagnostics.map(({ brokerIndex }) => brokerIndex).sort(), ["0", "1", "2-3"]);
+    assert.ok(diagnostics.every((diagnostic) => (
+      Object.keys(diagnostic).sort().join(",")
+      === "brokerIndex,cleanup,deadline,statusStage,stderr,stdout"
+    )));
+    assert.doesNotMatch(JSON.stringify(diagnostics), /SENTINEL|powershell|S-1-|[A-Za-z]:\\/i);
   };
 
   await runFailure("spawn:timeout", (_index, closed) => fixtureBroker({ hang: true, onClose: closed }));
@@ -324,6 +350,83 @@ test("Windows broker supervisor terminates and drains all siblings on timeout, f
     stdout: index === 0 ? "x".repeat(33) : "",
     onClose: closed,
   }), { deadlineMs: 200 });
+});
+
+test("Windows broker cleanup deadline never settles before an unkillable child is contained", async () => {
+  let active = 0;
+  let settled = false;
+  const diagnostics: unknown[] = [];
+  const started = performance.now();
+  const result = runWindowsInspectionBrokerBatch({
+    entryCount: 1,
+    startBroker: () => fixtureBroker({
+      hang: true,
+      killReturns: false,
+      releaseAfterKillMs: 80,
+      onStart: () => { active += 1; },
+      onClose: () => { active -= 1; },
+    }),
+    deadlineMs: 10,
+    cleanupTimeoutMs: 20,
+    maxOutputBytes: 32,
+    onBrokerResult: (diagnostic) => diagnostics.push(diagnostic),
+  }).then(
+    () => { settled = true; throw new Error("unkillable broker unexpectedly resolved"); },
+    (error) => { settled = true; throw error; },
+  );
+  const rejection = assert.rejects(result, (error) => error instanceof WindowsNativeStageError
+    && error.stage === "spawn:cleanup" && error.primaryStage === "spawn:timeout");
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  assert.equal(settled, false);
+  assert.equal(active, 1);
+  await rejection;
+  assert.equal(active, 0);
+  assert.ok(performance.now() - started >= 75);
+  assert.deepEqual(diagnostics, [{
+    brokerIndex: "0",
+    statusStage: "spawn:timeout",
+    stderr: "empty",
+    stdout: "empty",
+    deadline: "expired",
+    cleanup: "deadline-expired",
+  }]);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /SENTINEL|powershell|S-1-|[A-Za-z]:\\/i);
+});
+
+test("Windows broker supervisor waits for delayed close and both stream drains", async () => {
+  let active = 0;
+  let settled = false;
+  const diagnostics: unknown[] = [];
+  const started = performance.now();
+  const result = runWindowsInspectionBrokerBatch({
+    entryCount: 1,
+    startBroker: () => fixtureBroker({
+      hang: true,
+      closeEventDelayMs: 15,
+      streamDrainDelayMs: 55,
+      onStart: () => { active += 1; },
+      onClose: () => { active -= 1; },
+    }),
+    deadlineMs: 5,
+    cleanupTimeoutMs: 100,
+    maxOutputBytes: 32,
+    onBrokerResult: (diagnostic) => diagnostics.push(diagnostic),
+  }).finally(() => { settled = true; });
+  const rejection = assert.rejects(result, (error) => error instanceof WindowsNativeStageError
+    && error.stage === "spawn:timeout" && error.primaryStage === "spawn:timeout");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(active, 0);
+  assert.equal(settled, false);
+  await rejection;
+  assert.ok(performance.now() - started >= 50);
+  assert.deepEqual(diagnostics, [{
+    brokerIndex: "0",
+    statusStage: "spawn:timeout",
+    stderr: "empty",
+    stdout: "empty",
+    deadline: "expired",
+    cleanup: "contained",
+  }]);
 });
 
 test("Windows one-target broker documents reject missing, duplicate, and extra results", () => {
@@ -340,7 +443,7 @@ test("Windows one-target broker documents reject missing, duplicate, and extra r
   );
 });
 
-test("Windows production isolates entry fields and retains private handle lifetime", () => {
+test("Windows production batches fixed inherited handles and revalidates each entry in-process", () => {
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:fd-duplicate"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:index-info-initial"));
   assert.ok(WINDOWS_NATIVE_STAGE_CODES.includes("broker:current-user-sid"));
@@ -359,32 +462,20 @@ test("Windows production isolates entry fields and retains private handle lifeti
   assert.equal(windowsBrokerFailureStage(84), "broker:entry-format");
   assert.equal(windowsBrokerFailureStage(85), "broker:entry-flags");
   assert.equal(windowsBrokerFailureStage(86), "broker:entry-rules");
-
-  const duplicate = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=80");
+  assert.equal(windowsBrokerFailureStage(87), "broker:control");
+  assert.match(WINDOWS_INSPECTION_SOURCE, /\$n=__PROPR_ENTRY_COUNT__\n\$r=__PROPR_ROUND_COUNT__/);
+  assert.match(WINDOWS_INSPECTION_SOURCE, /for\(\$i=0;\$i-lt \$n;\$i\+\+\)/);
+  assert.match(WINDOWS_INSPECTION_SOURCE, /_get_osfhandle\(3\+\$i\)/);
+  assert.match(WINDOWS_INSPECTION_SOURCE,
+    /DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{exit \$stage\}/);
   const initial = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=74");
-  const sid = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=78");
-  const revalidation = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=79");
+  const revalidation = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=79", initial);
   const decode = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=81", revalidation);
   const compose = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=82", decode);
-  const entryFormat = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=84", compose);
-  const entryFlags = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=85", entryFormat);
-  const entryRules = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=86", entryFlags);
-  const entryBuild = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=83", entryRules);
-  const json = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=77", entryBuild);
-  assert.ok(duplicate >= 0 && duplicate < initial && initial < sid && sid < revalidation
-    && revalidation < decode && decode < compose && compose < entryFormat
-    && entryFormat < entryFlags && entryFlags < entryRules && entryRules < entryBuild
-    && entryBuild < json);
-  assert.match(WINDOWS_INSPECTION_SOURCE.slice(duplicate, initial),
-    /DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{exit \$stage\}/);
-  assert.match(WINDOWS_INSPECTION_SOURCE.slice(initial, sid),
-    /^\$stage=74\n  \$before=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$privateHandle,\$before\)\)\{exit \$stage\}\n  $/s);
-  assert.match(WINDOWS_INSPECTION_SOURCE.slice(sid, WINDOWS_INSPECTION_SOURCE.indexOf("$stage=75", sid)),
-    /^\$stage=78\n  \$current=.*WindowsIdentity\]::GetCurrent\(\)\.User\n  if\(\$null-eq \$current\)\{exit \$stage\}\n  \$currentSid=\$current\.Value\n  $/s);
-  assert.match(WINDOWS_INSPECTION_SOURCE.slice(revalidation, decode),
-    /^\$stage=79\n  \$after=.*AllocHGlobal\(52\)\n  if\(-not .*GetFileInformationByHandle\(\$privateHandle,\$after\)\)\{exit \$stage\}\n  $/s);
+  const entryBuild = WINDOWS_INSPECTION_SOURCE.indexOf("$stage=83", compose);
+  assert.ok(initial >= 0 && initial < revalidation && revalidation < decode
+    && decode < compose && compose < entryBuild);
   const decodedIdentity = WINDOWS_INSPECTION_SOURCE.slice(decode, compose);
-  assert.match(decodedIdentity, /^\$stage=81\n  \$beforeVolume=/);
   for (const [field, structure, offset] of [
     ["beforeVolume", "before", 28], ["afterVolume", "after", 28],
     ["beforeHigh", "before", 44], ["beforeLow", "before", 48],
@@ -395,69 +486,17 @@ test("Windows production isolates entry fields and retains private handle lifeti
   assert.equal(WINDOWS_INSPECTION_SOURCE.match(/function Read-ProprUInt32/g)?.length, 1);
   assert.equal(WINDOWS_INSPECTION_SOURCE.match(/Read-ProprUInt32 \$(?:before|after) (?:28|44|48)/g)?.length, 6);
   assert.match(decodedIdentity,
-    /\$afterHigh=Read-ProprUInt32 \$after 44;\$afterLow=Read-ProprUInt32 \$after 48\n  $/);
+    /\$afterHigh=Read-ProprUInt32 \$after 44;\$afterLow=Read-ProprUInt32 \$after 48\n\s*$/);
   assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE,
     /\[uint32\]\[Runtime\.InteropServices\.Marshal\]::ReadInt32/);
   assert.match(WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE,
     /if\(-not \[BitConverter\]::IsLittleEndian\)\{exit \$stage\}\n  \$signed=\[int32\]\[Runtime\.InteropServices\.Marshal\]::ReadInt32\(\$pointer,\$offset\)\n  \$bytes=\[BitConverter\]::GetBytes\(\$signed\)\n  \[BitConverter\]::ToUInt32\(\$bytes,0\)/);
-  const composedIdentity = WINDOWS_INSPECTION_SOURCE.slice(
-    compose, entryFormat,
-  );
+  const composedIdentity = WINDOWS_INSPECTION_SOURCE.slice(compose, WINDOWS_INSPECTION_SOURCE.indexOf("$stage=84", compose));
   assert.match(composedIdentity,
-    /^\$stage=82\n  \$beforeId=Join-ProprUInt64 \$beforeLow \$beforeHigh\n  if\(\$beforeId-isnot \[uint64\]\)\{exit \$stage\}\n  \$afterId=Join-ProprUInt64 \$afterLow \$afterHigh\n  if\(\$afterId-isnot \[uint64\]\)\{exit \$stage\}\n  $/);
-  const formattedIdentity = WINDOWS_INSPECTION_SOURCE.slice(entryFormat, entryFlags);
-  assert.equal(formattedIdentity, [
-    "$stage=84",
-    "  $beforeVolumeDecimal=$beforeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)",
-    "  $afterVolumeDecimal=$afterVolume.ToString([Globalization.CultureInfo]::InvariantCulture)",
-    "  $beforeIdDecimal=$beforeId.ToString([Globalization.CultureInfo]::InvariantCulture)",
-    "  $afterIdDecimal=$afterId.ToString([Globalization.CultureInfo]::InvariantCulture)",
-    "  if($beforeVolumeDecimal-isnot [string]-or $beforeVolumeDecimal.Length-eq 0-or $beforeVolumeDecimal.Length-gt 10-or $beforeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}",
-    "  if($afterVolumeDecimal-isnot [string]-or $afterVolumeDecimal.Length-eq 0-or $afterVolumeDecimal.Length-gt 10-or $afterVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}",
-    "  if($beforeIdDecimal-isnot [string]-or $beforeIdDecimal.Length-eq 0-or $beforeIdDecimal.Length-gt 20-or $beforeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}",
-    "  if($afterIdDecimal-isnot [string]-or $afterIdDecimal.Length-eq 0-or $afterIdDecimal.Length-gt 20-or $afterIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}",
-    "  ",
-  ].join("\n"));
-  assert.equal(formattedIdentity.match(/\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)/g)?.length, 4);
-  assert.doesNotMatch(formattedIdentity, /\$entry=|Console|Write-|Out\./);
-  const entryFlagValidation = WINDOWS_INSPECTION_SOURCE.slice(entryFlags, entryRules);
-  assert.equal(entryFlagValidation, [
-    "$stage=85",
-    "  $daclProtected=[bool](($control-band 0x1000)-ne 0)",
-    "  $reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)",
-    "  if($daclProtected-isnot [bool]-or $reparsePoint-isnot [bool]){exit $stage}",
-    "  ",
-  ].join("\n"));
-  assert.doesNotMatch(entryFlagValidation, /Console|Write-|Out\./);
-  const entryRuleValidation = WINDOWS_INSPECTION_SOURCE.slice(entryRules, entryBuild);
-  assert.equal(entryRuleValidation, [
-    "$stage=86",
-    "  [object[]]$rulesArray=$rules.ToArray()",
-    "  if($rulesArray-isnot [object[]]-or $rulesArray.Count-ne $rules.Count-or $rulesArray.Count-gt 128){exit $stage}",
-    "  for($ruleIndex=0;$ruleIndex-lt $rulesArray.Count;$ruleIndex++){",
-    "    if(-not [object]::ReferenceEquals($rulesArray[$ruleIndex],$rules[$ruleIndex])){exit $stage}",
-    "  }",
-    "  ",
-  ].join("\n"));
+    /^\$stage=82\n\s+\$beforeId=Join-ProprUInt64 \$beforeLow \$beforeHigh\n\s+if\(\$beforeId-isnot \[uint64\]\)\{exit \$stage\}\n\s+\$afterId=Join-ProprUInt64 \$afterLow \$afterHigh\n\s+if\(\$afterId-isnot \[uint64\]\)\{exit \$stage\}\n\s*$/);
   assert.equal(WINDOWS_INSPECTION_SOURCE.match(/\[object\[\]\]\$rulesArray=\$rules\.ToArray\(\)/g)?.length, 1);
   assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE, /@\(\s*\$rules\s*\)/);
-  assert.doesNotMatch(entryRuleValidation, /ConvertTo-Json|\.ToString|Console|Write-|Out\./);
-  const entryConstruction = WINDOWS_INSPECTION_SOURCE.slice(entryBuild, json);
-  assert.equal(entryConstruction, [
-    "$stage=83",
-    "  $entry=[pscustomobject][ordered]@{",
-    "    currentUserSid=$currentSid;ownerSid=$ownerSid",
-    "    daclProtected=$daclProtected;reparsePoint=$reparsePoint",
-    "    volumeSerialNumber=$beforeVolumeDecimal",
-    "    fileId=$beforeIdDecimal",
-    "    verifiedVolumeSerialNumber=$afterVolumeDecimal",
-    "    verifiedFileId=$afterIdDecimal;rules=$rulesArray",
-    "  }",
-    "  ",
-  ].join("\n"));
-  assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE, /__PROPR_|\bindex=|\bkind=|authorityKind=/);
-  assert.doesNotMatch(entryConstruction,
-    /Marshal|\.ToString|InvariantCulture|@\(\$rules\)|ReferenceEquals|-band|\bfor\s*\(/);
+  assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE, /\bpath=|\bkind=|authorityKind=|S-1-/);
   assert.doesNotMatch(composedIdentity, /ToString|\$entry=/);
   assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE, /4294967296|\[uint64\]\$(?:before|after)High\*/);
   assert.match(WINDOWS_UINT64_COMPOSER_SOURCE,
@@ -486,10 +525,10 @@ test("Windows production isolates entry fields and retains private handle lifeti
   assert.match(WINDOWS_INSPECTION_SOURCE,
     /GetSecurityInfo\(\$privateHandle,1,5,\[ref\]\$owner,\[ref\]\$group,\[ref\]\$dacl,\[ref\]\$sacl,\[ref\]\$descriptor\)/);
   assert.equal(WINDOWS_INSPECTION_SOURCE.match(/::CloseHandle\(\$privateHandle\)/g)?.length, 1);
-  assert.match(WINDOWS_INSPECTION_SOURCE,
-    /finally \{if\(\$privateHandleOwned\)\{\$null=\[ProprReadOnlyAuthority\]::CloseHandle\(\$privateHandle\)\}\}/);
+  assert.match(WINDOWS_INSPECTION_SOURCE, /ReadLine\(\)-cne 'PROPR_REVALIDATE_V1'/);
+  assert.match(WINDOWS_INSPECTION_SOURCE, /\[Console\]::Out\.WriteLine\(\$json\)/);
+  assert.match(WINDOWS_INSPECTION_SOURCE, /FreeHGlobal\(\$before\)/);
   assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE, /CloseHandle\(\$originalHandle\)/);
-  assert.doesNotMatch(WINDOWS_INSPECTION_SOURCE.slice(initial), /\$originalHandle/);
 });
 
 test("Windows PowerShell boundary retains a derived minimal environment and no filesystem writes", () => {
@@ -503,7 +542,7 @@ test("Windows PowerShell boundary retains a derived minimal environment and no f
   ]) assert.equal(forbidden in windowsPowerShellEnvironment("C:\\Windows"), false);
   assert.equal(WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES, false);
   assert.equal(WINDOWS_INSPECTOR_WRITES_FILESYSTEM, false);
-  assert.equal(WINDOWS_INSPECTOR_TRANSPORT, "inherited-standard-handle");
+  assert.equal(WINDOWS_INSPECTOR_TRANSPORT, "inherited-fixed-fd-table");
   for (const source of [WINDOWS_INSPECTION_SOURCE, WINDOWS_NATIVE_TIMING_PROBE_SOURCE]) {
     assert.doesNotMatch(source, /Add-Type|Start-Process|Set-Content|Out-File|New-Item|Remove-Item|Invoke-Expression/i);
   }

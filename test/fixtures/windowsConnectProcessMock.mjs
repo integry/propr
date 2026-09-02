@@ -56,7 +56,7 @@ const nativeStages = new Set([
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
   "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose", "broker:entry-format",
-  "broker:entry-flags", "broker:entry-rules", "broker:entry-build",
+  "broker:entry-flags", "broker:entry-rules", "broker:entry-build", "broker:control",
   "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
   "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ]);
@@ -66,27 +66,29 @@ globalThis[Symbol.for("propr.test.windowsNativeDiagnostic")] = (stage) => {
 };
 
 function authorityDocument(args, options, mode, invocation = authorityInvocation) {
-  const stat = fstatSync(options.stdio[0], { bigint: true });
-  const identity = { device: stat.dev.toString(10), file: stat.ino.toString(10) };
   const userSid = "S-1-5-21-100-200-300-1001";
-  const entries = [{
-    currentUserSid: userSid,
-    ownerSid: userSid,
-    daclProtected: true,
-    reparsePoint: false,
-    volumeSerialNumber: identity.device,
-    fileId: identity.file,
-    verifiedVolumeSerialNumber: identity.device,
-    verifiedFileId: identity.file,
-    rules: [{
-      identitySid: userSid,
-      inherited: false,
-      accessType: "allow",
-      appliesToSelf: true,
-      rights: "2032127",
-    }],
-  }];
-  const protectedEntry = entries[0];
+  const descriptors = options.stdio.slice(3).filter(Number.isInteger);
+  const entries = descriptors.map((descriptor) => {
+    const stat = fstatSync(descriptor, { bigint: true });
+    const identity = { device: stat.dev.toString(10), file: stat.ino.toString(10) };
+    return {
+      currentUserSid: userSid,
+      ownerSid: userSid,
+      daclProtected: true,
+      reparsePoint: false,
+      volumeSerialNumber: identity.device,
+      fileId: identity.file,
+      verifiedVolumeSerialNumber: identity.device,
+      verifiedFileId: identity.file,
+      rules: [{
+        identitySid: userSid,
+        inherited: false,
+        accessType: "allow",
+        appliesToSelf: true,
+        rights: "2032127",
+      }],
+    };
+  });
   if (mode === "descriptor-mismatch") {
     entries[0].fileId = (BigInt(entries[0].fileId) + 1n).toString(10);
     entries[0].verifiedFileId = entries[0].fileId;
@@ -95,20 +97,20 @@ function authorityDocument(args, options, mode, invocation = authorityInvocation
   else if (mode === "authority-kind-mismatch") entries[0].extraAuthorityKind = "root";
   else if (mode === "identity-mismatch") {
     entries[0].fileId = (BigInt(entries[0].fileId) + 1n).toString(10);
-  } else if (mode === "sid-mismatch" && invocation > 1) {
-    entries[0].currentUserSid = "S-1-5-21-100-200-300-1002";
-  } else if (mode === "broad-write" && protectedEntry) {
-    protectedEntry.rules = [{
+  } else if (mode === "sid-mismatch" && entries.length > 1) {
+    entries[1].currentUserSid = "S-1-5-21-100-200-300-1002";
+  } else if (mode === "broad-write") {
+    for (const entry of entries) entry.rules = [{
       identitySid: "S-1-1-0", inherited: false, accessType: "allow", appliesToSelf: true, rights: "2",
     }];
-  } else if (mode === "inherited-write" && protectedEntry) {
-    protectedEntry.rules[0].inherited = true;
-  } else if (mode === "unprotected" && protectedEntry) {
-    protectedEntry.daclProtected = false;
-  } else if (mode === "owner-mismatch" && protectedEntry) {
-    protectedEntry.ownerSid = "S-1-5-18";
-  } else if (mode === "reparse" && protectedEntry) {
-    protectedEntry.reparsePoint = true;
+  } else if (mode === "inherited-write") {
+    for (const entry of entries) entry.rules[0].inherited = true;
+  } else if (mode === "unprotected") {
+    for (const entry of entries) entry.daclProtected = false;
+  } else if (mode === "owner-mismatch") {
+    for (const entry of entries) entry.ownerSid = "S-1-5-18";
+  } else if (mode === "reparse") {
+    for (const entry of entries) entry.reparsePoint = true;
   }
   return JSON.stringify({ version: 1, entries });
 }
@@ -118,6 +120,7 @@ function fakeAuthorityChild(args, options, mode) {
   const child = new EventEmitter();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
+  child.stdin = options.stdio[0] === "pipe" ? new PassThrough() : null;
   child.pid = 0x7000_0000 + authorityInvocation;
   child.exitCode = null;
   child.signalCode = null;
@@ -135,26 +138,36 @@ function fakeAuthorityChild(args, options, mode) {
     close(null, "SIGKILL");
     return true;
   };
-  queueMicrotask(() => {
+  const publish = () => {
     if (closed) return;
     if (mode === "timeout") {
       const error = Object.assign(new Error("private-path-SENTINEL"), { code: "ETIMEDOUT" });
       child.emit("error", error);
       return;
     }
-    if (mode === "malformed") child.stdout.write("{");
-    else if (mode === "oversized") child.stdout.write("x".repeat(128 * 1024 + 1));
-    else if (mode === "extra-key") child.stdout.write('{"version":1,"entries":[],"extra":true}');
-    else if (mode === "duplicate") child.stdout.write('{"version":1,"version":1,"entries":[]}');
-    else if (mode === "entry-count") child.stdout.write('{"version":1,"entries":[]}');
+    if (mode === "malformed") child.stdout.write("{\n");
+    else if (mode === "oversized") child.stdout.write(`${"x".repeat(128 * 1024 + 1)}\n`);
+    else if (mode === "extra-key") child.stdout.write('{"version":1,"entries":[],"extra":true}\n');
+    else if (mode === "duplicate") child.stdout.write('{"version":1,"version":1,"entries":[]}\n');
+    else if (mode === "entry-count") child.stdout.write('{"version":1,"entries":[]}\n');
     else if (mode === "entry-shape") {
       const document = JSON.parse(authorityDocument(args, options, mode, invocation));
       document.entries[0].extra = true;
-      child.stdout.write(JSON.stringify(document));
+      child.stdout.write(`${JSON.stringify(document)}\n`);
     } else if (mode === "stderr") child.stderr.write("private-path-SENTINEL S-1-5-21-999 raw-error-SENTINEL");
-    else if (mode !== "nonzero") child.stdout.write(authorityDocument(args, options, mode, invocation));
+    else if (mode !== "nonzero") child.stdout.write(`${authorityDocument(args, options, mode, invocation)}\n`);
+    if (child.stdin && !closed && mode !== "nonzero") return;
     close(mode === "nonzero" ? 70 : 0);
+  };
+  child.stdin?.once("data", (chunk) => {
+    if (Buffer.from(chunk).toString("ascii") !== "PROPR_REVALIDATE_V1\n") {
+      close(87);
+      return;
+    }
+    child.stdin = null;
+    publish();
   });
+  queueMicrotask(publish);
   return child;
 }
 

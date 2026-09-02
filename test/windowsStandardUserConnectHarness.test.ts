@@ -15,6 +15,7 @@ import {
 const harness = readFileSync('scripts/verify-windows-standard-user-connect.mjs', 'utf8');
 const processMock = readFileSync('test/fixtures/windowsConnectProcessMock.mjs', 'utf8');
 const windowsAuthority = readFileSync('packages/cli/src/connectWindowsAuthority.ts', 'utf8');
+const connectCommand = readFileSync('packages/cli/src/commands/connectCommand.ts', 'utf8');
 
 function diagnosticDefinitions(): {
   scenarioAllowlist: string[];
@@ -320,7 +321,7 @@ test('the ordinary-user Windows proof retains native security paths and bounds r
   }
   assert.match(
     processMock,
-    /else if \(mode !== "nonzero"\) child\.stdout\.write\(authorityDocument\(args, options, mode, invocation\)\);/,
+    /else if \(mode !== "nonzero"\) child\.stdout\.write\(`\$\{authorityDocument\(args, options, mode, invocation\)\}\\n`\);/,
   );
   assert.match(harness, /\{ name: "path-aba", mode: "path-aba", reason: "INVALID_ROOT" \}/);
   assert.match(harness, /\{ name: "authority-missing-system-root", systemRootMode: "missing", nativeStage: "resolver:env" \}/);
@@ -364,7 +365,7 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'broker:ps-version', 'broker:job', 'broker:fd', 'broker:fd-duplicate', 'broker:index-info-initial',
     'broker:security-info', 'broker:acl', 'broker:json', 'broker:current-user-sid',
     'broker:index-info-revalidation', 'broker:index-info-decode', 'broker:index-info-compose', 'broker:entry-format',
-    'broker:entry-flags', 'broker:entry-rules', 'broker:entry-build',
+    'broker:entry-flags', 'broker:entry-rules', 'broker:entry-build', 'broker:control',
     'parent:utf8', 'parent:json-parse', 'parent:json-canonical', 'parent:document-shape',
     'parent:entry-count', 'parent:entry-shape', 'parent:json-shape', 'parent:descriptor-bind', 'parent:post-bind',
   ]);
@@ -448,8 +449,8 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
   assert.doesNotMatch(catchBody, /(?:result|api|error)\.(?:stdout|stderr|message|path|argv|env|config)/i);
 });
 
-test('the staged hosted probe and production inspector both use the inherited standard handle', () => {
-  assert.doesNotMatch(windowsAuthority, /_get_osfhandle|AssignProcessToJobObject|CreateJobObject/);
+test('the staged probe uses stdin while production inherits a fixed multi-handle fd table', () => {
+  assert.doesNotMatch(windowsAuthority, /AssignProcessToJobObject|CreateJobObject/);
   assert.match(harness, /runWindowsNativeTimingProbe\(probeFd\)/);
   assert.match(harness, /openSync\(\s*fixture,\s*constants\.O_RDONLY \| constants\.O_DIRECTORY \| constants\.O_NOFOLLOW,\s*\)/);
   assert.match(harness, /native-timing=\$\{nativeProbe\.evidence\}/);
@@ -459,28 +460,29 @@ test('the staged hosted probe and production inspector both use the inherited st
   const productionSourceStart = windowsAuthority.indexOf('export const WINDOWS_INSPECTION_SOURCE');
   const productionSourceEnd = windowsAuthority.indexOf('export const WINDOWS_NATIVE_PROBE_MILESTONES', productionSourceStart);
   const productionSource = windowsAuthority.slice(productionSourceStart, productionSourceEnd);
-  assert.match(productionSource, /GetStdHandle\(-10\)/);
-  assert.doesNotMatch(productionSource, /_get_osfhandle|AssignProcessToJobObject|CreateJobObject|Start-Process|CreateProcess/);
+  assert.match(productionSource, /_get_osfhandle\(3\+\$i\)/);
+  assert.doesNotMatch(productionSource, /AssignProcessToJobObject|CreateJobObject|Start-Process|CreateProcess/);
   assert.match(windowsAuthority, /stdio: \[stdin, "pipe", "pipe"\]/);
-  assert.match(windowsAuthority, /stdio: \[pinnedFd, "pipe", "pipe"\]/);
-  assert.doesNotMatch(productionSource, /__PROPR_|\bindex=|\bkind=|authorityKind=/);
-  assert.match(windowsAuthority, /powerShellArguments\(WINDOWS_INSPECTION_SOURCE\)/);
-  assert.doesNotMatch(windowsAuthority, /inspectionSource\(target|\.replace\("__PROPR_/);
+  assert.match(windowsAuthority, /stdio: \[roundCount === 2 \? "pipe" : "ignore", "pipe", "pipe", \.\.\.targets\.map/);
+  assert.doesNotMatch(productionSource, /\bpath=|\bkind=|authorityKind=|S-1-/);
+  assert.match(windowsAuthority, /powerShellArguments\(inspectionSource\(targets\.length, roundCount\)\)/);
+  assert.match(windowsAuthority, /\.replace\("__PROPR_ENTRY_COUNT__", String\(entryCount\)\)/);
+  assert.match(windowsAuthority, /\.replace\("__PROPR_ROUND_COUNT__", String\(roundCount\)\)/);
   assert.match(windowsAuthority, /WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false/);
   assert.match(windowsAuthority, /WINDOWS_INSPECTOR_WRITES_FILESYSTEM = false/);
 });
 
-test('the production inspector duplicates its standard handle before the split native operations', () => {
+test('the production inspector duplicates each fixed fd before split native operations', () => {
   const productionSourceStart = windowsAuthority.indexOf('export const WINDOWS_INSPECTION_SOURCE');
   const productionSourceEnd = windowsAuthority.indexOf('export const WINDOWS_NATIVE_PROBE_MILESTONES', productionSourceStart);
   const productionSource = windowsAuthority.slice(productionSourceStart, productionSourceEnd);
   assert.match(productionSource, /\$stage=80\s+if\(-not \[ProprReadOnlyAuthority\]::DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{exit \$stage\}/);
   assert.match(productionSource, /\$stage=74\s+\$before=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$privateHandle,\$before\)\)\{exit \$stage\}/);
-  assert.match(productionSource, /\$stage=78\s+\$current=\[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)\.User\s+if\(\$null-eq \$current\)\{exit \$stage\}\s+\$currentSid=\$current\.Value/);
+  assert.match(productionSource, /\$stage=78\s+\$current=\[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)\.User\s+if\(\$null-eq \$current\)\{exit \$stage\}/);
   assert.match(productionSource, /GetSecurityInfo\(\$privateHandle,1,5,\[ref\]\$owner,\[ref\]\$group,\[ref\]\$dacl,\[ref\]\$sacl,\[ref\]\$descriptor\)/);
   assert.match(productionSource, /\$stage=79\s+\$after=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$privateHandle,\$after\)\)\{exit \$stage\}/);
   assert.equal(productionSource.match(/::CloseHandle\(\$privateHandle\)/g)?.length, 1);
-  assert.match(productionSource, /finally \{if\(\$privateHandleOwned\)\{\$null=\[ProprReadOnlyAuthority\]::CloseHandle\(\$privateHandle\)\}\}/);
+  assert.match(productionSource, /if\(\$privateHandle-ne \[IntPtr\]::Zero\)\{\$null=\[ProprReadOnlyAuthority\]::CloseHandle\(\$privateHandle\)\}/);
   assert.doesNotMatch(productionSource, /CloseHandle\(\$originalHandle\)/);
   assert.doesNotMatch(windowsAuthority, /"broker:index-info"/);
   assert.match(windowsAuthority, /74: "broker:index-info-initial"/);
@@ -513,7 +515,7 @@ test('the staged probe accepts only ordered milestone tokens and coarse timing b
   assert.match(windowsAuthority, /GetFileInformationByHandle/);
 });
 
-test('the diagnostic allowance precedes one bounded concurrent standard-handle proof', () => {
+test('the diagnostic allowance precedes two bounded one-broker authority generations', () => {
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS, 60_000);
   assert.equal(WINDOWS_INSPECTION_TIMEOUT_MS, 60_000);
   assert.equal(WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS, 5_000);
@@ -534,9 +536,15 @@ test('the diagnostic allowance precedes one bounded concurrent standard-handle p
   assert.equal(Number.isFinite(windowsProductScenarioTimeoutMs), true);
   assert.equal(Number.isSafeInteger(windowsProductScenarioTimeoutMs), true);
   assert.ok(WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS < WINDOWS_INSPECTION_TIMEOUT_MS);
-  assert.match(windowsAuthority, /startBroker: \(index\) => spawnInspectionBroker\(executable, targets\[index\]\.pinnedFd\)/u);
-  assert.match(windowsAuthority, /const deadlineTimer = setTimeout\(\(\) => fail\("spawn:timeout"\), deadlineMs\)/u);
+  assert.match(windowsAuthority, /startBroker: \(\) => child/u);
+  assert.match(windowsAuthority, /const deadlineTimer = setTimeout\(\(\) => \{\s*deadlineExpired = true;/u);
   assert.match(windowsAuthority, /deadlineMs: WINDOWS_INSPECTION_TIMEOUT_MS/u);
+  const trustedGeneration = connectCommand.indexOf('await readTrustedConnectTunnelOverride(root)');
+  const rootGeneration = connectCommand.indexOf('await withOwnedConnectRootSnapshot(root');
+  assert.ok(trustedGeneration >= 0 && trustedGeneration < rootGeneration);
+  const rootSnapshot = connectCommand.slice(rootGeneration, connectCommand.indexOf("dependencies.reportSmokeDiagnostic?.(phase, 'PASSED')", rootGeneration));
+  assert.match(rootSnapshot, /process\.platform === "win32"\s*\? windowsTunnelEnabledOverride/u);
+  assert.doesNotMatch(rootSnapshot, /process\.platform === "win32"\s*\? await readTrustedConnectTunnelOverride/u);
   const productionInspection = windowsAuthority.slice(
     windowsAuthority.indexOf('export async function runWindowsReadOnlyInspection'),
     windowsAuthority.indexOf('function probeFailureStage'),
