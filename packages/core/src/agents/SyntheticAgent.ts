@@ -10,6 +10,7 @@ import { estimateTokens } from '../utils/tokenCalculation.js';
 /** Agent facade that keeps the requested virtual identity while routing calls centrally. */
 export class SyntheticAgent implements Agent {
   readonly config: AgentConfig;
+  readonly goalCapable = false;
 
   constructor(
     readonly syntheticConfig: SyntheticAgentConfig,
