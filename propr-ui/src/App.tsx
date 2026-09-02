@@ -219,11 +219,9 @@ const AppContent: React.FC = () => {
   }, [isDemoMode, refreshCurrentUser]);
 
 
-  // Render spinner while checking auth
-  if (isDemoModeLoading || isLoading) return <LoadingSpinner />;
-
-  return (
-    <SocketProvider disabled={isDemoMode}>
+  // Mount with the connected desktop surface for lifecycle attribution, but keep it disabled until
+  // current-user bootstrap succeeds so a revoked activation never opens a second socket.
+  const content = isDemoModeLoading || isLoading ? <LoadingSpinner /> : (
       <ToastProvider>
         <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
           <DemoModeBanner />
@@ -360,8 +358,9 @@ const AppContent: React.FC = () => {
           </div>
         </div>
       </ToastProvider>
-    </SocketProvider>
   );
+
+  return <SocketProvider disabled={isDemoModeLoading || isDemoMode || isLoading || currentUser === null}>{content}</SocketProvider>;
 };
 
 const WebApp: React.FC = () => {

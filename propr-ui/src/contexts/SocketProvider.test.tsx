@@ -92,16 +92,32 @@ describe('SocketProvider', () => {
     expect(connectSocketMock).not.toHaveBeenCalled();
   });
 
+  it('constructs and explicitly connects once when bootstrap enables a published activation', () => {
+    state.scope = scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA');
+    const { rerender } = render(<SocketProvider disabled><div>loading</div></SocketProvider>);
+    expect(connectSocketMock).not.toHaveBeenCalled();
+
+    rerender(<SocketProvider><div>ready</div></SocketProvider>);
+
+    expect(connectSocketMock).toHaveBeenCalledOnce();
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].connect).toHaveBeenCalledOnce();
+  });
+
   it('creates one force-new scoped Manager on null-to-A activation', () => {
     render(<SocketProvider><div>app</div></SocketProvider>);
     publish(scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA'));
 
     expect(connectSocketMock).toHaveBeenCalledOnce();
     expect(connectSocketMock).toHaveBeenCalledWith(expect.objectContaining({
+      autoConnect: false,
       forceNew: true,
       withCredentials: false,
       query: { proprDesktopTransportScope: 'AAAAAAAAAAAAAAAAAAAAAA' },
     }));
+    expect(sockets[0].connect).toHaveBeenCalledOnce();
+    expect(sockets[0].on.mock.invocationCallOrder.at(-1))
+      .toBeLessThan(sockets[0].connect.mock.invocationCallOrder[0]);
     const options = sockets[0].options;
     const query = options.query as Record<string, unknown>;
     expect(Object.keys(query)).toEqual([DESKTOP_TRANSPORT_SCOPE_QUERY]);
@@ -193,7 +209,7 @@ describe('SocketProvider', () => {
     await vi.waitFor(() => expect(handleDesktopAccessCode).toHaveBeenCalledWith(
       'INVALID_INSTANCE_TOKEN', state.scope,
     ));
-    expect(sockets[0].connect).not.toHaveBeenCalled();
+    expect(sockets[0].connect).toHaveBeenCalledOnce();
   });
 
   it('reconnects the current Manager when authorization changes without invalidating its token', async () => {
@@ -204,7 +220,7 @@ describe('SocketProvider', () => {
 
     socketA.handlers.get('authentication:error')?.({ code: 'AUTHORIZATION_CHANGED' });
 
-    await vi.waitFor(() => expect(socketA.connect).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(socketA.connect).toHaveBeenCalledTimes(2));
     expect(handleDesktopAccessCode).toHaveBeenCalledWith('AUTHORIZATION_CHANGED', state.scope);
     expect(socketA.disconnect).toHaveBeenCalledOnce();
   });
@@ -226,12 +242,12 @@ describe('SocketProvider', () => {
     resolveClassification('authorization-changed');
     await Promise.resolve();
 
-    expect(socketA.connect).not.toHaveBeenCalled();
+    expect(socketA.connect).toHaveBeenCalledOnce();
     expect(socketA.disconnect).toHaveBeenCalledOnce();
     expect(socketA.off).toHaveBeenCalledWith('authentication:error', staleAuthenticationHandler);
     expect(socketA.handlers.size).toBe(0);
     expect(socketB.disconnect).not.toHaveBeenCalled();
-    expect(socketB.connect).not.toHaveBeenCalled();
+    expect(socketB.connect).toHaveBeenCalledOnce();
   });
 
   it('drops every application event dispatched by a stale socket scope', () => {

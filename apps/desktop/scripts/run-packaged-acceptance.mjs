@@ -61,6 +61,7 @@ const requestRecords = [];
 const socketRecords = [];
 const fixtureHandshakeRecords = [];
 const mainHandshakeRecords = [];
+const rendererLifecycleRecords = [];
 const screenshotMetadata = [];
 const accessibilityChecks = [];
 const axeFindings = [];
@@ -73,11 +74,23 @@ let visibleFocus = false;
 let modalFocusTrap = false;
 let modalFocusRestore = false;
 let traceWritten = false;
+let rendererLifecycleEvidenceInvalid = false;
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const unique = values => [...new Set(values)].sort((a, b) => ACCEPTANCE_JOURNEYS.indexOf(a) - ACCEPTANCE_JOURNEYS.indexOf(b));
 const sleep = milliseconds => new Promise(resolveValue => setTimeout(resolveValue, milliseconds));
 const MAIN_HANDSHAKE_EVENT = 'desktop.acceptance.websocket_handshake';
+const RENDERER_LIFECYCLE_PREFIX = '[ProPR Acceptance Renderer Lifecycle]';
+const RENDERER_LIFECYCLE_PHASES = new Set([
+  'profile-activation-published', 'socket-provider-mounted', 'socket-effect-disabled',
+  'socket-effect-scope-unavailable', 'socket-effect-ready', 'socket-construction-invoked', 'socket-constructed',
+  'socket-connect-invoked',
+]);
+const RENDERER_LIFECYCLE_KEYS = [
+  'schemaVersion', 'phase', 'profileActivationPublished', 'socketProviderMounted',
+  'providerDisabled', 'desktopRuntime', 'connectionScope', 'socketConstructionInvocations',
+  'socketConstructions', 'connectInvocations',
+].sort();
 const MAIN_HANDSHAKE_CATEGORIES = new Set([
   'none', 'untrusted-http-origin', 'wrong-path', 'wrong-transport', 'wrong-resource-type',
   'scope-missing', 'scope-duplicate', 'scope-malformed', 'no-active-binding',
@@ -131,6 +144,27 @@ const captureMainHandshakeEvidence = (line, journey) => {
   } catch {
     mainHandshakeRecords.push({ journey, accepted: false, rejectionCategory: 'invalid-main-evidence' });
   }
+};
+
+const captureRendererLifecycleEvidence = (argumentsValue, journey) => {
+  if (argumentsValue[0] !== RENDERER_LIFECYCLE_PREFIX) return;
+  const evidence = argumentsValue[1];
+  const exactKeys = evidence && typeof evidence === 'object' && !Array.isArray(evidence)
+    && Object.keys(evidence).sort().join('\n') === RENDERER_LIFECYCLE_KEYS.join('\n');
+  const booleans = exactKeys && [
+    'profileActivationPublished', 'socketProviderMounted', 'providerDisabled', 'desktopRuntime',
+  ].every(key => typeof evidence[key] === 'boolean');
+  const counts = exactKeys && [
+    'socketConstructionInvocations', 'socketConstructions', 'connectInvocations',
+  ].every(key => Number.isInteger(evidence[key]) && evidence[key] >= 0 && evidence[key] <= 2);
+  if (!exactKeys || evidence.schemaVersion !== 1 || !RENDERER_LIFECYCLE_PHASES.has(evidence.phase)
+    || !['unknown', 'available', 'unavailable'].includes(evidence.connectionScope)
+    || !booleans || !counts
+    || rendererLifecycleRecords.filter(record => record.journey === journey).length >= 12) {
+    rendererLifecycleEvidenceInvalid = true;
+    return;
+  }
+  rendererLifecycleRecords.push({ journey, ...evidence });
 };
 
 await access(binaryPath, fsConstants.X_OK);
@@ -409,13 +443,17 @@ const launchApplication = async (scenario, initialDeepLink) => {
       const journey = activeJourney;
       const pending = Promise.all(message.args().map(async argument => {
         try { return await argument.jsonValue(); } catch { return { unserializable: argument.toString() }; }
-      })).then(argumentsValue => consoleRecords.push({
-        journey,
-        type: message.type(),
-        text: message.text(),
-        arguments: argumentsValue,
-        location: message.location(),
-      }));
+      })).then(argumentsValue => {
+        const record = {
+          journey,
+          type: message.type(),
+          text: message.text(),
+          arguments: argumentsValue,
+          location: message.location(),
+        };
+        consoleRecords.push(record);
+        captureRendererLifecycleEvidence(record.arguments, journey);
+      });
       pendingConsoleRecords.push(pending);
     });
     page.on('pageerror', error => pageErrorRecords.push({ journey: activeJourney, name: error.name, message: error.message, stack: error.stack || '' }));
@@ -726,7 +764,27 @@ const socketHandshakeFailureCategory = journey => {
   if (connected.length === 1 && !socketRecords.some(record => record.journey === journey
     && record.genuineApplicationEvent === true)) return 'application-event-not-produced';
   if (connected.length === 1) return 'renderer-application-event-not-observed';
-  return 'renderer-upgrade-not-produced';
+  const lifecycleCategory = rendererLifecycleCategory(journey);
+  return lifecycleCategory === 'none'
+    ? 'renderer-connect-invoked-upgrade-not-produced'
+    : lifecycleCategory;
+};
+
+const rendererLifecycleCategory = journey => {
+  if (rendererLifecycleEvidenceInvalid) return 'renderer-lifecycle-evidence-invalid';
+  const records = rendererLifecycleRecords.filter(record => record.journey === journey);
+  const latest = records.at(-1);
+  if (!latest?.profileActivationPublished) return 'renderer-profile-activation-not-propagated';
+  if (!latest.socketProviderMounted) return 'renderer-socket-provider-not-mounted';
+  if (latest.providerDisabled) return 'renderer-socket-provider-disabled';
+  if (!latest.desktopRuntime) return 'renderer-desktop-runtime-unavailable';
+  if (latest.connectionScope !== 'available') return 'renderer-connection-scope-unavailable';
+  if (latest.socketConstructionInvocations === 0) return 'renderer-socket-construction-not-invoked';
+  if (latest.socketConstructions === 0) return 'renderer-socket-construction-not-produced';
+  if (latest.connectInvocations === 0) return 'renderer-socket-connect-not-invoked';
+  if (latest.socketConstructionInvocations !== 1 || latest.socketConstructions !== 1
+    || latest.connectInvocations !== 1) return 'renderer-socket-lifecycle-duplicate';
+  return 'none';
 };
 
 const waitForAuthenticatedSocket = async journey => {
@@ -740,8 +798,10 @@ const waitForAuthenticatedSocket = async journey => {
       && record.genuineApplicationEvent === true && record.direction === 'fixture-to-renderer');
     const rendererObservedApplicationEvent = consoleRecords.some(record => record.journey === journey
       && record.text.startsWith('[SocketContext] Received queue stats update:'));
+    const rendererLifecycle = rendererLifecycleCategory(journey);
     if (mainAccepted.length === 1 && fixtureAccepted.length === 1
-      && connected.length === 1 && applicationEvents.length >= 1 && rendererObservedApplicationEvent) return;
+      && connected.length === 1 && applicationEvents.length >= 1 && rendererObservedApplicationEvent
+      && rendererLifecycle === 'none') return;
     const category = socketHandshakeFailureCategory(journey);
     if (category.startsWith('main-') || category.startsWith('fixture-') || category.startsWith('duplicate-')) {
       throw new Error(`Acceptance Socket.IO handshake failed: ${category}`);
@@ -763,6 +823,8 @@ const observedServiceSummary = () => {
   const fixtureHandshake = fixtureHandshakes[0];
   const rendererObservedApplicationEvent = consoleRecords.some(record => record.journey === 'dashboard-profile-manager'
     && record.text.startsWith('[SocketContext] Received queue stats update:'));
+  const rendererLifecycle = rendererLifecycleRecords
+    .filter(record => record.journey === 'dashboard-profile-manager').at(-1);
   const pairingStarted = requestRecords.filter(record => record.method === 'POST' && record.url === '/api/desktop/pairings');
   const pairingPolled = requestRecords.filter(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/poll`);
   const pairingActivated = requestRecords.filter(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/activate`);
@@ -791,6 +853,17 @@ const observedServiceSummary = () => {
         authorizationHeaderExactlyMainInjected: mainHandshake?.bearerMainInjected === true
           && fixtureHandshake?.authorizationMatchesActivatedBearer === true,
         rendererObservedApplicationEvent,
+        rendererLifecycle: rendererLifecycle ? {
+          phase: rendererLifecycle.phase,
+          profileActivationPublished: rendererLifecycle.profileActivationPublished,
+          socketProviderMounted: rendererLifecycle.socketProviderMounted,
+          providerDisabled: rendererLifecycle.providerDisabled,
+          desktopRuntime: rendererLifecycle.desktopRuntime,
+          connectionScope: rendererLifecycle.connectionScope,
+          socketConstructionInvocations: rendererLifecycle.socketConstructionInvocations,
+          socketConstructions: rendererLifecycle.socketConstructions,
+          connectInvocations: rendererLifecycle.connectInvocations,
+        } : null,
         rejectionCategory: mainHandshake?.rejectionCategory ?? socketHandshakeFailureCategory('dashboard-profile-manager'),
       },
     },
@@ -813,6 +886,15 @@ const observedServiceSummary = () => {
     || !services.socketIo.handshake.authorizationHeaderPresent
     || !services.socketIo.handshake.authorizationHeaderExactlyMainInjected
     || !services.socketIo.handshake.rendererObservedApplicationEvent
+    || services.socketIo.handshake.rendererLifecycle?.phase !== 'socket-connect-invoked'
+    || services.socketIo.handshake.rendererLifecycle?.profileActivationPublished !== true
+    || services.socketIo.handshake.rendererLifecycle?.socketProviderMounted !== true
+    || services.socketIo.handshake.rendererLifecycle?.providerDisabled !== false
+    || services.socketIo.handshake.rendererLifecycle?.desktopRuntime !== true
+    || services.socketIo.handshake.rendererLifecycle?.connectionScope !== 'available'
+    || services.socketIo.handshake.rendererLifecycle?.socketConstructionInvocations !== 1
+    || services.socketIo.handshake.rendererLifecycle?.socketConstructions !== 1
+    || services.socketIo.handshake.rendererLifecycle?.connectInvocations !== 1
     || services.socketIo.handshake.rejectionCategory !== 'none'
     || services.pairing.started <= 0 || services.pairing.polled <= 0 || services.pairing.activated <= 0
     || services.connect.confirmedRequests <= 0) {
@@ -947,7 +1029,7 @@ try {
 
   const services = observedServiceSummary();
   const sanitizedSummary = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     generatedAt: FIXED_TIME,
     status: 'passed',
     journeys: ACCEPTANCE_JOURNEYS.length,

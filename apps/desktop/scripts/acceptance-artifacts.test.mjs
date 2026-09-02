@@ -121,7 +121,7 @@ const accessibilityFor = () => ({
 });
 
 const summaryFor = () => ({
-  schemaVersion: 3,
+  schemaVersion: 4,
   generatedAt: FIXED_TIME,
   status: 'passed',
   journeys: ACCEPTANCE_JOURNEYS.length,
@@ -151,6 +151,17 @@ const summaryFor = () => ({
         authorizationHeaderPresent: true,
         authorizationHeaderExactlyMainInjected: true,
         rendererObservedApplicationEvent: true,
+        rendererLifecycle: {
+          phase: 'socket-connect-invoked',
+          profileActivationPublished: true,
+          socketProviderMounted: true,
+          providerDisabled: false,
+          desktopRuntime: true,
+          connectionScope: 'available',
+          socketConstructionInvocations: 1,
+          socketConstructions: 1,
+          connectInvocations: 1,
+        },
         rejectionCategory: 'none',
       },
     },
@@ -297,6 +308,25 @@ describe('packaged acceptance artifact contract', () => {
       ]) {
         const invalidSummary = structuredClone(evidence.summary);
         mutateHandshake(invalidSummary.services.socketIo.handshake);
+        assert.throws(
+          () => validateAcceptanceEvidence(
+            evidence.accessibility, evidence.manifest, invalidSummary, evidence.sanitizedLog,
+          ),
+          /not observed/,
+        );
+      }
+      for (const mutateLifecycle of [
+        lifecycle => { lifecycle.profileActivationPublished = false; },
+        lifecycle => { lifecycle.socketProviderMounted = false; },
+        lifecycle => { lifecycle.providerDisabled = true; },
+        lifecycle => { lifecycle.connectionScope = 'unavailable'; },
+        lifecycle => { lifecycle.socketConstructionInvocations = 0; },
+        lifecycle => { lifecycle.socketConstructions = 0; },
+        lifecycle => { lifecycle.connectInvocations = 0; },
+        lifecycle => { lifecycle.connectInvocations = 2; },
+      ]) {
+        const invalidSummary = structuredClone(evidence.summary);
+        mutateLifecycle(invalidSummary.services.socketIo.handshake.rendererLifecycle);
         assert.throws(
           () => validateAcceptanceEvidence(
             evidence.accessibility, evidence.manifest, invalidSummary, evidence.sanitizedLog,

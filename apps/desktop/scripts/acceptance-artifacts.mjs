@@ -439,7 +439,7 @@ const validateAccessibility = accessibility => {
 
 const validateSummary = summary => {
   assertExactKeys(summary, ['schemaVersion', 'generatedAt', 'status', 'journeys', 'screenshots', 'boundary', 'console', 'services', 'redaction'], 'Acceptance summary');
-  if (summary.schemaVersion !== 3 || summary.generatedAt !== FIXED_TIME || summary.status !== 'passed'
+  if (summary.schemaVersion !== 4 || summary.generatedAt !== FIXED_TIME || summary.status !== 'passed'
     || summary.journeys !== ACCEPTANCE_JOURNEYS.length || summary.screenshots !== expectedScreenshotNames().length
     || summary.redaction !== 'Full raw surfaces were scanned; published logs retain only source, level, byte count, and digest.') {
     throw new Error('Acceptance sanitized summary is invalid');
@@ -463,9 +463,15 @@ const validateSummary = summary => {
     'scopeEqualsActivatedBinding', 'activeBindingPresent', 'profileGenerationCurrent',
     'originEqualsActivatedBinding', 'path', 'transport', 'resource',
     'rendererBearerPresent', 'rendererCookiePresent', 'authorizationHeaderPresent',
-    'authorizationHeaderExactlyMainInjected', 'rendererObservedApplicationEvent', 'rejectionCategory',
+    'authorizationHeaderExactlyMainInjected', 'rendererObservedApplicationEvent', 'rendererLifecycle',
+    'rejectionCategory',
   ], 'Acceptance Socket.IO handshake summary');
   const handshake = socketIo.handshake;
+  assertExactKeys(handshake.rendererLifecycle, [
+    'phase', 'profileActivationPublished', 'socketProviderMounted', 'providerDisabled',
+    'desktopRuntime', 'connectionScope', 'socketConstructionInvocations', 'socketConstructions',
+    'connectInvocations',
+  ], 'Acceptance renderer Socket.IO lifecycle summary');
   if (rest.requestCount <= 0 || rest.authenticatedRequestCount <= 0 || !rest.journeys.includes('dashboard-profile-manager')
     || socketIo.authenticatedConnections !== 1 || socketIo.events <= 0 || !socketIo.journeys.includes('dashboard-profile-manager')
     || handshake.mainAttempts !== 1 || handshake.fixtureAttempts !== 1
@@ -477,6 +483,15 @@ const validateSummary = summary => {
     || handshake.rendererBearerPresent !== false || handshake.rendererCookiePresent !== false
     || handshake.authorizationHeaderPresent !== true || handshake.authorizationHeaderExactlyMainInjected !== true
     || handshake.rendererObservedApplicationEvent !== true
+    || handshake.rendererLifecycle.phase !== 'socket-connect-invoked'
+    || handshake.rendererLifecycle.profileActivationPublished !== true
+    || handshake.rendererLifecycle.socketProviderMounted !== true
+    || handshake.rendererLifecycle.providerDisabled !== false
+    || handshake.rendererLifecycle.desktopRuntime !== true
+    || handshake.rendererLifecycle.connectionScope !== 'available'
+    || handshake.rendererLifecycle.socketConstructionInvocations !== 1
+    || handshake.rendererLifecycle.socketConstructions !== 1
+    || handshake.rendererLifecycle.connectInvocations !== 1
     || handshake.rejectionCategory !== 'none'
     || pairing.started <= 0 || pairing.polled <= 0 || pairing.activated <= 0 || !pairing.journeys.includes('dashboard-profile-manager')
     || connect.confirmedRequests <= 0 || connect.journeys.join('\n') !== 'connect-confirmation') {

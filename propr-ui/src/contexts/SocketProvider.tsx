@@ -10,6 +10,12 @@ import {
   subscribeDesktopConnectionScope,
 } from '../api/apiClient';
 import { isDesktopRuntime } from '../config/runtimeMode';
+import {
+  reportPackagedAcceptanceRendererLifecycle,
+  reportPackagedAcceptanceSocketConnectInvocation,
+  reportPackagedAcceptanceSocketConstructed,
+  reportPackagedAcceptanceSocketConstructionInvocation,
+} from '../desktop/packagedAcceptanceRendererLifecycle';
 
 interface SocketProviderProps {
   children: React.ReactNode;
@@ -31,7 +37,17 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
   );
 
   useEffect(() => {
+    reportPackagedAcceptanceRendererLifecycle('socket-provider-mounted', {
+      socketProviderMounted: true,
+    });
+  }, []);
+
+  useEffect(() => {
     if (disabled) {
+      reportPackagedAcceptanceRendererLifecycle('socket-effect-disabled', {
+        providerDisabled: true,
+        desktopRuntime: Boolean(isDesktopRuntime()),
+      });
       setSocket(null);
       setIsConnected(false);
       return;
@@ -39,14 +55,25 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
 
     const desktopScope = getDesktopConnectionScope();
     if (isDesktopRuntime() && !desktopScope) {
+      reportPackagedAcceptanceRendererLifecycle('socket-effect-scope-unavailable', {
+        providerDisabled: false,
+        desktopRuntime: true,
+        connectionScope: 'unavailable',
+      });
       setSocket(null);
       setIsConnected(false);
       return;
     }
     setIsConnected(false);
+    reportPackagedAcceptanceRendererLifecycle('socket-effect-ready', {
+      providerDisabled: false,
+      desktopRuntime: Boolean(isDesktopRuntime()),
+      connectionScope: desktopScope ? 'available' : 'unavailable',
+    });
+    reportPackagedAcceptanceSocketConstructionInvocation();
     const newSocket = proprClient.connectSocket({
       transports: ['websocket'],
-      autoConnect: true,
+      autoConnect: false,
       path: '/socket.io/',
       forceNew: true,
       ...(desktopScope ? {
@@ -57,6 +84,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
         query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope },
       } : {}),
     });
+    reportPackagedAcceptanceSocketConstructed();
     let disposed = false;
     const isCurrentScope = (): boolean => {
       if (disposed) return false;
@@ -142,6 +170,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     newSocket.on(TASK_LIVE_UPDATE, taskLiveUpdated);
 
     setSocket(newSocket);
+    reportPackagedAcceptanceRendererLifecycle('socket-constructed', {
+      providerDisabled: false,
+      desktopRuntime: Boolean(isDesktopRuntime()),
+      connectionScope: desktopScope ? 'available' : 'unavailable',
+    });
+    reportPackagedAcceptanceSocketConnectInvocation();
+    newSocket.connect();
 
     return () => {
       console.log('[SocketContext] Cleaning up socket connection');
