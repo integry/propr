@@ -26,7 +26,7 @@ const bridgeFixture = () => {
   let profiles = [storedProfile];
   let activeProfileId: string | null = null;
   const pair = vi.fn(async () => ({ paired: true as const }));
-  const onDeepLink = vi.fn((_listener: (url: string) => void) => () => undefined);
+  const onDeepLink = vi.fn(() => () => undefined);
   const probe = vi.fn(async () => ({
     status: 'ready' as const,
     version: '0.8.15',
