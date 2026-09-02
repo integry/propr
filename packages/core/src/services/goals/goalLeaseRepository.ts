@@ -91,6 +91,26 @@ export class GoalLeaseRepository {
       if (affected !== 1) await throwLeaseFailure(trx, id);
     });
   }
+
+  async assertCurrent(
+    goalId: string,
+    owner: string,
+    epoch: number,
+    options: { allowTerminal?: boolean } = {}
+  ): Promise<void> {
+    const id = boundedText(goalId, 'goalId') as string;
+    const leaseOwner = boundedText(owner, 'leaseOwner') as string;
+    validateFence({ leaseOwner, leaseEpoch: epoch });
+    const goal = await this.db<GoalRecord>('goals').where('goal_id', id).first();
+    if (!goal) throw new GoalError(GOAL_ERROR_CODES.notFound, 'Goal not found', 404);
+    if (isTerminalGoalState(goal.state) && !options.allowTerminal) {
+      throw new GoalError(GOAL_ERROR_CODES.terminalState, 'Terminal goals reject controller effects', 409);
+    }
+    if (goal.lease_owner !== leaseOwner || goal.lease_epoch !== epoch
+      || !goal.lease_expires_at || goal.lease_expires_at <= nowIso()) {
+      throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Controller lease is stale or expired', 409);
+    }
+  }
 }
 
 function validateTtl(ttlMs: number): void {

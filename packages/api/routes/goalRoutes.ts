@@ -52,6 +52,8 @@ import {
 
 interface GoalRoutesDeps {
   db?: Knex;
+  /** Optional low-latency hint to the SQL-backed goal supervisor. */
+  goalWake?: (goalId: string) => void | Promise<void>;
   services?: {
     loadAgents?: () => Promise<AgentConfig[]>;
     loadRepositories?: () => Promise<RepoToMonitor[]>;
@@ -157,6 +159,17 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
   const loadAgentsFn = deps.services?.loadAgents ?? loadAgents;
   const loadRepositoriesFn = deps.services?.loadRepositories ?? loadMonitoredReposRaw;
 
+  async function signalGoal(goalId: string): Promise<void> {
+    try {
+      await deps.goalWake?.(goalId);
+    } catch (error) {
+      // The committed SQL row is itself the durable wake-up source. Surface the
+      // transient hint failure operationally without turning a successful,
+      // replayable create into a misleading HTTP failure.
+      console.error('Goal wake hint failed; startup scan will recover it:', error);
+    }
+  }
+
   /**
    * Confirm the goal exists and belongs to the caller. Not-found and
    * cross-owner access both surface as goal_not_found so ownership is never
@@ -186,6 +199,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
       const input = { ...result.input, idempotencyKey };
       const replay = await repository.readCreateGoalReplay(input);
       if (replay) {
+        await signalGoal(replay.goalId);
         res.status(201).json({ goal: toPublicGoal(replay) });
         return;
       }
@@ -197,6 +211,9 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         return;
       }
       const goal = await repository.createGoal(input);
+      // The durable queued row is already committed. A failed/missing wake does
+      // not lose work because the supervisor startup/interval scan reads SQL.
+      await signalGoal(goal.goalId);
       res.status(201).json({ goal: toPublicGoal(goal) });
     } catch (error) {
       sendGoalError(res, error);

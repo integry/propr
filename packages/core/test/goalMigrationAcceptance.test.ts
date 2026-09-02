@@ -11,6 +11,7 @@ import { GoalLifecycleService } from '../src/services/goals/goalLifecycleService
 import { GoalRepository } from '../src/services/goals/goalRepository.js';
 
 const GOAL_MIGRATION = '20260831000000_create_goal_control_plane.js';
+const GOAL_NATIVE_EXECUTION_MIGRATION = '20260902000000_add_goal_native_executions.js';
 const MIGRATIONS_DIRECTORY = join(
   dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -28,7 +29,10 @@ class GoalMigrationSource implements Knex.MigrationSource<string> {
       .sort();
     return this.includeGoalMigration
       ? migrations
-      : migrations.filter((name) => name !== GOAL_MIGRATION);
+      : migrations.filter((name) => ![
+        GOAL_MIGRATION,
+        GOAL_NATIVE_EXECUTION_MIGRATION,
+      ].includes(name));
   }
 
   getMigrationName(migration: string): string {

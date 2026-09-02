@@ -8,6 +8,19 @@ export {
   type ControllerGoalMutationOptions,
 } from './goalLifecycleService.js';
 export * from './goalTypes.js';
+export * from './goalRuntimeTypes.js';
+export {
+  GoalExecutionRepository,
+  buildNativeGoalPolicy,
+  buildNativeGoalCommand,
+  deterministicGoalWorkspace,
+  type GoalExecutionAllocation,
+} from './goalExecutionRepository.js';
+export {
+  GoalSupervisor,
+  GoalRuntimeMap,
+  type GoalSupervisorOptions,
+} from './goalSupervisor.js';
 export {
   CANONICAL_JSON_MAX_BYTES,
   CANONICAL_JSON_MAX_DEPTH,

@@ -38,7 +38,8 @@ export class GoalRepository {
   private readonly leases: GoalLeaseRepository;
   private readonly mutations: GoalMutationRepository;
 
-  constructor(db: Knex) {
+  constructor(readonly database: Knex) {
+    const db = database;
     this.reads = new GoalReadRepository(db);
     this.hierarchy = new GoalHierarchyRepository(db);
     this.events = new GoalEventRepository(db);
@@ -144,6 +145,15 @@ export class GoalRepository {
 
   releaseLease(goalId: string, owner: string, epoch: number): Promise<void> {
     return this.leases.releaseLease(goalId, owner, epoch);
+  }
+
+  assertLease(
+    goalId: string,
+    owner: string,
+    epoch: number,
+    options: { allowTerminal?: boolean } = {}
+  ): Promise<void> {
+    return this.leases.assertCurrent(goalId, owner, epoch, options);
   }
 
   transition(goalId: string, input: TransitionInput): Promise<Goal> {
