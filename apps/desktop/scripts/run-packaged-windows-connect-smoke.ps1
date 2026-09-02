@@ -52,7 +52,7 @@ param(
     'identity-change','existing'
   )]
   [string]$CaptureParserAuthorityTestCase = 'existing',
-  [ValidateSet('success','nonzero')]
+  [ValidateSet('success','nonzero','empty','hostile')]
   [string]$CaptureRedirectionProducerTestCase = 'success'
 )
 
@@ -151,12 +151,16 @@ $captureAuthorityPredicates = @(
   'identity-replacement',
   'pre-create',
   'redirect-open',
+  'redirect-argument-contract',
   'redirect-timeout',
   'redirect-child-exit',
   'post-redirection-identity',
   'capture-content',
   'cleanup'
 )
+$captureProducerExitBuckets = @('zero','forced-23','other')
+$captureProducerOutputStates = @('exact-expected','empty','other-bounded')
+$captureProducerResultPredicates = @('redirect-child-exit','capture-content')
 $lifecycleFailureSubphases = @(
   'fixture-setup',
   'package-validation',
@@ -205,6 +209,10 @@ $launcherAuthority = $null
 $plainPassword = $null
 $handoffArgument = $null
 $captureAuthorityPredicate = $null
+$captureProducerResultAttributed = $false
+$captureProducerExitBucket = $null
+$captureProducerStdoutState = $null
+$captureProducerStderrState = $null
 
 function Stop-PackagedConnect {
   param([Parameter(Mandatory=$true)][ValidateSet(
@@ -250,6 +258,30 @@ function Set-CaptureAuthorityPredicate {
     throw [InvalidOperationException]::new('invalid-fixed-capture-authority-predicate')
   }
   $script:captureAuthorityPredicate = $Predicate
+}
+
+function Get-TestOnlyCaptureProducerOutputState {
+  param(
+    [Parameter(Mandatory=$true)]$Authority,
+    [Parameter(Mandatory=$true)][string]$Expected
+  )
+  if ($LifecycleTestMode -cne 'capture-redirection') {
+    throw [InvalidOperationException]::new('capture-producer-state-outside-test-mode')
+  }
+  try {
+    $maximumAttributedBytes = 256
+    $length = [ProprHostLauncherNative]::GetLength($Authority.Handle)
+    if ($length -eq 0) { return 'empty' }
+    if ($length -gt $maximumAttributedBytes) { return 'other-bounded' }
+    $bytes = [ProprHostLauncherNative]::ReadBounded(
+      $Authority.Handle, $maximumAttributedBytes
+    )
+    if ($bytes.Length -ne $length) { return 'other-bounded' }
+    if ([Text.Encoding]::UTF8.GetString($bytes) -ceq $Expected) {
+      return 'exact-expected'
+    }
+  } catch {}
+  return 'other-bounded'
 }
 
 function Set-LifecycleFailureSubphase {
@@ -1032,6 +1064,7 @@ function Read-PackagedConnectSmokeFailure {
     'desktop.main_process.uncaught_exception',
     'desktop.renderer.connect_discovery.ready',
     'desktop.renderer.connect_discovery.phase',
+    'desktop.renderer.connect_discovery.proof',
     'desktop.renderer.connect_discovery.status',
     'desktop.renderer.gone',
     'desktop.renderer.ready'
@@ -1850,12 +1883,20 @@ if ($LifecycleTestMode -eq 'capture-redirection') {
     Set-CaptureAuthorityPredicate 'redirect-open'
     $captureProducerExitCode = if (
       $CaptureRedirectionProducerTestCase -ceq 'nonzero'
-    ) { 23 } else { 0 }
-    $captureProducerSource = (
-      "[Console]::Out.Write('capture-stdout');" +
-      "[Console]::Error.Write('capture-stderr');" +
+    ) { 23 } elseif ($CaptureRedirectionProducerTestCase -in @('empty','hostile')) {
+      71
+    } else { 0 }
+    $captureProducerSource = if ($CaptureRedirectionProducerTestCase -ceq 'empty') {
       "exit $captureProducerExitCode"
-    )
+    } elseif ($CaptureRedirectionProducerTestCase -ceq 'hostile') {
+      "[Console]::Out.Write('C:\hostile\capture stdout environment-secret');" +
+        "[Console]::Error.Write('S-1-5-21 stderr native-text');" +
+        "exit $captureProducerExitCode"
+    } else {
+      "[Console]::Out.Write('capture-stdout');" +
+        "[Console]::Error.Write('capture-stderr');" +
+        "exit $captureProducerExitCode"
+    }
     $captureProducerArgument = [Convert]::ToBase64String(
       [Text.Encoding]::Unicode.GetBytes($captureProducerSource)
     )
@@ -1874,21 +1915,48 @@ if ($LifecycleTestMode -eq 'capture-redirection') {
         !($redirectionProcess -is [System.Diagnostics.Process])) {
       Stop-PackagedConnect 'spawn-failed'
     }
-    Set-CaptureAuthorityPredicate 'redirect-timeout'
-    if (!$redirectionProcess.WaitForExit($terminationTimeoutMilliseconds)) {
+    Set-CaptureAuthorityPredicate 'redirect-open'
+    # PS5.1 must acquire the redirected process handle before waiting or ExitCode can remain unset.
+    $redirectionProcessHandle = $redirectionProcess.Handle
+    if ($redirectionProcessHandle -eq [IntPtr]::Zero) {
       Stop-PackagedConnect 'spawn-failed'
     }
-    Set-CaptureAuthorityPredicate 'redirect-child-exit'
-    if ($redirectionProcess.ExitCode -ne 0) {
+    Set-CaptureAuthorityPredicate 'redirect-argument-contract'
+    if ($redirectionProcess.StartInfo.Arguments -cne $captureProducerArguments) {
+      Stop-PackagedConnect 'spawn-failed'
+    }
+    Set-CaptureAuthorityPredicate 'redirect-timeout'
+    if (!$redirectionProcess.WaitForExit($terminationTimeoutMilliseconds)) {
       Stop-PackagedConnect 'spawn-failed'
     }
     Assert-PrivilegedCaptureIdentity `
       $stdoutAuthority $privilegedSid -TestOnlyIdentityPredicate 'post-redirection-identity'
     Assert-PrivilegedCaptureIdentity `
       $stderrAuthority $privilegedSid -TestOnlyIdentityPredicate 'post-redirection-identity'
+    Set-CaptureAuthorityPredicate 'redirect-child-exit'
+    $captureProducerActualExit = try { $redirectionProcess.ExitCode } catch { $null }
+    $captureProducerExitBucket = if ($captureProducerActualExit -eq 0) {
+      'zero'
+    } elseif ($CaptureRedirectionProducerTestCase -ceq 'nonzero' -and
+        $captureProducerActualExit -eq 23) {
+      'forced-23'
+    } else {
+      'other'
+    }
     Set-CaptureAuthorityPredicate 'capture-content'
-    if ([IO.File]::ReadAllText($stdout) -cne 'capture-stdout' -or
-        [IO.File]::ReadAllText($stderr) -cne 'capture-stderr') {
+    $captureProducerStdoutState = Get-TestOnlyCaptureProducerOutputState `
+      $stdoutAuthority 'capture-stdout'
+    $captureProducerStderrState = Get-TestOnlyCaptureProducerOutputState `
+      $stderrAuthority 'capture-stderr'
+    $captureProducerResultAttributed = $true
+    Set-CaptureAuthorityPredicate 'redirect-child-exit'
+    if ($CaptureRedirectionProducerTestCase -cne 'success' -or
+        $captureProducerExitBucket -cne 'zero') {
+      Stop-PackagedConnect 'spawn-failed'
+    }
+    Set-CaptureAuthorityPredicate 'capture-content'
+    if ($captureProducerStdoutState -cne 'exact-expected' -or
+        $captureProducerStderrState -cne 'exact-expected') {
       Stop-PackagedConnect 'artifact-type'
     }
     $redirectionAccepted = $true
@@ -2453,6 +2521,15 @@ if ($null -ne $primaryFailure) {
         $primarySubphase -ceq 'capture-authority' -and
         $captureAuthorityPredicates -ccontains $captureAuthorityPredicate) {
       $subphaseEvidence += ":predicate=$captureAuthorityPredicate"
+      if ($LifecycleTestMode -ceq 'capture-redirection' -and
+          $captureProducerResultPredicates -ccontains $captureAuthorityPredicate -and
+          $captureProducerResultAttributed -and
+          $captureProducerExitBuckets -ccontains $captureProducerExitBucket -and
+          $captureProducerOutputStates -ccontains $captureProducerStdoutState -and
+          $captureProducerOutputStates -ccontains $captureProducerStderrState) {
+        $subphaseEvidence += ":exit=$captureProducerExitBucket" +
+          ":out=$captureProducerStdoutState`:err=$captureProducerStderrState"
+      }
     }
   } elseif ($primaryPhase -ceq 'application-runtime' -and
       $lifecycleFailureSubphases -ccontains $primarySubphase) {

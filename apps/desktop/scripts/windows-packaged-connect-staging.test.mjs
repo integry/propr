@@ -74,6 +74,7 @@ const positiveHostNodeProducerSubphases = Object.freeze([
 const captureRedirectionFailurePredicates = Object.freeze([
   'pre-create',
   'redirect-open',
+  'redirect-argument-contract',
   'redirect-timeout',
   'redirect-child-exit',
   'post-redirection-identity',
@@ -89,10 +90,23 @@ const captureRedirectionReportedPredicates = Object.freeze([
   ...captureRedirectionFailurePredicates,
   'diagnostic-contract',
 ]);
+const captureProducerExitBuckets = Object.freeze(['zero', 'forced-23', 'other']);
+const captureProducerOutputStates = Object.freeze(['exact-expected', 'empty', 'other-bounded']);
+const captureRedirectionResultPredicates = Object.freeze([
+  'redirect-child-exit',
+  'capture-content',
+]);
 const captureRedirectionDiagnosticPattern = new RegExp(
   '^PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
     + ':phase=capture-parse:subphase=capture-authority'
     + ':predicate=([a-z-]+):cleanup=none\\r?\\n$',
+  'u',
+);
+const captureRedirectionResultDiagnosticPattern = new RegExp(
+  '^PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+    + ':phase=capture-parse:subphase=capture-authority'
+    + ':predicate=([a-z-]+):exit=([a-z0-9-]+)'
+    + ':out=([a-z-]+):err=([a-z-]+):cleanup=none\\r?\\n$',
   'u',
 );
 const captureRedirectionAcceptedPattern =
@@ -279,20 +293,31 @@ const runCaptureRedirectionTest = (producerTestCase = 'success') => spawnSync(wi
 });
 
 const failCaptureRedirectionTest = result => {
-  let predicate = 'diagnostic-contract';
+  let evidence = 'predicate=diagnostic-contract';
   if (!result.error && result.signal === null && result.status === 1
       && Buffer.isBuffer(result.stdout) && result.stdout.length === 0
       && Buffer.isBuffer(result.stderr) && result.stderr.length <= 256) {
     const diagnostic = result.stderr.toString('utf8');
-    const match = captureRedirectionDiagnosticPattern.exec(diagnostic);
-    if (match && captureRedirectionFailurePredicates.includes(match[1])
+    const resultMatch = captureRedirectionResultDiagnosticPattern.exec(diagnostic);
+    const predicateMatch = captureRedirectionDiagnosticPattern.exec(diagnostic);
+    if (resultMatch
+        && captureRedirectionResultPredicates.includes(resultMatch[1])
+        && captureProducerExitBuckets.includes(resultMatch[2])
+        && captureProducerOutputStates.includes(resultMatch[3])
+        && captureProducerOutputStates.includes(resultMatch[4])
         && !hasHostileDiagnosticEvidence(diagnostic)) {
-      predicate = match[1];
+      evidence = `predicate=${resultMatch[1]}:exit=${resultMatch[2]}`
+        + `:out=${resultMatch[3]}:err=${resultMatch[4]}`;
+    } else if (predicateMatch
+        && captureRedirectionFailurePredicates.includes(predicateMatch[1])
+        && !captureRedirectionResultPredicates.includes(predicateMatch[1])
+        && !hasHostileDiagnosticEvidence(diagnostic)) {
+      evidence = `predicate=${predicateMatch[1]}`;
     }
   }
-  assert.ok(captureRedirectionReportedPredicates.includes(predicate));
+  assert.ok(captureRedirectionReportedPredicates.includes(evidence.slice('predicate='.length).split(':')[0]));
   const error = new Error(
-    `PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST:failed:predicate=${predicate}`,
+    `PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST:failed:${evidence}`,
   );
   error.stack = error.message;
   throw error;
@@ -314,7 +339,7 @@ test('capture redirection mismatch reporting is total and redacted for each laun
       && !hasHostileDiagnosticEvidence(error.message),
     label,
   );
-  for (const predicate of ['redirect-open', 'redirect-timeout', 'redirect-child-exit']) {
+  for (const predicate of ['redirect-open', 'redirect-argument-contract', 'redirect-timeout']) {
     const diagnostic = 'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
       + ':phase=capture-parse:subphase=capture-authority'
       + `:predicate=${predicate}:cleanup=none\r\n`;
@@ -339,6 +364,41 @@ test('capture redirection mismatch reporting is total and redacted for each laun
       stderr: Buffer.from(diagnostic),
     }, `${predicate}-totality`);
   }
+
+  for (const [predicate, exit, out, err] of [
+    ['redirect-child-exit', 'zero', 'exact-expected', 'exact-expected'],
+    ['redirect-child-exit', 'forced-23', 'empty', 'other-bounded'],
+    ['capture-content', 'other', 'other-bounded', 'empty'],
+  ]) {
+    const diagnostic = 'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+      + ':phase=capture-parse:subphase=capture-authority'
+      + `:predicate=${predicate}:exit=${exit}:out=${out}:err=${err}:cleanup=none\r\n`;
+    assert.throws(
+      () => failCaptureRedirectionTest(resultFor(diagnostic)),
+      error => error.message === 'PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST'
+        + `:failed:predicate=${predicate}:exit=${exit}:out=${out}:err=${err}`
+        && error.stack === error.message
+        && !hasHostileDiagnosticEvidence(error.message),
+      `${predicate}-${exit}-${out}-${err}`,
+    );
+    assertDiagnosticContract(resultFor(
+      diagnostic + String.raw`C:\hostile\capture S-1-5-21 environment-secret`,
+    ), `${predicate}-hostile-output`);
+  }
+
+  for (const diagnostic of [
+    'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+      + ':phase=capture-parse:subphase=capture-authority'
+      + ':predicate=redirect-child-exit:cleanup=none\r\n',
+    'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+      + ':phase=capture-parse:subphase=capture-authority'
+      + ':predicate=redirect-child-exit:exit=23:out=exact-expected:err=exact-expected'
+      + ':cleanup=none\r\n',
+    'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+      + ':phase=capture-parse:subphase=capture-authority'
+      + ':predicate=redirect-child-exit:exit=other:out=raw-value:err=empty'
+      + ':cleanup=none\r\n',
+  ]) assertDiagnosticContract(resultFor(diagnostic), 'result-attribution-totality');
 });
 
 const assertLauncherAuthorityRejected = (result, category, subphase) => {
@@ -1005,6 +1065,15 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(captureParser, /packaged_connect\.artifact_failed/u);
   assert.match(captureParser, /packaged_connect\.smoke_failed/u);
   assert.doesNotMatch(captureParser, /packaged_connect\.child_failed/u);
+  const nestedDiagnosticEvents = captureParser.slice(
+    captureParser.indexOf('$diagnosticEvents = @('),
+    captureParser.indexOf('$diagnosticCodes = @('),
+  );
+  assert.match(nestedDiagnosticEvents, /'desktop\.renderer\.connect_discovery\.proof'/u);
+  assert.equal(
+    (orchestrator.match(/desktop\.renderer\.connect_discovery\.proof/gu) ?? []).length,
+    1,
+  );
   assert.match(captureParser, /Test-UniqueJsonPropertyNames \$jsonLine/u);
   assert.match(captureParser, /\[Text\.UTF8Encoding\]::new\(\$false, \$true\)/u);
   assert.match(captureAuthority, /\$captureLength -lt 1 -or \$captureLength -gt 65536/u);
@@ -1073,6 +1142,7 @@ test('the workflow stages before alternate credentials and the harness preflight
   for (const predicate of [
     'pre-create',
     'redirect-open',
+    'redirect-argument-contract',
     'redirect-timeout',
     'redirect-child-exit',
     'capture-content',
@@ -1089,12 +1159,23 @@ test('the workflow stages before alternate credentials and the harness preflight
   );
   assert.match(
     captureRedirectionTestMode,
-    /CaptureRedirectionProducerTestCase -ceq 'nonzero'[\s\S]*?\{ 23 \} else \{ 0 \}[\s\S]*?\$captureProducerSource = \([\s\S]*?capture-stdout[\s\S]*?capture-stderr[\s\S]*?exit \$captureProducerExitCode[\s\S]*?\[Text\.Encoding\]::Unicode\.GetBytes\(\$captureProducerSource\)[\s\S]*?'-NoLogo -NoProfile -NonInteractive -EncodedCommand "'[\s\S]*?-ArgumentList \$captureProducerArguments/u,
+    /CaptureRedirectionProducerTestCase -ceq 'nonzero'[\s\S]*?\{ 23 \}[\s\S]*?\$captureProducerSource = if[\s\S]*?capture-stdout[\s\S]*?capture-stderr[\s\S]*?exit \$captureProducerExitCode[\s\S]*?\[Text\.Encoding\]::Unicode\.GetBytes\(\$captureProducerSource\)[\s\S]*?'-NoLogo -NoProfile -NonInteractive -EncodedCommand "'[\s\S]*?-ArgumentList \$captureProducerArguments/u,
   );
   assert.doesNotMatch(captureRedirectionTestMode, /-ArgumentList @\(/u);
   assert.match(
     captureRedirectionTestMode,
-    /Set-CaptureAuthorityPredicate 'redirect-timeout'[\s\S]*?WaitForExit\(\$terminationTimeoutMilliseconds\)[\s\S]*?Set-CaptureAuthorityPredicate 'redirect-child-exit'[\s\S]*?\.ExitCode -ne 0[\s\S]*?Assert-PrivilegedCaptureIdentity/u,
+    /Set-CaptureAuthorityPredicate 'redirect-argument-contract'[\s\S]*?\.StartInfo\.Arguments -cne \$captureProducerArguments/u,
+  );
+  assert.match(
+    captureRedirectionTestMode,
+    /\$redirectionProcessHandle = \$redirectionProcess\.Handle[\s\S]*?Set-CaptureAuthorityPredicate 'redirect-timeout'[\s\S]*?WaitForExit\(\$terminationTimeoutMilliseconds\)[\s\S]*?Assert-PrivilegedCaptureIdentity[\s\S]*?Assert-PrivilegedCaptureIdentity[\s\S]*?Get-TestOnlyCaptureProducerOutputState/u,
+  );
+  assert.doesNotMatch(
+    captureRedirectionTestMode.slice(
+      captureRedirectionTestMode.indexOf('WaitForExit($terminationTimeoutMilliseconds)'),
+      captureRedirectionTestMode.indexOf('Assert-PrivilegedCaptureIdentity'),
+    ),
+    /ReadAllText|ReadAllBytes|ReadBounded/u,
   );
   assert.doesNotMatch(captureRedirectionTestMode, /start-process-launch/u);
   assert.match(
@@ -1202,6 +1283,10 @@ windowsTest('the PS5.1 child-failure parser accepts only the two exact bounded p
       ...smokeRecord,
       records: [{ event: 'desktop.renderer.connect_discovery.ready' }],
     })}\n`, 'category=spawn-failed:phase=application-runtime:subphase=timeout-before-ready'],
+    ['valid-record-contained-proof-milestone', `${JSON.stringify({
+      ...smokeRecord,
+      records: [{ event: 'desktop.renderer.connect_discovery.proof' }],
+    })}\n`, 'category=spawn-failed:phase=application-runtime:subphase=timeout-before-ready'],
     ['valid-ready-duplicate', `${JSON.stringify({
       ...smokeRecord, category: 'ready-duplicate',
     })}\n`, 'category=spawn-failed:phase=application-runtime:subphase=ready-duplicate'],
@@ -1264,6 +1349,13 @@ windowsTest('the PS5.1 child-failure parser accepts only the two exact bounded p
       'category=artifact-type:phase=capture-parse:subphase=capture-size'],
     ['wrong-event', `${JSON.stringify({ ...smokeRecord, event: 'packaged_connect.child_failed' })}\n`,
       'category=artifact-type:phase=capture-parse:subphase=capture-event-cardinality'],
+    ['wrong-nested-event', `${JSON.stringify({
+      ...smokeRecord, records: [{ event: 'desktop.renderer.connect_discovery.arbitrary' }],
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-event-cardinality'],
+    ['proof-extra-field', `${JSON.stringify({
+      ...smokeRecord,
+      records: [{ event: 'desktop.renderer.connect_discovery.proof', milestone: 'connect-proof' }],
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
     ['smoke-wrong-category', `${JSON.stringify({
       ...smokeRecord, category: 'arbitrary-runtime-error',
     })}\n`,
@@ -1480,9 +1572,36 @@ windowsTest('a forced nonzero capture producer maps only to redirect-child-exit'
   assert.equal(result.status, 1);
   assert.equal(result.stdout.length, 0);
   const diagnostic = result.stderr.toString('utf8');
-  assert.match(diagnostic, captureRedirectionDiagnosticPattern);
-  assert.equal(captureRedirectionDiagnosticPattern.exec(diagnostic)?.[1], 'redirect-child-exit');
+  assert.equal(
+    diagnostic,
+    'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+      + ':phase=capture-parse:subphase=capture-authority'
+      + ':predicate=redirect-child-exit:exit=forced-23'
+      + ':out=exact-expected:err=exact-expected:cleanup=none\r\n',
+  );
   assertNoHostileDiagnosticEvidence(diagnostic);
+});
+
+windowsTest('empty and hostile producer results map only to fixed bounded buckets', () => {
+  for (const [producerTestCase, expectedResult] of [
+    ['empty', 'exit=other:out=empty:err=empty'],
+    ['hostile', 'exit=other:out=other-bounded:err=other-bounded'],
+  ]) {
+    const result = runCaptureRedirectionTest(producerTestCase);
+    assert.equal(result.error, undefined, producerTestCase);
+    assert.equal(result.signal, null, producerTestCase);
+    assert.equal(result.status, 1, producerTestCase);
+    assert.equal(result.stdout.length, 0, producerTestCase);
+    const diagnostic = result.stderr.toString('utf8');
+    assert.equal(
+      diagnostic,
+      'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+        + ':phase=capture-parse:subphase=capture-authority'
+        + `:predicate=redirect-child-exit:${expectedResult}:cleanup=none\r\n`,
+      producerTestCase,
+    );
+    assertNoHostileDiagnosticEvidence(diagnostic);
+  }
 });
 
 windowsTest('each host preflight failure transition emits one fixed redacted subphase', () => {
