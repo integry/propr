@@ -469,6 +469,8 @@ const validateSummary = summary => {
   const handshake = socketIo.handshake;
   assertExactKeys(handshake.rendererLifecycle, [
     'phase', 'profileActivationPublished', 'socketProviderMounted', 'providerDisabled',
+    'disabledByDemoModeLoading', 'disabledByDemoMode',
+    'disabledByCurrentUserLoading', 'disabledByCurrentUserAbsent',
     'desktopRuntime', 'connectionScope', 'socketConstructionInvocations', 'socketConstructions',
     'connectInvocations',
   ], 'Acceptance renderer Socket.IO lifecycle summary');
@@ -487,6 +489,10 @@ const validateSummary = summary => {
     || handshake.rendererLifecycle.profileActivationPublished !== true
     || handshake.rendererLifecycle.socketProviderMounted !== true
     || handshake.rendererLifecycle.providerDisabled !== false
+    || handshake.rendererLifecycle.disabledByDemoModeLoading !== false
+    || handshake.rendererLifecycle.disabledByDemoMode !== false
+    || handshake.rendererLifecycle.disabledByCurrentUserLoading !== false
+    || handshake.rendererLifecycle.disabledByCurrentUserAbsent !== false
     || handshake.rendererLifecycle.desktopRuntime !== true
     || handshake.rendererLifecycle.connectionScope !== 'available'
     || handshake.rendererLifecycle.socketConstructionInvocations !== 1

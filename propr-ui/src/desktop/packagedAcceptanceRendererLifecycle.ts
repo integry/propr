@@ -11,11 +11,15 @@ export type PackagedAcceptanceRendererLifecyclePhase =
   | 'socket-connect-invoked';
 
 export interface PackagedAcceptanceRendererLifecycleEvidence {
-  schemaVersion: 1;
+  schemaVersion: 2;
   phase: PackagedAcceptanceRendererLifecyclePhase;
   profileActivationPublished: boolean;
   socketProviderMounted: boolean;
   providerDisabled: boolean;
+  disabledByDemoModeLoading: boolean;
+  disabledByDemoMode: boolean;
+  disabledByCurrentUserLoading: boolean;
+  disabledByCurrentUserAbsent: boolean;
   desktopRuntime: boolean;
   connectionScope: 'unknown' | 'available' | 'unavailable';
   socketConstructionInvocations: number;
@@ -28,11 +32,15 @@ type AcceptanceWindow = Window & {
 };
 
 const initialEvidence: PackagedAcceptanceRendererLifecycleEvidence = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   phase: 'profile-activation-published',
   profileActivationPublished: false,
   socketProviderMounted: false,
   providerDisabled: false,
+  disabledByDemoModeLoading: false,
+  disabledByDemoMode: false,
+  disabledByCurrentUserLoading: false,
+  disabledByCurrentUserAbsent: false,
   desktopRuntime: false,
   connectionScope: 'unknown',
   socketConstructionInvocations: 0,
@@ -56,7 +64,7 @@ export const reportPackagedAcceptanceRendererLifecycle = (
 ): void => {
   if (!acceptanceEvidenceEnabled() || reportCount >= REPORT_LIMIT) return;
   reportCount += 1;
-  evidence = { ...evidence, ...update, schemaVersion: 1, phase };
+  evidence = { ...evidence, ...update, schemaVersion: 2, phase };
   console.info(PACKAGED_ACCEPTANCE_RENDERER_LIFECYCLE_PREFIX, evidence);
 };
 

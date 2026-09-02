@@ -88,8 +88,9 @@ const RENDERER_LIFECYCLE_PHASES = new Set([
 ]);
 const RENDERER_LIFECYCLE_KEYS = [
   'schemaVersion', 'phase', 'profileActivationPublished', 'socketProviderMounted',
-  'providerDisabled', 'desktopRuntime', 'connectionScope', 'socketConstructionInvocations',
-  'socketConstructions', 'connectInvocations',
+  'providerDisabled', 'disabledByDemoModeLoading', 'disabledByDemoMode',
+  'disabledByCurrentUserLoading', 'disabledByCurrentUserAbsent', 'desktopRuntime',
+  'connectionScope', 'socketConstructionInvocations', 'socketConstructions', 'connectInvocations',
 ].sort();
 const MAIN_HANDSHAKE_CATEGORIES = new Set([
   'none', 'untrusted-http-origin', 'wrong-path', 'wrong-transport', 'wrong-resource-type',
@@ -153,13 +154,21 @@ const captureRendererLifecycleEvidence = (argumentsValue, journey) => {
     && Object.keys(evidence).sort().join('\n') === RENDERER_LIFECYCLE_KEYS.join('\n');
   const booleans = exactKeys && [
     'profileActivationPublished', 'socketProviderMounted', 'providerDisabled', 'desktopRuntime',
+    'disabledByDemoModeLoading', 'disabledByDemoMode',
+    'disabledByCurrentUserLoading', 'disabledByCurrentUserAbsent',
   ].every(key => typeof evidence[key] === 'boolean');
   const counts = exactKeys && [
     'socketConstructionInvocations', 'socketConstructions', 'connectInvocations',
   ].every(key => Number.isInteger(evidence[key]) && evidence[key] >= 0 && evidence[key] <= 2);
-  if (!exactKeys || evidence.schemaVersion !== 1 || !RENDERER_LIFECYCLE_PHASES.has(evidence.phase)
+  const disableReasonsConsistent = booleans && evidence.providerDisabled === [
+    evidence.disabledByDemoModeLoading,
+    evidence.disabledByDemoMode,
+    evidence.disabledByCurrentUserLoading,
+    evidence.disabledByCurrentUserAbsent,
+  ].some(Boolean);
+  if (!exactKeys || evidence.schemaVersion !== 2 || !RENDERER_LIFECYCLE_PHASES.has(evidence.phase)
     || !['unknown', 'available', 'unavailable'].includes(evidence.connectionScope)
-    || !booleans || !counts
+    || !booleans || !counts || !disableReasonsConsistent
     || rendererLifecycleRecords.filter(record => record.journey === journey).length >= 12) {
     rendererLifecycleEvidenceInvalid = true;
     return;
@@ -776,7 +785,13 @@ const rendererLifecycleCategory = journey => {
   const latest = records.at(-1);
   if (!latest?.profileActivationPublished) return 'renderer-profile-activation-not-propagated';
   if (!latest.socketProviderMounted) return 'renderer-socket-provider-not-mounted';
-  if (latest.providerDisabled) return 'renderer-socket-provider-disabled';
+  if (latest.providerDisabled) {
+    if (latest.disabledByDemoModeLoading) return 'renderer-socket-provider-disabled-demo-mode-loading';
+    if (latest.disabledByDemoMode) return 'renderer-socket-provider-disabled-demo-mode';
+    if (latest.disabledByCurrentUserLoading) return 'renderer-socket-provider-disabled-current-user-loading';
+    if (latest.disabledByCurrentUserAbsent) return 'renderer-socket-provider-disabled-current-user-absent';
+    return 'renderer-socket-provider-disabled-unattributed';
+  }
   if (!latest.desktopRuntime) return 'renderer-desktop-runtime-unavailable';
   if (latest.connectionScope !== 'available') return 'renderer-connection-scope-unavailable';
   if (latest.socketConstructionInvocations === 0) return 'renderer-socket-construction-not-invoked';
@@ -858,6 +873,10 @@ const observedServiceSummary = () => {
           profileActivationPublished: rendererLifecycle.profileActivationPublished,
           socketProviderMounted: rendererLifecycle.socketProviderMounted,
           providerDisabled: rendererLifecycle.providerDisabled,
+          disabledByDemoModeLoading: rendererLifecycle.disabledByDemoModeLoading,
+          disabledByDemoMode: rendererLifecycle.disabledByDemoMode,
+          disabledByCurrentUserLoading: rendererLifecycle.disabledByCurrentUserLoading,
+          disabledByCurrentUserAbsent: rendererLifecycle.disabledByCurrentUserAbsent,
           desktopRuntime: rendererLifecycle.desktopRuntime,
           connectionScope: rendererLifecycle.connectionScope,
           socketConstructionInvocations: rendererLifecycle.socketConstructionInvocations,
@@ -890,6 +909,10 @@ const observedServiceSummary = () => {
     || services.socketIo.handshake.rendererLifecycle?.profileActivationPublished !== true
     || services.socketIo.handshake.rendererLifecycle?.socketProviderMounted !== true
     || services.socketIo.handshake.rendererLifecycle?.providerDisabled !== false
+    || services.socketIo.handshake.rendererLifecycle?.disabledByDemoModeLoading !== false
+    || services.socketIo.handshake.rendererLifecycle?.disabledByDemoMode !== false
+    || services.socketIo.handshake.rendererLifecycle?.disabledByCurrentUserLoading !== false
+    || services.socketIo.handshake.rendererLifecycle?.disabledByCurrentUserAbsent !== false
     || services.socketIo.handshake.rendererLifecycle?.desktopRuntime !== true
     || services.socketIo.handshake.rendererLifecycle?.connectionScope !== 'available'
     || services.socketIo.handshake.rendererLifecycle?.socketConstructionInvocations !== 1

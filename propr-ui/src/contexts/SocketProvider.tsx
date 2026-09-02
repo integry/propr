@@ -20,9 +20,28 @@ import {
 interface SocketProviderProps {
   children: React.ReactNode;
   disabled?: boolean;
+  disableReasons?: SocketProviderDisableReasons;
 }
 
-export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabled = false }) => {
+export interface SocketProviderDisableReasons {
+  demoModeLoading: boolean;
+  demoMode: boolean;
+  currentUserLoading: boolean;
+  currentUserAbsent: boolean;
+}
+
+const noDisableReasons: SocketProviderDisableReasons = {
+  demoModeLoading: false,
+  demoMode: false,
+  currentUserLoading: false,
+  currentUserAbsent: false,
+};
+
+export const SocketProvider: React.FC<SocketProviderProps> = ({
+  children,
+  disabled = false,
+  disableReasons = noDisableReasons,
+}) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const taskUpdateCallbacksRef = useRef<Set<(payload: TaskUpdatePayload) => void>>(new Set());
@@ -35,7 +54,12 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     getDesktopSocketConfigurationKey,
     getDesktopSocketConfigurationKey,
   );
-
+  const {
+    demoModeLoading,
+    demoMode,
+    currentUserLoading,
+    currentUserAbsent,
+  } = disableReasons;
   useEffect(() => {
     reportPackagedAcceptanceRendererLifecycle('socket-provider-mounted', {
       socketProviderMounted: true,
@@ -43,10 +67,17 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
   }, []);
 
   useEffect(() => {
+    const disableReasonEvidence = {
+      disabledByDemoModeLoading: demoModeLoading,
+      disabledByDemoMode: demoMode,
+      disabledByCurrentUserLoading: currentUserLoading,
+      disabledByCurrentUserAbsent: currentUserAbsent,
+    };
     if (disabled) {
       reportPackagedAcceptanceRendererLifecycle('socket-effect-disabled', {
         providerDisabled: true,
         desktopRuntime: Boolean(isDesktopRuntime()),
+        ...disableReasonEvidence,
       });
       setSocket(null);
       setIsConnected(false);
@@ -59,6 +90,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
         providerDisabled: false,
         desktopRuntime: true,
         connectionScope: 'unavailable',
+        ...disableReasonEvidence,
       });
       setSocket(null);
       setIsConnected(false);
@@ -69,6 +101,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       providerDisabled: false,
       desktopRuntime: Boolean(isDesktopRuntime()),
       connectionScope: desktopScope ? 'available' : 'unavailable',
+      ...disableReasonEvidence,
     });
     reportPackagedAcceptanceSocketConstructionInvocation();
     const newSocket = proprClient.connectSocket({
@@ -174,6 +207,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       providerDisabled: false,
       desktopRuntime: Boolean(isDesktopRuntime()),
       connectionScope: desktopScope ? 'available' : 'unavailable',
+      ...disableReasonEvidence,
     });
     reportPackagedAcceptanceSocketConnectInvocation();
     newSocket.connect();
@@ -193,7 +227,14 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       newSocket.off(TASK_LIVE_UPDATE, taskLiveUpdated);
       newSocket.disconnect();
     };
-  }, [disabled, socketConfigurationKey]);
+  }, [
+    currentUserAbsent,
+    currentUserLoading,
+    demoMode,
+    demoModeLoading,
+    disabled,
+    socketConfigurationKey,
+  ]);
 
   const subscribeToTask = useCallback((taskId: string) => {
     if (socket && isConnected) {

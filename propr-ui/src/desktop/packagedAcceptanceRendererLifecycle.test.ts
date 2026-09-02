@@ -39,16 +39,21 @@ describe('packaged acceptance renderer lifecycle evidence', () => {
     expect(info).toHaveBeenCalledTimes(12);
     expect(prefix).toBe(PACKAGED_ACCEPTANCE_RENDERER_LIFECYCLE_PREFIX);
     expect(Object.keys(evidence).sort()).toEqual([
-      'connectInvocations', 'connectionScope', 'desktopRuntime', 'phase', 'profileActivationPublished',
-      'providerDisabled', 'schemaVersion', 'socketConstructionInvocations', 'socketConstructions',
-      'socketProviderMounted',
+      'connectInvocations', 'connectionScope', 'desktopRuntime', 'disabledByCurrentUserAbsent',
+      'disabledByCurrentUserLoading', 'disabledByDemoMode', 'disabledByDemoModeLoading', 'phase',
+      'profileActivationPublished', 'providerDisabled', 'schemaVersion', 'socketConstructionInvocations',
+      'socketConstructions', 'socketProviderMounted',
     ]);
     expect(evidence).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       phase: 'socket-construction-invoked',
       profileActivationPublished: true,
       connectionScope: 'available',
       socketConstructionInvocations: 2,
+      disabledByDemoModeLoading: false,
+      disabledByDemoMode: false,
+      disabledByCurrentUserLoading: false,
+      disabledByCurrentUserAbsent: false,
     });
     expect(JSON.stringify(evidence)).not.toMatch(/scope-|https?:|profile-|bearer|authorization|cookie|path|error/i);
   });

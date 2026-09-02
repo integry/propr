@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import React, { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, HashRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import { ToastProvider } from './components/ui/Toast'
@@ -7,7 +7,6 @@ import { useDemoMode } from './contexts/DemoModeContext'
 import { DemoModeProvider } from './contexts/DemoModeProvider'
 import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
-import { getCurrentUser, INSTANCE_AUTHORIZATION_CHANGED_EVENT } from './api/proprApi'
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
 import {
   hostedUiConnectionIssue,
@@ -16,13 +15,14 @@ import {
   pathWithActiveHostedTunnelFlow,
 } from './config/runtimeConfig'
 import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
-import type { CurrentUser, InstancePermission } from './api/proprTypes'
+import type { InstancePermission } from './api/proprTypes'
 import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
 import { ConnectAccountProvider } from './contexts/ConnectAccountContext'
 import { BrowserPushProvider } from './hooks/useBrowserPush'
 import { NotificationCenterProvider } from './contexts/NotificationCenterContext'
-import { currentUiPathname, isDesktopRuntime, publicAssetUrl } from './config/runtimeMode'
+import { isDesktopRuntime, publicAssetUrl } from './config/runtimeMode'
 import { DesktopPresentationBoundary } from './desktop/DesktopPresentationBoundary'
+import { useCurrentUserBootstrap } from './hooks/useCurrentUserBootstrap'
 
 const Router = isDesktopRuntime() ? HashRouter : BrowserRouter;
 
@@ -43,8 +43,6 @@ const TasksPage = lazy(() => import('./pages/TasksPage'))
 
 type CompatibilityState = { status: 'checking' } | { status: 'ready' }
   | { status: 'blocked'; title: string; message: string };
-
-const AUTHORIZATION_REFRESH_INTERVAL_MS = 60_000;
 
 const LoadingSpinner: React.FC = () => (
   <div className="flex h-screen w-full items-center justify-center bg-gray-50">
@@ -143,85 +141,17 @@ export const NotFoundRouteContent: React.FC<{ hostname?: string }> = ({ hostname
 
 const AppContent: React.FC = () => {
   const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
-  // Auth check state - start loading unless already on login page
-  const [isLoading, setIsLoading] = useState(currentUiPathname() !== '/login');
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
-  const refreshPromiseRef = useRef<Promise<void> | null>(null);
-
-  const refreshCurrentUser = useCallback(async () => {
-    if (refreshPromiseRef.current) return refreshPromiseRef.current;
-    const request = getCurrentUser()
-      .then(user => { setCurrentUser(user); })
-      .finally(() => {
-        if (refreshPromiseRef.current === request) refreshPromiseRef.current = null;
-      });
-    refreshPromiseRef.current = request;
-    return request;
-  }, []);
-
-  // Perform initial auth check
-  useEffect(() => {
-    if (isDemoModeLoading) return;
-
-    const checkSession = async () => {
-      // Don't check if we are already on login page
-      if (currentUiPathname() === '/login') {
-        setIsLoading(false);
-        return;
-      }
-
-      try {
-        await refreshCurrentUser();
-        // Session is valid
-        setIsLoading(false);
-      } catch (error) {
-        // If error is NOT 'Authentication required', we let the app render (to show errors).
-        // If it IS 'Authentication required', handleApiResponse handles the redirect,
-        // so we keep isLoading=true to prevent UI flash.
-        if (error instanceof Error && error.message !== 'Authentication required') {
-          setIsLoading(false);
-        }
-      }
-    };
-
-    checkSession();
-  }, [isDemoModeLoading, refreshCurrentUser]);
-
-  useEffect(() => {
-    const handleAuthorizationChanged = () => {
-      void refreshCurrentUser().catch(error => {
-        console.error('Failed to refresh instance authorization:', error);
-      });
-    };
-    window.addEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, handleAuthorizationChanged);
-    return () => window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, handleAuthorizationChanged);
-  }, [refreshCurrentUser]);
-
-  useEffect(() => {
-    if (isDemoMode || currentUiPathname() === '/login') return;
-    const refreshAuthorization = () => {
-      if (document.visibilityState === 'hidden') return;
-      void refreshCurrentUser().catch(error => {
-        console.error('Failed to synchronize instance authorization:', error);
-      });
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') refreshAuthorization();
-    };
-    const interval = window.setInterval(refreshAuthorization, AUTHORIZATION_REFRESH_INTERVAL_MS);
-    window.addEventListener('focus', refreshAuthorization);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener('focus', refreshAuthorization);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [isDemoMode, refreshCurrentUser]);
-
+  const {
+    currentUser,
+    currentUserAbsent,
+    currentUserLoading,
+    isInitialLoading,
+    refreshCurrentUser,
+  } = useCurrentUserBootstrap({ isDemoMode, isDemoModeLoading });
 
   // Mount with the connected desktop surface for lifecycle attribution, but keep it disabled until
   // current-user bootstrap succeeds so a revoked activation never opens a second socket.
-  const content = isDemoModeLoading || isLoading ? <LoadingSpinner /> : (
+  const content = isDemoModeLoading || isInitialLoading ? <LoadingSpinner /> : (
       <ToastProvider>
         <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
           <DemoModeBanner />
@@ -360,7 +290,20 @@ const AppContent: React.FC = () => {
       </ToastProvider>
   );
 
-  return <SocketProvider disabled={isDemoModeLoading || isDemoMode || isLoading || currentUser === null}>{content}</SocketProvider>;
+  const disableReasons = {
+    demoModeLoading: isDemoModeLoading,
+    demoMode: isDemoMode,
+    currentUserLoading,
+    currentUserAbsent,
+  };
+  return (
+    <SocketProvider
+      disabled={Object.values(disableReasons).some(Boolean)}
+      disableReasons={disableReasons}
+    >
+      {content}
+    </SocketProvider>
+  );
 };
 
 const WebApp: React.FC = () => {
