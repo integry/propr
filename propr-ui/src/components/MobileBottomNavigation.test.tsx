@@ -1,9 +1,18 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getAgentTankUsage, refreshAgentTank } from '../api/revertApi';
 import type { CurrentUser } from '../api/proprTypes';
 import type { HeaderStats } from '../hooks/useHeaderStats';
 import MobileBottomNavigation from './MobileBottomNavigation';
+
+vi.mock('../api/revertApi', () => ({
+  getAgentTankUsage: vi.fn(),
+  refreshAgentTank: vi.fn(),
+}));
+
+const mockGetAgentTankUsage = vi.mocked(getAgentTankUsage);
+const mockRefreshAgentTank = vi.mocked(refreshAgentTank);
 
 const user: CurrentUser = {
   id: 'user-1',
@@ -38,14 +47,15 @@ const Location = () => {
 function renderNavigation(
   initialEntry = '/tasks/task-1',
   onLogout = vi.fn(),
-  currentUser: CurrentUser | null = user
+  currentUser: CurrentUser | null = user,
+  isDemoMode = false
 ) {
   render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <MobileBottomNavigation
         user={currentUser}
         onLogout={onLogout}
-        isDemoMode={false}
+        isDemoMode={isDemoMode}
         unreadCount={7}
         systemHealth={systemHealth}
       />
@@ -56,6 +66,12 @@ function renderNavigation(
 }
 
 describe('MobileBottomNavigation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetAgentTankUsage.mockResolvedValue({ enabled: false });
+    mockRefreshAgentTank.mockResolvedValue({ success: true });
+  });
+
   it('renders all five destinations in order with the unread count and route active state', () => {
     renderNavigation();
 
@@ -142,5 +158,96 @@ describe('MobileBottomNavigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
 
     expect(onLogout).toHaveBeenCalledOnce();
+  });
+
+  it('shows Agent Tank usage for users with agent management permission', async () => {
+    mockGetAgentTankUsage.mockResolvedValue({
+      enabled: true,
+      agents: {
+        claude: {
+          name: 'claude',
+          usage: { session: { percent: 25, resetsIn: '2h' } },
+        },
+      },
+    });
+
+    renderNavigation();
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+
+    expect(await screen.findByText('Usage')).toBeInTheDocument();
+    expect(screen.getByText('Claude')).toBeInTheDocument();
+    expect(screen.getByText('25%')).toBeInTheDocument();
+    expect(screen.getByTitle('Refresh usage')).toBeInTheDocument();
+  });
+
+  it('hides Agent Tank usage without agent management permission outside demo mode', () => {
+    mockGetAgentTankUsage.mockResolvedValue({
+      enabled: true,
+      agents: {
+        claude: {
+          name: 'claude',
+          usage: { session: { percent: 25 } },
+        },
+      },
+    });
+
+    renderNavigation('/tasks', vi.fn(), { ...user, permissions: [] });
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+
+    expect(screen.queryByText('Usage')).not.toBeInTheDocument();
+    expect(mockGetAgentTankUsage).not.toHaveBeenCalled();
+  });
+
+  it('shows Agent Tank usage without manual refresh in demo mode', async () => {
+    mockGetAgentTankUsage.mockResolvedValue({
+      enabled: true,
+      agents: {
+        codex: {
+          name: 'codex',
+          usage: { fiveHour: { percentUsed: 40, resetsIn: '3h' } },
+        },
+      },
+    });
+
+    renderNavigation('/tasks', vi.fn(), { ...user, permissions: [] }, true);
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+
+    expect(await screen.findByText('Usage')).toBeInTheDocument();
+    expect(screen.getByText('Codex')).toBeInTheDocument();
+    expect(screen.queryByTitle('Refresh usage')).not.toBeInTheDocument();
+  });
+
+  it('expands and collapses the metric breakdown for an agent with multiple metrics', async () => {
+    mockGetAgentTankUsage.mockResolvedValue({
+      enabled: true,
+      agents: {
+        claude: {
+          name: 'claude',
+          usage: {
+            session: { percent: 25, resetsIn: '2h' },
+            weeklyAll: { percent: 50, resetsIn: '4d' },
+          },
+        },
+      },
+    });
+
+    renderNavigation();
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+
+    const agentRow = await screen.findByRole('button', { name: /Claude/ });
+    expect(agentRow).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Session')).not.toBeInTheDocument();
+    expect(screen.queryByText('Weekly')).not.toBeInTheDocument();
+
+    fireEvent.click(agentRow);
+
+    expect(agentRow).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Session')).toBeInTheDocument();
+    expect(screen.getByText('Weekly')).toBeInTheDocument();
+
+    fireEvent.click(agentRow);
+
+    expect(agentRow).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Session')).not.toBeInTheDocument();
   });
 });
