@@ -51,6 +51,7 @@ import {
 } from './acceptance-test-authorization';
 import { registerPackagedAcceptanceZoomIpc } from './acceptance-zoom';
 import { AcceptanceSetupController } from './acceptance-setup-controller';
+import { configureDesktopSessionSecurity } from './session-security';
 import {
   createBrowserWindowOptions,
   MINIMUM_BROWSER_WINDOW_SIZE,
@@ -169,41 +170,6 @@ const registerProtocolClient = (): void => {
 
 const deliverDeepLink = (value: string): void => {
   deepLinkDelivery.deliver(value);
-};
-
-const configureSessionSecurity = (credentials: DesktopCredentialService): {
-  close(): void;
-  dispose(): void;
-} => {
-  const desktopSession = session.defaultSession;
-  desktopSession.setPermissionCheckHandler(() => false);
-  desktopSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    callback(credentials.prepareRequest(details.url, details.requestHeaders, {
-      method: details.method,
-      resourceType: details.resourceType,
-    }));
-  });
-  desktopSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...credentials.sanitizeResponseHeaders(details.url, details.responseHeaders ?? {}),
-        'Content-Security-Policy': [rendererContentSecurityPolicy(!app.isPackaged)],
-      },
-    });
-  });
-  return {
-    close() {
-      desktopSession.webRequest.onBeforeSendHeaders((_details, callback) => callback({ cancel: true }));
-      desktopSession.webRequest.onHeadersReceived((_details, callback) => callback({ cancel: true }));
-    },
-    dispose() {
-      desktopSession.setPermissionCheckHandler(null);
-      desktopSession.setPermissionRequestHandler(null);
-      desktopSession.webRequest.onBeforeSendHeaders(null);
-      desktopSession.webRequest.onHeadersReceived(null);
-    },
-  };
 };
 
 const configurePackagedRendererProtocol = (): (() => void) => {
@@ -533,7 +499,13 @@ if (!hasSingleInstanceLock) {
       } : {}),
       ...(acceptancePairingTiming ? { pairingTiming: acceptancePairingTiming } : {}),
     });
-    const sessionSecurity = configureSessionSecurity(credentials);
+    const sessionSecurity = configureDesktopSessionSecurity({
+      contentSecurityPolicy: () => rendererContentSecurityPolicy(!app.isPackaged),
+      credentials,
+      desktopSession: session.defaultSession,
+      getMainRenderer: () => mainWindow?.webContents ?? null,
+      isTrustedRendererUrl: value => isTrustedRendererUrl(value, devServerUrl, packagedRendererUrl),
+    });
     const credentialInitialization = await credentials.initialize();
     if (credentialInitialization.status === 'degraded') {
       log('warn', 'desktop.credential_revocation.startup_degraded', {

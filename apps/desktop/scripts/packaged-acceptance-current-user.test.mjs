@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   classifyCurrentUserRequestShape,
+  currentUserValidationPhaseSummary,
   currentUserValidationFailureCategory,
   scopedCurrentUserRequestGeneration,
 } from './packaged-acceptance-current-user.mjs';
@@ -180,5 +181,42 @@ describe('packaged current-user acceptance correlation', () => {
       mainRecords: [acceptedMain],
       fixtureRecords: [{ ...fixtureRecords[0], authorizationMatchesActivatedBearer: false }],
     }), 'current-user-upstream-bearer-custody-invalid');
+  });
+});
+
+describe('packaged current-user strict failure diagnostics', () => {
+  it('reports fixed bounded phase counts without retaining request secrets', () => {
+    const summary = currentUserValidationPhaseSummary({
+      journey,
+      rendererRecords: [
+        { journey, activeScopePresent: true, scopeGeneration: 1, phase: 'request-issued' },
+        { journey, activeScopePresent: true, scopeGeneration: 1, phase: 'active-scope-rejected' },
+      ],
+      mainRecords: [],
+      fixtureRecords: [],
+      requestRecords: Array.from({ length: 12 }, () => ({
+        journey,
+        method: 'OPTIONS',
+        origin: 'propr-app://renderer',
+        url: '/api/auth/user?proprDesktopScopeGeneration=1',
+        authorization: 'Bearer must-not-appear',
+      })),
+    });
+
+    assert.deepEqual(summary, {
+      schemaVersion: 1,
+      options: 9,
+      get: 0,
+      main: 0,
+      mainAccepted: 0,
+      fixture: 0,
+      fixture200: 0,
+      requestIssued: 1,
+      responseCompleted: 0,
+      parsedUserAccepted: 0,
+      activeScopeAccepted: 0,
+      rejected: 1,
+    });
+    assert.equal(JSON.stringify(summary).includes('must-not-appear'), false);
   });
 });

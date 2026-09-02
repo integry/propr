@@ -34,13 +34,13 @@ describe('desktop current-user bootstrap main-proxy integration', () => {
     vi.restoreAllMocks();
   });
 
-  it('correlates exactly one real React bootstrap request through apiFetch and main-only bearer custody', async () => {
+  it('correlates one fixed-alias React bootstrap request through apiFetch and main-only bearer custody', async () => {
     (window as AcceptanceWindow).__PROPR_PACKAGED_ACCEPTANCE__ = {};
     setDesktopConnectionScope({
       bridge: {} as never,
       profileId: 'profile-a',
       transportScope: scope,
-    }, 'https://example.test');
+    }, 'http://127.0.0.2:41731');
 
     const mainProxyRecords: Array<Record<string, unknown>> = [];
     const upstreamRecords: Array<Record<string, unknown>> = [];

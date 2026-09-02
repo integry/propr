@@ -41,6 +41,41 @@ export const classifyCurrentUserRequestShape = (method, url, origin) => {
     : null;
 };
 
+const boundedCount = records => Math.min(records.length, 9);
+
+/** Fixed, bounded, secret-free diagnostics for the strict hosted boundary. */
+export const currentUserValidationPhaseSummary = ({
+  journey,
+  rendererRecords,
+  mainRecords,
+  fixtureRecords,
+  requestRecords,
+}) => {
+  const renderer = rendererRecords.filter(record => record.journey === journey
+    && record.activeScopePresent && record.scopeGeneration > 0);
+  const main = mainRecords.filter(record => record.journey === journey);
+  const fixture = fixtureRecords.filter(record => record.journey === journey
+    && record.source === 'renderer');
+  const currentUserRequests = requestRecords.filter(record => record.journey === journey
+    && record.origin === DESKTOP_RENDERER_ORIGIN
+    && scopedCurrentUserRequestGeneration('GET', record.url) !== null);
+  const phaseCount = phase => boundedCount(renderer.filter(record => record.phase === phase));
+  return {
+    schemaVersion: 1,
+    options: boundedCount(currentUserRequests.filter(record => record.method === 'OPTIONS')),
+    get: boundedCount(currentUserRequests.filter(record => record.method === 'GET')),
+    main: boundedCount(main),
+    mainAccepted: boundedCount(main.filter(record => record.accepted === true)),
+    fixture: boundedCount(fixture),
+    fixture200: boundedCount(fixture.filter(record => record.responseStatus === 200)),
+    requestIssued: phaseCount('request-issued'),
+    responseCompleted: phaseCount('response-completed'),
+    parsedUserAccepted: phaseCount('parsed-user-accepted'),
+    activeScopeAccepted: phaseCount('active-scope-accepted'),
+    rejected: boundedCount(renderer.filter(record => record.phase.endsWith('-rejected'))),
+  };
+};
+
 export const currentUserValidationFailureCategory = ({
   journey,
   evidenceInvalid,

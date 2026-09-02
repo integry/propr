@@ -36,6 +36,7 @@ import { PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS } from './packaged-acceptance-cl
 import { analyzeExistingElectronRenderer } from './packaged-acceptance-axe.mjs';
 import {
   classifyCurrentUserRequestShape,
+  currentUserValidationPhaseSummary,
   currentUserValidationFailureCategory as classifyCurrentUserValidation,
 } from './packaged-acceptance-current-user.mjs';
 import {
@@ -901,6 +902,14 @@ const currentUserValidationFailureCategory = journey => {
   });
 };
 
+const currentUserPhaseSummary = journey => currentUserValidationPhaseSummary({
+  journey,
+  rendererRecords: rendererCurrentUserRecords,
+  mainRecords: mainCurrentUserRecords,
+  fixtureRecords: fixtureCurrentUserRecords,
+  requestRecords,
+});
+
 const socketHandshakeFailureCategory = journey => {
   const currentUserCategory = currentUserValidationFailureCategory(journey);
   if (currentUserCategory !== 'none') return currentUserCategory;
@@ -966,9 +975,11 @@ const waitForAuthenticatedSocket = async journey => {
       && rendererLifecycle === 'none') return;
     const category = socketHandshakeFailureCategory(journey);
     if (category.startsWith('main-') || category.startsWith('fixture-') || category.startsWith('duplicate-')) {
-      throw new Error(`Acceptance Socket.IO handshake failed: ${category}`);
+      throw new Error(`Acceptance Socket.IO handshake failed: ${category}; current-user-phases=${JSON.stringify(currentUserPhaseSummary(journey))}`);
     }
-    if (Date.now() >= deadline) throw new Error(`Acceptance Socket.IO handshake failed: ${category}`);
+    if (Date.now() >= deadline) {
+      throw new Error(`Acceptance Socket.IO handshake failed: ${category}; current-user-phases=${JSON.stringify(currentUserPhaseSummary(journey))}`);
+    }
     await sleep(50);
   }
 };

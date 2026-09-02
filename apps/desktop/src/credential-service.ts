@@ -1140,6 +1140,14 @@ export class DesktopCredentialService {
     }
   }
 
+  /** Whether main currently owns the credential binding required by renderer transport. */
+  hasActiveRendererBinding(): boolean {
+    const active = this.#active;
+    return active !== null
+      && this.#generation(active.profileId) === active.profileGeneration
+      && this.#selectionGeneration === active.selectionGeneration;
+  }
+
   prepareRequest(
     url: string,
     originalHeaders: RequestHeaders,
