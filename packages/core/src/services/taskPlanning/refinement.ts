@@ -10,6 +10,7 @@ import { estimateLlmDuration } from '../../utils/llmEstimation.js';
 import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { loadSettings } from '../../config/configManager.js';
 import { resolveConfiguredModel } from '../../config/configuredModel.js';
+import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import { PlanningFailedError, getRawInputCharLimit, type MinimalLogger } from '../planning/index.js';
 import type { RefinePlanOptions, RefinePlanResult, RefinePlanEstimation } from './types.js';
 
@@ -177,7 +178,18 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
   // from the draft) so refinement matches the original plan; fall back to the
   // planner generation setting, then the configured default agent.
   const settings = await loadSettings();
-  const generationModel = await resolveConfiguredModel(options.generationModel || settings.planner_generation_model);
+  const requestedGenerationModel = await resolveConfiguredModel(options.generationModel || settings.planner_generation_model);
+  const registry = AgentRegistry.getInstance();
+  await registry.ensureInitialized();
+  const separator = requestedGenerationModel.indexOf(':');
+  const routingSession = registry.beginRoutingSession(separator < 0
+    ? { requestedAgentAlias: requestedGenerationModel }
+    : {
+        requestedAgentAlias: requestedGenerationModel.slice(0, separator),
+        requestedModel: requestedGenerationModel.slice(separator + 1),
+      });
+  const selection = await routingSession.select();
+  const generationModel = `${selection.physicalAgentAlias}:${selection.physicalModel}`;
   correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, generationModel, hasOriginalContext: !!originalContext, draftId }, 'Refining plan');
 
   // Assemble within the model's raw input character limit so oversized plans /
@@ -222,7 +234,7 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
     currentTaskCount: currentPlan.length,
     hasOriginalContext: !!originalContext,
   };
-  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: generationModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef, taskId: draftId, executionType: 'plan-refinement', metadata: refinementMetadata });
+  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: generationModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef, taskId: draftId, executionType: 'plan-refinement', metadata: refinementMetadata, routingSession });
 
   // Debug: log raw response (first 1000 chars) to diagnose parsing issues
   correlatedLogger.info({ responsePreview: response.substring(0, 1000), responseLength: response.length }, 'Raw LLM refinement response');
@@ -254,7 +266,8 @@ ${response}`;
           githubToken,
           issueRef,
           taskId: draftId,
-          executionType: 'plan-refinement'
+          executionType: 'plan-refinement',
+          routingSession: routingSession.fork()
         });
 
         refinementResponse = parseRefinementResponse(repairedResponse, correlatedLogger);

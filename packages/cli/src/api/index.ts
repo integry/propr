@@ -157,6 +157,18 @@ export type {
   SaveAgentsResponse,
 } from "./agents.js";
 
+// Synthetic agent pools configuration API
+export {
+  listSyntheticAgents,
+  saveSyntheticAgents,
+  deleteSyntheticAgent,
+} from "./syntheticPools.js";
+
+export type {
+  SyntheticAgentsResponse,
+  SaveSyntheticAgentsResponse,
+} from "./syntheticPools.js";
+
 // System Settings API
 export {
   getSettings,

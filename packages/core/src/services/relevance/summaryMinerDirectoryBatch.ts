@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import { Agent } from '../../agents/types.js';
+import { Agent, type AnalyzeOptions } from '../../agents/types.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
@@ -12,6 +12,8 @@ import {
   recordPrimarySummarizationResponseFailure,
   recordSummarizationCooldown
 } from '../../config/configManager.js';
+import { SyntheticPoolExhaustedError, type SyntheticRoutingSession } from '../syntheticRoutingService.js';
+import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import {
   type DirectoryInfo, type DirectoryResult,
   buildBatchDirectoryPrompt, parseBatchDirectoryResponse
@@ -65,6 +67,8 @@ interface ProcessDirectoryBatchOptions {
   fallbackAgentAliasSetting?: string;
   fullName: string;
   branch: string;
+  routingSession?: SyntheticRoutingSession;
+  fallbackRoutingSession?: SyntheticRoutingSession;
 }
 
 class SummarizationCooldownRecordedError extends Error {
@@ -88,12 +92,22 @@ export async function processDirectoryBatch(options: ProcessDirectoryBatchOption
   const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
   const estimatedOutputTokens = directories.length * 150;
   const state = createDirectoryBatchState(options);
+  const fallbackRoutingSession = beginFallbackRoutingSession(
+    options.fallbackAgent,
+    options.fallbackModelUsed ?? options.fallbackModelOverride
+  );
 
   try {
-    await analyzeDirectoryBatchWithFallback({ ...options, prompt, state });
+    await analyzeDirectoryBatchWithFallback({ ...options, prompt, state, fallbackRoutingSession });
     state.success = state.results.some(r => r.summary !== null);
     options.log.debug({ batchSize: directories.length, successCount: state.results.filter(r => r.summary).length }, 'Processed directory batch');
   } catch (error) {
+    if (fallbackRoutingSession?.routingMetadata && options.fallbackAgent) {
+      state.routingMetadata = fallbackRoutingSession.routingMetadata;
+      state.agentUsed = options.fallbackAgent;
+      const physicalModel = state.routingMetadata.physicalModel;
+      if (typeof physicalModel === 'string') state.modelLogged = physicalModel;
+    }
     state.errorMessage = (error as Error).message;
     state.stopProcessing = error instanceof SummarizationCooldownRecordedError;
     options.log.warn({ error: state.errorMessage, batchSize: directories.length }, 'Failed to process directory batch');
@@ -113,6 +127,7 @@ export async function processDirectoryBatch(options: ProcessDirectoryBatchOption
 interface DirectoryBatchState {
   agentUsed: Agent;
   modelLogged: string;
+  routingMetadata?: Record<string, unknown>;
   success: boolean;
   errorMessage?: string;
   results: DirectoryResult[];
@@ -141,8 +156,12 @@ async function analyzeDirectoryBatchWithFallback(options: ProcessDirectoryBatchO
   const { prompt, directories, agent, modelOverride, modelUsed, fullName, branch, primaryAgentAliasSetting, log, state } = options;
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
-      prompt, directories, agent, model: modelUsed ?? modelOverride, context: `directory_aggregation:${fullName}`, fullName
+      prompt, directories, agent, model: modelUsed ?? modelOverride, context: `directory_aggregation:${fullName}`, fullName,
+      routingSession: options.routingSession,
     });
+    state.routingMetadata = options.routingSession?.routingMetadata;
+    const physicalModel = state.routingMetadata?.physicalModel;
+    if (typeof physicalModel === 'string') state.modelLogged = physicalModel;
     // Best-effort bookkeeping: a transient runtime-state error here must not
     // discard a directory batch the LLM aggregated successfully.
     await clearSummarizationPrimaryQuotaFailuresSafe(
@@ -150,6 +169,9 @@ async function analyzeDirectoryBatchWithFallback(options: ProcessDirectoryBatchO
       log
     );
   } catch (primaryError) {
+    state.routingMetadata = options.routingSession?.routingMetadata;
+    const physicalModel = state.routingMetadata?.physicalModel;
+    if (typeof physicalModel === 'string') state.modelLogged = physicalModel;
     await handlePrimaryDirectoryFailure(primaryError, options);
   }
 }
@@ -171,13 +193,14 @@ async function handlePrimaryDirectoryFailure(
 ): Promise<void> {
   const { agent, primaryAgentAliasSetting, fallbackAgent, fallbackAgentAliasSetting, fullName, branch } = options;
   const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
+  const syntheticRouteUnavailable = primaryError instanceof SyntheticPoolExhaustedError;
   // Only quota/usage-limit exhaustion and invalid model output switch to the
-  // fallback model. Other failures (transient outages, agent bugs, malformed
-  // prompts) propagate.
-  if (!isQuotaExhaustionError(primaryError)) {
+  // fallback model. An exhausted synthetic route is also eligible because it
+  // represents the configured primary pool being unavailable for this call.
+  if (!isQuotaExhaustionError(primaryError) && !syntheticRouteUnavailable) {
     if (isSummarizationInvalidResponseError(primaryError)) {
       if (fallbackAgent && fallbackAgentAliasSetting) {
-        await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, false);
+        await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, 'invalid-response');
         return;
       }
       await recordSummarizationCooldown({
@@ -191,6 +214,12 @@ async function handlePrimaryDirectoryFailure(
     throw primaryError;
   }
 
+  if (syntheticRouteUnavailable) {
+    if (!fallbackAgent || !fallbackAgentAliasSetting) throw primaryError;
+    await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, 'synthetic-route');
+    return;
+  }
+
   if (!fallbackAgent || !fallbackAgentAliasSetting) {
     await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias });
     await recordSummarizationCooldown({
@@ -202,17 +231,17 @@ async function handlePrimaryDirectoryFailure(
     throw new SummarizationCooldownRecordedError(primaryError);
   }
 
-  await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, true);
+  await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, 'quota');
 }
 
 async function analyzeDirectoryBatchWithFallbackAgent(
   primaryError: unknown,
   primaryAgentAlias: string,
   options: ProcessDirectoryBatchOptions & { prompt: string; state: DirectoryBatchState },
-  primaryWasQuotaLimited: boolean
+  failureKind: 'quota' | 'invalid-response' | 'synthetic-route'
 ): Promise<void> {
   const { prompt, directories, fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch, log, state } = options;
-  if (primaryWasQuotaLimited) {
+  if (failureKind === 'quota') {
     await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
   }
   log.warn({
@@ -220,10 +249,10 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     primaryAgentAlias,
     fallbackAgentAlias: fallbackAgent?.config.alias,
     fallbackModel: fallbackModelUsed ?? fallbackModelOverride
-  }, primaryWasQuotaLimited
-    ? 'Primary directory summarization model quota-limited; retrying batch with fallback'
-    : 'Primary directory summarization returned unusable output; retrying batch with fallback');
+  }, directoryFallbackWarning(failureKind));
 
+  const fallbackRoutingSession = options.fallbackRoutingSession;
+  markDirectoryFallbackAttempt(state, fallbackAgent as Agent, fallbackModelUsed ?? fallbackModelOverride);
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
       prompt,
@@ -232,14 +261,19 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       model: fallbackModelUsed ?? fallbackModelOverride,
       context: `directory_aggregation_fallback:${fullName}`,
       fullName,
-      retryOptions: SUMMARIZATION_FALLBACK_RETRY
+      retryOptions: SUMMARIZATION_FALLBACK_RETRY,
+      routingSession: fallbackRoutingSession,
     });
     state.fallbackUsed = true;
     state.fallbackPrimaryAgentAlias = primaryAgentAlias;
     state.fallbackAgentAlias = fallbackAgentAliasSetting;
     state.agentUsed = fallbackAgent as Agent;
-    state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
-    if (primaryWasQuotaLimited) {
+    state.routingMetadata = fallbackRoutingSession?.routingMetadata;
+    const physicalModel = state.routingMetadata?.physicalModel;
+    state.modelLogged = typeof physicalModel === 'string'
+      ? physicalModel
+      : fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
+    if (failureKind === 'quota') {
       await clearSummarizationCooldown(fullName, branch, {
         primaryAgentAlias,
         fallbackAgentAlias: fallbackAgentAliasSetting,
@@ -251,7 +285,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       if (fallbackAgentAliasSetting) {
         await promoteSummarizationFallbackIfNeeded({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
       }
-    } else if (isSummarizationInvalidResponseError(primaryError)) {
+    } else if (shouldRecordResponseFailure(failureKind, primaryError)) {
       await recordPrimarySummarizationResponseFailure({
         primaryAgentAlias,
         fallbackAgentAlias: fallbackAgentAliasSetting as string,
@@ -259,7 +293,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       });
     }
   } catch (fallbackError) {
-    if (!primaryWasQuotaLimited) throw fallbackError;
+    if (failureKind !== 'quota') throw fallbackError;
     await recordSummarizationCooldown({
       repository: fullName,
       branch,
@@ -273,6 +307,32 @@ async function analyzeDirectoryBatchWithFallbackAgent(
   }
 }
 
+function directoryFallbackWarning(failureKind: 'quota' | 'invalid-response' | 'synthetic-route'): string {
+  return failureKind === 'quota'
+    ? 'Primary directory summarization model quota-limited; retrying batch with fallback'
+    : failureKind === 'synthetic-route'
+      ? 'Primary synthetic directory summarization route unavailable; retrying batch with fallback'
+      : 'Primary directory summarization returned unusable output; retrying batch with fallback';
+}
+
+function markDirectoryFallbackAttempt(
+  state: DirectoryBatchState,
+  fallbackAgent: Agent,
+  fallbackModel: string | undefined
+): void {
+  state.agentUsed = fallbackAgent;
+  state.modelLogged = fallbackModel ?? fallbackAgent.config.defaultModel ?? 'unknown';
+  state.routingMetadata = undefined;
+}
+
+function shouldRecordResponseFailure(failureKind: string, error: unknown): boolean {
+  return failureKind === 'invalid-response' && isSummarizationInvalidResponseError(error);
+}
+
+function beginFallbackRoutingSession(agent: Agent | undefined, model: string | undefined): SyntheticRoutingSession | undefined {
+  return agent instanceof SyntheticAgent ? agent.beginRoutingSession(model) : undefined;
+}
+
 async function logDirectoryBatchCall(options: ProcessDirectoryBatchOptions & {
   state: DirectoryBatchState;
   estimatedInputTokens: number;
@@ -280,9 +340,12 @@ async function logDirectoryBatchCall(options: ProcessDirectoryBatchOptions & {
   durationMs: number;
 }): Promise<void> {
   const { directories, fullName, log, state, estimatedInputTokens, estimatedOutputTokens, durationMs } = options;
+  const physicalAgentAlias = typeof state.routingMetadata?.physicalAgentAlias === 'string'
+    ? state.routingMetadata.physicalAgentAlias
+    : state.agentUsed.config.alias;
   await logSummarizationCall({
     timestamp: new Date().toISOString(), callType: 'directory_aggregation', model: state.modelLogged,
-    agentAlias: state.agentUsed.config.alias, repository: fullName, estimatedInputTokens, estimatedOutputTokens,
+    agentAlias: physicalAgentAlias, repository: fullName, estimatedInputTokens, estimatedOutputTokens,
     estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
     fileCount: directories.length, success: state.success, durationMs, error: state.errorMessage
   }, log);
@@ -290,8 +353,12 @@ async function logDirectoryBatchCall(options: ProcessDirectoryBatchOptions & {
   await persistLlmLog(createLlmLogFromAnalysis({
     executionType: 'summarization', modelUsed: state.modelLogged, executionTimeMs: durationMs, success: state.success,
     tokenUsage: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens },
-    error: state.errorMessage, repository: fullName, agentAlias: state.agentUsed.config.alias,
-    metadata: { directoryCount: directories.length, phase: 'directory_aggregation' },
+    error: state.errorMessage, repository: fullName, agentAlias: physicalAgentAlias,
+    metadata: {
+      directoryCount: directories.length,
+      phase: 'directory_aggregation',
+      ...(state.routingMetadata && { syntheticRouting: state.routingMetadata }),
+    },
     workRef: { workType: 'repository', workRepository: fullName },
   }));
 }
@@ -316,18 +383,22 @@ async function analyzeDirectoryBatchWithAgent(options: {
   context: string;
   fullName: string;
   retryOptions?: RetryOptions;
+  routingSession?: SyntheticRoutingSession;
 }): Promise<DirectoryResult[]> {
-  const { prompt, directories, agent, model, context, fullName, retryOptions = SUMMARIZATION_RETRY } = options;
+  const { prompt, directories, agent, model, context, fullName, retryOptions = SUMMARIZATION_RETRY, routingSession } = options;
   return withRetry(
     async () => {
-      const analysisResult = await agent.analyze(prompt, {
+      const analyzeOptions: AnalyzeOptions = {
         model,
         responseFormat: 'json',
         executionType: 'summarization',
         repository: fullName,
         metadata: { phase: 'directory_aggregation', directoryCount: directories.length },
         suppressLlmLog: true
-      });
+      };
+      const analysisResult = routingSession
+        ? await routingSession.analyze(prompt, analyzeOptions)
+        : await agent.analyze(prompt, analyzeOptions);
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Directory summarization agent analysis failed');
       }

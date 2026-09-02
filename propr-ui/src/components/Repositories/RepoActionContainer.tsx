@@ -13,6 +13,8 @@ import {
   clearChatMessages,
   PersistedChatMessage
 } from '../../api/repoChatApi';
+import { getInstanceCatalog } from '../../api/proprApi';
+import type { InstanceCatalogAgent } from '@propr/shared';
 import { generateRepoImprovements } from '../../api/repoImprovementsApi';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 
@@ -54,7 +56,14 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
   const [chatMessages, setChatMessages] = useState<Message[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [agents, setAgents] = useState<InstanceCatalogAgent[]>([]);
   const { isDemoMode } = useDemoMode();
+
+  useEffect(() => {
+    getInstanceCatalog()
+      .then(catalog => setAgents(catalog.agents))
+      .catch(error => console.error('Failed to load model catalog:', error));
+  }, []);
 
   // Switch tab when initialTab changes (e.g. from navigation state)
   useEffect(() => {
@@ -268,6 +277,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
             repositoryName={selectedRepo.alias || selectedRepo.name}
             disabled={isLoadingMessages || isDemoMode}
             placeholder={isDemoMode ? 'Demo mode is read-only' : undefined}
+            agents={agents}
           />
         )}
         {activeTab === 'improve' && (
@@ -276,6 +286,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
             repositoryId={selectedRepo.name}
             suggestions={suggestions}
             onToggleSuggestion={handleToggleSuggestion}
+            agents={agents}
             onGenerateSuggestions={async (params: {
               categories: ImprovementCategory[];
               customPrompt: string;

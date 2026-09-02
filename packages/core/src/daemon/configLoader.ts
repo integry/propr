@@ -1,6 +1,6 @@
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { loadMonitoredRepos, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from '../config/configManager.js';
+import { loadMonitoredRepos, loadMonitoredReposRaw, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from '../config/configManager.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 
 interface Settings {
@@ -30,6 +30,36 @@ export function isMonitoredRepository(repository: string, repos: readonly string
     const normalizedRepository = repository.trim().toLowerCase();
     return normalizedRepository.length > 0
         && repos.some(configured => configured.trim().toLowerCase() === normalizedRepository);
+}
+
+/**
+ * Returns whether automatic failed-CI follow-up is enabled for a repository.
+ * Missing or malformed options are treated as disabled so legacy repository
+ * configurations cannot opt into autonomous follow-up work after an upgrade.
+ */
+export async function isAutoCiFollowupEnabledForRepository(
+    owner: string,
+    repo: string,
+    loadConfiguredRepos: typeof loadMonitoredReposRaw = loadMonitoredReposRaw,
+): Promise<boolean> {
+    const repository = `${owner.trim()}/${repo.trim()}`.toLowerCase();
+    if (repository === '/') return false;
+
+    try {
+        const configuredRepos = await loadConfiguredRepos();
+        // Branch-specific entries can share a repository name. Treat the option
+        // as enabled when any matching entry explicitly opts in so the result is
+        // independent of configuration order while the UI keeps those entries
+        // synchronized on subsequent writes.
+        return configuredRepos.some(candidate =>
+            candidate.name.trim().toLowerCase() === repository
+            && candidate.autoFollowupOnFailedCi === true
+        );
+    } catch (error) {
+        const err = error as Error;
+        logger.warn({ repository, error: err.message }, 'Failed to load automatic CI follow-up repository configuration; treating it as disabled');
+        return false;
+    }
 }
 
 export async function resolveMonitoredRepositories(

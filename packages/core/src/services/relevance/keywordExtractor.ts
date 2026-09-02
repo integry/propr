@@ -4,6 +4,7 @@ import logger from '../../utils/logger.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { loadSettings } from '../../config/configManager.js';
 import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 // --- Settings cache (avoids a DB round-trip on every LLM extraction call) ---
 
@@ -191,6 +192,7 @@ export interface KeywordExtractionOptions {
   /** Agent to use for LLM calls */
   agent: Agent;
   correlationId?: string;
+  routingSession?: SyntheticRoutingSession;
 }
 
 const KEYWORD_EXTRACTION_PROMPT = `Extract the most relevant keywords from the user's request for finding files in a codebase.
@@ -211,6 +213,25 @@ Return ONLY a JSON object in this exact format:
   "alternatives": ["alt1", "alt2", "related1"]
 }`;
 
+function resolveKeywordLogTarget(options: {
+  actualModelUsed?: string;
+  routedMetadata?: Record<string, unknown>;
+  configuredModel?: string;
+  agent: Agent;
+}): { modelUsed: string; agentAlias: string } {
+  const { actualModelUsed, routedMetadata, configuredModel, agent } = options;
+  const routedModel = routedMetadata?.physicalModel;
+  const routedAgentAlias = routedMetadata?.physicalAgentAlias;
+  return {
+    modelUsed: actualModelUsed
+      || (typeof routedModel === 'string' ? routedModel : undefined)
+      || configuredModel
+      || agent.config.defaultModel
+      || 'unknown',
+    agentAlias: typeof routedAgentAlias === 'string' ? routedAgentAlias : agent.config.alias,
+  };
+}
+
 /**
  * Extracts relevant keywords and alternatives from a user prompt using an LLM.
  * This helps improve file matching by understanding the user's intent.
@@ -219,12 +240,14 @@ export async function extractKeywordsWithLLM(
   prompt: string,
   options: KeywordExtractionOptions
 ): Promise<ExtractedKeywords> {
-  const { agent, correlationId } = options;
+  const { agent, correlationId, routingSession } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   const startTime = Date.now();
   let success = false;
   let errorMessage: string | undefined;
+  let routedMetadata: Record<string, unknown> | undefined;
+  let actualModelUsed: string | undefined;
   const cachedSettings = await getCachedSettings();
 
   try {
@@ -234,14 +257,19 @@ export async function extractKeywordsWithLLM(
 
     correlatedLogger.debug({ promptLength: prompt.length, model: contextModel }, 'Extracting keywords with LLM');
 
-    const analysisResult = await agent.analyze(llmPrompt, {
+    const analyzeOptions = {
       ...(contextModel ? { model: contextModel } : {}),
       timeoutMs: resolveContextAnalysisTimeoutMs(),
       executionType: 'context-analysis',
       correlationId,
       metadata: { callType: 'keyword_extraction' },
       suppressLlmLog: true
-    });
+    };
+    const analysisResult = routingSession
+      ? await routingSession.analyze(llmPrompt, analyzeOptions)
+      : await agent.analyze(llmPrompt, analyzeOptions);
+    routedMetadata = routingSession?.routingMetadata;
+    actualModelUsed = analysisResult.modelUsed;
     if (!analysisResult.success) {
       throw new Error(analysisResult.error || 'Context keyword analysis failed');
     }
@@ -284,18 +312,27 @@ export async function extractKeywordsWithLLM(
     return { primary: [], alternatives: [], all: [] };
   } finally {
     const durationMs = Date.now() - startTime;
-    const modelUsed = cachedSettings.planner_context_model as string || agent.config.defaultModel || 'unknown';
+    routedMetadata ??= routingSession?.routingMetadata;
+    const logTarget = resolveKeywordLogTarget({
+      actualModelUsed,
+      routedMetadata,
+      configuredModel: cachedSettings.planner_context_model as string,
+      agent,
+    });
 
     // Persist to llm_logs table
     const logEntry = createLlmLogFromAnalysis({
       executionType: 'context-analysis',
-      modelUsed,
+      modelUsed: logTarget.modelUsed,
       executionTimeMs: durationMs,
       success,
       error: errorMessage,
       correlationId,
-      agentAlias: agent.config.alias,
-      metadata: { callType: 'keyword_extraction' },
+      agentAlias: logTarget.agentAlias,
+      metadata: {
+        callType: 'keyword_extraction',
+        ...(routedMetadata && { syntheticRouting: routedMetadata }),
+      },
       workRef: {
         workType: 'repository',
       },

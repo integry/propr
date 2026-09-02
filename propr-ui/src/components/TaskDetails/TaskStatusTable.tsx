@@ -29,6 +29,13 @@ const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[
 };
 
 const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {
+  const routing = item.metadata?.syntheticRouting;
+  if (routing) {
+    const attempt = routing.attemptNumber ?? history.slice(0, index + 1)
+      .filter(entry => entry.metadata?.syntheticRouting).length;
+    const physical = [routing.physicalAgentAlias, routing.physicalModel].filter(Boolean).join(' · ');
+    return `Pool attempt ${attempt}${physical ? ` — ${physical}` : ''}`;
+  }
   const isReview = commandMode === 'review';
   const isFix = commandMode === 'fix';
   const claudeCount = history.slice(0, index + 1).filter(h => {
@@ -121,6 +128,7 @@ const TimelineContent: React.FC<{
   const displayLabel = getDisplayLabel(item, index, history, commandMode);
   const prInfo = item.metadata?.pr || item.metadata?.pullRequest;
   const isCompleted = item.state?.toUpperCase() === 'COMPLETED';
+  const routing = item.metadata?.syntheticRouting;
 
   return (
     <div className={`flex-grow ${isCompleted ? 'mt-1' : ''} ${compact ? 'pb-3' : 'pb-6'}`}>
@@ -142,6 +150,12 @@ const TimelineContent: React.FC<{
               </a>
             )}
           </div>
+          {routing && (
+            <div className="mt-0.5 text-[10px] text-slate-500">
+              Virtual {routing.virtualAgentAlias} · {routing.virtualModel}
+              {routing.selectionReason ? ` · ${routing.selectionReason}` : ''}
+            </div>
+          )}
         </div>
 
         {/* Duration */}

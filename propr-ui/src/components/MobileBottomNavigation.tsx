@@ -21,6 +21,7 @@ import {
 import type { HeaderStats } from '../hooks/useHeaderStats';
 import type { CurrentUser } from '../api/proprTypes';
 import { userHasPermission } from '../contexts/AuthContext';
+import AgentTankSidebar from './AgentTankSidebar';
 
 interface MobileBottomNavigationProps {
   user: CurrentUser | null;
@@ -257,6 +258,13 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
             </nav>
 
             <HealthDetails systemHealth={systemHealth} />
+
+            {(isDemoMode || userHasPermission(user, 'instance.manage_agents')) && (
+              <AgentTankSidebar
+                allowManualRefresh={!isDemoMode}
+                className="border-slate-100"
+              />
+            )}
 
             {user && (
               <div className="border-t border-slate-100 p-4">

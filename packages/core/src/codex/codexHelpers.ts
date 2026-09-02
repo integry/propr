@@ -208,8 +208,15 @@ function addCodexTokenUsage(usage: CodexEvent['usage'] | undefined, state: Parse
 }
 
 function handleErrorEvent(event: CodexEvent, state: ParseState): void {
-    state.isError = true;
-    state.errorMessage = event.message;
+    // Codex emits retry progress as `error` events even though the turn is
+    // still active. A later successful completion must not remain poisoned by
+    // one of these transient transport notifications. If every reconnect is
+    // exhausted, Codex emits a separate terminal error (and exits non-zero).
+    const isReconnectNotice = event.message?.startsWith('Reconnecting... ');
+    if (!isReconnectNotice) {
+        state.isError = true;
+        state.errorMessage = event.message;
+    }
     state.logs += `[Error] ${event.message}\n`;
 }
 

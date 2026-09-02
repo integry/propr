@@ -265,8 +265,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
                 logger.info({ event }, 'Received config update event');
 
                 // Handle agent config updates by refreshing the registry
-                if (event.subtype === 'agents_update') {
-                    logger.info('Refreshing AgentRegistry due to agents_update event...');
+                if (event.subtype === 'agents_update' || event.subtype === 'synthetic_agents_update') {
+                    logger.info({ subtype: event.subtype }, 'Refreshing AgentRegistry due to agent configuration update...');
                     try {
                         const registry = AgentRegistry.getInstance();
                         await registry.refresh();

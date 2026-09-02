@@ -30,6 +30,7 @@ import {
   JsonInputError,
 } from "../utils/index.js";
 import { presentApiError } from "../utils/apiErrorPresentation.js";
+import { createAgentPoolCommand } from "./agentPoolCommands.js";
 
 const AGENT_TYPE_LIST = AGENT_TYPES.join(", ");
 
@@ -139,6 +140,8 @@ Examples:
   $ propr agent add my-claude -t claude -m ...    # Add an agent
   $ propr agent delete my-agent                   # Delete an agent
 `);
+
+  agent.addCommand(createAgentPoolCommand());
 
   // agent list
   agent

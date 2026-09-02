@@ -7,6 +7,7 @@ import {
 
 function fakeDatabase(options: {
     migrationError?: Error;
+    migrationErrors?: Error[];
     migrationRejectsWithUndefined?: boolean;
     restoreError?: Error;
 } = {}): {
@@ -25,6 +26,8 @@ function fakeDatabase(options: {
                 latest: async () => {
                     calls.push('migrate.latest');
                     if (options.migrationRejectsWithUndefined) return Promise.reject(undefined);
+                    const migrationError = options.migrationErrors?.shift();
+                    if (migrationError) throw migrationError;
                     if (options.migrationError) throw options.migrationError;
                 },
             },
@@ -39,6 +42,50 @@ test('migration gate wraps the migration with foreign-key safety', async () => {
 
     assert.deepEqual(calls, [
         'PRAGMA foreign_keys = OFF',
+        'migrate.latest',
+        'PRAGMA foreign_keys = ON',
+    ]);
+});
+
+test('migration gate waits for a concurrent migrator and retries the lock', async () => {
+    const migrationLock = new Error('Migration table is already locked');
+    migrationLock.name = 'MigrationLocked';
+    const { database, calls } = fakeDatabase({ migrationErrors: [migrationLock] });
+    const waits: number[] = [];
+
+    await applyDatabaseMigrations(database, {
+        lockRetryDelayMs: 25,
+        wait: async milliseconds => { waits.push(milliseconds); },
+    });
+
+    assert.deepEqual(waits, [25]);
+    assert.deepEqual(calls, [
+        'PRAGMA foreign_keys = OFF',
+        'migrate.latest',
+        'migrate.latest',
+        'PRAGMA foreign_keys = ON',
+    ]);
+});
+
+test('migration gate rejects after exhausting migration lock retries', async () => {
+    const firstLock = new Error('Migration table is already locked');
+    firstLock.name = 'MigrationLocked';
+    const finalLock = new Error('Migration table is already locked');
+    finalLock.name = 'MigrationLocked';
+    const { database, calls } = fakeDatabase({
+        migrationErrors: [firstLock, finalLock],
+    });
+
+    await assert.rejects(
+        applyDatabaseMigrations(database, {
+            lockRetryAttempts: 1,
+            wait: async () => undefined,
+        }),
+        finalLock,
+    );
+    assert.deepEqual(calls, [
+        'PRAGMA foreign_keys = OFF',
+        'migrate.latest',
         'migrate.latest',
         'PRAGMA foreign_keys = ON',
     ]);

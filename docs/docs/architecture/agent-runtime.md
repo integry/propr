@@ -146,6 +146,9 @@ Common settings:
 HOST_CODEX_DIR=/home/your-user/.codex
 CODEX_TIMEOUT_MS=86400000
 CODEX_MAX_TURNS=1000
+CODEX_STREAM_TRANSPORT=websocket
+CODEX_STREAM_IDLE_TIMEOUT_MS=1800000
+CODEX_STREAM_MAX_RETRIES=5
 ```
 
 The entrypoint checks for `/home/node/.codex/config.toml`, prepares `sessions` and `rules`, and avoids recursively changing bind-mounted workspace ownership. Codex runs as:
@@ -154,7 +157,7 @@ The entrypoint checks for `/home/node/.codex/config.toml`, prepares `sessions` a
 codex exec --json --dangerously-bypass-approvals-and-sandbox --config features.multi_agent=false --skip-git-repo-check --cd /home/node/workspace -
 ```
 
-When a model is selected, ProPR adds `--model <id>`. Codex emits NDJSON events that ProPR parses into logs, result text, session metadata, and token usage.
+When a model is selected, ProPR adds `--model <id>`. By default, ProPR selects a WebSocket-capable OpenAI provider with a 30-minute stream idle timeout so long, quiet turns are not pinned to a single HTTP response body. Set `CODEX_STREAM_TRANSPORT=sse` when WebSockets are unavailable or `CODEX_STREAM_TRANSPORT=inherit` to preserve a custom provider from the mounted Codex configuration. Codex emits NDJSON events that ProPR parses into logs, result text, session metadata, and token usage; reconnect notices remain visible without making a later successful turn fail.
 
 ### Antigravity
 

@@ -42,7 +42,7 @@ export class CodexAgent implements Agent {
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel } = options;
+            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel, metadata } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -88,7 +88,7 @@ export class CodexAgent implements Agent {
 
             await this.persistTaskLog({
                 response, parsedOutput, executionTime, modelUsed: response.modelUsed, prompt, usageMetrics,
-                issueRef, repo, taskId, prNumber, isRetry, retryReason
+                issueRef, repo, taskId, prNumber, isRetry, retryReason, metadata
             });
 
             this.handleTaskCompletion({ response, issueNumber: issueRef.number, result, parsedOutput, worktreePath, worktreeGitContent });
@@ -142,9 +142,9 @@ export class CodexAgent implements Agent {
         executionTime: number; modelUsed: string; prompt: string;
         usageMetrics: CodexUsageMetrics;
         issueRef: AgentTaskOptions['issueRef']; repo: string;
-        taskId?: string; prNumber?: number; isRetry: boolean; retryReason?: string;
+        taskId?: string; prNumber?: number; isRetry: boolean; retryReason?: string; metadata?: Record<string, unknown>;
     }): Promise<void> {
-        const { response, parsedOutput, executionTime, modelUsed, usageMetrics, issueRef, repo, taskId, prNumber, isRetry, retryReason } = params;
+        const { response, parsedOutput, executionTime, modelUsed, usageMetrics, issueRef, repo, taskId, prNumber, isRetry, retryReason, metadata } = params;
         await storeCodexPromptInRedis({ codexOutput: parsedOutput, prompt: params.prompt, issueRef, model: modelUsed, isRetry, retryReason });
         const logEntry = createLlmLogFromAnalysis({
             executionType: 'implementation', modelUsed,
@@ -154,7 +154,7 @@ export class CodexAgent implements Agent {
             sessionId: parsedOutput.sessionId, draftId: taskId,
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
             agentAlias: this.config.alias, reasoningLevel: response.reasoningLevel,
-            metadata: { isRetry, retryReason, conversationId: parsedOutput.conversationId },
+            metadata: { ...metadata, isRetry, retryReason, conversationId: parsedOutput.conversationId },
             ...this.formatUsageMetrics(usageMetrics),
             workRef: buildTaskWorkRef(taskId, issueRef.number, repo, prNumber),
         });
