@@ -637,6 +637,7 @@ describe('desktop trusted release workflow', () => {
     for (const caseId of [
       'CALLSITE_RESOURCE_COLLISION_REPLACEMENT_SURVIVAL_READ',
       'CALLSITE_RESOURCE_COLLISION_MANIFEST_PRESERVATION',
+      'CALLSITE_HKCU_BASELINE_STATE',
     ]) {
       assert.match(
         installedWindowsAppSupervisorBehaviorTest,
@@ -1017,6 +1018,32 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /HKCU_INSTALLED_ABSENCE_ASSERTION/);
     assert.match(installedWindowsAppTest, /HKCU_INSTALLED_FALLBACK/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-HkcuInstalledValueOwnership/);
+    const hkcuInstalledValueOwnership = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Test-HkcuInstalledValueOwnership'),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Test-ProvisionalUserMarkerOwnership'),
+    );
+    assert.match(
+      hkcuInstalledValueOwnership,
+      /Invoke-SupervisorAttributedOperation\s+`\n\s+-Scenario 'HKCU_BASELINE_RESTORE'\s+`\n\s+-Phase 'FIXTURE_SETUP'\s+`\n\s+-Callsite 'HKCU_BASELINE_STATE'\s+`\n\s+-Field 'REGISTRY_PATH'\s+`\n\s+-Action \{\n\s+Assert-True \(!\(Test-Path -LiteralPath \$desktopKey\)\)/,
+    );
+    for (const scenario of [
+      'HKCU_BASELINE_RESTORE',
+      'HKCU_PENDING_RECEIPT',
+      'HKCU_NONEMPTY',
+      'HKCU_EMPTY',
+      'HKCU_CONFLICT',
+      'HKCU_PROVISIONAL',
+    ]) {
+      assert.match(
+        hkcuInstalledValueOwnership,
+        new RegExp(
+          "Set-SupervisorInvocationContext\\s+`\\n\\s+'HKCU_INSTALLED_VALUE_OWNERSHIP'\\s+`\\n\\s+" +
+            "'" + scenario + "'\\s+`\\n\\s+'FIXTURE_SETUP'\\s+`\\n\\s+'HKCU_BASELINE_STATE'\\s+`\\n\\s+'REGISTRY_PATH'",
+        ),
+      );
+    }
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SupervisorInvocationCallsites[\s\S]*'HKCU_BASELINE_STATE'/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SupervisorInvocationFields[\s\S]*'REGISTRY_PATH'/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /OWNED_RESOURCES_NORMAL_SUCCESS/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /typed authenticated empty-state receipt/);
     assert.match(

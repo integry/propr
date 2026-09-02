@@ -2008,6 +2008,7 @@ function Get-SupervisorInvocationCallsites {
     'CONTROLLER_RESULT_FIELD',
     'EARLY_PROCESS_STATE_PATH',
     'EARLY_PROCESS_STATE_READ',
+    'HKCU_BASELINE_STATE',
     'MANIFEST_PRESERVATION',
     'RESOURCE_FIELD_VALIDATION',
     'REPLACEMENT_SURVIVAL_READ',
@@ -2216,6 +2217,7 @@ function Get-SupervisorAttributionTotalityCases {
     'CALLSITE_EARLY_DESCENDANT_PID',
     'CALLSITE_EARLY_PROCESS_TREE_ASSERTION',
     'CALLSITE_EARLY_MANIFEST_PRESERVATION',
+    'CALLSITE_HKCU_BASELINE_STATE',
     'CALLSITE_REPLACEMENT_SURVIVAL_READ',
     'FIELD_EXECUTABLE_BACKUP',
     'FIELD_MANIFEST_PATH',
@@ -3389,6 +3391,13 @@ function Test-SupervisorInvocationAttributionTotality {
         Scenario='EARLY_INITIALIZATION_TIMEOUT'
         Phase='MANIFEST_ASSERTION'
         Callsite='MANIFEST_PRESERVATION'; Field='MANIFEST_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_BASELINE_STATE'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='HKCU_BASELINE_STATE'; Field='REGISTRY_PATH'
       },
       [PSCustomObject]@{
         CaseId='CALLSITE_REPLACEMENT_SURVIVAL_READ'
@@ -5484,8 +5493,15 @@ function Test-HkcuInstalledValueOwnership {
   $installedName = 'installed'
   $sentinelInstalled = 'pre-existing-installed'
   $sentinelUnrelated = 'preserve-unrelated'
-  Assert-True (!(Test-Path -LiteralPath $desktopKey)) `
-    'HKCU installed-value fixture baseline was not clean'
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'HKCU_BASELINE_RESTORE' `
+    -Phase 'FIXTURE_SETUP' `
+    -Callsite 'HKCU_BASELINE_STATE' `
+    -Field 'REGISTRY_PATH' `
+    -Action {
+      Assert-True (!(Test-Path -LiteralPath $desktopKey)) `
+        'HKCU installed-value fixture baseline was not clean'
+    }
 
   function New-HkcuManifest(
     [bool]$BaselineKeyExisted,
@@ -5544,6 +5560,12 @@ function Test-HkcuInstalledValueOwnership {
   }
 
   try {
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_BASELINE_RESTORE' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
     (Get-Item -LiteralPath $desktopKey).SetValue(
       $installedName, $sentinelInstalled, [Microsoft.Win32.RegistryValueKind]::String)
@@ -5566,6 +5588,12 @@ function Test-HkcuInstalledValueOwnership {
     Assert-True ([string]$restoredKey.GetValue('Unrelated') -ceq $sentinelUnrelated) `
       'unrelated HKCU value was changed during baseline restoration'
 
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_PENDING_RECEIPT' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     $unchangedManifest = New-HkcuManifest `
       $true $true 'String' $baselineData $false $false $true
     $unchanged = Invoke-WorkflowCleanupController `
@@ -5581,6 +5609,12 @@ function Test-HkcuInstalledValueOwnership {
       'rejected pending MSI receipt discarded authenticated recovery authority'
     Remove-Item -LiteralPath $unchangedManifest.Path -Force -ErrorAction Stop
 
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_NONEMPTY' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
     (Get-Item -LiteralPath $desktopKey).SetValue(
@@ -5597,6 +5631,12 @@ function Test-HkcuInstalledValueOwnership {
         [string]$nonemptyKey.GetValue('Unrelated') -ceq $sentinelUnrelated) `
       'run-owned HKCU cleanup removed its nonempty key or unrelated value'
 
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_EMPTY' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
     (Get-Item -LiteralPath $desktopKey).SetValue(
@@ -5607,6 +5647,12 @@ function Test-HkcuInstalledValueOwnership {
     Assert-True ($empty.ExitCode -eq 0 -and !(Test-Path -LiteralPath $desktopKey)) `
       'run-created empty HKCU key was not removed'
 
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_CONFLICT' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
     (Get-Item -LiteralPath $desktopKey).SetValue(
       $installedName, 'foreign-conflict', [Microsoft.Win32.RegistryValueKind]::String)
@@ -5624,6 +5670,12 @@ function Test-HkcuInstalledValueOwnership {
       'conflicting HKCU cleanup discarded authenticated recovery authority'
     Remove-Item -LiteralPath $conflictManifest.Path -Force -ErrorAction Stop
 
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_PROVISIONAL' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
     (Get-Item -LiteralPath $desktopKey).SetValue(
