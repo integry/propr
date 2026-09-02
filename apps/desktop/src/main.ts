@@ -839,8 +839,8 @@ if (!hasSingleInstanceLock) {
       reportRevocationFailure: diagnostic => {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
       },
-      expectedPublicInstanceIdentity: (profileId, origin) =>
-        connectDiscovery.expectedPublicInstanceIdentity(profileId, origin),
+      snapshotConnectIdentityClaim: (profileId, origin) =>
+        connectDiscovery.snapshotIdentityClaim(profileId, origin),
     });
     const sessionSecurity = configureSessionSecurity(credentials);
     const credentialInitialization = await credentials.initialize();

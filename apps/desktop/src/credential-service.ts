@@ -25,6 +25,7 @@ import {
 } from './shared/contract';
 import { normalizeApiBaseUrl } from './security';
 import type { PendingCredentialRevocation, ProfileStore, StoredCredential } from './profile-store';
+import type { DesktopConnectIdentityClaimSnapshot } from './connect-discovery';
 
 const DEFINITIVE_INVALID_CODES = new Set([
   'INVALID_INSTANCE_TOKEN',
@@ -51,8 +52,8 @@ export interface CredentialServiceDependencies {
     code: 'network' | 'http' | 'local-cleanup';
     status?: number;
   }): void;
-  /** Main-owned Connect evidence; renderer input can never provide this value. */
-  expectedPublicInstanceIdentity?(profileId: string, origin: string): string | null;
+  /** Main-owned Connect evidence; renderer input can never provide this snapshot. */
+  snapshotConnectIdentityClaim?(profileId: string, origin: string): DesktopConnectIdentityClaimSnapshot;
 }
 
 export interface DesktopPairingBrowserRequest {
@@ -331,7 +332,7 @@ export class DesktopCredentialService {
   readonly #pairingProtocol: PairingProtocolRequestOptions;
   readonly #reportRevocationFailure: NonNullable<CredentialServiceDependencies['reportRevocationFailure']>;
   readonly #revocationDeadlines: RevocationDeadlines;
-  readonly #expectedPublicInstanceIdentity: NonNullable<CredentialServiceDependencies['expectedPublicInstanceIdentity']>;
+  readonly #snapshotConnectIdentityClaim: NonNullable<CredentialServiceDependencies['snapshotConnectIdentityClaim']>;
   readonly #internalRequestKey = randomBytes(32).toString('base64url');
   readonly #lifecycleController = new AbortController();
   readonly #profileGenerations = new Map<string, number>();
@@ -360,7 +361,11 @@ export class DesktopCredentialService {
     this.#pairingProtocol = dependencies.pairingProtocol ?? {};
     this.#reportRevocationFailure = dependencies.reportRevocationFailure ?? (() => undefined);
     this.#revocationDeadlines = boundedRevocationDeadlines(dependencies.revocationDeadlines);
-    this.#expectedPublicInstanceIdentity = dependencies.expectedPublicInstanceIdentity ?? (() => null);
+    this.#snapshotConnectIdentityClaim = dependencies.snapshotConnectIdentityClaim ?? (() => ({
+      status: 'unclaimed',
+      isCurrent: () => true,
+      beginCommit: () => () => undefined,
+    }));
   }
 
   async initialize(): Promise<CredentialServiceInitialization> {
@@ -533,6 +538,10 @@ export class DesktopCredentialService {
     const label = input.label?.trim();
     if (!label || label.length > 80) throw new Error('Profile label must contain 1 to 80 characters');
     const proposed = { ...input, id: input.id, label, apiBaseUrl: origin };
+    const connectClaim = this.#snapshotConnectIdentityClaim(proposed.id, proposed.apiBaseUrl);
+    if (connectClaim.status === 'origin-mismatch') {
+      throw new Error('The ProPR Connect origin changed. Use the currently discovered instance.');
+    }
     const baseline = await this.#profiles.readProfileCredential(proposed.id);
     this.#cancelPairingNow(proposed.id);
     if (this.#pendingActivation?.profileId === proposed.id) this.#pendingActivation = null;
@@ -549,16 +558,16 @@ export class DesktopCredentialService {
 
     try {
       const discovery = await client.discoverDesktop(8_000, controller.signal);
-      const claimedIdentity = this.#expectedPublicInstanceIdentity(proposed.id, proposed.apiBaseUrl);
       if (!discovery.compatibility.compatible
         || !discovery.desktopAuthentication.browserPairing
         || !discovery.desktopAuthentication.instanceBearerTokens
         || !discovery.desktopAuthentication.socketIoBearerAuthentication
-        || (claimedIdentity !== null && claimedIdentity !== discovery.publicInstanceIdentity)) {
+        || (connectClaim.status === 'claimed'
+          && connectClaim.publicInstanceIdentity !== discovery.publicInstanceIdentity)) {
         throw new Error('The ProPR instance identity or desktop protocol changed. Approve the new instance again.');
       }
       this.#assertPairingCurrent(
-        proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
+        proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal, connectClaim,
       );
       const completed = await client.pairDesktop(this.#clientName, {
         ...this.#pairingTiming,
@@ -571,7 +580,7 @@ export class DesktopCredentialService {
         signal: controller.signal,
         onApprovalRequired: async (approvalUrl, _expiresAt, pairingId) => {
           this.#assertPairingCurrent(
-            proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
+            proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal, connectClaim,
           );
           await this.#openPairingBrowser({
             apiBaseUrl: proposed.apiBaseUrl,
@@ -588,17 +597,23 @@ export class DesktopCredentialService {
         publicInstanceIdentity: discovery.publicInstanceIdentity,
         token: completed.token,
       };
+      this.#assertPairingCurrent(
+        proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal, connectClaim,
+      );
       const journaled = await this.#profiles.journalPendingRevocation(transient, credentialGeneration);
       if ('stored' in journaled) {
         throw new Error('OS-backed secure storage is required for desktop pairing.');
       }
       transientRevocation = journaled;
       this.#assertPairingCurrent(
-        proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
+        proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal, connectClaim,
       );
       let activationError: unknown;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
+          this.#assertPairingCurrent(
+            proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal, connectClaim,
+          );
           await client.activateDesktopPairing(completed, controller.signal);
           activationError = undefined;
           break;
@@ -609,7 +624,7 @@ export class DesktopCredentialService {
       }
       if (activationError) throw activationError;
       this.#assertPairingCurrent(
-        proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
+        proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal, connectClaim,
       );
       const committed = await this.#profiles.commitPairedProfile(
         proposed,
@@ -617,9 +632,10 @@ export class DesktopCredentialService {
         baseline,
         () => !controller.signal.aborted
           && this.#generation(proposed.id) === profileGeneration
-          && this.#selectionGeneration === selectionGeneration,
+          && this.#selectionGeneration === selectionGeneration
+          && connectClaim.isCurrent(),
         () => this.#beginPairPublish(
-          proposed.id, profileGeneration, selectionGeneration, controller.signal,
+          proposed.id, profileGeneration, selectionGeneration, controller.signal, connectClaim,
         ),
         () => {
           publicationStarted = true;
@@ -1330,16 +1346,21 @@ export class DesktopCredentialService {
     profileGeneration: number,
     selectionGeneration: number,
     signal: AbortSignal,
+    connectClaim: DesktopConnectIdentityClaimSnapshot,
   ): (() => void) | null {
     if (this.#publishingPair || signal.aborted
       || this.#generation(profileId) !== profileGeneration
-      || this.#selectionGeneration !== selectionGeneration) return null;
+      || this.#selectionGeneration !== selectionGeneration
+      || !connectClaim.isCurrent()) return null;
+    const releaseConnectClaim = connectClaim.beginCommit();
+    if (!releaseConnectClaim) return null;
     this.#publishingPair = true;
     let released = false;
     return () => {
       if (released) return;
       released = true;
       this.#publishingPair = false;
+      releaseConnectClaim();
       const waiters = this.#publishWaiters.splice(0);
       waiters.forEach(waiter => waiter());
     };
@@ -1408,9 +1429,11 @@ export class DesktopCredentialService {
     profileGeneration: number,
     selectionGeneration: number,
     signal: AbortSignal,
+    connectClaim: DesktopConnectIdentityClaimSnapshot,
   ): void {
     if (signal.aborted || this.#generation(profileId) !== profileGeneration
-      || this.#selectionGeneration !== selectionGeneration) {
+      || this.#selectionGeneration !== selectionGeneration
+      || !connectClaim.isCurrent()) {
       throw new ProprClientError('Desktop pairing was cancelled.', { kind: 'aborted' });
     }
     if (normalizeApiBaseUrl(origin) !== origin) throw new Error('Invalid desktop API URL');

@@ -27,6 +27,11 @@ describe('desktop fixed-root Connect discovery', () => {
       discover: async () => readyStatus(),
     });
 
+    const unclaimed = service.snapshotIdentityClaim(
+      'propr-connect-discovered', 'https://t-discovered123.propr.dev',
+    );
+    assert.equal(unclaimed.status, 'unclaimed');
+    assert.equal(unclaimed.isCurrent(), true);
     const candidates = await service.discover();
     assert.deepEqual(candidates, [{
       id: 'propr-connect-discovered',
@@ -35,9 +40,15 @@ describe('desktop fixed-root Connect discovery', () => {
     }]);
     const serialized = JSON.stringify(candidates);
     assert.doesNotMatch(serialized, /123e4567|root|path|environment|executable|credential|authority/i);
-    assert.equal(service.expectedPublicInstanceIdentity(
+    const claim = service.snapshotIdentityClaim(
       'propr-connect-discovered', 'https://t-discovered123.propr.dev',
-    ), readyStatus().publicInstanceIdentity);
+    );
+    assert.equal(claim.status, 'claimed');
+    if (claim.status === 'claimed') {
+      assert.equal(claim.publicInstanceIdentity, readyStatus().publicInstanceIdentity);
+      assert.equal(claim.isCurrent(), true);
+    }
+    assert.equal(unclaimed.isCurrent(), false);
   });
 
   it('fences rediscovery to an existing managed profile and preserves its id and label', async () => {
@@ -60,10 +71,36 @@ describe('desktop fixed-root Connect discovery', () => {
       label: saved.label,
       apiBaseUrl: 'https://t-recovered456.propr.dev',
     });
-    assert.equal(service.expectedPublicInstanceIdentity(saved.id, saved.apiBaseUrl), null);
-    assert.equal(service.expectedPublicInstanceIdentity(
-      saved.id, 'https://t-recovered456.propr.dev',
-    ), readyStatus().publicInstanceIdentity);
+    const staleOrigin = service.snapshotIdentityClaim(saved.id, saved.apiBaseUrl);
+    assert.equal(staleOrigin.status, 'origin-mismatch');
+    assert.equal(staleOrigin.isCurrent(), true);
+    const current = service.snapshotIdentityClaim(saved.id, 'https://t-recovered456.propr.dev');
+    assert.equal(current.status, 'claimed');
+    if (current.status === 'claimed') {
+      assert.equal(current.publicInstanceIdentity, readyStatus().publicInstanceIdentity);
+      assert.equal(current.isCurrent(), true);
+    }
+    const firstGeneration = current.status === 'claimed' ? current.generation : -1;
+    const releaseCommit = current.beginCommit();
+    assert.ok(releaseCommit);
+    let rediscoverySettled = false;
+    const rediscovery = service.rediscover(saved.id).then(result => {
+      rediscoverySettled = true;
+      return result;
+    });
+    await Promise.resolve();
+    assert.equal(rediscoverySettled, false);
+    assert.equal(current.isCurrent(), true);
+    releaseCommit();
+    assert.deepEqual(await rediscovery, {
+      id: saved.id,
+      label: saved.label,
+      apiBaseUrl: 'https://t-recovered456.propr.dev',
+    });
+    const rotated = service.snapshotIdentityClaim(saved.id, 'https://t-recovered456.propr.dev');
+    assert.equal(rotated.status, 'claimed');
+    if (rotated.status === 'claimed') assert.ok(rotated.generation > firstGeneration);
+    assert.equal(current.isCurrent(), false);
     assert.equal(await service.rediscover('missing-profile'), null);
   });
 

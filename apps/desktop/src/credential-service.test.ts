@@ -13,7 +13,9 @@ import {
   PROPR_API_COMPATIBILITY,
   PROPR_UI_COMPATIBILITY,
 } from '@propr/shared';
+import type { ConnectStatusDocument } from '@propr/cli/desktop-discovery';
 import { DesktopCredentialService } from './credential-service';
+import { DesktopConnectDiscoveryService } from './connect-discovery';
 import { ProfileStore, type EncryptionProvider, type StoredCredential } from './profile-store';
 
 const temporaryDirectories: string[] = [];
@@ -95,6 +97,23 @@ const credential = (profileId: string, origin: string, character: string): Store
   origin,
   publicInstanceIdentity: discovery.publicInstanceIdentity,
   token: token(character),
+});
+const connectStatus = (
+  endpoint: string,
+  publicInstanceIdentity: string,
+): ConnectStatusDocument => ({
+  schemaVersion: 1,
+  status: 'ready',
+  canonicalEndpoint: endpoint,
+  publicInstanceIdentity,
+  configured: true,
+  enabled: true,
+  sidecarRunning: true,
+  apiReady: true,
+  restartRequired: false,
+  compatibility: '2026-08-01',
+  version: '0.8.15',
+  reasonCodes: [],
 });
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -240,25 +259,275 @@ describe('main-process desktop credential service', () => {
     ), { cancel: true });
   });
 
-  it('does not let renderer pairing input override a main-owned Connect identity claim', async () => {
+  it('fences old and concurrently rotated Connect claims through pairing, commit, and transport activation', async () => {
     const store = await createStore();
-    const requests: string[] = [];
-    const service = new DesktopCredentialService({
+    const origins = {
+      old: 'https://t-old123.propr.dev',
+      current: 'https://t-current456.propr.dev',
+      replacement: 'https://t-replacement789.propr.dev',
+    } as const;
+    const identities = {
+      old: discovery.publicInstanceIdentity,
+      current: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      replacement: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    } as const;
+    const profile = await store.save({
+      id: 'connect-saved', label: 'Saved Connect', apiBaseUrl: origins.old,
+    });
+    const oldCredential: StoredCredential = {
+      ...credential(profile.id, origins.old, 'A'),
+      publicInstanceIdentity: identities.old,
+    };
+    await store.writeCredential(oldCredential);
+    await store.setActive(profile.id);
+
+    let nativeStatus = connectStatus(origins.old, identities.old);
+    const connect = new DesktopConnectDiscoveryService(store, {
+      supported: true,
+      discover: async () => nativeStatus,
+    });
+    assert.deepEqual(await connect.rediscover(profile.id), {
+      id: profile.id, label: profile.label, apiBaseUrl: origins.old,
+    });
+    const oldClaim = connect.snapshotIdentityClaim(profile.id, origins.old);
+    assert.equal(oldClaim.status, 'claimed');
+
+    const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+    const stalePollStarted = deferred<void>();
+    const releaseStalePoll = deferred<Response>();
+    const requests: Array<{
+      url: string;
+      authorization: string | null;
+      transportScope: string | null;
+      body: string | null;
+    }> = [];
+    let pairingNumber = 0;
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Connect claim test',
+      pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
       openPairingBrowser: async () => undefined,
-      expectedPublicInstanceIdentity: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      fetch: async input => {
-        requests.push(input.toString());
-        return json(discovery);
+      snapshotConnectIdentityClaim: (profileId, origin) => connect.snapshotIdentityClaim(profileId, origin),
+      fetch: async (input, init) => {
+        const url = input.toString();
+        const headers = new Headers(init?.headers);
+        requests.push({
+          url,
+          authorization: headers.get('Authorization'),
+          transportScope: headers.get('X-ProPR-Desktop-Transport-Scope'),
+          body: typeof init?.body === 'string' ? init.body : null,
+        });
+        const origin = new URL(url).origin;
+        const identity = origin === origins.old
+          ? identities.old
+          : origin === origins.current ? identities.current : identities.replacement;
+        if (url.endsWith('/api/desktop/discovery')) {
+          return json({ ...discovery, publicInstanceIdentity: identity });
+        }
+        if (url.endsWith('/api/auth/user')) return json({ username: 'connect-user' });
+        if (url.endsWith('/api/desktop/pairings')) {
+          pairingNumber += 1;
+          const pairingCharacter = pairingNumber === 1 ? 'B' : pairingNumber === 2 ? 'C' : 'D';
+          return pairingStartResponse(url, init, {
+            pairingId: `dpr_${pairingCharacter.repeat(22)}`,
+            deviceSecret: pairingCharacter.repeat(43),
+            approvalUrl: `${origin}/approve`,
+            expiresAt: new Date(pairingNow + 10_000).toISOString(),
+            interval: 1,
+          }, 201);
+        }
+        if (url.includes(`/dpr_${'B'.repeat(22)}/poll`)) {
+          return provisionalPairingResponse(url, token('B'));
+        }
+        if (url.includes(`/dpr_${'C'.repeat(22)}/poll`)) {
+          stalePollStarted.resolve();
+          return releaseStalePoll.promise;
+        }
+        if (url.includes(`/dpr_${'D'.repeat(22)}/poll`)) {
+          return provisionalPairingResponse(url, token('D'));
+        }
+        if (url.includes('/activate')) return pairingActivationReceipt();
+        if (url.includes(`/dpr_${'C'.repeat(22)}/cancel`)) {
+          return json({ status: 'cancelled', cancelledAt: '2026-01-01T00:00:02.000Z' });
+        }
+        if (url.endsWith('/api/desktop/tokens/current')) {
+          const committed = await store.readCredential(profile.id);
+          if (origin === origins.old) {
+            assert.equal(committed?.origin, origins.current);
+            assert.equal(committed?.token, token('B'));
+            assert.equal(headers.get('Authorization'), `Bearer ${oldCredential.token}`);
+          } else {
+            assert.equal(origin, origins.current);
+            assert.equal(committed?.origin, origins.replacement);
+            assert.equal(committed?.token, token('D'));
+            assert.equal(headers.get('Authorization'), `Bearer ${token('B')}`);
+          }
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`Unexpected request: ${url}`);
       },
     });
-    credentialServices.push(service);
 
+    const oldReady = await service.probe({
+      id: profile.id, label: profile.label, apiBaseUrl: origins.old,
+    });
+    assert.equal(oldReady.status, 'ready');
+    if (oldReady.status !== 'ready') return;
+    const oldActivation = await service.activate(oldReady.activationTicket);
+
+    nativeStatus = connectStatus(origins.current, identities.current);
+    assert.deepEqual(await connect.rediscover(profile.id), {
+      id: profile.id, label: profile.label, apiBaseUrl: origins.current,
+    });
+    const currentClaim = connect.snapshotIdentityClaim(profile.id, origins.current);
+    assert.equal(currentClaim.status, 'claimed');
+    assert.equal(oldClaim.isCurrent(), false);
+    if (oldClaim.status === 'claimed' && currentClaim.status === 'claimed') {
+      assert.ok(currentClaim.generation > oldClaim.generation);
+    }
+
+    const beforeStaleOrigin = requests.length;
     await assert.rejects(service.pair({
-      id: 'propr-connect-discovered', label: 'Renderer label', apiBaseUrl: 'https://t-claimed123.propr.dev',
-    }), /identity|protocol/i);
-    assert.deepEqual(requests, ['https://t-claimed123.propr.dev/api/desktop/discovery']);
+      id: profile.id, label: profile.label, apiBaseUrl: origins.old,
+    }), /Connect origin changed/i);
+    assert.equal(requests.length, beforeStaleOrigin);
+    assert.deepEqual(await store.readCredential(profile.id), oldCredential);
+
+    const currentPairingStart = requests.length;
+    await service.pair({ id: profile.id, label: 'Current Connect', apiBaseUrl: origins.current });
+    await service.awaitIdle();
+    const currentBinding = testPairingBindings.get(origins.current);
+    assert.match(String(currentBinding?.credentialGeneration), /^[A-Za-z0-9_-]{22}$/);
+    assert.deepEqual(await store.readCredential(profile.id), {
+      version: 2,
+      profileId: profile.id,
+      origin: origins.current,
+      publicInstanceIdentity: identities.current,
+      token: token('B'),
+    });
+    const currentIdentityMatch = requests.findIndex((request, index) => index >= currentPairingStart
+      && request.url === `${origins.current}/api/desktop/discovery`);
+    const oldRevocation = requests.findIndex(request => request.url === `${origins.old}/api/desktop/tokens/current`
+      && request.authorization === `Bearer ${oldCredential.token}`);
+    assert.ok(currentIdentityMatch >= currentPairingStart);
+    assert.ok(oldRevocation > currentIdentityMatch);
+    assert.equal(requests.slice(currentPairingStart, currentIdentityMatch + 1)
+      .some(request => request.authorization !== null), false);
+    assert.equal(requests.slice(currentPairingStart)
+      .some(request => request.authorization === `Bearer ${oldCredential.token}`
+        && !request.url.endsWith('/api/desktop/tokens/current')), false);
+
+    const currentReady = await service.probe({
+      id: profile.id, label: 'Current Connect', apiBaseUrl: origins.current,
+    });
+    assert.equal(currentReady.status, 'ready');
+    if (currentReady.status !== 'ready') return;
+    const currentActivation = await service.activate(currentReady.activationTicket);
+    assert.equal(currentActivation.identityEpoch, currentBinding?.credentialGeneration);
+    assert.notEqual(currentActivation.identityEpoch, oldActivation.identityEpoch);
+    assert.notEqual(currentActivation.transportScope, oldActivation.transportScope);
+    assert.deepEqual(service.prepareRequest(
+      `${origins.old}/api/tasks`, transportHeaders(oldActivation.transportScope),
+    ), { cancel: true });
+    assert.deepEqual(service.prepareRequest(
+      `wss://${new URL(origins.old).host}/socket.io/?transport=websocket&proprDesktopTransportScope=${oldActivation.transportScope}`,
+      {}, { resourceType: 'webSocket' },
+    ), { cancel: true });
+    assert.deepEqual((await service.prepareRequestAsync(
+      `${origins.current}/api/tasks`, transportHeaders(currentActivation.transportScope),
+    )).requestHeaders, { Authorization: `Bearer ${token('B')}` });
+    assert.deepEqual((await service.prepareRequestAsync(
+      `wss://${new URL(origins.current).host}/socket.io/?transport=websocket&proprDesktopTransportScope=${currentActivation.transportScope}`,
+      {}, { resourceType: 'webSocket' },
+    )).requestHeaders, { Authorization: `Bearer ${token('B')}` });
+
+    const concurrentPairingStart = requests.length;
+    const stalePairing = service.pair({
+      id: profile.id, label: 'Stale current Connect', apiBaseUrl: origins.current,
+    });
+    await stalePollStarted.promise;
+    nativeStatus = connectStatus(origins.replacement, identities.replacement);
+    assert.deepEqual(await connect.rediscover(profile.id), {
+      id: profile.id, label: 'Current Connect', apiBaseUrl: origins.replacement,
+    });
+    const replacementClaim = connect.snapshotIdentityClaim(profile.id, origins.replacement);
+    assert.equal(replacementClaim.status, 'claimed');
+    assert.equal(currentClaim.isCurrent(), false);
+    if (currentClaim.status === 'claimed' && replacementClaim.status === 'claimed') {
+      assert.ok(replacementClaim.generation > currentClaim.generation);
+    }
+    releaseStalePoll.resolve(provisionalPairingResponse(
+      `${origins.current}/api/desktop/pairings/dpr_${'C'.repeat(22)}/poll`, token('C'),
+    ));
+    await assert.rejects(stalePairing, /cancelled/i);
+    await service.awaitIdle();
+    const concurrentRequests = requests.slice(concurrentPairingStart);
+    assert.equal(concurrentRequests.some(request => request.url.includes('/activate')), false);
+    assert.equal(concurrentRequests.filter(request => request.url.includes(`/dpr_${'C'.repeat(22)}/cancel`)).length, 1);
+    assert.equal(concurrentRequests.some(request => request.authorization !== null), false);
+    assert.equal(concurrentRequests.some(request => request.body?.includes(token('B'))
+      || request.body?.includes(token('C'))), false);
+    assert.deepEqual(await store.readCredential(profile.id), {
+      version: 2,
+      profileId: profile.id,
+      origin: origins.current,
+      publicInstanceIdentity: identities.current,
+      token: token('B'),
+    });
+    assert.deepEqual(await store.pendingRevocations(), []);
+
+    const replacementPairingStart = requests.length;
+    await service.pair({
+      id: profile.id, label: 'Replacement Connect', apiBaseUrl: origins.replacement,
+    });
+    await service.awaitIdle();
+    const replacementBinding = testPairingBindings.get(origins.replacement);
+    assert.match(String(replacementBinding?.credentialGeneration), /^[A-Za-z0-9_-]{22}$/);
+    assert.notEqual(replacementBinding?.credentialGeneration, currentBinding?.credentialGeneration);
+    const replacementIdentityMatch = requests.findIndex((request, index) => index >= replacementPairingStart
+      && request.url === `${origins.replacement}/api/desktop/discovery`);
+    const currentRevocation = requests.findIndex((request, index) => index >= replacementPairingStart
+      && request.url === `${origins.current}/api/desktop/tokens/current`
+      && request.authorization === `Bearer ${token('B')}`);
+    assert.ok(replacementIdentityMatch >= replacementPairingStart);
+    assert.ok(currentRevocation > replacementIdentityMatch);
+    assert.equal(requests.slice(concurrentPairingStart, replacementIdentityMatch + 1)
+      .some(request => request.authorization !== null), false);
+    assert.equal(requests.some(request => request.authorization === `Bearer ${token('C')}`), false);
+    assert.deepEqual(await store.readCredential(profile.id), {
+      version: 2,
+      profileId: profile.id,
+      origin: origins.replacement,
+      publicInstanceIdentity: identities.replacement,
+      token: token('D'),
+    });
+
+    const replacementReady = await service.probe({
+      id: profile.id, label: 'Replacement Connect', apiBaseUrl: origins.replacement,
+    });
+    assert.equal(replacementReady.status, 'ready');
+    if (replacementReady.status !== 'ready') return;
+    const replacementActivation = await service.activate(replacementReady.activationTicket);
+    assert.equal(replacementActivation.identityEpoch, replacementBinding?.credentialGeneration);
+    assert.notEqual(replacementActivation.transportScope, currentActivation.transportScope);
+    assert.deepEqual(service.prepareRequest(
+      `${origins.current}/api/tasks`, transportHeaders(currentActivation.transportScope),
+    ), { cancel: true });
+    assert.deepEqual(service.prepareRequest(
+      `wss://${new URL(origins.current).host}/socket.io/?transport=websocket&proprDesktopTransportScope=${currentActivation.transportScope}`,
+      {}, { resourceType: 'webSocket' },
+    ), { cancel: true });
+    assert.deepEqual((await service.prepareRequestAsync(
+      `${origins.replacement}/api/tasks`, transportHeaders(replacementActivation.transportScope),
+    )).requestHeaders, { Authorization: `Bearer ${token('D')}` });
+    assert.deepEqual((await service.prepareRequestAsync(
+      `wss://${new URL(origins.replacement).host}/socket.io/?transport=websocket&proprDesktopTransportScope=${replacementActivation.transportScope}`,
+      {}, { resourceType: 'webSocket' },
+    )).requestHeaders, { Authorization: `Bearer ${token('D')}` });
+    assert.equal(requests.some(request => request.url.includes(oldActivation.transportScope)
+      || request.url.includes(currentActivation.transportScope)
+      || request.transportScope === oldActivation.transportScope
+      || request.transportScope === currentActivation.transportScope), false);
   });
 
   it('injects the active bearer only for its bound profile origin and strips renderer identity', async () => {
