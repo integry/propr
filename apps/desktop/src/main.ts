@@ -1,10 +1,11 @@
 import { lstatSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, screen, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, safeStorage, screen, session, shell } from 'electron';
 import type { Rectangle } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import type { SetupActions } from '@propr/local-setup';
+import { configureApplicationMenu } from './application-menu';
 import { DeepLinkDelivery } from './deep-link-delivery';
 import { DesktopCredentialService } from './credential-service';
 import { createDesktopLocalHost } from './desktop-host';
@@ -427,6 +428,7 @@ if (!hasSingleInstanceLock) {
 
   registerProtocolClient();
   void app.whenReady().then(async () => {
+    configureApplicationMenu(Menu, app.isPackaged);
     logger = createDesktopLogger(
       join(app.getPath('logs'), 'desktop.jsonl'),
       () => packagedSmokeEvidence?.write('desktop.log.write_failed'),
