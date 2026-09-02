@@ -10,11 +10,15 @@ export interface GoalCapability {
   defaultModel: string | null;
 }
 
+export type GoalLaunchStrategy = 'direct' | 'orchestrate';
+
 export interface Goal {
   id: string;
   owner: string;
   repository: string;
   objective: string;
+  launchStrategy: GoalLaunchStrategy;
+  initialPrompt: string;
   baseBranch: string | null;
   branchName: string | null;
   worktreePath: string | null;
@@ -55,7 +59,7 @@ export const getGoalCapabilities = async () =>
   request<{ agents: GoalCapability[] }>('/api/goals/capabilities');
 export const listGoals = async () => request<{ goals: Goal[] }>('/api/goals');
 export const getGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`);
-export const createGoal = async (body: { repository: string; objective: string; agentId: string; model: string; baseBranch?: string; maxParallelTasks?: number; ultrafix?: boolean }) =>
+export const createGoal = async (body: { repository: string; objective: string; launchStrategy: GoalLaunchStrategy; agentId: string; model: string; baseBranch?: string; maxParallelTasks?: number; ultrafix?: boolean }) =>
   request<{ goal: Goal }>('/api/goals', { method: 'POST', body: JSON.stringify(body) });
 export const pauseGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/pause`, { method: 'POST' });
 export const resumeGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/resume`, { method: 'POST' });

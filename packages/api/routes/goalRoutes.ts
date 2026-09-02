@@ -5,11 +5,13 @@ import type { Queue } from 'bullmq';
 import {
   AgentRegistry,
   GOAL_CONTINUE_INPUT,
+  GOAL_LAUNCH_STRATEGIES,
   buildNativeGoalCommand,
   getAuthenticatedOctokit,
   goalJobId,
   type GoalCapability,
   type GoalJobData,
+  type GoalLaunchStrategy,
 } from '@propr/core';
 import type { RedisClientType } from 'redis';
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
@@ -28,6 +30,8 @@ interface GoalRow {
   owner_login: string;
   repository: string;
   objective: string;
+  launch_strategy: GoalLaunchStrategy;
+  initial_prompt: string;
   base_branch: string | null;
   branch_name: string | null;
   worktree_path: string | null;
@@ -88,6 +92,8 @@ async function serializeGoal(db: Knex, row: GoalRow) {
     owner: row.owner_login,
     repository: row.repository,
     objective: row.objective,
+    launchStrategy: row.launch_strategy,
+    initialPrompt: row.initial_prompt,
     baseBranch: row.base_branch,
     branchName: row.branch_name,
     worktreePath: row.worktree_path,
@@ -130,6 +136,7 @@ async function findOwnedGoal(db: Knex, req: Request, res: Response): Promise<Goa
 function validateCreateBody(body: Record<string, unknown>): string | null {
   if (typeof body.repository !== 'string' || !repositoryPattern.test(body.repository)) return 'repository must be in owner/repo format';
   if (typeof body.objective !== 'string' || body.objective.trim().length < 1 || body.objective.length > 65_536) return 'objective is required';
+  if (!GOAL_LAUNCH_STRATEGIES.includes(body.launchStrategy as GoalLaunchStrategy)) return 'launchStrategy must be direct or orchestrate';
   if (typeof body.agentId !== 'string' || !body.agentId) return 'agentId is required';
   if (typeof body.model !== 'string' || !body.model) return 'model is required';
   if (body.baseBranch != null && (typeof body.baseBranch !== 'string' || body.baseBranch.length > 255)) return 'baseBranch is invalid';
@@ -229,19 +236,28 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     const goalId = randomUUID();
     const taskId = `goal-${goalId}`;
     const now = new Date().toISOString();
+    const launchStrategy = body.launchStrategy as GoalLaunchStrategy;
+    const initialPrompt = buildNativeGoalCommand({
+      objective: body.objective as string,
+      launchStrategy,
+      maxParallelTasks: body.maxParallelTasks as number | null | undefined,
+      ultrafix: body.ultrafix === true,
+    });
     const row = {
       goal_id: goalId,
       owner_id: ownerId,
       owner_login: req.user!.username,
       repository: body.repository,
       objective: body.objective as string,
+      launch_strategy: launchStrategy,
+      initial_prompt: initialPrompt,
       base_branch: body.baseBranch || null,
       agent_id: agent.config.id,
       agent_alias: agent.config.alias,
       agent_type: agent.config.type,
       requested_model: body.model,
       max_parallel_tasks: body.maxParallelTasks || null,
-      ultrafix: body.ultrafix == null ? null : body.ultrafix,
+      ultrafix: body.ultrafix === true,
       desired_state: 'running',
       current_task_id: taskId,
       run_generation: 0,
@@ -252,7 +268,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     await deps.db('goals').insert(row);
     const data: GoalJobData = {
       goalId, taskId, repoOwner, repoName, generation: 0,
-      input: buildNativeGoalCommand(row.objective),
+      input: initialPrompt,
     };
     try {
       await deps.taskQueue.add('processGoal', data, { jobId: goalJobId(goalId, 0) });
@@ -322,7 +338,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     if (!row) return;
     if (row.result_state || row.desired_state === 'cancelled') return void res.status(409).json({ error: 'Goal is terminal' });
     if (row.desired_state !== 'paused') return void res.status(409).json({ error: 'Goal is not paused' });
-    await enqueueContinuation(row, row.session_id ? GOAL_CONTINUE_INPUT : buildNativeGoalCommand(row.objective), res);
+    await enqueueContinuation(row, row.session_id ? GOAL_CONTINUE_INPUT : row.initial_prompt, res);
   };
 
   const cancel = async (req: Request, res: Response) => {

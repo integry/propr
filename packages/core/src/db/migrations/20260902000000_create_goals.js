@@ -10,6 +10,8 @@ export async function up(knex) {
     table.string('owner_login', 255).notNullable();
     table.string('repository', 255).notNullable();
     table.text('objective').notNullable();
+    table.string('launch_strategy', 20).notNullable();
+    table.text('initial_prompt').notNullable();
     table.string('base_branch', 255);
     table.string('branch_name', 255);
     table.text('worktree_path');

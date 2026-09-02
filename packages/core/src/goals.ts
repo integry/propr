@@ -1,27 +1,52 @@
 export type GoalDesiredState = 'running' | 'paused' | 'cancelled';
 export type GoalResultState = 'completed' | 'failed' | 'cancelled';
+export const GOAL_LAUNCH_STRATEGIES = ['direct', 'orchestrate'] as const;
+export type GoalLaunchStrategy = typeof GOAL_LAUNCH_STRATEGIES[number];
 
 export const GOAL_CONTINUE_INPUT = 'Continue working toward the goal.';
 
-/** The first provider input is intentionally not decorated with ProPR prompts. */
-export function buildNativeGoalCommand(objective: string): string {
-    return `/goal ${objective}`;
+const launchInstructions: Record<GoalLaunchStrategy, string> = {
+    direct: [
+        'Launch strategy — Agent implements directly:',
+        'Implement the goal yourself. Open a draft implementation PR early, then keep pushing commits to that same PR as work progresses.',
+    ].join('\n'),
+    orchestrate: [
+        'Launch strategy — Agent orchestrates through ProPR:',
+        'Drive delivery by deciding the decomposition and hierarchy yourself, creating GitHub issues, and starting and monitoring their implementation through ProPR.',
+        'For a large delivery, organize the work into an epic PR and, when useful, sub-epic and issue PRs. You—not a ProPR planner—own every planning and hierarchy decision.',
+    ].join('\n'),
+};
+
+/** Build the exact first input for the single provider-native goal session. */
+export function buildNativeGoalCommand(options: {
+    objective: string;
+    launchStrategy: GoalLaunchStrategy;
+    maxParallelTasks?: number | null;
+    ultrafix?: boolean | null;
+}): string {
+    const parallelPolicy = options.maxParallelTasks == null
+        ? 'Concurrency policy: No maximum parallel task count was selected. Decide and manage concurrency yourself; ProPR does not schedule a plan graph.'
+        : `Concurrency policy: Run at most ${options.maxParallelTasks} implementation tasks in parallel. Decide what to parallelize and enforce this limit yourself; ProPR does not schedule a plan graph.`;
+    const ultrafixPolicy = options.ultrafix
+        ? 'Ultrafix policy: Enabled. Run Ultrafix as part of delivery before final completion.'
+        : 'Ultrafix policy: Disabled. Do not run Ultrafix unless later steering input explicitly requests it.';
+    return [
+        `/goal ${options.objective}`,
+        '',
+        launchInstructions[options.launchStrategy],
+        parallelPolicy,
+        ultrafixPolicy,
+        'Delivery requirements:',
+        '- Finish with a draft PR containing the final implementation.',
+        '- Track every GitHub issue and PR you create, validate that each artifact exists and is in the expected state, and report its URL so ProPR can record it.',
+        '- Validate the final draft PR and its related artifacts before declaring the goal complete.',
+    ].join('\n');
 }
 
 export function goalJobId(goalId: string, generation: number): string {
     return `goal-${goalId}-${generation}`;
 }
 
-export function buildGoalPolicyEnvironment(options: {
-    maxParallelTasks?: number | null;
-    ultrafix?: boolean | null;
-}): Record<string, string> {
-    const environment: Record<string, string> = { PROPR_EXECUTION_MODE: 'goal' };
-    if (options.maxParallelTasks != null) {
-        environment.PROPR_GOAL_MAX_PARALLEL_TASKS = String(options.maxParallelTasks);
-    }
-    if (options.ultrafix != null) {
-        environment.PROPR_GOAL_ULTRAFIX = options.ultrafix ? 'enabled' : 'disabled';
-    }
-    return environment;
+export function buildGoalPolicyEnvironment(): Record<string, string> {
+    return { PROPR_EXECUTION_MODE: 'goal' };
 }

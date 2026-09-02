@@ -23,6 +23,7 @@ interface GoalRow {
     goal_id: string;
     repository: string;
     objective: string;
+    initial_prompt: string;
     base_branch: string | null;
     branch_name: string | null;
     worktree_path: string | null;
@@ -35,8 +36,6 @@ interface GoalRow {
     session_id: string | null;
     conversation_id: string | null;
     run_generation: number;
-    max_parallel_tasks: number | null;
-    ultrafix: number | boolean | null;
     artifact_refs?: string | GoalArtifact[] | null;
     started_at: string | null;
 }
@@ -215,7 +214,7 @@ export async function processGoalJob(job: Job<GoalJobData>) {
     // retry is a continuation of that provider-owned goal.
     const input = goal.session_id && job.data.generation === 0
         ? GOAL_CONTINUE_INPUT
-        : job.data.input || GOAL_CONTINUE_INPUT;
+        : job.data.generation === 0 ? goal.initial_prompt : job.data.input || GOAL_CONTINUE_INPUT;
     const result = await agent.executeTask({
         worktreePath: worktree.worktreePath,
         issueRef: { number: 0, repoOwner, repoName },
@@ -227,10 +226,7 @@ export async function processGoalJob(job: Job<GoalJobData>) {
         executionMode: 'goal',
         resumeSessionId: goal.session_id ?? undefined,
         resumeConversationId: goal.conversation_id ?? undefined,
-        environment: buildGoalPolicyEnvironment({
-            maxParallelTasks: !goal.session_id ? goal.max_parallel_tasks : null,
-            ultrafix: !goal.session_id && goal.ultrafix != null ? Boolean(goal.ultrafix) : null,
-        }),
+        environment: buildGoalPolicyEnvironment(),
         onSessionId: (sessionId, conversationId) => saveSession({
             goalId: goal.goal_id, taskId: goal.current_task_id, model: goal.requested_model, sessionId, conversationId,
         }),

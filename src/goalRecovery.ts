@@ -6,7 +6,7 @@ interface RecoverableGoal {
     goal_id: string;
     current_task_id: string;
     repository: string;
-    objective: string;
+    initial_prompt: string;
     worktree_path: string | null;
     session_id: string | null;
     started_at: string | null;
@@ -76,7 +76,7 @@ export async function recoverNonterminalGoals(options: {
             repoOwner,
             repoName,
             generation: goal.run_generation,
-            input: goal.session_id ? GOAL_CONTINUE_INPUT : `/goal ${goal.objective}`,
+            input: goal.session_id ? GOAL_CONTINUE_INPUT : goal.initial_prompt,
             recovery: Boolean(goal.session_id),
         }, { jobId: id });
         recovered++;

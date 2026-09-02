@@ -13,7 +13,7 @@ test('goal migration stores only the durable owner/session execution envelope', 
         await up(database);
         const columns = await database('goals').columnInfo();
         assert.deepEqual(
-            ['goal_id', 'owner_id', 'repository', 'objective', 'agent_id', 'requested_model', 'desired_state', 'current_task_id', 'session_id', 'worktree_path']
+            ['goal_id', 'owner_id', 'repository', 'objective', 'launch_strategy', 'initial_prompt', 'agent_id', 'requested_model', 'desired_state', 'current_task_id', 'session_id', 'worktree_path']
                 .filter(column => !columns[column]),
             [],
         );
@@ -24,7 +24,8 @@ test('goal migration stores only the durable owner/session execution envelope', 
 
         const base = {
             goal_id: 'goal-1', owner_id: 'owner-1', owner_login: 'alice', repository: 'acme/repo',
-            objective: 'Ship it', agent_id: 'agent-1', agent_alias: 'codex', agent_type: 'codex',
+            objective: 'Ship it', launch_strategy: 'direct', initial_prompt: '/goal Ship it',
+            agent_id: 'agent-1', agent_alias: 'codex', agent_type: 'codex',
             requested_model: 'gpt-5.6', current_task_id: 'goal-task-1',
         };
         await database('goals').insert(base);

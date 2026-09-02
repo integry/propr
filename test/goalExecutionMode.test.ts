@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
-import { buildNativeGoalCommand } from '../packages/core/src/goals.ts';
+import { buildGoalPolicyEnvironment, buildNativeGoalCommand } from '../packages/core/src/goals.ts';
 import { helpAdvertisesNativeGoal } from '../packages/core/src/agents/goalCapabilities.ts';
 import { buildDockerArgs as buildClaudeDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
 import { buildCodexDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts';
@@ -32,8 +32,30 @@ after(async () => {
 });
 
 describe('native goal provider contract', () => {
-  test('builds the exact native first input without a ProPR wrapper', () => {
-    assert.equal(buildNativeGoalCommand('Ship the dashboard'), '/goal Ship the dashboard');
+  test('builds the direct strategy as one visible native prompt policy', () => {
+    const prompt = buildNativeGoalCommand({
+      objective: 'Ship the dashboard', launchStrategy: 'direct', maxParallelTasks: 3, ultrafix: true,
+    });
+    assert.match(prompt, /^\/goal Ship the dashboard/);
+    assert.match(prompt, /Agent implements directly/);
+    assert.match(prompt, /Open a draft implementation PR early/);
+    assert.match(prompt, /at most 3 implementation tasks in parallel/);
+    assert.match(prompt, /Ultrafix policy: Enabled/);
+    assert.match(prompt, /Finish with a draft PR/);
+    assert.match(prompt, /validate that each artifact exists/);
+  });
+
+  test('builds orchestration as agent-owned prompt policy without scheduler state', () => {
+    const prompt = buildNativeGoalCommand({
+      objective: 'Ship the platform', launchStrategy: 'orchestrate', maxParallelTasks: null, ultrafix: false,
+    });
+    assert.match(prompt, /Agent orchestrates through ProPR/);
+    assert.match(prompt, /creating GitHub issues/);
+    assert.match(prompt, /epic PR/);
+    assert.match(prompt, /You—not a ProPR planner—own every planning and hierarchy decision/);
+    assert.match(prompt, /No maximum parallel task count was selected/);
+    assert.match(prompt, /Ultrafix policy: Disabled/);
+    assert.deepEqual(buildGoalPolicyEnvironment(), { PROPR_EXECUTION_MODE: 'goal' });
   });
 
   test('Claude changes only persistence/resume arguments in goal mode', () => {

@@ -33,6 +33,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         });
         const common = {
             owner_login: 'alice', repository: 'acme/repo', objective: 'Ship it',
+            launch_strategy: 'direct', initial_prompt: '/goal Ship it\n\nSaved policy',
             agent_id: 'agent-1', agent_alias: 'codex', agent_type: 'codex', requested_model: 'gpt-5.6',
             desired_state: 'paused', run_generation: 2, session_id: 'thread-1',
             branch_name: 'goal/ship-it', worktree_path: '/worktrees/goal-1',
@@ -57,7 +58,18 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         const listed = response();
         await routes.list(request('owner-1'), listed.res);
         assert.equal(listed.state.status, 200);
-        assert.deepEqual((listed.state.body as { goals: Array<{ id: string }> }).goals.map(goal => goal.id), ['goal-1']);
+        const listedGoals = (listed.state.body as { goals: Array<{ id: string; launchStrategy: string; initialPrompt: string }> }).goals;
+        assert.deepEqual(listedGoals.map(goal => goal.id), ['goal-1']);
+        assert.equal(listedGoals[0].launchStrategy, 'direct');
+        assert.equal(listedGoals[0].initialPrompt, '/goal Ship it\n\nSaved policy');
+
+        const invalidStrategy = response();
+        await routes.create(request('owner-1', {}, {
+            repository: 'acme/repo', objective: 'Ship it', agentId: 'agent-1', model: 'gpt-5.6',
+            launchStrategy: 'planner',
+        }), invalidStrategy.res);
+        assert.equal(invalidStrategy.state.status, 400);
+        assert.deepEqual(invalidStrategy.state.body, { error: 'launchStrategy must be direct or orchestrate' });
 
         const hidden = response();
         await routes.get(request('owner-1', { goalId: 'goal-2' }), hidden.res);

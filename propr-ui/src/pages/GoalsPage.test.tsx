@@ -24,6 +24,7 @@ const capability = {
 };
 const goal: goalsApi.Goal = {
   id: 'goal-1', owner: 'owner', repository: 'acme/web', objective: 'Ship the dashboard',
+  launchStrategy: 'orchestrate', initialPrompt: '/goal Ship the dashboard\n\nLaunch strategy — Agent orchestrates through ProPR',
   baseBranch: null, branchName: 'goal/dashboard', worktreePath: '/tmp/worktree',
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' }, requestedModel: 'gpt-5.6', effectiveModel: 'gpt-5.6',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,
@@ -54,8 +55,9 @@ describe('GoalsPage', () => {
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /><Route path="/goals/:goalId" element={<div>Goal detail</div>} /></Routes></MemoryRouter>);
     await screen.findByRole('option', { name: 'codex' });
     fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Ship the dashboard' } });
+    fireEvent.click(screen.getByLabelText('Agent orchestrates through ProPR'));
     fireEvent.click(screen.getByRole('button', { name: 'Start native goal' }));
-    await waitFor(() => expect(goalsApi.createGoal).toHaveBeenCalledWith(expect.objectContaining({ repository: 'acme/web', agentId: 'agent-1', model: 'gpt-5.6', objective: 'Ship the dashboard' })));
+    await waitFor(() => expect(goalsApi.createGoal).toHaveBeenCalledWith(expect.objectContaining({ repository: 'acme/web', agentId: 'agent-1', model: 'gpt-5.6', objective: 'Ship the dashboard', launchStrategy: 'orchestrate' })));
     expect(await screen.findByText('Goal detail')).toBeInTheDocument();
   });
 
@@ -70,6 +72,8 @@ describe('GoalsPage', () => {
     render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
     expect((await screen.findAllByText('Implement API')).length).toBeGreaterThan(0);
     expect(screen.getByText('15')).toBeInTheDocument();
+    expect(screen.getByText('Agent orchestrates through ProPR')).toBeInTheDocument();
+    expect(screen.getByText(/\/goal Ship the dashboard/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: "What's done?" }));
     await waitFor(() => expect(goalsApi.pauseGoal).toHaveBeenCalledWith('goal-1'));
     await waitFor(() => expect(goalsApi.sendGoalInput).toHaveBeenCalledWith('goal-1', { canned: 'done' }));
