@@ -17,7 +17,22 @@ export const IPC_CHANNELS = Object.freeze({
   lifecycleStop: 'desktop:lifecycle-stop',
   lifecycleRestart: 'desktop:lifecycle-restart',
   deepLink: 'desktop:deep-link',
+  deepLinkAcknowledgement: 'desktop:deep-link-acknowledgement',
 } as const);
+
+export interface DesktopDeepLinkDelivery {
+  deliveryId: number;
+  url: string;
+}
+
+export type DesktopDeepLinkConsumption = {
+  kind: 'connect-confirmation' | 'open-queued' | 'open-navigated';
+  target: string;
+};
+
+export interface DesktopDeepLinkAcknowledgement extends DesktopDeepLinkDelivery {
+  consumption: DesktopDeepLinkConsumption;
+}
 
 export type DesktopPlatform = 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku'
   | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
@@ -80,7 +95,7 @@ export type LocalLifecycleOperationResult =
 export interface DesktopBridge {
   app: {
     getMetadata(): Promise<DesktopAppMetadata>;
-    onDeepLink(listener: (url: string) => void): () => void;
+    onDeepLink(listener: (url: string) => DesktopDeepLinkConsumption | null): () => void;
   };
   auth: {
     logout(apiBaseUrl: string): Promise<void>;

@@ -1,8 +1,14 @@
+import type {
+  DesktopDeepLinkAcknowledgement,
+  DesktopDeepLinkConsumption,
+  DesktopDeepLinkDelivery,
+} from './shared/contract';
+
 export interface DeepLinkWindow {
   isDestroyed(): boolean;
   webContents: {
     isLoading(): boolean;
-    send(channel: string, value: string): void;
+    send(channel: string, value: DesktopDeepLinkDelivery): void;
   };
 }
 
@@ -10,16 +16,33 @@ export interface DeepLinkWindow {
 export class DeepLinkDelivery<TWindow extends DeepLinkWindow> {
   private window: TWindow | null = null;
   private readonly recentlyAccepted = new Map<string, number>();
+  private deliveryId = 0;
+  private draining = false;
+  private active: {
+    acknowledged: boolean;
+    delivery: DesktopDeepLinkDelivery;
+    resolve: (consumption: DesktopDeepLinkConsumption) => void;
+    timer: ReturnType<typeof setTimeout>;
+    window: TWindow;
+  } | null = null;
+  private readonly idleWaiters = new Set<() => void>();
 
   constructor(
     private readonly channel: string,
     private readonly pending: string[] = [],
-    private readonly delivered: (value: string) => void = () => undefined,
+    private readonly delivered: (
+      value: string,
+      consumption: DesktopDeepLinkConsumption,
+      window: TWindow,
+    ) => void | Promise<void> = () => undefined,
+    private readonly failed: (error: Error) => void = () => undefined,
     private readonly now: () => number = Date.now,
     private readonly duplicateWindowMs = 1_000,
+    private readonly acknowledgementTimeoutMs = 5_000,
   ) {
-    if (!Number.isFinite(duplicateWindowMs) || duplicateWindowMs < 0) {
-      throw new Error('Desktop deep-link duplicate window must be non-negative');
+    if (!Number.isFinite(duplicateWindowMs) || duplicateWindowMs < 0
+      || !Number.isFinite(acknowledgementTimeoutMs) || acknowledgementTimeoutMs <= 0) {
+      throw new Error('Desktop deep-link timing configuration is invalid');
     }
     const uniquePending = [...new Set(pending)];
     pending.splice(0, pending.length, ...uniquePending);
@@ -35,11 +58,8 @@ export class DeepLinkDelivery<TWindow extends DeepLinkWindow> {
     for (const [candidate, time] of this.recentlyAccepted) {
       if (acceptedAt - time > this.duplicateWindowMs) this.recentlyAccepted.delete(candidate);
     }
-    if (!this.window || this.window.isDestroyed() || this.window.webContents.isLoading()) {
-      this.pending.push(value);
-      return true;
-    }
-    this.send(this.window, value);
+    this.pending.push(value);
+    void this.drain();
     return true;
   }
 
@@ -49,21 +69,83 @@ export class DeepLinkDelivery<TWindow extends DeepLinkWindow> {
 
   setWindow(window: TWindow): void {
     this.window = window;
-    this.flush(window);
+    void this.drain();
   }
 
   clearWindow(window: TWindow): void {
     if (this.window === window) this.window = null;
   }
 
-  private flush(window: TWindow): void {
-    if (window.isDestroyed() || window.webContents.isLoading()) return;
-    const linksToDeliver = this.pending.splice(0);
-    linksToDeliver.forEach(value => this.send(window, value));
+  acknowledge(window: TWindow, acknowledgement: DesktopDeepLinkAcknowledgement): boolean {
+    if (!this.active || this.active.acknowledged || this.active.window !== window
+      || acknowledgement.deliveryId !== this.active.delivery.deliveryId
+      || acknowledgement.url !== this.active.delivery.url) return false;
+    this.active.acknowledged = true;
+    clearTimeout(this.active.timer);
+    this.active.resolve(acknowledgement.consumption);
+    return true;
   }
 
-  private send(window: TWindow, value: string): void {
-    window.webContents.send(this.channel, value);
-    this.delivered(value);
+  acknowledgeSender(sender: unknown, acknowledgement: DesktopDeepLinkAcknowledgement): boolean {
+    if (!this.active || this.active.window.webContents !== sender) return false;
+    return this.acknowledge(this.active.window, acknowledgement);
+  }
+
+  whenIdle(): Promise<void> {
+    if (!this.draining && !this.active && this.pending.length === 0) return Promise.resolve();
+    return new Promise(resolve => this.idleWaiters.add(resolve));
+  }
+
+  private flush(_window: TWindow): void {
+    void this.drain();
+  }
+
+  private async drain(): Promise<void> {
+    if (this.draining) return;
+    this.draining = true;
+    try {
+      while (this.pending.length > 0) {
+        const window = this.window;
+        if (!window || window.isDestroyed() || window.webContents.isLoading()) return;
+        const value = this.pending.shift();
+        if (value === undefined) return;
+        const delivery = { deliveryId: ++this.deliveryId, url: value };
+        let resolveAcknowledgement!: (value: DesktopDeepLinkConsumption) => void;
+        let rejectAcknowledgement!: (error: Error) => void;
+        const acknowledgement = new Promise<DesktopDeepLinkConsumption>((resolve, reject) => {
+          resolveAcknowledgement = resolve;
+          rejectAcknowledgement = reject;
+        });
+        const timer = setTimeout(
+          () => rejectAcknowledgement(new Error('Desktop renderer deep-link acknowledgement deadline expired')),
+          this.acknowledgementTimeoutMs,
+        );
+        this.active = {
+          acknowledged: false,
+          delivery,
+          resolve: resolveAcknowledgement,
+          timer,
+          window,
+        };
+        window.webContents.send(this.channel, delivery);
+        try {
+          const consumption = await acknowledgement;
+          await this.delivered(value, consumption, window);
+        } catch (error) {
+          this.pending.splice(0);
+          this.failed(error instanceof Error ? error : new Error('Desktop renderer deep-link acknowledgement failed'));
+          return;
+        } finally {
+          clearTimeout(timer);
+          this.active = null;
+        }
+      }
+    } finally {
+      this.draining = false;
+      if (!this.active && this.pending.length === 0) {
+        this.idleWaiters.forEach(resolve => resolve());
+        this.idleWaiters.clear();
+      }
+    }
   }
 }

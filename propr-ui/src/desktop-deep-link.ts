@@ -7,12 +7,16 @@ export class DesktopDeepLinkNavigation {
 
   constructor(private readonly navigate: (path: string) => void) {}
 
-  receive(value: string): boolean {
+  receiveWithState(value: string): { path: string; state: 'queued' | 'navigated' } | null {
     const path = dashboardPathFromDeepLink(value);
-    if (!path) return false;
+    if (!path) return null;
     if (this.dashboardReady) this.navigate(path);
     else this.pendingPaths.push(path);
-    return true;
+    return { path, state: this.dashboardReady ? 'navigated' : 'queued' };
+  }
+
+  receive(value: string): boolean {
+    return this.receiveWithState(value) !== null;
   }
 
   setDashboardReady(): void {

@@ -19,6 +19,7 @@ import {
   validatedDevServerUrl,
 } from './security';
 import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
+import type { DesktopDeepLinkConsumption } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
@@ -77,6 +78,7 @@ try {
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 let mainWindow: BrowserWindow | null = null;
+let nativeSmokeWindow: BrowserWindow | null = null;
 const initialDeepLink = deepLinkFromArguments(process.argv);
 const nativeObservedEvents = new Set<string>();
 let nativeRendererReady = false;
@@ -104,13 +106,43 @@ const nativeEventForDeliveredLink = (value: string): string | null => {
   }
   return null;
 };
+const assertNativeRendererConsumption = (
+  value: string,
+  consumption: DesktopDeepLinkConsumption,
+  window: BrowserWindow,
+): void => {
+  const expected = value === NATIVE_COLD_MANUAL_LINK
+    ? { kind: 'connect-confirmation', target: 'http://localhost:44111' }
+    : value === NATIVE_COLD_TUNNEL_LINK
+      ? { kind: 'connect-confirmation', target: 'https://t-native-relaunch.propr.dev' }
+      : value === NATIVE_WARM_MANUAL_LINK
+        ? { kind: 'connect-confirmation', target: 'http://127.0.0.1:44112' }
+        : value === NATIVE_WARM_TUNNEL_LINK
+          ? { kind: 'connect-confirmation', target: 'https://t-native-evidence.propr.dev' }
+          : value === NATIVE_WARM_OPEN_LINK
+            ? { kind: 'open-queued', target: '/tasks?status=open' }
+            : null;
+  if (!expected) return;
+  if (consumption.kind !== expected.kind || consumption.target !== expected.target) {
+    throw new Error('Native renderer deep-link acknowledgement did not prove the intended state');
+  }
+  if ([NATIVE_WARM_MANUAL_LINK, NATIVE_WARM_TUNNEL_LINK, NATIVE_WARM_OPEN_LINK].includes(value)
+    && nativeSmokeWindow !== window) {
+    throw new Error('Native warm deep link did not reach the already-running renderer');
+  }
+};
 const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
   IPC_CHANNELS.deepLink,
   initialDeepLink ? [initialDeepLink] : [],
-  value => {
+  (value, consumption, window) => {
+    assertNativeRendererConsumption(value, consumption, window);
     const event = nativeEventForDeliveredLink(value);
     if (event) recordNativeEvent(event);
     maybeCompleteNativeFirstLaunch();
+  },
+  error => {
+    log('error', 'desktop.app.start_failed', { error });
+    app.exit(1);
   },
 );
 let logger: DesktopLogger | null = null;
@@ -381,7 +413,9 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
   if (preloadBridgeExposed !== true) {
     throw new Error('Desktop preload bridge was not exposed to the renderer');
   }
+  if (nativeSmokePhase && !nativeSmokeWindow) nativeSmokeWindow = window;
   deepLinkDelivery.setWindow(window);
+  if (nativeSmokePhase) await deepLinkDelivery.whenIdle();
   const smokeProfileApiUrl = process.env.PROPR_DESKTOP_SMOKE_PROFILE_API_URL;
   if (packagedSmokeTest && smokeProfileApiUrl) {
     const normalizedSmokeApiUrl = normalizeApiBaseUrl(smokeProfileApiUrl);
@@ -441,7 +475,13 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
       const storage = nativeProfiles?.security();
       const credentialWrite = await nativeProfiles?.writeCredential('native-local', 'native-custody-probe');
       if (!storage || !credentialWrite) throw new Error('Native secure-storage custody probe did not run');
-      if (storage.available) {
+      if (process.platform === 'linux') {
+        if (storage.available || credentialWrite.stored
+          || (await nativeProfiles?.readCredential('native-local'))?.available !== false) {
+          throw new Error('Native Linux fallback-only proof unexpectedly claimed libsecret custody');
+        }
+        recordNativeEvent('desktop.native.secure_storage_fallback_refused');
+      } else if (storage.available) {
         if (storage.backend === 'basic_text' || !credentialWrite.stored
           || (await nativeProfiles?.readCredential('native-local'))?.value !== 'native-custody-probe') {
           throw new Error('Native secure-storage custody probe did not use OS encryption');
@@ -582,6 +622,8 @@ if (!hasSingleInstanceLock) {
       desktopSession: session.defaultSession,
       devServerUrl,
       packagedRendererUrl,
+      acknowledgeDeepLink: (event, acknowledgement) =>
+        deepLinkDelivery.acknowledgeSender(event.sender, acknowledgement),
     });
 
     app.on('before-quit', event => {

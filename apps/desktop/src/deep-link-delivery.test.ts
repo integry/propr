@@ -1,97 +1,134 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { DeepLinkDelivery, type DeepLinkWindow } from './deep-link-delivery';
+import type { DesktopDeepLinkDelivery } from './shared/contract';
 
 describe('desktop deep-link delivery', () => {
-  const createWindow = (sent: Array<{ channel: string; value: string }>): DeepLinkWindow => ({
+  const createWindow = (sent: DesktopDeepLinkDelivery[]): DeepLinkWindow => ({
     isDestroyed: () => false,
     webContents: {
       isLoading: () => false,
-      send: (channel, value) => sent.push({ channel, value }),
+      send: (_channel, value) => sent.push(value),
     },
   });
+  const tick = () => new Promise(resolve => setImmediate(resolve));
 
-  it('queues links received after did-finish-load until the ready window is registered', () => {
-    const sent: Array<{ channel: string; value: string }> = [];
+  it('queues across the load boundary and waits for renderer consumption in order', async () => {
+    const sent: DesktopDeepLinkDelivery[] = [];
+    const consumed: string[] = [];
+    const delivery = new DeepLinkDelivery<DeepLinkWindow>(
+      'desktop:deep-link',
+      ['propr://connect?api=http%3A%2F%2Flocalhost%3A4000'],
+      value => { consumed.push(value); },
+    );
     const window = createWindow(sent);
-    const delivery = new DeepLinkDelivery<DeepLinkWindow>('desktop:deep-link', ['propr://open?task=initial']);
-
-    delivery.didFinishLoad(window);
-    delivery.deliver('propr://open?task=between');
-
-    assert.deepEqual(sent, []);
-
+    delivery.deliver('propr://open?path=%2Ftasks');
     delivery.setWindow(window);
 
-    assert.deepEqual(sent, [
-      { channel: 'desktop:deep-link', value: 'propr://open?task=initial' },
-      { channel: 'desktop:deep-link', value: 'propr://open?task=between' },
+    assert.equal(sent.length, 1);
+    assert.deepEqual(consumed, []);
+    assert.equal(delivery.acknowledge(window, {
+      ...sent[0],
+      consumption: { kind: 'connect-confirmation', target: 'http://localhost:4000' },
+    }), true);
+    await tick();
+    assert.equal(sent.length, 2);
+    assert.deepEqual(consumed, ['propr://connect?api=http%3A%2F%2Flocalhost%3A4000']);
+    assert.equal(delivery.acknowledge(window, {
+      ...sent[1],
+      consumption: { kind: 'open-queued', target: '/tasks' },
+    }), true);
+    await delivery.whenIdle();
+
+    assert.deepEqual(consumed, [
+      'propr://connect?api=http%3A%2F%2Flocalhost%3A4000',
+      'propr://open?path=%2Ftasks',
     ]);
   });
 
-  it('delivers a queued initial Connect URL before packaged smoke asserts it and only once', () => {
-    const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
-    const preloadReady = main.indexOf("throw new Error('Desktop preload bridge was not exposed to the renderer')");
-    const readyWindowRegistration = main.indexOf('deepLinkDelivery.setWindow(window);');
-    const packagedSmokeStart = main.indexOf('const smokeProfileApiUrl =');
-    assert.ok(preloadReady < readyWindowRegistration);
-    assert.ok(readyWindowRegistration < packagedSmokeStart);
-    assert.equal(main.match(/deepLinkDelivery\.setWindow\(/g)?.length, 1);
-
-    const sent: Array<{ channel: string; value: string }> = [];
-    const window = createWindow(sent);
-    const connectUrl = 'propr://connect?api=https%3A%2F%2Fconnect.propr.dev';
-    const delivery = new DeepLinkDelivery<DeepLinkWindow>('desktop:deep-link', [connectUrl]);
-
-    delivery.didFinishLoad(window);
-    assert.deepEqual(sent, []);
-
-    delivery.setWindow(window);
-    const assertPackagedSmokeDeepLink = () => {
-      assert.deepEqual(sent.filter(({ value }) => value === connectUrl), [
-        { channel: 'desktop:deep-link', value: connectUrl },
-      ]);
-    };
-    assertPackagedSmokeDeepLink();
-
-    delivery.didFinishLoad(window);
-    delivery.setWindow(window);
-
-    assert.equal(sent.filter(({ value }) => value === connectUrl).length, 1);
-  });
-
-  it('coalesces duplicate OS notifications without swallowing a later intentional activation', () => {
-    const sent: Array<{ channel: string; value: string }> = [];
-    const delivered: string[] = [];
+  it('rejects duplicate delivery and duplicate or out-of-order acknowledgements', async () => {
+    const sent: DesktopDeepLinkDelivery[] = [];
+    const consumed: string[] = [];
     let now = 1_000;
     const link = 'propr://open?path=%2Ftasks';
     const delivery = new DeepLinkDelivery<DeepLinkWindow>(
       'desktop:deep-link',
       [],
-      value => delivered.push(value),
+      value => { consumed.push(value); },
+      error => { throw error; },
       () => now,
       1_000,
     );
-    delivery.setWindow(createWindow(sent));
+    const window = createWindow(sent);
+    delivery.setWindow(window);
 
     assert.equal(delivery.deliver(link), true);
     assert.equal(delivery.deliver(link), false);
+    assert.equal(sent.length, 1);
+    assert.equal(delivery.acknowledge(window, {
+      deliveryId: sent[0].deliveryId + 1,
+      url: link,
+      consumption: { kind: 'open-queued', target: '/tasks' },
+    }), false);
+    const acknowledgement = {
+      ...sent[0],
+      consumption: { kind: 'open-queued' as const, target: '/tasks' },
+    };
+    assert.equal(delivery.acknowledge(window, acknowledgement), true);
+    assert.equal(delivery.acknowledge(window, acknowledgement), false);
+    await delivery.whenIdle();
+    assert.deepEqual(consumed, [link]);
+
     now += 1_001;
     assert.equal(delivery.deliver(link), true);
-
-    assert.deepEqual(sent.map(item => item.value), [link, link]);
-    assert.deepEqual(delivered, [link, link]);
+    await tick();
+    assert.equal(sent.length, 2);
+    assert.equal(delivery.acknowledge(window, {
+      ...sent[1],
+      consumption: { kind: 'open-queued', target: '/tasks' },
+    }), true);
+    await delivery.whenIdle();
+    assert.deepEqual(consumed, [link, link]);
   });
 
-  it('deduplicates a cold link reported through both argv and open-url', () => {
-    const sent: Array<{ channel: string; value: string }> = [];
-    const link = 'propr://connect?api=https%3A%2F%2Ft-native-evidence.propr.dev';
-    const delivery = new DeepLinkDelivery<DeepLinkWindow>('desktop:deep-link', [link], undefined, () => 10);
-
-    assert.equal(delivery.deliver(link), false);
+  it('fails closed when the renderer does not acknowledge consumption', async () => {
+    const sent: DesktopDeepLinkDelivery[] = [];
+    let failure: Error | undefined;
+    const delivery = new DeepLinkDelivery<DeepLinkWindow>(
+      'desktop:deep-link',
+      [],
+      undefined,
+      error => { failure = error; },
+      Date.now,
+      1_000,
+      20,
+    );
     delivery.setWindow(createWindow(sent));
+    delivery.deliver('propr://open?path=%2Ftasks');
+    await delivery.whenIdle();
+    assert.equal(sent.length, 1);
+    assert.match(failure?.message ?? '', /acknowledgement deadline/);
+  });
 
-    assert.deepEqual(sent, [{ channel: 'desktop:deep-link', value: link }]);
+  it('deduplicates a cold link reported through argv and open-url before delivery', async () => {
+    const sent: DesktopDeepLinkDelivery[] = [];
+    const link = 'propr://connect?api=https%3A%2F%2Ft-native-evidence.propr.dev';
+    const delivery = new DeepLinkDelivery<DeepLinkWindow>(
+      'desktop:deep-link',
+      [link],
+      undefined,
+      undefined,
+      () => 10,
+    );
+    const window = createWindow(sent);
+    assert.equal(delivery.deliver(link), false);
+    delivery.setWindow(window);
+    assert.equal(sent.length, 1);
+    delivery.acknowledge(window, {
+      ...sent[0],
+      consumption: { kind: 'connect-confirmation', target: 'https://t-native-evidence.propr.dev' },
+    });
+    await delivery.whenIdle();
+    assert.equal(sent.length, 1);
   });
 });

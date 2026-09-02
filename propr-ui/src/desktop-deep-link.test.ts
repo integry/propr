@@ -6,7 +6,10 @@ describe('desktop open deep-link navigation', () => {
     const navigate = vi.fn();
     const navigation = new DesktopDeepLinkNavigation(navigate);
 
-    expect(navigation.receive('propr://open?path=%2Ftasks')).toBe(true);
+    expect(navigation.receiveWithState('propr://open?path=%2Ftasks')).toEqual({
+      path: '/tasks',
+      state: 'queued',
+    });
     expect(navigate).not.toHaveBeenCalled();
 
     navigation.setDashboardReady();
@@ -30,7 +33,10 @@ describe('desktop open deep-link navigation', () => {
     const navigation = new DesktopDeepLinkNavigation(navigate);
     navigation.setDashboardReady();
 
-    expect(navigation.receive('propr://open?path=%2Ftasks%3Fstatus%3Dopen%23recent')).toBe(true);
+    expect(navigation.receiveWithState('propr://open?path=%2Ftasks%3Fstatus%3Dopen%23recent')).toEqual({
+      path: '/tasks?status=open#recent',
+      state: 'navigated',
+    });
     expect(navigate).toHaveBeenCalledWith('/tasks?status=open#recent');
   });
 

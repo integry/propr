@@ -16,6 +16,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createConnection } from 'node:net';
 import { arch as hostArch, platform as hostPlatform, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { once } from 'node:events';
@@ -36,6 +37,7 @@ const APP_ID = 'dev.propr.desktop';
 const PROCESS_TIMEOUT_MS = 45_000;
 const COMMAND_TIMEOUT_MS = 10 * 60_000;
 const OUTPUT_CAP = 64 * 1024;
+const CLEANUP_GRACE_MS = 2_000;
 const COLD_MANUAL = 'propr://connect?api=http%3A%2F%2Flocalhost%3A44111';
 const COLD_TUNNEL = 'propr://connect?api=https%3A%2F%2Ft-native-relaunch.propr.dev';
 const WARM_MANUAL = 'propr://connect?api=http%3A%2F%2F127.0.0.1%3A44112';
@@ -121,6 +123,180 @@ const run = (file, args, { cwd, env, timeout = COMMAND_TIMEOUT_MS, input } = {})
   });
 });
 
+const delay = milliseconds => new Promise(resolveDelay => setTimeout(resolveDelay, milliseconds));
+
+const errorFrom = (error, fallback) => error instanceof Error ? error : new Error(fallback);
+
+export class NativeLifecycleFailure extends AggregateError {
+  constructor(primaryError, cleanupFailures) {
+    const cleanupLabels = cleanupFailures.map(failure => failure.label).sort();
+    const message = primaryError
+      ? `Native lifecycle failed; cleanup also failed: ${cleanupLabels.join(', ')}`
+      : `Native lifecycle cleanup failed: ${cleanupLabels.join(', ')}`;
+    const safeErrors = [
+      ...(primaryError ? [new Error('Native lifecycle primary operation failed')] : []),
+      ...cleanupLabels.map(label => new Error(`Native lifecycle cleanup failed: ${label}`)),
+    ];
+    super(safeErrors, message);
+    this.name = 'NativeLifecycleFailure';
+    Object.defineProperties(this, {
+      primaryError: { value: primaryError, enumerable: false },
+      cleanupFailures: { value: cleanupFailures, enumerable: false },
+    });
+  }
+}
+
+const throwCombined = (primaryError, cleanupFailures) => {
+  if (cleanupFailures.length > 0) throw new NativeLifecycleFailure(primaryError, cleanupFailures);
+  if (primaryError) throw primaryError;
+};
+
+const processGroupExists = pid => {
+  if (!pid) return false;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false;
+    throw error;
+  }
+};
+
+const waitUntil = async (predicate, timeout) => {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (!predicate()) return true;
+    await delay(25);
+  }
+  return !predicate();
+};
+
+class OwnedProcessGroup {
+  constructor(child) {
+    this.child = child;
+    this.pid = child.pid;
+    this.closed = false;
+    this.released = false;
+    this.result = null;
+    this.closePromise = new Promise(resolveClose => {
+      child.once('error', error => {
+        if (!this.result) this.result = { code: null, error, signal: null };
+      });
+      child.once('close', (code, signal) => {
+        this.closed = true;
+        this.result = { code, error: this.result?.error, signal };
+        resolveClose(this.result);
+      });
+    });
+  }
+
+  signal(signal) {
+    if (!this.pid) return;
+    try {
+      process.kill(-this.pid, signal);
+    } catch (error) {
+      if (error?.code !== 'ESRCH') throw error;
+    }
+  }
+
+  async waitForClose(timeout) {
+    if (this.closed) return this.result;
+    return Promise.race([
+      this.closePromise,
+      delay(timeout).then(() => { throw new Error('Native application close deadline expired'); }),
+    ]);
+  }
+
+  async terminate() {
+    if (this.released) {
+      await this.waitForClose(CLEANUP_GRACE_MS);
+      return;
+    }
+    if (processGroupExists(this.pid)) {
+      this.signal('SIGTERM');
+      if (!await waitUntil(() => processGroupExists(this.pid), CLEANUP_GRACE_MS)) {
+        this.signal('SIGKILL');
+      }
+    }
+    const groupGone = await waitUntil(() => processGroupExists(this.pid), CLEANUP_GRACE_MS);
+    let closeError;
+    try {
+      await this.waitForClose(CLEANUP_GRACE_MS);
+    } catch (error) {
+      closeError = errorFrom(error, 'Native application close postcondition failed');
+    }
+    if (!groupGone && closeError) {
+      throw new Error('Native application close and process-group cleanup deadlines expired');
+    }
+    if (!groupGone) throw new Error('Native application process-group cleanup deadline expired');
+    if (closeError) throw closeError;
+    if (processGroupExists(this.pid)) throw new Error('Native application left a process in its owned process group');
+    this.released = true;
+  }
+
+  async waitForSuccessfulExit(timeout = PROCESS_TIMEOUT_MS) {
+    let result;
+    try {
+      result = await this.waitForClose(timeout);
+    } catch (error) {
+      const cleanupFailures = [];
+      try {
+        await this.terminate();
+      } catch (cleanupError) {
+        cleanupFailures.push({
+          label: 'process-groups',
+          error: errorFrom(cleanupError, 'Process-group cleanup failed'),
+        });
+      }
+      throwCombined(errorFrom(error, 'Native application close failed'), cleanupFailures);
+    }
+    if (processGroupExists(this.pid)) {
+      const primaryError = new Error('Native application main process exited before its owned process group');
+      const cleanupFailures = [];
+      try {
+        await this.terminate();
+      } catch (cleanupError) {
+        cleanupFailures.push({
+          label: 'process-groups',
+          error: errorFrom(cleanupError, 'Process-group cleanup failed'),
+        });
+      }
+      throwCombined(primaryError, cleanupFailures);
+    }
+    // Relinquish authority only after proving that the complete group is gone;
+    // this also prevents a later cleanup pass from acting on a reused PID.
+    this.released = true;
+    if (result?.error) throw result.error;
+    if (result?.code !== 0) {
+      throw new Error(`Native application exited with code ${result?.code ?? 'null'} signal ${result?.signal ?? 'none'}`);
+    }
+  }
+}
+
+export class OwnedProcessGroups {
+  constructor() {
+    this.groups = [];
+  }
+
+  track(child) {
+    const group = new OwnedProcessGroup(child);
+    this.groups.push(group);
+    return group;
+  }
+
+  async cleanup() {
+    const failures = [];
+    for (const group of [...this.groups].reverse()) {
+      try {
+        await group.terminate();
+      } catch (error) {
+        failures.push({ label: 'process-groups', error: errorFrom(error, 'Process-group cleanup failed') });
+      }
+    }
+    return failures;
+  }
+}
+
 const digest = async path => createHash('sha256').update(await readFile(path)).digest('hex');
 
 const inspectStagedArtifact = async ({ artifact, kind, target, workRoot }) => {
@@ -170,7 +346,7 @@ export const assertArtifactSet = async target => {
   return expectedKinds;
 };
 
-const assertSafeExtractedTree = async root => {
+export const assertSafeExtractedTree = async root => {
   const canonicalRoot = await realpath(root);
   const visit = async directory => {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -180,6 +356,10 @@ const assertSafeExtractedTree = async root => {
         const fromRoot = relative(canonicalRoot, target);
         if (!fromRoot || fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
           throw new Error('Native artifact contains a symlink escaping its install root');
+        }
+        const targetStats = await stat(path);
+        if (!targetStats.isFile() && !targetStats.isDirectory()) {
+          throw new Error('Native artifact contains a symlink to an unsupported filesystem entry');
         }
       } else if (entry.isDirectory()) {
         await visit(path);
@@ -191,40 +371,81 @@ const assertSafeExtractedTree = async root => {
   await visit(root);
 };
 
-const extractRpm = async (artifact, root) => {
-  await new Promise((resolveExtraction, reject) => {
-    const converter = spawn('/usr/bin/rpm2cpio', [artifact], { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
-    const extractor = spawn(
-      '/usr/bin/cpio',
-      ['--extract', '--make-directories', '--no-absolute-filenames', '--quiet'],
-      { cwd: root, shell: false, stdio: ['pipe', 'ignore', 'pipe'] },
-    );
-    converter.stdout.pipe(extractor.stdin);
-    let failure;
-    let diagnostics = Buffer.alloc(0);
-    converter.stderr.on('data', chunk => { diagnostics = appendBounded(diagnostics, chunk); });
-    extractor.stderr.on('data', chunk => { diagnostics = appendBounded(diagnostics, chunk); });
-    converter.once('error', error => { failure = error; extractor.kill('SIGKILL'); });
-    extractor.once('error', error => { failure = error; converter.kill('SIGKILL'); });
-    converter.once('close', code => {
-      if (code !== 0 && !failure) {
-        failure = new Error(`rpm2cpio failed with code ${code ?? 'null'}`);
-        extractor.kill('SIGKILL');
-      }
-    });
-    const timer = setTimeout(() => {
-      failure = new Error('RPM extraction deadline expired');
-      converter.kill('SIGKILL');
-      extractor.kill('SIGKILL');
-    }, COMMAND_TIMEOUT_MS);
-    extractor.once('close', code => {
-      clearTimeout(timer);
-      if (failure) reject(failure);
-      else if (code !== 0) reject(new Error(`cpio failed with code ${code ?? 'null'}`));
-      else if (diagnostics.length !== 0) reject(new Error('RPM extraction emitted unexpected diagnostics'));
-      else resolveExtraction();
-    });
-  });
+const waitForPipelineProcess = child => new Promise(resolveProcess => {
+  let spawnError;
+  child.once('error', error => { spawnError = error; });
+  child.once('close', (code, signal) => resolveProcess({ code, error: spawnError, signal }));
+});
+
+const stopPipelineProcess = async (child, completion) => {
+  const running = child.exitCode === null
+    && (child.signalCode === undefined || child.signalCode === null);
+  if (running) child.kill('SIGTERM');
+  const result = await Promise.race([completion, delay(CLEANUP_GRACE_MS).then(() => null)]);
+  if (result) return result;
+  child.kill('SIGKILL');
+  return Promise.race([
+    completion,
+    delay(CLEANUP_GRACE_MS).then(() => { throw new Error('RPM extraction process cleanup deadline expired'); }),
+  ]);
+};
+
+export const extractRpm = async (artifact, root, {
+  converterFile = '/usr/bin/rpm2cpio',
+  extractorFile = '/usr/bin/cpio',
+  spawnProcess = spawn,
+  timeout = COMMAND_TIMEOUT_MS,
+} = {}) => {
+  const converter = spawnProcess(converterFile, [artifact], { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+  const extractor = spawnProcess(
+    extractorFile,
+    ['--extract', '--make-directories', '--no-absolute-filenames', '--quiet'],
+    { cwd: root, shell: false, stdio: ['pipe', 'ignore', 'pipe'] },
+  );
+  const converterCompletion = waitForPipelineProcess(converter);
+  const extractorCompletion = waitForPipelineProcess(extractor);
+  const stopExtractorOnConverterFailure = converterCompletion.then(result => (
+    result.error || result.code !== 0 ? stopPipelineProcess(extractor, extractorCompletion) : undefined
+  ));
+  const stopConverterOnExtractorFailure = extractorCompletion.then(result => (
+    result.error || result.code !== 0 ? stopPipelineProcess(converter, converterCompletion) : undefined
+  ));
+  let diagnostics = Buffer.alloc(0);
+  converter.stderr.on('data', chunk => { diagnostics = appendBounded(diagnostics, chunk); });
+  extractor.stderr.on('data', chunk => { diagnostics = appendBounded(diagnostics, chunk); });
+  converter.stdout.pipe(extractor.stdin);
+
+  let results;
+  try {
+    results = await Promise.race([
+      Promise.all([
+        converterCompletion,
+        extractorCompletion,
+        stopExtractorOnConverterFailure,
+        stopConverterOnExtractorFailure,
+      ]).then(([converterResult, extractorResult]) => [converterResult, extractorResult]),
+      delay(timeout).then(() => { throw new Error('RPM extraction deadline expired'); }),
+    ]);
+  } catch (error) {
+    const cleanup = await Promise.allSettled([
+      stopPipelineProcess(converter, converterCompletion),
+      stopPipelineProcess(extractor, extractorCompletion),
+    ]);
+    const cleanupFailures = cleanup
+      .filter(result => result.status === 'rejected')
+      .map(result => ({ label: 'rpm-processes', error: result.reason }));
+    throwCombined(errorFrom(error, 'RPM extraction failed'), cleanupFailures);
+  }
+  const [converterResult, extractorResult] = results;
+  if (converterResult.error) throw converterResult.error;
+  if (extractorResult.error) throw extractorResult.error;
+  if (converterResult.code !== 0) {
+    throw new Error(`rpm2cpio failed with code ${converterResult.code ?? 'null'} signal ${converterResult.signal ?? 'none'}`);
+  }
+  if (extractorResult.code !== 0) {
+    throw new Error(`cpio failed with code ${extractorResult.code ?? 'null'} signal ${extractorResult.signal ?? 'none'}`);
+  }
+  if (diagnostics.length !== 0) throw new Error('RPM extraction emitted unexpected diagnostics');
 };
 
 const locateApplication = async ({ platform, arch, kind, installRoot }) => {
@@ -249,7 +470,81 @@ const locateApplication = async ({ platform, arch, kind, installRoot }) => {
   };
 };
 
-const extractArtifact = async ({ artifact, kind, target, installRoot, mountRoot }) => {
+const mountOutputContains = (output, mountRoot) => output.toString('utf8')
+  .split(/\r?\n/)
+  .some(line => line.trimEnd().endsWith(mountRoot));
+
+export class DmgMountAuthority {
+  constructor(mountRoot, { runCommand = run } = {}) {
+    this.mountRoot = mountRoot;
+    this.runCommand = runCommand;
+    this.mounted = false;
+  }
+
+  async attach(artifact) {
+    await this.runCommand('/usr/bin/hdiutil', [
+      'attach', '-readonly', '-nobrowse', '-mountpoint', this.mountRoot, artifact,
+    ]);
+    this.mounted = true;
+  }
+
+  async detach() {
+    if (!this.mounted) return;
+    let detachError;
+    try {
+      await this.runCommand('/usr/bin/hdiutil', ['detach', this.mountRoot], { timeout: 30_000 });
+    } catch (error) {
+      detachError = errorFrom(error, 'DMG detach failed');
+    }
+    let mounts;
+    let queryError;
+    try {
+      mounts = await this.runCommand('/usr/bin/hdiutil', ['info'], { timeout: 30_000 });
+    } catch (error) {
+      queryError = errorFrom(error, 'DMG mount postcondition query failed');
+    }
+    const stale = mounts ? mountOutputContains(mounts.stdout, this.mountRoot) : false;
+    if (!queryError && !stale) this.mounted = false;
+    const failures = [];
+    if (detachError) failures.push({ label: 'dmg-detach', error: detachError });
+    if (queryError) failures.push({ label: 'dmg-mount-query', error: queryError });
+    if (stale) failures.push({ label: 'dmg-mounted-postcondition', error: new Error('DMG mount remained active') });
+    throwCombined(null, failures);
+  }
+}
+
+export const extractDmg = async ({
+  artifact,
+  installRoot,
+  mountAuthority,
+  readDirectory = readdir,
+  runCommand = run,
+}) => {
+  let primaryError;
+  try {
+    await mountAuthority.attach(artifact);
+    const applications = (await readDirectory(mountAuthority.mountRoot, { withFileTypes: true }))
+      .filter(entry => entry.isDirectory() && entry.name.endsWith('.app'));
+    if (applications.length !== 1) throw new Error('Mounted DMG has a missing or duplicate application identity');
+    await runCommand('/usr/bin/ditto', [
+      join(mountAuthority.mountRoot, applications[0].name),
+      join(installRoot, applications[0].name),
+    ]);
+  } catch (error) {
+    primaryError = errorFrom(error, 'DMG extraction failed');
+  }
+  const cleanupFailures = [];
+  if (mountAuthority.mounted) {
+    try {
+      await mountAuthority.detach();
+    } catch (error) {
+      cleanupFailures.push({ label: 'dmg-mount', error: errorFrom(error, 'DMG cleanup failed') });
+    }
+  }
+  throwCombined(primaryError, cleanupFailures);
+};
+
+const extractArtifact = async ({ artifact, kind, target, installRoot, mountAuthority }) => {
   if (kind === 'deb') {
     await run('/usr/bin/dpkg-deb', ['--extract', artifact, installRoot]);
   } else if (kind === 'rpm') {
@@ -259,11 +554,7 @@ const extractArtifact = async ({ artifact, kind, target, installRoot, mountRoot 
   } else if (kind === 'zip') {
     await run('/usr/bin/ditto', ['-x', '-k', artifact, installRoot]);
   } else {
-    await run('/usr/bin/hdiutil', ['attach', '-readonly', '-nobrowse', '-mountpoint', mountRoot, artifact]);
-    const applications = (await readdir(mountRoot, { withFileTypes: true }))
-      .filter(entry => entry.isDirectory() && entry.name.endsWith('.app'));
-    if (applications.length !== 1) throw new Error('Mounted DMG has a missing or duplicate application identity');
-    await run('/usr/bin/ditto', [join(mountRoot, applications[0].name), join(installRoot, applications[0].name)]);
+    await extractDmg({ artifact, installRoot, mountAuthority });
   }
 };
 
@@ -306,10 +597,12 @@ const validateIdentity = async ({ target, kind, application }) => {
   }
 };
 
-const waitForEvents = async (path, events, child, timeout = PROCESS_TIMEOUT_MS) => {
+export const waitForEvents = async (path, events, child, timeout = PROCESS_TIMEOUT_MS) => {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error('Native application exited before producing required evidence');
+    const exited = child.exitCode !== null
+      || (child.signalCode !== undefined && child.signalCode !== null);
+    if (exited) throw new Error('Native application exited before producing required evidence');
     try {
       const records = (await readFile(path, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
       const names = records.map(record => record.event);
@@ -325,68 +618,42 @@ const waitForEvents = async (path, events, child, timeout = PROCESS_TIMEOUT_MS) 
   throw new Error('Native application evidence deadline expired');
 };
 
-const signalApplicationGroup = (child, signal) => {
-  if (!child.pid) return;
-  try {
-    process.kill(-child.pid, signal);
-  } catch (error) {
-    if (error?.code !== 'ESRCH') throw error;
-  }
-};
-
-const assertApplicationGroupGone = async child => {
-  if (!child.pid) return;
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    try {
-      process.kill(-child.pid, 0);
-    } catch (error) {
-      if (error?.code === 'ESRCH') return;
-      throw error;
+const assertEvidenceOrdering = async (path, requiredEvents) => {
+  const records = (await readFile(path, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const names = records.map(record => record.event);
+  let previous = -1;
+  for (const event of requiredEvents) {
+    const occurrences = names.reduce((count, name) => count + Number(name === event), 0);
+    const index = names.indexOf(event);
+    if (occurrences !== 1 || index <= previous) {
+      throw new Error('Native application evidence was duplicated or out of order');
     }
-    await new Promise(resolveWait => setTimeout(resolveWait, 50));
+    previous = index;
   }
-  signalApplicationGroup(child, 'SIGKILL');
-  throw new Error('Native application left a process in its owned process group');
 };
 
-const waitForExit = (child, timeout = PROCESS_TIMEOUT_MS) => new Promise((resolveExit, reject) => {
-  const complete = (code, signal) => {
-    void assertApplicationGroupGone(child).then(() => {
-      if (code === 0) resolveExit();
-      else reject(new Error(`Native application exited with code ${code ?? 'null'} signal ${signal ?? 'none'}`));
-    }, reject);
-  };
-  if (child.exitCode !== null) {
-    complete(child.exitCode, child.signalCode);
-    return;
-  }
-  const timer = setTimeout(() => {
-    signalApplicationGroup(child, 'SIGKILL');
-    reject(new Error('Native application shutdown deadline expired'));
-  }, timeout);
-  child.once('close', (code, signal) => {
-    clearTimeout(timer);
-    complete(code, signal);
-  });
-});
-
-const startApplication = (application, args, env, cwd) => spawn(application.executable, args, {
+const startApplication = (application, args, env, cwd, processGroups) => processGroups.track(spawn(application.executable, args, {
   cwd,
   env,
   detached: true,
   shell: false,
   stdio: ['ignore', 'ignore', 'ignore'],
-});
+}));
 
-const dispatchDirect = async (application, userData, link, env) => {
-  const child = startApplication(application, [`--user-data-dir=${userData}`, link], env, dirname(application.applicationRoot));
-  await waitForExit(child, 15_000);
+const dispatchDirect = async (application, userData, link, env, processGroups) => {
+  const group = startApplication(
+    application,
+    [`--user-data-dir=${userData}`, link],
+    env,
+    dirname(application.applicationRoot),
+    processGroups,
+  );
+  await group.waitForSuccessfulExit(15_000);
 };
 
-const linuxProtocolDispatch = async ({ application, profile, link, env }) => {
+const linuxProtocolDispatch = async ({ application, profile, link, env, processGroups }) => {
   if (!application.desktopFile) {
-    await dispatchDirect(application, profile.userData, link, env);
+    await dispatchDirect(application, profile.userData, link, env, processGroups);
     return 'direct-second-instance; ZIP has no OS launcher registration';
   }
   const applications = join(profile.xdgData, 'applications');
@@ -406,9 +673,45 @@ const linuxProtocolDispatch = async ({ application, profile, link, env }) => {
   return 'xdg-mime-registration+gio-dispatch (CI-relocated package launcher)';
 };
 
-const macProtocolDispatch = async ({ application, link, env }) => {
-  const launchServices = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
-  await run(launchServices, ['-f', application.applicationRoot], { env });
+const LAUNCH_SERVICES = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
+
+export class LaunchServicesAuthority {
+  constructor(applicationRoot, environment, { runCommand = run } = {}) {
+    this.applicationRoot = applicationRoot;
+    this.environment = environment;
+    this.runCommand = runCommand;
+    this.registered = false;
+  }
+
+  async register() {
+    await this.runCommand(LAUNCH_SERVICES, ['-f', this.applicationRoot], { env: this.environment, timeout: 30_000 });
+    this.registered = true;
+  }
+
+  async unregister() {
+    if (!this.registered) return;
+    await this.runCommand(LAUNCH_SERVICES, ['-u', this.applicationRoot], { env: this.environment, timeout: 30_000 });
+  }
+
+  async assertGone() {
+    const result = await this.runCommand(LAUNCH_SERVICES, ['-dump'], { env: this.environment, timeout: 30_000 });
+    if (result.stdout.toString('utf8').split(/\r?\n/).some(line => {
+      const record = line.trim();
+      const index = record.indexOf(this.applicationRoot);
+      if (index < 0) return false;
+      const before = record[index - 1];
+      const after = record[index + this.applicationRoot.length];
+      return (index === 0 || /[\s:"'=]/.test(before))
+        && (after === undefined || /[\s"',)]/.test(after));
+    })) {
+      throw new Error('Copied application remained registered with LaunchServices');
+    }
+    this.registered = false;
+  }
+}
+
+const macProtocolDispatch = async ({ launchServices, link, env }) => {
+  await launchServices.register();
   await run('/usr/bin/open', ['-b', APP_ID, link], { env, timeout: 15_000 });
   return 'LaunchServices-registration+open-bundle-dispatch';
 };
@@ -441,17 +744,136 @@ const createProfileApi = async () => {
       ? '{"product":"ProPR","desktopAuthentication":{"protocolVersion":1}}'
       : '{"profileEndpoint":true}');
   });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Native profile API did not bind safely');
-  return { server, url: `http://127.0.0.1:${address.port}` };
+  try {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Native profile API did not bind safely');
+    return { port: address.port, server, url: `http://127.0.0.1:${address.port}` };
+  } catch (error) {
+    const primaryError = errorFrom(error, 'Native profile API creation failed');
+    const cleanupFailures = [];
+    if (server.listening) {
+      try {
+        const address = server.address();
+        if (!address || typeof address === 'string') {
+          try {
+            server.closeAllConnections();
+          } finally {
+            await Promise.race([
+              new Promise((resolveClose, rejectClose) => server.close(closeError => (
+                closeError ? rejectClose(closeError) : resolveClose()
+              ))),
+              delay(CLEANUP_GRACE_MS).then(() => {
+                throw new Error('Native profile API setup close deadline expired');
+              }),
+            ]);
+          }
+          if (server.listening || server.address() !== null) {
+            throw new Error('Native profile API retained listening authority after setup failure');
+          }
+        } else {
+          await closeProfileApi({ server, port: address.port });
+        }
+      } catch (cleanupError) {
+        cleanupFailures.push({
+          label: 'profile-api-setup',
+          error: errorFrom(cleanupError, 'Native profile API setup cleanup failed'),
+        });
+      }
+    }
+    throwCombined(primaryError, cleanupFailures);
+  }
 };
 
-const closeServer = async server => {
-  if (!server.listening) return;
-  server.closeAllConnections();
-  await new Promise((resolveClose, rejectClose) => server.close(error => error ? rejectClose(error) : resolveClose()));
+const assertPortClosed = (port, timeout = CLEANUP_GRACE_MS) => new Promise((resolveClosed, rejectClosed) => {
+  const socket = createConnection({ host: '127.0.0.1', port });
+  const timer = setTimeout(() => {
+    socket.destroy();
+    rejectClosed(new Error('Native profile API close postcondition deadline expired'));
+  }, timeout);
+  socket.once('connect', () => {
+    clearTimeout(timer);
+    socket.destroy();
+    rejectClosed(new Error('Native profile API remained reachable after close'));
+  });
+  socket.once('error', error => {
+    clearTimeout(timer);
+    if (error?.code === 'ECONNREFUSED') resolveClosed();
+    else rejectClosed(new Error('Native profile API close postcondition failed'));
+  });
+});
+
+export const closeProfileApi = async ({ server, port }, {
+  closeDeadline = CLEANUP_GRACE_MS,
+  probeClosed = assertPortClosed,
+} = {}) => {
+  const failures = [];
+  let closeError;
+  if (server.listening) {
+    try {
+      server.closeAllConnections();
+    } catch (error) {
+      failures.push({
+        label: 'profile-api-connections',
+        error: errorFrom(error, 'Native profile API connection cleanup failed'),
+      });
+    }
+    try {
+      await Promise.race([
+        new Promise((resolveClose, rejectClose) => server.close(error => (
+          error ? rejectClose(error) : resolveClose()
+        ))),
+        delay(closeDeadline).then(() => { throw new Error('Native profile API close deadline expired'); }),
+      ]);
+    } catch (error) {
+      closeError = errorFrom(error, 'Native profile API close failed');
+    }
+  }
+  if (closeError) failures.push({ label: 'profile-api-close', error: closeError });
+  if (server.listening || server.address() !== null) {
+    failures.push({ label: 'profile-api-listening', error: new Error('Native profile API retained listening authority') });
+  } else {
+    try {
+      await probeClosed(port);
+    } catch (error) {
+      failures.push({ label: 'profile-api-postcondition', error: errorFrom(error, 'Native profile API postcondition failed') });
+    }
+  }
+  throwCombined(null, failures);
+};
+
+const assertAbsent = async (path, message) => {
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error(message);
+};
+
+export const removeAuthorizedProfile = async (profile, {
+  inspectPath = lstat,
+  removeProfile = removePrivateSmokeProfile,
+} = {}) => {
+  let removalError;
+  try {
+    await removeProfile(profile);
+  } catch (error) {
+    removalError = errorFrom(error, 'Native private profile authority cleanup failed');
+  }
+  let postconditionError;
+  try {
+    await inspectPath(profile.root);
+    postconditionError = new Error('Native private profile remained after authority cleanup');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') postconditionError = errorFrom(error, 'Native private profile postcondition failed');
+  }
+  const failures = [];
+  if (removalError) failures.push({ label: 'profile-authority', error: removalError });
+  if (postconditionError) failures.push({ label: 'profile-postcondition', error: postconditionError });
+  throwCombined(null, failures);
 };
 
 const defaultUserDataCandidates = target => {
@@ -479,21 +901,26 @@ const assertDefaultUserDataUntouched = async target => {
 
 const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
   const workRoot = await mkdtemp(join(tmpdir(), `propr-native-${kind}-`));
-  await chmod(workRoot, 0o700);
   const installRoot = join(workRoot, 'install');
   const mountRoot = join(workRoot, 'mount');
-  await mkdir(installRoot, { mode: 0o700 });
-  await mkdir(mountRoot, { mode: 0o700 });
-  const beforeDigest = await digest(artifact);
-  const profile = await createPrivateSmokeProfile(workRoot);
-  const profileApi = await createProfileApi();
+  const processGroups = new OwnedProcessGroups();
+  const mountAuthority = kind === 'dmg' ? new DmgMountAuthority(mountRoot) : null;
+  let profile;
+  let profileApi;
   let application;
-  let mounted = false;
+  let launchServices;
+  let sandboxPrepared = false;
+  let primaryError;
   try {
+    await chmod(workRoot, 0o700);
+    await mkdir(installRoot, { mode: 0o700 });
+    await mkdir(mountRoot, { mode: 0o700 });
+    const beforeDigest = await digest(artifact);
+    profile = await createPrivateSmokeProfile(workRoot);
+    profileApi = await createProfileApi();
     await assertDefaultUserDataUntouched(target);
     await inspectStagedArtifact({ artifact, kind, target, workRoot });
-    await extractArtifact({ artifact, kind, target, installRoot, mountRoot });
-    mounted = kind === 'dmg';
+    await extractArtifact({ artifact, kind, target, installRoot, mountAuthority });
     application = await locateApplication({ ...target, kind, installRoot });
     await assertSafeExtractedTree(installRoot);
     await validateIdentity({ target, kind, application });
@@ -501,6 +928,7 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
       const sandbox = join(application.applicationRoot, 'chrome-sandbox');
       await run('/usr/bin/sudo', ['/usr/bin/chown', 'root:root', sandbox]);
       await run('/usr/bin/sudo', ['/usr/bin/chmod', '4755', sandbox]);
+      sandboxPrepared = true;
     }
 
     const baseEnvironment = await createSmokeChildEnvironment({
@@ -522,24 +950,46 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
       '--propr-smoke-test',
       `--user-data-dir=${profile.userData}`,
       COLD_MANUAL,
-    ], firstEnvironment, workRoot);
+    ], firstEnvironment, workRoot, processGroups);
     const firstEvidence = join(profile.userData, 'application.smoke-evidence.first.jsonl');
-    await waitForEvents(firstEvidence, ['desktop.renderer.ready', 'desktop.deeplink.cold_manual_once'], first);
-    await dispatchDirect(application, profile.userData, WARM_MANUAL, dispatchEnvironment);
+    await waitForEvents(firstEvidence, ['desktop.renderer.ready', 'desktop.deeplink.cold_manual_once'], first.child);
+    await dispatchDirect(application, profile.userData, WARM_MANUAL, dispatchEnvironment, processGroups);
+    await waitForEvents(firstEvidence, ['desktop.deeplink.warm_manual_once'], first.child);
+    if (target.platform === 'darwin') {
+      launchServices = new LaunchServicesAuthority(application.applicationRoot, dispatchEnvironment);
+    }
     const protocol = target.platform === 'linux'
-      ? await linuxProtocolDispatch({ application, profile, link: WARM_TUNNEL, env: dispatchEnvironment })
-      : await macProtocolDispatch({ application, link: WARM_TUNNEL, env: dispatchEnvironment });
-    await dispatchDirect(application, profile.userData, WARM_OPEN, dispatchEnvironment);
-    await dispatchDirect(application, profile.userData, 'native-evidence-malformed', dispatchEnvironment);
-    await dispatchDirect(application, profile.userData, 'https://native-evidence.invalid/unsafe', dispatchEnvironment);
+      ? await linuxProtocolDispatch({ application, profile, link: WARM_TUNNEL, env: dispatchEnvironment, processGroups })
+      : await macProtocolDispatch({ launchServices, link: WARM_TUNNEL, env: dispatchEnvironment });
+    await waitForEvents(firstEvidence, ['desktop.deeplink.warm_tunnel_once'], first.child);
+    await dispatchDirect(application, profile.userData, WARM_OPEN, dispatchEnvironment, processGroups);
+    await waitForEvents(firstEvidence, ['desktop.deeplink.warm_open_once'], first.child);
+    await dispatchDirect(application, profile.userData, 'native-evidence-malformed', dispatchEnvironment, processGroups);
+    await waitForEvents(firstEvidence, ['desktop.deeplink.rejected_malformed'], first.child);
     await dispatchDirect(
       application,
       profile.userData,
       `propr://connect?api=https%3A%2F%2Ft-native-evidence.propr.dev%2F${'a'.repeat(2_100)}`,
       dispatchEnvironment,
+      processGroups,
     );
-    await waitForExit(first);
-    await waitForEvents(firstEvidence, REQUIRED_FIRST_EVENTS, { exitCode: null });
+    await waitForEvents(firstEvidence, ['desktop.deeplink.rejected_oversized'], first.child);
+    await dispatchDirect(
+      application,
+      profile.userData,
+      'https://native-evidence.invalid/unsafe',
+      dispatchEnvironment,
+      processGroups,
+    );
+    await waitForEvents(firstEvidence, ['desktop.deeplink.rejected_unsafe_scheme'], first.child);
+    await first.waitForSuccessfulExit();
+    const requiredFirstEvents = target.platform === 'linux'
+      ? REQUIRED_FIRST_EVENTS.flatMap(event => event === 'desktop.native.secure_storage_enforced'
+          ? ['desktop.native.secure_storage_fallback_refused', event]
+          : [event])
+      : REQUIRED_FIRST_EVENTS;
+    await waitForEvents(firstEvidence, requiredFirstEvents, { exitCode: null });
+    await assertEvidenceOrdering(firstEvidence, requiredFirstEvents);
     await assertProfileAuthority(profile);
 
     const relaunchEnvironment = Object.freeze({
@@ -553,40 +1003,70 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
       '--propr-smoke-test',
       `--user-data-dir=${profile.userData}`,
       COLD_TUNNEL,
-    ], relaunchEnvironment, workRoot);
-    await waitForExit(relaunch);
+    ], relaunchEnvironment, workRoot, processGroups);
+    await relaunch.waitForSuccessfulExit();
+    const relaunchEvidence = join(profile.userData, 'application.smoke-evidence.relaunch.jsonl');
     await waitForEvents(
-      join(profile.userData, 'application.smoke-evidence.relaunch.jsonl'),
+      relaunchEvidence,
       REQUIRED_RELAUNCH_EVENTS,
       { exitCode: null },
     );
+    await assertEvidenceOrdering(relaunchEvidence, REQUIRED_RELAUNCH_EVENTS);
     await assertProfileAuthority(profile);
     if (await digest(artifact) !== beforeDigest) throw new Error('Native lifecycle mutated the staged artifact bytes');
     await assertDefaultUserDataUntouched(target);
-    report.push({ kind, protocol, lifecycle: 'extract-or-mount-copy/launch/shutdown/relaunch/remove' });
-  } finally {
-    await closeServer(profileApi.server).catch(() => undefined);
-    if (target.platform === 'darwin' && application) {
-      const launchServices = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
-      await run(launchServices, ['-u', application.applicationRoot]).catch(() => undefined);
-    }
-    if (mounted) await run('/usr/bin/hdiutil', ['detach', mountRoot]).catch(() => undefined);
-    if (target.platform === 'linux' && application) {
-      await run('/usr/bin/sudo', ['/bin/rm', '-f', join(application.applicationRoot, 'chrome-sandbox')]).catch(() => undefined);
-    }
-    await removePrivateSmokeProfile(profile).catch(() => undefined);
-    await rm(installRoot, { recursive: true, force: true });
-    await rm(mountRoot, { recursive: true, force: true });
-    await rm(workRoot, { recursive: true, force: true });
-    for (const path of [installRoot, profile.root]) {
-      try {
-        await stat(path);
-        throw new Error('Native uninstall/remove left an owned root behind');
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-      }
-    }
+    report.push({
+      coldDispatch: 'direct-argv (not OS protocol launch)',
+      kind,
+      lifecycle: 'extract-or-mount-copy/launch/shutdown/relaunch/remove',
+      protocol,
+      secureStorage: target.platform === 'linux'
+        ? 'fallback-only; plaintext refused; libsecret custody not exercised'
+        : 'OS-protected Keychain round-trip and deletion',
+    });
+  } catch (error) {
+    primaryError = errorFrom(error, 'Native lifecycle operation failed');
   }
+
+  const cleanupFailures = await processGroups.cleanup();
+  const cleanup = async (label, operation) => {
+    try {
+      await operation();
+    } catch (error) {
+      cleanupFailures.push({ label, error: errorFrom(error, 'Native lifecycle cleanup failed') });
+    }
+  };
+  if (profileApi) await cleanup('profile-api', () => closeProfileApi(profileApi));
+  if (launchServices?.registered) await cleanup('launchservices-unregister', () => launchServices.unregister());
+  if (mountAuthority?.mounted) await cleanup('dmg-mount', () => mountAuthority.detach());
+  if (sandboxPrepared && application) {
+    await cleanup('linux-sandbox', () => run('/usr/bin/sudo', [
+      '/bin/rm', '-f', join(application.applicationRoot, 'chrome-sandbox'),
+    ]));
+  }
+  await cleanup('install-root', () => rm(installRoot, { recursive: true, force: true }));
+  await cleanup('install-postcondition', () => assertAbsent(
+    installRoot,
+    'Native uninstall/remove left an owned install root behind',
+  ));
+  if (launchServices?.registered) await cleanup('launchservices-postcondition', () => launchServices.assertGone());
+  if (!mountAuthority?.mounted) {
+    await cleanup('mount-root', () => rm(mountRoot, { recursive: true, force: true }));
+    await cleanup('mount-postcondition', () => assertAbsent(mountRoot, 'Native DMG mount root remained after detach'));
+  }
+  if (profile) {
+    await cleanup('profile-authority', () => removeAuthorizedProfile(profile));
+  }
+  const blocksOuterRemoval = cleanupFailures.some(failure => [
+    'dmg-mount',
+    'mount-postcondition',
+    'profile-authority',
+  ].includes(failure.label));
+  if (!blocksOuterRemoval) {
+    await cleanup('work-root', () => rm(workRoot, { recursive: true, force: true }));
+    await cleanup('work-postcondition', () => assertAbsent(workRoot, 'Native lifecycle work root remained after cleanup'));
+  }
+  throwCombined(primaryError, cleanupFailures);
 };
 
 export const runNativeArtifactLifecycle = async target => {
@@ -604,8 +1084,8 @@ export const runNativeArtifactLifecycle = async target => {
     target: `${target.platform}-${target.arch}`,
     evidence: report,
     limitations: target.platform === 'linux'
-      ? 'ZIP has no OS launcher; its warm dispatch is direct. Package launchers use an isolated CI relocation.'
-      : 'Unsigned internal-RC evidence uses local LaunchServices only; signing, notarization, and Gatekeeper assessment are not claimed.',
+      ? 'Cold launch is direct argv. ZIP warm dispatch is direct. Package warm dispatch uses isolated XDG/GIO. Secure storage is fallback-only; libsecret custody is not exercised.'
+      : 'Cold launch is direct argv. Warm protocol evidence uses local LaunchServices. Unsigned internal-RC evidence does not claim signing, notarization, or Gatekeeper assessment.',
   }));
 };
 

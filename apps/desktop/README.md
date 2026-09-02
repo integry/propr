@@ -164,18 +164,25 @@ rm -r "$install_root"
 
 The pull-request native gate runs on `ubuntu-24.04`/`ubuntu-24.04-arm` and
 `macos-15-intel`/`macos-15`. It consumes the canonical staged bytes: DEB/RPM are extracted with `dpkg-deb`/`rpm2cpio`
-and ZIP with the platform archive tool; DMG is mounted read-only and copied with `ditto`. Every format gets a first
-launch, clean shutdown, preserved-state relaunch, and owned-root removal. The gate rechecks the executable architecture,
+and ZIP with the platform archive tool; DMG is mounted read-only and copied with `ditto`. DMG authority begins as soon
+as attach succeeds, and detach plus an absent-mount postcondition is mandatory before its mount root is removed. Every
+format gets a first launch, clean shutdown, preserved-state relaunch, and owned-root removal. The gate rechecks the executable architecture,
 identity/version, launcher or bundle, safe paths/symlinks, 0700/0600 profile authority, unchanged artifact bytes, and
 absence of default-profile leakage. A fixed non-secret custody probe must either round-trip through OS encryption or be
 refused with no `basic_text`/plaintext fallback; macOS additionally requires the OS-protected Keychain backend.
 Evidence files contain fixed event names only—never endpoints, paths, credentials,
-or process output.
+or process output. Deep-link events are written only after the already-loaded renderer acknowledges the exact consumed
+confirmation or queued navigation state; each dispatch waits for that bounded acknowledgement before the next begins.
 
 Linux DEB/RPM protocol evidence uses an isolated XDG MIME database and a CI-relocated copy of the package's real
 desktop launcher, then dispatches with `gio`; ZIP has no registered launcher, so its single-instance dispatch evidence
 is direct and is reported as that limitation. macOS registers the copied bundle with LaunchServices and dispatches with
-`open -b`. LaunchServices' own database writes are OS-managed evidence, not application profile writes. These checks do
+`open -b`; unregister failure or a stale exact copied-bundle record fails cleanup. LaunchServices' database writes are
+OS-managed state, distinct from app-owned profile writes, and are not reported as cleaned while that copied record remains.
+Cold starts for every format are direct executable argv launches, not OS protocol launches; OS protocol dispatch evidence
+is warm-only. The Linux job does not forward its outer session-bus address or provision a scoped Secret Service, so its
+secure-storage result is explicitly fallback-only: `basic_text`/plaintext storage must be refused, and installed
+`libsecret` is not claimed as exercised custody. These checks do
 not claim end-user Gatekeeper approval for unsigned builds, signing, notarization, or behavior on a desktop session that
 the hosted runner cannot provide.
 

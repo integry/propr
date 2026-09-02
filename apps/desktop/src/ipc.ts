@@ -6,6 +6,7 @@ import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
 import { isSafeExternalUrl, isTrustedRendererUrl } from './security';
 import { IPC_CHANNELS } from './shared/contract';
+import type { DesktopDeepLinkAcknowledgement } from './shared/contract';
 
 interface RegisterIpcOptions {
   app: App;
@@ -16,6 +17,7 @@ interface RegisterIpcOptions {
   desktopSession: Session;
   devServerUrl: string | undefined;
   packagedRendererUrl: string;
+  acknowledgeDeepLink: (event: IpcMainInvokeEvent, acknowledgement: DesktopDeepLinkAcknowledgement) => boolean;
 }
 
 type Handler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown;
@@ -47,6 +49,20 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
     arch: process.arch,
     packaged: options.app.isPackaged,
   }));
+  handle(IPC_CHANNELS.deepLinkAcknowledgement, (event, acknowledgement) => {
+    if (!acknowledgement || typeof acknowledgement !== 'object'
+      || !Number.isSafeInteger(acknowledgement.deliveryId) || acknowledgement.deliveryId <= 0
+      || typeof acknowledgement.url !== 'string'
+      || !acknowledgement.consumption || typeof acknowledgement.consumption !== 'object'
+      || !['connect-confirmation', 'open-queued', 'open-navigated'].includes(acknowledgement.consumption.kind)
+      || typeof acknowledgement.consumption.target !== 'string') {
+      throw new Error('Invalid desktop deep-link acknowledgement');
+    }
+    if (!options.acknowledgeDeepLink(event, acknowledgement)) {
+      throw new Error('Unexpected desktop deep-link acknowledgement');
+    }
+    return undefined;
+  });
   handle(IPC_CHANNELS.authLogout, (_event, apiBaseUrl) => logoutDesktopSession(options.desktopSession, apiBaseUrl));
   handle(IPC_CHANNELS.openExternal, async (_event, value: unknown) => {
     if (typeof value !== 'string' || !isSafeExternalUrl(value)) throw new Error('External URL is not allowed');

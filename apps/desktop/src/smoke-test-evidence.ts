@@ -32,6 +32,7 @@ export const NATIVE_SMOKE_EVIDENCE_EVENTS = [
   'desktop.native.profile_fresh',
   'desktop.native.profile_preserved',
   'desktop.native.secure_storage_enforced',
+  'desktop.native.secure_storage_fallback_refused',
   'desktop.deeplink.cold_manual_once',
   'desktop.deeplink.cold_tunnel_once',
   'desktop.deeplink.warm_manual_once',
