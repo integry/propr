@@ -73,7 +73,9 @@ const positiveHostNodeProducerSubphases = Object.freeze([
 ]);
 const captureRedirectionFailurePredicates = Object.freeze([
   'pre-create',
-  'start-process-launch',
+  'redirect-open',
+  'redirect-timeout',
+  'redirect-child-exit',
   'post-redirection-identity',
   'capture-owner',
   'dacl-canonicality',
@@ -95,7 +97,7 @@ const captureRedirectionDiagnosticPattern = new RegExp(
 );
 const captureRedirectionAcceptedPattern =
   /^PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST:accepted\r?\n$/u;
-const hostileDiagnosticPattern = /[A-Z]:\\|\\\\|S-1-5-|account-name|stdout|stderr|exception|native-text|environment-secret/iu;
+const hostileDiagnosticPattern = /[A-Z]:\\|\\\\|S-1-5-|account-name|username|stdout|stderr|exception|native-text|command-line|sddl|exit-code|environment-secret/iu;
 const uppercasePathDiagnosticPattern = /\bPATH\b/u;
 const hasHostileDiagnosticEvidence = value => hostileDiagnosticPattern.test(value)
   || uppercasePathDiagnosticPattern.test(value);
@@ -295,7 +297,7 @@ const failCaptureRedirectionTest = result => {
   throw error;
 };
 
-test('capture redirection mismatch reporting exposes only an allowlisted predicate', () => {
+test('capture redirection mismatch reporting is total and redacted for each launch predicate', () => {
   const resultFor = stderr => ({
     error: undefined,
     signal: null,
@@ -303,25 +305,39 @@ test('capture redirection mismatch reporting exposes only an allowlisted predica
     stdout: Buffer.alloc(0),
     stderr: Buffer.from(stderr),
   });
-  assert.throws(
-    () => failCaptureRedirectionTest(resultFor(
-      'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
-        + ':phase=capture-parse:subphase=capture-authority'
-        + ':predicate=post-redirection-identity:cleanup=none\r\n',
-    )),
-    error => error.message === 'PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST'
-      + ':failed:predicate=post-redirection-identity'
-      && error.stack === error.message,
-  );
-  assert.throws(
-    () => failCaptureRedirectionTest(resultFor(
-      String.raw`C:\hostile\capture S-1-5-21 account-name stdout stderr exception`,
-    )),
+  const assertDiagnosticContract = (result, label) => assert.throws(
+    () => failCaptureRedirectionTest(result),
     error => error.message === 'PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST'
       + ':failed:predicate=diagnostic-contract'
       && error.stack === error.message
       && !hasHostileDiagnosticEvidence(error.message),
+    label,
   );
+  for (const predicate of ['redirect-open', 'redirect-timeout', 'redirect-child-exit']) {
+    const diagnostic = 'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+      + ':phase=capture-parse:subphase=capture-authority'
+      + `:predicate=${predicate}:cleanup=none\r\n`;
+    assert.throws(
+      () => failCaptureRedirectionTest(resultFor(diagnostic)),
+      error => error.message === 'PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST'
+        + `:failed:predicate=${predicate}`
+        && error.stack === error.message
+        && !hasHostileDiagnosticEvidence(error.message),
+      predicate,
+    );
+
+    assertDiagnosticContract(resultFor(
+      diagnostic + String.raw`C:\hostile\capture S-1-5-21 account-name username stdout stderr exception native-text command-line sddl exit-code environment-secret`,
+    ), `${predicate}-hostile-output`);
+
+    assertDiagnosticContract({
+      error: new Error(String.raw`C:\hostile\exception`),
+      signal: 'hostile-signal',
+      status: null,
+      stdout: Buffer.from('environment-secret'),
+      stderr: Buffer.from(diagnostic),
+    }, `${predicate}-totality`);
+  }
 });
 
 const assertLauncherAuthorityRejected = (result, category, subphase) => {
@@ -1055,7 +1071,9 @@ test('the workflow stages before alternate credentials and the harness preflight
   );
   for (const predicate of [
     'pre-create',
-    'start-process-launch',
+    'redirect-open',
+    'redirect-timeout',
+    'redirect-child-exit',
     'capture-content',
     'cleanup',
   ]) {
@@ -1066,6 +1084,15 @@ test('the workflow stages before alternate credentials and the harness preflight
   }
   assert.match(
     captureRedirectionTestMode,
+    /Set-CaptureAuthorityPredicate 'redirect-open'[\s\S]*?Start-Process[\s\S]*?!\(\$redirectionProcess -is \[System\.Diagnostics\.Process\]\)/u,
+  );
+  assert.match(
+    captureRedirectionTestMode,
+    /Set-CaptureAuthorityPredicate 'redirect-timeout'[\s\S]*?WaitForExit\(\$terminationTimeoutMilliseconds\)[\s\S]*?Set-CaptureAuthorityPredicate 'redirect-child-exit'[\s\S]*?\.ExitCode -ne 0[\s\S]*?Assert-PrivilegedCaptureIdentity/u,
+  );
+  assert.doesNotMatch(captureRedirectionTestMode, /start-process-launch/u);
+  assert.match(
+    captureRedirectionTestMode,
     /-TestOnlyIdentityPredicate 'post-redirection-identity'/u,
   );
   assert.match(
@@ -1073,6 +1100,7 @@ test('the workflow stages before alternate credentials and the harness preflight
     /\$primaryFailure = 'artifact-type'[\s\S]*?\$primaryPhase = 'capture-parse'[\s\S]*?\$primarySubphase = 'capture-authority'[\s\S]*?Set-CaptureAuthorityPredicate \$redirectionFailurePredicate/u,
   );
   assert.match(captureParser, /Set-LifecycleFailureSubphase \$failureRecord\.category[\s\S]*?return 'spawn-failed'/u);
+  assert.doesNotMatch(captureParser, /lastMilestone/u);
   assert.match(captureParser, /\$script:failurePhase = \$failureRecord\.phase/u);
   assert.match(
     orchestrator,
@@ -1164,6 +1192,16 @@ windowsTest('the PS5.1 child-failure parser accepts only the two exact bounded p
   const cases = [
     ['valid-smoke', smokeLine,
       'category=spawn-failed:phase=application-runtime:subphase=timeout-before-ready'],
+    ['valid-record-contained-ready-milestone', `${JSON.stringify({
+      ...smokeRecord,
+      records: [{ event: 'desktop.renderer.connect_discovery.ready' }],
+    })}\n`, 'category=spawn-failed:phase=application-runtime:subphase=timeout-before-ready'],
+    ['valid-ready-duplicate', `${JSON.stringify({
+      ...smokeRecord, category: 'ready-duplicate',
+    })}\n`, 'category=spawn-failed:phase=application-runtime:subphase=ready-duplicate'],
+    ['valid-child-remained-alive', `${JSON.stringify({
+      ...smokeRecord, category: 'child-remained-alive',
+    })}\n`, 'category=spawn-failed:phase=application-runtime:subphase=child-remained-alive'],
     ['valid-staged-contract', artifactLine,
       'category=artifact-type:phase=staged-contract:subphase=parent-to-runner-binding'],
     ['valid-staged-tree', `${JSON.stringify(stagedTreeRecord)}\n`,
@@ -1184,6 +1222,9 @@ windowsTest('the PS5.1 child-failure parser accepts only the two exact bounded p
     ), 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
     ['smoke-extra-field', `${JSON.stringify({ ...smokeRecord, detail: 'fixed' })}\n`,
       'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['smoke-top-level-last-milestone', `${JSON.stringify({
+      ...smokeRecord, lastMilestone: 'desktop.app.ready',
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
     ['artifact-extra-field', `${JSON.stringify({ ...stagedContractRecord, detail: 'fixed' })}\n`,
       'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
     ['smoke-missing-field', `${JSON.stringify({

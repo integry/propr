@@ -148,7 +148,9 @@ $captureAuthorityPredicates = @(
   'link-path-type',
   'identity-replacement',
   'pre-create',
-  'start-process-launch',
+  'redirect-open',
+  'redirect-timeout',
+  'redirect-child-exit',
   'post-redirection-identity',
   'capture-content',
   'cleanup'
@@ -165,7 +167,9 @@ $lifecycleFailureSubphases = @(
   'child-exit-after-ready',
   'tree-termination',
   'ready-clean-exit',
-  'ready-forced-exit'
+  'ready-forced-exit',
+  'ready-duplicate',
+  'child-remained-alive'
 )
 $failureSubphases = @(
   $hostFailureSubphases +
@@ -1841,7 +1845,7 @@ if ($LifecycleTestMode -eq 'capture-redirection') {
     )
     $stdoutAuthority = Initialize-PrivilegedCaptureFile $stdout $privilegedSid
     $stderrAuthority = Initialize-PrivilegedCaptureFile $stderr $privilegedSid
-    Set-CaptureAuthorityPredicate 'start-process-launch'
+    Set-CaptureAuthorityPredicate 'redirect-open'
     $captureProducerSource = "[Console]::Out.Write('capture-stdout');[Console]::Error.Write('capture-stderr')"
     $captureProducerArgument = [Convert]::ToBase64String(
       [Text.Encoding]::Unicode.GetBytes($captureProducerSource)
@@ -1853,13 +1857,16 @@ if ($LifecycleTestMode -eq 'capture-redirection') {
       -RedirectStandardOutput $stdout `
       -RedirectStandardError $stderr `
       -ErrorAction Stop
-    Assert-PrivilegedCaptureIdentity `
-      $stdoutAuthority $privilegedSid -TestOnlyIdentityPredicate 'post-redirection-identity'
-    Assert-PrivilegedCaptureIdentity `
-      $stderrAuthority $privilegedSid -TestOnlyIdentityPredicate 'post-redirection-identity'
-    Set-CaptureAuthorityPredicate 'start-process-launch'
-    if (!$redirectionProcess.WaitForExit($terminationTimeoutMilliseconds) -or
-        $redirectionProcess.ExitCode -ne 0) {
+    if ($null -eq $redirectionProcess -or
+        !($redirectionProcess -is [System.Diagnostics.Process])) {
+      Stop-PackagedConnect 'spawn-failed'
+    }
+    Set-CaptureAuthorityPredicate 'redirect-timeout'
+    if (!$redirectionProcess.WaitForExit($terminationTimeoutMilliseconds)) {
+      Stop-PackagedConnect 'spawn-failed'
+    }
+    Set-CaptureAuthorityPredicate 'redirect-child-exit'
+    if ($redirectionProcess.ExitCode -ne 0) {
       Stop-PackagedConnect 'spawn-failed'
     }
     Assert-PrivilegedCaptureIdentity `
