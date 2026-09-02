@@ -25,6 +25,7 @@ const adaptersFor = (
   probe: (profile: DesktopProfile) => Promise<DesktopConnectionResult> = async () => ({ status: 'offline', message: 'offline' }),
 ): DesktopAdapters => ({
   platform: 'linux',
+  app: { onDeepLink: () => () => undefined },
   profiles: {
     list: vi.fn(async () => [savedProfile]),
     save: vi.fn(async () => undefined),
