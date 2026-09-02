@@ -288,7 +288,10 @@ const currentUserResponseClassification = async (
 export const getCurrentUser = async (options: CurrentUserValidationOptions = {}): Promise<CurrentUser> => {
   const scopeGeneration = options.scopeGeneration ?? 0;
   const activeScopePresent = options.activeScopePresent === true;
-  const response = await apiFetch(`${API_BASE_URL}/api/auth/user`, { credentials: 'include' });
+  const response = await apiFetch(`${API_BASE_URL}/api/auth/user`, {
+    credentials: 'include',
+    cache: 'no-store',
+  });
   const classification = await currentUserResponseClassification(response);
   if (activeScopePresent) {
     reportPackagedAcceptanceCurrentUser({

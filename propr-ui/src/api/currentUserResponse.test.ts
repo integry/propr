@@ -65,4 +65,18 @@ describe('current-user response schema', () => {
       phase: 'parsed-user-rejected', classification: 'invalid-schema', schemaAccepted: false,
     }));
   });
+
+  it('bypasses caches and dispatches one active-scope validation request', async () => {
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(validUser), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(getCurrentUser({ scopeGeneration: 4, activeScopePresent: true })).resolves.toEqual(validUser);
+
+    expect(apiFetch).toHaveBeenCalledOnce();
+    expect(apiFetch).toHaveBeenCalledWith('https://example.test/api/auth/user', {
+      credentials: 'include',
+      cache: 'no-store',
+    });
+  });
 });
