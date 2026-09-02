@@ -101,7 +101,7 @@ describe('notification projection lifecycle races', { concurrency: false }, () =
       repository: 'integry/propr', timestamp: delayedAt,
     });
 
-    assert.equal(await countNotificationEvents(database), 2);
+    assert.equal(await countNotificationEvents(database), 1);
     assert.equal(await countUndismissedNotificationReceipts(database, 'task'), 0);
     assert.equal(await countUndismissedNotificationReceipts(database, 'pull_request'), 0);
     assert.deepEqual(

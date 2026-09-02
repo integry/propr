@@ -49,6 +49,7 @@ interface TaskContext {
   repository: string;
   issueNumber?: number;
   prNumber?: number;
+  description?: string;
   isReview: boolean;
   followupEligible: boolean;
   reviewFollowupEligible: boolean;
@@ -91,6 +92,27 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function compactDisplayText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return undefined;
+  const characters = Array.from(normalized);
+  return characters.length <= 320
+    ? normalized
+    : `${characters.slice(0, 319).join('')}…`;
+}
+
+function taskDescription(initial: Record<string, unknown>): string | undefined {
+  const issueRef = typeof initial.issueRef === 'object'
+    && initial.issueRef !== null
+    && !Array.isArray(initial.issueRef)
+    ? initial.issueRef as Record<string, unknown>
+    : {};
+  return compactDisplayText(initial.subtitle)
+    ?? compactDisplayText(initial.title)
+    ?? compactDisplayText(issueRef.title);
 }
 
 function stableKey(scope: string, ...parts: unknown[]): string {
@@ -288,8 +310,12 @@ export class NotificationProjectionService {
           ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
           ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
         },
-        title: 'Task failed',
-        body: `Work for ${context.repository} did not complete.`,
+        title: context.prNumber !== undefined
+          ? `Task failed for PR #${context.prNumber}`
+          : context.issueNumber !== undefined
+            ? `Task failed for issue #${context.issueNumber}`
+            : 'Task failed',
+        body: context.description ?? `Work for ${context.repository} did not complete.`,
         actions: taskActions({
           followup: context.followupEligible,
           hasPullRequest: pullRequestUrl !== undefined,
@@ -310,8 +336,8 @@ export class NotificationProjectionService {
           type: 'review', repository: context.repository,
           prNumber: context.prNumber, taskId: payload.taskId,
         },
-        title: 'Review completed',
-        body: `Review of PR #${context.prNumber} is complete.`,
+        title: `Review completed for PR #${context.prNumber}`,
+        body: context.description ?? `Review of PR #${context.prNumber} is complete.`,
         actions: taskActions({
           followup: context.reviewFollowupEligible,
           hasPullRequest: pullRequestUrl !== undefined,
@@ -319,7 +345,7 @@ export class NotificationProjectionService {
         ...pullRequestAction(pullRequestUrl),
         occurredAt,
       }, recipients, context.repository, context.prNumber);
-    } else {
+    } else if (context.prNumber === undefined) {
       await this.createPullRequestAwareEvent({
         deduplicationKey: stableKey('implementation-completed', payload.taskId, payload.state, occurredAt),
         kind: 'task',
@@ -329,8 +355,11 @@ export class NotificationProjectionService {
           ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
           ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
         },
-        title: 'Implementation completed',
-        body: `Implementation work for ${context.repository} is complete.`,
+        title: context.issueNumber === undefined
+          ? 'Implementation completed'
+          : `Implementation completed for issue #${context.issueNumber}`,
+        body: context.description
+          ?? `Implementation work for ${context.repository} is complete.`,
         actions: taskActions({
           followup: context.followupEligible,
           hasPullRequest: pullRequestUrl !== undefined,
@@ -340,7 +369,7 @@ export class NotificationProjectionService {
       }, recipients, context.repository, context.prNumber);
     }
 
-    if (context.prNumber !== undefined) {
+    if (!context.isReview && context.prNumber !== undefined) {
       await this.notifications.createPullRequestAttentionNotificationEvent(
         context.repository,
         context.prNumber,
@@ -353,8 +382,9 @@ export class NotificationProjectionService {
           target: {
             type: 'pull_request', repository: context.repository, prNumber: context.prNumber,
           },
-          title: 'Pull request needs attention',
-          body: `PR #${context.prNumber} is ready for attention.`,
+          title: `PR #${context.prNumber} ready for review`,
+          body: context.description
+            ?? `Implementation is complete; review the changes in ${context.repository}.`,
           actions: [
             ...(pullRequestUrl === undefined ? [] : ['open_pr' as const]),
             'dismiss',
@@ -535,6 +565,7 @@ export class NotificationProjectionService {
       repository,
       issueNumber,
       prNumber,
+      description: taskDescription(initial),
       isReview,
       followupEligible: supportsTaskFollowup(task, issueNumber),
       reviewFollowupEligible: supportsTaskFollowup(task, prNumber),

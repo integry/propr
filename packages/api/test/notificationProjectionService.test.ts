@@ -58,11 +58,15 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     );
   });
 
-  test('separates implementation, review, and sanitized PR-attention events', async () => {
+  test('emits one descriptive notification for each completed task', async () => {
     const implementationAt = iso();
     await database('tasks').insert({
       task_id: 'implementation-1', repository: 'integry/propr', issue_number: 1719,
-      pr_number: null, task_type: 'issue', initial_job_data: '{}',
+      pr_number: null, task_type: 'issue',
+      initial_job_data: JSON.stringify({
+        title: 'Follow-up PR #42: Deduplicate Inbox notifications',
+        subtitle: 'Keep only the newest actionable Inbox update.',
+      }),
     });
     await database('task_history').insert({
       task_id: 'implementation-1', state: 'completed', timestamp: implementationAt,
@@ -89,7 +93,11 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     await database('tasks').insert({
       task_id: 'pr-comments-batch-integry-propr-7', repository: 'integry/propr',
       issue_number: 1719, pr_number: null, task_type: 'issue',
-      initial_job_data: JSON.stringify({ number: 7, commentBody: 'SECRET COMMENT' }),
+      initial_job_data: JSON.stringify({
+        number: 7,
+        title: 'Review PR #7 notification behavior',
+        commentBody: 'SECRET COMMENT',
+      }),
     });
     await database('task_history').insert({
       task_id: 'pr-comments-batch-integry-propr-7', state: 'completed',
@@ -104,14 +112,24 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     });
 
     const events = await database('notification_events')
-      .select('kind', 'title', 'action_json')
-      .orderBy('occurred_at') as Array<{ kind: string; title: string; action_json: string | null }>;
+      .select('kind', 'title', 'body', 'action_json')
+      .orderBy('occurred_at') as Array<{
+        kind: string; title: string; body: string; action_json: string | null;
+      }>;
     assert.deepEqual(
       events.map(event => event.kind).sort(),
-      ['pull_request', 'pull_request', 'review', 'task'],
+      ['pull_request', 'review'],
     );
-    assert.ok(events.some(event => event.title === 'Implementation completed'));
-    assert.ok(events.some(event => event.title === 'Review completed'));
+    assert.deepEqual(events.map(event => ({ title: event.title, body: event.body })), [
+      {
+        title: 'PR #42 ready for review',
+        body: 'Keep only the newest actionable Inbox update.',
+      },
+      {
+        title: 'Review completed for PR #7',
+        body: 'Review PR #7 notification behavior',
+      },
+    ]);
     const implementationPrEvent = events.find(event =>
       event.action_json?.includes('/pull/42'));
     assert.equal(
@@ -119,7 +137,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       'https://github.com/integry/propr/pull/42',
     );
     assert.doesNotMatch(JSON.stringify(events), /evil\.example|SECRET/);
-    assert.equal(await countNotificationEvents(database), 4);
+    assert.equal(await countNotificationEvents(database), 2);
   });
 
   test('ignores stale task transitions and emits one stalled event per unchanged activity', async () => {
@@ -174,7 +192,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
 
     const events = await database('notification_events').select('*');
     assert.equal(events.length, 1);
-    assert.equal(events[0].title, 'Task failed');
+    assert.equal(events[0].title, 'Task failed for issue #99');
     assert.doesNotMatch(JSON.stringify(events[0]), /SECRET/);
     assert.deepEqual(
       (await database('notification_user_states').pluck('user_id')).sort(),
@@ -207,12 +225,10 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         advertised_actions_json: string;
       }>;
     assert.deepEqual(events.map(event => event.title), [
-      'Implementation completed',
-      'Pull request needs attention',
+      'PR #42 ready for review',
     ]);
     assert.ok(events.every(event => event.action_json === null));
     assert.deepEqual(events.map(event => JSON.parse(event.advertised_actions_json)), [
-      ['dismiss'],
       ['dismiss'],
     ]);
   });
@@ -263,10 +279,14 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
 
     const listed = await new NotificationService({ database }).listNotifications('admin-user');
     const lifecycleEvents = listed.notifications.filter(notification => [
-      'Task failed', 'Implementation completed', 'Review completed',
+      'Task failed for issue #101',
+      'Implementation completed for issue #102',
+      'Review completed for PR #7',
     ].includes(notification.title));
     assert.deepEqual(lifecycleEvents.map(notification => notification.title).sort(), [
-      'Implementation completed', 'Review completed', 'Task failed',
+      'Implementation completed for issue #102',
+      'Review completed for PR #7',
+      'Task failed for issue #101',
     ]);
     assert.ok(lifecycleEvents.every(notification => !notification.actions.includes('follow_up')));
   });
