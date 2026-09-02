@@ -47,7 +47,10 @@ export const useCurrentUserBootstrap = ({
   );
   const currentConfigurationKey = desktopRuntime ? socketConfigurationKey : 'browser';
   const currentConfigurationKeyRef = useRef(currentConfigurationKey);
-  const scopeGenerationRef = useRef({ configurationKey: currentConfigurationKey, generation: 0 });
+  const scopeGenerationRef = useRef({
+    configurationKey: currentConfigurationKey,
+    generation: desktopRuntime && getDesktopConnectionScope() !== null ? 1 : 0,
+  });
   if (scopeGenerationRef.current.configurationKey !== currentConfigurationKey) {
     scopeGenerationRef.current = {
       configurationKey: currentConfigurationKey,

@@ -111,9 +111,17 @@ describe('desktop current-user bootstrap', () => {
       isDemoModeLoading: false,
     }));
     await waitFor(() => expect(getCurrentUser).toHaveBeenCalledOnce());
+    expect(getCurrentUser).toHaveBeenNthCalledWith(1, {
+      activeScopePresent: false,
+      scopeGeneration: 0,
+    });
 
     publishScope(activeScope);
     await waitFor(() => expect(getCurrentUser).toHaveBeenCalledTimes(2));
+    expect(getCurrentUser).toHaveBeenNthCalledWith(2, {
+      activeScopePresent: true,
+      scopeGeneration: 1,
+    });
     expect(result.current.currentUserLoading).toBe(true);
 
     activated.resolve(user);
@@ -161,6 +169,84 @@ describe('desktop current-user bootstrap', () => {
     scopeB.reject(new Error('Desktop authentication is required.'));
     await act(async () => { await Promise.allSettled([initial.promise, scopeB.promise]); });
     expect(result.current.currentUser).toEqual(user);
+  });
+
+  it('mounts an active scope at generation one and enables exactly one stable Manager after current validation', async () => {
+    const mountedA = deferred<CurrentUser>();
+    const scopeB = deferred<CurrentUser>();
+    const currentA = deferred<CurrentUser>();
+    const refreshedA = deferred<CurrentUser>();
+    const staleMountedUser = { ...user, id: 'stale-mounted-a' };
+    const staleScopeBUser = { ...user, id: 'stale-scope-b' };
+    getCurrentUser
+      .mockReturnValueOnce(mountedA.promise)
+      .mockReturnValueOnce(scopeB.promise)
+      .mockReturnValueOnce(currentA.promise)
+      .mockReturnValueOnce(refreshedA.promise);
+    state.scope = activeScope;
+
+    let latestBootstrap: ReturnType<typeof useCurrentUserBootstrap> | undefined;
+    const Harness = () => {
+      const bootstrap = useCurrentUserBootstrap({ isDemoMode: false, isDemoModeLoading: false });
+      latestBootstrap = bootstrap;
+      const disableReasons = {
+        demoModeLoading: false,
+        demoMode: false,
+        currentUserLoading: bootstrap.currentUserLoading,
+        currentUserAbsent: bootstrap.currentUserAbsent,
+      };
+      return (
+        <SocketProvider disabled={Object.values(disableReasons).some(Boolean)} disableReasons={disableReasons}>
+          <div>app</div>
+        </SocketProvider>
+      );
+    };
+
+    render(<Harness />);
+    await waitFor(() => expect(getCurrentUser).toHaveBeenCalledOnce());
+    expect(getCurrentUser).toHaveBeenNthCalledWith(1, {
+      activeScopePresent: true,
+      scopeGeneration: 1,
+    });
+    expect(connectSocket).not.toHaveBeenCalled();
+
+    publishScope({ ...activeScope, profileId: 'profile-b', transportScope: 'BBBBBBBBBBBBBBBBBBBBBB' });
+    await waitFor(() => expect(getCurrentUser).toHaveBeenCalledTimes(2));
+    expect(getCurrentUser).toHaveBeenNthCalledWith(2, {
+      activeScopePresent: true,
+      scopeGeneration: 2,
+    });
+    publishScope(activeScope);
+    await waitFor(() => expect(getCurrentUser).toHaveBeenCalledTimes(3));
+    expect(getCurrentUser).toHaveBeenNthCalledWith(3, {
+      activeScopePresent: true,
+      scopeGeneration: 3,
+    });
+
+    currentA.resolve(user);
+    await waitFor(() => expect(latestBootstrap?.currentUser).toEqual(user));
+    await waitFor(() => expect(connectSocket).toHaveBeenCalledOnce());
+    expect(sockets[0].connect).toHaveBeenCalledOnce();
+
+    mountedA.resolve(staleMountedUser);
+    scopeB.resolve(staleScopeBUser);
+    await act(async () => { await Promise.all([mountedA.promise, scopeB.promise]); });
+    expect(latestBootstrap?.currentUser).toEqual(user);
+    expect(connectSocket).toHaveBeenCalledOnce();
+    expect(sockets[0].connect).toHaveBeenCalledOnce();
+
+    act(() => { window.dispatchEvent(new Event('propr:instance-authorization-changed')); });
+    await waitFor(() => expect(getCurrentUser).toHaveBeenCalledTimes(4));
+    expect(getCurrentUser).toHaveBeenNthCalledWith(4, {
+      activeScopePresent: true,
+      scopeGeneration: 3,
+    });
+    refreshedA.resolve(user);
+    await act(async () => { await refreshedA.promise; });
+    expect(latestBootstrap?.currentUser).toEqual(user);
+    expect(connectSocket).toHaveBeenCalledOnce();
+    expect(sockets[0].connect).toHaveBeenCalledOnce();
+    expect(sockets[0].disconnect).not.toHaveBeenCalled();
   });
 
   it('constructs once after activated validation and removes that Manager when revalidation fails', async () => {
