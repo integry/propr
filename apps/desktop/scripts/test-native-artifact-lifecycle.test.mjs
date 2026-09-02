@@ -8,15 +8,20 @@ import { inspect } from 'node:util';
 import {
   assertArtifactSet,
   assertSafeExtractedTree,
+  classifyFirstEvidenceDeadline,
   closeProfileApi,
   DmgMountAuthority,
   extractDmg,
   extractRpm,
+  inspectRunningProcessGroupMembers,
   LaunchServicesAuthority,
   NativeLifecycleFailure,
+  NativeLifecycleOperationFailure,
   OwnedProcessGroups,
   parseArguments,
+  removeCopiedApplicationWithLaunchServicesAuthority,
   removeAuthorizedProfile,
+  runningProcessGroupMembersFromPs,
   waitForEvents,
 } from './test-native-artifact-lifecycle.mjs';
 
@@ -88,6 +93,58 @@ describe('native staged artifact lifecycle authority', () => {
     }
   });
 
+  test('allows a successful parent a bounded natural same-group descendant drain', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const groups = new OwnedProcessGroups();
+    const child = spawn(process.execPath, ['-e', `
+      const { spawn } = require('node:child_process');
+      spawn('/bin/sleep', ['0.15'], { stdio: 'ignore' }).unref();
+    `], { detached: true, shell: false, stdio: 'ignore' });
+    const group = groups.track(child);
+    try {
+      const started = Date.now();
+      await group.waitForSuccessfulExit(3_000);
+      assert.ok(Date.now() - started >= 100, 'owned group was released before its descendant drained');
+      assert.deepEqual(await inspectRunningProcessGroupMembers(child.pid), []);
+    } finally {
+      await groups.cleanup();
+    }
+  });
+
+  test('kills and proves absence for a genuinely lingering successful-parent descendant', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const groups = new OwnedProcessGroups();
+    const child = spawn(process.execPath, ['-e', `
+      const { spawn } = require('node:child_process');
+      spawn('/bin/sleep', ['30'], { stdio: 'ignore' }).unref();
+    `], { detached: true, shell: false, stdio: 'ignore' });
+    const group = groups.track(child);
+    try {
+      await assert.rejects(group.waitForSuccessfulExit(3_000), /owned process group drained/);
+      assert.deepEqual(await inspectRunningProcessGroupMembers(child.pid), []);
+      assert.deepEqual(await groups.cleanup(), []);
+    } finally {
+      await groups.cleanup();
+    }
+  });
+
+  test('treats zombie-only process-group records as non-running without hiding live members', () => {
+    const records = Buffer.from([
+      ' 410  410 Z',
+      ' 411  410 Z+',
+      ' 412  410 S',
+      ' 510  510 R+',
+    ].join('\n'));
+    assert.deepEqual(runningProcessGroupMembersFromPs(records, 410), [412]);
+    assert.deepEqual(runningProcessGroupMembersFromPs(Buffer.from(' 410  410 Z\n'), 410), []);
+    assert.throws(
+      () => runningProcessGroupMembersFromPs(Buffer.from('secret-capable malformed output\n'), 410),
+      /invalid record/,
+    );
+  });
+
   for (const failurePoint of ['scan', 'copy']) {
     test(`detaches and verifies a DMG when ${failurePoint} fails after attach`, async () => {
       const calls = [];
@@ -154,6 +211,31 @@ describe('native staged artifact lifecycle authority', () => {
     assert.equal(authority.mounted, true);
   });
 
+  test('reports a fixed non-secret operation stage and classifies a stalled custody probe', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-native-stage-'));
+    const evidence = join(directory, 'evidence.jsonl');
+    const privateFailure = new Error('failed at /private/profile with https://secret.invalid/token');
+    try {
+      await writeFile(evidence, [
+        JSON.stringify({ event: 'desktop.smoke.authorized' }),
+        JSON.stringify({ event: 'desktop.native.secure_storage_probe.started' }),
+      ].join('\n'));
+      assert.equal(await classifyFirstEvidenceDeadline(evidence), 'FIRST_SECURE_STORAGE_PROBE');
+
+      const operationFailure = new NativeLifecycleOperationFailure('FIRST_SECURE_STORAGE_PROBE', privateFailure);
+      const aggregate = new NativeLifecycleFailure(operationFailure, [{
+        label: 'process-groups',
+        error: new Error('private cleanup output'),
+      }]);
+      assert.match(aggregate.message, /stage:FIRST_SECURE_STORAGE_PROBE/);
+      assert.doesNotMatch(String(aggregate), /private\/profile|secret\.invalid|private cleanup output/);
+      assert.doesNotMatch(JSON.stringify(aggregate), /private\/profile|secret\.invalid|private cleanup output/);
+      assert.doesNotMatch(inspect(aggregate), /private\/profile|secret\.invalid|private cleanup output/);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test('surfaces LaunchServices unregister failure and stale exact registration', async () => {
     const applicationRoot = '/private/copied/ProPR Desktop.app';
     const unregisterFailure = new LaunchServicesAuthority(applicationRoot, {}, {
@@ -174,6 +256,53 @@ describe('native staged artifact lifecycle authority', () => {
     stale.registered = true;
     await assert.rejects(stale.assertGone(), /remained registered/);
     assert.equal(stale.registered, true);
+  });
+
+  test('retains the copied application until unregister and exact absence both succeed', async () => {
+    for (const failurePoint of ['unregister', 'postcondition']) {
+      const calls = [];
+      const launchServices = {
+        registered: true,
+        unregister: async () => {
+          calls.push('unregister');
+          if (failurePoint === 'unregister') throw new Error('injected unregister failure');
+        },
+        assertGone: async () => {
+          calls.push('postcondition');
+          if (failurePoint === 'postcondition') throw new Error('injected stale record');
+          launchServices.registered = false;
+        },
+      };
+      const failures = await removeCopiedApplicationWithLaunchServicesAuthority({
+        installRoot: '/private/install',
+        launchServices,
+      }, {
+        removeInstallRoot: async () => { calls.push('remove'); },
+        assertInstallRootAbsent: async () => { calls.push('install-postcondition'); },
+      });
+      assert.deepEqual(calls, ['unregister', 'postcondition']);
+      assert.deepEqual(failures.map(failure => failure.label), [
+        failurePoint === 'unregister' ? 'launchservices-unregister' : 'launchservices-postcondition',
+      ]);
+    }
+
+    const calls = [];
+    const launchServices = {
+      registered: true,
+      unregister: async () => { calls.push('unregister'); },
+      assertGone: async () => {
+        calls.push('postcondition');
+        launchServices.registered = false;
+      },
+    };
+    assert.deepEqual(await removeCopiedApplicationWithLaunchServicesAuthority({
+      installRoot: '/private/install',
+      launchServices,
+    }, {
+      removeInstallRoot: async () => { calls.push('remove'); },
+      assertInstallRootAbsent: async () => { calls.push('install-postcondition'); },
+    }), []);
+    assert.deepEqual(calls, ['unregister', 'postcondition', 'remove', 'install-postcondition']);
   });
 
   test('does not mask profile API or private-profile authority cleanup failures', async () => {

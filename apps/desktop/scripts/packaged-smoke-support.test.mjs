@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
 import { describe, test } from 'node:test';
@@ -103,6 +103,41 @@ describe('packaged smoke native window layout', () => {
 });
 
 describe('packaged smoke child environment', () => {
+  test('preserves a validated runner HOME only for an explicit native macOS Keychain context', async () => {
+    const profile = await createPrivateSmokeProfile(tmpdir());
+    const runnerHome = await mkdtemp(join(tmpdir(), 'propr-runner-home-'));
+    try {
+      const isolated = await createSmokeChildEnvironment({
+        platform: 'darwin',
+        profile,
+        profileApiUrl: 'http://127.0.0.1:43123',
+        parentEnvironment: { HOME: runnerHome },
+      });
+      assert.equal(isolated.HOME, profile.home);
+
+      const keychainEnabled = await createSmokeChildEnvironment({
+        platform: 'darwin',
+        profile,
+        profileApiUrl: 'http://127.0.0.1:43123',
+        parentEnvironment: { HOME: runnerHome },
+        preserveMacosKeychainContext: true,
+      });
+      assert.equal(keychainEnabled.HOME, runnerHome);
+      assert.equal(keychainEnabled.TMPDIR, profile.temporary);
+
+      await assert.rejects(createSmokeChildEnvironment({
+        platform: 'darwin',
+        profile,
+        profileApiUrl: 'http://127.0.0.1:43123',
+        parentEnvironment: { HOME: 'relative-home' },
+        preserveMacosKeychainContext: true,
+      }), /Keychain home is invalid/);
+    } finally {
+      await removePrivateSmokeProfile(profile);
+      await rm(runnerHome, { recursive: true, force: true });
+    }
+  });
+
   test('passes only platform launch inputs and private profile paths from a hostile parent', async () => {
     const parent = await createPrivateSmokeProfile(tmpdir());
     const xAuthority = join(parent.root, 'Xauthority');

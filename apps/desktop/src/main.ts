@@ -5,6 +5,7 @@ import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, screen, sessio
 import type { Rectangle } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import { DeepLinkDelivery } from './deep-link-delivery';
+import { handleDeepLinkDeliveryFailure } from './deep-link-failure-policy';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
@@ -126,7 +127,8 @@ const assertNativeRendererConsumption = (
   if (consumption.kind !== expected.kind || consumption.target !== expected.target) {
     throw new Error('Native renderer deep-link acknowledgement did not prove the intended state');
   }
-  if ([NATIVE_WARM_MANUAL_LINK, NATIVE_WARM_TUNNEL_LINK, NATIVE_WARM_OPEN_LINK].includes(value)
+  if (nativeSmokePhase
+    && [NATIVE_WARM_MANUAL_LINK, NATIVE_WARM_TUNNEL_LINK, NATIVE_WARM_OPEN_LINK].includes(value)
     && nativeSmokeWindow !== window) {
     throw new Error('Native warm deep link did not reach the already-running renderer');
   }
@@ -140,9 +142,11 @@ const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
     if (event) recordNativeEvent(event);
     maybeCompleteNativeFirstLaunch();
   },
-  error => {
-    log('error', 'desktop.app.start_failed', { error });
-    app.exit(1);
+  _error => {
+    handleDeepLinkDeliveryFailure(nativeSmokePhase !== undefined, {
+      exit: code => app.exit(code),
+      log,
+    });
   },
 );
 let logger: DesktopLogger | null = null;
@@ -472,6 +476,7 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
         label: 'Native ProPR Connect tunnel',
         apiBaseUrl: 'https://t-preserved.propr.dev',
       });
+      recordNativeEvent('desktop.native.secure_storage_probe.started');
       const storage = nativeProfiles?.security();
       const credentialWrite = await nativeProfiles?.writeCredential('native-local', 'native-custody-probe');
       if (!storage || !credentialWrite) throw new Error('Native secure-storage custody probe did not run');
@@ -497,6 +502,7 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
       if (process.platform === 'darwin' && (!storage.available || storage.backend !== 'os-protected')) {
         throw new Error('Native macOS artifact did not retain Keychain-backed custody');
       }
+      recordNativeEvent('desktop.native.secure_storage_probe.completed');
       recordNativeEvent('desktop.native.secure_storage_enforced');
       recordNativeEvent('desktop.native.profile_fresh');
     } else {

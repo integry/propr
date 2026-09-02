@@ -47,6 +47,8 @@ const REQUIRED_FIRST_EVENTS = [
   'desktop.smoke.authorized',
   'desktop.native.identity_verified',
   'desktop.deeplink.cold_manual_once',
+  'desktop.native.secure_storage_probe.started',
+  'desktop.native.secure_storage_probe.completed',
   'desktop.native.secure_storage_enforced',
   'desktop.native.profile_fresh',
   'desktop.renderer.ready',
@@ -105,8 +107,16 @@ const run = (file, args, { cwd, env, timeout = COMMAND_TIMEOUT_MS, input } = {})
   });
   let stdout = Buffer.alloc(0);
   let stderr = Buffer.alloc(0);
-  child.stdout.on('data', chunk => { stdout = appendBounded(stdout, chunk); });
-  child.stderr.on('data', chunk => { stderr = appendBounded(stderr, chunk); });
+  let stdoutOverflow = false;
+  let stderrOverflow = false;
+  child.stdout.on('data', chunk => {
+    stdoutOverflow ||= stdout.length + chunk.length > OUTPUT_CAP;
+    stdout = appendBounded(stdout, chunk);
+  });
+  child.stderr.on('data', chunk => {
+    stderrOverflow ||= stderr.length + chunk.length > OUTPUT_CAP;
+    stderr = appendBounded(stderr, chunk);
+  });
   if (input !== undefined) child.stdin.end(input);
   const timer = setTimeout(() => child.kill('SIGKILL'), timeout);
   child.once('error', error => {
@@ -119,7 +129,7 @@ const run = (file, args, { cwd, env, timeout = COMMAND_TIMEOUT_MS, input } = {})
       reject(new Error(`${basename(file)} failed with code ${code ?? 'null'} signal ${signal ?? 'none'}`));
       return;
     }
-    resolveRun({ stdout, stderr });
+    resolveRun({ stderr, stderrOverflow, stdout, stdoutOverflow });
   });
 });
 
@@ -127,14 +137,67 @@ const delay = milliseconds => new Promise(resolveDelay => setTimeout(resolveDela
 
 const errorFrom = (error, fallback) => error instanceof Error ? error : new Error(fallback);
 
+export const NATIVE_LIFECYCLE_OPERATION_STAGES = Object.freeze([
+  'PREPARE_WORK_ROOT',
+  'CREATE_PROFILE',
+  'START_PROFILE_API',
+  'BASELINE_BEFORE',
+  'INSPECT_ARTIFACT',
+  'EXTRACT_ARTIFACT',
+  'VALIDATE_ARTIFACT',
+  'PREPARE_LINUX_SANDBOX',
+  'CREATE_CHILD_ENVIRONMENT',
+  'FIRST_LAUNCH',
+  'FIRST_INITIAL_EVIDENCE',
+  'FIRST_SECURE_STORAGE_PROBE',
+  'FIRST_RENDERER_READY',
+  'WARM_MANUAL_DISPATCH',
+  'WARM_MANUAL_EVIDENCE',
+  'PROTOCOL_DISPATCH',
+  'PROTOCOL_EVIDENCE',
+  'WARM_OPEN_DISPATCH',
+  'WARM_OPEN_EVIDENCE',
+  'MALFORMED_DISPATCH',
+  'MALFORMED_EVIDENCE',
+  'OVERSIZED_DISPATCH',
+  'OVERSIZED_EVIDENCE',
+  'UNSAFE_SCHEME_DISPATCH',
+  'UNSAFE_SCHEME_EVIDENCE',
+  'FIRST_EXIT',
+  'FIRST_EVIDENCE_VALIDATION',
+  'RELAUNCH',
+  'RELAUNCH_EXIT',
+  'RELAUNCH_EVIDENCE',
+  'FINAL_VALIDATION',
+]);
+
+export class NativeLifecycleOperationFailure extends Error {
+  constructor(stage, operationError) {
+    if (!NATIVE_LIFECYCLE_OPERATION_STAGES.includes(stage)) {
+      throw new Error('Native lifecycle failure stage is invalid');
+    }
+    super(`Native lifecycle operation failed [stage:${stage}]`);
+    this.name = 'NativeLifecycleOperationFailure';
+    this.stage = stage;
+    Object.defineProperty(this, 'operationError', { value: operationError, enumerable: false });
+  }
+}
+
 export class NativeLifecycleFailure extends AggregateError {
   constructor(primaryError, cleanupFailures) {
     const cleanupLabels = cleanupFailures.map(failure => failure.label).sort();
+    const stage = primaryError instanceof NativeLifecycleOperationFailure
+      ? ` [stage:${primaryError.stage}]`
+      : '';
     const message = primaryError
-      ? `Native lifecycle failed; cleanup also failed: ${cleanupLabels.join(', ')}`
+      ? `Native lifecycle failed${stage}; cleanup also failed: ${cleanupLabels.join(', ')}`
       : `Native lifecycle cleanup failed: ${cleanupLabels.join(', ')}`;
     const safeErrors = [
-      ...(primaryError ? [new Error('Native lifecycle primary operation failed')] : []),
+      ...(primaryError ? [new Error(
+        primaryError instanceof NativeLifecycleOperationFailure
+          ? primaryError.message
+          : 'Native lifecycle primary operation failed',
+      )] : []),
       ...cleanupLabels.map(label => new Error(`Native lifecycle cleanup failed: ${label}`)),
     ];
     super(safeErrors, message);
@@ -151,24 +214,38 @@ const throwCombined = (primaryError, cleanupFailures) => {
   if (primaryError) throw primaryError;
 };
 
-const processGroupExists = pid => {
-  if (!pid) return false;
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    if (error?.code === 'ESRCH') return false;
-    throw error;
+export const runningProcessGroupMembersFromPs = (output, processGroupId) => {
+  if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
+    throw new Error('Native process-group identity is invalid');
   }
+  const members = [];
+  for (const line of output.toString('utf8').split(/\r?\n/).filter(candidate => candidate.trim())) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line);
+    if (!match) throw new Error('Native process-group inspection returned an invalid record');
+    const pid = Number(match[1]);
+    const pgid = Number(match[2]);
+    const state = match[3][0];
+    if (pgid === processGroupId && state !== 'Z') members.push(pid);
+  }
+  return members;
+};
+
+export const inspectRunningProcessGroupMembers = async processGroupId => {
+  if (!processGroupId) return [];
+  const result = await run('/bin/ps', ['-axo', 'pid=,pgid=,stat='], { timeout: CLEANUP_GRACE_MS });
+  if (result.stdoutOverflow || result.stderrOverflow) {
+    throw new Error('Native process-group inspection exceeded its fixed output bound');
+  }
+  return runningProcessGroupMembersFromPs(result.stdout, processGroupId);
 };
 
 const waitUntil = async (predicate, timeout) => {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (!predicate()) return true;
+    if (!await predicate()) return true;
     await delay(25);
   }
-  return !predicate();
+  return !await predicate();
 };
 
 class OwnedProcessGroup {
@@ -212,13 +289,35 @@ class OwnedProcessGroup {
       await this.waitForClose(CLEANUP_GRACE_MS);
       return;
     }
-    if (processGroupExists(this.pid)) {
+    let initialMembers;
+    try {
+      initialMembers = await inspectRunningProcessGroupMembers(this.pid);
+    } catch {
+      // Inspection failure cannot relinquish authority: still bound TERM/KILL before reporting
+      // that the running-member postcondition could not be proved.
       this.signal('SIGTERM');
-      if (!await waitUntil(() => processGroupExists(this.pid), CLEANUP_GRACE_MS)) {
+      await delay(CLEANUP_GRACE_MS);
+      this.signal('SIGKILL');
+      try {
+        await this.waitForClose(CLEANUP_GRACE_MS);
+      } catch {
+        throw new Error('Native application close and process-group inspection deadlines expired');
+      }
+      throw new Error('Native application process-group inspection failed after bounded cleanup');
+    }
+    if (initialMembers.length > 0) {
+      this.signal('SIGTERM');
+      if (!await waitUntil(
+        async () => (await inspectRunningProcessGroupMembers(this.pid)).length > 0,
+        CLEANUP_GRACE_MS,
+      )) {
         this.signal('SIGKILL');
       }
     }
-    const groupGone = await waitUntil(() => processGroupExists(this.pid), CLEANUP_GRACE_MS);
+    const groupGone = await waitUntil(
+      async () => (await inspectRunningProcessGroupMembers(this.pid)).length > 0,
+      CLEANUP_GRACE_MS,
+    );
     let closeError;
     try {
       await this.waitForClose(CLEANUP_GRACE_MS);
@@ -230,7 +329,9 @@ class OwnedProcessGroup {
     }
     if (!groupGone) throw new Error('Native application process-group cleanup deadline expired');
     if (closeError) throw closeError;
-    if (processGroupExists(this.pid)) throw new Error('Native application left a process in its owned process group');
+    if ((await inspectRunningProcessGroupMembers(this.pid)).length > 0) {
+      throw new Error('Native application left a running process in its owned process group');
+    }
     this.released = true;
   }
 
@@ -250,8 +351,36 @@ class OwnedProcessGroup {
       }
       throwCombined(errorFrom(error, 'Native application close failed'), cleanupFailures);
     }
-    if (processGroupExists(this.pid)) {
-      const primaryError = new Error('Native application main process exited before its owned process group');
+    let resultError = result?.error;
+    if (!resultError && result?.code !== 0) {
+      resultError = new Error(
+        `Native application exited with code ${result?.code ?? 'null'} signal ${result?.signal ?? 'none'}`,
+      );
+    }
+    let naturallyDrained;
+    try {
+      naturallyDrained = await waitUntil(
+        async () => (await inspectRunningProcessGroupMembers(this.pid)).length > 0,
+        CLEANUP_GRACE_MS,
+      );
+    } catch (error) {
+      const cleanupFailures = [];
+      try {
+        await this.terminate();
+      } catch (cleanupError) {
+        cleanupFailures.push({
+          label: 'process-groups',
+          error: errorFrom(cleanupError, 'Process-group cleanup failed'),
+        });
+      }
+      throwCombined(
+        resultError ?? errorFrom(error, 'Native process-group drain inspection failed'),
+        cleanupFailures,
+      );
+    }
+    if (!naturallyDrained) {
+      const primaryError = resultError
+        ?? new Error('Native application main process exited before its owned process group drained');
       const cleanupFailures = [];
       try {
         await this.terminate();
@@ -266,10 +395,7 @@ class OwnedProcessGroup {
     // Relinquish authority only after proving that the complete group is gone;
     // this also prevents a later cleanup pass from acting on a reused PID.
     this.released = true;
-    if (result?.error) throw result.error;
-    if (result?.code !== 0) {
-      throw new Error(`Native application exited with code ${result?.code ?? 'null'} signal ${result?.signal ?? 'none'}`);
-    }
+    if (resultError) throw resultError;
   }
 }
 
@@ -710,6 +836,35 @@ export class LaunchServicesAuthority {
   }
 }
 
+export const removeCopiedApplicationWithLaunchServicesAuthority = async ({
+  installRoot,
+  launchServices,
+}, {
+  removeInstallRoot = path => rm(path, { recursive: true, force: true }),
+  assertInstallRootAbsent = path => assertAbsent(
+    path,
+    'Native uninstall/remove left an owned install root behind',
+  ),
+} = {}) => {
+  const failures = [];
+  const attempt = async (label, operation) => {
+    try {
+      await operation();
+    } catch (error) {
+      failures.push({ label, error: errorFrom(error, 'Native lifecycle cleanup failed') });
+    }
+  };
+  if (launchServices?.registered) {
+    await attempt('launchservices-unregister', () => launchServices.unregister());
+    await attempt('launchservices-postcondition', () => launchServices.assertGone());
+  }
+  if (failures.length === 0) {
+    await attempt('install-root', () => removeInstallRoot(installRoot));
+    await attempt('install-postcondition', () => assertInstallRootAbsent(installRoot));
+  }
+  return failures;
+};
+
 const macProtocolDispatch = async ({ launchServices, link, env }) => {
   await launchServices.register();
   await run('/usr/bin/open', ['-b', APP_ID, link], { env, timeout: 15_000 });
@@ -899,6 +1054,27 @@ const assertDefaultUserDataUntouched = async target => {
   }
 };
 
+export const classifyFirstEvidenceDeadline = async path => {
+  try {
+    const events = new Set((await readFile(path, 'utf8'))
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line)?.event));
+    if (events.has('desktop.native.secure_storage_probe.started')
+      && !events.has('desktop.native.secure_storage_probe.completed')) {
+      return 'FIRST_SECURE_STORAGE_PROBE';
+    }
+    if (events.has('desktop.native.secure_storage_probe.completed')
+      && !events.has('desktop.renderer.ready')) {
+      return 'FIRST_RENDERER_READY';
+    }
+  } catch {
+    // The fixed initial-evidence stage remains actionable when no valid evidence exists.
+  }
+  return 'FIRST_INITIAL_EVIDENCE';
+};
+
 const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
   const workRoot = await mkdtemp(join(tmpdir(), `propr-native-${kind}-`));
   const installRoot = join(workRoot, 'install');
@@ -911,29 +1087,40 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
   let launchServices;
   let sandboxPrepared = false;
   let primaryError;
+  let operationStage = 'PREPARE_WORK_ROOT';
   try {
     await chmod(workRoot, 0o700);
     await mkdir(installRoot, { mode: 0o700 });
     await mkdir(mountRoot, { mode: 0o700 });
     const beforeDigest = await digest(artifact);
+    operationStage = 'CREATE_PROFILE';
     profile = await createPrivateSmokeProfile(workRoot);
+    operationStage = 'START_PROFILE_API';
     profileApi = await createProfileApi();
+    operationStage = 'BASELINE_BEFORE';
     await assertDefaultUserDataUntouched(target);
+    operationStage = 'INSPECT_ARTIFACT';
     await inspectStagedArtifact({ artifact, kind, target, workRoot });
+    operationStage = 'EXTRACT_ARTIFACT';
     await extractArtifact({ artifact, kind, target, installRoot, mountAuthority });
+    operationStage = 'VALIDATE_ARTIFACT';
     application = await locateApplication({ ...target, kind, installRoot });
     await assertSafeExtractedTree(installRoot);
     await validateIdentity({ target, kind, application });
     if (target.platform === 'linux') {
+      operationStage = 'PREPARE_LINUX_SANDBOX';
       const sandbox = join(application.applicationRoot, 'chrome-sandbox');
       await run('/usr/bin/sudo', ['/usr/bin/chown', 'root:root', sandbox]);
       await run('/usr/bin/sudo', ['/usr/bin/chmod', '4755', sandbox]);
       sandboxPrepared = true;
     }
 
+    operationStage = 'CREATE_CHILD_ENVIRONMENT';
     const baseEnvironment = await createSmokeChildEnvironment({
+      platform: target.platform,
       profile,
       profileApiUrl: profileApi.url,
+      preserveMacosKeychainContext: target.platform === 'darwin',
     });
     const firstEnvironment = Object.freeze({
       ...baseEnvironment,
@@ -946,26 +1133,44 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
     delete dispatchEnvironment.PROPR_DESKTOP_SMOKE_TEST;
     delete dispatchEnvironment.PROPR_DESKTOP_SMOKE_PROFILE_API_URL;
 
+    operationStage = 'FIRST_LAUNCH';
     const first = startApplication(application, [
       '--propr-smoke-test',
       `--user-data-dir=${profile.userData}`,
       COLD_MANUAL,
     ], firstEnvironment, workRoot, processGroups);
     const firstEvidence = join(profile.userData, 'application.smoke-evidence.first.jsonl');
-    await waitForEvents(firstEvidence, ['desktop.renderer.ready', 'desktop.deeplink.cold_manual_once'], first.child);
+    operationStage = 'FIRST_INITIAL_EVIDENCE';
+    try {
+      await waitForEvents(firstEvidence, ['desktop.renderer.ready', 'desktop.deeplink.cold_manual_once'], first.child);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Native application evidence deadline expired') {
+        operationStage = await classifyFirstEvidenceDeadline(firstEvidence);
+      }
+      throw error;
+    }
+    operationStage = 'WARM_MANUAL_DISPATCH';
     await dispatchDirect(application, profile.userData, WARM_MANUAL, dispatchEnvironment, processGroups);
+    operationStage = 'WARM_MANUAL_EVIDENCE';
     await waitForEvents(firstEvidence, ['desktop.deeplink.warm_manual_once'], first.child);
     if (target.platform === 'darwin') {
       launchServices = new LaunchServicesAuthority(application.applicationRoot, dispatchEnvironment);
     }
+    operationStage = 'PROTOCOL_DISPATCH';
     const protocol = target.platform === 'linux'
       ? await linuxProtocolDispatch({ application, profile, link: WARM_TUNNEL, env: dispatchEnvironment, processGroups })
       : await macProtocolDispatch({ launchServices, link: WARM_TUNNEL, env: dispatchEnvironment });
+    operationStage = 'PROTOCOL_EVIDENCE';
     await waitForEvents(firstEvidence, ['desktop.deeplink.warm_tunnel_once'], first.child);
+    operationStage = 'WARM_OPEN_DISPATCH';
     await dispatchDirect(application, profile.userData, WARM_OPEN, dispatchEnvironment, processGroups);
+    operationStage = 'WARM_OPEN_EVIDENCE';
     await waitForEvents(firstEvidence, ['desktop.deeplink.warm_open_once'], first.child);
+    operationStage = 'MALFORMED_DISPATCH';
     await dispatchDirect(application, profile.userData, 'native-evidence-malformed', dispatchEnvironment, processGroups);
+    operationStage = 'MALFORMED_EVIDENCE';
     await waitForEvents(firstEvidence, ['desktop.deeplink.rejected_malformed'], first.child);
+    operationStage = 'OVERSIZED_DISPATCH';
     await dispatchDirect(
       application,
       profile.userData,
@@ -973,7 +1178,9 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
       dispatchEnvironment,
       processGroups,
     );
+    operationStage = 'OVERSIZED_EVIDENCE';
     await waitForEvents(firstEvidence, ['desktop.deeplink.rejected_oversized'], first.child);
+    operationStage = 'UNSAFE_SCHEME_DISPATCH';
     await dispatchDirect(
       application,
       profile.userData,
@@ -981,13 +1188,16 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
       dispatchEnvironment,
       processGroups,
     );
+    operationStage = 'UNSAFE_SCHEME_EVIDENCE';
     await waitForEvents(firstEvidence, ['desktop.deeplink.rejected_unsafe_scheme'], first.child);
+    operationStage = 'FIRST_EXIT';
     await first.waitForSuccessfulExit();
     const requiredFirstEvents = target.platform === 'linux'
-      ? REQUIRED_FIRST_EVENTS.flatMap(event => event === 'desktop.native.secure_storage_enforced'
+      ? REQUIRED_FIRST_EVENTS.flatMap(event => event === 'desktop.native.secure_storage_probe.completed'
           ? ['desktop.native.secure_storage_fallback_refused', event]
           : [event])
       : REQUIRED_FIRST_EVENTS;
+    operationStage = 'FIRST_EVIDENCE_VALIDATION';
     await waitForEvents(firstEvidence, requiredFirstEvents, { exitCode: null });
     await assertEvidenceOrdering(firstEvidence, requiredFirstEvents);
     await assertProfileAuthority(profile);
@@ -999,13 +1209,16 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
       PROPR_DESKTOP_NATIVE_EXPECTED_PLATFORM: target.platform,
       PROPR_DESKTOP_NATIVE_EXPECTED_VERSION: target.version,
     });
+    operationStage = 'RELAUNCH';
     const relaunch = startApplication(application, [
       '--propr-smoke-test',
       `--user-data-dir=${profile.userData}`,
       COLD_TUNNEL,
     ], relaunchEnvironment, workRoot, processGroups);
+    operationStage = 'RELAUNCH_EXIT';
     await relaunch.waitForSuccessfulExit();
     const relaunchEvidence = join(profile.userData, 'application.smoke-evidence.relaunch.jsonl');
+    operationStage = 'RELAUNCH_EVIDENCE';
     await waitForEvents(
       relaunchEvidence,
       REQUIRED_RELAUNCH_EVENTS,
@@ -1013,6 +1226,7 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
     );
     await assertEvidenceOrdering(relaunchEvidence, REQUIRED_RELAUNCH_EVENTS);
     await assertProfileAuthority(profile);
+    operationStage = 'FINAL_VALIDATION';
     if (await digest(artifact) !== beforeDigest) throw new Error('Native lifecycle mutated the staged artifact bytes');
     await assertDefaultUserDataUntouched(target);
     report.push({
@@ -1025,7 +1239,10 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
         : 'OS-protected Keychain round-trip and deletion',
     });
   } catch (error) {
-    primaryError = errorFrom(error, 'Native lifecycle operation failed');
+    primaryError = new NativeLifecycleOperationFailure(
+      operationStage,
+      errorFrom(error, 'Native lifecycle operation failed'),
+    );
   }
 
   const cleanupFailures = await processGroups.cleanup();
@@ -1037,19 +1254,16 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
     }
   };
   if (profileApi) await cleanup('profile-api', () => closeProfileApi(profileApi));
-  if (launchServices?.registered) await cleanup('launchservices-unregister', () => launchServices.unregister());
   if (mountAuthority?.mounted) await cleanup('dmg-mount', () => mountAuthority.detach());
   if (sandboxPrepared && application) {
     await cleanup('linux-sandbox', () => run('/usr/bin/sudo', [
       '/bin/rm', '-f', join(application.applicationRoot, 'chrome-sandbox'),
     ]));
   }
-  await cleanup('install-root', () => rm(installRoot, { recursive: true, force: true }));
-  await cleanup('install-postcondition', () => assertAbsent(
+  cleanupFailures.push(...await removeCopiedApplicationWithLaunchServicesAuthority({
     installRoot,
-    'Native uninstall/remove left an owned install root behind',
-  ));
-  if (launchServices?.registered) await cleanup('launchservices-postcondition', () => launchServices.assertGone());
+    launchServices,
+  }));
   if (!mountAuthority?.mounted) {
     await cleanup('mount-root', () => rm(mountRoot, { recursive: true, force: true }));
     await cleanup('mount-postcondition', () => assertAbsent(mountRoot, 'Native DMG mount root remained after detach'));
@@ -1061,6 +1275,10 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
     'dmg-mount',
     'mount-postcondition',
     'profile-authority',
+    'launchservices-unregister',
+    'launchservices-postcondition',
+    'install-root',
+    'install-postcondition',
   ].includes(failure.label));
   if (!blocksOuterRemoval) {
     await cleanup('work-root', () => rm(workRoot, { recursive: true, force: true }));

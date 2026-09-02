@@ -294,6 +294,7 @@ export const createSmokeChildEnvironment = async ({
   profileApiUrl,
   parentEnvironment = process.env,
   inspectPath = lstat,
+  preserveMacosKeychainContext = false,
 }) => {
   if (!profile || !createdProfiles.has(profile)) {
     throw new Error('Packaged smoke child environment rejected an unknown profile');
@@ -330,8 +331,21 @@ export const createSmokeChildEnvironment = async ({
     });
   }
   if (platform === 'darwin') {
+    let home = profile.home;
+    if (preserveMacosKeychainContext) {
+      const runnerHome = parentEnvironment.HOME;
+      if (typeof runnerHome !== 'string' || runnerHome.length > 4096
+        || !isAbsolute(runnerHome) || resolve(runnerHome) !== runnerHome) {
+        throw new Error('Packaged smoke macOS Keychain home is invalid');
+      }
+      const homeStats = await inspectPath(runnerHome);
+      if (!homeStats.isDirectory() || homeStats.isSymbolicLink()) {
+        throw new Error('Packaged smoke macOS Keychain home is invalid');
+      }
+      home = runnerHome;
+    }
     return Object.freeze({
-      HOME: profile.home,
+      HOME: home,
       ...triggers,
       TEMP: profile.temporary,
       TMP: profile.temporary,
