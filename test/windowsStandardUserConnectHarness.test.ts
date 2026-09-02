@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 import {
   parseWindowsNativeProbeOutput,
-  WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS,
+  WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS,
   WINDOWS_INSPECTION_TIMEOUT_MS,
   WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS,
-  windowsInspectionTimeoutForElapsed,
   WindowsNativeStageError,
   windowsNativeTimingBucket,
 } from '../packages/cli/src/connectWindowsAuthority.js';
@@ -16,6 +17,8 @@ import {
 const harness = readFileSync('scripts/verify-windows-standard-user-connect.mjs', 'utf8');
 const processMock = readFileSync('test/fixtures/windowsConnectProcessMock.mjs', 'utf8');
 const windowsAuthority = readFileSync('packages/cli/src/connectWindowsAuthority.ts', 'utf8');
+const connectCommand = readFileSync('packages/cli/src/commands/connectCommand.ts', 'utf8');
+const packagedConnectLifecycle = readFileSync('apps/desktop/scripts/packaged-connect-lifecycle.mjs', 'utf8');
 
 function diagnosticDefinitions(): {
   scenarioAllowlist: string[];
@@ -23,14 +26,11 @@ function diagnosticDefinitions(): {
   statusKindAllowlist: string[];
   reasonCodeAllowlist: string[];
   nativeStageAllowlist: string[];
-  probeMilestoneAllowlist: string[];
-  probeTimingAllowlist: string[];
   createFailureDiagnostic: (
     scenario: string,
     stage: string,
     failureStatus: { status?: unknown; reasonCodes?: unknown } | null,
     nativeStage: string | null,
-    probe: { milestone: string | null; timing: string | null },
   ) => Record<string, unknown>;
 } {
   const start = harness.indexOf('const scenarioAllowlist =');
@@ -43,8 +43,6 @@ function diagnosticDefinitions(): {
     statusKindAllowlist,
     reasonCodeAllowlist,
     nativeStageAllowlist,
-    probeMilestoneAllowlist,
-    probeTimingAllowlist,
     createFailureDiagnostic,
   })`) as ReturnType<typeof diagnosticDefinitions>;
 }
@@ -321,11 +319,129 @@ test('the ordinary-user Windows proof retains native security paths and bounds r
   }
   assert.match(
     processMock,
-    /if \(mode === "valid-authority"\) return result\(0, authorityDocument\(args, options, mode\)\);/,
+    /else if \(mode !== "nonzero"\) child\.stdout\.write\(`\$\{authorityDocument\(args, options, mode, invocation\)\}\\n`\);/,
   );
   assert.match(harness, /\{ name: "path-aba", mode: "path-aba", reason: "INVALID_ROOT" \}/);
   assert.match(harness, /\{ name: "authority-missing-system-root", systemRootMode: "missing", nativeStage: "resolver:env" \}/);
   assert.match(harness, /\{ name: "authority-untrusted-system-root", systemRootMode: "untrusted", nativeStage: "resolver:global-id" \}/);
+});
+
+test('the async two-round fake authority child contains exact-cap overflow promptly', () => {
+  const processFixture = pathToFileURL(resolve('test/fixtures/windowsConnectProcessMock.mjs')).href;
+  const authorityModule = pathToFileURL(resolve('packages/cli/src/connectWindowsAuthority.ts')).href;
+  const regression = `
+    import assert from "node:assert/strict";
+    import childProcess from "node:child_process";
+    import {
+      runWindowsInspectionBrokerBatch,
+      WindowsNativeStageError,
+      writeWindowsInspectionRevalidationControl,
+    } from ${JSON.stringify(authorityModule)};
+
+    const tick = () => new Promise((resolve) => setImmediate(resolve));
+    await tick();
+    const baselineHandles = new Set(process._getActiveHandles());
+    const baselineResources = process.getActiveResourcesInfo().reduce((counts, name) => {
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+      return counts;
+    }, new Map());
+    const child = childProcess.spawn("powershell.exe", [], {
+      shell: false,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const input = child.stdin;
+    assert.ok(input && child.stdout && child.stderr);
+    let publishedBytes = 0;
+    let exitEvents = 0;
+    let closeEvents = 0;
+    let stdoutEnds = 0;
+    let stderrEnds = 0;
+    let stdoutCloses = 0;
+    let stderrCloses = 0;
+    let stdinCloses = 0;
+    child.stdout.on("data", (chunk) => { publishedBytes += Buffer.byteLength(chunk); });
+    child.stdout.on("end", () => { stdoutEnds += 1; });
+    child.stderr.on("end", () => { stderrEnds += 1; });
+    child.stdout.on("close", () => { stdoutCloses += 1; });
+    child.stderr.on("close", () => { stderrCloses += 1; });
+    input.on("close", () => { stdinCloses += 1; });
+    child.on("exit", () => { exitEvents += 1; });
+    child.on("close", () => { closeEvents += 1; });
+
+    const started = performance.now();
+    await assert.rejects(runWindowsInspectionBrokerBatch({
+      entryCount: 1,
+      startBroker: () => child,
+      deadlineMs: 1_000,
+      cleanupTimeoutMs: 250,
+      maxOutputBytes: 128 * 1024,
+    }), (error) => error instanceof WindowsNativeStageError && error.stage === "parent:utf8");
+    assert.ok(performance.now() - started < 750, "overflow did not reject inside its short bound");
+    assert.equal(publishedBytes, 128 * 1024 + 1);
+    assert.equal(child.exitCode, null);
+    assert.equal(child.signalCode, "SIGKILL");
+    assert.equal(child.killed, true);
+    assert.equal(exitEvents, 1);
+    assert.equal(closeEvents, 1);
+    assert.equal(stdoutEnds, 1);
+    assert.equal(stderrEnds, 1);
+    assert.equal(stdoutCloses, 1);
+    assert.equal(stderrCloses, 1);
+    assert.equal(stdinCloses, 1);
+    for (const output of [child.stdout, child.stderr]) {
+      assert.equal(output.readableEnded, true);
+      assert.equal(output.destroyed, true);
+      assert.equal(output.closed, true);
+    }
+    assert.equal(input.destroyed, true);
+    assert.equal(input.closed, true);
+    assert.equal(input.writable, false);
+    await assert.rejects(
+      writeWindowsInspectionRevalidationControl(child),
+      (error) => error instanceof WindowsNativeStageError && error.stage === "broker:control",
+    );
+    assert.equal(child.kill("SIGKILL"), true);
+    assert.equal(child.kill("SIGKILL"), true);
+    await tick();
+    assert.equal(exitEvents, 1);
+    assert.equal(closeEvents, 1);
+
+    const referencedHandles = process._getActiveHandles().filter((handle) => (
+      !baselineHandles.has(handle)
+      && (typeof handle.hasRef !== "function" || handle.hasRef())
+    ));
+    assert.deepEqual(referencedHandles.map((handle) => handle.constructor?.name ?? "unknown"), []);
+    const finalResources = process.getActiveResourcesInfo().reduce((counts, name) => {
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+      return counts;
+    }, new Map());
+    for (const [name, count] of finalResources) {
+      assert.ok(count <= (baselineResources.get(name) ?? 0), name + " remained referenced");
+    }
+  `;
+  const started = performance.now();
+  const result = spawnSync(process.execPath, [
+    '--no-warnings',
+    '--import', 'tsx',
+    '--import', processFixture,
+    '--input-type=module',
+    '--eval', regression,
+  ], {
+    cwd: resolve('.'),
+    shell: false,
+    windowsHide: true,
+    encoding: 'utf8',
+    timeout: 3_000,
+    maxBuffer: 16 * 1024,
+    env: { ...process.env, PROPR_TEST_AUTHORITY_MODE: 'oversized' },
+  });
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.signal, null, result.stderr);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
+  assert.ok(performance.now() - started < 3_000);
 });
 
 test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all other values', () => {
@@ -342,7 +458,7 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'authority-missing-system-root', 'authority-mismatched-system-root', 'authority-untrusted-system-root',
   ]);
   assert.deepEqual([...definitions.assertionStageAllowlist], [
-    'native-timing', 'authority-probe', 'scaffold', 'identity-assertion', 'config-init', 'config-save',
+    'authority-probe', 'scaffold', 'identity-assertion', 'config-init', 'config-save',
     'config-assertion',
     'write-env', 'spawn', 'signal', 'exit', 'bounds', 'schema', 'status', 'endpoint',
     'identity', 'reasons', 'api-ready', 'restart', 'stderr', 'sentinel', 'api-spawn',
@@ -360,21 +476,13 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
   ]);
   assert.deepEqual([...definitions.nativeStageAllowlist], [
     'resolver:env', 'resolver:canonical', 'resolver:global-open', 'resolver:global-id',
-    'spawn:create', 'spawn:error', 'spawn:timeout', 'spawn:cumulative-timeout', 'spawn:status', 'spawn:stderr',
-    'probe:entry', 'probe:baseline', 'probe:reflection-emit', 'probe:win32', 'probe:standard-handle', 'probe:output',
+    'spawn:create', 'spawn:error', 'spawn:timeout', 'spawn:status', 'spawn:stderr', 'spawn:cleanup',
     'broker:ps-version', 'broker:job', 'broker:fd', 'broker:fd-duplicate', 'broker:index-info-initial',
     'broker:security-info', 'broker:acl', 'broker:json', 'broker:current-user-sid',
     'broker:index-info-revalidation', 'broker:index-info-decode', 'broker:index-info-compose', 'broker:entry-format',
-    'broker:entry-flags', 'broker:entry-rules', 'broker:entry-build',
+    'broker:entry-flags', 'broker:entry-rules', 'broker:entry-build', 'broker:control',
     'parent:utf8', 'parent:json-parse', 'parent:json-canonical', 'parent:document-shape',
     'parent:entry-count', 'parent:entry-shape', 'parent:json-shape', 'parent:descriptor-bind', 'parent:post-bind',
-  ]);
-  assert.deepEqual([...definitions.probeMilestoneAllowlist], [
-    'none', 'entry-ps51-desktop-x64', 'constant-json', 'reflection-emit', 'harmless-win32',
-    'standard-handle-identity',
-  ]);
-  assert.deepEqual([...definitions.probeTimingAllowlist], [
-    'under-5s', '5-to-15s', '15-to-30s', '30-to-45s', '45-to-60s', 'at-least-60s',
   ]);
   const assignedStages = [...harness.matchAll(/currentStage = "([^"]+)";/g)]
     .map((match) => match[1]);
@@ -393,12 +501,9 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     identity: 'identity-SENTINEL',
     endpoint: 'endpoint-SENTINEL',
     secret: 'secret-SENTINEL',
-  } as { status: string; reasonCodes: string[] }, 'broker:fd', {
-    milestone: 'standard-handle-identity', timing: '15-to-30s',
-  });
+  } as { status: string; reasonCodes: string[] }, 'broker:fd');
   assert.deepEqual(Object.keys(diagnostic), [
     'scenario', 'stage', 'nativeStage', 'status', 'reasonCodes',
-    'probeMilestone', 'probeTiming',
   ]);
   assert.deepEqual(JSON.parse(JSON.stringify(diagnostic)), {
     scenario: 'ready',
@@ -406,30 +511,14 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     nativeStage: 'broker:fd',
     status: 'ready',
     reasonCodes: ['ACL_DIAGNOSTIC_UNAVAILABLE'],
-    probeMilestone: 'standard-handle-identity',
-    probeTiming: '15-to-30s',
   });
   assert.equal(JSON.stringify(diagnostic).includes('SENTINEL'), false);
-
-  assert.deepEqual(JSON.parse(JSON.stringify(definitions.createFailureDiagnostic(
-    'ready', 'native-timing', null, 'spawn:timeout',
-    { milestone: 'reflection-emit', timing: 'at-least-60s' },
-  ))), {
-    scenario: 'ready',
-    stage: 'native-timing',
-    nativeStage: 'spawn:timeout',
-    status: null,
-    reasonCodes: [],
-    probeMilestone: 'reflection-emit',
-    probeTiming: 'at-least-60s',
-  });
 
   const rejected = definitions.createFailureDiagnostic(
     'private-scenario-SENTINEL',
     'raw-output-SENTINEL',
     { status: 'secret-status-SENTINEL', reasonCodes: ['secret-reason-SENTINEL'] },
     'raw-native-stage-SENTINEL',
-    { milestone: 'secret-SENTINEL', timing: '12345ms-SENTINEL' },
   );
   assert.deepEqual(JSON.parse(JSON.stringify(rejected)), {
     scenario: 'ready',
@@ -437,47 +526,47 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     nativeStage: null,
     status: null,
     reasonCodes: [],
-    probeMilestone: null,
-    probeTiming: null,
   });
 
   const catchStart = harness.lastIndexOf('} catch {');
   const catchEnd = harness.indexOf('} finally {', catchStart);
   const catchBody = harness.slice(catchStart, catchEnd);
-  assert.match(catchBody, /createFailureDiagnostic\(\s*currentScenario, currentStage, failureStatus, currentNativeStage, nativeProbe,/);
+  assert.match(catchBody, /createFailureDiagnostic\(\s*currentScenario, currentStage, failureStatus, currentNativeStage,/);
   assert.match(catchBody, /JSON\.stringify\(\s*diagnostic,\s*\)/);
   assert.doesNotMatch(catchBody, /(?:result|api|error)\.(?:stdout|stderr|message|path|argv|env|config)/i);
 });
 
-test('the staged hosted probe and production inspector both use the inherited standard handle', () => {
-  assert.doesNotMatch(windowsAuthority, /_get_osfhandle|AssignProcessToJobObject|CreateJobObject/);
-  assert.match(harness, /runWindowsNativeTimingProbe\(probeFd\)/);
-  assert.match(harness, /openSync\(\s*fixture,\s*constants\.O_RDONLY \| constants\.O_DIRECTORY \| constants\.O_NOFOLLOW,\s*\)/);
-  assert.match(harness, /native-timing=\$\{nativeProbe\.evidence\}/);
-  assert.match(harness, /;total:\$\{nativeProbe\.timing\}/);
+test('the ordinary-user path skips the isolated timing probe and production inherits a fixed multi-handle fd table', () => {
+  assert.doesNotMatch(windowsAuthority, /AssignProcessToJobObject|CreateJobObject/);
+  assert.doesNotMatch(harness, /runWindowsNativeTimingProbe|native-timing|nativeProbe|probeMilestone|probeTiming/);
   assert.match(harness, /ready=standard-handle-passed/);
 
   const productionSourceStart = windowsAuthority.indexOf('export const WINDOWS_INSPECTION_SOURCE');
   const productionSourceEnd = windowsAuthority.indexOf('export const WINDOWS_NATIVE_PROBE_MILESTONES', productionSourceStart);
   const productionSource = windowsAuthority.slice(productionSourceStart, productionSourceEnd);
-  assert.match(productionSource, /GetStdHandle\(-10\)/);
-  assert.doesNotMatch(productionSource, /_get_osfhandle|AssignProcessToJobObject|CreateJobObject|Start-Process|CreateProcess/);
+  assert.match(productionSource, /_get_osfhandle\(3\+\$i\)/);
+  assert.doesNotMatch(productionSource, /AssignProcessToJobObject|CreateJobObject|Start-Process|CreateProcess/);
   assert.match(windowsAuthority, /stdio: \[stdin, "pipe", "pipe"\]/);
+  assert.match(windowsAuthority, /stdio: \[roundCount === 2 \? "pipe" : "ignore", "pipe", "pipe", \.\.\.targets\.map/);
+  assert.doesNotMatch(productionSource, /\bpath=|\bkind=|authorityKind=|S-1-/);
+  assert.match(windowsAuthority, /powerShellArguments\(inspectionSource\(targets\.length, roundCount\)\)/);
+  assert.match(windowsAuthority, /\.replace\("__PROPR_ENTRY_COUNT__", String\(entryCount\)\)/);
+  assert.match(windowsAuthority, /\.replace\("__PROPR_ROUND_COUNT__", String\(roundCount\)\)/);
   assert.match(windowsAuthority, /WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false/);
   assert.match(windowsAuthority, /WINDOWS_INSPECTOR_WRITES_FILESYSTEM = false/);
 });
 
-test('the production inspector duplicates its standard handle before the split native operations', () => {
+test('the production inspector duplicates each fixed fd before split native operations', () => {
   const productionSourceStart = windowsAuthority.indexOf('export const WINDOWS_INSPECTION_SOURCE');
   const productionSourceEnd = windowsAuthority.indexOf('export const WINDOWS_NATIVE_PROBE_MILESTONES', productionSourceStart);
   const productionSource = windowsAuthority.slice(productionSourceStart, productionSourceEnd);
-  assert.match(productionSource, /\$stage=80\s+if\(-not \[ProprReadOnlyAuthority\]::DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{exit \$stage\}/);
-  assert.match(productionSource, /\$stage=74\s+\$before=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$privateHandle,\$before\)\)\{exit \$stage\}/);
-  assert.match(productionSource, /\$stage=78\s+\$current=\[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)\.User\s+if\(\$null-eq \$current\)\{exit \$stage\}\s+\$currentSid=\$current\.Value/);
+  assert.match(productionSource, /\$stage=80\s+if\(-not \[ProprReadOnlyAuthority\]::DuplicateHandle\(\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\$originalHandle,\s*\[ProprReadOnlyAuthority\]::GetCurrentProcess\(\),\[ref\]\$privateHandle,0,\$false,2\)\)\{Exit-ProprStage\}/);
+  assert.match(productionSource, /\$stage=74\s+\$before=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$privateHandle,\$before\)\)\{Exit-ProprStage\}/);
+  assert.match(productionSource, /\$stage=78\s+\$current=\[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)\.User\s+if\(\$null-eq \$current\)\{Exit-ProprStage\}/);
   assert.match(productionSource, /GetSecurityInfo\(\$privateHandle,1,5,\[ref\]\$owner,\[ref\]\$group,\[ref\]\$dacl,\[ref\]\$sacl,\[ref\]\$descriptor\)/);
-  assert.match(productionSource, /\$stage=79\s+\$after=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$privateHandle,\$after\)\)\{exit \$stage\}/);
+  assert.match(productionSource, /\$stage=79\s+\$after=\[Runtime\.InteropServices\.Marshal\]::AllocHGlobal\(52\)\s+if\(-not \[ProprReadOnlyAuthority\]::GetFileInformationByHandle\(\$privateHandle,\$after\)\)\{Exit-ProprStage\}/);
   assert.equal(productionSource.match(/::CloseHandle\(\$privateHandle\)/g)?.length, 1);
-  assert.match(productionSource, /finally \{if\(\$privateHandleOwned\)\{\$null=\[ProprReadOnlyAuthority\]::CloseHandle\(\$privateHandle\)\}\}/);
+  assert.match(productionSource, /if\(\$privateHandle-ne \[IntPtr\]::Zero\)\{\$null=\[ProprReadOnlyAuthority\]::CloseHandle\(\$privateHandle\)\}/);
   assert.doesNotMatch(productionSource, /CloseHandle\(\$originalHandle\)/);
   assert.doesNotMatch(windowsAuthority, /"broker:index-info"/);
   assert.match(windowsAuthority, /74: "broker:index-info-initial"/);
@@ -510,51 +599,60 @@ test('the staged probe accepts only ordered milestone tokens and coarse timing b
   assert.match(windowsAuthority, /GetFileInformationByHandle/);
 });
 
-test('the diagnostic allowance precedes a cumulatively bounded production standard-handle proof', () => {
+test('the fixed product contracts run ready and malformed authority scenarios without a timing-probe gate', () => {
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS, 60_000);
   assert.equal(WINDOWS_INSPECTION_TIMEOUT_MS, 60_000);
-  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 240_000);
+  assert.equal(WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS, 5_000);
   assert.match(
     windowsAuthority,
-    /export const WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS = 240_000;/,
+    /export const WINDOWS_INSPECTION_TIMEOUT_MS = 60_000;/,
   );
   assert.match(harness, /const WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT = 2;/);
   assert.match(harness, /const WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS = 15_000;/);
+  assert.match(harness, /const WINDOWS_PRODUCT_AUTHORITY_TIMEOUT_MS = 60_000;/);
   assert.match(
     harness,
-    /const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = \(\s*WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT\s*\* nativeAuthority\.WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS\s*\) \+ WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;/,
+    /const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = \(\s*WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT \* WINDOWS_PRODUCT_AUTHORITY_TIMEOUT_MS\s*\) \+ WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;/,
   );
   const windowsProductScenarioTimeoutMs = (
-    2 * WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS
+    2 * WINDOWS_INSPECTION_TIMEOUT_MS
   ) + 15_000;
-  assert.equal(windowsProductScenarioTimeoutMs, 495_000);
+  assert.equal(windowsProductScenarioTimeoutMs, 135_000);
   assert.equal(Number.isFinite(windowsProductScenarioTimeoutMs), true);
   assert.equal(Number.isSafeInteger(windowsProductScenarioTimeoutMs), true);
-  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 4 * WINDOWS_INSPECTION_TIMEOUT_MS);
-  assert.notEqual(
-    WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS / WINDOWS_INSPECTION_TIMEOUT_MS,
-    32,
+  assert.match(packagedConnectLifecycle, /readyTimeoutMs = 240_000,/u);
+  assert.ok(WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS < WINDOWS_INSPECTION_TIMEOUT_MS);
+  assert.match(windowsAuthority, /startBroker: \(\) => child/u);
+  assert.match(windowsAuthority, /const deadlineTimer = setTimeout\(\(\) => \{\s*deadlineExpired = true;/u);
+  assert.match(windowsAuthority, /deadlineMs: WINDOWS_INSPECTION_TIMEOUT_MS/u);
+  const trustedGeneration = connectCommand.indexOf('await readTrustedConnectTunnelOverride(root)');
+  const rootGeneration = connectCommand.indexOf('await withOwnedConnectRootSnapshot(root');
+  assert.ok(trustedGeneration >= 0 && trustedGeneration < rootGeneration);
+  const rootSnapshot = connectCommand.slice(rootGeneration, connectCommand.indexOf("dependencies.reportSmokeDiagnostic?.(phase, 'PASSED')", rootGeneration));
+  assert.match(rootSnapshot, /process\.platform === "win32"\s*\? windowsTunnelEnabledOverride/u);
+  assert.doesNotMatch(rootSnapshot, /process\.platform === "win32"\s*\? await readTrustedConnectTunnelOverride/u);
+  const productionInspection = windowsAuthority.slice(
+    windowsAuthority.indexOf('export async function runWindowsReadOnlyInspection'),
+    windowsAuthority.indexOf('function probeFailureStage'),
   );
-  assert.equal(windowsInspectionTimeoutForElapsed(0), 60_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(60_000), 60_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(120_000), 60_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(180_000), 60_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(180_001), 59_999);
-  assert.equal(windowsInspectionTimeoutForElapsed(210_000), 30_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(225_000), 15_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(239_999.9), 1);
-  assert.throws(
-    () => windowsInspectionTimeoutForElapsed(240_000),
-    (error) => error instanceof WindowsNativeStageError && error.stage === 'spawn:cumulative-timeout',
-  );
-  assert.throws(
-    () => windowsInspectionTimeoutForElapsed(240_001),
-    (error) => error instanceof WindowsNativeStageError && error.stage === 'spawn:cumulative-timeout',
-  );
-  const probeCall = harness.indexOf('runWindowsNativeTimingProbe(probeFd)');
-  const productionMatrix = harness.indexOf('for (const scenario of cases)', probeCall);
+  assert.doesNotMatch(productionInspection, /spawnSync|windowsInspectionTimeoutForElapsed/u);
+  assert.doesNotMatch(harness, /runWindowsNativeTimingProbe/);
+  assert.equal(fixtureScenarios()[0]?.name, 'ready');
+  assert.match(harness, /\{ name: "authority-malformed", mode: "malformed", nativeStage: "parent:json-parse" \}/);
+  const productionMatrix = harness.indexOf('for (const scenario of cases)');
   const productionSpawn = harness.indexOf('const result = spawnSync(process.execPath', productionMatrix);
-  assert.ok(probeCall < productionMatrix && productionMatrix < productionSpawn);
+  const authorityMatrix = harness.indexOf('for (const scenario of authorityFailures)', productionSpawn);
+  const authoritySpawn = harness.indexOf('const result = spawnSync(process.execPath', authorityMatrix);
+  assert.ok(productionMatrix < productionSpawn && productionSpawn < authorityMatrix && authorityMatrix < authoritySpawn);
+  const productScenarioLoop = harness.slice(productionMatrix, authorityMatrix);
+  assert.match(productScenarioLoop, /currentScenario = scenario\.name;[\s\S]*assert\.equal\(document\.status, scenario\.status, scenario\.name\);/u);
+  assert.match(productScenarioLoop, /const expectedStderr = scenario\.status === "ready" \? "" : `ProPR Connect discovery: \$\{scenario\.status\}\.\\n`;/u);
+  assert.match(productScenarioLoop, /assert\.equal\(nativeDiagnostic\.applicationStderr, expectedStderr, scenario\.name\);/u);
+  const authorityScenarioLoop = harness.slice(authorityMatrix, harness.indexOf('currentScenario = "api"', authorityMatrix));
+  assert.match(authorityScenarioLoop, /assert\.equal\(currentNativeStage, scenario\.nativeStage, scenario\.name\);/u);
+  assert.match(authorityScenarioLoop, /assert\.equal\(document\.status, "invalidConfig", scenario\.name\);/u);
+  assert.match(authorityScenarioLoop, /scenario\.reason \?\? "ACL_DIAGNOSTIC_UNAVAILABLE"/u);
+  assert.match(authorityScenarioLoop, /assert\.equal\(nativeDiagnostic\.applicationStderr, "ProPR Connect discovery: invalidConfig\.\\n", scenario\.name\);/u);
   const probeStart = windowsAuthority.indexOf('export function runWindowsNativeTimingProbe');
   const probeEnd = windowsAuthority.indexOf('\n}\n\nexport function windowsInspectionEntryKind', probeStart);
   const probe = windowsAuthority.slice(probeStart, probeEnd);
@@ -570,7 +668,7 @@ test('the hostile path ABA remains replaced through validation and is rejected a
   assert.match(processMock, /process\.once\("exit", \(\) => \{/);
   const replacement = processMock.indexOf('writeFileSync(envPath');
   const exitHook = processMock.indexOf('process.once("exit"', replacement);
-  const spawn = processMock.indexOf('return originalSpawnSync(command, args, options);', replacement);
+  const spawn = processMock.indexOf('return originalSpawn(command, args, options);', replacement);
   const restore = processMock.indexOf('renameSync(detached, envPath);', replacement);
   assert.ok(
     replacement < exitHook && exitHook < restore && restore < spawn,

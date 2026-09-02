@@ -7,9 +7,11 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import {
   preservePrimaryWithCleanup,
+  readPackagedConnectFailureMilestone,
   removeAuthorizedConnectFixture,
   runPackagedConnectLifecycle,
 } from './packaged-connect-lifecycle.mjs';
+import { verifyNativeWindowsReadyPipeRegression } from './packaged-connect-ready-regression.mjs';
 import {
   canonicalizeWindowsFixtureEntry,
   encodedWindowsFixtureAcl,
@@ -229,6 +231,8 @@ try {
   failurePhase = 'package-validation';
   await assertPackageAuthority();
   const treeKillerPath = await windowsTreeKiller();
+  failurePhase = 'ready-pipe-regression';
+  await verifyNativeWindowsReadyPipeRegression({ treeKillerPath });
   const sensitiveNeedles = [
     ...secrets, fixture, configRoot, stackRoot, identity,
     'S-1-5-', 'volumeSerialNumber', 'fileId', 'authorityDiagnostic',
@@ -242,6 +246,9 @@ try {
     authorityMechanism: authorityMechanism(),
     sensitiveNeedles,
     treeKillerPath,
+    readFailureMilestone: () => readPackagedConnectFailureMilestone(
+      join(userDataPath, 'application.smoke-evidence.jsonl'),
+    ),
     env: {
       ...process.env,
       PROPR_DESKTOP_CONNECT_SMOKE_TEST: '1',
@@ -268,6 +275,8 @@ try {
   if (outcome.ok && cleanup.ok) {
     process.stdout.write(`Packaged Connect discovery passed for ${process.platform}-${process.arch}: ${authorityMechanism()}.\n`);
   } else {
+    // Keep this exact #2056 producer schema: event/category/capture/records
+    // with optional secondary, and no top-level milestone extension.
     process.stderr.write(`${JSON.stringify({
       event: 'packaged_connect.smoke_failed',
       category: outcome.category,

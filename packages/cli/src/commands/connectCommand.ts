@@ -380,9 +380,17 @@ export async function getLocalConnectStatus(
   dependencies.reportSmokeDiagnostic?.(phase, 'STARTED');
   try {
     const prepared = await prepareConnectHostConfig();
+    // A native Windows generation owns one broker under one fixed 60-second
+    // deadline. Finish the independent trusted-home generation before opening
+    // the root generation so neither cold start consumes the other's bound.
+    const windowsTunnelEnabledOverride = process.platform === "win32" && root
+      ? await readTrustedConnectTunnelOverride(root)
+      : undefined;
     const local = await withOwnedConnectRootSnapshot(root, async (snapshot) => {
       const cfg = prepared.resolveSnapshot(snapshot);
-      const tunnelEnabledOverride = await readTrustedConnectTunnelOverride(snapshot.requestedRoot);
+      const tunnelEnabledOverride = process.platform === "win32"
+        ? windowsTunnelEnabledOverride
+        : await readTrustedConnectTunnelOverride(snapshot.requestedRoot);
       const effectiveCfg = tunnelEnabledOverride === undefined
         ? cfg
         : { ...cfg, uiTunnelEnabled: tunnelEnabledOverride };
@@ -400,7 +408,7 @@ export async function getLocalConnectStatus(
         publicInstanceIdentity,
         sidecarInspection,
       };
-    }, { parseEnvFile: prepared.parseEnvFile });
+    }, { parseEnvFile: prepared.parseEnvFile, pinPublicIdentityAuthority: process.platform === "win32" });
     dependencies.reportSmokeDiagnostic?.(phase, 'PASSED');
     phase = 'status-resolution';
     dependencies.reportSmokeDiagnostic?.(phase, 'STARTED');

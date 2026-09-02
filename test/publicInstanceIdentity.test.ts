@@ -45,6 +45,7 @@ import {
   assertSafeDarwinAclOutput,
   assertSafeWindowsAuthority,
   stableAuthorityIdentity,
+  WindowsAuthorityInspectionError,
   type ConnectRootAuthorityInspector,
   type WindowsAuthorityInspection,
 } from '../packages/cli/src/connectRootAuthority.js';
@@ -921,6 +922,29 @@ test('trusted Connect config read is bounded, root-specific, replacement-safe, a
     await assert.rejects(readTrustedConnectTunnelOverride(root, { trustedHome: home }), TrustedConnectConfigError);
     chmodSync(configPath, 0o000);
     await assert.rejects(readTrustedConnectTunnelOverride(root, { trustedHome: home }), TrustedConnectConfigError);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('trusted Connect config preserves unavailable Windows root authority for status mapping', async () => {
+  const parent = temporaryRoot('propr-connect-trusted-authority-');
+  const home = join(parent, 'os-home');
+  const configDir = join(home, '.propr');
+  privateDirectory(configDir);
+  writeFileSync(join(configDir, 'config.json'), JSON.stringify({
+    tunnelEnabledByRoot: { 'C:\\trusted\\stack': true },
+  }), { mode: 0o600 });
+  const unavailable = new WindowsAuthorityInspectionError();
+  const inspector: ConnectRootAuthorityInspector = {
+    inspectDarwinAcl: () => { throw new Error('unused'); },
+    inspectWindowsAcl: async () => { throw unavailable; },
+    inspectWindowsAcls: async () => { throw unavailable; },
+  };
+  try {
+    await assert.rejects(readTrustedConnectTunnelOverride('C:\\trusted\\stack', {
+      platform: 'win32', trustedHome: home, authorityInspector: inspector,
+    }), (error) => error === unavailable);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }

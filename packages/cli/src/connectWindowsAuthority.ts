@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
   closeSync,
   constants,
@@ -16,11 +16,10 @@ import type {
 } from "./connectRootAuthority.js";
 
 // Hosted alternate-user Windows can spend more than fifteen seconds entering
-// the fixed PowerShell/Reflection.Emit boundary. Each production call gets one
-// bounded cold-start allowance. The cumulative cap is a fixed four-process
-// proof ceiling and is independent of the 32-entry input-schema bound.
+// the fixed PowerShell/Reflection.Emit boundary. All one-target brokers start
+// concurrently and share this single wall-clock allowance.
 export const WINDOWS_INSPECTION_TIMEOUT_MS = 60_000;
-export const WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS = 240_000;
+export const WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS = 5_000;
 export const WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS = 60_000;
 const WINDOWS_INSPECTION_MAX_BYTES = 128 * 1024;
 const WINDOWS_NATIVE_PROBE_MAX_BYTES = 2 * 1024;
@@ -29,12 +28,12 @@ const GLOBAL_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
 
 export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
-  "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
+  "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr", "spawn:cleanup",
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
   "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose", "broker:entry-format",
-  "broker:entry-flags", "broker:entry-rules", "broker:entry-build",
+  "broker:entry-flags", "broker:entry-rules", "broker:entry-build", "broker:control",
   "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
   "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ] as const);
@@ -43,10 +42,31 @@ export type WindowsNativeStageCode = (typeof WINDOWS_NATIVE_STAGE_CODES)[number]
 
 const WINDOWS_NATIVE_STAGE_SET: ReadonlySet<string> = new Set(WINDOWS_NATIVE_STAGE_CODES);
 const WINDOWS_NATIVE_DIAGNOSTIC_HOOK = Symbol.for("propr.test.windowsNativeDiagnostic");
+const WINDOWS_BROKER_ENTRY_FAILURE_BASE = 1_000;
+const WINDOWS_BROKER_ENTRY_FAILURE_STRIDE = 100;
+
+export type WindowsBrokerEntryIndexToken =
+  | "00" | "01" | "02" | "03" | "04" | "05" | "06" | "07"
+  | "08" | "09" | "10" | "11" | "12" | "13" | "14" | "15"
+  | "16" | "17" | "18" | "19" | "20" | "21" | "22" | "23"
+  | "24" | "25" | "26" | "27" | "28" | "29" | "30" | "31";
+
+export type WindowsBrokerEntryOperationToken =
+  | "fd" | "fd-duplicate" | "identity-initial" | "security-info" | "acl"
+  | "identity-revalidation" | "identity-decode" | "identity-compose"
+  | "entry-format" | "entry-flags" | "entry-rules" | "entry-build";
 
 export class WindowsNativeStageError extends Error {
-  constructor(readonly stage: WindowsNativeStageCode) {
-    super("Windows native authority inspection failed");
+  constructor(
+    readonly stage: WindowsNativeStageCode,
+    /** The initiating failure retained when cleanup becomes the terminal result. */
+    readonly primaryStage: WindowsNativeStageCode = stage,
+    readonly entryIndex: WindowsBrokerEntryIndexToken | null = null,
+    readonly operation: WindowsBrokerEntryOperationToken | null = null,
+  ) {
+    super(entryIndex === null || operation === null
+      ? "Windows native authority inspection failed"
+      : `Windows native authority inspection failed [entry=${entryIndex} operation=${operation}]`);
     this.name = "WindowsNativeStageError";
   }
 }
@@ -58,22 +78,36 @@ export function reportWindowsNativeStage(stage: WindowsNativeStageCode): void {
   try { (hook as (value: string) => void)(stage); } catch { /* Diagnostics never alter production status. */ }
 }
 
-function stageError(stage: WindowsNativeStageCode): WindowsNativeStageError {
-  return new WindowsNativeStageError(stage);
+function stageError(
+  stage: WindowsNativeStageCode,
+  primaryStage: WindowsNativeStageCode = stage,
+  entryIndex: WindowsBrokerEntryIndexToken | null = null,
+  operation: WindowsBrokerEntryOperationToken | null = null,
+): WindowsNativeStageError {
+  return new WindowsNativeStageError(stage, primaryStage, entryIndex, operation);
 }
 
-// Each production inspector receives exactly one already-open target as its
-// standard-input HANDLE. Unlike Node extra stdio slots, STARTF_USESTDHANDLES is
-// a documented Windows process boundary and GetStdHandle returns the inherited
-// HANDLE directly. The script contains no process-creation API or external
-// command; terminating powershell.exe therefore terminates the complete tree.
+// Each production inspector receives every already-open target in one fixed,
+// bounded fd table beginning at fd 3. The only per-spawn source substitutions
+// are canonical entry/round counts; target paths, HANDLE values, identities,
+// kinds, SIDs, and metadata never cross argv/environment. The script contains
+// no process-creation API or external command, so powershell.exe is the entire
+// owned process tree.
 export const WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false;
 export const WINDOWS_INSPECTOR_WRITES_FILESYSTEM = false;
-export const WINDOWS_INSPECTOR_TRANSPORT = "inherited-standard-handle" as const;
+export const WINDOWS_INSPECTOR_TRANSPORT = "inherited-fixed-fd-table" as const;
+
+const WINDOWS_BROKER_STAGE_EXIT_SOURCE = String.raw`
+function Exit-ProprStage {
+  if($script:proprEntryIndex-ge 0-and $script:proprEntryIndex-lt 32){
+    exit (${WINDOWS_BROKER_ENTRY_FAILURE_BASE}+($script:proprEntryIndex*${WINDOWS_BROKER_ENTRY_FAILURE_STRIDE})+$stage)
+  }
+  exit $stage
+}`;
 
 export const WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE = String.raw`
 function Read-ProprUInt32([IntPtr]$pointer,[int]$offset){
-  if(-not [BitConverter]::IsLittleEndian){exit $stage}
+  if(-not [BitConverter]::IsLittleEndian){Exit-ProprStage}
   $signed=[int32][Runtime.InteropServices.Marshal]::ReadInt32($pointer,$offset)
   $bytes=[BitConverter]::GetBytes($signed)
   [BitConverter]::ToUInt32($bytes,0)
@@ -81,7 +115,7 @@ function Read-ProprUInt32([IntPtr]$pointer,[int]$offset){
 
 export const WINDOWS_UINT64_COMPOSER_SOURCE = String.raw`
 function Join-ProprUInt64([uint32]$low,[uint32]$high){
-  if(-not [BitConverter]::IsLittleEndian){exit $stage}
+  if(-not [BitConverter]::IsLittleEndian){Exit-ProprStage}
   $bytes=New-Object byte[] 8
   [Array]::Copy([BitConverter]::GetBytes([uint32]$low),0,$bytes,0,4)
   [Array]::Copy([BitConverter]::GetBytes([uint32]$high),0,$bytes,4,4)
@@ -90,18 +124,24 @@ function Join-ProprUInt64([uint32]$low,[uint32]$high){
 
 // Reflection.Emit keeps the fixed P/Invoke surface in memory. Add-Type and its
 // writable compiler workspace are deliberately absent.
+// Two fixed internal spellings are compacted before UTF-16/base64 encoding so
+// this audited source remains below the existing 28k argv bound. They contain
+// no caller-controlled value and do not alter the protocol.
 export const WINDOWS_INSPECTION_SOURCE = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Set-StrictMode -Version 2
+$script:proprEntryIndex=-1
+${WINDOWS_BROKER_STAGE_EXIT_SOURCE}
 ${WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE}
 ${WINDOWS_UINT64_COMPOSER_SOURCE}
+$n=__PROPR_ENTRY_COUNT__
+$r=__PROPR_ROUND_COUNT__
 $stage=71
-$privateHandle=[IntPtr]::Zero
-$privateHandleOwned=$false
 try {
+  if($n-lt 1-or $n-gt 32-or ($r-ne 1-and $r-ne 2)){Exit-ProprStage}
   if($PSVersionTable.PSVersion.Major-ne 5-or $PSVersionTable.PSVersion.Minor-ne 1-or
-     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){exit $stage}
+     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){Exit-ProprStage}
   $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly(
     (New-Object Reflection.AssemblyName('ProprReadOnlyAuthorityAssembly')),
     [Reflection.Emit.AssemblyBuilderAccess]::Run)
@@ -115,7 +155,7 @@ try {
   }
   $winapi=[Runtime.InteropServices.CallingConvention]::Winapi
   $intptr=[IntPtr];$intptrRef=$intptr.MakeByRefType();$uint=[uint32];$uintRef=$uint.MakeByRefType();$ushortRef=([uint16]).MakeByRefType();$boolRef=([bool]).MakeByRefType()
-  Add-NativeMethod 'GetStdHandle' 'kernel32.dll' $intptr @([int]) $winapi
+  Add-NativeMethod '_get_osfhandle' 'msvcrt.dll' $intptr @([int]) $winapi
   Add-NativeMethod 'DuplicateHandle' 'kernel32.dll' ([bool]) @($intptr,$intptr,$intptr,$intptrRef,$uint,[bool],$uint) $winapi
   Add-NativeMethod 'CloseHandle' 'kernel32.dll' ([bool]) @($intptr) $winapi
   Add-NativeMethod 'GetFileInformationByHandle' 'kernel32.dll' ([bool]) @($intptr,$intptr) $winapi
@@ -129,106 +169,127 @@ try {
   $null=$builder.CreateType()
   $stage=72
   $inJob=$false
-  if(-not [ProprReadOnlyAuthority]::IsProcessInJob([ProprReadOnlyAuthority]::GetCurrentProcess(),[IntPtr]::Zero,[ref]$inJob)){exit $stage}
-  $stage=73
-  $originalHandle=[ProprReadOnlyAuthority]::GetStdHandle(-10)
-  if($originalHandle-eq [IntPtr](-1)-or $originalHandle-eq [IntPtr](-2)-or $originalHandle-eq [IntPtr]::Zero){exit $stage}
-  $stage=80
-  if(-not [ProprReadOnlyAuthority]::DuplicateHandle(
-    [ProprReadOnlyAuthority]::GetCurrentProcess(),$originalHandle,
-    [ProprReadOnlyAuthority]::GetCurrentProcess(),[ref]$privateHandle,0,$false,2)){exit $stage}
-  $privateHandleOwned=$true
-  if($privateHandle-eq [IntPtr](-1)-or $privateHandle-eq [IntPtr](-2)-or $privateHandle-eq [IntPtr]::Zero){exit $stage}
-  $stage=74
-  $before=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-  if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$before)){exit $stage}
-  $stage=78
-  $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
-  if($null-eq $current){exit $stage}
-  $currentSid=$current.Value
-  $stage=75
-  $owner=[IntPtr]::Zero;$group=[IntPtr]::Zero;$dacl=[IntPtr]::Zero;$sacl=[IntPtr]::Zero;$descriptor=[IntPtr]::Zero
+  if(-not [ProprReadOnlyAuthority]::IsProcessInJob([ProprReadOnlyAuthority]::GetCurrentProcess(),[IntPtr]::Zero,[ref]$inJob)){Exit-ProprStage}
+  function Inspect-ProprEntry([int]$i,[string]$currentSid){
+  $script:proprEntryIndex=$i
+  $privateHandle=[IntPtr]::Zero
+  $before=[IntPtr]::Zero;$after=[IntPtr]::Zero;$aclInfo=[IntPtr]::Zero
+  $descriptor=[IntPtr]::Zero
   try {
-    if([ProprReadOnlyAuthority]::GetSecurityInfo($privateHandle,1,5,[ref]$owner,[ref]$group,[ref]$dacl,[ref]$sacl,[ref]$descriptor)-ne 0){exit $stage}
-    if($owner-eq [IntPtr]::Zero-or $dacl-eq [IntPtr]::Zero-or $descriptor-eq [IntPtr]::Zero){exit $stage}
+    $stage=73
+    $originalHandle=[ProprReadOnlyAuthority]::_get_osfhandle(3+$i)
+    if($originalHandle-eq [IntPtr](-1)-or $originalHandle-eq [IntPtr](-2)-or $originalHandle-eq [IntPtr]::Zero){Exit-ProprStage}
+    $stage=80
+    if(-not [ProprReadOnlyAuthority]::DuplicateHandle(
+      [ProprReadOnlyAuthority]::GetCurrentProcess(),$originalHandle,
+      [ProprReadOnlyAuthority]::GetCurrentProcess(),[ref]$privateHandle,0,$false,2)){Exit-ProprStage}
+    if($privateHandle-eq [IntPtr](-1)-or $privateHandle-eq [IntPtr](-2)-or $privateHandle-eq [IntPtr]::Zero){Exit-ProprStage}
+    $stage=74
+    $before=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
+    if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$before)){Exit-ProprStage}
+    $stage=75
+    $owner=[IntPtr]::Zero;$group=[IntPtr]::Zero;$dacl=[IntPtr]::Zero;$sacl=[IntPtr]::Zero
+    if([ProprReadOnlyAuthority]::GetSecurityInfo($privateHandle,1,5,[ref]$owner,[ref]$group,[ref]$dacl,[ref]$sacl,[ref]$descriptor)-ne 0){Exit-ProprStage}
+    if($owner-eq [IntPtr]::Zero-or $dacl-eq [IntPtr]::Zero-or $descriptor-eq [IntPtr]::Zero){Exit-ProprStage}
     $ownerSid=(New-Object Security.Principal.SecurityIdentifier($owner)).Value
     $control=[uint16]0;$revision=[uint32]0
-    if(-not [ProprReadOnlyAuthority]::GetSecurityDescriptorControl($descriptor,[ref]$control,[ref]$revision)){exit $stage}
+    if(-not [ProprReadOnlyAuthority]::GetSecurityDescriptorControl($descriptor,[ref]$control,[ref]$revision)){Exit-ProprStage}
     $stage=76
     $aclInfo=[Runtime.InteropServices.Marshal]::AllocHGlobal(12)
-    if(-not [ProprReadOnlyAuthority]::GetAclInformation($dacl,$aclInfo,12,2)){exit $stage}
+    if(-not [ProprReadOnlyAuthority]::GetAclInformation($dacl,$aclInfo,12,2)){Exit-ProprStage}
     $aceCount=Read-ProprUInt32 $aclInfo 0
     $aclBytes=Read-ProprUInt32 $aclInfo 4
-    if($aceCount-gt 128-or $aclBytes-lt 8-or $aclBytes-gt 65535){exit $stage}
+    if($aceCount-gt 128-or $aclBytes-lt 8-or $aclBytes-gt 65535){Exit-ProprStage}
     $aclRevision=[Runtime.InteropServices.Marshal]::ReadByte($dacl,0)
-    if(($aclRevision-ne 2-and $aclRevision-ne 4)-or [Runtime.InteropServices.Marshal]::ReadByte($dacl,1)-ne 0){exit $stage}
+    if(($aclRevision-ne 2-and $aclRevision-ne 4)-or [Runtime.InteropServices.Marshal]::ReadByte($dacl,1)-ne 0){Exit-ProprStage}
     $rules=New-Object Collections.Generic.List[object]
     for($aceIndex=0;$aceIndex-lt $aceCount;$aceIndex++){
       $ace=[IntPtr]::Zero
-      if(-not [ProprReadOnlyAuthority]::GetAce($dacl,$aceIndex,[ref]$ace)-or $ace-eq [IntPtr]::Zero){exit $stage}
+      if(-not [ProprReadOnlyAuthority]::GetAce($dacl,$aceIndex,[ref]$ace)-or $ace-eq [IntPtr]::Zero){Exit-ProprStage}
       $aceType=[Runtime.InteropServices.Marshal]::ReadByte($ace,0);$flags=[Runtime.InteropServices.Marshal]::ReadByte($ace,1)
       $aceSize=[uint16][Runtime.InteropServices.Marshal]::ReadInt16($ace,2)
-      if(($aceType-ne 0-and $aceType-ne 1)-or ($flags-band 0xE0)-ne 0-or $aceSize-lt 16-or $aceSize-gt 4096){exit $stage}
+      if(($aceType-ne 0-and $aceType-ne 1)-or ($flags-band 0xE0)-ne 0-or $aceSize-lt 16-or $aceSize-gt 4096){Exit-ProprStage}
       $mask=Read-ProprUInt32 $ace 4
       $sidPointer=[IntPtr]::Add($ace,8);$sid=New-Object Security.Principal.SecurityIdentifier($sidPointer)
-      if($sid.BinaryLength-gt ($aceSize-8)){exit $stage}
+      if($sid.BinaryLength-gt ($aceSize-8)){Exit-ProprStage}
       $rules.Add([pscustomobject][ordered]@{
         identitySid=$sid.Value;inherited=[bool](($flags-band 0x10)-ne 0)
         accessType=$(if($aceType-eq 0){'allow'}else{'deny'});appliesToSelf=[bool](($flags-band 8)-eq 0)
         rights=$mask.ToString([Globalization.CultureInfo]::InvariantCulture)
       })
     }
-  } finally {if($descriptor-ne [IntPtr]::Zero){$null=[ProprReadOnlyAuthority]::LocalFree($descriptor)}}
-  $stage=79
-  $after=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-  if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$after)){exit $stage}
-  $stage=81
-  $beforeVolume=Read-ProprUInt32 $before 28
-  $afterVolume=Read-ProprUInt32 $after 28
-  $beforeHigh=Read-ProprUInt32 $before 44;$beforeLow=Read-ProprUInt32 $before 48
-  $afterHigh=Read-ProprUInt32 $after 44;$afterLow=Read-ProprUInt32 $after 48
-  $stage=82
-  $beforeId=Join-ProprUInt64 $beforeLow $beforeHigh
-  if($beforeId-isnot [uint64]){exit $stage}
-  $afterId=Join-ProprUInt64 $afterLow $afterHigh
-  if($afterId-isnot [uint64]){exit $stage}
-  $stage=84
-  $beforeVolumeDecimal=$beforeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
-  $afterVolumeDecimal=$afterVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
-  $beforeIdDecimal=$beforeId.ToString([Globalization.CultureInfo]::InvariantCulture)
-  $afterIdDecimal=$afterId.ToString([Globalization.CultureInfo]::InvariantCulture)
-  if($beforeVolumeDecimal-isnot [string]-or $beforeVolumeDecimal.Length-eq 0-or $beforeVolumeDecimal.Length-gt 10-or $beforeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
-  if($afterVolumeDecimal-isnot [string]-or $afterVolumeDecimal.Length-eq 0-or $afterVolumeDecimal.Length-gt 10-or $afterVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
-  if($beforeIdDecimal-isnot [string]-or $beforeIdDecimal.Length-eq 0-or $beforeIdDecimal.Length-gt 20-or $beforeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
-  if($afterIdDecimal-isnot [string]-or $afterIdDecimal.Length-eq 0-or $afterIdDecimal.Length-gt 20-or $afterIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
-  $stage=85
-  $daclProtected=[bool](($control-band 0x1000)-ne 0)
-  $reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
-  if($daclProtected-isnot [bool]-or $reparsePoint-isnot [bool]){exit $stage}
-  $stage=86
-  [object[]]$rulesArray=$rules.ToArray()
-  if($rulesArray-isnot [object[]]-or $rulesArray.Count-ne $rules.Count-or $rulesArray.Count-gt 128){exit $stage}
-  for($ruleIndex=0;$ruleIndex-lt $rulesArray.Count;$ruleIndex++){
-    if(-not [object]::ReferenceEquals($rulesArray[$ruleIndex],$rules[$ruleIndex])){exit $stage}
+    $stage=79
+    $after=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
+    if(-not [ProprReadOnlyAuthority]::GetFileInformationByHandle($privateHandle,$after)){Exit-ProprStage}
+    $stage=81
+    $beforeVolume=Read-ProprUInt32 $before 28
+    $afterVolume=Read-ProprUInt32 $after 28
+    $beforeHigh=Read-ProprUInt32 $before 44;$beforeLow=Read-ProprUInt32 $before 48
+    $afterHigh=Read-ProprUInt32 $after 44;$afterLow=Read-ProprUInt32 $after 48
+    $stage=82
+    $beforeId=Join-ProprUInt64 $beforeLow $beforeHigh
+    if($beforeId-isnot [uint64]){Exit-ProprStage}
+    $afterId=Join-ProprUInt64 $afterLow $afterHigh
+    if($afterId-isnot [uint64]){Exit-ProprStage}
+    $stage=84
+    $beforeVolumeDecimal=$beforeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $afterVolumeDecimal=$afterVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $beforeIdDecimal=$beforeId.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $afterIdDecimal=$afterId.ToString([Globalization.CultureInfo]::InvariantCulture)
+    if($beforeVolumeDecimal-isnot [string]-or $beforeVolumeDecimal.Length-eq 0-or $beforeVolumeDecimal.Length-gt 10-or $beforeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
+    if($afterVolumeDecimal-isnot [string]-or $afterVolumeDecimal.Length-eq 0-or $afterVolumeDecimal.Length-gt 10-or $afterVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
+    if($beforeIdDecimal-isnot [string]-or $beforeIdDecimal.Length-eq 0-or $beforeIdDecimal.Length-gt 20-or $beforeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
+    if($afterIdDecimal-isnot [string]-or $afterIdDecimal.Length-eq 0-or $afterIdDecimal.Length-gt 20-or $afterIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
+    $stage=85
+    $daclProtected=[bool](($control-band 0x1000)-ne 0)
+    $reparsePoint=[bool](([Runtime.InteropServices.Marshal]::ReadInt32($before,0)-band 0x400)-ne 0)
+    if($daclProtected-isnot [bool]-or $reparsePoint-isnot [bool]){Exit-ProprStage}
+    $stage=86
+    [object[]]$rulesArray=$rules.ToArray()
+    if($rulesArray-isnot [object[]]-or $rulesArray.Count-ne $rules.Count-or $rulesArray.Count-gt 128){Exit-ProprStage}
+    for($ruleIndex=0;$ruleIndex-lt $rulesArray.Count;$ruleIndex++){
+      if(-not [object]::ReferenceEquals($rulesArray[$ruleIndex],$rules[$ruleIndex])){Exit-ProprStage}
+    }
+    $stage=83
+    return [pscustomobject][ordered]@{
+      currentUserSid=$currentSid;ownerSid=$ownerSid
+      daclProtected=$daclProtected;reparsePoint=$reparsePoint
+      volumeSerialNumber=$beforeVolumeDecimal
+      fileId=$beforeIdDecimal
+      verifiedVolumeSerialNumber=$afterVolumeDecimal
+      verifiedFileId=$afterIdDecimal;rules=$rulesArray
+    }
+  } catch { Exit-ProprStage } finally {
+    if($descriptor-ne [IntPtr]::Zero){$null=[ProprReadOnlyAuthority]::LocalFree($descriptor)};if($aclInfo-ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::FreeHGlobal($aclInfo)}
+    if($after-ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::FreeHGlobal($after)};if($before-ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::FreeHGlobal($before)}
+    if($privateHandle-ne [IntPtr]::Zero){$null=[ProprReadOnlyAuthority]::CloseHandle($privateHandle)}
   }
-  $stage=83
-  $entry=[pscustomobject][ordered]@{
-    index=__PROPR_INDEX__;kind='__PROPR_ENTRY_KIND__';authorityKind='__PROPR_AUTHORITY_KIND__';currentUserSid=$currentSid;ownerSid=$ownerSid
-    daclProtected=$daclProtected;reparsePoint=$reparsePoint
-    volumeSerialNumber=$beforeVolumeDecimal
-    fileId=$beforeIdDecimal
-    verifiedVolumeSerialNumber=$afterVolumeDecimal
-    verifiedFileId=$afterIdDecimal;rules=$rulesArray
   }
-  $stage=77
-  $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;entries=@($entry)}) -Compress -Depth 5
-  if([Text.Encoding]::UTF8.GetByteCount($json)-gt 131072){exit $stage}
   [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false,$true)
-  [Console]::Out.Write($json)
+  for($q=0;$q-lt $r;$q++){
+    if($q-ne 0){
+      $stage=87
+      if([Console]::In.ReadLine()-cne 'PROPR_REVALIDATE_V1'){Exit-ProprStage}
+    }
+    $stage=78
+    $current=[Security.Principal.WindowsIdentity]::GetCurrent().User
+    if($null-eq $current){Exit-ProprStage}
+    $entries=New-Object Collections.Generic.List[object]
+    for($i=0;$i-lt $n;$i++){
+      $entries.Add((Inspect-ProprEntry $i $current.Value))
+      $script:proprEntryIndex=-1
+    }
+    $stage=77
+    [object[]]$entryArray=$entries.ToArray()
+    if($entryArray.Count-ne $n){Exit-ProprStage}
+    $json=ConvertTo-Json ([pscustomobject][ordered]@{version=1;entries=$entryArray}) -Compress -Depth 5
+    if([Text.Encoding]::UTF8.GetByteCount($json)-gt 131072){Exit-ProprStage}
+    [Console]::Out.WriteLine($json)
+    [Console]::Out.Flush()
+  }
   exit 0
-}catch{exit $stage}
-finally {if($privateHandleOwned){$null=[ProprReadOnlyAuthority]::CloseHandle($privateHandle)}}
-`;
+}catch{Exit-ProprStage}
+`.replaceAll("Exit-ProprStage", "Fail").replaceAll("proprEntryIndex", "e");
 
 export const WINDOWS_NATIVE_PROBE_MILESTONES = Object.freeze([
   "entry-ps51-desktop-x64",
@@ -250,6 +311,8 @@ export const WINDOWS_NATIVE_TIMING_PROBE_SOURCE = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 Set-StrictMode -Version 2
+$script:proprEntryIndex=-1
+${WINDOWS_BROKER_STAGE_EXIT_SOURCE}
 ${WINDOWS_UNSIGNED_FIELD_DECODER_SOURCE}
 ${WINDOWS_UINT64_COMPOSER_SOURCE}
 $clock=[Diagnostics.Stopwatch]::StartNew()
@@ -262,11 +325,11 @@ function Write-ProprMilestone([string]$name){
 $stage=91
 try {
   if($PSVersionTable.PSVersion.Major-ne 5-or $PSVersionTable.PSVersion.Minor-ne 1-or
-     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){exit $stage}
+     $PSVersionTable.PSEdition-ne 'Desktop'-or -not [Environment]::Is64BitProcess){Exit-ProprStage}
   Write-ProprMilestone 'entry-ps51-desktop-x64'
   $stage=92
   $baseline='{"version":1,"baseline":"constant"}'
-  if($baseline-ne '{"version":1,"baseline":"constant"}'){exit $stage}
+  if($baseline-ne '{"version":1,"baseline":"constant"}'){Exit-ProprStage}
   Write-ProprMilestone 'constant-json'
   $stage=93
   $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly(
@@ -287,25 +350,25 @@ try {
   $null=$builder.CreateType()
   Write-ProprMilestone 'reflection-emit'
   $stage=94
-  if([ProprNativeTimingProbe]::GetCurrentProcessId()-eq 0){exit $stage}
+  if([ProprNativeTimingProbe]::GetCurrentProcessId()-eq 0){Exit-ProprStage}
   Write-ProprMilestone 'harmless-win32'
   $stage=95
   $handle=[ProprNativeTimingProbe]::GetStdHandle(-10)
-  if($handle-eq [IntPtr](-1)-or $handle-eq [IntPtr](-2)-or $handle-eq [IntPtr]::Zero){exit $stage}
+  if($handle-eq [IntPtr](-1)-or $handle-eq [IntPtr](-2)-or $handle-eq [IntPtr]::Zero){Exit-ProprStage}
   $info=[Runtime.InteropServices.Marshal]::AllocHGlobal(52)
-  if(-not [ProprNativeTimingProbe]::GetFileInformationByHandle($handle,$info)){exit $stage}
+  if(-not [ProprNativeTimingProbe]::GetFileInformationByHandle($handle,$info)){Exit-ProprStage}
   $probeVolume=Read-ProprUInt32 $info 28
   $probeHigh=Read-ProprUInt32 $info 44;$probeLow=Read-ProprUInt32 $info 48
   $probeId=Join-ProprUInt64 $probeLow $probeHigh
-  if($probeId-isnot [uint64]){exit $stage}
+  if($probeId-isnot [uint64]){Exit-ProprStage}
   $probeVolumeDecimal=$probeVolume.ToString([Globalization.CultureInfo]::InvariantCulture)
   $probeIdDecimal=$probeId.ToString([Globalization.CultureInfo]::InvariantCulture)
-  if($probeVolumeDecimal-isnot [string]-or $probeVolumeDecimal.Length-eq 0-or $probeVolumeDecimal.Length-gt 10-or $probeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
-  if($probeIdDecimal-isnot [string]-or $probeIdDecimal.Length-eq 0-or $probeIdDecimal.Length-gt 20-or $probeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){exit $stage}
+  if($probeVolumeDecimal-isnot [string]-or $probeVolumeDecimal.Length-eq 0-or $probeVolumeDecimal.Length-gt 10-or $probeVolumeDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
+  if($probeIdDecimal-isnot [string]-or $probeIdDecimal.Length-eq 0-or $probeIdDecimal.Length-gt 20-or $probeIdDecimal-cnotmatch '^(0|[1-9][0-9]*)$'){Exit-ProprStage}
   Write-ProprMilestone 'standard-handle-identity'
   exit 0
-}catch{exit $stage}
-`;
+}catch{Exit-ProprStage}
+`.replaceAll("Exit-ProprStage", "Fail").replaceAll("proprEntryIndex", "e");
 
 interface HeldExecutable {
   readonly path: string;
@@ -378,19 +441,29 @@ function resolveWindowsPowerShell(): HeldExecutable {
 
 function revalidateWindowsPowerShell(executable: HeldExecutable): void {
   let namedFd: number | undefined;
+  let globalFd: number | undefined;
   try {
     try { namedFd = openSync(executable.path, constants.O_RDONLY | constants.O_NOFOLLOW); } catch {
       throw stageError("resolver:global-id");
     }
+    try {
+      globalFd = openSync(
+        `${GLOBAL_SYSTEM_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+    } catch { throw stageError("resolver:global-id"); }
     const held = fstatSync(executable.fd, { bigint: true });
     const named = fstatSync(namedFd, { bigint: true });
+    const global = fstatSync(globalFd, { bigint: true });
     if (
-      !held.isFile() || !named.isFile()
+      !held.isFile() || !named.isFile() || !global.isFile()
       || held.dev.toString(10) !== executable.device || held.ino.toString(10) !== executable.file
       || named.dev.toString(10) !== executable.device || named.ino.toString(10) !== executable.file
+      || global.dev.toString(10) !== executable.device || global.ino.toString(10) !== executable.file
     ) throw stageError("resolver:global-id");
   } finally {
     if (namedFd !== undefined) closeSync(namedFd);
+    if (globalFd !== undefined) closeSync(globalFd);
   }
 }
 
@@ -420,23 +493,51 @@ export function parseWindowsInspectionDocument(value: Buffer | string): readonly
   return document.entries as WindowsAuthorityInspection[];
 }
 
-export function windowsBrokerFailureStage(status: number | null): WindowsNativeStageCode {
-  const stages: Readonly<Record<number, WindowsNativeStageCode>> = {
-    71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info-initial",
-    75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
-    78: "broker:current-user-sid", 79: "broker:index-info-revalidation", 80: "broker:fd-duplicate",
-    81: "broker:index-info-decode", 82: "broker:index-info-compose", 83: "broker:entry-build",
-    84: "broker:entry-format", 85: "broker:entry-flags", 86: "broker:entry-rules",
-  };
-  return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
+const WINDOWS_BROKER_FAILURE_STAGES: Readonly<Record<number, WindowsNativeStageCode>> = {
+  71: "broker:ps-version", 72: "broker:job", 73: "broker:fd", 74: "broker:index-info-initial",
+  75: "broker:security-info", 76: "broker:acl", 77: "broker:json",
+  78: "broker:current-user-sid", 79: "broker:index-info-revalidation", 80: "broker:fd-duplicate",
+  81: "broker:index-info-decode", 82: "broker:index-info-compose", 83: "broker:entry-build",
+  84: "broker:entry-format", 85: "broker:entry-flags", 86: "broker:entry-rules", 87: "broker:control",
+};
+
+const WINDOWS_BROKER_ENTRY_OPERATIONS: Readonly<Record<number, WindowsBrokerEntryOperationToken>> = {
+  73: "fd", 74: "identity-initial", 75: "security-info", 76: "acl",
+  79: "identity-revalidation", 80: "fd-duplicate", 81: "identity-decode",
+  82: "identity-compose", 83: "entry-build", 84: "entry-format",
+  85: "entry-flags", 86: "entry-rules",
+};
+
+export interface WindowsBrokerFailureAttribution {
+  readonly stage: WindowsNativeStageCode;
+  readonly entryIndex: WindowsBrokerEntryIndexToken | null;
+  readonly operation: WindowsBrokerEntryOperationToken | null;
 }
 
-function inspectionSource(target: WindowsAuthorityTarget, index: number): string {
-  const entryKind = target.kind === "env" ? "file" : "directory";
-  return WINDOWS_INSPECTION_SOURCE
-    .replace("__PROPR_INDEX__", String(index))
-    .replace("__PROPR_ENTRY_KIND__", entryKind)
-    .replace("__PROPR_AUTHORITY_KIND__", target.kind);
+export function windowsBrokerFailureAttribution(status: number | null): WindowsBrokerFailureAttribution {
+  if (status !== null && Number.isInteger(status) && status >= WINDOWS_BROKER_ENTRY_FAILURE_BASE) {
+    const encoded = status - WINDOWS_BROKER_ENTRY_FAILURE_BASE;
+    const index = Math.floor(encoded / WINDOWS_BROKER_ENTRY_FAILURE_STRIDE);
+    const operationCode = encoded % WINDOWS_BROKER_ENTRY_FAILURE_STRIDE;
+    const stage = WINDOWS_BROKER_FAILURE_STAGES[operationCode];
+    const operation = WINDOWS_BROKER_ENTRY_OPERATIONS[operationCode];
+    if (index >= 0 && index < WINDOWS_INSPECTION_MAX_ENTRIES && stage && operation) {
+      return Object.freeze({
+        stage,
+        entryIndex: String(index).padStart(2, "0") as WindowsBrokerEntryIndexToken,
+        operation,
+      });
+    }
+  }
+  return Object.freeze({
+    stage: status === null ? "spawn:status" : (WINDOWS_BROKER_FAILURE_STAGES[status] ?? "spawn:status"),
+    entryIndex: null,
+    operation: null,
+  });
+}
+
+export function windowsBrokerFailureStage(status: number | null): WindowsNativeStageCode {
+  return windowsBrokerFailureAttribution(status).stage;
 }
 
 /** The fixed inspector receives no caller-controlled executable/module/profile/temp authority. */
@@ -445,19 +546,23 @@ export function windowsPowerShellEnvironment(systemRoot: string): Readonly<Recor
   return Object.freeze({ SystemRoot: systemRoot, WINDIR: systemRoot });
 }
 
-function spawnPowerShell(
+function powerShellArguments(source: string): readonly string[] {
+  const encoded = Buffer.from(source, "utf16le").toString("base64");
+  if (encoded.length > 28_000) throw stageError("spawn:create");
+  return [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded,
+  ];
+}
+
+function spawnPowerShellSync(
   executable: HeldExecutable,
   source: string,
   stdin: "ignore" | number,
   timeout = WINDOWS_INSPECTION_TIMEOUT_MS,
   maxBuffer = WINDOWS_INSPECTION_MAX_BYTES,
 ) {
-  const encoded = Buffer.from(source, "utf16le").toString("base64");
-  if (encoded.length > 28_000) throw stageError("spawn:create");
   try {
-    return spawnSync(executable.path, [
-      "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded,
-    ], {
+    return spawnSync(executable.path, powerShellArguments(source), {
       shell: false,
       windowsHide: true,
       encoding: "buffer",
@@ -467,6 +572,31 @@ function spawnPowerShell(
       killSignal: "SIGKILL",
       maxBuffer,
       stdio: [stdin, "pipe", "pipe"],
+    });
+  } catch { throw stageError("spawn:create"); }
+}
+
+function inspectionSource(entryCount: number, roundCount: 1 | 2): string {
+  if (!Number.isInteger(entryCount) || entryCount < 1 || entryCount > WINDOWS_INSPECTION_MAX_ENTRIES) {
+    throw stageError("spawn:create");
+  }
+  return WINDOWS_INSPECTION_SOURCE
+    .replace("__PROPR_ENTRY_COUNT__", String(entryCount))
+    .replace("__PROPR_ROUND_COUNT__", String(roundCount));
+}
+
+function spawnInspectionBroker(
+  executable: HeldExecutable,
+  targets: readonly WindowsAuthorityTarget[],
+  roundCount: 1 | 2,
+): ChildProcess {
+  try {
+    return spawn(executable.path, powerShellArguments(inspectionSource(targets.length, roundCount)), {
+      shell: false,
+      windowsHide: true,
+      cwd: win32.dirname(executable.path),
+      env: windowsPowerShellEnvironment(executable.systemRoot),
+      stdio: [roundCount === 2 ? "pipe" : "ignore", "pipe", "pipe", ...targets.map((target) => target.pinnedFd)],
     });
   } catch { throw stageError("spawn:create"); }
 }
@@ -528,70 +658,580 @@ export function parseWindowsNativeProbeOutput(
   return records;
 }
 
-function assertSpawnSuccess(result: ReturnType<typeof spawnSync>): void {
-  if (result.error) {
-    if ((result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") throw stageError("spawn:timeout");
-    throw stageError("spawn:error");
+export type WindowsBrokerInspection = Omit<WindowsAuthorityInspection, "index" | "kind" | "authorityKind">;
+
+const WINDOWS_BROKER_ENTRY_KEYS = Object.freeze([
+  "currentUserSid", "ownerSid", "daclProtected", "reparsePoint", "volumeSerialNumber", "fileId",
+  "verifiedVolumeSerialNumber", "verifiedFileId", "rules",
+]);
+
+export function parseWindowsBrokerDocument(value: Buffer | string): WindowsBrokerInspection {
+  const entries = parseWindowsBrokerBatchDocument(value, 1);
+  return entries[0];
+}
+
+export function parseWindowsBrokerBatchDocument(
+  value: Buffer | string,
+  expectedEntryCount: number,
+): readonly WindowsBrokerInspection[] {
+  if (!Number.isInteger(expectedEntryCount) || expectedEntryCount < 1
+    || expectedEntryCount > WINDOWS_INSPECTION_MAX_ENTRIES) throw stageError("parent:entry-count");
+  const text = strictUtf8(value);
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { throw stageError("parent:json-parse"); }
+  if (JSON.stringify(parsed) !== text) throw stageError("parent:json-canonical");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw stageError("parent:document-shape");
   }
-  if (result.signal) throw stageError(result.signal === "SIGKILL" ? "spawn:timeout" : "spawn:status");
-  if (result.status !== 0) throw stageError(windowsBrokerFailureStage(result.status));
-  const stderrBytes = typeof result.stderr === "string"
-    ? Buffer.byteLength(result.stderr, "utf8")
-    : (result.stderr?.byteLength ?? 0);
-  if (stderrBytes !== 0) throw stageError("spawn:stderr");
+  const document = parsed as Record<string, unknown>;
+  if (Object.keys(document).sort().join(",") !== "entries,version" || document.version !== 1
+    || !Array.isArray(document.entries)) throw stageError("parent:document-shape");
+  if (document.entries.length !== expectedEntryCount) throw stageError("parent:entry-count");
+  for (const entry of document.entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || Object.keys(entry).sort().join(",") !== [...WINDOWS_BROKER_ENTRY_KEYS].sort().join(",")) {
+      throw stageError("parent:entry-shape");
+    }
+  }
+  return document.entries as readonly WindowsBrokerInspection[];
 }
 
-export function windowsInspectionTimeoutForElapsed(elapsedMs: number): number {
-  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) throw stageError("spawn:cumulative-timeout");
-  const remaining = WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS - Math.floor(elapsedMs);
-  if (remaining <= 0) throw stageError("spawn:cumulative-timeout");
-  return Math.min(WINDOWS_INSPECTION_TIMEOUT_MS, remaining);
+interface InspectionBrokerState {
+  readonly child: ChildProcess;
+  readonly stdout: Buffer[];
+  stdoutState: WindowsBrokerStreamState;
+  stderrState: WindowsBrokerStreamState;
+  stdoutEnded: boolean;
+  stderrEnded: boolean;
+  closed: boolean;
+  statusStage: WindowsBrokerStatusStage;
+  entryIndex: WindowsBrokerEntryIndexToken | null;
+  operation: WindowsBrokerEntryOperationToken | null;
+  diagnosticReported: boolean;
 }
 
-export function runWindowsReadOnlyInspection(
+export type WindowsBrokerIndexBucket = "0" | "1" | "2-3" | "4-7" | "8-15" | "16-31";
+export type WindowsBrokerStreamState = "empty" | "nonempty" | "overflow";
+export type WindowsBrokerStatusStage = WindowsNativeStageCode | "ok" | "sibling-termination";
+export type WindowsBrokerDeadlineState = "active" | "expired";
+export type WindowsBrokerCleanupState = "not-started" | "contained" | "deadline-expired";
+
+/** Fixed, secret-free post-drain attribution for native regression evidence. */
+export interface WindowsBrokerResultDiagnostic {
+  readonly brokerIndex: WindowsBrokerIndexBucket;
+  readonly statusStage: WindowsBrokerStatusStage;
+  readonly entryIndex: WindowsBrokerEntryIndexToken | null;
+  readonly operation: WindowsBrokerEntryOperationToken | null;
+  readonly stderr: WindowsBrokerStreamState;
+  readonly stdout: WindowsBrokerStreamState;
+  readonly deadline: WindowsBrokerDeadlineState;
+  readonly cleanup: WindowsBrokerCleanupState;
+}
+
+function windowsBrokerIndexBucket(index: number): WindowsBrokerIndexBucket {
+  if (index === 0) return "0";
+  if (index === 1) return "1";
+  if (index <= 3) return "2-3";
+  if (index <= 7) return "4-7";
+  if (index <= 15) return "8-15";
+  return "16-31";
+}
+
+/**
+ * Start all fixed one-target brokers before yielding and supervise them under
+ * one deadline. A resolved batch proves that every broker closed after both
+ * output streams drained; a rejected batch first terminates every live broker.
+ */
+export interface WindowsInspectionBrokerBatchOptions {
+  readonly entryCount: number;
+  readonly startBroker: (index: number) => ChildProcess;
+  readonly deadlineMs: number;
+  readonly cleanupTimeoutMs: number;
+  readonly maxOutputBytes: number;
+  readonly onBrokerResult?: (diagnostic: WindowsBrokerResultDiagnostic) => void;
+}
+
+export function runWindowsInspectionBrokerBatch({
+  entryCount,
+  startBroker,
+  deadlineMs,
+  cleanupTimeoutMs,
+  maxOutputBytes,
+  onBrokerResult,
+}: WindowsInspectionBrokerBatchOptions): Promise<readonly Buffer[]> {
+  if (!Number.isInteger(entryCount) || entryCount < 1 || entryCount > WINDOWS_INSPECTION_MAX_ENTRIES
+    || !Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > WINDOWS_INSPECTION_TIMEOUT_MS
+    || !Number.isInteger(cleanupTimeoutMs) || cleanupTimeoutMs < 1
+    || cleanupTimeoutMs > WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS
+    || !Number.isInteger(maxOutputBytes) || maxOutputBytes < 1
+    || maxOutputBytes > WINDOWS_INSPECTION_MAX_BYTES) throw stageError("spawn:create");
+  return new Promise((resolve, reject) => {
+    const brokers: InspectionBrokerState[] = [];
+    let aggregateBytes = 0;
+    let closedCount = 0;
+    let spawningComplete = false;
+    let failure: WindowsNativeStageError | undefined;
+    let settled = false;
+    let deadlineExpired = false;
+    let cleanupDeadlineExpired = false;
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+    let containmentTimer: ReturnType<typeof setInterval> | undefined;
+
+    const report = (broker: InspectionBrokerState, index: number): void => {
+      if (broker.diagnosticReported || !broker.closed || !broker.stdoutEnded || !broker.stderrEnded) return;
+      broker.diagnosticReported = true;
+      try {
+        onBrokerResult?.(Object.freeze({
+          brokerIndex: windowsBrokerIndexBucket(index),
+          statusStage: broker.statusStage,
+          entryIndex: broker.entryIndex,
+          operation: broker.operation,
+          stderr: broker.stderrState,
+          stdout: broker.stdoutState,
+          deadline: deadlineExpired ? "expired" : "active",
+          cleanup: cleanupDeadlineExpired
+            ? "deadline-expired"
+            : failure ? "contained" : "not-started",
+        }));
+      } catch { /* Diagnostics never alter containment or the production result. */ }
+    };
+
+    const settle = (): void => {
+      brokers.forEach(report);
+      if (settled || !spawningComplete || closedCount !== brokers.length
+        || brokers.some((broker) => !broker.stdoutEnded || !broker.stderrEnded)) return;
+      settled = true;
+      clearTimeout(deadlineTimer);
+      if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
+      if (containmentTimer !== undefined) clearInterval(containmentTimer);
+      if (failure) reject(failure);
+      else resolve(brokers.map((broker) => Buffer.concat(broker.stdout)));
+    };
+    const terminateLiveBrokers = (): void => {
+      for (const broker of brokers) {
+        if (broker.closed) continue;
+        try { broker.child.kill("SIGKILL"); } catch { /* Retain ownership and retry until close/drain. */ }
+      }
+    };
+    const fail = (stageOrError: WindowsNativeStageCode | WindowsNativeStageError): void => {
+      if (failure || settled) return;
+      failure = stageOrError instanceof WindowsNativeStageError ? stageOrError : stageError(stageOrError);
+      clearTimeout(deadlineTimer);
+      for (const broker of brokers) {
+        if (!broker.closed && broker.statusStage === "ok") broker.statusStage = "sibling-termination";
+      }
+      terminateLiveBrokers();
+      cleanupTimer = setTimeout(() => {
+        if (settled) return;
+        cleanupDeadlineExpired = true;
+        failure = stageError(
+          "spawn:cleanup",
+          failure!.primaryStage,
+          failure!.entryIndex,
+          failure!.operation,
+        );
+        terminateLiveBrokers();
+        // A cleanup deadline classifies the eventual fixed failure; it never
+        // proves containment. Keep every listener and a referenced retry alive
+        // until child close plus both stream terminals prove ownership ended.
+        containmentTimer = setInterval(terminateLiveBrokers, Math.min(250, cleanupTimeoutMs));
+        settle();
+      }, cleanupTimeoutMs);
+      settle();
+    };
+    const accept = (broker: InspectionBrokerState, stream: "stdout" | "stderr", chunk: unknown): void => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      aggregateBytes += bytes.byteLength;
+      if (aggregateBytes > maxOutputBytes) {
+        broker[stream === "stdout" ? "stdoutState" : "stderrState"] = "overflow";
+        broker.statusStage = "parent:utf8";
+        fail("parent:utf8");
+        return;
+      }
+      if (stream === "stderr") {
+        if (bytes.byteLength > 0) {
+          broker.stderrState = "nonempty";
+          broker.statusStage = "spawn:stderr";
+          fail("spawn:stderr");
+        }
+        return;
+      }
+      if (bytes.byteLength > 0) broker.stdoutState = "nonempty";
+      broker.stdout.push(bytes);
+    };
+
+    const deadlineTimer = setTimeout(() => {
+      deadlineExpired = true;
+      for (const broker of brokers) {
+        if (!broker.closed && broker.statusStage === "ok") broker.statusStage = "spawn:timeout";
+      }
+      fail("spawn:timeout");
+    }, deadlineMs);
+    try {
+      for (let index = 0; index < entryCount; index += 1) {
+        const child = startBroker(index);
+        const broker: InspectionBrokerState = {
+          child,
+          stdout: [],
+          stdoutState: "empty",
+          stderrState: "empty",
+          stdoutEnded: !child.stdout,
+          stderrEnded: !child.stderr,
+          closed: false,
+          statusStage: "ok",
+          entryIndex: null,
+          operation: null,
+          diagnosticReported: false,
+        };
+        brokers.push(broker);
+        if (!child.stdout || !child.stderr) {
+          broker.statusStage = "spawn:create";
+          fail("spawn:create");
+          break;
+        }
+        child.stdout.on("data", (chunk) => accept(broker, "stdout", chunk));
+        child.stderr.on("data", (chunk) => accept(broker, "stderr", chunk));
+        child.stdout.once("end", () => { broker.stdoutEnded = true; settle(); });
+        child.stderr.once("end", () => { broker.stderrEnded = true; settle(); });
+        child.once("error", (error) => {
+          const stage = (error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? "spawn:timeout" : "spawn:error";
+          broker.statusStage = stage;
+          fail(stage);
+        });
+        child.once("close", (status, signal) => {
+          if (broker.closed) return;
+          broker.closed = true;
+          closedCount += 1;
+          if (broker.statusStage === "ok" || broker.statusStage === "sibling-termination") {
+            if (signal !== null && !failure) {
+              broker.statusStage = "spawn:status";
+            } else if (status !== 0) {
+              const attribution = windowsBrokerFailureAttribution(status);
+              broker.statusStage = attribution.stage;
+              broker.entryIndex = attribution.entryIndex;
+              broker.operation = attribution.operation;
+            }
+          }
+          if (!failure && broker.statusStage !== "ok") {
+            fail(broker.statusStage === "sibling-termination"
+              ? "spawn:status"
+              : stageError(broker.statusStage, broker.statusStage, broker.entryIndex, broker.operation));
+          }
+          settle();
+        });
+      }
+    } catch (error) {
+      fail(error instanceof WindowsNativeStageError ? error.stage : "spawn:create");
+    } finally {
+      spawningComplete = true;
+      if (failure) terminateLiveBrokers();
+      settle();
+    }
+  });
+}
+
+function revalidateWindowsTargets(targets: readonly WindowsAuthorityTarget[]): void {
+  try {
+    for (const target of targets) {
+      const held = fstatSync(target.pinnedFd, { bigint: true });
+      if (held.dev.toString(10) !== target.expectedIdentity.device
+        || held.ino.toString(10) !== target.expectedIdentity.file) throw new Error();
+    }
+  } catch { throw stageError("parent:post-bind"); }
+}
+
+function splitWindowsBrokerFrames(output: Buffer, expectedCount: 1 | 2): readonly Buffer[] {
+  const frames: Buffer[] = [];
+  let offset = 0;
+  while (offset < output.byteLength) {
+    const newline = output.indexOf(0x0a, offset);
+    if (newline < 0) throw stageError("parent:json-canonical");
+    const end = newline > offset && output[newline - 1] === 0x0d ? newline - 1 : newline;
+    if (end === offset) throw stageError("parent:json-canonical");
+    frames.push(output.subarray(offset, end));
+    offset = newline + 1;
+  }
+  if (frames.length !== expectedCount) throw stageError("parent:entry-count");
+  return frames;
+}
+
+function bindWindowsInspectionTargets(
+  frame: Buffer,
   targets: readonly WindowsAuthorityTarget[],
 ): readonly WindowsAuthorityInspection[] {
+  const rawEntries = parseWindowsBrokerBatchDocument(frame, targets.length);
+  const inspections: WindowsAuthorityInspection[] = [];
+  for (let index = 0; index < targets.length; index += 1) {
+    const target = targets[index];
+    const entry: WindowsAuthorityInspection = {
+      index,
+      kind: target.kind === "env" ? "file" : "directory",
+      authorityKind: target.kind,
+      ...rawEntries[index],
+    };
+    try {
+      if (
+        entry.index !== index
+        || entry.kind !== (target.kind === "env" ? "file" : "directory")
+        || entry.authorityKind !== target.kind
+        || BigInt(entry.volumeSerialNumber) !== BigInt(target.expectedIdentity.device)
+        || BigInt(entry.fileId) !== BigInt(target.expectedIdentity.file)
+        || BigInt(entry.volumeSerialNumber) !== BigInt(entry.verifiedVolumeSerialNumber)
+        || BigInt(entry.fileId) !== BigInt(entry.verifiedFileId)
+      ) throw new Error();
+    } catch { throw stageError("parent:descriptor-bind"); }
+    inspections.push(entry);
+  }
+  return inspections;
+}
+
+interface WindowsInspectionProcess {
+  readonly child: ChildProcess;
+  readonly terminal: Promise<readonly Buffer[]>;
+  readonly firstFrame: Promise<Buffer>;
+}
+
+export function writeWindowsInspectionRevalidationControl(child: ChildProcess): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const input = child.stdin;
+    if (!input || input.destroyed || !input.writable) {
+      reject(stageError("broker:control"));
+      return;
+    }
+    let completed = false;
+    const complete = (error?: Error | null): void => {
+      if (completed) return;
+      completed = true;
+      if (error) reject(stageError("broker:control"));
+      else resolve();
+    };
+    const onError = (): void => complete(stageError("broker:control"));
+    // Keep the listener through the stream's terminal lifetime. Node may invoke
+    // the end callback before emitting its paired EPIPE/error event.
+    input.on("error", onError);
+    try {
+      input.end("PROPR_REVALIDATE_V1\n", "ascii", complete);
+    } catch {
+      complete(stageError("broker:control"));
+    }
+  });
+}
+
+function startWindowsInspectionProcess(
+  executable: HeldExecutable,
+  targets: readonly WindowsAuthorityTarget[],
+  roundCount: 1 | 2,
+): WindowsInspectionProcess {
+  const child = spawnInspectionBroker(executable, targets, roundCount);
+  const terminal = runWindowsInspectionBrokerBatch({
+    entryCount: 1,
+    startBroker: () => child,
+    deadlineMs: WINDOWS_INSPECTION_TIMEOUT_MS,
+    cleanupTimeoutMs: WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS,
+    maxOutputBytes: WINDOWS_INSPECTION_MAX_BYTES,
+  });
+  const firstFrame = new Promise<Buffer>((resolve, reject) => {
+    if (!child.stdout) {
+      reject(stageError("spawn:create"));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let byteLength = 0;
+    let finished = false;
+    child.stdout.on("data", (chunk: Buffer | Uint8Array) => {
+      if (finished) return;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      chunks.push(bytes);
+      byteLength += bytes.byteLength;
+      if (byteLength > WINDOWS_INSPECTION_MAX_BYTES) {
+        finished = true;
+        reject(stageError("parent:utf8"));
+        return;
+      }
+      const combined = Buffer.concat(chunks, byteLength);
+      const newline = combined.indexOf(0x0a);
+      if (newline < 0) return;
+      const end = newline > 0 && combined[newline - 1] === 0x0d ? newline - 1 : newline;
+      if (end === 0 || combined.subarray(newline + 1).byteLength !== 0) {
+        finished = true;
+        reject(stageError("parent:json-canonical"));
+        return;
+      }
+      finished = true;
+      resolve(combined.subarray(0, end));
+    });
+  });
+  // A close/failure before the first complete frame must reject the initial
+  // proof instead of leaving the frame waiter pending.
+  return {
+    child,
+    terminal,
+    firstFrame: Promise.race([
+      firstFrame,
+      terminal.then((outputs) => splitWindowsBrokerFrames(outputs[0], roundCount)[0]),
+    ]),
+  };
+}
+
+async function terminateWindowsInspectionProcess(processState: WindowsInspectionProcess): Promise<void> {
+  if (processState.child.exitCode === null && processState.child.signalCode === null) {
+    try { processState.child.kill("SIGKILL"); } catch { /* Supervisor retains ownership and retries. */ }
+  }
+  try {
+    await processState.terminal;
+  } catch (error) {
+    if (error instanceof WindowsNativeStageError && error.stage === "spawn:cleanup") throw error;
+  }
+}
+
+function sameWindowsInspectionTargets(
+  initial: readonly WindowsAuthorityTarget[],
+  final: readonly WindowsAuthorityTarget[],
+): boolean {
+  return initial.length === final.length && initial.every((target, index) => (
+    target.kind === final[index].kind
+    && target.expectedIdentity.device === final[index].expectedIdentity.device
+    && target.expectedIdentity.file === final[index].expectedIdentity.file
+  ));
+}
+
+export interface WindowsReadOnlyInspectionGeneration {
+  readonly initial: readonly WindowsAuthorityInspection[];
+  revalidate(targets: readonly WindowsAuthorityTarget[]): Promise<readonly WindowsAuthorityInspection[]>;
+  abort(): Promise<void>;
+}
+
+/**
+ * Hold one multi-handle broker across a snapshot generation. The second round
+ * re-reads every descriptor/ACL after the caller's operation; no initial result
+ * is reused as final authority and the one 60-second broker deadline is fixed.
+ */
+export async function beginWindowsReadOnlyInspectionGeneration(
+  targets: readonly WindowsAuthorityTarget[],
+): Promise<WindowsReadOnlyInspectionGeneration> {
   if (targets.length < 1 || targets.length > WINDOWS_INSPECTION_MAX_ENTRIES) {
     throw stageError("parent:entry-count");
   }
   const executable = resolveWindowsPowerShell();
-  const inspections: WindowsAuthorityInspection[] = [];
-  let totalOutputBytes = 0;
-  const inspectionStarted = performance.now();
+  let processState: WindowsInspectionProcess | undefined;
+  let finished = false;
+  const closeExecutable = (): void => {
+    if (finished) return;
+    finished = true;
+    closeSync(executable.fd);
+  };
   try {
-    for (let index = 0; index < targets.length; index += 1) {
-      const target = targets[index];
-      const timeout = windowsInspectionTimeoutForElapsed(performance.now() - inspectionStarted);
-      const result = spawnPowerShell(executable, inspectionSource(target, index), target.pinnedFd, timeout);
-      assertSpawnSuccess(result);
-      totalOutputBytes += typeof result.stdout === "string"
-        ? Buffer.byteLength(result.stdout, "utf8")
-        : (result.stdout?.byteLength ?? 0);
-      if (totalOutputBytes > WINDOWS_INSPECTION_MAX_BYTES) throw stageError("parent:utf8");
-      const entries = parseWindowsInspectionDocument(result.stdout ?? Buffer.alloc(0));
-      if (entries.length !== 1) throw stageError("parent:entry-count");
-      const entry = entries[0];
-      try {
-        if (
-          entry.index !== index
-          || entry.kind !== (target.kind === "env" ? "file" : "directory")
-          || entry.authorityKind !== target.kind
-          || BigInt(entry.volumeSerialNumber) !== BigInt(target.expectedIdentity.device)
-          || BigInt(entry.fileId) !== BigInt(target.expectedIdentity.file)
-          || BigInt(entry.volumeSerialNumber) !== BigInt(entry.verifiedVolumeSerialNumber)
-          || BigInt(entry.fileId) !== BigInt(entry.verifiedFileId)
-        ) throw new Error();
-      } catch { throw stageError("parent:descriptor-bind"); }
-      const after = fstatSync(target.pinnedFd, { bigint: true });
-      if (after.dev.toString(10) !== target.expectedIdentity.device || after.ino.toString(10) !== target.expectedIdentity.file) {
-        throw stageError("parent:post-bind");
+    revalidateWindowsPowerShell(executable);
+    revalidateWindowsTargets(targets);
+    processState = startWindowsInspectionProcess(executable, targets, 2);
+    const initialFrame = await processState.firstFrame;
+    const initial = bindWindowsInspectionTargets(initialFrame, targets);
+    revalidateWindowsTargets(targets);
+    revalidateWindowsPowerShell(executable);
+    let consumed = false;
+    return {
+      initial,
+      revalidate: async (finalTargets) => {
+        if (consumed || finished || !processState) throw stageError("parent:post-bind");
+        consumed = true;
+        let result: readonly WindowsAuthorityInspection[] | undefined;
+        let finalError: unknown;
+        try {
+          revalidateWindowsPowerShell(executable);
+          revalidateWindowsTargets(finalTargets);
+          if (!sameWindowsInspectionTargets(targets, finalTargets)) throw stageError("parent:post-bind");
+          await writeWindowsInspectionRevalidationControl(processState.child);
+          const outputs = await processState.terminal;
+          const frames = splitWindowsBrokerFrames(outputs[0], 2);
+          result = bindWindowsInspectionTargets(frames[1], finalTargets);
+          revalidateWindowsTargets(finalTargets);
+          revalidateWindowsPowerShell(executable);
+        } catch (error) {
+          finalError = error;
+        } finally {
+          if (processState.child.exitCode === null && processState.child.signalCode === null) {
+            try { await terminateWindowsInspectionProcess(processState); } catch (error) { finalError = error; }
+          }
+          try {
+            revalidateWindowsTargets(finalTargets);
+            revalidateWindowsPowerShell(executable);
+          } catch (error) {
+            if (!(finalError instanceof WindowsNativeStageError && finalError.stage === "spawn:cleanup")) {
+              const validation = error instanceof WindowsNativeStageError ? error : stageError("parent:post-bind");
+              finalError = stageError(
+                validation.stage,
+                finalError instanceof WindowsNativeStageError ? finalError.primaryStage : validation.primaryStage,
+              );
+            }
+          }
+          closeExecutable();
+        }
+        if (finalError !== undefined) throw finalError;
+        return result!;
+      },
+      abort: async () => {
+        if (consumed || finished || !processState) return;
+        consumed = true;
+        let finalError: unknown;
+        try { await terminateWindowsInspectionProcess(processState); } catch (error) { finalError = error; }
+        try {
+          revalidateWindowsTargets(targets);
+          revalidateWindowsPowerShell(executable);
+        } catch (error) {
+          if (!(finalError instanceof WindowsNativeStageError && finalError.stage === "spawn:cleanup")) {
+            finalError = error;
+          }
+        } finally { closeExecutable(); }
+        if (finalError !== undefined) throw finalError;
+      },
+    };
+  } catch (error) {
+    let finalError: unknown = error;
+    try {
+      if (processState) {
+        try { await terminateWindowsInspectionProcess(processState); } catch (cleanupError) { finalError = cleanupError; }
       }
-      inspections.push(entry);
-    }
+      try {
+        revalidateWindowsTargets(targets);
+        revalidateWindowsPowerShell(executable);
+      } catch (validationError) {
+        if (!(finalError instanceof WindowsNativeStageError && finalError.stage === "spawn:cleanup")) {
+          const validation = validationError instanceof WindowsNativeStageError
+            ? validationError
+            : stageError("parent:post-bind");
+          finalError = stageError(
+            validation.stage,
+            finalError instanceof WindowsNativeStageError ? finalError.primaryStage : validation.primaryStage,
+          );
+        }
+      }
+    } finally { closeExecutable(); }
+    throw finalError;
+  }
+}
+
+export async function runWindowsReadOnlyInspection(
+  targets: readonly WindowsAuthorityTarget[],
+): Promise<readonly WindowsAuthorityInspection[]> {
+  if (targets.length < 1 || targets.length > WINDOWS_INSPECTION_MAX_ENTRIES) {
+    throw stageError("parent:entry-count");
+  }
+  const executable = resolveWindowsPowerShell();
+  try {
+    revalidateWindowsPowerShell(executable);
+    revalidateWindowsTargets(targets);
+    const processState = startWindowsInspectionProcess(executable, targets, 1);
+    const outputs = await processState.terminal;
+    const inspections = bindWindowsInspectionTargets(splitWindowsBrokerFrames(outputs[0], 1)[0], targets);
+    revalidateWindowsTargets(targets);
     revalidateWindowsPowerShell(executable);
     return inspections;
   } finally {
-    closeSync(executable.fd);
+    try {
+      revalidateWindowsTargets(targets);
+    } finally {
+      try { revalidateWindowsPowerShell(executable); } finally { closeSync(executable.fd); }
+    }
   }
 }
 
@@ -610,7 +1250,7 @@ export function runWindowsNativeTimingProbe(targetFd: number): WindowsNativeTimi
   const executable = resolveWindowsPowerShell();
   try {
     const started = performance.now();
-    const result = spawnPowerShell(
+    const result = spawnPowerShellSync(
       executable,
       WINDOWS_NATIVE_TIMING_PROBE_SOURCE,
       targetFd,

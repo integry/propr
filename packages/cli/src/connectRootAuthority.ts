@@ -18,11 +18,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  beginWindowsReadOnlyInspectionGeneration,
   parseWindowsInspectionDocument,
   reportWindowsNativeStage,
   runWindowsReadOnlyInspection,
   WindowsNativeStageError,
   windowsInspectionEntryKind,
+  type WindowsBrokerEntryIndexToken,
+  type WindowsBrokerEntryOperationToken,
 } from "./connectWindowsAuthority.js";
 import {
   assertCanonicalNativeArtifactParents,
@@ -128,6 +131,15 @@ export interface ConnectRootAuthorityInspector {
     kind?: ConnectAuthorityEntryKind,
   ): Promise<WindowsAuthorityInspection>;
   inspectWindowsAcls?(entries: readonly WindowsAuthorityTarget[]): Promise<readonly WindowsAuthorityInspection[]>;
+  beginWindowsAclsGeneration?(
+    entries: readonly WindowsAuthorityTarget[],
+  ): Promise<WindowsAuthorityInspectionGeneration>;
+}
+
+export interface WindowsAuthorityInspectionGeneration {
+  readonly initial: readonly WindowsAuthorityInspection[];
+  revalidate(entries: readonly WindowsAuthorityTarget[]): Promise<readonly WindowsAuthorityInspection[]>;
+  abort(): Promise<void>;
 }
 
 export type WindowsAuthorityPolicyReason =
@@ -151,10 +163,23 @@ export class WindowsAuthorityPolicyError extends Error {
 
 /** Fixed, redacted boundary for a failed read-only Windows ACL inspection. */
 export class WindowsAuthorityInspectionError extends Error {
-  constructor() {
-    super("Windows ACL authority inspection is unavailable");
+  constructor(
+    readonly entryIndex: WindowsBrokerEntryIndexToken | null = null,
+    readonly operation: WindowsBrokerEntryOperationToken | null = null,
+  ) {
+    super(entryIndex === null || operation === null
+      ? "Windows ACL authority inspection is unavailable"
+      : `Windows ACL authority inspection is unavailable [entry=${entryIndex} operation=${operation}]`);
     this.name = "WindowsAuthorityInspectionError";
   }
+}
+
+function unavailableWindowsAuthority(error?: unknown): WindowsAuthorityInspectionError {
+  if (error instanceof WindowsNativeStageError) {
+    reportWindowsNativeStage(error.stage);
+    return new WindowsAuthorityInspectionError(error.entryIndex, error.operation);
+  }
+  return new WindowsAuthorityInspectionError();
 }
 
 export function stableAuthorityIdentity(fd: number): StableAuthorityIdentity {
@@ -385,10 +410,32 @@ async function nativeWindowsAcls(
   entries: readonly WindowsAuthorityTarget[],
 ): Promise<readonly WindowsAuthorityInspection[]> {
   try {
-    return runWindowsReadOnlyInspection(entries);
+    return await runWindowsReadOnlyInspection(entries);
   } catch (error) {
-    if (error instanceof WindowsNativeStageError) reportWindowsNativeStage(error.stage);
-    throw new WindowsAuthorityInspectionError();
+    throw unavailableWindowsAuthority(error);
+  }
+}
+
+async function beginNativeWindowsAclsGeneration(
+  entries: readonly WindowsAuthorityTarget[],
+): Promise<WindowsAuthorityInspectionGeneration> {
+  try {
+    const generation = await beginWindowsReadOnlyInspectionGeneration(entries);
+    return {
+      initial: generation.initial,
+      revalidate: async (finalEntries) => {
+        try { return await generation.revalidate(finalEntries); } catch (error) {
+          throw unavailableWindowsAuthority(error);
+        }
+      },
+      abort: async () => {
+        try { await generation.abort(); } catch (error) {
+          throw unavailableWindowsAuthority(error);
+        }
+      },
+    };
+  } catch (error) {
+    throw unavailableWindowsAuthority(error);
   }
 }
 
@@ -411,6 +458,7 @@ export const nativeConnectRootAuthorityInspector: ConnectRootAuthorityInspector 
   inspectDarwinAcl: nativeDarwinAcl,
   inspectWindowsAcl: nativeWindowsAcl,
   inspectWindowsAcls: nativeWindowsAcls,
+  beginWindowsAclsGeneration: beginNativeWindowsAclsGeneration,
 };
 
 /** Windows mutation is unsupported until the separately reviewed authority work lands. */
@@ -599,23 +647,23 @@ export async function assertNativeEntryAuthority(
   }
 }
 
-/** Inspect and bind one Windows descriptor batch before applying entry policy. */
-export async function assertNativeWindowsEntriesAuthority(
-  inspector: ConnectRootAuthorityInspector,
-  entries: readonly { path: string; kind: ConnectAuthorityEntryKind; pinnedFd: number }[],
-): Promise<void> {
-  const targets = entries.map((entry) => ({
+type WindowsAuthorityEntry = { path: string; kind: ConnectAuthorityEntryKind; pinnedFd: number };
+
+function windowsAuthorityTargets(entries: readonly WindowsAuthorityEntry[]): readonly WindowsAuthorityTarget[] {
+  return entries.map((entry) => ({
     path: entry.path,
     kind: entry.kind,
     expectedIdentity: stableAuthorityIdentity(entry.pinnedFd),
     pinnedFd: entry.pinnedFd,
   }));
-  const batched = inspector.inspectWindowsAcls !== undefined;
-  const inspections = inspector.inspectWindowsAcls
-    ? await inspector.inspectWindowsAcls(targets)
-    : await Promise.all(targets.map((target) => inspector.inspectWindowsAcl(
-      target.path, target.expectedIdentity, target.pinnedFd, target.kind,
-    )));
+}
+
+function assertWindowsAuthorityInspectionResults(
+  inspections: readonly WindowsAuthorityInspection[],
+  targets: readonly WindowsAuthorityTarget[],
+  entries: readonly WindowsAuthorityEntry[],
+  batched: boolean,
+): void {
   if (inspections.length !== targets.length) {
     reportWindowsNativeStage("parent:entry-count");
     throw new WindowsAuthorityInspectionError();
@@ -658,6 +706,71 @@ export async function assertNativeWindowsEntriesAuthority(
     }
     assertSafeWindowsAuthority(inspection, target.kind);
   }
+}
+
+/** Inspect and bind one Windows descriptor batch before applying entry policy. */
+export async function assertNativeWindowsEntriesAuthority(
+  inspector: ConnectRootAuthorityInspector,
+  entries: readonly WindowsAuthorityEntry[],
+): Promise<void> {
+  const targets = windowsAuthorityTargets(entries);
+  const batched = inspector.inspectWindowsAcls !== undefined;
+  const inspections = inspector.inspectWindowsAcls
+    ? await inspector.inspectWindowsAcls(targets)
+    : await Promise.all(targets.map((target) => inspector.inspectWindowsAcl(
+      target.path, target.expectedIdentity, target.pinnedFd, target.kind,
+    )));
+  assertWindowsAuthorityInspectionResults(inspections, targets, entries, batched);
+}
+
+export interface NativeWindowsEntriesAuthorityGeneration {
+  revalidate(entries: readonly WindowsAuthorityEntry[]): Promise<void>;
+  abort(): Promise<void>;
+}
+
+/**
+ * Keep native before/after authority in one cold-start generation when the
+ * inspector supports it. Fixture/custom inspectors retain the two-call path.
+ */
+export async function beginNativeWindowsEntriesAuthorityGeneration(
+  inspector: ConnectRootAuthorityInspector,
+  entries: readonly WindowsAuthorityEntry[],
+): Promise<NativeWindowsEntriesAuthorityGeneration> {
+  if (!inspector.beginWindowsAclsGeneration) {
+    await assertNativeWindowsEntriesAuthority(inspector, entries);
+    let consumed = false;
+    return {
+      revalidate: async (finalEntries) => {
+        if (consumed) throw new WindowsAuthorityInspectionError();
+        consumed = true;
+        await assertNativeWindowsEntriesAuthority(inspector, finalEntries);
+      },
+      abort: async () => { consumed = true; },
+    };
+  }
+  const targets = windowsAuthorityTargets(entries);
+  const generation = await inspector.beginWindowsAclsGeneration(targets);
+  try {
+    assertWindowsAuthorityInspectionResults(generation.initial, targets, entries, true);
+  } catch (error) {
+    await generation.abort();
+    throw error;
+  }
+  let consumed = false;
+  return {
+    revalidate: async (finalEntries) => {
+      if (consumed) throw new WindowsAuthorityInspectionError();
+      consumed = true;
+      const finalTargets = windowsAuthorityTargets(finalEntries);
+      const inspections = await generation.revalidate(finalTargets);
+      assertWindowsAuthorityInspectionResults(inspections, finalTargets, finalEntries, true);
+    },
+    abort: async () => {
+      if (consumed) return;
+      consumed = true;
+      await generation.abort();
+    },
+  };
 }
 
 export { parseWindowsInspectionDocument };

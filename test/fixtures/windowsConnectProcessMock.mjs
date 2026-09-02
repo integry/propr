@@ -1,7 +1,9 @@
 import childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
 import { fstatSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { join, resolve } from "node:path";
+import { PassThrough } from "node:stream";
 
 const WINDOWS_ROOT_MISSING_MARKER = "PROPR_TEST_WINDOWS_ROOT_MISSING";
 const WINDOWS_ROOT_MISSING_MARKER_VALUE = "windows-root-missing-v1";
@@ -43,16 +45,18 @@ consumeMissingWindowsRootFixtureMarker();
 consumeUntrustedWindowsRootFixtureMarker();
 
 const originalSpawnSync = childProcess.spawnSync;
+const originalSpawn = childProcess.spawn;
 const forbidden = /(?:connect-authority|ProPRConnectAuthority|pwsh|csc|msiexec)(?:\.exe)?$/i;
 let abaPerformed = false;
+let authorityInvocation = 0;
 const nativeStages = new Set([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
-  "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
+  "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr", "spawn:cleanup",
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
   "broker:index-info-revalidation", "broker:index-info-decode", "broker:index-info-compose", "broker:entry-format",
-  "broker:entry-flags", "broker:entry-rules", "broker:entry-build",
+  "broker:entry-flags", "broker:entry-rules", "broker:entry-build", "broker:control",
   "parent:utf8", "parent:json-parse", "parent:json-canonical", "parent:document-shape",
   "parent:entry-count", "parent:entry-shape", "parent:json-shape", "parent:descriptor-bind", "parent:post-bind",
 ]);
@@ -61,61 +65,185 @@ globalThis[Symbol.for("propr.test.windowsNativeDiagnostic")] = (stage) => {
   process.stderr.write(`[propr-windows-native-stage:${fixed}]\n`);
 };
 
-function authorityDocument(args, options, mode) {
-  const encodedIndex = args.indexOf("-EncodedCommand") + 1;
-  const source = Buffer.from(args[encodedIndex], "base64").toString("utf16le");
-  const specs = [...source.matchAll(/index=(\d+);kind='(directory|file)';authorityKind='(ancestor|home|root|data|env)'/g)];
-  const identities = [options.stdio[0]].map((fd) => {
-    const stat = fstatSync(fd, { bigint: true });
-    return { device: stat.dev.toString(10), file: stat.ino.toString(10) };
-  });
+function authorityDocument(args, options, mode, invocation = authorityInvocation) {
   const userSid = "S-1-5-21-100-200-300-1001";
-  const entries = specs.map((spec, index) => ({
-    index: Number(spec[1]),
-    kind: spec[2],
-    authorityKind: spec[3],
-    currentUserSid: userSid,
-    ownerSid: userSid,
-    daclProtected: true,
-    reparsePoint: false,
-    volumeSerialNumber: identities[index].device,
-    fileId: identities[index].file,
-    verifiedVolumeSerialNumber: identities[index].device,
-    verifiedFileId: identities[index].file,
-    rules: [{
-      identitySid: userSid,
-      inherited: false,
-      accessType: "allow",
-      appliesToSelf: true,
-      rights: "2032127",
-    }],
-  }));
-  const protectedEntry = entries.find((entry) => ["root", "data", "env"].includes(entry.authorityKind));
+  const descriptors = options.stdio.slice(3).filter(Number.isInteger);
+  const entries = descriptors.map((descriptor) => {
+    const stat = fstatSync(descriptor, { bigint: true });
+    const identity = { device: stat.dev.toString(10), file: stat.ino.toString(10) };
+    return {
+      currentUserSid: userSid,
+      ownerSid: userSid,
+      daclProtected: true,
+      reparsePoint: false,
+      volumeSerialNumber: identity.device,
+      fileId: identity.file,
+      verifiedVolumeSerialNumber: identity.device,
+      verifiedFileId: identity.file,
+      rules: [{
+        identitySid: userSid,
+        inherited: false,
+        accessType: "allow",
+        appliesToSelf: true,
+        rights: "2032127",
+      }],
+    };
+  });
   if (mode === "descriptor-mismatch") {
     entries[0].fileId = (BigInt(entries[0].fileId) + 1n).toString(10);
     entries[0].verifiedFileId = entries[0].fileId;
-  } else if (mode === "index-mismatch") entries[0].index += 1;
-  else if (mode === "kind-mismatch") entries[0].kind = entries[0].kind === "file" ? "directory" : "file";
-  else if (mode === "authority-kind-mismatch") entries[0].authorityKind = entries[0].authorityKind === "root" ? "data" : "root";
+  } else if (mode === "index-mismatch") entries[0].extraIndex = 1;
+  else if (mode === "kind-mismatch") entries[0].extraKind = "file";
+  else if (mode === "authority-kind-mismatch") entries[0].extraAuthorityKind = "root";
   else if (mode === "identity-mismatch") {
     entries[0].fileId = (BigInt(entries[0].fileId) + 1n).toString(10);
-  } else if (mode === "sid-mismatch" && entries[0].index > 0) {
-    entries[0].currentUserSid = "S-1-5-21-100-200-300-1002";
-  } else if (mode === "broad-write" && protectedEntry) {
-    protectedEntry.rules = [{
+  } else if (mode === "sid-mismatch" && entries.length > 1) {
+    entries[1].currentUserSid = "S-1-5-21-100-200-300-1002";
+  } else if (mode === "broad-write") {
+    for (const entry of entries) entry.rules = [{
       identitySid: "S-1-1-0", inherited: false, accessType: "allow", appliesToSelf: true, rights: "2",
     }];
-  } else if (mode === "inherited-write" && protectedEntry) {
-    protectedEntry.rules[0].inherited = true;
-  } else if (mode === "unprotected" && protectedEntry) {
-    protectedEntry.daclProtected = false;
-  } else if (mode === "owner-mismatch" && protectedEntry) {
-    protectedEntry.ownerSid = "S-1-5-18";
-  } else if (mode === "reparse" && protectedEntry) {
-    protectedEntry.reparsePoint = true;
+  } else if (mode === "inherited-write") {
+    for (const entry of entries) entry.rules[0].inherited = true;
+  } else if (mode === "unprotected") {
+    for (const entry of entries) entry.daclProtected = false;
+  } else if (mode === "owner-mismatch") {
+    for (const entry of entries) entry.ownerSid = "S-1-5-18";
+  } else if (mode === "reparse") {
+    for (const entry of entries) entry.reparsePoint = true;
   }
   return JSON.stringify({ version: 1, entries });
 }
+
+function fakeAuthorityChild(args, options, mode) {
+  const invocation = authorityInvocation += 1;
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = options.stdio[0] === "pipe" ? new PassThrough() : null;
+  child.pid = 0x7000_0000 + authorityInvocation;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.killed = false;
+  let terminalRequested = false;
+  let terminalEmitted = false;
+  let closeEmitted = false;
+  let terminalStatus = null;
+  let terminalSignal = null;
+  const streams = [child.stdin, child.stdout, child.stderr].filter(Boolean);
+  const emitCloseWhenDrained = () => {
+    if (!terminalEmitted || closeEmitted || streams.some((stream) => !stream.closed)) return;
+    closeEmitted = true;
+    child.emit("close", terminalStatus, terminalSignal);
+  };
+  for (const stream of streams) stream.once("close", emitCloseWhenDrained);
+  const close = (status, signal = null) => {
+    if (terminalRequested) return;
+    terminalRequested = true;
+    terminalStatus = status;
+    terminalSignal = signal;
+    child.exitCode = status;
+    child.signalCode = signal;
+    // Make the control side terminal synchronously with kill. A control end
+    // attempted after this point must observe the destroyed pipe, never race
+    // the deferred output drain and appear to succeed.
+    if (child.stdin && !child.stdin.destroyed) child.stdin.destroy();
+    queueMicrotask(() => {
+      if (terminalEmitted) return;
+      terminalEmitted = true;
+      child.emit("exit", terminalStatus, terminalSignal);
+      // A real ChildProcess closes its control pipe on termination and emits
+      // `close` only after both output pipes have reached their terminals.
+      // Defer this work out of a possibly re-entrant stdout `data` handler so
+      // overflow, backpressure, end callbacks, errors, and EPIPE are ordered.
+      for (const output of [child.stdout, child.stderr]) {
+        output.resume();
+        if (!output.destroyed && !output.writableEnded) output.end();
+      }
+      emitCloseWhenDrained();
+    });
+  };
+  child.kill = () => {
+    child.killed = true;
+    close(null, "SIGKILL");
+    return true;
+  };
+  const publish = () => {
+    if (terminalRequested) return;
+    if (mode === "timeout") {
+      const error = Object.assign(new Error("private-path-SENTINEL"), { code: "ETIMEDOUT" });
+      child.emit("error", error);
+      return;
+    }
+    if (mode === "malformed") child.stdout.write("{\n");
+    else if (mode === "oversized") child.stdout.write("x".repeat(128 * 1024 + 1));
+    else if (mode === "extra-key") child.stdout.write('{"version":1,"entries":[],"extra":true}\n');
+    else if (mode === "duplicate") child.stdout.write('{"version":1,"version":1,"entries":[]}\n');
+    else if (mode === "entry-count") child.stdout.write('{"version":1,"entries":[]}\n');
+    else if (mode === "entry-shape") {
+      const document = JSON.parse(authorityDocument(args, options, mode, invocation));
+      document.entries[0].extra = true;
+      child.stdout.write(`${JSON.stringify(document)}\n`);
+    } else if (mode === "stderr") child.stderr.write("private-path-SENTINEL S-1-5-21-999 raw-error-SENTINEL");
+    else if (mode !== "nonzero") child.stdout.write(`${authorityDocument(args, options, mode, invocation)}\n`);
+    if (child.stdin && !terminalRequested && mode !== "nonzero") return;
+    close(mode === "nonzero" ? 70 : 0);
+  };
+  if (child.stdin) {
+    const controlChunks = [];
+    let controlBytes = 0;
+    child.stdin.on("data", (chunk) => {
+      if (terminalRequested) return;
+      const bytes = Buffer.from(chunk);
+      controlBytes += bytes.byteLength;
+      if (controlBytes > Buffer.byteLength("PROPR_REVALIDATE_V1\n", "ascii")) {
+        close(87);
+        return;
+      }
+      controlChunks.push(bytes);
+    });
+    child.stdin.once("finish", () => {
+      if (terminalRequested) return;
+      const control = Buffer.concat(controlChunks, controlBytes).toString("ascii");
+      if (control !== "PROPR_REVALIDATE_V1\n") {
+        close(87);
+        return;
+      }
+      publish();
+      if (!terminalRequested) close(0);
+    });
+    child.stdin.once("error", () => close(87));
+  }
+  queueMicrotask(publish);
+  return child;
+}
+
+childProcess.spawn = (command, args, options) => {
+  const executable = String(command);
+  if (forbidden.test(executable)) throw new Error("forbidden Windows authority executable");
+  if (!/powershell\.exe$/i.test(executable)) return originalSpawn(command, args, options);
+  const mode = process.env.PROPR_TEST_AUTHORITY_MODE;
+  if (mode === "path-aba" && !abaPerformed) {
+    abaPerformed = true;
+    const envPath = join(process.env.PROPR_TEST_AUTHORITY_ROOT, ".env");
+    const detached = `${envPath}-aba-detached`;
+    renameSync(envPath, detached);
+    writeFileSync(envPath, [
+      "PROPR_STACK=attacker-replacement-SENTINEL",
+      "PROPR_INSTANCE_ID=attacker",
+      "PROPR_UI_PUBLIC_API_URL=https://t-attacker.propr.dev",
+      "PROPR_UI_TUNNEL_ENABLED=true",
+      "PROPR_UI_TUNNEL_TOKEN=attacker-replacement-SENTINEL",
+      "",
+    ].join("\n"));
+    process.once("exit", () => {
+      rmSync(envPath, { force: true });
+      renameSync(detached, envPath);
+    });
+  }
+  if (!mode || mode === "path-aba") return originalSpawn(command, args, options);
+  return fakeAuthorityChild(args, options, mode);
+};
 
 childProcess.spawnSync = (command, args, options) => {
   const executable = String(command);

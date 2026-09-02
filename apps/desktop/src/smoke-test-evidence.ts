@@ -23,9 +23,19 @@ export const PACKAGED_SMOKE_EVIDENCE_EVENTS = [
   'desktop.log.write_failed',
 ] as const;
 
-export type PackagedSmokeEvidenceEvent = typeof PACKAGED_SMOKE_EVIDENCE_EVENTS[number];
+export const PACKAGED_CONNECT_SMOKE_EVIDENCE_EVENTS = [
+  'desktop.renderer.connect_discovery.proof',
+  'desktop.renderer.connect_discovery.ready',
+] as const;
 
-const allowedEvents = new Set<string>(PACKAGED_SMOKE_EVIDENCE_EVENTS);
+export type PackagedSmokeEvidenceEvent =
+  | typeof PACKAGED_SMOKE_EVIDENCE_EVENTS[number]
+  | typeof PACKAGED_CONNECT_SMOKE_EVIDENCE_EVENTS[number];
+
+const allowedEvents = new Set<string>([
+  ...PACKAGED_SMOKE_EVIDENCE_EVENTS,
+  ...PACKAGED_CONNECT_SMOKE_EVIDENCE_EVENTS,
+]);
 
 export interface PackagedSmokeEvidenceSink {
   write(event: string): void;

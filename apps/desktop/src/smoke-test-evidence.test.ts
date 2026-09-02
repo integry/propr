@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   createPackagedSmokeEvidenceSink,
+  PACKAGED_CONNECT_SMOKE_EVIDENCE_EVENTS,
   PACKAGED_SMOKE_EVIDENCE_EVENTS,
   PACKAGED_SMOKE_EVIDENCE_FILE,
 } from './smoke-test-evidence';
@@ -71,6 +72,22 @@ describe('packaged smoke evidence', () => {
       assert.deepEqual(records.slice(0, lifecycle.length).map(record => record.event), lifecycle);
       assert.equal(records.length, PACKAGED_SMOKE_EVIDENCE_EVENTS.length);
       assert.ok(Buffer.byteLength(contents, 'utf8') < 1024);
+    });
+  });
+
+  it('retains only the two fixed Connect attribution milestones', () => {
+    withSmokeDirectory(directory => {
+      const sink = createPackagedSmokeEvidenceSink(directory);
+      assert.ok(sink);
+      for (const event of PACKAGED_CONNECT_SMOKE_EVIDENCE_EVENTS) sink.write(event);
+      sink.write('desktop.renderer.connect_discovery.private-value');
+      sink.close();
+
+      const contents = readFileSync(join(directory, PACKAGED_SMOKE_EVIDENCE_FILE), 'utf8');
+      assert.deepEqual(contents.trimEnd().split('\n').map(line => JSON.parse(line)), [
+        { event: 'desktop.renderer.connect_discovery.proof' },
+        { event: 'desktop.renderer.connect_discovery.ready' },
+      ]);
     });
   });
 });

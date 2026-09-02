@@ -19,6 +19,7 @@ import {
   readPublicInstanceIdentityPinned,
   type PinnedPublicIdentityDirectory,
 } from "@propr/local-setup";
+import { PUBLIC_INSTANCE_IDENTITY_FILENAME } from "@propr/shared";
 import {
   directoryDescriptorAccess,
   mkdirAt,
@@ -31,11 +32,13 @@ import {
 import {
   assertNativeEntryAuthority,
   assertNativeWindowsEntriesAuthority,
+  beginNativeWindowsEntriesAuthorityGeneration,
   nativeConnectRootAuthorityInspector,
   WindowsAuthorityInspectionError,
   WindowsAuthorityPolicyError,
   type ConnectAuthorityEntryKind,
   type ConnectRootAuthorityInspector,
+  type NativeWindowsEntriesAuthorityGeneration,
 } from "./connectRootAuthority.js";
 import { canonicalRootKey } from "./config/rootKey.js";
 
@@ -96,6 +99,8 @@ export interface ConnectRootSnapshotOptions {
   authorityInspector?: ConnectRootAuthorityInspector;
   onBoundary?: (boundary: ConnectRootSnapshotBoundary) => void | Promise<void>;
   parseEnvFile?: (contents: string) => Record<string, string>;
+  /** @internal Discovery pre-pins the read-only identity into the same Windows authority generation. */
+  pinPublicIdentityAuthority?: boolean;
 }
 
 interface HeldDirectory {
@@ -357,6 +362,7 @@ export async function readTrustedConnectTunnelOverride(
   let homeAncestorsClosed = false;
   let configDir: HeldDirectory | undefined;
   let configFd: number | undefined;
+  let windowsAuthorityGeneration: NativeWindowsEntriesAuthorityGeneration | undefined;
   try {
     if (!sameResolvedPath(realpathSync.native(homePath), homePath, platform)) {
       throw new TrustedConnectConfigError("REPARSE_POINT");
@@ -487,7 +493,7 @@ export async function readTrustedConnectTunnelOverride(
     if (platform === "darwin") {
       await authorityEntry(inspector, platform, join(configDir.visiblePath, "config.json"), "env", configFd);
     } else if (platform === "win32") {
-      await authorityEntries(inspector, [
+      windowsAuthorityGeneration = await beginNativeWindowsEntriesAuthorityGeneration(inspector, [
         ...home.ancestry.slice(0, -1).map((entry) => ({
           path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
         })),
@@ -495,8 +501,6 @@ export async function readTrustedConnectTunnelOverride(
         { path: configDir.visiblePath, kind: "data", pinnedFd: configDir.fd },
         { path: join(configDir.visiblePath, "config.json"), kind: "env", pinnedFd: configFd },
       ]);
-      closeAcquiredAncestors(home);
-      homeAncestorsClosed = true;
     }
     verifyNamedConfigDirectory();
     await options.onBoundary?.("config-opened");
@@ -516,7 +520,10 @@ export async function readTrustedConnectTunnelOverride(
       await authorityEntry(inspector, platform, configDir.visiblePath, "data", configDir.fd);
       await authorityEntry(inspector, platform, join(configDir.visiblePath, "config.json"), "env", configFd);
     } else if (platform === "win32") {
-      await authorityEntries(inspector, [
+      await windowsAuthorityGeneration!.revalidate([
+        ...home.ancestry.slice(0, -1).map((entry) => ({
+          path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
+        })),
         { path: home.root.visiblePath, kind: "home", pinnedFd: home.root.fd },
         { path: configDir.visiblePath, kind: "data", pinnedFd: configDir.fd },
         { path: join(configDir.visiblePath, "config.json"), kind: "env", pinnedFd: configFd },
@@ -525,17 +532,22 @@ export async function readTrustedConnectTunnelOverride(
     return parseTrustedTunnelOverride(contents, requestedRoot, platform);
   } catch (error) {
     if (error instanceof TrustedConnectConfigError) throw error;
+    if (error instanceof WindowsAuthorityInspectionError) throw error;
     if (error instanceof WindowsAuthorityPolicyError) {
       throw new TrustedConnectConfigError(`NATIVE_ENTRY_${error.entryIndex}_${error.policyReason}`);
     }
     if (error instanceof ConnectRootError) throw new TrustedConnectConfigError(error.reason);
     throw new TrustedConnectConfigError();
   } finally {
-    if (configFd !== undefined) closeSync(configFd);
-    if (configDir !== undefined) closeSync(configDir.fd);
-    if (home !== undefined) {
-      if (!homeAncestorsClosed) closeAcquiredAncestors(home);
-      closeSync(home.root.fd);
+    try {
+      await windowsAuthorityGeneration?.abort();
+    } finally {
+      if (configFd !== undefined) closeSync(configFd);
+      if (configDir !== undefined) closeSync(configDir.fd);
+      if (home !== undefined) {
+        if (!homeAncestorsClosed) closeAcquiredAncestors(home);
+        closeSync(home.root.fd);
+      }
     }
   }
 }
@@ -683,8 +695,10 @@ export async function withOwnedConnectRootSnapshot<T>(
   let root: HeldDirectory | undefined;
   let data: HeldDirectory | undefined;
   let envFd: number | undefined;
+  let publicIdentityAuthorityFd: number | undefined;
   let acquiredRoot: AcquiredRoot | undefined;
   let acquiredAncestorsClosed = false;
+  let windowsAuthorityGeneration: NativeWindowsEntriesAuthorityGeneration | undefined;
   try {
     const acquired = openRootNoFollow(requestedRoot, ioPlatform);
     acquiredRoot = acquired;
@@ -719,19 +733,33 @@ export async function withOwnedConnectRootSnapshot<T>(
     const initialEnvStat = fstatSync(envFd);
     assertPrivateEnv(initialEnvStat, callerUid, platform);
     assertNamedEntry(requestedRoot, ".env", initialEnvStat);
+    if (platform === "win32" && options.pinPublicIdentityAuthority === true) {
+      publicIdentityAuthorityFd = data.openChild(
+        PUBLIC_INSTANCE_IDENTITY_FILENAME,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      const identityStat = fstatSync(publicIdentityAuthorityFd);
+      if (!identityStat.isFile() || identityStat.isSymbolicLink() || identityStat.nlink !== 1) {
+        throw new PublicInstanceIdentityError();
+      }
+      assertNamedEntry(data.visiblePath, PUBLIC_INSTANCE_IDENTITY_FILENAME, identityStat);
+    }
     if (platform === "darwin") {
       await authorityEntry(inspector, platform, join(requestedRoot, ".env"), "env", envFd);
     } else if (platform === "win32") {
-      await authorityEntries(inspector, [
+      windowsAuthorityGeneration = await beginNativeWindowsEntriesAuthorityGeneration(inspector, [
         ...acquired.ancestry.slice(0, -1).map((entry) => ({
           path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
         })),
         { path: root.visiblePath, kind: "root", pinnedFd: root.fd },
         { path: data.visiblePath, kind: "data", pinnedFd: data.fd },
         { path: join(requestedRoot, ".env"), kind: "env", pinnedFd: envFd },
+        ...(publicIdentityAuthorityFd === undefined ? [] : [{
+          path: join(data.visiblePath, PUBLIC_INSTANCE_IDENTITY_FILENAME),
+          kind: "env" as const,
+          pinnedFd: publicIdentityAuthorityFd,
+        }]),
       ]);
-      closeAcquiredAncestors(acquired);
-      acquiredAncestorsClosed = true;
     }
     await options.onBoundary?.("acquired");
 
@@ -777,7 +805,13 @@ export async function withOwnedConnectRootSnapshot<T>(
       },
       validateEntry: async (name, fd) => {
         const entryPath = join(data!.visiblePath, name);
-        if (platform !== "linux") {
+        if (platform === "win32" && publicIdentityAuthorityFd !== undefined
+          && name === PUBLIC_INSTANCE_IDENTITY_FILENAME) {
+          const retained = fstatSync(publicIdentityAuthorityFd);
+          const current = fstatSync(fd);
+          if (!sameIdentity(retained, current)) throw new PublicInstanceIdentityError();
+          assertNamedEntry(data!.visiblePath, name, current);
+        } else if (platform !== "linux") {
           await authorityEntry(inspector, platform, entryPath, "env", fd);
         }
       },
@@ -834,13 +868,18 @@ export async function withOwnedConnectRootSnapshot<T>(
         || before.some((entry, index) => !sameIdentity(entry.stat, after[index].stat))
       ) throw new ConnectRootError();
       if (platform === "win32") {
-        await authorityEntries(inspector, [
+        await windowsAuthorityGeneration!.revalidate([
           ...reacquired.ancestry.slice(0, -1).map((entry) => ({
             path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
           })),
           { path: reacquired.root.visiblePath, kind: "root", pinnedFd: reacquired.root.fd },
           { path: data.visiblePath, kind: "data", pinnedFd: data.fd },
           { path: join(requestedRoot, ".env"), kind: "env", pinnedFd: envFd },
+          ...(publicIdentityAuthorityFd === undefined ? [] : [{
+            path: join(data.visiblePath, PUBLIC_INSTANCE_IDENTITY_FILENAME),
+            kind: "env" as const,
+            pinnedFd: publicIdentityAuthorityFd,
+          }]),
         ]);
       } else {
         await assertPlatformAuthority(reacquired, platform, inspector, callerUid);
@@ -860,10 +899,15 @@ export async function withOwnedConnectRootSnapshot<T>(
     }
     throw new ConnectRootError();
   } finally {
-    if (acquiredRoot !== undefined && !acquiredAncestorsClosed) closeAcquiredAncestors(acquiredRoot);
-    if (envFd !== undefined) closeSync(envFd);
-    if (data !== undefined) closeSync(data.fd);
-    if (root !== undefined) closeSync(root.fd);
+    try {
+      await windowsAuthorityGeneration?.abort();
+    } finally {
+      if (acquiredRoot !== undefined && !acquiredAncestorsClosed) closeAcquiredAncestors(acquiredRoot);
+      if (publicIdentityAuthorityFd !== undefined) closeSync(publicIdentityAuthorityFd);
+      if (envFd !== undefined) closeSync(envFd);
+      if (data !== undefined) closeSync(data.fd);
+      if (root !== undefined) closeSync(root.fd);
+    }
   }
 }
 
