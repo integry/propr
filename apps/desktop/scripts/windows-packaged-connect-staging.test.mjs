@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { win32 } from 'node:path';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, win32 } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
@@ -119,6 +120,45 @@ const terminateTreeAfterTest = processId => {
     stdio: 'ignore',
     timeout: 5_000,
   });
+};
+
+const runLauncherAuthorityTest = (path, testCase = 'normal', retargetPath) => {
+  const arguments_ = [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-File',
+    orchestratorPath,
+    '-Architecture',
+    process.arch,
+    '-LifecycleTestMode',
+    'launcher-authority',
+    '-LauncherAuthorityTestCase',
+    testCase,
+    '-LauncherAuthorityTestPath',
+    path,
+  ];
+  if (retargetPath !== undefined) {
+    arguments_.push('-LauncherAuthorityTestRetargetPath', retargetPath);
+  }
+  return spawnSync(windowsPowerShell51Path(), arguments_, {
+    shell: false,
+    windowsHide: true,
+    timeout: 15_000,
+  });
+};
+
+const assertLauncherAuthorityRejected = (result, category) => {
+  assert.ifError(result.error);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout.length, 0);
+  const diagnostic = result.stderr.toString('utf8').trim();
+  assert.equal(
+    diagnostic,
+    `PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=${category}:phase=ordinary-user-preflight:subphase=host-node-canonical-authority:cleanup=none`,
+  );
+  assert.doesNotMatch(diagnostic, hostileDiagnosticPattern);
 };
 
 const validationOptions = overrides => ({
@@ -441,7 +481,15 @@ test('the workflow stages before alternate credentials and the harness preflight
   const copy = orchestrator.indexOf('Copy-Item -LiteralPath $entry.FullName');
   const acl = orchestrator.indexOf('Set-StagedEntryAcl $item');
   const alternateLaunch = orchestrator.indexOf('$process = Start-Process');
+  const nativeAuthorityTests = workflow.indexOf(
+    'node --test apps/desktop/scripts/windows-packaged-connect-staging.test.mjs',
+  );
+  const packageStep = workflow.indexOf('npm run desktop:package');
+  const packagedLaunch = workflow.indexOf('run-packaged-windows-connect-smoke.ps1');
   assert.ok(copy >= 0 && copy < acl && acl < alternateLaunch);
+  assert.ok(nativeAuthorityTests >= 0
+    && nativeAuthorityTests < packageStep
+    && packageStep < packagedLaunch);
   assert.doesNotMatch(orchestrator.slice(alternateLaunch, alternateLaunch + 700), /\s-Wait(?:\s|`)/u);
   assert.match(orchestrator, /Assert-PeArchitecture \$sourceExecutable \$Architecture/u);
   assert.match(orchestrator, /Assert-PeArchitecture \$stagedExecutable \$Architecture/u);
@@ -475,7 +523,7 @@ test('the workflow stages before alternate credentials and the harness preflight
   );
   const hostTransitions = [
     ['host-node-resolution', '$node = (Get-Command node.exe'],
-    ['host-node-canonical-authority', "$null = Get-CanonicalItem $node 'file'"],
+    ['host-node-canonical-authority', '$launcherAuthority = Get-TrustedHostLauncher $node'],
     ['host-capture-contract', '$stdout = Join-Path $authenticatedRunnerTemp'],
     ['host-environment-publication', "$previousParent = [Environment]::GetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_PARENT'"],
   ];
@@ -490,6 +538,15 @@ test('the workflow stages before alternate credentials and the harness preflight
       `${subphase} must cover exactly its host operation boundary`);
   }
   assert.match(orchestrator, /function Set-PrimaryFailureFromException[\s\S]*?\$script:primaryPhase = \$failurePhase[\s\S]*?\$script:primarySubphase = if \(\$failureSubphases -ccontains \$failureSubphase\)/u);
+  assert.match(orchestrator, /function Get-TrustedHostLauncher[\s\S]*?GetFinalPath\(\$sourceHandle\)[\s\S]*?Open\(\$finalPath, \$true\)[\s\S]*?GetIdentity\(\$authorityHandle\)[\s\S]*?Open\(\$selectedPath, \$false\)/u);
+  assert.match(orchestrator, /\$node = \$launcherAuthority\.Path[\s\S]*?-FilePath \$node/u);
+  assert.match(orchestrator, /Start-Process[\s\S]*?finally \{\s*\$launcherAuthority\.Handle\.Dispose\(\)/u);
+  assert.match(orchestrator, /FILE_FLAG_OPEN_REPARSE_POINT/u);
+  assert.match(orchestrator, /FILE_ID_INFO[\s\S]*?GetFileInformationByHandleEx[\s\S]*?FileIdInfo = 18/u);
+  assert.match(orchestrator, /FILE_SHARE_READ\s*\n\s*: FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE/u);
+  assert.match(orchestrator, /\$Path\.Length -gt 259[\s\S]*?\[\\x00-\\x1f\\x7f\]/u);
+  assert.match(orchestrator, /function Get-CanonicalItem[\s\S]*?FileAttributes\]::ReparsePoint/u);
+  assert.match(orchestrator, /function Assert-PackageTreeTypes[\s\S]*?FileAttributes\]::ReparsePoint/u);
   assert.match(orchestrator, /\$childFailureSubphases -cnotcontains \$record\.subphase/u);
   assert.match(orchestrator, /catch \{\s*Set-PrimaryFailureFromException \$_\.Exception\s*\}/u);
   assert.match(orchestrator, /\$primaryPhase -ceq 'ordinary-user-preflight'[\s\S]*?\$primarySubphase = 'host-state-contract'/u);
@@ -550,6 +607,54 @@ windowsTest('each host preflight failure transition emits one fixed redacted sub
     assert.equal((diagnostic.match(/:subphase=/gu) ?? []).length, 1);
     assert.doesNotMatch(diagnostic, hostileDiagnosticPattern);
   }
+});
+
+windowsTest('the host launcher accepts only a stable final ordinary-file identity', async context => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-launcher-authority-'));
+  context.after(() => rm(root, { force: true, recursive: true }));
+  const target = join(root, 'node-target.exe');
+  const otherTarget = join(root, 'node-other.exe');
+  const alias = join(root, 'node-alias.exe');
+  const brokenAlias = join(root, 'node-broken.exe');
+  const retargetedAlias = join(root, 'node-retargeted.exe');
+  const identityTarget = join(root, 'node-identity.exe');
+  const directory = join(root, 'node-directory.exe');
+  await Promise.all([
+    writeFile(target, Buffer.from('ordinary launcher target')),
+    writeFile(otherTarget, Buffer.from('other ordinary launcher target')),
+    writeFile(identityTarget, Buffer.from('identity launcher target')),
+  ]);
+  await symlink(target, alias, 'file');
+  await symlink(join(root, 'missing-target.exe'), brokenAlias, 'file');
+  await symlink(target, retargetedAlias, 'file');
+  await mkdir(directory);
+
+  for (const acceptedPath of [target, alias]) {
+    const result = runLauncherAuthorityTest(acceptedPath);
+    assert.ifError(result.error);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 0);
+    assert.equal(
+      result.stdout.toString('utf8').trim(),
+      'PROPR_WINDOWS_PACKAGED_CONNECT_LAUNCHER_AUTHORITY_TEST:accepted',
+    );
+    assert.equal(result.stderr.length, 0);
+  }
+
+  assertLauncherAuthorityRejected(runLauncherAuthorityTest(brokenAlias), 'artifact-missing');
+  assertLauncherAuthorityRejected(
+    runLauncherAuthorityTest(retargetedAlias, 'retarget-alias', otherTarget),
+    'artifact-type',
+  );
+  assertLauncherAuthorityRejected(
+    runLauncherAuthorityTest(identityTarget, 'identity-mismatch'),
+    'artifact-type',
+  );
+  assertLauncherAuthorityRejected(runLauncherAuthorityTest(directory), 'artifact-type');
+  assertLauncherAuthorityRejected(runLauncherAuthorityTest(String.raw`\\.\NUL`), 'artifact-type');
+  assertLauncherAuthorityRejected(runLauncherAuthorityTest('node.exe'), 'artifact-type');
+  assertLauncherAuthorityRejected(runLauncherAuthorityTest(`${root}\\${'x'.repeat(260)}`), 'artifact-type');
+  assertLauncherAuthorityRejected(runLauncherAuthorityTest(`${root}\\control-${String.fromCharCode(1)}.exe`), 'artifact-type');
 });
 
 test('the bounded cleanup source requires proven child exit and bounded stream closure', async () => {

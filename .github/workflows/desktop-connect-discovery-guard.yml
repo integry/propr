@@ -79,6 +79,10 @@ jobs:
         if: matrix.platform == 'win32'
         run: npm run test:windows-fixture-acl -w @propr/desktop
 
+      - name: Verify Windows packaged launcher authority
+        if: matrix.platform == 'win32'
+        run: node --test apps/desktop/scripts/windows-packaged-connect-staging.test.mjs
+
       - name: Package the target-native desktop app
         run: npm run desktop:package
 

@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory=$true)]
   [ValidateSet('x64','arm64')]
   [string]$Architecture,
-  [ValidateSet('none','terminate-tree','cleanup-timeout','diagnostic-subphase')]
+  [ValidateSet('none','terminate-tree','cleanup-timeout','diagnostic-subphase','launcher-authority')]
   [string]$LifecycleTestMode = 'none',
   [ValidateRange(0,2147483647)]
   [int]$LifecycleTestProcessId = 0,
@@ -12,7 +12,11 @@ param(
     'host-capture-contract',
     'host-environment-publication'
   )]
-  [string]$DiagnosticTestSubphase = 'host-node-resolution'
+  [string]$DiagnosticTestSubphase = 'host-node-resolution',
+  [ValidateSet('normal','retarget-alias','identity-mismatch')]
+  [string]$LauncherAuthorityTestCase = 'normal',
+  [string]$LauncherAuthorityTestPath = '',
+  [string]$LauncherAuthorityTestRetargetPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,6 +80,7 @@ $stageLeaf = $null
 $stdout = $null
 $stderr = $null
 $privilegedSid = $null
+$launcherAuthority = $null
 
 function Stop-PackagedConnect {
   param([Parameter(Mandatory=$true)][ValidateSet(
@@ -209,6 +214,269 @@ function Get-CanonicalItem {
     Stop-PackagedConnect 'artifact-type'
   }
   return $item
+}
+
+$hostLauncherNativeSource = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public static class ProprHostLauncherNative {
+  public const uint FILE_READ_ATTRIBUTES = 0x00000080;
+  public const uint FILE_SHARE_READ = 0x00000001;
+  public const uint FILE_SHARE_WRITE = 0x00000002;
+  public const uint FILE_SHARE_DELETE = 0x00000004;
+  public const uint OPEN_EXISTING = 3;
+  public const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+  public const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+  public const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
+  public const uint FILE_ATTRIBUTE_DEVICE = 0x00000040;
+  public const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+  public const uint FILE_TYPE_DISK = 0x0001;
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct BY_HANDLE_FILE_INFORMATION {
+    public uint FileAttributes;
+    public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+    public uint VolumeSerialNumber;
+    public uint FileSizeHigh;
+    public uint FileSizeLow;
+    public uint NumberOfLinks;
+    public uint FileIndexHigh;
+    public uint FileIndexLow;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct FILE_ID_128 {
+    public ulong Low;
+    public ulong High;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct FILE_ID_INFO {
+    public ulong VolumeSerialNumber;
+    public FILE_ID_128 FileId;
+  }
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern SafeFileHandle CreateFileW(
+    string fileName,
+    uint desiredAccess,
+    uint shareMode,
+    IntPtr securityAttributes,
+    uint creationDisposition,
+    uint flagsAndAttributes,
+    IntPtr templateFile
+  );
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool GetFileInformationByHandle(
+    SafeFileHandle file,
+    out BY_HANDLE_FILE_INFORMATION information
+  );
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool GetFileInformationByHandleEx(
+    SafeFileHandle file,
+    int fileInformationClass,
+    out FILE_ID_INFO information,
+    uint bufferSize
+  );
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern uint GetFileType(SafeFileHandle file);
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern uint GetFinalPathNameByHandleW(
+    SafeFileHandle file,
+    StringBuilder path,
+    uint pathLength,
+    uint flags
+  );
+
+  public static SafeFileHandle Open(string path, bool finalPathAuthority) {
+    uint share = finalPathAuthority
+      ? FILE_SHARE_READ
+      : FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    uint flags = FILE_FLAG_BACKUP_SEMANTICS;
+    if (finalPathAuthority) flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+    SafeFileHandle handle = CreateFileW(
+      path,
+      FILE_READ_ATTRIBUTES,
+      share,
+      IntPtr.Zero,
+      OPEN_EXISTING,
+      flags,
+      IntPtr.Zero
+    );
+    if (handle.IsInvalid) {
+      int error = Marshal.GetLastWin32Error();
+      handle.Dispose();
+      throw new Win32Exception(error);
+    }
+    return handle;
+  }
+
+  public static string GetIdentity(SafeFileHandle handle) {
+    const int FileIdInfo = 18;
+    FILE_ID_INFO information;
+    if (!GetFileInformationByHandleEx(
+      handle,
+      FileIdInfo,
+      out information,
+      (uint)Marshal.SizeOf(typeof(FILE_ID_INFO))
+    )) {
+      throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    return String.Format(
+      System.Globalization.CultureInfo.InvariantCulture,
+      "{0:X16}:{1:X16}:{2:X16}",
+      information.VolumeSerialNumber,
+      information.FileId.High,
+      information.FileId.Low
+    );
+  }
+
+  public static uint GetAttributes(SafeFileHandle handle) {
+    BY_HANDLE_FILE_INFORMATION information;
+    if (!GetFileInformationByHandle(handle, out information)) {
+      throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    return information.FileAttributes;
+  }
+
+  public static uint GetHandleType(SafeFileHandle handle) {
+    uint type = GetFileType(handle);
+    if (type == 0) {
+      int error = Marshal.GetLastWin32Error();
+      if (error != 0) throw new Win32Exception(error);
+    }
+    return type;
+  }
+
+  public static string GetFinalPath(SafeFileHandle handle) {
+    StringBuilder path = new StringBuilder(32768);
+    uint length = GetFinalPathNameByHandleW(handle, path, (uint)path.Capacity, 0);
+    if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+    if (length >= path.Capacity) throw new Win32Exception(206);
+    return path.ToString();
+  }
+}
+'@
+
+function Initialize-HostLauncherNative {
+  if ($null -eq ('ProprHostLauncherNative' -as [type])) {
+    Add-Type -TypeDefinition $hostLauncherNativeSource -Language CSharp -ErrorAction Stop
+  }
+}
+
+function Get-BoundedAbsoluteWindowsPath {
+  param([Parameter(Mandatory=$true)][string]$Path)
+  if ([String]::IsNullOrEmpty($Path) -or $Path.Length -gt 259 -or $Path -cmatch '[\x00-\x1f\x7f]' -or
+      $Path.StartsWith('\\?\', [StringComparison]::Ordinal) -or
+      $Path.StartsWith('\\.\', [StringComparison]::Ordinal) -or
+      $Path.StartsWith('\??\', [StringComparison]::Ordinal)) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  try {
+    $fullPath = [IO.Path]::GetFullPath($Path)
+  } catch {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  $driveAbsolute = $fullPath -cmatch '^[A-Za-z]:\\' -and !$fullPath.Substring(2).Contains(':')
+  $uncAbsolute = $fullPath -cmatch '^\\\\[^\\:]+\\[^\\:]+\\' -and !$fullPath.Substring(2).Contains(':')
+  if (!$driveAbsolute -and !$uncAbsolute) { Stop-PackagedConnect 'artifact-type' }
+  if (![String]::Equals($fullPath, $Path, [StringComparison]::OrdinalIgnoreCase)) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  return $fullPath
+}
+
+function ConvertFrom-NativeFinalPath {
+  param([Parameter(Mandatory=$true)][string]$Path)
+  if ($Path.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
+    return '\\' + $Path.Substring(8)
+  }
+  if ($Path.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) {
+    return $Path.Substring(4)
+  }
+  Stop-PackagedConnect 'artifact-type'
+}
+
+function Assert-OrdinaryHostLauncherHandle {
+  param([Parameter(Mandatory=$true)]$Handle)
+  $attributes = [ProprHostLauncherNative]::GetAttributes($Handle)
+  if ([ProprHostLauncherNative]::GetHandleType($Handle) -ne [ProprHostLauncherNative]::FILE_TYPE_DISK -or
+      ($attributes -band [ProprHostLauncherNative]::FILE_ATTRIBUTE_DIRECTORY) -ne 0 -or
+      ($attributes -band [ProprHostLauncherNative]::FILE_ATTRIBUTE_DEVICE) -ne 0 -or
+      ($attributes -band [ProprHostLauncherNative]::FILE_ATTRIBUTE_REPARSE_POINT) -ne 0) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+}
+
+function Get-TrustedHostLauncher {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [scriptblock]$TestOnlyBeforeFinalReopen,
+    [scriptblock]$TestOnlyBeforeSourceReopen
+  )
+  $sourceHandle = $null
+  $authorityHandle = $null
+  $sourceReopenHandle = $null
+  $authorityTransferred = $false
+  try {
+    Initialize-HostLauncherNative
+    $selectedPath = Get-BoundedAbsoluteWindowsPath $Path
+    $sourceHandle = [ProprHostLauncherNative]::Open($selectedPath, $false)
+    Assert-OrdinaryHostLauncherHandle $sourceHandle
+    $sourceIdentity = [ProprHostLauncherNative]::GetIdentity($sourceHandle)
+    $finalPath = Get-BoundedAbsoluteWindowsPath (
+      ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($sourceHandle))
+    )
+
+    if ($null -ne $TestOnlyBeforeFinalReopen) { & $TestOnlyBeforeFinalReopen }
+    $authorityHandle = [ProprHostLauncherNative]::Open($finalPath, $true)
+    Assert-OrdinaryHostLauncherHandle $authorityHandle
+    $authorityIdentity = [ProprHostLauncherNative]::GetIdentity($authorityHandle)
+    $authorityFinalPath = Get-BoundedAbsoluteWindowsPath (
+      ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($authorityHandle))
+    )
+    if (![String]::Equals($sourceIdentity, $authorityIdentity, [StringComparison]::Ordinal) -or
+        ![String]::Equals($finalPath, $authorityFinalPath, [StringComparison]::OrdinalIgnoreCase)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    if ($null -ne $TestOnlyBeforeSourceReopen) { & $TestOnlyBeforeSourceReopen }
+    $sourceReopenHandle = [ProprHostLauncherNative]::Open($selectedPath, $false)
+    Assert-OrdinaryHostLauncherHandle $sourceReopenHandle
+    $sourceReopenIdentity = [ProprHostLauncherNative]::GetIdentity($sourceReopenHandle)
+    $sourceReopenFinalPath = Get-BoundedAbsoluteWindowsPath (
+      ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($sourceReopenHandle))
+    )
+    if (![String]::Equals($authorityIdentity, $sourceReopenIdentity, [StringComparison]::Ordinal) -or
+        ![String]::Equals($finalPath, $sourceReopenFinalPath, [StringComparison]::OrdinalIgnoreCase)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    $authorityTransferred = $true
+    return [PSCustomObject]@{ Path = $finalPath; Handle = $authorityHandle }
+  } catch {
+    if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
+    $nativeException = $_.Exception
+    while ($null -ne $nativeException.InnerException) { $nativeException = $nativeException.InnerException }
+    if ($nativeException -is [ComponentModel.Win32Exception] -and $nativeException.NativeErrorCode -in @(2,3)) {
+      Stop-PackagedConnect 'artifact-missing'
+    }
+    Stop-PackagedConnect 'artifact-inaccessible'
+  } finally {
+    if ($null -ne $sourceHandle) { $sourceHandle.Dispose() }
+    if ($null -ne $sourceReopenHandle) { $sourceReopenHandle.Dispose() }
+    if (!$authorityTransferred -and $null -ne $authorityHandle) { $authorityHandle.Dispose() }
+  }
 }
 
 function Assert-PeArchitecture {
@@ -550,7 +818,47 @@ if ($LifecycleTestMode -eq 'terminate-tree') {
   }
 }
 
-if ($LifecycleTestMode -eq 'diagnostic-subphase') {
+if ($LifecycleTestMode -eq 'launcher-authority') {
+  Set-OrdinaryUserPreflightSubphase 'host-node-canonical-authority'
+  try {
+    $beforeFinalReopen = $null
+    $beforeSourceReopen = $null
+    if ($LauncherAuthorityTestCase -eq 'identity-mismatch') {
+      $beforeFinalReopen = {
+        $replacementBackup = $LauncherAuthorityTestPath + '.propr-identity-' + [Guid]::NewGuid().ToString('N')
+        Move-Item -LiteralPath $LauncherAuthorityTestPath -Destination $replacementBackup -ErrorAction Stop
+        [IO.File]::WriteAllBytes($LauncherAuthorityTestPath, [byte[]]@(0x4d,0x5a))
+      }
+    } elseif ($LauncherAuthorityTestCase -eq 'retarget-alias') {
+      $beforeSourceReopen = {
+        $null = Get-BoundedAbsoluteWindowsPath $LauncherAuthorityTestRetargetPath
+        Remove-Item -LiteralPath $LauncherAuthorityTestPath -Force -ErrorAction Stop
+        $null = New-Item `
+          -ItemType SymbolicLink `
+          -Path $LauncherAuthorityTestPath `
+          -Target $LauncherAuthorityTestRetargetPath `
+          -ErrorAction Stop
+      }
+    }
+    $launcherAuthority = Get-TrustedHostLauncher `
+      -Path $LauncherAuthorityTestPath `
+      -TestOnlyBeforeFinalReopen $beforeFinalReopen `
+      -TestOnlyBeforeSourceReopen $beforeSourceReopen
+    $launcherAuthority.Handle.Dispose()
+    $launcherAuthority = $null
+    [Console]::Out.WriteLine('PROPR_WINDOWS_PACKAGED_CONNECT_LAUNCHER_AUTHORITY_TEST:accepted')
+    exit 0
+  } catch {
+    Set-PrimaryFailureFromException $_.Exception
+  } finally {
+    if ($null -ne $launcherAuthority) {
+      $launcherAuthority.Handle.Dispose()
+      $launcherAuthority = $null
+    }
+  }
+}
+
+if ($LifecycleTestMode -in @('diagnostic-subphase','launcher-authority')) {
   # The shared final diagnostic below emits the injected fixed state.
 } elseif ($LifecycleTestMode -eq 'cleanup-timeout') {
   $cleanupTimeoutMilliseconds = 750
@@ -672,7 +980,8 @@ try {
     Set-OrdinaryUserPreflightSubphase 'host-node-resolution'
     $node = (Get-Command node.exe -CommandType Application -ErrorAction Stop).Source
     Set-OrdinaryUserPreflightSubphase 'host-node-canonical-authority'
-    $null = Get-CanonicalItem $node 'file'
+    $launcherAuthority = Get-TrustedHostLauncher $node
+    $node = $launcherAuthority.Path
     Set-OrdinaryUserPreflightSubphase 'host-capture-contract'
     $stdout = Join-Path $authenticatedRunnerTemp ('propr-connect-' + [Guid]::NewGuid().ToString('N') + '.stdout')
     $stderr = Join-Path $authenticatedRunnerTemp ('propr-connect-' + [Guid]::NewGuid().ToString('N') + '.stderr')
@@ -687,16 +996,21 @@ try {
       [Environment]::SetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_LEAF', $stageLeaf, 'Process')
       try {
         Set-FailurePhase 'application-spawn'
-        $process = Start-Process `
-          -FilePath $node `
-          -ArgumentList @('scripts/smoke-packaged-connect.mjs') `
-          -WorkingDirectory $desktopDirectory `
-          -Credential $credential `
-          -LoadUserProfile `
-          -PassThru `
-          -RedirectStandardOutput $stdout `
-          -RedirectStandardError $stderr `
-          -ErrorAction Stop
+        try {
+          $process = Start-Process `
+            -FilePath $node `
+            -ArgumentList @('scripts/smoke-packaged-connect.mjs') `
+            -WorkingDirectory $desktopDirectory `
+            -Credential $credential `
+            -LoadUserProfile `
+            -PassThru `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr `
+            -ErrorAction Stop
+        } finally {
+          $launcherAuthority.Handle.Dispose()
+          $launcherAuthority = $null
+        }
       } catch {
         Stop-PackagedConnect 'spawn-failed'
       }
@@ -770,6 +1084,10 @@ try {
     Set-PrimaryFailureFromException $_.Exception
   }
 } finally {
+  if ($null -ne $launcherAuthority) {
+    try { $launcherAuthority.Handle.Dispose() } catch {}
+    $launcherAuthority = $null
+  }
   if ($null -ne $authenticatedRunnerTemp -and $null -ne $privilegedSid) {
     $cleanupResult = Invoke-BoundedCleanup
     if ($cleanupResult -eq 'timeout') {
