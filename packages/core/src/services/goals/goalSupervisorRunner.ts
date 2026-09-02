@@ -13,12 +13,8 @@ import { GoalSupervisorControl } from './goalSupervisorControl.js';
 import { GoalSupervisorObservations } from './goalSupervisorObservations.js';
 import type { Goal, GoalLeaseFence } from './goalTypes.js';
 import type {
-  GoalArtifactVerifier,
-  GoalProviderRuntime,
-  GoalProviderRuntimeResolver,
-  GoalRuntimeExecution,
-  GoalRuntimeResult,
-  GoalWorkspaceIdentity,
+  GoalArtifactVerifier, GoalProviderRuntime, GoalProviderRuntimeResolver,
+  GoalRuntimeExecution, GoalRuntimeResult, GoalWorkspaceIdentity,
 } from './goalRuntimeTypes.js';
 import {
   abortableDelay,

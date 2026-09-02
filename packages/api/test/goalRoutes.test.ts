@@ -9,9 +9,7 @@ import { up as createNativeExecutions } from '../../core/src/db/migrations/20260
 import { resetConfiguredDemoMode, configureDemoMode } from '../demoMode.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 
-type BetterSqliteConnection = {
-  pragma: (arg: string, options?: { simple?: boolean }) => unknown;
-};
+type BetterSqliteConnection = { pragma: (arg: string, options?: { simple?: boolean }) => unknown };
 
 let database: Knex, createCounter = 0;
 
@@ -47,9 +45,7 @@ const agents: AgentConfig[] = [
     defaultModel: 'claude-opus-4-8',
   },
 ];
-const repositories: RepoToMonitor[] = [
-  { name: 'octo/repo', enabled: true } as RepoToMonitor,
-];
+const repositories: RepoToMonitor[] = [{ name: 'octo/repo', enabled: true } as RepoToMonitor];
 
 function makeRoutes() {
   return createGoalRoutes({
@@ -432,10 +428,7 @@ describe('goal routes', () => {
     const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
     const goalRepository = new GoalRepository(database);
     const lease = await goalRepository.claimLease(goalId, 'terminal-test', 60_000);
-    await goalRepository.transition(goalId, {
-      toState: 'cancelled', terminalReason: 'user_cancelled',
-      leaseOwner: 'terminal-test', leaseEpoch: lease.epoch,
-    });
+    await goalRepository.transition(goalId, { toState: 'cancelled', terminalReason: 'user_cancelled', leaseOwner: 'terminal-test', leaseEpoch: lease.epoch });
     const response = makeResponse();
     await makeRoutes().requestModelChange(
       makeRequest({ params: { goalId }, body: { model: 'claude-sonnet-5' }, headers: { 'Idempotency-Key': 'model-terminal' } }),
