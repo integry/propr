@@ -87,6 +87,7 @@ export function createSupervisedCodexAppServerFactory(
             await containers.cancelPendingOpenAttempt({
                 goalId: request.goalId, sessionId: request.sessionId,
                 attemptId: pending.initializationIntent.attemptId,
+                deterministicOpenKey: pending.initializationIntent.deterministicOpenKey,
             });
         },
     };

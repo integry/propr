@@ -211,7 +211,7 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
                         completion,
                         () => this.rollbackProviderPrimitive(providerRequest.operationFence, state),
                     );
-                }),
+                }, value => rebuildProviderSnapshot(value, this.adapter.provider)),
                 value => rebuildProviderSnapshot(value, this.adapter.provider),
             );
         } catch (error) {

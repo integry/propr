@@ -17,14 +17,14 @@ import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.j
 import { assertSafeProviderIdentifier, safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { decodeDurableGoalSessionState } from './durableStateSecurity.js';
 import { boundedProviderBoundary, expireResumeLease } from './providerBarrierProtocol.js';
-import { untrustedProviderResult } from './providerResultBoundary.js';
+import { rebuildIteratorResult, untrustedProviderResult } from './providerResultBoundary.js';
 import {
     controlExecutionIdentity,
     nextState,
     validateControlFence,
 } from './support.js';
 import { completesAtAfterTurnPause, needsAfterTurnPauseAudit } from './turnCompletionProtocol.js';
-import { controlOperationId, mintFreshAttemptId } from './controlOperationIdentity.js';
+import { compositeOperationId, controlOperationId, mintFreshAttemptId } from './controlOperationIdentity.js';
 import {
     createProviderOperationFence, createProviderResumeRequest, providerFirstEffectStream,
     rollbackStartedProviderPrimitive, startedProviderEffect,
@@ -151,9 +151,10 @@ export abstract class GoalSessionCore {
     }
 
     /** Starts the primitive while the authoritative state row is transaction-locked. */
-    protected providerFirstEffect<T>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>,
-        stage: GoalProviderEffectStage = 'provider_primitive'): Promise<T> {
-        assertGoalProviderEffectStage(stage); return this.ports.providerFirstEffects.start(fence, stage, effect);
+    protected providerFirstEffect<T, R>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>,
+        rebuild: (value: T) => R, stage: GoalProviderEffectStage = 'provider_primitive'): Promise<R> {
+        assertGoalProviderEffectStage(stage);
+        return this.ports.providerFirstEffects.start(fence, stage, effect, rebuild);
     }
 
     protected startedProviderEffect<T>(completion: Promise<T>, rollbackOrCancel: () => void | Promise<void>): GoalStartedProviderEffect<T> {
@@ -166,7 +167,10 @@ export abstract class GoalSessionCore {
 
     protected providerFirstEffectStream<T>(fence: GoalProviderOperationFence,
         create: () => AsyncIterable<T>): AsyncIterable<T> {
-        return providerFirstEffectStream(this.ports.providerFirstEffects, fence, create);
+        return providerFirstEffectStream(
+            this.ports.providerFirstEffects, fence, create,
+            value => rebuildIteratorResult(value) as IteratorResult<T>,
+        );
     }
 
     protected async providerResult<T, R>(
@@ -184,7 +188,9 @@ export abstract class GoalSessionCore {
         return this.providerOperationFence(
             fence, generation,
             {
-                kind: 'turn', operationId: `${fence.turnId}:${execution.executionId}:${execution.attemptId}`,
+                kind: 'turn', operationId: compositeOperationId(
+                    'turn', fence.turnId, execution.executionId, execution.attemptId,
+                ),
                 turnId: fence.turnId, executionId: execution.executionId, attemptId: execution.attemptId,
             },
         );

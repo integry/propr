@@ -19,7 +19,7 @@ export type {
     RunGoalTurnRequest,
     RunGoalTurnResult,
 } from './GoalSessionSupervisor.js';
-export { GoalSessionScopeError } from './InMemoryGoalSessionPorts.js';
+export { GoalSessionScopeError } from './errors.js';
 export { AuthoritativeGoalSessionRuntimePorts } from './AuthoritativeGoalSessionRuntimePorts.js';
 export {
     createSqliteGoalSessionRuntimePorts,

@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import type {
     DurableCorrectiveMessage, GoalEventAppendResult, GoalExecutionIdentity,
@@ -11,16 +12,16 @@ import type {
 } from './AuthoritativeGoalSessionRuntimePorts.js';
 import { AuthoritativeGoalSessionRuntimePorts } from './AuthoritativeGoalSessionRuntimePorts.js';
 import type { GoalSessionRecoveryPort, GoalSessionRuntimePorts } from './runtimePorts.js';
-import { GoalSessionContractError } from './errors.js';
-import { GoalSessionScopeError } from './InMemoryGoalSessionPorts.js';
+import { GoalSessionContractError, GoalSessionScopeError } from './errors.js';
 import { assertStartedProviderEffect } from './providerEffectProtocol.js';
 import { assertProviderFirstEffectState } from './providerFirstEffect.js';
-import { assertGoalProviderEffectStage } from './providerOperationBoundary.js';
+import { assertGoalProviderEffectStage, assertGoalProviderOperationFence } from './providerOperationBoundary.js';
 import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { sqliteGoalScope, sqliteTerminalKey, sqliteTransitionKey } from './sqliteGoalSessionKeys.js';
 import { assertSqliteGoalControlSchema, replayableProviderOutcomeJson } from './sqliteGoalSessionSchema.js';
+import { isSafeIdentifier } from './safeIdentifier.js';
 
-type EffectRow = { kind: string; status: string; outcome_json: string | null };
+type EffectRow = { kind: string; status: string; claim_token: string; outcome_json: string | null };
 
 /** Production SQLite adapter over an injected, already-migrated control database. */
 export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeTransactionDomain {
@@ -39,13 +40,15 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
     async create(state: Omit<GoalSessionState, 'version'>): Promise<GoalSessionState | null> {
         const saved = { ...structuredClone(state), version: 1 };
         return this.immediate(() => {
-            this.database.prepare('INSERT OR IGNORE INTO goal_session_runtime_owners(session_id, goal_id) VALUES (?, ?)')
-                .run(state.sessionId, state.goalId);
+            this.bindOwnerForCreate(state);
             this.assertOwner(state);
             const result = this.database.prepare(
-                'INSERT OR IGNORE INTO goal_session_runtime_state(scope, payload_json) VALUES (?, ?)',
-            ).run(sqliteGoalScope(state), JSON.stringify(saved));
-            return result.changes === 1 ? saved : null;
+                `INSERT OR IGNORE INTO goal_session_runtime_state
+                    (session_id, goal_id, scope, payload_json) VALUES (?, ?, ?, ?)`,
+            ).run(state.sessionId, state.goalId, sqliteGoalScope(state), JSON.stringify(saved));
+            if (result.changes !== 1) return null;
+            this.syncProviderSession(saved);
+            return saved;
         });
     }
 
@@ -98,19 +101,24 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
     async replay(identity: GoalSessionIdentity, afterSequence = 0): Promise<PersistedGoalSessionEvent[]> {
         this.assertOwner(identity);
         const rows = this.database.prepare(
-            'SELECT payload_json FROM goal_events WHERE goal_id = ? AND sequence > ? ORDER BY sequence',
+            `SELECT payload_json FROM goal_events
+                WHERE goal_id = ? AND sequence > ? AND kind = 'domain'
+                    AND event_type LIKE 'goal_session.%' ORDER BY sequence`,
         ).all(identity.goalId, afterSequence) as Array<{ payload_json: string | null }>;
         return rows.flatMap(row => {
             if (!row.payload_json) return [];
-            const event = JSON.parse(row.payload_json) as PersistedGoalSessionEvent;
-            return event.sessionId === identity.sessionId ? [event] : [];
+            let event: unknown;
+            try { event = JSON.parse(row.payload_json); }
+            catch { return []; }
+            return isPersistedRuntimeEvent(event, identity) ? [event] : [];
         });
     }
 
     async listPending(identity: GoalSessionIdentity): Promise<DurableCorrectiveMessage[]> {
         this.assertOwner(identity);
         const rows = this.database.prepare(
-            "SELECT message_id, sequence, body, created_at, acknowledged_at FROM goal_messages WHERE goal_id = ? AND state != 'acknowledged' ORDER BY sequence",
+            `SELECT message_id, sequence, body, created_at, acknowledged_at FROM goal_messages
+                WHERE goal_id = ? AND state IN ('queued', 'delivering', 'delivered') ORDER BY queue_ordinal`,
         ).all(identity.goalId) as Array<{
             message_id: string; sequence: number; body: string; created_at: string; acknowledged_at: string | null;
         }>;
@@ -128,15 +136,27 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
         return this.immediate(() => {
             this.assertOwner(fence);
             if (!matchesTurn(this.readState(fence), fence, execution)) return 'stale_fence';
-            const row = this.database.prepare(
-                'SELECT state FROM goal_messages WHERE goal_id = ? AND message_id = ?',
-            ).get(fence.goalId, messageId) as { state: string } | undefined;
+            const row = this.database.prepare(`SELECT state, delivered_at FROM goal_messages
+                WHERE goal_id = ? AND message_id = ?`).get(fence.goalId, messageId) as {
+                state: string; delivered_at: string | null;
+            } | undefined;
             if (!row) return 'not_found';
             if (row.state === 'acknowledged') return 'already_acknowledged';
+            if (!['queued', 'delivering', 'delivered'].includes(row.state)) return 'not_found';
             const acknowledgedAt = new Date().toISOString();
-            this.database.prepare(
-                "UPDATE goal_messages SET state = 'acknowledged', acknowledged_at = ? WHERE goal_id = ? AND message_id = ?",
-            ).run(acknowledgedAt, fence.goalId, messageId);
+            if (row.state === 'queued') this.database.prepare(`UPDATE goal_messages SET state = 'delivering',
+                claimed_by = ?, claimed_turn_id = ?, claimed_lease_generation = ?,
+                delivery_key = ?, delivery_attempts = delivery_attempts + 1
+                WHERE goal_id = ? AND message_id = ? AND state = 'queued'`)
+                .run(fence.sessionId, fence.turnId, fence.controllerEpoch,
+                    boundedEventKey(['message-delivery', fence.sessionId, fence.turnId, messageId]), fence.goalId, messageId);
+            if (row.state !== 'delivered') this.database.prepare(`UPDATE goal_messages SET state = 'delivered', delivered_at = ?
+                WHERE goal_id = ? AND message_id = ? AND state = 'delivering'`)
+                .run(acknowledgedAt, fence.goalId, messageId);
+            const result = this.database.prepare(`UPDATE goal_messages SET state = 'acknowledged', acknowledged_at = ?
+                WHERE goal_id = ? AND message_id = ? AND state = 'delivered' AND delivered_at IS NOT NULL`)
+                .run(acknowledgedAt, fence.goalId, messageId);
+            if (result.changes !== 1) return 'stale_fence';
             this.record(fence, fence.turnId, execution, { type: 'message_acknowledged', messageId });
             return 'acknowledged';
         });
@@ -148,13 +168,15 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
             const existing = this.readModelChange(identity, operationId);
             if (existing) return existing;
             const row = this.database.prepare(`
-                INSERT INTO goal_session_runtime_model_sequences(scope, next_sequence) VALUES (?, 2)
+                INSERT INTO goal_session_runtime_model_sequences
+                    (session_id, goal_id, scope, next_sequence) VALUES (?, ?, ?, 2)
                 ON CONFLICT(scope) DO UPDATE SET next_sequence = next_sequence + 1
                 RETURNING next_sequence - 1 AS sequence
-            `).get(sqliteGoalScope(identity)) as { sequence: number };
+            `).get(identity.sessionId, identity.goalId, sqliteGoalScope(identity)) as { sequence: number };
             this.database.prepare(`INSERT INTO goal_session_runtime_model_changes
-                (scope, operation_id, sequence, model, status) VALUES (?, ?, ?, ?, 'pending')`)
-                .run(sqliteGoalScope(identity), operationId, row.sequence, model);
+                (session_id, goal_id, scope, operation_id, sequence, model, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending')`)
+                .run(identity.sessionId, identity.goalId, sqliteGoalScope(identity), operationId, row.sequence, model);
             return { operationId, model, sequence: row.sequence, status: 'pending' };
         });
     }
@@ -181,57 +203,69 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
     ): Promise<GoalProviderEffectClaimResult> {
-        assertGoalProviderEffectStage(stage);
+        assertGoalProviderOperationFence(fence); assertGoalProviderEffectStage(stage);
         return this.immediate(() => {
             this.assertOwner(fence);
             assertProviderFirstEffectState(this.readState(fence), fence);
             const current = this.readEffect(fence, stage);
-            if (current?.kind !== undefined && current.kind !== fence.kind) {
+            if (current && current.kind !== fence.kind) {
                 throw new GoalSessionContractError('Provider effect kind conflicts with its durable claim', 'PROVIDER_EFFECT_IN_DOUBT');
             }
             if (current?.status === 'settled') {
                 return { status: 'settled', outcome: JSON.parse(current.outcome_json ?? 'null') };
             }
-            if (current?.status === 'terminal_in_doubt' || current && fence.kind === 'open') {
-                this.database.prepare(`UPDATE goal_session_runtime_provider_effects
-                    SET status = 'terminal_in_doubt', updated_at = ? WHERE scope = ? AND operation_id = ? AND stage = ?`)
-                    .run(new Date().toISOString(), sqliteGoalScope(fence), fence.operationId, stage);
+            if (current && (current.status === 'started' || current.status === 'poisoned')) {
                 return { status: 'terminal_in_doubt' };
             }
+            const token = randomUUID();
             if (current) {
-                this.database.prepare(`UPDATE goal_session_runtime_provider_effects
-                    SET status = 'claimed', updated_at = ? WHERE scope = ? AND operation_id = ? AND stage = ?`)
-                    .run(new Date().toISOString(), sqliteGoalScope(fence), fence.operationId, stage);
-                return { status: 'recoverable' };
+                const result = this.database.prepare(`UPDATE goal_session_runtime_provider_effects
+                    SET status = 'recoverable', claim_token = ?, updated_at = ?
+                    WHERE scope = ? AND operation_id = ? AND stage = ?
+                        AND claim_token = ? AND status IN ('unstarted', 'recoverable')`)
+                    .run(token, new Date().toISOString(), sqliteGoalScope(fence), fence.operationId, stage, current.claim_token);
+                if (result.changes !== 1) throw effectCasFailure();
+                return { status: 'recoverable', token };
             }
             this.database.prepare(`INSERT INTO goal_session_runtime_provider_effects
-                (scope, operation_id, kind, stage, status, updated_at) VALUES (?, ?, ?, ?, 'claimed', ?)`)
-                .run(sqliteGoalScope(fence), fence.operationId, fence.kind, stage, new Date().toISOString());
-            return { status: 'claimed' };
+                (session_id, goal_id, scope, operation_id, kind, stage, status, claim_token, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'unstarted', ?, ?)`)
+                .run(fence.sessionId, fence.goalId, sqliteGoalScope(fence), fence.operationId,
+                    fence.kind, stage, token, new Date().toISOString());
+            return { status: 'claimed', token };
         });
     }
 
     async runClaimedProviderEffect<T>(
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
+        token: string,
         effect: () => GoalStartedProviderEffect<T>,
     ): Promise<GoalStartedProviderEffect<T>> {
-        assertGoalProviderEffectStage(stage);
+        assertGoalProviderOperationFence(fence); assertGoalProviderEffectStage(stage);
+        if (!isSafeIdentifier(token)) throw effectCasFailure();
+        // Persist provider entry before callback execution. A crash after this
+        // CAS is conservatively live/unknown and can never re-enter callback.
+        this.immediate(() => {
+            this.assertOwner(fence);
+            assertProviderFirstEffectState(this.readState(fence), fence);
+            const result = this.database.prepare(`UPDATE goal_session_runtime_provider_effects
+                SET status = 'started', updated_at = ? WHERE scope = ? AND operation_id = ?
+                    AND stage = ? AND claim_token = ? AND status IN ('unstarted', 'recoverable')`)
+                .run(new Date().toISOString(), sqliteGoalScope(fence), fence.operationId, stage, token);
+            if (result.changes !== 1) throw effectCasFailure();
+        });
+        // Re-lock and revalidate the authoritative state immediately around the
+        // synchronous primitive start. Invalidations on another connection are
+        // serialized before or after this callback, never through it.
         return this.immediate(() => {
             this.assertOwner(fence);
             assertProviderFirstEffectState(this.readState(fence), fence);
             const claim = this.readEffect(fence, stage);
-            if (!claim || claim.kind !== fence.kind || claim.status !== 'claimed') throw new GoalSessionContractError(
-                'Provider effect stage does not own an exact durable claim', 'PROVIDER_EFFECT_IN_DOUBT',
-            );
-            this.database.prepare(`UPDATE goal_session_runtime_provider_effects SET status = 'starting', updated_at = ?
-                WHERE scope = ? AND operation_id = ? AND stage = ? AND status = 'claimed'`)
-                .run(new Date().toISOString(), sqliteGoalScope(fence), fence.operationId, stage);
+            if (!claim || claim.kind !== fence.kind || claim.status !== 'started'
+                || claim.claim_token !== token) throw effectCasFailure();
             const started = effect();
             assertStartedProviderEffect<T>(started);
-            this.database.prepare(`UPDATE goal_session_runtime_provider_effects SET status = 'started', updated_at = ?
-                WHERE scope = ? AND operation_id = ? AND stage = ? AND status = 'starting'`)
-                .run(new Date().toISOString(), sqliteGoalScope(fence), fence.operationId, stage);
             return started;
         });
     }
@@ -239,25 +273,31 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
     async settleProviderEffect(
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
+        token: string,
         outcome: unknown,
     ): Promise<void> {
-        assertGoalProviderEffectStage(stage);
+        assertGoalProviderOperationFence(fence); assertGoalProviderEffectStage(stage);
+        if (!isSafeIdentifier(token)) throw effectCasFailure();
         const outcomeJson = stage === 'container_spawn' ? null : replayableProviderOutcomeJson(outcome);
         this.immediate(() => {
             this.assertOwner(fence);
-            this.database.prepare(`UPDATE goal_session_runtime_provider_effects
-                SET status = ?, outcome_json = ?, updated_at = ? WHERE scope = ? AND operation_id = ? AND stage = ?`)
-                .run(stage === 'container_spawn' ? 'terminal_in_doubt' : 'settled', outcomeJson,
-                    new Date().toISOString(), sqliteGoalScope(fence), fence.operationId, stage);
+            const result = this.database.prepare(`UPDATE goal_session_runtime_provider_effects
+                SET status = ?, outcome_json = ?, updated_at = ? WHERE scope = ? AND operation_id = ?
+                    AND stage = ? AND status = 'started' AND claim_token = ?`)
+                .run(stage === 'container_spawn' ? 'poisoned' : 'settled', outcomeJson,
+                    new Date().toISOString(), sqliteGoalScope(fence), fence.operationId, stage, token);
+            if (result.changes !== 1) throw effectCasFailure();
         });
     }
 
-    async markProviderEffectRecoverable(fence: GoalProviderOperationFence, stage: GoalProviderEffectStage): Promise<void> {
-        assertGoalProviderEffectStage(stage); this.immediate(() => {
+    async poisonProviderEffect(fence: GoalProviderOperationFence, stage: GoalProviderEffectStage, token: string): Promise<void> {
+        assertGoalProviderOperationFence(fence); assertGoalProviderEffectStage(stage);
+        if (!isSafeIdentifier(token)) throw effectCasFailure();
+        this.immediate(() => {
             this.assertOwner(fence);
-            this.database.prepare(`UPDATE goal_session_runtime_provider_effects SET status = 'recoverable', updated_at = ?
-                WHERE scope = ? AND operation_id = ? AND stage = ? AND status != 'settled'`)
-                .run(new Date().toISOString(), sqliteGoalScope(fence), fence.operationId, stage);
+            this.database.prepare(`UPDATE goal_session_runtime_provider_effects SET status = 'poisoned', updated_at = ?
+                WHERE scope = ? AND operation_id = ? AND stage = ? AND claim_token = ? AND status != 'settled'`)
+                .run(new Date().toISOString(), sqliteGoalScope(fence), fence.operationId, stage, token);
         });
     }
 
@@ -279,7 +319,7 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
                 ? transition.fence.turnId : `#control-e${transition.fence.controllerEpoch}`,
             transition.execution, event,
         );
-        this.addCommit('transition', identity);
+        this.addCommit(transition.fence, 'transition', identity);
         return saved;
     }
 
@@ -299,7 +339,7 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
             ? completion.fence.turnId : `#control-e${completion.fence.controllerEpoch}`;
         for (const event of completion.auditEvents) this.record(completion.fence, turnId, completion.execution, event);
         this.record(completion.fence, turnId, completion.execution, completion.event);
-        this.addCommit('terminal', identity);
+        this.addCommit(completion.fence, 'terminal', identity);
         return saved;
     }
 
@@ -314,7 +354,22 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
         const result = this.database.prepare(`UPDATE goal_session_runtime_state SET payload_json = ?
             WHERE scope = ? AND payload_json = ?`)
             .run(JSON.stringify(saved), sqliteGoalScope(expected), JSON.stringify(current));
-        return result.changes === 1 ? saved : null;
+        if (result.changes !== 1) return null;
+        this.syncProviderSession(saved);
+        return saved;
+    }
+
+    private syncProviderSession(state: GoalSessionState): void {
+        const metadata = state.recoveryMetadata === undefined ? null : replayableProviderOutcomeJson(state.recoveryMetadata);
+        const result = this.database.prepare(`UPDATE goal_provider_sessions SET
+            provider_thread_id = ?, recovery_metadata_json = ?,
+            effective_model = COALESCE(?, effective_model), lease_generation = ?,
+            current_turn_id = ?, current_execution_id = ?, current_attempt_id = ?, updated_at = ?
+            WHERE session_id = ? AND goal_id = ?`)
+            .run(state.providerSessionId ?? null, metadata, state.currentModel ?? null, state.controllerEpoch,
+                state.activeTurn?.turnId ?? null, state.activeTurn?.executionId ?? null,
+                state.activeTurn?.attemptId ?? null, new Date().toISOString(), state.sessionId, state.goalId);
+        if (result.changes !== 1) throw new GoalSessionScopeError();
     }
 
     private record(
@@ -323,18 +378,45 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
         execution: GoalExecutionIdentity,
         event: GoalSessionEvent,
     ): PersistedGoalSessionEvent {
-        const row = this.database.prepare('SELECT COALESCE(MAX(sequence), 0) AS sequence FROM goal_events WHERE goal_id = ?')
-            .get(fence.goalId) as { sequence: number };
+        const sequence = this.allocateEventSequence(fence.goalId);
         const persisted: PersistedGoalSessionEvent = {
-            ...fence, turnId, ...execution, sequence: row.sequence + 1,
+            ...fence, turnId, ...execution, sequence,
             recordedAt: new Date().toISOString(), event: structuredClone(sanitizeGoalSessionEvent(event)),
         };
+        const payloadJson = replayableProviderOutcomeJson(persisted);
+        if (Buffer.byteLength(payloadJson, 'utf8') > 256 * 1024) throw new GoalSessionContractError(
+            'Goal runtime event exceeds the authoritative payload bound', 'UNSAFE_PROVIDER_VALUE',
+        );
         this.database.prepare(`INSERT INTO goal_events
-            (goal_id, sequence, kind, event_type, payload_json, idempotency_key, lease_epoch, created_at)
-            VALUES (?, ?, 'goal_session', ?, ?, ?, ?, ?)`)
-            .run(fence.goalId, persisted.sequence, persisted.event.type, JSON.stringify(persisted),
-                `goal-session:${fence.sessionId}:${persisted.sequence}`, fence.controllerEpoch, persisted.recordedAt);
+            (goal_id, sequence, kind, event_type, payload_json, idempotency_key, lease_epoch, created_at,
+                schema_version, source_session_id, source_turn_id, source_execution_id, source_attempt_id,
+                lease_generation, payload_bytes)
+            VALUES (?, ?, 'domain', ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`)
+            .run(fence.goalId, persisted.sequence, `goal_session.${persisted.event.type}`, payloadJson,
+                boundedEventKey(['goal-session', fence.sessionId, String(sequence)]),
+                fence.controllerEpoch, persisted.recordedAt, fence.sessionId, turnId,
+                execution.executionId, execution.attemptId, fence.controllerEpoch,
+                Buffer.byteLength(payloadJson, 'utf8'));
+        this.database.prepare(`UPDATE goal_event_state SET projection_sequence = ?, updated_at = ?
+            WHERE goal_id = ? AND projection_sequence < ?`)
+            .run(sequence, persisted.recordedAt, fence.goalId, sequence);
         return persisted;
+    }
+
+    private allocateEventSequence(goalId: string): number {
+        this.database.prepare(`INSERT OR IGNORE INTO goal_event_state
+            (goal_id, high_watermark, min_retained_sequence, projection_sequence, checkpoint_sequence, updated_at)
+            SELECT goal_id, COALESCE((SELECT MAX(sequence) FROM goal_events WHERE goal_id = ?), 0), 1,
+                COALESCE((SELECT MAX(sequence) FROM goal_events WHERE goal_id = ?), 0), 0, ?
+            FROM goals WHERE goal_id = ?`)
+            .run(goalId, goalId, new Date().toISOString(), goalId);
+        const row = this.database.prepare(`UPDATE goal_event_state
+            SET high_watermark = high_watermark + 1, updated_at = ? WHERE goal_id = ?
+            RETURNING high_watermark AS sequence`).get(new Date().toISOString(), goalId) as { sequence: number } | undefined;
+        if (!row) throw new GoalSessionContractError(
+            'Authoritative goal event allocator is missing', 'AUTHORITATIVE_DOMAIN_MISSING',
+        );
+        return row.sequence;
     }
 
     private readState(identity: GoalSessionIdentity): GoalSessionState | null {
@@ -344,7 +426,7 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
     }
 
     private readEffect(identity: GoalProviderOperationFence, stage: GoalProviderEffectStage): EffectRow | undefined {
-        return this.database.prepare(`SELECT kind, status, outcome_json FROM goal_session_runtime_provider_effects
+        return this.database.prepare(`SELECT kind, status, claim_token, outcome_json FROM goal_session_runtime_provider_effects
             WHERE scope = ? AND operation_id = ? AND stage = ?`)
             .get(sqliteGoalScope(identity), identity.operationId, stage) as EffectRow | undefined;
     }
@@ -363,17 +445,32 @@ export class SqliteGoalSessionControlDomain implements GoalSessionAuthoritativeT
     }
 
     private assertOwner(identity: GoalSessionIdentity): void {
-        const row = this.database.prepare('SELECT goal_id FROM goal_session_runtime_owners WHERE session_id = ?')
+        const row = this.database.prepare('SELECT goal_id FROM goal_provider_sessions WHERE session_id = ?')
             .get(identity.sessionId) as { goal_id: string } | undefined;
-        if (row && row.goal_id !== identity.goalId) throw new GoalSessionScopeError();
+        if (!row || row.goal_id !== identity.goalId) throw new GoalSessionScopeError();
+    }
+
+    private bindOwnerForCreate(state: Omit<GoalSessionState, 'version'>): void {
+        if (!isSafeIdentifier(state.goalId) || !isSafeIdentifier(state.sessionId)
+            || !isSafeIdentifier(state.provider)) throw new GoalSessionScopeError();
+        try {
+            this.database.prepare(`INSERT OR IGNORE INTO goal_provider_sessions
+                (session_id, goal_id, agent, effective_model, lease_generation, created_at, updated_at)
+                SELECT ?, goal_id, agent, effective_model, lease_epoch, ?, ? FROM goals
+                WHERE goal_id = ? AND agent = ?`)
+                .run(state.sessionId, new Date().toISOString(), new Date().toISOString(), state.goalId, state.provider);
+        } catch { throw new GoalSessionScopeError(); }
+        this.assertOwner(state);
     }
 
     private hasCommit(kind: string, identity: string): boolean {
         return Boolean(this.database.prepare('SELECT 1 FROM goal_session_runtime_commits WHERE kind = ? AND identity = ?').get(kind, identity));
     }
 
-    private addCommit(kind: string, identity: string): void {
-        this.database.prepare('INSERT INTO goal_session_runtime_commits(kind, identity) VALUES (?, ?)').run(kind, identity);
+    private addCommit(owner: GoalSessionIdentity, kind: string, identity: string): void {
+        this.database.prepare(`INSERT INTO goal_session_runtime_commits
+            (session_id, goal_id, kind, identity) VALUES (?, ?, ?, ?)`)
+            .run(owner.sessionId, owner.goalId, kind, identity);
     }
 
     private immediate<T>(operation: () => T): T {
@@ -415,4 +512,32 @@ function matchesTransition(
     if (!matchesControl(state, transition.fence)) return false;
     return transition.turnScoped !== true
         || 'turnId' in transition.fence && matchesTurn(state, transition.fence, transition.execution);
+}
+
+function boundedEventKey(parts: readonly string[]): string {
+    return `goal-session:${createHash('sha256').update(parts.join('\0')).digest('hex')}`;
+}
+
+function isPersistedRuntimeEvent(
+    value: unknown,
+    identity: GoalSessionIdentity,
+): value is PersistedGoalSessionEvent {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
+    const event = value as Partial<PersistedGoalSessionEvent>;
+    if (event.goalId !== identity.goalId || event.sessionId !== identity.sessionId
+        || !isSafeIdentifier(event.turnId) || !isSafeIdentifier(event.executionId)
+        || !isSafeIdentifier(event.attemptId) || !Number.isSafeInteger(event.controllerEpoch)
+        || !Number.isSafeInteger(event.sequence) || (event.sequence ?? 0) < 1
+        || typeof event.recordedAt !== 'string' || !Number.isFinite(Date.parse(event.recordedAt))
+        || !event.event || typeof event.event !== 'object' || Array.isArray(event.event)) return false;
+    try { sanitizeGoalSessionEvent(event.event as GoalSessionEvent); }
+    catch { return false; }
+    return true;
+}
+
+function effectCasFailure(): GoalSessionContractError {
+    return new GoalSessionContractError(
+        'Provider effect token no longer owns the exact durable state', 'PROVIDER_EFFECT_IN_DOUBT',
+    );
 }

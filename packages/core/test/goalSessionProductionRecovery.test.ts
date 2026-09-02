@@ -6,274 +6,375 @@ import { test } from 'node:test';
 import Database from 'better-sqlite3';
 import knex from 'knex';
 import type {
-    GoalBeginTurnRequest, GoalProviderCancelRequest, GoalProviderOpenRequest,
-    GoalProviderSessionSnapshot, GoalSessionAdapter, GoalSessionEvent, GoalSessionState,
+    GoalProviderOpenRequest, GoalProviderSessionSnapshot, GoalSessionAdapter, GoalSessionState,
 } from '../src/agents/goalSession/contract.js';
-import { GoalSessionContractError, providerOpenInDoubtError } from '../src/agents/goalSession/errors.js';
 import { AuthoritativeGoalSessionRuntimePorts } from '../src/agents/goalSession/AuthoritativeGoalSessionRuntimePorts.js';
+import { GoalSessionContractError, GoalSessionScopeError } from '../src/agents/goalSession/errors.js';
 import { GoalSessionSupervisor } from '../src/agents/goalSession/GoalSessionSupervisor.js';
+import { GoalContainerSupervisor } from '../src/agents/goalSession/GoalContainerSupervisor.js';
 import { issueGoalSupervisedOpenPlan } from '../src/agents/goalSession/goalSessionOpen.js';
 import { startedProviderEffect } from '../src/agents/goalSession/providerEffectProtocol.js';
+import { rebuildMessageAcknowledgement, rebuildProviderSnapshot } from '../src/agents/goalSession/providerResultBoundary.js';
 import {
     createSqliteGoalSessionRuntimePorts, SqliteGoalSessionControlDomain,
 } from '../src/agents/goalSession/SqliteGoalSessionControlDomain.js';
-import {
-    createControlTables, createProductionSchema, createRuntimeExtensionTables, recovery,
-} from './productionGoalSessionTestSupport.js';
+import { createProductionSchema, recovery, seedAuthoritativeGoal } from './productionGoalSessionTestSupport.js';
 
-const identity = { goalId: 'production-recovery-goal', sessionId: 'production-recovery-session' };
+const identity = { goalId: 'production-goal', sessionId: 'production-session' };
 
-function openState(operationId = 'open-attempt'): Omit<GoalSessionState, 'version'> {
-    const timestamp = new Date().toISOString();
+function initialState(overrides: Partial<Omit<GoalSessionState, 'version'>> = {}): Omit<GoalSessionState, 'version'> {
+    const now = new Date().toISOString();
     return {
         ...identity, provider: 'adapter', controllerEpoch: 1, status: 'initializing',
-        completedTurnIds: [], providerOpenAttemptId: operationId,
+        completedTurnIds: [], providerOpenAttemptId: 'open-attempt',
         providerOpenOperationGeneration: 1, providerOperationGeneration: 1,
-        createdAt: timestamp, updatedAt: timestamp,
+        createdAt: now, updatedAt: now, ...overrides,
     };
 }
 
-function openFence(operationId = 'open-attempt') {
-    return {
-        ...identity, controllerEpoch: 1, generation: 1,
-        kind: 'open' as const, operationId,
-    };
-}
-
-function runningTurnState(): Omit<GoalSessionState, 'version'> {
-    const state = openState();
-    return {
-        ...state, status: 'running', providerSessionId: 'native-session', currentModel: 'model-a',
+function runningState(): Omit<GoalSessionState, 'version'> {
+    return initialState({
+        status: 'running', providerSessionId: 'provider-session', currentModel: 'model-a',
         activeTurn: {
             turnId: 'turn-one', executionId: 'execution-one', attemptId: 'attempt-one', executionEpoch: 1,
-            objective: 'recover delivery', requestedModel: 'model-a',
+            objective: 'exercise production fencing', requestedModel: 'model-a',
             repository: { repository: 'integry/propr', worktreePath: '/tmp/worktree', branch: 'main' },
             status: 'running', providerOperationGeneration: 1,
         },
+    });
+}
+
+function openFence(operationId = 'open-attempt') {
+    return { ...identity, controllerEpoch: 1, generation: 1, kind: 'open' as const, operationId };
+}
+
+function steerFence() {
+    return {
+        ...identity, controllerEpoch: 1, generation: 1, kind: 'steer' as const,
+        operationId: 'message-one', turnId: 'turn-one', executionId: 'execution-one', attemptId: 'attempt-one',
     };
 }
 
-test('production composition fails closed without the complete migrated control schema', () => {
-    const database = new Database(':memory:');
-    assert.throws(() => createSqliteGoalSessionRuntimePorts(database, recovery), (error: unknown) =>
-        error instanceof GoalSessionContractError && error.code === 'AUTHORITATIVE_DOMAIN_MISSING');
-    database.close();
+test('actual #2018 and provider migrations compose in both orders, reopen, and rollback/up', async t => {
+    const foundation = await import('../src/db/migrations/20260831000000_create_goal_control_plane.js');
+    const replay = await import('../src/db/migrations/20260901000000_add_durable_goal_replay.js');
+    const runtime = await import('../src/db/migrations/20260902000000_extend_goal_control_provider_effects.js');
+    for (const ordering of ['control-first', 'runtime-first'] as const) await t.test(ordering, async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-real-migrations-'));
+        const filename = path.join(directory, 'control.sqlite');
+        const client = knex({ client: 'better-sqlite3', connection: { filename }, useNullAsDefault: true });
+        try {
+            if (ordering === 'runtime-first') await runtime.up(client);
+            await foundation.up(client);
+            await replay.up(client);
+            if (ordering === 'control-first') await runtime.up(client);
+            await runtime.down(client);
+            await runtime.up(client);
+        } finally { await client.destroy(); }
+        const first = new Database(filename);
+        seedAuthoritativeGoal(first, { goalId: identity.goalId, agent: 'adapter' });
+        assert.doesNotThrow(() => new SqliteGoalSessionControlDomain(first));
+        first.close();
+        const reopened = new Database(filename);
+        assert.doesNotThrow(() => new SqliteGoalSessionControlDomain(reopened));
+        assert.equal(reopened.prepare("SELECT 1 FROM sqlite_master WHERE name = 'goal_session_runtime_owners'").get(), undefined);
+        reopened.close();
+        fs.rmSync(directory, { recursive: true, force: true });
+    });
 });
 
-test('provider-effect extension and exact #2018 control schema compose in both initialization orders', async t => {
-    for (const ordering of ['control_first', 'runtime_first'] as const) {
-        await t.test(ordering, async () => {
-            const directory = fs.mkdtempSync(path.join(os.tmpdir(), `goal-schema-${ordering}-`));
-            const filename = path.join(directory, 'control.sqlite');
-            if (ordering === 'control_first') {
-                const control = new Database(filename);
-                createControlTables(control);
-                control.close();
-            }
-            const client = knex({ client: 'better-sqlite3', connection: { filename }, useNullAsDefault: true });
-            const migration = await import('../src/db/migrations/20260902000000_extend_goal_control_provider_effects.js');
-            await migration.up(client);
-            await client.destroy();
-            if (ordering === 'runtime_first') {
-                const control = new Database(filename);
-                createControlTables(control);
-                control.close();
-            }
-            const database = new Database(filename);
-            assert.doesNotThrow(() => new SqliteGoalSessionControlDomain(database));
-            const eventColumns = (database.prepare('PRAGMA table_info(goal_events)').all() as Array<{ name: string }>).map(row => row.name);
-            assert.deepEqual(eventColumns, [
-                'id', 'goal_id', 'sequence', 'kind', 'event_type', 'payload_json',
-                'idempotency_key', 'lease_epoch', 'created_at',
-            ]);
-            database.close();
-            fs.rmSync(directory, { recursive: true, force: true });
-        });
-    }
-});
-
-test('production durable effects recover provider-success/local-persistence loss and replay settled outcomes', async t => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-production-recovery-'));
+test('goal_provider_sessions is the sole global owner and missing/wrong owners fail closed', async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-global-owner-'));
     const filename = path.join(directory, 'control.sqlite');
-    createProductionSchema(filename);
-    let database = new Database(filename);
-    let domain = new SqliteGoalSessionControlDomain(database);
-    const created = await domain.create(runningTurnState());
-    assert.ok(created);
-    let resolveCompletion!: (value: { messageId: string }) => void;
-    let callbackEntries = 0;
-    let externalEffects = 0;
-    const adopted = new Map<string, { messageId: string }>();
-    const invoke = () => {
-        callbackEntries += 1;
-        let outcome = adopted.get('open-attempt');
-        if (!outcome) {
-            externalEffects += 1;
-            outcome = { messageId: 'durable-message' };
-            adopted.set('open-attempt', outcome);
-        }
-        return outcome;
-    };
-    const completion = new Promise<{ messageId: string }>(resolve => { resolveCompletion = resolve; });
-    const recoveryFence = {
-        ...identity, controllerEpoch: 1, generation: 1, kind: 'steer' as const,
-        operationId: 'steer-message', turnId: 'turn-one', executionId: 'execution-one', attemptId: 'attempt-one',
-    };
-    const interrupted = domainAsGate(domain).start(recoveryFence, 'provider_primitive', () => {
-        invoke();
-        return startedProviderEffect(completion, () => undefined);
-    });
-    await new Promise<void>(resolve => setImmediate(resolve));
-    database.close();
-    resolveCompletion(adopted.get('open-attempt')!);
-    await assert.rejects(interrupted);
-
-    database = new Database(filename);
-    domain = new SqliteGoalSessionControlDomain(database);
-    const recovered = await domainAsGate(domain).start(recoveryFence, 'provider_primitive', () =>
-        startedProviderEffect(Promise.resolve(invoke()), () => undefined));
-    assert.deepEqual(recovered, { messageId: 'durable-message' });
-    let replayCallback = false;
-    const replayed = await domainAsGate(domain).start(recoveryFence, 'provider_primitive', () => {
-        replayCallback = true;
-        return startedProviderEffect(Promise.resolve({ messageId: 'wrong' }), () => undefined);
-    });
-    assert.deepEqual(replayed, recovered);
-    assert.deepEqual({ externalEffects, callbackEntries, replayCallback }, {
-        externalEffects: 1, callbackEntries: 2, replayCallback: false,
-    });
+    await createProductionSchema(filename);
+    const database = new Database(filename);
+    seedAuthoritativeGoal(database, { goalId: identity.goalId, agent: 'adapter' });
+    seedAuthoritativeGoal(database, { goalId: 'other-goal', agent: 'adapter' });
+    const domain = new SqliteGoalSessionControlDomain(database);
+    assert.ok(await domain.create(initialState()));
+    await assert.rejects(domain.load({ goalId: 'other-goal', sessionId: identity.sessionId }), GoalSessionScopeError);
+    await assert.rejects(domain.load({ goalId: identity.goalId, sessionId: 'missing-session' }), GoalSessionScopeError);
+    await assert.rejects(domain.replay({ goalId: 'other-goal', sessionId: identity.sessionId }), GoalSessionScopeError);
+    await assert.rejects(domain.claim({ goalId: 'other-goal', sessionId: identity.sessionId }, 'model-op', 'model-b'), GoalSessionScopeError);
+    await assert.rejects(domain.create(initialState({ goalId: 'other-goal' })), GoalSessionScopeError);
+    assert.deepEqual(database.prepare('SELECT session_id, goal_id FROM goal_provider_sessions').all(), [
+        { session_id: identity.sessionId, goal_id: identity.goalId },
+    ]);
     database.close();
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
 });
 
-test('runtime and database reject forged stages before effect and preserve all three nested identities', async () => {
-    const database = new Database(':memory:');
-    createProductionSchemaForMemory(database);
-    const domain = new SqliteGoalSessionControlDomain(database);
-    await domain.create(openState());
-    await assert.rejects(domain.load({ goalId: 'foreign-goal', sessionId: identity.sessionId }), /different goal/);
-    let effects = 0;
-    await assert.rejects(domainAsGate(domain).start(openFence(), 'forged' as never, () => {
-        effects += 1;
-        return startedProviderEffect(Promise.resolve(), () => undefined);
-    }), /three internal stages/);
-    await assert.rejects((domain.claimProviderEffect as (f: ReturnType<typeof openFence>, s: string) => Promise<unknown>)(
-        openFence(), 'forged',
-    ), /three internal stages/);
-    const gate = domainAsGate(domain);
-    await gate.start(openFence(), 'container_spawn', () => {
-        effects += 1;
-        return startedProviderEffect(gate.start(openFence(), 'provider_primitive', () => {
-            effects += 1;
-            return startedProviderEffect(gate.start(openFence(), 'stream_first_next', () => {
-                effects += 1;
-                return startedProviderEffect(Promise.resolve('nested'), () => undefined);
-            }), () => undefined);
-        }), () => undefined);
-    });
-    assert.equal(effects, 3);
-    database.close();
-});
-
-test('forged supervised plans start no provider work and response-loss reopen remains terminal', async () => {
-    const database = new Database(':memory:');
-    createProductionSchemaForMemory(database);
-    let threadStarts = 0;
-    const adapter = responseLossAdapter(() => { threadStarts += 1; });
-    const runtime = createSqliteGoalSessionRuntimePorts(database, recovery);
-    const first = new GoalSessionSupervisor(adapter, runtime, () => 'attempt-response-loss');
-    const forged = {
-        repository: { repository: 'integry/propr', worktreePath: '/tmp/worktree', branch: 'main' },
-        requestedModel: 'gpt-5.6-sol', providerHomeTarget: '/home/node/.codex', credentialTargets: [],
-    };
-    await assert.rejects(first.openSession({
-        ...identity, provider: 'codex', controllerEpoch: 1, supervisedOpen: forged,
-    }), /not issued/);
-    assert.equal(threadStarts, 0);
-
-    const plan = issueGoalSupervisedOpenPlan(forged, {
-        createTransport: async () => inertTransport(), cancelPending: async () => undefined,
-        transferPending: () => undefined,
-    });
-    await assert.rejects(first.openSession({ ...identity, provider: 'codex', controllerEpoch: 1, supervisedOpen: plan }),
-        (error: unknown) => error instanceof GoalSessionContractError && error.code === 'PROVIDER_OPEN_IN_DOUBT');
-    assert.equal((await runtime.state.load(identity))?.status, 'failed');
-    const replacement = new GoalSessionSupervisor(adapter, runtime, () => 'attempt-replacement');
-    await assert.rejects(replacement.openSession({
-        ...identity, provider: 'codex', controllerEpoch: 2, supervisedOpen: plan,
-    }), /failed provider session cannot be resumed/);
-    assert.equal(threadStarts, 1);
-    database.close();
-});
-
-test('cancellation between eager spawn and provider primitive cancels exact pending ownership once', async t => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-pending-open-'));
+test('two production supervisors recover and cancel one exact-label pending-open container', async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-pending-open-owner-'));
     const filename = path.join(directory, 'control.sqlite');
-    createProductionSchema(filename);
+    const statePath = path.join(directory, 'container.state');
+    const logPath = path.join(directory, 'docker.log');
+    const dockerPath = path.join(import.meta.dirname, 'fixtures', 'fake-pending-open-docker.mjs');
+    await createProductionSchema(filename);
     const firstDatabase = new Database(filename);
-    const cancellingDatabase = new Database(filename);
-    let providerOpens = 0;
-    let providerPendingCancels = 0;
-    let ownedCancels = 0;
-    const adapter = responseLossAdapter(() => { providerOpens += 1; });
-    adapter.openSession = async () => {
-        providerOpens += 1;
-        return { providerSessionId: 'must-not-open', recoveryMetadata: {}, model: 'gpt-5.6-sol' };
-    };
-    adapter.cancelPending = async () => { providerPendingCancels += 1; };
+    seedAuthoritativeGoal(firstDatabase, { goalId: identity.goalId, agent: 'adapter' });
     const firstRuntime = createSqliteGoalSessionRuntimePorts(firstDatabase, recovery);
-    const cancellingRuntime = createSqliteGoalSessionRuntimePorts(cancellingDatabase, recovery);
-    const first = new GoalSessionSupervisor(adapter, firstRuntime, () => 'pending-open-attempt');
-    const cancelling = new GoalSessionSupervisor(adapter, cancellingRuntime, () => 'cancel-attempt');
-    let cancellation: GoalSessionState | undefined;
+    assert.ok(await firstRuntime.state.create(initialState()));
+    const secondDatabase = new Database(filename);
+    const secondRuntime = createSqliteGoalSessionRuntimePorts(secondDatabase, recovery);
+    const first = new GoalContainerSupervisor(directory, firstRuntime.events, undefined, { dockerPath });
+    const second = new GoalContainerSupervisor(directory, secondRuntime.events, undefined, { dockerPath });
+    const pendingIdentity = {
+        ...identity, attemptId: 'open-attempt', deterministicOpenKey: 'durable-open-key',
+    };
+    fs.writeFileSync(statePath, 'pending-container');
+    fs.writeFileSync(logPath, '');
+    const previous = {
+        state: process.env.GOAL_PENDING_OPEN_STATE,
+        log: process.env.GOAL_PENDING_OPEN_LOG,
+        labels: process.env.GOAL_PENDING_OPEN_LABELS,
+    };
+    process.env.GOAL_PENDING_OPEN_STATE = statePath;
+    process.env.GOAL_PENDING_OPEN_LOG = logPath;
+    process.env.GOAL_PENDING_OPEN_LABELS = JSON.stringify({
+        'propr.goal.id': identity.goalId,
+        'propr.goal.session': identity.sessionId,
+        'propr.goal.scope': 'open',
+        'propr.goal.attempt': pendingIdentity.attemptId,
+        'propr.goal.open-key': pendingIdentity.deterministicOpenKey,
+    });
+    try {
+        await Promise.all([
+            first.cancelPendingOpenAttempt(pendingIdentity),
+            second.cancelPendingOpenAttempt(pendingIdentity),
+        ]);
+    } finally {
+        restoreEnvironment('GOAL_PENDING_OPEN_STATE', previous.state);
+        restoreEnvironment('GOAL_PENDING_OPEN_LOG', previous.log);
+        restoreEnvironment('GOAL_PENDING_OPEN_LABELS', previous.labels);
+    }
+    assert.equal(fs.existsSync(statePath), false);
+    const calls = fs.readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]);
+    assert.ok(calls.some(call => call[0] === 'rm' && call[2] === 'pending-container'));
+    assert.ok(calls.filter(call => call[0] === 'ps').every(call => call.includes('label=propr.goal.scope=open')));
+    firstDatabase.close(); secondDatabase.close();
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+});
+
+test('token-fenced production effects admit one non-open callback and replay only settled DTOs', async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-effect-token-'));
+    const filename = path.join(directory, 'control.sqlite');
+    await createProductionSchema(filename);
+    const firstDatabase = new Database(filename);
+    seedAuthoritativeGoal(firstDatabase, { goalId: identity.goalId, agent: 'adapter' });
+    const firstDomain = new SqliteGoalSessionControlDomain(firstDatabase);
+    assert.ok(await firstDomain.create(runningState()));
+    const secondDatabase = new Database(filename);
+    const first = new AuthoritativeGoalSessionRuntimePorts(firstDomain, recovery);
+    const duplicate = new AuthoritativeGoalSessionRuntimePorts(new SqliteGoalSessionControlDomain(secondDatabase), recovery);
+    let resolve!: (value: { messageId: string }) => void;
+    const completion = new Promise<{ messageId: string }>(done => { resolve = done; });
+    let callbacks = 0;
+    const delivery = first.start(steerFence(), 'provider_primitive', () => {
+        callbacks += 1;
+        return startedProviderEffect(completion, () => undefined);
+    }, rebuildMessageAcknowledgement);
+    await new Promise<void>(done => setImmediate(done));
+    await assert.rejects(duplicate.start(steerFence(), 'provider_primitive', () => {
+        callbacks += 1;
+        return startedProviderEffect(Promise.resolve({ messageId: 'wrong' }), () => undefined);
+    }, rebuildMessageAcknowledgement), providerDoubt);
+    resolve({ messageId: 'message-one' });
+    assert.deepEqual(await delivery, { messageId: 'message-one' });
+    let replayedCallback = false;
+    assert.deepEqual(await duplicate.start(steerFence(), 'provider_primitive', () => {
+        replayedCallback = true;
+        return startedProviderEffect(Promise.resolve({ messageId: 'wrong' }), () => undefined);
+    }, rebuildMessageAcknowledgement), { messageId: 'message-one' });
+    assert.deepEqual({ callbacks, replayedCallback }, { callbacks: 1, replayedCallback: false });
+    firstDatabase.close(); secondDatabase.close();
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+});
+
+test('every internal effect stage is independently fenced across two SQLite connections', async t => {
+    for (const stage of ['provider_primitive', 'stream_first_next', 'container_spawn'] as const) await t.test(stage, async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-effect-stage-'));
+        const filename = path.join(directory, 'control.sqlite');
+        await createProductionSchema(filename);
+        const database = new Database(filename);
+        seedAuthoritativeGoal(database, { goalId: identity.goalId, agent: 'adapter' });
+        const domain = new SqliteGoalSessionControlDomain(database);
+        assert.ok(await domain.create(initialState()));
+        const peerDatabase = new Database(filename);
+        const gate = new AuthoritativeGoalSessionRuntimePorts(domain, recovery);
+        const peer = new AuthoritativeGoalSessionRuntimePorts(new SqliteGoalSessionControlDomain(peerDatabase), recovery);
+        let callbacks = 0;
+        const first = await gate.start(openFence(), stage, () => {
+            callbacks += 1;
+            return startedProviderEffect(Promise.resolve({ messageId: stage }), () => undefined);
+        }, rebuildMessageAcknowledgement);
+        assert.equal(first.messageId, stage);
+        if (stage === 'container_spawn') {
+            await assert.rejects(peer.start(openFence(), stage, () => {
+                callbacks += 1;
+                return startedProviderEffect(Promise.resolve({ messageId: 'duplicate' }), () => undefined);
+            }, rebuildMessageAcknowledgement), providerDoubt);
+        } else {
+            assert.deepEqual(await peer.start(openFence(), stage, () => {
+                callbacks += 1;
+                return startedProviderEffect(Promise.resolve({ messageId: 'duplicate' }), () => undefined);
+            }, rebuildMessageAcknowledgement), first);
+        }
+        assert.equal(callbacks, 1);
+        database.close(); peerDatabase.close();
+        fs.rmSync(directory, { recursive: true, force: true });
+    });
+});
+
+test('hostile and lossy provider values poison the exact token before settlement', async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-hostile-result-'));
+    const filename = path.join(directory, 'control.sqlite');
+    await createProductionSchema(filename);
+    const database = new Database(filename);
+    seedAuthoritativeGoal(database, { goalId: identity.goalId, agent: 'adapter' });
+    const domain = new SqliteGoalSessionControlDomain(database);
+    assert.ok(await domain.create(initialState()));
+    const gate = new AuthoritativeGoalSessionRuntimePorts(domain, recovery);
+    let toJsonCalls = 0;
+    const hostile = {
+        providerSessionId: 'provider-session', recoveryMetadata: {},
+        toJSON() { toJsonCalls += 1; return { providerSessionId: 'clean', recoveryMetadata: {} }; },
+    };
+    let callbacks = 0;
+    await assert.rejects(gate.start(openFence(), 'provider_primitive', () => {
+        callbacks += 1;
+        return startedProviderEffect(Promise.resolve(hostile), () => undefined);
+    }, value => rebuildProviderSnapshot(value, 'adapter')), /invalid session snapshot/);
+    await assert.rejects(gate.start(openFence(), 'provider_primitive', () => {
+        callbacks += 1;
+        return startedProviderEffect(Promise.resolve({ providerSessionId: 'other', recoveryMetadata: {} }), () => undefined);
+    }, value => rebuildProviderSnapshot(value, 'adapter')), providerDoubt);
+    assert.deepEqual({ callbacks, toJsonCalls }, { callbacks: 1, toJsonCalls: 0 });
+    assert.equal((database.prepare('SELECT status FROM goal_session_runtime_provider_effects').get() as { status: string }).status, 'poisoned');
+    database.close();
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+});
+
+test('closed fences, 255-byte IDs, allocator replay, and message state obey #2018', async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-boundaries-'));
+    const filename = path.join(directory, 'control.sqlite');
+    await createProductionSchema(filename);
+    const database = new Database(filename);
+    seedAuthoritativeGoal(database, { goalId: identity.goalId, agent: 'adapter' });
+    const domain = new SqliteGoalSessionControlDomain(database);
+    assert.ok(await domain.create(runningState()));
+    const beforeEffects = database.prepare('SELECT COUNT(*) AS count FROM goal_session_runtime_provider_effects').get() as { count: number };
+    await assert.rejects(domain.claimProviderEffect({ ...steerFence(), kind: 'future' } as never, 'provider_primitive'));
+    await assert.rejects(domain.claimProviderEffect({ ...steerFence(), excess: true } as never, 'provider_primitive'));
+    await assert.rejects(domain.claimProviderEffect(steerFence(), 'future' as never));
+    assert.equal((database.prepare('SELECT COUNT(*) AS count FROM goal_session_runtime_provider_effects').get() as { count: number }).count, beforeEffects.count);
+
+    const state = await domain.load(identity);
+    assert.ok(state?.activeTurn);
+    const appended = await domain.append(
+        { ...identity, controllerEpoch: 1, turnId: 'turn-one' },
+        { executionId: 'execution-one', attemptId: 'attempt-one' },
+        { type: 'output', channel: 'stdout', data: 'hello' },
+    );
+    assert.equal(appended.accepted, true);
+    const eventRow = database.prepare('SELECT sequence, kind, event_type FROM goal_events').get() as Record<string, unknown>;
+    assert.deepEqual(eventRow, { sequence: 1, kind: 'domain', event_type: 'goal_session.output' });
+    assert.equal((database.prepare('SELECT high_watermark FROM goal_event_state WHERE goal_id = ?').get(identity.goalId) as { high_watermark: number }).high_watermark, 1);
+    database.prepare(`INSERT INTO goal_events
+        (goal_id, sequence, kind, event_type, payload_json, idempotency_key, lease_epoch, created_at,
+            schema_version, payload_bytes)
+        VALUES (?, 2, 'domain', 'unrelated.event', NULL, 'unrelated-null', 1, ?, 1, 0)`)
+        .run(identity.goalId, new Date().toISOString());
+    database.prepare('UPDATE goal_event_state SET high_watermark = 2 WHERE goal_id = ?').run(identity.goalId);
+    assert.equal((await domain.replay(identity)).length, 1);
+
+    database.prepare(`INSERT INTO goal_messages
+        (message_id, goal_id, sequence, queue_ordinal, body, state, delivery_attempts, retry_count,
+            idempotency_key, created_at)
+        VALUES ('message-one', ?, 1, 1, 'corrective', 'queued', 0, 0, 'message-key', ?)`)
+        .run(identity.goalId, new Date().toISOString());
+    assert.equal(await domain.acknowledgeWithEvent(
+        { ...identity, controllerEpoch: 1, turnId: 'turn-one' },
+        { executionId: 'execution-one', attemptId: 'attempt-one' }, 'message-one',
+    ), 'acknowledged');
+    const message = database.prepare(`SELECT state, delivered_at, acknowledged_at
+        FROM goal_messages WHERE message_id = 'message-one'`).get() as Record<string, unknown>;
+    assert.equal(message.state, 'acknowledged');
+    assert.equal(typeof message.delivered_at, 'string');
+    assert.equal(typeof message.acknowledged_at, 'string');
+
+    const longGoal = `g${'a'.repeat(254)}`;
+    const longSession = `s${'b'.repeat(254)}`;
+    seedAuthoritativeGoal(database, { goalId: longGoal, agent: 'adapter' });
+    assert.ok(await domain.create(initialState({ goalId: longGoal, sessionId: longSession })));
+    await assert.rejects(domain.create(initialState({
+        goalId: `g${'a'.repeat(255)}`, sessionId: `s${'b'.repeat(255)}`,
+    })), GoalSessionScopeError);
+    database.close();
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+});
+
+test('settled successful open survives state-CAS crash with one total thread/start', async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-open-settled-'));
+    const filename = path.join(directory, 'control.sqlite');
+    await createProductionSchema(filename);
+    const database = new Database(filename);
+    seedAuthoritativeGoal(database, { goalId: identity.goalId, agent: 'codex', model: 'gpt-5.6-sol' });
+    const runtime = createSqliteGoalSessionRuntimePorts(database, recovery);
+    let starts = 0;
+    const adapter = codexAdapter(() => { starts += 1; });
     const plan = issueGoalSupervisedOpenPlan({
         repository: { repository: 'integry/propr', worktreePath: '/tmp/worktree', branch: 'main' },
         requestedModel: 'gpt-5.6-sol', providerHomeTarget: '/home/node/.codex', credentialTargets: [],
     }, {
-        createTransport: async () => {
-            cancellation = await cancelling.cancel({ ...identity, controllerEpoch: 1, reason: 'cancel after spawn' });
-            return inertTransport();
-        },
-        cancelPending: async () => { ownedCancels += 1; },
-        transferPending: () => assert.fail('stale eager open cannot transfer ownership'),
+        createTransport: async () => inertTransport(), cancelPending: async () => undefined,
+        transferPending: () => undefined,
     });
-    await assert.rejects(first.openSession({
-        ...identity, provider: 'codex', controllerEpoch: 1, supervisedOpen: plan,
-    }));
-    assert.equal(cancellation?.status, 'terminated');
-    assert.deepEqual({ providerOpens, providerPendingCancels, ownedCancels }, {
-        providerOpens: 0, providerPendingCancels: 1, ownedCancels: 1,
-    });
-    firstDatabase.close();
-    cancellingDatabase.close();
+    const originalCompareAndSet = runtime.state.compareAndSet.bind(runtime.state);
+    let crash = true;
+    runtime.state.compareAndSet = async (expected, next) => {
+        if (crash && next.providerSessionId) { crash = false; return null; }
+        return originalCompareAndSet(expected, next);
+    };
+    const first = new GoalSessionSupervisor(adapter, runtime, () => 'open-attempt');
+    await assert.rejects(first.openSession({ ...identity, provider: 'codex', controllerEpoch: 1, supervisedOpen: plan }));
+    const replacement = new GoalSessionSupervisor(adapter, runtime, () => 'replacement-attempt');
+    const reopened = await replacement.openSession({ ...identity, provider: 'codex', controllerEpoch: 1, supervisedOpen: plan });
+    assert.equal(reopened.providerSessionId, 'codex-thread');
+    assert.equal(starts, 1, 'thread/start is replayed from the exact settled operation');
+    database.close();
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
 });
 
-function domainAsGate(domain: SqliteGoalSessionControlDomain) {
-    return new AuthoritativeGoalSessionRuntimePorts(domain, recovery);
+function providerDoubt(error: unknown): boolean {
+    return error instanceof GoalSessionContractError && error.code === 'PROVIDER_EFFECT_IN_DOUBT';
 }
 
-function createProductionSchemaForMemory(database: Database.Database): void {
-    createControlTables(database);
-    createRuntimeExtensionTables(database);
+function restoreEnvironment(name: string, value: string | undefined): void {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
 }
 
-function responseLossAdapter(onStart: () => void): GoalSessionAdapter {
+function codexAdapter(onStart: () => void): GoalSessionAdapter {
     return {
         provider: 'codex', supportsDeterministicOpen: true,
         capabilities: { nativeSessionId: 'eager', steering: 'active_turn', pause: 'after_turn', modelChange: 'next_turn' },
         publishOperationBarrier: async () => undefined,
-        openSession: async (_request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot> => {
+        openSession: async (request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot> => {
             onStart();
-            throw providerOpenInDoubtError();
+            return {
+                providerSessionId: 'codex-thread', model: 'gpt-5.6-sol', recoveryMetadata: {
+                    version: 2, provider: 'codex', protocolVersion: 'app-server-0.146.0', payload: {
+                        threadId: 'codex-thread', sessionId: 'codex-session', initialized: true,
+                        openKey: request.deterministicOpenKey!, repository: 'integry/propr', model: 'gpt-5.6-sol',
+                        providerHomeIdentity: '/home/node/.codex', cliVersion: '0.146.0',
+                    }, usage: { components: [] },
+                },
+            };
         },
-        beginTurn: async function* (_request: GoalBeginTurnRequest): AsyncIterable<GoalSessionEvent> {
-            yield { type: 'completion', outcome: 'succeeded' };
-        },
-        resumeSession: async (_request, snapshot) => snapshot,
+        beginTurn: async function* () {}, resumeSession: async (_request, snapshot) => snapshot,
         requestModelChange: async request => ({ requestedModel: request.model, appliesAt: 'next_turn' }),
-        cancel: async (_request: GoalProviderCancelRequest) => undefined,
-        cancelPending: async () => undefined,
+        cancel: async () => undefined, cancelPending: async () => undefined,
         reconcile: async () => ({ outcome: 'failed', reason: 'unused' }),
     };
 }

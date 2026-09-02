@@ -64,6 +64,12 @@ export function rebuildMessageAcknowledgement(value: unknown): { messageId: stri
     return { messageId: providerId(input.messageId, 'messageId') };
 }
 
+/** Closed replay shape for provider primitives whose contract returns void. */
+export function rebuildVoidProviderResult(value: unknown): undefined {
+    if (value !== undefined && value !== null) malformed('void result');
+    return undefined;
+}
+
 export function rebuildModelAcknowledgement(value: unknown): GoalModelChangeAcknowledgement {
     const input = closedRecord(value, ['outcome', 'requestedModel', 'appliesAt', 'effectiveModel'], 'model acknowledgement');
     const result: GoalModelChangeAcknowledgement = {

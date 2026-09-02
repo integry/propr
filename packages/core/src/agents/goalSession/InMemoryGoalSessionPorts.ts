@@ -33,13 +33,8 @@ import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { assertProviderFirstEffectState } from './providerFirstEffect.js';
 import { assertStartedProviderEffect } from './providerEffectProtocol.js';
 import { assertGoalProviderEffectStage } from './providerOperationBoundary.js';
-
-export class GoalSessionScopeError extends Error {
-    constructor(message = 'A provider session is owned by a different goal') {
-        super(message);
-        this.name = 'GoalSessionScopeError';
-    }
-}
+import { GoalSessionScopeError } from './errors.js';
+export { GoalSessionScopeError } from './errors.js';
 
 function clone<T>(value: T): T {
     return structuredClone(value);
@@ -91,17 +86,18 @@ export class InMemoryGoalSessionPorts implements
         };
     }
 
-    async start<T>(
+    async start<T, R>(
         fence: GoalProviderOperationFence,
         _stage: GoalProviderEffectStage,
         effect: () => GoalStartedProviderEffect<T>,
-    ): Promise<T> {
+        rebuild: (value: T) => R,
+    ): Promise<R> {
         assertGoalProviderEffectStage(_stage);
         const state = this.states.get(keyOf(fence));
         assertProviderFirstEffectState(state ? clone(state) : null, fence);
         const started = effect();
         assertStartedProviderEffect<T>(started);
-        return started.completion;
+        return rebuild(await started.completion);
     }
 
     async load(identity: GoalSessionIdentity): Promise<GoalSessionState | null> {

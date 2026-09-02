@@ -147,7 +147,7 @@ export class SqliteGoalSessionTestPorts {
                 `INSERT OR IGNORE INTO goal_session_runtime_provider_effects
                     (scope, operation_id, kind, stage, status) VALUES (?, ?, ?, ?, 'claimed')`,
             ).run(scope(fence), fence.operationId, fence.kind, stage);
-            if (result.changes === 1) return { status: 'claimed' as const };
+            if (result.changes === 1) return { status: 'claimed' as const, token: 'test-effect-token' };
             const existing = this.database.prepare(`SELECT status, outcome_json
                 FROM goal_session_runtime_provider_effects WHERE scope = ? AND operation_id = ? AND stage = ?`)
                 .get(scope(fence), fence.operationId, stage) as { status: string; outcome_json: string | null };
@@ -160,6 +160,7 @@ export class SqliteGoalSessionTestPorts {
     async settleProviderEffect(
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
+        _token: string,
         outcome: unknown,
     ): Promise<void> {
         this.database.prepare(`UPDATE goal_session_runtime_provider_effects SET status = 'settled', outcome_json = ?
@@ -167,11 +168,12 @@ export class SqliteGoalSessionTestPorts {
             .run(JSON.stringify(outcome ?? null), scope(fence), fence.operationId, stage);
     }
 
-    async markProviderEffectRecoverable(): Promise<void> {}
+    async poisonProviderEffect(): Promise<void> {}
 
     async runClaimedProviderEffect<T>(
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
+        _token: string,
         effect: () => GoalStartedProviderEffect<T>,
     ): Promise<GoalStartedProviderEffect<T>> {
         let started: GoalStartedProviderEffect<T> | undefined;

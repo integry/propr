@@ -21,6 +21,13 @@ export class UnsupportedGoalSessionTransitionError extends GoalSessionContractEr
     }
 }
 
+export class GoalSessionScopeError extends GoalSessionContractError {
+    constructor(message = 'The provider session is missing or owned by a different goal') {
+        super(message, 'SESSION_SCOPE_MISMATCH');
+        this.name = 'GoalSessionScopeError';
+    }
+}
+
 const PROVIDER_OPEN_IN_DOUBT_ERRORS = new WeakSet<GoalSessionContractError>();
 
 /** Internal Codex transport signal; adapter-supplied lookalikes are untrusted. */

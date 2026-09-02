@@ -12,7 +12,7 @@ import {
 import { assertGoalProviderEffectStage } from './providerOperationBoundary.js';
 
 export type GoalProviderEffectClaimResult =
-    | { status: 'claimed' | 'recoverable' }
+    | { status: 'claimed' | 'recoverable'; token: string }
     | { status: 'settled'; outcome: unknown }
     | { status: 'terminal_in_doubt' };
 
@@ -30,16 +30,19 @@ export interface GoalProviderEffectTransactionDomain {
     runClaimedProviderEffect<T>(
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
+        token: string,
         effect: () => GoalStartedProviderEffect<T>,
     ): Promise<GoalStartedProviderEffect<T>>;
     settleProviderEffect(
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
+        token: string,
         outcome: unknown,
     ): Promise<void>;
-    markProviderEffectRecoverable(
+    poisonProviderEffect(
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
+        token: string,
     ): Promise<void>;
 }
 
@@ -69,7 +72,7 @@ export class AuthoritativeGoalSessionRuntimePorts implements GoalProviderFirstEf
             || typeof domain.providerEffects.claimProviderEffect !== 'function'
             || typeof domain.providerEffects.runClaimedProviderEffect !== 'function'
             || typeof domain.providerEffects.settleProviderEffect !== 'function'
-            || typeof domain.providerEffects.markProviderEffectRecoverable !== 'function'
+            || typeof domain.providerEffects.poisonProviderEffect !== 'function'
             || typeof recovery?.inspectContainer !== 'function' || typeof recovery.inspectRepository !== 'function') {
             throw new GoalSessionContractError(
                 'Goal runtime requires an authoritative transaction domain', 'AUTHORITATIVE_DOMAIN_MISSING',
@@ -90,14 +93,15 @@ export class AuthoritativeGoalSessionRuntimePorts implements GoalProviderFirstEf
         };
     }
 
-    async start<T>(
+    async start<T, R>(
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
         effect: () => GoalStartedProviderEffect<T>,
-    ): Promise<T> {
+        rebuild: (value: T) => R,
+    ): Promise<R> {
         assertGoalProviderEffectStage(stage);
         const claim = await this.domain.providerEffects.claimProviderEffect(fence, stage);
-        if (claim.status === 'settled') return claim.outcome as T;
+        if (claim.status === 'settled') return rebuild(claim.outcome as T);
         if (claim.status === 'terminal_in_doubt') throw new GoalSessionContractError(
             'Provider effect stage is already claimed and remains in doubt', 'PROVIDER_EFFECT_IN_DOUBT',
         );
@@ -105,7 +109,7 @@ export class AuthoritativeGoalSessionRuntimePorts implements GoalProviderFirstEf
         let committed: GoalStartedProviderEffect<T>;
         let cleanup: GoalStartedProviderEffect<unknown>['cleanup'] | undefined;
         try {
-            committed = await this.domain.providerEffects.runClaimedProviderEffect(fence, stage, () => {
+            committed = await this.domain.providerEffects.runClaimedProviderEffect(fence, stage, claim.token, () => {
                 const candidate: unknown = effect();
                 cleanup = startedProviderEffectCleanup(candidate);
                 assertStartedProviderEffect<T>(candidate);
@@ -129,14 +133,15 @@ export class AuthoritativeGoalSessionRuntimePorts implements GoalProviderFirstEf
                     );
                 }
             }
+            await this.domain.providerEffects.poisonProviderEffect(fence, stage, claim.token).catch(() => undefined);
             throw error;
         }
         try {
-            const outcome = await committed.completion;
-            await this.domain.providerEffects.settleProviderEffect(fence, stage, outcome);
+            const outcome = rebuild(await committed.completion);
+            await this.domain.providerEffects.settleProviderEffect(fence, stage, claim.token, outcome);
             return outcome;
         } catch (error) {
-            await this.domain.providerEffects.markProviderEffectRecoverable(fence, stage).catch(() => undefined);
+            await this.domain.providerEffects.poisonProviderEffect(fence, stage, claim.token).catch(() => undefined);
             throw error;
         }
     }

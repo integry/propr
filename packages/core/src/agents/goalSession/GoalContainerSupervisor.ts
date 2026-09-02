@@ -36,6 +36,7 @@ export type {
 export interface GoalContainerSupervisorOptions {
     isolation?: GoalContainerIsolationPolicy;
     providerFirstEffects?: GoalProviderFirstEffectPort;
+    dockerPath?: string;
 }
 
 function resolveSupervisorOptions(
@@ -230,6 +231,29 @@ function assertContainerOperationFence(
     }
 }
 
+function rebuildStartedContainer(value: SupervisedDockerExecution): SupervisedDockerExecution {
+    if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype
+        || Object.getOwnPropertySymbols(value).length > 0) {
+        throw new GoalSessionContractError('Docker returned an invalid supervised execution', 'INVALID_PROVIDER_RESULT');
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = ['containerName', 'writeInput', 'closeInput', 'cancel', 'completion'];
+    if (Object.keys(descriptors).length !== keys.length
+        || keys.some(key => !descriptors[key]?.enumerable || !('value' in descriptors[key]))) {
+        throw new GoalSessionContractError('Docker returned an invalid supervised execution', 'INVALID_PROVIDER_RESULT');
+    }
+    const name = descriptors.containerName.value as unknown;
+    if (name !== null && (typeof name !== 'string' || name.length > 128)
+        || typeof descriptors.writeInput.value !== 'function'
+        || typeof descriptors.closeInput.value !== 'function'
+        || typeof descriptors.cancel.value !== 'function'
+        || !(descriptors.completion.value instanceof Promise)
+        || Object.getPrototypeOf(descriptors.completion.value) !== Promise.prototype) {
+        throw new GoalSessionContractError('Docker returned an invalid supervised execution', 'INVALID_PROVIDER_RESULT');
+    }
+    return value;
+}
+
 /**
  * Owns goal-scoped container resources and converts duplex byte output into
  * normalized, atomically fenced durable events. Provider adapters retain
@@ -238,7 +262,7 @@ function assertContainerOperationFence(
 export class GoalContainerSupervisor {
     private readonly isolation: GoalContainerIsolationPolicy;
     private readonly providerFirstEffects?: GoalProviderFirstEffectPort;
-    private readonly pendingOpen = new PendingOpenOwnership();
+    private readonly pendingOpen: PendingOpenOwnership;
 
     constructor(
         private readonly baseDirectory: string,
@@ -251,6 +275,7 @@ export class GoalContainerSupervisor {
             environmentKeys: [], worktreePaths: [], providerHomeTargets: [], credentialMounts: [],
         };
         this.providerFirstEffects = resolved.providerFirstEffects;
+        this.pendingOpen = new PendingOpenOwnership(resolved.dockerPath);
         validateAbsolutePath(baseDirectory, 'Goal container base directory');
     }
 
@@ -265,7 +290,9 @@ export class GoalContainerSupervisor {
     /** Idempotently releases a process still owned by its exact eager-open attempt. */
     async cancelPendingOpen(claim: Readonly<GoalSupervisedOpenClaim>): Promise<void> { await this.pendingOpen.cancel(claim); }
 
-    async cancelPendingOpenAttempt(identity: { goalId: string; sessionId: string; attemptId: string }): Promise<void> {
+    async cancelPendingOpenAttempt(identity: {
+        goalId: string; sessionId: string; attemptId: string; deterministicOpenKey?: string;
+    }): Promise<void> {
         await this.pendingOpen.cancelIdentity(identity); }
 
     /** Transfers cleanup ownership to the now-persisted provider session. */
@@ -343,7 +370,7 @@ export class GoalContainerSupervisor {
             request.image,
             ...request.command,
         ];
-        const execution = await this.providerFirstEffects.start<SupervisedDockerExecution>(
+        const execution = await this.providerFirstEffects.start<SupervisedDockerExecution, SupervisedDockerExecution>(
             operationFence, 'container_spawn', () => {
                 const started = executeSupervisedDockerCommand(dockerArgs, {
             goalId: request.goalId,
@@ -410,6 +437,7 @@ export class GoalContainerSupervisor {
                 return startedProviderEffect(Promise.resolve(started), () =>
                     started.cancel(new Error('Authoritative Docker-start transaction failed')));
             },
+            rebuildStartedContainer,
         );
         // Completion notifications are observed and rebuilt; they never create
         // an unhandled rejection or expose a subprocess exception to an adapter.

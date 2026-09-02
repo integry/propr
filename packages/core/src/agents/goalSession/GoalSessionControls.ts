@@ -67,7 +67,7 @@ export abstract class GoalSessionControls extends GoalCancellationControls {
                 messageId: request.messageId, body: safeDiagnostic(message.body, '[redacted corrective message]'),
             }, persistedSnapshot(state));
             return this.startedProviderEffect(completion, () => this.rollbackProviderPrimitive(operationFence, state));
-        }), rebuildMessageAcknowledgement);
+        }, rebuildMessageAcknowledgement), rebuildMessageAcknowledgement);
         if (acknowledgement.messageId !== request.messageId) {
             throw new GoalSessionContractError('Provider acknowledged a different corrective message', 'MESSAGE_ACK_MISMATCH');
         }
@@ -128,7 +128,7 @@ export abstract class GoalSessionControls extends GoalCancellationControls {
                 operationGeneration, operationFence,
             }, persistedSnapshot(state));
             return this.startedProviderEffect(completion, () => this.rollbackProviderPrimitive(operationFence, state));
-        }), rebuildPauseAcknowledgement);
+        }, rebuildPauseAcknowledgement), rebuildPauseAcknowledgement);
         if (acknowledgement.appliesAt === 'after_turn') {
             throw new GoalSessionContractError('Active-turn provider returned an after-turn pause acknowledgement', 'CAPABILITY_ACK_MISMATCH');
         }
@@ -185,6 +185,7 @@ export abstract class GoalSessionControls extends GoalCancellationControls {
                         () => this.rollbackProviderPrimitive(providerRequest.operationFence, state),
                     );
                 },
+                value => rebuildProviderSnapshot(value, this.adapter.provider),
             ), value => rebuildProviderSnapshot(value, this.adapter.provider));
         } catch (error) {
             await this.expireResumeOperation(request, intent.operationId, intent.operationGeneration);

@@ -4,7 +4,7 @@ import type {
 } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
 import { persistedSnapshot } from './support.js';
-import { assertGoalProviderEffectStage } from './providerOperationBoundary.js';
+import { assertGoalProviderEffectStage, assertGoalProviderOperationFence } from './providerOperationBoundary.js';
 
 const STARTED_PROVIDER_EFFECTS = new WeakSet<object>();
 
@@ -16,13 +16,15 @@ export function createProviderOperationFence(
     generation: number,
     operation: OperationIdentity,
 ): GoalProviderOperationFence {
-    return {
+    const fence = {
         goalId: identity.goalId, sessionId: identity.sessionId,
         controllerEpoch: identity.controllerEpoch, generation,
         kind: operation.kind, operationId: operation.operationId,
         leaseExpiresAt: operation.leaseExpiresAt, turnId: operation.turnId,
         executionId: operation.executionId, attemptId: operation.attemptId,
     };
+    assertGoalProviderOperationFence(fence);
+    return fence;
 }
 
 export function createProviderResumeRequest(
@@ -147,6 +149,7 @@ export function providerFirstEffectStream<T>(
     port: GoalProviderFirstEffectPort,
     fence: GoalProviderOperationFence,
     create: () => AsyncIterable<T>,
+    rebuild: (value: IteratorResult<T>) => IteratorResult<T>,
 ): AsyncIterable<T> {
     assertGoalProviderEffectStage('stream_first_next');
     let iterator: AsyncIterator<T> | undefined;
@@ -163,7 +166,7 @@ export function providerFirstEffectStream<T>(
                     );
                     const completion = iterator.next();
                     return startedProviderEffect(completion, async () => { await iterator!.return!(); });
-                });
+                }, rebuild);
             },
             return: async () => iterator?.return ? iterator.return() : { done: true, value: undefined },
         }),

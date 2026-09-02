@@ -1,13 +1,14 @@
 import { GoalSessionContractError } from './errors.js';
 
-/** Canonical grammar for every opaque goal-session identifier. */
-export const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+/** Canonical grammar for #2018's 255-byte opaque runtime identifiers. */
+export const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$/;
 
 /** Credential formats that remain syntactically valid opaque identifiers. */
 export const SECRET_ID_PREFIX = /^(?:Bearer|gh[oprsu]_|github_pat_|sk-|AKIA)/i;
 
 export function isSafeIdentifier(value: unknown): value is string {
-    return typeof value === 'string' && SAFE_ID.test(value) && !SECRET_ID_PREFIX.test(value);
+    return typeof value === 'string' && Buffer.byteLength(value, 'utf8') <= 255
+        && SAFE_ID.test(value) && !SECRET_ID_PREFIX.test(value);
 }
 
 export function assertSafeCallerTurnIdentity(request: {

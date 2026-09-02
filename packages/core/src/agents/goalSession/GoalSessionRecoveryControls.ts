@@ -145,7 +145,8 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                     repository: prepared.repository,
                 });
                 return this.startedProviderEffect(completion, () => this.rollbackProviderPrimitive(operationFence, state));
-            }), value => rebuildReconcileResult(value, this.adapter.provider));
+            }, value => rebuildReconcileResult(value, this.adapter.provider)),
+            value => rebuildReconcileResult(value, this.adapter.provider));
         } catch (error) {
             await this.requireLiveRecoveryLease(
                 prepared.fence, recovery.execution, state.recoveryAttempt!.operationToken,

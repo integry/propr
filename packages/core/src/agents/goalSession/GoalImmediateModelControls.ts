@@ -7,6 +7,7 @@ import { nextState, persistedSnapshot } from './support.js';
 import { assertSafeProviderIdentifier } from './securityBoundary.js';
 import { rebuildModelAcknowledgement } from './providerResultBoundary.js';
 import { claimModelApplicationIntent } from './modelApplicationLease.js';
+import { compositeOperationId } from './controlOperationIdentity.js';
 
 /** Durable generation and convergence protocol for provider model side effects. */
 export abstract class GoalImmediateModelControls extends GoalTurnRunner {
@@ -151,7 +152,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
                 operationFence,
             }, persistedSnapshot(state));
             return this.startedProviderEffect(completion, () => this.rollbackProviderPrimitive(operationFence, state));
-        }), rebuildModelAcknowledgement);
+        }, rebuildModelAcknowledgement), rebuildModelAcknowledgement);
         validateImmediateModelAcknowledgement({ ...fence, model: intent.model }, state, acknowledgement);
         return this.finishImmediateModelGeneration(fence, intent, acknowledgement);
     }
@@ -246,7 +247,7 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
                     operationFence,
                 }, persistedSnapshot(state));
                 return this.startedProviderEffect(completion, () => this.rollbackProviderPrimitive(operationFence, state));
-            }), rebuildModelAcknowledgement);
+            }, rebuildModelAcknowledgement), rebuildModelAcknowledgement);
             validateImmediateModelAcknowledgement({ ...fence, model: target.model }, state, acknowledgement);
             state = await this.requireControlledState(fence);
             assertModelControllable(state);
@@ -407,7 +408,9 @@ export abstract class GoalImmediateModelControls extends GoalTurnRunner {
     ) {
         return this.providerOperationFence(
             fence, generation, {
-                kind: 'model', operationId: `${intent.modelChangeId}:${intent.applicationToken ?? 'unclaimed'}`,
+                kind: 'model', operationId: compositeOperationId(
+                    'model', intent.modelChangeId, intent.applicationToken ?? 'unclaimed',
+                ),
                 leaseExpiresAt: intent.leaseExpiresAt,
             },
         );

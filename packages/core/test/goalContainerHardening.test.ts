@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 import type { GoalSessionAdapter } from '../src/agents/goalSession/contract.js';
 import { InMemoryGoalSessionPorts } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
 import { createSqliteGoalSessionRuntimePorts } from '../src/agents/goalSession/SqliteGoalSessionControlDomain.js';
-import { createProductionSchema, recovery } from './productionGoalSessionTestSupport.js';
+import { createProductionSchema, recovery, seedAuthoritativeGoal } from './productionGoalSessionTestSupport.js';
 
 const spawnCalls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
 let stdinHandler: ((data: string) => void) | undefined;
@@ -593,9 +593,10 @@ test('start rejects unapproved, broad, sensitive, and symlink-aliased mount sour
 test('production Codex factory composes claimed supervisor, duplex, and exact App Server open', async t => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-factory-open-'));
     const filename = path.join(base, 'control.sqlite');
-    createProductionSchema(filename);
+    await createProductionSchema(filename);
     const supervisorDatabase = new Database(filename);
     const containerDatabase = new Database(filename);
+    seedAuthoritativeGoal(supervisorDatabase, { goalId: 'factory-goal', agent: 'codex', model: 'gpt-5.6-sol' });
     const runtime = createSqliteGoalSessionRuntimePorts(supervisorDatabase, recovery);
     const containerRuntime = createSqliteGoalSessionRuntimePorts(containerDatabase, recovery);
     const containers = new GoalContainerSupervisor(base, containerRuntime.events, undefined, {

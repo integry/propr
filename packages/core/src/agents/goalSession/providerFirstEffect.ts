@@ -2,14 +2,16 @@ import type {
     GoalModelChangeIntent, GoalProviderOperationFence, GoalSessionState,
 } from './contract.js';
 import { StaleGoalSessionFenceError } from './errors.js';
-import { controlOperationId } from './controlOperationIdentity.js';
+import { compositeOperationId, controlOperationId } from './controlOperationIdentity.js';
 import { isSafeIdentifier } from './safeIdentifier.js';
+import { assertGoalProviderOperationFence } from './providerOperationBoundary.js';
 
 /** Validates the complete serializable provider fence against one locked state row. */
 export function assertProviderFirstEffectState(
     state: GoalSessionState | null,
     fence: GoalProviderOperationFence,
 ): asserts state is GoalSessionState {
+    assertGoalProviderOperationFence(fence);
     if (!state || state.goalId !== fence.goalId || state.sessionId !== fence.sessionId
         || state.controllerEpoch !== fence.controllerEpoch
         || (state.providerOperationGeneration ?? 0) !== fence.generation
@@ -51,6 +53,9 @@ function assertKindAuthority(state: GoalSessionState, fence: GoalProviderOperati
             return;
         case 'cancel':
             assertCancelAuthority(state, fence);
+            return;
+        default:
+            stale();
     }
 }
 
@@ -64,7 +69,7 @@ function assertOpenAuthority(state: GoalSessionState, fence: GoalProviderOperati
 function assertTurnAuthority(state: GoalSessionState, fence: GoalProviderOperationFence): void {
     const turn = state.activeTurn;
     const expectedTurnOperation = turn
-        ? `${turn.turnId}:${turn.executionId}:${turn.attemptId}` : undefined;
+        ? compositeOperationId('turn', turn.turnId, turn.executionId, turn.attemptId) : undefined;
     if (!turn || !['running', 'pause_requested', 'paused'].includes(state.status)
         || fence.kind === 'turn' && fence.operationId !== expectedTurnOperation
         || fence.kind === 'steer' && !isSafeIdentifier(fence.operationId)) stale();
@@ -104,7 +109,7 @@ function assertRecoveryAuthority(state: GoalSessionState, fence: GoalProviderOpe
 
 function assertModelAuthority(state: GoalSessionState, fence: GoalProviderOperationFence): void {
     const intent = modelIntents(state).find(candidate =>
-        `${candidate.modelChangeId}:${candidate.applicationToken ?? 'unclaimed'}` === fence.operationId);
+        compositeOperationId('model', candidate.modelChangeId, candidate.applicationToken ?? 'unclaimed') === fence.operationId);
     if (!intent || !intent.applicationToken || intent.applicationControllerEpoch !== fence.controllerEpoch
         || (intent.phase !== 'provider_in_doubt' && intent.phase !== 'committed')
         || intent.leaseExpiresAt !== fence.leaseExpiresAt || expired(intent.leaseExpiresAt)) stale();

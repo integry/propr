@@ -21,7 +21,7 @@ import {
     rebuildPauseAcknowledgement, rebuildProviderSnapshot, rebuildReconcileResult,
     untrustedProviderResult,
 } from '../src/agents/goalSession/providerResultBoundary.js';
-import { createProductionSchema, recovery } from './productionGoalSessionTestSupport.js';
+import { createProductionSchema, recovery, seedAuthoritativeGoal } from './productionGoalSessionTestSupport.js';
 
 const identity = { goalId: 'exact-correction-goal', sessionId: 'exact-correction-session' };
 const repository = { repository: 'integry/propr', worktreePath: '/tmp/exact-correction', branch: 'correction' };
@@ -433,7 +433,10 @@ test('Codex response loss fails closed and persisted exact identity is the only 
 test('production Supervisor crash/reopen issues one total Codex thread/start and keeps durable doubt terminal', async t => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-response-loss-supervisor-'));
     const filename = path.join(directory, 'control.sqlite');
-    createProductionSchema(filename);
+    await createProductionSchema(filename);
+    const seedDatabase = new Database(filename);
+    seedAuthoritativeGoal(seedDatabase, { goalId: identity.goalId, agent: 'codex', model: 'gpt-5.6-sol' });
+    seedDatabase.close();
     const transports: LineTransport[] = [];
     const plan = issueGoalSupervisedOpenPlan({
         repository, requestedModel: 'gpt-5.6-sol', providerHomeTarget: '/home/node/.codex', credentialTargets: [],

@@ -6,6 +6,7 @@ import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.j
 import { GoalImmediateModelControls } from './GoalImmediateModelControls.js';
 import { safeFailureDiagnostic } from './securityBoundary.js';
 import { nextState, persistedSnapshot } from './support.js';
+import { rebuildVoidProviderResult } from './providerResultBoundary.js';
 
 /** Durable two-phase provider invalidation and idempotent cancellation replay. */
 export abstract class GoalCancellationControls extends GoalImmediateModelControls {
@@ -61,14 +62,14 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
             await this.publishProviderOperationBarrier(fence, request.operationGeneration, intent.cancellationId);
             const authoritative = await this.requireControlledStateForBarrier(fence);
             assertCancellationAuthority(authoritative, request);
-            const signal = this.providerFirstEffect<void>(request.operationFence, () => {
+            const signal = this.providerFirstEffect(request.operationFence, () => {
                 const completion = intent.pendingContext
                     ? this.adapter.cancelPending!(request, intent.pendingContext)
                     : this.adapter.cancel(request, persistedSnapshot(state));
                 // Cancellation is itself the ownership release. On a transaction
                 // failure, settling this idempotent cancellation completes cleanup.
                 return this.startedProviderEffect(completion, async () => { await completion; });
-            });
+            }, rebuildVoidProviderResult);
             await boundedCancellation(signal);
             return undefined;
         } catch (error) {

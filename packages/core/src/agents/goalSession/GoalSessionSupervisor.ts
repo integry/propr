@@ -2,6 +2,7 @@ import type { GoalSessionState } from './contract.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
     GoalSessionContractError,
+    GoalSessionScopeError,
     StaleGoalSessionFenceError,
     UnsupportedGoalSessionTransitionError,
 } from './errors.js';
@@ -106,7 +107,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                     'INCOMPLETE_INITIALIZATION',
                 );
             }
-            state = await this.recordInitializationIntent(request, state, !opened.created);
+            state = await this.recordInitializationIntent(request, state);
             deterministicOpenKey = state.initializationIntent?.deterministicOpenKey;
         } else {
             state = await this.recordProviderOpenAttempt(state);
@@ -249,17 +250,17 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
     private async recordInitializationIntent(
         request: OpenGoalSessionRequest,
         state: GoalSessionState,
-        recovery: boolean,
     ): Promise<GoalSessionState> {
-        if (state.initializationIntent && !recovery) return state;
-        const attemptId = state.initializationIntent
-            ? this.mintFreshAttemptId(state.initializationIntent.attemptId)
-            : this.mintAttemptId();
+        // Reopen must first replay the exact settled open operation. Minting a
+        // fresh attempt here would bypass that receipt and issue a second
+        // Codex thread/start after a response-before-state-CAS crash.
+        if (state.initializationIntent) return state;
+        const attemptId = this.mintAttemptId();
         const operationGeneration = (state.providerOperationGeneration ?? 0) + 1;
         return this.compareAndSetExact(state, {
             initializationIntent: {
                 attemptId,
-                deterministicOpenKey: state.initializationIntent?.deterministicOpenKey ?? deterministicOpenKey(request),
+                deterministicOpenKey: deterministicOpenKey(request),
                 recordedAt: nowIso(),
             },
             providerOpenAttemptId: attemptId,
@@ -281,7 +282,12 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
     }
 
     private async loadOrCreateForOpen(request: OpenGoalSessionRequest): Promise<{ state: GoalSessionState; created: boolean }> {
-        const loaded = await this.ports.state.load(request);
+        let loaded: GoalSessionState | null;
+        try { loaded = await this.ports.state.load(request); }
+        catch (error) {
+            if (!(error instanceof GoalSessionScopeError)) throw error;
+            loaded = null;
+        }
         let state = loaded ? decodeDurableGoalSessionState(loaded) : null;
         let created = false;
         if (!state) {
@@ -360,7 +366,8 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                     completion,
                     () => openContext?.transport.cancel() ?? this.rollbackProviderPrimitive(operationFence, state),
                 );
-            }), value => rebuildProviderSnapshot(value, this.adapter.provider));
+            }, value => rebuildProviderSnapshot(value, this.adapter.provider)),
+            value => rebuildProviderSnapshot(value, this.adapter.provider));
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata, this.adapter.provider);
             assertProviderIdentity(state, snapshot);
             const preserveIntentModel = this.adapter.capabilities.modelChange === 'next_safe_boundary'

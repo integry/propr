@@ -4,6 +4,8 @@ import type {
     GoalRepositoryIdentity,
     GoalSessionIdentity,
 } from './contract.js';
+import { GoalSessionContractError } from './errors.js';
+import { isSafeIdentifier } from './safeIdentifier.js';
 
 export interface GoalProviderBarrierIntent {
     generation: number;
@@ -72,12 +74,61 @@ export type GoalProviderEffectStage = 'provider_primitive' | 'stream_first_next'
 const PROVIDER_EFFECT_STAGES: ReadonlySet<string> = new Set([
     'provider_primitive', 'stream_first_next', 'container_spawn',
 ]);
+const PROVIDER_OPERATION_KINDS: ReadonlySet<string> = new Set([
+    'open', 'turn', 'resume', 'reconcile', 'steer', 'model', 'pause', 'cancel',
+]);
+const PROVIDER_FENCE_FIELDS = new Set([
+    'goalId', 'sessionId', 'controllerEpoch', 'generation', 'operationId', 'kind',
+    'leaseExpiresAt', 'turnId', 'executionId', 'attemptId',
+]);
 
 /** Runtime boundary for JavaScript callers and values decoded from persistence. */
 export function assertGoalProviderEffectStage(value: unknown): asserts value is GoalProviderEffectStage {
     if (typeof value !== 'string' || !PROVIDER_EFFECT_STAGES.has(value)) {
-        throw new Error('Provider effect stage is not one of the three internal stages');
+        throw new GoalSessionContractError(
+            'Provider effect stage is not one of the three internal stages', 'INVALID_PROVIDER_FENCE',
+        );
     }
+}
+
+/** Closed runtime decoder for provider fences received from JS and persistence. */
+export function assertGoalProviderOperationFence(value: unknown): asserts value is GoalProviderOperationFence {
+    let descriptors: PropertyDescriptorMap;
+    try {
+        if (!value || typeof value !== 'object' || Array.isArray(value)
+            || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) invalidFence();
+        descriptors = Object.getOwnPropertyDescriptors(value);
+        if (Object.getOwnPropertySymbols(value).length > 0
+            || Object.entries(descriptors).some(([key, descriptor]) =>
+                !PROVIDER_FENCE_FIELDS.has(key) || !descriptor.enumerable || !('value' in descriptor))) invalidFence();
+    } catch (error) {
+        if (error instanceof GoalSessionContractError) throw error;
+        invalidFence();
+    }
+    const field = (name: string): unknown => descriptors[name]?.value;
+    for (const name of ['goalId', 'sessionId', 'operationId']) {
+        if (!isSafeIdentifier(field(name))) invalidFence();
+    }
+    const kind = field('kind');
+    if (typeof kind !== 'string' || !PROVIDER_OPERATION_KINDS.has(kind)) invalidFence();
+    for (const name of ['controllerEpoch', 'generation']) {
+        const number = field(name);
+        if (!Number.isSafeInteger(number) || (number as number) < 0) invalidFence();
+    }
+    for (const name of ['turnId', 'executionId', 'attemptId']) {
+        const candidate = field(name);
+        if (candidate !== undefined && !isSafeIdentifier(candidate)) invalidFence();
+    }
+    const leaseExpiresAt = field('leaseExpiresAt');
+    if (leaseExpiresAt !== undefined
+        && (typeof leaseExpiresAt !== 'string' || !Number.isFinite(Date.parse(leaseExpiresAt)))) invalidFence();
+    if ((kind === 'turn' || kind === 'steer')
+        && (!field('turnId') || !field('executionId') || !field('attemptId'))) invalidFence();
+    if (kind === 'reconcile' && (!field('executionId') || !field('attemptId'))) invalidFence();
+}
+
+function invalidFence(): never {
+    throw new GoalSessionContractError('Provider operation fence is invalid', 'INVALID_PROVIDER_FENCE');
 }
 
 export interface GoalStartedProviderEffectCleanup {
@@ -106,11 +157,13 @@ export interface GoalStartedProviderEffect<T> {
  * after releasing the authoritative transaction.
  */
 export interface GoalProviderFirstEffectPort {
-    start<T>(
+    start<T, R>(
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
         effect: () => GoalStartedProviderEffect<T>,
-    ): Promise<T>;
+        /** Rebuilds a fresh, bounded operation-specific DTO before settlement. */
+        rebuild: (value: T) => R,
+    ): Promise<R>;
 }
 
 /** Monotonic provider-visible high-water publication. */

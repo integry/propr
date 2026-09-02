@@ -18,3 +18,9 @@ export function controlOperationId(kind: string, state: GoalSessionState): strin
         .slice(0, 24);
     return `${kind}-${scope}-e${state.controllerEpoch}-v${state.version}`;
 }
+
+/** Bounded stable identity for composites of independently bounded caller IDs. */
+export function compositeOperationId(kind: string, ...parts: readonly string[]): string {
+    const digest = createHash('sha256').update(parts.join('\0')).digest('hex');
+    return `${kind}-${digest}`;
+}
