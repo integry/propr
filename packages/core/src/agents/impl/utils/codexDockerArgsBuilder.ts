@@ -130,3 +130,17 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
     logger.info({ issueNumber, agentAlias: config.alias }, 'Docker args built for Codex agent');
     return wrapDockerRunArgsWithRepoSetup(dockerArgs, dockerImage, 'codex');
 }
+
+/** Build the same isolated goal container, but expose Codex's native JSONL App Server. */
+export function buildCodexAppServerDockerArgs(config: AgentConfig, params: CodexDockerArgsParams): string[] {
+    const args = buildCodexDockerArgs(config, {
+        ...params,
+        modelName: undefined,
+        jsonOutput: false,
+        executionMode: 'goal',
+        resumeSessionId: undefined,
+    });
+    const codexIndex = args.lastIndexOf('codex');
+    if (codexIndex < 0) throw new Error('Codex executable was not present in App Server container arguments');
+    return [...args.slice(0, codexIndex), 'codex', 'app-server'];
+}

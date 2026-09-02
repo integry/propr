@@ -17,6 +17,7 @@ import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/ind
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
+import { executeCodexAppServerGoal } from './codexAppServer.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -41,6 +42,7 @@ export class CodexAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        if (options.executionMode === 'goal') return this.executeNativeGoal(options);
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
             onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel,
@@ -55,7 +57,7 @@ export class CodexAgent implements Agent {
         }, isRetry ? 'Starting Codex agent execution (RETRY)...' : 'Starting Codex agent execution...');
 
         try {
-            const prompt = executionMode === 'goal' ? customPrompt : buildCodexPrompt({
+            const prompt = buildCodexPrompt({
                 customPrompt, issueRef, branchName, modelName: effectiveModel,
                 issueDetails, isRetry, retryReason, systemPrompt
             });
@@ -102,6 +104,16 @@ export class CodexAgent implements Agent {
             }
             return this.handleTaskError({ error: error as Error, executionTime: Date.now() - startTime, issueRef, repo, effectiveModel });
         }
+    }
+
+    private async executeNativeGoal(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        await setWorktreeOwnership(options.worktreePath, options.issueRef.number);
+        const worktreeGitContent = verifyWorktreeStructure(options.worktreePath, options.issueRef.number);
+        const result = await executeCodexAppServerGoal(this.config, options, this.timeoutMs);
+        if (result.success) {
+            verifyWorktreePostExecution(options.worktreePath, options.issueRef.number, worktreeGitContent);
+        }
+        return result;
     }
 
     private buildTaskExecutionResult(params: {

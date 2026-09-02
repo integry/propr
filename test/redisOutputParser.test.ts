@@ -102,6 +102,40 @@ test('parseRedisOutput counts Codex usage once when turn and result records coex
     });
 });
 
+test('parseRedisOutput projects native Codex App Server plan, activity and token usage', () => {
+    const parsed = parseRedisOutput([
+        JSON.stringify({ method: 'turn/plan/updated', params: { plan: [
+            { step: 'Inspect transport', status: 'completed' },
+            { step: 'Run tests', status: 'inProgress' },
+        ] } }),
+        JSON.stringify({ method: 'item/completed', params: { item: {
+            id: 'cmd-1', type: 'commandExecution', command: 'npm test', aggregatedOutput: 'passed', status: 'completed',
+        } } }),
+        JSON.stringify({ method: 'thread/tokenUsage/updated', params: { tokenUsage: { total: {
+            inputTokens: 200, outputTokens: 50, cachedInputTokens: 80,
+        } } } }),
+        JSON.stringify({ method: 'thread/goal/updated', params: { goal: {
+            objective: 'Ship native goals', status: 'active', tokenBudget: 1000, tokensUsed: 330, timeUsedSeconds: 42,
+        } } }),
+    ]);
+
+    assert.deepStrictEqual(parsed.todos, [
+        { id: 'plan-0', content: 'Inspect transport', status: 'completed' },
+        { id: 'plan-1', content: 'Run tests', status: 'in_progress' },
+    ]);
+    assert.equal(parsed.currentTask, 'Run tests');
+    assert.equal(parsed.events.some(event => event.type === 'tool_use'), true);
+    assert.deepStrictEqual(parsed.tokenUsage, {
+        input_tokens: 200,
+        output_tokens: 50,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 80,
+    });
+    assert.deepStrictEqual(parsed.nativeGoal, {
+        objective: 'Ship native goals', status: 'active', tokenBudget: 1000, tokensUsed: 330, timeUsedSeconds: 42,
+    });
+});
+
 test('parseRedisOutput emits Vibe live events from a partial JSON transcript array', () => {
     const output = `[
   {

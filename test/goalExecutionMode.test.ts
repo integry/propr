@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
 import { buildGoalPolicyEnvironment, buildNativeGoalCommand } from '../packages/core/src/goals.ts';
-import { helpAdvertisesNativeGoal } from '../packages/core/src/agents/goalCapabilities.ts';
+import { claudeInitSupportsNativeGoal, codexHandshakeSupportsNativeGoal } from '../packages/core/src/agents/goalCapabilities.ts';
 import { buildDockerArgs as buildClaudeDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
-import { buildCodexDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts';
+import { buildCodexAppServerDockerArgs, buildCodexDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts';
 import { AntigravityAgent } from '../packages/core/src/agents/impl/AntigravityAgent.ts';
 import type { AgentConfig } from '../packages/core/src/agents/types.ts';
 
@@ -69,17 +69,15 @@ describe('native goal provider contract', () => {
     assert.deepEqual(resumed.slice(resumed.indexOf('--resume'), resumed.indexOf('--resume') + 2), ['--resume', 'claude-session']);
   });
 
-  test('Codex removes ephemeral mode and resumes the exact thread', () => {
+  test('Codex keeps one-shot arguments unchanged and goal mode exposes App Server', () => {
     const normal = buildCodexDockerArgs(baseConfig('codex'), common);
-    const initial = buildCodexDockerArgs(baseConfig('codex'), { ...common, executionMode: 'goal' });
-    const resumed = buildCodexDockerArgs(baseConfig('codex'), { ...common, executionMode: 'goal', resumeSessionId: 'codex-thread' });
+    const appServer = buildCodexAppServerDockerArgs(baseConfig('codex'), { ...common, executionMode: 'goal' });
     assert.ok(normal.includes('--ephemeral'));
     assert.ok(normal.includes('features.multi_agent=false'));
-    assert.equal(initial.includes('--ephemeral'), false);
-    assert.equal(initial.includes('features.multi_agent=false'), false);
-    assert.ok(resumed.includes('resume'));
-    assert.ok(resumed.includes('codex-thread'));
-    assert.equal(resumed[resumed.indexOf('codex-thread') + 1], '-');
+    assert.deepEqual(appServer.slice(appServer.lastIndexOf('codex')), ['codex', 'app-server']);
+    assert.equal(appServer.includes('--ephemeral'), false);
+    assert.equal(appServer.includes('features.multi_agent=false'), false);
+    assert.equal(appServer.includes('exec'), false);
   });
 
   test('Antigravity retains state and resumes the exact conversation', () => {
@@ -94,8 +92,20 @@ describe('native goal provider contract', () => {
     assert.deepEqual(resumed.slice(resumed.indexOf('--conversation'), resumed.indexOf('--conversation') + 2), ['--conversation', 'agy-conversation']);
   });
 
-  test('capability detection does not emulate goal mode when help omits it', () => {
-    assert.equal(helpAdvertisesNativeGoal('Commands:\n  /goal <objective>  Start a native goal'), true);
-    assert.equal(helpAdvertisesNativeGoal('Commands:\n  exec\n  resume'), false);
+  test('capability detection requires provider-specific protocol evidence', () => {
+    assert.equal(codexHandshakeSupportsNativeGoal([
+      JSON.stringify({ id: 1, result: { userAgent: 'codex' } }),
+      JSON.stringify({ id: 2, error: { code: -32000, message: 'Thread not found' } }),
+    ].join('\n')), true);
+    assert.equal(codexHandshakeSupportsNativeGoal([
+      JSON.stringify({ id: 1, result: {} }),
+      JSON.stringify({ id: 2, error: { code: -32601, message: 'Method not found' } }),
+    ].join('\n')), false);
+    assert.deepEqual(claudeInitSupportsNativeGoal(JSON.stringify({
+      type: 'system', subtype: 'init', session_id: 'session-1', slash_commands: ['help', 'goal'],
+    })), { supported: true, sessionId: 'session-1' });
+    assert.equal(claudeInitSupportsNativeGoal(JSON.stringify({
+      type: 'system', subtype: 'init', session_id: 'session-2', slash_commands: ['help'],
+    })).supported, false);
   });
 });

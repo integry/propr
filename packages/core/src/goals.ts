@@ -4,6 +4,7 @@ export const GOAL_LAUNCH_STRATEGIES = ['direct', 'orchestrate'] as const;
 export type GoalLaunchStrategy = typeof GOAL_LAUNCH_STRATEGIES[number];
 
 export const GOAL_CONTINUE_INPUT = 'Continue working toward the goal.';
+export const CODEX_GOAL_OBJECTIVE_MAX_LENGTH = 4_000;
 
 const launchInstructions: Record<GoalLaunchStrategy, string> = {
     direct: [
@@ -45,6 +46,10 @@ export function buildNativeGoalCommand(options: {
 
 export function goalJobId(goalId: string, generation: number): string {
     return `goal-${goalId}-${generation}`;
+}
+
+export function goalAttemptLabel(generation: number, claimId: string): string {
+    return `${generation}:${claimId}`;
 }
 
 export function buildGoalPolicyEnvironment(): Record<string, string> {

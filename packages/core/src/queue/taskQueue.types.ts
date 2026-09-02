@@ -108,6 +108,8 @@ export interface GoalJobData {
     repoOwner: string;
     repoName: string;
     generation: number;
+    /** Opaque durable claim for this exact generation. */
+    claimId: string;
     /** Exact initial native command or an ordinary same-session continuation. */
     input?: string;
     recovery?: boolean;

@@ -28,7 +28,10 @@ const goal: goalsApi.Goal = {
   baseBranch: null, branchName: 'goal/dashboard', worktreePath: '/tmp/worktree',
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' }, requestedModel: 'gpt-5.6', effectiveModel: 'gpt-5.6',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,
+  failureReason: null, pausePending: false,
   taskId: 'goal-task-1', sessionId: 'thread-1', conversationId: null, finalPr: null, artifacts: [],
+  artifactStats: { issues: 1, openIssues: 1, pullRequests: 1, openPullRequests: 1 },
+  liveSummary: { currentTask: 'Implement API', todos: [{ id: 'todo-1', content: 'Implement API', status: 'in_progress' },], tokenUsage: { input_tokens: 10, output_tokens: 5 }, nativeGoal: null },
   taskState: 'claude_execution', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   startedAt: new Date().toISOString(), pausedAt: null, completedAt: null, elapsedMs: 1000, activeMs: 1000, pausedMs: 0,
 };
@@ -64,8 +67,22 @@ describe('GoalsPage', () => {
   it('gates creation when the pinned provider lacks native goal capability', async () => {
     vi.mocked(goalsApi.getGoalCapabilities).mockResolvedValue({ agents: [{ ...capability, goalCapable: false, reason: 'No /goal' }] });
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
-    expect(await screen.findByText(/No pinned coding-agent CLI/)).toBeInTheDocument();
+    expect(await screen.findByText(/No pinned coding-agent runtime/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start native goal' })).toBeDisabled();
+  });
+
+  it('projects native checklist, time, token, and repository artifact stats in the goal list', async () => {
+    vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [{
+      ...goal,
+      liveSummary: {
+        ...goal.liveSummary,
+        nativeGoal: { objective: goal.objective, status: 'active', tokenBudget: 1000, tokensUsed: 330, timeUsedSeconds: 42 },
+      },
+    }] });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    expect(await screen.findByText('330 tokens · 42s active')).toBeInTheDocument();
+    expect(screen.getByText('1/1 open issues · 1/1 open PRs')).toBeInTheDocument();
+    expect(screen.getByText('◉ Implement API')).toBeInTheDocument();
   });
 
   it('renders existing task live details and sends canned status input through the same session', async () => {
@@ -75,8 +92,8 @@ describe('GoalsPage', () => {
     expect(screen.getByText('Agent orchestrates through ProPR')).toBeInTheDocument();
     expect(screen.getByText(/\/goal Ship the dashboard/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: "What's done?" }));
-    await waitFor(() => expect(goalsApi.pauseGoal).toHaveBeenCalledWith('goal-1'));
     await waitFor(() => expect(goalsApi.sendGoalInput).toHaveBeenCalledWith('goal-1', { canned: 'done' }));
+    expect(goalsApi.pauseGoal).not.toHaveBeenCalled();
   });
 
   it('requests the next model separately from the effective model and exposes cancellation', async () => {
@@ -99,9 +116,14 @@ describe('GoalsPage', () => {
     const view = render(page());
     await waitFor(() => expect(socket.subscribeToTaskLive).toHaveBeenCalledWith('goal-task-1'));
     act(() => liveHandler?.({
-      taskId: 'goal-task-1', events: [{ id: 'next', type: 'assistant', content: 'Incremental update' }],
+      taskId: 'goal-task-1', events: [{ id: 'initial', type: 'thought', content: 'Initial native output' }],
+      todos: [], currentTask: 'Implementing', tokenUsage: null,
+    } as never));
+    act(() => liveHandler?.({
+      taskId: 'goal-task-1', events: [{ id: 'next', type: 'thought', content: 'Incremental update' }],
       todos: [], currentTask: 'Testing', tokenUsage: null,
     } as never));
+    expect(await screen.findByText('Initial native output')).toBeInTheDocument();
     expect(await screen.findByText('Incremental update')).toBeInTheDocument();
 
     socket.isConnected = false;

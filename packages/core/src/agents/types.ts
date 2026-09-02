@@ -55,6 +55,12 @@ export interface AgentTaskOptions {
     resumeSessionId?: string;
     /** Provider conversation identity when it differs from the session ID. */
     resumeConversationId?: string;
+    /** Native objective used by provider goal metadata APIs. */
+    nativeGoalObjective?: string;
+    /** Pending FIFO input consumed by the turn being started, when applicable. */
+    initialControlInputId?: string;
+    /** Durable controls observed only at provider turn boundaries. */
+    goalControl?: GoalExecutionControl;
 
     // Execution overrides
     model?: string;
@@ -84,6 +90,24 @@ export interface AgentTaskOptions {
 
     /** PR number when this is a PR follow-up task (distinct from issueRef.number) */
     prNumber?: number;
+}
+
+export interface GoalControlInput {
+    id: string;
+    message: string;
+}
+
+export interface GoalControlSnapshot {
+    desiredState: 'running' | 'paused' | 'cancelled';
+    requestedModel: string;
+    pendingInputs: GoalControlInput[];
+}
+
+export interface GoalExecutionControl {
+    load(): Promise<GoalControlSnapshot>;
+    heartbeat(): Promise<void>;
+    setActiveTurn(turnId: string | null): Promise<void>;
+    markInputDelivered(inputId: string, turnId: string): Promise<void>;
 }
 
 export interface TokenUsage {

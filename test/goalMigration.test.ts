@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import knex from 'knex';
 import { down, up } from '../packages/core/src/db/migrations/20260902000000_create_goals.js';
+import { down as downHardening, up as upHardening } from '../packages/core/src/db/migrations/20260902010000_harden_native_goals.js';
 
 test('goal migration stores only the durable owner/session execution envelope', async () => {
     const database = knex({
@@ -11,10 +12,22 @@ test('goal migration stores only the durable owner/session execution envelope', 
     });
     try {
         await up(database);
+        await upHardening(database);
         const columns = await database('goals').columnInfo();
         assert.deepEqual(
             ['goal_id', 'owner_id', 'repository', 'objective', 'launch_strategy', 'initial_prompt', 'agent_id', 'requested_model', 'desired_state', 'current_task_id', 'session_id', 'worktree_path']
                 .filter(column => !columns[column]),
+            [],
+        );
+        assert.deepEqual(
+            ['run_claim', 'claimed_at', 'attempt_heartbeat_at', 'active_turn_id', 'pause_confirmed_at', 'resume_requested', 'create_idempotency_key', 'failure_reason', 'artifact_stats']
+                .filter(column => !columns[column]),
+            [],
+        );
+        const inputColumns = await database('goal_inputs').columnInfo();
+        assert.deepEqual(
+            ['sequence', 'input_id', 'goal_id', 'owner_id', 'idempotency_key', 'kind', 'message', 'state', 'delivered_generation', 'delivered_claim', 'delivered_turn_id']
+                .filter(column => !inputColumns[column]),
             [],
         );
         assert.equal(columns.output, undefined);
@@ -33,6 +46,7 @@ test('goal migration stores only the durable owner/session execution envelope', 
             database('goals').insert({ ...base, goal_id: 'goal-2' }),
             /unique/i,
         );
+        await downHardening(database);
         await down(database);
         assert.equal(await database.schema.hasTable('goals'), false);
     } finally {

@@ -320,9 +320,10 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
     if (!taskStateFinalizers) throw new Error('PR comment task state finalizers were not attached');
     const attachedTaskStateFinalizers = taskStateFinalizers;
-    const goalRecovery = await recoverNonterminalGoals();
-    logger.info(goalRecovery, 'Recovered nonterminal native goals');
-    const taskStateRecovery = await startWorkerTaskStateRecovery({ stateManager });
+    const taskStateRecovery = await startWorkerTaskStateRecovery({
+        stateManager,
+        recoverGoals: () => recoverNonterminalGoals(),
+    });
 
     const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
         AGENT_RUNTIME_BUILD_QUEUE_NAME,

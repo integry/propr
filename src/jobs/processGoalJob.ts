@@ -12,90 +12,49 @@ import {
     getAuthenticatedOctokit,
     getRepoUrl,
     getStateManager,
+    goalAttemptLabel,
     logger,
     recordLLMMetrics,
+    runWithExecutionAbortSignal,
     type AgentExecutionResult,
+    type Agent,
     type GoalJobData,
+    parseGoalArtifacts,
+    validateGoalArtifacts,
 } from '@propr/core';
 import { createContainerIdCallback } from './issueJobCallbacks.js';
-
-interface GoalRow {
-    goal_id: string;
-    repository: string;
-    objective: string;
-    initial_prompt: string;
-    base_branch: string | null;
-    branch_name: string | null;
-    worktree_path: string | null;
-    agent_id: string;
-    agent_alias: string;
-    requested_model: string;
-    desired_state: 'running' | 'paused' | 'cancelled';
-    result_state: 'completed' | 'failed' | 'cancelled' | null;
-    current_task_id: string;
-    session_id: string | null;
-    conversation_id: string | null;
-    run_generation: number;
-    artifact_refs?: string | GoalArtifact[] | null;
-    started_at: string | null;
-}
-
-const githubArtifactPattern = /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/(pull|issues)\/(\d+)/g;
-
-type GoalArtifact = { type: 'pull_request' | 'issue'; number: number; url: string };
-
-function discoverArtifacts(output: string): GoalArtifact[] {
-    const artifacts = new Map<string, GoalArtifact>();
-    for (const match of output.matchAll(githubArtifactPattern)) {
-        artifacts.set(match[0], { type: match[1] === 'pull' ? 'pull_request' : 'issue', number: Number(match[2]), url: match[0] });
-    }
-    return [...artifacts.values()];
-}
+import {
+    claimGoalAttempt,
+    createGoalExecutionControl,
+    fencedGoal,
+    fencedGoalUpdate,
+    firstPendingGoalInput,
+    saveFencedGoalSession,
+    type GoalRow,
+} from './goalAttemptState.js';
+import { enqueueNextGoalAttempt } from './goalAttemptScheduling.js';
 
 function isRecoverableInterruption(result: AgentExecutionResult): boolean {
     if (result.terminationReason) return true;
     if (result.exitCode != null && [125, 137, 143].includes(result.exitCode)) return true;
-    return /(?:docker|container|socket hang up|ECONNRESET|ECONNREFUSED|SIGKILL|terminated|execution aborted)/i
+    return /(?:docker|container|socket hang up|ECONNRESET|ECONNREFUSED|SIGKILL|terminated|execution aborted|App Server exited)/i
         .test(result.error || '');
 }
 
-async function saveSession(options: { goalId: string; taskId: string; model: string; sessionId: string; conversationId?: string }): Promise<void> {
-    const { goalId, taskId, model, sessionId, conversationId } = options;
-    await db('goals').where({ goal_id: goalId }).update({
-        session_id: sessionId,
-        ...(conversationId ? { conversation_id: conversationId } : {}),
-        updated_at: db.fn.now(),
-    });
-    const stateManager = getStateManager();
-    const state = await stateManager.getTaskState(taskId);
-    if (!state || state.state === TaskStates.CANCELLED || state.state === TaskStates.COMPLETED || state.state === TaskStates.FAILED) return;
-    if (state.state === TaskStates.CLAUDE_EXECUTION) {
-        await stateManager.updateHistoryMetadata(taskId, TaskStates.CLAUDE_EXECUTION, { sessionId, conversationId, model, executionMode: 'goal' });
-    } else {
-        await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
-            reason: 'Native goal execution started',
-            claudeResult: { success: false, sessionId, conversationId },
-            historyMetadata: { sessionId, conversationId, model, executionMode: 'goal' },
-        });
-    }
-}
-
-async function ensureGoalWorktree(goal: GoalRow, token: string): Promise<{ worktreePath: string; branchName: string }> {
+async function ensureGoalWorktree(
+    goal: GoalRow,
+    job: GoalJobData,
+    token: string,
+): Promise<{ worktreePath: string; branchName: string }> {
     if (goal.worktree_path && goal.branch_name) {
-        if (!fs.existsSync(goal.worktree_path)) {
-            throw new Error('Saved goal worktree is missing; refusing to create a second goal worktree');
-        }
+        if (!fs.existsSync(goal.worktree_path)) throw new Error('Saved goal worktree is missing; exact-session recovery cannot continue');
         return { worktreePath: goal.worktree_path, branchName: goal.branch_name };
     }
-
     const [repoOwner, repoName] = goal.repository.split('/');
     await ensureGitRepository(logger as never);
     const localRepoPath = await ensureRepoCloned({
-        repoUrl: getRepoUrl({ repoOwner, repoName }),
-        owner: repoOwner,
-        repoName,
-        authToken: token,
-        ...(goal.base_branch ? { baseBranch: goal.base_branch } : {}),
+        repoUrl: getRepoUrl({ repoOwner, repoName }), owner: repoOwner, repoName,
+        authToken: token, ...(goal.base_branch ? { baseBranch: goal.base_branch } : {}),
     });
     const worktree = await createWorktreeForIssue(localRepoPath, {
         issueId: `goal-${goal.goal_id.slice(0, 8)}`,
@@ -103,77 +62,56 @@ async function ensureGoalWorktree(goal: GoalRow, token: string): Promise<{ workt
         owner: repoOwner,
         repoName,
     }, { baseBranch: goal.base_branch, modelName: goal.requested_model });
-
-    const updated = await db('goals')
-        .where({ goal_id: goal.goal_id })
-        .whereNull('worktree_path')
-        .update({ worktree_path: worktree.worktreePath, branch_name: worktree.branchName, updated_at: db.fn.now() });
-    if (updated === 0) {
-        const winner = await db<GoalRow>('goals').where({ goal_id: goal.goal_id }).first();
-        if (!winner?.worktree_path || !winner.branch_name) throw new Error('Goal worktree allocation was fenced by an incomplete record');
-        return { worktreePath: winner.worktree_path, branchName: winner.branch_name };
-    }
+    const saved = await db('goals').where({
+        goal_id: goal.goal_id,
+        run_generation: job.generation,
+        run_claim: job.claimId,
+        desired_state: 'running',
+    }).whereNull('result_state').whereNull('worktree_path').update({
+        worktree_path: worktree.worktreePath,
+        branch_name: worktree.branchName,
+        attempt_heartbeat_at: db.fn.now(),
+        updated_at: db.fn.now(),
+    });
+    if (saved !== 1) throw new Error('Goal worktree allocation lost its attempt claim');
     return worktree;
 }
 
-function parseArtifacts(value: GoalRow['artifact_refs']): GoalArtifact[] {
-    if (Array.isArray(value)) return value;
-    if (typeof value !== 'string') return [];
-    try { return JSON.parse(value) as GoalArtifact[]; } catch { return []; }
-}
-
-async function saveResultMetadata(goal: GoalRow, result: AgentExecutionResult): Promise<GoalArtifact | undefined> {
-    const artifactsByUrl = new Map(parseArtifacts(goal.artifact_refs).map(artifact => [artifact.url, artifact]));
-    for (const artifact of discoverArtifacts(`${result.rawOutput || ''}\n${result.logs || ''}\n${result.summary || ''}`)) {
-        artifactsByUrl.set(artifact.url, artifact);
-    }
-    const artifacts = [...artifactsByUrl.values()];
-    const finalPr = artifacts.findLast(artifact => artifact.type === 'pull_request');
-    await db('goals').where({ goal_id: goal.goal_id }).update({
-        effective_model: result.modelUsed,
-        ...(result.sessionId ? { session_id: result.sessionId } : {}),
-        ...(result.conversationId ? { conversation_id: result.conversationId } : {}),
-        ...(finalPr ? { final_pr_number: finalPr.number, final_pr_url: finalPr.url } : {}),
-        artifact_refs: JSON.stringify(artifacts),
-        updated_at: db.fn.now(),
-    });
-    return finalPr;
-}
-
-async function finalizeGoal(goal: GoalRow, result: AgentExecutionResult): Promise<void> {
-    await db('goals').where({ goal_id: goal.goal_id }).update({
-        result_state: result.success ? 'completed' : 'failed',
-        completed_at: db.fn.now(),
-        updated_at: db.fn.now(),
-    });
-}
-
-// This runner deliberately keeps every lifecycle fence adjacent to the single
-// provider execution so retries cannot bypass worktree/session ownership.
-// eslint-disable-next-line complexity
-export async function processGoalJob(job: Job<GoalJobData>) {
-    const goal = await db<GoalRow>('goals').where({ goal_id: job.data.goalId }).first();
-    if (!goal || goal.current_task_id !== job.data.taskId) return { status: 'skipped', reason: 'goal_not_found' };
-    if (goal.result_state || goal.desired_state !== 'running' || goal.run_generation !== job.data.generation) {
-        return { status: 'skipped', reason: 'goal_fence' };
-    }
-    if (goal.worktree_path && !goal.session_id && (job.attemptsMade > 0 || job.data.recovery)) {
-        throw new Error('Goal execution stopped before its provider session was persisted; refusing to start a second native goal');
-    }
-
+async function saveSessionAndTaskState(
+    options: {
+        job: GoalJobData;
+        goal: GoalRow;
+        model: string;
+        sessionId: string;
+        conversationId?: string;
+    },
+): Promise<void> {
+    const { job, goal, model, sessionId, conversationId } = options;
+    if (!await saveFencedGoalSession(job, sessionId, conversationId)) throw new Error('Goal session identity write was fenced');
     const stateManager = getStateManager();
+    const state = await stateManager.getTaskState(goal.current_task_id);
+    const terminalStates = new Set<string>([TaskStates.CANCELLED, TaskStates.COMPLETED, TaskStates.FAILED]);
+    if (!state || terminalStates.has(state.state)) return;
+    const metadata = { sessionId, conversationId, model, executionMode: 'goal' };
+    if (state.state === TaskStates.CLAUDE_EXECUTION) {
+        await stateManager.updateHistoryMetadata(goal.current_task_id, TaskStates.CLAUDE_EXECUTION, metadata);
+    } else {
+        await stateManager.updateTaskState(goal.current_task_id, TaskStates.CLAUDE_EXECUTION, {
+            reason: 'Native goal execution started',
+            claudeResult: { success: false, sessionId, conversationId },
+            historyMetadata: metadata,
+        });
+    }
+}
+
+async function initializeGoalTask(goal: GoalRow): Promise<void> {
     const [repoOwner, repoName] = goal.repository.split('/');
+    const stateManager = getStateManager();
     let state = await stateManager.getTaskState(goal.current_task_id);
     if (!state) {
         state = await stateManager.createTaskState(goal.current_task_id, {
-            number: 0,
-            repoOwner,
-            repoName,
-            type: 'goal',
-            modelName: goal.requested_model,
-            agentAlias: goal.agent_alias,
-            title: goal.objective,
-            goalId: goal.goal_id,
+            number: 0, repoOwner, repoName, type: 'goal', modelName: goal.requested_model,
+            agentAlias: goal.agent_alias, title: goal.objective, goalId: goal.goal_id,
         }, goal.goal_id);
     }
     await stateManager.updateTaskState(goal.current_task_id, TaskStates.PROCESSING, {
@@ -181,99 +119,265 @@ export async function processGoalJob(job: Job<GoalJobData>) {
         reason: goal.session_id ? 'Resuming native goal session' : 'Preparing native goal session',
         historyMetadata: { executionMode: 'goal', generation: goal.run_generation },
     });
+}
 
-    const octokit = await getAuthenticatedOctokit();
-    const githubToken = await octokit.auth({ type: 'installation' }) as { token: string };
-    const worktree = await ensureGoalWorktree(goal, githubToken.token);
+async function saveProviderResult(
+    job: GoalJobData,
+    goal: GoalRow,
+    result: AgentExecutionResult,
+): Promise<{ finalPr?: { number: number; url: string } }> {
+    const validated = await validateGoalArtifacts({
+        context: { repository: goal.repository, branchName: goal.branch_name, baseBranch: goal.base_branch },
+        existing: parseGoalArtifacts(goal.artifact_refs),
+        output: `${result.rawOutput || ''}\n${result.logs || ''}\n${result.summary || ''}`,
+    });
+    const saved = await fencedGoalUpdate(job, {
+        effective_model: result.modelUsed,
+        ...(result.sessionId ? { session_id: result.sessionId } : {}),
+        ...(result.conversationId ? { conversation_id: result.conversationId } : {}),
+        final_pr_number: validated.finalPr?.number ?? null,
+        final_pr_url: validated.finalPr?.url ?? null,
+        artifact_refs: JSON.stringify(validated.artifacts),
+        artifact_stats: JSON.stringify(validated.stats),
+        artifacts_checked_at: db.fn.now(),
+        attempt_heartbeat_at: db.fn.now(),
+    });
+    if (!saved) throw new Error('Goal provider result write was fenced');
+    return { finalPr: validated.finalPr };
+}
+
+async function finalizeGoal(
+    job: GoalJobData,
+    resultState: 'completed' | 'failed',
+    failureReason?: string,
+): Promise<boolean> {
+    const query = db('goals').where({
+        goal_id: job.goalId,
+        run_generation: job.generation,
+        run_claim: job.claimId,
+        desired_state: 'running',
+    }).whereNull('result_state');
+    return await query.update({
+        result_state: resultState,
+        failure_reason: failureReason ?? null,
+        active_turn_id: null,
+        completed_at: db.fn.now(),
+        updated_at: db.fn.now(),
+    }) === 1;
+}
+
+async function recordGoalMetrics(goal: GoalRow, job: GoalJobData, result: AgentExecutionResult): Promise<void> {
+    if (!await fencedGoal(job)) throw new Error('Goal metrics write was fenced');
+    const [repoOwner, repoName] = goal.repository.split('/');
+    await recordLLMMetrics({
+        success: result.success, sessionId: result.sessionId, conversationId: result.conversationId,
+        executionTime: result.executionTimeMs, model: result.modelUsed,
+        conversationLog: result.conversationLog, tokenUsage: result.tokenUsage, error: result.error,
+    }, { number: 0, repoOwner, repoName }, {
+        jobType: 'issue', correlationId: goal.goal_id, taskId: goal.current_task_id,
+    });
+}
+
+interface PreparedGoalAttempt {
+    goal: GoalRow;
+    agent: Agent;
+    githubToken: string;
+    worktree: { worktreePath: string; branchName: string };
+    pendingInput: { input_id: string; message: string } | null;
+}
+
+type GoalPreparation = { ready: true; value: PreparedGoalAttempt }
+    | { ready: false; result: { status: string; reason?: string } };
+
+async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): Promise<GoalPreparation> {
+    await initializeGoalTask(claimed);
 
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
-    const agent = registry.getAgentById(goal.agent_id) || registry.getAgentByAlias(goal.agent_alias);
-    if (!agent?.goalCapable) throw new Error(`Agent ${goal.agent_alias} has no native goal execution path`);
+    const agent = registry.getAgentById(claimed.agent_id) || registry.getAgentByAlias(claimed.agent_alias);
+    if (!agent?.goalCapable) throw new Error(`Agent ${claimed.agent_alias} has no native goal execution path`);
     const capability = (await registry.getGoalCapabilities()).find(item => item.agentId === agent.config.id);
-    if (!capability?.goalCapable) {
-        throw new Error(capability?.reason || `Pinned ${goal.agent_alias} CLI does not support native /goal`);
-    }
+    if (!capability?.goalCapable) throw new Error(capability?.reason || `Pinned ${claimed.agent_alias} runtime has no native goal transport`);
 
-    const beforeExecution = await db<GoalRow>('goals').where({ goal_id: goal.goal_id }).first();
-    if (!beforeExecution || beforeExecution.desired_state !== 'running' || beforeExecution.run_generation !== job.data.generation) {
-        await stateManager.updateTaskState(goal.current_task_id, TaskStates.PROCESSING, {
-            reason: beforeExecution?.desired_state === 'paused' ? 'Goal paused before provider input' : 'Goal execution fenced before provider input',
-        });
-        return { status: 'skipped', reason: 'goal_input_fence' };
+    const octokit = await getAuthenticatedOctokit();
+    const githubToken = await octokit.auth({ type: 'installation' }) as { token: string };
+    const worktree = await ensureGoalWorktree(claimed, data, githubToken.token);
+    const boundaryGoal = await fencedGoal(data);
+    if (!boundaryGoal) return { ready: false, result: { status: 'skipped', reason: 'goal_boundary_fence' } };
+    if (boundaryGoal.desired_state === 'paused') {
+        await fencedGoalUpdate(data, { pause_confirmed_at: db.fn.now(), active_turn_id: null });
+        const confirmed = await fencedGoal(data);
+        if (confirmed?.resume_requested) await enqueueNextGoalAttempt({ ...confirmed, pause_confirmed_at: new Date().toISOString() }, data);
+        return { ready: false, result: { status: 'paused' } };
     }
-    if (!beforeExecution.started_at) {
-        const started = await db('goals').where({ goal_id: goal.goal_id, desired_state: 'running', run_generation: job.data.generation })
-            .whereNull('started_at')
-            .update({ started_at: db.fn.now(), updated_at: db.fn.now() });
-        if (started !== 1) return { status: 'skipped', reason: 'goal_start_fence' };
-    }
+    if (boundaryGoal.desired_state !== 'running') return { ready: false, result: { status: 'skipped', reason: 'goal_boundary_fence' } };
+    const pendingInput = await firstPendingGoalInput(boundaryGoal);
+    return { ready: true, value: { goal: boundaryGoal, agent, githubToken: githubToken.token, worktree, pendingInput } };
+}
 
-    // BullMQ retries the same durable job data. Once the early callback has
-    // recorded a session, never replay the initial /goal command into it: a
-    // retry is a continuation of that provider-owned goal.
-    const input = goal.session_id && job.data.generation === 0
-        ? GOAL_CONTINUE_INPUT
-        : job.data.generation === 0 ? goal.initial_prompt : job.data.input || GOAL_CONTINUE_INPUT;
-    const result = await agent.executeTask({
-        worktreePath: worktree.worktreePath,
-        issueRef: { number: 0, repoOwner, repoName },
-        prompt: input,
-        model: goal.requested_model,
-        githubToken: githubToken.token,
-        branchName: worktree.branchName,
-        taskId: goal.current_task_id,
-        executionMode: 'goal',
-        resumeSessionId: goal.session_id ?? undefined,
-        resumeConversationId: goal.conversation_id ?? undefined,
-        environment: buildGoalPolicyEnvironment(),
-        onSessionId: (sessionId, conversationId) => saveSession({
-            goalId: goal.goal_id, taskId: goal.current_task_id, model: goal.requested_model, sessionId, conversationId,
+async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
+    const { goal, agent, githubToken, worktree, pendingInput } = prepared;
+    const prompt = pendingInput?.message
+        ?? (goal.session_id ? GOAL_CONTINUE_INPUT : goal.initial_prompt);
+    const control = createGoalExecutionControl(data);
+    const executionController = new AbortController();
+    return runWithExecutionAbortSignal(
+        executionController.signal,
+        () => agent.executeTask({
+            worktreePath: worktree.worktreePath,
+            issueRef: { number: 0, repoOwner: data.repoOwner, repoName: data.repoName },
+            prompt,
+            model: goal.requested_model,
+            githubToken,
+            branchName: worktree.branchName,
+            taskId: goal.current_task_id,
+            executionMode: 'goal',
+            nativeGoalObjective: goal.objective,
+            resumeSessionId: goal.session_id ?? undefined,
+            resumeConversationId: goal.conversation_id ?? undefined,
+            initialControlInputId: pendingInput?.input_id,
+            goalControl: control,
+            environment: buildGoalPolicyEnvironment(),
+            onSessionId: (sessionId, conversationId) => saveSessionAndTaskState({
+                job: data,
+                goal,
+                model: goal.requested_model,
+                sessionId,
+                conversationId,
+            }),
+            onContainerId: createContainerIdCallback(
+                goal.current_task_id, getStateManager(), logger as never, worktree.worktreePath,
+            ),
         }),
-        onContainerId: createContainerIdCallback(goal.current_task_id, stateManager, logger as never, worktree.worktreePath),
+        goalAttemptLabel(data.generation, data.claimId),
+    );
+}
+
+async function acknowledgeNonCodexInput(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<void> {
+    const { pendingInput, goal } = prepared;
+    if (!pendingInput || goal.agent_type === 'codex') return;
+    await db.transaction(async trx => {
+        const owned = await trx('goals').where({
+            goal_id: data.goalId,
+            current_task_id: data.taskId,
+            run_generation: data.generation,
+            run_claim: data.claimId,
+        }).whereNull('result_state').forUpdate().first('owner_id');
+        if (!owned) throw new Error('Goal input acknowledgement was fenced');
+        const changed = await trx('goal_inputs').where({
+            input_id: pendingInput.input_id,
+            goal_id: goal.goal_id,
+            owner_id: owned.owner_id,
+            state: 'pending',
+        }).update({
+            state: 'delivered',
+            delivered_generation: data.generation,
+            delivered_claim: data.claimId,
+            delivered_at: trx.fn.now(),
+        });
+        if (changed !== 1) throw new Error('Goal input was already delivered or superseded');
     });
+}
 
-    await recordLLMMetrics({
-        success: result.success,
-        sessionId: result.sessionId,
-        conversationId: result.conversationId,
-        executionTime: result.executionTimeMs,
-        model: result.modelUsed,
-        conversationLog: result.conversationLog,
-        tokenUsage: result.tokenUsage,
-        error: result.error,
-    }, { number: 0, repoOwner, repoName }, { jobType: 'issue', correlationId: goal.goal_id, taskId: goal.current_task_id });
+async function withAttemptHeartbeat<T>(data: GoalJobData, operation: () => Promise<T>): Promise<T> {
+    let heartbeat = Promise.resolve();
+    const update = (): void => {
+        heartbeat = heartbeat.then(() => fencedGoalUpdate(data, { attempt_heartbeat_at: db.fn.now() })).then(() => undefined);
+    };
+    const timer = setInterval(update, 30_000);
+    try {
+        return await operation();
+    } finally {
+        clearInterval(timer);
+        await heartbeat;
+    }
+}
 
-    const finalPr = await saveResultMetadata(goal, result);
-
-    const latest = await db<GoalRow>('goals').where({ goal_id: goal.goal_id }).first();
-    if (!latest || latest.desired_state === 'cancelled') {
-        await stateManager.markTaskCancelled(goal.current_task_id, 'user');
+async function handleStoppedGoal(
+    data: GoalJobData,
+    goal: GoalRow,
+    latest: GoalRow | null,
+): Promise<{ status: string } | null> {
+    if (!latest) return { status: 'skipped' };
+    if (latest.desired_state === 'cancelled') {
+        await getStateManager().markTaskCancelled(goal.current_task_id, 'user');
         return { status: 'cancelled' };
     }
-    if (latest.desired_state === 'paused') {
-        await stateManager.updateTaskState(goal.current_task_id, TaskStates.PROCESSING, { reason: 'Goal paused at provider boundary', historyMetadata: { paused: true } });
-        return { status: 'paused' };
+    if (latest.desired_state !== 'paused') return null;
+    await fencedGoalUpdate(data, { pause_confirmed_at: db.fn.now(), active_turn_id: null });
+    await getStateManager().updateTaskState(goal.current_task_id, TaskStates.PROCESSING, {
+        reason: 'Goal paused at a provider turn boundary', historyMetadata: { paused: true },
+    });
+    if (latest.resume_requested) {
+        await enqueueNextGoalAttempt({ ...latest, pause_confirmed_at: new Date().toISOString() }, data);
     }
-    if (!result.success && isRecoverableInterruption(result)) {
-        throw new Error(`Native goal execution was interrupted and will resume: ${result.error || result.terminationReason || `exit ${result.exitCode}`}`);
-    }
-    if (job.data.continuationKind === 'input') {
-        await db('goals').where({ goal_id: goal.goal_id, desired_state: 'running' }).update({
-            desired_state: 'paused', paused_at: db.fn.now(), updated_at: db.fn.now(),
-        });
-        await stateManager.updateTaskState(goal.current_task_id, TaskStates.PROCESSING, {
-            reason: 'Goal input completed at provider boundary',
-            historyMetadata: { paused: true, continuationKind: 'input' },
-        });
-        return { status: 'input_complete' };
-    }
+    return { status: 'paused' };
+}
 
-    await finalizeGoal(latest, result);
-    if (result.success) {
-        await stateManager.markTaskCompleted(goal.current_task_id, finalPr ? { prNumber: finalPr.number, prUrl: finalPr.url } : {});
+async function scheduleFurtherWork(
+    data: GoalJobData,
+    latest: GoalRow,
+    result: AgentExecutionResult,
+): Promise<{ status: string } | null> {
+    if (await firstPendingGoalInput(latest)) {
+        await enqueueNextGoalAttempt(latest, data);
+        return { status: 'continuing' };
+    }
+    const recoverable = !result.success && isRecoverableInterruption(result)
+        && Boolean(latest.session_id) && Boolean(latest.worktree_path);
+    if (!recoverable) return null;
+    await enqueueNextGoalAttempt(latest, data, true);
+    return { status: 'recovering' };
+}
+
+async function handleGoalResult(
+    data: GoalJobData,
+    prepared: PreparedGoalAttempt,
+    result: AgentExecutionResult,
+) {
+    const { goal, worktree } = prepared;
+    const postExecution = await db<GoalRow>('goals').where({ goal_id: goal.goal_id }).first();
+    if (!postExecution
+        || postExecution.run_generation !== data.generation
+        || postExecution.run_claim !== data.claimId
+        || postExecution.result_state === 'cancelled') {
+        return { status: postExecution?.result_state === 'cancelled' ? 'cancelled' : 'skipped', reason: 'goal_post_execution_fence' };
+    }
+    const boundaryStop = await handleStoppedGoal(data, goal, await fencedGoal(data));
+    if (boundaryStop) return boundaryStop;
+    await acknowledgeNonCodexInput(data, prepared);
+    await recordGoalMetrics(goal, data, result);
+    const artifacts = await saveProviderResult(data, { ...goal, branch_name: worktree.branchName }, result);
+    const latest = await fencedGoal(data);
+    const stopped = await handleStoppedGoal(data, goal, latest);
+    if (stopped) return stopped;
+    const furtherWork = await scheduleFurtherWork(data, latest!, result);
+    if (furtherWork) return furtherWork;
+
+    const missingFinalPr = result.success && !artifacts.finalPr;
+    const failure = missingFinalPr
+        ? 'Provider completed without the required open draft PR for the saved goal branch and expected base'
+        : result.error || 'Native goal execution failed';
+    const resultState = result.success && !missingFinalPr ? 'completed' : 'failed';
+    const completed = await finalizeGoal(data, resultState, resultState === 'failed' ? failure : undefined);
+    if (!completed) return { status: 'skipped', reason: 'goal_finalize_fence' };
+    if (result.success && artifacts.finalPr) {
+        await getStateManager().markTaskCompleted(goal.current_task_id, {
+            prNumber: artifacts.finalPr.number, prUrl: artifacts.finalPr.url,
+        });
         return { status: 'complete', goalId: goal.goal_id };
     }
-    await stateManager.markTaskFailed(goal.current_task_id, new Error(result.error || 'Native goal execution failed'));
+    await getStateManager().markTaskFailed(goal.current_task_id, new Error(failure));
     return { status: 'failed', goalId: goal.goal_id };
+}
+
+export async function processGoalJob(job: Job<GoalJobData>) {
+    const claimed = await claimGoalAttempt(job.data);
+    if (!claimed) return { status: 'skipped', reason: 'goal_claim_fence' };
+    return withAttemptHeartbeat(job.data, async () => {
+        const preparation = await prepareClaimedGoalAttempt(job.data, claimed);
+        if (!preparation.ready) return preparation.result;
+        const result = await executePreparedGoal(job.data, preparation.value);
+        return handleGoalResult(job.data, preparation.value, result);
+    });
 }
