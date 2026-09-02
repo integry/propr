@@ -694,7 +694,30 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       resourceCollisionAssertions,
-      /-Scenario 'RESOURCE_COLLISION'[\s\S]*-Phase 'MANIFEST_ASSERTION'[\s\S]*-Callsite 'MANIFEST_PRESERVATION'[\s\S]*-Field 'MANIFEST_PATH'[\s\S]*\$collisionAuthority\.State -ceq 'ACTIVE'/,
+      /-Scenario 'RESOURCE_COLLISION'[\s\S]*-Phase 'MANIFEST_ASSERTION'[\s\S]*-Callsite 'MANIFEST_PRESERVATION'[\s\S]*-Field 'MANIFEST_PATH'[\s\S]*\$collisionManifestState -ceq 'ACTIVE'/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /\$currentOwnerToken = Get-ItemPropertyValue[\s\S]*\$cleanupFailed = \$true/,
+    );
+    assert.ok(
+      installedWindowsAppCleanup.indexOf('$currentOwnerToken = Get-ItemPropertyValue')
+        < installedWindowsAppCleanup.indexOf(
+          "if ([string]$manifest.MsiTransactionState -ceq 'COMMITTED') {\n    Assert-MsiManagedFileSystemAuthority $manifest\n  }",
+        ),
+      'registry ownership collision preflight must precede committed MSI file-system authority',
+    );
+    assert.ok(
+      installedWindowsAppCleanup.indexOf(
+        "if ([string]$manifest.MsiTransactionState -ceq 'COMMITTED') {\n    Assert-MsiManagedFileSystemAuthority $manifest\n  }",
+      )
+        < installedWindowsAppCleanup.indexOf("if ($cleanupFailed) {\n    throw 'owned resource authority collision'\n  }"),
+      'committed MSI file-system authority must complete before collision exit',
+    );
+    assert.ok(
+      installedWindowsAppCleanup.indexOf("if ($cleanupFailed) {\n    throw 'owned resource authority collision'\n  }")
+        < installedWindowsAppCleanup.indexOf('if ($allowAuthenticatedMsiUninstall'),
+      'ownership collision must stop before cleanup mutation',
     );
     const fixtureProcessStateReader = installedWindowsAppSupervisorBehaviorTest.slice(
       installedWindowsAppSupervisorBehaviorTest.indexOf('function Read-FixtureProcessState'),
@@ -1483,7 +1506,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /timed-out workflow cleanup discarded authenticated recovery authority[\s\S]*\$collisionAuthority\.State -ceq 'ACTIVE'[\s\S]*retry to fixed cleanup success/,
+      /timed-out workflow cleanup discarded authenticated recovery authority[\s\S]*\$collisionManifestState -ceq 'ACTIVE'[\s\S]*retry to fixed cleanup success/,
     );
     const fixedResultWrite = installedWindowsAppWorkflowCleanup.indexOf(
       'Write-FixedResult $fixedResult',

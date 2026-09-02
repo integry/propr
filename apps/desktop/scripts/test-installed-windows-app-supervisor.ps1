@@ -1326,6 +1326,224 @@ function Get-SanitizedWorkflowCleanupResultDiagnostic($Result) {
   return $diagnostic
 }
 
+function Get-SanitizedResourceCollisionControllerDiagnostic($Result, [string]$Field) {
+  return (
+    (Get-SanitizedSupervisorInvocationDiagnostic `
+      $script:currentSupervisorInvocationTest `
+      'RESOURCE_COLLISION' `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_RESULT_FIELD' `
+      $Field) + ':' + (Get-SanitizedWorkflowCleanupResultDiagnostic $Result)
+  )
+}
+
+function Get-SupervisorFixtureSha256Hex([byte[]]$Bytes) {
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($sha256.ComputeHash($Bytes)).Replace(
+      '-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
+function Get-SupervisorFixtureStringDigest([string]$Text) {
+  $bytes = [Text.Encoding]::UTF8.GetBytes([string]$Text)
+  return Get-SupervisorFixtureSha256Hex $bytes
+}
+
+function Get-SupervisorFixtureFileDigest([string]$Path) {
+  try {
+    if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { return 'MISSING' }
+    $stream = [IO.File]::Open(
+      $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+      $sha256 = [Security.Cryptography.SHA256]::Create()
+      try {
+        return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace(
+          '-', '').ToLowerInvariant()
+      } finally {
+        $sha256.Dispose()
+      }
+    } finally {
+      $stream.Dispose()
+    }
+  } catch {
+    return 'INVALID'
+  }
+}
+
+function Get-SupervisorFixtureDirectoryDigest([string]$Path) {
+  try {
+    if (!(Test-Path -LiteralPath $Path -PathType Container)) { return 'MISSING' }
+    $root = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (!$root.PSIsContainer -or
+        ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      return 'INVALID'
+    }
+    $rootPath = $root.FullName.TrimEnd('\')
+    $records = [Collections.Generic.List[string]]::new()
+    $records.Add('D||')
+    foreach ($entry in @(Get-ChildItem -LiteralPath $rootPath -Recurse -Force `
+        -ErrorAction Stop | Sort-Object -Property FullName -CaseSensitive)) {
+      if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return 'INVALID'
+      }
+      $relativePath = $entry.FullName.Substring($rootPath.Length).TrimStart('\')
+      if (!$relativePath -or [IO.Path]::IsPathRooted($relativePath)) {
+        return 'INVALID'
+      }
+      $relative = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes($relativePath))
+      if ($entry.PSIsContainer) {
+        $records.Add(('D|{0}|' -f $relative))
+      } else {
+        $records.Add(('F|{0}|{1}' -f
+          $relative, (Get-SupervisorFixtureFileDigest $entry.FullName)))
+      }
+    }
+    return Get-SupervisorFixtureStringDigest ($records.ToArray() -join "`n")
+  } catch {
+    return 'INVALID'
+  }
+}
+
+function Get-SupervisorFixtureRegistryDigest([string]$Path) {
+  try {
+    if (!(Test-Path -LiteralPath $Path)) { return 'MISSING' }
+    $root = Get-Item -LiteralPath $Path -ErrorAction Stop
+    $records = [Collections.Generic.List[string]]::new()
+    $pending = [Collections.Generic.Queue[object]]::new()
+    $pending.Enqueue([PSCustomObject]@{ Key = $root; Relative = '' })
+    while ($pending.Count -ne 0) {
+      $entry = $pending.Dequeue()
+      $records.Add(('K|{0}' -f [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes([string]$entry.Relative))))
+      foreach ($valueName in @($entry.Key.GetValueNames() | Sort-Object -CaseSensitive)) {
+        $value = $entry.Key.GetValue(
+          $valueName,
+          $null,
+          [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+        $valueBytes = if ($value -is [byte[]]) {
+          $value
+        } elseif ($value -is [string[]]) {
+          [Text.Encoding]::UTF8.GetBytes(($value | ConvertTo-Json -Compress))
+        } else {
+          [Text.Encoding]::UTF8.GetBytes([Convert]::ToString(
+            $value,
+            [Globalization.CultureInfo]::InvariantCulture
+          ))
+        }
+        $records.Add(('V|{0}|{1}|{2}' -f
+          [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$valueName)),
+          $entry.Key.GetValueKind($valueName).ToString(),
+          [Convert]::ToBase64String($valueBytes)))
+      }
+      foreach ($child in @(Get-ChildItem -LiteralPath $entry.Key.PSPath -ErrorAction Stop |
+          Sort-Object -Property PSChildName -CaseSensitive)) {
+        $relative = if ($entry.Relative) {
+          '{0}\{1}' -f $entry.Relative, $child.PSChildName
+        } else { [string]$child.PSChildName }
+        $pending.Enqueue([PSCustomObject]@{ Key = $child; Relative = $relative })
+      }
+    }
+    return Get-SupervisorFixtureStringDigest ($records.ToArray() -join "`n")
+  } catch {
+    return 'INVALID'
+  }
+}
+
+function Get-SupervisorFixtureRegistryValueDigest([string]$Path, [string]$Name) {
+  if (!(Test-Path -LiteralPath $Path)) { return 'MISSING' }
+  try {
+    return Get-SupervisorFixtureStringDigest ([string](
+      Get-ItemPropertyValue -LiteralPath $Path -Name $Name -ErrorAction Stop))
+  } catch {
+    return 'MISSING'
+  }
+}
+
+function Get-OwnedResourcePreservationSnapshot($Owned) {
+  $user = Get-LocalUser -Name $Owned.UserName -ErrorAction SilentlyContinue
+  $profileMatches = try {
+    @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+      Where-Object {
+        $_.SID -ceq [string]$Owned.UserSid -and
+          [string]::Equals(
+            ([string]$_.LocalPath).TrimEnd('\'),
+            ([string]$Owned.ProfilePath).TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase)
+      })
+  } catch {
+    @()
+  }
+  $shortcutFolderDigest =
+    Get-SupervisorFixtureDirectoryDigest ([string]$Owned.ShortcutFolder)
+  $smokeDirectoryDigest =
+    Get-SupervisorFixtureDirectoryDigest ([string]$Owned.SmokeDirectory)
+  $ownedRootDigest =
+    Get-SupervisorFixtureDirectoryDigest ([string]$Owned.OwnedRoot)
+  $installRootDigest =
+    Get-SupervisorFixtureDirectoryDigest ([string]$Owned.InstallRoot)
+  $executableDigest = Get-SupervisorFixtureFileDigest ([string]$Owned.Executable)
+  $shortcutDigest = Get-SupervisorFixtureFileDigest ([string]$Owned.Shortcut)
+  $registryPathDigest =
+    Get-SupervisorFixtureRegistryDigest ([string]$Owned.RegistryPath)
+  $registryValueDigest = Get-SupervisorFixtureRegistryValueDigest `
+    ([string]$Owned.RegistryPath) 'ProPRInstalledAppOwner'
+  $userDigest = if ($null -eq $user) {
+    'MISSING'
+  } elseif ([string]$user.SID.Value -ceq [string]$Owned.UserSid) {
+    'MATCH'
+  } else {
+    'CHANGED'
+  }
+  $profileDigest = if ($profileMatches.Count -eq 1 -and
+      (Test-Path -LiteralPath $Owned.ProfilePath -PathType Container)) {
+    'MATCH'
+  } else {
+    'CHANGED'
+  }
+  return [PSCustomObject][ordered]@{
+    OWNED_ROOT = $ownedRootDigest
+    INSTALL_ROOT = $installRootDigest
+    EXECUTABLE = $executableDigest
+    SHORTCUT_FOLDER = $shortcutFolderDigest
+    SHORTCUT = $shortcutDigest
+    SMOKE_DIRECTORY = $smokeDirectoryDigest
+    REGISTRY_PATH = $registryPathDigest
+    REGISTRY_VALUE = $registryValueDigest
+    USER_NAME = $userDigest
+    PROFILE_PATH = $profileDigest
+  }
+}
+
+function Assert-OwnedResourcePreservationSnapshot(
+  $Before,
+  $After,
+  [string]$Field
+) {
+  $preservationBefore = $Before
+  $preservationAfter = $After
+  $preservationField = [string]$Field
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'RESOURCE_COLLISION' `
+    -Phase 'RESOURCE_ASSERTION' `
+    -Callsite 'REPLACEMENT_SURVIVAL_READ' `
+    -Field $preservationField `
+    -Action {
+      Assert-True ([string]$preservationBefore.$preservationField -ceq
+          [string]$preservationAfter.$preservationField) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'RESOURCE_COLLISION' `
+          'RESOURCE_ASSERTION' `
+          'REPLACEMENT_SURVIVAL_READ' `
+          $preservationField)
+    }
+}
+
 function Get-WorkflowCleanupControllerStatusMatch([string]$TerminalLine) {
   return [regex]::Match(
     $TerminalLine,
@@ -4777,6 +4995,10 @@ function Test-PreExistingCleanupOwnership {
 
       Set-ItemProperty -LiteralPath $workflowOwned.RegistryPath `
         -Name 'ProPRInstalledAppOwner' -Value 'foreign-owner'
+      $collisionManifestBefore = Get-Content -LiteralPath $workflowManifest -Raw `
+        -Encoding UTF8
+      $collisionResourcesBefore =
+        Get-OwnedResourcePreservationSnapshot $workflowOwned
       $failedWorkflowCleanup = Invoke-WorkflowCleanupController `
         'RESOURCE_COLLISION' $workflowManifest $workflowRunId $workflowStateDirectory
       Invoke-SupervisorAttributedOperation `
@@ -4786,12 +5008,8 @@ function Test-PreExistingCleanupOwnership {
         -Field 'EXIT_CODE' `
         -Action {
           Assert-True ($failedWorkflowCleanup.ExitCode -eq 21) `
-            (Get-SanitizedSupervisorInvocationDiagnostic `
-              $script:currentSupervisorInvocationTest `
-              'RESOURCE_COLLISION' `
-              'WORKFLOW_CLEANUP_CONTROLLER' `
-              'CONTROLLER_RESULT_FIELD' `
-              'EXIT_CODE')
+            (Get-SanitizedResourceCollisionControllerDiagnostic `
+              $failedWorkflowCleanup 'EXIT_CODE')
         }
       Invoke-SupervisorAttributedOperation `
         -Scenario 'RESOURCE_COLLISION' `
@@ -4800,12 +5018,8 @@ function Test-PreExistingCleanupOwnership {
         -Field 'REPORTED_EXIT_CODE' `
         -Action {
           Assert-True ($failedWorkflowCleanup.ReportedExitCode -eq 21) `
-            (Get-SanitizedSupervisorInvocationDiagnostic `
-              $script:currentSupervisorInvocationTest `
-              'RESOURCE_COLLISION' `
-              'WORKFLOW_CLEANUP_CONTROLLER' `
-              'CONTROLLER_RESULT_FIELD' `
-              'REPORTED_EXIT_CODE')
+            (Get-SanitizedResourceCollisionControllerDiagnostic `
+              $failedWorkflowCleanup 'REPORTED_EXIT_CODE')
         }
       Invoke-SupervisorAttributedOperation `
         -Scenario 'RESOURCE_COLLISION' `
@@ -4814,12 +5028,8 @@ function Test-PreExistingCleanupOwnership {
         -Field 'RESULT' `
         -Action {
           Assert-True ($failedWorkflowCleanup.Result -ceq 'FAILED') `
-            (Get-SanitizedSupervisorInvocationDiagnostic `
-              $script:currentSupervisorInvocationTest `
-              'RESOURCE_COLLISION' `
-              'WORKFLOW_CLEANUP_CONTROLLER' `
-              'CONTROLLER_RESULT_FIELD' `
-              'RESULT')
+            (Get-SanitizedResourceCollisionControllerDiagnostic `
+              $failedWorkflowCleanup 'RESULT')
         }
       Invoke-SupervisorAttributedOperation `
         -Scenario 'RESOURCE_COLLISION' `
@@ -4829,21 +5039,28 @@ function Test-PreExistingCleanupOwnership {
         -Action {
           Assert-True ($failedWorkflowCleanup.ControllerStatus -ceq
               'OWNED_RESOURCE_CLEANUP_FAILURE') `
-            (Get-SanitizedSupervisorInvocationDiagnostic `
-              $script:currentSupervisorInvocationTest `
-              'RESOURCE_COLLISION' `
-              'WORKFLOW_CLEANUP_CONTROLLER' `
-              'CONTROLLER_RESULT_FIELD' `
-              'CONTROLLER_STATUS')
+            (Get-SanitizedResourceCollisionControllerDiagnostic `
+              $failedWorkflowCleanup 'CONTROLLER_STATUS')
         }
+      $collisionResourcesAfter =
+        Get-OwnedResourcePreservationSnapshot $workflowOwned
+      foreach ($collisionResourceField in @(
+          'OWNED_ROOT','INSTALL_ROOT','EXECUTABLE','SHORTCUT_FOLDER','SHORTCUT',
+          'SMOKE_DIRECTORY','REGISTRY_PATH','REGISTRY_VALUE','USER_NAME',
+          'PROFILE_PATH'
+        )) {
+        Assert-OwnedResourcePreservationSnapshot `
+          $collisionResourcesBefore $collisionResourcesAfter $collisionResourceField
+      }
       Invoke-SupervisorAttributedOperation `
         -Scenario 'RESOURCE_COLLISION' `
         -Phase 'RESOURCE_ASSERTION' `
         -Callsite 'REPLACEMENT_SURVIVAL_READ' `
         -Field 'REGISTRY_VALUE' `
         -Action {
-          Assert-True ((Get-ItemPropertyValue -LiteralPath $workflowOwned.RegistryPath `
-              -Name 'ProPRInstalledAppOwner') -ceq 'foreign-owner') `
+          Assert-True ((Get-SupervisorFixtureRegistryValueDigest `
+              ([string]$workflowOwned.RegistryPath) 'ProPRInstalledAppOwner') -ceq
+              (Get-SupervisorFixtureStringDigest 'foreign-owner')) `
             (Get-SanitizedSupervisorInvocationDiagnostic `
               $script:currentSupervisorInvocationTest `
               'RESOURCE_COLLISION' `
@@ -4857,9 +5074,29 @@ function Test-PreExistingCleanupOwnership {
         -Callsite 'MANIFEST_PRESERVATION' `
         -Field 'MANIFEST_PATH' `
         -Action {
-          $collisionAuthority = Get-Content -LiteralPath $workflowManifest -Raw -Encoding UTF8 |
-            ConvertFrom-Json -ErrorAction Stop
-          Assert-True ($collisionAuthority.State -ceq 'ACTIVE') `
+          $collisionManifestAfter = if (Test-Path -LiteralPath $workflowManifest `
+              -PathType Leaf) {
+            try {
+              Get-Content -LiteralPath $workflowManifest -Raw -Encoding UTF8
+            } catch {
+              ''
+            }
+          } else {
+            ''
+          }
+          Assert-True ($collisionManifestAfter -ceq $collisionManifestBefore) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'MANIFEST_ASSERTION' `
+              'MANIFEST_PRESERVATION' `
+              'MANIFEST_PATH')
+          $collisionManifestState = try {
+            [string](($collisionManifestAfter | ConvertFrom-Json -ErrorAction Stop).State)
+          } catch {
+            'INVALID'
+          }
+          Assert-True ($collisionManifestState -ceq 'ACTIVE') `
             (Get-SanitizedSupervisorInvocationDiagnostic `
               $script:currentSupervisorInvocationTest `
               'RESOURCE_COLLISION' `
@@ -4870,13 +5107,24 @@ function Test-PreExistingCleanupOwnership {
 
       Set-ItemProperty -LiteralPath $workflowOwned.RegistryPath `
         -Name 'ProPRInstalledAppOwner' -Value ([string]$workflowOwned.Token)
+      Assert-True ((Get-SupervisorFixtureRegistryValueDigest `
+          ([string]$workflowOwned.RegistryPath) 'ProPRInstalledAppOwner') -ceq
+          (Get-SupervisorFixtureStringDigest ([string]$workflowOwned.Token))) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'RESOURCE_COLLISION' `
+          'AUTHORITY_RESTORE' `
+          'AUTHORITY_RESTORE_WRITE' `
+          'REGISTRY_VALUE')
       $workflowCleanup = Invoke-WorkflowCleanupController `
         'WORKFLOW_RETRY' $workflowManifest $workflowRunId $workflowStateDirectory
       Assert-True ($workflowCleanup.ExitCode -eq 0 -and
           $workflowCleanup.ReportedExitCode -eq 0 -and
+          $workflowCleanup.Result -ceq 'COMPLETE' -and
           $workflowCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED' -and
           $workflowCleanup.InvocationIdentifier -ceq 'WORKFLOW_RETRY') `
-        'workflow cleanup controller did not retry to fixed cleanup success'
+        ("workflow cleanup controller did not retry to fixed cleanup success:" +
+          (Get-SanitizedWorkflowCleanupResultDiagnostic $workflowCleanup))
       Assert-OwnedResourcesGone $workflowOwned
       Assert-True (!(Test-Path -LiteralPath $workflowManifest)) `
         'workflow cleanup did not consume the ownership manifest'

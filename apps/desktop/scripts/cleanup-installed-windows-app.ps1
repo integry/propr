@@ -1571,9 +1571,10 @@ try {
         throw 'registry manifest scope is invalid'
       }
       if (!(Test-Path -LiteralPath $path)) { continue }
-      if ([string](Get-ItemPropertyValue -LiteralPath $path -Name $ownerRegistryValue `
-          -ErrorAction Stop) -cne [string]$record.Token) {
-        throw 'registry manifest token is invalid'
+      $currentOwnerToken = Get-ItemPropertyValue -LiteralPath $path `
+        -Name $ownerRegistryValue -ErrorAction SilentlyContinue
+      if ([string]$currentOwnerToken -cne [string]$record.Token) {
+        $cleanupFailed = $true
       }
     } else {
       $expectedPath = if ($kind -eq 'PROTOCOL') {
@@ -1737,6 +1738,9 @@ try {
   }
   if ([string]$manifest.MsiTransactionState -ceq 'COMMITTED') {
     Assert-MsiManagedFileSystemAuthority $manifest
+  }
+  if ($cleanupFailed) {
+    throw 'owned resource authority collision'
   }
   if ($allowAuthenticatedMsiUninstall -and !$cleanupFailed) {
     $msiExitCode = 1618
