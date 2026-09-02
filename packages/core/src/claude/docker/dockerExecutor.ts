@@ -56,7 +56,7 @@ export interface DockerCommandOptions {
     signal?: AbortSignal;
 }
 
-interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
+interface JsonLineMessage { type?: string; event?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; thread_id?: string; init?: { conversation_id?: string }; }
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
@@ -171,7 +171,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
         const child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData);
 
-        let stdout = '', stderr = '';
+        let stdout = '', stderr = '', sessionLineBuffer = '';
         const state = createDockerExecutionState();
         let ownershipFailure: unknown;
         let hasOwnershipFailure = false;
@@ -215,6 +215,28 @@ export function executeDockerCommand(command: string, args: string[], options: D
             pendingCallbacks.add(callbackPromise);
             void callbackPromise.finally(() => pendingCallbacks.delete(callbackPromise));
         };
+        const inspectSessionLines = (chunk: string, timestamp: string, flush = false): void => {
+            sessionLineBuffer += chunk;
+            const lines = sessionLineBuffer.split('\n');
+            const remainder = lines.pop() ?? '';
+            sessionLineBuffer = flush ? '' : remainder;
+            if (flush && remainder) lines.push(remainder);
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const message: JsonLineMessage = JSON.parse(line);
+                    if (message.type === 'assistant' || message.type === 'user') {
+                        messageTimestamps.set(message.message?.id || `${message.type}-${JSON.stringify(message).substring(0, 100)}`, timestamp);
+                    }
+                    const detectedSessionId = message.session_id || message.thread_id
+                        || (message.event === 'init' ? message.conversation_id || message.init?.conversation_id : undefined);
+                    if (!state.sessionIdDetected && onSessionId && detectedSessionId) {
+                        state.sessionIdDetected = true;
+                        invokeExecutionCallback(() => onSessionId(detectedSessionId, message.conversation_id || message.init?.conversation_id));
+                    }
+                } catch { /* non-JSON provider output */ }
+            }
+        };
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
         const timeoutHandle = setTimeout(() => {
             state.timedOut = true;
@@ -256,22 +278,13 @@ export function executeDockerCommand(command: string, args: string[], options: D
         child.stdout?.on('data', (data: Buffer) => {
             const chunk = data.toString(), ts = new Date().toISOString();
             stdout += chunk;
-            for (const line of chunk.split('\n')) {
-                if (!line.trim()) continue;
-                try {
-                    const j: JsonLineMessage = JSON.parse(line);
-                    if (j.type === 'assistant' || j.type === 'user') messageTimestamps.set(j.message?.id || `${j.type}-${JSON.stringify(j).substring(0, 100)}`, ts);
-                    if (!state.sessionIdDetected && onSessionId && j.session_id) {
-                        state.sessionIdDetected = true;
-                        invokeExecutionCallback(() => onSessionId(j.session_id!, j.conversation_id));
-                    }
-                } catch { /* skip */ }
-            }
+            inspectSessionLines(chunk, ts);
         });
         child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
+            inspectSessionLines('', new Date().toISOString(), true);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
             if (abortChecker) await abortChecker.close();
             await Promise.allSettled([...pendingCallbacks]);
@@ -302,6 +315,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         });
         child.on('error', async (error: Error) => {
             clearTimeout(timeoutHandle);
+            inspectSessionLines('', new Date().toISOString(), true);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
             if (abortChecker) await abortChecker.close();

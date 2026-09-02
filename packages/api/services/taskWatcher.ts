@@ -88,7 +88,7 @@ export class TaskWatcherManager {
     }
 
     // Get agent config to find the correct log path
-    const agentConfig = await findAgentConfigForTask(taskId);
+    const agentConfig = await findAgentConfigForTask(taskId, this.deps?.db);
     const agentType = agentConfig?.type || 'claude';
     const agentRoot = agentConfig ? resolveConfigPath(agentConfig.configPath) : path.join(os.homedir(), '.claude');
 

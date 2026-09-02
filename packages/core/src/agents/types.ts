@@ -45,6 +45,17 @@ export interface AgentTaskOptions {
     issueDetails?: IssueDetails;
     prompt: string;
 
+    /**
+     * Selects the provider's native long-running goal path. Goal input is
+     * delivered verbatim and provider session persistence is retained.
+     * Omitted for the existing one-shot task behavior.
+     */
+    executionMode?: 'task' | 'goal';
+    /** Exact provider session identity to resume in goal mode. */
+    resumeSessionId?: string;
+    /** Provider conversation identity when it differs from the session ID. */
+    resumeConversationId?: string;
+
     // Execution overrides
     model?: string;
     systemPrompt?: string;
@@ -187,6 +198,9 @@ export type AgentTerminationReason = 'timeout' | 'max_turns';
 
 export interface Agent {
     readonly config: AgentConfig;
+
+    /** Whether this provider implementation has a native goal execution path. */
+    readonly goalCapable: boolean;
 
     /**
      * Executes a complex task modifying files in the worktree.

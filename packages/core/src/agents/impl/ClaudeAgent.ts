@@ -78,6 +78,7 @@ export function resolveAnalysisOutcome(claudeOutput: ClaudeOutput, stderr: strin
 
 export class ClaudeAgent implements Agent {
     readonly config: AgentConfig;
+    readonly goalCapable = true;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 
@@ -92,7 +93,8 @@ export class ClaudeAgent implements Agent {
         const {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber, reasoningLevel
+            onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber, reasoningLevel,
+            executionMode = 'task', resumeSessionId
         } = options;
 
         const startTime = Date.now();
@@ -107,7 +109,7 @@ export class ClaudeAgent implements Agent {
         }, isRetry ? 'Starting Claude agent execution (RETRY)...' : 'Starting Claude agent execution...');
 
         try {
-            const prompt = buildClaudePrompt({
+            const prompt = executionMode === 'goal' ? customPrompt : buildClaudePrompt({
                 customPrompt, issueRef, branchName, modelName: effectiveModel, issueDetails, isRetry, retryReason
             });
 
@@ -118,7 +120,7 @@ export class ClaudeAgent implements Agent {
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
-                reasoningLevel: effectiveReasoningLevel
+                reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(

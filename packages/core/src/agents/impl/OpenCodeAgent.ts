@@ -43,6 +43,7 @@ function buildFailedExecutionResult(error: Error & { stderr?: string }, executio
 
 export class OpenCodeAgent implements Agent {
     readonly config: AgentConfig;
+    readonly goalCapable = false;
     private readonly timeoutMs: number;
 
     constructor(config: AgentConfig) {

@@ -58,6 +58,7 @@ import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoop
 import { parseArgs } from './daemon/cliArgs.js';
 import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
 import { startEventIntake } from './daemon/eventIntakeStartup.js';
+import { recoverNonterminalGoals } from './goalRecovery.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -221,6 +222,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             process.exit(1);
         }
     }
+
+    const goalRecovery = await recoverNonterminalGoals();
+    logger.info(goalRecovery, 'Recovered nonterminal native goals during daemon startup');
 
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',

@@ -30,6 +30,7 @@ type CodexUsageMetrics = Awaited<ReturnType<typeof executeWithUsageTracking>>['u
 
 export class CodexAgent implements Agent {
     readonly config: AgentConfig;
+    readonly goalCapable = true;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 
@@ -42,7 +43,8 @@ export class CodexAgent implements Agent {
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel } = options;
+            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel,
+            executionMode = 'task', resumeSessionId } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -53,7 +55,7 @@ export class CodexAgent implements Agent {
         }, isRetry ? 'Starting Codex agent execution (RETRY)...' : 'Starting Codex agent execution...');
 
         try {
-            const prompt = buildCodexPrompt({
+            const prompt = executionMode === 'goal' ? customPrompt : buildCodexPrompt({
                 customPrompt, issueRef, branchName, modelName: effectiveModel,
                 issueDetails, isRetry, retryReason, systemPrompt
             });
@@ -63,7 +65,7 @@ export class CodexAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
-                reasoningLevel: effectiveReasoningLevel
+                reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(

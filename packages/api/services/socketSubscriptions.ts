@@ -132,11 +132,19 @@ export class SocketSubscriptionManager {
     if (socketSubscriptions.size === 0) this.pendingSubscriptions.delete(socket);
   }
 
-  async taskExists(taskId: string): Promise<boolean> {
+  async taskExists(taskId: string, socket?: Socket): Promise<boolean> {
     const queueDependencies = this.dependencies.getQueueDependencies();
     if (!queueDependencies) return false;
     try {
       const stateKey = `${queueDependencies.workerStateOptions?.keyPrefix ?? 'worker:state:'}${taskId}`;
+      if (taskId.startsWith('goal-')) {
+        if (!socket) return false;
+        const goal = await queueDependencies.db('goals')
+          .select('owner_id')
+          .where({ current_task_id: taskId })
+          .first() as { owner_id?: string } | undefined;
+        if (!goal || goal.owner_id !== this.getPrincipal(socket).user.id) return false;
+      }
       if (await queueDependencies.redisClient.get(stateKey)) return true;
       const task = await queueDependencies.db('tasks')
         .select('task_id')
@@ -221,7 +229,7 @@ export class SocketSubscriptionManager {
       if (!await this.join(socket, {
         event: 'subscribe:task',
         room: taskRoom(taskId),
-        authorize: () => this.taskExists(taskId),
+        authorize: () => this.taskExists(taskId, socket),
       })) return;
       console.log(`[SocketService] Client ${socket.id} subscribed to task:${taskId}`);
     });
@@ -241,7 +249,7 @@ export class SocketSubscriptionManager {
         await this.join(socket, {
           event: 'subscribe:task:live',
           room: `task:live:${taskId}`,
-          authorize: () => this.taskExists(taskId),
+          authorize: () => this.taskExists(taskId, socket),
           onJoined: async () => {
             await this.dependencies.taskWatcherManager.startTaskWatcher(taskId);
             await this.dependencies.taskWatcherManager.sendTaskLiveUpdate(taskId, true);

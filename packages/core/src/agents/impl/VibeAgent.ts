@@ -48,6 +48,7 @@ interface VibeDockerArgsParams {
 
 export class VibeAgent implements Agent {
     readonly config: AgentConfig;
+    readonly goalCapable = false;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 

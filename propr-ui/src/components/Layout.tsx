@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { ScrollText, ListTodo, BookMarked, Bot, Cpu, ShieldCheck, Inbox } from 'lucide-react';
+import { ScrollText, ListTodo, BookMarked, Bot, Cpu, ShieldCheck, Inbox, Target } from 'lucide-react';
 import { logout } from '../api/proprApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
 import { useSystemReadiness } from '../hooks/useSystemReadiness';
@@ -53,6 +53,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { name: 'Dashboard', href: '/', icon: HomeIcon },
     { name: 'Inbox', href: '/inbox', icon: Inbox },
     { name: 'Plans', href: '/plans', icon: ScrollText },
+    { name: 'Goals', href: '/goals', icon: Target },
     { name: 'Tasks', href: '/tasks', icon: ListTodo },
     { name: 'Repositories', href: '/repositories', icon: BookMarked },
     ...(userHasPermission(user, 'instance.manage_agents')

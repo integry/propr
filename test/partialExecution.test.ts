@@ -135,6 +135,17 @@ describe('partial agent execution', () => {
         );
     });
 
+    test('detects an early provider session when its JSON line spans stdout chunks', async () => {
+        let observed: string | undefined;
+        await executeDockerCommand(process.execPath, [
+            '-e',
+            'process.stdout.write("{\\\"type\\\":\\\"thread.started\\\",\\\"thread_"); setTimeout(() => process.stdout.write("id\\\":\\\"thread-split\\\"}\\n"), 10);',
+        ], {
+            onSessionId: async sessionId => { observed = sessionId; },
+        });
+        assert.equal(observed, 'thread-split');
+    });
+
     test('does not convert a delayed ownership callback failure into a timeout result', async () => {
         const superseded = new Error('delayed callback superseded timed-out attempt');
         superseded.name = 'SupersededTaskAttemptError';

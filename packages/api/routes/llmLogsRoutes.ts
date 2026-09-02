@@ -72,6 +72,13 @@ function applyLlmLogFilters<T extends Knex.QueryBuilder>(query: T, filters: LlmL
   return query;
 }
 
+function applyGoalOwnershipFilter<T extends Knex.QueryBuilder>(query: T, ownerId?: string): T {
+  return query.whereNotExists(function() {
+    this.select('*').from('goals').whereRaw('goals.current_task_id = llm_logs.task_id');
+    if (ownerId) this.whereNot('goals.owner_id', ownerId);
+  }) as T;
+}
+
 interface UsageMetricRecordRow {
   id: number;
   llm_log_id: number;
@@ -244,12 +251,24 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
   /** Process-wide cache for work-ref column existence. Only caches `true`
    *  so a process started before the migration will re-check until it lands. */
   let hasWorkRefColumnsCache = false;
+  let hasGoalsTableCache = false;
 
   async function checkWorkRefColumns(): Promise<boolean> {
     if (hasWorkRefColumnsCache) return true;
     try {
       const result = await db.schema.hasColumn('llm_logs', 'work_type');
       if (result) hasWorkRefColumnsCache = true;
+      return result;
+    } catch {
+      return false;
+    }
+  }
+
+  async function checkGoalsTable(): Promise<boolean> {
+    if (hasGoalsTableCache) return true;
+    try {
+      const result = await db.schema.hasTable('goals');
+      if (result) hasGoalsTableCache = true;
       return result;
     } catch {
       return false;
@@ -310,6 +329,7 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
 
       // Check if work-reference columns exist (cached after first successful check)
       const hasWorkRefColumns = await checkWorkRefColumns();
+      const hasGoalsTable = await checkGoalsTable();
 
       // Build and execute queries
       const baseColumns = [
@@ -327,9 +347,11 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         ? [...baseColumns, ...workRefColumns]
         : baseColumns;
 
-      const baseQuery = db('llm_logs').select(...selectColumns);
-
-      const countQuery = db('llm_logs').count('* as count');
+      const ownerId = req.user?.id ? String(req.user.id) : undefined;
+      const rawBaseQuery = db('llm_logs').select(...selectColumns);
+      const rawCountQuery = db('llm_logs').count('* as count');
+      const baseQuery = hasGoalsTable ? applyGoalOwnershipFilter(rawBaseQuery, ownerId) : rawBaseQuery;
+      const countQuery = hasGoalsTable ? applyGoalOwnershipFilter(rawCountQuery, ownerId) : rawCountQuery;
 
       // If work_type filter is requested but the column doesn't exist, return empty results
       if (!hasWorkRefColumns && workType) {

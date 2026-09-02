@@ -16,6 +16,7 @@ import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 import { loadAgentRuntimePackageState, resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
 import { AGENT_DEFAULTS } from '../config/modelDefinitions.js';
+import { GOAL_CAPABILITY_COMMANDS, helpAdvertisesNativeGoal, type GoalCapability } from './goalCapabilities.js';
 
 export interface AgentRegistryOperationalStatus {
     unifiedAgentImage: {
@@ -46,6 +47,7 @@ export class AgentRegistry {
     private pendingBackgroundRefresh: Promise<void> | null = null;
     private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
     private unifiedAgentImageRetryTimer: NodeJS.Timeout | null = null;
+    private goalCapabilityCache = new Map<string, GoalCapability>();
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -85,6 +87,7 @@ export class AgentRegistry {
             // Clear existing maps
             this.agents.clear();
             this.agentsByAlias.clear();
+            this.goalCapabilityCache.clear();
 
             if (configs.length === 0) {
                 // Fallback: Create default Claude agent from ENV vars if no config exists
@@ -221,6 +224,55 @@ export class AgentRegistry {
      */
     getAllAgents(): Agent[] {
         return Array.from(this.agents.values());
+    }
+
+    /**
+     * Capability-probes the exact configured image instead of assuming a
+     * provider name implies support. Results are cached until registry refresh.
+     */
+    async getGoalCapabilities(): Promise<GoalCapability[]> {
+        return Promise.all(this.getAllAgents().map(async agent => {
+            const cached = this.goalCapabilityCache.get(agent.config.id);
+            if (cached) return cached;
+
+            const command = GOAL_CAPABILITY_COMMANDS[agent.config.type];
+            let capability: GoalCapability;
+            if (!agent.goalCapable || !command) {
+                capability = {
+                    agentId: agent.config.id,
+                    agentAlias: agent.config.alias,
+                    agentType: agent.config.type,
+                    goalCapable: false,
+                    reason: 'Provider does not implement native goal mode',
+                };
+            } else {
+                try {
+                    const result = await executeDockerCommand('docker', [
+                        'run', '--rm', '--entrypoint', command,
+                        agent.config.dockerImage, '--help',
+                    ], { timeout: 30_000 });
+                    const help = `${result.stdout}\n${result.stderr}`;
+                    const supported = result.exitCode === 0 && helpAdvertisesNativeGoal(help);
+                    capability = {
+                        agentId: agent.config.id,
+                        agentAlias: agent.config.alias,
+                        agentType: agent.config.type,
+                        goalCapable: supported,
+                        ...(!supported && { reason: 'Pinned CLI does not advertise native /goal support' }),
+                    };
+                } catch (error) {
+                    capability = {
+                        agentId: agent.config.id,
+                        agentAlias: agent.config.alias,
+                        agentType: agent.config.type,
+                        goalCapable: false,
+                        reason: `Capability probe failed: ${(error as Error).message}`,
+                    };
+                }
+            }
+            this.goalCapabilityCache.set(agent.config.id, capability);
+            return capability;
+        }));
     }
 
     /**

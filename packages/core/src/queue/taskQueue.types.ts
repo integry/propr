@@ -101,6 +101,20 @@ export interface TaskImportJobData {
     user?: string;
 }
 
+/** One continuation of the same native provider goal task/session. */
+export interface GoalJobData {
+    goalId: string;
+    taskId: string;
+    repoOwner: string;
+    repoName: string;
+    generation: number;
+    /** Exact initial native command or an ordinary same-session continuation. */
+    input?: string;
+    recovery?: boolean;
+    /** Ordinary replies do not by themselves declare the provider-owned goal complete. */
+    continuationKind?: 'run' | 'input';
+}
+
 export interface AnalysisJobData {
     taskId: string;
     executionId: string;
@@ -151,7 +165,7 @@ export interface MergeConflictJobData {
     systemGenerated: true;    // Distinguishes from user-authored follow-up comments
 }
 
-export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData;
+export type JobData = IssueJobData | CommentJobData | TaskImportJobData | GoalJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData;
 
 export interface ClaudeOutputResult {
     type?: string;
