@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 import {
@@ -322,6 +324,124 @@ test('the ordinary-user Windows proof retains native security paths and bounds r
   assert.match(harness, /\{ name: "path-aba", mode: "path-aba", reason: "INVALID_ROOT" \}/);
   assert.match(harness, /\{ name: "authority-missing-system-root", systemRootMode: "missing", nativeStage: "resolver:env" \}/);
   assert.match(harness, /\{ name: "authority-untrusted-system-root", systemRootMode: "untrusted", nativeStage: "resolver:global-id" \}/);
+});
+
+test('the async two-round fake authority child contains exact-cap overflow promptly', () => {
+  const processFixture = pathToFileURL(resolve('test/fixtures/windowsConnectProcessMock.mjs')).href;
+  const authorityModule = pathToFileURL(resolve('packages/cli/src/connectWindowsAuthority.ts')).href;
+  const regression = `
+    import assert from "node:assert/strict";
+    import childProcess from "node:child_process";
+    import {
+      runWindowsInspectionBrokerBatch,
+      WindowsNativeStageError,
+      writeWindowsInspectionRevalidationControl,
+    } from ${JSON.stringify(authorityModule)};
+
+    const tick = () => new Promise((resolve) => setImmediate(resolve));
+    await tick();
+    const baselineHandles = new Set(process._getActiveHandles());
+    const baselineResources = process.getActiveResourcesInfo().reduce((counts, name) => {
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+      return counts;
+    }, new Map());
+    const child = childProcess.spawn("powershell.exe", [], {
+      shell: false,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const input = child.stdin;
+    assert.ok(input && child.stdout && child.stderr);
+    let publishedBytes = 0;
+    let exitEvents = 0;
+    let closeEvents = 0;
+    let stdoutEnds = 0;
+    let stderrEnds = 0;
+    let stdoutCloses = 0;
+    let stderrCloses = 0;
+    let stdinCloses = 0;
+    child.stdout.on("data", (chunk) => { publishedBytes += Buffer.byteLength(chunk); });
+    child.stdout.on("end", () => { stdoutEnds += 1; });
+    child.stderr.on("end", () => { stderrEnds += 1; });
+    child.stdout.on("close", () => { stdoutCloses += 1; });
+    child.stderr.on("close", () => { stderrCloses += 1; });
+    input.on("close", () => { stdinCloses += 1; });
+    child.on("exit", () => { exitEvents += 1; });
+    child.on("close", () => { closeEvents += 1; });
+
+    const started = performance.now();
+    await assert.rejects(runWindowsInspectionBrokerBatch({
+      entryCount: 1,
+      startBroker: () => child,
+      deadlineMs: 1_000,
+      cleanupTimeoutMs: 250,
+      maxOutputBytes: 128 * 1024,
+    }), (error) => error instanceof WindowsNativeStageError && error.stage === "parent:utf8");
+    assert.ok(performance.now() - started < 750, "overflow did not reject inside its short bound");
+    assert.equal(publishedBytes, 128 * 1024 + 1);
+    assert.equal(child.exitCode, null);
+    assert.equal(child.signalCode, "SIGKILL");
+    assert.equal(child.killed, true);
+    assert.equal(exitEvents, 1);
+    assert.equal(closeEvents, 1);
+    assert.equal(stdoutEnds, 1);
+    assert.equal(stderrEnds, 1);
+    assert.equal(stdoutCloses, 1);
+    assert.equal(stderrCloses, 1);
+    assert.equal(stdinCloses, 1);
+    for (const output of [child.stdout, child.stderr]) {
+      assert.equal(output.readableEnded, true);
+      assert.equal(output.destroyed, true);
+      assert.equal(output.closed, true);
+    }
+    assert.equal(input.destroyed, true);
+    assert.equal(input.closed, true);
+    assert.equal(input.writable, false);
+    await assert.rejects(
+      writeWindowsInspectionRevalidationControl(child),
+      (error) => error instanceof WindowsNativeStageError && error.stage === "broker:control",
+    );
+    assert.equal(child.kill("SIGKILL"), true);
+    assert.equal(child.kill("SIGKILL"), true);
+    await tick();
+    assert.equal(exitEvents, 1);
+    assert.equal(closeEvents, 1);
+
+    const referencedHandles = process._getActiveHandles().filter((handle) => (
+      !baselineHandles.has(handle)
+      && (typeof handle.hasRef !== "function" || handle.hasRef())
+    ));
+    assert.deepEqual(referencedHandles.map((handle) => handle.constructor?.name ?? "unknown"), []);
+    const finalResources = process.getActiveResourcesInfo().reduce((counts, name) => {
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+      return counts;
+    }, new Map());
+    for (const [name, count] of finalResources) {
+      assert.ok(count <= (baselineResources.get(name) ?? 0), name + " remained referenced");
+    }
+  `;
+  const started = performance.now();
+  const result = spawnSync(process.execPath, [
+    '--no-warnings',
+    '--import', 'tsx',
+    '--import', processFixture,
+    '--input-type=module',
+    '--eval', regression,
+  ], {
+    cwd: resolve('.'),
+    shell: false,
+    windowsHide: true,
+    encoding: 'utf8',
+    timeout: 3_000,
+    maxBuffer: 16 * 1024,
+    env: { ...process.env, PROPR_TEST_AUTHORITY_MODE: 'oversized' },
+  });
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.signal, null, result.stderr);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
+  assert.ok(performance.now() - started < 3_000);
 });
 
 test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all other values', () => {

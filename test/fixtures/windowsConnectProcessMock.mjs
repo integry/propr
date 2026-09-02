@@ -124,29 +124,59 @@ function fakeAuthorityChild(args, options, mode) {
   child.pid = 0x7000_0000 + authorityInvocation;
   child.exitCode = null;
   child.signalCode = null;
-  let closed = false;
+  child.killed = false;
+  let terminalRequested = false;
+  let terminalEmitted = false;
+  let closeEmitted = false;
+  let terminalStatus = null;
+  let terminalSignal = null;
+  const streams = [child.stdin, child.stdout, child.stderr].filter(Boolean);
+  const emitCloseWhenDrained = () => {
+    if (!terminalEmitted || closeEmitted || streams.some((stream) => !stream.closed)) return;
+    closeEmitted = true;
+    child.emit("close", terminalStatus, terminalSignal);
+  };
+  for (const stream of streams) stream.once("close", emitCloseWhenDrained);
   const close = (status, signal = null) => {
-    if (closed) return;
-    closed = true;
+    if (terminalRequested) return;
+    terminalRequested = true;
+    terminalStatus = status;
+    terminalSignal = signal;
     child.exitCode = status;
     child.signalCode = signal;
-    child.stdout.end();
-    child.stderr.end();
-    setImmediate(() => child.emit("close", status, signal));
+    // Make the control side terminal synchronously with kill. A control end
+    // attempted after this point must observe the destroyed pipe, never race
+    // the deferred output drain and appear to succeed.
+    if (child.stdin && !child.stdin.destroyed) child.stdin.destroy();
+    queueMicrotask(() => {
+      if (terminalEmitted) return;
+      terminalEmitted = true;
+      child.emit("exit", terminalStatus, terminalSignal);
+      // A real ChildProcess closes its control pipe on termination and emits
+      // `close` only after both output pipes have reached their terminals.
+      // Defer this work out of a possibly re-entrant stdout `data` handler so
+      // overflow, backpressure, end callbacks, errors, and EPIPE are ordered.
+      for (const output of [child.stdout, child.stderr]) {
+        output.resume();
+        if (!output.destroyed && !output.writableEnded) output.end();
+      }
+      emitCloseWhenDrained();
+    });
   };
   child.kill = () => {
+    child.killed = true;
     close(null, "SIGKILL");
     return true;
   };
   const publish = () => {
-    if (closed) return;
+    if (terminalRequested) return;
     if (mode === "timeout") {
       const error = Object.assign(new Error("private-path-SENTINEL"), { code: "ETIMEDOUT" });
       child.emit("error", error);
       return;
     }
     if (mode === "malformed") child.stdout.write("{\n");
-    else if (mode === "oversized") child.stdout.write(`${"x".repeat(128 * 1024 + 1)}\n`);
+    else if (mode === "oversized") child.stdout.write("x".repeat(128 * 1024 + 1));
     else if (mode === "extra-key") child.stdout.write('{"version":1,"entries":[],"extra":true}\n');
     else if (mode === "duplicate") child.stdout.write('{"version":1,"version":1,"entries":[]}\n');
     else if (mode === "entry-count") child.stdout.write('{"version":1,"entries":[]}\n');
@@ -156,17 +186,34 @@ function fakeAuthorityChild(args, options, mode) {
       child.stdout.write(`${JSON.stringify(document)}\n`);
     } else if (mode === "stderr") child.stderr.write("private-path-SENTINEL S-1-5-21-999 raw-error-SENTINEL");
     else if (mode !== "nonzero") child.stdout.write(`${authorityDocument(args, options, mode, invocation)}\n`);
-    if (child.stdin && !closed && mode !== "nonzero") return;
+    if (child.stdin && !terminalRequested && mode !== "nonzero") return;
     close(mode === "nonzero" ? 70 : 0);
   };
-  child.stdin?.once("data", (chunk) => {
-    if (Buffer.from(chunk).toString("ascii") !== "PROPR_REVALIDATE_V1\n") {
-      close(87);
-      return;
-    }
-    child.stdin = null;
-    publish();
-  });
+  if (child.stdin) {
+    const controlChunks = [];
+    let controlBytes = 0;
+    child.stdin.on("data", (chunk) => {
+      if (terminalRequested) return;
+      const bytes = Buffer.from(chunk);
+      controlBytes += bytes.byteLength;
+      if (controlBytes > Buffer.byteLength("PROPR_REVALIDATE_V1\n", "ascii")) {
+        close(87);
+        return;
+      }
+      controlChunks.push(bytes);
+    });
+    child.stdin.once("finish", () => {
+      if (terminalRequested) return;
+      const control = Buffer.concat(controlChunks, controlBytes).toString("ascii");
+      if (control !== "PROPR_REVALIDATE_V1\n") {
+        close(87);
+        return;
+      }
+      publish();
+      if (!terminalRequested) close(0);
+    });
+    child.stdin.once("error", () => close(87));
+  }
   queueMicrotask(publish);
   return child;
 }
