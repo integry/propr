@@ -127,6 +127,12 @@ export const runPackagedTransportSmoke = async ({
   };
 
   try {
+    // Both fixture origins must be populated while no renderer credential
+    // binding is active. Once activation publishes a binding, production
+    // correctly restricts renderer network traffic to that exact origin.
+    await seedStorage();
+    if (!await storageState('present')) throw new Error('Packaged origin storage fixture was incomplete');
+
     await window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
       const started = Date.now();
       const poll = () => {
@@ -182,7 +188,6 @@ export const runPackagedTransportSmoke = async ({
       localStorage.setItem('packaged-smoke-local', 'non-secret sentinel');
       sessionStorage.setItem('packaged-smoke-session', 'non-secret sentinel');
     })()`);
-    await seedStorage();
     if (!await storageState('present')) throw new Error('Packaged origin storage fixture was incomplete');
 
     let cleanupFailed = false;
