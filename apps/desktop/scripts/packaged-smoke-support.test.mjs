@@ -352,6 +352,25 @@ describe('packaged smoke child environment', () => {
     assert.doesNotMatch(smokeSource, /env:\s*\{[\s\S]*process\.env/);
   });
 
+  test('serves each named fixture identity paired with its persisted credential', async () => {
+    const smokeSource = await readFile(new URL('./smoke-packaged.mjs', import.meta.url), 'utf8');
+    const mainSource = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
+    assert.match(
+      smokeSource,
+      /name === 'first'\s*\? 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'\s*: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'/u,
+    );
+    assert.match(smokeSource, /first = await listenFixture\('first'\);/u);
+    assert.match(smokeSource, /second = await listenFixture\('second'\);/u);
+    assert.match(
+      mainSource,
+      /origin: smoke\.firstOrigin,\s*publicInstanceIdentity: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'/u,
+    );
+    assert.match(
+      mainSource,
+      /origin: smoke\.secondOrigin,\s*publicInstanceIdentity: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'/u,
+    );
+  });
+
   test('requires the adjacent packaged spawn options with LF or CRLF source', () => {
     const options = [
       '    cwd: smokeProfile.root,',

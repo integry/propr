@@ -185,7 +185,7 @@ const listenFixture = async name => {
     }
     if (request.url === '/api/desktop/discovery') {
       response.writeHead(200, { ...corsHeaders, 'Set-Cookie': 'discovery=must-not-persist; HttpOnly; SameSite=None' });
-      response.end(discovery(name === 'A'
+      response.end(discovery(name === 'first'
         ? 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
         : 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'));
       return;
