@@ -47,6 +47,7 @@ Likely causes, what to check, and fixes:
 - **Relative or `~` paths in launcher variables.** All `PROPR_*` and `HOST_*` paths must be absolute; the launcher and `.env` parsing do not expand `~` or `$HOME`.
 - **Agent credentials not detected or unreadable.** For Claude, Codex, Antigravity, or OpenCode, add the agent with **Log in to a new account** to let ProPR create and map an isolated directory automatically; no provider `HOST_*` path is needed. To reuse host credentials, `propr init stack` auto-detects `~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, and `~/.vibe`. Authenticate with the provider CLI first (for example `claude auth login`, `agy login`) and create existing-account mount directories before starting — Docker can otherwise create them as root-owned. Vibe additionally needs its prompt cache directory to exist: `mkdir -p "/tmp/propr-vibe-prompts-$(id -u)"`. `propr check --verify` smoke-tests each agent image and pinpoints the broken one.
 - **Tunnel enabled without a token.** `propr check` fails when `PROPR_UI_TUNNEL_ENABLED` is set without `PROPR_UI_TUNNEL_TOKEN`. Run `propr tunnel setup` with the values from ProPR Connect, or remove the flag.
+- **Incomplete or malformed Web Push credentials.** Set `WEB_PUSH_VAPID_SUBJECT`, `WEB_PUSH_VAPID_PUBLIC_KEY`, and `WEB_PUSH_VAPID_PRIVATE_KEY` together from one generated pair, or leave all three unset. `propr check` never prints the keys. Keep the private key out of source control and logs; see [PWA, Web Push, and Badges](./pwa-web-push.md#configure-vapid).
 - **`direct_webhook` mode without a secret.** The API refuses to start in `GITHUB_EVENT_INTAKE_MODE=direct_webhook` without `GH_WEBHOOK_SECRET` (the secret is unused in the other intake modes).
 - **`propr setup` exits immediately in CI or a pipe.** When stdin is not a terminal, setup cannot prompt. Scaffold non-interactively instead: `propr init stack`, edit `<root>/.env`, then `propr start --no-tui`.
 
@@ -90,7 +91,7 @@ See [PR Automation And Fine-Tuning](../features/pr-followup.md) for the full pic
 
 Where to look:
 
-- **The task record.** Open the task detail view first: it shows the failure message, current state, selected agent and model, the exact prompt sent to the agent (View Prompt), execution log files (View Logs), the live execution event log, and per-file diffs. `propr task get <task-id>` shows the same details with run history from the CLI.
+- **The task record.** Open the task detail view first: it shows the failure message, current state, selected agent and model, the exact prompt sent to the agent (View Prompt), execution log files (View Logs), the live execution event log, and per-file diffs. `propr task inspect` shows all queued and executing work; `propr task inspect <task-id>` shows one task's current details and run history.
 - **Agent session logs** under `/tmp/claude-logs`, surfaced per task in the task detail view.
 - **The LLM Log page** (or `propr log list --failed`) for per-call status when the failure is a model call.
 

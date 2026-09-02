@@ -64,6 +64,7 @@ test("every advertised nested project option remains in the command surface audi
     "plan create",
     "plan list",
     "task import",
+    "task inspect",
     "task list",
     "todo add",
     "todo category add",

@@ -67,6 +67,11 @@ export interface TaskSummary {
   createdAt: string;
 
   /**
+   * When the task last changed lifecycle state. Older servers may omit this.
+   */
+  updatedAt?: string;
+
+  /**
    * When the task completed (if applicable).
    */
   completedAt: string | null;

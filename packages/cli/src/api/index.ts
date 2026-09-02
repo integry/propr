@@ -36,8 +36,17 @@ export {
   applyAgentRuntimePackages,
   getAgentRuntimePackages,
   updateAgentRuntimePackages,
+  verifyAgentRuntimePackages,
 } from './agentRuntime.js';
-export type { AgentRuntimeBuildStatus, AgentRuntimePackageState } from './agentRuntime.js';
+export type {
+  AgentRuntimeBuildStatus,
+  AgentRuntimeImageVerification,
+  AgentRuntimePackageCheck,
+  AgentRuntimePackageState,
+  AgentRuntimePackageVerificationResult,
+  AgentRuntimeVerificationIssue,
+  AgentRuntimeVerificationStatus,
+} from './agentRuntime.js';
 
 // Plan Management API
 export {

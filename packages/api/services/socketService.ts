@@ -31,6 +31,7 @@ import {
   taskRoom,
   userRoom,
 } from './socketSubscriptions.js';
+import type { NotificationProjectionService } from './notificationProjectionService.js';
 
 /** CORS origin validation function type compatible with Socket.IO */
 type CorsOriginCallback = (err: Error | null, allow?: boolean) => void;
@@ -42,6 +43,7 @@ export interface QueueDependencies {
   redisClient: RedisClientType;
   db: Knex;
   workerStateOptions?: Pick<WorkerStateManagerOptions, 'keyPrefix' | 'stateExpiry'>;
+  notificationProjection?: NotificationProjectionService;
 }
 
 const DEFAULT_TASK_STATE_EXPIRY_SECONDS = 7 * 24 * 3600;
@@ -114,6 +116,7 @@ export class SocketService {
   private taskRevisions = new Map<string, TaskRevisionCacheEntry>();
   private taskUpdateTails = new Map<string, Promise<void>>();
   private draftUpdateTails = new Map<string, Promise<void>>();
+  private notificationProjection: NotificationProjectionService | null = null;
 
   constructor(
     httpServer: HttpServer,
@@ -163,6 +166,8 @@ export class SocketService {
     this.taskWatcherManager.setDeps({ redisClient: deps.redisClient, db: deps.db });
     this.queueBroadcaster = new QueueBroadcaster(this.io, deps.taskQueue);
     this.queueBroadcaster.init();
+    this.notificationProjection = deps.notificationProjection ?? null;
+    this.notificationProjection?.startStalledDetector();
     console.log('[SocketService] Queue features initialized');
   }
 
@@ -309,6 +314,12 @@ export class SocketService {
       .to(taskRoom(payload.taskId))
       .emit(TASK_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${TASK_UPDATE} for task ${payload.taskId}`);
+    if (this.notificationProjection) {
+      await this.notificationProjection.bestEffort(
+        `task update for ${payload.taskId}`,
+        () => this.notificationProjection!.projectTaskUpdate(payload),
+      );
+    }
   }
 
   private async handleDraftUpdate(payload: DraftUpdatePayload): Promise<void> {
@@ -333,12 +344,24 @@ export class SocketService {
       .to(userRoom(ownerId))
       .emit(DRAFT_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${DRAFT_UPDATE} for draft ${payload.draftId}, step: ${payload.step}`);
+    if (this.notificationProjection) {
+      await this.notificationProjection.bestEffort(
+        `draft update for ${payload.draftId}`,
+        () => this.notificationProjection!.projectDraftUpdate(payload),
+      );
+    }
   }
 
   private handleIndexingUpdate(payload: IndexingUpdatePayload): void {
     this.io.to(`indexing:${payload.repository}`).emit(INDEXING_UPDATE, payload);
     this.io.to('indexing:updates').emit(INDEXING_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${INDEXING_UPDATE} for repository ${payload.repository}, phase: ${payload.phase}`);
+    if (this.notificationProjection) {
+      void this.notificationProjection.bestEffort(
+        `indexing update for ${payload.repository}`,
+        () => this.notificationProjection!.projectIndexingUpdate(payload),
+      );
+    }
   }
 
   private handleTaskLiveUpdate(payload: TaskLiveUpdatePayload): void {
@@ -391,6 +414,8 @@ export class SocketService {
         await this.queueBroadcaster.close();
         this.queueBroadcaster = null;
       }
+
+      this.notificationProjection?.close();
 
       await this.taskWatcherManager.closeAll();
 

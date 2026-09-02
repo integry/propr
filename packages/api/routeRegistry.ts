@@ -8,6 +8,7 @@ import type {
   createInstanceCatalogRoutes,
 } from './routes/index.js';
 import {
+  requireAgentTankUsageAccess,
   requireManageAgents,
   requireManageMembers,
   requireManageRuntime,
@@ -64,7 +65,7 @@ export function createManagementRouteEntries({
     ['get', '/api/config/agent-tank', requireManageAgents, configRoutes.getAgentTankSettings],
     ['post', '/api/config/agent-tank', requireManageAgents, configRoutes.postAgentTankSettings],
     ['get', '/api/config/agent-tank/status', requireManageAgents, configRoutes.getAgentTankStatus],
-    ['get', '/api/config/agent-tank/usage', requireManageAgents, configRoutes.getAgentTankUsage],
+    ['get', '/api/config/agent-tank/usage', requireAgentTankUsageAccess, configRoutes.getAgentTankUsage],
     ['post', '/api/config/agent-tank/refresh', requireManageAgents, configRoutes.postAgentTankRefresh],
     ['get', '/api/config/agent-tank/detect', requireManageAgents, configRoutes.getAgentTankDetect],
 
@@ -80,6 +81,7 @@ export function createManagementRouteEntries({
     ['post', '/api/agent-runtime/packages/validate', requireManageRuntime, agentRuntimeRoutes.validateRuntimePackages],
     ['put', '/api/agent-runtime/packages', requireManageRuntime, agentRuntimeRoutes.putRuntimePackages],
     ['post', '/api/agent-runtime/packages/apply', requireManageRuntime, agentRuntimeRoutes.applyRuntimePackages],
+    ['post', '/api/agent-runtime/packages/verify', requireManageRuntime, agentRuntimeRoutes.verifyRuntimePackages],
 
     ['post', '/api/agents/:agentId/login-sessions', requireManageAgents, agentLoginRoutes.startLogin],
     ['get', '/api/agents/:agentId/login-sessions/:sessionId', requireManageAgents, agentLoginRoutes.getLogin],

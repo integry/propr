@@ -344,6 +344,20 @@ jobs:
               - added|modified: 'packages/core/src/**/*.js'
               - added|modified: 'packages/core/src/**/*.ts'
 
+      - name: Run Notification Regression Tests
+        if: steps.filter.outputs.ui == 'true' || steps.filter.outputs.api == 'true' || steps.filter.outputs.core_package == 'true'
+        env:
+          NODE_ENV: test
+        run: npm run test:notifications
+
+      - name: Install Chromium for PWA Smoke Test
+        if: steps.filter.outputs.ui == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Run PWA and Mobile Browser Smoke Test
+        if: steps.filter.outputs.ui == 'true'
+        run: npm run test:browser --workspace=propr-ui
+
       - name: Run Checks
         id: build
         continue-on-error: true

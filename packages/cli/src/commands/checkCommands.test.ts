@@ -4,10 +4,22 @@ import { test, type TestContext } from "node:test";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { AgentTankUsage, AgentValidationRow } from "./agentValidation.js";
 import {
+  configurationErrorCheck,
   createCheckCommand,
   printAgentTankUsage,
   type AgentValidationFlowDependencies,
 } from "./checkCommands.js";
+
+test("propr check presents VAPID validation as a clear failure without key material", () => {
+  const detail = "Web Push VAPID configuration is incomplete: set all three variables together.";
+
+  assert.deepEqual(configurationErrorCheck(detail), {
+    name: "Web Push VAPID",
+    status: "fail",
+    detail,
+    group: "Configuration",
+  });
+});
 
 function usageFixture(): unknown {
   return JSON.parse(

@@ -18,6 +18,7 @@
 // The CLI imports this .mjs dynamically and types it via src/orchestrator/types.ts.
 
 import { spawn, spawnSync } from 'node:child_process';
+import { createECDH, timingSafeEqual } from 'node:crypto';
 import { readFileSync, existsSync, statSync, accessSync, constants as fsConstants } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve, dirname, isAbsolute, join } from 'node:path';
@@ -283,6 +284,13 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const authRateLimitWindowMs = overrides.authRateLimitWindowMs ?? get('PROPR_AUTH_RATE_LIMIT_WINDOW_MS') ?? '900000';
     const webhookRateLimitMax = overrides.webhookRateLimitMax ?? get('PROPR_WEBHOOK_RATE_LIMIT_MAX') ?? '300';
     const webhookRateLimitWindowMs = overrides.webhookRateLimitWindowMs ?? get('PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS') ?? '60000';
+    // Web Push is optional, but a partially configured VAPID identity is never
+    // useful. Resolve the three values here so both the host CLI and the
+    // containerized launcher validate the exact stack environment before any
+    // service starts. Key material is deliberately never included in errors.
+    const webPushVapidSubject = get('WEB_PUSH_VAPID_SUBJECT');
+    const webPushVapidPublicKey = get('WEB_PUSH_VAPID_PUBLIC_KEY');
+    const webPushVapidPrivateKey = get('WEB_PUSH_VAPID_PRIVATE_KEY');
 
     // Agent credential host dirs (HOST:HOST mounts so spawned agent containers
     // resolve the same path end-to-end).
@@ -345,6 +353,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         apiRateLimitMax, apiRateLimitWindowMs,
         authRateLimitMax, authRateLimitWindowMs,
         webhookRateLimitMax, webhookRateLimitWindowMs,
+        webPushVapidSubject, webPushVapidPublicKey, webPushVapidPrivateKey,
         hostClaudeDir, hostCodexDir, hostAntigravityDir,
         hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
@@ -1677,6 +1686,9 @@ export function validateEnv(cfg) {
     const runtimeModeError = packagedRuntimeModeError(cfg);
     if (runtimeModeError) errors.push(runtimeModeError);
 
+    const vapidError = validateVapidConfiguration(cfg);
+    if (vapidError) errors.push(vapidError);
+
     // Docker name constraint — the stack name is embedded in container, volume
     // and network names, so reject it early instead of failing mid-startup.
     const dockerNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
@@ -1880,6 +1892,75 @@ export function validateEnv(cfg) {
     }
 
     return { ok: errors.length === 0, errors, warnings };
+}
+
+function decodeCanonicalBase64Url(value, expectedBytes) {
+    const expectedLength = Math.ceil(expectedBytes * 8 / 6);
+    if (
+        typeof value !== 'string'
+        || value.length !== expectedLength
+        || value !== value.trim()
+        || !/^[A-Za-z0-9_-]+$/.test(value)
+    ) return null;
+    const decoded = Buffer.from(value, 'base64url');
+    return decoded.length === expectedBytes && decoded.toString('base64url') === value
+        ? decoded
+        : null;
+}
+
+function validVapidSubject(value) {
+    if (typeof value !== 'string' || value.length === 0 || value !== value.trim()) return false;
+    try {
+        const url = new URL(value);
+        if (url.protocol === 'https:') {
+            return url.hostname.length > 0 && url.username === '' && url.password === '';
+        }
+        return url.protocol === 'mailto:'
+            && url.pathname.length > 0
+            && url.pathname.includes('@')
+            && url.search === ''
+            && url.hash === '';
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Validate an optional VAPID identity without ever returning key material.
+ * This mirrors packages/api/services/webPushConfiguration.ts, but remains local
+ * because the launcher is a dependency-free Node module shipped on its own.
+ */
+export function validateVapidConfiguration(cfg) {
+    const subject = cfg.webPushVapidSubject;
+    const publicKeyValue = cfg.webPushVapidPublicKey;
+    const privateKeyValue = cfg.webPushVapidPrivateKey;
+    const configuredValues = [subject, publicKeyValue, privateKeyValue]
+        .filter(value => typeof value === 'string' && value.length > 0).length;
+    if (configuredValues === 0) return null;
+    if (configuredValues !== 3) {
+        return 'Web Push VAPID configuration is incomplete: set WEB_PUSH_VAPID_SUBJECT, '
+            + 'WEB_PUSH_VAPID_PUBLIC_KEY, and WEB_PUSH_VAPID_PRIVATE_KEY together, or leave all three unset. '
+            + 'The public key is browser-visible; keep the private key secret and never commit or log it.';
+    }
+    if (!validVapidSubject(subject)) {
+        return 'Web Push VAPID configuration is malformed: WEB_PUSH_VAPID_SUBJECT must be an HTTPS URL or mailto address.';
+    }
+
+    const publicKey = decodeCanonicalBase64Url(publicKeyValue, 65);
+    const privateKey = decodeCanonicalBase64Url(privateKeyValue, 32);
+    if (!publicKey || publicKey[0] !== 0x04 || !privateKey) {
+        return 'Web Push VAPID configuration is malformed: the public and private keys must be canonical URL-safe base64 P-256 keys generated as one VAPID pair. Key values are not shown.';
+    }
+    try {
+        const ecdh = createECDH('prime256v1');
+        ecdh.setPrivateKey(privateKey);
+        if (!timingSafeEqual(publicKey, ecdh.getPublicKey(undefined, 'uncompressed'))) {
+            return 'Web Push VAPID configuration is invalid: the public and private keys do not belong to the same VAPID pair. Key values are not shown.';
+        }
+    } catch {
+        return 'Web Push VAPID configuration is malformed: the private key is not a valid P-256 VAPID key. Key values are not shown.';
+    }
+    return null;
 }
 
 /**
