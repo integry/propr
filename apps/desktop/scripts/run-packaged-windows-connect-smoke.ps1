@@ -33,7 +33,7 @@ param(
     'host-launcher-source-reopen-final-path',
     'host-launcher-source-reopen-match',
     'host-capture-contract',
-    'host-environment-publication'
+    'host-staging-handoff'
   )]
   [string]$DiagnosticTestSubphase = 'host-node-command-cardinality',
   [ValidateSet(
@@ -101,7 +101,7 @@ $hostFailureSubphases = @(
   'host-launcher-source-reopen-final-path',
   'host-launcher-source-reopen-match',
   'host-capture-contract',
-  'host-environment-publication',
+  'host-staging-handoff',
   'host-state-contract'
 )
 $childFailureSubphases = @(
@@ -111,7 +111,15 @@ $childFailureSubphases = @(
   'unexpected-exit',
   'authority-contract'
 )
-$failureSubphases = @($hostFailureSubphases + $childFailureSubphases)
+$childStagedContractSubphases = @(
+  'runner-temp-input-shape',
+  'staging-parent-input-shape',
+  'parent-to-runner-binding',
+  'fixed-parent-leaf',
+  'generated-stage-leaf',
+  'derived-root-to-parent-binding'
+)
+$failureSubphases = @($hostFailureSubphases + $childFailureSubphases + $childStagedContractSubphases)
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
 $cleanupTimeoutMilliseconds = 60 * 1000
@@ -157,9 +165,18 @@ function Set-FailurePhase {
     throw [InvalidOperationException]::new('invalid-fixed-failure-phase')
   }
   $script:failurePhase = $Phase
-  if ($Phase -cne 'ordinary-user-preflight') {
+  if ($Phase -cnotin @('staged-contract','ordinary-user-preflight')) {
     $script:failureSubphase = $null
   }
+}
+
+function Set-StagedContractSubphase {
+  param([Parameter(Mandatory=$true)][string]$Subphase)
+  if ($childStagedContractSubphases -cnotcontains $Subphase) {
+    throw [InvalidOperationException]::new('invalid-fixed-failure-subphase')
+  }
+  $script:failureSubphase = $Subphase
+  $script:failurePhase = 'staged-contract'
 }
 
 function Set-OrdinaryUserPreflightSubphase {
@@ -182,6 +199,9 @@ function Set-PrimaryFailureFromException {
     } else {
       'host-state-contract'
     }
+  } elseif ($script:primaryPhase -ceq 'staged-contract' -and
+      $childStagedContractSubphases -ccontains $failureSubphase) {
+    $script:primarySubphase = $failureSubphase
   }
 }
 
@@ -1226,35 +1246,32 @@ try {
     if ((Test-Path -LiteralPath $stdout) -or (Test-Path -LiteralPath $stderr)) {
       Stop-PackagedConnect 'artifact-type'
     }
-    Set-OrdinaryUserPreflightSubphase 'host-environment-publication'
-    $previousParent = [Environment]::GetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_PARENT', 'Process')
-    $previousLeaf = [Environment]::GetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_LEAF', 'Process')
+    Set-OrdinaryUserPreflightSubphase 'host-staging-handoff'
+    $handoffText = [String]::Join("`n", [string[]]@($authenticatedRunnerTemp, $stageParent, $stageLeaf))
+    $handoffBytes = [Text.Encoding]::UTF8.GetBytes($handoffText)
+    $handoffArgument = '--propr-windows-staged-contract=' + [Convert]::ToBase64String($handoffBytes)
+    if ($handoffArgument.Length -gt 16384 -or $handoffArgument -cnotmatch '^--propr-windows-staged-contract=[A-Za-z0-9+/]+={0,2}$') {
+      Stop-PackagedConnect 'artifact-type'
+    }
     try {
-      [Environment]::SetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_PARENT', $stageParent, 'Process')
-      [Environment]::SetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_LEAF', $stageLeaf, 'Process')
+      Set-FailurePhase 'application-spawn'
       try {
-        Set-FailurePhase 'application-spawn'
-        try {
-          $process = Start-Process `
-            -FilePath $node `
-            -ArgumentList @('scripts/smoke-packaged-connect.mjs') `
-            -WorkingDirectory $desktopDirectory `
-            -Credential $credential `
-            -LoadUserProfile `
-            -PassThru `
-            -RedirectStandardOutput $stdout `
-            -RedirectStandardError $stderr `
-            -ErrorAction Stop
-        } finally {
-          $launcherAuthority.Handle.Dispose()
-          $launcherAuthority = $null
-        }
-      } catch {
-        Stop-PackagedConnect 'spawn-failed'
+        $process = Start-Process `
+          -FilePath $node `
+          -ArgumentList @('scripts/smoke-packaged-connect.mjs', $handoffArgument) `
+          -WorkingDirectory $desktopDirectory `
+          -Credential $credential `
+          -LoadUserProfile `
+          -PassThru `
+          -RedirectStandardOutput $stdout `
+          -RedirectStandardError $stderr `
+          -ErrorAction Stop
+      } finally {
+        $launcherAuthority.Handle.Dispose()
+        $launcherAuthority = $null
       }
-    } finally {
-      [Environment]::SetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_PARENT', $previousParent, 'Process')
-      [Environment]::SetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_LEAF', $previousLeaf, 'Process')
+    } catch {
+      Stop-PackagedConnect 'spawn-failed'
     }
     Set-FailurePhase 'application-runtime'
     try {
@@ -1284,7 +1301,12 @@ try {
           if ($record.event -ceq 'packaged_connect.artifact_failed' -and
               $failureCategories -ccontains $record.category -and
               $failurePhases -ccontains $record.phase) {
-            if ($record.phase -ceq 'ordinary-user-preflight') {
+            if ($record.phase -ceq 'staged-contract') {
+              if ($childStagedContractSubphases -cnotcontains $record.subphase) {
+                Stop-PackagedConnect 'artifact-type'
+              }
+              Set-StagedContractSubphase $record.subphase
+            } elseif ($record.phase -ceq 'ordinary-user-preflight') {
               if ($childFailureSubphases -cnotcontains $record.subphase) {
                 Stop-PackagedConnect 'artifact-type'
               }
@@ -1349,6 +1371,9 @@ if ($null -ne $primaryFailure) {
     if ($failureSubphases -cnotcontains $primarySubphase) {
       $primarySubphase = 'host-state-contract'
     }
+    $subphaseEvidence = ":subphase=$primarySubphase"
+  } elseif ($primaryPhase -ceq 'staged-contract' -and
+      $childStagedContractSubphases -ccontains $primarySubphase) {
     $subphaseEvidence = ":subphase=$primarySubphase"
   }
   [Console]::Error.WriteLine("PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=$primaryFailure`:phase=$primaryPhase$subphaseEvidence`:cleanup=$cleanupSecondary")

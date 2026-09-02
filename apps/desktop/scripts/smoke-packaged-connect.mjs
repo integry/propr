@@ -18,6 +18,7 @@ import {
 import {
   describeWindowsArtifactFailure,
   packagedConnectArtifactSensitiveNeedles,
+  parseWindowsStagedPackageHandoff,
   validateWindowsStagedPackage,
 } from './windows-packaged-connect-staging.mjs';
 
@@ -63,11 +64,22 @@ const nativeHashes = {
   },
 };
 let packagedConnectPhase = 'fixture-setup';
+let windowsStagedContract;
+let windowsStagedHandoff;
 
 if (process.platform === 'win32') {
   try {
     packagedConnectPhase = 'staged-contract';
-    const staged = await validateWindowsStagedPackage({ expectedArchitecture: process.arch });
+    [windowsStagedHandoff] = process.argv.slice(2);
+    windowsStagedContract = parseWindowsStagedPackageHandoff(process.argv.slice(2));
+    const staged = await validateWindowsStagedPackage({
+      environment: {
+        RUNNER_TEMP: windowsStagedContract.runnerTemp,
+        PROPR_DESKTOP_CONNECT_STAGING_PARENT: windowsStagedContract.parent,
+        PROPR_DESKTOP_CONNECT_STAGING_LEAF: windowsStagedContract.leaf,
+      },
+      expectedArchitecture: process.arch,
+    });
     artifactRoot = staged.root;
     binaryPath = staged.executable;
     resourcesPath = staged.resources;
@@ -260,6 +272,8 @@ try {
       platform: process.platform,
       artifactRoot,
       binaryPath,
+      stagedContract: windowsStagedContract,
+      stagedHandoff: windowsStagedHandoff,
     }),
     'S-1-5-', 'volumeSerialNumber', 'fileId', 'authorityDiagnostic',
   ];

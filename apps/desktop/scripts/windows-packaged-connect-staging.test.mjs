@@ -12,10 +12,13 @@ import {
   describeWindowsArtifactFailure,
   packagedConnectArtifactSensitiveNeedles,
   parseWindowsStagedPackageContract,
+  parseWindowsStagedPackageHandoff,
   validateWindowsStagedPackage,
   WINDOWS_ARTIFACT_FAILURE_CATEGORIES,
   WINDOWS_ARTIFACT_FAILURE_PHASES,
   WINDOWS_ARTIFACT_FAILURE_SUBPHASES,
+  WINDOWS_ORDINARY_USER_PREFLIGHT_FAILURE_SUBPHASES,
+  WINDOWS_STAGED_CONTRACT_FAILURE_SUBPHASES,
   WindowsArtifactFailure,
 } from './windows-packaged-connect-staging.mjs';
 import { windowsPowerShell51Path } from './windows-fixture-acl.mjs';
@@ -30,7 +33,7 @@ const hostPreflightSubphases = Object.freeze([
   'host-node-path-binding',
   'host-node-launcher-return-authority',
   'host-capture-contract',
-  'host-environment-publication',
+  'host-staging-handoff',
 ]);
 const launcherAuthoritySubphases = Object.freeze([
   'host-launcher-native-initialization',
@@ -83,6 +86,15 @@ const environment = {
   PROPR_DESKTOP_CONNECT_STAGING_PARENT: parent,
   PROPR_DESKTOP_CONNECT_STAGING_LEAF: leaf,
 };
+const handoffFor = ({
+  RUNNER_TEMP = environment.RUNNER_TEMP,
+  PROPR_DESKTOP_CONNECT_STAGING_PARENT = environment.PROPR_DESKTOP_CONNECT_STAGING_PARENT,
+  PROPR_DESKTOP_CONNECT_STAGING_LEAF = environment.PROPR_DESKTOP_CONNECT_STAGING_LEAF,
+} = {}) => '--propr-windows-staged-contract=' + Buffer.from([
+  RUNNER_TEMP,
+  PROPR_DESKTOP_CONNECT_STAGING_PARENT,
+  PROPR_DESKTOP_CONNECT_STAGING_LEAF,
+].join('\n'), 'utf8').toString('base64');
 const regularFile = {
   isDirectory: () => false,
   isFile: () => true,
@@ -368,24 +380,76 @@ describe('packaged Windows Connect staging contract', () => {
     assert.equal(contract.root, win32.join(parent, leaf));
     assert.equal(contract.executable, win32.join(parent, leaf, 'propr-desktop.exe'));
 
-    for (const invalid of [
-      {},
-      { PROPR_DESKTOP_CONNECT_STAGED_ROOT: contract.root },
-      { ...environment, PROPR_DESKTOP_CONNECT_STAGING_PARENT: String.raw`C:\runner-temp\other` },
-      { ...environment, PROPR_DESKTOP_CONNECT_STAGING_PARENT: `${parent}\\` },
-      { ...environment, PROPR_DESKTOP_CONNECT_STAGING_PARENT: String.raw`C:\runner-temp\x\..\propr-connect-packaged-stage` },
-      { ...environment, PROPR_DESKTOP_CONNECT_STAGING_PARENT: String.raw`\\server\share\propr-connect-packaged-stage` },
-      { ...environment, PROPR_DESKTOP_CONNECT_STAGING_LEAF: '../package' },
-      { ...environment, PROPR_DESKTOP_CONNECT_STAGING_LEAF: 'propr-connect-package-ABCDEF0123456789abcdef0123456789' },
-      { ...environment, PROPR_DESKTOP_CONNECT_STAGING_LEAF: 'propr-connect-package-0123' },
+    for (const [invalid, subphase] of [
+      [{}, 'runner-temp-input-shape'],
+      [{ PROPR_DESKTOP_CONNECT_STAGED_ROOT: contract.root }, 'runner-temp-input-shape'],
+      [{ ...environment, RUNNER_TEMP: 'runner-temp' }, 'runner-temp-input-shape'],
+      [{ ...environment, PROPR_DESKTOP_CONNECT_STAGING_PARENT: `${parent}\\` }, 'staging-parent-input-shape'],
+      [{ ...environment, PROPR_DESKTOP_CONNECT_STAGING_PARENT: String.raw`\\server\share\propr-connect-packaged-stage` }, 'staging-parent-input-shape'],
+      [{ ...environment, PROPR_DESKTOP_CONNECT_STAGING_PARENT: String.raw`C:\runner-temp\x\propr-connect-packaged-stage` }, 'parent-to-runner-binding'],
+      [{ ...environment, PROPR_DESKTOP_CONNECT_STAGING_PARENT: String.raw`C:\runner-temp\other` }, 'fixed-parent-leaf'],
+      [{ ...environment, PROPR_DESKTOP_CONNECT_STAGING_LEAF: '../package' }, 'generated-stage-leaf'],
+      [{ ...environment, PROPR_DESKTOP_CONNECT_STAGING_LEAF: 'propr-connect-package-ABCDEF0123456789abcdef0123456789' }, 'generated-stage-leaf'],
+      [{ ...environment, PROPR_DESKTOP_CONNECT_STAGING_LEAF: 'propr-connect-package-0123' }, 'generated-stage-leaf'],
     ]) {
       assert.throws(
         () => parseWindowsStagedPackageContract(invalid),
         error => error instanceof WindowsArtifactFailure
           && error.category === 'artifact-type'
-          && error.phase === 'staged-contract',
+          && error.phase === 'staged-contract'
+          && error.subphase === subphase,
       );
     }
+  });
+
+  test('accepts one bounded parent-owned handoff and rejects every other input shape', () => {
+    const contract = parseWindowsStagedPackageHandoff([handoffFor()]);
+    assert.equal(contract.runnerTemp, environment.RUNNER_TEMP);
+    assert.equal(contract.parent, parent);
+    assert.equal(contract.leaf, leaf);
+    for (const arguments_ of [
+      [],
+      [handoffFor(), handoffFor()],
+      ['--propr-windows-staged-contract=not-base64'],
+      ['--different-contract=AAAA'],
+      [`--propr-windows-staged-contract=${'A'.repeat(16_388)}`],
+      ['--propr-windows-staged-contract=' + Buffer.from('one\ntwo', 'utf8').toString('base64')],
+    ]) {
+      assert.throws(
+        () => parseWindowsStagedPackageHandoff(arguments_),
+        error => error instanceof WindowsArtifactFailure
+          && error.category === 'artifact-type'
+          && error.phase === 'staged-contract'
+          && error.subphase === 'runner-temp-input-shape',
+      );
+    }
+  });
+
+  test('emits only fixed staged-contract predicate evidence', () => {
+    const diagnostics = WINDOWS_STAGED_CONTRACT_FAILURE_SUBPHASES.map(subphase => {
+      const failure = new WindowsArtifactFailure('artifact-type', 'staged-contract', subphase);
+      return JSON.stringify({
+        event: 'packaged_connect.artifact_failed',
+        ...describeWindowsArtifactFailure(failure, 'application-spawn'),
+      });
+    });
+    assert.deepEqual(diagnostics, WINDOWS_STAGED_CONTRACT_FAILURE_SUBPHASES.map(subphase => (
+      `{"event":"packaged_connect.artifact_failed","category":"artifact-type",`
+        + `"phase":"staged-contract","subphase":"${subphase}"}`
+    )));
+    assertNoHostileDiagnosticEvidence(diagnostics.join('\n'));
+
+    const hostileSubphase = new WindowsArtifactFailure(
+      'artifact-type',
+      'staged-contract',
+      String.raw`C:\secret\account-name-S-1-5-21-123`,
+    );
+    assert.equal(hostileSubphase.subphase, undefined);
+    assert.deepEqual(describeWindowsArtifactFailure(hostileSubphase, 'staged-contract'), {
+      category: 'artifact-type',
+      phase: 'staged-contract',
+    });
+    assertNoHostileDiagnosticEvidence(hostileSubphase.message);
   });
 
   test('rejects missing, inaccessible, reparse, wrong-type, and noncanonical entries before preflight', async () => {
@@ -509,6 +573,14 @@ describe('packaged Windows Connect staging contract', () => {
       'application-runtime',
       'result-verify',
     ]);
+    assert.deepEqual(WINDOWS_STAGED_CONTRACT_FAILURE_SUBPHASES, [
+      'runner-temp-input-shape',
+      'staging-parent-input-shape',
+      'parent-to-runner-binding',
+      'fixed-parent-leaf',
+      'generated-stage-leaf',
+      'derived-root-to-parent-binding',
+    ]);
     assert.deepEqual(
       describeWindowsArtifactFailure(new Error(String.raw`C:\secret\account`), 'fixture-setup'),
       { category: 'artifact-inaccessible', phase: 'fixture-setup' },
@@ -535,12 +607,16 @@ describe('packaged Windows Connect staging contract', () => {
   });
 
   test('maps every preflight transport and exit result to fixed subphase evidence', () => {
-    assert.deepEqual(WINDOWS_ARTIFACT_FAILURE_SUBPHASES, [
+    assert.deepEqual(WINDOWS_ORDINARY_USER_PREFLIGHT_FAILURE_SUBPHASES, [
       'preflight-invocation',
       'descendant-enumeration',
       'executable-read',
       'unexpected-exit',
       'authority-contract',
+    ]);
+    assert.deepEqual(WINDOWS_ARTIFACT_FAILURE_SUBPHASES, [
+      ...WINDOWS_STAGED_CONTRACT_FAILURE_SUBPHASES,
+      ...WINDOWS_ORDINARY_USER_PREFLIGHT_FAILURE_SUBPHASES,
     ]);
     const clean = status => ({
       status,
@@ -640,18 +716,22 @@ describe('packaged Windows Connect staging contract', () => {
     const options = {
       artifactRoot: String.raw`C:\runner-temp\stage\leaf`,
       binaryPath: String.raw`C:\runner-temp\stage\leaf\propr-desktop.exe`,
-      environment: {
-        PROPR_DESKTOP_CONNECT_STAGING_PARENT: String.raw`C:\runner-temp\stage`,
-        PROPR_DESKTOP_CONNECT_STAGING_LEAF: 'leaf',
+      stagedContract: {
+        runnerTemp: String.raw`C:\runner-temp`,
+        parent: String.raw`C:\runner-temp\stage`,
+        leaf: 'leaf',
       },
+      stagedHandoff: handoffFor(),
     };
     assert.deepEqual(packagedConnectArtifactSensitiveNeedles({ platform: 'darwin', ...options }), []);
     assert.deepEqual(packagedConnectArtifactSensitiveNeedles({ platform: 'linux', ...options }), []);
     assert.deepEqual(packagedConnectArtifactSensitiveNeedles({ platform: 'win32', ...options }), [
       options.artifactRoot,
       options.binaryPath,
-      options.environment.PROPR_DESKTOP_CONNECT_STAGING_PARENT,
-      options.environment.PROPR_DESKTOP_CONNECT_STAGING_LEAF,
+      options.stagedContract.runnerTemp,
+      options.stagedContract.parent,
+      options.stagedContract.leaf,
+      options.stagedHandoff,
     ]);
   });
 });
@@ -739,7 +819,7 @@ test('the workflow stages before alternate credentials and the harness preflight
     ['host-node-path-binding', '$launcherAuthority = Get-TrustedHostLauncher -Path $node'],
     ['host-node-launcher-return-authority', '$launcherAuthorityResults = @($launcherAuthority)'],
     ['host-capture-contract', '$stdout = Join-Path $authenticatedRunnerTemp'],
-    ['host-environment-publication', "$previousParent = [Environment]::GetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_PARENT'"],
+    ['host-staging-handoff', '$handoffText = [String]::Join'],
   ];
   for (let index = 0; index < hostTransitions.length; index += 1) {
     const [subphase, operation] = hostTransitions[index];
@@ -757,6 +837,9 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(orchestrator, /\$node = \$launcherPathProperty\.Value[\s\S]*?-FilePath \$node/u);
   assert.match(hostBoundary, /SafeFileHandle[\s\S]*?\.IsInvalid[\s\S]*?\.IsClosed/u);
   assert.match(orchestrator, /Start-Process[\s\S]*?finally \{\s*\$launcherAuthority\.Handle\.Dispose\(\)/u);
+  assert.match(orchestrator, /\$handoffArgument = '--propr-windows-staged-contract=' \+ \[Convert\]::ToBase64String\(\$handoffBytes\)/u);
+  assert.match(orchestrator, /-ArgumentList @\('scripts\/smoke-packaged-connect\.mjs', \$handoffArgument\)[\s\S]*?-Credential \$credential[\s\S]*?-LoadUserProfile/u);
+  assert.doesNotMatch(orchestrator, /SetEnvironmentVariable\('PROPR_DESKTOP_CONNECT_STAGING_/u);
   assert.match(orchestrator, /FILE_FLAG_OPEN_REPARSE_POINT/u);
   assert.match(
     orchestrator,
@@ -793,6 +876,7 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(orchestrator, /function Get-CanonicalItem[\s\S]*?FileAttributes\]::ReparsePoint/u);
   assert.match(orchestrator, /function Assert-PackageTreeTypes[\s\S]*?FileAttributes\]::ReparsePoint/u);
   assert.match(orchestrator, /\$childFailureSubphases -cnotcontains \$record\.subphase/u);
+  assert.match(orchestrator, /\$childStagedContractSubphases -cnotcontains \$record\.subphase/u);
   assert.match(orchestrator, /catch \{\s*Set-PrimaryFailureFromException \$_\.Exception\s*\}/u);
   assert.match(orchestrator, /\$primaryPhase -ceq 'ordinary-user-preflight'[\s\S]*?\$primarySubphase = 'host-state-contract'/u);
   assert.match(orchestrator, /\$subphaseEvidence = ":subphase=\$primarySubphase"/u);
@@ -814,6 +898,7 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.equal((harness.match(/await validateWindowsStagedPackage\(/gu) ?? []).length, 1);
   assert.equal((harness.match(/await runPackagedConnectLifecycle\(/gu) ?? []).length, 1);
   assert.match(harness, /shell: false/u);
+  assert.match(harness, /parseWindowsStagedPackageHandoff\(process\.argv\.slice\(2\)\)/u);
   assert.match(harness, /delete childEnvironment\.PROPR_DESKTOP_CONNECT_STAGING_PARENT/u);
   assert.match(harness, /delete childEnvironment\.PROPR_DESKTOP_CONNECT_STAGING_LEAF/u);
   assert.match(harness, /describeWindowsArtifactFailure\(error, packagedConnectPhase\)/u);

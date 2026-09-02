@@ -26,7 +26,16 @@ export const WINDOWS_ARTIFACT_FAILURE_PHASES = Object.freeze([
   'result-verify',
 ]);
 
-export const WINDOWS_ARTIFACT_FAILURE_SUBPHASES = Object.freeze([
+export const WINDOWS_STAGED_CONTRACT_FAILURE_SUBPHASES = Object.freeze([
+  'runner-temp-input-shape',
+  'staging-parent-input-shape',
+  'parent-to-runner-binding',
+  'fixed-parent-leaf',
+  'generated-stage-leaf',
+  'derived-root-to-parent-binding',
+]);
+
+export const WINDOWS_ORDINARY_USER_PREFLIGHT_FAILURE_SUBPHASES = Object.freeze([
   'preflight-invocation',
   'descendant-enumeration',
   'executable-read',
@@ -34,22 +43,39 @@ export const WINDOWS_ARTIFACT_FAILURE_SUBPHASES = Object.freeze([
   'authority-contract',
 ]);
 
+export const WINDOWS_ARTIFACT_FAILURE_SUBPHASES = Object.freeze([
+  ...WINDOWS_STAGED_CONTRACT_FAILURE_SUBPHASES,
+  ...WINDOWS_ORDINARY_USER_PREFLIGHT_FAILURE_SUBPHASES,
+]);
+
 const STAGING_PARENT_LEAF = 'propr-connect-packaged-stage';
 const STAGING_LEAF_PATTERN = /^propr-connect-package-[a-f0-9]{32}$/u;
 const EXPECTED_MACHINES = Object.freeze({ x64: 0x8664, arm64: 0xaa64 });
 const MAX_CONTRACT_PATH_LENGTH = 4096;
+const MAX_HANDOFF_LENGTH = 16_384;
+const STAGED_CONTRACT_HANDOFF_PREFIX = '--propr-windows-staged-contract=';
 const PE_HEADER_BYTES = 4096;
+
+const isAllowedSubphase = (phase, subphase) => (
+  (phase === 'staged-contract'
+    && WINDOWS_STAGED_CONTRACT_FAILURE_SUBPHASES.includes(subphase))
+  || (phase === 'ordinary-user-preflight'
+    && WINDOWS_ORDINARY_USER_PREFLIGHT_FAILURE_SUBPHASES.includes(subphase))
+);
 
 export const packagedConnectArtifactSensitiveNeedles = ({
   platform,
   artifactRoot,
   binaryPath,
-  environment = process.env,
+  stagedContract,
+  stagedHandoff,
 }) => platform === 'win32' ? [
   artifactRoot,
   binaryPath,
-  environment.PROPR_DESKTOP_CONNECT_STAGING_PARENT,
-  environment.PROPR_DESKTOP_CONNECT_STAGING_LEAF,
+  stagedContract.runnerTemp,
+  stagedContract.parent,
+  stagedContract.leaf,
+  stagedHandoff,
 ] : [];
 
 export class WindowsArtifactFailure extends Error {
@@ -58,8 +84,7 @@ export class WindowsArtifactFailure extends Error {
       ? category : 'artifact-inaccessible';
     const fixedPhase = WINDOWS_ARTIFACT_FAILURE_PHASES.includes(phase)
       ? phase : 'application-runtime';
-    const fixedSubphase = fixedPhase === 'ordinary-user-preflight'
-      && WINDOWS_ARTIFACT_FAILURE_SUBPHASES.includes(subphase)
+    const fixedSubphase = isAllowedSubphase(fixedPhase, subphase)
       ? subphase : undefined;
     super(`Packaged Connect Windows artifact failed [category=${fixedCategory} phase=${fixedPhase}`
       + `${fixedSubphase ? ` subphase=${fixedSubphase}` : ''}]`);
@@ -93,16 +118,24 @@ export const parseWindowsStagedPackageContract = environment => {
   const runnerTemp = environment?.RUNNER_TEMP;
   const parent = environment?.PROPR_DESKTOP_CONNECT_STAGING_PARENT;
   const leaf = environment?.PROPR_DESKTOP_CONNECT_STAGING_LEAF;
-  if (!isCanonicalAbsoluteWindowsPath(runnerTemp)
-    || !isCanonicalAbsoluteWindowsPath(parent)
-    || win32.dirname(parent) !== runnerTemp
-    || win32.basename(parent) !== STAGING_PARENT_LEAF
-    || !STAGING_LEAF_PATTERN.test(leaf ?? '')) {
-    fail('artifact-type', 'staged-contract');
+  if (!isCanonicalAbsoluteWindowsPath(runnerTemp)) {
+    fail('artifact-type', 'staged-contract', 'runner-temp-input-shape');
+  }
+  if (!isCanonicalAbsoluteWindowsPath(parent)) {
+    fail('artifact-type', 'staged-contract', 'staging-parent-input-shape');
+  }
+  if (win32.dirname(parent) !== runnerTemp) {
+    fail('artifact-type', 'staged-contract', 'parent-to-runner-binding');
+  }
+  if (win32.basename(parent) !== STAGING_PARENT_LEAF) {
+    fail('artifact-type', 'staged-contract', 'fixed-parent-leaf');
+  }
+  if (!STAGING_LEAF_PATTERN.test(leaf ?? '')) {
+    fail('artifact-type', 'staged-contract', 'generated-stage-leaf');
   }
   const root = win32.join(parent, leaf);
   if (win32.dirname(root) !== parent || win32.basename(root) !== leaf) {
-    fail('artifact-type', 'staged-contract');
+    fail('artifact-type', 'staged-contract', 'derived-root-to-parent-binding');
   }
   return Object.freeze({
     runnerTemp,
@@ -112,6 +145,37 @@ export const parseWindowsStagedPackageContract = environment => {
     executable: win32.join(root, 'propr-desktop.exe'),
     resources: win32.join(root, 'resources'),
     applicationArchive: win32.join(root, 'resources', 'app.asar'),
+  });
+};
+
+export const parseWindowsStagedPackageHandoff = arguments_ => {
+  if (!Array.isArray(arguments_) || arguments_.length !== 1
+    || typeof arguments_[0] !== 'string'
+    || !arguments_[0].startsWith(STAGED_CONTRACT_HANDOFF_PREFIX)) {
+    fail('artifact-type', 'staged-contract', 'runner-temp-input-shape');
+  }
+  const encoded = arguments_[0].slice(STAGED_CONTRACT_HANDOFF_PREFIX.length);
+  if (encoded.length < 4 || encoded.length > MAX_HANDOFF_LENGTH
+    || encoded.length % 4 !== 0
+    || !/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) {
+    fail('artifact-type', 'staged-contract', 'runner-temp-input-shape');
+  }
+  const bytes = Buffer.from(encoded, 'base64');
+  if (bytes.toString('base64') !== encoded) {
+    fail('artifact-type', 'staged-contract', 'runner-temp-input-shape');
+  }
+  const decoded = bytes.toString('utf8');
+  if (!Buffer.from(decoded, 'utf8').equals(bytes)) {
+    fail('artifact-type', 'staged-contract', 'runner-temp-input-shape');
+  }
+  const fields = decoded.split('\n');
+  if (fields.length !== 3) {
+    fail('artifact-type', 'staged-contract', 'runner-temp-input-shape');
+  }
+  return parseWindowsStagedPackageContract({
+    RUNNER_TEMP: fields[0],
+    PROPR_DESKTOP_CONNECT_STAGING_PARENT: fields[1],
+    PROPR_DESKTOP_CONNECT_STAGING_LEAF: fields[2],
   });
 };
 
@@ -314,10 +378,10 @@ export const describeWindowsArtifactFailure = (error, fallbackPhase = 'applicati
     : (preSpawn ? (error?.code === 'ENOENT' ? 'artifact-missing' : 'artifact-inaccessible')
       : classifyWindowsArtifactFailure(error));
   const fixedErrorSubphase = error instanceof WindowsArtifactFailure
-    && WINDOWS_ARTIFACT_FAILURE_SUBPHASES.includes(error.subphase)
+    && isAllowedSubphase(phase, error.subphase)
     ? error.subphase : undefined;
   const subphase = phase === 'ordinary-user-preflight'
     ? (fixedErrorSubphase ?? 'preflight-invocation')
-    : undefined;
+    : fixedErrorSubphase;
   return Object.freeze({ category, phase, ...(subphase ? { subphase } : {}) });
 };
