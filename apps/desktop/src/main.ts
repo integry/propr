@@ -630,6 +630,7 @@ const createMainWindow = async (
     }
     log('info', 'desktop.renderer.profile_api.ready', { origin: DESKTOP_RENDERER_ORIGIN });
   }
+  let mvpFlowProof: Record<string, unknown> = { connectDiscovery: true };
   if (packagedSmokeTest && !transportSmoke) {
     const profileFlow = await window.webContents.executeJavaScript(`(async () => {
       const bridge = window.proprDesktop;
@@ -658,6 +659,13 @@ const createMainWindow = async (
       || !profileFlow?.lifecycleBoundary || !profileFlow?.connectDeepLink) {
       throw new Error('Packaged desktop local/remote/API profile flow failed');
     }
+    mvpFlowProof = {
+      connectDiscovery: true,
+      localProfile: profileFlow.local,
+      remoteActiveProfile: profileFlow.active && profileFlow.remote,
+      lifecycleBoundary: profileFlow.lifecycleBoundary,
+      connectUiPopulated: profileFlow.connectDeepLink,
+    };
   } else if (packagedSmokeTest) {
     const boundary = await window.webContents.executeJavaScript(`(async () => {
       const bridge = window.proprDesktop;
@@ -675,7 +683,7 @@ const createMainWindow = async (
     }
   }
   if (packagedSmokeTest) {
-    log('info', 'desktop.renderer.mvp_flows.ready', { connectDiscovery: true });
+    log('info', 'desktop.renderer.mvp_flows.ready', mvpFlowProof);
     log('info', PACKAGED_LAYOUT_READY_EVENT, { layout: await inspectPackagedLayout(window) });
     log('info', PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT, {
       layout: inspectPackagedReducedNativeWindow(),
@@ -859,7 +867,6 @@ if (!hasSingleInstanceLock) {
       if (BrowserWindow.getAllWindows().length === 0) {
         void createMainWindow(null).then(window => {
           mainWindow = window;
-          deepLinkDelivery.setWindow(window);
         });
       }
     });

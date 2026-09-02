@@ -48,12 +48,14 @@ export const DesktopBrand: React.FC = () => (
 
 interface ProfileEditorProps {
   initial?: DesktopProfile;
+  candidate?: boolean;
+  notice?: string | null;
   operationError?: string | null;
   onCancel(): void;
   onSave(profile: DesktopProfile): void;
 }
 
-export const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operationError, onCancel, onSave }) => {
+export const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, candidate = false, notice, operationError, onCancel, onSave }) => {
   const [name, setName] = useState(initial?.name || 'My ProPR');
   const [baseUrl, setBaseUrl] = useState(initial ? initial.baseUrl : 'http://127.0.0.1:3000');
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -82,8 +84,9 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operation
       <button type="button" className="desktop-back-button" onClick={onCancel}>
         <ArrowLeft aria-hidden="true" /> Back
       </button>
-      <h2>{initial ? 'Edit instance' : 'Connect to an instance'}</h2>
+      <h2>{candidate || !initial ? 'Connect to an instance' : 'Edit instance'}</h2>
       <p>Enter the address shown by your ProPR server.</p>
+      {notice && <div className="desktop-version-note" role="status">{notice}</div>}
       <label>
         Display name
         <input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="Team ProPR" maxLength={80} />
@@ -94,7 +97,7 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operation
       </label>
       {connectEndpoint && <div className="desktop-connect-verified" role="status"><Cloud aria-hidden="true" /> Verified ProPR Connect endpoint</div>}
       {error && <div id="profile-url-error" className="desktop-inline-error" role="alert">{error}</div>}
-      <button type="submit" className="desktop-primary-button">{initial ? 'Save changes' : 'Connect'}</button>
+      <button type="submit" className="desktop-primary-button">{candidate || !initial ? 'Connect' : 'Save changes'}</button>
     </form>
   );
 };

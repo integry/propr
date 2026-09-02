@@ -53,6 +53,7 @@ const deferred = <T,>() => {
 
 const adaptersWithDiscovery = (discover: DesktopAdapters['discovery']['discover']): DesktopAdapters => ({
   platform: 'linux',
+  app: { onDeepLink: () => () => undefined },
   profiles: {
     list: vi.fn(async () => [savedProfile]), save: vi.fn(async () => undefined),
     remove: vi.fn(async () => undefined), getActiveId: vi.fn(async () => null),

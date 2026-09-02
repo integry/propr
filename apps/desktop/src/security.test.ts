@@ -4,6 +4,7 @@ import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import {
   deepLinkFromArguments,
   applyDevelopmentRendererCsp,
+  connectApiBaseUrlFromDeepLink,
   dashboardPathFromDeepLink,
   isSafeExternalUrl,
   isTrustedRendererUrl,
@@ -106,6 +107,67 @@ describe('desktop URL security', () => {
     assert.equal(normalizeDeepLink('propr://delete-everything'), null);
     assert.equal(normalizeDeepLink('https://propr.example.com'), null);
     assert.equal(normalizeDeepLink('propr://user:secret@connect'), null);
+  });
+
+  it('accepts only one bounded canonical Connect API candidate', () => {
+    const link = 'propr://connect?api=https%3A%2F%2Fconnect.propr.dev';
+    assert.equal(connectApiBaseUrlFromDeepLink(link), 'https://connect.propr.dev');
+    assert.equal(normalizeDeepLink(link), link);
+
+    const rejected = [
+      'propr://connect',
+      'propr://connect?api=',
+      'propr://connect?api=https%3A%2F%2Fconnect.propr.dev&api=https%3A%2F%2Fother.example',
+      'propr://connect?api=https%3A%2F%2Fconnect.propr.dev&token=secret',
+      'propr://connect?url=https%3A%2F%2Fconnect.propr.dev',
+      'propr://user:secret@connect?api=https%3A%2F%2Fconnect.propr.dev',
+      'propr://connect:443?api=https%3A%2F%2Fconnect.propr.dev',
+      'propr://connect/path?api=https%3A%2F%2Fconnect.propr.dev',
+      'propr://connect?api=https%3A%2F%2Fconnect.propr.dev#fragment',
+      'propr://connect?api=http%3A%2F%2Fconnect.propr.dev',
+      'propr://connect?api=https%3A%2F%2Fuser%3Asecret%40connect.propr.dev',
+      'propr://connect?api=https%3A%2F%2Fconnect.propr.dev%2Fapi',
+      'propr://connect?api=https%3A%2F%2Fconnect.propr.dev%3Ftoken%3Dsecret',
+      'propr://connect?api=https%3A%2F%2Fconnect.propr.dev%23secret',
+      'propr://connect?api=https%253A%252F%252Fconnect.propr.dev',
+    ];
+    rejected.forEach(candidate => {
+      assert.equal(connectApiBaseUrlFromDeepLink(candidate), null, candidate);
+      assert.equal(normalizeDeepLink(candidate), null, candidate);
+    });
+
+    const oversized = `propr://connect?api=https%3A%2F%2Fexample.com&${'x'.repeat(2_048)}`;
+    assert.ok(oversized.length > 2_048);
+    assert.equal(connectApiBaseUrlFromDeepLink(oversized), null);
+    assert.equal(normalizeDeepLink(oversized), null);
+
+    const expandedApi = `https://${Array(300).fill('é').join('.')}.example`;
+    const rawLink = `propr://connect?api=${expandedApi}`;
+    const expandedCanonicalLink = new URL(rawLink).href;
+    assert.ok(rawLink.length < 2_048);
+    assert.ok(expandedCanonicalLink.length > 2_048);
+    assert.notEqual(connectApiBaseUrlFromDeepLink(rawLink), null);
+    assert.equal(normalizeDeepLink(rawLink), null);
+  });
+
+  it('does not canonicalize malformed reserved Connect origins into trusted candidates', () => {
+    const rejectedOrigins = [
+      'https://t-instance123.propr.dev/',
+      'HTTPS://t-instance123.propr.dev',
+      'https://T-instance123.propr.dev',
+      'https://t-instance123.propr.dev:443',
+      'https://t-instance123.propr.dev:8443',
+      'https://t-%69nstance123.propr.dev',
+      'https://t-instance123.propr%2edev',
+      'https://t-instance123.foo.propr.dev',
+      'https://x.t-instance123.propr.dev',
+      'https://t-instance123.propr.dev.',
+    ];
+    rejectedOrigins.forEach(origin => {
+      const link = `propr://connect?api=${encodeURIComponent(origin)}`;
+      assert.equal(connectApiBaseUrlFromDeepLink(link), null, origin);
+      assert.equal(normalizeDeepLink(link), null, origin);
+    });
   });
 
   it('accepts a normal internal dashboard route from an open deep link', () => {

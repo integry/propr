@@ -26,6 +26,7 @@ const bridgeFixture = () => {
   let profiles = [storedProfile];
   let activeProfileId: string | null = null;
   const pair = vi.fn(async () => ({ paired: true as const }));
+  const onDeepLink = vi.fn(() => () => undefined);
   const probe = vi.fn(async () => ({
     status: 'ready' as const,
     version: '0.8.15',
@@ -53,7 +54,7 @@ const bridgeFixture = () => {
       getMetadata: async () => ({
         name: 'ProPR Desktop', version: '0.8.15', platform: 'linux', arch: 'x64', packaged: true,
       }),
-      onDeepLink: () => () => undefined,
+      onDeepLink,
     },
     auth: { logout: async () => undefined },
     external: { open: async () => undefined },
@@ -78,7 +79,7 @@ const bridgeFixture = () => {
       restart: async () => ({ ok: false, code: 'not-implemented', status: { state: 'disconnected' } }),
     },
   };
-  return { bridge, pair, probe, activate, discard, discover, rediscover, profiles: () => profiles };
+  return { bridge, onDeepLink, pair, probe, activate, discard, discover, rediscover, profiles: () => profiles };
 };
 
 describe('Electron remote instance adapters', () => {
@@ -93,6 +94,18 @@ describe('Electron remote instance adapters', () => {
 
     expect(adapters.localSetup.supported).toBe(false);
     expect(adapters.discovery.supported).toBe(true);
+  });
+
+  it('forwards the renderer deep-link subscription through the Electron adapter once', () => {
+    const fixture = bridgeFixture();
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+    const listener = vi.fn();
+
+    const unsubscribe = adapters.app.onDeepLink(listener);
+
+    expect(fixture.onDeepLink).toHaveBeenCalledOnce();
+    expect(fixture.onDeepLink).toHaveBeenCalledWith(listener);
+    unsubscribe();
   });
 
   it('projects typed main discovery and managed recovery without renderer authority inputs', async () => {

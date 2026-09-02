@@ -38,6 +38,7 @@ const adaptersFor = (
     async () => ({ status: 'ready', version: '0.8.15' }),
 ): DesktopAdapters => ({
   platform: 'linux',
+  app: { onDeepLink: () => () => undefined },
   profiles: {
     list: vi.fn(async () => profiles),
     save: vi.fn(async () => undefined),
