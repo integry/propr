@@ -109,7 +109,30 @@ const createDesktopDiscoveryDeadline = (timeoutMs: number, callerSignal?: AbortS
   else callerSignal?.addEventListener('abort', onAbort, { once: true });
   return {
     signal: controller.signal,
-    race: <T>(operation: Promise<T>): Promise<T> => Promise.race([operation, deadline]),
+    race: <T>(operation: Promise<T>, disposeLateValue?: (value: T) => void): Promise<T> =>
+      new Promise<T>((resolve, reject) => {
+        let settled = false;
+        Promise.resolve(operation).then(
+          value => {
+            if (settled) {
+              try { disposeLateValue?.(value); } catch { /* best-effort ownership cleanup */ }
+              return;
+            }
+            settled = true;
+            resolve(value);
+          },
+          error => {
+            if (settled) return;
+            settled = true;
+            reject(error);
+          },
+        );
+        deadline.catch(error => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        });
+      }),
     timedOut: (): boolean => timedOut,
     dispose: (): void => {
       clearTimeout(timeout);
@@ -268,13 +291,18 @@ export class ProprClient {
     const deadline = createDesktopDiscoveryDeadline(timeoutMs, signal);
     let response: Response;
     try {
-      response = await deadline.race(this.fetch(this.url('/api/desktop/discovery'), {
-        cache: 'no-store',
-        credentials: 'omit',
-        headers: { Accept: 'application/json' },
-        redirect: 'manual',
-        signal: deadline.signal,
-      }, { timeoutMs: 0 }));
+      response = await deadline.race(
+        this.fetchImplementation(this.resolveRequestTarget(this.url('/api/desktop/discovery')), {
+          cache: 'no-store',
+          credentials: 'omit',
+          headers: { Accept: 'application/json' },
+          redirect: 'manual',
+          signal: deadline.signal,
+        }),
+        lateResponse => {
+          try { void lateResponse.body?.cancel().catch(() => undefined); } catch { /* hostile late response */ }
+        },
+      );
     } catch (cause) {
       deadline.dispose();
       if (deadline.timedOut()) {
@@ -283,7 +311,8 @@ export class ProprClient {
       if (signal?.aborted) {
         throw new ProprClientError('Desktop discovery was cancelled.', { kind: 'aborted', cause });
       }
-      throw cause;
+      if (cause instanceof ProprClientError) throw cause;
+      throw new ProprClientError('The ProPR API could not be reached.', { kind: 'network', cause });
     }
     try {
     if (!response.ok || response.redirected

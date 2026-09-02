@@ -753,6 +753,35 @@ export class DesktopCredentialService {
       };
     }
     const authentication = authenticationSummary(discovery.desktopAuthentication);
+    if (!connectClaim.isCurrent()) {
+      return {
+        status: 'authentication-required',
+        message: 'The ProPR Connect instance changed. Use the currently discovered instance and approve it again.',
+        version: discovery.version,
+        authentication,
+      };
+    }
+    const initial = await this.#profiles.readProfileCredential(input.id);
+    if (this.#generation(input.id) !== operationGeneration
+      || this.#selectionGeneration !== operationSelection
+      || this.#latestProbeTicket !== probeTicket) {
+      return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
+    }
+    const identityMismatched = initial.profile?.apiBaseUrl === origin
+      && initial.credential?.origin === origin
+      && (!isPublicInstanceIdentity(initial.credential.publicInstanceIdentity)
+        || initial.credential.publicInstanceIdentity !== discovery.publicInstanceIdentity);
+    if (identityMismatched) {
+      const removed = await this.#detachIdentityFailedCredential(
+        initial.credential!,
+        operationGeneration,
+        operationSelection,
+        probeTicket,
+      );
+      if (!removed) {
+        return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
+      }
+    }
     if (!discovery.compatibility.compatible) {
       return { status: 'incompatible', message: discovery.compatibility.message, version: discovery.version };
     }
@@ -775,9 +804,8 @@ export class DesktopCredentialService {
       };
     }
 
-    if (!connectClaim.isCurrent()
-      || (connectClaim.status === 'claimed'
-        && connectClaim.publicInstanceIdentity !== discovery.publicInstanceIdentity)) {
+    if (connectClaim.status === 'claimed'
+      && connectClaim.publicInstanceIdentity !== discovery.publicInstanceIdentity) {
       return {
         status: 'authentication-required',
         message: 'The ProPR Connect instance changed. Use the currently discovered instance and approve it again.',
@@ -785,12 +813,13 @@ export class DesktopCredentialService {
         authentication,
       };
     }
-
-    const initial = await this.#profiles.readProfileCredential(input.id);
-    if (this.#generation(input.id) !== operationGeneration
-      || this.#selectionGeneration !== operationSelection
-      || this.#latestProbeTicket !== probeTicket) {
-      return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
+    if (identityMismatched) {
+      return {
+        status: 'authentication-required',
+        message: 'This endpoint now identifies as a different ProPR instance. Approve it again to continue.',
+        version: discovery.version,
+        authentication,
+      };
     }
     if (initial.profile?.apiBaseUrl !== origin) {
       return {
@@ -835,25 +864,6 @@ export class DesktopCredentialService {
         authentication,
       };
     }
-    if (!isPublicInstanceIdentity(credential.publicInstanceIdentity)
-      || credential.publicInstanceIdentity !== discovery.publicInstanceIdentity) {
-      const removed = await this.#detachIdentityFailedCredential(
-        credential,
-        operationGeneration,
-        operationSelection,
-        probeTicket,
-      );
-      if (!removed) {
-        return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
-      }
-      return {
-        status: 'authentication-required',
-        message: 'This endpoint now identifies as a different ProPR instance. Approve it again to continue.',
-        version: discovery.version,
-        authentication,
-      };
-    }
-
     let response: Response;
     try {
       if (!connectClaim.isCurrent()) {

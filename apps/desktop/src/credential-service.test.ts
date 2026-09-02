@@ -654,7 +654,7 @@ describe('main-process desktop credential service', () => {
     }))).requestHeaders, { Authorization: `Bearer ${token('B')}` });
   });
 
-  it('detaches profile B credential A without sending any bearer request to A or minting a ticket', async () => {
+  it('detaches origin and identity mismatches before bearer use or early protocol exits', async () => {
     const store = await createStore();
     const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://b.example.test' });
     await store.writeCredential(credential(profileB.id, 'https://a.example.test', 'A'));
@@ -683,6 +683,52 @@ describe('main-process desktop credential service', () => {
     assert.equal(requests.some(request => request.url.startsWith('https://a.example.test/')), false);
     assert.equal(await store.readCredential(profileB.id), null);
     assert.equal((await store.list()).activeProfileId, null);
+
+    const replacementIdentity = '123e4567-e89b-42d3-a456-426614174001';
+    for (const [name, replacementDiscovery, expectedStatus] of [
+      ['incompatible', {
+        ...discovery,
+        version: '99.0.0',
+        apiCompatibility: '9999-12-31',
+        publicInstanceIdentity: replacementIdentity,
+      }, 'incompatible'],
+      ['capability', {
+        ...discovery,
+        publicInstanceIdentity: replacementIdentity,
+        desktopAuthentication: {
+          ...discovery.desktopAuthentication,
+          socketIoBearerAuthentication: false,
+        },
+      }, 'authentication-required'],
+    ] as const) {
+      const store = await createStore();
+      const profile = await store.save({
+        id: `identity-${name}`, label: name, apiBaseUrl: `https://${name}.example.test`,
+      });
+      await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+      const requests: Array<{ url: string; authorization: string | null }> = [];
+      const service = createCredentialService({
+        profiles: store,
+        clientName: 'Identity early-exit test',
+        openPairingBrowser: async () => undefined,
+        fetch: async (input, init) => {
+          requests.push({
+            url: input.toString(),
+            authorization: new Headers(init?.headers).get('Authorization'),
+          });
+          return json(replacementDiscovery);
+        },
+      });
+
+      const result = await service.probe({
+        id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl,
+      });
+      assert.equal(result.status, expectedStatus);
+      assert.equal(await store.readCredential(profile.id), null);
+      assert.ok(requests.length >= 1);
+      assert.equal(requests.every(request => request.url === `${profile.apiBaseUrl}/api/desktop/discovery`
+        && request.authorization === null), true);
+    }
   });
 
   it('does not mint a ticket when a delayed B probe observes credential replacement with origin A', async () => {
@@ -1864,6 +1910,8 @@ describe('main-process desktop credential service', () => {
         return new Response(new ReadableStream<Uint8Array>({
           start(controller) {
             controller.enqueue(new TextEncoder().encode('{'));
+          },
+          pull() {
             bodyStarted.resolve();
           },
           cancel() { bodyCancelled = true; },
