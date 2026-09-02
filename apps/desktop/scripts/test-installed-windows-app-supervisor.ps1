@@ -1745,12 +1745,29 @@ function Restore-HkcuDesktopFixtureBoundary(
               }
               Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $Boundary.BackupPath)
               Assert-HkcuDesktopFixtureOperation (!(Test-Path -LiteralPath $Boundary.DesktopKey))
+              $recoveredBackupDigest = try {
+                Get-HkcuFixtureRegistryDigest ([string]$Boundary.BackupPath)
+              } catch {
+                'INVALID'
+              }
+              Assert-HkcuDesktopFixtureOperation (
+                Test-HkcuFixtureRegistryDigest $recoveredBackupDigest)
+              Assert-HkcuDesktopFixtureOperation (
+                $recoveredBackupDigest -ceq [string]$Boundary.BaselineDigest)
             } catch {
               $desktopDigest = if (Test-Path -LiteralPath $Boundary.DesktopKey) {
-                Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+                try {
+                  Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+                } catch {
+                  'INVALID'
+                }
               } else { 'MISSING' }
               $backupDigestAfterRecovery = if (Test-Path -LiteralPath $Boundary.BackupPath) {
-                Get-HkcuFixtureRegistryDigest ([string]$Boundary.BackupPath)
+                try {
+                  Get-HkcuFixtureRegistryDigest ([string]$Boundary.BackupPath)
+                } catch {
+                  'INVALID'
+                }
               } else { 'MISSING' }
               Assert-HkcuDesktopFixtureOperation (
                 $desktopDigest -ceq [string]$Boundary.BaselineDigest -or
@@ -2334,7 +2351,11 @@ function Get-SupervisorInvocationCallsites {
     'EARLY_PROCESS_STATE_PATH',
     'EARLY_PROCESS_STATE_READ',
     'HKCU_BASELINE_STATE',
-    'REGRESSION_VALUE_SETUP',
+    'REGRESSION_ROOT_KEY_SETUP',
+    'REGRESSION_VALUE_KIND_SETUP',
+    'REGRESSION_NATIVE_NONE_WRITE',
+    'REGRESSION_NESTED_KEY_SETUP',
+    'REGRESSION_NESTED_VALUE_SETUP',
     'NATIVE_VALUE_READ',
     'BASELINE_DIGEST',
     'BASELINE_RELOCATE',
@@ -2388,6 +2409,7 @@ function Get-SupervisorInvocationFields {
     'REGISTRY_PATH',
     'REGISTRY_ROOT',
     'REGISTRY_VALUE',
+    'NATIVE_RETURN_CODE',
     'USER_NAME',
     'USER_SID',
     'PROFILE_PATH',
@@ -2552,7 +2574,11 @@ function Get-SupervisorAttributionTotalityCases {
     'CALLSITE_EARLY_PROCESS_TREE_ASSERTION',
     'CALLSITE_EARLY_MANIFEST_PRESERVATION',
     'CALLSITE_HKCU_BASELINE_STATE',
-    'CALLSITE_HKCU_REGRESSION_VALUE_SETUP',
+    'CALLSITE_HKCU_REGRESSION_ROOT_KEY_SETUP',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_SETUP',
+    'CALLSITE_HKCU_REGRESSION_NATIVE_NONE_WRITE',
+    'CALLSITE_HKCU_REGRESSION_NESTED_KEY_SETUP',
+    'CALLSITE_HKCU_REGRESSION_NESTED_VALUE_SETUP',
     'CALLSITE_HKCU_NATIVE_VALUE_READ',
     'CALLSITE_HKCU_BASELINE_DIGEST',
     'CALLSITE_HKCU_BASELINE_RELOCATE',
@@ -3743,11 +3769,39 @@ function Test-SupervisorInvocationAttributionTotality {
         Callsite='HKCU_BASELINE_STATE'; Field='REGISTRY_PATH'
       },
       [PSCustomObject]@{
-        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_SETUP'
+        CaseId='CALLSITE_HKCU_REGRESSION_ROOT_KEY_SETUP'
         Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
         Scenario='HKCU_BASELINE_RESTORE'
         Phase='FIXTURE_SETUP'
-        Callsite='REGRESSION_VALUE_SETUP'; Field='REGISTRY_VALUE'
+        Callsite='REGRESSION_ROOT_KEY_SETUP'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_SETUP'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_SETUP'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_NATIVE_NONE_WRITE'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_NATIVE_NONE_WRITE'; Field='NATIVE_RETURN_CODE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_NESTED_KEY_SETUP'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_NESTED_KEY_SETUP'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_NESTED_VALUE_SETUP'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_NESTED_VALUE_SETUP'; Field='REGISTRY_VALUE'
       },
       [PSCustomObject]@{
         CaseId='CALLSITE_HKCU_NATIVE_VALUE_READ'
@@ -5896,10 +5950,16 @@ function Test-PreExistingAppPathsAuthority {
 
 function Set-HkcuFixtureBoundaryValueKinds([string]$Path) {
   Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_VALUE_SETUP' `
-    -Field 'REGISTRY_VALUE' `
+    -Callsite 'REGRESSION_ROOT_KEY_SETUP' `
+    -Field 'REGISTRY_PATH' `
     -Action {
       [void](New-Item -Path $Path -Force -ErrorAction Stop)
+      Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $Path)
+    }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_VALUE_KIND_SETUP' `
+    -Field 'REGISTRY_VALUE' `
+    -Action {
       $key = Get-Item -LiteralPath $Path -ErrorAction Stop
       $key.SetValue('', 'default-string', [Microsoft.Win32.RegistryValueKind]::String)
       $key.SetValue('StringValue', 'plain-string', [Microsoft.Win32.RegistryValueKind]::String)
@@ -5924,11 +5984,30 @@ function Set-HkcuFixtureBoundaryValueKinds([string]$Path) {
         [string[]]@('alpha', '', 'omega'),
         [Microsoft.Win32.RegistryValueKind]::MultiString
       )
+    }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_NATIVE_NONE_WRITE' `
+    -Field 'NATIVE_RETURN_CODE' `
+    -Action {
+      $key = Get-Item -LiteralPath $Path -ErrorAction Stop
       Set-SupervisorFixtureRegistryValueNativeBytes `
         $key 'NoneValue' 0 ([byte[]]@(9, 8, 7))
+    }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_NESTED_KEY_SETUP' `
+    -Field 'REGISTRY_PATH' `
+    -Action {
       $nested = Join-Path $Path 'Nested'
       $child = Join-Path $nested 'Child'
       [void](New-Item -Path $child -Force -ErrorAction Stop)
+      Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $child)
+    }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_NESTED_VALUE_SETUP' `
+    -Field 'REGISTRY_VALUE' `
+    -Action {
+      $nested = Join-Path $Path 'Nested'
+      $child = Join-Path $nested 'Child'
       $childKey = Get-Item -LiteralPath $child -ErrorAction Stop
       $childKey.SetValue('NestedValue', 'nested-string', [Microsoft.Win32.RegistryValueKind]::String)
     }
@@ -6096,6 +6175,7 @@ function Test-HkcuFixtureDigestFailureAttributionRegression(
   [string]$InitializeInvalidPath,
   [string]$BackupEqualityPath,
   [string]$PostRestoreEqualityPath,
+  [string]$RecoveryProofPath,
   [string]$FinalEqualityPath
 ) {
   Set-HkcuFixtureBoundaryValueKinds $InitializeInvalidPath
@@ -6137,6 +6217,70 @@ function Test-HkcuFixtureDigestFailureAttributionRegression(
   Assert-HkcuDesktopFixtureOperation `
     ((Test-Path -LiteralPath $postRestoreEqualityBoundary.BackupPath) -and
       !(Test-Path -LiteralPath $PostRestoreEqualityPath))
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'FINAL_BASELINE_DIGEST' `
+    -Field 'REGISTRY_ROOT' `
+    -Action {
+      Assert-HkcuDesktopFixtureOperation (
+        (Get-HkcuFixtureRegistryDigest $postRestoreEqualityBoundary.BackupPath) -ceq
+          [string]$postRestoreEqualityBoundary.BaselineDigest
+      )
+    }
+
+  Set-HkcuFixtureBoundaryValueKinds $RecoveryProofPath
+  $recoveryProofDigest = Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'BASELINE_DIGEST' `
+    -Field 'REGISTRY_ROOT' `
+    -Action {
+      $digest = Get-HkcuFixtureRegistryDigest $RecoveryProofPath
+      Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
+      $digest
+    }
+  $recoveryProofBoundary = New-HkcuDesktopFixtureBoundaryState $RecoveryProofPath
+  Initialize-HkcuDesktopFixtureBoundary $recoveryProofBoundary
+  $recoveryProofBoundary.ForcePostRestoreDigestMismatch = $true
+  $recoveryProofBackupPath = [string]$recoveryProofBoundary.BackupPath
+  $recoveryProofBadDigest = Get-HkcuFixtureDifferentDigest $recoveryProofDigest
+  $originalHkcuDigestForRecoveryProof =
+    (Get-Command Get-HkcuFixtureRegistryDigest -CommandType Function).ScriptBlock
+  function Get-HkcuFixtureRegistryDigest([string]$Path) {
+    if ([string]::Equals(
+        [string]$Path,
+        [string]$recoveryProofBackupPath,
+        [StringComparison]::OrdinalIgnoreCase
+      )) {
+      return $recoveryProofBadDigest
+    }
+    & $originalHkcuDigestForRecoveryProof $Path
+  }
+  $expectedRecoveryProofFailure = Get-SanitizedSupervisorInvocationDiagnostic `
+    'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+    'HKCU_BASELINE_RESTORE' `
+    'FIXTURE_SETUP' `
+    'RECOVERY_RELOCATE' `
+    'REGISTRY_PATH'
+  try {
+    Restore-HkcuDesktopFixtureBoundary $recoveryProofBoundary $false
+    Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
+  } catch {
+    Assert-True ([string]$_.Exception.Message -ceq $expectedRecoveryProofFailure) `
+      (Get-HkcuFixtureBoundaryDiagnostic)
+  } finally {
+    Set-Item -Path Function:\Get-HkcuFixtureRegistryDigest `
+      -Value $originalHkcuDigestForRecoveryProof
+  }
+  Assert-HkcuDesktopFixtureOperation `
+    ((Test-Path -LiteralPath $recoveryProofBoundary.BackupPath) -and
+      !(Test-Path -LiteralPath $RecoveryProofPath))
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'FINAL_BASELINE_DIGEST' `
+    -Field 'REGISTRY_ROOT' `
+    -Action {
+      Assert-HkcuDesktopFixtureOperation (
+        (Get-HkcuFixtureRegistryDigest $recoveryProofBoundary.BackupPath) -ceq
+          $recoveryProofDigest
+      )
+    }
 
   Set-HkcuFixtureBoundaryValueKinds $FinalEqualityPath
   $finalDigest = Get-HkcuFixtureRegistryDigest $FinalEqualityPath
@@ -6180,6 +6324,8 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
   $backupEqualityDesktop = Join-Path $backupEqualityParent 'Desktop'
   $postRestoreEqualityParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
   $postRestoreEqualityDesktop = Join-Path $postRestoreEqualityParent 'Desktop'
+  $recoveryProofParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $recoveryProofDesktop = Join-Path $recoveryProofParent 'Desktop'
   $finalEqualityParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
   $finalEqualityDesktop = Join-Path $finalEqualityParent 'Desktop'
   Invoke-SupervisorAttributedOperation `
@@ -6196,6 +6342,7 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
           $initializeInvalidDesktop `
           $backupEqualityDesktop `
           $postRestoreEqualityDesktop `
+          $recoveryProofDesktop `
           $finalEqualityDesktop
         Set-HkcuFixtureBoundaryValueKinds $presentDesktop
         $presentDigest = Invoke-HkcuDesktopFixtureOperation `
@@ -6403,6 +6550,7 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
             $initializeInvalidParent,
             $backupEqualityParent,
             $postRestoreEqualityParent,
+            $recoveryProofParent,
             $finalEqualityParent
           )) {
           if (Test-Path -LiteralPath $path) {

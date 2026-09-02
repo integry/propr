@@ -638,7 +638,11 @@ describe('desktop trusted release workflow', () => {
       'CALLSITE_RESOURCE_COLLISION_REPLACEMENT_SURVIVAL_READ',
       'CALLSITE_RESOURCE_COLLISION_MANIFEST_PRESERVATION',
       'CALLSITE_HKCU_BASELINE_STATE',
-      'CALLSITE_HKCU_REGRESSION_VALUE_SETUP',
+      'CALLSITE_HKCU_REGRESSION_ROOT_KEY_SETUP',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_SETUP',
+      'CALLSITE_HKCU_REGRESSION_NATIVE_NONE_WRITE',
+      'CALLSITE_HKCU_REGRESSION_NESTED_KEY_SETUP',
+      'CALLSITE_HKCU_REGRESSION_NESTED_VALUE_SETUP',
       'CALLSITE_HKCU_NATIVE_VALUE_READ',
       'CALLSITE_HKCU_BASELINE_DIGEST',
       'CALLSITE_HKCU_BASELINE_RELOCATE',
@@ -917,7 +921,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /function Restore-HkcuDesktopFixtureBoundary[\s\S]*if \(!\$Boundary\.BaselinePresent\)[\s\S]*Callsite 'TARGET_OWNERSHIP'[\s\S]*Assert-HkcuDesktopFixtureOperation \$TargetOwnedByFixture[\s\S]*Remove-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Callsite 'BASELINE_DIGEST'[\s\S]*Get-HkcuFixtureRegistryDigest \(\[string\]\$Boundary\.BackupPath\)[\s\S]*Callsite 'TARGET_OWNERSHIP'[\s\S]*Assert-HkcuDesktopFixtureOperation \$TargetOwnedByFixture[\s\S]*Remove-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Assert-HkcuDesktopFixtureOperation \(!\(Test-Path -LiteralPath \$Boundary\.DesktopKey\)\)[\s\S]*Rename-Item -LiteralPath \$Boundary\.BackupPath[\s\S]*Callsite 'RECOVERY_RELOCATE'[\s\S]*Rename-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*-ErrorAction Stop[\s\S]*Callsite 'FINAL_BASELINE_DIGEST'[\s\S]*Callsite 'FINAL_BACKUP_ABSENCE'/,
+      /function Restore-HkcuDesktopFixtureBoundary[\s\S]*if \(!\$Boundary\.BaselinePresent\)[\s\S]*Callsite 'TARGET_OWNERSHIP'[\s\S]*Assert-HkcuDesktopFixtureOperation \$TargetOwnedByFixture[\s\S]*Remove-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Callsite 'BASELINE_DIGEST'[\s\S]*Get-HkcuFixtureRegistryDigest \(\[string\]\$Boundary\.BackupPath\)[\s\S]*Callsite 'TARGET_OWNERSHIP'[\s\S]*Assert-HkcuDesktopFixtureOperation \$TargetOwnedByFixture[\s\S]*Remove-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Assert-HkcuDesktopFixtureOperation \(!\(Test-Path -LiteralPath \$Boundary\.DesktopKey\)\)[\s\S]*Rename-Item -LiteralPath \$Boundary\.BackupPath[\s\S]*Callsite 'RECOVERY_RELOCATE'[\s\S]*Rename-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*-ErrorAction Stop[\s\S]*\$recoveredBackupDigest = try \{[\s\S]*Get-HkcuFixtureRegistryDigest \(\[string\]\$Boundary\.BackupPath\)[\s\S]*\$recoveredBackupDigest -ceq \[string\]\$Boundary\.BaselineDigest[\s\S]*Callsite 'FINAL_BASELINE_DIGEST'[\s\S]*Callsite 'FINAL_BACKUP_ABSENCE'/,
     );
     const registryDigestFunction = installedWindowsAppSupervisorBehaviorTest.slice(
       installedWindowsAppSupervisorBehaviorTest.indexOf(
@@ -1128,7 +1132,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /function Test-HkcuFixtureDigestFailureAttributionRegression[\s\S]*Initialize-HkcuDesktopFixtureBoundary \$initializeInvalidBoundary[\s\S]*'BASELINE_DIGEST'[\s\S]*Restore-HkcuDesktopFixtureBoundary \$backupEqualityBoundary \$false[\s\S]*'BASELINE_DIGEST'[\s\S]*ForcePostRestoreDigestMismatch = \$true[\s\S]*Restore-HkcuDesktopFixtureBoundary \$postRestoreEqualityBoundary \$false[\s\S]*'BASELINE_DIGEST'[\s\S]*-Callsite 'FINAL_BASELINE_DIGEST'[\s\S]*'FINAL_BASELINE_DIGEST'/,
+      /function Test-HkcuFixtureDigestFailureAttributionRegression[\s\S]*Initialize-HkcuDesktopFixtureBoundary \$initializeInvalidBoundary[\s\S]*'BASELINE_DIGEST'[\s\S]*Restore-HkcuDesktopFixtureBoundary \$backupEqualityBoundary \$false[\s\S]*'BASELINE_DIGEST'[\s\S]*ForcePostRestoreDigestMismatch = \$true[\s\S]*Restore-HkcuDesktopFixtureBoundary \$postRestoreEqualityBoundary \$false[\s\S]*'BASELINE_DIGEST'[\s\S]*Get-HkcuFixtureRegistryDigest \$postRestoreEqualityBoundary\.BackupPath[\s\S]*ForcePostRestoreDigestMismatch = \$true[\s\S]*\$recoveryProofBadDigest[\s\S]*'RECOVERY_RELOCATE'[\s\S]*Restore-HkcuDesktopFixtureBoundary \$recoveryProofBoundary \$false[\s\S]*\$expectedRecoveryProofFailure[\s\S]*-Callsite 'FINAL_BASELINE_DIGEST'[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryProofBoundary\.BackupPath[\s\S]*'FINAL_BASELINE_DIGEST'/,
     );
     assert.match(
       hkcuBoundaryRegression,
@@ -1153,7 +1157,15 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /RegSetValueEx/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /Set-SupervisorFixtureRegistryValueNativeBytes\s+`\n\s+\$key 'NoneValue' 0 \(\[byte\[\]\]@\(9, 8, 7\)\)/,
+      /Callsite 'REGRESSION_NATIVE_NONE_WRITE'[\s\S]*Field 'NATIVE_RETURN_CODE'[\s\S]*Set-SupervisorFixtureRegistryValueNativeBytes\s+`\n\s+\$key 'NoneValue' 0 \(\[byte\[\]\]@\(9, 8, 7\)\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Set-HkcuFixtureBoundaryValueKinds[\s\S]*Callsite 'REGRESSION_ROOT_KEY_SETUP'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_SETUP'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_NATIVE_NONE_WRITE'[\s\S]*Field 'NATIVE_RETURN_CODE'[\s\S]*Callsite 'REGRESSION_NESTED_KEY_SETUP'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_NESTED_VALUE_SETUP'[\s\S]*Field 'REGISTRY_VALUE'/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_SETUP'[\s\S]*Field 'REGISTRY_VALUE'/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
@@ -1193,7 +1205,11 @@ describe('desktop trusted release workflow', () => {
     }
     for (const callsite of [
       'HKCU_BASELINE_STATE',
-      'REGRESSION_VALUE_SETUP',
+      'REGRESSION_ROOT_KEY_SETUP',
+      'REGRESSION_VALUE_KIND_SETUP',
+      'REGRESSION_NATIVE_NONE_WRITE',
+      'REGRESSION_NESTED_KEY_SETUP',
+      'REGRESSION_NESTED_VALUE_SETUP',
       'NATIVE_VALUE_READ',
       'BASELINE_DIGEST',
       'BASELINE_RELOCATE',
@@ -1208,6 +1224,7 @@ describe('desktop trusted release workflow', () => {
         new RegExp(`Get-SupervisorInvocationCallsites[\\s\\S]*'${callsite}'`),
       );
     }
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SupervisorInvocationFields[\s\S]*'NATIVE_RETURN_CODE'/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SupervisorInvocationFields[\s\S]*'REGISTRY_PATH'/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /OWNED_RESOURCES_NORMAL_SUCCESS/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /typed authenticated empty-state receipt/);
