@@ -16,7 +16,7 @@ import {
   FuseVersion,
   getCurrentFuseWire,
 } from '@electron/fuses';
-import { assertPackagedLayout, parseEventLayout } from './packaged-layout.mjs';
+import { assertPackagedLayout, parseEventLayout, parseEventRecord } from './packaged-layout.mjs';
 import {
   createPackagedSmokeLaunch,
   LAYOUT_READY_EVENT,

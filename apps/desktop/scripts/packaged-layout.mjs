@@ -1,7 +1,7 @@
 const EXPECTED_WINDOW_SIZE = { width: 1280, height: 820 };
 const MINIMUM_WINDOW_SIZE = { width: 880, height: 620 };
 
-const parseEventRecord = (smokeOutput, expectedEvent) => {
+export const parseEventRecord = (smokeOutput, expectedEvent) => {
   for (const line of smokeOutput.split(/\r?\n/)) {
     if (!line.includes(expectedEvent)) continue;
     try {

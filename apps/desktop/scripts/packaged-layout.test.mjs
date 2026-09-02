@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { assertPackagedLayout } from './packaged-layout.mjs';
+import { assertPackagedLayout, parseEventRecord } from './packaged-layout.mjs';
 
 const bounds = (left, top, width, height) => ({
   bottom: top + height,
@@ -28,6 +28,36 @@ const layout = ({
   heading: bounds((viewportWidth - 420) / 2, 132, 420, 58),
   connectButton: bounds((viewportWidth - 520) / 2, 230, 520, 76),
   connectDescription: bounds((viewportWidth - 300) / 2, 270, 300, 18),
+});
+
+describe('packaged desktop event parsing', () => {
+  it('returns the first full record for the exact matching event', () => {
+    const firstProof = {
+      event: 'desktop.renderer.mvp_flows.ready',
+      localProfile: true,
+      remoteActiveProfile: true,
+      lifecycleBoundary: true,
+      connectUiPopulated: true,
+    };
+    const output = [
+      'not JSON: desktop.renderer.mvp_flows.ready',
+      JSON.stringify({ event: 'desktop.renderer.mvp_flows.ready.extra', localProfile: false }),
+      JSON.stringify({ event: 'desktop.renderer.other', note: 'desktop.renderer.mvp_flows.ready' }),
+      JSON.stringify(firstProof),
+      JSON.stringify({ event: 'desktop.renderer.mvp_flows.ready', localProfile: false }),
+    ].join('\n');
+
+    assert.deepEqual(parseEventRecord(output, firstProof.event), firstProof);
+  });
+
+  it('returns undefined when the event is absent', () => {
+    const output = [
+      '{malformed',
+      JSON.stringify({ event: 'desktop.renderer.other' }),
+    ].join('\n');
+
+    assert.equal(parseEventRecord(output, 'desktop.renderer.mvp_flows.ready'), undefined);
+  });
 });
 
 describe('packaged desktop layout assertions', () => {
