@@ -366,13 +366,15 @@ describe('GoalRepository WAL contention', () => {
       first.applyModelChange(goal.goalId, fence),
     ]);
     if (cancelOutcome.status !== 'fulfilled') throw cancelOutcome.reason;
-    const terminal = cancelOutcome.value;
+    const cancelling = cancelOutcome.value;
     const immediatelyAfterRace = await first.requireGoal(goal.goalId);
-    assert.equal(immediatelyAfterRace.version, terminal.version);
-    assert.equal(immediatelyAfterRace.effectiveModel, terminal.effectiveModel);
+    assert.ok(immediatelyAfterRace.version >= cancelling.version);
     if (applyOutcome.status === 'rejected') {
       assert.equal((applyOutcome.reason as GoalError).code, 'goal_terminal_state');
     }
+    const terminal = await first.transition(goal.goalId, {
+      toState: 'cancelled', terminalReason: 'user_cancelled', ...fence,
+    });
     const statsAtTerminal = await first.getActiveTimeStats(goal.goalId);
 
     await assert.rejects(

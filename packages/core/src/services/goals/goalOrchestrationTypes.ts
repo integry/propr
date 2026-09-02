@@ -57,6 +57,8 @@ export interface GoalAttempt {
   goalId: string;
   nodeId: string;
   executionId: string;
+  /** Stable provider idempotency identity. It never changes across recovery. */
+  dispatchIdentity: string;
   attemptNumber: number;
   sessionId: string | null;
   status: GoalAttemptStatus;
@@ -68,6 +70,7 @@ export interface GoalAttempt {
   ultrafixMaxCycles: number | null;
   leaseGeneration: number;
   externalRef: string | null;
+  lastDispatchError: string | null;
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;
@@ -114,7 +117,8 @@ export interface GoalGitHubArtifact {
 
 export type GoalOutboxOperationKind =
   | 'create_issue' | 'create_branch' | 'create_pull_request'
-  | 'update_issue' | 'update_pull_request' | 'merge_pull_request';
+  | 'update_issue' | 'update_pull_request' | 'merge_pull_request'
+  | 'create_comment' | 'sync_labels';
 
 export interface GoalOutboxOperation {
   operationId: string;
@@ -126,6 +130,15 @@ export interface GoalOutboxOperation {
   marker: string;
   payload: Record<string, unknown>;
   attempts: number;
+  claimOwner: string | null;
+  claimToken: string | null;
+  claimExpiresAt: string | null;
+}
+
+export interface GoalClaimedOutboxOperation extends GoalOutboxOperation {
+  claimOwner: string;
+  claimToken: string;
+  claimExpiresAt: string;
 }
 
 export type GoalEvidenceKind = 'ci' | 'review' | 'ultrafix' | 'freshness';
@@ -165,20 +178,38 @@ export interface GoalRuntimeDispatch {
   attemptNumber: number;
   attemptId: string;
   repository: string;
+  agent: string;
   issueNumber: number | null;
   baseBranch: string;
   headBranch: string;
   model: string;
+  dispatchIdentity: string;
   acceptanceCriteria: string[];
   controllerFence: GoalLeaseFence;
 }
 
+export type GoalRuntimeExecutionState =
+  | 'absent' | 'dispatching' | 'running' | 'safe_boundary'
+  | 'succeeded' | 'failed' | 'cancelled';
+
+export interface GoalRuntimeExecution {
+  dispatchIdentity: string;
+  state: GoalRuntimeExecutionState;
+  sessionId?: string;
+  externalRef?: string;
+  hasDiff?: boolean;
+  detail?: Record<string, unknown>;
+}
+
 /** The runtime port intentionally contains no filesystem/container primitive. */
 export interface GoalRuntimePort {
+  /** Lookup is required: dispatch is safe only when the stable identity is absent. */
+  lookup(input: { dispatchIdentity: string; controllerFence: GoalLeaseFence }): Promise<GoalRuntimeExecution>;
   dispatch(input: GoalRuntimeDispatch): Promise<{ sessionId: string; externalRef?: string }>;
-  sendFollowup?(input: { attemptId: string; sessionId: string; body: string; controllerFence: GoalLeaseFence }): Promise<void>;
-  requestSafeBoundary?(input: { attemptId: string; sessionId: string; controllerFence: GoalLeaseFence }): Promise<void>;
-  resume?(input: { attemptId: string; sessionId: string; controllerFence: GoalLeaseFence }): Promise<void>;
+  sendFollowup(input: { attemptId: string; sessionId: string; messageId: string; body: string; controllerFence: GoalLeaseFence }): Promise<void>;
+  requestSafeBoundary(input: { attemptId: string; sessionId: string; controllerFence: GoalLeaseFence }): Promise<void>;
+  resume(input: { attemptId: string; sessionId: string; controllerFence: GoalLeaseFence }): Promise<void>;
+  stop(input: { dispatchIdentity: string; attemptId: string; sessionId: string | null; controllerFence: GoalLeaseFence }): Promise<GoalRuntimeExecution>;
 }
 
 export interface GoalGitHubRemoteArtifact {
@@ -193,6 +224,8 @@ export interface GoalGitHubRemoteArtifact {
   headSha?: string | null;
   baseSha?: string | null;
   state: GoalArtifactState;
+  labels?: string[];
+  body?: string | null;
 }
 
 /** All GitHub mutations are mediated by persisted outbox operations. */
@@ -201,6 +234,29 @@ export interface GoalGitHubPort {
   execute(operation: GoalOutboxOperation, marker: GoalArtifactMarker): Promise<GoalGitHubRemoteArtifact | null>;
   inspectGoal(repository: string, markers: GoalArtifactMarker[]): Promise<GoalGitHubRemoteArtifact[]>;
   branchHasDiff(repository: string, head: string, base: string): Promise<boolean>;
+}
+
+export interface GoalValidationRequest {
+  goalId: string;
+  nodeId: string;
+  repository: string;
+  pullRequestNumber: number;
+  headSha: string;
+  baseSha: string;
+  policy: GoalReadinessPolicy;
+  controllerFence: GoalLeaseFence;
+}
+
+export interface GoalValidationPort {
+  validate(input: GoalValidationRequest): Promise<Array<Omit<GoalValidationEvidenceInput, keyof GoalLeaseFence>>>;
+  runUltrafix?(input: GoalValidationRequest & {
+    attemptId: string | null;
+    cycle: number;
+    threshold: number;
+    maxCycles: number;
+    agent: string;
+    model: string;
+  }): Promise<{ score: number; headSha: string; baseSha: string; result?: Record<string, unknown> }>;
 }
 
 export interface GoalEventPort {

@@ -52,6 +52,7 @@ export async function up(knex) {
     table.text('goal_id').notNullable();
     table.text('node_id').notNullable();
     table.text('execution_id').notNullable();
+    table.text('dispatch_identity').notNullable().unique();
     table.integer('attempt_number').notNullable();
     table.text('session_id').nullable();
     table.text('status').notNullable();
@@ -63,6 +64,7 @@ export async function up(knex) {
     table.integer('ultrafix_max_cycles').nullable();
     table.integer('lease_generation').notNullable();
     table.text('external_ref').nullable();
+    table.text('last_dispatch_error').nullable();
     table.text('started_at').nullable();
     table.text('finished_at').nullable();
     table.text('created_at').notNullable().defaultTo(now(knex));
@@ -92,6 +94,25 @@ export async function up(knex) {
     table.check("state IN ('reserved','active','released','expired')");
     table.index(['repository', 'state', 'expires_at'], 'goal_capacity_repository_idx');
     table.index(['goal_id', 'state', 'expires_at'], 'goal_capacity_goal_idx');
+  });
+
+  await knex.schema.createTable('goal_node_integrations', (table) => {
+    table.text('goal_id').notNullable();
+    table.text('node_id').notNullable();
+    table.text('runtime_state').notNullable().defaultTo('pending');
+    table.text('integration_state').notNullable().defaultTo('pending');
+    table.text('head_sha').nullable();
+    table.text('base_sha').nullable();
+    table.text('policy_hash').nullable();
+    table.text('merged_remote_id').nullable();
+    table.text('runtime_completed_at').nullable();
+    table.text('integrated_at').nullable();
+    table.text('updated_at').notNullable().defaultTo(now(knex));
+    table.primary(['goal_id', 'node_id']);
+    table.foreign(['goal_id', 'node_id']).references(['goal_id', 'node_id']).inTable('goal_nodes').onDelete('CASCADE');
+    table.check("runtime_state IN ('pending','running','succeeded','failed','cancelled')");
+    table.check("integration_state IN ('pending','awaiting_artifacts','awaiting_validation','ready_to_merge','integrated','no_diff','failed','cancelled')");
+    table.index(['goal_id', 'integration_state'], 'goal_integrations_ready_idx');
   });
 
   await knex.schema.createTable('goal_branch_locks', (table) => {
@@ -147,17 +168,20 @@ export async function up(knex) {
     table.integer('attempts').notNullable().defaultTo(0);
     table.text('claimed_by').nullable();
     table.integer('claim_generation').nullable();
+    table.text('claim_token').nullable();
     table.text('claim_expires_at').nullable();
     table.text('last_error').nullable();
     table.text('available_at').notNullable().defaultTo(now(knex));
     table.text('completed_at').nullable();
+    table.text('superseded_at').nullable();
     table.text('created_at').notNullable().defaultTo(now(knex));
     table.text('updated_at').notNullable().defaultTo(now(knex));
     table.foreign(['goal_id', 'node_id']).references(['goal_id', 'node_id']).inTable('goal_nodes').onDelete('CASCADE');
     table.foreign('artifact_id').references('artifact_id').inTable('goal_github_artifacts').onDelete('SET NULL');
     table.unique(['goal_id', 'idempotency_key']);
     table.check('json_valid(payload_json)');
-    table.check("state IN ('pending','claimed','succeeded','failed') AND typeof(attempts) = 'integer' AND attempts >= 0");
+    table.check("state IN ('pending','claimed','succeeded','failed','superseded') AND typeof(attempts) = 'integer' AND attempts >= 0");
+    table.check("(state = 'claimed' AND claimed_by IS NOT NULL AND claim_token IS NOT NULL AND claim_expires_at IS NOT NULL) OR (state <> 'claimed' AND claimed_by IS NULL AND claim_token IS NULL AND claim_expires_at IS NULL)");
     table.index(['state', 'available_at'], 'goal_outbox_ready_idx');
   });
 
@@ -187,7 +211,7 @@ export async function up(knex) {
     table.text('goal_id').notNullable();
     table.text('node_id').notNullable();
     table.integer('cycle').notNullable();
-    table.text('attempt_id').notNullable();
+    table.text('attempt_id').nullable();
     table.text('head_sha').notNullable();
     table.text('status').notNullable();
     table.integer('score').nullable();
@@ -217,6 +241,7 @@ export async function down(knex) {
   await knex.schema.dropTableIfExists('goal_github_outbox');
   await knex.schema.dropTableIfExists('goal_github_artifacts');
   await knex.schema.dropTableIfExists('goal_branch_locks');
+  await knex.schema.dropTableIfExists('goal_node_integrations');
   await knex.schema.dropTableIfExists('goal_capacity_reservations');
   await knex.schema.dropTableIfExists('goal_attempts');
   await knex.schema.dropTableIfExists('goal_node_specs');

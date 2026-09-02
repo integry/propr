@@ -428,7 +428,7 @@ describe('goal routes', () => {
   test('rejects model changes once a goal is terminal', async () => {
     const created = await createGoalViaApi();
     const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
-    await new GoalRepository(database).requestCancel(goalId, { terminalReason: 'user_cancelled' });
+    await database('goals').where('goal_id', goalId).update({ state: 'cancelled', terminal_reason: 'user_cancelled' });
     const response = makeResponse();
     await makeRoutes().requestModelChange(
       makeRequest({ params: { goalId }, body: { model: 'claude-sonnet-5' }, headers: { 'Idempotency-Key': 'model-terminal' } }),

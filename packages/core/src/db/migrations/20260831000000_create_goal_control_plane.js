@@ -26,7 +26,7 @@ function isoNow(knex) {
 }
 
 const GOAL_STATES = [
-  'queued', 'planning', 'running', 'pausing', 'paused', 'recovering',
+  'queued', 'planning', 'running', 'pausing', 'paused', 'cancelling', 'recovering',
   'completing', 'completed', 'failed', 'cancelled',
 ];
 const NODE_KINDS = ['root_epic', 'sub_epic', 'implementation_issue', 'implementation_pr'];

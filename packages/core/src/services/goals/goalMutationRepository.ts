@@ -90,10 +90,9 @@ export class GoalMutationRepository {
 
   async requestCancel(goalId: string, input: CancelIntentInput = {}): Promise<Goal> {
     return this.transitionOperatorIntent(goalId, {
-      toState: 'cancelled',
+      toState: 'cancelling',
       expectedVersion: input.expectedVersion,
       reason: input.reason,
-      terminalReason: input.terminalReason ?? 'user_cancelled',
       idempotencyKey: input.idempotencyKey,
       idempotencyOperation: `cancel:${goalId}`,
     }, CANCEL_SOURCE_STATES);
@@ -266,7 +265,7 @@ export class GoalMutationRepository {
     validateFence(fence);
     return goalTransaction(this.db, async (trx) => {
       const goal = await requireGoalRecord(trx, goalId);
-      if (isTerminalGoalState(goal.state)) {
+      if (isTerminalGoalState(goal.state) || goal.state === 'cancelling') {
         throw new GoalError(GOAL_ERROR_CODES.terminalState, 'Effective model cannot change after the goal is terminal', 409);
       }
       const transition = await trx('goal_model_transitions')

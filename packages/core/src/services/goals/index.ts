@@ -21,4 +21,11 @@ export {
 } from './goalOrchestrationRepository.js';
 export { GoalController, type GoalControllerOptions, type GoalControllerTickResult } from './goalController.js';
 export { GoalControllerSupervisor, type GoalSupervisorOptions } from './goalControllerSupervisor.js';
+export {
+  ProductionGoalOrchestrator,
+  ProPRGoalGitHubPort,
+  ProPRGoalValidationPort,
+  createProductionGoalOrchestrator,
+  type ProductionGoalOrchestratorOptions,
+} from './goalProductionOrchestrator.js';
 export * from './goalOrchestrationTypes.js';

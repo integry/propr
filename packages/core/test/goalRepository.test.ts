@@ -388,13 +388,13 @@ describe('GoalRepository', () => {
     assert.equal(completed.terminalReason, 'objective_met');
   });
 
-  test('requestCancel defaults its optional terminal reason', async () => {
+  test('requestCancel records durable cancelling intent before controller finalization', async () => {
     const goal = await seedGoal();
 
     const cancelled = await repo.requestCancel(goal.goalId);
 
-    assert.equal(cancelled.state, 'cancelled');
-    assert.equal(cancelled.terminalReason, 'user_cancelled');
+    assert.equal(cancelled.state, 'cancelling');
+    assert.equal(cancelled.terminalReason, null);
   });
 
   test('enforces optimistic version preconditions', async () => {
@@ -610,8 +610,11 @@ describe('GoalRepository', () => {
       });
       await repo.markMessageDelivered(goal.goalId, delivered.messageId, fence);
       await repo.requestModelChange(goal.goalId, 'claude-sonnet-5');
-      const cancelled = await repo.requestCancel(goal.goalId, {
+      await repo.requestCancel(goal.goalId, {
         terminalReason: 'user_cancelled',
+      });
+      const cancelled = await repo.transition(goal.goalId, {
+        toState: 'cancelled', terminalReason: 'user_cancelled', ...fence,
       });
       const before = {
         goal: cancelled,

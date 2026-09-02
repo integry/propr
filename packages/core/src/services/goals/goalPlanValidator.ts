@@ -18,9 +18,9 @@ export function deterministicGoalNodeId(goalId: string, key: string): string {
   return `gn_${crypto.createHash('sha256').update(`${goalId}\0${key}`).digest('hex').slice(0, 32)}`;
 }
 
-export function deterministicGoalBranch(goalId: string, key: string, kind: GoalNodeKind): string {
+export function deterministicGoalBranch(goalId: string, key: string): string {
   const slug = key.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 28) || 'work';
-  const digest = crypto.createHash('sha256').update(`${goalId}\0${key}\0${kind}`).digest('hex').slice(0, 10);
+  const digest = crypto.createHash('sha256').update(`${goalId}\0${key}`).digest('hex').slice(0, 10);
   return `propr/goal-${slug}-${digest}`;
 }
 
@@ -40,8 +40,12 @@ export function validateGoalPlan(goalIdValue: string, input: GoalPlanInput): Val
     if (byKey.has(node.key)) invalid(`Duplicate node key: ${node.key}`);
     byKey.set(node.key, node);
   });
+  const singlePullRequestGoal = input.nodes.length === 1 && input.nodes[0].kind === 'implementation_pr'
+    && input.nodes[0].parentKey == null;
   const roots = input.nodes.filter((node) => node.kind === 'root_epic');
-  if (roots.length !== 1 || roots[0].parentKey != null) invalid('Plan must contain exactly one parentless root epic');
+  if (!singlePullRequestGoal && (roots.length !== 1 || roots[0].parentKey != null)) {
+    invalid('Plan must contain exactly one parentless root epic, or one parentless implementation PR');
+  }
 
   const depths = new Map<string, number>();
   const visiting = new Set<string>();
@@ -59,7 +63,7 @@ export function validateGoalPlan(goalIdValue: string, input: GoalPlanInput): Val
   };
   input.nodes.forEach((node) => {
     const depth = depthOf(node.key);
-    if (node.kind !== 'root_epic') {
+    if (node.kind !== 'root_epic' && !singlePullRequestGoal) {
       const parent = requireNode(byKey, node.parentKey, `parent of ${node.key}`);
       if (!legalParent(parent.kind, node.kind)) invalid(`Illegal ${parent.kind} -> ${node.kind} relationship for ${node.key}`);
       if (depth === 0) invalid(`Only the root epic may be parentless: ${node.key}`);
@@ -75,7 +79,7 @@ export function validateGoalPlan(goalIdValue: string, input: GoalPlanInput): Val
     return depth || left.key.localeCompare(right.key);
   });
   const nodeIdByKey = new Map(ordered.map((node) => [node.key, deterministicGoalNodeId(goalId, node.key)]));
-  const headByKey = new Map(ordered.map((node) => [node.key, deterministicGoalBranch(goalId, node.key, node.kind)]));
+  const headByKey = new Map(ordered.map((node) => [node.key, deterministicGoalBranch(goalId, node.key)]));
   const nodes: ValidatedGoalPlanNode[] = ordered.map((node, orderIndex) => {
     const parent = node.parentKey == null ? null : byKey.get(node.parentKey)!;
     const integrationParent = parent == null
@@ -173,4 +177,3 @@ function branch(value: unknown, field: string): string {
 function invalid(message: string): never {
   throw new GoalError(GOAL_ERROR_CODES.validation, message, 400);
 }
-

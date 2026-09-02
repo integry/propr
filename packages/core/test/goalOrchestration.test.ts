@@ -61,6 +61,26 @@ async function setupGoal(maxActiveTasks = 2) {
   return { goal, fence };
 }
 
+async function proveInitialArtifacts(goalId: string, nodes: ReturnType<typeof validateGoalPlan>['nodes'], fence: { leaseOwner: string; leaseEpoch: number }) {
+  for (const node of nodes) {
+    for (const kind of ['issue', ...(node.noCode ? [] : ['branch'])] as const) {
+      await orchestration.enqueueGitHubOperation({
+        goalId, nodeId: node.nodeId, artifactKind: kind,
+        operationKind: kind === 'issue' ? 'create_issue' : 'create_branch',
+        idempotencyKey: `test:${kind}:${node.nodeId}`, head: kind === 'branch' ? node.headBranch : null,
+        base: kind === 'branch' ? node.baseBranch : null, payload: {}, ...fence,
+      });
+      const [operation] = await orchestration.claimGitHubOperations(goalId, fence.leaseOwner, 1, fence);
+      await orchestration.adoptGitHubArtifact(operation, {
+        remoteId: `${kind}:${node.nodeId}`, number: kind === 'issue' ? 1 : undefined,
+        repository: 'octo/repo', kind, marker: operation.marker,
+        headBranch: kind === 'branch' ? node.headBranch : null,
+        baseBranch: kind === 'branch' ? node.baseBranch : null, state: 'present',
+      }, fence);
+    }
+  }
+}
+
 beforeEach(async () => {
   if (database) await database.destroy();
   database = createDatabase();
@@ -93,6 +113,7 @@ describe('durable goal orchestration', () => {
   test('atomically installs one plan and preserves active work across replans', async () => {
     const { goal, fence } = await setupGoal();
     const installed = await orchestration.installPlan(goal.goalId, plan(), fence);
+    await proveInitialArtifacts(goal.goalId, installed.plan.nodes, fence);
     const replay = await orchestration.installPlan(goal.goalId, plan(), fence);
     assert.equal(replay.replayed, true);
     assert.equal(replay.revision, installed.revision);
@@ -111,7 +132,8 @@ describe('durable goal orchestration', () => {
 
   test('enforces dependency readiness and SQL-backed goal capacity', async () => {
     const { goal, fence } = await setupGoal(2);
-    await orchestration.installPlan(goal.goalId, plan(), fence);
+    const installed = await orchestration.installPlan(goal.goalId, plan(), fence);
+    await proveInitialArtifacts(goal.goalId, installed.plan.nodes, fence);
     const first = await orchestration.reserveRunnableNodes(goal.goalId, fence);
     assert.deepEqual(first.map((item) => item.node.key).sort(), ['api', 'docs']);
     assert.equal((await orchestration.reserveRunnableNodes(goal.goalId, fence)).length, 0);
@@ -123,6 +145,22 @@ describe('durable goal orchestration', () => {
     await orchestration.markAttemptDispatching(goal.goalId, docs.attempt.attemptId, fence);
     await orchestration.markAttemptDispatched(goal.goalId, docs.attempt.attemptId, { sessionId: 'same-agent-session-a' }, fence);
     await orchestration.finishAttempt(goal.goalId, api.attempt.attemptId, 'succeeded', fence);
+    assert.equal((await orchestration.reserveRunnableNodes(goal.goalId, fence)).length, 0, 'runtime success is not dependency integration');
+    const apiNode = installed.plan.nodes.find((node) => node.key === 'api')!;
+    await orchestration.enqueueGitHubOperation({
+      goalId: goal.goalId, nodeId: apiNode.nodeId, artifactKind: 'pull_request',
+      operationKind: 'create_pull_request', idempotencyKey: 'test:api-pr',
+      head: apiNode.headBranch, base: apiNode.baseBranch, payload: {}, ...fence,
+    });
+    const [operation] = await orchestration.claimGitHubOperations(goal.goalId, fence.leaseOwner, 1, fence);
+    await orchestration.adoptGitHubArtifact(operation, {
+      remoteId: 'api-pr', number: 2, repository: 'octo/repo', kind: 'pull_request',
+      marker: operation.marker, headBranch: apiNode.headBranch, baseBranch: apiNode.baseBranch,
+      headSha: 'api-head', baseSha: 'backend-base', state: 'merged',
+    }, fence);
+    await orchestration.reconcileIntegrationEvidence(goal.goalId, {
+      policyHash: 'test-policy', requiredEvidence: [], mergePolicy: 'manual',
+    }, fence);
     const next = await orchestration.reserveRunnableNodes(goal.goalId, fence);
     assert.deepEqual(next.map((item) => item.node.key), ['db']);
     assert.notEqual(next[0].attempt.executionId, api.attempt.executionId);
@@ -130,7 +168,8 @@ describe('durable goal orchestration', () => {
 
   test('snapshots future model and Ultrafix policy per attempt', async () => {
     const { goal, fence } = await setupGoal(1);
-    await orchestration.installPlan(goal.goalId, plan(), fence);
+    const installed = await orchestration.installPlan(goal.goalId, plan(), fence);
+    await proveInitialArtifacts(goal.goalId, installed.plan.nodes, fence);
     const [first] = await orchestration.reserveRunnableNodes(goal.goalId, fence);
     assert.equal(first.attempt.effectiveModel, 'gpt-5.6-sol');
     assert.equal(first.attempt.parallelismSnapshot, 1);
@@ -163,7 +202,7 @@ describe('durable goal orchestration', () => {
       ...parseGoalArtifactMarker(claimed.marker), base: 'main',
     });
     await assert.rejects(
-      orchestration.adoptGitHubArtifact(goal.goalId, claimed.operationId, {
+      orchestration.adoptGitHubArtifact(claimed, {
         remoteId: '1', number: 1, repository: 'octo/repo', kind: 'pull_request',
         marker: hostileMarker, headBranch: api.headBranch, baseBranch: 'main', state: 'present',
       }, fence),
@@ -203,7 +242,7 @@ describe('durable goal orchestration', () => {
     const controller = new GoalController(
       goals,
       orchestration,
-      { async dispatch() { return { sessionId: 'runtime-session' }; } },
+      { async lookup(input) { return { dispatchIdentity: input.dispatchIdentity, state: 'absent' }; }, async dispatch() { return { sessionId: 'runtime-session' }; } },
       github,
       { async emit() {} },
       { controllerId: 'controller-a' }
@@ -242,13 +281,14 @@ describe('durable goal orchestration', () => {
     const installed = await orchestration.installPlan(goal.goalId, tinyPlan, fence);
     await orchestration.reserveRunnableNodes(goal.goalId, fence);
     const root = installed.plan.nodes.find((node) => node.key === 'root')!;
+    await orchestration.markAggregateRuntimeComplete(goal.goalId, root.nodeId, fence);
     const operation = await orchestration.enqueueGitHubOperation({
       goalId: goal.goalId, nodeId: root.nodeId, artifactKind: 'pull_request',
       operationKind: 'create_pull_request', idempotencyKey: 'root-pr',
       head: root.headBranch, base: root.baseBranch, payload: {}, ...fence,
     });
     const [claimed] = await orchestration.claimGitHubOperations(goal.goalId, 'controller-a', 1, fence);
-    await orchestration.adoptGitHubArtifact(goal.goalId, claimed.operationId, {
+    await orchestration.adoptGitHubArtifact(claimed, {
       remoteId: 'root-pr', number: 99, repository: 'octo/repo', kind: 'pull_request',
       marker: operation.marker, headBranch: root.headBranch, baseBranch: root.baseBranch,
       headSha: 'head-new', baseSha: 'base-1', state: 'present',
@@ -266,8 +306,8 @@ describe('durable goal orchestration', () => {
       expectedChecks: ['test'], result: { conclusion: 'success' }, status: 'passed', ...fence,
     });
     const exact = await orchestration.goalCompletionReadiness(goal.goalId, { ...policy, requiredEvidence: [...policy.requiredEvidence] });
-    assert.equal(exact.ready, true);
-    assert.equal(exact.terminalAction, 'complete');
+    assert.equal(exact.ready, false);
+    assert.equal(exact.terminalAction, 'wait_for_merge');
   });
 
   test('controller capability boundary has no target-code mutation primitive', async () => {
