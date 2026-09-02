@@ -172,15 +172,12 @@ describe('goal routes', () => {
 
   test('rejects invalid concurrency and merge policy values', async () => {
     const state = await createGoalViaApi({ maxActiveTasks: 999 });
-    assert.equal(state.statusCode, 400);
-    assert.equal((state.body as { code: string }).code, 'goal_concurrency_bound_exceeded');
+    assert.deepEqual([state.statusCode, (state.body as { code: string }).code], [400, 'goal_concurrency_bound_exceeded']);
     const nullConcurrency = await createGoalViaApi({ maxActiveTasks: null });
     const nullMergePolicy = await createGoalViaApi({ mergePolicy: null });
-    const automaticMerge = await createGoalViaApi({ mergePolicy: 'auto' });
-    const automaticSquash = await createGoalViaApi({ mergePolicy: 'auto_squash' });
     assert.deepEqual([nullConcurrency.statusCode, (nullConcurrency.body as { code: string }).code], [400, 'goal_concurrency_bound_exceeded']);
     assert.deepEqual([nullMergePolicy.statusCode, (nullMergePolicy.body as { code: string }).code], [400, 'goal_validation_error']);
-    assert.deepEqual([automaticMerge.statusCode, automaticSquash.statusCode], [400, 400]);
+    assert.deepEqual(await Promise.all(['auto', 'auto_squash'].map(async (mergePolicy) => (await createGoalViaApi({ mergePolicy })).statusCode)), [400, 400]);
   });
 
   test('validates and persists the shared Ultrafix contract', async () => {
