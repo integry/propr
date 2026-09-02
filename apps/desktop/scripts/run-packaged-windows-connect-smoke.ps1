@@ -45,7 +45,12 @@ param(
   [string]$LauncherAuthorityTestCase = 'normal',
   [string]$LauncherAuthorityTestPath = '',
   [string]$LauncherAuthorityTestRetargetPath = '',
-  [string]$CaptureParserTestPath = ''
+  [string]$CaptureParserTestPath = '',
+  [ValidateSet(
+    'administrators-owner','current-owner','foreign-owner','ordinary-owner',
+    'ordinary-write','broad-write','identity-change','existing'
+  )]
+  [string]$CaptureParserAuthorityTestCase = 'existing'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -461,43 +466,211 @@ function Test-UniqueJsonPropertyNames {
   return $true
 }
 
-function Read-PackagedConnectSmokeFailure {
-  param([Parameter(Mandatory=$true)][string]$Path)
-
-  Set-CaptureParseSubphase 'capture-authority'
-  if ([IO.Path]::GetDirectoryName($Path) -cne $authenticatedRunnerTemp -or
-      [IO.Path]::GetFileName($Path) -cnotmatch '^propr-connect-[a-f0-9]{32}\.stderr$') {
-    Stop-PackagedConnect 'artifact-type'
-  }
-  $captureItem = Get-CanonicalItem $Path 'file'
+function Assert-CaptureAuthorityAcl {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [Parameter(Mandatory=$true)]
+    [Security.Principal.SecurityIdentifier]$CapturePrivilegedSid
+  )
   try {
-    $captureAcl = [IO.File]::GetAccessControl(
-      $Path,
+    $sections = [Security.AccessControl.AccessControlSections]::Access -bor
       [Security.AccessControl.AccessControlSections]::Owner
-    )
-    $captureOwner = $captureAcl.GetOwner([Security.Principal.SecurityIdentifier])
+    $acl = [IO.File]::GetAccessControl($Path, $sections)
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
+    $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
   } catch {
     Stop-PackagedConnect 'artifact-inaccessible'
   }
-  if ($null -eq $privilegedSid -or $null -eq $captureOwner -or
-      $captureOwner.Value -cne $privilegedSid.Value) {
+  $ownerValues = @($CapturePrivilegedSid.Value, $administratorsSid.Value)
+  if ($null -eq $owner -or
+      $ownerValues -cnotcontains $owner.Value -or
+      ($null -ne $testUserSid -and $owner.Value -ceq $testUserSid.Value) -or
+      !$acl.AreAccessRulesCanonical) {
     Stop-PackagedConnect 'artifact-type'
   }
 
-  Set-CaptureParseSubphase 'capture-size'
-  if ($captureItem.Length -lt 1 -or $captureItem.Length -gt 65536) {
-    Stop-PackagedConnect 'artifact-type'
+  $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+  $authorizedWriters = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach ($identity in @($CapturePrivilegedSid, $administratorsSid, $systemSid)) {
+    if ($null -ne $identity) { $null = $authorizedWriters.Add($identity.Value) }
   }
+  $mutationRights = [Security.AccessControl.FileSystemRights]::Write -bor
+    [Security.AccessControl.FileSystemRights]::Delete -bor
+    [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+    [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+    [Security.AccessControl.FileSystemRights]::TakeOwnership
+  foreach ($rule in $rules) {
+    if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        ($rule.FileSystemRights -band $mutationRights) -ne 0 -and
+        !$authorizedWriters.Contains($rule.IdentityReference.Value)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+  }
+}
 
-  Set-CaptureParseSubphase 'capture-read'
+function Read-AuthorizedCaptureBytes {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [scriptblock]$TestOnlyBeforeReopen,
+    [switch]$TestOnlyAllowReplacement,
+    [Security.Principal.SecurityIdentifier]$TestOnlyCapturePrivilegedSid
+  )
+  $parentHandle = $null
+  $parentReopenHandle = $null
+  $captureHandle = $null
+  $captureReopenHandle = $null
+  $captureFinalHandle = $null
   try {
-    $captureBytes = [IO.File]::ReadAllBytes($Path)
+    Set-CaptureParseSubphase 'capture-authority'
+    $capturePrivilegedSid = if ($null -eq $TestOnlyCapturePrivilegedSid) {
+      $privilegedSid
+    } else {
+      $TestOnlyCapturePrivilegedSid
+    }
+    if ([String]::IsNullOrEmpty($authenticatedRunnerTemp) -or
+        $null -eq $capturePrivilegedSid -or
+        ![IO.Path]::IsPathRooted($authenticatedRunnerTemp) -or
+        [IO.Path]::GetFullPath($authenticatedRunnerTemp).TrimEnd('\') -cne $authenticatedRunnerTemp -or
+        [IO.Path]::GetDirectoryName($Path) -cne $authenticatedRunnerTemp -or
+        [IO.Path]::GetFileName($Path) -cnotmatch '^propr-connect-[a-f0-9]{32}\.stderr$' -or
+        [IO.Path]::GetFullPath($Path) -cne $Path) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    Initialize-HostLauncherNative
+    $parentHandle = [ProprHostLauncherNative]::Open($authenticatedRunnerTemp, $true)
+    $parentAttributes = [ProprHostLauncherNative]::GetAttributes($parentHandle)
+    $parentFinalPath = Get-BoundedAbsoluteWindowsPath (
+      ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($parentHandle))
+    )
+    if ([ProprHostLauncherNative]::GetHandleType($parentHandle) -ne
+          [ProprHostLauncherNative]::FILE_TYPE_DISK -or
+        ($parentAttributes -band [ProprHostLauncherNative]::FILE_ATTRIBUTE_DIRECTORY) -eq 0 -or
+        ($parentAttributes -band [ProprHostLauncherNative]::FILE_ATTRIBUTE_DEVICE) -ne 0 -or
+        ($parentAttributes -band [ProprHostLauncherNative]::FILE_ATTRIBUTE_REPARSE_POINT) -ne 0 -or
+        ![String]::Equals(
+          $parentFinalPath, $authenticatedRunnerTemp, [StringComparison]::OrdinalIgnoreCase
+        )) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $parentIdentity = [ProprHostLauncherNative]::GetIdentity($parentHandle)
+    try {
+      $parentAcl = [IO.Directory]::GetAccessControl(
+        $authenticatedRunnerTemp,
+        [Security.AccessControl.AccessControlSections]::Owner
+      )
+      $parentOwner = $parentAcl.GetOwner([Security.Principal.SecurityIdentifier])
+    } catch {
+      Stop-PackagedConnect 'artifact-inaccessible'
+    }
+    if ($null -eq $parentOwner -or @(
+        $privilegedSid.Value, $administratorsSid.Value, 'S-1-5-18'
+      ) -cnotcontains $parentOwner.Value) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    $captureHandle = [ProprHostLauncherNative]::OpenCapture(
+      $Path, !$TestOnlyAllowReplacement.IsPresent
+    )
+    $captureAttributes = [ProprHostLauncherNative]::GetAttributes($captureHandle)
+    $captureFinalPath = Get-BoundedAbsoluteWindowsPath (
+      ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($captureHandle))
+    )
+    if ([ProprHostLauncherNative]::GetHandleType($captureHandle) -ne
+          [ProprHostLauncherNative]::FILE_TYPE_DISK -or
+        ($captureAttributes -band [ProprHostLauncherNative]::FILE_ATTRIBUTE_DIRECTORY) -ne 0 -or
+        ($captureAttributes -band [ProprHostLauncherNative]::FILE_ATTRIBUTE_DEVICE) -ne 0 -or
+        ($captureAttributes -band [ProprHostLauncherNative]::FILE_ATTRIBUTE_REPARSE_POINT) -ne 0 -or
+        [ProprHostLauncherNative]::GetLinkCount($captureHandle) -ne 1 -or
+        ![String]::Equals($captureFinalPath, $Path, [StringComparison]::OrdinalIgnoreCase)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $captureIdentity = [ProprHostLauncherNative]::GetIdentity($captureHandle)
+    Assert-CaptureAuthorityAcl $Path $capturePrivilegedSid
+
+    if ($null -ne $TestOnlyBeforeReopen) { & $TestOnlyBeforeReopen }
+    $captureReopenHandle = [ProprHostLauncherNative]::OpenCapture($Path, $true)
+    $captureReopenAttributes = [ProprHostLauncherNative]::GetAttributes($captureReopenHandle)
+    $captureReopenIdentity = [ProprHostLauncherNative]::GetIdentity($captureReopenHandle)
+    $captureReopenFinalPath = Get-BoundedAbsoluteWindowsPath (
+      ConvertFrom-NativeFinalPath ([ProprHostLauncherNative]::GetFinalPath($captureReopenHandle))
+    )
+    if ([ProprHostLauncherNative]::GetHandleType($captureReopenHandle) -ne
+          [ProprHostLauncherNative]::FILE_TYPE_DISK -or
+        ($captureReopenAttributes -band (
+          [ProprHostLauncherNative]::FILE_ATTRIBUTE_DIRECTORY -bor
+          [ProprHostLauncherNative]::FILE_ATTRIBUTE_DEVICE -bor
+          [ProprHostLauncherNative]::FILE_ATTRIBUTE_REPARSE_POINT
+        )) -ne 0 -or
+        [ProprHostLauncherNative]::GetLinkCount($captureReopenHandle) -ne 1 -or
+        ![String]::Equals($captureIdentity, $captureReopenIdentity, [StringComparison]::Ordinal) -or
+        ![String]::Equals($captureFinalPath, $captureReopenFinalPath, [StringComparison]::OrdinalIgnoreCase)) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    Assert-CaptureAuthorityAcl $Path $capturePrivilegedSid
+
+    Set-CaptureParseSubphase 'capture-size'
+    $captureLength = [ProprHostLauncherNative]::GetLength($captureReopenHandle)
+    if ($captureLength -lt 1 -or $captureLength -gt 65536) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    Set-CaptureParseSubphase 'capture-read'
+    $captureBytes = [ProprHostLauncherNative]::ReadBounded($captureReopenHandle, 65536)
+    if ($captureBytes.Length -ne $captureLength) { Stop-PackagedConnect 'artifact-type' }
+
+    Set-CaptureParseSubphase 'capture-authority'
+    if (![String]::Equals(
+        $captureReopenIdentity,
+        [ProprHostLauncherNative]::GetIdentity($captureReopenHandle),
+        [StringComparison]::Ordinal
+      )) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $captureFinalHandle = [ProprHostLauncherNative]::OpenCapture($Path, $true)
+    if (![String]::Equals(
+          $captureReopenIdentity,
+          [ProprHostLauncherNative]::GetIdentity($captureFinalHandle),
+          [StringComparison]::Ordinal
+        ) -or [ProprHostLauncherNative]::GetLinkCount($captureFinalHandle) -ne 1) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    Assert-CaptureAuthorityAcl $Path $capturePrivilegedSid
+    $parentReopenHandle = [ProprHostLauncherNative]::Open($authenticatedRunnerTemp, $true)
+    if (![String]::Equals(
+        $parentIdentity,
+        [ProprHostLauncherNative]::GetIdentity($parentReopenHandle),
+        [StringComparison]::Ordinal
+      )) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    return ,$captureBytes
   } catch {
+    if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
     Stop-PackagedConnect 'artifact-inaccessible'
+  } finally {
+    foreach ($handle in @(
+      $captureFinalHandle, $captureReopenHandle, $captureHandle,
+      $parentReopenHandle, $parentHandle
+    )) {
+      if ($null -ne $handle) { $handle.Dispose() }
+    }
   }
-  if ($captureBytes.Length -ne $captureItem.Length) {
-    Stop-PackagedConnect 'artifact-type'
-  }
+}
+
+function Read-PackagedConnectSmokeFailure {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [scriptblock]$TestOnlyBeforeReopen,
+    [switch]$TestOnlyAllowReplacement,
+    [Security.Principal.SecurityIdentifier]$TestOnlyCapturePrivilegedSid
+  )
+
+  $captureBytes = Read-AuthorizedCaptureBytes `
+    -Path $Path `
+    -TestOnlyBeforeReopen $TestOnlyBeforeReopen `
+    -TestOnlyAllowReplacement:$TestOnlyAllowReplacement `
+    -TestOnlyCapturePrivilegedSid $TestOnlyCapturePrivilegedSid
 
   Set-CaptureParseSubphase 'capture-utf8'
   try {
@@ -745,6 +918,8 @@ using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 public static class ProprHostLauncherNative {
+  public const uint GENERIC_READ = 0x80000000;
+  public const uint READ_CONTROL = 0x00020000;
   public const uint FILE_READ_ATTRIBUTES = 0x00000080;
   public const uint FILE_SHARE_READ = 0x00000001;
   public const uint FILE_SHARE_WRITE = 0x00000002;
@@ -811,6 +986,15 @@ public static class ProprHostLauncherNative {
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern uint GetFileType(SafeFileHandle file);
 
+  [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+  private static extern bool ReadFile(
+    SafeFileHandle file,
+    byte[] buffer,
+    uint bytesToRead,
+    out uint bytesRead,
+    IntPtr overlapped
+  );
+
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
   private static extern uint GetFinalPathNameByHandleW(
     SafeFileHandle file,
@@ -832,6 +1016,27 @@ public static class ProprHostLauncherNative {
       IntPtr.Zero,
       OPEN_EXISTING,
       flags,
+      IntPtr.Zero
+    );
+    if (handle.IsInvalid) {
+      int error = Marshal.GetLastWin32Error();
+      handle.Dispose();
+      throw new Win32Exception(error);
+    }
+    return handle;
+  }
+
+  public static SafeFileHandle OpenCapture(string path, bool lockAuthority) {
+    uint share = lockAuthority
+      ? FILE_SHARE_READ
+      : FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    SafeFileHandle handle = CreateFileW(
+      path,
+      GENERIC_READ | READ_CONTROL,
+      share,
+      IntPtr.Zero,
+      OPEN_EXISTING,
+      FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
       IntPtr.Zero
     );
     if (handle.IsInvalid) {
@@ -868,6 +1073,40 @@ public static class ProprHostLauncherNative {
       throw new Win32Exception(Marshal.GetLastWin32Error());
     }
     return information.FileAttributes;
+  }
+
+  public static uint GetLinkCount(SafeFileHandle handle) {
+    BY_HANDLE_FILE_INFORMATION information;
+    if (!GetFileInformationByHandle(handle, out information)) {
+      throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    return information.NumberOfLinks;
+  }
+
+  public static long GetLength(SafeFileHandle handle) {
+    BY_HANDLE_FILE_INFORMATION information;
+    if (!GetFileInformationByHandle(handle, out information)) {
+      throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    return ((long)information.FileSizeHigh << 32) | information.FileSizeLow;
+  }
+
+  public static byte[] ReadBounded(SafeFileHandle handle, int maximumLength) {
+    if (maximumLength < 1) throw new ArgumentOutOfRangeException("maximumLength");
+    using (System.IO.MemoryStream output = new System.IO.MemoryStream()) {
+      byte[] buffer = new byte[Math.Min(4096, maximumLength + 1)];
+      while (output.Length <= maximumLength) {
+        int remaining = maximumLength + 1 - (int)output.Length;
+        uint requested = (uint)Math.Min(buffer.Length, remaining);
+        uint read;
+        if (!ReadFile(handle, buffer, requested, out read, IntPtr.Zero)) {
+          throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        if (read == 0) break;
+        output.Write(buffer, 0, (int)read);
+      }
+      return output.ToArray();
+    }
   }
 
   public static uint GetHandleType(SafeFileHandle handle) {
@@ -1352,9 +1591,65 @@ if ($LifecycleTestMode -eq 'capture-parser') {
       Stop-PackagedConnect 'artifact-type'
     }
     $authenticatedRunnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')
+    if ($authenticatedRunnerTemp -cne $env:RUNNER_TEMP.TrimEnd('\')) {
+      Set-CaptureParseSubphase 'capture-authority'
+      Stop-PackagedConnect 'artifact-type'
+    }
     $privilegedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $testUserSid = [Security.Principal.SecurityIdentifier]::new(
+      'S-1-5-21-42424242-42424242-42424242-1001'
+    )
     $stderr = $CaptureParserTestPath
-    $childFailureCategory = Read-PackagedConnectSmokeFailure $stderr
+    $beforeCaptureReopen = $null
+    $allowCaptureReplacement = $false
+    $captureExpectedPrivilegedSid = $null
+    if ($CaptureParserAuthorityTestCase -in @(
+        'administrators-owner','current-owner','foreign-owner','ordinary-owner'
+      )) {
+      $captureOwner = if ($CaptureParserAuthorityTestCase -eq 'administrators-owner') {
+        $administratorsSid
+      } else {
+        $privilegedSid
+      }
+      $captureAcl = [IO.File]::GetAccessControl($stderr)
+      $captureAcl.SetOwner($captureOwner)
+      [IO.File]::SetAccessControl($stderr, $captureAcl)
+    }
+    if ($CaptureParserAuthorityTestCase -eq 'foreign-owner') {
+      $captureExpectedPrivilegedSid = [Security.Principal.SecurityIdentifier]::new(
+        'S-1-5-21-51515151-51515151-51515151-1001'
+      )
+    } elseif ($CaptureParserAuthorityTestCase -eq 'ordinary-owner') {
+      $testUserSid = $privilegedSid
+    } elseif ($CaptureParserAuthorityTestCase -in @('ordinary-write','broad-write')) {
+      $writeSid = if ($CaptureParserAuthorityTestCase -eq 'ordinary-write') {
+        $testUserSid
+      } else {
+        [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+      }
+      $captureAcl = [IO.File]::GetAccessControl($stderr)
+      $null = $captureAcl.AddAccessRule(
+        [Security.AccessControl.FileSystemAccessRule]::new(
+          $writeSid,
+          [Security.AccessControl.FileSystemRights]::FullControl,
+          [Security.AccessControl.AccessControlType]::Allow
+        )
+      )
+      [IO.File]::SetAccessControl($stderr, $captureAcl)
+    } elseif ($CaptureParserAuthorityTestCase -eq 'identity-change') {
+      $allowCaptureReplacement = $true
+      $beforeCaptureReopen = {
+        $captureBackup = $stderr + '.propr-replaced'
+        $captureContent = [IO.File]::ReadAllBytes($stderr)
+        Move-Item -LiteralPath $stderr -Destination $captureBackup -ErrorAction Stop
+        [IO.File]::WriteAllBytes($stderr, $captureContent)
+      }
+    }
+    $childFailureCategory = Read-PackagedConnectSmokeFailure `
+      -Path $stderr `
+      -TestOnlyBeforeReopen $beforeCaptureReopen `
+      -TestOnlyAllowReplacement:$allowCaptureReplacement `
+      -TestOnlyCapturePrivilegedSid $captureExpectedPrivilegedSid
     Stop-PackagedConnect $childFailureCategory
   } catch {
     Set-PrimaryFailureFromException $_.Exception
