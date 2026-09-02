@@ -54,7 +54,7 @@ describe('production desktop session security', () => {
     assert.equal(desktopNetworkPermissionAllowed({ ...accepted, permission: 'local-network-access' }), true);
   });
 
-  it('carries the fixed-alias React preflight and one GET through the same production interceptor as smoke', async () => {
+  it('limits granted renderer network access to the active origin through the production interceptor', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-session-security-'));
     const store = new ProfileStore(directory, encryption);
     const mainEvidence: DesktopCurrentUserProxyEvidence[] = [];
@@ -149,16 +149,33 @@ describe('production desktop session security', () => {
       );
       assert.equal(requestedPermission, true);
 
-      const currentUserUrl = `${REACT_FIXTURE_ORIGIN}/api/auth/user?proprDesktopScopeGeneration=1`;
-      const intercepted = async (method: 'OPTIONS' | 'GET', headers: Record<string, string>) => {
+      const intercepted = async (
+        url: string,
+        method: 'OPTIONS' | 'GET',
+        headers: Record<string, string>,
+        resourceType = 'xhr',
+      ) => {
         return await new Promise<Record<string, unknown>>(resolve => beforeSendHeaders({
-          url: currentUserUrl,
+          url,
           method,
-          resourceType: 'xhr',
+          resourceType,
           requestHeaders: headers,
         }, resolve));
       };
-      const preflight = await intercepted('OPTIONS', {
+      const unrelatedTargets = [
+        'http://127.0.0.1:41731/api/side-effect',
+        'https://192.168.1.10/api/side-effect',
+        'http://127.0.0.2:41732/api/side-effect',
+        'https://127.0.0.2.evil.invalid:41731/api/side-effect',
+      ];
+      for (const url of unrelatedTargets) {
+        assert.deepEqual(await intercepted(url, 'GET', {
+          Origin: DESKTOP_RENDERER_ORIGIN,
+        }), { cancel: true }, url);
+      }
+
+      const currentUserUrl = `${REACT_FIXTURE_ORIGIN}/api/auth/user?proprDesktopScopeGeneration=1`;
+      const preflight = await intercepted(currentUserUrl, 'OPTIONS', {
         Origin: DESKTOP_RENDERER_ORIGIN,
         'Access-Control-Request-Method': 'GET',
         'Access-Control-Request-Headers': DESKTOP_TRANSPORT_SCOPE_HEADER,
@@ -166,13 +183,18 @@ describe('production desktop session security', () => {
       assert.equal(preflight.cancel, undefined);
       assert.equal(new Headers(preflight.requestHeaders as HeadersInit).has('Authorization'), false);
 
-      const get = await intercepted('GET', {
+      const get = await intercepted(currentUserUrl, 'GET', {
         Origin: DESKTOP_RENDERER_ORIGIN,
         Cookie: 'renderer=must-not-cross',
+        Authorization: 'Bearer renderer-controlled',
         [DESKTOP_TRANSPORT_SCOPE_HEADER]: activated.transportScope,
       });
       const outbound = new Headers(get.requestHeaders as HeadersInit);
       assert.equal(get.cancel, undefined);
+      assert.deepEqual(get.requestHeaders, {
+        Origin: DESKTOP_RENDERER_ORIGIN,
+        Authorization: `Bearer ${TOKEN}`,
+      });
       assert.equal(outbound.get('Authorization'), `Bearer ${TOKEN}`);
       assert.equal(outbound.has('Cookie'), false);
       assert.equal(outbound.has(DESKTOP_TRANSPORT_SCOPE_HEADER), false);
@@ -181,6 +203,19 @@ describe('production desktop session security', () => {
       assert.equal(mainEvidence[0].rendererScopeGeneration, 1);
       assert.equal(mainEvidence[0].scopeHeaderCount, 1);
       assert.equal(mainEvidence[0].bearerMainInjected, true);
+
+      const socketUrl = `${REACT_FIXTURE_ORIGIN.replace(/^http/, 'ws')}/socket.io/`
+        + `?EIO=4&transport=websocket&proprDesktopTransportScope=${activated.transportScope}`;
+      const socket = await intercepted(socketUrl, 'GET', {
+        Origin: DESKTOP_RENDERER_ORIGIN,
+        Cookie: 'renderer=must-not-cross',
+        Authorization: 'Bearer renderer-controlled',
+      }, 'webSocket');
+      assert.equal(socket.cancel, undefined);
+      assert.deepEqual(socket.requestHeaders, {
+        Origin: DESKTOP_RENDERER_ORIGIN,
+        Authorization: `Bearer ${TOKEN}`,
+      });
       configured.dispose();
     } finally {
       await service.dispose();

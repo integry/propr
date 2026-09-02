@@ -1329,6 +1329,15 @@ export class DesktopCredentialService {
       return { requestHeaders: headers };
     }
 
+    // Electron's Local Network Access permission is requester-scoped rather
+    // than destination-scoped. While the trusted renderer has a current
+    // binding, keep every other canonical network destination behind the
+    // exact active origin even when the renderer omitted its REST marker.
+    if (activeIsCurrent && active && target && target.origin !== active.origin) {
+      reportCurrentUser(false, 'wrong-origin');
+      return { cancel: true };
+    }
+
     if (!markedRestRequest) {
       reportCurrentUser(false, 'scope-missing');
       return { requestHeaders: headers };
