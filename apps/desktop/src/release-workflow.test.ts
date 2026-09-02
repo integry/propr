@@ -612,7 +612,15 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /CaseId='BOUNDARY_BOOTSTRAP_TIMEOUT'[\s\S]*Invoke-SupervisorAttributedTest -Test \$case\.Test -Action/,
+      /CaseId='BOUNDARY_BOOTSTRAP_TIMEOUT'[\s\S]*\$caseExpectedTest = \[string\]\$case\.Test[\s\S]*Invoke-SupervisorAttributedTest -Test \$caseExpectedTest -Action/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Test-WorkflowCleanupProtocolMismatchDiagnosticExact[\s\S]*PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Test-SupervisorInvocationDiagnosticExact \$diagnosticMessage\) -or\s*\(Test-WorkflowCleanupProtocolMismatchDiagnosticExact \$diagnosticMessage\)/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
@@ -976,7 +984,13 @@ describe('desktop trusted release workflow', () => {
         < installedWindowsAppCleanup.indexOf("Add-Type -TypeDefinition @'"),
       'cleanup worker ownership handshake must precede cold type loading',
     );
-    assert.match(installedWindowsAppSupervisorBehaviorTest, /early-initialization child cleanup/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /-FixtureEarlyInitializationChild/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /workflow-cleanup-early-processes\.json/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /'WorkerPid','DescendantPid'/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /\$pidValue -gt 0/);
     assert.match(installedWindowsAppCleanup, /workflow-cleanup-early-processes\.json/);
     assert.match(installedWindowsAppWorkflowCleanup, /MANIFEST_VALIDATION_FAILURE/);
     assert.match(installedWindowsAppWorkflowCleanup, /OWNED_RESOURCE_CLEANUP_FAILURE/);

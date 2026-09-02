@@ -1593,6 +1593,45 @@ function Test-SupervisorInvocationDiagnosticExact([string]$Diagnostic) {
     $match.Groups[5].Value -cin (Get-SupervisorInvocationFields)
 }
 
+function Test-WorkflowCleanupProtocolMismatchDiagnosticExact([string]$Diagnostic) {
+  $match = [regex]::Match(
+    [string]$Diagnostic,
+    ('^PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' +
+      'INVOCATION:([A-Z_]+):OBSERVED:' +
+      '(NONE|STARTUP|TERMINAL|MALFORMED|PARTIAL|DUPLICATE|REORDERED|EXTRA|OVERSIZED):' +
+      'LINE_COUNT:(0|1|2|3\+):STDERR_COUNT:(0|[1-9][0-9]{0,3}):' +
+      'PROCESS_EXIT:(0|20|21|122|123|124|125|INVALID):' +
+      'LIFECYCLE:(EXITED|PROCESS_CREATION_FAILURE|OWNERSHIP_FAILURE|' +
+      'TIMEOUT_BEFORE_STARTUP|TIMEOUT_AFTER_STARTUP|' +
+      'CANCELLED_BEFORE_STARTUP|CANCELLED_AFTER_STARTUP|' +
+      'ACTIVE_TREE_AFTER_EXIT|DRAIN_TIMEOUT|DRAIN_FAILURE):' +
+      'TREE_TERMINATION:(NOT_REQUIRED|COMPLETE|FAILED):' +
+      'STARTUP_CLASS:(NONE|READY|PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):' +
+      'LINE_NUMBER:([0-3])$'),
+    [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+  if (!$match.Success) { return $false }
+  $standardErrorCount = 0
+  if (![int]::TryParse(
+      $match.Groups[4].Value,
+      [Globalization.NumberStyles]::None,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [ref]$standardErrorCount
+    ) -or $standardErrorCount -gt 4096) {
+    return $false
+  }
+  return $match.Groups[1].Value -cin @(
+    'STARTUP_PROTOCOL','REPLACEMENT_RETRY','REPLACED_ENTRY_RETRY',
+    'PROFILE_ALTERNATE_LEAF','PROFILE_RETRY','EXECUTABLE_IDENTITY_RETRY',
+    'FOREIGN_CHILD_RETRY','TERMINATION_RETRY','PARAMETER_VALIDATION',
+    'EARLY_INITIALIZATION_TIMEOUT','CLEANUP_TIMEOUT','INSTALLER_REPLACEMENT',
+    'RESOURCE_COLLISION','WORKFLOW_RETRY','NORMAL_CLEANUP','MANIFEST_VALIDATION',
+    'SMOKE_PROMOTION_RETRY','SMOKE_TOKEN_MISSING','SMOKE_TOKEN_RETRY',
+    'APP_PATH_MISMATCH','HKCU_BASELINE_RESTORE','HKCU_PENDING_RECEIPT',
+    'HKCU_NONEMPTY','HKCU_EMPTY','HKCU_CONFLICT','HKCU_PROVISIONAL',
+    'USER_MARKER_OWNED','USER_MARKER_REPLACEMENT','PROTOCOL_REGRESSION'
+  )
+}
+
 function Get-SupervisorAttributionTotalityCases {
   return @(
     'GENERAL',
@@ -1697,7 +1736,9 @@ function Invoke-SupervisorAttributedBoundary(
   try {
     & $Action
   } catch {
-    if (Test-SupervisorInvocationDiagnosticExact $_.Exception.Message) {
+    $diagnosticMessage = [string]$_.Exception.Message
+    if ((Test-SupervisorInvocationDiagnosticExact $diagnosticMessage) -or
+        (Test-WorkflowCleanupProtocolMismatchDiagnosticExact $diagnosticMessage)) {
       throw
     }
     throw (Get-SanitizedSupervisorInvocationDiagnostic `
