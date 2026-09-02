@@ -869,19 +869,67 @@ function Read-FixtureProcessState([string]$StateDirectory) {
 }
 
 function Read-FixtureResourceState([string]$StateDirectory) {
-  Set-SupervisorInvocationContext `
-    $script:currentSupervisorInvocationTest `
-    $script:currentSupervisorInvocationScenario `
-    'RESOURCE_STATE'
-  $statePath = Join-Path $StateDirectory 'resources.json'
-  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
-  while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
-    if ($stopwatch.ElapsedMilliseconds -ge 45000) {
-      throw 'fixture did not publish owned resource state'
+  $resourceStateScenario = $script:currentSupervisorInvocationScenario
+  $resourceStateDirectory = $StateDirectory
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $resourceStateScenario `
+    -Phase 'RESOURCE_STATE' `
+    -Callsite 'RESOURCE_STATE_DIRECTORY_INPUT' `
+    -Field 'STATE_DIRECTORY' `
+    -Action {
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$resourceStateDirectory)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $resourceStateScenario `
+          'RESOURCE_STATE' `
+          'RESOURCE_STATE_DIRECTORY_INPUT' `
+          'STATE_DIRECTORY')
     }
-    Start-Sleep -Milliseconds 25
-  }
-  return Get-Content -LiteralPath $statePath -Raw -Encoding ASCII | ConvertFrom-Json
+  $statePath = Invoke-SupervisorAttributedOperation `
+    -Scenario $resourceStateScenario `
+    -Phase 'RESOURCE_STATE' `
+    -Callsite 'RESOURCE_STATE_PATH_CONSTRUCTION' `
+    -Field 'RESOURCE_STATE_PATH' `
+    -Action {
+      $constructedResourceStatePath = Join-Path $resourceStateDirectory 'resources.json'
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$constructedResourceStatePath)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $resourceStateScenario `
+          'RESOURCE_STATE' `
+          'RESOURCE_STATE_PATH_CONSTRUCTION' `
+          'RESOURCE_STATE_PATH')
+      $constructedResourceStatePath
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $resourceStateScenario `
+    -Phase 'RESOURCE_STATE' `
+    -Callsite 'RESOURCE_STATE_PUBLICATION_WAIT' `
+    -Field 'RESOURCE_STATE_PATH' `
+    -Action {
+      $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+      while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
+        if ($stopwatch.ElapsedMilliseconds -ge 15000) {
+          Assert-True $false `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              $resourceStateScenario `
+              'RESOURCE_STATE' `
+              'RESOURCE_STATE_PUBLICATION_WAIT' `
+              'RESOURCE_STATE_PATH')
+        }
+        Start-Sleep -Milliseconds 25
+      }
+    }
+  return Invoke-SupervisorAttributedOperation `
+    -Scenario $resourceStateScenario `
+    -Phase 'RESOURCE_STATE' `
+    -Callsite 'RESOURCE_STATE_READ_PARSE' `
+    -Field 'RESOURCE_STATE_PATH' `
+    -Action {
+      Get-Content -LiteralPath $statePath -Raw -Encoding ASCII |
+        ConvertFrom-Json -ErrorAction Stop
+    }
 }
 
 function Assert-ProcessTreeGone($State) {
@@ -1287,28 +1335,120 @@ function Get-WorkflowCleanupControllerStatusMatch([string]$TerminalLine) {
   )
 }
 
+function Test-OwnedRegistryValueAbsent([string]$Path, [string]$Name) {
+  if (!(Test-Path -LiteralPath $Path)) { return $true }
+  $property = Get-ItemProperty -LiteralPath $Path -Name $Name `
+    -ErrorAction SilentlyContinue
+  if ($null -eq $property) { return $true }
+  return $null -eq $property.PSObject.Properties[$Name]
+}
+
+function Assert-OwnedResourcePredicate(
+  [string]$Scenario,
+  [string]$Callsite,
+  [string]$Field,
+  [Diagnostics.Stopwatch]$CleanupStopwatch,
+  [scriptblock]$Predicate
+) {
+  $predicateScenario = $Scenario
+  $predicateCallsite = $Callsite
+  $predicateField = $Field
+  $predicateCleanupStopwatch = $CleanupStopwatch
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $predicateScenario `
+    -Phase 'RESOURCE_ASSERTION' `
+    -Callsite $predicateCallsite `
+    -Field $predicateField `
+    -Action {
+      do {
+        if (& $Predicate) { return }
+        if ($predicateCleanupStopwatch.ElapsedMilliseconds -ge 5000) { break }
+        Start-Sleep -Milliseconds 25
+      } while ($true)
+      Assert-True $false `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $predicateScenario `
+          'RESOURCE_ASSERTION' `
+          $predicateCallsite `
+          $predicateField)
+    }
+}
+
 function Assert-OwnedResourcesGone($Owned) {
-  Set-SupervisorInvocationContext `
-    $script:currentSupervisorInvocationTest `
-    $script:currentSupervisorInvocationScenario `
-    'RESOURCE_ASSERTION'
-  foreach ($ownedPath in @(
-    $Owned.OwnedRoot, $Owned.InstallRoot, $Owned.ShortcutFolder,
-    $Owned.Shortcut, $Owned.SmokeDirectory
-  )) {
-    Assert-True (!(Test-Path -LiteralPath $ownedPath)) `
-      'external cleanup left a run-owned file-system resource behind'
+  $resourceScenario = $script:currentSupervisorInvocationScenario
+  $cleanupStopwatch = [Diagnostics.Stopwatch]::StartNew()
+  foreach ($ownedDirectoryCase in @(
+      @{ Path = $Owned.OwnedRoot; Field = 'OWNED_ROOT' },
+      @{ Path = $Owned.InstallRoot; Field = 'INSTALL_ROOT' },
+      @{ Path = $Owned.ShortcutFolder; Field = 'SHORTCUT_FOLDER' },
+      @{ Path = $Owned.SmokeDirectory; Field = 'SMOKE_DIRECTORY' }
+    )) {
+    $ownedDirectoryPath = [string]$ownedDirectoryCase.Path
+    $ownedDirectoryField = [string]$ownedDirectoryCase.Field
+    Assert-OwnedResourcePredicate `
+      -Scenario $resourceScenario `
+      -Callsite 'FINAL_FILESYSTEM_DIRECTORY_ABSENCE' `
+      -Field $ownedDirectoryField `
+      -CleanupStopwatch $cleanupStopwatch `
+      -Predicate { !(Test-Path -LiteralPath $ownedDirectoryPath) }
   }
-  Assert-True (!(Test-Path -LiteralPath $Owned.RegistryPath)) `
-    'external cleanup left a run-owned registry resource behind'
-  Assert-True (!(Test-Path -LiteralPath $Owned.RegistryRoot)) `
-    'external cleanup left the run-owned registry root behind'
-  Assert-True ($null -eq (Get-LocalUser -Name $Owned.UserName -ErrorAction SilentlyContinue)) `
-    'external cleanup left the run-owned local user behind'
-  $ownedProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
-    Where-Object { $_.SID -ceq $Owned.UserSid })
-  Assert-True ($ownedProfiles.Count -eq 0) `
-    'external cleanup left the run-owned profile behind'
+  $ownedExecutablePath = [string]$Owned.Executable
+  if (![string]::IsNullOrWhiteSpace($ownedExecutablePath)) {
+    Assert-OwnedResourcePredicate `
+      -Scenario $resourceScenario `
+      -Callsite 'FINAL_FILESYSTEM_FILE_ABSENCE' `
+      -Field 'EXECUTABLE' `
+      -CleanupStopwatch $cleanupStopwatch `
+      -Predicate { !(Test-Path -LiteralPath $ownedExecutablePath) }
+  }
+  $ownedShortcutPath = [string]$Owned.Shortcut
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_SHORTCUT_ABSENCE' `
+    -Field 'SHORTCUT' `
+    -CleanupStopwatch $cleanupStopwatch `
+    -Predicate { !(Test-Path -LiteralPath $ownedShortcutPath) }
+  $ownedRegistryPath = [string]$Owned.RegistryPath
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_REGISTRY_VALUE_ABSENCE' `
+    -Field 'REGISTRY_VALUE' `
+    -CleanupStopwatch $cleanupStopwatch `
+    -Predicate { Test-OwnedRegistryValueAbsent $ownedRegistryPath 'ProPRInstalledAppOwner' }
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_REGISTRY_PATH_ABSENCE' `
+    -Field 'REGISTRY_PATH' `
+    -CleanupStopwatch $cleanupStopwatch `
+    -Predicate { !(Test-Path -LiteralPath $ownedRegistryPath) }
+  $ownedRegistryRoot = [string]$Owned.RegistryRoot
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_REGISTRY_ROOT_ABSENCE' `
+    -Field 'REGISTRY_ROOT' `
+    -CleanupStopwatch $cleanupStopwatch `
+    -Predicate { !(Test-Path -LiteralPath $ownedRegistryRoot) }
+  $ownedUserName = [string]$Owned.UserName
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_USER_ABSENCE' `
+    -Field 'USER_NAME' `
+    -CleanupStopwatch $cleanupStopwatch `
+    -Predicate {
+      $null -eq (Get-LocalUser -Name $ownedUserName -ErrorAction SilentlyContinue)
+    }
+  $ownedUserSid = [string]$Owned.UserSid
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_PROFILE_ABSENCE' `
+    -Field 'USER_SID' `
+    -CleanupStopwatch $cleanupStopwatch `
+    -Predicate {
+      $ownedProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+        Where-Object { $_.SID -ceq $ownedUserSid })
+      $ownedProfiles.Count -eq 0
+    }
 }
 
 function Convert-FixtureAuthorityFieldToken([string]$Field) {
@@ -1657,6 +1797,8 @@ function Get-SupervisorInvocationCallsites {
     'GENERAL',
     'CRITICAL_GATE_PATH',
     'CRITICAL_GATE_READ',
+    'CRITICAL_RESULT_FIELD',
+    'CRITICAL_OUTPUT_MARKER',
     'PROCESS_STATE_PATH',
     'PROCESS_STATE_READ',
     'PROCESS_STATE_DIRECTORY_INPUT',
@@ -1666,6 +1808,10 @@ function Get-SupervisorInvocationCallsites {
     'PROCESS_STATE_WORKER_PID',
     'PROCESS_STATE_DESCENDANT_PID',
     'PROCESS_TREE_ASSERTION',
+    'RESOURCE_STATE_DIRECTORY_INPUT',
+    'RESOURCE_STATE_PATH_CONSTRUCTION',
+    'RESOURCE_STATE_PUBLICATION_WAIT',
+    'RESOURCE_STATE_READ_PARSE',
     'CONTROLLER_INVOCATION_INPUT',
     'CONTROLLER_PROTOCOL_PARSE',
     'CONTROLLER_RESULT_FIELD',
@@ -1678,6 +1824,14 @@ function Get-SupervisorInvocationCallsites {
     'AUTHORITY_RESTORE_REMOVE',
     'AUTHORITY_RESTORE_MOVE',
     'WORKFLOW_CLEANUP_RETRY',
+    'FINAL_FILESYSTEM_DIRECTORY_ABSENCE',
+    'FINAL_FILESYSTEM_FILE_ABSENCE',
+    'FINAL_SHORTCUT_ABSENCE',
+    'FINAL_REGISTRY_VALUE_ABSENCE',
+    'FINAL_REGISTRY_PATH_ABSENCE',
+    'FINAL_REGISTRY_ROOT_ABSENCE',
+    'FINAL_USER_ABSENCE',
+    'FINAL_PROFILE_ABSENCE',
     'FINAL_ABSENCE_CHECK'
   )
 }
@@ -1688,7 +1842,10 @@ function Get-SupervisorInvocationFields {
     'STATE_DIRECTORY',
     'CRITICAL_GATE_PATH',
     'CRITICAL_GATE_CONTENT',
+    'MSI_TRANSACTION_MARKER',
+    'POST_TERMINATION_CLEANUP_MARKER',
     'PROCESS_STATE_PATH',
+    'RESOURCE_STATE_PATH',
     'WORKER_PID',
     'DESCENDANT_PID',
     'PROCESS_TREE',
@@ -1703,6 +1860,7 @@ function Get-SupervisorInvocationFields {
     'SMOKE_DIRECTORY',
     'REGISTRY_PATH',
     'REGISTRY_ROOT',
+    'REGISTRY_VALUE',
     'USER_NAME',
     'USER_SID',
     'PROFILE_PATH',
@@ -1835,6 +1993,10 @@ function Get-SupervisorAttributionTotalityCases {
     'BOUNDARY_USER_MARKER',
     'CALLSITE_CRITICAL_GATE_PATH',
     'CALLSITE_CRITICAL_GATE_READ',
+    'CALLSITE_CRITICAL_RESULT_EXIT_CODE',
+    'CALLSITE_CRITICAL_RESULT_STATE_DIRECTORY',
+    'CALLSITE_CRITICAL_OUTPUT_COMMITTED',
+    'CALLSITE_CRITICAL_OUTPUT_CLEANUP_COMPLETE',
     'CALLSITE_PROCESS_STATE_READ',
     'CALLSITE_FIXTURE_PROCESS_STATE_DIRECTORY_INPUT',
     'CALLSITE_FIXTURE_PROCESS_STATE_PATH_CONSTRUCTION',
@@ -1843,6 +2005,10 @@ function Get-SupervisorAttributionTotalityCases {
     'CALLSITE_FIXTURE_PROCESS_STATE_WORKER_PID',
     'CALLSITE_FIXTURE_PROCESS_STATE_DESCENDANT_PID',
     'CALLSITE_PROCESS_TREE_ASSERTION',
+    'CALLSITE_RESOURCE_STATE_DIRECTORY_INPUT',
+    'CALLSITE_RESOURCE_STATE_PATH_CONSTRUCTION',
+    'CALLSITE_RESOURCE_STATE_PUBLICATION_WAIT',
+    'CALLSITE_RESOURCE_STATE_READ_PARSE',
     'CALLSITE_CONTROLLER_INPUT_MANIFEST',
     'CALLSITE_CONTROLLER_INPUT_RUN_ID',
     'CALLSITE_CONTROLLER_INPUT_STATE_DIRECTORY',
@@ -1861,6 +2027,17 @@ function Get-SupervisorAttributionTotalityCases {
     'FIELD_MANIFEST_PATH',
     'CALLSITE_WORKFLOW_CLEANUP_RETRY',
     'CALLSITE_FINAL_ABSENCE_CHECK',
+    'CALLSITE_FINAL_OWNED_ROOT_ABSENCE',
+    'CALLSITE_FINAL_INSTALL_ROOT_ABSENCE',
+    'CALLSITE_FINAL_EXECUTABLE_ABSENCE',
+    'CALLSITE_FINAL_SHORTCUT_FOLDER_ABSENCE',
+    'CALLSITE_FINAL_SHORTCUT_ABSENCE',
+    'CALLSITE_FINAL_SMOKE_DIRECTORY_ABSENCE',
+    'CALLSITE_FINAL_REGISTRY_VALUE_ABSENCE',
+    'CALLSITE_FINAL_REGISTRY_PATH_ABSENCE',
+    'CALLSITE_FINAL_REGISTRY_ROOT_ABSENCE',
+    'CALLSITE_FINAL_USER_ABSENCE',
+    'CALLSITE_FINAL_PROFILE_ABSENCE',
     'FORGED_PREFIX_SECRET',
     'MISSING_GATE_STATE_DIRECTORY',
     'MISSING_EXECUTABLE_BACKUP',
@@ -2829,6 +3006,28 @@ function Test-SupervisorInvocationAttributionTotality {
         Phase='PROCESS_STATE'; Callsite='CRITICAL_GATE_READ'; Field='CRITICAL_GATE_CONTENT'
       },
       [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_RESULT_EXIT_CODE'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='PROCESS_OUTPUT'; Callsite='CRITICAL_RESULT_FIELD'; Field='EXIT_CODE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_RESULT_STATE_DIRECTORY'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='PROCESS_OUTPUT'; Callsite='CRITICAL_RESULT_FIELD'; Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_OUTPUT_COMMITTED'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='PROCESS_OUTPUT'; Callsite='CRITICAL_OUTPUT_MARKER'
+        Field='MSI_TRANSACTION_MARKER'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_OUTPUT_CLEANUP_COMPLETE'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='PROCESS_OUTPUT'; Callsite='CRITICAL_OUTPUT_MARKER'
+        Field='POST_TERMINATION_CLEANUP_MARKER'
+      },
+      [PSCustomObject]@{
         CaseId='CALLSITE_PROCESS_STATE_READ'
         Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
         Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_READ'; Field='PROCESS_STATE_PATH'
@@ -2867,6 +3066,30 @@ function Test-SupervisorInvocationAttributionTotality {
         CaseId='CALLSITE_PROCESS_TREE_ASSERTION'
         Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
         Phase='PROCESS_STATE'; Callsite='PROCESS_TREE_ASSERTION'; Field='PROCESS_TREE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_RESOURCE_STATE_DIRECTORY_INPUT'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='RESOURCE_STATE'; Callsite='RESOURCE_STATE_DIRECTORY_INPUT'
+        Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_RESOURCE_STATE_PATH_CONSTRUCTION'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='RESOURCE_STATE'; Callsite='RESOURCE_STATE_PATH_CONSTRUCTION'
+        Field='RESOURCE_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_RESOURCE_STATE_PUBLICATION_WAIT'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='RESOURCE_STATE'; Callsite='RESOURCE_STATE_PUBLICATION_WAIT'
+        Field='RESOURCE_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_RESOURCE_STATE_READ_PARSE'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='RESOURCE_STATE'; Callsite='RESOURCE_STATE_READ_PARSE'
+        Field='RESOURCE_STATE_PATH'
       },
       [PSCustomObject]@{
         CaseId='CALLSITE_CONTROLLER_INPUT_MANIFEST'
@@ -2988,6 +3211,83 @@ function Test-SupervisorInvocationAttributionTotality {
         Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
         Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
         Phase='RESOURCE_ASSERTION'; Callsite='FINAL_ABSENCE_CHECK'; Field='MANIFEST_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_OWNED_ROOT_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_FILESYSTEM_DIRECTORY_ABSENCE'
+        Field='OWNED_ROOT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_INSTALL_ROOT_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_FILESYSTEM_DIRECTORY_ABSENCE'
+        Field='INSTALL_ROOT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_EXECUTABLE_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_FILESYSTEM_FILE_ABSENCE'
+        Field='EXECUTABLE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_SHORTCUT_FOLDER_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_FILESYSTEM_DIRECTORY_ABSENCE'
+        Field='SHORTCUT_FOLDER'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_SHORTCUT_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_SHORTCUT_ABSENCE'
+        Field='SHORTCUT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_SMOKE_DIRECTORY_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_FILESYSTEM_DIRECTORY_ABSENCE'
+        Field='SMOKE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_REGISTRY_VALUE_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_REGISTRY_VALUE_ABSENCE'
+        Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_REGISTRY_PATH_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_REGISTRY_PATH_ABSENCE'
+        Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_REGISTRY_ROOT_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_REGISTRY_ROOT_ABSENCE'
+        Field='REGISTRY_ROOT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_USER_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_USER_ABSENCE'
+        Field='USER_NAME'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_PROFILE_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_PROFILE_ABSENCE'
+        Field='USER_SID'
       }
     )) {
     $diagnostic = ''
@@ -3370,7 +3670,7 @@ function Invoke-CriticalCancellationScenario([string]$Scenario) {
       'CRITICAL_GATE_PATH' `
       'CRITICAL_GATE_PATH'
     while (!(Test-Path -LiteralPath $gatePath -PathType Leaf)) {
-      if ($gateWait.ElapsedMilliseconds -ge 45000) {
+      if ($gateWait.ElapsedMilliseconds -ge 15000) {
         throw 'critical-cancellation fixture did not reach its interruption gate'
       }
       Start-Sleep -Milliseconds 25
@@ -3402,15 +3702,15 @@ function Invoke-CriticalCancellationScenario([string]$Scenario) {
     Set-SupervisorInvocationContext `
       $script:currentSupervisorInvocationTest `
       $Scenario `
-      'PROCESS_STATE' `
-      'PROCESS_STATE_PATH' `
+      'PROCESS_OUTPUT' `
+      'CRITICAL_RESULT_FIELD' `
       'STATE_DIRECTORY'
     Assert-True (![string]::IsNullOrWhiteSpace($stateDirectory)) `
       (Get-SanitizedSupervisorInvocationDiagnostic `
         $script:currentSupervisorInvocationTest `
         $Scenario `
-        'PROCESS_STATE' `
-        'PROCESS_STATE_PATH' `
+        'PROCESS_OUTPUT' `
+        'CRITICAL_RESULT_FIELD' `
         'STATE_DIRECTORY')
     return [PSCustomObject]@{
       ExitCode = $process.ExitCode
@@ -3427,17 +3727,65 @@ function Invoke-CriticalCancellationScenario([string]$Scenario) {
 
 function Test-MsiTransactionInterruptionGates {
   $duringMsi = Invoke-CriticalCancellationScenario 'DURING_MSI'
-  Assert-True ($duringMsi.ExitCode -eq 125) `
-    'DURING_MSI cancellation did not preserve the supervisor cancellation status'
-  Assert-Contains $duringMsi.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:GRACE' `
-    'DURING_MSI cancellation did not enter the fixed transaction grace'
-  Assert-Contains $duringMsi.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:ROLLED_BACK_CLEAN' `
-    'DURING_MSI cancellation did not prove the exact clean rollback receipt'
-  Assert-Contains $duringMsi.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
-    'DURING_MSI clean rollback did not complete bounded cleanup'
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_MSI' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_RESULT_FIELD' `
+    -Field 'EXIT_CODE' `
+    -Action {
+      Assert-True ($duringMsi.ExitCode -eq 125) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_MSI' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_RESULT_FIELD' `
+          'EXIT_CODE')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_MSI' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_OUTPUT_MARKER' `
+    -Field 'MSI_TRANSACTION_MARKER' `
+    -Action {
+      Assert-Contains $duringMsi.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:GRACE' `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_MSI' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_OUTPUT_MARKER' `
+          'MSI_TRANSACTION_MARKER')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_MSI' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_OUTPUT_MARKER' `
+    -Field 'MSI_TRANSACTION_MARKER' `
+    -Action {
+      Assert-Contains $duringMsi.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:ROLLED_BACK_CLEAN' `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_MSI' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_OUTPUT_MARKER' `
+          'MSI_TRANSACTION_MARKER')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_MSI' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_OUTPUT_MARKER' `
+    -Field 'POST_TERMINATION_CLEANUP_MARKER' `
+    -Action {
+      Assert-Contains $duringMsi.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_MSI' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_OUTPUT_MARKER' `
+          'POST_TERMINATION_CLEANUP_MARKER')
+    }
   Set-SupervisorInvocationContext `
     'MSI_TRANSACTION_INTERRUPTION_GATES' `
     'DURING_MSI' `
@@ -3456,15 +3804,64 @@ function Test-MsiTransactionInterruptionGates {
     'DURING_MSI rollback did not retain the exact clean fixture baseline'
 
   $duringCapture = Invoke-CriticalCancellationScenario 'DURING_OWNERSHIP_CAPTURE'
-  $duringCaptureDiagnostic = Get-SanitizedCriticalCancellationDiagnostic $duringCapture
-  Assert-True ($duringCapture.ExitCode -eq 125) `
-    "DURING_OWNERSHIP_CAPTURE cancellation did not preserve cancellation status:$duringCaptureDiagnostic"
-  Assert-Contains $duringCapture.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:COMMITTED' `
-    "DURING_OWNERSHIP_CAPTURE did not publish durable nonprovisional authority:$duringCaptureDiagnostic"
-  Assert-Contains $duringCapture.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
-    "DURING_OWNERSHIP_CAPTURE durable authority did not complete cleanup:$duringCaptureDiagnostic"
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_OWNERSHIP_CAPTURE' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_RESULT_FIELD' `
+    -Field 'EXIT_CODE' `
+    -Action {
+      Assert-True ($duringCapture.ExitCode -eq 125) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_OWNERSHIP_CAPTURE' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_RESULT_FIELD' `
+          'EXIT_CODE')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_OWNERSHIP_CAPTURE' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_OUTPUT_MARKER' `
+    -Field 'MSI_TRANSACTION_MARKER' `
+    -Action {
+      Assert-Contains $duringCapture.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:COMMITTED' `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_OWNERSHIP_CAPTURE' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_OUTPUT_MARKER' `
+          'MSI_TRANSACTION_MARKER')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_OWNERSHIP_CAPTURE' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_OUTPUT_MARKER' `
+    -Field 'POST_TERMINATION_CLEANUP_MARKER' `
+    -Action {
+      Assert-Contains $duringCapture.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_OWNERSHIP_CAPTURE' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_OUTPUT_MARKER' `
+          'POST_TERMINATION_CLEANUP_MARKER')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_OWNERSHIP_CAPTURE' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_RESULT_FIELD' `
+    -Field 'STATE_DIRECTORY' `
+    -Action {
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$duringCapture.StateDirectory)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_OWNERSHIP_CAPTURE' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_RESULT_FIELD' `
+          'STATE_DIRECTORY')
+    }
   $capturedOwned = Read-FixtureResourceState $duringCapture.StateDirectory
   Assert-OwnedResourcesGone $capturedOwned
 }

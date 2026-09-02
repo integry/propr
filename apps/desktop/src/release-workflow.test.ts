@@ -666,6 +666,91 @@ describe('desktop trusted release workflow', () => {
       fixtureProcessStateReader,
       /throw 'fixture did not publish process state'/,
     );
+    const fixtureResourceStateReader = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Read-FixtureResourceState'),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Assert-ProcessTreeGone'),
+    );
+    for (const callsite of [
+      'RESOURCE_STATE_DIRECTORY_INPUT',
+      'RESOURCE_STATE_PATH_CONSTRUCTION',
+      'RESOURCE_STATE_PUBLICATION_WAIT',
+      'RESOURCE_STATE_READ_PARSE',
+    ]) {
+      assert.match(fixtureResourceStateReader, new RegExp(callsite));
+      assert.match(installedWindowsAppSupervisorBehaviorTest, new RegExp(`'${callsite}'`));
+    }
+    assert.match(fixtureResourceStateReader, /RESOURCE_STATE_PATH/);
+    assert.match(fixtureResourceStateReader, /ElapsedMilliseconds -ge 15000/);
+    const criticalCancellation = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Invoke-CriticalCancellationScenario',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Test-MsiTransactionInterruptionGates',
+      ),
+    );
+    assert.match(criticalCancellation, /CRITICAL_RESULT_FIELD[\s\S]*STATE_DIRECTORY/);
+    assert.match(criticalCancellation, /ElapsedMilliseconds -ge 15000/);
+    assert.doesNotMatch(
+      criticalCancellation,
+      /'PROCESS_STATE'\s+`\s+'PROCESS_STATE_PATH'\s+`\s+'STATE_DIRECTORY'/,
+    );
+    const msiInterruptionGates = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Test-MsiTransactionInterruptionGates',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Test-BootstrapTimeout'),
+    );
+    for (const token of [
+      'CRITICAL_RESULT_FIELD',
+      'CRITICAL_OUTPUT_MARKER',
+      'MSI_TRANSACTION_MARKER',
+      'POST_TERMINATION_CLEANUP_MARKER',
+    ]) {
+      assert.match(msiInterruptionGates, new RegExp(token));
+    }
+    const ownedResourceAssertion = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Test-OwnedRegistryValueAbsent',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Convert-FixtureAuthorityFieldToken',
+      ),
+    );
+    for (const callsite of [
+      'FINAL_FILESYSTEM_DIRECTORY_ABSENCE',
+      'FINAL_FILESYSTEM_FILE_ABSENCE',
+      'FINAL_SHORTCUT_ABSENCE',
+      'FINAL_REGISTRY_VALUE_ABSENCE',
+      'FINAL_REGISTRY_PATH_ABSENCE',
+      'FINAL_REGISTRY_ROOT_ABSENCE',
+      'FINAL_USER_ABSENCE',
+      'FINAL_PROFILE_ABSENCE',
+    ]) {
+      assert.match(ownedResourceAssertion, new RegExp(callsite));
+      assert.match(installedWindowsAppSupervisorBehaviorTest, new RegExp(`'${callsite}'`));
+    }
+    for (const field of [
+      'OWNED_ROOT',
+      'INSTALL_ROOT',
+      'EXECUTABLE',
+      'SHORTCUT_FOLDER',
+      'SHORTCUT',
+      'SMOKE_DIRECTORY',
+      'REGISTRY_VALUE',
+      'REGISTRY_PATH',
+      'REGISTRY_ROOT',
+      'USER_NAME',
+      'USER_SID',
+    ]) {
+      assert.match(ownedResourceAssertion, new RegExp(field));
+    }
+    assert.match(ownedResourceAssertion, /\$cleanupStopwatch = \[Diagnostics\.Stopwatch\]::StartNew\(\)/);
+    assert.match(ownedResourceAssertion, /ElapsedMilliseconds -ge 5000/);
+    assert.doesNotMatch(
+      ownedResourceAssertion,
+      /Set-SupervisorInvocationContext[\s\S]*'RESOURCE_ASSERTION'\s*\)/,
+    );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingAppPathsAuthority/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-ProcessTreeGone/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-OwnedFixtureAuthorityComplete/);
@@ -1258,7 +1343,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /did not publish durable nonprovisional authority:\$duringCaptureDiagnostic/,
+      /CRITICAL_OUTPUT_MARKER[\s\S]*MSI_TRANSACTION_MARKER[\s\S]*WATCHDOG:MSI_TRANSACTION:COMMITTED/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
