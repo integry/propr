@@ -138,11 +138,27 @@ function Write-FixtureOwnershipManifest($Manifest) {
 }
 
 function Write-FixtureCriticalGate([string]$Name) {
-  [IO.File]::WriteAllText(
-    (Join-Path $stateDirectory 'critical-gate.txt'),
-    $Name,
-    [Text.Encoding]::ASCII
+  if (!$stateDirectory -or !(Test-Path -LiteralPath $stateDirectory -PathType Container)) {
+    throw 'fixture critical gate state directory is invalid'
+  }
+  $gatePath = Join-Path $stateDirectory 'critical-gate.txt'
+  $temporaryGatePath = "$gatePath.$PID.new"
+  $bytes = [Text.Encoding]::ASCII.GetBytes($Name)
+  $stream = [IO.FileStream]::new(
+    $temporaryGatePath,
+    [IO.FileMode]::Create,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::None,
+    4096,
+    [IO.FileOptions]::WriteThrough
   )
+  try {
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    $stream.Dispose()
+  }
+  [IO.File]::Move($temporaryGatePath, $gatePath, $true)
 }
 
 function Write-FixtureOwnershipToken([string]$Path, [string]$Token) {
@@ -647,9 +663,9 @@ function Replace-FixtureExecutableByteIdenticallyViaMove {
   [IO.File]::Copy($state.Executable, $replacement, $false)
   Move-Item -LiteralPath $state.Executable -Destination $backup -ErrorAction Stop
   Move-Item -LiteralPath $replacement -Destination $state.Executable -ErrorAction Stop
-  $state | Add-Member -NotePropertyName ExecutableBackup -NotePropertyValue $backup
+  $state | Add-Member -NotePropertyName ExecutableBackup -NotePropertyValue $backup -Force
   $state | Add-Member -NotePropertyName ByteIdenticalReplacement `
-    -NotePropertyValue $true
+    -NotePropertyValue $true -Force
   $state | ConvertTo-Json -Compress | Set-Content -LiteralPath `
     (Join-Path $stateDirectory 'resources.json') -Encoding ASCII
 }
@@ -776,6 +792,9 @@ try {
 }
 
 $descendant = Start-FixtureDescendant
+if ($PID -le 0 -or $descendant.Id -le 0) {
+  throw 'fixture process state authority is invalid'
+}
 $state = [ordered]@{ WorkerPid = $PID; DescendantPid = $descendant.Id }
 $processStatePath = Join-Path $stateDirectory 'processes.json'
 $processStateTemporaryPath = "$processStatePath.$PID.new"

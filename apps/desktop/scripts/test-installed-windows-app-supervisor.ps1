@@ -26,6 +26,8 @@ $dummyInstallerSha256 = $null
 $script:currentSupervisorInvocationTest = 'UNATTRIBUTED'
 $script:currentSupervisorInvocationScenario = 'UNATTRIBUTED'
 $script:currentSupervisorInvocationPhase = 'UNATTRIBUTED'
+$script:currentSupervisorInvocationCallsite = 'GENERAL'
+$script:currentSupervisorInvocationField = 'NONE'
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (!$Condition) { throw $Message }
@@ -639,6 +641,19 @@ function New-SupervisorStartInfo(
 }
 
 function Read-FixtureProcessState([string]$StateDirectory) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'PROCESS_STATE' `
+    'PROCESS_STATE_PATH' `
+    'STATE_DIRECTORY'
+  Assert-True (![string]::IsNullOrWhiteSpace($StateDirectory)) `
+    (Get-SanitizedSupervisorInvocationDiagnostic `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'PROCESS_STATE' `
+      'PROCESS_STATE_PATH' `
+      'STATE_DIRECTORY')
   $statePath = Join-Path $StateDirectory 'processes.json'
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
@@ -647,7 +662,31 @@ function Read-FixtureProcessState([string]$StateDirectory) {
     }
     Start-Sleep -Milliseconds 25
   }
-  return Get-Content -LiteralPath $statePath -Raw -Encoding ASCII | ConvertFrom-Json
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'PROCESS_STATE' `
+    'PROCESS_STATE_READ' `
+    'PROCESS_STATE_PATH'
+  $state = Get-Content -LiteralPath $statePath -Raw -Encoding ASCII |
+    ConvertFrom-Json -ErrorAction Stop
+  foreach ($field in @('WorkerPid','DescendantPid')) {
+    $property = $state.PSObject.Properties[$field]
+    $pidValue = 0
+    Assert-True ($null -ne $property -and [int]::TryParse(
+        [string]$property.Value,
+        [Globalization.NumberStyles]::None,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [ref]$pidValue
+      ) -and $pidValue -gt 0) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        $script:currentSupervisorInvocationTest `
+        $script:currentSupervisorInvocationScenario `
+        'PROCESS_STATE' `
+        'PROCESS_STATE_READ' `
+        (($field -creplace '([a-z])([A-Z])', '$1_$2').ToUpperInvariant()))
+  }
+  return $state
 }
 
 function Read-FixtureResourceState([string]$StateDirectory) {
@@ -667,6 +706,12 @@ function Read-FixtureResourceState([string]$StateDirectory) {
 }
 
 function Assert-ProcessTreeGone($State) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    $script:currentSupervisorInvocationPhase `
+    'PROCESS_TREE_ASSERTION' `
+    'PROCESS_TREE'
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   do {
     $worker = Get-Process -Id ([int]$State.WorkerPid) -ErrorAction SilentlyContinue
@@ -1011,35 +1056,143 @@ function Assert-OwnedResourcesGone($Owned) {
     'external cleanup left the run-owned profile behind'
 }
 
+function Convert-FixtureAuthorityFieldToken([string]$Field) {
+  $token = ($Field -creplace '([a-z])([A-Z])', '$1_$2').ToUpperInvariant()
+  return Get-SanitizedSupervisorFieldToken $token
+}
+
+function Assert-FixtureStateFieldsComplete(
+  $State,
+  [string]$Scenario,
+  [string]$Callsite,
+  [string[]]$Fields
+) {
+  foreach ($field in $Fields) {
+    $fieldToken = Convert-FixtureAuthorityFieldToken $field
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      $script:currentSupervisorInvocationPhase `
+      $Callsite `
+      $fieldToken
+    $property = $State.PSObject.Properties[$field]
+    Assert-True ($null -ne $property -and
+        ![string]::IsNullOrWhiteSpace([string]$property.Value)) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        $script:currentSupervisorInvocationTest `
+        $Scenario `
+        $script:currentSupervisorInvocationPhase `
+        $Callsite `
+        $fieldToken)
+  }
+}
+
 function Restore-ReplacedFixtureAuthority($Owned) {
   Set-SupervisorInvocationContext `
     $script:currentSupervisorInvocationTest `
     $script:currentSupervisorInvocationScenario `
-    'AUTHORITY_RESTORE'
+    'AUTHORITY_RESTORE' `
+    'AUTHORITY_RESTORE_WRITE' `
+    'TOKEN'
+  Assert-FixtureStateFieldsComplete `
+    $Owned $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE_WRITE' @('OwnedRoot','Token')
   [IO.File]::WriteAllText(
     (Join-Path $Owned.OwnedRoot '.propr-installed-app-owner'),
     [string]$Owned.Token,
     [Text.Encoding]::ASCII
   )
   if ($Owned.PSObject.Properties['InstallRootBackup']) {
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_REMOVE' @('InstallRoot')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_REMOVE' `
+      'INSTALL_ROOT'
     Remove-Item -LiteralPath $Owned.InstallRoot -Recurse -Force -ErrorAction Stop
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_MOVE' @('InstallRootBackup','InstallRoot')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_MOVE' `
+      'INSTALL_ROOT_BACKUP'
     Move-Item -LiteralPath $Owned.InstallRootBackup -Destination $Owned.InstallRoot `
       -ErrorAction Stop
   } elseif ($Owned.PSObject.Properties['ExecutableBackup']) {
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_REMOVE' @('Executable')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_REMOVE' `
+      'EXECUTABLE'
     Remove-Item -LiteralPath $Owned.Executable -Force -ErrorAction Stop
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_MOVE' @('ExecutableBackup','Executable')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_MOVE' `
+      'EXECUTABLE_BACKUP'
     Move-Item -LiteralPath $Owned.ExecutableBackup -Destination $Owned.Executable `
       -ErrorAction Stop
   }
+  Assert-FixtureStateFieldsComplete `
+    $Owned $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE_WRITE' @('ShortcutFolder','Token')
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE' `
+    'AUTHORITY_RESTORE_WRITE' `
+    'SHORTCUT_FOLDER'
   [IO.File]::WriteAllText(
     (Join-Path $Owned.ShortcutFolder '.propr-installed-app-owner'),
     [string]$Owned.Token,
     [Text.Encoding]::ASCII
   )
   if ($Owned.PSObject.Properties['ShortcutBackup']) {
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_REMOVE' @('Shortcut')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_REMOVE' `
+      'SHORTCUT'
     Remove-Item -LiteralPath $Owned.Shortcut -Force -ErrorAction Stop
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_MOVE' @('ShortcutBackup','Shortcut')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_MOVE' `
+      'SHORTCUT_BACKUP'
     Move-Item -LiteralPath $Owned.ShortcutBackup -Destination $Owned.Shortcut `
       -ErrorAction Stop
   }
+  Assert-FixtureStateFieldsComplete `
+    $Owned $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE_WRITE' @('RegistryPath','Token')
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE' `
+    'AUTHORITY_RESTORE_WRITE' `
+    'REGISTRY_PATH'
   Set-ItemProperty -LiteralPath $Owned.RegistryPath `
     -Name 'ProPRInstalledAppOwner' -Value ([string]$Owned.Token)
 }
@@ -1063,7 +1216,12 @@ function Assert-ReplacedExecutableSurvives($Owned) {
   Set-SupervisorInvocationContext `
     $script:currentSupervisorInvocationTest `
     $script:currentSupervisorInvocationScenario `
-    'RESOURCE_ASSERTION'
+    'RESOURCE_ASSERTION' `
+    'REPLACEMENT_SURVIVAL_READ' `
+    'EXECUTABLE'
+  Assert-FixtureStateFieldsComplete `
+    $Owned $script:currentSupervisorInvocationScenario `
+    'REPLACEMENT_SURVIVAL_READ' @('Executable')
   $expected = if ($Owned.PSObject.Properties['ByteIdenticalReplacement']) {
     'owned-executable'
   } else { 'foreign-executable' }
@@ -1238,27 +1396,90 @@ function Get-SupervisorInvocationPhases {
   )
 }
 
+function Get-SupervisorInvocationCallsites {
+  return @(
+    'UNATTRIBUTED',
+    'GENERAL',
+    'CRITICAL_GATE_PATH',
+    'CRITICAL_GATE_READ',
+    'PROCESS_STATE_PATH',
+    'PROCESS_STATE_READ',
+    'PROCESS_TREE_ASSERTION',
+    'RESOURCE_FIELD_VALIDATION',
+    'REPLACEMENT_SURVIVAL_READ',
+    'AUTHORITY_RESTORE_WRITE',
+    'AUTHORITY_RESTORE_REMOVE',
+    'AUTHORITY_RESTORE_MOVE',
+    'WORKFLOW_CLEANUP_RETRY',
+    'FINAL_ABSENCE_CHECK'
+  )
+}
+
+function Get-SupervisorInvocationFields {
+  return @(
+    'NONE',
+    'STATE_DIRECTORY',
+    'CRITICAL_GATE_PATH',
+    'CRITICAL_GATE_CONTENT',
+    'PROCESS_STATE_PATH',
+    'WORKER_PID',
+    'DESCENDANT_PID',
+    'PROCESS_TREE',
+    'OWNED_ROOT',
+    'INSTALL_ROOT',
+    'SHORTCUT_FOLDER',
+    'SHORTCUT',
+    'SMOKE_DIRECTORY',
+    'REGISTRY_PATH',
+    'REGISTRY_ROOT',
+    'USER_NAME',
+    'USER_SID',
+    'PROFILE_PATH',
+    'MANIFEST_PATH',
+    'RUN_ID',
+    'TOKEN',
+    'EXECUTABLE',
+    'EXECUTABLE_BACKUP',
+    'SHORTCUT_BACKUP',
+    'INSTALL_ROOT_BACKUP',
+    'BYTE_IDENTICAL_REPLACEMENT'
+  )
+}
+
 function Get-SanitizedSupervisorInvocationToken([string]$Token, [string[]]$AllowList) {
   if ($Token -cin $AllowList) { return $Token }
   return 'UNATTRIBUTED'
 }
 
+function Get-SanitizedSupervisorFieldToken([string]$Token) {
+  if ($Token -cin (Get-SupervisorInvocationFields)) { return $Token }
+  return 'NONE'
+}
+
 function Get-SanitizedSupervisorInvocationDiagnostic(
   [string]$Test,
   [string]$Scenario,
-  [string]$Phase
+  [string]$Phase,
+  [string]$Callsite = 'GENERAL',
+  [string]$Field = 'NONE'
 ) {
   $testName = Get-SanitizedSupervisorInvocationToken $Test (Get-SupervisorInvocationTests)
   $scenarioName = Get-SanitizedSupervisorInvocationToken $Scenario (Get-SupervisorInvocationScenarios)
   $phaseName = Get-SanitizedSupervisorInvocationToken $Phase (Get-SupervisorInvocationPhases)
+  $callsiteName = Get-SanitizedSupervisorInvocationToken `
+    $Callsite (Get-SupervisorInvocationCallsites)
+  $fieldName = Get-SanitizedSupervisorFieldToken $Field
   return ('PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:{0}:' +
-    'SCENARIO:{1}:PHASE:{2}:FAILED') -f $testName, $scenarioName, $phaseName
+    'SCENARIO:{1}:PHASE:{2}:CALLSITE:{3}:FIELD:{4}:FAILED') -f `
+    $testName, $scenarioName, $phaseName, $callsiteName, $fieldName
 }
 
 function Set-SupervisorInvocationContext(
   [string]$Test,
   [string]$Scenario,
-  [string]$Phase
+  [string]$Phase,
+  [string]$Callsite = 'GENERAL',
+  [string]$Field = 'NONE'
 ) {
   $script:currentSupervisorInvocationTest =
     Get-SanitizedSupervisorInvocationToken $Test (Get-SupervisorInvocationTests)
@@ -1266,32 +1487,58 @@ function Set-SupervisorInvocationContext(
     Get-SanitizedSupervisorInvocationToken $Scenario (Get-SupervisorInvocationScenarios)
   $script:currentSupervisorInvocationPhase =
     Get-SanitizedSupervisorInvocationToken $Phase (Get-SupervisorInvocationPhases)
+  $script:currentSupervisorInvocationCallsite =
+    Get-SanitizedSupervisorInvocationToken $Callsite (Get-SupervisorInvocationCallsites)
+  $script:currentSupervisorInvocationField = Get-SanitizedSupervisorFieldToken $Field
+}
+
+function Test-SupervisorInvocationDiagnosticExact([string]$Diagnostic) {
+  $match = [regex]::Match(
+    [string]$Diagnostic,
+    ('^PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:([A-Z_]+):' +
+      'SCENARIO:([A-Z_]+):PHASE:([A-Z_]+):CALLSITE:([A-Z_]+):' +
+      'FIELD:([A-Z_]+):FAILED$')
+  )
+  if (!$match.Success) { return $false }
+  return $match.Groups[1].Value -cin (Get-SupervisorInvocationTests) -and
+    $match.Groups[2].Value -cin (Get-SupervisorInvocationScenarios) -and
+    $match.Groups[3].Value -cin (Get-SupervisorInvocationPhases) -and
+    $match.Groups[4].Value -cin (Get-SupervisorInvocationCallsites) -and
+    $match.Groups[5].Value -cin (Get-SupervisorInvocationFields)
 }
 
 function Invoke-SupervisorAttributedBoundary(
   [string]$Test,
   [string]$Scenario,
   [string]$Phase,
-  [scriptblock]$Action
+  [scriptblock]$Action,
+  [string]$Callsite = 'GENERAL',
+  [string]$Field = 'NONE'
 ) {
   $previousTest = $script:currentSupervisorInvocationTest
   $previousScenario = $script:currentSupervisorInvocationScenario
   $previousPhase = $script:currentSupervisorInvocationPhase
-  Set-SupervisorInvocationContext $Test $Scenario $Phase
+  $previousCallsite = $script:currentSupervisorInvocationCallsite
+  $previousField = $script:currentSupervisorInvocationField
+  Set-SupervisorInvocationContext $Test $Scenario $Phase $Callsite $Field
   try {
     & $Action
   } catch {
-    if ($_.Exception.Message -clike 'PROPR_WINDOWS_SUPERVISOR_INVOCATION:*') {
+    if (Test-SupervisorInvocationDiagnosticExact $_.Exception.Message) {
       throw
     }
     throw (Get-SanitizedSupervisorInvocationDiagnostic `
       $script:currentSupervisorInvocationTest `
       $script:currentSupervisorInvocationScenario `
-      $script:currentSupervisorInvocationPhase)
+      $script:currentSupervisorInvocationPhase `
+      $script:currentSupervisorInvocationCallsite `
+      $script:currentSupervisorInvocationField)
   } finally {
     $script:currentSupervisorInvocationTest = $previousTest
     $script:currentSupervisorInvocationScenario = $previousScenario
     $script:currentSupervisorInvocationPhase = $previousPhase
+    $script:currentSupervisorInvocationCallsite = $previousCallsite
+    $script:currentSupervisorInvocationField = $previousField
   }
 }
 
@@ -1306,16 +1553,20 @@ function Assert-SupervisorInvocationDiagnosticBounded(
   [string]$Diagnostic,
   [string]$Test,
   [string]$Scenario,
-  [string]$Phase
+  [string]$Phase,
+  [string]$Callsite = 'GENERAL',
+  [string]$Field = 'NONE'
 ) {
-  $expected = Get-SanitizedSupervisorInvocationDiagnostic $Test $Scenario $Phase
+  $expected = Get-SanitizedSupervisorInvocationDiagnostic `
+    $Test $Scenario $Phase $Callsite $Field
   Assert-True ($Diagnostic -ceq $expected) `
     'supervisor invocation attribution was not the exact fixed diagnostic'
-  Assert-True ([Text.Encoding]::ASCII.GetByteCount($Diagnostic) -le 224) `
+  Assert-True ([Text.Encoding]::ASCII.GetByteCount($Diagnostic) -le 320) `
     'supervisor invocation attribution exceeded its bounded size'
   Assert-True ($Diagnostic -cmatch (
       '^PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:[A-Z_]+:' +
-      'SCENARIO:[A-Z_]+:PHASE:[A-Z_]+:FAILED$'
+      'SCENARIO:[A-Z_]+:PHASE:[A-Z_]+:CALLSITE:[A-Z_]+:' +
+      'FIELD:[A-Z_]+:FAILED$'
     )) 'supervisor invocation attribution used a non-allowlisted token format'
   foreach ($forbidden in @(
       $secretNeedle,
@@ -1327,7 +1578,6 @@ function Assert-SupervisorInvocationDiagnosticBounded(
       'S-1-5-',
       'fixture-user',
       'credential',
-      'manifest',
       'stdout',
       'stderr'
     )) {
@@ -2029,12 +2279,63 @@ function Test-SupervisorInvocationAttributionTotality {
       [PSCustomObject]@{
         Test='PROVISIONAL_USER_MARKER_OWNERSHIP'; Scenario='USER_MARKER_REPLACEMENT'
         Phase='WORKFLOW_CLEANUP_CONTROLLER'
+      },
+      [PSCustomObject]@{
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'; Callsite='CRITICAL_GATE_PATH'; Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'; Callsite='CRITICAL_GATE_READ'; Field='CRITICAL_GATE_CONTENT'
+      },
+      [PSCustomObject]@{
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_READ'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_TREE_ASSERTION'; Field='PROCESS_TREE'
+      },
+      [PSCustomObject]@{
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
+        Phase='RESOURCE_ASSERTION'; Callsite='REPLACEMENT_SURVIVAL_READ'; Field='EXECUTABLE'
+      },
+      [PSCustomObject]@{
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
+        Phase='RESOURCE_ASSERTION'; Callsite='RESOURCE_FIELD_VALIDATION'; Field='EXECUTABLE_BACKUP'
+      },
+      [PSCustomObject]@{
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
+        Phase='RESOURCE_ASSERTION'; Callsite='RESOURCE_FIELD_VALIDATION'; Field='MANIFEST_PATH'
+      },
+      [PSCustomObject]@{
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
+        Phase='RESOURCE_ASSERTION'; Callsite='WORKFLOW_CLEANUP_RETRY'; Field='RUN_ID'
+      },
+      [PSCustomObject]@{
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_ABSENCE_CHECK'; Field='MANIFEST_PATH'
       }
     )) {
     $diagnostic = ''
+    $callsite = if ($case.PSObject.Properties['Callsite']) {
+      [string]$case.Callsite
+    } else { 'GENERAL' }
+    $field = if ($case.PSObject.Properties['Field']) {
+      [string]$case.Field
+    } else { 'NONE' }
     try {
       Invoke-SupervisorAttributedTest $case.Test {
-        Invoke-SupervisorAttributedBoundary $case.Test $case.Scenario $case.Phase {
+        Invoke-SupervisorAttributedBoundary `
+          $case.Test $case.Scenario $case.Phase `
+          -Callsite $callsite `
+          -Field $field `
+          -Action {
           throw (
             "Cannot bind argument to parameter 'LiteralPath' because it is null. " +
             "$secretNeedle $testRoot Registry::HKEY_LOCAL_MACHINE S-1-5-21 " +
@@ -2046,18 +2347,99 @@ function Test-SupervisorInvocationAttributionTotality {
       $diagnostic = $_.Exception.Message
     }
     Assert-SupervisorInvocationDiagnosticBounded `
-      $diagnostic $case.Test $case.Scenario $case.Phase
+      $diagnostic $case.Test $case.Scenario $case.Phase $callsite $field
   }
+  $forgedDiagnostic = ''
+  try {
+    Invoke-SupervisorAttributedBoundary `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      -Callsite 'RESOURCE_FIELD_VALIDATION' `
+      -Field 'EXECUTABLE_BACKUP' `
+      -Action {
+        throw (
+          'PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:PRE_EXISTING_CLEANUP_OWNERSHIP:' +
+          'SCENARIO:OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE:' +
+          'PHASE:RESOURCE_ASSERTION:CALLSITE:RESOURCE_FIELD_VALIDATION:' +
+          "FIELD:EXECUTABLE_BACKUP:FAILED:$secretNeedle"
+        )
+      }
+  } catch {
+    $forgedDiagnostic = $_.Exception.Message
+  }
+  Assert-SupervisorInvocationDiagnosticBounded `
+    $forgedDiagnostic `
+    'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+    'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+    'RESOURCE_ASSERTION' `
+    'RESOURCE_FIELD_VALIDATION' `
+    'EXECUTABLE_BACKUP'
+
+  $missingGateStateDirectoryDiagnostic = ''
+  try {
+    Set-SupervisorInvocationContext `
+      'MSI_TRANSACTION_INTERRUPTION_GATES' `
+      'DURING_MSI' `
+      'PROCESS_STATE' `
+      'CRITICAL_GATE_PATH' `
+      'STATE_DIRECTORY'
+    Assert-True (![string]::IsNullOrWhiteSpace('')) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        'MSI_TRANSACTION_INTERRUPTION_GATES' `
+        'DURING_MSI' `
+        'PROCESS_STATE' `
+        'CRITICAL_GATE_PATH' `
+        'STATE_DIRECTORY')
+  } catch {
+    $missingGateStateDirectoryDiagnostic = $_.Exception.Message
+  }
+  Assert-SupervisorInvocationDiagnosticBounded `
+    $missingGateStateDirectoryDiagnostic `
+    'MSI_TRANSACTION_INTERRUPTION_GATES' `
+    'DURING_MSI' `
+    'PROCESS_STATE' `
+    'CRITICAL_GATE_PATH' `
+    'STATE_DIRECTORY'
+
+  $missingExecutableBackupDiagnostic = ''
+  try {
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'RESOURCE_FIELD_VALIDATION' `
+      'EXECUTABLE_BACKUP'
+    Assert-FixtureStateFieldsComplete `
+      ([PSCustomObject]@{
+        Executable = 'EXECUTABLE'
+        ManifestPath = 'MANIFEST_PATH'
+        RunId = 'RUN_ID'
+      }) `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_FIELD_VALIDATION' `
+      @('ExecutableBackup')
+  } catch {
+    $missingExecutableBackupDiagnostic = $_.Exception.Message
+  }
+  Assert-SupervisorInvocationDiagnosticBounded `
+    $missingExecutableBackupDiagnostic `
+    'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+    'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+    'RESOURCE_ASSERTION' `
+    'RESOURCE_FIELD_VALIDATION' `
+    'EXECUTABLE_BACKUP'
   foreach ($testName in Get-SupervisorInvocationTests) {
     foreach ($scenarioName in Get-SupervisorInvocationScenarios) {
       foreach ($phaseName in Get-SupervisorInvocationPhases) {
         $diagnostic = Get-SanitizedSupervisorInvocationDiagnostic `
           $testName $scenarioName $phaseName
-        Assert-True ([Text.Encoding]::ASCII.GetByteCount($diagnostic) -le 224) `
+        Assert-True ([Text.Encoding]::ASCII.GetByteCount($diagnostic) -le 320) `
           'an allowlisted supervisor invocation diagnostic exceeded its byte bound'
         Assert-True ($diagnostic -cmatch (
             '^PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:[A-Z_]+:' +
-            'SCENARIO:[A-Z_]+:PHASE:[A-Z_]+:FAILED$'
+            'SCENARIO:[A-Z_]+:PHASE:[A-Z_]+:CALLSITE:[A-Z_]+:' +
+            'FIELD:[A-Z_]+:FAILED$'
           )) 'an allowlisted supervisor invocation diagnostic was not token-only'
       }
     }
@@ -2199,10 +2581,27 @@ function Invoke-CriticalCancellationScenario([string]$Scenario) {
     Set-SupervisorInvocationContext `
       $script:currentSupervisorInvocationTest $Scenario 'PROCESS_START'
     if (!$process.Start()) { throw 'critical-cancellation supervisor did not start' }
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      'PROCESS_STATE' `
+      'CRITICAL_GATE_PATH' `
+      'STATE_DIRECTORY'
+    Assert-True (![string]::IsNullOrWhiteSpace($stateDirectory)) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        $script:currentSupervisorInvocationTest `
+        $Scenario `
+        'PROCESS_STATE' `
+        'CRITICAL_GATE_PATH' `
+        'STATE_DIRECTORY')
     $gatePath = Join-Path $stateDirectory 'critical-gate.txt'
     $gateWait = [Diagnostics.Stopwatch]::StartNew()
     Set-SupervisorInvocationContext `
-      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_WAIT'
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      'PROCESS_WAIT' `
+      'CRITICAL_GATE_PATH' `
+      'CRITICAL_GATE_PATH'
     while (!(Test-Path -LiteralPath $gatePath -PathType Leaf)) {
       if ($gateWait.ElapsedMilliseconds -ge 45000) {
         throw 'critical-cancellation fixture did not reach its interruption gate'
@@ -2210,7 +2609,11 @@ function Invoke-CriticalCancellationScenario([string]$Scenario) {
       Start-Sleep -Milliseconds 25
     }
     Set-SupervisorInvocationContext `
-      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_STATE'
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      'PROCESS_STATE' `
+      'CRITICAL_GATE_READ' `
+      'CRITICAL_GATE_CONTENT'
     Assert-True ((Get-Content -LiteralPath $gatePath -Raw -Encoding ASCII) -ceq $Scenario) `
       'critical-cancellation fixture published the wrong interruption gate'
     [void]$cancellation.Set()
@@ -2223,8 +2626,25 @@ function Invoke-CriticalCancellationScenario([string]$Scenario) {
     $output = $process.StandardOutput.ReadToEnd()
     $errorOutput = $process.StandardError.ReadToEnd()
     Set-SupervisorInvocationContext `
-      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_STATE'
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      'PROCESS_STATE' `
+      'PROCESS_TREE_ASSERTION' `
+      'PROCESS_TREE'
     Assert-ProcessTreeGone (Read-FixtureProcessState $stateDirectory)
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      'PROCESS_STATE' `
+      'PROCESS_STATE_PATH' `
+      'STATE_DIRECTORY'
+    Assert-True (![string]::IsNullOrWhiteSpace($stateDirectory)) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        $script:currentSupervisorInvocationTest `
+        $Scenario `
+        'PROCESS_STATE' `
+        'PROCESS_STATE_PATH' `
+        'STATE_DIRECTORY')
     return [PSCustomObject]@{
       ExitCode = $process.ExitCode
       Output = $output
@@ -2251,6 +2671,20 @@ function Test-MsiTransactionInterruptionGates {
   Assert-Contains $duringMsi.Output `
     'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
     'DURING_MSI clean rollback did not complete bounded cleanup'
+  Set-SupervisorInvocationContext `
+    'MSI_TRANSACTION_INTERRUPTION_GATES' `
+    'DURING_MSI' `
+    'PROCESS_STATE' `
+    'FINAL_ABSENCE_CHECK' `
+    'OWNED_ROOT'
+  Assert-FixtureStateFieldsComplete `
+    $duringMsi 'DURING_MSI' 'FINAL_ABSENCE_CHECK' @('StateDirectory')
+  Set-SupervisorInvocationContext `
+    'MSI_TRANSACTION_INTERRUPTION_GATES' `
+    'DURING_MSI' `
+    'PROCESS_STATE' `
+    'FINAL_ABSENCE_CHECK' `
+    'OWNED_ROOT'
   Assert-True (!(Test-Path -LiteralPath (Join-Path $duringMsi.StateDirectory 'owned'))) `
     'DURING_MSI rollback did not retain the exact clean fixture baseline'
 
@@ -2782,22 +3216,101 @@ function Test-PreExistingCleanupOwnership {
       'byte-identical replace-via-move did not fail closed on entry identity'
     $byteIdenticalOwned = Read-FixtureResourceState $byteIdenticalDirectory
     Assert-ReplacedExecutableSurvives $byteIdenticalOwned
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'RESOURCE_FIELD_VALIDATION' `
+      'MANIFEST_PATH'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_FIELD_VALIDATION' `
+      @('ManifestPath','RunId','Executable','ExecutableBackup')
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'REPLACEMENT_SURVIVAL_READ' `
+      'MANIFEST_PATH'
     $byteIdenticalManifest = Get-Content -LiteralPath $byteIdenticalOwned.ManifestPath `
       -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
     Assert-True ($byteIdenticalManifest.State -ceq 'ACTIVE') `
       'byte-identical replace-via-move discarded ACTIVE recovery authority'
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'AUTHORITY_RESTORE_REMOVE' `
+      'EXECUTABLE'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'AUTHORITY_RESTORE_REMOVE' `
+      @('Executable')
     Remove-Item -LiteralPath $byteIdenticalOwned.Executable -Force -ErrorAction Stop
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'AUTHORITY_RESTORE_MOVE' `
+      'EXECUTABLE_BACKUP'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'AUTHORITY_RESTORE_MOVE' `
+      @('ExecutableBackup','Executable')
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'AUTHORITY_RESTORE_MOVE' `
+      'EXECUTABLE_BACKUP'
     Move-Item -LiteralPath $byteIdenticalOwned.ExecutableBackup `
       -Destination $byteIdenticalOwned.Executable -ErrorAction Stop
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'WORKFLOW_CLEANUP_RETRY' `
+      'RUN_ID'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'WORKFLOW_CLEANUP_RETRY' `
+      @('ManifestPath','RunId')
     $byteIdenticalRetry = Invoke-WorkflowCleanupController `
       'EXECUTABLE_IDENTITY_RETRY' $byteIdenticalOwned.ManifestPath `
       $byteIdenticalOwned.RunId $byteIdenticalDirectory
     Assert-True ($byteIdenticalRetry.ExitCode -eq 0 -and
         $byteIdenticalRetry.Result -ceq 'COMPLETE') `
       'byte-identical file cleanup did not succeed after exact entry identity restoration'
-    Assert-True (!(Test-Path -LiteralPath $byteIdenticalOwned.Executable) -and
-        !(Test-Path -LiteralPath $byteIdenticalOwned.ManifestPath)) `
-      'byte-identical file retry did not consume the exact owned entry and authority'
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'FINAL_ABSENCE_CHECK' `
+      'EXECUTABLE'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'FINAL_ABSENCE_CHECK' `
+      @('Executable')
+    Assert-True (!(Test-Path -LiteralPath $byteIdenticalOwned.Executable)) `
+      'byte-identical file retry did not consume the exact owned entry'
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'FINAL_ABSENCE_CHECK' `
+      'MANIFEST_PATH'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'FINAL_ABSENCE_CHECK' `
+      @('ManifestPath')
+    Assert-True (!(Test-Path -LiteralPath $byteIdenticalOwned.ManifestPath)) `
+      'byte-identical file retry did not consume the exact recovery authority'
 
     $foreignChildStateDirectory = New-StateDirectory 'in-place-foreign-child'
     $foreignChildResult = Invoke-FixtureScenario `

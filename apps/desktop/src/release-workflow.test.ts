@@ -599,7 +599,13 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-SupervisorInvocationAttributionTotality/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:\{0\}:' \+\s*'SCENARIO:\{1\}:PHASE:\{2\}:FAILED/,
+      /PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:\{0\}:' \+\s*'SCENARIO:\{1\}:PHASE:\{2\}:CALLSITE:\{3\}:FIELD:\{4\}:FAILED/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-SupervisorInvocationDiagnosticExact/);
+    assert.doesNotMatch(installedWindowsAppSupervisorBehaviorTest, /-clike 'PROPR_WINDOWS_SUPERVISOR_INVOCATION:\*'/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /FIELD:EXECUTABLE_BACKUP:FAILED:\$secretNeedle[\s\S]*Assert-SupervisorInvocationDiagnosticBounded/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
@@ -623,6 +629,10 @@ describe('desktop trusted release workflow', () => {
     assert.match(
       installedWindowsAppSupervisorFixture,
       /\$registryRoot = "Registry::HKEY_LOCAL_MACHINE\\Software\\ProPRSupervisorFixture\\\$\(\$manifest\.RunId\)"[\s\S]*RegistryRoot = \$registryRoot/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorFixture,
+      /ExecutableBackup -NotePropertyValue \$backup -Force[\s\S]*ByteIdenticalReplacement[\s\S]*-NotePropertyValue \$true -Force/,
     );
     assert.ok(
       installedWindowsAppSupervisorBehaviorTest.indexOf(
