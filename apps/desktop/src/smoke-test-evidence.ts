@@ -7,7 +7,10 @@ import {
   writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import type { DesktopWebSocketHandshakeEvidence } from './credential-service';
+import type {
+  DesktopCurrentUserProxyEvidence,
+  DesktopWebSocketHandshakeEvidence,
+} from './credential-service';
 
 export const PACKAGED_SMOKE_EVIDENCE_FILE = 'application.smoke-evidence.jsonl';
 
@@ -39,6 +42,73 @@ export interface PackagedSmokeHandshakeEvidenceBuffer {
   records: DesktopWebSocketHandshakeEvidence[];
   overflowed: boolean;
 }
+
+export const PACKAGED_SMOKE_CURRENT_USER_EVIDENCE_LIMIT = 4;
+
+export interface PackagedSmokeCurrentUserEvidenceBuffer {
+  records: DesktopCurrentUserProxyEvidence[];
+  overflowed: boolean;
+}
+
+export interface PackagedCurrentUserBoundarySummary {
+  schemaVersion: 1;
+  rendererValidations: 3;
+  exactGet: true;
+  scopeHeaderCount: 1;
+  activeBindingPresent: true;
+  profileGenerationCurrent: true;
+  scopeEqualsActive: true;
+  originEqualsActive: true;
+  rendererBearerPresent: false;
+  rendererCookiePresent: false;
+  outboundBearerPresent: true;
+  bearerMainInjected: true;
+  accepted: true;
+}
+
+const exactCurrentUserEvidence = (evidence: DesktopCurrentUserProxyEvidence): boolean =>
+  evidence.schemaVersion === 1
+  && evidence.correlation === 'current-scope-user-validation'
+  && evidence.requestObserved === true
+  && evidence.method === 'get'
+  && evidence.scopeHeaderCount === 1
+  && evidence.activeBindingPresent === true
+  && Number.isSafeInteger(evidence.activeScopeGeneration)
+  && evidence.activeScopeGeneration >= 0
+  && evidence.profileGenerationCurrent === true
+  && evidence.scopeEqualsActive === true
+  && evidence.originEqualsActive === true
+  && evidence.rendererBearerPresent === false
+  && evidence.rendererCookiePresent === false
+  && evidence.outboundBearerPresent === true
+  && evidence.bearerMainInjected === true
+  && evidence.accepted === true
+  && evidence.rejectionCategory === 'none';
+
+/** Validate the renderer request side of all three packaged smoke activations. */
+export const validatePackagedCurrentUserBoundaryEvidence = (
+  evidence: readonly DesktopCurrentUserProxyEvidence[],
+  overflowed: boolean,
+): PackagedCurrentUserBoundarySummary => {
+  if (overflowed || evidence.length !== 3 || evidence.some(record => !exactCurrentUserEvidence(record))) {
+    throw new Error('Packaged current-user main-boundary evidence failed');
+  }
+  return {
+    schemaVersion: 1,
+    rendererValidations: 3,
+    exactGet: true,
+    scopeHeaderCount: 1,
+    activeBindingPresent: true,
+    profileGenerationCurrent: true,
+    scopeEqualsActive: true,
+    originEqualsActive: true,
+    rendererBearerPresent: false,
+    rendererCookiePresent: false,
+    outboundBearerPresent: true,
+    bearerMainInjected: true,
+    accepted: true,
+  };
+};
 
 export interface PackagedStaleSocketBoundarySummary {
   schemaVersion: 1;

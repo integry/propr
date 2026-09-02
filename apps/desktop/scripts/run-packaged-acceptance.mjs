@@ -35,8 +35,8 @@ import {
 import { PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS } from './packaged-acceptance-clock.mjs';
 import { analyzeExistingElectronRenderer } from './packaged-acceptance-axe.mjs';
 import {
+  classifyCurrentUserRequestShape,
   currentUserValidationFailureCategory as classifyCurrentUserValidation,
-  scopedCurrentUserRequestGeneration,
 } from './packaged-acceptance-current-user.mjs';
 import {
   captureElectronRendererScreenshot,
@@ -355,9 +355,14 @@ const createFixture = async (mode, fixedOrigin) => {
       return json(response, 200, { status: 'cancelled', cancelledAt: FIXED_TIME });
     }
     if (request.method === 'DELETE' && request.url === '/api/desktop/tokens/current') return json(response, 204, {});
-    if (scopedCurrentUserRequestGeneration(request.method, request.url) !== null) {
-      authChecks += 1;
-      const source = request.headers.origin === DESKTOP_RENDERER_ORIGIN ? 'renderer' : 'main';
+    const currentUserShape = classifyCurrentUserRequestShape(
+      request.method,
+      request.url,
+      request.headers.origin,
+    );
+    if (currentUserShape !== null) {
+      if (currentUserShape.source === 'renderer') authChecks += 1;
+      const source = currentUserShape.source;
       const record = {
         journey: activeJourney,
         correlation: 'current-scope-user-validation',
@@ -369,7 +374,7 @@ const createFixture = async (mode, fixedOrigin) => {
         responseStatus: 200,
         classification: 'success',
       };
-      if (mode === 'revoked' && authChecks >= 1) {
+      if (source === 'renderer' && mode === 'revoked' && authChecks >= 1) {
         record.responseStatus = 401;
         record.classification = 'revoked';
         recordCurrentUserFixture(record);

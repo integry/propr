@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   createPackagedSmokeEvidenceSink,
+  validatePackagedCurrentUserBoundaryEvidence,
   PACKAGED_SMOKE_EVIDENCE_EVENTS,
   PACKAGED_SMOKE_EVIDENCE_FILE,
   validatePackagedStaleSocketBoundaryEvidence,
@@ -122,6 +123,52 @@ describe('packaged smoke evidence', () => {
           },
         ], true),
         /main-boundary evidence failed/,
+      );
+
+      const currentUserEvidence = {
+        schemaVersion: 1 as const,
+        correlation: 'current-scope-user-validation' as const,
+        requestObserved: true as const,
+        method: 'get' as const,
+        scopeHeaderCount: 1 as const,
+        activeBindingPresent: true,
+        activeScopeGeneration: 0,
+        profileGenerationCurrent: true,
+        scopeEqualsActive: true,
+        originEqualsActive: true,
+        rendererBearerPresent: false,
+        rendererCookiePresent: false,
+        outboundBearerPresent: true,
+        bearerMainInjected: true,
+        accepted: true,
+        rejectionCategory: 'none' as const,
+      };
+      assert.deepEqual(validatePackagedCurrentUserBoundaryEvidence([
+        currentUserEvidence,
+        { ...currentUserEvidence, activeScopeGeneration: 1 },
+        { ...currentUserEvidence, activeScopeGeneration: 2 },
+      ], false), {
+        schemaVersion: 1,
+        rendererValidations: 3,
+        exactGet: true,
+        scopeHeaderCount: 1,
+        activeBindingPresent: true,
+        profileGenerationCurrent: true,
+        scopeEqualsActive: true,
+        originEqualsActive: true,
+        rendererBearerPresent: false,
+        rendererCookiePresent: false,
+        outboundBearerPresent: true,
+        bearerMainInjected: true,
+        accepted: true,
+      });
+      assert.throws(
+        () => validatePackagedCurrentUserBoundaryEvidence([
+          currentUserEvidence,
+          currentUserEvidence,
+          { ...currentUserEvidence, rendererBearerPresent: true },
+        ], false),
+        /current-user main-boundary evidence failed/,
       );
     });
   });

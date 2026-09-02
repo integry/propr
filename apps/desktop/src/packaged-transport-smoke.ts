@@ -6,7 +6,9 @@ import { clearDesktopInstanceCookies } from './desktop-session';
 import type { ProfileStore } from './profile-store';
 import { normalizeApiBaseUrl } from './security';
 import {
+  validatePackagedCurrentUserBoundaryEvidence,
   validatePackagedStaleSocketBoundaryEvidence,
+  type PackagedSmokeCurrentUserEvidenceBuffer,
   type PackagedSmokeHandshakeEvidenceBuffer,
 } from './smoke-test-evidence';
 
@@ -45,6 +47,7 @@ interface RunPackagedTransportSmokeOptions {
   desktopSession: Session;
   smoke: PackagedTransportSmoke;
   handshakeEvidence: PackagedSmokeHandshakeEvidenceBuffer;
+  currentUserEvidence: PackagedSmokeCurrentUserEvidenceBuffer;
   log(event: string, fields: Record<string, unknown>): void;
 }
 
@@ -56,6 +59,7 @@ export const runPackagedTransportSmoke = async ({
   desktopSession,
   smoke,
   handshakeEvidence,
+  currentUserEvidence,
   log,
 }: RunPackagedTransportSmokeOptions): Promise<void> => {
   const profileId = 'packaged-transport-smoke';
@@ -65,6 +69,15 @@ export const runPackagedTransportSmoke = async ({
   if (!security.available || security.backend === 'basic_text') {
     throw new Error('Packaged transport smoke requires the production OS credential backend');
   }
+  const waitForCurrentUserEvidence = async (expected: number): Promise<void> => {
+    const deadline = Date.now() + 5_000;
+    while (currentUserEvidence.records.length < expected && Date.now() < deadline) {
+      await new Promise(resolveWait => setTimeout(resolveWait, 20));
+    }
+    if (currentUserEvidence.records.length !== expected || currentUserEvidence.overflowed) {
+      throw new Error('Packaged current-user main-boundary evidence count was invalid');
+    }
+  };
   const profileA = await profiles.save({
     id: profileId, label: 'Packaged transport A', apiBaseUrl: smoke.firstOrigin,
   });
@@ -148,6 +161,7 @@ export const runPackagedTransportSmoke = async ({
       || first?.staleRestRejected !== true) {
       throw new Error('Packaged renderer protocol or first transport proof failed');
     }
+    await waitForCurrentUserEvidence(2);
     const staleAttemptEvidenceStart = handshakeEvidence.records.length;
     const staleAttemptResult = await window.webContents.executeJavaScript(`
       window.__proprPackagedTransportSmoke.expectSocketRejected(${JSON.stringify(first.socketId)})
@@ -232,6 +246,13 @@ export const runPackagedTransportSmoke = async ({
       || second?.rendererPersistenceContainsSecret !== false || secretInMainMetadata) {
       throw new Error('Packaged replacement scope or secret-custody proof failed');
     }
+    await waitForCurrentUserEvidence(3);
+    log('desktop.renderer.transport_smoke.current_user', {
+      ...validatePackagedCurrentUserBoundaryEvidence(
+        currentUserEvidence.records,
+        currentUserEvidence.overflowed,
+      ),
+    });
     log('desktop.renderer.transport_smoke.ready', {
       customProtocol: true,
       restBearer: true,

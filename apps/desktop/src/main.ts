@@ -40,7 +40,9 @@ import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import {
   createPackagedSmokeEvidenceSink,
+  PACKAGED_SMOKE_CURRENT_USER_EVIDENCE_LIMIT,
   PACKAGED_SMOKE_HANDSHAKE_EVIDENCE_LIMIT,
+  type PackagedSmokeCurrentUserEvidenceBuffer,
   type PackagedSmokeHandshakeEvidenceBuffer,
 } from './smoke-test-evidence';
 import {
@@ -105,6 +107,10 @@ try {
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 const packagedAcceptanceTest = packagedAcceptanceUserDataDirectory !== null;
 const packagedSmokeHandshakeEvidence: PackagedSmokeHandshakeEvidenceBuffer = {
+  records: [],
+  overflowed: false,
+};
+const packagedSmokeCurrentUserEvidence: PackagedSmokeCurrentUserEvidenceBuffer = {
   records: [],
   overflowed: false,
 };
@@ -517,6 +523,13 @@ if (!hasSingleInstanceLock) {
           }
           packagedSmokeHandshakeEvidence.records.push(evidence);
         },
+        reportCurrentUserValidation: (evidence: DesktopCurrentUserProxyEvidence) => {
+          if (packagedSmokeCurrentUserEvidence.records.length >= PACKAGED_SMOKE_CURRENT_USER_EVIDENCE_LIMIT) {
+            packagedSmokeCurrentUserEvidence.overflowed = true;
+            return;
+          }
+          packagedSmokeCurrentUserEvidence.records.push(evidence);
+        },
       } : {}),
       ...(acceptancePairingTiming ? { pairingTiming: acceptancePairingTiming } : {}),
     });
@@ -626,6 +639,7 @@ if (!hasSingleInstanceLock) {
         desktopSession: session.defaultSession,
         smoke: transportSmoke,
         handshakeEvidence: packagedSmokeHandshakeEvidence,
+        currentUserEvidence: packagedSmokeCurrentUserEvidence,
         log: (event, fields) => log('info', event, fields),
       });
     }

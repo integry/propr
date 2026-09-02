@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  classifyCurrentUserRequestShape,
   currentUserValidationFailureCategory,
   scopedCurrentUserRequestGeneration,
 } from './packaged-acceptance-current-user.mjs';
@@ -70,6 +71,36 @@ describe('packaged scoped current-user request URL', () => {
       ['GET', '/api/smoke/rest?proprDesktopScopeGeneration=1'],
     ]) {
       assert.equal(scopedCurrentUserRequestGeneration(method, url), null, `${method} ${url}`);
+    }
+  });
+});
+
+describe('packaged current-user fixture request shapes', () => {
+  it('distinguishes the exact main probe from renderer-scoped validation', () => {
+    assert.deepEqual(classifyCurrentUserRequestShape(
+      'GET', '/api/auth/user', undefined,
+    ), { source: 'main', scopeGeneration: null });
+    assert.deepEqual(classifyCurrentUserRequestShape(
+      'GET', '/api/auth/user', 'https://non-renderer.example.test',
+    ), { source: 'main', scopeGeneration: null });
+    assert.deepEqual(classifyCurrentUserRequestShape(
+      'GET', '/api/auth/user?proprDesktopScopeGeneration=7', 'propr-app://renderer',
+    ), { source: 'renderer', scopeGeneration: 7 });
+  });
+
+  it('rejects cross-assigned, duplicate, extra, and noncanonical encoded forms', () => {
+    for (const [method, url, origin] of [
+      ['GET', '/api/auth/user?proprDesktopScopeGeneration=7', undefined],
+      ['GET', '/api/auth/user', 'propr-app://renderer'],
+      ['GET', '/api/auth/user?proprDesktopScopeGeneration=7&proprDesktopScopeGeneration=8', 'propr-app://renderer'],
+      ['GET', '/api/auth/user?proprDesktopScopeGeneration=7&extra=1', 'propr-app://renderer'],
+      ['GET', '/api/auth/user?%70roprDesktopScopeGeneration=7', 'propr-app://renderer'],
+      ['GET', '/api/auth/user?proprDesktopScopeGeneration=%37', 'propr-app://renderer'],
+      ['GET', '/api/auth/user?proprDesktopScopeGeneration=07', 'propr-app://renderer'],
+      ['GET', '/api/auth/user?', undefined],
+      ['POST', '/api/auth/user', undefined],
+    ]) {
+      assert.equal(classifyCurrentUserRequestShape(method, url, origin), null, `${method} ${url}`);
     }
   });
 });

@@ -1,3 +1,5 @@
+import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
+
 export const CURRENT_USER_SCOPE_GENERATION_QUERY = 'proprDesktopScopeGeneration';
 
 export const scopedCurrentUserRequestGeneration = (method, url) => {
@@ -16,6 +18,27 @@ export const scopedCurrentUserRequestGeneration = (method, url) => {
     || parsed.search !== `?${CURRENT_USER_SCOPE_GENERATION_QUERY}=${value}`) return null;
   const generation = Number(value);
   return Number.isSafeInteger(generation) ? generation : null;
+};
+
+/** Classify only the two authenticated current-user request shapes used by desktop. */
+export const classifyCurrentUserRequestShape = (method, url, origin) => {
+  if (method !== 'GET' || typeof url !== 'string') return null;
+  let parsed;
+  try {
+    parsed = new URL(url, 'http://fixture.invalid');
+  } catch {
+    return null;
+  }
+  if (parsed.pathname !== '/api/auth/user') return null;
+
+  if (origin === DESKTOP_RENDERER_ORIGIN) {
+    const scopeGeneration = scopedCurrentUserRequestGeneration(method, url);
+    return scopeGeneration === null ? null : { source: 'renderer', scopeGeneration };
+  }
+
+  return url === '/api/auth/user' && parsed.search === '' && [...parsed.searchParams].length === 0
+    ? { source: 'main', scopeGeneration: null }
+    : null;
 };
 
 export const currentUserValidationFailureCategory = ({
