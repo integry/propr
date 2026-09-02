@@ -638,6 +638,15 @@ describe('desktop trusted release workflow', () => {
       'CALLSITE_RESOURCE_COLLISION_REPLACEMENT_SURVIVAL_READ',
       'CALLSITE_RESOURCE_COLLISION_MANIFEST_PRESERVATION',
       'CALLSITE_HKCU_BASELINE_STATE',
+      'CALLSITE_HKCU_REGRESSION_VALUE_SETUP',
+      'CALLSITE_HKCU_NATIVE_VALUE_READ',
+      'CALLSITE_HKCU_BASELINE_DIGEST',
+      'CALLSITE_HKCU_BASELINE_RELOCATE',
+      'CALLSITE_HKCU_TARGET_OWNERSHIP',
+      'CALLSITE_HKCU_BASELINE_RESTORE',
+      'CALLSITE_HKCU_RECOVERY_RELOCATE',
+      'CALLSITE_HKCU_FINAL_BASELINE_DIGEST',
+      'CALLSITE_HKCU_FINAL_BACKUP_ABSENCE',
     ]) {
       assert.match(
         installedWindowsAppSupervisorBehaviorTest,
@@ -904,11 +913,19 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /function Initialize-HkcuDesktopFixtureBoundary[\s\S]*Get-SupervisorFixtureRegistryDigest \(\[string\]\$Boundary\.DesktopKey\)[\s\S]*\[Guid\]::NewGuid\(\)\.ToString\('D'\)[\s\S]*Assert-True \(!\(Test-Path -LiteralPath \$Boundary\.BackupPath\)\)[\s\S]*Rename-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Assert-True \(!\(Test-Path -LiteralPath \$Boundary\.DesktopKey\)\)/,
+      /function Initialize-HkcuDesktopFixtureBoundary[\s\S]*Callsite 'BASELINE_RELOCATE'[\s\S]*Callsite 'BASELINE_DIGEST'[\s\S]*Get-SupervisorFixtureRegistryDigest \(\[string\]\$Boundary\.DesktopKey\)[\s\S]*\[Guid\]::NewGuid\(\)\.ToString\('D'\)[\s\S]*Assert-HkcuDesktopFixtureOperation \(!\(Test-Path -LiteralPath \$Boundary\.BackupPath\)\)[\s\S]*Rename-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Assert-HkcuDesktopFixtureOperation \(!\(Test-Path -LiteralPath \$Boundary\.DesktopKey\)\)/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /function Restore-HkcuDesktopFixtureBoundary[\s\S]*Get-SupervisorFixtureRegistryDigest \(\[string\]\$Boundary\.BackupPath\)[\s\S]*Assert-True \$TargetOwnedByFixture[\s\S]*Remove-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Assert-True \(!\(Test-Path -LiteralPath \$Boundary\.DesktopKey\)\)[\s\S]*Rename-Item -LiteralPath \$Boundary\.BackupPath[\s\S]*Assert-True \(\$restoredDigest -ceq \[string\]\$Boundary\.BaselineDigest\)/,
+      /function Restore-HkcuDesktopFixtureBoundary[\s\S]*if \(!\$Boundary\.BaselinePresent\)[\s\S]*Callsite 'TARGET_OWNERSHIP'[\s\S]*Assert-HkcuDesktopFixtureOperation \$TargetOwnedByFixture[\s\S]*Remove-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Callsite 'BASELINE_DIGEST'[\s\S]*Get-SupervisorFixtureRegistryDigest \(\[string\]\$Boundary\.BackupPath\)[\s\S]*Callsite 'TARGET_OWNERSHIP'[\s\S]*Assert-HkcuDesktopFixtureOperation \$TargetOwnedByFixture[\s\S]*Remove-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Assert-HkcuDesktopFixtureOperation \(!\(Test-Path -LiteralPath \$Boundary\.DesktopKey\)\)[\s\S]*Rename-Item -LiteralPath \$Boundary\.BackupPath[\s\S]*Callsite 'RECOVERY_RELOCATE'[\s\S]*Rename-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*-ErrorAction Stop[\s\S]*Callsite 'FINAL_BASELINE_DIGEST'[\s\S]*Callsite 'FINAL_BACKUP_ABSENCE'/,
+    );
+    const hkcuDesktopBoundaryRestore = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Restore-HkcuDesktopFixtureBoundary'),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Get-OwnedResourcePreservationSnapshot'),
+    );
+    assert.doesNotMatch(
+      hkcuDesktopBoundaryRestore,
+      /ErrorAction SilentlyContinue/,
     );
     assert.doesNotMatch(
       installedWindowsAppSupervisorBehaviorTest,
@@ -1040,7 +1057,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /function Test-HkcuDesktopFixtureBoundaryRegression[\s\S]*Set-HkcuFixtureBoundaryValueKinds \$presentDesktop[\s\S]*\(Get-SupervisorFixtureRegistryDigest \$presentBoundary\.BackupPath\) -ceq[\s\S]*Assert-HkcuFixtureBoundaryValueKinds \$presentDesktop[\s\S]*!\$absentBoundary\.BaselinePresent[\s\S]*\[string\]::IsNullOrWhiteSpace\(\[string\]\$absentBoundary\.BackupPath\)[\s\S]*Restore-HkcuDesktopFixtureBoundary \$failureBoundary \$false[\s\S]*Test-Path -LiteralPath \$failureBoundary\.BackupPath/,
+      /function Test-HkcuDesktopFixtureBoundaryRegression[\s\S]*Set-HkcuFixtureBoundaryValueKinds \$presentDesktop[\s\S]*\(Get-SupervisorFixtureRegistryDigest \$presentBoundary\.BackupPath\) -ceq[\s\S]*Assert-HkcuFixtureBoundaryValueKinds \$presentDesktop[\s\S]*!\$absentBoundary\.BaselinePresent[\s\S]*\[string\]::IsNullOrWhiteSpace\(\[string\]\$absentBoundary\.BackupPath\)[\s\S]*Restore-HkcuDesktopFixtureBoundary \$absentForeignBoundary \$false[\s\S]*Test-Path -LiteralPath \$absentForeignDesktop[\s\S]*Restore-HkcuDesktopFixtureBoundary \$failureBoundary \$false[\s\S]*Test-Path -LiteralPath \$failureBoundary\.BackupPath[\s\S]*ForcePostRestoreDigestMismatch = \$true[\s\S]*ForceRecoveryRenameFailure = \$true[\s\S]*Restore-HkcuDesktopFixtureBoundary \$recoveryFailureBoundary \$false[\s\S]*Get-SupervisorFixtureRegistryDigest \$recoveryFailureDesktop/,
     );
     for (const valueKind of [
       'StringValue',
@@ -1074,7 +1091,23 @@ describe('desktop trusted release workflow', () => {
         ),
       );
     }
-    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SupervisorInvocationCallsites[\s\S]*'HKCU_BASELINE_STATE'/);
+    for (const callsite of [
+      'HKCU_BASELINE_STATE',
+      'REGRESSION_VALUE_SETUP',
+      'NATIVE_VALUE_READ',
+      'BASELINE_DIGEST',
+      'BASELINE_RELOCATE',
+      'TARGET_OWNERSHIP',
+      'BASELINE_RESTORE',
+      'RECOVERY_RELOCATE',
+      'FINAL_BASELINE_DIGEST',
+      'FINAL_BACKUP_ABSENCE',
+    ]) {
+      assert.match(
+        installedWindowsAppSupervisorBehaviorTest,
+        new RegExp(`Get-SupervisorInvocationCallsites[\\s\\S]*'${callsite}'`),
+      );
+    }
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SupervisorInvocationFields[\s\S]*'REGISTRY_PATH'/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /OWNED_RESOURCES_NORMAL_SUCCESS/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /typed authenticated empty-state receipt/);
