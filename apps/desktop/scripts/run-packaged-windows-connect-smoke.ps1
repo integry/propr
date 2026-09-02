@@ -146,7 +146,12 @@ $captureAuthorityPredicates = @(
   'dacl-canonicality',
   'unauthorized-writer',
   'link-path-type',
-  'identity-replacement'
+  'identity-replacement',
+  'pre-create',
+  'start-process-launch',
+  'post-redirection-identity',
+  'capture-content',
+  'cleanup'
 )
 $lifecycleFailureSubphases = @(
   'fixture-setup',
@@ -539,6 +544,7 @@ function Assert-PrivilegedCaptureFile {
     [Parameter(Mandatory=$true)][Microsoft.Win32.SafeHandles.SafeFileHandle]$AuthorityHandle,
     [Parameter(Mandatory=$true)][Security.Principal.SecurityIdentifier]$CapturePrivilegedSid,
     [string]$ExpectedIdentity = '',
+    [string]$TestOnlyIdentityPredicate = 'identity-replacement',
     [switch]$SkipAcl
   )
   Set-CaptureAuthorityPredicate 'link-path-type'
@@ -558,7 +564,7 @@ function Assert-PrivilegedCaptureFile {
     Stop-PackagedConnect 'artifact-type'
   }
   $identity = [ProprHostLauncherNative]::GetIdentity($AuthorityHandle)
-  Set-CaptureAuthorityPredicate 'identity-replacement'
+  Set-CaptureAuthorityPredicate $TestOnlyIdentityPredicate
   if (![String]::IsNullOrEmpty($ExpectedIdentity) -and
       ![String]::Equals($identity, $ExpectedIdentity, [StringComparison]::Ordinal)) {
     Stop-PackagedConnect 'artifact-type'
@@ -602,6 +608,9 @@ function Initialize-PrivilegedCaptureFile {
     }
 
     $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    if ($LifecycleTestMode -ceq 'capture-redirection') {
+      Set-CaptureAuthorityPredicate 'pre-create'
+    }
     $captureAcl = [Security.AccessControl.FileSecurity]::new()
     $captureAcl.SetAccessRuleProtection($true, $false)
     $captureAcl.SetOwner($CapturePrivilegedSid)
@@ -653,11 +662,12 @@ function Initialize-PrivilegedCaptureFile {
 function Assert-PrivilegedCaptureIdentity {
   param(
     [Parameter(Mandatory=$true)]$Authority,
-    [Parameter(Mandatory=$true)][Security.Principal.SecurityIdentifier]$CapturePrivilegedSid
+    [Parameter(Mandatory=$true)][Security.Principal.SecurityIdentifier]$CapturePrivilegedSid,
+    [string]$TestOnlyIdentityPredicate = 'identity-replacement'
   )
   $reopenHandle = $null
   try {
-    Set-CaptureAuthorityPredicate 'identity-replacement'
+    Set-CaptureAuthorityPredicate $TestOnlyIdentityPredicate
     if ($null -eq $Authority -or !($Authority.Path -is [string]) -or
         !($Authority.Identity -is [string]) -or
         !($Authority.SecurityDescriptor -is [string]) -or
@@ -672,7 +682,8 @@ function Assert-PrivilegedCaptureIdentity {
     }
     $reopenHandle = [ProprHostLauncherNative]::OpenRedirectCaptureAuthority($Authority.Path)
     $null = Assert-PrivilegedCaptureFile `
-      $Authority.Path $reopenHandle $CapturePrivilegedSid $Authority.Identity
+      $Authority.Path $reopenHandle $CapturePrivilegedSid $Authority.Identity `
+      -TestOnlyIdentityPredicate $TestOnlyIdentityPredicate
     Set-CaptureAuthorityPredicate 'dacl-canonicality'
     if ((Get-CaptureAuthorityDescriptor $Authority.Path) -cne $Authority.SecurityDescriptor) {
       Stop-PackagedConnect 'artifact-type'
@@ -691,6 +702,7 @@ function Read-AuthorizedCaptureBytes {
     [scriptblock]$TestOnlyBeforeReopen,
     [switch]$TestOnlyAllowReplacement,
     [Security.Principal.SecurityIdentifier]$TestOnlyCapturePrivilegedSid,
+    [Security.Principal.SecurityIdentifier]$TestOnlyExpectedParentOwnerSid,
     [string]$ExpectedCaptureIdentity = ''
   )
   $parentHandle = $null
@@ -746,6 +758,15 @@ function Read-AuthorizedCaptureBytes {
     if ($null -eq $parentOwner -or @(
         $privilegedSid.Value, $administratorsSid.Value, 'S-1-5-18'
       ) -cnotcontains $parentOwner.Value) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    if ($null -ne $TestOnlyExpectedParentOwnerSid -and
+        ($LifecycleTestMode -cne 'capture-parser' -or
+          $CaptureParserAuthorityTestCase -cne 'foreign-parent-owner')) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    if ($null -ne $TestOnlyExpectedParentOwnerSid -and
+        $parentOwner.Value -cne $TestOnlyExpectedParentOwnerSid.Value) {
       Stop-PackagedConnect 'artifact-type'
     }
 
@@ -855,6 +876,7 @@ function Read-PackagedConnectSmokeFailure {
     [scriptblock]$TestOnlyBeforeReopen,
     [switch]$TestOnlyAllowReplacement,
     [Security.Principal.SecurityIdentifier]$TestOnlyCapturePrivilegedSid,
+    [Security.Principal.SecurityIdentifier]$TestOnlyExpectedParentOwnerSid,
     [string]$ExpectedCaptureIdentity = ''
   )
 
@@ -863,6 +885,7 @@ function Read-PackagedConnectSmokeFailure {
     -TestOnlyBeforeReopen $TestOnlyBeforeReopen `
     -TestOnlyAllowReplacement:$TestOnlyAllowReplacement `
     -TestOnlyCapturePrivilegedSid $TestOnlyCapturePrivilegedSid `
+    -TestOnlyExpectedParentOwnerSid $TestOnlyExpectedParentOwnerSid `
     -ExpectedCaptureIdentity $ExpectedCaptureIdentity
 
   Set-CaptureParseSubphase 'capture-utf8'
@@ -1798,8 +1821,10 @@ $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'
 if ($LifecycleTestMode -eq 'capture-redirection') {
   $redirectionProcess = $null
   $redirectionAccepted = $false
+  $redirectionFailurePredicate = $null
   try {
-    Set-OrdinaryUserPreflightSubphase 'host-capture-contract'
+    Set-CaptureParseSubphase 'capture-authority'
+    Set-CaptureAuthorityPredicate 'pre-create'
     if ([String]::IsNullOrEmpty($env:RUNNER_TEMP) -or ![IO.Path]::IsPathRooted($env:RUNNER_TEMP)) {
       Stop-PackagedConnect 'artifact-type'
     }
@@ -1816,6 +1841,7 @@ if ($LifecycleTestMode -eq 'capture-redirection') {
     )
     $stdoutAuthority = Initialize-PrivilegedCaptureFile $stdout $privilegedSid
     $stderrAuthority = Initialize-PrivilegedCaptureFile $stderr $privilegedSid
+    Set-CaptureAuthorityPredicate 'start-process-launch'
     $captureProducerSource = "[Console]::Out.Write('capture-stdout');[Console]::Error.Write('capture-stderr')"
     $captureProducerArgument = [Convert]::ToBase64String(
       [Text.Encoding]::Unicode.GetBytes($captureProducerSource)
@@ -1827,43 +1853,68 @@ if ($LifecycleTestMode -eq 'capture-redirection') {
       -RedirectStandardOutput $stdout `
       -RedirectStandardError $stderr `
       -ErrorAction Stop
-    Assert-PrivilegedCaptureIdentity $stdoutAuthority $privilegedSid
-    Assert-PrivilegedCaptureIdentity $stderrAuthority $privilegedSid
+    Assert-PrivilegedCaptureIdentity `
+      $stdoutAuthority $privilegedSid -TestOnlyIdentityPredicate 'post-redirection-identity'
+    Assert-PrivilegedCaptureIdentity `
+      $stderrAuthority $privilegedSid -TestOnlyIdentityPredicate 'post-redirection-identity'
+    Set-CaptureAuthorityPredicate 'start-process-launch'
     if (!$redirectionProcess.WaitForExit($terminationTimeoutMilliseconds) -or
         $redirectionProcess.ExitCode -ne 0) {
       Stop-PackagedConnect 'spawn-failed'
     }
-    Assert-PrivilegedCaptureIdentity $stdoutAuthority $privilegedSid
-    Assert-PrivilegedCaptureIdentity $stderrAuthority $privilegedSid
+    Assert-PrivilegedCaptureIdentity `
+      $stdoutAuthority $privilegedSid -TestOnlyIdentityPredicate 'post-redirection-identity'
+    Assert-PrivilegedCaptureIdentity `
+      $stderrAuthority $privilegedSid -TestOnlyIdentityPredicate 'post-redirection-identity'
+    Set-CaptureAuthorityPredicate 'capture-content'
     if ([IO.File]::ReadAllText($stdout) -cne 'capture-stdout' -or
         [IO.File]::ReadAllText($stderr) -cne 'capture-stderr') {
       Stop-PackagedConnect 'artifact-type'
     }
     $redirectionAccepted = $true
   } catch {
-    Set-PrimaryFailureFromException $_.Exception
+    $redirectionFailurePredicate = if (
+      $captureAuthorityPredicates -ccontains $captureAuthorityPredicate
+    ) { $captureAuthorityPredicate } else { 'pre-create' }
   } finally {
+    $redirectionCleanupFailed = $false
+    Set-CaptureAuthorityPredicate 'cleanup'
     if ($null -ne $redirectionProcess) {
       try {
         if (!$redirectionProcess.HasExited) { Stop-SpawnedProcess $redirectionProcess }
-      } catch {}
-      $redirectionProcess.Dispose()
+      } catch { $redirectionCleanupFailed = $true }
+      try { $redirectionProcess.Dispose() } catch { $redirectionCleanupFailed = $true }
     }
     foreach ($authority in @($stdoutAuthority, $stderrAuthority)) {
       if ($null -ne $authority -and $null -ne $authority.Handle) {
-        $authority.Handle.Dispose()
+        try { $authority.Handle.Dispose() } catch { $redirectionCleanupFailed = $true }
       }
     }
     foreach ($capture in @($stdout, $stderr)) {
-      if (![String]::IsNullOrEmpty($capture) -and (Test-Path -LiteralPath $capture)) {
-        Remove-Item -LiteralPath $capture -Force -ErrorAction SilentlyContinue
+      if (![String]::IsNullOrEmpty($capture)) {
+        try {
+          if (Test-Path -LiteralPath $capture) {
+            Remove-Item -LiteralPath $capture -Force -ErrorAction Stop
+          }
+          if (Test-Path -LiteralPath $capture) { $redirectionCleanupFailed = $true }
+        } catch { $redirectionCleanupFailed = $true }
       }
     }
+    if ($redirectionCleanupFailed -and $null -eq $redirectionFailurePredicate) {
+      $redirectionFailurePredicate = 'cleanup'
+    }
   }
-  if ($redirectionAccepted) {
+  if ($redirectionAccepted -and $null -eq $redirectionFailurePredicate) {
     [Console]::Out.WriteLine('PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST:accepted')
     exit 0
   }
+  $primaryFailure = 'artifact-type'
+  $primaryPhase = 'capture-parse'
+  $primarySubphase = 'capture-authority'
+  if ($captureAuthorityPredicates -cnotcontains $redirectionFailurePredicate) {
+    $redirectionFailurePredicate = 'pre-create'
+  }
+  Set-CaptureAuthorityPredicate $redirectionFailurePredicate
 }
 
 if ($LifecycleTestMode -eq 'capture-parser') {
@@ -1891,6 +1942,7 @@ if ($LifecycleTestMode -eq 'capture-parser') {
     $beforeCaptureReopen = $null
     $allowCaptureReplacement = $false
     $captureExpectedPrivilegedSid = $null
+    $captureExpectedParentOwnerSid = $null
     if ($CaptureParserAuthorityTestCase -in @(
         'administrators-owner','current-owner','foreign-owner','ordinary-owner'
       )) {
@@ -1929,11 +1981,9 @@ if ($LifecycleTestMode -eq 'capture-parser') {
       $captureAcl.SetAccessRuleProtection($false, $true)
       [IO.File]::SetAccessControl($stderr, $captureAcl)
     } elseif ($CaptureParserAuthorityTestCase -eq 'foreign-parent-owner') {
-      $parentAcl = [IO.Directory]::GetAccessControl($authenticatedRunnerTemp)
-      $parentAcl.SetOwner(
-        [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+      $captureExpectedParentOwnerSid = [Security.Principal.SecurityIdentifier]::new(
+        'S-1-5-21-61616161-61616161-61616161-1001'
       )
-      [IO.Directory]::SetAccessControl($authenticatedRunnerTemp, $parentAcl)
     } elseif ($CaptureParserAuthorityTestCase -eq 'identity-change') {
       $allowCaptureReplacement = $true
       $beforeCaptureReopen = {
@@ -1947,7 +1997,8 @@ if ($LifecycleTestMode -eq 'capture-parser') {
       -Path $stderr `
       -TestOnlyBeforeReopen $beforeCaptureReopen `
       -TestOnlyAllowReplacement:$allowCaptureReplacement `
-      -TestOnlyCapturePrivilegedSid $captureExpectedPrivilegedSid
+      -TestOnlyCapturePrivilegedSid $captureExpectedPrivilegedSid `
+      -TestOnlyExpectedParentOwnerSid $captureExpectedParentOwnerSid
     Stop-PackagedConnect $childFailureCategory
   } catch {
     Set-PrimaryFailureFromException $_.Exception
@@ -2378,7 +2429,7 @@ if ($null -ne $primaryFailure) {
   } elseif ($primaryPhase -ceq 'capture-parse' -and
       $captureParseSubphases -ccontains $primarySubphase) {
     $subphaseEvidence = ":subphase=$primarySubphase"
-    if ($LifecycleTestMode -ceq 'capture-parser' -and
+    if ($LifecycleTestMode -in @('capture-parser','capture-redirection') -and
         $primarySubphase -ceq 'capture-authority' -and
         $captureAuthorityPredicates -ccontains $captureAuthorityPredicate) {
       $subphaseEvidence += ":predicate=$captureAuthorityPredicate"

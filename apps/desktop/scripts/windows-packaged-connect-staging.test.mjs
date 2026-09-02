@@ -71,6 +71,30 @@ const positiveHostNodeProducerSubphases = Object.freeze([
   'host-node-command-type',
   'host-node-source',
 ]);
+const captureRedirectionFailurePredicates = Object.freeze([
+  'pre-create',
+  'start-process-launch',
+  'post-redirection-identity',
+  'capture-owner',
+  'dacl-canonicality',
+  'unauthorized-writer',
+  'link-path-type',
+  'identity-replacement',
+  'capture-content',
+  'cleanup',
+]);
+const captureRedirectionReportedPredicates = Object.freeze([
+  ...captureRedirectionFailurePredicates,
+  'diagnostic-contract',
+]);
+const captureRedirectionDiagnosticPattern = new RegExp(
+  '^PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+    + ':phase=capture-parse:subphase=capture-authority'
+    + ':predicate=([a-z-]+):cleanup=none\\r?\\n$',
+  'u',
+);
+const captureRedirectionAcceptedPattern =
+  /^PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST:accepted\r?\n$/u;
 const hostileDiagnosticPattern = /[A-Z]:\\|\\\\|S-1-5-|account-name|stdout|stderr|exception|native-text|environment-secret/iu;
 const uppercasePathDiagnosticPattern = /\bPATH\b/u;
 const hasHostileDiagnosticEvidence = value => hostileDiagnosticPattern.test(value)
@@ -249,6 +273,55 @@ const runCaptureRedirectionTest = () => spawnSync(windowsPowerShell51Path(), [
   shell: false,
   windowsHide: true,
   timeout: 45_000,
+});
+
+const failCaptureRedirectionTest = result => {
+  let predicate = 'diagnostic-contract';
+  if (!result.error && result.signal === null && result.status === 1
+      && Buffer.isBuffer(result.stdout) && result.stdout.length === 0
+      && Buffer.isBuffer(result.stderr) && result.stderr.length <= 256) {
+    const diagnostic = result.stderr.toString('utf8');
+    const match = captureRedirectionDiagnosticPattern.exec(diagnostic);
+    if (match && captureRedirectionFailurePredicates.includes(match[1])
+        && !hasHostileDiagnosticEvidence(diagnostic)) {
+      predicate = match[1];
+    }
+  }
+  assert.ok(captureRedirectionReportedPredicates.includes(predicate));
+  const error = new Error(
+    `PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST:failed:predicate=${predicate}`,
+  );
+  error.stack = error.message;
+  throw error;
+};
+
+test('capture redirection mismatch reporting exposes only an allowlisted predicate', () => {
+  const resultFor = stderr => ({
+    error: undefined,
+    signal: null,
+    status: 1,
+    stdout: Buffer.alloc(0),
+    stderr: Buffer.from(stderr),
+  });
+  assert.throws(
+    () => failCaptureRedirectionTest(resultFor(
+      'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
+        + ':phase=capture-parse:subphase=capture-authority'
+        + ':predicate=post-redirection-identity:cleanup=none\r\n',
+    )),
+    error => error.message === 'PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST'
+      + ':failed:predicate=post-redirection-identity'
+      && error.stack === error.message,
+  );
+  assert.throws(
+    () => failCaptureRedirectionTest(resultFor(
+      String.raw`C:\hostile\capture S-1-5-21 account-name stdout stderr exception`,
+    )),
+    error => error.message === 'PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST'
+      + ':failed:predicate=diagnostic-contract'
+      && error.stack === error.message
+      && !hasHostileDiagnosticEvidence(error.message),
+  );
 });
 
 const assertLauncherAuthorityRejected = (result, category, subphase) => {
@@ -944,6 +1017,24 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(captureAuthority, /GetIdentity\(\$captureHandle\)[\s\S]*?GetIdentity\(\$captureReopenHandle\)/u);
   assert.match(captureAuthority, /ReadBounded\(\$captureReopenHandle, 65536\)/u);
   assert.doesNotMatch(captureAuthority, /ReadAllBytes\(\$Path\)/u);
+  assert.match(
+    captureAuthority,
+    /\$privilegedSid\.Value, \$administratorsSid\.Value, 'S-1-5-18'[\s\S]*?-cnotcontains \$parentOwner\.Value[\s\S]*?\$TestOnlyExpectedParentOwnerSid[\s\S]*?\$parentOwner\.Value -cne \$TestOnlyExpectedParentOwnerSid\.Value/u,
+  );
+  const topLevelParameters = orchestrator.slice(0, orchestrator.indexOf('$ErrorActionPreference'));
+  assert.doesNotMatch(topLevelParameters, /TestOnlyExpectedParentOwnerSid/u);
+  const captureParserTestMode = orchestrator.slice(
+    orchestrator.indexOf("if ($LifecycleTestMode -eq 'capture-parser')"),
+    orchestrator.indexOf("if ($LifecycleTestMode -eq 'diagnostic-subphase')"),
+  );
+  assert.match(
+    captureParserTestMode,
+    /foreign-parent-owner'[\s\S]*?\$captureExpectedParentOwnerSid = \[Security\.Principal\.SecurityIdentifier\]::new\([\s\S]*?-TestOnlyExpectedParentOwnerSid \$captureExpectedParentOwnerSid/u,
+  );
+  assert.doesNotMatch(
+    captureParserTestMode,
+    /\[IO\.Directory\]::SetAccessControl\(\$authenticatedRunnerTemp|\$parentAcl\.SetOwner/u,
+  );
   assert.match(orchestrator, /public static SafeFileHandle OpenCapture[\s\S]*?GENERIC_READ \| READ_CONTROL/u);
   assert.match(
     orchestrator,
@@ -957,6 +1048,29 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(
     orchestrator,
     /Start-Process[\s\S]*?Assert-PrivilegedCaptureIdentity \$stdoutAuthority \$privilegedSid[\s\S]*?Assert-PrivilegedCaptureIdentity \$stderrAuthority \$privilegedSid/u,
+  );
+  const captureRedirectionTestMode = orchestrator.slice(
+    orchestrator.indexOf("if ($LifecycleTestMode -eq 'capture-redirection')"),
+    orchestrator.indexOf("if ($LifecycleTestMode -eq 'capture-parser')"),
+  );
+  for (const predicate of [
+    'pre-create',
+    'start-process-launch',
+    'capture-content',
+    'cleanup',
+  ]) {
+    assert.match(
+      captureRedirectionTestMode,
+      new RegExp(`Set-CaptureAuthorityPredicate '${predicate}'`, 'u'),
+    );
+  }
+  assert.match(
+    captureRedirectionTestMode,
+    /-TestOnlyIdentityPredicate 'post-redirection-identity'/u,
+  );
+  assert.match(
+    captureRedirectionTestMode,
+    /\$primaryFailure = 'artifact-type'[\s\S]*?\$primaryPhase = 'capture-parse'[\s\S]*?\$primarySubphase = 'capture-authority'[\s\S]*?Set-CaptureAuthorityPredicate \$redirectionFailurePredicate/u,
   );
   assert.match(captureParser, /Set-LifecycleFailureSubphase \$failureRecord\.category[\s\S]*?return 'spawn-failed'/u);
   assert.match(captureParser, /\$script:failurePhase = \$failureRecord\.phase/u);
@@ -1210,15 +1324,15 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
     assertResult(authorityCase, runCaptureParserTest(path, authorityCase), expectedRejected(predicate));
   }
 
-  const foreignOwnerParent = await mkdtemp(join(runnerTemp, 'propr-capture-parent-owner-'));
-  trackedPaths.push(foreignOwnerParent);
-  const foreignParentCapture = await newCapturePath(foreignOwnerParent);
+  const isolatedParent = await mkdtemp(join(runnerTemp, 'propr-capture-parent-owner-'));
+  trackedPaths.push(isolatedParent);
+  const isolatedParentCapture = await newCapturePath(isolatedParent);
   assertResult(
     'foreign-parent-owner',
     runCaptureParserTest(
-      foreignParentCapture,
+      isolatedParentCapture,
       'foreign-parent-owner',
-      { RUNNER_TEMP: foreignOwnerParent },
+      { RUNNER_TEMP: isolatedParent },
     ),
     expectedRejected('parent-owner'),
   );
@@ -1305,14 +1419,11 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
 
 windowsTest('Start-Process preserves each protected precreated capture authority', () => {
   const result = runCaptureRedirectionTest();
-  assert.ifError(result.error);
-  assert.equal(result.signal, null);
-  assert.equal(result.status, 0);
-  assert.equal(
-    result.stdout.toString('utf8').trim(),
-    'PROPR_WINDOWS_PACKAGED_CONNECT_CAPTURE_REDIRECTION_TEST:accepted',
-  );
-  assert.equal(result.stderr.length, 0);
+  const accepted = !result.error && result.signal === null && result.status === 0
+    && Buffer.isBuffer(result.stdout) && result.stdout.length <= 128
+    && captureRedirectionAcceptedPattern.test(result.stdout.toString('utf8'))
+    && Buffer.isBuffer(result.stderr) && result.stderr.length === 0;
+  if (!accepted) failCaptureRedirectionTest(result);
 });
 
 windowsTest('each host preflight failure transition emits one fixed redacted subphase', () => {
