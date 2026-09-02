@@ -267,10 +267,11 @@ const runCaptureParserTest = (
   env: { ...process.env, ...environmentOverrides },
 });
 
-const runCaptureRedirectionTest = () => spawnSync(windowsPowerShell51Path(), [
+const runCaptureRedirectionTest = (producerTestCase = 'success') => spawnSync(windowsPowerShell51Path(), [
   '-NoLogo', '-NoProfile', '-NonInteractive', '-File', orchestratorPath,
   '-Architecture', process.arch,
   '-LifecycleTestMode', 'capture-redirection',
+  '-CaptureRedirectionProducerTestCase', producerTestCase,
 ], {
   shell: false,
   windowsHide: true,
@@ -1088,6 +1089,11 @@ test('the workflow stages before alternate credentials and the harness preflight
   );
   assert.match(
     captureRedirectionTestMode,
+    /CaptureRedirectionProducerTestCase -ceq 'nonzero'[\s\S]*?\{ 23 \} else \{ 0 \}[\s\S]*?\$captureProducerSource = \([\s\S]*?capture-stdout[\s\S]*?capture-stderr[\s\S]*?exit \$captureProducerExitCode[\s\S]*?\[Text\.Encoding\]::Unicode\.GetBytes\(\$captureProducerSource\)[\s\S]*?'-NoLogo -NoProfile -NonInteractive -EncodedCommand "'[\s\S]*?-ArgumentList \$captureProducerArguments/u,
+  );
+  assert.doesNotMatch(captureRedirectionTestMode, /-ArgumentList @\(/u);
+  assert.match(
+    captureRedirectionTestMode,
     /Set-CaptureAuthorityPredicate 'redirect-timeout'[\s\S]*?WaitForExit\(\$terminationTimeoutMilliseconds\)[\s\S]*?Set-CaptureAuthorityPredicate 'redirect-child-exit'[\s\S]*?\.ExitCode -ne 0[\s\S]*?Assert-PrivilegedCaptureIdentity/u,
   );
   assert.doesNotMatch(captureRedirectionTestMode, /start-process-launch/u);
@@ -1458,13 +1464,25 @@ windowsTest('the PS5.1 capture parser enforces native owner ACL path and identit
   );
 });
 
-windowsTest('Start-Process preserves each protected precreated capture authority', () => {
+windowsTest('the exact PS5.1 capture argv writes both protected captures and exits zero', () => {
   const result = runCaptureRedirectionTest();
   const accepted = !result.error && result.signal === null && result.status === 0
     && Buffer.isBuffer(result.stdout) && result.stdout.length <= 128
     && captureRedirectionAcceptedPattern.test(result.stdout.toString('utf8'))
     && Buffer.isBuffer(result.stderr) && result.stderr.length === 0;
   if (!accepted) failCaptureRedirectionTest(result);
+});
+
+windowsTest('a forced nonzero capture producer maps only to redirect-child-exit', () => {
+  const result = runCaptureRedirectionTest('nonzero');
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout.length, 0);
+  const diagnostic = result.stderr.toString('utf8');
+  assert.match(diagnostic, captureRedirectionDiagnosticPattern);
+  assert.equal(captureRedirectionDiagnosticPattern.exec(diagnostic)?.[1], 'redirect-child-exit');
+  assertNoHostileDiagnosticEvidence(diagnostic);
 });
 
 windowsTest('each host preflight failure transition emits one fixed redacted subphase', () => {

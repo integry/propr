@@ -51,7 +51,9 @@ param(
     'ordinary-write','broad-write','unprotected-dacl','foreign-parent-owner',
     'identity-change','existing'
   )]
-  [string]$CaptureParserAuthorityTestCase = 'existing'
+  [string]$CaptureParserAuthorityTestCase = 'existing',
+  [ValidateSet('success','nonzero')]
+  [string]$CaptureRedirectionProducerTestCase = 'success'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1846,13 +1848,24 @@ if ($LifecycleTestMode -eq 'capture-redirection') {
     $stdoutAuthority = Initialize-PrivilegedCaptureFile $stdout $privilegedSid
     $stderrAuthority = Initialize-PrivilegedCaptureFile $stderr $privilegedSid
     Set-CaptureAuthorityPredicate 'redirect-open'
-    $captureProducerSource = "[Console]::Out.Write('capture-stdout');[Console]::Error.Write('capture-stderr')"
+    $captureProducerExitCode = if (
+      $CaptureRedirectionProducerTestCase -ceq 'nonzero'
+    ) { 23 } else { 0 }
+    $captureProducerSource = (
+      "[Console]::Out.Write('capture-stdout');" +
+      "[Console]::Error.Write('capture-stderr');" +
+      "exit $captureProducerExitCode"
+    )
     $captureProducerArgument = [Convert]::ToBase64String(
       [Text.Encoding]::Unicode.GetBytes($captureProducerSource)
     )
+    $captureProducerArguments = (
+      '-NoLogo -NoProfile -NonInteractive -EncodedCommand "' +
+      $captureProducerArgument + '"'
+    )
     $redirectionProcess = Start-Process `
       -FilePath (Join-Path $PSHOME 'powershell.exe') `
-      -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',$captureProducerArgument) `
+      -ArgumentList $captureProducerArguments `
       -PassThru `
       -RedirectStandardOutput $stdout `
       -RedirectStandardError $stderr `
