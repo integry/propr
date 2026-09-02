@@ -158,7 +158,13 @@ function Write-FixtureCriticalGate([string]$Name) {
   } finally {
     $stream.Dispose()
   }
-  [IO.File]::Move($temporaryGatePath, $gatePath, $true)
+  if ([IO.Directory]::Exists($gatePath)) {
+    throw 'fixture critical gate destination is not a file'
+  }
+  if ([IO.File]::Exists($gatePath)) {
+    [IO.File]::Delete($gatePath)
+  }
+  [IO.File]::Move($temporaryGatePath, $gatePath)
 }
 
 function Write-FixtureOwnershipToken([string]$Path, [string]$Token) {

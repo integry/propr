@@ -1507,6 +1507,78 @@ function Test-SupervisorInvocationDiagnosticExact([string]$Diagnostic) {
     $match.Groups[5].Value -cin (Get-SupervisorInvocationFields)
 }
 
+function Get-SupervisorAttributionTotalityCases {
+  return @(
+    'GENERAL',
+    'BOUNDARY_BOOTSTRAP_TIMEOUT',
+    'BOUNDARY_WINDOWS_POWERSHELL_COMPATIBILITY',
+    'BOUNDARY_OPERATION_DEADLINE',
+    'BOUNDARY_NEGATIVE_WORKER_EXIT',
+    'BOUNDARY_FAIL_CLOSED_MARKER',
+    'BOUNDARY_LIVE_CANCELLATION',
+    'BOUNDARY_MSI_INTERRUPTION',
+    'BOUNDARY_PRIMARY_FALLBACK',
+    'BOUNDARY_PRE_EXISTING_CLEANUP',
+    'BOUNDARY_SMOKE_PROMOTION',
+    'BOUNDARY_APP_PATHS_AUTHORITY',
+    'BOUNDARY_HKCU_OWNERSHIP',
+    'BOUNDARY_USER_MARKER',
+    'CALLSITE_CRITICAL_GATE_PATH',
+    'CALLSITE_CRITICAL_GATE_READ',
+    'CALLSITE_PROCESS_STATE_READ',
+    'CALLSITE_PROCESS_TREE_ASSERTION',
+    'CALLSITE_REPLACEMENT_SURVIVAL_READ',
+    'FIELD_EXECUTABLE_BACKUP',
+    'FIELD_MANIFEST_PATH',
+    'CALLSITE_WORKFLOW_CLEANUP_RETRY',
+    'CALLSITE_FINAL_ABSENCE_CHECK',
+    'FORGED_PREFIX_SECRET',
+    'MISSING_GATE_STATE_DIRECTORY',
+    'MISSING_EXECUTABLE_BACKUP',
+    'ALLOWLISTED_TEST_SCENARIO_PHASE',
+    'ALLOWLISTED_CALLSITE_FIELD',
+    'POWERSHELL_GATE_PUBLICATION'
+  )
+}
+
+function Get-SanitizedSupervisorAttributionCaseToken([string]$Token) {
+  if ($Token -cin (Get-SupervisorAttributionTotalityCases)) { return $Token }
+  return 'GENERAL'
+}
+
+function Get-SupervisorInvocationDiagnosticClassification(
+  [string]$Diagnostic,
+  [string]$Expected
+) {
+  if ([string]::IsNullOrWhiteSpace($Diagnostic)) { return 'missing' }
+  if (Test-SupervisorInvocationDiagnosticExact $Diagnostic) {
+    if ($Diagnostic -ceq $Expected) { return 'exact' }
+    return 'sanitized-to-context'
+  }
+  return 'malformed'
+}
+
+function Get-SupervisorAttributionTotalityAssertionMessage(
+  [string]$CaseId,
+  [string]$ExpectedClassification,
+  [string]$ObservedClassification
+) {
+  $caseName = Get-SanitizedSupervisorAttributionCaseToken $CaseId
+  if ($ExpectedClassification -cnotin @(
+      'exact','sanitized-to-context','malformed','missing'
+    )) {
+    $ExpectedClassification = 'malformed'
+  }
+  if ($ObservedClassification -cnotin @(
+      'exact','sanitized-to-context','malformed','missing'
+    )) {
+    $ObservedClassification = 'malformed'
+  }
+  return ('supervisor invocation attribution totality diverged:' +
+    'CASE:{0}:EXPECTED:{1}:OBSERVED:{2}') -f `
+    $caseName, $ExpectedClassification, $ObservedClassification
+}
+
 function Invoke-SupervisorAttributedBoundary(
   [string]$Test,
   [string]$Scenario,
@@ -1546,7 +1618,11 @@ function Invoke-SupervisorAttributedTest(
   [string]$Test,
   [scriptblock]$Action
 ) {
-  Invoke-SupervisorAttributedBoundary $Test 'TEST' 'TEST' $Action
+  Invoke-SupervisorAttributedBoundary `
+    -Test $Test `
+    -Scenario 'TEST' `
+    -Phase 'TEST' `
+    -Action $Action
 }
 
 function Assert-SupervisorInvocationDiagnosticBounded(
@@ -1555,19 +1631,26 @@ function Assert-SupervisorInvocationDiagnosticBounded(
   [string]$Scenario,
   [string]$Phase,
   [string]$Callsite = 'GENERAL',
-  [string]$Field = 'NONE'
+  [string]$Field = 'NONE',
+  [string]$CaseId = 'GENERAL'
 ) {
   $expected = Get-SanitizedSupervisorInvocationDiagnostic `
     $Test $Scenario $Phase $Callsite $Field
   Assert-True ($Diagnostic -ceq $expected) `
-    'supervisor invocation attribution was not the exact fixed diagnostic'
+    (Get-SupervisorAttributionTotalityAssertionMessage `
+      $CaseId 'exact' `
+      (Get-SupervisorInvocationDiagnosticClassification $Diagnostic $expected))
   Assert-True ([Text.Encoding]::ASCII.GetByteCount($Diagnostic) -le 320) `
-    'supervisor invocation attribution exceeded its bounded size'
+    (Get-SupervisorAttributionTotalityAssertionMessage `
+      $CaseId 'exact' `
+      (Get-SupervisorInvocationDiagnosticClassification $Diagnostic $expected))
   Assert-True ($Diagnostic -cmatch (
       '^PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:[A-Z_]+:' +
       'SCENARIO:[A-Z_]+:PHASE:[A-Z_]+:CALLSITE:[A-Z_]+:' +
       'FIELD:[A-Z_]+:FAILED$'
-    )) 'supervisor invocation attribution used a non-allowlisted token format'
+    )) (Get-SupervisorAttributionTotalityAssertionMessage `
+      $CaseId 'exact' `
+      (Get-SupervisorInvocationDiagnosticClassification $Diagnostic $expected))
   foreach ($forbidden in @(
       $secretNeedle,
       $testRoot,
@@ -1582,8 +1665,30 @@ function Assert-SupervisorInvocationDiagnosticBounded(
       'stderr'
     )) {
     Assert-NotContains $Diagnostic $forbidden `
-      'supervisor invocation attribution disclosed raw failure context'
+      (Get-SupervisorAttributionTotalityAssertionMessage `
+        $CaseId 'exact' `
+        (Get-SupervisorInvocationDiagnosticClassification $Diagnostic $expected))
   }
+}
+
+function Test-CriticalGatePublisherPowerShellCompatibility {
+  $fixtureText = Get-Content -LiteralPath $fixtureWorkerPath -Raw -Encoding UTF8
+  $match = [regex]::Match(
+    $fixtureText,
+    '(?sm)function Write-FixtureCriticalGate\(\[string\]\$Name\) \{(?<body>.*?)^\}'
+  )
+  Assert-True ($match.Success) `
+    (Get-SupervisorAttributionTotalityAssertionMessage `
+      'POWERSHELL_GATE_PUBLICATION' 'exact' 'missing')
+  $body = $match.Groups['body'].Value
+  Assert-True ($body -cmatch '\[IO\.FileOptions\]::WriteThrough' -and
+      $body -cmatch '\$stream\.Flush\(\$true\)' -and
+      $body -cmatch '\[IO\.Directory\]::Exists\(\$gatePath\)' -and
+      $body -cmatch '\[IO\.File\]::Delete\(\$gatePath\)' -and
+      $body -cmatch '\[IO\.File\]::Move\(\$temporaryGatePath, \$gatePath\)' -and
+      $body -cnotmatch '\[IO\.File\]::Move\(\$temporaryGatePath, \$gatePath, \$true\)') `
+    (Get-SupervisorAttributionTotalityAssertionMessage `
+      'POWERSHELL_GATE_PUBLICATION' 'exact' 'malformed')
 }
 
 function Get-WorkflowCleanupProtocolMismatchDiagnostic(
@@ -2230,93 +2335,115 @@ function Test-WorkflowCleanupProtocolStateMachine {
 function Test-SupervisorInvocationAttributionTotality {
   foreach ($case in @(
       [PSCustomObject]@{
+        CaseId='BOUNDARY_BOOTSTRAP_TIMEOUT'
         Test='BOOTSTRAP_TIMEOUT'; Scenario='NO_MARKER'; Phase='SUPERVISOR_PROCESS'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_WINDOWS_POWERSHELL_COMPATIBILITY'
         Test='WINDOWS_POWERSHELL_CLEANUP_COMPATIBILITY'
         Scenario='NO_MARKER_WINDOWS_POWERSHELL'; Phase='SUPERVISOR_PROCESS'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_OPERATION_DEADLINE'
         Test='OPERATION_DEADLINE_AND_TREE_TERMINATION'
         Scenario='VALID_THEN_DEADLINE'; Phase='SUPERVISOR_PROCESS'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_NEGATIVE_WORKER_EXIT'
         Test='NEGATIVE_WORKER_EXIT_FINALIZATION'
         Scenario='NEGATIVE_EXIT'; Phase='SUPERVISOR_PROCESS'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_FAIL_CLOSED_MARKER'
         Test='FAIL_CLOSED_MARKERS'; Scenario='MALFORMED_MARKER'
         Phase='SUPERVISOR_PROCESS'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_LIVE_CANCELLATION'
         Test='LIVE_CANCELLATION_AND_REDACTION'; Scenario='CANCELLATION'
         Phase='PROCESS_OUTPUT'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_MSI_INTERRUPTION'
         Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
         Phase='PROCESS_WAIT'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_PRIMARY_FALLBACK'
         Test='PRIMARY_WORKER_FALLBACK_FOREIGN_DESCENDANTS'
         Scenario='PRIMARY_FALLBACK_FOREIGN_DESCENDANTS'; Phase='SUPERVISOR_PROCESS'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_PRE_EXISTING_CLEANUP'
         Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
         Scenario='OWNED_RESOURCES_THEN_DEADLINE'; Phase='RESOURCE_STATE'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_SMOKE_PROMOTION'
         Test='SMOKE_PROMOTION_INTERRUPTION_AUTHORITY'
         Scenario='SMOKE_BEFORE_PROMOTION_THEN_DEADLINE'; Phase='RESOURCE_STATE'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_APP_PATHS_AUTHORITY'
         Test='PRE_EXISTING_APP_PATHS_AUTHORITY'; Scenario='PRE_EXISTING_APP_PATHS'
         Phase='PROCESS_OUTPUT'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_HKCU_OWNERSHIP'
         Test='HKCU_INSTALLED_VALUE_OWNERSHIP'; Scenario='HKCU_BASELINE_RESTORE'
         Phase='WORKFLOW_CLEANUP_CONTROLLER'
       },
       [PSCustomObject]@{
+        CaseId='BOUNDARY_USER_MARKER'
         Test='PROVISIONAL_USER_MARKER_OWNERSHIP'; Scenario='USER_MARKER_REPLACEMENT'
         Phase='WORKFLOW_CLEANUP_CONTROLLER'
       },
       [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_GATE_PATH'
         Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
         Phase='PROCESS_STATE'; Callsite='CRITICAL_GATE_PATH'; Field='STATE_DIRECTORY'
       },
       [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_GATE_READ'
         Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
         Phase='PROCESS_STATE'; Callsite='CRITICAL_GATE_READ'; Field='CRITICAL_GATE_CONTENT'
       },
       [PSCustomObject]@{
+        CaseId='CALLSITE_PROCESS_STATE_READ'
         Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
         Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_READ'; Field='PROCESS_STATE_PATH'
       },
       [PSCustomObject]@{
+        CaseId='CALLSITE_PROCESS_TREE_ASSERTION'
         Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
         Phase='PROCESS_STATE'; Callsite='PROCESS_TREE_ASSERTION'; Field='PROCESS_TREE'
       },
       [PSCustomObject]@{
+        CaseId='CALLSITE_REPLACEMENT_SURVIVAL_READ'
         Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
         Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
         Phase='RESOURCE_ASSERTION'; Callsite='REPLACEMENT_SURVIVAL_READ'; Field='EXECUTABLE'
       },
       [PSCustomObject]@{
+        CaseId='FIELD_EXECUTABLE_BACKUP'
         Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
         Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
         Phase='RESOURCE_ASSERTION'; Callsite='RESOURCE_FIELD_VALIDATION'; Field='EXECUTABLE_BACKUP'
       },
       [PSCustomObject]@{
+        CaseId='FIELD_MANIFEST_PATH'
         Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
         Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
         Phase='RESOURCE_ASSERTION'; Callsite='RESOURCE_FIELD_VALIDATION'; Field='MANIFEST_PATH'
       },
       [PSCustomObject]@{
+        CaseId='CALLSITE_WORKFLOW_CLEANUP_RETRY'
         Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
         Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
         Phase='RESOURCE_ASSERTION'; Callsite='WORKFLOW_CLEANUP_RETRY'; Field='RUN_ID'
       },
       [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_ABSENCE_CHECK'
         Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
         Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
         Phase='RESOURCE_ASSERTION'; Callsite='FINAL_ABSENCE_CHECK'; Field='MANIFEST_PATH'
@@ -2330,24 +2457,27 @@ function Test-SupervisorInvocationAttributionTotality {
       [string]$case.Field
     } else { 'NONE' }
     try {
-      Invoke-SupervisorAttributedTest $case.Test {
+      Invoke-SupervisorAttributedTest -Test $case.Test -Action {
         Invoke-SupervisorAttributedBoundary `
-          $case.Test $case.Scenario $case.Phase `
+          -Test $case.Test `
+          -Scenario $case.Scenario `
+          -Phase $case.Phase `
           -Callsite $callsite `
           -Field $field `
           -Action {
-          throw (
-            "Cannot bind argument to parameter 'LiteralPath' because it is null. " +
-            "$secretNeedle $testRoot Registry::HKEY_LOCAL_MACHINE S-1-5-21 " +
-            'manifest stdout stderr'
-          )
-        }
+            throw (
+              "Cannot bind argument to parameter 'LiteralPath' because it is null. " +
+              "$secretNeedle $testRoot Registry::HKEY_LOCAL_MACHINE S-1-5-21 " +
+              'manifest stdout stderr'
+            )
+          }
       }
     } catch {
       $diagnostic = $_.Exception.Message
     }
     Assert-SupervisorInvocationDiagnosticBounded `
-      $diagnostic $case.Test $case.Scenario $case.Phase $callsite $field
+      $diagnostic $case.Test $case.Scenario $case.Phase $callsite $field `
+      $case.CaseId
   }
   $forgedDiagnostic = ''
   try {
@@ -2374,7 +2504,8 @@ function Test-SupervisorInvocationAttributionTotality {
     'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
     'RESOURCE_ASSERTION' `
     'RESOURCE_FIELD_VALIDATION' `
-    'EXECUTABLE_BACKUP'
+    'EXECUTABLE_BACKUP' `
+    'FORGED_PREFIX_SECRET'
 
   $missingGateStateDirectoryDiagnostic = ''
   try {
@@ -2400,7 +2531,8 @@ function Test-SupervisorInvocationAttributionTotality {
     'DURING_MSI' `
     'PROCESS_STATE' `
     'CRITICAL_GATE_PATH' `
-    'STATE_DIRECTORY'
+    'STATE_DIRECTORY' `
+    'MISSING_GATE_STATE_DIRECTORY'
 
   $missingExecutableBackupDiagnostic = ''
   try {
@@ -2428,22 +2560,43 @@ function Test-SupervisorInvocationAttributionTotality {
     'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
     'RESOURCE_ASSERTION' `
     'RESOURCE_FIELD_VALIDATION' `
-    'EXECUTABLE_BACKUP'
+    'EXECUTABLE_BACKUP' `
+    'MISSING_EXECUTABLE_BACKUP'
   foreach ($testName in Get-SupervisorInvocationTests) {
     foreach ($scenarioName in Get-SupervisorInvocationScenarios) {
       foreach ($phaseName in Get-SupervisorInvocationPhases) {
         $diagnostic = Get-SanitizedSupervisorInvocationDiagnostic `
           $testName $scenarioName $phaseName
         Assert-True ([Text.Encoding]::ASCII.GetByteCount($diagnostic) -le 320) `
-          'an allowlisted supervisor invocation diagnostic exceeded its byte bound'
+          (Get-SupervisorAttributionTotalityAssertionMessage `
+            'ALLOWLISTED_TEST_SCENARIO_PHASE' 'exact' 'malformed')
         Assert-True ($diagnostic -cmatch (
             '^PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:[A-Z_]+:' +
             'SCENARIO:[A-Z_]+:PHASE:[A-Z_]+:CALLSITE:[A-Z_]+:' +
             'FIELD:[A-Z_]+:FAILED$'
-          )) 'an allowlisted supervisor invocation diagnostic was not token-only'
+          )) (Get-SupervisorAttributionTotalityAssertionMessage `
+            'ALLOWLISTED_TEST_SCENARIO_PHASE' 'exact' `
+            (Get-SupervisorInvocationDiagnosticClassification `
+              $diagnostic $diagnostic))
       }
     }
   }
+  foreach ($callsiteName in Get-SupervisorInvocationCallsites) {
+    foreach ($fieldName in Get-SupervisorInvocationFields) {
+      $diagnostic = Get-SanitizedSupervisorInvocationDiagnostic `
+        'ATTRIBUTION_TOTALITY' 'PROTOCOL_REGRESSION' 'TEST' `
+        $callsiteName $fieldName
+      Assert-True ([Text.Encoding]::ASCII.GetByteCount($diagnostic) -le 320) `
+        (Get-SupervisorAttributionTotalityAssertionMessage `
+          'ALLOWLISTED_CALLSITE_FIELD' 'exact' 'malformed')
+      Assert-True (Test-SupervisorInvocationDiagnosticExact $diagnostic) `
+        (Get-SupervisorAttributionTotalityAssertionMessage `
+          'ALLOWLISTED_CALLSITE_FIELD' 'exact' `
+          (Get-SupervisorInvocationDiagnosticClassification `
+            $diagnostic $diagnostic))
+    }
+  }
+  Test-CriticalGatePublisherPowerShellCompatibility
   Write-Host 'PROPR_WINDOWS_SUPERVISOR_INVOCATION_ATTRIBUTION:TOTAL:PASSED'
   [Console]::Out.Flush()
 }

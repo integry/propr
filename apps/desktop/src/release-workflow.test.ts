@@ -602,6 +602,26 @@ describe('desktop trusted release workflow', () => {
       /PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:\{0\}:' \+\s*'SCENARIO:\{1\}:PHASE:\{2\}:CALLSITE:\{3\}:FIELD:\{4\}:FAILED/,
     );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-SupervisorInvocationDiagnosticExact/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Get-SupervisorAttributionTotalityAssertionMessage/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /CASE:\{0\}:EXPECTED:\{1\}:OBSERVED:\{2\}/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /CaseId='BOUNDARY_BOOTSTRAP_TIMEOUT'[\s\S]*Invoke-SupervisorAttributedTest -Test \$case\.Test -Action/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /foreach \(\$callsiteName in Get-SupervisorInvocationCallsites\)[\s\S]*foreach \(\$fieldName in Get-SupervisorInvocationFields\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Test-CriticalGatePublisherPowerShellCompatibility/,
+    );
     assert.doesNotMatch(installedWindowsAppSupervisorBehaviorTest, /-clike 'PROPR_WINDOWS_SUPERVISOR_INVOCATION:\*'/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
@@ -633,6 +653,14 @@ describe('desktop trusted release workflow', () => {
     assert.match(
       installedWindowsAppSupervisorFixture,
       /ExecutableBackup -NotePropertyValue \$backup -Force[\s\S]*ByteIdenticalReplacement[\s\S]*-NotePropertyValue \$true -Force/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorFixture,
+      /\[IO\.FileOptions\]::WriteThrough[\s\S]*\$stream\.Flush\(\$true\)[\s\S]*\[IO\.Directory\]::Exists\(\$gatePath\)[\s\S]*\[IO\.File\]::Delete\(\$gatePath\)[\s\S]*\[IO\.File\]::Move\(\$temporaryGatePath, \$gatePath\)/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisorFixture,
+      /\[IO\.File\]::Move\(\$temporaryGatePath, \$gatePath, \$true\)/,
     );
     assert.ok(
       installedWindowsAppSupervisorBehaviorTest.indexOf(
