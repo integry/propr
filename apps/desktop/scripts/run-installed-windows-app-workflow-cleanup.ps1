@@ -1,3 +1,4 @@
+[CmdletBinding(PositionalBinding=$false)]
 param(
   [object]$OwnershipManifest,
   [object]$Installer,
@@ -5,7 +6,7 @@ param(
   [object]$CleanupTimeoutMilliseconds = 4 * 60 * 1000,
   [object]$TerminationTimeoutMilliseconds = 30 * 1000,
   [object]$FixtureRoot,
-  [object]$FixtureEarlyInitializationChild,
+  [switch]$FixtureEarlyInitializationChild,
   [switch]$FixtureResultEmissionFailure,
   [object]$StartupFailureClass,
   [object]$ProtocolFixture

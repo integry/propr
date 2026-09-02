@@ -465,6 +465,140 @@ function Test-WorkflowCleanupBodyParserRegression {
     'workflow cleanup production body failed whole-file parser regression'
 }
 
+function Test-WorkflowCleanupWrapperParserRegression {
+  $tokens = $null
+  $parseErrors = $null
+  $wrapperAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $workflowCleanupPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+  )
+  Assert-True ($parseErrors.Count -eq 0) `
+    'workflow cleanup wrapper failed whole-file parser regression'
+  $scriptText = Get-Content -LiteralPath $workflowCleanupPath -Raw -Encoding UTF8
+  Assert-True ($scriptText -cmatch (
+      '^\[CmdletBinding\(PositionalBinding=\$false\)\]\r?\nparam\(')) `
+    'workflow cleanup wrapper did not disable positional switch coercion'
+
+  $cmdletBinding = @($wrapperAst.ParamBlock.Attributes | Where-Object {
+      $_.TypeName.FullName -ceq 'CmdletBinding'
+    })
+  Assert-True ($cmdletBinding.Count -eq 1) `
+    'workflow cleanup wrapper has no single CmdletBinding contract'
+  $positionalBinding = @($cmdletBinding[0].NamedArguments | Where-Object {
+      $_.ArgumentName -ceq 'PositionalBinding'
+    })
+  Assert-True ($positionalBinding.Count -eq 1 -and
+      $positionalBinding[0].Argument.Extent.Text -ceq '$false') `
+    'workflow cleanup wrapper positional binding was not fail-closed'
+
+  $fixtureParameter = @($wrapperAst.ParamBlock.Parameters | Where-Object {
+      $_.Name.VariablePath.UserPath -ceq 'FixtureEarlyInitializationChild'
+    })
+  Assert-True ($fixtureParameter.Count -eq 1) `
+    'workflow cleanup wrapper fixture switch parameter is missing'
+  $fixtureParameterTypes = @($fixtureParameter[0].Attributes | ForEach-Object {
+      $_.TypeName.FullName
+    })
+  Assert-True (@($fixtureParameterTypes | Where-Object {
+        $_ -cmatch '^(?:switch|System\.Management\.Automation\.SwitchParameter)$'
+      }).Count -eq 1) `
+    'workflow cleanup wrapper fixture parameter does not accept a valueless flag'
+  Assert-True (@($fixtureParameterTypes | Where-Object {
+        $_ -cmatch '^(?:object|string|System\.Object|System\.String)$'
+      }).Count -eq 0) `
+    'workflow cleanup wrapper fixture parameter allows object or string coercion'
+  Assert-True ($null -eq $fixtureParameter[0].DefaultValue) `
+    'workflow cleanup wrapper fixture switch omission was not left false'
+  Assert-True ($scriptText -cmatch (
+      'if \(\[bool\]\$FixtureEarlyInitializationChild\) \{\s*' +
+      '\$bodyParameters\.FixtureEarlyInitializationChild = \$true\s*\}')) `
+    'workflow cleanup wrapper did not forward true only to the fixture body'
+  Assert-True ($scriptText -cnotmatch
+      '\$bodyParameters\.FixtureEarlyInitializationChild\s*=\s*\$false') `
+    'workflow cleanup wrapper forwarded a false fixture body value'
+
+  $probePath = Join-Path ([IO.Path]::GetTempPath()) (
+    "propr-workflow-cleanup-wrapper-switch-$([Guid]::NewGuid().ToString('N')).ps1")
+  $probeText = @'
+[CmdletBinding(PositionalBinding=$false)]
+param(
+  [switch]$FixtureEarlyInitializationChild
+)
+
+if ([bool]$FixtureEarlyInitializationChild) {
+  [Console]::Out.WriteLine('FORWARD_TRUE')
+} else {
+  [Console]::Out.WriteLine('FORWARD_FALSE')
+}
+'@
+  [IO.File]::WriteAllText(
+    $probePath,
+    $probeText,
+    [Text.UTF8Encoding]::new($false)
+  )
+  try {
+    function Invoke-FixtureSwitchBindingProbe(
+      [string]$Path,
+      [string[]]$Arguments
+    ) {
+      $startInfo = [Diagnostics.ProcessStartInfo]::new()
+      $startInfo.FileName = $hostPath
+      $startInfo.UseShellExecute = $false
+      $startInfo.RedirectStandardOutput = $true
+      $startInfo.RedirectStandardError = $true
+      foreach ($argument in @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $Path
+      )) {
+        $startInfo.ArgumentList.Add($argument)
+      }
+      foreach ($argument in $Arguments) {
+        $startInfo.ArgumentList.Add($argument)
+      }
+      $process = [Diagnostics.Process]::new()
+      $process.StartInfo = $startInfo
+      try {
+        if (!$process.Start()) { throw 'fixture switch binding probe did not start' }
+        if (!$process.WaitForExit(5000)) {
+          $process.Kill($true)
+          throw 'fixture switch binding probe timed out'
+        }
+        return [PSCustomObject]@{
+          ExitCode = $process.ExitCode
+          StandardOutput = $process.StandardOutput.ReadToEnd().Trim()
+          StandardError = $process.StandardError.ReadToEnd()
+        }
+      } finally {
+        $process.Dispose()
+      }
+    }
+
+    $omitted = Invoke-FixtureSwitchBindingProbe $probePath @()
+    Assert-True ($omitted.ExitCode -eq 0 -and
+        $omitted.StandardOutput -ceq 'FORWARD_FALSE' -and
+        $omitted.StandardError.Length -eq 0) `
+      'workflow cleanup wrapper fixture switch omission did not remain false'
+    $valueless = Invoke-FixtureSwitchBindingProbe `
+      $probePath @('-FixtureEarlyInitializationChild')
+    Assert-True ($valueless.ExitCode -eq 0 -and
+        $valueless.StandardOutput -ceq 'FORWARD_TRUE' -and
+        $valueless.StandardError.Length -eq 0) `
+      'workflow cleanup wrapper fixture switch did not accept a valueless flag'
+    $invalidString = Invoke-FixtureSwitchBindingProbe `
+      $probePath @('-FixtureEarlyInitializationChild', 'arbitrary')
+    Assert-True ($invalidString.ExitCode -ne 0 -and
+        $invalidString.StandardOutput.Length -eq 0) `
+      'workflow cleanup wrapper fixture switch accepted a stray string value'
+    $invalidObject = Invoke-FixtureSwitchBindingProbe `
+      $probePath @('-FixtureEarlyInitializationChild:[object]::new()')
+    Assert-True ($invalidObject.ExitCode -ne 0 -and
+        $invalidObject.StandardOutput.Length -eq 0) `
+      'workflow cleanup wrapper fixture switch accepted arbitrary object coercion'
+  } finally {
+    Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function New-StateDirectory([string]$Name) {
   $path = Join-Path $testRoot $Name
   [void](New-Item -ItemType Directory -Path $path -ErrorAction Stop)
@@ -4891,6 +5025,7 @@ Assert-True ($actualArchitecture -ceq $Architecture) `
   "supervisor behavior tests expected $Architecture but are running on $actualArchitecture"
 
 Test-WorkflowCleanupBodyParserRegression
+Test-WorkflowCleanupWrapperParserRegression
 [void](New-Item -ItemType Directory -Path $testRoot -ErrorAction Stop)
 Initialize-TestInstaller
 try {

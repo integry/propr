@@ -1040,6 +1040,30 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppWorkflowCleanupWrapper,
+      /^\[CmdletBinding\(PositionalBinding=\$false\)\]\nparam\(/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /\[switch\]\$FixtureEarlyInitializationChild/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /\[(?:object|string)\]\$FixtureEarlyInitializationChild/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /if \(\[bool\]\$FixtureEarlyInitializationChild\) \{\n\s+\$bodyParameters\.FixtureEarlyInitializationChild = \$true\n\s+\}/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /\$bodyParameters\.FixtureEarlyInitializationChild\s*=\s*\$false/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Test-WorkflowCleanupWrapperParserRegression[\s\S]*FixtureEarlyInitializationChild[\s\S]*FORWARD_FALSE[\s\S]*FORWARD_TRUE[\s\S]*arbitrary/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
       /'PARSER'[\s\S]*'PARAMETER_BINDING'[\s\S]*'TYPE_LOAD'[\s\S]*'OTHER'/,
     );
     assert.match(installedWindowsAppWorkflowCleanupWrapper, /Write-StartupFailure \$_/);
