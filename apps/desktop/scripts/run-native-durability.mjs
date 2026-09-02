@@ -1,8 +1,20 @@
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+const expectedTestsFor = (relativePath) => {
+  const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), 'utf8');
+  const matches = [...source.matchAll(
+    /^export const NATIVE_DURABILITY_EXPECTED_TESTS = ([1-9]\d*) as const;$/gm,
+  )];
+  if (matches.length !== 1) {
+    throw new Error(`${relativePath} must export exactly one native durability expected-test contract`);
+  }
+  return Number(matches[0][1]);
+};
+
 const EXPECTED = Object.freeze({
-  'credential-service': 69,
+  'credential-service': expectedTestsFor('src/credential-service.test.ts'),
   'profile-store': 39,
   'pairing-shutdown': 10,
 });

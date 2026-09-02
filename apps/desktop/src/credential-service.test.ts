@@ -16,6 +16,8 @@ import {
 import { DesktopCredentialService, type DesktopWebSocketHandshakeEvidence } from './credential-service';
 import { ProfileStore, type EncryptionProvider, type StoredCredential } from './profile-store';
 
+export const NATIVE_DURABILITY_EXPECTED_TESTS = 70 as const;
+
 const temporaryDirectories: string[] = [];
 const credentialServices: DesktopCredentialService[] = [];
 const encryption: EncryptionProvider = {
