@@ -55,6 +55,18 @@ interface TaskContext {
   reviewFollowupEligible: boolean;
 }
 
+interface TaskEventProjection {
+  payload: TaskUpdatePayload;
+  context: TaskContext;
+  occurredAt: string;
+  recipients: readonly NotificationRecipient[];
+  pullRequestUrl?: string;
+}
+
+interface PullRequestTaskEventProjection extends TaskEventProjection {
+  prNumber: number;
+}
+
 interface SourceActivityRow {
   activity_type: 'task' | 'indexing';
   activity_key: string;
@@ -301,98 +313,26 @@ export class NotificationProjectionService {
       ? undefined
       : safeGithubPullRequestUrl(context.repository, context.prNumber);
     if (payload.state === 'failed') {
-      await this.createPullRequestAwareEvent({
-        deduplicationKey: stableKey('task-failed', payload.taskId, payload.state, occurredAt),
-        kind: 'task',
-        severity: 'error',
-        target: {
-          type: 'task', repository: context.repository, taskId: payload.taskId,
-          ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
-          ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
-        },
-        title: context.prNumber !== undefined
-          ? `Task failed for PR #${context.prNumber}`
-          : context.issueNumber !== undefined
-            ? `Task failed for issue #${context.issueNumber}`
-            : 'Task failed',
-        body: context.description ?? `Work for ${context.repository} did not complete.`,
-        actions: taskActions({
-          followup: context.followupEligible,
-          hasPullRequest: pullRequestUrl !== undefined,
-        }),
-        ...pullRequestAction(pullRequestUrl),
-        occurredAt,
-      }, recipients, context.repository, context.prNumber);
+      await this.projectFailedTask({
+        payload, context, occurredAt, recipients, pullRequestUrl,
+      });
       return;
     }
     if (payload.state !== 'completed') return;
 
     if (context.isReview && context.prNumber !== undefined) {
-      await this.createPullRequestAwareEvent({
-        deduplicationKey: stableKey('review-completed', payload.taskId, payload.state, occurredAt),
-        kind: 'review',
-        severity: 'success',
-        target: {
-          type: 'review', repository: context.repository,
-          prNumber: context.prNumber, taskId: payload.taskId,
-        },
-        title: `Review completed for PR #${context.prNumber}`,
-        body: context.description ?? `Review of PR #${context.prNumber} is complete.`,
-        actions: taskActions({
-          followup: context.reviewFollowupEligible,
-          hasPullRequest: pullRequestUrl !== undefined,
-        }),
-        ...pullRequestAction(pullRequestUrl),
-        occurredAt,
-      }, recipients, context.repository, context.prNumber);
+      await this.projectCompletedReview(
+        { payload, context, occurredAt, recipients, pullRequestUrl, prNumber: context.prNumber },
+      );
     } else if (context.prNumber === undefined) {
-      await this.createPullRequestAwareEvent({
-        deduplicationKey: stableKey('implementation-completed', payload.taskId, payload.state, occurredAt),
-        kind: 'task',
-        severity: 'success',
-        target: {
-          type: 'task', repository: context.repository, taskId: payload.taskId,
-          ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
-          ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
-        },
-        title: context.issueNumber === undefined
-          ? 'Implementation completed'
-          : `Implementation completed for issue #${context.issueNumber}`,
-        body: context.description
-          ?? `Implementation work for ${context.repository} is complete.`,
-        actions: taskActions({
-          followup: context.followupEligible,
-          hasPullRequest: pullRequestUrl !== undefined,
-        }),
-        ...pullRequestAction(pullRequestUrl),
-        occurredAt,
-      }, recipients, context.repository, context.prNumber);
+      await this.projectCompletedImplementation(
+        { payload, context, occurredAt, recipients, pullRequestUrl },
+      );
     }
 
     if (!context.isReview && context.prNumber !== undefined) {
-      await this.notifications.createPullRequestAttentionNotificationEvent(
-        context.repository,
-        context.prNumber,
-        {
-          deduplicationKey: stableKey(
-            'pr-attention', payload.taskId, context.prNumber, occurredAt,
-          ),
-          kind: 'pull_request',
-          severity: 'info',
-          target: {
-            type: 'pull_request', repository: context.repository, prNumber: context.prNumber,
-          },
-          title: `PR #${context.prNumber} ready for review`,
-          body: context.description
-            ?? `Implementation is complete; review the changes in ${context.repository}.`,
-          actions: [
-            ...(pullRequestUrl === undefined ? [] : ['open_pr' as const]),
-            'dismiss',
-          ],
-          ...pullRequestAction(pullRequestUrl),
-          occurredAt,
-        },
-        recipients,
+      await this.projectPullRequestAttention(
+        { payload, context, occurredAt, recipients, pullRequestUrl, prNumber: context.prNumber },
       );
     }
   }
@@ -523,6 +463,112 @@ export class NotificationProjectionService {
       repository,
       prNumber,
       input,
+      recipients,
+    );
+  }
+
+  private projectFailedTask(input: TaskEventProjection): Promise<{ id: string } | null> {
+    const { payload, context, occurredAt, recipients, pullRequestUrl } = input;
+    return this.createPullRequestAwareEvent({
+      deduplicationKey: stableKey('task-failed', payload.taskId, payload.state, occurredAt),
+      kind: 'task',
+      severity: 'error',
+      target: {
+        type: 'task', repository: context.repository, taskId: payload.taskId,
+        ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
+        ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
+      },
+      title: context.prNumber !== undefined
+        ? `Task failed for PR #${context.prNumber}`
+        : context.issueNumber !== undefined
+          ? `Task failed for issue #${context.issueNumber}`
+          : 'Task failed',
+      body: context.description ?? `Work for ${context.repository} did not complete.`,
+      actions: taskActions({
+        followup: context.followupEligible,
+        hasPullRequest: pullRequestUrl !== undefined,
+      }),
+      ...pullRequestAction(pullRequestUrl),
+      occurredAt,
+    }, recipients, context.repository, context.prNumber);
+  }
+
+  private projectCompletedReview(
+    input: PullRequestTaskEventProjection,
+  ): Promise<{ id: string } | null> {
+    const { payload, context, occurredAt, recipients, pullRequestUrl, prNumber } = input;
+    return this.createPullRequestAwareEvent({
+      deduplicationKey: stableKey('review-completed', payload.taskId, payload.state, occurredAt),
+      kind: 'review',
+      severity: 'success',
+      target: {
+        type: 'review', repository: context.repository,
+        prNumber, taskId: payload.taskId,
+      },
+      title: `Review completed for PR #${prNumber}`,
+      body: context.description ?? `Review of PR #${prNumber} is complete.`,
+      actions: taskActions({
+        followup: context.reviewFollowupEligible,
+        hasPullRequest: pullRequestUrl !== undefined,
+      }),
+      ...pullRequestAction(pullRequestUrl),
+      occurredAt,
+    }, recipients, context.repository, prNumber);
+  }
+
+  private projectCompletedImplementation(
+    input: TaskEventProjection,
+  ): Promise<{ id: string } | null> {
+    const { payload, context, occurredAt, recipients, pullRequestUrl } = input;
+    return this.createPullRequestAwareEvent({
+      deduplicationKey: stableKey('implementation-completed', payload.taskId, payload.state, occurredAt),
+      kind: 'task',
+      severity: 'success',
+      target: {
+        type: 'task', repository: context.repository, taskId: payload.taskId,
+        ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
+        ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
+      },
+      title: context.issueNumber === undefined
+        ? 'Implementation completed'
+        : `Implementation completed for issue #${context.issueNumber}`,
+      body: context.description
+        ?? `Implementation work for ${context.repository} is complete.`,
+      actions: taskActions({
+        followup: context.followupEligible,
+        hasPullRequest: pullRequestUrl !== undefined,
+      }),
+      ...pullRequestAction(pullRequestUrl),
+      occurredAt,
+    }, recipients, context.repository, context.prNumber);
+  }
+
+  private projectPullRequestAttention(
+    input: PullRequestTaskEventProjection,
+  ): Promise<{ id: string } | null> {
+    const { payload, context, occurredAt, recipients, pullRequestUrl, prNumber } = input;
+    return this.notifications.createPullRequestAttentionNotificationEvent(
+      context.repository,
+      prNumber,
+      {
+        deduplicationKey: stableKey(
+          'pr-attention', payload.taskId, prNumber, occurredAt,
+        ),
+        kind: 'pull_request',
+        severity: 'info',
+        target: {
+          type: 'pull_request', repository: context.repository, prNumber,
+        },
+        title: `PR #${prNumber} ready for review`,
+        body: context.description
+          ?? `Implementation is complete; review the changes in ${context.repository}.`,
+        actions: [
+          ...(pullRequestUrl === undefined ? [] : ['open_pr' as const]),
+          'dismiss',
+        ],
+        ...pullRequestAction(pullRequestUrl),
+        occurredAt,
+      },
       recipients,
     );
   }
