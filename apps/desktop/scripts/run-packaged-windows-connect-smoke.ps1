@@ -2,13 +2,15 @@ param(
   [Parameter(Mandatory=$true)]
   [ValidateSet('x64','arm64')]
   [string]$Architecture,
-  [ValidateSet('none','terminate-tree','cleanup-timeout','diagnostic-subphase','launcher-authority')]
+  [ValidateSet('none','terminate-tree','cleanup-timeout','diagnostic-subphase','host-node-producer','launcher-authority')]
   [string]$LifecycleTestMode = 'none',
   [ValidateRange(0,2147483647)]
   [int]$LifecycleTestProcessId = 0,
   [ValidateSet(
-    'host-node-resolution',
-    'host-node-canonical-authority',
+    'host-node-command-result',
+    'host-node-source',
+    'host-node-path-binding',
+    'host-node-launcher-return-authority',
     'host-launcher-native-initialization',
     'host-launcher-selected-path-input',
     'host-launcher-selected-path-extra-colon',
@@ -32,7 +34,9 @@ param(
     'host-capture-contract',
     'host-environment-publication'
   )]
-  [string]$DiagnosticTestSubphase = 'host-node-resolution',
+  [string]$DiagnosticTestSubphase = 'host-node-command-result',
+  [ValidateSet('positive','zero','multiple','non-application','missing-source','non-scalar-source')]
+  [string]$HostNodeProducerTestCase = 'positive',
   [ValidateSet('normal','alias','retarget-alias','identity-mismatch')]
   [string]$LauncherAuthorityTestCase = 'normal',
   [string]$LauncherAuthorityTestPath = '',
@@ -67,8 +71,10 @@ $failurePhases = @(
   'cleanup'
 )
 $hostFailureSubphases = @(
-  'host-node-resolution',
-  'host-node-canonical-authority',
+  'host-node-command-result',
+  'host-node-source',
+  'host-node-path-binding',
+  'host-node-launcher-return-authority',
   'host-launcher-native-initialization',
   'host-launcher-selected-path-input',
   'host-launcher-selected-path-extra-colon',
@@ -172,6 +178,39 @@ function Set-PrimaryFailureFromException {
       'host-state-contract'
     }
   }
+}
+
+function Get-ValidatedHostNodePath {
+  param(
+    [switch]$UseTestOnlyCommandResults,
+    [AllowNull()][AllowEmptyCollection()][object[]]$TestOnlyCommandResults,
+    [scriptblock]$TestOnlySourceProducer
+  )
+  Set-OrdinaryUserPreflightSubphase 'host-node-command-result'
+  if ($UseTestOnlyCommandResults) {
+    $commandResults = @($TestOnlyCommandResults)
+  } else {
+    $commandResults = @(Get-Command node.exe -CommandType Application -ErrorAction Stop)
+  }
+  if ($commandResults.Count -ne 1 -or
+      !($commandResults[0] -is [Management.Automation.ApplicationInfo])) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  Set-OrdinaryUserPreflightSubphase 'host-node-source'
+  $command = $commandResults[0]
+  $sourceProperty = $command.PSObject.Properties['Source']
+  if ($null -eq $sourceProperty) { Stop-PackagedConnect 'artifact-type' }
+  $source = if ($null -eq $TestOnlySourceProducer) {
+    $sourceProperty.Value
+  } else {
+    & $TestOnlySourceProducer $command
+  }
+  if ($null -eq $source -or !($source -is [string]) -or
+      [String]::IsNullOrEmpty($source)) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  return $source
 }
 
 function Stop-SpawnedProcess {
@@ -894,8 +933,57 @@ if ($LifecycleTestMode -eq 'terminate-tree') {
   }
 }
 
+if ($LifecycleTestMode -eq 'host-node-producer') {
+  try {
+    if ($HostNodeProducerTestCase -eq 'positive') {
+      $node = Get-ValidatedHostNodePath
+    } elseif ($HostNodeProducerTestCase -eq 'zero') {
+      $node = Get-ValidatedHostNodePath `
+        -UseTestOnlyCommandResults `
+        -TestOnlyCommandResults ([object[]]@())
+    } elseif ($HostNodeProducerTestCase -eq 'non-application') {
+      $node = Get-ValidatedHostNodePath `
+        -UseTestOnlyCommandResults `
+        -TestOnlyCommandResults ([object[]]@([PSCustomObject]@{ Source = 'C:\hostile\node.exe' }))
+    } else {
+      $knownApplications = @(Get-Command `
+        -Name ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) `
+        -CommandType Application `
+        -ErrorAction Stop)
+      $knownApplication = $knownApplications[0]
+      if (!($knownApplication -is [Management.Automation.ApplicationInfo])) {
+        Set-OrdinaryUserPreflightSubphase 'host-node-command-result'
+        Stop-PackagedConnect 'artifact-type'
+      }
+      if ($HostNodeProducerTestCase -eq 'multiple') {
+        $node = Get-ValidatedHostNodePath `
+          -UseTestOnlyCommandResults `
+          -TestOnlyCommandResults ([object[]]@($knownApplication, $knownApplication))
+      } elseif ($HostNodeProducerTestCase -eq 'missing-source') {
+        $node = Get-ValidatedHostNodePath `
+          -UseTestOnlyCommandResults `
+          -TestOnlyCommandResults ([object[]]@($knownApplication)) `
+          -TestOnlySourceProducer { $null }
+      } else {
+        $node = Get-ValidatedHostNodePath `
+          -UseTestOnlyCommandResults `
+          -TestOnlyCommandResults ([object[]]@($knownApplication)) `
+          -TestOnlySourceProducer { [object[]]@('C:\hostile\one.exe', 'C:\hostile\two.exe') }
+      }
+    }
+    if (!($node -is [string]) -or [String]::IsNullOrEmpty($node)) {
+      Set-OrdinaryUserPreflightSubphase 'host-node-source'
+      Stop-PackagedConnect 'artifact-type'
+    }
+    [Console]::Out.WriteLine('PROPR_WINDOWS_PACKAGED_CONNECT_HOST_NODE_PRODUCER_TEST:accepted')
+    exit 0
+  } catch {
+    Set-PrimaryFailureFromException $_.Exception
+  }
+}
+
 if ($LifecycleTestMode -eq 'launcher-authority') {
-  Set-OrdinaryUserPreflightSubphase 'host-node-canonical-authority'
+  Set-OrdinaryUserPreflightSubphase 'host-node-path-binding'
   try {
     $beforeFinalReopen = $null
     $beforeSourceReopen = $null
@@ -934,7 +1022,7 @@ if ($LifecycleTestMode -eq 'launcher-authority') {
   }
 }
 
-if ($LifecycleTestMode -in @('diagnostic-subphase','launcher-authority')) {
+if ($LifecycleTestMode -in @('diagnostic-subphase','host-node-producer','launcher-authority')) {
   # The shared final diagnostic below emits the injected fixed state.
 } elseif ($LifecycleTestMode -eq 'cleanup-timeout') {
   $cleanupTimeoutMilliseconds = 750
@@ -1053,11 +1141,23 @@ try {
     foreach ($item in $aclEntries) { Set-StagedEntryAcl $item $testUserSid $administratorsSid }
     foreach ($item in $aclEntries) { Assert-StagedEntryAcl $item $testUserSid $administratorsSid }
 
-    Set-OrdinaryUserPreflightSubphase 'host-node-resolution'
-    $node = (Get-Command node.exe -CommandType Application -ErrorAction Stop).Source
-    Set-OrdinaryUserPreflightSubphase 'host-node-canonical-authority'
-    $launcherAuthority = Get-TrustedHostLauncher $node
-    $node = $launcherAuthority.Path
+    $node = Get-ValidatedHostNodePath
+    Set-OrdinaryUserPreflightSubphase 'host-node-path-binding'
+    $launcherAuthority = Get-TrustedHostLauncher -Path $node
+    Set-OrdinaryUserPreflightSubphase 'host-node-launcher-return-authority'
+    $launcherAuthorityResults = @($launcherAuthority)
+    if ($launcherAuthorityResults.Count -ne 1) { Stop-PackagedConnect 'artifact-type' }
+    $launcherAuthority = $launcherAuthorityResults[0]
+    $launcherPathProperty = $launcherAuthority.PSObject.Properties['Path']
+    $launcherHandleProperty = $launcherAuthority.PSObject.Properties['Handle']
+    if ($null -eq $launcherPathProperty -or $null -eq $launcherHandleProperty -or
+        !($launcherPathProperty.Value -is [string]) -or
+        [String]::IsNullOrEmpty($launcherPathProperty.Value) -or
+        !($launcherHandleProperty.Value -is [Microsoft.Win32.SafeHandles.SafeFileHandle]) -or
+        $launcherHandleProperty.Value.IsInvalid -or $launcherHandleProperty.Value.IsClosed) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+    $node = $launcherPathProperty.Value
     Set-OrdinaryUserPreflightSubphase 'host-capture-contract'
     $stdout = Join-Path $authenticatedRunnerTemp ('propr-connect-' + [Guid]::NewGuid().ToString('N') + '.stdout')
     $stderr = Join-Path $authenticatedRunnerTemp ('propr-connect-' + [Guid]::NewGuid().ToString('N') + '.stderr')

@@ -24,8 +24,10 @@ const windowsTest = process.platform === 'win32' ? test : test.skip;
 const orchestratorPath = fileURLToPath(new URL('./run-packaged-windows-connect-smoke.ps1', import.meta.url));
 const taskkillPath = String.raw`C:\Windows\System32\taskkill.exe`;
 const hostPreflightSubphases = Object.freeze([
-  'host-node-resolution',
-  'host-node-canonical-authority',
+  'host-node-command-result',
+  'host-node-source',
+  'host-node-path-binding',
+  'host-node-launcher-return-authority',
   'host-capture-contract',
   'host-environment-publication',
 ]);
@@ -53,6 +55,10 @@ const launcherAuthoritySubphases = Object.freeze([
 ]);
 const fixedHostDiagnosticSubphases = Object.freeze([
   ...hostPreflightSubphases,
+  ...launcherAuthoritySubphases,
+]);
+const launcherInvocationSubphases = Object.freeze([
+  'host-node-path-binding',
   ...launcherAuthoritySubphases,
 ]);
 const hostileDiagnosticPattern = /[A-Z]:\\|S-1-5-|account-name|stdout|stderr|exception|environment-secret/iu;
@@ -174,6 +180,24 @@ const runLauncherAuthorityTest = (path, testCase = 'normal', retargetPath) => {
   });
 };
 
+const runHostNodeProducerTest = testCase => spawnSync(windowsPowerShell51Path(), [
+  '-NoLogo',
+  '-NoProfile',
+  '-NonInteractive',
+  '-File',
+  orchestratorPath,
+  '-Architecture',
+  process.arch,
+  '-LifecycleTestMode',
+  'host-node-producer',
+  '-HostNodeProducerTestCase',
+  testCase,
+], {
+  shell: false,
+  windowsHide: true,
+  timeout: 10_000,
+});
+
 const assertLauncherAuthorityRejected = (result, category, subphase) => {
   const expected = `PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=${category}`
     + `:phase=ordinary-user-preflight:subphase=${subphase}:cleanup=none`;
@@ -199,7 +223,7 @@ const failAcceptedLauncherCase = (caseName, result) => {
       && Buffer.isBuffer(result.stderr) && result.stderr.length <= 512) {
     const diagnostic = result.stderr.toString('utf8').trim();
     const match = /^PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=(artifact-missing|artifact-inaccessible|artifact-type|architecture-mismatch|spawn-failed):phase=(ordinary-user-preflight):subphase=([a-z-]+):cleanup=none$/u.exec(diagnostic);
-    if (match && launcherAuthoritySubphases.includes(match[3])
+    if (match && launcherInvocationSubphases.includes(match[3])
         && !hostileDiagnosticPattern.test(diagnostic)) {
       evidence = `category=${match[1]}:phase=${match[2]}:subphase=${match[3]}`;
     }
@@ -577,13 +601,37 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(orchestrator, /\.psbase\.Invoke\('IsMember', \$ordinaryUserEntry\.Path\)/u);
   assert.doesNotMatch(orchestrator, /Get-LocalGroupMember/u);
   assert.doesNotMatch(orchestrator, /Get-Content|Write-(?:Host|Error|Verbose|Debug|Information)|GITHUB_WORKSPACE/u);
+  const hostNodeProducer = orchestrator.slice(
+    orchestrator.indexOf('function Get-ValidatedHostNodePath'),
+    orchestrator.indexOf('function Stop-SpawnedProcess'),
+  );
+  const producerTransitions = [
+    ['host-node-command-result', 'Get-Command node.exe -CommandType Application'],
+    ['host-node-source', "$sourceProperty = $command.PSObject.Properties['Source']"],
+  ];
+  for (let index = 0; index < producerTransitions.length; index += 1) {
+    const [subphase, operation] = producerTransitions[index];
+    const transition = hostNodeProducer.indexOf(`Set-OrdinaryUserPreflightSubphase '${subphase}'`);
+    const operationIndex = hostNodeProducer.indexOf(operation);
+    const nextTransition = index + 1 < producerTransitions.length
+      ? hostNodeProducer.indexOf(
+        `Set-OrdinaryUserPreflightSubphase '${producerTransitions[index + 1][0]}'`,
+      )
+      : hostNodeProducer.length;
+    assert.ok(transition >= 0 && transition < operationIndex && operationIndex < nextTransition,
+      `${subphase} must cover exactly its producer operation boundary`);
+  }
+  assert.match(hostNodeProducer, /\$commandResults\.Count -ne 1[\s\S]*?Management\.Automation\.ApplicationInfo/u);
+  assert.match(hostNodeProducer, /\$command = \$commandResults\[0\]/u);
+  assert.match(hostNodeProducer, /\$null -eq \$sourceProperty[\s\S]*?\$source -is \[string\]/u);
+  assert.doesNotMatch(orchestrator, /\$node\s*=\s*['"]node(?:\.exe)?['"]/iu);
   const hostBoundary = orchestrator.slice(
-    orchestrator.indexOf("Set-OrdinaryUserPreflightSubphase 'host-node-resolution'", orchestrator.indexOf("Set-FailurePhase 'staging-acl'")),
+    orchestrator.indexOf('$node = Get-ValidatedHostNodePath', orchestrator.indexOf("Set-FailurePhase 'staging-acl'")),
     orchestrator.indexOf("Set-FailurePhase 'application-spawn'"),
   );
   const hostTransitions = [
-    ['host-node-resolution', '$node = (Get-Command node.exe'],
-    ['host-node-canonical-authority', '$launcherAuthority = Get-TrustedHostLauncher $node'],
+    ['host-node-path-binding', '$launcherAuthority = Get-TrustedHostLauncher -Path $node'],
+    ['host-node-launcher-return-authority', '$launcherAuthorityResults = @($launcherAuthority)'],
     ['host-capture-contract', '$stdout = Join-Path $authenticatedRunnerTemp'],
     ['host-environment-publication', "$previousParent = [Environment]::GetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_PARENT'"],
   ];
@@ -599,7 +647,9 @@ test('the workflow stages before alternate credentials and the harness preflight
   }
   assert.match(orchestrator, /function Set-PrimaryFailureFromException[\s\S]*?\$script:primaryPhase = \$failurePhase[\s\S]*?\$script:primarySubphase = if \(\$failureSubphases -ccontains \$failureSubphase\)/u);
   assert.match(orchestrator, /function Get-TrustedHostLauncher[\s\S]*?GetFinalPath\(\$sourceHandle\)[\s\S]*?Open\(\$finalPath, \$true\)[\s\S]*?GetIdentity\(\$authorityHandle\)[\s\S]*?Open\(\$selectedPath, \$false\)/u);
-  assert.match(orchestrator, /\$node = \$launcherAuthority\.Path[\s\S]*?-FilePath \$node/u);
+  assert.doesNotMatch(hostBoundary, /Get-TrustedHostLauncher \$node/u);
+  assert.match(orchestrator, /\$node = \$launcherPathProperty\.Value[\s\S]*?-FilePath \$node/u);
+  assert.match(hostBoundary, /SafeFileHandle[\s\S]*?\.IsInvalid[\s\S]*?\.IsClosed/u);
   assert.match(orchestrator, /Start-Process[\s\S]*?finally \{\s*\$launcherAuthority\.Handle\.Dispose\(\)/u);
   assert.match(orchestrator, /FILE_FLAG_OPEN_REPARSE_POINT/u);
   assert.match(
@@ -698,6 +748,42 @@ windowsTest('each host preflight failure transition emits one fixed redacted sub
     assert.equal((diagnostic.match(/:subphase=/gu) ?? []).length, 1);
     assert.doesNotMatch(diagnostic, hostileDiagnosticPattern);
   }
+});
+
+for (const [testCase, subphase] of [
+  ['zero', 'host-node-command-result'],
+  ['multiple', 'host-node-command-result'],
+  ['non-application', 'host-node-command-result'],
+  ['missing-source', 'host-node-source'],
+  ['non-scalar-source', 'host-node-source'],
+]) {
+  windowsTest(`the PS5.1 host Node producer rejects ${testCase} command evidence`, () => {
+    const result = runHostNodeProducerTest(testCase);
+    assert.ifError(result.error);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout.length, 0);
+    const diagnostic = result.stderr.toString('utf8').trim();
+    assert.equal(
+      diagnostic,
+      `PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type`
+        + `:phase=ordinary-user-preflight:subphase=${subphase}:cleanup=none`,
+    );
+    assert.equal((diagnostic.match(/:subphase=/gu) ?? []).length, 1);
+    assert.doesNotMatch(diagnostic, hostileDiagnosticPattern);
+  });
+}
+
+windowsTest('the PS5.1 host Node producer returns one validated scalar Source', () => {
+  const result = runHostNodeProducerTest('positive');
+  assert.ifError(result.error);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 0);
+  assert.equal(
+    result.stdout.toString('utf8').trim(),
+    'PROPR_WINDOWS_PACKAGED_CONNECT_HOST_NODE_PRODUCER_TEST:accepted',
+  );
+  assert.equal(result.stderr.length, 0);
 });
 
 windowsTest('the host launcher accepts only a stable final ordinary-file identity', async context => {
