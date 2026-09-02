@@ -1,4 +1,5 @@
 import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CurrentUser } from '../api/proprTypes';
 import { SocketProvider } from '../contexts/SocketProvider';
@@ -247,6 +248,56 @@ describe('desktop current-user bootstrap', () => {
     expect(connectSocket).toHaveBeenCalledOnce();
     expect(sockets[0].connect).toHaveBeenCalledOnce();
     expect(sockets[0].disconnect).not.toHaveBeenCalled();
+  });
+
+  it('waits for demo-mode loading before one active-on-mount validation and Manager in StrictMode', async () => {
+    getCurrentUser.mockResolvedValue(user);
+    state.scope = activeScope;
+
+    const Harness = ({ isDemoModeLoading }: { isDemoModeLoading: boolean }) => {
+      const bootstrap = useCurrentUserBootstrap({ isDemoMode: false, isDemoModeLoading });
+      const disableReasons = {
+        demoModeLoading: isDemoModeLoading,
+        demoMode: false,
+        currentUserLoading: bootstrap.currentUserLoading,
+        currentUserAbsent: bootstrap.currentUserAbsent,
+      };
+      return (
+        <SocketProvider disabled={Object.values(disableReasons).some(Boolean)} disableReasons={disableReasons}>
+          <div>app</div>
+        </SocketProvider>
+      );
+    };
+
+    const { rerender } = render(
+      <StrictMode>
+        <Harness isDemoModeLoading />
+      </StrictMode>,
+    );
+
+    // Let an immediately resolved local validation fully settle if an effect
+    // incorrectly owns active-scope bootstrap while demo mode is still loading.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getCurrentUser).not.toHaveBeenCalled();
+    expect(connectSocket).not.toHaveBeenCalled();
+
+    rerender(
+      <StrictMode>
+        <Harness isDemoModeLoading={false} />
+      </StrictMode>,
+    );
+
+    await waitFor(() => expect(connectSocket).toHaveBeenCalledOnce());
+    expect(getCurrentUser).toHaveBeenCalledOnce();
+    expect(getCurrentUser).toHaveBeenCalledWith({
+      activeScopePresent: true,
+      scopeGeneration: 1,
+    });
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].connect).toHaveBeenCalledOnce();
   });
 
   it('constructs once after activated validation and removes that Manager when revalidation fails', async () => {

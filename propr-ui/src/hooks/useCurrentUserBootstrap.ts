@@ -161,14 +161,7 @@ export const useCurrentUserBootstrap = ({
     };
 
     void checkSession();
-  }, [isDemoModeLoading, refreshCurrentUser]);
-
-  useEffect(() => {
-    if (!desktopRuntime || !getDesktopConnectionScope()) return;
-    void refreshCurrentUser().catch(error => {
-      console.error('Failed to validate the activated desktop connection:', error);
-    });
-  }, [currentConfigurationKey, desktopRuntime, refreshCurrentUser]);
+  }, [currentConfigurationKey, isDemoModeLoading, refreshCurrentUser]);
 
   useEffect(() => {
     const handleAuthorizationChanged = () => {
