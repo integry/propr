@@ -20,13 +20,13 @@ test('goal migration stores only the durable owner/session execution envelope', 
             [],
         );
         assert.deepEqual(
-            ['run_claim', 'claimed_at', 'attempt_heartbeat_at', 'active_turn_id', 'pause_confirmed_at', 'resume_requested', 'create_idempotency_key', 'failure_reason', 'artifact_stats']
+            ['run_claim', 'claimed_at', 'attempt_heartbeat_at', 'active_turn_id', 'pause_confirmed_at', 'resume_requested', 'create_idempotency_key', 'create_idempotency_operation', 'create_payload_hash', 'control_generation', 'control_ack_generation', 'task_reconciled_at', 'failure_reason', 'artifact_stats']
                 .filter(column => !columns[column]),
             [],
         );
         const inputColumns = await database('goal_inputs').columnInfo();
         assert.deepEqual(
-            ['sequence', 'input_id', 'goal_id', 'owner_id', 'idempotency_key', 'kind', 'message', 'state', 'delivered_generation', 'delivered_claim', 'delivered_turn_id']
+            ['sequence', 'input_id', 'goal_id', 'owner_id', 'idempotency_key', 'operation', 'payload_hash', 'kind', 'message', 'state', 'delivered_generation', 'delivered_claim', 'delivered_turn_id', 'delivery_error']
                 .filter(column => !inputColumns[column]),
             [],
         );

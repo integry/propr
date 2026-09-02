@@ -20,6 +20,7 @@ vi.mock('../contexts/useSocket', () => ({ useSocket: () => socket }));
 
 const capability = {
   agentId: 'agent-1', agentAlias: 'codex', agentType: 'codex', goalCapable: true,
+  controls: { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true },
   models: ['gpt-5.6', 'gpt-5.6-fast'], defaultModel: 'gpt-5.6',
 };
 const goal: goalsApi.Goal = {
@@ -28,6 +29,7 @@ const goal: goalsApi.Goal = {
   baseBranch: null, branchName: 'goal/dashboard', worktreePath: '/tmp/worktree',
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' }, requestedModel: 'gpt-5.6', effectiveModel: 'gpt-5.6',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,
+  control: { requestGeneration: 0, acknowledgedGeneration: 0, pending: false },
   failureReason: null, pausePending: false,
   taskId: 'goal-task-1', sessionId: 'thread-1', conversationId: null, finalPr: null, artifacts: [],
   artifactStats: { issues: 1, openIssues: 1, pullRequests: 1, openPullRequests: 1 },

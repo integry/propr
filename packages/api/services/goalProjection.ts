@@ -2,11 +2,10 @@ import type { Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import {
   parseGoalArtifacts,
-  validateGoalArtifacts,
   type GoalArtifactStats,
   type GoalLaunchStrategy,
 } from '@propr/core';
-import { parseRedisOutput } from './redisOutputParser.js';
+import { projectTaskLiveDetails } from '../routes/liveDetailsRoutes.js';
 
 export interface GoalProjectionRow {
   goal_id: string;
@@ -44,6 +43,11 @@ export interface GoalProjectionRow {
   artifacts_checked_at: string | null;
   failure_reason: string | null;
   create_idempotency_key: string | null;
+  create_idempotency_operation: string | null;
+  create_payload_hash: string | null;
+  control_generation: number;
+  control_ack_generation: number;
+  task_reconciled_at: string | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -58,48 +62,6 @@ function parseStats(value: GoalProjectionRow['artifact_stats']): GoalArtifactSta
     try { return JSON.parse(value) as GoalArtifactStats; } catch { /* use zero projection */ }
   }
   return { issues: 0, openIssues: 0, pullRequests: 0, openPullRequests: 0 };
-}
-
-async function refreshArtifacts(
-  db: Knex,
-  row: GoalProjectionRow,
-  output: string,
-): Promise<GoalProjectionRow> {
-  if (row.result_state) return row;
-  const checkedAt = row.artifacts_checked_at ? new Date(row.artifacts_checked_at).getTime() : 0;
-  if (Date.now() - checkedAt < 15_000) return row;
-  try {
-    const validated = await validateGoalArtifacts({
-      context: { repository: row.repository, branchName: row.branch_name, baseBranch: row.base_branch },
-      existing: parseGoalArtifacts(row.artifact_refs as string | null),
-      output,
-    });
-    await db('goals').where({
-      goal_id: row.goal_id,
-      run_generation: row.run_generation,
-      run_claim: row.run_claim,
-    }).whereNull('result_state').update({
-      artifact_refs: JSON.stringify(validated.artifacts),
-      artifact_stats: JSON.stringify(validated.stats),
-      artifacts_checked_at: db.fn.now(),
-      ...(validated.finalPr ? {
-        final_pr_number: validated.finalPr.number,
-        final_pr_url: validated.finalPr.url,
-      } : {}),
-    });
-    return {
-      ...row,
-      artifact_refs: validated.artifacts,
-      artifact_stats: validated.stats,
-      artifacts_checked_at: new Date().toISOString(),
-      ...(validated.finalPr ? {
-        final_pr_number: validated.finalPr.number,
-        final_pr_url: validated.finalPr.url,
-      } : {}),
-    };
-  } catch {
-    return row;
-  }
 }
 
 function goalTiming(row: GoalProjectionRow): { elapsedMs: number; pausedMs: number; activeMs: number } {
@@ -118,9 +80,8 @@ export async function serializeGoal(
   redis: RedisClientType,
   source: GoalProjectionRow,
 ) {
-  const output = await redis.get(`agent:output:${source.current_task_id}`) ?? '';
-  const row = await refreshArtifacts(db, source, output);
-  const live = output.trim() ? parseRedisOutput(output.split('\n').filter(Boolean)) : null;
+  const row = source;
+  const live = await projectTaskLiveDetails(redis, db, row.current_task_id, row.session_id);
   const latestHistory = await db('task_history')
     .where({ task_id: row.current_task_id })
     .orderBy('timestamp', 'desc')
@@ -145,6 +106,11 @@ export async function serializeGoal(
     resultState: row.result_state,
     failureReason: row.failure_reason,
     pausePending: row.desired_state === 'paused' && !row.pause_confirmed_at,
+    control: {
+      requestGeneration: Number(row.control_generation || 0),
+      acknowledgedGeneration: Number(row.control_ack_generation || 0),
+      pending: Number(row.control_ack_generation || 0) < Number(row.control_generation || 0),
+    },
     taskId: row.current_task_id,
     sessionId: row.session_id,
     conversationId: row.conversation_id,

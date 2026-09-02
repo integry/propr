@@ -5,6 +5,12 @@ export interface GoalCapability {
   agentAlias: string;
   agentType: string;
   goalCapable: boolean;
+  controls: {
+    liveInput: boolean;
+    inputAtBoundary: boolean;
+    modelAtBoundary: boolean;
+    pauseAtBoundary: boolean;
+  };
   reason?: string;
   models: string[];
   defaultModel: string | null;
@@ -31,6 +37,7 @@ export interface Goal {
   resultState: 'completed' | 'failed' | 'cancelled' | null;
   failureReason: string | null;
   pausePending: boolean;
+  control: { requestGeneration: number; acknowledgedGeneration: number; pending: boolean };
   taskId: string;
   sessionId: string | null;
   conversationId: string | null;

@@ -7,7 +7,19 @@ export interface GoalCapability {
     agentAlias: string;
     agentType: AgentType;
     goalCapable: boolean;
+    controls: {
+        liveInput: boolean;
+        inputAtBoundary: boolean;
+        modelAtBoundary: boolean;
+        pauseAtBoundary: boolean;
+    };
     reason?: string;
+}
+
+function controlsFor(agent: Agent): GoalCapability['controls'] {
+    return agent.config.type === 'codex'
+        ? { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true }
+        : { liveInput: false, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true };
 }
 
 export const GOAL_CAPABILITY_COMMANDS: Partial<Record<AgentType, string>> = {
@@ -60,6 +72,7 @@ function unsupportedCapability(agent: Agent, reason: string): GoalCapability {
         agentAlias: agent.config.alias,
         agentType: agent.config.type,
         goalCapable: false,
+        controls: { liveInput: false, inputAtBoundary: false, modelAtBoundary: false, pauseAtBoundary: false },
         reason,
     };
 }
@@ -82,7 +95,7 @@ async function probeCodex(agent: Agent): Promise<GoalCapability> {
         ...dockerConfigMount(agent), agent.config.dockerImage, 'app-server',
     ], { timeout: 30_000, stdinData: handshake });
     return codexHandshakeSupportsNativeGoal(result.stdout)
-        ? { agentId: agent.config.id, agentAlias: agent.config.alias, agentType: agent.config.type, goalCapable: true }
+        ? { agentId: agent.config.id, agentAlias: agent.config.alias, agentType: agent.config.type, goalCapable: true, controls: controlsFor(agent) }
         : unsupportedCapability(agent, 'Pinned Codex App Server did not complete the native goal protocol handshake');
 }
 
@@ -102,7 +115,7 @@ async function probeClaude(agent: Agent): Promise<GoalCapability> {
     ], { timeout: 120_000, stdinData: 'Reply with OK only.' });
     const resumeInit = claudeInitSupportsNativeGoal(resumed.stdout);
     return resumed.exitCode === 0 && resumeInit.sessionId === init.sessionId
-        ? { agentId: agent.config.id, agentAlias: agent.config.alias, agentType: agent.config.type, goalCapable: true }
+        ? { agentId: agent.config.id, agentAlias: agent.config.alias, agentType: agent.config.type, goalCapable: true, controls: controlsFor(agent) }
         : unsupportedCapability(agent, 'Pinned Claude runtime did not resume the exact noninteractive session');
 }
 

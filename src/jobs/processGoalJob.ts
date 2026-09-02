@@ -84,10 +84,15 @@ async function saveSessionAndTaskState(
         model: string;
         sessionId: string;
         conversationId?: string;
+        acknowledgeControls: boolean;
     },
 ): Promise<void> {
-    const { job, goal, model, sessionId, conversationId } = options;
+    const { job, goal, model, sessionId, conversationId, acknowledgeControls } = options;
     if (!await saveFencedGoalSession(job, sessionId, conversationId)) throw new Error('Goal session identity write was fenced');
+    if (!await fencedGoalUpdate(job, {
+        effective_model: model,
+        ...(acknowledgeControls ? { control_ack_generation: goal.control_generation } : {}),
+    })) throw new Error('Goal control acknowledgement was fenced');
     const stateManager = getStateManager();
     const state = await stateManager.getTaskState(goal.current_task_id);
     const terminalStates = new Set<string>([TaskStates.CANCELLED, TaskStates.COMPLETED, TaskStates.FAILED]);
@@ -166,6 +171,15 @@ async function finalizeGoal(
     }) === 1;
 }
 
+async function markGoalTaskReconciled(job: GoalJobData, resultState: string): Promise<void> {
+    await db('goals').where({
+        goal_id: job.goalId,
+        run_generation: job.generation,
+        run_claim: job.claimId,
+        result_state: resultState,
+    }).whereNull('task_reconciled_at').update({ task_reconciled_at: db.fn.now(), updated_at: db.fn.now() });
+}
+
 async function recordGoalMetrics(goal: GoalRow, job: GoalJobData, result: AgentExecutionResult): Promise<void> {
     if (!await fencedGoal(job)) throw new Error('Goal metrics write was fenced');
     const [repoOwner, repoName] = goal.repository.split('/');
@@ -232,19 +246,21 @@ async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAtte
             branchName: worktree.branchName,
             taskId: goal.current_task_id,
             executionMode: 'goal',
-            nativeGoalObjective: goal.objective,
+            nativeGoalObjective: goal.initial_prompt,
             resumeSessionId: goal.session_id ?? undefined,
             resumeConversationId: goal.conversation_id ?? undefined,
             initialControlInputId: pendingInput?.input_id,
             goalControl: control,
             environment: buildGoalPolicyEnvironment(),
-            onSessionId: (sessionId, conversationId) => saveSessionAndTaskState({
-                job: data,
-                goal,
-                model: goal.requested_model,
-                sessionId,
-                conversationId,
-            }),
+            onSessionId: async (sessionId, conversationId) => {
+                await saveSessionAndTaskState({
+                    job: data, goal, model: goal.requested_model, sessionId, conversationId,
+                    acknowledgeControls: !pendingInput,
+                });
+                if (pendingInput && goal.agent_type !== 'codex') {
+                    await control.markInputDelivered(pendingInput.input_id, `session:${sessionId}`);
+                }
+            },
             onContainerId: createContainerIdCallback(
                 goal.current_task_id, getStateManager(), logger as never, worktree.worktreePath,
             ),
@@ -275,7 +291,25 @@ async function acknowledgeNonCodexInput(data: GoalJobData, prepared: PreparedGoa
             delivered_claim: data.claimId,
             delivered_at: trx.fn.now(),
         });
-        if (changed !== 1) throw new Error('Goal input was already delivered or superseded');
+        if (changed !== 1) {
+            const delivered = await trx('goal_inputs').where({
+                input_id: pendingInput.input_id,
+                goal_id: goal.goal_id,
+                owner_id: owned.owner_id,
+                state: 'delivered',
+                delivered_generation: data.generation,
+                delivered_claim: data.claimId,
+            }).first('input_id');
+            if (!delivered) throw new Error('Goal input was already delivered or superseded');
+        }
+        await trx('goals').where({
+            goal_id: data.goalId,
+            run_generation: data.generation,
+            run_claim: data.claimId,
+        }).whereNull('result_state').update({
+            control_ack_generation: trx.raw('control_generation'),
+            updated_at: trx.fn.now(),
+        });
     });
 }
 
@@ -300,7 +334,14 @@ async function handleStoppedGoal(
 ): Promise<{ status: string } | null> {
     if (!latest) return { status: 'skipped' };
     if (latest.desired_state === 'cancelled') {
-        await getStateManager().markTaskCancelled(goal.current_task_id, 'user');
+        const task = await getStateManager().markTaskCancelled(goal.current_task_id, 'user');
+        if (task.state !== TaskStates.CANCELLED) throw new Error('Goal cancellation could not reconcile its backing task');
+        await fencedGoalUpdate(data, {
+            result_state: 'cancelled',
+            active_turn_id: null,
+            completed_at: db.fn.now(),
+            task_reconciled_at: db.fn.now(),
+        });
         return { status: 'cancelled' };
     }
     if (latest.desired_state !== 'paused') return null;
@@ -334,24 +375,25 @@ async function handleGoalResult(
     data: GoalJobData,
     prepared: PreparedGoalAttempt,
     result: AgentExecutionResult,
+    operations: GoalResultOperations = defaultGoalResultOperations,
 ) {
     const { goal, worktree } = prepared;
-    const postExecution = await db<GoalRow>('goals').where({ goal_id: goal.goal_id }).first();
+    const postExecution = await operations.loadGoal(goal.goal_id);
     if (!postExecution
         || postExecution.run_generation !== data.generation
         || postExecution.run_claim !== data.claimId
         || postExecution.result_state === 'cancelled') {
         return { status: postExecution?.result_state === 'cancelled' ? 'cancelled' : 'skipped', reason: 'goal_post_execution_fence' };
     }
-    const boundaryStop = await handleStoppedGoal(data, goal, await fencedGoal(data));
+    await operations.acknowledgeInput(data, prepared);
+    await operations.recordMetrics(goal, data, result);
+    const boundaryStop = await operations.handleStopped(data, goal, await operations.fencedGoal(data));
     if (boundaryStop) return boundaryStop;
-    await acknowledgeNonCodexInput(data, prepared);
-    await recordGoalMetrics(goal, data, result);
-    const artifacts = await saveProviderResult(data, { ...goal, branch_name: worktree.branchName }, result);
-    const latest = await fencedGoal(data);
-    const stopped = await handleStoppedGoal(data, goal, latest);
+    const artifacts = await operations.saveProviderResult(data, { ...goal, branch_name: worktree.branchName }, result);
+    const latest = await operations.fencedGoal(data);
+    const stopped = await operations.handleStopped(data, goal, latest);
     if (stopped) return stopped;
-    const furtherWork = await scheduleFurtherWork(data, latest!, result);
+    const furtherWork = await operations.scheduleFurtherWork(data, latest!, result);
     if (furtherWork) return furtherWork;
 
     const missingFinalPr = result.success && !artifacts.finalPr;
@@ -359,25 +401,74 @@ async function handleGoalResult(
         ? 'Provider completed without the required open draft PR for the saved goal branch and expected base'
         : result.error || 'Native goal execution failed';
     const resultState = result.success && !missingFinalPr ? 'completed' : 'failed';
-    const completed = await finalizeGoal(data, resultState, resultState === 'failed' ? failure : undefined);
+    const completed = await operations.finalizeGoal(data, resultState, resultState === 'failed' ? failure : undefined);
     if (!completed) return { status: 'skipped', reason: 'goal_finalize_fence' };
     if (result.success && artifacts.finalPr) {
-        await getStateManager().markTaskCompleted(goal.current_task_id, {
+        const task = await operations.stateManager().markTaskCompleted(goal.current_task_id, {
             prNumber: artifacts.finalPr.number, prUrl: artifacts.finalPr.url,
         });
+        if (task.state !== TaskStates.COMPLETED) throw new Error('Completed goal could not reconcile its backing task');
+        await operations.markTaskReconciled(data, resultState);
         return { status: 'complete', goalId: goal.goal_id };
     }
-    await getStateManager().markTaskFailed(goal.current_task_id, new Error(failure));
+    const task = await operations.stateManager().markTaskFailed(goal.current_task_id, new Error(failure));
+    if (task.state !== TaskStates.FAILED) throw new Error('Failed goal could not reconcile its backing task');
+    await operations.markTaskReconciled(data, resultState);
     return { status: 'failed', goalId: goal.goal_id };
 }
 
-export async function processGoalJob(job: Job<GoalJobData>) {
-    const claimed = await claimGoalAttempt(job.data);
+interface GoalResultOperations {
+    loadGoal(goalId: string): Promise<GoalRow | null>;
+    fencedGoal: typeof fencedGoal;
+    acknowledgeInput: typeof acknowledgeNonCodexInput;
+    recordMetrics: typeof recordGoalMetrics;
+    handleStopped: typeof handleStoppedGoal;
+    saveProviderResult: typeof saveProviderResult;
+    scheduleFurtherWork: typeof scheduleFurtherWork;
+    finalizeGoal: typeof finalizeGoal;
+    markTaskReconciled: typeof markGoalTaskReconciled;
+    stateManager(): Pick<ReturnType<typeof getStateManager>, 'markTaskCompleted' | 'markTaskFailed'>;
+}
+
+const defaultGoalResultOperations: GoalResultOperations = {
+    loadGoal: async goalId => await db<GoalRow>('goals').where({ goal_id: goalId }).first() ?? null,
+    fencedGoal,
+    acknowledgeInput: acknowledgeNonCodexInput,
+    recordMetrics: recordGoalMetrics,
+    handleStopped: handleStoppedGoal,
+    saveProviderResult,
+    scheduleFurtherWork,
+    finalizeGoal,
+    markTaskReconciled: markGoalTaskReconciled,
+    stateManager: getStateManager,
+};
+
+export interface GoalJobProcessorDependencies {
+    claim: typeof claimGoalAttempt;
+    withHeartbeat: typeof withAttemptHeartbeat;
+    prepare: typeof prepareClaimedGoalAttempt;
+    execute: typeof executePreparedGoal;
+    result: GoalResultOperations;
+}
+
+const defaultGoalJobProcessorDependencies: GoalJobProcessorDependencies = {
+    claim: claimGoalAttempt,
+    withHeartbeat: withAttemptHeartbeat,
+    prepare: prepareClaimedGoalAttempt,
+    execute: executePreparedGoal,
+    result: defaultGoalResultOperations,
+};
+
+export async function processGoalJob(
+    job: Job<GoalJobData>,
+    dependencies: GoalJobProcessorDependencies = defaultGoalJobProcessorDependencies,
+) {
+    const claimed = await dependencies.claim(job.data);
     if (!claimed) return { status: 'skipped', reason: 'goal_claim_fence' };
-    return withAttemptHeartbeat(job.data, async () => {
-        const preparation = await prepareClaimedGoalAttempt(job.data, claimed);
+    return dependencies.withHeartbeat(job.data, async () => {
+        const preparation = await dependencies.prepare(job.data, claimed);
         if (!preparation.ready) return preparation.result;
-        const result = await executePreparedGoal(job.data, preparation.value);
-        return handleGoalResult(job.data, preparation.value, result);
+        const result = await dependencies.execute(job.data, preparation.value);
+        return handleGoalResult(job.data, preparation.value, result, dependencies.result);
     });
 }

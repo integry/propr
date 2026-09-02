@@ -55,7 +55,7 @@ export interface AgentTaskOptions {
     resumeSessionId?: string;
     /** Provider conversation identity when it differs from the session ID. */
     resumeConversationId?: string;
-    /** Native objective used by provider goal metadata APIs. */
+    /** Stable initial native goal instruction used by provider goal metadata APIs. */
     nativeGoalObjective?: string;
     /** Pending FIFO input consumed by the turn being started, when applicable. */
     initialControlInputId?: string;
@@ -69,7 +69,7 @@ export interface AgentTaskOptions {
     retryReason?: string;
 
     // Callbacks
-    onSessionId?: (sessionId: string, conversationId?: string) => void;
+    onSessionId?: (sessionId: string, conversationId?: string) => void | Promise<void>;
     onContainerId?: (containerId: string, containerName: string) => void;
 
     // GitHub token for container
@@ -101,6 +101,7 @@ export interface GoalControlSnapshot {
     desiredState: 'running' | 'paused' | 'cancelled';
     requestedModel: string;
     pendingInputs: GoalControlInput[];
+    controlGeneration: number;
 }
 
 export interface GoalExecutionControl {
@@ -108,6 +109,8 @@ export interface GoalExecutionControl {
     heartbeat(): Promise<void>;
     setActiveTurn(turnId: string | null): Promise<void>;
     markInputDelivered(inputId: string, turnId: string): Promise<void>;
+    markInputUndeliverable(inputId: string, reason: string): Promise<void>;
+    appendOutput(records: string[]): Promise<void>;
 }
 
 export interface TokenUsage {

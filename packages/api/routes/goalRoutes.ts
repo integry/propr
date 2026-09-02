@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
@@ -40,6 +40,55 @@ function currentOwnerId(req: Request): string | null {
 function requestIdempotencyKey(req: Request): string | null {
   const value = req.get('Idempotency-Key');
   return value && value.length <= 255 ? value : null;
+}
+
+function requiredIdempotencyKey(req: Request, res: Response): string | null {
+  const key = requestIdempotencyKey(req);
+  if (!key) res.status(400).json({ error: 'A valid Idempotency-Key header is required' });
+  return key;
+}
+
+function mutationHash(operation: string, payload: Record<string, unknown>): string {
+  return createHash('sha256').update(`${operation}\n${JSON.stringify(payload)}`).digest('hex');
+}
+
+class IdempotencyConflictError extends Error {}
+
+async function existingMutation(
+  db: Knex,
+  row: GoalRow,
+  key: string,
+  operation: string,
+  payloadHash: string,
+): Promise<{ state?: string } | null> {
+  const createUse = await db('goals').where({ owner_id: row.owner_id, create_idempotency_key: key }).first('goal_id');
+  if (createUse) {
+    throw new IdempotencyConflictError('Idempotency-Key was already used for a different goal, operation, or payload');
+  }
+  const existing = await db('goal_inputs').where({ owner_id: row.owner_id, idempotency_key: key }).first();
+  if (!existing) return null;
+  if (existing.goal_id !== row.goal_id || existing.operation !== operation || existing.payload_hash !== payloadHash) {
+    throw new IdempotencyConflictError('Idempotency-Key was already used for a different goal, operation, or payload');
+  }
+  return existing;
+}
+
+async function recordControlMutation(
+  db: Knex,
+  row: GoalRow,
+  key: string,
+  operation: string,
+  payloadHash: string,
+): Promise<void> {
+  try {
+    await db('goal_inputs').insert({
+      input_id: randomUUID(), goal_id: row.goal_id, owner_id: row.owner_id,
+      idempotency_key: key, operation, payload_hash: payloadHash,
+      kind: 'control', message: '', state: 'delivered', created_at: db.fn.now(), delivered_at: db.fn.now(),
+    });
+  } catch (error) {
+    if (!await existingMutation(db, row, key, operation, payloadHash)) throw error;
+  }
 }
 
 async function findOwnedGoal(db: Knex, req: Request, res: Response): Promise<GoalRow | null> {
@@ -158,12 +207,26 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     if (validationError) return void res.status(400).json({ error: validationError });
     const ownerId = currentOwnerId(req);
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
-    const createKey = requestIdempotencyKey(req) ?? randomUUID();
+    const createKey = requiredIdempotencyKey(req, res);
+    if (!createKey) return;
+    const createOperation = 'goal.create';
+    const createPayloadHash = mutationHash(createOperation, {
+      repository: body.repository, objective: body.objective, launchStrategy: body.launchStrategy,
+      agentId: body.agentId, model: body.model, baseBranch: body.baseBranch ?? null,
+      maxParallelTasks: body.maxParallelTasks ?? null, ultrafix: body.ultrafix === true,
+    });
+    const inputUse = await deps.db('goal_inputs').where({ owner_id: ownerId, idempotency_key: createKey }).first('input_id');
+    if (inputUse) return void res.status(409).json({ error: 'Idempotency-Key was already used for a different operation or payload' });
     const existing = await deps.db<GoalRow>('goals').where({
       owner_id: ownerId,
       create_idempotency_key: createKey,
     }).first();
-    if (existing) return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, existing) });
+    if (existing) {
+      if (existing.create_idempotency_operation !== createOperation || existing.create_payload_hash !== createPayloadHash) {
+        return void res.status(409).json({ error: 'Idempotency-Key was already used for a different operation or payload' });
+      }
+      return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, existing) });
+    }
 
     const selection = await resolveCreationAgent(body, getCapabilities);
     if ('error' in selection) return void res.status(selection.status).json({ error: selection.error });
@@ -208,6 +271,8 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       run_generation: 0,
       run_claim: claimId,
       create_idempotency_key: createKey,
+      create_idempotency_operation: createOperation,
+      create_payload_hash: createPayloadHash,
       artifact_refs: JSON.stringify([]),
       artifact_stats: JSON.stringify({ issues: 0, openIssues: 0, pullRequests: 0, openPullRequests: 0 }),
       created_at: now,
@@ -220,7 +285,12 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         owner_id: ownerId,
         create_idempotency_key: createKey,
       }).first();
-      if (raced) return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, raced) });
+      if (raced) {
+        if (raced.create_idempotency_operation !== createOperation || raced.create_payload_hash !== createPayloadHash) {
+          return void res.status(409).json({ error: 'Idempotency-Key was already used for a different operation or payload' });
+        }
+        return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, raced) });
+      }
       throw error;
     }
     const data: GoalJobData = {
@@ -242,24 +312,37 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const pause = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (!row) return;
+    const key = requiredIdempotencyKey(req, res);
+    if (!key) return;
+    const operation = 'goal.pause';
+    const payloadHash = mutationHash(operation, { goalId: row.goal_id });
+    try {
+      if (await existingMutation(deps.db, row, key, operation, payloadHash) && row.pause_confirmed_at) {
+        return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+      }
+    } catch (error) {
+      if (error instanceof IdempotencyConflictError) return void res.status(409).json({ error: error.message });
+      throw error;
+    }
     if (row.result_state || row.desired_state === 'cancelled') return void res.status(409).json({ error: 'Goal is terminal' });
-    if (row.desired_state === 'paused') return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
-    const changed = await deps.db('goals').where({
-      goal_id: row.goal_id,
-      owner_id: row.owner_id,
-      run_generation: row.run_generation,
-      run_claim: row.run_claim,
-      desired_state: 'running',
-    }).whereNull('result_state').update({
-      desired_state: 'paused',
-      paused_at: deps.db.fn.now(),
-      pause_confirmed_at: row.claimed_at ? null : deps.db.fn.now(),
-      updated_at: deps.db.fn.now(),
-    });
-    if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before pause could be claimed' });
+    if (row.desired_state !== 'paused') {
+      const changed = await deps.db('goals').where({
+        goal_id: row.goal_id,
+        owner_id: row.owner_id,
+        run_generation: row.run_generation,
+        run_claim: row.run_claim,
+        desired_state: 'running',
+      }).whereNull('result_state').update({
+        desired_state: 'paused',
+        paused_at: deps.db.fn.now(),
+        pause_confirmed_at: row.claimed_at ? null : deps.db.fn.now(),
+        updated_at: deps.db.fn.now(),
+      });
+      if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before pause could be claimed' });
+    }
     // Codex pauses through native turn/interrupt. Other proven providers stop
     // their resumable noninteractive invocation and resume the exact session.
-    if (row.agent_type !== 'codex' && row.claimed_at) {
+    if (row.agent_type !== 'codex' && row.claimed_at && !row.pause_confirmed_at) {
       await stop(row.current_task_id, {
         redisClient: deps.redisClient,
         requestedBy: req.user!.username,
@@ -268,33 +351,40 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         markCancelled: async () => undefined,
       });
     }
+    await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
 
-  async function addGoalInput(row: GoalRow, req: Request, message: string, kind: 'input' | 'resume'): Promise<void> {
-    const key = requestIdempotencyKey(req) ?? randomUUID();
-    const existing = await deps.db('goal_inputs').where({
-      goal_id: row.goal_id, owner_id: row.owner_id, idempotency_key: key,
-    }).first('input_id');
-    if (existing) return;
+  async function addGoalInput(
+    row: GoalRow,
+    key: string,
+    message: string,
+    kind: 'input' | 'resume',
+  ): Promise<'inserted' | 'pending' | 'settled'> {
+    const operation = `goal.${kind}`;
+    const payloadHash = mutationHash(operation, { goalId: row.goal_id, message });
+    const existing = await existingMutation(deps.db, row, key, operation, payloadHash);
+    if (existing) return existing.state === 'pending' ? 'pending' : 'settled';
     try {
       await deps.db('goal_inputs').insert({
         input_id: randomUUID(),
         goal_id: row.goal_id,
         owner_id: row.owner_id,
         idempotency_key: key,
+        operation,
+        payload_hash: payloadHash,
         kind,
         message,
         state: 'pending',
         created_at: deps.db.fn.now(),
       });
     } catch (error) {
-      const raced = await deps.db('goal_inputs').where({
-        goal_id: row.goal_id, owner_id: row.owner_id, idempotency_key: key,
-      }).first('input_id');
-      if (!raced) throw error;
+      if (!await existingMutation(deps.db, row, key, operation, payloadHash)) throw error;
+      const raced = await existingMutation(deps.db, row, key, operation, payloadHash);
+      return raced?.state === 'pending' ? 'pending' : 'settled';
     }
+    return 'inserted';
   }
 
   async function beginPausedContinuation(row: GoalRow): Promise<boolean> {
@@ -328,23 +418,32 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const resume = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (!row) return;
-    const idempotencyKey = requestIdempotencyKey(req);
-    if (idempotencyKey) {
-      const prior = await deps.db('goal_inputs').where({
-        goal_id: row.goal_id,
-        owner_id: row.owner_id,
-        idempotency_key: idempotencyKey,
-        kind: 'resume',
-      }).first('input_id');
-      if (prior) return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+    const idempotencyKey = requiredIdempotencyKey(req, res);
+    if (!idempotencyKey) return;
+    const resumeMessage = row.session_id ? GOAL_CONTINUE_INPUT : row.initial_prompt;
+    const resumeOperation = 'goal.resume';
+    const resumePayloadHash = mutationHash(resumeOperation, { goalId: row.goal_id, message: resumeMessage });
+    let resumeInserted = false;
+    try {
+      resumeInserted = !await existingMutation(deps.db, row, idempotencyKey, resumeOperation, resumePayloadHash);
+    } catch (error) {
+      if (error instanceof IdempotencyConflictError) return void res.status(409).json({ error: error.message });
+      throw error;
+    }
+    if (!resumeInserted && row.desired_state === 'running') {
+      return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
     }
     if (row.result_state || row.desired_state === 'cancelled') return void res.status(409).json({ error: 'Goal is terminal' });
     if (row.desired_state !== 'paused') return void res.status(409).json({ error: 'Goal is not paused' });
-    await addGoalInput(row, req, row.session_id ? GOAL_CONTINUE_INPUT : row.initial_prompt, 'resume');
+    if (resumeInserted) await addGoalInput(row, idempotencyKey, resumeMessage, 'resume');
     await deps.db('goals').where({
       goal_id: row.goal_id, owner_id: row.owner_id, run_generation: row.run_generation,
       run_claim: row.run_claim, desired_state: 'paused',
-    }).whereNull('result_state').update({ resume_requested: true, updated_at: deps.db.fn.now() });
+    }).whereNull('result_state').update({
+      resume_requested: true,
+      ...(resumeInserted ? { control_generation: deps.db.raw('control_generation + 1') } : {}),
+      updated_at: deps.db.fn.now(),
+    });
     const latest = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
     if (latest?.pause_confirmed_at) await beginPausedContinuation(latest);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
@@ -354,25 +453,53 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const cancel = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (!row) return;
+    const key = requiredIdempotencyKey(req, res);
+    if (!key) return;
+    const operation = 'goal.cancel';
+    const payloadHash = mutationHash(operation, { goalId: row.goal_id });
+    try {
+      if (await existingMutation(deps.db, row, key, operation, payloadHash) && row.result_state === 'cancelled') {
+        return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+      }
+    } catch (error) {
+      if (error instanceof IdempotencyConflictError) return void res.status(409).json({ error: error.message });
+      throw error;
+    }
     if (row.result_state === 'cancelled') return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
     if (row.result_state) return void res.status(409).json({ error: 'Goal is already complete' });
     const finalPauseMs = row.paused_at ? Math.max(0, Date.now() - new Date(row.paused_at).getTime()) : 0;
-    const changed = await deps.db('goals').where({
-      goal_id: row.goal_id, owner_id: row.owner_id,
-      run_generation: row.run_generation, run_claim: row.run_claim,
-    }).whereNull('result_state').update({
-      desired_state: 'cancelled', result_state: 'cancelled', paused_at: null,
-      paused_ms: Number(row.paused_ms || 0) + finalPauseMs,
-      completed_at: deps.db.fn.now(), updated_at: deps.db.fn.now(),
-    });
-    if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before cancellation could be claimed' });
-    await stop(row.current_task_id, {
+    if (row.desired_state !== 'cancelled') {
+      const changed = await deps.db('goals').where({
+        goal_id: row.goal_id, owner_id: row.owner_id,
+        run_generation: row.run_generation, run_claim: row.run_claim,
+      }).whereNull('result_state').update({
+        desired_state: 'cancelled', paused_at: null,
+        paused_ms: Number(row.paused_ms || 0) + finalPauseMs,
+        updated_at: deps.db.fn.now(),
+      });
+      if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before cancellation could be claimed' });
+    }
+    const stopped = await stop(row.current_task_id, {
       redisClient: deps.redisClient,
       requestedBy: req.user!.username,
       reason: 'Goal cancelled by user.',
       cancellationReason: 'goal_cancelled',
       ensureCancelled: true,
     });
+    // A signalled worker has not necessarily crossed its stop boundary yet.
+    // Leave the goal nonterminal so both an HTTP retry and leased recovery keep
+    // reconciling cleanup. Directly stopped/not-running work can finalize now.
+    if (stopped.containerStopped || stopped.notRunning || stopped.notFound || stopped.removedQueuedJobs > 0) {
+      await deps.db('goals').where({
+        goal_id: row.goal_id, owner_id: row.owner_id,
+        run_generation: row.run_generation, run_claim: row.run_claim,
+        desired_state: 'cancelled',
+      }).whereNull('result_state').update({
+        result_state: 'cancelled', completed_at: deps.db.fn.now(),
+        updated_at: deps.db.fn.now(),
+      });
+    }
+    await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
@@ -380,8 +507,20 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const requestModel = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (!row) return;
-    if (row.result_state) return void res.status(409).json({ error: 'Goal is terminal' });
+    const key = requiredIdempotencyKey(req, res);
+    if (!key) return;
     const model = req.body?.model;
+    const operation = 'goal.model';
+    const payloadHash = mutationHash(operation, { goalId: row.goal_id, model });
+    try {
+      if (await existingMutation(deps.db, row, key, operation, payloadHash)) {
+        return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+      }
+    } catch (error) {
+      if (error instanceof IdempotencyConflictError) return void res.status(409).json({ error: error.message });
+      throw error;
+    }
+    if (row.result_state) return void res.status(409).json({ error: 'Goal is terminal' });
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
     const agent = registry.getAgentById(row.agent_id);
@@ -389,8 +528,28 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     const changed = await deps.db('goals').where({
       goal_id: row.goal_id, owner_id: row.owner_id,
       run_generation: row.run_generation, run_claim: row.run_claim,
-    }).whereNull('result_state').update({ requested_model: model, updated_at: deps.db.fn.now() });
+    }).whereNull('result_state').update({
+      requested_model: model,
+      control_generation: deps.db.raw('control_generation + 1'),
+      ...(row.desired_state === 'running' ? {
+        desired_state: 'paused', paused_at: deps.db.fn.now(),
+        pause_confirmed_at: row.claimed_at ? null : deps.db.fn.now(), resume_requested: true,
+      } : {}),
+      updated_at: deps.db.fn.now(),
+    });
     if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before the model request was saved' });
+    if (row.desired_state === 'running' && row.agent_type !== 'codex' && row.claimed_at) {
+      await stop(row.current_task_id, {
+        redisClient: deps.redisClient, requestedBy: req.user!.username,
+        reason: 'Goal model change requested at the next provider boundary.',
+        cancellationReason: 'goal_control_boundary', markCancelled: async () => undefined,
+      });
+    }
+    const modelBoundary = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+    if (modelBoundary?.desired_state === 'paused' && modelBoundary.pause_confirmed_at && modelBoundary.resume_requested) {
+      await beginPausedContinuation(modelBoundary);
+    }
+    await recordControlMutation(deps.db, row, key, operation, payloadHash);
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
@@ -398,19 +557,69 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const input = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (!row) return;
+    const key = requiredIdempotencyKey(req, res);
+    if (!key) return;
     if (row.result_state || row.desired_state === 'cancelled') return void res.status(409).json({ error: 'Goal is terminal' });
     const canned = req.body?.canned as keyof typeof cannedInputs | undefined;
     const message = canned ? cannedInputs[canned] : req.body?.message;
     if (typeof message !== 'string' || !message.trim() || message.length > 65_536) return void res.status(400).json({ error: 'A valid message or canned status request is required' });
-    await addGoalInput(row, req, message.trim(), 'input');
+    let inputDisposition: 'inserted' | 'pending' | 'settled';
+    try {
+      inputDisposition = await addGoalInput(row, key, message.trim(), 'input');
+    } catch (error) {
+      if (error instanceof IdempotencyConflictError) return void res.status(409).json({ error: error.message });
+      throw error;
+    }
+    if (inputDisposition === 'settled'
+      || (inputDisposition === 'pending' && row.desired_state === 'running' && !row.claimed_at)) {
+      return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+    }
     if (row.desired_state === 'paused') {
       await deps.db('goals').where({
         goal_id: row.goal_id, owner_id: row.owner_id,
         run_generation: row.run_generation, run_claim: row.run_claim,
         desired_state: 'paused',
-      }).whereNull('result_state').update({ resume_requested: true, updated_at: deps.db.fn.now() });
+      }).whereNull('result_state').update({
+        resume_requested: true,
+        ...(inputDisposition === 'inserted' || !row.resume_requested
+          ? { control_generation: deps.db.raw('control_generation + 1') }
+          : {}),
+        updated_at: deps.db.fn.now(),
+      });
+      if (row.agent_type !== 'codex' && row.claimed_at && !row.pause_confirmed_at) {
+        await stop(row.current_task_id, {
+          redisClient: deps.redisClient, requestedBy: req.user!.username,
+          reason: 'Goal input queued for the next provider boundary.',
+          cancellationReason: 'goal_control_boundary', markCancelled: async () => undefined,
+        });
+      }
       const latest = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
       if (latest?.pause_confirmed_at) await beginPausedContinuation(latest);
+    } else if (row.agent_type === 'codex') {
+      if (inputDisposition === 'inserted') await deps.db('goals').where({
+        goal_id: row.goal_id, owner_id: row.owner_id,
+        run_generation: row.run_generation, run_claim: row.run_claim, desired_state: 'running',
+      }).whereNull('result_state').update({
+        control_generation: deps.db.raw('control_generation + 1'), updated_at: deps.db.fn.now(),
+      });
+    } else {
+      await deps.db('goals').where({
+        goal_id: row.goal_id, owner_id: row.owner_id,
+        run_generation: row.run_generation, run_claim: row.run_claim, desired_state: 'running',
+      }).whereNull('result_state').update({
+        desired_state: 'paused', paused_at: deps.db.fn.now(),
+        pause_confirmed_at: row.claimed_at ? null : deps.db.fn.now(), resume_requested: true,
+        control_generation: deps.db.raw('control_generation + 1'), updated_at: deps.db.fn.now(),
+      });
+      if (row.claimed_at) {
+        await stop(row.current_task_id, {
+          redisClient: deps.redisClient, requestedBy: req.user!.username,
+          reason: 'Goal input queued for the next provider boundary.',
+          cancellationReason: 'goal_control_boundary', markCancelled: async () => undefined,
+        });
+      }
+      const inputBoundary = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+      if (inputBoundary?.pause_confirmed_at) await beginPausedContinuation(inputBoundary);
     }
     const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });

@@ -29,6 +29,9 @@ export interface GoalRow {
     artifact_refs?: string | GoalArtifact[] | null;
     started_at: string | null;
     paused_at: string | null;
+    control_generation: number;
+    control_ack_generation: number;
+    task_reconciled_at?: string | null;
 }
 
 function attemptWhere(query: Knex.QueryBuilder, job: GoalJobData): Knex.QueryBuilder {
@@ -87,6 +90,7 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
                 desiredState: goal.desired_state,
                 requestedModel: goal.requested_model,
                 pendingInputs: inputs.map(input => ({ id: input.input_id, message: input.message })),
+                controlGeneration: Number(goal.control_generation || 0),
             };
         },
         async heartbeat() {
@@ -116,6 +120,57 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
                     delivered_at: trx.fn.now(),
                 });
                 if (changed !== 1) throw new Error('Goal input was already delivered or superseded');
+                await attemptWhere(trx('goals'), job).update({
+                    control_ack_generation: trx.raw('control_generation'),
+                    updated_at: trx.fn.now(),
+                });
+            });
+        },
+        async markInputUndeliverable(inputId, reason) {
+            await db.transaction(async trx => {
+                const owned = await attemptWhere(trx('goals'), job).first('owner_id');
+                if (!owned) throw new Error('Goal input rejection was fenced');
+                const changed = await trx('goal_inputs').where({
+                    input_id: inputId,
+                    goal_id: job.goalId,
+                    owner_id: owned.owner_id,
+                    state: 'pending',
+                }).update({
+                    state: 'undeliverable',
+                    delivered_generation: job.generation,
+                    delivered_claim: job.claimId,
+                    delivered_at: trx.fn.now(),
+                    delivery_error: reason,
+                });
+                if (changed !== 1) throw new Error('Goal input was already delivered or superseded');
+                await attemptWhere(trx('goals'), job).update({
+                    control_ack_generation: trx.raw('control_generation'),
+                    updated_at: trx.fn.now(),
+                });
+            });
+        },
+        async appendOutput(records) {
+            if (records.length === 0) return;
+            await db.transaction(async trx => {
+                const owned = await attemptWhere(trx('goals'), job).first('goal_id');
+                if (!owned) throw new Error('Goal output append was fenced');
+                const history = await trx('task_history').where({ task_id: job.taskId })
+                    .orderBy('timestamp', 'desc').first();
+                if (!history) return;
+                let metadata: Record<string, unknown> = {};
+                try {
+                    metadata = typeof history.metadata === 'string'
+                        ? JSON.parse(history.metadata) as Record<string, unknown>
+                        : history.metadata || {};
+                } catch { /* replace malformed metadata */ }
+                const existing = Array.isArray(metadata.goalOutputRecords)
+                    ? metadata.goalOutputRecords.filter((value): value is string => typeof value === 'string')
+                    : [];
+                const bounded = [...existing, ...records].slice(-1000);
+                while (Buffer.byteLength(bounded.join('\n')) > 1024 * 1024 && bounded.length > 1) bounded.shift();
+                await trx('task_history').where({ history_id: history.history_id }).update({
+                    metadata: JSON.stringify({ ...metadata, goalOutputRecords: bounded }),
+                });
             });
         },
     };

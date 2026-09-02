@@ -29,6 +29,11 @@ interface NativeGoalSnapshot {
     objective?: string;
 }
 
+function externalGoalObjective(options: AgentTaskOptions): string {
+    const objective = options.nativeGoalObjective!;
+    return objective.startsWith('/goal ') ? objective.slice('/goal '.length) : objective;
+}
+
 function cleanModelName(model: string | undefined): string | undefined {
     return model?.includes(':') ? model.split(':').pop() : model;
 }
@@ -89,12 +94,12 @@ async function openGoalThread(
     }
     connection.effectiveModel = thread.model ?? model;
     await options.onSessionId?.(thread.id, thread.sessionId);
-    if (options.resumeSessionId) {
-        await connection.request('thread/goal/get', { threadId: thread.id });
-    } else {
+    if (!options.resumeSessionId) {
         await connection.request('thread/goal/set', {
             threadId: thread.id,
-            objective: options.nativeGoalObjective,
+            // App Server 0.146 activates the external goal and continues the
+            // thread itself. Keep all launch policy in that one native prompt.
+            objective: externalGoalObjective(options),
             status: 'active',
         });
     }
@@ -140,6 +145,12 @@ async function observeNativeGoal(
         connection.discardStartedTurn(turnId);
         await control.setActiveTurn(turnId);
         if (firstTurn && options.initialControlInputId) {
+            await connection.request('turn/steer', {
+                threadId,
+                clientUserMessageId: options.initialControlInputId,
+                input: [{ type: 'text', text: options.prompt, text_elements: [] }],
+                expectedTurnId: turnId,
+            });
             await control.markInputDelivered(options.initialControlInputId, turnId);
         }
         firstTurn = false;
@@ -160,7 +171,7 @@ async function observeNativeGoal(
     }
 }
 
-async function runGoalProtocol(
+export async function runGoalProtocol(
     connection: AppServerConnection,
     options: AgentTaskOptions,
     model: string | undefined,
@@ -169,10 +180,16 @@ async function runGoalProtocol(
     const thread = await openGoalThread(connection, options, model);
     if (options.resumeSessionId) {
         const recoveredGoal = nativeGoalSnapshot(await connection.request('thread/goal/get', { threadId: thread.id }));
-        if (recoveredGoal.objective !== options.nativeGoalObjective) {
+        if (recoveredGoal.objective !== externalGoalObjective(options)) {
             throw new Error('Persisted Codex thread belongs to a different native goal objective');
         }
         if (recoveredGoal.status === 'complete') {
+            if (options.initialControlInputId) {
+                await control.markInputUndeliverable(
+                    options.initialControlInputId,
+                    'Codex native goal completed before this FIFO input could be delivered',
+                );
+            }
             return { thread, completion: { status: 'completed' }, effectiveModel: model };
         }
         if (recoveredGoal.status !== 'active') {
@@ -188,16 +205,12 @@ async function runGoalProtocol(
         return { thread, effectiveModel: cleanModelName(boundary.requestedModel) || model };
     }
     const effectiveModel = cleanModelName(boundary.requestedModel) || model;
-    const result = await connection.request('turn/start', {
-        threadId: thread.id,
-        ...(options.initialControlInputId ? { clientUserMessageId: options.initialControlInputId } : {}),
-        input: [{ type: 'text', text: options.prompt, text_elements: [] }],
-        ...(effectiveModel ? { model: effectiveModel } : {}),
-    });
-    const turn = asRecord(result.turn);
-    if (typeof turn.id !== 'string') throw new Error('Codex App Server did not return turn.id');
-    connection.effectiveModel = typeof turn.model === 'string' ? turn.model : effectiveModel;
-    const completion = await observeNativeGoal(connection, thread.id, turn.id, options);
+    // Applying/resuming an active external goal calls continue_if_idle() in the
+    // pinned App Server. Starting another turn here races that native turn.
+    const turnId = await waitForNativeGoalTurn(connection, thread.id, control);
+    if (!turnId) return { thread, effectiveModel };
+    connection.effectiveModel = effectiveModel;
+    const completion = await observeNativeGoal(connection, thread.id, turnId, options);
     await connection.request('thread/goal/get', { threadId: thread.id }).catch(() => undefined);
     return { thread, completion, effectiveModel };
 }
@@ -213,6 +226,7 @@ function protocolResult(
         success,
         logs: `${connection.rawOutput}${connection.stderrOutput ? `\n${connection.stderrOutput}` : ''}`,
         rawOutput: connection.rawOutput,
+        conversationLog: connection.conversationLog,
         summary: connection.summaryParts.join('\n\n') || undefined,
         modifiedFiles: [],
         modelUsed: connection.effectiveModel || effectiveModel || 'unknown',
@@ -246,7 +260,7 @@ export async function executeCodexAppServerGoal(
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
     const abort = (): void => { child.kill('SIGTERM'); };
     ownership?.signal.addEventListener('abort', abort, { once: true });
-    const connection = new AppServerConnection(child, options.taskId);
+    const connection = new AppServerConnection(child, options.taskId, records => control.appendOutput(records));
     void detectContainer(getDockerRunContainerName(args), options.onContainerId);
     const deadline = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
     let thread: ThreadIdentity | undefined;
@@ -261,6 +275,7 @@ export async function executeCodexAppServerGoal(
             success: false,
             logs: `${connection.rawOutput}${connection.stderrOutput ? `\n${connection.stderrOutput}` : ''}`,
             rawOutput: connection.rawOutput,
+            conversationLog: connection.conversationLog,
             modifiedFiles: [], modelUsed: connection.effectiveModel || model || 'unknown',
             sessionId: thread?.id, conversationId: thread?.sessionId,
             executionTimeMs: Date.now() - start, error: message, exitCode: child.exitCode,

@@ -2,7 +2,29 @@ import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
-import type { TokenUsage } from '../types.js';
+import type { AgentExecutionResult, TokenUsage } from '../types.js';
+
+const MAX_LIVE_OUTPUT_BYTES = 1024 * 1024;
+const MAX_SUMMARY_PARTS = 100;
+const APPEND_BOUNDED_OUTPUT_SCRIPT = `
+local combined = (redis.call('get', KEYS[1]) or '') .. ARGV[1]
+local maximum = tonumber(ARGV[2])
+if string.len(combined) > maximum then
+    combined = string.sub(combined, string.len(combined) - maximum + 1)
+    local boundary = string.find(combined, '\\n')
+    if boundary then combined = string.sub(combined, boundary + 1) end
+end
+redis.call('setex', KEYS[1], tonumber(ARGV[3]), combined)
+return string.len(combined)
+`;
+
+export function boundedCodexJsonlTail(value: string, maximum = MAX_LIVE_OUTPUT_BYTES): string {
+    if (Buffer.byteLength(value) <= maximum) return value;
+    let tail = value.slice(-maximum);
+    const boundary = tail.indexOf('\n');
+    if (boundary >= 0) tail = tail.slice(boundary + 1);
+    return tail;
+}
 
 interface RpcError { code?: number; message?: string }
 export interface RpcMessage {
@@ -44,6 +66,8 @@ export class AppServerConnection {
     private output = '';
     private stderr = '';
     private flushTimer: ReturnType<typeof setTimeout> | null = null;
+    private pendingOutput = '';
+    private flushPromise: Promise<void> = Promise.resolve();
     private closedError: Error | null = null;
     summaryParts: string[] = [];
     tokenUsage?: TokenUsage;
@@ -52,13 +76,16 @@ export class AppServerConnection {
     constructor(
         private child: ReturnType<typeof spawn>,
         private taskId: string | undefined,
+        private persistOutput?: (records: string[]) => Promise<void>,
     ) {
         this.redis = new Redis({
             host: process.env.REDIS_HOST || 'redis',
             port: parseInt(process.env.REDIS_PORT || '6379', 10),
             maxRetriesPerRequest: 1,
         });
-        child.stderr?.on('data', chunk => { this.stderr += chunk.toString(); });
+        child.stderr?.on('data', chunk => {
+            this.stderr = this.boundedTail(this.stderr + chunk.toString());
+        });
         const lines = readline.createInterface({ input: child.stdout! });
         lines.on('line', line => this.onLine(line));
         child.once('close', code => this.closePending(new Error(`Codex App Server exited before the active turn completed (exit ${code ?? 'unknown'})`)));
@@ -66,11 +93,16 @@ export class AppServerConnection {
     }
 
     get rawOutput(): string { return this.output; }
+    get conversationLog(): AgentExecutionResult['conversationLog'] {
+        return this.output.split('\n').flatMap(line => {
+            try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
+        }) as AgentExecutionResult['conversationLog'];
+    }
     get stderrOutput(): string { return this.stderr; }
     get closeError(): Error | null { return this.closedError; }
 
     private onLine(line: string): void {
-        this.output += `${line}\n`;
+        this.appendOutput(`${line}\n`);
         this.scheduleFlush();
         let message: RpcMessage;
         try { message = JSON.parse(line) as RpcMessage; } catch { return; }
@@ -110,7 +142,10 @@ export class AppServerConnection {
         }
         if (message.method === 'item/completed') {
             const item = asRecord(params.item);
-            if (item.type === 'agentMessage' && typeof item.text === 'string') this.summaryParts.push(item.text);
+            if (item.type === 'agentMessage' && typeof item.text === 'string') {
+                this.summaryParts.push(item.text);
+                if (this.summaryParts.length > MAX_SUMMARY_PARTS) this.summaryParts.shift();
+            }
         }
         if (message.method === 'thread/tokenUsage/updated') this.tokenUsage = extractTokenUsage(params) ?? this.tokenUsage;
         if (message.method === 'model/rerouted' && typeof params.toModel === 'string') this.effectiveModel = params.toModel;
@@ -119,16 +154,46 @@ export class AppServerConnection {
     private appendGoalSnapshot(method: string, result: Record<string, unknown>): void {
         if (!['thread/goal/set', 'thread/goal/get'].includes(method) || !result.goal) return;
         const line = JSON.stringify({ method: 'thread/goal/updated', params: { goal: result.goal }, source: 'rpc_snapshot' });
-        this.output += `${line}\n`;
+        this.appendOutput(`${line}\n`);
         this.scheduleFlush();
+    }
+
+    private boundedTail(value: string): string {
+        return boundedCodexJsonlTail(value);
+    }
+
+    private appendOutput(value: string): void {
+        this.output = this.boundedTail(this.output + value);
+        this.pendingOutput = this.boundedTail(this.pendingOutput + value);
+    }
+
+    private flushOutput(): Promise<void> {
+        if (!this.taskId || !this.pendingOutput) return this.flushPromise;
+        const chunk = this.pendingOutput;
+        this.pendingOutput = '';
+        this.flushPromise = this.flushPromise.then(async () => {
+            await Promise.all([
+                this.redis.eval(
+                    APPEND_BOUNDED_OUTPUT_SCRIPT,
+                    1,
+                    `agent:output:${this.taskId}`,
+                    chunk,
+                    String(MAX_LIVE_OUTPUT_BYTES),
+                    '3600',
+                ),
+                this.persistOutput?.(chunk.split('\n').filter(Boolean)),
+            ]);
+        }).catch(error => {
+            logger.debug({ error: (error as Error).message }, 'Failed to persist Codex App Server output');
+        });
+        return this.flushPromise;
     }
 
     private scheduleFlush(): void {
         if (!this.taskId || this.flushTimer) return;
         this.flushTimer = setTimeout(() => {
             this.flushTimer = null;
-            void this.redis.setex(`agent:output:${this.taskId}`, 3600, this.output).catch(error =>
-                logger.debug({ error: (error as Error).message }, 'Failed to persist Codex App Server output'));
+            void this.flushOutput();
         }, 200);
     }
 
@@ -183,7 +248,7 @@ export class AppServerConnection {
 
     async close(): Promise<void> {
         if (this.flushTimer) clearTimeout(this.flushTimer);
-        if (this.taskId) await this.redis.setex(`agent:output:${this.taskId}`, 3600, this.output).catch(() => undefined);
+        await this.flushOutput();
         await this.redis.quit().catch(() => undefined);
         this.child.stdin?.end();
         const force = setTimeout(() => this.child.kill('SIGTERM'), 500);

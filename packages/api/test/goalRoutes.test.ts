@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import type { Request, Response } from 'express';
 import knex from 'knex';
-import { closeConnection } from '@propr/core';
+import { AgentRegistry, closeConnection } from '@propr/core';
 import { up as createGoals } from '../../core/src/db/migrations/20260902000000_create_goals.js';
 import { up as hardenGoals } from '../../core/src/db/migrations/20260902010000_harden_native_goals.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
@@ -27,6 +27,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
     const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
     const queued: Array<{ name: string; data: Record<string, unknown>; options: { jobId: string } }> = [];
     const stopped: string[] = [];
+    const stopAttempts = new Map<string, number>();
     try {
         await createGoals(database);
         await hardenGoals(database);
@@ -39,16 +40,28 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         const common = {
             owner_login: 'alice', repository: 'acme/repo', objective: 'Ship it',
             launch_strategy: 'direct', initial_prompt: '/goal Ship it\n\nSaved policy',
-            agent_id: 'agent-1', agent_alias: 'codex', agent_type: 'codex', requested_model: 'gpt-5.6',
+            agent_id: 'agent-1', agent_alias: 'claude', agent_type: 'claude', requested_model: 'gpt-5.6',
             desired_state: 'paused', run_generation: 2, run_claim: 'claim-2', session_id: 'thread-1',
             branch_name: 'goal/ship-it', worktree_path: '/worktrees/goal-1',
             pause_confirmed_at: new Date().toISOString(),
             artifact_stats: JSON.stringify({ issues: 0, openIssues: 0, pullRequests: 0, openPullRequests: 0 }),
-            artifacts_checked_at: new Date().toISOString(),
+            artifacts_checked_at: '2000-01-01T00:00:00.000Z',
         };
         await database('goals').insert([
             { ...common, goal_id: 'goal-1', owner_id: 'owner-1', current_task_id: 'goal-task-1' },
             { ...common, goal_id: 'goal-2', owner_id: 'owner-2', current_task_id: 'goal-task-2' },
+            {
+                ...common, goal_id: 'goal-3', owner_id: 'owner-2', current_task_id: 'goal-task-3',
+                desired_state: 'running', pause_confirmed_at: null, claimed_at: new Date().toISOString(),
+            },
+            {
+                ...common, goal_id: 'goal-4', owner_id: 'owner-2', current_task_id: 'goal-task-4',
+                desired_state: 'running', pause_confirmed_at: null, claimed_at: new Date().toISOString(),
+            },
+            {
+                ...common, goal_id: 'goal-5', owner_id: 'owner-2', current_task_id: 'goal-task-5',
+                desired_state: 'running', pause_confirmed_at: null, claimed_at: new Date().toISOString(),
+            },
         ]);
         const routes = createGoalRoutes({
             db: database,
@@ -58,18 +71,39 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
                     queued.push({ name, data, options });
                 },
             } as never,
-            redisClient: { get: async () => null, del: async () => 1 } as never,
-            stopExecution: async taskId => { stopped.push(taskId); return {} as never; },
+            redisClient: {
+                get: async (key: string) => key === 'agent:output:goal-task-1' ? [
+                    JSON.stringify({ type: 'assistant', timestamp: '2026-09-02T20:00:00Z', message: {
+                        content: [{ type: 'tool_use', name: 'TodoWrite', input: { todos: [
+                            { id: 'todo-1', content: 'Inspect API', status: 'completed' },
+                            { id: 'todo-2', content: 'Run tests', status: 'in_progress' },
+                        ] } }], usage: { input_tokens: 12, output_tokens: 4 },
+                    } }),
+                ].join('\n') : null,
+                del: async () => 1,
+            } as never,
+            stopExecution: async taskId => {
+                stopped.push(taskId);
+                const attempt = (stopAttempts.get(taskId) ?? 0) + 1;
+                stopAttempts.set(taskId, attempt);
+                return taskId === 'goal-task-2' && attempt === 1
+                    ? { success: true, containerStopped: false, removedQueuedJobs: 0, abortSignalled: true } as never
+                    : { success: true, containerStopped: true, removedQueuedJobs: 0 } as never;
+            },
             getCapabilities: async () => [],
         });
 
         const listed = response();
         await routes.list(request('owner-1'), listed.res);
         assert.equal(listed.state.status, 200);
-        const listedGoals = (listed.state.body as { goals: Array<{ id: string; launchStrategy: string; initialPrompt: string }> }).goals;
+        const listedGoals = (listed.state.body as { goals: Array<{ id: string; launchStrategy: string; initialPrompt: string; liveSummary: { currentTask: string; todos: unknown[]; tokenUsage: { input_tokens: number } } }> }).goals;
         assert.deepEqual(listedGoals.map(goal => goal.id), ['goal-1']);
         assert.equal(listedGoals[0].launchStrategy, 'direct');
         assert.equal(listedGoals[0].initialPrompt, '/goal Ship it\n\nSaved policy');
+        assert.equal(listedGoals[0].liveSummary.currentTask, 'Run tests');
+        assert.equal(listedGoals[0].liveSummary.todos.length, 2);
+        assert.equal(listedGoals[0].liveSummary.tokenUsage.input_tokens, 12);
+        assert.equal((await database('goals').where({ goal_id: 'goal-1' }).first()).artifacts_checked_at, '2000-01-01T00:00:00.000Z');
 
         const invalidStrategy = response();
         await routes.create(request('owner-1', {}, {
@@ -78,6 +112,20 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         }), invalidStrategy.res);
         assert.equal(invalidStrategy.state.status, 400);
         assert.deepEqual(invalidStrategy.state.body, { error: 'launchStrategy must be direct or orchestrate' });
+
+        await database('goals').where({ goal_id: 'goal-1' }).update({
+            create_idempotency_key: 'create-key-1',
+            create_idempotency_operation: 'goal.create',
+            create_payload_hash: 'different-payload',
+        });
+        const mismatchedCreate = response();
+        const createRequest = request('owner-1', {}, {
+            repository: 'acme/repo', objective: 'Different goal', agentId: 'agent-1', model: 'gpt-5.6',
+            launchStrategy: 'direct',
+        });
+        createRequest.get = () => 'create-key-1';
+        await routes.create(createRequest, mismatchedCreate.res);
+        assert.equal(mismatchedCreate.state.status, 409);
 
         const hidden = response();
         await routes.get(request('owner-1', { goalId: 'goal-2' }), hidden.res);
@@ -126,16 +174,61 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.equal(duplicateInput.state.status, 200);
         assert.equal(queued.length, 1);
         assert.equal(Number((await database('goal_inputs').count('* as count').first()).count), 1);
+        const mismatchedInput = response();
+        const mismatchedRequest = request('owner-1', { goalId: 'goal-1' }, { message: 'A different payload.' });
+        mismatchedRequest.get = () => 'owner-input-1';
+        await routes.input(mismatchedRequest, mismatchedInput.res);
+        assert.equal(mismatchedInput.state.status, 409);
+        const missingKeyInput = response();
+        await routes.input(request('owner-1', { goalId: 'goal-1' }, { message: 'No key.' }), missingKeyInput.res);
+        assert.equal(missingKeyInput.state.status, 400);
         const updated = await database('goals').where({ goal_id: 'goal-1' }).first();
         assert.equal(updated.session_id, 'thread-1');
         assert.equal(updated.current_task_id, 'goal-task-1');
         assert.equal(updated.worktree_path, '/worktrees/goal-1');
         assert.equal(updated.desired_state, 'running');
 
+        const runningClaudeInput = response();
+        const runningInputRequest = request('owner-2', { goalId: 'goal-3' }, { message: 'Apply this at a safe boundary.' });
+        runningInputRequest.get = () => 'owner-running-input-1';
+        await routes.input(runningInputRequest, runningClaudeInput.res);
+        assert.equal(runningClaudeInput.state.status, 200);
+        const boundary = await database('goals').where({ goal_id: 'goal-3' }).first();
+        assert.equal(boundary.desired_state, 'paused');
+        assert.equal(Boolean(boundary.resume_requested), true);
+        assert.equal(boundary.control_generation, 1);
+        assert.ok(stopped.includes('goal-task-3'));
+
+        const pauseRequest = request('owner-2', { goalId: 'goal-4' });
+        pauseRequest.get = () => 'owner-pause-1';
+        await routes.pause(pauseRequest, response().res);
+        await routes.pause(pauseRequest, response().res);
+        assert.equal(stopped.filter(taskId => taskId === 'goal-task-4').length, 2);
+
+        const registry = AgentRegistry.getInstance();
+        mock.method(registry, 'ensureInitialized', async () => {});
+        mock.method(registry, 'getAgentById', () => ({ config: {
+            id: 'agent-1', alias: 'claude', type: 'claude', supportedModels: ['gpt-5.6', 'gpt-5.6-fast'],
+        } } as never));
+        const modelRequest = request('owner-2', { goalId: 'goal-5' }, { model: 'gpt-5.6-fast' });
+        modelRequest.get = () => 'owner-model-1';
+        await routes.requestModel(modelRequest, response().res);
+        const modelBoundary = await database('goals').where({ goal_id: 'goal-5' }).first();
+        assert.equal(modelBoundary.requested_model, 'gpt-5.6-fast');
+        assert.equal(modelBoundary.desired_state, 'paused');
+        assert.equal(Boolean(modelBoundary.resume_requested), true);
+        assert.equal(modelBoundary.control_generation, 1);
+        assert.ok(stopped.includes('goal-task-5'));
+
         const cancelled = response();
-        await routes.cancel(request('owner-2', { goalId: 'goal-2' }), cancelled.res);
+        const cancelRequest = request('owner-2', { goalId: 'goal-2' });
+        cancelRequest.get = () => 'owner-cancel-1';
+        await routes.cancel(cancelRequest, cancelled.res);
+        assert.equal((await database('goals').where({ goal_id: 'goal-2' }).first()).result_state, null);
+        await routes.cancel(cancelRequest, cancelled.res);
         assert.equal(cancelled.state.status, 200);
-        assert.deepEqual(stopped, ['goal-task-2']);
+        assert.ok(stopped.includes('goal-task-2'));
+        assert.equal(stopped.filter(taskId => taskId === 'goal-task-2').length, 2);
         assert.equal((await database('goals').where({ goal_id: 'goal-2' }).first()).result_state, 'cancelled');
     } finally {
         await database.destroy();

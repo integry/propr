@@ -11,6 +11,11 @@ export async function up(knex) {
     table.timestamp('pause_confirmed_at');
     table.boolean('resume_requested').notNullable().defaultTo(false);
     table.string('create_idempotency_key', 255);
+    table.string('create_idempotency_operation', 100);
+    table.string('create_payload_hash', 64);
+    table.integer('control_generation').notNullable().defaultTo(0);
+    table.integer('control_ack_generation').notNullable().defaultTo(0);
+    table.timestamp('task_reconciled_at');
     table.text('failure_reason');
     table.json('artifact_stats').defaultTo('{}');
     table.timestamp('artifacts_checked_at');
@@ -24,6 +29,8 @@ export async function up(knex) {
     table.uuid('goal_id').notNullable().references('goal_id').inTable('goals').onDelete('CASCADE');
     table.string('owner_id', 255).notNullable();
     table.string('idempotency_key', 255).notNullable();
+    table.string('operation', 100).notNullable();
+    table.string('payload_hash', 64).notNullable();
     table.string('kind', 20).notNullable().defaultTo('input');
     table.text('message').notNullable();
     table.string('state', 20).notNullable().defaultTo('pending');
@@ -32,8 +39,9 @@ export async function up(knex) {
     table.string('delivered_turn_id', 255);
     table.timestamp('created_at').defaultTo(knex.fn.now()).notNullable();
     table.timestamp('delivered_at');
+    table.text('delivery_error');
 
-    table.unique(['goal_id', 'owner_id', 'idempotency_key']);
+    table.unique(['owner_id', 'idempotency_key']);
     table.index(['goal_id', 'state', 'sequence']);
   });
 }
@@ -51,6 +59,11 @@ export async function down(knex) {
       'pause_confirmed_at',
       'resume_requested',
       'create_idempotency_key',
+      'create_idempotency_operation',
+      'create_payload_hash',
+      'control_generation',
+      'control_ack_generation',
+      'task_reconciled_at',
       'failure_reason',
       'artifact_stats',
       'artifacts_checked_at',
