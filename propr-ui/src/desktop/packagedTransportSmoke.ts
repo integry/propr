@@ -6,7 +6,9 @@ import {
   handleDesktopAccessCode,
   proprClient,
 } from '../api/apiClient';
+import { getCurrentUser } from '../api/proprApi';
 import { createElectronDesktopAdapters } from './electronAdapters';
+import type { DesktopRendererBridge } from '../../../apps/desktop/src/shared/contract';
 import type { DesktopProfile } from './types';
 
 interface SocketRecord {
@@ -88,12 +90,13 @@ const waitForSocket = (socket: Socket, expected: 'connect' | 'connect_error'): P
   });
 
 /** Packaged-only E2E driver composed from the production renderer adapters. */
-export const installPackagedTransportSmokeHarness = (): void => {
-  const bridge = window.__PROPR_DESKTOP__;
-  if (!bridge) throw new Error('Packaged renderer bridge is unavailable');
+export const createPackagedTransportSmokeHarness = (
+  bridge: DesktopRendererBridge,
+): PackagedTransportSmokeHarness => {
   const adapters = createElectronDesktopAdapters(bridge);
   const sockets = new Map<number, SocketRecord>();
   let nextSocketId = 1;
+  let nextCurrentUserScopeGeneration = 1;
 
   const harness: PackagedTransportSmokeHarness = {
     async activate(profile) {
@@ -107,6 +110,9 @@ export const installPackagedTransportSmokeHarness = (): void => {
         throw new Error('Packaged desktop activation failed');
       }
       adapters.connection.publishActivation(profile, activated);
+      const scopeGeneration = nextCurrentUserScopeGeneration;
+      nextCurrentUserScopeGeneration += 1;
+      await getCurrentUser({ scopeGeneration, activeScopePresent: true });
       return {
         profileId: activated.profileId,
         transportScope: activated.transportScope,
@@ -182,6 +188,13 @@ export const installPackagedTransportSmokeHarness = (): void => {
       };
     },
   };
+  return harness;
+};
+
+export const installPackagedTransportSmokeHarness = (): void => {
+  const bridge = window.__PROPR_DESKTOP__;
+  if (!bridge) throw new Error('Packaged renderer bridge is unavailable');
+  const harness = createPackagedTransportSmokeHarness(bridge);
   Object.defineProperty(window, '__proprPackagedTransportSmoke', {
     configurable: false,
     enumerable: false,
