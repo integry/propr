@@ -2,10 +2,17 @@ param(
   [Parameter(Mandatory=$true)]
   [ValidateSet('x64','arm64')]
   [string]$Architecture,
-  [ValidateSet('none','terminate-tree','cleanup-timeout')]
+  [ValidateSet('none','terminate-tree','cleanup-timeout','diagnostic-subphase')]
   [string]$LifecycleTestMode = 'none',
   [ValidateRange(0,2147483647)]
-  [int]$LifecycleTestProcessId = 0
+  [int]$LifecycleTestProcessId = 0,
+  [ValidateSet(
+    'host-node-resolution',
+    'host-node-canonical-authority',
+    'host-capture-contract',
+    'host-environment-publication'
+  )]
+  [string]$DiagnosticTestSubphase = 'host-node-resolution'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,13 +42,21 @@ $failurePhases = @(
   'result-verify',
   'cleanup'
 )
-$failureSubphases = @(
+$hostFailureSubphases = @(
+  'host-node-resolution',
+  'host-node-canonical-authority',
+  'host-capture-contract',
+  'host-environment-publication',
+  'host-state-contract'
+)
+$childFailureSubphases = @(
   'preflight-invocation',
   'descendant-enumeration',
   'executable-read',
   'unexpected-exit',
   'authority-contract'
 )
+$failureSubphases = @($hostFailureSubphases + $childFailureSubphases)
 $applicationTimeoutMilliseconds = 5 * 60 * 1000
 $terminationTimeoutMilliseconds = 30 * 1000
 $cleanupTimeoutMilliseconds = 60 * 1000
@@ -51,6 +66,7 @@ $primaryFailure = $null
 $primaryPhase = $null
 $primarySubphase = $null
 $failurePhase = 'source-layout'
+$failureSubphase = $null
 $cleanupSecondary = 'none'
 $testUser = $null
 $testUserSid = $null
@@ -85,6 +101,32 @@ function Set-FailurePhase {
     throw [InvalidOperationException]::new('invalid-fixed-failure-phase')
   }
   $script:failurePhase = $Phase
+  if ($Phase -cne 'ordinary-user-preflight') {
+    $script:failureSubphase = $null
+  }
+}
+
+function Set-OrdinaryUserPreflightSubphase {
+  param([Parameter(Mandatory=$true)][string]$Subphase)
+  if ($failureSubphases -cnotcontains $Subphase) {
+    throw [InvalidOperationException]::new('invalid-fixed-failure-subphase')
+  }
+  $script:failureSubphase = $Subphase
+  $script:failurePhase = 'ordinary-user-preflight'
+}
+
+function Set-PrimaryFailureFromException {
+  param([Parameter(Mandatory=$true)][Exception]$Exception)
+  $script:primaryFailure = Get-FixedFailureCategory $Exception
+  $script:primaryPhase = $failurePhase
+  $script:primarySubphase = $null
+  if ($script:primaryPhase -ceq 'ordinary-user-preflight') {
+    $script:primarySubphase = if ($failureSubphases -ccontains $failureSubphase) {
+      $failureSubphase
+    } else {
+      'host-state-contract'
+    }
+  }
 }
 
 function Stop-SpawnedProcess {
@@ -478,6 +520,17 @@ function Invoke-BoundedCleanup {
 $authenticatedRunnerTemp = $null
 $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 
+if ($LifecycleTestMode -eq 'diagnostic-subphase') {
+  Set-OrdinaryUserPreflightSubphase $DiagnosticTestSubphase
+  try {
+    throw [InvalidOperationException]::new(
+      'C:\hostile\package S-1-5-21-123 account-name stdout stderr exception environment-secret'
+    )
+  } catch {
+    Set-PrimaryFailureFromException $_.Exception
+  }
+}
+
 if ($LifecycleTestMode -eq 'terminate-tree') {
   $lifecycleTarget = $null
   try {
@@ -497,7 +550,9 @@ if ($LifecycleTestMode -eq 'terminate-tree') {
   }
 }
 
-if ($LifecycleTestMode -eq 'cleanup-timeout') {
+if ($LifecycleTestMode -eq 'diagnostic-subphase') {
+  # The shared final diagnostic below emits the injected fixed state.
+} elseif ($LifecycleTestMode -eq 'cleanup-timeout') {
   $cleanupTimeoutMilliseconds = 750
   $terminationTimeoutMilliseconds = 3000
   $streamCloseTimeoutMilliseconds = 3000
@@ -614,14 +669,17 @@ try {
     foreach ($item in $aclEntries) { Set-StagedEntryAcl $item $testUserSid $administratorsSid }
     foreach ($item in $aclEntries) { Assert-StagedEntryAcl $item $testUserSid $administratorsSid }
 
-    Set-FailurePhase 'ordinary-user-preflight'
+    Set-OrdinaryUserPreflightSubphase 'host-node-resolution'
     $node = (Get-Command node.exe -CommandType Application -ErrorAction Stop).Source
+    Set-OrdinaryUserPreflightSubphase 'host-node-canonical-authority'
     $null = Get-CanonicalItem $node 'file'
+    Set-OrdinaryUserPreflightSubphase 'host-capture-contract'
     $stdout = Join-Path $authenticatedRunnerTemp ('propr-connect-' + [Guid]::NewGuid().ToString('N') + '.stdout')
     $stderr = Join-Path $authenticatedRunnerTemp ('propr-connect-' + [Guid]::NewGuid().ToString('N') + '.stderr')
     if ((Test-Path -LiteralPath $stdout) -or (Test-Path -LiteralPath $stderr)) {
       Stop-PackagedConnect 'artifact-type'
     }
+    Set-OrdinaryUserPreflightSubphase 'host-environment-publication'
     $previousParent = [Environment]::GetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_PARENT', 'Process')
     $previousLeaf = [Environment]::GetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_LEAF', 'Process')
     try {
@@ -675,15 +733,17 @@ try {
               $failureCategories -ccontains $record.category -and
               $failurePhases -ccontains $record.phase) {
             if ($record.phase -ceq 'ordinary-user-preflight') {
-              if ($failureSubphases -cnotcontains $record.subphase) {
+              if ($childFailureSubphases -cnotcontains $record.subphase) {
                 Stop-PackagedConnect 'artifact-type'
               }
-              $primarySubphase = $record.subphase
+              Set-OrdinaryUserPreflightSubphase $record.subphase
             } elseif ($null -ne $record.subphase) {
               Stop-PackagedConnect 'artifact-type'
             }
             $reportedCategories += $record.category
-            Set-FailurePhase $record.phase
+            if ($record.phase -cne 'ordinary-user-preflight') {
+              Set-FailurePhase $record.phase
+            }
           } elseif ($record.event -cne 'packaged_connect.child_failed') {
             Stop-PackagedConnect 'artifact-type'
           }
@@ -707,8 +767,7 @@ try {
       Stop-PackagedConnect 'spawn-failed'
     }
   } catch {
-    $primaryFailure = Get-FixedFailureCategory $_.Exception
-    $primaryPhase = $failurePhase
+    Set-PrimaryFailureFromException $_.Exception
   }
 } finally {
   if ($null -ne $authenticatedRunnerTemp -and $null -ne $privilegedSid) {
@@ -730,8 +789,10 @@ if ($null -ne $primaryFailure) {
   if ($failureCategories -cnotcontains $primaryFailure) { $primaryFailure = 'spawn-failed' }
   if ($failurePhases -cnotcontains $primaryPhase) { $primaryPhase = 'application-runtime' }
   $subphaseEvidence = ''
-  if ($primaryPhase -ceq 'ordinary-user-preflight' -and
-      $failureSubphases -ccontains $primarySubphase) {
+  if ($primaryPhase -ceq 'ordinary-user-preflight') {
+    if ($failureSubphases -cnotcontains $primarySubphase) {
+      $primarySubphase = 'host-state-contract'
+    }
     $subphaseEvidence = ":subphase=$primarySubphase"
   }
   [Console]::Error.WriteLine("PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=$primaryFailure`:phase=$primaryPhase$subphaseEvidence`:cleanup=$cleanupSecondary")

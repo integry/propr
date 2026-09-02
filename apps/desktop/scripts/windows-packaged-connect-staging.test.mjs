@@ -22,6 +22,13 @@ import { windowsPowerShell51Path } from './windows-fixture-acl.mjs';
 const windowsTest = process.platform === 'win32' ? test : test.skip;
 const orchestratorPath = fileURLToPath(new URL('./run-packaged-windows-connect-smoke.ps1', import.meta.url));
 const taskkillPath = String.raw`C:\Windows\System32\taskkill.exe`;
+const hostPreflightSubphases = Object.freeze([
+  'host-node-resolution',
+  'host-node-canonical-authority',
+  'host-capture-contract',
+  'host-environment-publication',
+]);
+const hostileDiagnosticPattern = /[A-Z]:\\|S-1-5-|account-name|stdout|stderr|exception|environment-secret/iu;
 
 const parent = String.raw`C:\runner-temp\propr-connect-packaged-stage`;
 const leaf = 'propr-connect-package-0123456789abcdef0123456789abcdef';
@@ -192,11 +199,35 @@ describe('packaged Windows Connect staging contract', () => {
       validateWindowsStagedPackage(validationOptions({ readHeader: async () => peFixture('x64') })),
       error => error instanceof WindowsArtifactFailure && error.category === 'architecture-mismatch',
     );
+  });
+
+  test('maps a hostile preflight callback throw totally and redacts all supplied evidence', async () => {
+    const hostile = new Error(
+      String.raw`hostile exception C:\secret\package S-1-5-21-123 account-name raw stdout raw stderr environment-secret`,
+    );
+    hostile.stdout = 'raw stdout';
+    hostile.stderr = 'raw stderr';
+    hostile.environment = { SECRET: 'environment-secret' };
     await assert.rejects(
       validateWindowsStagedPackage(validationOptions({
-        preflight: async () => { throw new Error('C:\\sensitive\\package'); },
+        preflight: async () => { throw hostile; },
       })),
-      error => error instanceof WindowsArtifactFailure && error.category === 'artifact-inaccessible',
+      error => {
+        assert.ok(error instanceof WindowsArtifactFailure);
+        assert.equal(error.category, 'artifact-inaccessible');
+        assert.equal(error.phase, 'ordinary-user-preflight');
+        assert.equal(error.subphase, 'preflight-invocation');
+        const diagnostic = JSON.stringify({
+          event: 'packaged_connect.artifact_failed',
+          ...describeWindowsArtifactFailure(error, 'ordinary-user-preflight'),
+        });
+        assert.equal(
+          diagnostic,
+          '{"event":"packaged_connect.artifact_failed","category":"artifact-inaccessible","phase":"ordinary-user-preflight","subphase":"preflight-invocation"}',
+        );
+        assert.doesNotMatch(`${error.message}\n${diagnostic}`, hostileDiagnosticPattern);
+        return true;
+      },
     );
   });
 
@@ -376,7 +407,7 @@ describe('packaged Windows Connect staging contract', () => {
     );
     assert.doesNotMatch(
       diagnostics.join('\n'),
-      /[A-Z]:\\|S-1-5-|account-name|raw stdout|raw stderr/iu,
+      hostileDiagnosticPattern,
     );
   });
 
@@ -438,7 +469,30 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(orchestrator, /\.psbase\.Invoke\('IsMember', \$ordinaryUserEntry\.Path\)/u);
   assert.doesNotMatch(orchestrator, /Get-LocalGroupMember/u);
   assert.doesNotMatch(orchestrator, /Get-Content|Write-(?:Host|Error|Verbose|Debug|Information)|GITHUB_WORKSPACE/u);
-  assert.match(orchestrator, /\$primaryPhase -ceq 'ordinary-user-preflight'[\s\S]*?\$failureSubphases -ccontains \$primarySubphase/u);
+  const hostBoundary = orchestrator.slice(
+    orchestrator.indexOf("Set-OrdinaryUserPreflightSubphase 'host-node-resolution'", orchestrator.indexOf("Set-FailurePhase 'staging-acl'")),
+    orchestrator.indexOf("Set-FailurePhase 'application-spawn'"),
+  );
+  const hostTransitions = [
+    ['host-node-resolution', '$node = (Get-Command node.exe'],
+    ['host-node-canonical-authority', "$null = Get-CanonicalItem $node 'file'"],
+    ['host-capture-contract', '$stdout = Join-Path $authenticatedRunnerTemp'],
+    ['host-environment-publication', "$previousParent = [Environment]::GetEnvironmentVariable('PROPR_DESKTOP_CONNECT_STAGING_PARENT'"],
+  ];
+  for (let index = 0; index < hostTransitions.length; index += 1) {
+    const [subphase, operation] = hostTransitions[index];
+    const transition = hostBoundary.indexOf(`Set-OrdinaryUserPreflightSubphase '${subphase}'`);
+    const operationIndex = hostBoundary.indexOf(operation);
+    const nextTransition = index + 1 < hostTransitions.length
+      ? hostBoundary.indexOf(`Set-OrdinaryUserPreflightSubphase '${hostTransitions[index + 1][0]}'`)
+      : hostBoundary.length;
+    assert.ok(transition >= 0 && transition < operationIndex && operationIndex < nextTransition,
+      `${subphase} must cover exactly its host operation boundary`);
+  }
+  assert.match(orchestrator, /function Set-PrimaryFailureFromException[\s\S]*?\$script:primaryPhase = \$failurePhase[\s\S]*?\$script:primarySubphase = if \(\$failureSubphases -ccontains \$failureSubphase\)/u);
+  assert.match(orchestrator, /\$childFailureSubphases -cnotcontains \$record\.subphase/u);
+  assert.match(orchestrator, /catch \{\s*Set-PrimaryFailureFromException \$_\.Exception\s*\}/u);
+  assert.match(orchestrator, /\$primaryPhase -ceq 'ordinary-user-preflight'[\s\S]*?\$primarySubphase = 'host-state-contract'/u);
   assert.match(orchestrator, /\$subphaseEvidence = ":subphase=\$primarySubphase"/u);
   assert.match(orchestrator, /PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=\$primaryFailure`:phase=\$primaryPhase\$subphaseEvidence`:cleanup=\$cleanupSecondary/u);
 
@@ -462,6 +516,40 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(harness, /packagedConnectArtifactSensitiveNeedles\(\{\s*platform: process\.platform,\s*artifactRoot,\s*binaryPath,/u);
   assert.doesNotMatch(harness, /identity, artifactRoot, binaryPath,/u);
   assert.doesNotMatch(harness, /child\.once\('error', error/u);
+});
+
+windowsTest('each host preflight failure transition emits one fixed redacted subphase', () => {
+  for (const subphase of hostPreflightSubphases) {
+    const result = spawnSync(windowsPowerShell51Path(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-File',
+      orchestratorPath,
+      '-Architecture',
+      process.arch,
+      '-LifecycleTestMode',
+      'diagnostic-subphase',
+      '-DiagnosticTestSubphase',
+      subphase,
+    ], {
+      shell: false,
+      windowsHide: true,
+      timeout: 10_000,
+    });
+
+    assert.ifError(result.error);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout.length, 0);
+    const diagnostic = result.stderr.toString('utf8').trim();
+    assert.equal(
+      diagnostic,
+      `PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-inaccessible:phase=ordinary-user-preflight:subphase=${subphase}:cleanup=none`,
+    );
+    assert.equal((diagnostic.match(/:subphase=/gu) ?? []).length, 1);
+    assert.doesNotMatch(diagnostic, hostileDiagnosticPattern);
+  }
 });
 
 test('the bounded cleanup source requires proven child exit and bounded stream closure', async () => {

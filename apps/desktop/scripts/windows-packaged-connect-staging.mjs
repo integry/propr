@@ -289,7 +289,7 @@ export const validateWindowsStagedPackage = async ({
   assertPackagedWindowsPeArchitecture(await readHeader(paths.executable), expectedArchitecture);
   try { await preflight(paths); } catch (error) {
     if (error instanceof WindowsArtifactFailure) throw error;
-    fail('artifact-inaccessible', 'ordinary-user-preflight');
+    fail('artifact-inaccessible', 'ordinary-user-preflight', 'preflight-invocation');
   }
   return paths;
 };
@@ -313,8 +313,11 @@ export const describeWindowsArtifactFailure = (error, fallbackPhase = 'applicati
     ? classifyWindowsArtifactFailure(error)
     : (preSpawn ? (error?.code === 'ENOENT' ? 'artifact-missing' : 'artifact-inaccessible')
       : classifyWindowsArtifactFailure(error));
-  const subphase = error instanceof WindowsArtifactFailure
+  const fixedErrorSubphase = error instanceof WindowsArtifactFailure
     && WINDOWS_ARTIFACT_FAILURE_SUBPHASES.includes(error.subphase)
     ? error.subphase : undefined;
+  const subphase = phase === 'ordinary-user-preflight'
+    ? (fixedErrorSubphase ?? 'preflight-invocation')
+    : undefined;
   return Object.freeze({ category, phase, ...(subphase ? { subphase } : {}) });
 };
