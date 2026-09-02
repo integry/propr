@@ -575,6 +575,15 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /if: always\(\) && matrix\.platform == 'win32'/);
       assert.match(section, /-OwnershipManifest \$env:PROPR_WINDOWS_INSTALLED_APP_MANIFEST/);
       assert.match(section, /-ExpectedRunId \$env:PROPR_WINDOWS_INSTALLED_APP_RUN_ID/);
+      assert.match(section, /\$supervisorHost = \(Get-Process -Id \$PID -ErrorAction Stop\)\.Path/);
+      assert.match(section, /& \$supervisorHost -NoLogo -NoProfile -NonInteractive `\n\s+-File apps\/desktop\/scripts\/test-installed-windows-app-supervisor\.ps1/);
+      assert.match(section, /6>&1 \|\n\s+Tee-Object -Variable supervisorOutput/);
+      assert.match(section, /if \(\$supervisorExitCode -ne 0\) \{ exit \$supervisorExitCode \}/);
+      assert.match(section, /\$supervisorLines = @\(\$supervisorOutput \| ForEach-Object \{ \[string\]\$_ \}\)/);
+      assert.match(
+        section,
+        /PROPR_WINDOWS_SUPERVISOR_TESTS:\$\{\{ matrix\.arch \}\}:PASSED/,
+      );
     }
   });
 
@@ -589,6 +598,24 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Invoke-WorkflowCleanupController/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingAppPathsAuthority/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-ProcessTreeGone/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-OwnedFixtureAuthorityComplete/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_SUPERVISOR_FIXTURE_AUTHORITY:SCENARIO:\{0\}:' \+\s*'PHASE:RESOURCE_STATE:FIELD:\{1\}:INVALID/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorFixture,
+      /\$registryRoot = "Registry::HKEY_LOCAL_MACHINE\\Software\\ProPRSupervisorFixture\\\$\(\$manifest\.RunId\)"[\s\S]*RegistryRoot = \$registryRoot/,
+    );
+    assert.ok(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        "Assert-OwnedFixtureAuthorityComplete $owned 'OWNED_RESOURCES_THEN_DEADLINE'",
+      )
+        < installedWindowsAppSupervisorBehaviorTest.indexOf(
+          'Test-Path -LiteralPath $owned.RegistryRoot',
+        ),
+      'fixture authority must be checked before LiteralPath cleanup assertions',
+    );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /WindowsIdentity\]::GetCurrent\(\)/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,

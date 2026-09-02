@@ -1065,6 +1065,37 @@ function Assert-MsiPreflightPreservedResources($Owned) {
     'MSI file-system preflight failure removed the run-owned user'
 }
 
+function Get-SanitizedFixtureAuthorityDiagnostic($Scenario, $Field) {
+  $scenarioName = if ([string]$Scenario -cmatch '^[A-Z_]{1,64}$') {
+    [string]$Scenario
+  } else { 'INVALID' }
+  $fieldName = if ([string]$Field -cmatch '^[A-Za-z][A-Za-z0-9]{0,31}$') {
+    [string]$Field
+  } else { 'InvalidField' }
+  return ('PROPR_SUPERVISOR_FIXTURE_AUTHORITY:SCENARIO:{0}:' +
+    'PHASE:RESOURCE_STATE:FIELD:{1}:INVALID') -f $scenarioName, $fieldName
+}
+
+function Assert-OwnedFixtureAuthorityComplete($Owned, [string]$Scenario) {
+  foreach ($field in @(
+      'OwnedRoot','InstallRoot','ShortcutFolder','Shortcut','SmokeDirectory',
+      'RegistryPath','RegistryRoot','UserName','UserSid','ProfilePath',
+      'ManifestPath','RunId','Token'
+    )) {
+    $property = $Owned.PSObject.Properties[$field]
+    Assert-True ($null -ne $property -and
+        ![string]::IsNullOrWhiteSpace([string]$property.Value)) `
+      (Get-SanitizedFixtureAuthorityDiagnostic $Scenario $field)
+  }
+  $expectedRegistryRoot =
+    "Registry::HKEY_LOCAL_MACHINE\Software\ProPRSupervisorFixture\$($Owned.RunId)"
+  Assert-True ([string]::Equals(
+      [string]$Owned.RegistryRoot,
+      $expectedRegistryRoot,
+      [StringComparison]::OrdinalIgnoreCase
+    )) (Get-SanitizedFixtureAuthorityDiagnostic $Scenario 'RegistryRoot')
+}
+
 function Get-WorkflowCleanupProtocolMismatchDiagnostic(
   [string]$InvocationIdentifier,
   [string]$ObservedLineCategory,
@@ -2198,6 +2229,7 @@ function Test-PreExistingCleanupOwnership {
     }
 
     $owned = Read-FixtureResourceState $stateDirectory
+    Assert-OwnedFixtureAuthorityComplete $owned 'OWNED_RESOURCES_THEN_DEADLINE'
     foreach ($ownedPath in @(
       $owned.OwnedRoot, $owned.InstallRoot, $owned.ShortcutFolder,
       $owned.Shortcut, $owned.SmokeDirectory

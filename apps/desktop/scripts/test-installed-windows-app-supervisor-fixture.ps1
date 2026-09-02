@@ -280,7 +280,8 @@ function New-OwnedFixtureResources(
   [IO.File]::WriteAllText($executable, 'owned-executable', [Text.Encoding]::ASCII)
   [IO.File]::WriteAllText($shortcut, 'owned-shortcut', [Text.Encoding]::ASCII)
 
-  $registryPath = "Registry::HKEY_LOCAL_MACHINE\Software\ProPRSupervisorFixture\$($manifest.RunId)\owned"
+  $registryRoot = "Registry::HKEY_LOCAL_MACHINE\Software\ProPRSupervisorFixture\$($manifest.RunId)"
+  $registryPath = "$registryRoot\owned"
   [void](New-Item -Path $registryPath -Force -ErrorAction Stop)
   Set-ItemProperty -LiteralPath $registryPath -Name 'ProPRInstalledAppOwner' -Value $token
   Set-ItemProperty -LiteralPath $registryPath -Name 'Payload' -Value 'owned'
@@ -464,7 +465,7 @@ function New-OwnedFixtureResources(
     Shortcut = $shortcut
     SmokeDirectory = $smokeDirectory
     RegistryPath = $registryPath
-    RegistryRoot = Split-Path -Parent $registryPath
+    RegistryRoot = $registryRoot
     UserName = $userName
     UserSid = $userSid
     ProfilePath = $canonicalProfilePath
