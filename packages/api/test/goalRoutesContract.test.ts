@@ -10,6 +10,7 @@ import {
   type RepoToMonitor,
 } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260831000000_create_goal_control_plane.js';
+import { up as createNativeExecutions } from '../../core/src/db/migrations/20260902000000_add_goal_native_executions.js';
 import { configureDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 
@@ -95,6 +96,7 @@ before(async () => {
     } },
   });
   await up(database);
+  await createNativeExecutions(database);
   resetConfiguredDemoMode();
   configureDemoMode(false);
 });
@@ -225,7 +227,9 @@ describe('goal HTTP contract', () => {
     const page1 = first.state.body as { goals: Array<Record<string, unknown>>; nextCursor: string };
     assert.equal('ownerUserId' in page1.goals[0], false);
     assert.equal('leaseOwner' in page1.goals[0], false);
-    assert.equal(typeof page1.goals[0].nodeCount, 'number');
+    assert.equal('nodeCount' in page1.goals[0], false);
+    assert.equal('activeNodeCount' in page1.goals[0], false);
+    assert.equal(page1.goals[0].nativePlan, null);
     const second = response();
     await api.listGoals(request({ query: { limit: '1', cursor: page1.nextCursor } }), second.res);
     assert.notEqual((second.state.body as { goals: Array<{ goalId: string }> }).goals[0].goalId, page1.goals[0].goalId);

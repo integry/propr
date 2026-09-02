@@ -22,6 +22,18 @@ export {
   type GoalSupervisorOptions,
 } from './goalSupervisor.js';
 export {
+  ProductionGoalRuntimeResolver,
+  GitHubGoalArtifactVerifier,
+  resolveGoalBaseBranch,
+  allocateGoalWorkspace,
+  createProductionGoalSupervisor,
+} from './goalProductionComposition.js';
+export { GoalDockerContainerManager, type GoalDockerExecutor } from './goalDockerContainer.js';
+export { CliGoalProviderRuntime } from './cliGoalProviderRuntime.js';
+export { CodexGoalProviderRuntime } from './codexGoalProviderRuntime.js';
+export { GoalArtifactRepository } from './goalArtifactRepository.js';
+export { GoalRuntimeControlRepository } from './goalRuntimeControlRepository.js';
+export {
   CANONICAL_JSON_MAX_BYTES,
   CANONICAL_JSON_MAX_DEPTH,
   CANONICAL_JSON_MAX_NODES,

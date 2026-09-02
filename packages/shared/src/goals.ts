@@ -221,8 +221,9 @@ export interface GoalSummaryView {
   ultrafixGoal: number | null;
   ultrafixMaxCycles: number | null;
   version: number;
-  nodeCount: number;
-  activeNodeCount: number;
+  nativePlan: JsonValue;
+  nativeTodos: JsonValue;
+  nativeStatus: JsonValue;
   latestSequence: number;
   createdAt: string;
   updatedAt: string;
@@ -299,8 +300,6 @@ export interface PublicGoalStatsDto {
 /** Canonical public detail read model shared by the API and UI. */
 export interface PublicGoalDetailDto {
   goal: PublicGoalDto;
-  nodes: PublicGoalNodeDto[];
-  dependencies: Array<{ nodeId: string; dependsOnNodeId: string }>;
   messages: PublicGoalMessageDto[];
   summary: GoalSummaryView;
   stats: PublicGoalStatsDto;

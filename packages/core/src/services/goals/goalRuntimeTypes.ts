@@ -3,7 +3,7 @@ import type { Goal } from './goalTypes.js';
 
 export const GOAL_RUNTIME_EXECUTION_STATES = [
   'allocated', 'starting', 'active', 'pausing', 'paused', 'interrupted',
-  'completing', 'completed', 'failed', 'cancelled',
+  'cancelling', 'completing', 'completed', 'failed', 'cancelled',
 ] as const;
 
 export type GoalRuntimeExecutionState = typeof GOAL_RUNTIME_EXECUTION_STATES[number];
@@ -26,6 +26,8 @@ export interface NativeGoalPolicy {
 
 export interface GoalWorkspaceIdentity {
   worktreeId: string;
+  /** Durable host path. Recovery must use this exact path before consulting config. */
+  worktreePath: string;
   repository: string;
   baseBranch: string;
   headBranch: string;
@@ -126,7 +128,7 @@ export interface GoalRuntimeRequest {
 }
 
 export type GoalRuntimeResult =
-  | { outcome: 'completed'; finalArtifact?: GoalReportedArtifact; merged?: boolean }
+  | { outcome: 'completed' }
   | { outcome: 'paused' }
   | { outcome: 'cancelled' }
   | { outcome: 'interrupted'; reason?: string; checkpoint?: string }
@@ -156,6 +158,34 @@ export interface GoalProviderRuntime {
     model: string,
     authority: GoalRuntimeAuthority
   ): Promise<{ effectiveModel: string }>;
+  /** Wait until provider work and late notifications have reached a closed boundary. */
+  settle(execution: GoalRuntimeExecution, authority: GoalRuntimeAuthority): Promise<void>;
+  /** Bounded-settlement fallback; idempotent for the exact provider session/container. */
+  terminate(execution: GoalRuntimeExecution, authority: GoalRuntimeAuthority): Promise<void>;
+}
+
+export interface GoalNativeProjection {
+  plan: unknown | null;
+  todos: unknown | null;
+  status: unknown | null;
+  nativeSequence: number;
+  updatedAt: string | null;
+}
+
+export interface VerifiedGoalPullRequest {
+  repository: string;
+  externalRef: string;
+  headBranch: string;
+  baseBranch: string;
+  headSha: string;
+  state: 'open';
+  draft: true;
+  merged: false;
+  markerPresent: true;
+}
+
+export interface GoalArtifactVerifier {
+  verifyFinalPullRequest(artifact: PersistedGoalReportedArtifact): Promise<VerifiedGoalPullRequest>;
 }
 
 export interface GoalProviderRuntimeResolver {

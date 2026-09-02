@@ -1,11 +1,9 @@
 import type { Knex } from 'knex';
 import {
   GOAL_ERROR_CODES,
-  GOAL_TERMINAL_REASONS,
   isTerminalGoalState,
   isValidGoalTransition,
   type GoalState,
-  type GoalTerminalReason,
 } from '@propr/shared';
 import type {
   CancelIntentInput,
@@ -17,34 +15,21 @@ import type {
 } from './goalTypes.js';
 import {
   GoalError,
-  boundedText,
   goalTransaction,
-  idempotencyKey,
   nowIso,
-  optionalReason,
   readIdempotentReplay,
   requireGoalRecord,
   runIdempotent,
   toGoal,
   validateFence,
 } from './goalRepositorySupport.js';
-
-interface ModelChangeOptions {
-  expectedVersion?: number;
-  reason?: string;
-  idempotencyKey?: string;
-}
-
-interface InternalTransitionInput {
-  toState: GoalState;
-  expectedVersion?: number;
-  leaseOwner?: string;
-  leaseEpoch?: number;
-  reason?: string;
-  terminalReason?: GoalTerminalReason;
-  idempotencyKey?: string;
-  idempotencyOperation?: string;
-}
+import { normalizeCancellationIntent } from './goalCancellationIntent.js';
+import {
+  normalizeModelChange,
+  normalizeTransition,
+  type InternalTransitionInput,
+  type ModelChangeOptions,
+} from './goalMutationValidation.js';
 
 interface TransitionPolicy {
   controllerAuthoritative: boolean;
@@ -89,14 +74,52 @@ export class GoalMutationRepository {
   }
 
   async requestCancel(goalId: string, input: CancelIntentInput = {}): Promise<Goal> {
-    return this.transitionOperatorIntent(goalId, {
-      toState: 'cancelled',
-      expectedVersion: input.expectedVersion,
-      reason: input.reason,
-      terminalReason: input.terminalReason ?? 'user_cancelled',
-      idempotencyKey: input.idempotencyKey,
-      idempotencyOperation: `cancel:${goalId}`,
-    }, CANCEL_SOURCE_STATES);
+    const normalized = normalizeCancellationIntent(input);
+    const initial = await requireGoalRecord(this.db, goalId);
+    const effect = (trx: Knex.Transaction) => this.persistCancellationIntent(
+      trx, goalId, normalized
+    );
+    if (normalized.idempotencyKey === undefined) return goalTransaction(this.db, effect);
+    return runIdempotent({
+      db: this.db,
+      ownerUserId: initial.owner_user_id,
+      operation: `cancel:${goalId}`,
+      key: normalized.idempotencyKey,
+      request: {
+        expectedVersion: normalized.expectedVersion ?? null,
+        reason: normalized.reason ?? null,
+        terminalReason: normalized.terminalReason,
+      },
+      goalId,
+      effect,
+    });
+  }
+
+  private async persistCancellationIntent(
+    trx: Knex.Transaction,
+    goalId: string,
+    input: ReturnType<typeof normalizeCancellationIntent>
+  ): Promise<Goal> {
+    const goal = await requireGoalRecord(trx, goalId);
+    if (!CANCEL_SOURCE_STATES.includes(goal.state)) {
+      throw new GoalError(GOAL_ERROR_CODES.terminalState, 'Terminal goals cannot be cancelled', 409);
+    }
+    if (input.expectedVersion !== undefined && input.expectedVersion !== goal.version) {
+      throw new GoalError(
+        GOAL_ERROR_CODES.versionConflict,
+        `Goal version conflict: expected ${input.expectedVersion}, found ${goal.version}`,
+        409
+      );
+    }
+    const existing = await trx('goal_cancellation_intents').where({ goal_id: goalId }).first();
+    if (!existing) await trx('goal_cancellation_intents').insert({
+      goal_id: goalId,
+      reason: input.reason ?? null,
+      terminal_reason: input.terminalReason,
+      requested_at: nowIso(),
+      acknowledged_at: null,
+    });
+    return toGoal(goal);
   }
 
   private transitionOperatorIntent(
@@ -369,45 +392,4 @@ export class GoalMutationRepository {
     }
     return toGoal(await requireGoalRecord(trx, goal.goal_id));
   }
-}
-
-function normalizeModelChange(requestedModel: string, options: ModelChangeOptions) {
-  const model = boundedText(requestedModel, 'requestedModel') as string;
-  const normalized: ModelChangeOptions = {
-    expectedVersion: validateVersion(options.expectedVersion),
-    reason: optionalReason(options.reason),
-    idempotencyKey: options.idempotencyKey === undefined ? undefined : idempotencyKey(options.idempotencyKey),
-  };
-  return {
-    model,
-    normalized,
-    request: {
-      requestedModel: model,
-      expectedVersion: normalized.expectedVersion ?? null,
-      reason: normalized.reason ?? null,
-    },
-  };
-}
-
-function normalizeTransition(input: InternalTransitionInput): InternalTransitionInput {
-  if (input.terminalReason !== undefined && !GOAL_TERMINAL_REASONS.includes(input.terminalReason)) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, 'terminalReason is invalid', 400);
-  }
-  return {
-    ...input,
-    expectedVersion: validateVersion(input.expectedVersion),
-    reason: optionalReason(input.reason),
-    idempotencyKey: input.idempotencyKey === undefined ? undefined : idempotencyKey(input.idempotencyKey),
-    idempotencyOperation: input.idempotencyOperation === undefined
-      ? undefined
-      : boundedText(input.idempotencyOperation, 'idempotencyOperation') as string,
-    leaseOwner: input.leaseOwner === undefined ? undefined : boundedText(input.leaseOwner, 'leaseOwner') as string,
-  };
-}
-
-function validateVersion(value: number | undefined): number | undefined {
-  if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, 'expectedVersion must be a positive safe integer', 400);
-  }
-  return value;
 }

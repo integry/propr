@@ -136,7 +136,8 @@ test('real pre-goal Knex chain passes the migration gate, reopen, and rollback',
     await applyDatabaseMigrations(database);
     const afterRestart = (await new GoalLifecycleService(database).getDetail(goal.goalId)).summary;
     assert.deepEqual(afterRestart, beforeRestart);
-    assert.equal(afterRestart.nodeCount, 1);
+    assert.equal('nodeCount' in afterRestart, false);
+    assert.equal(afterRestart.nativePlan, null);
     assert.equal(afterRestart.latestSequence, 1);
 
     await database.migrate.rollback();

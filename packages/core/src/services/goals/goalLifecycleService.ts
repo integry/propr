@@ -17,9 +17,9 @@ import {
   type GoalTerminalReason,
 } from '@propr/shared';
 import { GoalRepository } from './goalRepository.js';
+import { GoalRuntimeControlRepository } from './goalRuntimeControlRepository.js';
 import type {
   Goal,
-  GoalNode,
   GoalMessage,
   GoalActiveTimeStats,
 } from './goalTypes.js';
@@ -37,8 +37,6 @@ export interface ControllerGoalMutationOptions extends GoalMutationOptions {
 
 export interface GoalDetail {
   goal: Goal;
-  nodes: GoalNode[];
-  dependencies: Array<{ nodeId: string; dependsOnNodeId: string }>;
   messages: GoalMessage[];
   summary: GoalSummaryView;
   stats: GoalActiveTimeStats;
@@ -46,12 +44,14 @@ export interface GoalDetail {
 
 export class GoalLifecycleService {
   readonly repository: GoalRepository;
+  private readonly controls: GoalRuntimeControlRepository;
 
   constructor(dbOrRepository: Knex | GoalRepository) {
     this.repository =
       dbOrRepository instanceof GoalRepository
         ? dbOrRepository
         : new GoalRepository(dbOrRepository);
+    this.controls = new GoalRuntimeControlRepository(this.repository.database);
   }
 
   async pause(goalId: string, options: GoalMutationOptions = {}): Promise<Goal> {
@@ -103,21 +103,18 @@ export class GoalLifecycleService {
 
   async getDetail(goalId: string): Promise<GoalDetail> {
     const goal = await this.repository.requireGoal(goalId);
-    const [nodes, dependencies, messages, latestSequence, stats] =
+    const [messages, latestSequence, stats, projection] =
       await Promise.all([
-        this.repository.getNodes(goalId),
-        this.repository.getDependencies(goalId),
         this.repository.getMessages(goalId),
         this.repository.getLatestSequence(goalId),
         this.repository.getActiveTimeStats(goalId),
+        this.controls.getProjection(goalId),
       ]);
 
     return {
       goal,
-      nodes,
-      dependencies,
       messages,
-      summary: buildSummary(goal, nodes, latestSequence),
+      summary: buildSummary(goal, latestSequence, projection),
       stats,
     };
   }
@@ -125,12 +122,11 @@ export class GoalLifecycleService {
 
 export function buildSummary(
   goal: Goal,
-  nodes: GoalNode[],
-  latestSequence: number
+  latestSequence: number,
+  projection: Awaited<ReturnType<GoalRuntimeControlRepository['getProjection']>> = {
+    plan: null, todos: null, status: null, nativeSequence: 0, updatedAt: null,
+  }
 ): GoalSummaryView {
-  const activeNodeCount = nodes.filter(
-    (node) => node.status === 'in_progress'
-  ).length;
   return {
     goalId: goal.goalId,
     state: goal.state,
@@ -145,8 +141,9 @@ export function buildSummary(
     ultrafixGoal: goal.ultrafixGoal,
     ultrafixMaxCycles: goal.ultrafixMaxCycles,
     version: goal.version,
-    nodeCount: nodes.length,
-    activeNodeCount,
+    nativePlan: projection.plan as GoalSummaryView['nativePlan'],
+    nativeTodos: projection.todos as GoalSummaryView['nativeTodos'],
+    nativeStatus: projection.status as GoalSummaryView['nativeStatus'],
     latestSequence,
     createdAt: goal.createdAt,
     updatedAt: goal.updatedAt,

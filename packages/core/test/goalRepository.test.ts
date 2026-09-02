@@ -3,6 +3,7 @@ import { after, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import type { BetterSqliteConnection } from '../src/db/connection.js';
 import { down, up } from '../src/db/migrations/20260831000000_create_goal_control_plane.js';
+import { up as createNativeExecutions } from '../src/db/migrations/20260902000000_add_goal_native_executions.js';
 import { GoalRepository, GoalError } from '../src/services/goals/goalRepository.js';
 import { GoalLifecycleService } from '../src/services/goals/goalLifecycleService.js';
 import { GoalLeaseRepository } from '../src/services/goals/goalLeaseRepository.js';
@@ -49,6 +50,7 @@ beforeEach(async () => {
   if (database) await database.destroy();
   database = createDatabase();
   await up(database);
+  await createNativeExecutions(database);
   repo = new GoalRepository(database);
 });
 
@@ -388,13 +390,17 @@ describe('GoalRepository', () => {
     assert.equal(completed.terminalReason, 'objective_met');
   });
 
-  test('requestCancel defaults its optional terminal reason', async () => {
+  test('requestCancel durably records nonterminal cancellation intent', async () => {
     const goal = await seedGoal();
 
-    const cancelled = await repo.requestCancel(goal.goalId);
+    const pending = await repo.requestCancel(goal.goalId);
+    const intent = await database('goal_cancellation_intents')
+      .where({ goal_id: goal.goalId }).first();
 
-    assert.equal(cancelled.state, 'cancelled');
-    assert.equal(cancelled.terminalReason, 'user_cancelled');
+    assert.equal(pending.state, 'queued');
+    assert.equal(pending.terminalReason, null);
+    assert.equal(intent.terminal_reason, 'user_cancelled');
+    assert.equal(intent.acknowledged_at, null);
   });
 
   test('enforces optimistic version preconditions', async () => {
@@ -584,7 +590,7 @@ describe('GoalRepository', () => {
       );
     });
 
-    test('a leased cancellation fences every controller mutation while exact release still works', async () => {
+    test('a terminal controller transition fences every mutation while exact release still works', async () => {
       const goal = await seedGoal();
       const fence = await claimFence(goal.goalId, 'terminal-controller');
       const firstNode = await repo.addNode(goal.goalId, {
@@ -610,8 +616,8 @@ describe('GoalRepository', () => {
       });
       await repo.markMessageDelivered(goal.goalId, delivered.messageId, fence);
       await repo.requestModelChange(goal.goalId, 'claude-sonnet-5');
-      const cancelled = await repo.requestCancel(goal.goalId, {
-        terminalReason: 'user_cancelled',
+      const cancelled = await repo.transition(goal.goalId, {
+        toState: 'cancelled', terminalReason: 'user_cancelled', ...fence,
       });
       const before = {
         goal: cancelled,
@@ -845,8 +851,9 @@ describe('GoalRepository', () => {
       ...fence,
     });
     const detail = await service.getDetail(goal.goalId);
-    assert.equal(detail.summary.nodeCount, 1);
-    assert.equal(detail.summary.activeNodeCount, 1);
+    assert.equal('nodeCount' in detail.summary, false);
+    assert.equal('activeNodeCount' in detail.summary, false);
+    assert.equal(detail.summary.nativePlan, null);
     assert.equal(detail.summary.latestSequence, 1);
     assert.equal(detail.summary.objective, 'Ship the control plane');
   });

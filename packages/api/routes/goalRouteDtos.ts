@@ -3,7 +3,6 @@ import type {
   GoalDetail,
   GoalEvent,
   GoalMessage,
-  GoalNode,
 } from '@propr/core';
 import { redactSecrets } from '@propr/core';
 import type {
@@ -12,7 +11,7 @@ import type {
   PublicGoalDto,
   PublicGoalEventDto,
   PublicGoalMessageDto,
-  PublicGoalNodeDto,
+  GoalSummaryView,
 } from '@propr/shared';
 import { redactPublicPathTokens } from './goalRoutePublicStringSanitizer.js';
 
@@ -31,7 +30,9 @@ const PUBLIC_EVENT_PAYLOAD_LIMITS = {
 const PUBLIC_EVENT_KEY_NAMES = new Set([
   'auditTrail',
   'count',
+  'completed',
   'current',
+  'description',
   'eventLabel',
   'eventName',
   'repositoryOwner',
@@ -41,6 +42,7 @@ const PUBLIC_EVENT_KEY_NAMES = new Set([
   'prNumber',
   'filePath',
   'index',
+  'id',
   'label',
   'line',
   'message',
@@ -59,6 +61,9 @@ const PUBLIC_EVENT_KEY_NAMES = new Set([
   'socketDescription',
   'source',
   'status',
+  'steps',
+  'tasks',
+  'title',
   'target',
   'total',
   'value',
@@ -300,22 +305,6 @@ export function toPublicGoal(goal: Goal): PublicGoalDto {
   };
 }
 
-export function toPublicGoalNode(node: GoalNode): PublicGoalNodeDto {
-  return {
-    nodeId: node.nodeId,
-    goalId: node.goalId,
-    parentNodeId: node.parentNodeId,
-    kind: node.kind,
-    externalRef: node.externalRef,
-    externalKind: node.externalKind,
-    title: node.title,
-    status: node.status,
-    orderIndex: node.orderIndex,
-    createdAt: node.createdAt,
-    updatedAt: node.updatedAt,
-  };
-}
-
 export function toPublicGoalMessage(message: GoalMessage): PublicGoalMessageDto {
   return {
     messageId: message.messageId,
@@ -344,13 +333,17 @@ export function toPublicGoalEvent(event: GoalEvent): PublicGoalEventDto {
 export function toPublicGoalDetail(detail: GoalDetail): PublicGoalDetailDto {
   return {
     goal: toPublicGoal(detail.goal),
-    nodes: detail.nodes.map(toPublicGoalNode),
-    dependencies: detail.dependencies.map((dependency) => ({
-      nodeId: dependency.nodeId,
-      dependsOnNodeId: dependency.dependsOnNodeId,
-    })),
     messages: detail.messages.map(toPublicGoalMessage),
-    summary: detail.summary,
+    summary: toPublicGoalSummary(detail.summary),
     stats: detail.stats,
+  };
+}
+
+export function toPublicGoalSummary(summary: GoalSummaryView): GoalSummaryView {
+  return {
+    ...summary,
+    nativePlan: toPublicGoalEventPayload(summary.nativePlan),
+    nativeTodos: toPublicGoalEventPayload(summary.nativeTodos),
+    nativeStatus: toPublicGoalEventPayload(summary.nativeStatus),
   };
 }

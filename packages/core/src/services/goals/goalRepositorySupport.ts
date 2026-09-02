@@ -134,9 +134,10 @@ export function toMessage(row: GoalMessageRecord): GoalMessage {
 }
 
 export interface GoalSummaryRecord extends GoalRecord {
-  node_count: number;
-  active_node_count: number;
   latest_sequence: number;
+  native_plan: string | null;
+  native_todos: string | null;
+  native_status: string | null;
 }
 
 export function toSummary(row: GoalSummaryRecord): GoalSummaryView {
@@ -148,10 +149,15 @@ export function toSummary(row: GoalSummaryRecord): GoalSummaryView {
     maxActiveTasks: goal.maxActiveTasks, mergePolicy: goal.mergePolicy,
     ultrafixEnabled: goal.ultrafixEnabled, ultrafixGoal: goal.ultrafixGoal,
     ultrafixMaxCycles: goal.ultrafixMaxCycles, version: goal.version,
-    nodeCount: Number(row.node_count), activeNodeCount: Number(row.active_node_count),
+    nativePlan: parseProjection(row.native_plan), nativeTodos: parseProjection(row.native_todos),
+    nativeStatus: parseProjection(row.native_status),
     latestSequence: Number(row.latest_sequence), createdAt: goal.createdAt,
     updatedAt: goal.updatedAt,
   };
+}
+
+function parseProjection(value: string | null): GoalSummaryView['nativePlan'] {
+  return value === null ? null : JSON.parse(value) as GoalSummaryView['nativePlan'];
 }
 
 export async function requireGoalRecord(

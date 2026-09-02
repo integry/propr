@@ -27,7 +27,9 @@ import {
     loadUltrafixPauseSeconds,
     loadPrReviewModel,
     AgentRegistry,
-    runMigrations
+    runMigrations,
+    createProductionGoalSupervisor,
+    db
 } from '@propr/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { logger } from '@propr/core';
@@ -172,6 +174,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     await runMigrations();
 
     await loadAllConfigs();
+    await AgentRegistry.getInstance().refresh();
+    const goalSupervisor = createProductionGoalSupervisor(db);
+    await goalSupervisor.start();
 
     // Wire up ultrafix dependencies so packages/core can call into app-level services
     // without cross-package imports.
@@ -410,6 +415,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
+        await goalSupervisor.stop();
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the

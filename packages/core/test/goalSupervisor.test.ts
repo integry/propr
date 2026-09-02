@@ -6,6 +6,7 @@ import { up as createGoals } from '../src/db/migrations/20260831000000_create_go
 import { up as createExecutions } from '../src/db/migrations/20260902000000_add_goal_native_executions.js';
 import { GoalRepository } from '../src/services/goals/goalRepository.js';
 import { GoalExecutionRepository } from '../src/services/goals/goalExecutionRepository.js';
+import { GoalArtifactRepository } from '../src/services/goals/goalArtifactRepository.js';
 import { GoalRuntimeMap, GoalSupervisor } from '../src/services/goals/goalSupervisor.js';
 import type {
   GoalProviderRuntime,
@@ -50,6 +51,16 @@ async function createGoal(overrides: Partial<Parameters<GoalRepository['createGo
   });
 }
 
+async function reportFinal(request: GoalRuntimeRequest, draft = true): Promise<void> {
+  await request.callbacks.onArtifact({
+    artifactKey: 'final-pr', kind: 'epic_pr', repository: request.goal.repository,
+    externalRef: '2065', marker: `<!-- propr-goal:${request.goal.goalId} -->`,
+    headBranch: request.execution.workspace.headBranch,
+    baseBranch: request.execution.workspace.baseBranch,
+    headSha: 'verified-head', draft, state: 'open', finalEpicPullRequest: true,
+  });
+}
+
 function runtime(overrides: Partial<GoalProviderRuntime> = {}): GoalProviderRuntime {
   return {
     async start(request): Promise<GoalRuntimeResult> {
@@ -59,13 +70,16 @@ function runtime(overrides: Partial<GoalProviderRuntime> = {}): GoalProviderRunt
         runtimeId: 'container-1',
         worktreeId: request.execution.workspace.worktreeId,
       });
+      await reportFinal(request);
       return { outcome: 'completed' };
     },
-    resume: async () => ({ outcome: 'completed' }),
+    resume: async request => { await reportFinal(request); return { outcome: 'completed' }; },
     steer: async () => ({ acknowledged: true }),
     pause: async () => {},
     cancel: async () => {},
     changeModel: async (_execution, model) => ({ effectiveModel: model }),
+    settle: async () => {},
+    terminate: async () => {},
     ...overrides,
   };
 }
@@ -80,6 +94,21 @@ function supervisor(provider: GoalProviderRuntime, controllerId = 'controller-a'
       controlPollMs: 5,
       scanIntervalMs: 50,
       resolveBaseBranch: async () => '2003-epic-goal-control-plane',
+      artifactVerifier: {
+        verifyFinalPullRequest: async artifact => {
+          if (artifact.draft !== true || artifact.state !== 'open') {
+            throw new Error('GitHub reports a non-draft or non-open pull request');
+          }
+          return {
+            repository: artifact.repository,
+            externalRef: artifact.externalRef,
+            headBranch: artifact.headBranch!,
+            baseBranch: artifact.baseBranch!,
+            headSha: artifact.headSha ?? 'verified-head',
+            state: 'open', draft: true, merged: false, markerPresent: true,
+          };
+        },
+      },
     }
   );
 }
@@ -125,6 +154,7 @@ describe('GoalSupervisor', () => {
           nativeSequence: 1,
           checkpoint: 'checkpoint-1',
         });
+        await reportFinal(request);
         return { outcome: 'completed' };
       },
     });
@@ -148,6 +178,7 @@ describe('GoalSupervisor', () => {
     assert.deepEqual(events.events.map(event => event.eventType), [
       'provider.session.persisted',
       'native.plan',
+      'native.final_epic_pr',
     ]);
   });
 
@@ -171,6 +202,7 @@ describe('GoalSupervisor', () => {
     const replacement = runtime({
       resume: async request => {
         resumed = request;
+        await reportFinal(request);
         return { outcome: 'completed' };
       },
     });
@@ -201,6 +233,7 @@ describe('GoalSupervisor', () => {
           worktreeId: request.execution.workspace.worktreeId,
         });
         await new Promise(resolve => setTimeout(resolve, 40));
+        await reportFinal(request);
         return { outcome: 'completed' };
       },
       steer: async request => {
@@ -234,21 +267,8 @@ describe('GoalSupervisor', () => {
           providerThreadId: 'unsafe-thread',
           worktreeId: request.execution.workspace.worktreeId,
         });
-        return {
-          outcome: 'completed',
-          finalArtifact: {
-            artifactKey: 'final-pr',
-            kind: 'epic_pr',
-            repository: goal.repository,
-            externalRef: '2011',
-            marker: '<!-- propr-goal:unsafe -->',
-            headBranch: request.execution.workspace.headBranch,
-            baseBranch: request.execution.workspace.baseBranch,
-            draft: false,
-            state: 'open',
-            finalEpicPullRequest: true,
-          },
-        };
+        await reportFinal(request, false);
+        return { outcome: 'completed' };
       },
     });
 
@@ -256,8 +276,8 @@ describe('GoalSupervisor', () => {
     const failed = await repository.requireGoal(goal.goalId);
     assert.equal(failed.state, 'failed');
     assert.equal(failed.terminalReason, 'unrecoverable_error');
-    const associated = await new GoalExecutionRepository(database).getFinalEpicPullRequest(goal.goalId);
-    assert.equal(associated?.externalRef, '2011');
+    const associated = await new GoalArtifactRepository(database).getFinal(goal.goalId);
+    assert.equal(associated?.externalRef, '2065');
     assert.equal(associated?.finalEpicPullRequest, true);
   });
 
@@ -298,6 +318,7 @@ describe('GoalSupervisor', () => {
     const resumedProvider = runtime({
       resume: async request => {
         resumedThread = request.execution.providerThreadId;
+        await reportFinal(request);
         return { outcome: 'completed' };
       },
     });
@@ -341,6 +362,7 @@ describe('GoalSupervisor', () => {
           providerThreadId: 'scan-thread',
           worktreeId: request.execution.workspace.worktreeId,
         });
+        await reportFinal(request);
         return { outcome: 'completed' };
       },
     });
@@ -386,6 +408,7 @@ describe('GoalSupervisor', () => {
       resume: async request => {
         await request.authority.assertCurrent();
         resumedThread = request.execution.providerThreadId;
+        await reportFinal(request);
         return { outcome: 'completed' };
       },
     });

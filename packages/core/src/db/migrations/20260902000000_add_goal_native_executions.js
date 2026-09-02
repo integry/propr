@@ -15,7 +15,7 @@ function isoNow(knex) {
 
 const EXECUTION_STATES = [
   'allocated', 'starting', 'active', 'pausing', 'paused', 'interrupted',
-  'completing', 'completed', 'failed', 'cancelled',
+  'cancelling', 'completing', 'completed', 'failed', 'cancelled',
 ];
 
 const ARTIFACT_KINDS = [
@@ -35,6 +35,7 @@ export async function up(knex) {
     table.text('provider_thread_id').nullable();
     table.text('runtime_id').nullable();
     table.text('worktree_id').notNullable();
+    table.text('worktree_path').notNullable();
     table.text('repository').notNullable();
     table.text('base_branch').notNullable();
     table.text('head_branch').notNullable();
@@ -65,7 +66,7 @@ export async function up(knex) {
       'goal_runtime_executions_policy_check'
     );
     table.check(
-      "length(execution_id) BETWEEN 1 AND 255 AND length(agent) BETWEEN 1 AND 255 AND length(effective_model) BETWEEN 1 AND 255 AND length(worktree_id) BETWEEN 1 AND 255 AND length(repository) BETWEEN 1 AND 255 AND length(base_branch) BETWEEN 1 AND 255 AND length(head_branch) BETWEEN 1 AND 255 AND (provider_session_id IS NULL OR length(provider_session_id) BETWEEN 1 AND 255) AND (provider_thread_id IS NULL OR length(provider_thread_id) BETWEEN 1 AND 255) AND (runtime_id IS NULL OR length(runtime_id) BETWEEN 1 AND 255)",
+      "length(execution_id) BETWEEN 1 AND 255 AND length(agent) BETWEEN 1 AND 255 AND length(effective_model) BETWEEN 1 AND 255 AND length(worktree_id) BETWEEN 1 AND 255 AND length(worktree_path) BETWEEN 1 AND 2048 AND length(repository) BETWEEN 1 AND 255 AND length(base_branch) BETWEEN 1 AND 255 AND length(head_branch) BETWEEN 1 AND 255 AND (provider_session_id IS NULL OR length(provider_session_id) BETWEEN 1 AND 255) AND (provider_thread_id IS NULL OR length(provider_thread_id) BETWEEN 1 AND 255) AND (runtime_id IS NULL OR length(runtime_id) BETWEEN 1 AND 255)",
       {},
       'goal_runtime_executions_text_check'
     );
@@ -86,6 +87,8 @@ export async function up(knex) {
     table.text('state').nullable();
     table.boolean('draft').nullable();
     table.text('marker').notNullable();
+    table.text('verified_at').nullable();
+    table.text('verified_head_sha').nullable();
     // NULL for ordinary artifacts and the constant "final" for the one final
     // epic PR. SQLite uniqueness permits multiple NULLs but only one final row.
     table.text('final_slot').nullable();
@@ -112,9 +115,45 @@ export async function up(knex) {
       'goal_reported_artifacts_text_check'
     );
   });
+
+  await knex.schema.createTable('goal_cancellation_intents', (table) => {
+    table.text('goal_id').notNullable().primary();
+    table.text('reason').nullable();
+    table.text('terminal_reason').notNullable().defaultTo('user_cancelled');
+    table.text('requested_at').notNullable().defaultTo(isoNow(knex));
+    table.text('acknowledged_at').nullable();
+    table.foreign('goal_id').references('goal_id').inTable('goals')
+      .onUpdate('RESTRICT').onDelete('CASCADE');
+    table.check(
+      "terminal_reason = 'user_cancelled' AND (reason IS NULL OR length(reason) <= 1000)",
+      {},
+      'goal_cancellation_intents_bounds_check'
+    );
+  });
+
+  await knex.schema.createTable('goal_native_projections', (table) => {
+    table.text('goal_id').notNullable().primary();
+    table.text('execution_id').notNullable();
+    table.text('plan_json').nullable();
+    table.text('todos_json').nullable();
+    table.text('status_json').nullable();
+    table.integer('native_sequence').notNullable().defaultTo(0);
+    table.text('updated_at').notNullable().defaultTo(isoNow(knex));
+    table.foreign('goal_id').references('goal_id').inTable('goals')
+      .onUpdate('RESTRICT').onDelete('CASCADE');
+    table.foreign('execution_id').references('execution_id').inTable('goal_runtime_executions')
+      .onUpdate('RESTRICT').onDelete('CASCADE');
+    table.check(
+      "(plan_json IS NULL OR json_valid(plan_json)) AND (todos_json IS NULL OR json_valid(todos_json)) AND (status_json IS NULL OR json_valid(status_json)) AND native_sequence >= 0",
+      {},
+      'goal_native_projections_json_check'
+    );
+  });
 }
 
 export async function down(knex) {
+  await knex.schema.dropTableIfExists('goal_native_projections');
+  await knex.schema.dropTableIfExists('goal_cancellation_intents');
   await knex.schema.dropTableIfExists('goal_reported_artifacts');
   await knex.schema.dropTableIfExists('goal_runtime_executions');
 }

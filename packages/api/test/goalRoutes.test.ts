@@ -5,6 +5,7 @@ import knex, { type Knex } from 'knex';
 import type { AgentConfig, RepoToMonitor } from '@propr/core';
 import { GoalRepository, closeConnection } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260831000000_create_goal_control_plane.js';
+import { up as createNativeExecutions } from '../../core/src/db/migrations/20260902000000_add_goal_native_executions.js';
 import { resetConfiguredDemoMode, configureDemoMode } from '../demoMode.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 
@@ -122,6 +123,7 @@ beforeEach(async () => {
   if (database) await database.destroy();
   database = createDatabase();
   await up(database);
+  await createNativeExecutions(database);
   resetConfiguredDemoMode();
   configureDemoMode(false);
 });
@@ -187,7 +189,7 @@ describe('goal routes', () => {
     assert.equal((invalidCycles.body as { code: string }).code, 'goal_validation_error');
     const created = await createGoalViaApi({
       maxActiveTasks: 4,
-      mergePolicy: 'auto_squash',
+      mergePolicy: 'manual',
       ultrafixEnabled: true,
       ultrafixGoal: 8,
       ultrafixMaxCycles: 4,
@@ -195,7 +197,7 @@ describe('goal routes', () => {
     const goal = (created.body as { goal: { ultrafixGoal: number; ultrafixMaxCycles: number; mergePolicy: string } }).goal;
     assert.equal(goal.ultrafixGoal, 8);
     assert.equal(goal.ultrafixMaxCycles, 4);
-    assert.equal(goal.mergePolicy, 'auto_squash');
+    assert.equal(goal.mergePolicy, 'manual');
   });
 
   test('requires authentication', async () => {
@@ -428,7 +430,12 @@ describe('goal routes', () => {
   test('rejects model changes once a goal is terminal', async () => {
     const created = await createGoalViaApi();
     const goalId = (created.body as { goal: { goalId: string } }).goal.goalId;
-    await new GoalRepository(database).requestCancel(goalId, { terminalReason: 'user_cancelled' });
+    const goalRepository = new GoalRepository(database);
+    const lease = await goalRepository.claimLease(goalId, 'terminal-test', 60_000);
+    await goalRepository.transition(goalId, {
+      toState: 'cancelled', terminalReason: 'user_cancelled',
+      leaseOwner: 'terminal-test', leaseEpoch: lease.epoch,
+    });
     const response = makeResponse();
     await makeRoutes().requestModelChange(
       makeRequest({ params: { goalId }, body: { model: 'claude-sonnet-5' }, headers: { 'Idempotency-Key': 'model-terminal' } }),

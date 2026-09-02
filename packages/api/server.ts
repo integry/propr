@@ -52,7 +52,10 @@ import {
   closeUltrafixStateRedis,
   getActiveTasksForPR,
   AGENT_RUNTIME_BUILD_QUEUE_NAME,
-  runMigrations
+  runMigrations,
+  createProductionGoalSupervisor,
+  getAgentRegistry,
+  type GoalSupervisor
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -191,6 +194,7 @@ let configReloadSubscription: ConfigReloadSubscription | undefined;
 let notificationProjection: NotificationProjectionService | undefined;
 let webPushDispatcher: WebPushDispatcher | undefined;
 let webPushDispatcherConfigured = false;
+let goalSupervisor: GoalSupervisor | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -275,7 +279,10 @@ function setupRoutes(): void {
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
   const notificationRoutes = createNotificationRoutes({ webPushDispatcherConfigured });
-  const goalRoutes = createGoalRoutes({ db });
+  const goalRoutes = createGoalRoutes({
+    db,
+    goalWake: goalId => goalSupervisor?.wake(goalId),
+  });
   const adminRoutes = createAdminRoutes();
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
   const agentVersionRoutes = createAgentVersionRoutes();
@@ -410,6 +417,7 @@ async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
     await runMigrations();
+    if (!demoMode) goalSupervisor = createProductionGoalSupervisor(db);
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();
     await initRedis();
@@ -429,6 +437,7 @@ async function start(): Promise<void> {
       // Subscribe first, then enqueue the initial load through the same serial
       // chain so no settings update can race with the startup snapshot.
       await configReloadSubscription.reload();
+      await getAgentRegistry().refresh();
       await initializePushSubscriptionMaintenance();
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
@@ -442,6 +451,7 @@ async function start(): Promise<void> {
       console.log('Demo mode: skipped startup config initialization; API config reads use the curated database directly');
     }
     setupRoutes();
+    await goalSupervisor?.start();
     if (!demoMode) {
       const socketService = initSocketService(httpServer, validateCorsOrigin, {
         engineMiddleware: socketAuthMiddleware.engineMiddleware,
@@ -485,6 +495,7 @@ async function start(): Promise<void> {
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
       const shutdownTasks: ShutdownTask[] = [
+        { name: 'goal supervisor', close: () => goalSupervisor?.stop() ?? Promise.resolve() },
         { name: 'task queue', close: () => taskQueue.close() },
         { name: 'agent runtime build queue', close: () => runtimeBuildQueue.close() },
         { name: 'agent login sessions', close: () => agentLoginSessionManager.close() },

@@ -114,10 +114,10 @@ export class GoalEventRepository {
       goalId,
       effect: async (trx) => {
         const currentGoal = await requireGoalRecord(trx, goalId);
-        if (isTerminalGoalState(currentGoal.state)) {
+        if (isTerminalGoalState(currentGoal.state) || currentGoal.state === 'completing') {
           throw new GoalError(
             GOAL_ERROR_CODES.terminalState,
-            'Terminal goals cannot accept new messages',
+            'Closing or terminal goals cannot accept new messages',
             409
           );
         }

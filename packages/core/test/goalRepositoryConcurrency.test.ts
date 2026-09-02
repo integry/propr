@@ -6,8 +6,10 @@ import { tmpdir } from 'node:os';
 import knex, { type Knex } from 'knex';
 import type { BetterSqliteConnection } from '../src/db/connection.js';
 import { up } from '../src/db/migrations/20260831000000_create_goal_control_plane.js';
+import { up as createNativeExecutions } from '../src/db/migrations/20260902000000_add_goal_native_executions.js';
 import { GoalError, GoalRepository } from '../src/services/goals/goalRepository.js';
 import { GoalLifecycleService } from '../src/services/goals/goalLifecycleService.js';
+import { GoalRuntimeControlRepository } from '../src/services/goals/goalRuntimeControlRepository.js';
 
 let directory: string;
 let firstDb: Knex;
@@ -48,6 +50,7 @@ before(async () => {
   const filename = join(directory, 'goals.sqlite');
   firstDb = openDatabase(filename);
   await up(firstDb);
+  await createNativeExecutions(firstDb);
   secondDb = openDatabase(filename);
   await secondDb.raw('SELECT 1');
   first = new GoalRepository(firstDb);
@@ -353,7 +356,7 @@ describe('GoalRepository WAL contention', () => {
     ]);
   });
 
-  test('cancel fences model application, permits release, and prevents terminal reclaim', async () => {
+  test('cancellation intent survives another connection before provider acknowledgement', async () => {
     const goal = await createGoal('cancel-model-race-goal');
     await first.requestModelChange(goal.goalId, 'model-after-cancel', {
       idempotencyKey: 'cancel-model-request',
@@ -361,41 +364,25 @@ describe('GoalRepository WAL contention', () => {
     const lease = await first.claimLease(goal.goalId, 'terminal-controller', 60_000);
     const fence = { leaseOwner: 'terminal-controller', leaseEpoch: lease.epoch };
     const lifecycle = new GoalLifecycleService(second);
-    const [cancelOutcome, applyOutcome] = await Promise.allSettled([
-      lifecycle.cancel(goal.goalId, { idempotencyKey: 'cancel-wins-model-race' }),
-      first.applyModelChange(goal.goalId, fence),
-    ]);
-    if (cancelOutcome.status !== 'fulfilled') throw cancelOutcome.reason;
-    const terminal = cancelOutcome.value;
-    const immediatelyAfterRace = await first.requireGoal(goal.goalId);
-    assert.equal(immediatelyAfterRace.version, terminal.version);
-    assert.equal(immediatelyAfterRace.effectiveModel, terminal.effectiveModel);
-    if (applyOutcome.status === 'rejected') {
-      assert.equal((applyOutcome.reason as GoalError).code, 'goal_terminal_state');
-    }
-    const statsAtTerminal = await first.getActiveTimeStats(goal.goalId);
-
-    await assert.rejects(
-      first.applyModelChange(goal.goalId, fence),
-      (error: GoalError) => error.code === 'goal_terminal_state'
+    const pending = await lifecycle.cancel(goal.goalId, {
+      idempotencyKey: 'cancel-wins-model-race',
+    });
+    assert.equal(pending.state, 'queued');
+    assert.equal(
+      await new GoalRuntimeControlRepository(firstDb).hasPendingCancellation(goal.goalId),
+      true
     );
-    await assert.rejects(
-      second.claimLease(goal.goalId, 'terminal-reclaimer-before-release', 60_000),
-      (error: GoalError) => error.code === 'goal_terminal_state'
-    );
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    const applied = await first.applyModelChange(goal.goalId, fence);
+    assert.equal(applied.effectiveModel, 'model-after-cancel');
     await first.releaseLease(goal.goalId, fence.leaseOwner, fence.leaseEpoch);
-    await assert.rejects(
-      second.claimLease(goal.goalId, 'terminal-reclaimer-after-release', 60_000),
-      (error: GoalError) => error.code === 'goal_terminal_state'
-    );
-
     const reopened = await new GoalLifecycleService(second).getDetail(goal.goalId);
-    assert.equal(reopened.goal.state, 'cancelled');
-    assert.equal(reopened.goal.version, terminal.version);
+    assert.equal(reopened.goal.state, 'queued');
     assert.equal(reopened.goal.requestedModel, 'model-after-cancel');
-    assert.equal(reopened.goal.effectiveModel, terminal.effectiveModel);
-    assert.deepEqual(reopened.stats, statsAtTerminal);
+    assert.equal(reopened.goal.effectiveModel, 'model-after-cancel');
+    assert.equal(
+      await new GoalRuntimeControlRepository(secondDb).hasPendingCancellation(goal.goalId),
+      true
+    );
   });
 
   test('terminal elapsed and active time survive completion, release, and service reopen', async () => {

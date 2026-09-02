@@ -48,6 +48,7 @@ import {
   toPublicGoalDetail,
   toPublicGoalEvent,
   toPublicGoalMessage,
+  toPublicGoalSummary,
 } from './goalRouteDtos.js';
 
 interface GoalRoutesDeps {
@@ -252,7 +253,10 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
       const result = await (isDemoMode()
         ? repository.listGoals({ visibility: 'all-demo', ...listOptions })
         : repository.listGoals({ visibility: 'owner', ownerUserId: userId, ...listOptions }));
-      res.json(result);
+      res.json({
+        goals: result.goals.map(toPublicGoalSummary),
+        nextCursor: result.nextCursor,
+      });
     } catch (error) {
       sendGoalError(res, error);
     }
@@ -288,6 +292,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
           reason: boundedOptionalText(body.reason, 'reason', GOAL_REASON_MAX_LENGTH),
           idempotencyKey,
         });
+        await signalGoal(req.params.goalId);
         res.json({ goal: toPublicGoal(goal) });
       } catch (error) {
         sendGoalError(res, error);
@@ -339,6 +344,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
           idempotencyKey,
         }
       );
+      await signalGoal(req.params.goalId);
       res.json({ goal: toPublicGoal(updated) });
     } catch (error) {
       sendGoalError(res, error);
@@ -366,6 +372,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
         predefinedKind,
         idempotencyKey,
       });
+      await signalGoal(req.params.goalId);
       res.status(201).json({ message: toPublicGoalMessage(message) });
     } catch (error) {
       sendGoalError(res, error);

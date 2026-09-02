@@ -6,7 +6,6 @@ import {
   GOAL_LIST_DEFAULT_LIMIT,
   GOAL_LIST_MAX_LIMIT,
   GOAL_MAX_MAX_ACTIVE_TASKS,
-  GOAL_MERGE_POLICIES,
   GOAL_MIN_MAX_ACTIVE_TASKS,
   GOAL_OBJECTIVE_MAX_LENGTH,
   GOAL_SEARCH_MAX_LENGTH,
@@ -149,8 +148,9 @@ export class GoalReadRepository {
     const cursor = decodeCursor(query.cursor);
     let builder = this.db<GoalSummaryRecord>('goals')
       .select('goals.*')
-      .select(this.db.raw('(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id) AS node_count'))
-      .select(this.db.raw("(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id AND n.status = 'in_progress') AS active_node_count"))
+      .select(this.db.raw('(SELECT plan_json FROM goal_native_projections p WHERE p.goal_id = goals.goal_id) AS native_plan'))
+      .select(this.db.raw('(SELECT todos_json FROM goal_native_projections p WHERE p.goal_id = goals.goal_id) AS native_todos'))
+      .select(this.db.raw('(SELECT status_json FROM goal_native_projections p WHERE p.goal_id = goals.goal_id) AS native_status'))
       .select(this.db.raw('(SELECT COALESCE(MAX(sequence), 0) FROM goal_events e WHERE e.goal_id = goals.goal_id) AS latest_sequence'));
     if (ownerUserId !== null) builder = builder.where('owner_user_id', ownerUserId);
     if (repository) builder = builder.andWhere('repository', repository);
@@ -242,9 +242,12 @@ function normalizeCreateInput(input: CreateGoalInput): NormalizedCreateInput {
   }
   const { ultrafixEnabled, ultrafixGoal, ultrafixMaxCycles } = validateUltrafixInput(input);
   const mergePolicy: unknown = input.mergePolicy === undefined ? 'manual' : input.mergePolicy;
-  if (typeof mergePolicy !== 'string'
-    || !GOAL_MERGE_POLICIES.includes(mergePolicy as NonNullable<CreateGoalInput['mergePolicy']>)) {
-    throw new GoalError(GOAL_ERROR_CODES.validation, 'mergePolicy is invalid', 400);
+  if (mergePolicy !== 'manual') {
+    throw new GoalError(
+      GOAL_ERROR_CODES.validation,
+      'Native goals require manual approval; mergePolicy must be manual',
+      400
+    );
   }
   return {
     goalId: input.goalId === undefined ? undefined : boundedText(input.goalId, 'goalId') as string,

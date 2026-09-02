@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import { closeConnection, GoalRepository } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260831000000_create_goal_control_plane.js';
+import { up as createNativeExecutions } from '../../core/src/db/migrations/20260902000000_add_goal_native_executions.js';
 import { configureDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 
@@ -69,6 +70,7 @@ beforeEach(async () => {
   if (database) await database.destroy();
   database = createDatabase();
   await up(database);
+  await createNativeExecutions(database);
   resetConfiguredDemoMode();
   configureDemoMode(false);
 });
