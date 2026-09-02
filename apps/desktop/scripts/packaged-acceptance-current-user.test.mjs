@@ -4,6 +4,7 @@ import {
   classifyCurrentUserRequestShape,
   currentUserValidationPhaseSummary,
   currentUserValidationFailureCategory,
+  networkPermissionDecisionSummary,
   scopedCurrentUserRequestGeneration,
 } from './packaged-acceptance-current-user.mjs';
 
@@ -185,6 +186,67 @@ describe('packaged current-user acceptance correlation', () => {
 });
 
 describe('packaged current-user strict failure diagnostics', () => {
+  it('reports fixed bounded Local Network Access decision counts', () => {
+    const base = {
+      journey,
+      permissionCategory: 'loopback-network',
+      decision: 'check',
+      allowed: true,
+      activeBindingCurrent: true,
+      webContentsPresent: false,
+      webContentsEqualsMainWindow: false,
+      mainWindowPresent: true,
+      isMainFrame: true,
+      requestingUrlPresent: false,
+      requestingUrlTrusted: false,
+      rendererDocumentUrlTrusted: true,
+      requestingOriginAuthorityValid: true,
+      requestingOriginAuthorityEqual: true,
+    };
+    const summary = networkPermissionDecisionSummary({
+      journey,
+      records: [
+        base,
+        {
+          ...base,
+          permissionCategory: 'local-network-access',
+          decision: 'request',
+          allowed: false,
+          webContentsPresent: true,
+          webContentsEqualsMainWindow: true,
+          requestingUrlPresent: true,
+          requestingUrlTrusted: true,
+        },
+        ...Array.from({ length: 12 }, () => ({ ...base, journey: 'another-journey' })),
+      ],
+      invalidCount: 12,
+    });
+
+    assert.deepEqual(summary, {
+      schemaVersion: 1,
+      records: 2,
+      check: 1,
+      request: 1,
+      allowed: 1,
+      denied: 1,
+      localNetworkAccess: 1,
+      localNetwork: 0,
+      loopbackNetwork: 1,
+      activeBindingCurrent: 2,
+      webContentsPresent: 1,
+      webContentsEqualsMainWindow: 1,
+      mainWindowPresent: 2,
+      mainFrame: 2,
+      requestingUrlPresent: 1,
+      requestingUrlTrusted: 1,
+      rendererDocumentUrlTrusted: 2,
+      requestingOriginAuthorityValid: 2,
+      requestingOriginAuthorityEqual: 2,
+      invalid: 9,
+    });
+    assert.doesNotMatch(JSON.stringify(summary), /example\.test|propr_it_|Bearer|renderer\.html/);
+  });
+
   it('reports fixed bounded phase counts without retaining request secrets', () => {
     const summary = currentUserValidationPhaseSummary({
       journey,

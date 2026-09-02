@@ -1329,27 +1329,31 @@ export class DesktopCredentialService {
       return { requestHeaders: headers };
     }
 
-    // Electron's Local Network Access permission is requester-scoped rather
-    // than destination-scoped. While the trusted renderer has a current
-    // binding, keep every other canonical network destination behind the
-    // exact active origin even when the renderer omitted its REST marker.
-    if (activeIsCurrent && active && target && target.origin !== active.origin) {
-      reportCurrentUser(false, 'wrong-origin');
-      return { cancel: true };
+    // Electron's Local Network Access permission can remain cached after the
+    // renderer binding is discarded or revoked. Every renderer HTTP(S)/WS(S)
+    // request therefore needs a current binding and the exact active origin
+    // before even sanitized, unmarked traffic may leave the custom origin.
+    if (target) {
+      if (!active) {
+        reportCurrentUser(false, 'no-active-binding');
+        return { cancel: true };
+      }
+      if (!activeIsCurrent) {
+        reportCurrentUser(false, 'stale-generation');
+        return { cancel: true };
+      }
+      if (target.origin !== active.origin) {
+        reportCurrentUser(false, 'wrong-origin');
+        return { cancel: true };
+      }
     }
 
     if (!markedRestRequest) {
       reportCurrentUser(false, 'scope-missing');
       return { requestHeaders: headers };
     }
-    if (!active) {
-      reportCurrentUser(false, 'no-active-binding');
-      return { cancel: true };
-    }
-    if (!activeIsCurrent) {
-      reportCurrentUser(false, 'stale-generation');
-      return { cancel: true };
-    }
+    // `target` traffic was required to prove these immediately above.
+    if (!active || !activeIsCurrent) return { cancel: true };
     if (!target || !isApiRequest || target.origin !== active.origin) {
       reportCurrentUser(false, 'wrong-origin');
       return { cancel: true };

@@ -21,7 +21,7 @@ import {
 } from './credential-service';
 import { ProfileStore, type EncryptionProvider, type StoredCredential } from './profile-store';
 
-export const NATIVE_DURABILITY_EXPECTED_TESTS = 71 as const;
+export const NATIVE_DURABILITY_EXPECTED_TESTS = 72 as const;
 
 const temporaryDirectories: string[] = [];
 const credentialServices: DesktopCredentialService[] = [];
@@ -631,13 +631,24 @@ describe('main-process desktop credential service', () => {
     });
   });
 
-  it('passes through a realistic packaged-origin CORS preflight without renderer identity or bearer injection', () => {
+  it('passes through an active-origin CORS preflight without renderer identity or bearer injection', async () => {
+    const store = await createStore();
+    const profile = await store.save({
+      id: 'profile-a', label: 'A', apiBaseUrl: 'https://same.example.test',
+    });
+    await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
     const service = createCredentialService({
-      profiles: { awaitIdle: async () => undefined } as unknown as ProfileStore,
+      profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
-      fetch: async () => { throw new Error('Network is not expected'); },
+      fetch: async input => input.toString().endsWith('/api/desktop/discovery')
+        ? json(discovery)
+        : json({ username: 'octocat' }),
     });
+    const ready = await service.probe(profile);
+    assert.equal(ready.status, 'ready');
+    if (ready.status !== 'ready') return;
+    await service.activate(ready.activationTicket);
 
     assert.deepEqual(service.prepareRequest('https://same.example.test/api/tasks', {
       Origin: DESKTOP_RENDERER_ORIGIN,
@@ -652,6 +663,63 @@ describe('main-process desktop credential service', () => {
         'Access-Control-Request-Headers': 'X-ProPR-Desktop-Transport-Scope, Content-Type',
       },
     });
+  });
+
+  it('does not let a cached renderer grant outlive discard or revocation', async () => {
+    const store = await createStore();
+    const profile = await store.save({
+      id: 'profile-a', label: 'A', apiBaseUrl: 'https://same.example.test',
+    });
+    await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+    const service = createCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async input => input.toString().endsWith('/api/desktop/discovery')
+        ? json(discovery)
+        : json({ username: 'octocat' }),
+    });
+    const targets = [
+      'http://127.0.0.1:41731/api/side-effect',
+      'https://192.168.1.10/api/side-effect',
+      'https://same.example.test.evil.invalid/api/side-effect',
+      'https://same.example.test:444/api/side-effect',
+    ];
+    const assertCancelled = (label: string) => {
+      for (const url of [...targets, `${profile.apiBaseUrl}/api/side-effect`]) {
+        assert.deepEqual(service.prepareRequest(url, {
+          Origin: DESKTOP_RENDERER_ORIGIN,
+        }), { cancel: true }, `${label}: ${url}`);
+      }
+    };
+
+    assertCancelled('no active binding');
+    const firstReady = await service.probe(profile);
+    assert.equal(firstReady.status, 'ready');
+    if (firstReady.status !== 'ready') return;
+    const first = await service.activate(firstReady.activationTicket);
+    for (const url of targets) {
+      assert.deepEqual(service.prepareRequest(url, {
+        Origin: DESKTOP_RENDERER_ORIGIN,
+      }), { cancel: true }, `active foreign origin: ${url}`);
+    }
+    assert.deepEqual(service.prepareRequest(`${profile.apiBaseUrl}/api/side-effect`, {
+      Origin: DESKTOP_RENDERER_ORIGIN,
+    }).requestHeaders, { Origin: DESKTOP_RENDERER_ORIGIN });
+
+    assert.deepEqual(await service.discardActivation(first), { discarded: true });
+    assertCancelled('discarded binding');
+
+    const secondReady = await service.probe(profile);
+    assert.equal(secondReady.status, 'ready');
+    if (secondReady.status !== 'ready') return;
+    const second = await service.activate(secondReady.activationTicket);
+    assert.deepEqual(await service.invalidate({
+      profileId: profile.id,
+      transportScope: second.transportScope,
+      code: 'INSTANCE_TOKEN_REVOKED',
+    }), { invalidated: true });
+    assertCancelled('revoked binding');
   });
 
   it('reports every exact current-user proxy decision with bounded secret-free evidence', async () => {

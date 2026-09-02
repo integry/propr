@@ -38,6 +38,7 @@ import {
   classifyCurrentUserRequestShape,
   currentUserValidationPhaseSummary,
   currentUserValidationFailureCategory as classifyCurrentUserValidation,
+  networkPermissionDecisionSummary,
 } from './packaged-acceptance-current-user.mjs';
 import {
   captureElectronRendererScreenshot,
@@ -70,6 +71,7 @@ const rendererLifecycleRecords = [];
 const rendererCurrentUserRecords = [];
 const mainCurrentUserRecords = [];
 const fixtureCurrentUserRecords = [];
+const networkPermissionRecords = [];
 const screenshotMetadata = [];
 const accessibilityChecks = [];
 const axeFindings = [];
@@ -84,12 +86,14 @@ let modalFocusRestore = false;
 let traceWritten = false;
 let rendererLifecycleEvidenceInvalid = false;
 let currentUserEvidenceInvalid = false;
+let networkPermissionEvidenceInvalidCount = 0;
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const unique = values => [...new Set(values)].sort((a, b) => ACCEPTANCE_JOURNEYS.indexOf(a) - ACCEPTANCE_JOURNEYS.indexOf(b));
 const sleep = milliseconds => new Promise(resolveValue => setTimeout(resolveValue, milliseconds));
 const MAIN_HANDSHAKE_EVENT = 'desktop.acceptance.websocket_handshake';
 const MAIN_CURRENT_USER_EVENT = 'desktop.acceptance.current_user_proxy';
+const NETWORK_PERMISSION_EVENT = 'desktop.acceptance.network_permission';
 const RENDERER_LIFECYCLE_PREFIX = '[ProPR Acceptance Renderer Lifecycle]';
 const RENDERER_CURRENT_USER_PREFIX = '[ProPR Acceptance Current User]';
 const RENDERER_LIFECYCLE_PHASES = new Set([
@@ -119,6 +123,9 @@ const CURRENT_USER_RENDERER_PHASES = new Set([
 const CURRENT_USER_CLASSIFICATIONS = new Set([
   'pending', 'success', 'unauthenticated', 'revoked', 'forbidden', 'server-error',
   'network-error', 'invalid-schema',
+]);
+const NETWORK_PERMISSION_CATEGORIES = new Set([
+  'local-network-access', 'local-network', 'loopback-network',
 ]);
 
 const captureMainHandshakeEvidence = (line, journey) => {
@@ -216,6 +223,53 @@ const captureMainCurrentUserEvidence = (line, journey) => {
     else mainCurrentUserRecords.push({ journey, ...evidence });
   } catch {
     currentUserEvidenceInvalid = true;
+  }
+};
+
+const captureNetworkPermissionEvidence = (line, journey) => {
+  if (!line.includes(NETWORK_PERMISSION_EVENT)) return;
+  try {
+    const record = JSON.parse(line.slice(line.indexOf('{')));
+    const evidence = {
+      schemaVersion: record.schemaVersion,
+      permissionCategory: record.permissionCategory,
+      decision: record.decision,
+      allowed: record.allowed,
+      activeBindingCurrent: record.activeBindingCurrent,
+      webContentsPresent: record.webContentsPresent,
+      webContentsEqualsMainWindow: record.webContentsEqualsMainWindow,
+      mainWindowPresent: record.mainWindowPresent,
+      isMainFrame: record.isMainFrame,
+      requestingUrlPresent: record.requestingUrlPresent,
+      requestingUrlTrusted: record.requestingUrlTrusted,
+      rendererDocumentUrlTrusted: record.rendererDocumentUrlTrusted,
+      requestingOriginAuthorityValid: record.requestingOriginAuthorityValid,
+      requestingOriginAuthorityEqual: record.requestingOriginAuthorityEqual,
+    };
+    const valid = record.event === NETWORK_PERMISSION_EVENT
+      && evidence.schemaVersion === 1
+      && NETWORK_PERMISSION_CATEGORIES.has(evidence.permissionCategory)
+      && ['check', 'request'].includes(evidence.decision)
+      && [
+        evidence.allowed,
+        evidence.activeBindingCurrent,
+        evidence.webContentsPresent,
+        evidence.webContentsEqualsMainWindow,
+        evidence.mainWindowPresent,
+        evidence.isMainFrame,
+        evidence.requestingUrlPresent,
+        evidence.requestingUrlTrusted,
+        evidence.rendererDocumentUrlTrusted,
+        evidence.requestingOriginAuthorityValid,
+        evidence.requestingOriginAuthorityEqual,
+      ].every(value => typeof value === 'boolean');
+    if (!valid || networkPermissionRecords.filter(item => item.journey === journey).length >= 24) {
+      networkPermissionEvidenceInvalidCount = Math.min(networkPermissionEvidenceInvalidCount + 1, 9);
+      return;
+    }
+    networkPermissionRecords.push({ journey, ...evidence });
+  } catch {
+    networkPermissionEvidenceInvalidCount = Math.min(networkPermissionEvidenceInvalidCount + 1, 9);
   }
 };
 
@@ -569,6 +623,7 @@ const launchApplication = async (scenario, initialDeepLink) => {
         lines.forEach(line => {
           captureMainHandshakeEvidence(line, activeJourney);
           captureMainCurrentUserEvidence(line, activeJourney);
+          captureNetworkPermissionEvidence(line, activeJourney);
         });
       };
     };
@@ -910,6 +965,12 @@ const currentUserPhaseSummary = journey => currentUserValidationPhaseSummary({
   requestRecords,
 });
 
+const networkPermissionSummary = journey => networkPermissionDecisionSummary({
+  journey,
+  records: networkPermissionRecords,
+  invalidCount: networkPermissionEvidenceInvalidCount,
+});
+
 const socketHandshakeFailureCategory = journey => {
   const currentUserCategory = currentUserValidationFailureCategory(journey);
   if (currentUserCategory !== 'none') return currentUserCategory;
@@ -975,10 +1036,10 @@ const waitForAuthenticatedSocket = async journey => {
       && rendererLifecycle === 'none') return;
     const category = socketHandshakeFailureCategory(journey);
     if (category.startsWith('main-') || category.startsWith('fixture-') || category.startsWith('duplicate-')) {
-      throw new Error(`Acceptance Socket.IO handshake failed: ${category}; current-user-phases=${JSON.stringify(currentUserPhaseSummary(journey))}`);
+      throw new Error(`Acceptance Socket.IO handshake failed: ${category}; current-user-phases=${JSON.stringify(currentUserPhaseSummary(journey))}; network-permissions=${JSON.stringify(networkPermissionSummary(journey))}`);
     }
     if (Date.now() >= deadline) {
-      throw new Error(`Acceptance Socket.IO handshake failed: ${category}; current-user-phases=${JSON.stringify(currentUserPhaseSummary(journey))}`);
+      throw new Error(`Acceptance Socket.IO handshake failed: ${category}; current-user-phases=${JSON.stringify(currentUserPhaseSummary(journey))}; network-permissions=${JSON.stringify(networkPermissionSummary(journey))}`);
     }
     await sleep(50);
   }

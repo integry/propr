@@ -43,6 +43,34 @@ export const classifyCurrentUserRequestShape = (method, url, origin) => {
 
 const boundedCount = records => Math.min(records.length, 9);
 
+/** Fixed, bounded, secret-free counts for Local Network Access decisions. */
+export const networkPermissionDecisionSummary = ({ journey, records, invalidCount = 0 }) => {
+  const selected = records.filter(record => record.journey === journey);
+  const count = predicate => boundedCount(selected.filter(predicate));
+  return {
+    schemaVersion: 1,
+    records: boundedCount(selected),
+    check: count(record => record.decision === 'check'),
+    request: count(record => record.decision === 'request'),
+    allowed: count(record => record.allowed === true),
+    denied: count(record => record.allowed === false),
+    localNetworkAccess: count(record => record.permissionCategory === 'local-network-access'),
+    localNetwork: count(record => record.permissionCategory === 'local-network'),
+    loopbackNetwork: count(record => record.permissionCategory === 'loopback-network'),
+    activeBindingCurrent: count(record => record.activeBindingCurrent === true),
+    webContentsPresent: count(record => record.webContentsPresent === true),
+    webContentsEqualsMainWindow: count(record => record.webContentsEqualsMainWindow === true),
+    mainWindowPresent: count(record => record.mainWindowPresent === true),
+    mainFrame: count(record => record.isMainFrame === true),
+    requestingUrlPresent: count(record => record.requestingUrlPresent === true),
+    requestingUrlTrusted: count(record => record.requestingUrlTrusted === true),
+    rendererDocumentUrlTrusted: count(record => record.rendererDocumentUrlTrusted === true),
+    requestingOriginAuthorityValid: count(record => record.requestingOriginAuthorityValid === true),
+    requestingOriginAuthorityEqual: count(record => record.requestingOriginAuthorityEqual === true),
+    invalid: Math.min(invalidCount, 9),
+  };
+};
+
 /** Fixed, bounded, secret-free diagnostics for the strict hosted boundary. */
 export const currentUserValidationPhaseSummary = ({
   journey,

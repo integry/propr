@@ -18,6 +18,7 @@ import { ProfileStore, type EncryptionProvider } from './profile-store';
 import {
   configureDesktopSessionSecurity,
   desktopNetworkPermissionAllowed,
+  type DesktopNetworkPermissionEvidence,
 } from './session-security';
 
 const RENDERER_URL = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
@@ -35,23 +36,48 @@ const encryption: EncryptionProvider = {
 describe('production desktop session security', () => {
   it('denies every permission except active trusted-renderer local network access', () => {
     const accepted = {
-      activeBindingPresent: true,
+      activeBindingCurrent: true,
+      decision: 'check' as const,
+      isMainFrame: true,
+      mainWindowPresent: true,
       permission: 'loopback-network',
-      rendererDocumentUrl: RENDERER_URL,
-      rendererDocumentTrusted: true,
-      rendererMainFrame: true,
-      rendererMatchesMainWindow: true,
-      requestingOrigin: DESKTOP_RENDERER_ORIGIN,
+      rendererDocumentUrlTrusted: true,
+      requestingOriginAuthorityEqual: true,
+      requestingOriginAuthorityValid: true,
+      requestingUrlAuthorityEqual: true,
+      requestingUrlPresent: false,
+      requestingUrlTrusted: false,
+      webContentsEqualsMainWindow: false,
+      webContentsPresent: false,
     };
     assert.equal(desktopNetworkPermissionAllowed(accepted), true);
-    assert.equal(desktopNetworkPermissionAllowed({ ...accepted, activeBindingPresent: false }), false);
+    assert.equal(desktopNetworkPermissionAllowed({ ...accepted, activeBindingCurrent: false }), false);
     assert.equal(desktopNetworkPermissionAllowed({ ...accepted, permission: 'notifications' }), false);
-    assert.equal(desktopNetworkPermissionAllowed({ ...accepted, rendererMainFrame: false }), false);
-    assert.equal(desktopNetworkPermissionAllowed({ ...accepted, rendererMatchesMainWindow: false }), false);
-    assert.equal(desktopNetworkPermissionAllowed({ ...accepted, rendererDocumentTrusted: false }), false);
-    assert.equal(desktopNetworkPermissionAllowed({ ...accepted, requestingOrigin: 'https://attacker.example' }), false);
+    assert.equal(desktopNetworkPermissionAllowed({ ...accepted, isMainFrame: false }), false);
+    assert.equal(desktopNetworkPermissionAllowed({ ...accepted, rendererDocumentUrlTrusted: false }), false);
+    assert.equal(desktopNetworkPermissionAllowed({ ...accepted, requestingOriginAuthorityEqual: false }), false);
+    assert.equal(desktopNetworkPermissionAllowed({ ...accepted, requestingOriginAuthorityValid: false }), false);
+    assert.equal(desktopNetworkPermissionAllowed({
+      ...accepted,
+      requestingUrlPresent: true,
+      requestingUrlTrusted: false,
+    }), false);
     assert.equal(desktopNetworkPermissionAllowed({ ...accepted, permission: 'local-network' }), true);
     assert.equal(desktopNetworkPermissionAllowed({ ...accepted, permission: 'local-network-access' }), true);
+    assert.equal(desktopNetworkPermissionAllowed({
+      ...accepted,
+      decision: 'request',
+      requestingUrlPresent: true,
+      requestingUrlTrusted: true,
+      webContentsEqualsMainWindow: true,
+      webContentsPresent: true,
+    }), true);
+    assert.equal(desktopNetworkPermissionAllowed({
+      ...accepted,
+      decision: 'request',
+      requestingUrlPresent: true,
+      requestingUrlTrusted: true,
+    }), false);
   });
 
   it('limits granted renderer network access to the active origin through the production interceptor', async () => {
@@ -111,6 +137,7 @@ describe('production desktop session security', () => {
       let permissionCheck: PermissionCheck = () => { throw new Error('Permission check was not installed'); };
       let permissionRequest: PermissionRequest = () => { throw new Error('Permission request was not installed'); };
       let beforeSendHeaders: BeforeSendHeaders = () => { throw new Error('Request interceptor was not installed'); };
+      const permissionEvidence: DesktopNetworkPermissionEvidence[] = [];
       const desktopSession = {
         setPermissionCheckHandler: (listener: PermissionCheck | null) => {
           if (listener) permissionCheck = listener;
@@ -126,20 +153,42 @@ describe('production desktop session security', () => {
         },
       } as unknown as Session;
       const mainRenderer = { getURL: () => RENDERER_URL } as unknown as WebContents;
+      const otherRenderer = { getURL: () => RENDERER_URL } as unknown as WebContents;
       const configured = configureDesktopSessionSecurity({
         contentSecurityPolicy: () => "default-src 'self'",
         credentials: service,
         desktopSession,
         getMainRenderer: () => mainRenderer,
         isTrustedRendererUrl: value => value === RENDERER_URL,
+        reportNetworkPermissionDecision: evidence => permissionEvidence.push(evidence),
       });
 
+      // Electron documents a nullable WebContents for permission checks. The
+      // trusted main-frame authority remains sufficient without fabricating it.
       assert.equal(permissionCheck(
-        mainRenderer,
+        null,
         'loopback-network',
         DESKTOP_RENDERER_ORIGIN,
-        { requestingUrl: RENDERER_URL, isMainFrame: true },
+        { isMainFrame: true },
       ), true);
+      assert.equal(permissionCheck(null, 'loopback-network', DESKTOP_RENDERER_ORIGIN, {
+        isMainFrame: false,
+      }), false);
+      assert.equal(permissionCheck(null, 'loopback-network', 'https://attacker.example.test', {
+        isMainFrame: true,
+      }), false);
+      assert.equal(permissionCheck(null, 'loopback-network', '', {
+        isMainFrame: true,
+      }), false);
+      assert.equal(permissionCheck(null, 'loopback-network', DESKTOP_RENDERER_ORIGIN, {
+        requestingUrl: 'https://attacker.example.test/frame', isMainFrame: true,
+      }), false);
+      assert.equal(permissionCheck(otherRenderer, 'loopback-network', DESKTOP_RENDERER_ORIGIN, {
+        requestingUrl: RENDERER_URL, isMainFrame: true,
+      }), false);
+      assert.equal(permissionCheck(null, 'notifications', DESKTOP_RENDERER_ORIGIN, {
+        isMainFrame: true,
+      }), false);
       let requestedPermission = false;
       permissionRequest(
         mainRenderer,
@@ -148,6 +197,52 @@ describe('production desktop session security', () => {
         { requestingUrl: RENDERER_URL, isMainFrame: true },
       );
       assert.equal(requestedPermission, true);
+      permissionRequest(
+        otherRenderer,
+        'loopback-network',
+        (allowed: boolean) => { requestedPermission = allowed; },
+        { requestingUrl: RENDERER_URL, isMainFrame: true },
+      );
+      assert.equal(requestedPermission, false);
+      permissionRequest(
+        mainRenderer,
+        'loopback-network',
+        (allowed: boolean) => { requestedPermission = allowed; },
+        { isMainFrame: true },
+      );
+      assert.equal(requestedPermission, false);
+      permissionRequest(
+        mainRenderer,
+        'loopback-network',
+        (allowed: boolean) => { requestedPermission = allowed; },
+        { requestingUrl: 'https://attacker.example.test/frame', isMainFrame: true },
+      );
+      assert.equal(requestedPermission, false);
+      permissionRequest(
+        mainRenderer,
+        'loopback-network',
+        (allowed: boolean) => { requestedPermission = allowed; },
+        { requestingUrl: RENDERER_URL, isMainFrame: false },
+      );
+      assert.equal(requestedPermission, false);
+      assert.equal(permissionEvidence.length, 11);
+      assert.deepEqual(permissionEvidence[0], {
+        schemaVersion: 1,
+        permissionCategory: 'loopback-network',
+        decision: 'check',
+        allowed: true,
+        activeBindingCurrent: true,
+        webContentsPresent: false,
+        webContentsEqualsMainWindow: false,
+        mainWindowPresent: true,
+        isMainFrame: true,
+        requestingUrlPresent: false,
+        requestingUrlTrusted: false,
+        rendererDocumentUrlTrusted: true,
+        requestingOriginAuthorityValid: true,
+        requestingOriginAuthorityEqual: true,
+      });
+      assert.doesNotMatch(JSON.stringify(permissionEvidence), /attacker|renderer\.html|127\.0\.0\.2|propr_it_/);
 
       const intercepted = async (
         url: string,
@@ -216,6 +311,18 @@ describe('production desktop session security', () => {
         Origin: DESKTOP_RENDERER_ORIGIN,
         Authorization: `Bearer ${TOKEN}`,
       });
+      assert.deepEqual(await service.discardActivation(activated), { discarded: true });
+      assert.equal(permissionCheck(null, 'loopback-network', DESKTOP_RENDERER_ORIGIN, {
+        isMainFrame: true,
+      }), false);
+      for (const url of [...unrelatedTargets, `${REACT_FIXTURE_ORIGIN}/api/side-effect`]) {
+        assert.deepEqual(await intercepted(url, 'GET', {
+          Origin: DESKTOP_RENDERER_ORIGIN,
+        }), { cancel: true }, `cached grant after discard: ${url}`);
+      }
+      assert.deepEqual(await intercepted(socketUrl, 'GET', {
+        Origin: DESKTOP_RENDERER_ORIGIN,
+      }, 'webSocket'), { cancel: true });
       configured.dispose();
     } finally {
       await service.dispose();

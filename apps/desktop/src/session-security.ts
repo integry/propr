@@ -9,6 +9,28 @@ const DESKTOP_NETWORK_PERMISSIONS = new Set([
   'loopback-network',
 ]);
 
+export type DesktopNetworkPermissionCategory =
+  | 'local-network-access'
+  | 'local-network'
+  | 'loopback-network';
+
+export interface DesktopNetworkPermissionEvidence {
+  schemaVersion: 1;
+  permissionCategory: DesktopNetworkPermissionCategory;
+  decision: 'check' | 'request';
+  allowed: boolean;
+  activeBindingCurrent: boolean;
+  webContentsPresent: boolean;
+  webContentsEqualsMainWindow: boolean;
+  mainWindowPresent: boolean;
+  isMainFrame: boolean;
+  requestingUrlPresent: boolean;
+  requestingUrlTrusted: boolean;
+  rendererDocumentUrlTrusted: boolean;
+  requestingOriginAuthorityValid: boolean;
+  requestingOriginAuthorityEqual: boolean;
+}
+
 const rendererAuthority = (value: string): string | null => {
   try {
     const url = new URL(value);
@@ -19,14 +41,10 @@ const rendererAuthority = (value: string): string | null => {
   }
 };
 
-export interface DesktopNetworkPermissionContext {
-  activeBindingPresent: boolean;
+export interface DesktopNetworkPermissionContext extends Omit<DesktopNetworkPermissionEvidence,
+  'schemaVersion' | 'permissionCategory' | 'allowed'> {
   permission: string;
-  rendererDocumentUrl: string;
-  rendererDocumentTrusted: boolean;
-  rendererMainFrame: boolean;
-  rendererMatchesMainWindow: boolean;
-  requestingOrigin: string;
+  requestingUrlAuthorityEqual: boolean;
 }
 
 /**
@@ -36,20 +54,30 @@ export interface DesktopNetworkPermissionContext {
  * credential service still authorizes every concrete URL, scope, and header.
  */
 export const desktopNetworkPermissionAllowed = ({
-  activeBindingPresent,
+  activeBindingCurrent,
+  decision,
+  isMainFrame,
+  mainWindowPresent,
   permission,
-  rendererDocumentUrl,
-  rendererDocumentTrusted,
-  rendererMainFrame,
-  rendererMatchesMainWindow,
-  requestingOrigin,
+  rendererDocumentUrlTrusted,
+  requestingOriginAuthorityEqual,
+  requestingOriginAuthorityValid,
+  requestingUrlAuthorityEqual,
+  requestingUrlPresent,
+  requestingUrlTrusted,
+  webContentsEqualsMainWindow,
+  webContentsPresent,
 }: DesktopNetworkPermissionContext): boolean => DESKTOP_NETWORK_PERMISSIONS.has(permission)
-  && activeBindingPresent
-  && rendererMainFrame
-  && rendererMatchesMainWindow
-  && rendererDocumentTrusted
-  && rendererAuthority(rendererDocumentUrl) !== null
-  && rendererAuthority(rendererDocumentUrl) === rendererAuthority(requestingOrigin);
+  && activeBindingCurrent
+  && mainWindowPresent
+  && isMainFrame
+  && rendererDocumentUrlTrusted
+  && (!requestingUrlPresent || (requestingUrlTrusted && requestingUrlAuthorityEqual))
+  && requestingOriginAuthorityValid
+  && requestingOriginAuthorityEqual
+  && (decision === 'check'
+    ? !webContentsPresent || webContentsEqualsMainWindow
+    : webContentsPresent && webContentsEqualsMainWindow && requestingUrlPresent);
 
 interface ConfigureDesktopSessionSecurityOptions {
   contentSecurityPolicy(): string;
@@ -57,6 +85,7 @@ interface ConfigureDesktopSessionSecurityOptions {
   desktopSession: Session;
   getMainRenderer(): WebContents | null;
   isTrustedRendererUrl(value: string): boolean;
+  reportNetworkPermissionDecision?(evidence: DesktopNetworkPermissionEvidence): void;
 }
 
 /** Install the production permission, request, and response boundary on one session. */
@@ -66,32 +95,72 @@ export const configureDesktopSessionSecurity = ({
   desktopSession,
   getMainRenderer,
   isTrustedRendererUrl,
+  reportNetworkPermissionDecision = () => undefined,
 }: ConfigureDesktopSessionSecurityOptions): {
   close(): void;
   dispose(): void;
 } => {
   const allowNetworkPermission = (
+    decision: 'check' | 'request',
     webContents: WebContents | null,
     permission: string,
     requestingOrigin: string,
-    rendererMainFrame: boolean,
+    isMainFrame: boolean,
     requestingUrl?: string,
   ): boolean => {
     const mainRenderer = getMainRenderer();
-    const rendererDocumentUrl = requestingUrl || webContents?.getURL() || '';
-    return desktopNetworkPermissionAllowed({
-      activeBindingPresent: credentials.hasActiveRendererBinding(),
+    const rendererDocumentUrl = mainRenderer?.getURL() ?? '';
+    const rendererDocumentAuthority = rendererAuthority(rendererDocumentUrl);
+    const requestingUrlPresent = typeof requestingUrl === 'string' && requestingUrl.length > 0;
+    const requestingUrlAuthority = requestingUrlPresent ? rendererAuthority(requestingUrl) : null;
+    const requestingOriginAuthority = rendererAuthority(requestingOrigin);
+    const context: DesktopNetworkPermissionContext = {
+      activeBindingCurrent: credentials.hasActiveRendererBinding(),
+      decision,
+      isMainFrame: isMainFrame === true,
+      mainWindowPresent: mainRenderer !== null,
       permission,
-      rendererDocumentUrl,
-      rendererDocumentTrusted: isTrustedRendererUrl(rendererDocumentUrl),
-      rendererMainFrame,
-      rendererMatchesMainWindow: webContents !== null && webContents === mainRenderer,
-      requestingOrigin,
-    });
+      rendererDocumentUrlTrusted: mainRenderer !== null && isTrustedRendererUrl(rendererDocumentUrl),
+      requestingOriginAuthorityEqual: rendererDocumentAuthority !== null
+        && requestingOriginAuthority === rendererDocumentAuthority,
+      requestingOriginAuthorityValid: requestingOriginAuthority !== null
+        && requestingOrigin === requestingOriginAuthority,
+      requestingUrlAuthorityEqual: !requestingUrlPresent || (rendererDocumentAuthority !== null
+        && requestingUrlAuthority === rendererDocumentAuthority),
+      requestingUrlPresent,
+      requestingUrlTrusted: requestingUrlPresent && isTrustedRendererUrl(requestingUrl),
+      webContentsEqualsMainWindow: webContents !== null && webContents === mainRenderer,
+      webContentsPresent: webContents !== null,
+    };
+    const allowed = desktopNetworkPermissionAllowed(context);
+    if (DESKTOP_NETWORK_PERMISSIONS.has(permission)) {
+      try {
+        reportNetworkPermissionDecision({
+          schemaVersion: 1,
+          permissionCategory: permission as DesktopNetworkPermissionCategory,
+          decision,
+          allowed,
+          activeBindingCurrent: context.activeBindingCurrent,
+          webContentsPresent: context.webContentsPresent,
+          webContentsEqualsMainWindow: context.webContentsEqualsMainWindow,
+          mainWindowPresent: context.mainWindowPresent,
+          isMainFrame: context.isMainFrame,
+          requestingUrlPresent: context.requestingUrlPresent,
+          requestingUrlTrusted: context.requestingUrlTrusted,
+          rendererDocumentUrlTrusted: context.rendererDocumentUrlTrusted,
+          requestingOriginAuthorityValid: context.requestingOriginAuthorityValid,
+          requestingOriginAuthorityEqual: context.requestingOriginAuthorityEqual,
+        });
+      } catch {
+        // Diagnostics cannot change the permission decision.
+      }
+    }
+    return allowed;
   };
 
   desktopSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) =>
     allowNetworkPermission(
+      'check',
       webContents,
       String(permission),
       requestingOrigin,
@@ -99,15 +168,16 @@ export const configureDesktopSessionSecurity = ({
       details.requestingUrl,
     ));
   desktopSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    const rendererUrl = 'requestingUrl' in details && typeof details.requestingUrl === 'string'
+    const requestingUrl = 'requestingUrl' in details && typeof details.requestingUrl === 'string'
       ? details.requestingUrl
-      : webContents.getURL();
+      : undefined;
     callback(allowNetworkPermission(
+      'request',
       webContents,
       String(permission),
-      rendererAuthority(rendererUrl) ?? '',
+      requestingUrl ? rendererAuthority(requestingUrl) ?? '' : '',
       details.isMainFrame,
-      rendererUrl,
+      requestingUrl,
     ));
   });
   desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {

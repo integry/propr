@@ -51,7 +51,10 @@ import {
 } from './acceptance-test-authorization';
 import { registerPackagedAcceptanceZoomIpc } from './acceptance-zoom';
 import { AcceptanceSetupController } from './acceptance-setup-controller';
-import { configureDesktopSessionSecurity } from './session-security';
+import {
+  configureDesktopSessionSecurity,
+  type DesktopNetworkPermissionEvidence,
+} from './session-security';
 import {
   createBrowserWindowOptions,
   MINIMUM_BROWSER_WINDOW_SIZE,
@@ -505,6 +508,11 @@ if (!hasSingleInstanceLock) {
       desktopSession: session.defaultSession,
       getMainRenderer: () => mainWindow?.webContents ?? null,
       isTrustedRendererUrl: value => isTrustedRendererUrl(value, devServerUrl, packagedRendererUrl),
+      ...(packagedAcceptanceTest ? {
+        reportNetworkPermissionDecision: (evidence: DesktopNetworkPermissionEvidence) => {
+          log('info', 'desktop.acceptance.network_permission', { ...evidence });
+        },
+      } : {}),
     });
     const credentialInitialization = await credentials.initialize();
     if (credentialInitialization.status === 'degraded') {

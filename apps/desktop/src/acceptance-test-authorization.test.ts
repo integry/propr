@@ -77,11 +77,15 @@ describe('packaged acceptance authorization', () => {
     assert.match(main, /packagedAcceptanceTest \? \{\s*reportWebSocketHandshake:/);
     assert.match(main, /desktop\.acceptance\.websocket_handshake/);
     assert.match(main, /desktop\.acceptance\.current_user_proxy/);
+    assert.match(main, /packagedAcceptanceTest \? \{\s*reportNetworkPermissionDecision:/);
+    assert.match(main, /desktop\.acceptance\.network_permission/);
     const acceptanceRunner = readFileSync(fileURLToPath(new URL('../scripts/run-packaged-acceptance.mjs', import.meta.url)), 'utf8');
     const currentUserClassifier = readFileSync(fileURLToPath(new URL(
       '../scripts/packaged-acceptance-current-user.mjs', import.meta.url,
     )), 'utf8');
     assert.match(acceptanceRunner, /'Access-Control-Allow-Private-Network': 'true'/);
+    assert.match(acceptanceRunner, /network-permissions=/);
+    assert.match(currentUserClassifier, /networkPermissionDecisionSummary/);
     assert.match(currentUserClassifier, /current-user-upstream-request-not-arrived/);
     assert.match(currentUserClassifier, /current-user-parsed-schema-rejected/);
   });
