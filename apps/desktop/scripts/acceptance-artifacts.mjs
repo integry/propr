@@ -170,14 +170,27 @@ const genericSecretPatterns = [
   /(?:token|secret|password|private[_-]?key)\s*[=:]\s*[^\s"']{8,}/gi,
 ];
 
+// Keep generic matches inside plaintext runs so binary bytes cannot join otherwise separate metadata.
+const printableTextRuns = function* (bytes) {
+  let start = 0;
+  for (let index = 0; index < bytes.length; index += 1) {
+    const byte = bytes[index];
+    if (byte === 0x09 || byte === 0x0a || byte === 0x0d || (byte >= 0x20 && byte <= 0x7e)) continue;
+    if (index > start) yield bytes.subarray(start, index).toString('ascii');
+    start = index + 1;
+  }
+  if (start < bytes.length) yield bytes.subarray(start).toString('ascii');
+};
+
 const scanBytes = (bytes, description, sentinels) => {
-  const text = bytes.toString('utf8');
   for (const sentinel of sentinels) {
     if (sentinel && bytes.includes(Buffer.from(sentinel))) throw new Error(`Secret sentinel found in ${description}`);
   }
-  for (const pattern of genericSecretPatterns) {
-    pattern.lastIndex = 0;
-    if (pattern.test(text)) throw new Error(`Secret-shaped value found in ${description}`);
+  for (const text of printableTextRuns(bytes)) {
+    for (const pattern of genericSecretPatterns) {
+      pattern.lastIndex = 0;
+      if (pattern.test(text)) throw new Error(`Secret-shaped value found in ${description}`);
+    }
   }
 };
 

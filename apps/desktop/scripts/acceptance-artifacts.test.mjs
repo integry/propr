@@ -304,6 +304,48 @@ describe('packaged acceptance artifact contract', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('keeps generic matching within printable binary runs and exact sentinel scanning raw', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-acceptance-contract-binary-scan-'));
+    const database = join(root, 'key4.db');
+    const binaryAssignmentBridge = Buffer.concat([
+      Buffer.from('SQLite format 3\0NSS metadata password=', 'ascii'),
+      Buffer.from([0x00, 0x80, 0xff, 0x01]),
+      Buffer.from('binary-record-body', 'ascii'),
+      Buffer.from([0x00, 0x02]),
+    ]);
+    try {
+      assert.match(binaryAssignmentBridge.toString('utf8'), /password\s*[=:]\s*[^\s"']{8,}/i);
+      await writeFile(database, binaryAssignmentBridge);
+      await scanAcceptancePaths([database]);
+
+      for (const credential of [
+        `propr_it_${'a'.repeat(20)}`,
+        `ghp_${'b'.repeat(20)}`,
+        `Bearer ${'c'.repeat(16)}`,
+        'token=printable-value',
+        'secret: printable-value',
+        'password = printable-value',
+        'private-key=printable-value',
+      ]) {
+        await writeFile(database, Buffer.concat([
+          binaryAssignmentBridge,
+          Buffer.from([0x00, 0xff]),
+          Buffer.from(credential, 'ascii'),
+          Buffer.from([0x00]),
+        ]));
+        await assert.rejects(scanAcceptancePaths([database]), /Secret-shaped value/);
+      }
+
+      const sentinel = 'acceptance-exact-sentinel';
+      await writeFile(database, Buffer.concat([
+        Buffer.from([0x00, 0x80, 0xff]),
+        Buffer.from(sentinel, 'ascii'),
+        Buffer.from([0x01, 0xfe, 0x00]),
+      ]));
+      await assert.rejects(scanAcceptancePaths([database], [sentinel]), /Secret sentinel/);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('fails closed on missing, mutated, and unexpected artifact data', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'propr-acceptance-contract-invalid-'));
     const root = join(parent, ACCEPTANCE_ARTIFACT_LEAF);
