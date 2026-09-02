@@ -56,6 +56,8 @@ export function createManagementRouteEntries({
     ['post', '/api/config/primary-processing-labels', requireManageSettings, configRoutes.postPrimaryProcessingLabels],
     ['get', '/api/config/agents', requireManageAgents, configRoutes.getAgents],
     ['post', '/api/config/agents', requireManageAgents, configRoutes.postAgents],
+    ['get', '/api/config/synthetic-agents', requireManageAgents, configRoutes.getSyntheticAgents],
+    ['post', '/api/config/synthetic-agents', requireManageAgents, configRoutes.postSyntheticAgents],
     ['get', '/api/config/summarization', requireManageSettings, configRoutes.getSummarizationSettings],
     ['post', '/api/config/summarization', requireManageSettings, configRoutes.postSummarizationSettings],
     ['get', '/api/config/repos/indexing-status', requireManageSettings, configRoutes.getRepositoriesIndexingStatus],
@@ -101,7 +103,8 @@ export function createMemberCatalogRouteEntries({
   instanceCatalogRoutes,
 }: MemberCatalogRouteDeps): RouteEntry[] {
   return [
-    ['get', '/api/catalog', instanceCatalogRoutes.getCatalog],
+    ['get', '/api/catalog', instanceCatalogRoutes.getLegacyCatalog],
+    ['get', '/api/instance/catalog', instanceCatalogRoutes.getCatalog],
     ['get', '/api/repositories/indexing-status', instanceCatalogRoutes.getRepositoryIndexingStatus],
   ];
 }

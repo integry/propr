@@ -78,6 +78,8 @@ async function withServer(
 const managementRequests = [
   ['GET', '/api/config/settings'],
   ['GET', '/api/config/agents'],
+  ['GET', '/api/config/synthetic-agents'],
+  ['POST', '/api/config/synthetic-agents'],
   ['GET', '/api/config/agent-tank/usage'],
   ['GET', '/api/admin/members'],
   ['GET', '/api/agent-runtime/packages'],
@@ -104,7 +106,7 @@ describe('assembled instance permission routes', () => {
 
   test('members can read only the sanitized catalog endpoints', async () => {
     await withServer(async origin => {
-      for (const path of ['/api/catalog', '/api/repositories/indexing-status']) {
+      for (const path of ['/api/catalog', '/api/instance/catalog', '/api/repositories/indexing-status']) {
         const response = await fetch(`${origin}${path}`);
         assert.equal(response.status, 200, path);
       }

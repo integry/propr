@@ -4,11 +4,44 @@ import * as configManager from '@propr/core';
 import { AgentRegistry } from '@propr/core';
 import type { AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
+import {
+  findSyntheticReferencesToDirectAgent,
+  validateSyntheticAgentReferences,
+  validateExecutableSyntheticDefault,
+  type SyntheticAgentConfig,
+} from '@propr/shared';
 import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
 import type { AgentConfigStore, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
 import { DEFAULT_PREPARATION_DEPS, loadProcessedAgents, prepareAgentsUpdate, resolveDefaultAgentAlias } from './configRoutesAgentsPreparation.js';
+export { validateDefaultAgentSetting } from './configRoutesAgentDefaults.js';
 function buildAgentPreparationError(error: string, code?: string): { code?: string; error: string } {
   return code ? { code, error } : { error };
+}
+function validateDirectAgentUpdateIntegrity(
+  previousAgents: AgentConfig[],
+  processedAgents: AgentConfig[],
+  syntheticAgents: SyntheticAgentConfig[],
+): ApplyAgentsUpdateResult | undefined {
+  const proposedAliases = new Set(processedAgents.map(agent => agent.alias));
+  const removalConflicts = previousAgents.flatMap(agent => {
+    if (proposedAliases.has(agent.alias)) return [];
+    const references = findSyntheticReferencesToDirectAgent(syntheticAgents, agent.alias);
+    return references.length > 0 ? [{ alias: agent.alias, references }] : [];
+  });
+  if (removalConflicts.length > 0) {
+    const details = removalConflicts
+      .map(conflict => `Direct agent '${conflict.alias}' is referenced by ${conflict.references.join(', ')}`)
+      .join('; ');
+    return {
+      status: 409,
+      body: { error: `${details}. Remove those synthetic pool members before deleting the direct agent.` },
+    };
+  }
+
+  const referenceValidation = validateSyntheticAgentReferences(syntheticAgents, processedAgents);
+  return referenceValidation.errors.length > 0
+    ? { status: 400, body: { error: referenceValidation.errors.join('; ') } }
+    : undefined;
 }
 async function rollbackAgentConfigState({
   configStore,
@@ -157,6 +190,53 @@ async function publishAgentUpdates({
     console.error('Failed to log agents configuration update activity:', error);
   }
 }
+async function loadReasoningLevelWarnings(
+  configStore: AgentConfigStore,
+  agents: AgentConfig[],
+): Promise<string[]> {
+  if (!configStore.loadModelReasoningLevel) return [];
+  try {
+    return configManager.findReasoningLevelCliVersionWarnings(
+      agents,
+      await configStore.loadModelReasoningLevel(),
+    );
+  } catch (warningError) {
+    console.warn('Could not evaluate reasoning-level CLI compatibility after agents save:', warningError);
+    return [];
+  }
+}
+function resolveUpdatedDefaultAgent(
+  processedAgents: AgentConfig[],
+  syntheticAgents: SyntheticAgentConfig[],
+  currentDefault: string | undefined,
+): string | undefined {
+  return syntheticAgents.some(agent => agent.enabled && agent.alias === currentDefault)
+    ? currentDefault
+    : resolveDefaultAgentAlias(processedAgents, currentDefault);
+}
+async function loadSyntheticAgents(configStore: AgentConfigStore): Promise<SyntheticAgentConfig[]> {
+  return configStore.loadSyntheticAgents ? configStore.loadSyntheticAgents() : [];
+}
+async function resolveAgentUpdateDefaults(
+  configStore: AgentConfigStore,
+  processedAgents: AgentConfig[],
+  syntheticAgents: SyntheticAgentConfig[],
+): Promise<ApplyAgentsUpdateResult | {
+  currentDefault: string | undefined;
+  newDefault: string | undefined;
+  defaultChanged: boolean;
+}> {
+  const settings = await configStore.loadSettings();
+  const currentDefault = (settings as Record<string, unknown>).default_agent_alias as string | undefined;
+  const defaultError = validateExecutableSyntheticDefault(
+    currentDefault?.trim() || '',
+    syntheticAgents,
+    processedAgents,
+  );
+  if (defaultError) return { status: 409, body: { error: defaultError } };
+  const newDefault = resolveUpdatedDefaultAgent(processedAgents, syntheticAgents, currentDefault);
+  return { currentDefault, newDefault, defaultChanged: newDefault !== currentDefault };
+}
 export async function applyAgentsUpdate({
   agents,
   processedAgents: providedProcessedAgents,
@@ -183,10 +263,12 @@ export async function applyAgentsUpdate({
   }
 
   const previousAgents = await configStore.loadAgents();
-  const settings = await configStore.loadSettings();
-  const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
-  const newDefault = resolveDefaultAgentAlias(processedAgents, currentDefault);
-  const defaultChanged = newDefault !== currentDefault;
+  const syntheticAgents = await loadSyntheticAgents(configStore);
+  const integrityError = validateDirectAgentUpdateIntegrity(previousAgents, processedAgents, syntheticAgents);
+  if (integrityError) return integrityError;
+  const defaults = await resolveAgentUpdateDefaults(configStore, processedAgents, syntheticAgents);
+  if ('status' in defaults) return defaults;
+  const { currentDefault, newDefault, defaultChanged } = defaults;
 
   try {
     const { settingsWereUpdated } = await persistAgentConfigurationAtomically({
@@ -244,17 +326,7 @@ export async function applyAgentsUpdate({
     return publishResult;
   }
 
-  let warnings: string[] = [];
-  if (configStore.loadModelReasoningLevel) {
-    try {
-      warnings = configManager.findReasoningLevelCliVersionWarnings(
-        processedAgents,
-        await configStore.loadModelReasoningLevel()
-      );
-    } catch (warningError) {
-      console.warn('Could not evaluate reasoning-level CLI compatibility after agents save:', warningError);
-    }
-  }
+  const warnings = await loadReasoningLevelWarnings(configStore, processedAgents);
 
   return {
     status: 200,

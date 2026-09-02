@@ -5,7 +5,8 @@ import { DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
 import { ConfigRouteError, withConfigLock, SETTINGS_CONFIG_LOCK_KEY, resolveConfigStore } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
-import { createAgentsRoutes } from './configRoutesAgents.js';
+import { createAgentsRoutes, validateDefaultAgentSetting } from './configRoutesAgents.js';
+import { createSyntheticAgentConfigRoutes } from './configRoutesSyntheticAgents.js';
 import { saveSettingsWithRollback } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
@@ -137,6 +138,15 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     database,
     preparationDeps: deps.agentPreparationDeps,
   });
+  const syntheticAgentRoutes = createSyntheticAgentConfigRoutes(
+    {
+      redisClient,
+      configStore,
+      publishConfigUpdate,
+      logActivityHelper,
+      refreshAgentRegistry: () => configManager.AgentRegistry.getInstance().refresh(),
+    },
+  );
   const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, committedErrorMessage, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
     if (!bodyValidation.ok) {
@@ -313,10 +323,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return;
       }
     }
+    if (typeof settingsValidation.value.default_agent_alias === 'string') {
+      settingsValidation.value.default_agent_alias = settingsValidation.value.default_agent_alias.trim();
+    }
 
-    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock =>
-      saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock })
-    );
+    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
+      await validateDefaultAgentSetting(settingsValidation.value, configStore);
+      return saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock });
+    });
     if (result.status === 200 && result.body.noop !== true) {
       try {
         const updatedKeys = Object.keys(settingsValidation.value);
@@ -396,7 +410,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   return {
     getFollowupKeywords, postFollowupKeywords, getFollowupIgnoreKeywords, postFollowupIgnoreKeywords, getRepos, postRepos, getSettings, postSettings,
     getPrLabel, postPrLabel, getAiPrimaryTag, postAiPrimaryTag, getPrimaryProcessingLabels, postPrimaryProcessingLabels,
-    getAgents: agentsRoutes.getAgents, postAgents: agentsRoutes.postAgents, getSummarizationSettings,
+    getAgents: agentsRoutes.getAgents, postAgents: agentsRoutes.postAgents, getSyntheticAgents: syntheticAgentRoutes.getSyntheticAgents,
+    postSyntheticAgents: syntheticAgentRoutes.postSyntheticAgents,
+    getSummarizationSettings,
     postSummarizationSettings: indexingRoutes.postSummarizationSettings, getRepositoriesIndexingStatus: indexingRoutes.getRepositoriesIndexingStatus,
     triggerIndexing: indexingRoutes.triggerIndexing, triggerReindexAll: indexingRoutes.triggerReindexAll, stopIndexing: indexingRoutes.stopIndexing,
     getAgentTankSettings: agentTankRoutes.getAgentTankSettings, postAgentTankSettings: agentTankRoutes.postAgentTankSettings,
