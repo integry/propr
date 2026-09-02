@@ -155,8 +155,6 @@ export function toMessage(row: GoalMessageRecord): GoalMessage {
 }
 
 export interface GoalSummaryRecord extends GoalRecord {
-  node_count: number;
-  active_node_count: number;
   latest_sequence: number;
 }
 
@@ -169,7 +167,6 @@ export function toSummary(row: GoalSummaryRecord): GoalSummaryView {
     maxActiveTasks: goal.maxActiveTasks, mergePolicy: goal.mergePolicy,
     ultrafixEnabled: goal.ultrafixEnabled, ultrafixGoal: goal.ultrafixGoal,
     ultrafixMaxCycles: goal.ultrafixMaxCycles, version: goal.version,
-    nodeCount: Number(row.node_count), activeNodeCount: Number(row.active_node_count),
     latestSequence: Number(row.latest_sequence), createdAt: goal.createdAt,
     updatedAt: goal.updatedAt,
   };

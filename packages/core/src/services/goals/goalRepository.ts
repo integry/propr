@@ -1,12 +1,12 @@
 /**
  * Facade for the durable goal repositories. Cohesive modules own identity and
- * reads, hierarchy/session writes, ordered events/messages, leases, and
+ * reads, passive associations/session writes, ordered events/messages, leases, and
  * lifecycle/model mutations while callers retain one repository surface.
  */
 import type { Knex } from 'knex';
 import type {
   AppendEventInput,
-  AppendTypedGoalEventInput,
+  AppendProviderGoalEventInput,
   ClaimMessageInput,
   CancelIntentInput,
   CreateGoalInput,
@@ -16,6 +16,8 @@ import type {
   GoalActiveTimeStats,
   GoalEvent,
   GoalEventPageResult,
+  GoalChecklistItem,
+  GoalChecklistPageResult,
   GoalLeaseFence,
   GoalMessage,
   GoalMessagePageResult,
@@ -25,7 +27,6 @@ import type {
   GoalNode,
   OperatorIntentInput,
   GoalProviderSessionRecord,
-  GoalProviderTodo,
   ListGoalsQuery,
   ListGoalsResult,
   ProviderSessionUpdate,
@@ -139,8 +140,8 @@ export class GoalRepository {
     return this.events.appendMigrationEvent(goalId, input);
   }
 
-  appendTypedEvent(goalId: string, input: AppendTypedGoalEventInput | unknown): Promise<GoalEvent> {
-    return this.events.appendTypedEvent(goalId, input);
+  appendProviderEvent(goalId: string, input: AppendProviderGoalEventInput | unknown): Promise<GoalEvent> {
+    return this.events.appendProviderEvent(goalId, input);
   }
 
   readEventPage(
@@ -161,8 +162,15 @@ export class GoalRepository {
     return this.events.getLatestSequence(goalId);
   }
 
-  getProviderTodos(goalId: string): Promise<GoalProviderTodo[]> {
-    return this.events.getProviderTodos(goalId);
+  getProviderChecklist(goalId: string): Promise<GoalChecklistItem[]> {
+    return this.events.getProviderChecklist(goalId);
+  }
+
+  readProviderChecklistPage(
+    goalId: string,
+    options: { cursor?: string | null; limit?: number } = {}
+  ): Promise<GoalChecklistPageResult> {
+    return this.events.readProviderChecklistPage(goalId, options);
   }
 
   enqueueMessage(goalId: string, input: EnqueueMessageInput): Promise<GoalMessage> {

@@ -225,7 +225,7 @@ describe('goal HTTP contract', () => {
     const page1 = first.state.body as { goals: Array<Record<string, unknown>>; nextCursor: string };
     assert.equal('ownerUserId' in page1.goals[0], false);
     assert.equal('leaseOwner' in page1.goals[0], false);
-    assert.equal(typeof page1.goals[0].nodeCount, 'number');
+    assert.equal('nodeCount' in page1.goals[0], false);
     const second = response();
     await api.listGoals(request({ query: { limit: '1', cursor: page1.nextCursor } }), second.res);
     assert.notEqual((second.state.body as { goals: Array<{ goalId: string }> }).goals[0].goalId, page1.goals[0].goalId);

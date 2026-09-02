@@ -16,7 +16,7 @@ export interface SocketSubscriptionRequest {
   room: string;
   authorize: () => boolean | Promise<boolean>;
   authorizationError?: SocketSubscriptionErrorCode;
-  onJoined?: () => void | Promise<void>;
+  onJoined?: (isCurrent: () => boolean) => void | Promise<void>;
 }
 
 export class SocketSubscriptionState {
@@ -44,6 +44,9 @@ export class SocketSubscriptionState {
       state = { generation: Symbol(), pendingCount: 0 };
       subscriptions.set(room, state);
     }
+    // The newest request owns the room. Older delayed authorization/join work
+    // must observe a stale generation and unwind.
+    state.generation = Symbol();
     state.pendingCount += 1;
     return state.generation;
   }
@@ -65,5 +68,35 @@ export class SocketSubscriptionState {
     if (state.pendingCount > 0) return;
     subscriptions.delete(room);
     if (subscriptions.size === 0) this.pending.delete(socket);
+  }
+}
+
+/** Serializes same-room joins so delayed authorization cannot revive an older request. */
+export class SocketJoinSerializer {
+  private readonly locks = new WeakMap<Socket, Map<string, Promise<void>>>();
+
+  async run<T>(socket: Socket, room: string, operation: () => Promise<T>): Promise<T> {
+    let socketLocks = this.locks.get(socket);
+    if (!socketLocks) {
+      socketLocks = new Map();
+      this.locks.set(socket, socketLocks);
+    }
+    const previous = socketLocks.get(room) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => gate);
+    socketLocks.set(room, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (socketLocks.get(room) === tail) socketLocks.delete(room);
+      if (socketLocks.size === 0) this.locks.delete(socket);
+    }
+  }
+
+  clear(socket: Socket): void {
+    this.locks.delete(socket);
   }
 }

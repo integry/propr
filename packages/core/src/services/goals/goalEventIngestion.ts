@@ -36,13 +36,15 @@ export async function projectTypedEvent(
     await projectUsage(trx, coordinates.goalId, coordinates.sequence, event);
     return;
   }
-  if (event.type === 'provider.todo') {
+  if (event.type === 'provider.todo' || event.type === 'provider.plan') {
     await trx('goal_provider_todos').where({
       goal_id: coordinates.goalId, session_id: event.source.sessionId,
     }).delete();
-    await Promise.all(event.payload.items.map(item => trx('goal_provider_todos').insert({
+    await Promise.all(event.payload.items.map((item, itemOrdinal) => trx('goal_provider_todos').insert({
       goal_id: coordinates.goalId, session_id: event.source.sessionId, todo_id: item.id,
       body: item.text, status: item.status, event_sequence: coordinates.sequence,
+      source_kind: event.type === 'provider.plan' ? 'plan' : 'todo',
+      item_ordinal: itemOrdinal, updated_at: coordinates.createdAt,
     })));
     return;
   }
@@ -68,6 +70,10 @@ async function projectUsage(
     execution_id: event.source.executionId, attempt_id: event.source.attemptId,
     occurrence_id: payload.occurrenceId,
   };
+  const streamIdentity = {
+    goal_id: goalId, session_id: event.source.sessionId,
+    execution_id: event.source.executionId, attempt_id: event.source.attemptId,
+  };
   const contentDigest = crypto.createHash('sha256')
     .update(canonicalizePayload(payload)).digest('hex');
   const duplicate = await trx('goal_usage_occurrences').where(occurrenceIdentity).first();
@@ -77,13 +83,26 @@ async function projectUsage(
     }
     return;
   }
+  const attribution = await trx('goal_usage_occurrences').where(streamIdentity)
+    .first('provider', 'model') as { provider?: string; model?: string } | undefined;
+  if (attribution && (attribution.provider !== payload.provider || attribution.model !== payload.model)) {
+    throw new GoalError(
+      GOAL_ERROR_CODES.idempotencyConflict,
+      'Usage stream provider/model attribution is immutable for an execution attempt',
+      409
+    );
+  }
   let values = tokenValues(payload);
   if (payload.cumulative) {
-    const watermarkIdentity = {
-      goal_id: goalId, session_id: event.source.sessionId,
-      execution_id: event.source.executionId, attempt_id: event.source.attemptId,
-    };
+    const watermarkIdentity = streamIdentity;
     const previous = await trx('goal_usage_watermarks').where(watermarkIdentity).first();
+    if (previous && (previous.provider !== payload.provider || previous.model !== payload.model)) {
+      throw new GoalError(
+        GOAL_ERROR_CODES.idempotencyConflict,
+        'Cumulative usage stream provider/model attribution changed',
+        409
+      );
+    }
     const projected = projectCumulativeUsage(previous, values, event.source.providerSequence);
     values = projected.delta;
     if (previous) {
@@ -188,7 +207,8 @@ function toDomainEvent(row: GoalEventRecord): GoalEvent {
 }
 
 function sameSourceIdentity(row: GoalEventRecord, input: DurableGoalEventInput): boolean {
-  return row.source_session_id === input.source.sessionId && row.source_turn_id === input.source.turnId
+  return row.source_namespace === 'provider'
+    && row.source_session_id === input.source.sessionId && row.source_turn_id === input.source.turnId
     && row.source_execution_id === input.source.executionId && row.source_attempt_id === input.source.attemptId
     && row.source_provider_sequence === input.source.providerSequence
     && row.source_chunk_index === input.source.chunkIndex
@@ -248,7 +268,10 @@ export function validateSource(input: DurableGoalEventInput): void {
     sessionId: input.source.sessionId, turnId: input.source.turnId,
     executionId: input.source.executionId, attemptId: input.source.attemptId,
   })) boundedText(value, `source.${field}`);
-  idempotencyKey(input.idempotencyKey);
+  const key = idempotencyKey(input.idempotencyKey);
+  if (key.startsWith('internal:')) {
+    throw new GoalError(GOAL_ERROR_CODES.invalidIdempotencyKey, 'Provider idempotency keys cannot use the internal namespace', 400);
+  }
 }
 
 export function eventKind(type: DurableGoalEventType): 'lifecycle' | 'output' | 'domain' {

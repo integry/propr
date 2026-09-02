@@ -6,6 +6,7 @@ import type {
   GoalLeaseFence,
   GoalNode,
   GoalNodeRecord,
+  GoalRecord,
   GoalProviderSessionRecord,
   ProviderSessionUpdate,
   GoalNodePageResult,
@@ -162,6 +163,7 @@ export class GoalHierarchyRepository {
     const hasExecutionIdentity = await this.db.schema.hasColumn('goal_provider_sessions', 'current_turn_id');
     await goalTransaction(this.db, async (trx) => {
       const goal = await guardLease(trx, goalId, fields);
+      assertSelectedAgent(normalizedAgent, goal.agent);
       const existing = await trx<GoalProviderSessionRecord>('goal_provider_sessions')
         .where({ goal_id: goalId, agent: normalizedAgent }).first();
       const recoveryJson = fields.recoveryMetadata === undefined
@@ -169,42 +171,13 @@ export class GoalHierarchyRepository {
         : validateRecoveryMetadata(fields.recoveryMetadata);
       const now = nowIso();
       if (existing) {
-        const update = {
-          provider_thread_id: preserveUndefined(fields.providerThreadId, existing.provider_thread_id),
-          runtime_id: preserveUndefined(fields.runtimeId, existing.runtime_id),
-          worktree_id: preserveUndefined(fields.worktreeId, existing.worktree_id),
-          last_checkpoint: preserveUndefined(fields.lastCheckpoint, existing.last_checkpoint),
-          effective_model: fields.effectiveModel ?? existing.effective_model,
-          recovery_metadata_json: recoveryJson,
-          lease_generation: fields.leaseEpoch,
-          updated_at: now,
-          ...(hasExecutionIdentity ? {
-            current_turn_id: preserveUndefined(fields.turnId, existing.current_turn_id ?? null),
-            current_execution_id: preserveUndefined(fields.executionId, existing.current_execution_id ?? null),
-            current_attempt_id: preserveUndefined(fields.attemptId, existing.current_attempt_id ?? null),
-          } : {}),
-        };
-        const affected = await trx('goal_provider_sessions').where({
-          session_id: existing.session_id,
-          goal_id: goalId,
-          lease_generation: existing.lease_generation,
-        }).update(update);
-        if (affected !== 1) throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Provider session changed concurrently', 409);
+        await updateProviderSession(trx, {
+          goalId, fields, existing, recoveryJson, now, hasExecutionIdentity,
+        });
         return;
       }
-      await trx('goal_provider_sessions').insert({
-        session_id: crypto.randomUUID(), goal_id: goalId, agent: normalizedAgent,
-        provider_thread_id: fields.providerThreadId ?? null,
-        runtime_id: fields.runtimeId ?? null, worktree_id: fields.worktreeId ?? null,
-        last_checkpoint: fields.lastCheckpoint ?? null,
-        effective_model: fields.effectiveModel ?? goal.effective_model,
-        recovery_metadata_json: recoveryJson, lease_generation: fields.leaseEpoch,
-        created_at: now, updated_at: now,
-        ...(hasExecutionIdentity ? {
-          current_turn_id: fields.turnId ?? null,
-          current_execution_id: fields.executionId ?? null,
-          current_attempt_id: fields.attemptId ?? null,
-        } : {}),
+      await insertProviderSession(trx, {
+        goal, agent: normalizedAgent, fields, recoveryJson, now, hasExecutionIdentity,
       });
     });
   }
@@ -214,6 +187,73 @@ export class GoalHierarchyRepository {
       .where({ goal_id: goalId, agent }).first();
     return row ?? null;
   }
+}
+
+function assertSelectedAgent(agent: string, selectedAgent: string): void {
+  if (agent !== selectedAgent) {
+    throw new GoalError(GOAL_ERROR_CODES.validation, 'Provider session must use the goal selected agent', 400);
+  }
+}
+
+async function updateProviderSession(
+  trx: Knex.Transaction,
+  context: {
+    goalId: string; fields: ProviderSessionUpdate; existing: GoalProviderSessionRecord;
+    recoveryJson: string | null; now: string; hasExecutionIdentity: boolean;
+  }
+): Promise<void> {
+  const { goalId, fields, existing, recoveryJson, now, hasExecutionIdentity } = context;
+  if (fields.providerThreadId !== undefined && fields.providerThreadId !== null
+    && existing.provider_thread_id !== null && fields.providerThreadId !== existing.provider_thread_id) {
+    throw new GoalError(GOAL_ERROR_CODES.idempotencyConflict, 'Provider thread identity is immutable', 409);
+  }
+  if (fields.worktreeId !== undefined && fields.worktreeId !== null
+    && existing.worktree_id !== null && fields.worktreeId !== existing.worktree_id) {
+    throw new GoalError(GOAL_ERROR_CODES.idempotencyConflict, 'Goal worktree identity is immutable', 409);
+  }
+  const update = {
+    provider_thread_id: preserveUndefined(fields.providerThreadId, existing.provider_thread_id),
+    runtime_id: preserveUndefined(fields.runtimeId, existing.runtime_id),
+    worktree_id: preserveUndefined(fields.worktreeId, existing.worktree_id),
+    last_checkpoint: preserveUndefined(fields.lastCheckpoint, existing.last_checkpoint),
+    effective_model: fields.effectiveModel ?? existing.effective_model,
+    recovery_metadata_json: recoveryJson,
+    lease_generation: fields.leaseEpoch,
+    updated_at: now,
+    ...(hasExecutionIdentity ? {
+      current_turn_id: preserveUndefined(fields.turnId, existing.current_turn_id ?? null),
+      current_execution_id: preserveUndefined(fields.executionId, existing.current_execution_id ?? null),
+      current_attempt_id: preserveUndefined(fields.attemptId, existing.current_attempt_id ?? null),
+    } : {}),
+  };
+  const affected = await trx('goal_provider_sessions').where({
+    session_id: existing.session_id, goal_id: goalId, lease_generation: existing.lease_generation,
+  }).update(update);
+  if (affected !== 1) throw new GoalError(GOAL_ERROR_CODES.staleLease, 'Provider session changed concurrently', 409);
+}
+
+function insertProviderSession(
+  trx: Knex.Transaction,
+  context: {
+    goal: GoalRecord; agent: string; fields: ProviderSessionUpdate;
+    recoveryJson: string | null; now: string; hasExecutionIdentity: boolean;
+  }
+): Promise<number[]> {
+  const { goal, agent, fields, recoveryJson, now, hasExecutionIdentity } = context;
+  return trx('goal_provider_sessions').insert({
+    session_id: crypto.randomUUID(), goal_id: goal.goal_id, agent,
+    provider_thread_id: fields.providerThreadId ?? null,
+    runtime_id: fields.runtimeId ?? null, worktree_id: fields.worktreeId ?? null,
+    last_checkpoint: fields.lastCheckpoint ?? null,
+    effective_model: fields.effectiveModel ?? goal.effective_model,
+    recovery_metadata_json: recoveryJson, lease_generation: fields.leaseEpoch,
+    created_at: now, updated_at: now,
+    ...(hasExecutionIdentity ? {
+      current_turn_id: fields.turnId ?? null,
+      current_execution_id: fields.executionId ?? null,
+      current_attempt_id: fields.attemptId ?? null,
+    } : {}),
+  });
 }
 
 type NormalizedNode = Required<Omit<CreateNodeInput, 'nodeId' | 'parentNodeId' | 'externalRef' | 'externalKind' | 'title'>> & {

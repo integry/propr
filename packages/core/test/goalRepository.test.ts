@@ -845,8 +845,8 @@ describe('GoalRepository', () => {
       ...fence,
     });
     const detail = await service.getDetail(goal.goalId);
-    assert.equal(detail.summary.nodeCount, 1);
-    assert.equal(detail.summary.activeNodeCount, 1);
+    assert.equal(detail.nodes.length, 1);
+    assert.deepEqual(detail.checklist, []);
     assert.equal(detail.summary.latestSequence, 1);
     assert.equal(detail.summary.objective, 'Ship the control plane');
   });

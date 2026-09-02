@@ -54,7 +54,7 @@ test('goal socket unwinds failed joins, replays, tails with ack, and evicts afte
     });
     const session = await repository.getProviderSession(goal.goalId, 'codex');
     assert(session);
-    const append = (sequence: number) => repository.appendTypedEvent(goal.goalId, {
+    const append = (sequence: number) => repository.appendProviderEvent(goal.goalId, {
       schemaVersion: 1, type: 'provider.output',
       payload: { stream: 'stdout', outputType: 'text', chunk: `line-${sequence}` },
       idempotencyKey: `socket-${sequence}`, ...fence,
@@ -66,13 +66,23 @@ test('goal socket unwinds failed joins, replays, tails with ack, and evicts afte
     });
     await append(1);
     let enabled = false;
+    let delayedAuthorization: Promise<void> | null = null;
+    let delayedAuthorizationCalls = 0;
+    let delayedAuthorizationStarted = 0;
     const manager = new SocketSubscriptionManager({
       getQueueDependencies: () => ({
         db: database, taskQueue: {} as Queue, redisClient: {} as RedisClientType,
       } as QueueDependencies),
       getQueueBroadcaster: () => null,
       taskWatcherManager: {} as TaskWatcherManager,
-      isRepositoryEnabled: () => enabled,
+      isRepositoryEnabled: async () => {
+        if (delayedAuthorization && delayedAuthorizationCalls > 0) {
+          delayedAuthorizationCalls -= 1;
+          delayedAuthorizationStarted += 1;
+          await delayedAuthorization;
+        }
+        return enabled;
+      },
       goalAcknowledgementTimeoutMs: 100,
     });
     let serverRoomPresent = false;
@@ -93,12 +103,14 @@ test('goal socket unwinds failed joins, replays, tails with ack, and evicts afte
     });
     const sequences: number[] = [];
     const errors: string[] = [];
+    let subscribed = 0;
     let acknowledge = false;
     client.on('goal:events', (payload: { events: Array<{ sequence: number }> }, ack: () => void) => {
       sequences.push(...payload.events.map(event => event.sequence));
       if (acknowledge) ack();
     });
     client.on('subscription:error', (payload: { code: string }) => errors.push(payload.code));
+    client.on('goal:subscribed', () => { subscribed += 1; });
     await new Promise<void>(resolve => client!.once('connect', () => resolve()));
     client.emit('subscribe:goal', { goalId: goal.goalId, cursor: null });
     await waitFor(() => errors.includes('RECONNECT_REQUIRED') && !serverRoomPresent, 'failed join was not unwound');
@@ -119,6 +131,33 @@ test('goal socket unwinds failed joins, replays, tails with ack, and evicts afte
     await append(3);
     await new Promise(resolve => setTimeout(resolve, 600));
     assert.deepEqual(sequences, [1, 1, 2]);
+
+    enabled = true;
+    let releaseUnsubscribed!: () => void;
+    delayedAuthorization = new Promise<void>(resolve => { releaseUnsubscribed = resolve; });
+    delayedAuthorizationCalls = 1;
+    const beforeUnsubscribe = subscribed;
+    client.emit('subscribe:goal', { goalId: goal.goalId, cursor: null });
+    await waitFor(() => delayedAuthorizationStarted === 1, 'delayed join did not reach authorization');
+    client.emit('unsubscribe:goal', goal.goalId);
+    releaseUnsubscribed();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(serverRoomPresent, false);
+    assert.equal(subscribed, beforeUnsubscribe);
+
+    let releaseConcurrent!: () => void;
+    delayedAuthorization = new Promise<void>(resolve => { releaseConcurrent = resolve; });
+    delayedAuthorizationCalls = 1;
+    const beforeConcurrent = subscribed;
+    client.emit('subscribe:goal', { goalId: goal.goalId, cursor: null });
+    await waitFor(() => delayedAuthorizationStarted === 2, 'first concurrent join was not delayed');
+    client.emit('subscribe:goal', { goalId: goal.goalId, cursor: null });
+    releaseConcurrent();
+    delayedAuthorization = null;
+    await waitFor(
+      () => subscribed === beforeConcurrent + 1 && serverRoomPresent,
+      'newest concurrent join did not exclusively own the room'
+    );
   } finally {
     client?.disconnect();
     await io.close();

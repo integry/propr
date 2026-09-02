@@ -9,6 +9,14 @@ export {
 } from './goalLifecycleService.js';
 export * from './goalTypes.js';
 export {
+  GoalNativeSessionTransport,
+  type NativeGoalAttempt,
+  type NativeGoalIngressEvent,
+  type NativeGoalMessageSender,
+  type NativeGoalSupervisor,
+  type NativeGoalClaim,
+} from './goalNativeSessionTransport.js';
+export {
   CANONICAL_JSON_MAX_BYTES,
   CANONICAL_JSON_MAX_DEPTH,
   CANONICAL_JSON_MAX_NODES,

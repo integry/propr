@@ -378,7 +378,7 @@ export type {
 // Repository to-do and authenticated Inbox persistence.
 export * from './services/persistence/index.js';
 
-// Goal control plane (durable long-running goals, hierarchy, lifecycle, leases).
+// Thin native-goal transport (durable output/control, lifecycle, and leases).
 export * from './services/goals/index.js';
 
 // Repository migration (rename/move detection)

@@ -1,19 +1,22 @@
 import crypto from 'crypto';
 import type { Knex } from 'knex';
 import {
+  GOAL_CHECKLIST_DEFAULT_LIMIT, GOAL_CHECKLIST_MAX_LIMIT,
   GOAL_CURSOR_MAX_LENGTH, GOAL_ERROR_CODES, GOAL_EVENT_DEFAULT_LIMIT, GOAL_EVENT_DEFAULT_MAX_BYTES,
   GOAL_EVENT_MAX_BYTES, GOAL_EVENT_MAX_LIMIT, isDurableGoalEventType,
-  validateDurableGoalEvent, type DurableGoalEventInput,
+  isProviderGoalEventType, validateDurableGoalEvent, type DurableGoalEventInput,
+  type DurableGoalProviderEventInput,
 } from '@propr/shared';
 import type {
   AppendEventInput, GoalEvent, GoalEventPageResult, GoalEventRecord,
-  GoalLeaseFence, GoalProviderTodo,
+  GoalChecklistItem, GoalChecklistPageResult, GoalLeaseFence,
 } from './goalTypes.js';
 import {
   GoalError, guardLease, goalTransaction, idempotencyKey, nowIso,
   requireGoalRecord, toEvent,
 } from './goalRepositorySupport.js';
 import { decodeGoalPageCursor, encodeGoalPageCursor } from './goalPageCursor.js';
+import { decodeChecklistCursor, encodeChecklistCursor } from './goalChecklistCursor.js';
 import {
   allocateGoalEventSequence, ensureGoalEventState, type GoalEventStateRecord,
 } from './goalEventWriter.js';
@@ -26,7 +29,7 @@ import {
 export class GoalEventRepository {
   constructor(private readonly db: Knex) {}
 
-  /** Explicit migration-only writer. Runtime callers must use appendTypedEvent. */
+  /** Explicit migration-only writer. Runtime callers must use appendProviderEvent. */
   async appendMigrationEvent(goalId: string, input: AppendEventInput): Promise<GoalEvent> {
     const normalized = normalizeLegacyEvent(input);
     if (await this.hasEnhancedSchema()) {
@@ -54,7 +57,7 @@ export class GoalEventRepository {
     });
   }
 
-  async appendTypedEvent(goalId: string, input: unknown): Promise<GoalEvent> {
+  async appendProviderEvent(goalId: string, input: unknown): Promise<GoalEvent> {
     if (!await this.hasEnhancedSchema()) {
       throw new GoalError(GOAL_ERROR_CODES.validation, 'Durable goal event migration is not installed', 503);
     }
@@ -70,35 +73,42 @@ export class GoalEventRepository {
       );
     }
     const typed = input as DurableGoalEventInput;
-    if (typed.type === 'provider.output_compacted') {
-      throw new GoalError(GOAL_ERROR_CODES.invalidEventKind, 'Compaction tombstones are repository-authored only', 400);
+    if (!isProviderGoalEventType(typed.type)) {
+      await this.quarantineMalformed(goalId, input, 'event type is not allowed at provider ingress');
+      throw new GoalError(
+        GOAL_ERROR_CODES.invalidEventKind,
+        `${typed.type} is reserved for the trusted internal goal writer`,
+        400
+      );
     }
-    validateSource(typed);
-    const payloadJson = canonicalizePayload(typed.payload);
-    if (typed.type === 'provider.output') validateOutputChunk(typed.payload, payloadJson);
+    const providerEvent = typed as DurableGoalProviderEventInput;
+    validateSource(providerEvent);
+    const payloadJson = canonicalizePayload(providerEvent.payload);
+    if (providerEvent.type === 'provider.output') validateOutputChunk(providerEvent.payload, payloadJson);
     return goalTransaction(this.db, async trx => {
-      const goal = await guardLease(trx, goalId, typed);
-      await guardSourceIdentity(trx, goalId, typed);
-      const byKey = await findIdempotentEvent(trx, goalId, typed.idempotencyKey);
-      if (byKey) return compareTypedEvent(byKey, typed, payloadJson);
-      const bySource = await findSourceEvent(trx, goalId, typed);
-      if (bySource) return compareTypedEvent(bySource, typed, payloadJson);
+      const goal = await guardLease(trx, goalId, providerEvent);
+      await guardSourceIdentity(trx, goalId, providerEvent);
+      const byKey = await findIdempotentEvent(trx, goalId, providerEvent.idempotencyKey);
+      if (byKey) return compareTypedEvent(byKey, providerEvent, payloadJson);
+      const bySource = await findSourceEvent(trx, goalId, providerEvent);
+      if (bySource) return compareTypedEvent(bySource, providerEvent, payloadJson);
       const sequence = await allocateGoalEventSequence(trx, goalId);
       const createdAt = nowIso();
       const record: Omit<GoalEventRecord, 'id'> = {
-        goal_id: goalId, sequence, kind: eventKind(typed.type), event_type: typed.type,
-        payload_json: payloadJson, idempotency_key: idempotencyKey(typed.idempotencyKey),
+        goal_id: goalId, sequence, kind: eventKind(providerEvent.type), event_type: providerEvent.type,
+        payload_json: payloadJson, idempotency_key: idempotencyKey(providerEvent.idempotencyKey),
         lease_epoch: goal.lease_epoch, created_at: createdAt,
-        schema_version: typed.schemaVersion, source_session_id: typed.source.sessionId,
-        source_turn_id: typed.source.turnId, source_execution_id: typed.source.executionId,
-        source_attempt_id: typed.source.attemptId,
-        source_provider_sequence: typed.source.providerSequence,
-        source_chunk_index: typed.source.chunkIndex,
-        lease_generation: typed.source.leaseGeneration,
+        schema_version: providerEvent.schemaVersion, source_session_id: providerEvent.source.sessionId,
+        source_turn_id: providerEvent.source.turnId, source_execution_id: providerEvent.source.executionId,
+        source_attempt_id: providerEvent.source.attemptId,
+        source_provider_sequence: providerEvent.source.providerSequence,
+        source_chunk_index: providerEvent.source.chunkIndex,
+        lease_generation: providerEvent.source.leaseGeneration,
+        source_namespace: 'provider',
         payload_bytes: Buffer.byteLength(payloadJson),
       };
       const [id] = await trx('goal_events').insert(record);
-      await projectTypedEvent(trx, { goalId, sequence, createdAt }, typed);
+      await projectTypedEvent(trx, { goalId, sequence, createdAt }, providerEvent);
       await trx('goal_event_state').where('goal_id', goalId).update({
         projection_sequence: sequence, updated_at: createdAt,
       });
@@ -169,14 +179,49 @@ export class GoalEventRepository {
     return Number(row?.value ?? 0);
   }
 
-  async getProviderTodos(goalId: string): Promise<GoalProviderTodo[]> {
+  async getProviderChecklist(goalId: string): Promise<GoalChecklistItem[]> {
     if (!await this.db.schema.hasTable('goal_provider_todos')) return [];
     const rows = await this.db('goal_provider_todos').where('goal_id', goalId)
-      .orderBy('event_sequence', 'asc').orderBy('todo_id', 'asc');
+      .orderBy('session_id', 'asc').orderBy('item_ordinal', 'asc').orderBy('todo_id', 'asc');
     return rows.map(row => ({
-      sessionId: String(row.session_id), todoId: String(row.todo_id), body: String(row.body),
-      status: row.status as GoalProviderTodo['status'], eventSequence: Number(row.event_sequence),
+      sessionId: String(row.session_id), itemId: String(row.todo_id), text: String(row.body),
+      status: row.status as GoalChecklistItem['status'], source: row.source_kind as GoalChecklistItem['source'],
+      orderIndex: Number(row.item_ordinal), eventSequence: Number(row.event_sequence),
     }));
+  }
+
+  async readProviderChecklistPage(
+    goalId: string,
+    options: { cursor?: string | null; limit?: number } = {}
+  ): Promise<GoalChecklistPageResult> {
+    const limit = validateLimit(options.limit, GOAL_CHECKLIST_DEFAULT_LIMIT, GOAL_CHECKLIST_MAX_LIMIT);
+    const goal = await requireGoalRecord(this.db, goalId);
+    const binding = { goalId, ownerUserId: goal.owner_user_id, repository: goal.repository };
+    const cursor = decodeChecklistCursor(options.cursor, binding);
+    if (!await this.db.schema.hasTable('goal_provider_todos')) {
+      if (cursor) throw new GoalError(GOAL_ERROR_CODES.cursorExpired, 'Provider checklist cursor expired', 410);
+      return { items: [], nextCursor: null };
+    }
+    const rows = await this.db('goal_provider_todos').where('goal_id', goalId)
+      .orderBy('session_id', 'asc').orderBy('item_ordinal', 'asc').orderBy('todo_id', 'asc');
+    const position = cursor ? rows.findIndex(row => checklistCursorKey(row) === cursor.nodeId
+      && Number(row.item_ordinal) === cursor.orderIndex && String(row.updated_at) === cursor.createdAt) : -1;
+    if (cursor && position < 0) {
+      throw new GoalError(GOAL_ERROR_CODES.cursorExpired, 'Provider checklist cursor expired', 410);
+    }
+    const selected = rows.slice(position + 1, position + 1 + limit + 1);
+    const page = selected.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      items: page.map(row => ({
+        sessionId: String(row.session_id), itemId: String(row.todo_id), text: String(row.body),
+        status: row.status as GoalChecklistItem['status'], source: row.source_kind as GoalChecklistItem['source'],
+        orderIndex: Number(row.item_ordinal), eventSequence: Number(row.event_sequence),
+      })),
+      nextCursor: selected.length > limit && last ? encodeChecklistCursor(binding, {
+        orderIndex: Number(last.item_ordinal), nodeId: checklistCursorKey(last), createdAt: String(last.updated_at),
+      }) : null,
+    };
   }
 
   async compactOutput(goalId: string, throughSequence: number, fence: GoalLeaseFence): Promise<void> {
@@ -325,7 +370,12 @@ function findSourceEvent(trx: Knex.Transaction, goalId: string, input: DurableGo
     source_attempt_id: input.source.attemptId,
     source_provider_sequence: input.source.providerSequence,
     source_chunk_index: input.source.chunkIndex, lease_generation: input.source.leaseGeneration,
+    source_namespace: 'provider',
   }).first();
+}
+
+function checklistCursorKey(row: Record<string, unknown>): string {
+  return `${String(row.session_id)}:${String(row.source_kind)}:${String(row.todo_id)}`;
 }
 
 async function nextLegacySequence(trx: Knex.Transaction, goalId: string): Promise<number> {

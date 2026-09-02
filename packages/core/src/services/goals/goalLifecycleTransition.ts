@@ -101,6 +101,7 @@ async function appendLifecycleEvent(
   const actor = policy.controllerAuthoritative ? input.leaseOwner! : 'operator';
   await appendControlEvent(trx, goal, {
     type: 'lifecycle.state_changed',
+    namespace: 'lifecycle',
     payload: {
       from: goal.state, to: input.toState,
       ...(input.reason === undefined ? {} : { reason: input.reason }),

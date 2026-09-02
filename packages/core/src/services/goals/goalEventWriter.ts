@@ -1,5 +1,10 @@
 import type { Knex } from 'knex';
-import { DURABLE_GOAL_EVENT_SCHEMA_VERSION, type DurableGoalEventType } from '@propr/shared';
+import {
+  DURABLE_GOAL_EVENT_SCHEMA_VERSION,
+  isInternalGoalEventType,
+  validateDurableGoalEvent,
+  type InternalGoalEventType,
+} from '@propr/shared';
 import type { GoalEventRecord } from './goalTypes.js';
 import { nowIso } from './goalRepositorySupport.js';
 import { canonicalizeRuntimeJson } from './strictCanonicalJson.js';
@@ -21,6 +26,8 @@ export interface ControlEventIdentity {
   chunkIndex?: number;
   leaseGeneration: number;
 }
+
+export type ControlEventNamespace = 'lifecycle' | 'message-audit' | 'scheduler' | 'external-control';
 
 export async function ensureGoalEventState(
   trx: Knex.Transaction,
@@ -56,7 +63,8 @@ export async function appendControlEvent(
   trx: Knex.Transaction,
   goal: { goal_id: string; lease_epoch: number },
   input: {
-    type: DurableGoalEventType;
+    type: InternalGoalEventType;
+    namespace: ControlEventNamespace;
     kind?: 'lifecycle' | 'domain';
     payload: Record<string, unknown>;
     idempotencyKey: string;
@@ -64,9 +72,23 @@ export async function appendControlEvent(
     createdAt?: string;
   }
 ): Promise<number> {
+  if (!isInternalGoalEventType(input.type)) {
+    throw new Error(`Provider event ${input.type} cannot use the trusted internal writer`);
+  }
+  const validation = validateDurableGoalEvent({
+    schemaVersion: DURABLE_GOAL_EVENT_SCHEMA_VERSION,
+    type: input.type,
+    payload: input.payload,
+    source: { ...input.identity, chunkIndex: input.identity.chunkIndex ?? 0 },
+    idempotencyKey: 'internal-validation',
+    leaseOwner: 'internal-validation',
+    leaseEpoch: Math.max(goal.lease_epoch, 1),
+  });
+  if (!validation.ok) throw new Error(`Invalid trusted goal event: ${validation.error}`);
+  const internalKey = `internal:${input.namespace}:${input.idempotencyKey}`;
   const existing = await trx<GoalEventRecord>('goal_events').where({
     goal_id: goal.goal_id,
-    idempotency_key: input.idempotencyKey,
+    idempotency_key: internalKey,
   }).first();
   const payloadJson = canonicalizeRuntimeJson(input.payload);
   if (existing) {
@@ -77,7 +99,8 @@ export async function appendControlEvent(
       || existing.source_attempt_id !== input.identity.attemptId
       || existing.source_provider_sequence !== input.identity.providerSequence
       || existing.source_chunk_index !== (input.identity.chunkIndex ?? 0)
-      || existing.lease_generation !== input.identity.leaseGeneration) {
+      || existing.lease_generation !== input.identity.leaseGeneration
+      || existing.source_namespace !== `internal:${input.namespace}`) {
       throw new Error(`Conflicting internal goal event identity: ${input.idempotencyKey}`);
     }
     return existing.sequence;
@@ -89,7 +112,7 @@ export async function appendControlEvent(
     kind: input.kind ?? (input.type === 'lifecycle.state_changed' ? 'lifecycle' : 'domain'),
     event_type: input.type,
     payload_json: payloadJson,
-    idempotency_key: input.idempotencyKey,
+    idempotency_key: internalKey,
     lease_epoch: goal.lease_epoch,
     schema_version: DURABLE_GOAL_EVENT_SCHEMA_VERSION,
     source_session_id: input.identity.sessionId,
@@ -99,6 +122,7 @@ export async function appendControlEvent(
     source_provider_sequence: input.identity.providerSequence,
     source_chunk_index: input.identity.chunkIndex ?? 0,
     lease_generation: input.identity.leaseGeneration,
+    source_namespace: `internal:${input.namespace}`,
     payload_bytes: Buffer.byteLength(payloadJson),
     created_at: input.createdAt ?? nowIso(),
   });
@@ -113,7 +137,7 @@ export function lifecycleControlIdentity(
 ): ControlEventIdentity {
   const occurrence = `${goalId}:${version}`;
   return {
-    sessionId: `control:${actor}`,
+    sessionId: `internal:lifecycle:${actor}`,
     turnId: occurrence,
     executionId: occurrence,
     attemptId: occurrence,

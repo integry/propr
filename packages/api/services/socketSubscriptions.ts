@@ -10,10 +10,12 @@ import {
   goalRoom, normalizeRepositorySubscription, normalizeSocketResourceId, taskRoom, userRoom,
 } from './socketSubscriptionResources.js';
 import {
+  SocketJoinSerializer,
   SocketSubscriptionState,
   type SocketSubscriptionErrorCode,
   type SocketSubscriptionRequest,
 } from './socketSubscriptionState.js';
+import { SocketGoalTailManager } from './socketGoalTail.js';
 import {
   canAccessRepositoryIndexing as authorizeRepositoryIndexing,
   ownsDraft as authorizeDraft,
@@ -43,9 +45,12 @@ interface SocketSubscriptionDependencies {
 
 export class SocketSubscriptionManager {
   private readonly subscriptionState = new SocketSubscriptionState();
-  private readonly goalTails = new WeakMap<Socket, Map<string, ReturnType<typeof setInterval>>>();
+  private readonly joinSerializer = new SocketJoinSerializer();
+  private readonly goalTails: SocketGoalTailManager;
 
-  constructor(private readonly dependencies: SocketSubscriptionDependencies) {}
+  constructor(private readonly dependencies: SocketSubscriptionDependencies) {
+    this.goalTails = new SocketGoalTailManager(dependencies);
+  }
 
   setup(socket: Socket): void {
     const principal = this.getPrincipal(socket);
@@ -101,34 +106,39 @@ export class SocketSubscriptionManager {
   ): Promise<boolean> {
     const { event, room, authorize, authorizationError = 'FORBIDDEN', onJoined } = request;
     const generation = this.subscriptionState.begin(socket, room);
-    let joined = false;
-    try {
-      if (!await revalidateSocketAuthentication(socket)) return false;
-      if (!this.subscriptionState.current(socket, room, generation)) return false;
-      const authorized = await authorize();
-      if (!this.subscriptionState.current(socket, room, generation)) return false;
-      if (!authorized) {
-        this.reject(socket, event, authorizationError);
-        return false;
+    return this.joinSerializer.run(socket, room, async () => {
+      let joined = false;
+      let successful = false;
+      try {
+        if (!await revalidateSocketAuthentication(socket)) return false;
+        if (!this.subscriptionState.current(socket, room, generation)) return false;
+        const authorized = await authorize();
+        if (!this.subscriptionState.current(socket, room, generation)) return false;
+        if (!authorized) {
+          this.reject(socket, event, authorizationError);
+          return false;
+        }
+        if (!socket.connected) return false;
+        if (!this.canJoin(socket, room)) {
+          this.reject(socket, event, 'SUBSCRIPTION_LIMIT');
+          return false;
+        }
+        if (!this.subscriptionState.current(socket, room, generation)) return false;
+        await socket.join(room);
+        joined = true;
+        if (!this.subscriptionState.current(socket, room, generation)) return false;
+        await onJoined?.(() => this.subscriptionState.current(socket, room, generation));
+        if (!this.subscriptionState.current(socket, room, generation)) return false;
+        successful = true;
+        return true;
+      } catch (error) {
+        this.subscriptionState.cancel(socket, room);
+        throw error;
+      } finally {
+        if (joined && !successful) await socket.leave(room);
+        this.subscriptionState.finish(socket, room);
       }
-      if (!socket.connected) return false;
-      if (!this.canJoin(socket, room)) {
-        this.reject(socket, event, 'SUBSCRIPTION_LIMIT');
-        return false;
-      }
-      if (!this.subscriptionState.current(socket, room, generation)) return false;
-      await socket.join(room);
-      joined = true;
-      if (!this.subscriptionState.current(socket, room, generation)) return false;
-      await onJoined?.();
-      return true;
-    } catch (error) {
-      this.subscriptionState.cancel(socket, room);
-      if (joined || socket.rooms.has(room)) await socket.leave(room);
-      throw error;
-    } finally {
-      this.subscriptionState.finish(socket, room);
-    }
+    });
   }
 
   private setupTaskHandlers(socket: Socket): void {
@@ -279,7 +289,7 @@ export class SocketSubscriptionManager {
           event: 'subscribe:goal', room,
           authorize: () => this.ownsGoal(socket, goalId),
           authorizationError: 'RECONNECT_REQUIRED',
-          onJoined: async () => {
+          onJoined: async (isCurrent) => {
             const database = this.dependencies.getQueueDependencies()?.db;
             if (!database) return;
             const repository = new GoalRepository(database);
@@ -289,6 +299,7 @@ export class SocketSubscriptionManager {
             // therefore either in this replay or in the subsequent SQL tail;
             // Socket.IO delivery is never treated as a durability ack.
             while (pages < 10) {
+              if (!isCurrent()) return;
               if (!await revalidateSocketAuthentication(socket) || !await this.ownsGoal(socket, goalId)) {
                 throw new GoalError('goal_repository_forbidden', 'Repository access was revoked', 403);
               }
@@ -296,6 +307,7 @@ export class SocketSubscriptionManager {
                 cursor: replayCursor, limit: 100, maxBytes: 256 * 1024,
               });
               if (page.events.length > 0) {
+                if (!isCurrent()) return;
                 if (!await revalidateSocketAuthentication(socket) || !await this.ownsGoal(socket, goalId)) {
                   throw new GoalError('goal_repository_forbidden', 'Repository access was revoked', 403);
                 }
@@ -317,15 +329,16 @@ export class SocketSubscriptionManager {
               await socket.leave(room);
               return;
             }
+            if (!isCurrent()) return;
             socket.emit('goal:subscribed', {
               schemaVersion: 1, goalId, cursor: replayCursor,
             });
-            this.startGoalTail(socket, goalId, replayCursor);
+            this.goalTails.start(socket, goalId, replayCursor, () => this.ownsGoal(socket, goalId));
           },
         });
       } catch (error) {
         console.error(`[SocketService] Failed goal subscription for ${goalId}:`, error);
-        this.stopGoalTail(socket, goalId);
+        this.goalTails.stop(socket, goalId);
         await socket.leave(room);
         this.reject(socket, 'subscribe:goal', socketGoalErrorCode(error));
       }
@@ -336,76 +349,9 @@ export class SocketSubscriptionManager {
       if (!goalId) return;
       const room = goalRoom(goalId);
       this.subscriptionState.cancel(socket, room);
-      this.stopGoalTail(socket, goalId);
+      this.goalTails.stop(socket, goalId);
       await socket.leave(room);
     });
-  }
-
-  private startGoalTail(socket: Socket, goalId: string, initialCursor: string | null): void {
-    this.stopGoalTail(socket, goalId);
-    let tails = this.goalTails.get(socket);
-    if (!tails) {
-      tails = new Map();
-      this.goalTails.set(socket, tails);
-    }
-    let cursor = initialCursor;
-    let running = false;
-    let backpressureTicks = 0;
-    const timer = setInterval(() => {
-      if (running) return;
-      running = true;
-      void (async () => {
-        const room = goalRoom(goalId);
-        if (!socket.connected || !socket.rooms.has(room)) return this.stopGoalTail(socket, goalId);
-        if (!socket.conn.transport.writable) {
-          backpressureTicks += 1;
-          if (backpressureTicks >= 10) {
-            this.stopGoalTail(socket, goalId);
-            await socket.leave(room);
-            this.reject(socket, 'subscribe:goal', 'RECONNECT_REQUIRED');
-          }
-          return;
-        }
-        backpressureTicks = 0;
-        if (!await revalidateSocketAuthentication(socket) || !await this.ownsGoal(socket, goalId)) {
-          this.stopGoalTail(socket, goalId);
-          await socket.leave(room);
-          this.reject(socket, 'subscribe:goal', 'RECONNECT_REQUIRED');
-          return;
-        }
-        const database = this.dependencies.getQueueDependencies()?.db;
-        if (!database) return;
-        const page = await new GoalRepository(database).readEventPage(goalId, {
-          cursor, limit: 100, maxBytes: 256 * 1024,
-        });
-        if (page.events.length > 0) {
-          if (!socket.connected || !socket.rooms.has(room) || !socket.conn.transport.writable
-            || !await revalidateSocketAuthentication(socket) || !await this.ownsGoal(socket, goalId)) {
-            throw new GoalError('goal_repository_forbidden', 'Goal delivery authorization changed', 403);
-          }
-          await emitGoalEvents(socket, {
-            schemaVersion: 1, goalId, events: page.events.map(toPublicGoalEvent),
-            cursor: page.lastCursor, asOfSequence: page.asOfSequence,
-          }, this.dependencies.goalAcknowledgementTimeoutMs);
-          cursor = page.lastCursor;
-        }
-      })().catch(async error => {
-        console.error(`[SocketService] Goal tail failed for ${goalId}:`, error);
-        this.stopGoalTail(socket, goalId);
-        await socket.leave(goalRoom(goalId));
-        this.reject(socket, 'subscribe:goal', socketGoalErrorCode(error));
-      }).finally(() => { running = false; });
-    }, 500);
-    timer.unref?.();
-    tails.set(goalId, timer);
-  }
-
-  private stopGoalTail(socket: Socket, goalId: string): void {
-    const tails = this.goalTails.get(socket);
-    const timer = tails?.get(goalId);
-    if (timer) clearInterval(timer);
-    tails?.delete(goalId);
-    if (tails?.size === 0) this.goalTails.delete(socket);
   }
 
   private setupDisconnectHandler(socket: Socket): void {
@@ -422,9 +368,8 @@ export class SocketSubscriptionManager {
           console.error(`[SocketService] Failed to stop disconnected live task watcher ${taskId}:`, error);
         });
       }
-      const tails = this.goalTails.get(socket);
-      if (tails) for (const timer of tails.values()) clearInterval(timer);
-      this.goalTails.delete(socket);
+      this.goalTails.clear(socket);
+      this.joinSerializer.clear(socket);
     });
   }
 }

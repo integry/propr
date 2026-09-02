@@ -37,6 +37,23 @@ export async function up(knex) {
   }
   if (!await knex.schema.hasTable('goal_event_state')) await installDurableReplay(knex);
   await knex.raw(`
+    CREATE UNIQUE INDEX IF NOT EXISTS goal_provider_sessions_thread_unique_idx
+    ON goal_provider_sessions (agent, provider_thread_id)
+    WHERE provider_thread_id IS NOT NULL
+  `);
+  await addColumns(knex, 'goal_events', [
+    ['source_namespace', table => table.text('source_namespace').notNullable().defaultTo('migration')],
+  ]);
+  await knex.raw('DROP INDEX IF EXISTS goal_events_source_occurrence_idx');
+  await knex.raw(`
+    CREATE UNIQUE INDEX goal_events_source_occurrence_idx
+    ON goal_events (
+      goal_id, source_namespace, source_session_id, source_turn_id, source_execution_id,
+      source_attempt_id, source_provider_sequence, source_chunk_index, lease_generation
+    )
+    WHERE source_session_id IS NOT NULL
+  `);
+  await knex.raw(`
     UPDATE goal_events
     SET source_session_id = COALESCE(source_session_id, 'migration:event:' || id),
         source_turn_id = COALESCE(source_turn_id, 'migration:event:' || id),
@@ -65,6 +82,11 @@ export async function up(knex) {
   await addColumns(knex, 'goal_usage_watermarks', WATERMARK_COLUMNS.map(column => [
     column, table => table.integer(column).notNullable().defaultTo(-1),
   ]));
+  await addColumns(knex, 'goal_provider_todos', [
+    ['source_kind', table => table.text('source_kind').notNullable().defaultTo('todo')],
+    ['item_ordinal', table => table.integer('item_ordinal').notNullable().defaultTo(0)],
+    ['updated_at', table => table.text('updated_at').notNullable().defaultTo('1970-01-01T00:00:00.000Z')],
+  ]);
   await knex.raw(`
     CREATE UNIQUE INDEX IF NOT EXISTS goal_usage_occurrence_stable_idx
     ON goal_usage_occurrences (goal_id, session_id, execution_id, attempt_id, occurrence_id)

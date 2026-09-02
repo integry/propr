@@ -16,7 +16,7 @@ import type {
   GoalListRequest,
   GoalListResponse,
   GoalCannedAction,
-  DurableGoalEventInput,
+  DurableGoalProviderEventInput,
   DurableGoalEventType,
   GoalMessageDeliveryIdentity,
 } from '@propr/shared';
@@ -80,6 +80,7 @@ export interface GoalEventRecord {
   source_chunk_index?: number | null;
   lease_generation?: number | null;
   payload_bytes?: number;
+  source_namespace?: string;
 }
 
 export interface GoalMessageRecord {
@@ -280,7 +281,7 @@ export interface EnqueueMessageInput {
   authorUserId?: string;
 }
 
-export type AppendTypedGoalEventInput = DurableGoalEventInput;
+export type AppendProviderGoalEventInput = DurableGoalProviderEventInput;
 
 export interface GoalEventPageResult {
   events: GoalEvent[];
@@ -289,12 +290,19 @@ export interface GoalEventPageResult {
   asOfSequence: number;
 }
 
-export interface GoalProviderTodo {
+export interface GoalChecklistItem {
   sessionId: string;
-  todoId: string;
-  body: string;
+  itemId: string;
+  text: string;
   status: 'pending' | 'in_progress' | 'completed';
+  source: 'plan' | 'todo';
+  orderIndex: number;
   eventSequence: number;
+}
+
+export interface GoalChecklistPageResult {
+  items: GoalChecklistItem[];
+  nextCursor: string | null;
 }
 
 export interface GoalMessagePageResult {
@@ -364,8 +372,8 @@ export interface GoalActiveTimeStats {
 }
 
 export interface GoalStatistics extends GoalActiveTimeStats {
-  issues: { total: number; ready: number; active: number; processed: number; failed: number; blocked: number };
-  pullRequests: { open: number; reviewPending: number; ultrafixPending: number; mergeReady: number; merged: number };
+  issues: { total: number };
+  pullRequests: { total: number; open: number; merged: number };
   tokens: {
     input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; total: number;
     byProviderModel: Array<{
@@ -375,5 +383,4 @@ export interface GoalStatistics extends GoalActiveTimeStats {
   };
   activeProviders: string[];
   activeModels: string[];
-  controllerState: GoalState;
 }

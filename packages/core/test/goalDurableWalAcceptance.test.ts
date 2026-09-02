@@ -46,7 +46,7 @@ test('two WAL controllers allocate one durable total order and survive restart',
     assert(session);
     second = openWal(filename);
     const repositories = [new GoalRepository(first), new GoalRepository(second)];
-    await Promise.all(repositories.map((repository, index) => repository.appendTypedEvent(goal.goalId, {
+    await Promise.all(repositories.map((repository, index) => repository.appendProviderEvent(goal.goalId, {
       schemaVersion: 1, type: 'provider.output',
       payload: { stream: 'stdout', outputType: 'text', chunk: `controller-${index}` },
       idempotencyKey: `wal-${index}`, ...fence,

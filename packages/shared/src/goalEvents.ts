@@ -12,7 +12,12 @@ export const DURABLE_GOAL_EVENT_TYPES = [
   'scheduler.node_changed',
   'provider.output',
   'provider.output_compacted',
+  'provider.assistant',
+  'provider.tool',
+  'provider.plan',
   'provider.todo',
+  'provider.status',
+  'provider.completed',
   'usage.reported',
   'checkpoint.saved',
   'message.enqueued',
@@ -28,6 +33,40 @@ export const DURABLE_GOAL_EVENT_TYPES = [
 ] as const;
 
 export type DurableGoalEventType = (typeof DURABLE_GOAL_EVENT_TYPES)[number];
+
+/** Events the selected coding-agent session is allowed to submit. */
+export const PROVIDER_GOAL_EVENT_TYPES = [
+  'provider.output',
+  'provider.assistant',
+  'provider.tool',
+  'provider.plan',
+  'provider.todo',
+  'provider.status',
+  'provider.completed',
+  'usage.reported',
+  'checkpoint.saved',
+] as const satisfies readonly DurableGoalEventType[];
+
+export type ProviderGoalEventType = (typeof PROVIDER_GOAL_EVENT_TYPES)[number];
+
+/** Events written only by trusted ProPR lifecycle/control code. */
+export const INTERNAL_GOAL_EVENT_TYPES = [
+  'lifecycle.state_changed',
+  'scheduler.node_changed',
+  'provider.output_compacted',
+  'message.enqueued',
+  'message.claimed',
+  'message.delivered',
+  'message.acknowledged',
+  'message.failed',
+  'message.cancelled',
+  'github.entity_changed',
+  'ci.status_changed',
+  'review.status_changed',
+  'ultrafix.status_changed',
+] as const satisfies readonly DurableGoalEventType[];
+
+export type InternalGoalEventType = (typeof INTERNAL_GOAL_EVENT_TYPES)[number];
 
 export interface GoalEventSourceIdentity {
   sessionId: string;
@@ -70,6 +109,16 @@ export interface DurableGoalEventPayloadMap {
     outputType: GoalOutputType;
     chunk: string | JsonValue;
   };
+  'provider.assistant': { content: string | JsonValue };
+  'provider.tool': {
+    toolName: string;
+    status: string;
+    input?: JsonValue;
+    output?: JsonValue;
+  };
+  'provider.plan': {
+    items: Array<{ id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }>;
+  };
   'provider.output_compacted': {
     originalType: 'provider.output';
     contentDigest: string;
@@ -77,6 +126,11 @@ export interface DurableGoalEventPayloadMap {
   };
   'provider.todo': {
     items: Array<{ id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }>;
+  };
+  'provider.status': { status: string; detail?: string };
+  'provider.completed': {
+    status: 'completed' | 'failed' | 'cancelled';
+    summary?: string;
   };
   'usage.reported': {
     provider: string;
@@ -131,6 +185,11 @@ export type DurableGoalEventInput = {
   }
 }[DurableGoalEventType];
 
+export type DurableGoalProviderEventInput = Extract<
+  DurableGoalEventInput,
+  { type: ProviderGoalEventType }
+>;
+
 export interface GoalEventEnvelopeV1 {
   schemaVersion: typeof DURABLE_GOAL_EVENT_SCHEMA_VERSION;
   goalId: string;
@@ -163,11 +222,22 @@ export const DURABLE_GOAL_EVENT_REGISTRY: Readonly<Record<DurableGoalEventType, 
     required: { stream: 'string', outputType: 'string', chunk: 'output' },
     enum: { stream: ['stdout', 'stderr', 'structured'], outputType: ['text', 'json'] },
   },
+  'provider.assistant': { required: { content: 'output' } },
+  'provider.tool': {
+    required: { toolName: 'string', status: 'string' },
+    optional: { input: 'output', output: 'output' },
+  },
+  'provider.plan': { required: { items: 'todo-items' } },
   'provider.output_compacted': {
     required: { originalType: 'string', contentDigest: 'string', payloadBytes: 'integer' },
     enum: { originalType: ['provider.output'] },
   },
   'provider.todo': { required: { items: 'todo-items' } },
+  'provider.status': { required: { status: 'string' }, optional: { detail: 'string' } },
+  'provider.completed': {
+    required: { status: 'string' }, optional: { summary: 'string' },
+    enum: { status: ['completed', 'failed', 'cancelled'] },
+  },
   'usage.reported': {
     required: {
       provider: 'string', model: 'string', occurrenceId: 'string', inputTokens: 'integer',
@@ -299,4 +369,12 @@ export function validateDurableGoalEvent(
 
 export function isDurableGoalEventType(value: string): value is DurableGoalEventType {
   return Object.hasOwn(DURABLE_GOAL_EVENT_REGISTRY, value);
+}
+
+export function isProviderGoalEventType(value: string): value is ProviderGoalEventType {
+  return (PROVIDER_GOAL_EVENT_TYPES as readonly string[]).includes(value);
+}
+
+export function isInternalGoalEventType(value: string): value is InternalGoalEventType {
+  return (INTERNAL_GOAL_EVENT_TYPES as readonly string[]).includes(value);
 }

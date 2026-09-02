@@ -1,8 +1,8 @@
 // Shared goal control-plane contracts.
 //
-// These types define the source-of-truth domain for long-running goals: their
-// lifecycle state machine, hierarchical nodes, provider sessions, events,
-// corrective messages, and the fenced controller-lease semantics. They are the
+// These types define the durable transport around a selected coding agent's
+// native goal session: lifecycle, passive external associations, provider
+// events/checklist, corrective messages, and fenced controller-lease semantics. They are the
 // stable surface consumed by the SQLite repositories, the HTTP API, and the UI.
 //
 // The state machine and error codes live here (not in the database or a single
@@ -106,8 +106,8 @@ export const GOAL_CANNED_ACTION_TEXT: Readonly<Record<GoalCannedAction, string>>
   whats_left: "What's left?",
 };
 export const GOAL_CANNED_ACTION_MEANING: Readonly<Record<GoalCannedAction, string>> = {
-  whats_done: 'Authoritative checklist items currently completed by the controller',
-  whats_left: 'Authoritative checklist items not currently completed by the controller',
+  whats_done: 'Ask the selected coding agent to report what is done in its native goal session',
+  whats_left: 'Ask the selected coding agent to report what remains in its native goal session',
 };
 
 /** How a completed goal's pull requests are merged. */
@@ -246,8 +246,6 @@ export interface GoalSummaryView {
   ultrafixGoal: number | null;
   ultrafixMaxCycles: number | null;
   version: number;
-  nodeCount: number;
-  activeNodeCount: number;
   latestSequence: number;
   createdAt: string;
   updatedAt: string;
@@ -276,7 +274,7 @@ export interface PublicGoalDto {
   updatedAt: string;
 }
 
-/** Public hierarchy node without durable idempotency/controller metadata. */
+/** Legacy/passive external association node without controller metadata. */
 export interface PublicGoalNodeDto {
   nodeId: string;
   goalId: string;
@@ -316,8 +314,8 @@ export interface PublicGoalStatsDto {
   activeMs: number;
   currentlyPaused: boolean;
   recoveryMs: number;
-  issues: { total: number; ready: number; active: number; processed: number; failed: number; blocked: number };
-  pullRequests: { open: number; reviewPending: number; ultrafixPending: number; mergeReady: number; merged: number };
+  issues: { total: number };
+  pullRequests: { total: number; open: number; merged: number };
   tokens: {
     input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; total: number;
     byProviderModel: Array<{
@@ -327,27 +325,28 @@ export interface PublicGoalStatsDto {
   };
   activeProviders: string[];
   activeModels: string[];
-  controllerState: GoalState;
+}
+
+/** Current provider-native plan/todo projection. ProPR does not author these items. */
+export interface PublicGoalChecklistItemDto {
+  sessionId: string;
+  itemId: string;
+  text: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  source: 'plan' | 'todo';
+  orderIndex: number;
+  eventSequence: number;
 }
 
 /** Canonical public detail read model shared by the API and UI. */
 export interface PublicGoalDetailDto {
   goal: PublicGoalDto;
-  nodes: PublicGoalNodeDto[];
-  dependencies: Array<{ nodeId: string; dependsOnNodeId: string }>;
+  checklist: PublicGoalChecklistItemDto[];
   messages: PublicGoalMessageDto[];
   messagesNextCursor: string | null;
   checklistNextCursor: string | null;
   summary: GoalSummaryView;
   stats: PublicGoalStatsDto;
-  /** Provider suggestions; never authoritative execution checklist state. */
-  providerAdvisoryTodos: Array<{
-    sessionId: string;
-    todoId: string;
-    body: string;
-    status: 'pending' | 'in_progress' | 'completed';
-    eventSequence: number;
-  }>;
   asOfVersion: number;
   asOfSequence: number;
 }
@@ -365,7 +364,7 @@ export interface GoalMessagePage {
 }
 
 export interface GoalChecklistPage {
-  nodes: PublicGoalNodeDto[];
+  items: PublicGoalChecklistItemDto[];
   nextCursor: string | null;
   asOfSequence: number;
 }

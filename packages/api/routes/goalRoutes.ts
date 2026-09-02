@@ -53,6 +53,7 @@ import {
   toPublicGoalEvent,
   toPublicGoalMessage,
 } from './goalRouteDtos.js';
+import { toPublicGoalChecklistItem } from './goalChecklistDto.js';
 import {
   boundedOptionalText, parseExpectedVersion, parseLimit, requireUserId,
   resolveIdempotencyKey, sendGoalError,
@@ -383,18 +384,13 @@ export function createGoalRoutes(deps: GoalRoutesDeps = {}) {
           : (() => { throw new GoalError(GOAL_ERROR_CODES.invalidCursor, 'Goal cursor is invalid', 400); })();
       const limit = parseLimit(req.query.limit, GOAL_CHECKLIST_MAX_LIMIT);
       const page = await repository.withReadSnapshot(async snapshot => {
-        const nodes = await snapshot.readNodePage(req.params.goalId, { cursor, limit });
+        const checklist = await snapshot.readProviderChecklistPage(req.params.goalId, { cursor, limit });
         const asOfSequence = await snapshot.getLatestSequence(req.params.goalId);
-        return { ...nodes, asOfSequence };
+        return { ...checklist, asOfSequence };
       });
       res.json({
         schemaVersion: 1,
-        nodes: page.nodes.map(node => ({
-          nodeId: node.nodeId, goalId: node.goalId, parentNodeId: node.parentNodeId,
-          kind: node.kind, externalRef: node.externalRef, externalKind: node.externalKind,
-          title: node.title, status: node.status, orderIndex: node.orderIndex,
-          createdAt: node.createdAt, updatedAt: node.updatedAt,
-        })),
+        items: page.items.map(toPublicGoalChecklistItem),
         nextCursor: page.nextCursor,
         asOfSequence: page.asOfSequence,
       });

@@ -1,14 +1,14 @@
 import type { Knex } from 'knex';
 import {
   GOAL_CANNED_ACTIONS, GOAL_ERROR_CODES, GOAL_MESSAGE_BODY_MAX_LENGTH,
-  type DurableGoalEventType, type GoalCannedAction,
+  type InternalGoalEventType, type GoalCannedAction,
 } from '@propr/shared';
 import type {
   ClaimMessageInput, EnqueueMessageInput, GoalLeaseFence, GoalMessage,
   GoalMessageRecord, GoalProviderSessionRecord, MessageDeliveryFence,
 } from './goalTypes.js';
 import {
-  GoalError, boundedText, idempotencyKey, nowIso, requireGoalRecord, toMessage,
+  GoalError, boundedText, idempotencyKey, nowIso, toMessage,
 } from './goalRepositorySupport.js';
 import { appendControlEvent } from './goalEventWriter.js';
 
@@ -87,24 +87,6 @@ export function compareMessage(row: GoalMessageRecord, input: NormalizedMessage)
     throw new GoalError(GOAL_ERROR_CODES.idempotencyConflict, 'Message idempotency key was reused with a different payload', 409);
   }
   return toMessage(row);
-}
-
-export async function buildAuthoritativeStatusBody(
-  trx: Knex.Transaction, goalId: string, action: GoalCannedAction
-): Promise<string> {
-  const goal = await requireGoalRecord(trx, goalId);
-  const rows = await trx('goal_nodes').where('goal_id', goalId)
-    .groupBy('status').select('status').count({ count: '*' }) as Array<{ status: string; count: number | string }>;
-  const counts = new Map(rows.map(row => [String(row.status), Number(row.count)]));
-  const completed = counts.get('completed') ?? 0;
-  const remaining = rows.reduce((total, row) => (
-    row.status === 'completed' || row.status === 'cancelled' ? total : total + Number(row.count)
-  ), 0);
-  return action === 'whats_done'
-    ? `Controller status ${goal.state}: ${completed} authoritative checklist item(s) completed.`
-    : `Controller status ${goal.state}: ${remaining} authoritative checklist item(s) left; `
-      + `${counts.get('in_progress') ?? 0} active, ${counts.get('blocked') ?? 0} blocked, `
-      + `${counts.get('failed') ?? 0} failed.`;
 }
 
 export function sanitizeError(value: string): string {
@@ -265,7 +247,7 @@ export async function appendAudit(
   trx: Knex.Transaction,
   goal: { goal_id: string; lease_epoch: number },
   input: {
-    type: DurableGoalEventType; payload: Record<string, unknown>;
+    type: InternalGoalEventType; payload: Record<string, unknown>;
     idempotencyKey: string; createdAt?: string;
   }
 ): Promise<number> {
@@ -274,11 +256,12 @@ export async function appendAudit(
   const stage = ({
     'message.enqueued': 10, 'message.claimed': 11, 'message.delivered': 12,
     'message.acknowledged': 13, 'message.failed': 14, 'message.cancelled': 15,
-  } as Partial<Record<DurableGoalEventType, number>>)[input.type] ?? 0;
+  } as Partial<Record<InternalGoalEventType, number>>)[input.type] ?? 0;
   return appendControlEvent(trx, goal, {
     ...input,
+    namespace: 'message-audit',
     identity: {
-      sessionId: String(input.payload.sessionId ?? `control:${messageId}`), turnId,
+      sessionId: `internal:message-audit:${messageId}`, turnId,
       executionId: String(input.payload.executionId ?? turnId),
       attemptId: String(input.payload.attemptId ?? turnId),
       providerSequence: Number(input.payload.providerSequence ?? input.payload.queueOrdinal ?? 0),

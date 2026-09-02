@@ -3,7 +3,6 @@ import type {
   GoalDetail,
   GoalEvent,
   GoalMessage,
-  GoalNode,
 } from '@propr/core';
 import { redactSecrets } from '@propr/core';
 import type {
@@ -12,8 +11,8 @@ import type {
   PublicGoalDto,
   PublicGoalEventDto,
   PublicGoalMessageDto,
-  PublicGoalNodeDto,
 } from '@propr/shared';
+import { toPublicGoalChecklistItem } from './goalChecklistDto.js';
 import { redactPublicPathTokens } from './goalRoutePublicStringSanitizer.js';
 import { isDurableGoalEventType, validateDurableGoalEvent } from '@propr/shared';
 
@@ -76,6 +75,12 @@ const TYPED_EVENT_KEY_NAMES = new Set([
   'stream',
   'outputType',
   'chunk',
+  'content',
+  'toolName',
+  'input',
+  'output',
+  'detail',
+  'summary',
   'originalType',
   'contentDigest',
   'payloadBytes',
@@ -355,22 +360,6 @@ export function toPublicGoal(goal: Goal): PublicGoalDto {
   };
 }
 
-export function toPublicGoalNode(node: GoalNode): PublicGoalNodeDto {
-  return {
-    nodeId: node.nodeId,
-    goalId: node.goalId,
-    parentNodeId: node.parentNodeId,
-    kind: node.kind,
-    externalRef: node.externalRef,
-    externalKind: node.externalKind,
-    title: node.title,
-    status: node.status,
-    orderIndex: node.orderIndex,
-    createdAt: node.createdAt,
-    updatedAt: node.updatedAt,
-  };
-}
-
 export function toPublicGoalMessage(message: GoalMessage): PublicGoalMessageDto {
   return {
     messageId: message.messageId,
@@ -418,17 +407,12 @@ export function toPublicGoalEvent(event: GoalEvent): PublicGoalEventDto {
 export function toPublicGoalDetail(detail: GoalDetail): PublicGoalDetailDto {
   return {
     goal: toPublicGoal(detail.goal),
-    nodes: detail.nodes.map(toPublicGoalNode),
-    dependencies: detail.dependencies.map((dependency) => ({
-      nodeId: dependency.nodeId,
-      dependsOnNodeId: dependency.dependsOnNodeId,
-    })),
+    checklist: detail.checklist.map(toPublicGoalChecklistItem),
     messages: detail.messages.map(toPublicGoalMessage),
     messagesNextCursor: detail.messagesNextCursor,
     checklistNextCursor: detail.checklistNextCursor,
     summary: detail.summary,
     stats: detail.stats,
-    providerAdvisoryTodos: detail.providerAdvisoryTodos,
     asOfVersion: detail.asOfVersion,
     asOfSequence: detail.asOfSequence,
   };

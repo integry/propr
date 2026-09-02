@@ -24,13 +24,10 @@ export class GoalStatisticsRepository {
     // chains expose the expanded deterministic aggregate below.
     if (!enhanced) return timing as GoalStatistics;
     const nodes = await this.db<GoalNodeRecord>('goal_nodes').where('goal_id', goalId);
-    const dependencies = await this.db('goal_node_dependencies').where('goal_id', goalId);
-    const issueStats = buildIssueStats(nodes, dependencies);
-
     const external = enhanced
       ? await this.db('goal_external_projections').where('goal_id', goalId)
       : [];
-    const prStats = buildPullRequestStats(nodes, external);
+    const associations = buildAssociationStats(nodes, external);
 
     const usage = await this.readUsage(goalId, enhanced);
     const byProviderModel = usage.map(row => ({
@@ -52,12 +49,11 @@ export class GoalStatisticsRepository {
     return {
       ...timing,
       activeMs: Math.max(0, timing.elapsedMs - timing.pausedMs - timing.recoveryMs),
-      issues: issueStats,
-      pullRequests: prStats,
+      issues: associations.issues,
+      pullRequests: associations.pullRequests,
       tokens: { ...tokenTotals, byProviderModel },
       activeProviders: providerActive ? [...new Set(sessions.map(row => String(row.agent)))].sort() : [],
       activeModels: providerActive ? [...new Set(sessions.map(row => String(row.effective_model)))].sort() : [],
-      controllerState: goal.state,
     };
   }
 
@@ -74,54 +70,27 @@ export class GoalStatisticsRepository {
   }
 }
 
-function buildIssueStats(nodes: GoalNodeRecord[], dependencies: Array<Record<string, string>>) {
-  const completed = new Set(nodes.filter(node => node.status === 'completed').map(node => node.node_id));
-  const dependencyMap = new Map<string, string[]>();
-  for (const edge of dependencies) {
-    const current = dependencyMap.get(edge.node_id) ?? [];
-    current.push(edge.depends_on_node_id);
-    dependencyMap.set(edge.node_id, current);
-  }
-  const issues = nodes.filter(node => node.kind === 'implementation_issue');
-  return {
-    total: issues.length,
-    ready: issues.filter(node => node.status === 'pending'
-      && (dependencyMap.get(node.node_id) ?? []).every(id => completed.has(id))).length,
-    active: issues.filter(node => node.status === 'in_progress').length,
-    processed: issues.filter(node => node.status === 'completed').length,
-    failed: issues.filter(node => node.status === 'failed').length,
-    blocked: issues.filter(node => node.status === 'blocked').length,
-  };
-}
-
-function buildPullRequestStats(nodes: GoalNodeRecord[], external: Array<Record<string, unknown>>) {
+function buildAssociationStats(nodes: GoalNodeRecord[], external: Array<Record<string, unknown>>) {
+  const issues = new Set<number>();
   const pullRequests = new Map<number, string>();
-  const statuses = new Map<string, string>();
   for (const row of external) {
-    statuses.set(`${row.entity_type}:${row.entity_number}`, String(row.status));
+    if (row.entity_type === 'issue') issues.add(Number(row.entity_number));
     if (row.entity_type === 'pull_request') pullRequests.set(Number(row.entity_number), String(row.status));
   }
-  for (const node of nodes.filter(item => item.kind === 'implementation_pr')) {
+  for (const node of nodes) {
     const number = Number(node.external_ref);
-    if (Number.isSafeInteger(number) && !pullRequests.has(number)) {
-      pullRequests.set(number, node.status === 'completed' ? 'merged' : 'open');
+    if (!Number.isSafeInteger(number)) continue;
+    if (node.external_kind === 'issue' || node.kind === 'implementation_issue') issues.add(number);
+    if ((node.external_kind === 'pull_request' || node.kind === 'implementation_pr') && !pullRequests.has(number)) {
+      pullRequests.set(number, 'associated');
     }
   }
-  const pending = [...pullRequests].filter(([, status]) => status !== 'merged');
   return {
-    open: pending.length,
-    reviewPending: pending.filter(([number]) => isPending(statuses.get(`review:${number}`))).length,
-    ultrafixPending: pending.filter(([number]) => isPending(statuses.get(`ultrafix:${number}`), true)).length,
-    mergeReady: pending.filter(([number, status]) => status === 'merge_ready'
-      || statuses.get(`ci:${number}`) === 'success' && statuses.get(`review:${number}`) === 'approved'
-        && !isPending(statuses.get(`ultrafix:${number}`), true)).length,
-    merged: [...pullRequests.values()].filter(status => status === 'merged').length,
+    issues: { total: issues.size },
+    pullRequests: {
+      total: pullRequests.size,
+      open: [...pullRequests.values()].filter(status => status !== 'merged' && status !== 'closed').length,
+      merged: [...pullRequests.values()].filter(status => status === 'merged').length,
+    },
   };
-}
-
-function isPending(status: string | undefined, allowNotRequired = false): boolean {
-  const complete = allowNotRequired
-    ? ['complete', 'passed', 'not_required']
-    : ['approved', 'complete', 'passed'];
-  return Boolean(status && !complete.includes(status));
 }

@@ -2,9 +2,9 @@
  * Durable goal event/replay/message projections (issue #2008).
  *
  * This migration deliberately owns only append/audit and read projections. It
- * does not mutate controller plan/node/attempt authority owned by the goal
- * reconciler. All derived rows can be rebuilt from the retained event log and
- * its compaction checkpoints.
+ * does not create a ProPR planner, checklist, or decomposition authority. The
+ * selected coding agent's native goal session owns that state; projections can
+ * be rebuilt from its retained event log and compaction checkpoints.
  */
 
 const ISO_NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
@@ -22,17 +22,24 @@ export async function up(knex) {
     ['source_provider_sequence', table => table.integer('source_provider_sequence').nullable()],
     ['source_chunk_index', table => table.integer('source_chunk_index').nullable()],
     ['lease_generation', table => table.integer('lease_generation').nullable()],
+    ['source_namespace', table => table.text('source_namespace').notNullable().defaultTo('migration')],
     ['payload_bytes', table => table.integer('payload_bytes').notNullable().defaultTo(0)],
   ]) {
     if (!await knex.schema.hasColumn('goal_events', column)) {
       await knex.schema.alterTable('goal_events', add);
     }
   }
+  await knex.raw(`
+    CREATE UNIQUE INDEX IF NOT EXISTS goal_provider_sessions_thread_unique_idx
+    ON goal_provider_sessions (agent, provider_thread_id)
+    WHERE provider_thread_id IS NOT NULL
+  `);
 
+  await knex.raw('DROP INDEX IF EXISTS goal_events_source_occurrence_idx');
   await knex.raw(`
     CREATE UNIQUE INDEX IF NOT EXISTS goal_events_source_occurrence_idx
     ON goal_events (
-      goal_id, source_session_id, source_turn_id, source_execution_id,
+      goal_id, source_namespace, source_session_id, source_turn_id, source_execution_id,
       source_attempt_id, source_provider_sequence, source_chunk_index,
       lease_generation
     )
@@ -177,6 +184,9 @@ export async function up(knex) {
     table.text('body').notNullable();
     table.text('status').notNullable();
     table.integer('event_sequence').notNullable();
+    table.text('source_kind').notNullable().defaultTo('todo');
+    table.integer('item_ordinal').notNullable().defaultTo(0);
+    table.text('updated_at').notNullable().defaultTo(knex.raw(`(${ISO_NOW_SQL})`));
     table.primary(['goal_id', 'session_id', 'todo_id']);
     table.foreign('goal_id').references('goal_id').inTable('goals').onDelete('CASCADE');
   });
@@ -262,6 +272,7 @@ async function rebuildMessages(knex) {
 }
 
 export async function down(knex) {
+  await knex.raw('DROP INDEX IF EXISTS goal_provider_sessions_thread_unique_idx');
   await knex.schema.dropTableIfExists('goal_compaction_checkpoints');
   await knex.schema.dropTableIfExists('goal_provider_todos');
   await knex.schema.dropTableIfExists('goal_external_projections');

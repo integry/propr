@@ -131,7 +131,7 @@ test('real pre-goal Knex chain passes the migration gate, reopen, and rollback',
     });
     const session = await repository.getProviderSession(goal.goalId, 'claude');
     assert(session);
-    await repository.appendTypedEvent(goal.goalId, {
+    await repository.appendProviderEvent(goal.goalId, {
       schemaVersion: 1, type: 'checkpoint.saved', payload: { checkpointId: 'restart' },
       idempotencyKey: 'restart-event', ...fence,
       source: {
@@ -147,7 +147,7 @@ test('real pre-goal Knex chain passes the migration gate, reopen, and rollback',
     await applyDatabaseMigrations(database);
     const afterRestart = (await new GoalLifecycleService(database).getDetail(goal.goalId)).summary;
     assert.deepEqual(afterRestart, beforeRestart);
-    assert.equal(afterRestart.nodeCount, 1);
+    assert.equal('nodeCount' in afterRestart, false);
     assert.equal(afterRestart.latestSequence, 1);
 
     await database.migrate.rollback();

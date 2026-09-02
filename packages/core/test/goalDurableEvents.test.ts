@@ -84,10 +84,10 @@ describe('durable goal events and messages', () => {
     const firstInput = event('provider.output', {
       stream: 'stdout', outputType: 'text', chunk: 'first',
     }, 'output-1', 1);
-    const first = await repository.appendTypedEvent(goalId, firstInput);
-    const replay = await repository.appendTypedEvent(goalId, firstInput);
+    const first = await repository.appendProviderEvent(goalId, firstInput);
+    const replay = await repository.appendProviderEvent(goalId, firstInput);
     assert.equal(replay.sequence, first.sequence);
-    await repository.appendTypedEvent(goalId, event('provider.output', {
+    await repository.appendProviderEvent(goalId, event('provider.output', {
       stream: 'stderr', outputType: 'text', chunk: 'second',
     }, 'output-2', 2));
 
@@ -104,7 +104,7 @@ describe('durable goal events and messages', () => {
 
   test('rejects stale and malformed events without consuming a sequence', async () => {
     await assert.rejects(
-      repository.appendTypedEvent(goalId, {
+      repository.appendProviderEvent(goalId, {
         ...event('provider.output', { stream: 'stdout', outputType: 'text', chunk: 'bad' }, 'bad-kind', 1),
         type: 'provider.unknown',
       }),
@@ -113,7 +113,7 @@ describe('durable goal events and messages', () => {
     assert.equal(await repository.getLatestSequence(goalId), 0);
     assert.equal(Number((await database('goal_event_quarantine').count({ count: '*' }).first())?.count), 1);
     await assert.rejects(
-      repository.appendTypedEvent(goalId, {
+      repository.appendProviderEvent(goalId, {
         ...event('provider.output', { stream: 'stdout', outputType: 'text', chunk: 'stale' }, 'stale', 2),
         source: { ...source, leaseGeneration: source.leaseGeneration + 1 },
       }),
@@ -122,12 +122,75 @@ describe('durable goal events and messages', () => {
     assert.equal(await repository.getLatestSequence(goalId), 0);
   });
 
+  test('rejects every control-plane provenance at hostile provider ingress', async () => {
+    const forgedDelivery = {
+      messageId: 'forged', queueOrdinal: 1,
+      sessionId: source.sessionId, turnId: source.turnId,
+      executionId: source.executionId, attemptId: source.attemptId,
+      controllerId: fence.leaseOwner, leaseGeneration: fence.leaseEpoch,
+      deliveryKey: 'forged-delivery', providerIdempotencyKey: 'forged-provider-input',
+      providerSequence: 4, providerChunkIndex: 0,
+    };
+    const hostile = [
+      event('lifecycle.state_changed', { from: 'queued', to: 'completed' }, 'forge-lifecycle', 1),
+      event('scheduler.node_changed', { nodeId: 'forged', status: 'completed' }, 'forge-scheduler', 2),
+      event('provider.output_compacted', {
+        originalType: 'provider.output', contentDigest: 'forged', payloadBytes: 1,
+      }, 'forge-compaction', 3),
+      event('message.enqueued', {
+        messageId: 'forged', queueOrdinal: 1, authorUserId: 'attacker',
+      }, 'forge-message-enqueued', 4),
+      event('message.claimed', forgedDelivery, 'forge-message-claimed', 5),
+      event('message.delivered', forgedDelivery, 'forge-message-delivered', 6),
+      event('message.acknowledged', forgedDelivery, 'forge-message-acknowledged', 7),
+      event('message.failed', {
+        ...forgedDelivery, retryable: false, error: 'forged',
+      }, 'forge-message-failed', 8),
+      event('message.cancelled', {
+        messageId: 'forged', queueOrdinal: 1, authorUserId: 'attacker',
+      }, 'forge-message-cancelled', 9),
+      event('github.entity_changed', {
+        entity: 'pull_request', number: 1, status: 'merged',
+      }, 'forge-github', 10),
+      event('ci.status_changed', { pullRequestNumber: 1, status: 'success' }, 'forge-ci', 11),
+      event('review.status_changed', { pullRequestNumber: 1, status: 'approved' }, 'forge-review', 12),
+      event('ultrafix.status_changed', {
+        pullRequestNumber: 1, status: 'complete',
+      }, 'forge-ultrafix', 13),
+    ];
+    for (const candidate of hostile) {
+      await assert.rejects(
+        repository.appendProviderEvent(goalId, candidate),
+        (error: GoalError) => error.code === 'goal_invalid_event_kind'
+      );
+    }
+    assert.equal(await repository.getLatestSequence(goalId), 0);
+    assert.equal(Number((await database('goal_event_quarantine').count({ count: '*' }).first())?.count), hostile.length);
+  });
+
+  test('keeps internal message audit identities disjoint from provider coordinates', async () => {
+    const message = await repository.enqueueMessage(goalId, {
+      body: 'keep going', authorUserId: 'owner-1', idempotencyKey: 'audit-collision-message',
+    });
+    delivery = { ...delivery, messageId: message.messageId, providerSequence: 17, chunkIndex: 0 };
+    const claimed = await repository.claimNextMessage(goalId, delivery);
+    assert.equal(claimed?.state, 'delivering');
+    await repository.appendProviderEvent(goalId, event('provider.status', {
+      status: 'running', detail: 'same numeric occurrence as an audit stage',
+    }, 'provider-audit-coordinate', 17, 11));
+    const rows = await database('goal_events').where('goal_id', goalId).orderBy('sequence');
+    assert.deepEqual(rows.map(row => row.source_namespace), [
+      'internal:message-audit', 'internal:message-audit', 'provider',
+    ]);
+    assert.equal((await repository.getMessages(goalId))[0].state, 'delivering');
+  });
+
   test('commits FIFO message states and matching audit events atomically', async () => {
     const message = await repository.enqueueMessage(goalId, {
       body: '', cannedAction: 'whats_left', authorUserId: 'owner-1', idempotencyKey: 'message-1',
     });
     delivery.messageId = message.messageId;
-    assert.equal(message.body, 'Controller status queued: 0 authoritative checklist item(s) left; 0 active, 0 blocked, 0 failed.');
+    assert.equal(message.body, "What's left?");
     assert.equal(message.enqueueEventSequence, 1);
     await assert.rejects(
       repository.claimNextMessage(goalId, { ...delivery, messageId: 'different-message' }),
@@ -161,9 +224,9 @@ describe('durable goal events and messages', () => {
       inputTokens: 100, outputTokens: 20, cacheReadTokens: 30,
       cacheWriteTokens: 5, reasoningTokens: 7,
     }, 'usage-1', 1);
-    await repository.appendTypedEvent(goalId, usage);
-    await repository.appendTypedEvent(goalId, usage);
-    await repository.appendTypedEvent(goalId, event('provider.output', {
+    await repository.appendProviderEvent(goalId, usage);
+    await repository.appendProviderEvent(goalId, usage);
+    await repository.appendProviderEvent(goalId, event('provider.output', {
       stream: 'stdout', outputType: 'text', chunk: 'compact me',
     }, 'output-after-usage', 2));
     const cursor = (await repository.readEventPage(goalId, { limit: 1 })).lastCursor;
@@ -185,7 +248,7 @@ describe('durable goal events and messages', () => {
 
   test('reports an explicit oversized-page error without consuming its cursor', async () => {
     const large = 'x'.repeat(60 * 1024);
-    await repository.appendTypedEvent(goalId, event('provider.output', {
+    await repository.appendProviderEvent(goalId, event('provider.output', {
       stream: 'stdout', outputType: 'text', chunk: large,
     }, 'large-output', 1));
     await assert.rejects(
@@ -197,47 +260,37 @@ describe('durable goal events and messages', () => {
     assert.equal((page.events[0].payload as { chunk: string }).chunk.length, large.length);
   });
 
-  test('bounds detail checklists and exposes a canonical continuation cursor', async () => {
-    const now = '2026-09-01T23:00:00.000Z';
-    await database('goal_nodes').insert(Array.from({ length: 205 }, (_, index) => ({
-      node_id: `node-${String(index).padStart(3, '0')}`,
-      requested_node_id: null,
-      goal_id: goalId,
-      parent_node_id: null,
-      kind: 'implementation_issue',
-      idempotency_key: `node-key-${index}`,
-      external_ref: String(index + 1),
-      external_kind: 'issue',
-      title: `Issue ${index + 1}`,
-      status: 'pending',
-      attempt_count: 0,
-      order_index: index,
-      created_at: now,
-      updated_at: now,
-    })));
+  test('bounds provider-native checklists and exposes a canonical continuation cursor', async () => {
+    await repository.appendProviderEvent(goalId, event('provider.plan', {
+      items: Array.from({ length: 205 }, (_, index) => ({
+        id: `plan-${String(index).padStart(3, '0')}`,
+        text: `Native step ${index + 1}`,
+        status: index === 0 ? 'in_progress' : 'pending',
+      })),
+    }, 'native-plan', 19));
     const detail = await new GoalLifecycleService(repository).getDetail(goalId);
-    assert.equal(detail.nodes.length, 200);
-    assert.equal(detail.summary.nodeCount, 205);
+    assert.equal(detail.checklist.length, 200);
+    assert.equal(detail.checklist[0].source, 'plan');
     assert(detail.checklistNextCursor);
-    const rest = await repository.readNodePage(goalId, { cursor: detail.checklistNextCursor });
-    assert.equal(rest.nodes.length, 5);
+    const rest = await repository.readProviderChecklistPage(goalId, { cursor: detail.checklistNextCursor });
+    assert.equal(rest.items.length, 5);
     assert.equal(rest.nextCursor, null);
   });
 
-  test('separates provider todos from controller checklist and derives canned status', async () => {
+  test('uses provider plan/todo as checklist and sends canned questions to the agent', async () => {
     await repository.addNode(goalId, {
       kind: 'implementation_issue', status: 'completed', idempotencyKey: 'done-node', ...fence,
     });
     await repository.addNode(goalId, {
       kind: 'implementation_issue', status: 'pending', idempotencyKey: 'left-node', ...fence,
     });
-    await repository.appendTypedEvent(goalId, event('provider.todo', {
+    await repository.appendProviderEvent(goalId, event('provider.todo', {
       items: [{ id: 'advice-1', text: 'Provider suggestion', status: 'pending' }],
     }, 'provider-todos', 20));
     const status = await repository.enqueueMessage(goalId, {
       body: '', cannedAction: 'whats_left', authorUserId: 'owner-1', idempotencyKey: 'status-left',
     });
-    assert.match(status.body, /1 authoritative checklist item\(s\) left/);
+    assert.equal(status.body, "What's left?");
     await assert.rejects(
       repository.enqueueMessage(goalId, {
         body: 'arbitrary override', cannedAction: 'whats_left',
@@ -246,8 +299,8 @@ describe('durable goal events and messages', () => {
       (error: GoalError) => error.code === 'goal_validation_error'
     );
     const detail = await new GoalLifecycleService(repository).getDetail(goalId);
-    assert.equal(detail.nodes.length, 2);
-    assert.deepEqual(detail.providerAdvisoryTodos.map(todo => todo.todoId), ['advice-1']);
+    assert.deepEqual(detail.checklist.map(item => item.itemId), ['advice-1']);
+    assert.equal(detail.checklist[0].source, 'todo');
   });
 
   test('keeps cumulative usage monotonic and rejects occurrence relabeling', async () => {
@@ -256,22 +309,22 @@ describe('durable goal events and messages', () => {
         provider: 'openai', model, occurrenceId, inputTokens: tokens, outputTokens: 0,
         cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, cumulative: true,
       }, key, order);
-    await repository.appendTypedEvent(goalId, usage('newest', 100, 'usage-newest', 10));
-    await repository.appendTypedEvent(goalId, usage('older', 80, 'usage-older', 5));
-    await repository.appendTypedEvent(goalId, usage('next', 120, 'usage-next', 11));
+    await repository.appendProviderEvent(goalId, usage('newest', 100, 'usage-newest', 10));
+    await repository.appendProviderEvent(goalId, usage('older', 80, 'usage-older', 5));
+    await repository.appendProviderEvent(goalId, usage('next', 120, 'usage-next', 11));
     assert.equal((await repository.getStatistics(goalId)).tokens.input, 120);
     await assert.rejects(
-      repository.appendTypedEvent(goalId, usage('next', 120, 'usage-relabeled', 12, 'model-b')),
+      repository.appendProviderEvent(goalId, usage('fresh-relabelled', 120, 'usage-relabeled', 12, 'model-b')),
       (error: GoalError) => error.code === 'goal_idempotency_conflict'
     );
     assert.equal((await repository.getStatistics(goalId)).tokens.input, 120);
   });
 
   test('retains failed-attempt and model usage for no-code work with recovery timing after reopen', async () => {
-    await repository.appendTypedEvent(goalId, event('scheduler.node_changed', {
-      nodeId: 'provider-attempt-1', status: 'failed', attemptId: 'attempt-1',
+    await repository.appendProviderEvent(goalId, event('provider.status', {
+      status: 'failed', detail: 'native attempt failed',
     }, 'attempt-1-failed', 30));
-    await repository.appendTypedEvent(goalId, event('usage.reported', {
+    await repository.appendProviderEvent(goalId, event('usage.reported', {
       provider: 'openai', model: 'model-a', occurrenceId: 'attempt-usage',
       inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0,
       reasoningTokens: 1,
@@ -283,7 +336,7 @@ describe('durable goal events and messages', () => {
     source = {
       ...source, turnId: 'turn-2', executionId: 'execution-2', attemptId: 'attempt-2',
     };
-    await repository.appendTypedEvent(goalId, event('usage.reported', {
+    await repository.appendProviderEvent(goalId, event('usage.reported', {
       provider: 'openai', model: 'model-b', occurrenceId: 'attempt-usage',
       inputTokens: 20, outputTokens: 3, cacheReadTokens: 4, cacheWriteTokens: 0,
       reasoningTokens: 2,

@@ -1,7 +1,7 @@
 /**
  * Higher-level lifecycle operations composed from {@link GoalRepository}
- * transitions, plus the read-model assembly (hierarchy + summary + derived
- * time) the API returns.
+ * transitions, plus the provider-native checklist, summary, and derived time
+ * read model returned by the API.
  *
  * Pause is nonterminal: `pause` records the intent (`pausing`), a controller
  * confirms `paused`, and `resume` returns the goal to active work while every
@@ -22,7 +22,7 @@ import type {
   GoalNode,
   GoalMessage,
   GoalStatistics,
-  GoalProviderTodo,
+  GoalChecklistItem,
 } from './goalTypes.js';
 
 export interface GoalMutationOptions {
@@ -43,7 +43,7 @@ export interface GoalDetail {
   messages: GoalMessage[];
   summary: GoalSummaryView;
   stats: GoalStatistics;
-  providerAdvisoryTodos: GoalProviderTodo[];
+  checklist: GoalChecklistItem[];
   messagesNextCursor: string | null;
   checklistNextCursor: string | null;
   asOfVersion: number;
@@ -111,15 +111,14 @@ export class GoalLifecycleService {
     return this.repository.withReadSnapshot(async repository => {
       // The first read establishes the WAL snapshot used by every projection.
       const goal = await repository.requireGoal(goalId);
-      const [nodes, nodeCounts, dependencies, messagePage, latestSequence, stats, providerAdvisoryTodos] =
+      const [nodes, dependencies, messagePage, checklistPage, latestSequence, stats] =
         await Promise.all([
           repository.readNodePage(goalId),
-          repository.getNodeCounts(goalId),
           repository.getDependencies(goalId),
           repository.readMessagePage(goalId),
+          repository.readProviderChecklistPage(goalId),
           repository.getLatestSequence(goalId),
           repository.getStatistics(goalId),
-          repository.getProviderTodos(goalId),
         ]);
       return {
         goal,
@@ -127,10 +126,10 @@ export class GoalLifecycleService {
         dependencies,
         messages: messagePage.messages,
         messagesNextCursor: messagePage.nextCursor,
-        checklistNextCursor: nodes.nextCursor,
-        summary: buildSummary(goal, nodes.nodes, latestSequence, nodeCounts),
+        checklist: checklistPage.items,
+        checklistNextCursor: checklistPage.nextCursor,
+        summary: buildSummary(goal, latestSequence),
         stats,
-        providerAdvisoryTodos,
         asOfVersion: goal.version,
         asOfSequence: latestSequence,
       };
@@ -140,13 +139,8 @@ export class GoalLifecycleService {
 
 export function buildSummary(
   goal: Goal,
-  nodes: GoalNode[],
-  latestSequence: number,
-  counts?: { total: number; active: number }
+  latestSequence: number
 ): GoalSummaryView {
-  const activeNodeCount = nodes.filter(
-    (node) => node.status === 'in_progress'
-  ).length;
   return {
     goalId: goal.goalId,
     state: goal.state,
@@ -161,8 +155,6 @@ export function buildSummary(
     ultrafixGoal: goal.ultrafixGoal,
     ultrafixMaxCycles: goal.ultrafixMaxCycles,
     version: goal.version,
-    nodeCount: counts?.total ?? nodes.length,
-    activeNodeCount: counts?.active ?? activeNodeCount,
     latestSequence,
     createdAt: goal.createdAt,
     updatedAt: goal.updatedAt,

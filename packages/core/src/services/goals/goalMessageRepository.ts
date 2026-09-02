@@ -15,7 +15,7 @@ import { decodeGoalPageCursor, encodeGoalPageCursor } from './goalPageCursor.js'
 import { validateLimit } from './goalEventIngestion.js';
 import {
   appendAudit, assertDeliveryFence, assertDeliveryIdentity, assertFifoHead,
-  buildAuthoritativeStatusBody, claimMessage, clearDeliveryColumns, compareMessage,
+  claimMessage, clearDeliveryColumns, compareMessage,
   guardDeliveryAttempt, latestSequence, messageConflict, nextMessageOrdinal,
   normalizeDeliveryIdentity, normalizeMessage, requireEnhanced, requireMessage,
   sanitizeError, storedEvidence, takeoverMessage,
@@ -52,7 +52,7 @@ export class GoalMessageRepository {
         const queueOrdinal = await nextMessageOrdinal(trx, goalId);
         const createdAt = nowIso();
         const body = normalized.cannedAction
-          ? await buildAuthoritativeStatusBody(trx, goalId, normalized.cannedAction)
+          ? GOAL_CANNED_ACTION_TEXT[normalized.cannedAction]
           : normalized.body;
         const enqueueSequence = await appendAudit(trx, currentGoal, {
           type: 'message.enqueued',
