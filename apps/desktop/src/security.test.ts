@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   deepLinkFromArguments,
   applyDevelopmentRendererCsp,
@@ -13,6 +15,13 @@ import {
   rendererContentSecurityPolicy,
   validatedDevServerUrl,
 } from './security';
+
+const directiveSources = (policy: string, name: string): string[] => {
+  const directives = policy.split(';').map(directive => directive.trim());
+  const matching = directives.filter(directive => directive.split(/\s+/, 1)[0] === name);
+  assert.equal(matching.length, 1, `expected exactly one ${name} directive`);
+  return matching[0].split(/\s+/).slice(1);
+};
 
 describe('desktop URL security', () => {
   it('only accepts HTTPS and loopback HTTP API endpoints', () => {
@@ -156,6 +165,31 @@ describe('desktop URL security', () => {
     assert.doesNotMatch(policy, /unsafe-eval/);
     assert.match(policy, /script-src 'self'(?:;|$)/);
     assert.match(policy, /connect-src 'self' https: http: ws: wss:/);
+  });
+
+  it('keeps the renderer meta and response-header connect sources in exact scheme parity', () => {
+    const rendererHtml = readFileSync(
+      fileURLToPath(new URL('../renderer.html', import.meta.url)),
+      'utf8',
+    );
+    const metaPolicies = [...rendererHtml.matchAll(
+      /<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]+)"\s*\/>/g,
+    )];
+    assert.equal(metaPolicies.length, 1);
+
+    const expectedSources = ["'self'", 'https:', 'http:', 'ws:', 'wss:'];
+    const headerSources = directiveSources(rendererContentSecurityPolicy(), 'connect-src');
+    const metaSources = directiveSources(metaPolicies[0][1], 'connect-src');
+    assert.deepEqual(headerSources, expectedSources);
+    assert.deepEqual(metaSources, headerSources);
+
+    for (const target of [
+      'http://127.0.0.2:41731/api/auth/user',
+      'http://192.168.1.10:41731/api/auth/user',
+      'ws://10.0.0.8:41731/socket.io/',
+    ]) {
+      assert.equal(metaSources.includes(new URL(target).protocol), true, target);
+    }
   });
 
   it('relaxes inline scripts only while Vite serves the development renderer', () => {
