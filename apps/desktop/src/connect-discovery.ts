@@ -10,6 +10,12 @@ type RediscoveryProfile = Awaited<ReturnType<Pick<ProfileStore, 'list'>['list']>
 export type DesktopConnectIdentityClaimSnapshot = Readonly<
   | { status: 'unclaimed'; isCurrent(): boolean; beginCommit(): (() => void) | null }
   | {
+    status: 'pending';
+    generation: number;
+    isCurrent(): false;
+    beginCommit(): null;
+  }
+  | {
     status: 'origin-mismatch';
     generation: number;
     isCurrent(): boolean;
@@ -64,6 +70,7 @@ export class DesktopConnectDiscoveryService {
   #discoveryGeneration = 0;
   #identityClaimGeneration = 0;
   readonly #claimIntentGenerations = new Map<string, number>();
+  readonly #pendingClaimIntents = new Map<string, number>();
   readonly #claimCommitLocks = new Set<string>();
   readonly #claimCommitWaiters = new Map<string, Array<() => void>>();
 
@@ -78,14 +85,17 @@ export class DesktopConnectDiscoveryService {
 
   async discover(): Promise<DesktopDiscoveryCandidate[]> {
     if (!this.source.supported) throw new Error('Connect discovery is unavailable');
+    const intentGeneration = this.#beginClaimIntent('propr-connect-discovered');
     const pendingCommit = this.#waitForClaimCommit('propr-connect-discovered');
     if (pendingCommit) await pendingCommit;
-    this.#bumpClaimIntent('propr-connect-discovered');
     const generation = ++this.#discoveryGeneration;
     const status = await this.source.discover();
     const candidate = candidateFromStatus(status);
-    if (generation !== this.#discoveryGeneration) return [];
-    if (candidate) this.#publishIdentityClaim(candidate.id, candidate.apiBaseUrl, status.publicInstanceIdentity!);
+    if (generation !== this.#discoveryGeneration
+      || !this.#claimIntentIsCurrent('propr-connect-discovered', intentGeneration)) return [];
+    if (candidate) this.#publishIdentityClaim(
+      candidate.id, candidate.apiBaseUrl, status.publicInstanceIdentity!, intentGeneration,
+    );
     return candidate ? [candidate] : [];
   }
 
@@ -93,9 +103,9 @@ export class DesktopConnectDiscoveryService {
     if (!this.source.supported || typeof profileId !== 'string' || !PROFILE_ID_PATTERN.test(profileId)) {
       throw new Error('Connect rediscovery is unavailable');
     }
+    const intentGeneration = this.#beginClaimIntent(profileId);
     const pendingCommit = this.#waitForClaimCommit(profileId);
     if (pendingCommit) await pendingCommit;
-    this.#bumpClaimIntent(profileId);
     const generation = ++this.#discoveryGeneration;
     const current = (await this.profiles.list()).profiles.find(profile => profile.id === profileId);
     const currentEndpoint = current ? parseProprConnectEndpoint(current.apiBaseUrl) : null;
@@ -109,8 +119,11 @@ export class DesktopConnectDiscoveryService {
       || !revalidatedEndpoint
       || revalidatedEndpoint.origin !== currentEndpoint.origin
       || !sameRediscoveryProfile(current, revalidated)
-      || generation !== this.#discoveryGeneration) return null;
-    this.#publishIdentityClaim(current.id, candidate.apiBaseUrl, status.publicInstanceIdentity!);
+      || generation !== this.#discoveryGeneration
+      || !this.#claimIntentIsCurrent(profileId, intentGeneration)) return null;
+    this.#publishIdentityClaim(
+      current.id, candidate.apiBaseUrl, status.publicInstanceIdentity!, intentGeneration,
+    );
     return {
       id: current.id,
       label: current.label,
@@ -122,8 +135,18 @@ export class DesktopConnectDiscoveryService {
     const claim = this.#identityClaims.get(profileId);
     const intentGeneration = this.#claimIntentGeneration(profileId);
     const isCurrent = () => this.#identityClaims.get(profileId) === claim
-      && this.#claimIntentGeneration(profileId) === intentGeneration;
+      && this.#claimIntentGeneration(profileId) === intentGeneration
+      && !this.#pendingClaimIntents.has(profileId);
     const beginCommit = () => this.#beginClaimCommit(profileId, isCurrent);
+    const pendingIntent = this.#pendingClaimIntents.get(profileId);
+    if (pendingIntent !== undefined) {
+      return Object.freeze({
+        status: 'pending' as const,
+        generation: pendingIntent,
+        isCurrent: () => false as const,
+        beginCommit: () => null,
+      });
+    }
     if (!claim) {
       return Object.freeze({
         status: 'unclaimed' as const,
@@ -152,8 +175,19 @@ export class DesktopConnectDiscoveryService {
     return this.#claimIntentGenerations.get(profileId) ?? 0;
   }
 
-  #bumpClaimIntent(profileId: string): void {
-    this.#claimIntentGenerations.set(profileId, this.#claimIntentGeneration(profileId) + 1);
+  #beginClaimIntent(profileId: string): number {
+    const generation = this.#claimIntentGeneration(profileId) + 1;
+    this.#claimIntentGenerations.set(profileId, generation);
+    // Publish pending synchronously before the first await. Existing active
+    // snapshots become stale immediately, and no later pairing can acquire the
+    // commit gate while native discovery is unresolved.
+    this.#pendingClaimIntents.set(profileId, generation);
+    return generation;
+  }
+
+  #claimIntentIsCurrent(profileId: string, generation: number): boolean {
+    return this.#claimIntentGeneration(profileId) === generation
+      && this.#pendingClaimIntents.get(profileId) === generation;
   }
 
   #waitForClaimCommit(profileId: string): Promise<void> | null {
@@ -179,11 +213,19 @@ export class DesktopConnectDiscoveryService {
     };
   }
 
-  #publishIdentityClaim(profileId: string, origin: string, publicInstanceIdentity: string): void {
+  #publishIdentityClaim(
+    profileId: string,
+    origin: string,
+    publicInstanceIdentity: string,
+    intentGeneration: number,
+  ): void {
+    if (!this.#claimIntentIsCurrent(profileId, intentGeneration)
+      || this.#claimCommitLocks.has(profileId)) return;
     this.#identityClaims.set(profileId, {
       origin,
       publicInstanceIdentity,
       generation: ++this.#identityClaimGeneration,
     });
+    this.#pendingClaimIntents.delete(profileId);
   }
 }

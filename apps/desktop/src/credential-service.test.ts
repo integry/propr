@@ -386,6 +386,17 @@ describe('main-process desktop credential service', () => {
       assert.ok(currentClaim.generation > oldClaim.generation);
     }
 
+    const beforeDetachedTransport = requests.length;
+    assert.deepEqual(service.prepareRequest(
+      `${origins.old}/api/tasks`, transportHeaders(oldActivation.transportScope),
+    ), { cancel: true });
+    assert.deepEqual(await service.prepareRequestAsync(
+      `wss://${new URL(origins.old).host}/socket.io/?transport=websocket&proprDesktopTransportScope=${oldActivation.transportScope}`,
+      {}, { resourceType: 'webSocket' },
+    ), { cancel: true });
+    assert.equal(requests.slice(beforeDetachedTransport)
+      .some(request => request.authorization !== null), false);
+
     const beforeStaleOrigin = requests.length;
     await assert.rejects(service.pair({
       id: profile.id, label: profile.label, apiBaseUrl: origins.old,

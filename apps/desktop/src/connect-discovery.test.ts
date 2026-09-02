@@ -90,7 +90,11 @@ describe('desktop fixed-root Connect discovery', () => {
     });
     await Promise.resolve();
     assert.equal(rediscoverySettled, false);
-    assert.equal(current.isCurrent(), true);
+    assert.equal(current.isCurrent(), false);
+    const pending = service.snapshotIdentityClaim(saved.id, 'https://t-recovered456.propr.dev');
+    assert.equal(pending.status, 'pending');
+    assert.equal(pending.isCurrent(), false);
+    assert.equal(pending.beginCommit(), null);
     releaseCommit();
     assert.deepEqual(await rediscovery, {
       id: saved.id,

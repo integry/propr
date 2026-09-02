@@ -79,6 +79,7 @@ interface ActiveCredential extends StoredCredential {
   profileGeneration: number;
   selectionGeneration: number;
   transportScope: string;
+  connectClaim: DesktopConnectIdentityClaimSnapshot;
 }
 
 interface PendingActivation {
@@ -91,6 +92,7 @@ interface PendingActivation {
   activeProfileId: string | null;
   credential: StoredCredential;
   identityEpoch: string;
+  connectClaim: DesktopConnectIdentityClaimSnapshot;
 }
 
 type RequestHeaders = Record<string, string | string[]>;
@@ -539,7 +541,7 @@ export class DesktopCredentialService {
     if (!label || label.length > 80) throw new Error('Profile label must contain 1 to 80 characters');
     const proposed = { ...input, id: input.id, label, apiBaseUrl: origin };
     const connectClaim = this.#snapshotConnectIdentityClaim(proposed.id, proposed.apiBaseUrl);
-    if (connectClaim.status === 'origin-mismatch') {
+    if (connectClaim.status === 'origin-mismatch' || connectClaim.status === 'pending') {
       throw new Error('The ProPR Connect origin changed. Use the currently discovered instance.');
     }
     const baseline = await this.#profiles.readProfileCredential(proposed.id);
@@ -705,6 +707,13 @@ export class DesktopCredentialService {
     if (!input.id) throw new Error('Desktop profile id is required');
     const origin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!origin || origin !== input.apiBaseUrl) throw new Error('Invalid desktop API URL');
+    const connectClaim = this.#snapshotConnectIdentityClaim(input.id, origin);
+    if (connectClaim.status === 'origin-mismatch' || connectClaim.status === 'pending') {
+      return {
+        status: 'authentication-required',
+        message: 'The ProPR Connect instance changed. Use the currently discovered instance and approve it again.',
+      };
+    }
     const probeTicket = ++this.#latestProbeTicket;
     this.#pendingActivation = null;
     const operationGeneration = this.#generation(input.id);
@@ -761,6 +770,17 @@ export class DesktopCredentialService {
       return {
         status: 'authentication-required',
         message: 'OS-backed secure storage is unavailable. Enable your system keychain before pairing.',
+        version: discovery.version,
+        authentication,
+      };
+    }
+
+    if (!connectClaim.isCurrent()
+      || (connectClaim.status === 'claimed'
+        && connectClaim.publicInstanceIdentity !== discovery.publicInstanceIdentity)) {
+      return {
+        status: 'authentication-required',
+        message: 'The ProPR Connect instance changed. Use the currently discovered instance and approve it again.',
         version: discovery.version,
         authentication,
       };
@@ -836,6 +856,9 @@ export class DesktopCredentialService {
 
     let response: Response;
     try {
+      if (!connectClaim.isCurrent()) {
+        return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
+      }
       response = await this.#authenticatedFetch(
         credential, '/api/auth/user', { cache: 'no-store', signal: operation.signal }, 8_000,
       );
@@ -847,6 +870,7 @@ export class DesktopCredentialService {
       if (this.#generation(input.id) !== operationGeneration
         || this.#selectionGeneration !== operationSelection
         || this.#latestProbeTicket !== probeTicket
+        || !connectClaim.isCurrent()
         || current.profile?.apiBaseUrl !== origin
         || current.credential?.origin !== origin) {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
@@ -870,6 +894,7 @@ export class DesktopCredentialService {
         activeProfileId: current.activeProfileId,
         credential: { ...credential },
         identityEpoch: current.identityEpoch!,
+        connectClaim,
       };
       return { status: 'ready', version: discovery.version, authentication, activationTicket };
     }
@@ -945,6 +970,7 @@ export class DesktopCredentialService {
       profileGeneration: pending.profileGeneration,
       selectionGeneration: this.#selectionGeneration,
       transportScope,
+      connectClaim: pending.connectClaim,
     };
     return {
       status: 'ready',
@@ -1046,7 +1072,8 @@ export class DesktopCredentialService {
     const active = this.#active;
     const activeIsCurrent = active !== null
       && this.#generation(active.profileId) === active.profileGeneration
-      && this.#selectionGeneration === active.selectionGeneration;
+      && this.#selectionGeneration === active.selectionGeneration
+      && active.connectClaim.isCurrent();
     const isApiRequest = target?.pathname.startsWith('/api/') === true;
     const isSocketUpgrade = target?.pathname === '/socket.io/'
       && target.url.searchParams.get('transport') === 'websocket'
@@ -1088,7 +1115,8 @@ export class DesktopCredentialService {
       const discovery = await this.#client(active.origin).discoverDesktop(8_000, this.#lifecycleController.signal);
       const stillCurrent = this.#active === active
         && this.#generation(active.profileId) === active.profileGeneration
-        && this.#selectionGeneration === active.selectionGeneration;
+        && this.#selectionGeneration === active.selectionGeneration
+        && active.connectClaim.isCurrent();
       if (!stillCurrent) return { cancel: true };
       const supportsRequest = discovery.compatibility.compatible
         && discovery.desktopAuthentication.instanceBearerTokens
@@ -1378,7 +1406,8 @@ export class DesktopCredentialService {
   #pendingIsCurrent(pending: PendingActivation): boolean {
     return this.#latestProbeTicket === pending.probeTicket
       && this.#generation(pending.profileId) === pending.profileGeneration
-      && this.#selectionGeneration === pending.selectionGeneration;
+      && this.#selectionGeneration === pending.selectionGeneration
+      && pending.connectClaim.isCurrent();
   }
 
   #clearActiveIfCredential(credential: StoredCredential): void {
