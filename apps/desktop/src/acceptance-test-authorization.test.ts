@@ -90,6 +90,45 @@ describe('packaged acceptance authorization', () => {
     assert.match(currentUserClassifier, /current-user-parsed-schema-rejected/);
   });
 
+  it('bounds the dashboard Connected timeout diagnostic after flushing renderer evidence', () => {
+    const acceptanceRunner = readFileSync(fileURLToPath(new URL('../scripts/run-packaged-acceptance.mjs', import.meta.url)), 'utf8');
+    const dashboardStart = acceptanceRunner.indexOf("await runJourney('dashboard-profile-manager'");
+    const dashboardEnd = acceptanceRunner.indexOf("await runJourney('offline'", dashboardStart);
+    assert.notEqual(dashboardStart, -1);
+    assert.notEqual(dashboardEnd, -1);
+    const dashboardJourney = acceptanceRunner.slice(dashboardStart, dashboardEnd);
+
+    assert.match(dashboardJourney, /await opener\.waitFor\(\{ timeout: 15_000 \}\)/);
+    assert.match(dashboardJourney, /error instanceof Error\) \|\| error\.name !== 'TimeoutError'/);
+    const flush = dashboardJourney.indexOf('await settlePendingRendererConsoleCaptures()');
+    const diagnostic = dashboardJourney.indexOf('const diagnostic = {');
+    const rethrow = dashboardJourney.indexOf('Acceptance dashboard Connected control timed out:');
+    assert.ok(flush >= 0 && flush < diagnostic && diagnostic < rethrow);
+    const diagnosticCatch = dashboardJourney.slice(
+      dashboardJourney.indexOf('} catch (error)'),
+      dashboardJourney.indexOf('    await waitForObserved'),
+    );
+
+    for (const boundedField of [
+      'currentUserPhases: currentUserPhaseSummary(journey)',
+      'networkPermissions: networkPermissionSummary(journey)',
+      'currentUserCategory: currentUserValidationFailureCategory(journey)',
+      'rendererLifecycleCategory: rendererLifecycleCategory(journey)',
+      'surfacePhase: await rendererSurfacePhase(page)',
+      'rendererErrors: rendererErrorCountSummary(journey)',
+    ]) assert.ok(dashboardJourney.includes(boundedField), boundedField);
+    assert.doesNotMatch(diagnosticCatch, /error\.(?:message|stack)|record\.(?:text|arguments|location|url)/);
+
+    assert.match(
+      acceptanceRunner,
+      /const settlePendingRendererConsoleCaptures = async \(\) => \{[\s\S]*?await Promise\.allSettled\(unsettled\);[\s\S]*?\n\};/,
+    );
+    assert.match(acceptanceRunner, /const boundedAcceptanceDiagnosticCount = records => Math\.min\(records\.length, 9\)/);
+    assert.match(acceptanceRunner, /if \(document\.querySelector\('\.desktop-app'\)\) return 'app'/);
+    assert.match(acceptanceRunner, /if \(document\.querySelector\('\.desktop-entry'\)\) return 'entry'/);
+    assert.match(acceptanceRunner, /return 'loading'/);
+  });
+
   it('keeps the shared clock subject to exact pairing expiry validation', () => {
     const timing = packagedAcceptancePairingTiming(authorizePackagedAcceptanceTest(input));
     assert.ok(timing);

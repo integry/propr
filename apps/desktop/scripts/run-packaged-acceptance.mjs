@@ -971,6 +971,40 @@ const networkPermissionSummary = journey => networkPermissionDecisionSummary({
   invalidCount: networkPermissionEvidenceInvalidCount,
 });
 
+const settlePendingRendererConsoleCaptures = async () => {
+  let settledCount = 0;
+  while (settledCount < pendingConsoleRecords.length) {
+    const unsettled = pendingConsoleRecords.slice(settledCount);
+    settledCount += unsettled.length;
+    await Promise.allSettled(unsettled);
+  }
+};
+
+const boundedAcceptanceDiagnosticCount = records => Math.min(records.length, 9);
+
+const rendererErrorCountSummary = journey => {
+  const rendererConsole = consoleRecords.filter(record => record.journey === journey);
+  const rendererPageErrors = pageErrorRecords.filter(record => record.journey === journey);
+  return {
+    schemaVersion: 1,
+    console: boundedAcceptanceDiagnosticCount(rendererConsole),
+    consoleErrors: boundedAcceptanceDiagnosticCount(rendererConsole.filter(record => record.type === 'error')),
+    pageErrors: boundedAcceptanceDiagnosticCount(rendererPageErrors),
+  };
+};
+
+const rendererSurfacePhase = async page => {
+  try {
+    return await page.evaluate(() => {
+      if (document.querySelector('.desktop-app')) return 'app';
+      if (document.querySelector('.desktop-entry')) return 'entry';
+      return 'loading';
+    });
+  } catch {
+    return 'loading';
+  }
+};
+
 const socketHandshakeFailureCategory = journey => {
   const currentUserCategory = currentUserValidationFailureCategory(journey);
   if (currentUserCategory !== 'none') return currentUserCategory;
@@ -1235,7 +1269,23 @@ try {
   await runJourney('dashboard-profile-manager', 'default', null, async (page, application) => {
     await pair(page, readyOrigin, 'Operations');
     const opener = page.getByRole('button', { name: /Connected: Operations/ });
-    await opener.waitFor({ timeout: 15_000 });
+    try {
+      await opener.waitFor({ timeout: 15_000 });
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== 'TimeoutError') throw error;
+      await settlePendingRendererConsoleCaptures();
+      const journey = 'dashboard-profile-manager';
+      const diagnostic = {
+        schemaVersion: 1,
+        currentUserPhases: currentUserPhaseSummary(journey),
+        networkPermissions: networkPermissionSummary(journey),
+        currentUserCategory: currentUserValidationFailureCategory(journey),
+        rendererLifecycleCategory: rendererLifecycleCategory(journey),
+        surfacePhase: await rendererSurfacePhase(page),
+        rendererErrors: rendererErrorCountSummary(journey),
+      };
+      throw new Error(`Acceptance dashboard Connected control timed out: ${JSON.stringify(diagnostic)}`);
+    }
     await waitForObserved(() => {
       const journeyRequests = requestRecords.filter(record => record.journey === 'dashboard-profile-manager');
       return journeyRequests.some(record => record.method === 'POST' && record.url === '/api/desktop/pairings')
