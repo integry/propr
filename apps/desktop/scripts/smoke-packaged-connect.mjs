@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmod, lstat, mkdir, mkdtemp, readFile, realpath, writeFile,
@@ -15,6 +15,12 @@ import {
   encodedWindowsFixtureAcl,
   windowsPowerShell51Path,
 } from './windows-fixture-acl.mjs';
+import {
+  describeWindowsArtifactFailure,
+  packagedConnectArtifactSensitiveNeedles,
+  parseWindowsStagedPackageHandoff,
+  validateWindowsStagedPackage,
+} from './windows-packaged-connect-staging.mjs';
 
 if (!['darwin', 'linux', 'win32'].includes(process.platform)) {
   throw new Error('Packaged Connect discovery smoke requires Darwin, Linux, or Windows');
@@ -23,14 +29,14 @@ if (process.arch !== 'x64' && process.arch !== 'arm64') {
   throw new Error('Packaged Connect discovery smoke requires x64 or arm64');
 }
 
-const artifactRoot = resolve('out', `propr-desktop-${process.platform}-${process.arch}`);
-const binaryPath = process.platform === 'darwin'
+let artifactRoot = resolve('out', `propr-desktop-${process.platform}-${process.arch}`);
+let binaryPath = process.platform === 'darwin'
   ? join(artifactRoot, 'propr-desktop.app', 'Contents', 'MacOS', 'propr-desktop')
   : join(artifactRoot, process.platform === 'linux' ? 'propr-desktop' : 'propr-desktop.exe');
-const resourcesPath = process.platform === 'darwin'
+let resourcesPath = process.platform === 'darwin'
   ? join(artifactRoot, 'propr-desktop.app', 'Contents', 'Resources')
   : join(artifactRoot, 'resources');
-const unpackedNative = join(resourcesPath, 'app.asar.unpacked', '.vite', 'native', 'prebuilds');
+let unpackedNative = join(resourcesPath, 'app.asar.unpacked', '.vite', 'native', 'prebuilds');
 const endpoint = 'https://t-packaged123.propr.dev';
 const identity = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const secrets = [
@@ -57,6 +63,37 @@ const nativeHashes = {
     },
   },
 };
+let packagedConnectPhase = 'fixture-setup';
+let windowsStagedContract;
+let windowsStagedHandoff;
+
+if (process.platform === 'win32') {
+  try {
+    packagedConnectPhase = 'staged-contract';
+    [windowsStagedHandoff] = process.argv.slice(2);
+    windowsStagedContract = parseWindowsStagedPackageHandoff(process.argv.slice(2));
+    const staged = await validateWindowsStagedPackage({
+      environment: {
+        RUNNER_TEMP: windowsStagedContract.runnerTemp,
+        PROPR_DESKTOP_CONNECT_STAGING_PARENT: windowsStagedContract.parent,
+        PROPR_DESKTOP_CONNECT_STAGING_LEAF: windowsStagedContract.leaf,
+      },
+      expectedArchitecture: process.arch,
+    });
+    artifactRoot = staged.root;
+    binaryPath = staged.executable;
+    resourcesPath = staged.resources;
+    unpackedNative = join(resourcesPath, 'app.asar.unpacked', '.vite', 'native', 'prebuilds');
+  } catch (error) {
+    const failure = describeWindowsArtifactFailure(error, packagedConnectPhase);
+    process.stderr.write(`${JSON.stringify({
+      event: 'packaged_connect.artifact_failed',
+      ...failure,
+    })}\n`);
+    process.exit(1);
+  }
+}
+
 const authorityMechanism = () => {
   if (process.platform === 'darwin') return 'packaged-broker';
   if (process.platform === 'linux') return 'in-process-native-addon';
@@ -231,8 +268,33 @@ try {
   const treeKillerPath = await windowsTreeKiller();
   const sensitiveNeedles = [
     ...secrets, fixture, configRoot, stackRoot, identity,
+    ...packagedConnectArtifactSensitiveNeedles({
+      platform: process.platform,
+      artifactRoot,
+      binaryPath,
+      stagedContract: windowsStagedContract,
+      stagedHandoff: windowsStagedHandoff,
+    }),
     'S-1-5-', 'volumeSerialNumber', 'fileId', 'authorityDiagnostic',
   ];
+  const childEnvironment = {
+    ...process.env,
+    PROPR_DESKTOP_CONNECT_SMOKE_TEST: '1',
+    PROPR_DESKTOP_CONNECT_SMOKE_CONFIG_ROOT: configRoot,
+    PROPR_CONNECTOR_TOKEN: secrets[1],
+    PROPR_RELAY_TOKEN: secrets[2],
+    GITHUB_TOKEN: secrets[3],
+  };
+  delete childEnvironment.PROPR_DESKTOP_CONNECT_STAGING_PARENT;
+  delete childEnvironment.PROPR_DESKTOP_CONNECT_STAGING_LEAF;
+  const spawnLifecycleProcess = (executable, args, options) => {
+    if (executable !== binaryPath) return spawn(executable, args, options);
+    const child = spawn(binaryPath, ['--disable-gpu', `--user-data-dir=${userDataPath}`], {
+      ...options,
+      env: childEnvironment,
+    });
+    return child;
+  };
   failurePhase = 'lifecycle-internal';
   outcome = await runPackagedConnectLifecycle({
     binaryPath,
@@ -242,14 +304,8 @@ try {
     authorityMechanism: authorityMechanism(),
     sensitiveNeedles,
     treeKillerPath,
-    env: {
-      ...process.env,
-      PROPR_DESKTOP_CONNECT_SMOKE_TEST: '1',
-      PROPR_DESKTOP_CONNECT_SMOKE_CONFIG_ROOT: configRoot,
-      PROPR_CONNECTOR_TOKEN: secrets[1],
-      PROPR_RELAY_TOKEN: secrets[2],
-      GITHUB_TOKEN: secrets[3],
-    },
+    env: childEnvironment,
+    spawn: spawnLifecycleProcess,
   });
 } catch {
   outcome = { ok: false, category: failurePhase, capture: 'complete', records: [] };

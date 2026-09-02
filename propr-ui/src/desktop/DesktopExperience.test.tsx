@@ -135,6 +135,31 @@ describe('DesktopExperience', () => {
     expect(adapters.connection.activate).toHaveBeenCalledOnce();
   });
 
+  it('returns from the prefilled profile editor to every packaged-layout chooser element', async () => {
+    const adapters = adaptersFor();
+    const deepLinks = new DesktopDeepLinkInbox();
+    render(<DesktopExperience adapters={adapters} deepLinks={deepLinks}><div>Shared route tree</div></DesktopExperience>);
+
+    expect(await screen.findByRole('heading', { name: 'Let’s set up this computer' })).toBeInTheDocument();
+    act(() => deepLinks.receive('propr://connect?api=https%3A%2F%2Fconnect.propr.dev'));
+    expect(await screen.findByLabelText('Instance URL')).toHaveValue('https://connect.propr.dev');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await screen.findByRole('heading', { name: 'Let’s set up this computer' });
+
+    for (const selector of [
+      '.desktop-entry',
+      '.desktop-welcome-card',
+      '.desktop-welcome-card .desktop-brand img',
+      '.desktop-welcome-card .desktop-welcome-copy h1',
+      '.desktop-welcome-card .desktop-choice-button',
+      '.desktop-welcome-card .desktop-choice-button small',
+    ]) {
+      expect(document.querySelector(selector), selector).toBeVisible();
+    }
+    expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
+  });
+
   it('keeps Open deep-link navigation separate and bound to the active profile', async () => {
     const adapters = adaptersFor([localProfile], localProfile.id);
     const deepLinks = new DesktopDeepLinkInbox();

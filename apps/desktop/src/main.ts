@@ -313,6 +313,44 @@ const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<stri
   };
 };
 
+const closePackagedProfileEditorAndWaitForWelcomeChooser = async (window: BrowserWindow): Promise<void> => {
+  const chooserReady = await window.webContents.executeJavaScript(`(async () => {
+    const editor = document.querySelector('.desktop-welcome-card form.desktop-profile-form');
+    const backButton = editor?.querySelector('button.desktop-back-button');
+    if (!(backButton instanceof HTMLButtonElement)) return false;
+    backButton.click();
+
+    const deadline = performance.now() + 5000;
+    do {
+      const card = document.querySelector('.desktop-welcome-card');
+      const connectButton = card?.querySelector('.desktop-choice-button');
+      const elements = {
+        entry: document.querySelector('.desktop-entry'),
+        card,
+        logo: card?.querySelector('.desktop-brand img'),
+        heading: card?.querySelector('.desktop-welcome-copy h1'),
+        connectButton,
+        connectDescription: connectButton?.querySelector('small'),
+      };
+      const visiblyReady = Object.values(elements).every(element => {
+        if (!(element instanceof HTMLElement)) return false;
+        const bounds = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return bounds.width > 0 && bounds.height > 0
+          && bounds.right > 0 && bounds.bottom > 0
+          && bounds.left < window.innerWidth && bounds.top < window.innerHeight
+          && style.display !== 'none' && style.visibility === 'visible' && style.opacity !== '0';
+      });
+      if (visiblyReady) return true;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    } while (performance.now() < deadline);
+    return false;
+  })()`);
+  if (chooserReady !== true) {
+    throw new Error('Packaged desktop welcome chooser was not restored after the profile flow');
+  }
+};
+
 const createReducedSmokeWorkArea = (displayWorkArea: Rectangle): Rectangle => {
   const width = Math.min(displayWorkArea.width, MINIMUM_BROWSER_WINDOW_SIZE.width - 80);
   const height = Math.min(displayWorkArea.height, MINIMUM_BROWSER_WINDOW_SIZE.height - 60);
@@ -364,7 +402,7 @@ const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<
     || candidate.apiBaseUrl !== 'https://t-packaged123.propr.dev') {
     throw new Error('Packaged Connect renderer discovery proof was invalid');
   }
-  log('info', 'desktop.renderer.connect_discovery.ready', {
+  const readyFields = {
     selectedPlatform: process.platform,
     selectedArch: process.arch,
     authorityMechanism: process.platform === 'darwin'
@@ -373,6 +411,18 @@ const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<
         ? 'in-process-native-addon'
         : 'inherited-standard-handle',
     rendererSchemaValid: true,
+  } as const;
+  log('info', 'desktop.renderer.connect_discovery.ready', readyFields);
+  await new Promise<void>((resolveReady, rejectReady) => {
+    process.stdout.write(`${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'info',
+      event: 'desktop.renderer.connect_discovery.ready',
+      ...readyFields,
+    })}\n`, error => {
+      if (error) rejectReady(new Error('Packaged Connect READY publication failed'));
+      else resolveReady();
+    });
   });
 };
 
@@ -666,6 +716,7 @@ const createMainWindow = async (
       lifecycleBoundary: profileFlow.lifecycleBoundary,
       connectUiPopulated: profileFlow.connectDeepLink,
     };
+    await closePackagedProfileEditorAndWaitForWelcomeChooser(window);
   } else if (packagedSmokeTest) {
     const boundary = await window.webContents.executeJavaScript(`(async () => {
       const bridge = window.proprDesktop;

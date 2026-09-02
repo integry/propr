@@ -79,6 +79,10 @@ jobs:
         if: matrix.platform == 'win32'
         run: npm run test:windows-fixture-acl -w @propr/desktop
 
+      - name: Verify Windows packaged launcher authority
+        if: matrix.platform == 'win32'
+        run: node --test apps/desktop/scripts/windows-packaged-connect-staging.test.mjs
+
       - name: Package the target-native desktop app
         run: npm run desktop:package
 
@@ -99,29 +103,6 @@ jobs:
       - name: Run packaged Windows main-to-renderer discovery as an ordinary user
         if: matrix.platform == 'win32'
         shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $userName = 'propr-connect-ci'
-          if ($userName.Length -gt 20) { throw 'packaged discovery user name exceeds the local-account limit' }
-          $plainPassword = [Guid]::NewGuid().ToString('N') + 'aA1!'
-          $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
-          $credential = [PSCredential]::new("$env:COMPUTERNAME\$userName", $securePassword)
-          $stdout = Join-Path $env:RUNNER_TEMP 'packaged-connect.stdout'
-          $stderr = Join-Path $env:RUNNER_TEMP 'packaged-connect.stderr'
-          try {
-            New-LocalUser -Name $userName -Password $securePassword -PasswordNeverExpires | Out-Null
-            $administrators = Get-LocalGroupMember -Group 'Administrators' | ForEach-Object { $_.Name }
-            if ($administrators -contains "$env:COMPUTERNAME\$userName") { throw 'packaged discovery user is an administrator' }
-            $node = (Get-Command node.exe).Source
-            $desktopDirectory = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop'
-            $process = Start-Process -FilePath $node -ArgumentList @('scripts/smoke-packaged-connect.mjs') -WorkingDirectory $desktopDirectory -Credential $credential -LoadUserProfile -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-            Get-Content -LiteralPath $stdout
-            if ($process.ExitCode -ne 0) {
-              Get-Content -LiteralPath $stderr
-              throw "packaged Connect discovery exited $($process.ExitCode)"
-            }
-            if ((Get-Content -Raw -LiteralPath $stderr).Length -ne 0) { throw 'packaged Connect discovery wrote stderr' }
-          } finally {
-            Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
-          }
+        run: >-
+          & apps/desktop/scripts/run-packaged-windows-connect-smoke.ps1
+          -Architecture '${{ matrix.arch }}'

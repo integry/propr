@@ -123,6 +123,7 @@ describe('packaged smoke profile authorization', () => {
     const beforeQuit = main.indexOf("app.on('before-quit', event => shutdown.beforeQuit(event));");
     const createWindow = main.indexOf('mainWindow = await createMainWindow()');
     const mvpReady = main.indexOf("log('info', 'desktop.renderer.mvp_flows.ready'");
+    const chooserRestore = main.lastIndexOf('await closePackagedProfileEditorAndWaitForWelcomeChooser(window);');
     const layoutReady = main.indexOf("log('info', PACKAGED_LAYOUT_READY_EVENT");
     const reducedWindowReady = main.indexOf("log('info', PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT");
     const rendererReady = main.indexOf("log('info', 'desktop.renderer.ready'");
@@ -134,7 +135,9 @@ describe('packaged smoke profile authorization', () => {
     assert.ok(authorized < appReady && appReady < shutdownCoordinator);
     assert.ok(shutdownCoordinator < beforeQuit && beforeQuit < createWindow);
     assert.equal(main.match(/app\.on\('before-quit', event => shutdown\.beforeQuit\(event\)\);/g)?.length, 1);
-    assert.ok(mvpReady < layoutReady && layoutReady < reducedWindowReady && reducedWindowReady < rendererReady);
+    assert.notEqual(chooserRestore, -1);
+    assert.ok(chooserRestore < mvpReady && mvpReady < layoutReady
+      && layoutReady < reducedWindowReady && reducedWindowReady < rendererReady);
     assert.ok(beforeQuit < willQuit && willQuit < sinkClose);
     assert.deepEqual(Array.from(requiredEvents?.matchAll(/'([^']+)'/g) ?? [], match => match[1]), [
       'desktop.smoke.authorized',
