@@ -176,8 +176,11 @@ describe('goal routes', () => {
     assert.equal((state.body as { code: string }).code, 'goal_concurrency_bound_exceeded');
     const nullConcurrency = await createGoalViaApi({ maxActiveTasks: null });
     const nullMergePolicy = await createGoalViaApi({ mergePolicy: null });
+    const automaticMerge = await createGoalViaApi({ mergePolicy: 'auto' });
+    const automaticSquash = await createGoalViaApi({ mergePolicy: 'auto_squash' });
     assert.deepEqual([nullConcurrency.statusCode, (nullConcurrency.body as { code: string }).code], [400, 'goal_concurrency_bound_exceeded']);
     assert.deepEqual([nullMergePolicy.statusCode, (nullMergePolicy.body as { code: string }).code], [400, 'goal_validation_error']);
+    assert.deepEqual([automaticMerge.statusCode, automaticSquash.statusCode], [400, 400]);
   });
 
   test('validates and persists the shared Ultrafix contract', async () => {
@@ -187,7 +190,7 @@ describe('goal routes', () => {
     assert.equal((invalidCycles.body as { code: string }).code, 'goal_validation_error');
     const created = await createGoalViaApi({
       maxActiveTasks: 4,
-      mergePolicy: 'auto_squash',
+      mergePolicy: 'manual',
       ultrafixEnabled: true,
       ultrafixGoal: 8,
       ultrafixMaxCycles: 4,
@@ -195,7 +198,7 @@ describe('goal routes', () => {
     const goal = (created.body as { goal: { ultrafixGoal: number; ultrafixMaxCycles: number; mergePolicy: string } }).goal;
     assert.equal(goal.ultrafixGoal, 8);
     assert.equal(goal.ultrafixMaxCycles, 4);
-    assert.equal(goal.mergePolicy, 'auto_squash');
+    assert.equal(goal.mergePolicy, 'manual');
   });
 
   test('requires authentication', async () => {
@@ -309,8 +312,8 @@ describe('goal routes', () => {
     const repo = new GoalRepository(database);
     const lease = await repo.claimLease(goalId, 'api-test-controller', 60_000);
     for (let i = 1; i <= 3; i += 1) {
-      await repo.appendEvent(goalId, {
-        kind: 'output',
+      await repo.appendInternalEvent(goalId, {
+        kind: 'domain',
         eventType: 'log',
         idempotencyKey: `e${i}`,
         leaseOwner: 'api-test-controller',

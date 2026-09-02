@@ -1,7 +1,7 @@
 // Shared goal control-plane contracts.
 //
 // These types define the source-of-truth domain for long-running goals: their
-// lifecycle state machine, hierarchical nodes, provider sessions, events,
+// lifecycle state machine, single provider session, events,
 // corrective messages, and the fenced controller-lease semantics. They are the
 // stable surface consumed by the SQLite repositories, the HTTP API, and the UI.
 //
@@ -64,28 +64,13 @@ export function isValidGoalTransition(from: GoalState, to: GoalState): boolean {
   return GOAL_STATE_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-/** Hierarchy node kinds, from the root epic down to concrete work items. */
-export const GOAL_NODE_KINDS = [
-  'root_epic',
-  'sub_epic',
-  'implementation_issue',
-  'implementation_pr',
-] as const;
-export type GoalNodeKind = (typeof GOAL_NODE_KINDS)[number];
-
-export const GOAL_NODE_STATUSES = [
-  'pending',
-  'in_progress',
-  'blocked',
-  'completed',
-  'failed',
-  'cancelled',
-] as const;
-export type GoalNodeStatus = (typeof GOAL_NODE_STATUSES)[number];
-
 /** Append-only event families sharing one monotonic per-goal sequence. */
 export const GOAL_EVENT_KINDS = ['lifecycle', 'output', 'domain'] as const;
 export type GoalEventKind = (typeof GOAL_EVENT_KINDS)[number];
+
+/** Trusted controller events and normalized provider ingress never share a writer. */
+export const GOAL_EVENT_SOURCES = ['internal', 'provider'] as const;
+export type GoalEventSource = (typeof GOAL_EVENT_SOURCES)[number];
 
 /** Corrective-message delivery lifecycle. */
 export const GOAL_MESSAGE_STATES = [
@@ -95,8 +80,8 @@ export const GOAL_MESSAGE_STATES = [
 ] as const;
 export type GoalMessageState = (typeof GOAL_MESSAGE_STATES)[number];
 
-/** How a completed goal's pull requests are merged. */
-export const GOAL_MERGE_POLICIES = ['manual', 'auto', 'auto_squash'] as const;
+/** Final epic pull requests always remain unmerged for human approval. */
+export const GOAL_MERGE_POLICIES = ['manual'] as const;
 export type GoalMergePolicy = (typeof GOAL_MERGE_POLICIES)[number];
 
 export const GOAL_DEFAULT_MAX_ACTIVE_TASKS = 3;
@@ -133,7 +118,7 @@ export const GOAL_ERROR_CODES = {
   concurrencyBound: 'goal_concurrency_bound_exceeded',
   invalidIdempotencyKey: 'goal_invalid_idempotency_key',
   idempotencyConflict: 'goal_idempotency_conflict',
-  hierarchyConflict: 'goal_hierarchy_conflict',
+  sessionConflict: 'goal_session_conflict',
   invalidCursor: 'goal_invalid_cursor',
   invalidEventKind: 'goal_invalid_event_kind',
   terminalState: 'goal_terminal_state',
@@ -207,6 +192,32 @@ export interface GoalRecoveryMetadata {
   providerState?: 'starting' | 'active' | 'interrupted' | 'recoverable';
 }
 
+/**
+ * Summary populated only from the selected provider's native plan/todo stream.
+ * A null projection means that no provider plan has been observed; consumers
+ * must not infer zero work or a synthetic status from the goal lifecycle.
+ */
+export interface GoalPlanProgress {
+  totalItems: number;
+  completedItems: number;
+  activeItems: number;
+}
+
+/** Provider-native checklist item. Status is deliberately provider-defined. */
+export interface GoalChecklistItem {
+  itemId: string;
+  text: string;
+  status: string | null;
+}
+
+/** Boundary implemented by the typed provider projection work in #2008. */
+export interface GoalProviderPlanProjection {
+  status: string | null;
+  progress: GoalPlanProgress;
+  checklist: GoalChecklistItem[];
+  asOfSequence: number;
+}
+
 export interface GoalSummaryView {
   goalId: string;
   state: GoalState;
@@ -221,8 +232,7 @@ export interface GoalSummaryView {
   ultrafixGoal: number | null;
   ultrafixMaxCycles: number | null;
   version: number;
-  nodeCount: number;
-  activeNodeCount: number;
+  planProgress: GoalPlanProgress | null;
   latestSequence: number;
   createdAt: string;
   updatedAt: string;
@@ -251,21 +261,6 @@ export interface PublicGoalDto {
   updatedAt: string;
 }
 
-/** Public hierarchy node without durable idempotency/controller metadata. */
-export interface PublicGoalNodeDto {
-  nodeId: string;
-  goalId: string;
-  parentNodeId: string | null;
-  kind: GoalNodeKind;
-  externalRef: string | null;
-  externalKind: string | null;
-  title: string | null;
-  status: GoalNodeStatus;
-  orderIndex: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
 /** Public corrective-message state without delivery-worker internals. */
 export interface PublicGoalMessageDto {
   messageId: string;
@@ -283,6 +278,7 @@ export interface PublicGoalMessageDto {
 export interface PublicGoalEventDto {
   goalId: string;
   sequence: number;
+  source: GoalEventSource;
   kind: GoalEventKind;
   eventType: string;
   payload: JsonValue;
@@ -299,8 +295,7 @@ export interface PublicGoalStatsDto {
 /** Canonical public detail read model shared by the API and UI. */
 export interface PublicGoalDetailDto {
   goal: PublicGoalDto;
-  nodes: PublicGoalNodeDto[];
-  dependencies: Array<{ nodeId: string; dependsOnNodeId: string }>;
+  providerPlan: GoalProviderPlanProjection | null;
   messages: PublicGoalMessageDto[];
   summary: GoalSummaryView;
   stats: PublicGoalStatsDto;

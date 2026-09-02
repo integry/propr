@@ -1,11 +1,11 @@
 /**
  * Higher-level lifecycle operations composed from {@link GoalRepository}
- * transitions, plus the read-model assembly (hierarchy + summary + derived
+ * transitions, plus the read-model assembly (summary + derived
  * time) the API returns.
  *
  * Pause is nonterminal: `pause` records the intent (`pausing`), a controller
  * confirms `paused`, and `resume` returns the goal to active work while every
- * durable child record (nodes, dependencies, sessions, messages, events, stats)
+ * durable session, message, event, and timing record
  * is preserved. Cancellation is distinct from pause and records why active work
  * was stopped.
  */
@@ -13,13 +13,14 @@
 import type { Knex } from 'knex';
 import {
   isTerminalGoalState,
+  type GoalPlanProgress,
+  type GoalProviderPlanProjection,
   type GoalSummaryView,
   type GoalTerminalReason,
 } from '@propr/shared';
 import { GoalRepository } from './goalRepository.js';
 import type {
   Goal,
-  GoalNode,
   GoalMessage,
   GoalActiveTimeStats,
 } from './goalTypes.js';
@@ -37,8 +38,7 @@ export interface ControllerGoalMutationOptions extends GoalMutationOptions {
 
 export interface GoalDetail {
   goal: Goal;
-  nodes: GoalNode[];
-  dependencies: Array<{ nodeId: string; dependsOnNodeId: string }>;
+  providerPlan: GoalProviderPlanProjection | null;
   messages: GoalMessage[];
   summary: GoalSummaryView;
   stats: GoalActiveTimeStats;
@@ -103,10 +103,8 @@ export class GoalLifecycleService {
 
   async getDetail(goalId: string): Promise<GoalDetail> {
     const goal = await this.repository.requireGoal(goalId);
-    const [nodes, dependencies, messages, latestSequence, stats] =
+    const [messages, latestSequence, stats] =
       await Promise.all([
-        this.repository.getNodes(goalId),
-        this.repository.getDependencies(goalId),
         this.repository.getMessages(goalId),
         this.repository.getLatestSequence(goalId),
         this.repository.getActiveTimeStats(goalId),
@@ -114,10 +112,11 @@ export class GoalLifecycleService {
 
     return {
       goal,
-      nodes,
-      dependencies,
+      // #2008 supplies this projection from typed plan/todo/status events.
+      // Null is meaningful: no provider-native plan has been observed.
+      providerPlan: null,
       messages,
-      summary: buildSummary(goal, nodes, latestSequence),
+      summary: buildSummary(goal, latestSequence, null),
       stats,
     };
   }
@@ -125,12 +124,9 @@ export class GoalLifecycleService {
 
 export function buildSummary(
   goal: Goal,
-  nodes: GoalNode[],
-  latestSequence: number
+  latestSequence: number,
+  planProgress: GoalPlanProgress | null = null
 ): GoalSummaryView {
-  const activeNodeCount = nodes.filter(
-    (node) => node.status === 'in_progress'
-  ).length;
   return {
     goalId: goal.goalId,
     state: goal.state,
@@ -145,8 +141,7 @@ export function buildSummary(
     ultrafixGoal: goal.ultrafixGoal,
     ultrafixMaxCycles: goal.ultrafixMaxCycles,
     version: goal.version,
-    nodeCount: nodes.length,
-    activeNodeCount,
+    planProgress,
     latestSequence,
     createdAt: goal.createdAt,
     updatedAt: goal.updatedAt,

@@ -166,8 +166,8 @@ test('event route projects poisoned nested payloads without mutating persistence
     auditTrail: Array.from({ length: 120 }, (_, index) => ({ index, label: `safe-${index}` })),
   };
   const originalPayload = JSON.stringify(poisonedPayload);
-  await repo.appendEvent(goal.goalId, {
-    kind: 'output',
+  await repo.appendInternalEvent(goal.goalId, {
+    kind: 'domain',
     eventType: 'poisoned-log',
     payload: poisonedPayload,
     idempotencyKey: 'poisoned-event',

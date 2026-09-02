@@ -3,9 +3,8 @@
  *
  * Long-running goals require an owned, durable source of truth instead of the
  * expiring Redis records and one-shot agent jobs used by tasks. This migration
- * introduces ten goal-domain tables: goal identity/lifecycle and request
- * idempotency, the hierarchical node
- * tree with dependencies, provider sessions, an append-only per-goal event log,
+ * introduces the goal-domain tables: goal identity/lifecycle and request
+ * idempotency, one provider-native session, an append-only per-goal event log,
  * ordered corrective messages, and the auditable state/model transition and
  * pause-interval history from which elapsed/active/paused time is derived.
  *
@@ -29,10 +28,8 @@ const GOAL_STATES = [
   'queued', 'planning', 'running', 'pausing', 'paused', 'recovering',
   'completing', 'completed', 'failed', 'cancelled',
 ];
-const NODE_KINDS = ['root_epic', 'sub_epic', 'implementation_issue', 'implementation_pr'];
-const NODE_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'failed', 'cancelled'];
 const EVENT_KINDS = ['lifecycle', 'output', 'domain'];
-const MERGE_POLICIES = ['manual', 'auto', 'auto_squash'];
+const MERGE_POLICIES = ['manual'];
 
 export async function up(knex) {
   await knex.schema.createTable('goals', (table) => {
@@ -103,6 +100,11 @@ export async function up(knex) {
     table.index('repository', 'goals_repository_idx');
     table.index(['owner_user_id', 'repository'], 'goals_owner_repository_idx');
     table.index(['owner_user_id', 'state'], 'goals_owner_state_idx');
+    // Supports the composite provider-session FK which binds the session to
+    // the immutable agent selected on the goal.
+    table.unique(['goal_id', 'agent'], {
+      indexName: 'goals_goal_agent_idx',
+    });
   });
 
   await knex.schema.createTable('goal_idempotency_keys', (table) => {
@@ -126,102 +128,6 @@ export async function up(knex) {
     );
   });
 
-  await knex.schema.createTable('goal_nodes', (table) => {
-    table.text('node_id').notNullable().primary();
-    // Preserve whether the caller explicitly selected an identifier. The
-    // generated node_id alone cannot distinguish an omitted ID from a retry
-    // that supplies the generated response ID, which are different requests.
-    table.text('requested_node_id').nullable();
-    table.text('goal_id').notNullable();
-    table.text('parent_node_id').nullable();
-    table.text('kind').notNullable().checkIn(NODE_KINDS);
-    // Stable per-goal idempotency key so replanning does not duplicate nodes.
-    table.text('idempotency_key').notNullable();
-    // External GitHub identity (issue/PR number and its kind), when materialized.
-    table.text('external_ref').nullable();
-    table.text('external_kind').nullable();
-    table.text('title').nullable();
-    table.text('status').notNullable().defaultTo('pending').checkIn(NODE_STATUSES);
-    table.integer('attempt_count').notNullable().defaultTo(0);
-    table.integer('order_index').notNullable().defaultTo(0);
-    table.text('created_at').notNullable().defaultTo(isoNow(knex));
-    table.text('updated_at').notNullable().defaultTo(isoNow(knex));
-
-    table.check(
-      'typeof(attempt_count) = \'integer\' AND attempt_count >= 0',
-      {},
-      'goal_nodes_attempt_count_check'
-    );
-    table.check(
-      'typeof(order_index) = \'integer\' AND order_index >= 0',
-      {},
-      'goal_nodes_order_index_check'
-    );
-    table.check(
-      'length(node_id) BETWEEN 1 AND 255 AND (requested_node_id IS NULL OR length(requested_node_id) BETWEEN 1 AND 255) AND length(idempotency_key) BETWEEN 1 AND 255 AND (parent_node_id IS NULL OR length(parent_node_id) BETWEEN 1 AND 255) AND (external_ref IS NULL OR length(external_ref) <= 255) AND (external_kind IS NULL OR length(external_kind) <= 255)',
-      {},
-      'goal_nodes_text_bounds_check'
-    );
-
-    table
-      .foreign('goal_id')
-      .references('goal_id')
-      .inTable('goals')
-      .onUpdate('RESTRICT')
-      .onDelete('CASCADE');
-    table.unique(['goal_id', 'node_id'], {
-      indexName: 'goal_nodes_goal_node_idx',
-    });
-    table
-      .foreign(['goal_id', 'parent_node_id'])
-      .references(['goal_id', 'node_id'])
-      .inTable('goal_nodes')
-      .onUpdate('RESTRICT')
-      .onDelete('CASCADE');
-
-    table.unique(['goal_id', 'idempotency_key'], {
-      indexName: 'goal_nodes_goal_idempotency_idx',
-    });
-    table.index(['goal_id', 'parent_node_id', 'order_index'], 'goal_nodes_tree_idx');
-    table.index(['goal_id', 'status'], 'goal_nodes_status_idx');
-  });
-
-  await knex.schema.createTable('goal_node_dependencies', (table) => {
-    table.text('goal_id').notNullable();
-    table.text('node_id').notNullable();
-    table.text('depends_on_node_id').notNullable();
-    table.text('created_at').notNullable().defaultTo(isoNow(knex));
-
-    table.primary(['goal_id', 'node_id', 'depends_on_node_id']);
-    table.check(
-      'node_id <> depends_on_node_id',
-      {},
-      'goal_node_dependencies_no_self_edge_check'
-    );
-
-    table
-      .foreign('goal_id')
-      .references('goal_id')
-      .inTable('goals')
-      .onUpdate('RESTRICT')
-      .onDelete('CASCADE');
-    table
-      .foreign(['goal_id', 'node_id'])
-      .references(['goal_id', 'node_id'])
-      .inTable('goal_nodes')
-      .onUpdate('RESTRICT')
-      .onDelete('CASCADE');
-    table
-      .foreign(['goal_id', 'depends_on_node_id'])
-      .references(['goal_id', 'node_id'])
-      .inTable('goal_nodes')
-      .onUpdate('RESTRICT')
-      .onDelete('CASCADE');
-
-    table.index('goal_id', 'goal_node_dependencies_goal_idx');
-    table.index('depends_on_node_id', 'goal_node_dependencies_dependency_idx');
-  });
-
   await knex.schema.createTable('goal_provider_sessions', (table) => {
     table.text('session_id').notNullable().primary();
     table.text('goal_id').notNullable();
@@ -230,6 +136,8 @@ export async function up(knex) {
     table.text('runtime_id').nullable();
     table.text('worktree_id').nullable();
     table.text('last_checkpoint').nullable();
+    table.text('native_status').nullable();
+    table.text('requested_model').notNullable();
     table.text('effective_model').notNullable();
     table.text('recovery_metadata_json').nullable();
     // Fenced lease generation this session belongs to; a stale generation must
@@ -244,7 +152,7 @@ export async function up(knex) {
       'goal_provider_sessions_lease_generation_check'
     );
     table.check(
-      'length(session_id) BETWEEN 1 AND 255 AND length(agent) BETWEEN 1 AND 255 AND (provider_thread_id IS NULL OR length(provider_thread_id) <= 255) AND (runtime_id IS NULL OR length(runtime_id) <= 255) AND (worktree_id IS NULL OR length(worktree_id) <= 255)',
+      'length(session_id) BETWEEN 1 AND 255 AND length(agent) BETWEEN 1 AND 255 AND (provider_thread_id IS NULL OR length(provider_thread_id) <= 255) AND (runtime_id IS NULL OR length(runtime_id) <= 255) AND (worktree_id IS NULL OR length(worktree_id) <= 255) AND (native_status IS NULL OR length(native_status) <= 255) AND length(requested_model) BETWEEN 1 AND 255 AND length(effective_model) BETWEEN 1 AND 255',
       {},
       'goal_provider_sessions_text_bounds_check'
     );
@@ -255,14 +163,14 @@ export async function up(knex) {
     );
 
     table
-      .foreign('goal_id')
-      .references('goal_id')
+      .foreign(['goal_id', 'agent'])
+      .references(['goal_id', 'agent'])
       .inTable('goals')
       .onUpdate('RESTRICT')
       .onDelete('CASCADE');
 
-    table.unique(['goal_id', 'agent'], {
-      indexName: 'goal_provider_sessions_goal_agent_idx',
+    table.unique(['goal_id'], {
+      indexName: 'goal_provider_sessions_goal_idx',
     });
   });
 
@@ -271,6 +179,7 @@ export async function up(knex) {
     table.text('goal_id').notNullable();
     // Monotonic per-goal sequence; unique(goal_id, sequence) rejects gaps/dupes.
     table.integer('sequence').notNullable();
+    table.text('source').notNullable().defaultTo('internal').checkIn(['internal', 'provider']);
     table.text('kind').notNullable().checkIn(EVENT_KINDS);
     table.text('event_type').notNullable();
     table.text('payload_json').nullable();
@@ -449,17 +358,51 @@ export async function up(knex) {
     ON goal_pause_intervals (goal_id)
     WHERE resumed_at IS NULL
   `);
+
+  await knex.raw(`
+    CREATE TRIGGER goals_agent_immutable_update
+    BEFORE UPDATE OF agent ON goals
+    WHEN NEW.agent <> OLD.agent
+    BEGIN
+      SELECT RAISE(ABORT, 'goal agent is immutable');
+    END
+  `);
+  await createProviderSessionIdentityTriggers(knex);
+}
+
+async function createProviderSessionIdentityTriggers(knex) {
+  await knex.raw(`
+    CREATE TRIGGER goal_provider_session_owner_immutable
+    BEFORE UPDATE OF session_id, goal_id, agent ON goal_provider_sessions
+    WHEN NEW.session_id IS NOT OLD.session_id
+      OR NEW.goal_id IS NOT OLD.goal_id
+      OR NEW.agent IS NOT OLD.agent
+    BEGIN
+      SELECT RAISE(ABORT, 'goal provider session ownership is immutable');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER goal_provider_session_identity_immutable
+    BEFORE UPDATE OF provider_thread_id, worktree_id ON goal_provider_sessions
+    WHEN (OLD.provider_thread_id IS NOT NULL
+        AND NEW.provider_thread_id IS NOT OLD.provider_thread_id)
+      OR (OLD.worktree_id IS NOT NULL AND NEW.worktree_id IS NOT OLD.worktree_id)
+    BEGIN
+      SELECT RAISE(ABORT, 'goal provider session identity is immutable once set');
+    END
+  `);
 }
 
 export async function down(knex) {
+  await knex.raw('DROP TRIGGER IF EXISTS goals_agent_immutable_update');
+  await knex.raw('DROP TRIGGER IF EXISTS goal_provider_session_identity_immutable');
+  await knex.raw('DROP TRIGGER IF EXISTS goal_provider_session_owner_immutable');
   await knex.schema.dropTableIfExists('goal_pause_intervals');
   await knex.schema.dropTableIfExists('goal_model_transitions');
   await knex.schema.dropTableIfExists('goal_state_transitions');
   await knex.schema.dropTableIfExists('goal_messages');
   await knex.schema.dropTableIfExists('goal_events');
   await knex.schema.dropTableIfExists('goal_provider_sessions');
-  await knex.schema.dropTableIfExists('goal_node_dependencies');
-  await knex.schema.dropTableIfExists('goal_nodes');
   await knex.schema.dropTableIfExists('goal_idempotency_keys');
   await knex.schema.dropTableIfExists('goals');
 }

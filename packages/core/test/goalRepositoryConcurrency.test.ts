@@ -102,26 +102,26 @@ describe('GoalRepository WAL contention', () => {
     const goal = await createGoal('event-goal');
     const lease = await first.claimLease(goal.goalId, 'controller', 60_000);
     const event = {
-      kind: 'output' as const, eventType: 'line', payload: { line: 1 },
+      kind: 'domain' as const, eventType: 'line', payload: { line: 1 },
       idempotencyKey: 'same-event', leaseOwner: 'controller', leaseEpoch: lease.epoch,
     };
     const [left, right] = await Promise.all([
-      first.appendEvent(goal.goalId, event),
-      second.appendEvent(goal.goalId, event),
+      first.appendInternalEvent(goal.goalId, event),
+      second.appendInternalEvent(goal.goalId, event),
     ]);
     assert.deepEqual(right, left);
     const allocated = await Promise.all([
-      first.appendEvent(goal.goalId, { ...event, payload: { line: 2 }, idempotencyKey: 'event-2' }),
-      second.appendEvent(goal.goalId, { ...event, payload: { line: 3 }, idempotencyKey: 'event-3' }),
+      first.appendInternalEvent(goal.goalId, { ...event, payload: { line: 2 }, idempotencyKey: 'event-2' }),
+      second.appendInternalEvent(goal.goalId, { ...event, payload: { line: 3 }, idempotencyKey: 'event-3' }),
     ]);
     assert.deepEqual(allocated.map(item => item.sequence).sort((a, b) => a - b), [2, 3]);
     await assert.rejects(
-      second.appendEvent(goal.goalId, { ...event, payload: { line: 99 } }),
+      second.appendInternalEvent(goal.goalId, { ...event, payload: { line: 99 } }),
       (error: GoalError) => error.code === 'goal_idempotency_conflict'
     );
     const conflictResults = await Promise.allSettled([
-      first.appendEvent(goal.goalId, { ...event, payload: { value: 'left' }, idempotencyKey: 'event-race-conflict' }),
-      second.appendEvent(goal.goalId, { ...event, payload: { value: 'right' }, idempotencyKey: 'event-race-conflict' }),
+      first.appendInternalEvent(goal.goalId, { ...event, payload: { value: 'left' }, idempotencyKey: 'event-race-conflict' }),
+      second.appendInternalEvent(goal.goalId, { ...event, payload: { value: 'right' }, idempotencyKey: 'event-race-conflict' }),
     ]);
     assert.equal(conflictResults.filter(result => result.status === 'fulfilled').length, 1);
     assert.equal((conflictResults.find(result => result.status === 'rejected') as PromiseRejectedResult).reason.code, 'goal_idempotency_conflict');
@@ -182,7 +182,7 @@ describe('GoalRepository WAL contention', () => {
     await firstDb('goals').where('goal_id', goal.goalId).update({ lease_expires_at: '2000-01-01T00:00:00.000Z' });
     const staleFence = { leaseOwner: 'old-controller', leaseEpoch: lease.epoch };
     await assert.rejects(
-      first.appendEvent(goal.goalId, { kind: 'domain', eventType: 'expired', idempotencyKey: 'expired-event', ...staleFence }),
+      first.appendInternalEvent(goal.goalId, { kind: 'domain', eventType: 'expired', idempotencyKey: 'expired-event', ...staleFence }),
       (error: GoalError) => error.code === 'goal_stale_lease'
     );
     await assert.rejects(
@@ -192,7 +192,7 @@ describe('GoalRepository WAL contention', () => {
     const takeover = await second.claimLease(goal.goalId, 'new-controller', 60_000);
     assert.equal(takeover.epoch, lease.epoch + 1);
     await assert.rejects(
-      first.upsertProviderSession(goal.goalId, 'claude', { ...staleFence, runtimeId: 'stale' }),
+      first.upsertProviderSession(goal.goalId, { ...staleFence, runtimeId: 'stale' }),
       (error: GoalError) => error.code === 'goal_stale_lease'
     );
     await assert.rejects(
@@ -209,11 +209,11 @@ describe('GoalRepository WAL contention', () => {
     );
   });
 
-  test('restart cleanup preserves undefined provider fields and clears explicit nulls under the new fence', async () => {
+  test('restart cleanup preserves native session identity while clearing transient resume fields', async () => {
     const goal = await createGoal('provider-restart-cleanup-goal');
     const original = await first.claimLease(goal.goalId, 'crashed-controller', 60_000);
     const staleFence = { leaseOwner: 'crashed-controller', leaseEpoch: original.epoch };
-    await first.upsertProviderSession(goal.goalId, 'claude', {
+    await first.upsertProviderSession(goal.goalId, {
       ...staleFence,
       providerThreadId: 'thread-before-crash', runtimeId: 'runtime-before-crash',
       worktreeId: 'worktree-before-crash', lastCheckpoint: 'checkpoint-before-crash',
@@ -224,27 +224,37 @@ describe('GoalRepository WAL contention', () => {
     const restartedFence = { leaseOwner: 'restarted-controller', leaseEpoch: restarted.epoch };
 
     await assert.rejects(
-      first.upsertProviderSession(goal.goalId, 'claude', {
+      first.upsertProviderSession(goal.goalId, {
         ...staleFence, providerThreadId: null, runtimeId: null,
         worktreeId: null, lastCheckpoint: null,
       }),
       (error: GoalError) => error.code === 'goal_stale_lease'
     );
-    await second.upsertProviderSession(goal.goalId, 'claude', {
+    await second.upsertProviderSession(goal.goalId, {
       ...restartedFence,
-      runtimeId: null, worktreeId: null, lastCheckpoint: null,
+      runtimeId: null, lastCheckpoint: null,
     });
-    let session = await second.getProviderSession(goal.goalId, 'claude');
+    let session = await second.getProviderSession(goal.goalId);
     assert.equal(session?.provider_thread_id, 'thread-before-crash');
     assert.equal(session?.runtime_id, null);
-    assert.equal(session?.worktree_id, null);
+    assert.equal(session?.worktree_id, 'worktree-before-crash');
     assert.equal(session?.last_checkpoint, null);
 
-    await second.upsertProviderSession(goal.goalId, 'claude', {
-      ...restartedFence, providerThreadId: null,
-    });
-    session = await second.getProviderSession(goal.goalId, 'claude');
-    assert.equal(session?.provider_thread_id, null);
+    await assert.rejects(
+      second.upsertProviderSession(goal.goalId, {
+        ...restartedFence, providerThreadId: null,
+      }),
+      (error: GoalError) => error.code === 'goal_session_conflict'
+    );
+    await assert.rejects(
+      second.upsertProviderSession(goal.goalId, {
+        ...restartedFence, worktreeId: 'replacement-worktree',
+      }),
+      (error: GoalError) => error.code === 'goal_session_conflict'
+    );
+    session = await second.getProviderSession(goal.goalId);
+    assert.equal(session?.provider_thread_id, 'thread-before-crash');
+    assert.equal(session?.worktree_id, 'worktree-before-crash');
   });
 
   test('renew rejects invalid TTLs and non-current owner or epoch', async () => {
@@ -294,33 +304,18 @@ describe('GoalRepository WAL contention', () => {
     assert.equal((await firstDb('goal_state_transitions').where({ goal_id: goal.goalId, to_state: 'paused' })).length, 1);
   });
 
-  test('node retries audit every semantically relevant field', async () => {
-    const goal = await createGoal('node-audit-goal');
-    const lease = await first.claimLease(goal.goalId, 'node-controller', 60_000);
-    const base = {
-      nodeId: 'requested-node', kind: 'implementation_issue' as const,
-      externalRef: '42', externalKind: 'issue', title: 'Node',
-      status: 'pending' as const, orderIndex: 3, idempotencyKey: 'node-key',
-      leaseOwner: 'node-controller', leaseEpoch: lease.epoch,
-    };
-    await first.addNode(goal.goalId, base);
-    for (const changed of [
-      { externalRef: '43' }, { externalKind: 'pull_request' },
-      { status: 'in_progress' as const }, { orderIndex: 4 },
-      { nodeId: 'other-node' }, { nodeId: undefined },
-    ]) {
-      await assert.rejects(
-        first.addNode(goal.goalId, { ...base, ...changed }),
-        (error: GoalError) => error.code === 'goal_idempotency_conflict'
-      );
-    }
-
-    const generated = { ...base, nodeId: undefined, idempotencyKey: 'generated-node-key' };
-    const created = await first.addNode(goal.goalId, generated);
-    await assert.rejects(
-      first.addNode(goal.goalId, { ...generated, nodeId: created.nodeId }),
-      (error: GoalError) => error.code === 'goal_idempotency_conflict'
-    );
+  test('concurrent provider-session upserts retain one selected-agent session', async () => {
+    const goal = await createGoal('provider-session-contention-goal');
+    const lease = await first.claimLease(goal.goalId, 'session-controller', 60_000);
+    const fence = { leaseOwner: 'session-controller', leaseEpoch: lease.epoch };
+    await Promise.all([
+      first.upsertProviderSession(goal.goalId, { ...fence, runtimeId: 'runtime-left' }),
+      second.upsertProviderSession(goal.goalId, { ...fence, runtimeId: 'runtime-right' }),
+    ]);
+    const rows = await firstDb('goal_provider_sessions').where({ goal_id: goal.goalId });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].agent, goal.agent);
+    assert.ok(['runtime-left', 'runtime-right'].includes(rows[0].runtime_id));
   });
 
   test('model application audits only the deterministic current request', async () => {

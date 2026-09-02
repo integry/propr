@@ -9,8 +9,10 @@ import type { BetterSqliteConnection } from '../src/db/connection.js';
 import { applyDatabaseMigrations } from '../src/db/migrationGate.js';
 import { GoalLifecycleService } from '../src/services/goals/goalLifecycleService.js';
 import { GoalRepository } from '../src/services/goals/goalRepository.js';
+import { up as simplifyGoalFoundation } from '../src/db/migrations/20260902000000_simplify_goal_foundation.js';
 
 const GOAL_MIGRATION = '20260831000000_create_goal_control_plane.js';
+const GOAL_CORRECTION_MIGRATION = '20260902000000_simplify_goal_foundation.js';
 const MIGRATIONS_DIRECTORY = join(
   dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -28,7 +30,7 @@ class GoalMigrationSource implements Knex.MigrationSource<string> {
       .sort();
     return this.includeGoalMigration
       ? migrations
-      : migrations.filter((name) => name !== GOAL_MIGRATION);
+      : migrations.filter((name) => ![GOAL_MIGRATION, GOAL_CORRECTION_MIGRATION].includes(name));
   }
 
   getMigrationName(migration: string): string {
@@ -111,6 +113,9 @@ test('real pre-goal Knex chain passes the migration gate, reopen, and rollback',
       'goal_pause_intervals_open_idx',
       'goals_owner_state_idx',
     ]);
+    const retiredHierarchy = await database('sqlite_master').where({ type: 'table' })
+      .whereIn('name', ['goal_nodes', 'goal_node_dependencies']).pluck('name');
+    assert.deepEqual(retiredHierarchy, []);
 
     const repository = new GoalRepository(database);
     const goal = await repository.createGoal({
@@ -119,10 +124,7 @@ test('real pre-goal Knex chain passes the migration gate, reopen, and rollback',
     });
     const lease = await repository.claimLease(goal.goalId, 'restart-controller', 60_000);
     const fence = { leaseOwner: 'restart-controller', leaseEpoch: lease.epoch };
-    await repository.addNode(goal.goalId, {
-      kind: 'root_epic', status: 'in_progress', idempotencyKey: 'restart-node', ...fence,
-    });
-    await repository.appendEvent(goal.goalId, {
+    await repository.appendInternalEvent(goal.goalId, {
       kind: 'lifecycle', eventType: 'created', idempotencyKey: 'restart-event', ...fence,
     });
     const beforeRestart = (await new GoalLifecycleService(repository).getDetail(goal.goalId)).summary;
@@ -132,7 +134,7 @@ test('real pre-goal Knex chain passes the migration gate, reopen, and rollback',
     await applyDatabaseMigrations(database);
     const afterRestart = (await new GoalLifecycleService(database).getDetail(goal.goalId)).summary;
     assert.deepEqual(afterRestart, beforeRestart);
-    assert.equal(afterRestart.nodeCount, 1);
+    assert.equal(afterRestart.planProgress, null);
     assert.equal(afterRestart.latestSequence, 1);
 
     await database.migrate.rollback();
@@ -142,6 +144,103 @@ test('real pre-goal Knex chain passes the migration gate, reopen, and rollback',
     assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), []);
     const goalTables = await database('sqlite_master').where({ type: 'table' }).whereLike('name', 'goal%');
     assert.deepEqual(goalTables, []);
+  } finally {
+    await database.destroy();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('already-applied branch schema upgrades deterministically to one native session', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'propr-goal-branch-upgrade-'));
+  const database = openDatabase(join(directory, 'legacy.sqlite'), false);
+  try {
+    await database.schema.createTable('goals', (table) => {
+      table.text('goal_id').primary();
+      table.text('agent').notNullable();
+      table.text('requested_model').notNullable();
+      table.text('merge_policy').notNullable();
+    });
+    await database.schema.createTable('goal_events', (table) => {
+      table.increments('id').primary();
+      table.text('goal_id').notNullable();
+      table.integer('sequence').notNullable();
+      table.text('kind').notNullable();
+      table.text('event_type').notNullable();
+      table.text('payload_json').nullable();
+      table.text('idempotency_key').notNullable();
+      table.integer('lease_epoch').notNullable();
+      table.text('created_at').notNullable();
+    });
+    await database.schema.createTable('goal_nodes', (table) => {
+      table.text('node_id').primary();
+      table.text('goal_id').notNullable();
+    });
+    await database.schema.createTable('goal_node_dependencies', (table) => {
+      table.text('goal_id').notNullable();
+      table.text('node_id').notNullable();
+      table.text('depends_on_node_id').notNullable();
+    });
+    await database.schema.createTable('goal_provider_sessions', (table) => {
+      table.text('session_id').primary();
+      table.text('goal_id').notNullable();
+      table.text('agent').notNullable();
+      table.text('provider_thread_id').nullable();
+      table.text('runtime_id').nullable();
+      table.text('worktree_id').nullable();
+      table.text('last_checkpoint').nullable();
+      table.text('effective_model').notNullable();
+      table.text('recovery_metadata_json').nullable();
+      table.integer('lease_generation').notNullable();
+      table.text('created_at').notNullable();
+      table.text('updated_at').notNullable();
+      table.unique(['goal_id', 'agent']);
+    });
+
+    await database('goals').insert({
+      goal_id: 'legacy-goal', agent: 'claude',
+      requested_model: 'claude-opus-4-8', merge_policy: 'auto_squash',
+    });
+    await database('goal_events').insert({
+      goal_id: 'legacy-goal', sequence: 1, kind: 'lifecycle',
+      event_type: 'created', payload_json: null, idempotency_key: 'legacy-event',
+      lease_epoch: 1, created_at: '2026-09-01T00:00:00.000Z',
+    });
+    await database('goal_nodes').insert({ node_id: 'old-node', goal_id: 'legacy-goal' });
+    await database('goal_node_dependencies').insert({
+      goal_id: 'legacy-goal', node_id: 'old-node', depends_on_node_id: 'old-node',
+    });
+    const legacySession = {
+      goal_id: 'legacy-goal', provider_thread_id: 'thread', runtime_id: 'runtime',
+      worktree_id: 'worktree', last_checkpoint: 'checkpoint',
+      effective_model: 'claude-opus-4-8', recovery_metadata_json: null,
+      lease_generation: 1, created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+    };
+    await database('goal_provider_sessions').insert([
+      { ...legacySession, session_id: 'selected-session', agent: 'claude' },
+      { ...legacySession, session_id: 'wrong-session', agent: 'codex' },
+    ]);
+
+    await simplifyGoalFoundation(database);
+
+    assert.equal((await database('goals').first()).merge_policy, 'manual');
+    assert.equal((await database('goal_events').first()).source, 'internal');
+    const tables = await database('sqlite_master').where({ type: 'table' })
+      .whereIn('name', ['goal_nodes', 'goal_node_dependencies']).pluck('name');
+    assert.deepEqual(tables, []);
+    const sessions = await database('goal_provider_sessions');
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].session_id, 'selected-session');
+    assert.equal(sessions[0].agent, 'claude');
+    assert.equal(sessions[0].requested_model, 'claude-opus-4-8');
+    assert.equal(sessions[0].native_status, null);
+
+    await assert.rejects(database('goal_provider_sessions').insert({
+      ...sessions[0], session_id: 'second-session', agent: 'codex',
+    }));
+    await assert.rejects(database('goals').where({ goal_id: 'legacy-goal' }).update({ agent: 'codex' }));
+    await assert.rejects(database('goals').where({ goal_id: 'legacy-goal' }).update({ merge_policy: 'auto' }));
+    assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), []);
   } finally {
     await database.destroy();
     await rm(directory, { recursive: true, force: true });

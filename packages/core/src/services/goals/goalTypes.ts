@@ -6,9 +6,8 @@
 
 import type {
   GoalState,
-  GoalNodeKind,
-  GoalNodeStatus,
   GoalEventKind,
+  GoalEventSource,
   GoalMessageState,
   GoalMergePolicy,
   GoalTerminalReason,
@@ -40,27 +39,11 @@ export interface GoalRecord {
   updated_at: string;
 }
 
-export interface GoalNodeRecord {
-  node_id: string;
-  requested_node_id: string | null;
-  goal_id: string;
-  parent_node_id: string | null;
-  kind: GoalNodeKind;
-  idempotency_key: string;
-  external_ref: string | null;
-  external_kind: string | null;
-  title: string | null;
-  status: GoalNodeStatus;
-  attempt_count: number;
-  order_index: number;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface GoalEventRecord {
   id: number;
   goal_id: string;
   sequence: number;
+  source: GoalEventSource;
   kind: GoalEventKind;
   event_type: string;
   payload_json: string | null;
@@ -92,6 +75,8 @@ export interface GoalProviderSessionRecord {
   runtime_id: string | null;
   worktree_id: string | null;
   last_checkpoint: string | null;
+  native_status: string | null;
+  requested_model: string;
   effective_model: string;
   recovery_metadata_json: string | null;
   lease_generation: number;
@@ -133,26 +118,11 @@ export interface Goal {
   updatedAt: string;
 }
 
-export interface GoalNode {
-  nodeId: string;
-  goalId: string;
-  parentNodeId: string | null;
-  kind: GoalNodeKind;
-  idempotencyKey: string;
-  externalRef: string | null;
-  externalKind: string | null;
-  title: string | null;
-  status: GoalNodeStatus;
-  attemptCount: number;
-  orderIndex: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface GoalEvent {
   id: number;
   goalId: string;
   sequence: number;
+  source: GoalEventSource;
   kind: GoalEventKind;
   eventType: string;
   payload: unknown;
@@ -192,22 +162,8 @@ export interface CreateGoalInput {
   idempotencyKey?: string;
 }
 
-export interface CreateNodeInput {
-  nodeId?: string;
-  parentNodeId?: string | null;
-  kind: GoalNodeKind;
-  idempotencyKey: string;
-  externalRef?: string | null;
-  externalKind?: string | null;
-  title?: string | null;
-  status?: GoalNodeStatus;
-  orderIndex?: number;
-  leaseOwner: string;
-  leaseEpoch: number;
-}
-
-export interface AppendEventInput {
-  kind: GoalEventKind;
+export interface AppendInternalEventInput {
+  kind: Extract<GoalEventKind, 'lifecycle' | 'domain'>;
   eventType: string;
   payload?: unknown;
   idempotencyKey: string;
@@ -251,6 +207,8 @@ export interface ProviderSessionUpdate extends GoalLeaseFence {
   runtimeId?: string | null;
   worktreeId?: string | null;
   lastCheckpoint?: string | null;
+  nativeStatus?: string | null;
+  requestedModel?: string;
   effectiveModel?: string;
   recoveryMetadata?: GoalRecoveryMetadata | null;
 }

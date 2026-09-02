@@ -9,7 +9,7 @@ import {
   isTerminalGoalState,
 } from '@propr/shared';
 import type {
-  AppendEventInput,
+  AppendInternalEventInput,
   EnqueueMessageInput,
   GoalEvent,
   GoalEventRecord,
@@ -38,7 +38,7 @@ import {
 export class GoalEventRepository {
   constructor(private readonly db: Knex) {}
 
-  async appendEvent(goalId: string, input: AppendEventInput): Promise<GoalEvent> {
+  async appendInternalEvent(goalId: string, input: AppendInternalEventInput): Promise<GoalEvent> {
     const normalized = normalizeEvent(input);
     return goalTransaction(this.db, async (trx) => {
       const goal = await guardLease(trx, goalId, normalized);
@@ -55,7 +55,7 @@ export class GoalEventRepository {
       }
       const sequence = await nextSequence(trx, 'goal_events', goalId);
       const record = {
-        goal_id: goalId, sequence, kind: normalized.kind,
+        goal_id: goalId, sequence, source: 'internal' as const, kind: normalized.kind,
         event_type: normalized.eventType, payload_json: normalized.payloadJson,
         idempotency_key: normalized.idempotencyKey,
         lease_epoch: goal.lease_epoch, created_at: nowIso(),
@@ -195,10 +195,16 @@ async function nextSequence(trx: Knex.Transaction, table: 'goal_events' | 'goal_
   return (row?.maxSeq ?? 0) + 1;
 }
 
-type NormalizedEvent = AppendEventInput & { payloadJson: string | null };
+type NormalizedEvent = AppendInternalEventInput & { payloadJson: string | null };
 
-function normalizeEvent(input: AppendEventInput): NormalizedEvent {
-  if (!GOAL_EVENT_KINDS.includes(input.kind)) throw new GoalError(GOAL_ERROR_CODES.invalidEventKind, 'Event kind is not recognized', 400);
+function normalizeEvent(input: AppendInternalEventInput): NormalizedEvent {
+  if (input.kind !== 'lifecycle' && input.kind !== 'domain') {
+    throw new GoalError(
+      GOAL_ERROR_CODES.invalidEventKind,
+      'Provider event kinds must use the typed provider-ingress boundary',
+      400
+    );
+  }
   let payloadJson: string | null = null;
   if (Object.hasOwn(input, 'payload')) {
     try {

@@ -1,21 +1,19 @@
 /**
  * Facade for the durable goal repositories. Cohesive modules own identity and
- * reads, hierarchy/session writes, ordered events/messages, leases, and
+ * reads, the single provider session, ordered events/messages, leases, and
  * lifecycle/model mutations while callers retain one repository surface.
  */
 import type { Knex } from 'knex';
 import type {
-  AppendEventInput,
+  AppendInternalEventInput,
   CancelIntentInput,
   CreateGoalInput,
-  CreateNodeInput,
   EnqueueMessageInput,
   Goal,
   GoalActiveTimeStats,
   GoalEvent,
   GoalLeaseFence,
   GoalMessage,
-  GoalNode,
   OperatorIntentInput,
   GoalProviderSessionRecord,
   ListGoalsQuery,
@@ -24,7 +22,7 @@ import type {
   TransitionInput,
 } from './goalTypes.js';
 import { GoalReadRepository } from './goalReadRepository.js';
-import { GoalHierarchyRepository } from './goalHierarchyRepository.js';
+import { GoalSessionRepository } from './goalSessionRepository.js';
 import { GoalEventRepository } from './goalEventRepository.js';
 import { GoalLeaseRepository } from './goalLeaseRepository.js';
 import { GoalMutationRepository } from './goalMutationRepository.js';
@@ -33,14 +31,14 @@ export { GoalError } from './goalRepositorySupport.js';
 
 export class GoalRepository {
   private readonly reads: GoalReadRepository;
-  private readonly hierarchy: GoalHierarchyRepository;
+  private readonly sessions: GoalSessionRepository;
   private readonly events: GoalEventRepository;
   private readonly leases: GoalLeaseRepository;
   private readonly mutations: GoalMutationRepository;
 
   constructor(db: Knex) {
     this.reads = new GoalReadRepository(db);
-    this.hierarchy = new GoalHierarchyRepository(db);
+    this.sessions = new GoalSessionRepository(db);
     this.events = new GoalEventRepository(db);
     this.leases = new GoalLeaseRepository(db);
     this.mutations = new GoalMutationRepository(db);
@@ -70,41 +68,19 @@ export class GoalRepository {
     return this.reads.getActiveTimeStats(goalId);
   }
 
-  addNode(goalId: string, input: CreateNodeInput): Promise<GoalNode> {
-    return this.hierarchy.addNode(goalId, input);
-  }
-
-  addDependency(
-    goalId: string,
-    nodeId: string,
-    dependsOnNodeId: string,
-    fence: GoalLeaseFence
-  ): Promise<void> {
-    return this.hierarchy.addDependency(goalId, nodeId, dependsOnNodeId, fence);
-  }
-
-  getNodes(goalId: string): Promise<GoalNode[]> {
-    return this.hierarchy.getNodes(goalId);
-  }
-
-  getDependencies(goalId: string): Promise<Array<{ nodeId: string; dependsOnNodeId: string }>> {
-    return this.hierarchy.getDependencies(goalId);
-  }
-
   upsertProviderSession(
     goalId: string,
-    agent: string,
     fields: ProviderSessionUpdate
   ): Promise<void> {
-    return this.hierarchy.upsertProviderSession(goalId, agent, fields);
+    return this.sessions.upsertProviderSession(goalId, fields);
   }
 
-  getProviderSession(goalId: string, agent: string): Promise<GoalProviderSessionRecord | null> {
-    return this.hierarchy.getProviderSession(goalId, agent);
+  getProviderSession(goalId: string): Promise<GoalProviderSessionRecord | null> {
+    return this.sessions.getProviderSession(goalId);
   }
 
-  appendEvent(goalId: string, input: AppendEventInput): Promise<GoalEvent> {
-    return this.events.appendEvent(goalId, input);
+  appendInternalEvent(goalId: string, input: AppendInternalEventInput): Promise<GoalEvent> {
+    return this.events.appendInternalEvent(goalId, input);
   }
 
   readEvents(

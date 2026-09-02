@@ -36,7 +36,7 @@ function createDatabase(): Knex {
 }
 
 async function append(payload: unknown, idempotencyKey: string) {
-  return repository.appendEvent(goalId, {
+  return repository.appendInternalEvent(goalId, {
     kind: 'domain',
     eventType: 'canonical-test',
     payload,
@@ -137,7 +137,7 @@ describe('strict event payload canonicalization', () => {
       );
     }
     await assert.rejects(
-      repository.appendEvent(goalId, {
+      repository.appendInternalEvent(goalId, {
         kind: 'domain', eventType: 'canonical-test', idempotencyKey: 'different-retry', ...fence,
       }),
       (error: GoalError) => error.code === 'goal_idempotency_conflict'
@@ -200,13 +200,13 @@ describe('strict event payload canonicalization', () => {
 
   test('rejects explicit undefined but preserves the supported absent-payload event form', async () => {
     await assert.rejects(
-      repository.appendEvent(goalId, {
+      repository.appendInternalEvent(goalId, {
         kind: 'domain', eventType: 'canonical-test', payload: undefined,
         idempotencyKey: 'explicit-undefined', ...fence,
       }),
       (error: GoalError) => error.code === 'goal_validation_error'
     );
-    const event = await repository.appendEvent(goalId, {
+    const event = await repository.appendInternalEvent(goalId, {
       kind: 'domain', eventType: 'canonical-test', idempotencyKey: 'absent-payload', ...fence,
     });
     assert.equal(event.payload, null);

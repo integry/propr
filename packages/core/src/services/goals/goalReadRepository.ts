@@ -149,8 +149,6 @@ export class GoalReadRepository {
     const cursor = decodeCursor(query.cursor);
     let builder = this.db<GoalSummaryRecord>('goals')
       .select('goals.*')
-      .select(this.db.raw('(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id) AS node_count'))
-      .select(this.db.raw("(SELECT COUNT(*) FROM goal_nodes n WHERE n.goal_id = goals.goal_id AND n.status = 'in_progress') AS active_node_count"))
       .select(this.db.raw('(SELECT COALESCE(MAX(sequence), 0) FROM goal_events e WHERE e.goal_id = goals.goal_id) AS latest_sequence'));
     if (ownerUserId !== null) builder = builder.where('owner_user_id', ownerUserId);
     if (repository) builder = builder.andWhere('repository', repository);

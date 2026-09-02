@@ -19,8 +19,6 @@ import type {
   GoalLeaseFence,
   GoalMessage,
   GoalMessageRecord,
-  GoalNode,
-  GoalNodeRecord,
   GoalRecord,
 } from './goalTypes.js';
 
@@ -103,19 +101,10 @@ export function toGoal(row: GoalRecord): Goal {
   };
 }
 
-export function toNode(row: GoalNodeRecord): GoalNode {
-  return {
-    nodeId: row.node_id, goalId: row.goal_id, parentNodeId: row.parent_node_id,
-    kind: row.kind, idempotencyKey: row.idempotency_key,
-    externalRef: row.external_ref, externalKind: row.external_kind,
-    title: row.title, status: row.status, attemptCount: row.attempt_count,
-    orderIndex: row.order_index, createdAt: row.created_at, updatedAt: row.updated_at,
-  };
-}
-
 export function toEvent(row: GoalEventRecord): GoalEvent {
   return {
     id: row.id, goalId: row.goal_id, sequence: row.sequence, kind: row.kind,
+    source: row.source,
     eventType: row.event_type,
     payload: row.payload_json === null ? null : JSON.parse(row.payload_json),
     idempotencyKey: row.idempotency_key, leaseEpoch: row.lease_epoch,
@@ -134,8 +123,6 @@ export function toMessage(row: GoalMessageRecord): GoalMessage {
 }
 
 export interface GoalSummaryRecord extends GoalRecord {
-  node_count: number;
-  active_node_count: number;
   latest_sequence: number;
 }
 
@@ -148,7 +135,7 @@ export function toSummary(row: GoalSummaryRecord): GoalSummaryView {
     maxActiveTasks: goal.maxActiveTasks, mergePolicy: goal.mergePolicy,
     ultrafixEnabled: goal.ultrafixEnabled, ultrafixGoal: goal.ultrafixGoal,
     ultrafixMaxCycles: goal.ultrafixMaxCycles, version: goal.version,
-    nodeCount: Number(row.node_count), activeNodeCount: Number(row.active_node_count),
+    planProgress: null,
     latestSequence: Number(row.latest_sequence), createdAt: goal.createdAt,
     updatedAt: goal.updatedAt,
   };

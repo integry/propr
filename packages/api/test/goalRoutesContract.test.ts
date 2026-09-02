@@ -113,10 +113,7 @@ describe('goal HTTP contract', () => {
     const repository = new GoalRepository(database);
     const lease = await repository.claimLease(goalId, 'dto-controller', 60_000);
     const fence = { leaseOwner: 'dto-controller', leaseEpoch: lease.epoch };
-    await repository.addNode(goalId, {
-      kind: 'root_epic', title: 'Public node', idempotencyKey: 'private-node-key', ...fence,
-    });
-    await repository.appendEvent(goalId, {
+    await repository.appendInternalEvent(goalId, {
       kind: 'domain', eventType: 'public-event', payload: { progress: 1 },
       idempotencyKey: 'private-event-key', ...fence,
     });
@@ -128,6 +125,10 @@ describe('goal HTTP contract', () => {
     }), message.res);
     const detail = response();
     await api.getGoal(request({ params: { goalId } }), detail.res);
+    const detailBody = detail.state.body as Record<string, unknown>;
+    assert.equal(detailBody.providerPlan, null);
+    assert.equal('nodes' in detailBody, false);
+    assert.equal('dependencies' in detailBody, false);
     const model = response();
     await api.requestModelChange(request({
       params: { goalId }, body: { model: 'claude-sonnet-5' },
@@ -166,7 +167,7 @@ describe('goal HTTP contract', () => {
     }
     assert.deepEqual(
       Object.keys((events.state.body as { events: Array<Record<string, unknown>> }).events[0]).sort(),
-      ['createdAt', 'eventType', 'goalId', 'kind', 'payload', 'sequence']
+      ['createdAt', 'eventType', 'goalId', 'kind', 'payload', 'sequence', 'source']
     );
   });
 
@@ -225,7 +226,9 @@ describe('goal HTTP contract', () => {
     const page1 = first.state.body as { goals: Array<Record<string, unknown>>; nextCursor: string };
     assert.equal('ownerUserId' in page1.goals[0], false);
     assert.equal('leaseOwner' in page1.goals[0], false);
-    assert.equal(typeof page1.goals[0].nodeCount, 'number');
+    assert.equal(page1.goals[0].planProgress, null);
+    assert.equal('nodeCount' in page1.goals[0], false);
+    assert.equal('activeNodeCount' in page1.goals[0], false);
     const second = response();
     await api.listGoals(request({ query: { limit: '1', cursor: page1.nextCursor } }), second.res);
     assert.notEqual((second.state.body as { goals: Array<{ goalId: string }> }).goals[0].goalId, page1.goals[0].goalId);
