@@ -36,6 +36,9 @@ import {
     buildAntigravityRepositoryScoutPermissions,
     REPOSITORY_SCOUT_CONTAINER_ROOT,
 } from './utils/repositoryScoutMcpServer.js';
+import {
+    readBoundedProviderOutputFile,
+} from './utils/boundedProviderOutput.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -150,7 +153,7 @@ export class AntigravityAgent implements Agent {
             );
 
             const executionTime = Date.now() - startTime;
-            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath });
+            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath });
         } catch (error) {
             return this.handleExecutionError(error, Date.now() - startTime, issueRef, effectiveModel);
         } finally {
@@ -168,15 +171,14 @@ export class AntigravityAgent implements Agent {
     private async processExecutionResult(opts: {
         result: { stdout: string; stderr: string; exitCode: number | null; timedOut?: boolean }; executionTime: number;
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined;
-        prompt: string; worktreePath: string; worktreeGitContent: string | null; onSessionId?: (sessionId: string, conversationId?: string) => void;
+        prompt: string; worktreePath: string; worktreeGitContent: string | null;
         taskId?: string; prNumber?: number; isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
         transcriptPath?: string;
     }): Promise<AgentExecutionResult> {
-        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath } = opts;
+        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath } = opts;
         logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Antigravity agent execution completed');
 
-        const parsed = this.resolveSessionOutput(result.stdout, transcriptPath, onSessionId);
-        const { response } = await parsed;
+        const { response } = await this.resolveSessionOutput(result.stdout, transcriptPath);
 
         const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
         const modelIdentity = resolveAntigravityModelIdentity(response.modelUsed, effectiveModel, response.hasStreamEnvelopes); const resolvedModel = modelIdentity.modelUsed;
@@ -186,7 +188,8 @@ export class AntigravityAgent implements Agent {
         const agentResult: AgentExecutionResult = {
             success, executionTimeMs: executionTime,
             logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
-            exitCode: result.exitCode, rawOutput: result.stdout, modelUsed: resolvedModel, modifiedFiles: [],
+            exitCode: result.exitCode, rawOutput: result.stdout, modelUsed: resolvedModel,
+            providerModel: response.modelUsed, modifiedFiles: [],
             commitMessage: null, summary: response.summary ?? undefined, prompt, sessionId: response.sessionId, conversationId: response.conversationId, conversationLog: response.conversationLog,
             tokenUsage: finalTokenUsage, usageMetrics: usageMetrics ?? undefined,
             error: success ? undefined : result.stderr || executionError || 'Antigravity execution failed',
@@ -200,7 +203,7 @@ export class AntigravityAgent implements Agent {
         return agentResult;
     }
 
-    private async resolveSessionOutput(stdout: string, transcriptPath?: string, onSessionId?: (sessionId: string, conversationId?: string) => void) {
+    private async resolveSessionOutput(stdout: string, transcriptPath?: string) {
         const parsedOutput = parseAntigravityJsonl(stdout);
         const sessionOutput = await this.readTransientSessionOutput(transcriptPath, parsedOutput.sessionId);
         const sessionId = sessionOutput.sessionId || parsedOutput.sessionId;
@@ -213,7 +216,6 @@ export class AntigravityAgent implements Agent {
         const evidenceConflict = resolveAntigravityEvidenceConflict(parsedOutput.modelUsed, sessionOutput.modelUsed, parsedOutput.conversationId, sessionOutput.conversationId); const modelUsed = evidenceConflict ? undefined : parsedOutput.modelUsed || sessionOutput.modelUsed;
         const terminalStatus: 'success' | 'error' | undefined = parsedOutput.terminalStatus === 'error' || sessionOutput.terminalStatus === 'error' ? 'error' : parsedOutput.terminalStatus || sessionOutput.terminalStatus;
         const protocolError = resolveAntigravityProtocolError(parsedOutput.terminalStatus, parsedOutput.protocolError, parsedOutput.hasStreamEnvelopes) ?? resolveAntigravityProtocolError(sessionOutput.terminalStatus, sessionOutput.protocolError, sessionOutput.hasStreamEnvelopes) ?? evidenceConflict; const hasStreamEnvelopes = parsedOutput.hasStreamEnvelopes || sessionOutput.hasStreamEnvelopes;
-        if (sessionId && onSessionId) onSessionId(sessionId, conversationId);
         // rawConversationLog (full agentic trace: file views, searches, command
         // output, code edits) is kept for token estimation; conversationLog is
         // filtered and converted to the Claude-shaped representation consumed by
@@ -239,7 +241,7 @@ export class AntigravityAgent implements Agent {
     private async readTransientSessionOutput(transcriptPath: string | undefined, parsedSessionId?: string): Promise<{ sessionId: string | undefined; conversationId?: string; summary: string | undefined; conversationLog: AntigravityOutputEvent[]; tokenUsage?: TokenUsage; modelUsed?: string; terminalStatus?: 'success' | 'error'; protocolError?: string; hasStreamEnvelopes: boolean }> {
         if (!transcriptPath) return { sessionId: parsedSessionId, summary: undefined, conversationLog: [], hasStreamEnvelopes: false };
         try {
-            const transcript = await fs.promises.readFile(transcriptPath, 'utf8');
+            const transcript = await readBoundedProviderOutputFile(transcriptPath);
             const parsed = parseAntigravityJsonl(transcript);
             return {
                 sessionId: parsed.sessionId || parsedSessionId,

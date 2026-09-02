@@ -25,6 +25,7 @@ class FakeConnection {
     private alreadyComplete = false,
     initialStatus = 'active',
     private holdTurn = false,
+    private reportedModel = 'gpt-5.6',
   ) { this.goalStatus = alreadyComplete ? 'complete' : initialStatus; }
 
   async request(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -32,7 +33,7 @@ class FakeConnection {
     if (method === 'initialize') return {};
     if (method === 'thread/start' || method === 'thread/resume') {
       if (method === 'thread/resume' && this.goalStatus === 'active') this.startNativeTurn();
-      return { thread: { id: 'thread-1', sessionId: 'conversation-1' }, model: 'gpt-5.6' };
+      return { thread: { id: 'thread-1', sessionId: 'conversation-1', model: this.reportedModel } };
     }
     if (method === 'thread/goal/set') {
       if (typeof params.objective === 'string') this.objective = params.objective;
@@ -106,7 +107,11 @@ describe('pinned Codex 0.146 native external-goal activation', () => {
         const result = await runGoalProtocol(connection as never, options(state.control, resume, resume), 'gpt-5.6');
         assert.equal(result.completion?.status, 'completed');
         assert.equal(connection.requests.filter(request => request.method === 'turn/start').length, 0);
-        assert.equal(connection.requests.filter(request => request.method === (resume ? 'thread/resume' : 'thread/goal/set')).length, 1);
+        assert.equal(connection.requests.filter(request => request.method === (resume ? 'thread/resume' : 'thread/goal/set')).length, resume ? 1 : 2);
+        if (!resume) assert.deepEqual(
+          connection.requests.filter(request => request.method === 'thread/goal/set').map(request => request.params.status),
+          ['paused', 'active'],
+        );
         if (resume) assert.equal(connection.requests.find(request => request.method === 'thread/resume')?.params.model, 'gpt-5.6');
         if (resume) {
           assert.deepEqual(state.delivered, ['input-1']);
@@ -134,7 +139,7 @@ describe('pinned Codex 0.146 native external-goal activation', () => {
     assert.equal(paused.completion?.status, 'interrupted');
     const nativePause = fresh.requests.find(request => request.method === 'thread/goal/set' && request.params.status === 'paused');
     assert.equal(nativePause?.params.objective, '/goal Ship it\n\nPolicy');
-    assert.equal(fresh.requests.filter(request => request.method === 'turn/interrupt').length, 1);
+    assert.equal(fresh.requests.filter(request => request.method === 'turn/interrupt').length, 0);
 
     const resumedState = controls();
     const resumed = new FakeConnection(true, 'after', false, 'paused');
@@ -153,7 +158,32 @@ describe('pinned Codex 0.146 native external-goal activation', () => {
     const result = await runGoalProtocol(connection as never, options(state.control), 'gpt-5.6');
     assert.equal(result.completion?.status, 'interrupted');
     assert.equal(connection.requests.filter(request => request.method === 'thread/goal/clear').length, 1);
-    assert.equal(connection.requests.filter(request => request.method === 'turn/interrupt').length, 1);
+    assert.equal(connection.requests.filter(request => request.method === 'turn/interrupt').length, 0);
+  });
+
+  test('publishes a fresh thread only after the paused native goal exists', async () => {
+    const state = controls();
+    const connection = new FakeConnection(false, 'before');
+    let statusesAtPublication: unknown[] = [];
+    const runOptions = options(state.control);
+    runOptions.onSessionId = async () => {
+      statusesAtPublication = connection.requests
+        .filter(request => request.method === 'thread/goal/set')
+        .map(request => request.params.status);
+    };
+
+    await runGoalProtocol(connection as never, runOptions, 'gpt-5.6');
+    assert.deepEqual(statusesAtPublication, ['paused']);
+  });
+
+  test('keeps provider-returned model evidence when a different model was requested', async () => {
+    const state = controls();
+    const connection = new FakeConnection(false, 'before', false, 'active', false, 'provider-effective-model');
+    const result = await runGoalProtocol(connection as never, options(state.control), 'requested-model');
+
+    assert.equal(result.effectiveModel, 'provider-effective-model');
+    assert.equal(connection.effectiveModel, 'provider-effective-model');
+    assert.equal(connection.requests.find(request => request.method === 'thread/start')?.params.model, 'requested-model');
   });
 });
 
@@ -167,4 +197,11 @@ test('Codex live output retains resumed records and rotates a long stream on rec
   assert.doesNotMatch(bounded, /"index":0[,}]/);
   assert.match(bounded, /"index":199/);
   for (const line of bounded.split('\n').filter(Boolean)) assert.doesNotThrow(() => JSON.parse(line));
+
+  const multibyte = Array.from({ length: 100 }, (_, index) => JSON.stringify({ index, text: '😀'.repeat(8) })).join('\n') + '\n';
+  const multibyteTail = boundedCodexJsonlTail(multibyte, 300);
+  assert.ok(Buffer.byteLength(multibyteTail) <= 300);
+  for (const line of multibyteTail.split('\n').filter(Boolean)) assert.doesNotThrow(() => JSON.parse(line));
+
+  assert.equal(boundedCodexJsonlTail(`${JSON.stringify({ text: '😀'.repeat(500) })}\n`, 128), '');
 });

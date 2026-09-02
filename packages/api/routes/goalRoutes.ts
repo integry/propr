@@ -5,10 +5,10 @@ import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import {
   AgentRegistry,
-  CODEX_GOAL_OBJECTIVE_MAX_LENGTH,
   GOAL_CONTINUE_INPUT,
   GOAL_LAUNCH_STRATEGIES,
   buildNativeGoalCommand,
+  codexGoalPromptValidationError,
   getAuthenticatedOctokit,
   goalJobId,
   type GoalCapability,
@@ -123,14 +123,14 @@ type AgentSelection = { agent: Agent } | { error: string; status: number };
 async function resolveCreationAgent(
   body: Record<string, unknown>,
   getCapabilities: () => Promise<GoalCapability[]>,
+  initialPrompt: string,
 ): Promise<AgentSelection> {
   const registry = AgentRegistry.getInstance();
   await registry.ensureInitialized();
   const agent = registry.getAgentById(body.agentId as string) || registry.getAgentByAlias(body.agentId as string);
   if (!agent) return { error: 'Selected agent was not found', status: 400 };
-  if (agent.config.type === 'codex' && (body.objective as string).length > CODEX_GOAL_OBJECTIVE_MAX_LENGTH) {
-    return { error: `Codex goal objectives must be at most ${CODEX_GOAL_OBJECTIVE_MAX_LENGTH} characters`, status: 400 };
-  }
+  const promptError = agent.config.type === 'codex' ? codexGoalPromptValidationError(initialPrompt) : null;
+  if (promptError) return { error: promptError, status: 400 };
   if (!agent.config.supportedModels.includes(body.model as string) && agent.config.defaultModel !== body.model) {
     return { error: 'Selected model is not supported by this agent', status: 400 };
   }
@@ -231,7 +231,14 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, existing) });
     }
 
-    const selection = await resolveCreationAgent(body, getCapabilities);
+    const launchStrategy = body.launchStrategy as GoalLaunchStrategy;
+    const initialPrompt = buildNativeGoalCommand({
+      objective: body.objective as string,
+      launchStrategy,
+      maxParallelTasks: body.maxParallelTasks as number | null | undefined,
+      ultrafix: body.ultrafix === true,
+    });
+    const selection = await resolveCreationAgent(body, getCapabilities, initialPrompt);
     if ('error' in selection) return void res.status(selection.status).json({ error: selection.error });
     const { agent } = selection;
 
@@ -247,13 +254,6 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     const claimId = randomUUID();
     const taskId = `goal-${goalId}`;
     const now = new Date().toISOString();
-    const launchStrategy = body.launchStrategy as GoalLaunchStrategy;
-    const initialPrompt = buildNativeGoalCommand({
-      objective: body.objective as string,
-      launchStrategy,
-      maxParallelTasks: body.maxParallelTasks as number | null | undefined,
-      ultrafix: body.ultrafix === true,
-    });
     const row = {
       goal_id: goalId,
       owner_id: ownerId,

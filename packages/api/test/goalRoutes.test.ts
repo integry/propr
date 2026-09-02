@@ -121,6 +121,22 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.equal(invalidStrategy.state.status, 400);
         assert.deepEqual(invalidStrategy.state.body, { error: 'launchStrategy must be direct or orchestrate' });
 
+        const registry = AgentRegistry.getInstance();
+        mock.method(registry, 'ensureInitialized', async () => {});
+        mock.method(registry, 'getAgentById', (agentId: string) => ({ config: {
+            id: agentId, alias: agentId, type: agentId === 'codex-agent' ? 'codex' : 'claude',
+            supportedModels: ['gpt-5.6', 'gpt-5.6-fast'],
+        } } as never));
+        const oversizedCodexPrompt = response();
+        const oversizedCodexRequest = request('owner-1', {}, {
+            repository: 'acme/repo', objective: '😀'.repeat(4_000), agentId: 'codex-agent', model: 'gpt-5.6',
+            launchStrategy: 'direct',
+        });
+        oversizedCodexRequest.get = () => 'oversized-codex-prompt';
+        await routes.create(oversizedCodexRequest, oversizedCodexPrompt.res);
+        assert.equal(oversizedCodexPrompt.state.status, 400);
+        assert.match((oversizedCodexPrompt.state.body as { error: string }).error, /Final Codex goal prompt/);
+
         await database('goals').where({ goal_id: 'goal-1' }).update({
             create_idempotency_key: 'create-key-1',
             create_idempotency_operation: 'goal.create',
@@ -236,11 +252,6 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         await routes.pause(pauseRequest, response().res);
         assert.equal(stopped.filter(taskId => taskId === 'goal-task-4').length, 2);
 
-        const registry = AgentRegistry.getInstance();
-        mock.method(registry, 'ensureInitialized', async () => {});
-        mock.method(registry, 'getAgentById', () => ({ config: {
-            id: 'agent-1', alias: 'claude', type: 'claude', supportedModels: ['gpt-5.6', 'gpt-5.6-fast'],
-        } } as never));
         const modelRequest = request('owner-2', { goalId: 'goal-5' }, { model: 'gpt-5.6-fast' });
         modelRequest.get = () => 'owner-model-1';
         await routes.requestModel(modelRequest, response().res);

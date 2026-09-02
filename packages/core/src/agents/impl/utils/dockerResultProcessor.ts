@@ -129,6 +129,7 @@ export function processDockerResult(
         sessionId: claudeOutput.sessionId ?? undefined,
         conversationId: claudeOutput.conversationId,
         modelUsed,
+        providerModel: claudeOutput.model || undefined,
         cost: claudeOutput.finalResult?.total_cost_usd || claudeOutput.finalResult?.cost_usd,
         modifiedFiles: [],
         commitMessage,

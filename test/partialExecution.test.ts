@@ -146,6 +146,38 @@ describe('partial agent execution', () => {
         assert.equal(observed, 'thread-split');
     });
 
+    test('awaits the Antigravity session callback exactly once', async () => {
+        let callbacks = 0;
+        let callbackComplete = false;
+        await executeDockerCommand(process.execPath, [
+            '-e',
+            `console.log(JSON.stringify({event:'init',conversation_id:'agy-session',init:{model:'gemini'}}));
+             console.log(JSON.stringify({event:'result',result:{conversation_id:'agy-session',status:'SUCCESS'}}));`,
+        ], {
+            onSessionId: async (sessionId, conversationId) => {
+                callbacks += 1;
+                assert.equal(sessionId, 'agy-session');
+                assert.equal(conversationId, 'agy-session');
+                await new Promise(resolve => setTimeout(resolve, 25));
+                callbackComplete = true;
+            },
+        });
+        assert.equal(callbacks, 1);
+        assert.equal(callbackComplete, true);
+    });
+
+    test('bounds provider stdout by bytes and drops an oversized record', async () => {
+        const result = await executeDockerCommand(process.execPath, [
+            '-e',
+            `process.stdout.write(JSON.stringify({type:'message',text:'😀'.repeat(300000)}) + '\\n');
+             process.stdout.write(JSON.stringify({type:'result',result:'complete'}) + '\\n');`,
+        ]);
+        assert.ok(Buffer.byteLength(result.stdout) <= 1024 * 1024);
+        assert.doesNotMatch(result.stdout, /"type":"message"/);
+        assert.match(result.stdout, /"type":"result"/);
+        for (const line of result.stdout.split('\n').filter(Boolean)) assert.doesNotThrow(() => JSON.parse(line));
+    });
+
     test('does not convert a delayed ownership callback failure into a timeout result', async () => {
         const superseded = new Error('delayed callback superseded timed-out attempt');
         superseded.name = 'SupersededTaskAttemptError';

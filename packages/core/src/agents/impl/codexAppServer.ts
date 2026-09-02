@@ -45,7 +45,9 @@ function extractThread(result: Record<string, unknown>, fallbackSessionId?: stri
     return {
         id: thread.id,
         sessionId,
-        ...(typeof result.model === 'string' ? { model: result.model } : {}),
+        ...(typeof thread.model === 'string'
+            ? { model: thread.model }
+            : typeof result.model === 'string' ? { model: result.model } : {}),
     };
 }
 
@@ -91,17 +93,18 @@ async function openGoalThread(
     if (options.resumeSessionId && thread.id !== options.resumeSessionId) {
         throw new Error('Codex App Server resumed a different thread than the persisted goal identity');
     }
-    connection.effectiveModel = thread.model ?? model;
-    await options.onSessionId?.(thread.id, thread.sessionId);
+    connection.effectiveModel = thread.model;
     if (!options.resumeSessionId) {
+        // Materialize the immutable objective without starting work, then make
+        // the exact thread identity durable. A crash can now reopen a real goal
+        // instead of publishing an empty thread that cannot be recovered.
         await connection.request('thread/goal/set', {
             threadId: thread.id,
-            // App Server 0.146 activates the external goal and continues the
-            // thread itself. Keep all launch policy in that one native prompt.
             objective: nativeGoalObjective(options),
-            status: 'active',
+            status: 'paused',
         });
     }
+    await options.onSessionId?.(thread.id, thread.sessionId);
     return thread;
 }
 
@@ -215,7 +218,7 @@ export async function runGoalProtocol(
                     'Codex native goal completed before this FIFO input could be delivered',
                 );
             }
-            return { thread, completion: { status: 'completed' }, effectiveModel: model };
+            return { thread, completion: { status: 'completed' }, effectiveModel: thread.model };
         }
         if (['paused', 'blocked', 'usageLimited'].includes(recoveredGoal.status)) {
             await connection.request('thread/goal/set', {
@@ -227,7 +230,7 @@ export async function runGoalProtocol(
             return {
                 thread,
                 completion: { status: 'failed', error: `Codex native goal resumed in ${recoveredGoal.status} status` },
-                effectiveModel: model,
+                effectiveModel: thread.model,
             };
         }
     }
@@ -243,15 +246,24 @@ export async function runGoalProtocol(
         return {
             thread,
             completion: { status: 'interrupted', error: 'Goal stopped before provider turn observation' },
-            effectiveModel: cleanModelName(boundary.requestedModel) || model,
+            effectiveModel: thread.model,
         };
     }
-    const effectiveModel = cleanModelName(boundary.requestedModel) || model;
+    if (!options.resumeSessionId) {
+        // App Server 0.146 activates the external goal and continues the thread
+        // itself. Activate once only after identity persistence and the final
+        // desired-state check above.
+        await connection.request('thread/goal/set', {
+            threadId: thread.id,
+            objective: nativeGoalObjective(options),
+            status: 'active',
+        });
+    }
+    const effectiveModel = thread.model;
     // Applying/resuming an active external goal calls continue_if_idle() in the
     // pinned App Server. Starting another turn here races that native turn.
     const turnId = await waitForNativeGoalTurn(connection, thread.id, control, nativeGoalObjective(options));
     if (!turnId) return { thread, effectiveModel };
-    connection.effectiveModel = effectiveModel;
     const completion = await observeNativeGoal(connection, thread.id, turnId, options);
     await connection.request('thread/goal/get', { threadId: thread.id }).catch(() => undefined);
     return { thread, completion, effectiveModel };
@@ -272,6 +284,7 @@ function protocolResult(
         summary: connection.summaryParts.join('\n\n') || undefined,
         modifiedFiles: [],
         modelUsed: connection.effectiveModel || effectiveModel || 'unknown',
+        providerModel: connection.effectiveModel || effectiveModel,
         sessionId: thread.id,
         conversationId: thread.sessionId,
         executionTimeMs: Date.now() - start,
@@ -318,7 +331,8 @@ export async function executeCodexAppServerGoal(
             logs: `${connection.rawOutput}${connection.stderrOutput ? `\n${connection.stderrOutput}` : ''}`,
             rawOutput: connection.rawOutput,
             conversationLog: connection.conversationLog,
-            modifiedFiles: [], modelUsed: connection.effectiveModel || model || 'unknown',
+            modifiedFiles: [], modelUsed: connection.effectiveModel || thread?.model || 'unknown',
+            providerModel: connection.effectiveModel || thread?.model,
             sessionId: thread?.id, conversationId: thread?.sessionId,
             executionTimeMs: Date.now() - start, error: message, exitCode: child.exitCode,
         };

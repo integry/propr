@@ -52,7 +52,7 @@ describe('GoalsPage', () => {
     vi.mocked(getTaskLiveDetails).mockResolvedValue({ events: [], todos: [{ id: 'todo-1', content: 'Implement API', status: 'in_progress' }], currentTask: 'Implement API', tokenUsage: { input_tokens: 10, output_tokens: 5 } });
     vi.mocked(goalsApi.pauseGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'paused', pausedAt: new Date().toISOString() } });
     vi.mocked(goalsApi.sendGoalInput).mockResolvedValue({ goal });
-    vi.mocked(goalsApi.cancelGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'cancelled', resultState: 'cancelled' } });
+    vi.mocked(goalsApi.cancelGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'cancelled', resultState: null } });
     vi.mocked(goalsApi.requestGoalModel).mockResolvedValue({ goal: { ...goal, requestedModel: 'gpt-5.6-fast' } });
   });
 
@@ -115,6 +115,11 @@ describe('GoalsPage', () => {
     await waitFor(() => expect(goalsApi.requestGoalModel).toHaveBeenCalledWith('goal-1', 'gpt-5.6-fast'));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(goalsApi.cancelGoal).toHaveBeenCalledWith('goal-1'));
+    expect(await screen.findByText('cancelling')).toBeInTheDocument();
+    expect(screen.getByText(/Cancelling at the provider boundary/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Correction or follow-up')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Model for next continuation')).not.toBeInTheDocument();
   });
 
   it('re-subscribes after reconnect and merges incremental native output', async () => {

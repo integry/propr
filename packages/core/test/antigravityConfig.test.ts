@@ -450,11 +450,9 @@ test('Antigravity agent rejects stream results from a different conversation', a
             prompt: string;
             worktreePath: string;
             worktreeGitContent: null;
-            onSessionId: (sessionId: string, conversationId?: string) => void;
         }): Promise<{ success: boolean; error?: string; sessionId?: string; conversationId?: string; conversationLog?: unknown[]; modelUsed?: string }>;
     };
     internals.persistImplementationLog = async () => undefined;
-    let callbackIdentity: [string, string | undefined] | undefined;
 
     const result = await internals.processExecutionResult({
         result: { stdout, stderr: '', exitCode: 0 },
@@ -464,7 +462,6 @@ test('Antigravity agent rejects stream results from a different conversation', a
         prompt: 'test',
         worktreePath: '/tmp',
         worktreeGitContent: null,
-        onSessionId: (sessionId, conversationId) => { callbackIdentity = [sessionId, conversationId]; },
     });
 
     assert.equal(result.success, false);
@@ -472,7 +469,6 @@ test('Antigravity agent rejects stream results from a different conversation', a
     assert.equal(result.sessionId, 'conversation-sanitized');
     assert.equal(result.conversationId, 'conversation-sanitized');
     assert.equal(result.modelUsed, 'antigravity-gemini-3.7-flash-high');
-    assert.deepEqual(callbackIdentity, ['conversation-sanitized', 'conversation-sanitized']);
 });
 
 test('Antigravity agent rejects differing stdout and transcript conversation identities', async () => {
@@ -828,6 +824,7 @@ test('Antigravity session recovery reads and removes the exported transient tran
         const transcriptPath = path.join(tempDir, 'transcript.jsonl');
         await fs.promises.writeFile(
             transcriptPath,
+            `${'x'.repeat(1024 * 1024 + 100)}\n` +
             JSON.stringify({
                 step_index: 2,
                 source: 'MODEL',

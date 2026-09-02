@@ -195,6 +195,8 @@ export interface AgentExecutionResult {
 
     // Metadata
     modelUsed: string;
+    /** Model identity observed in provider output, distinct from the requested fallback. */
+    providerModel?: string;
     /** Effective reasoning level passed to the agent runtime, when configured. */
     reasoningLevel?: ReasoningLevel;
     sessionId?: string;

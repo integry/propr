@@ -47,8 +47,13 @@ async function ensureGoalWorktree(
     job: GoalJobData,
     token: string,
 ): Promise<{ worktreePath: string; branchName: string }> {
+    if (Boolean(goal.worktree_path) !== Boolean(goal.branch_name)) {
+        throw new Error('Saved goal worktree identity is incomplete; exact-session recovery cannot continue');
+    }
     if (goal.worktree_path && goal.branch_name) {
-        if (!fs.existsSync(goal.worktree_path)) throw new Error('Saved goal worktree is missing; exact-session recovery cannot continue');
+        if (!fs.existsSync(goal.worktree_path) || !fs.statSync(goal.worktree_path).isDirectory()) {
+            throw new Error('Saved goal worktree is missing; exact-session recovery cannot continue');
+        }
         return { worktreePath: goal.worktree_path, branchName: goal.branch_name };
     }
     const [repoOwner, repoName] = goal.repository.split('/');
@@ -82,23 +87,21 @@ async function saveSessionAndTaskState(
     options: {
         job: GoalJobData;
         goal: GoalRow;
-        model: string;
         sessionId: string;
         conversationId?: string;
         acknowledgeControls: boolean;
     },
 ): Promise<void> {
-    const { job, goal, model, sessionId, conversationId, acknowledgeControls } = options;
+    const { job, goal, sessionId, conversationId, acknowledgeControls } = options;
     if (!await saveFencedGoalSession(job, sessionId, conversationId)) throw new Error('Goal session identity write was fenced');
     if (!await fencedGoalUpdate(job, {
-        effective_model: model,
         ...(acknowledgeControls ? { control_ack_generation: goal.control_generation } : {}),
     })) throw new Error('Goal control acknowledgement was fenced');
     const stateManager = getStateManager();
     const state = await stateManager.getTaskState(goal.current_task_id);
     const terminalStates = new Set<string>([TaskStates.CANCELLED, TaskStates.COMPLETED, TaskStates.FAILED]);
     if (!state || terminalStates.has(state.state)) return;
-    const metadata = { sessionId, conversationId, model, executionMode: 'goal' };
+    const metadata = { sessionId, conversationId, requestedModel: goal.requested_model, executionMode: 'goal' };
     if (state.state === TaskStates.CLAUDE_EXECUTION) {
         await stateManager.updateHistoryMetadata(goal.current_task_id, TaskStates.CLAUDE_EXECUTION, metadata);
     } else {
@@ -132,15 +135,18 @@ async function saveProviderResult(
     goal: GoalRow,
     result: AgentExecutionResult,
 ): Promise<{ finalPr?: { number: number; url: string } }> {
+    const providerSessionId = result.sessionId ?? goal.session_id;
+    if (providerSessionId
+        && !await saveFencedGoalSession(job, providerSessionId, result.conversationId)) {
+        throw new Error('Goal provider identity write was fenced');
+    }
     const validated = await validateGoalArtifacts({
         context: { repository: goal.repository, branchName: goal.branch_name, baseBranch: goal.base_branch },
         existing: parseGoalArtifacts(goal.artifact_refs),
         output: `${result.rawOutput || ''}\n${result.logs || ''}\n${result.summary || ''}`,
     });
     const saved = await fencedGoalUpdate(job, {
-        effective_model: result.modelUsed,
-        ...(result.sessionId ? { session_id: result.sessionId } : {}),
-        ...(result.conversationId ? { conversation_id: result.conversationId } : {}),
+        ...(result.providerModel ? { effective_model: result.providerModel } : {}),
         final_pr_number: validated.finalPr?.number ?? null,
         final_pr_url: validated.finalPr?.url ?? null,
         artifact_refs: JSON.stringify(validated.artifacts),
@@ -257,7 +263,7 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
             environment: buildGoalPolicyEnvironment(),
             onSessionId: async (sessionId, conversationId) => {
                 await saveSessionAndTaskState({
-                    job: data, goal, model: goal.requested_model, sessionId, conversationId,
+                    job: data, goal, sessionId, conversationId,
                     acknowledgeControls: !pendingInput,
                 });
                 if (pendingInput && goal.agent_type !== 'codex' && !freshSession) {

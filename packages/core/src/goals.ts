@@ -6,6 +6,13 @@ export type GoalLaunchStrategy = typeof GOAL_LAUNCH_STRATEGIES[number];
 export const GOAL_CONTINUE_INPUT = 'Continue working toward the goal.';
 export const CODEX_GOAL_OBJECTIVE_MAX_LENGTH = 4_000;
 
+/** Codex measures goal objectives as Unicode code points, not UTF-16 units. */
+export function codexGoalPromptValidationError(prompt: string): string | null {
+    return Array.from(prompt).length > CODEX_GOAL_OBJECTIVE_MAX_LENGTH
+        ? `Final Codex goal prompt must be at most ${CODEX_GOAL_OBJECTIVE_MAX_LENGTH} Unicode characters`
+        : null;
+}
+
 const launchInstructions: Record<GoalLaunchStrategy, string> = {
     direct: [
         'Launch strategy — Agent implements directly:',

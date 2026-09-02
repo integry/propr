@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
-import { buildGoalPolicyEnvironment, buildNativeGoalCommand } from '../packages/core/src/goals.ts';
+import {
+  CODEX_GOAL_OBJECTIVE_MAX_LENGTH,
+  buildGoalPolicyEnvironment,
+  buildNativeGoalCommand,
+  codexGoalPromptValidationError,
+} from '../packages/core/src/goals.ts';
 import {
   antigravityConversationIdentity,
   claudeSessionIdentity,
@@ -60,6 +65,18 @@ describe('native goal provider contract', () => {
     assert.match(prompt, /No maximum parallel task count was selected/);
     assert.match(prompt, /Ultrafix policy: Disabled/);
     assert.deepEqual(buildGoalPolicyEnvironment(), { PROPR_EXECUTION_MODE: 'goal' });
+  });
+
+  test('validates the fully rendered Codex prompt with Unicode character semantics', () => {
+    const fixedPrompt = buildNativeGoalCommand({ objective: '', launchStrategy: 'direct' });
+    const objectiveLength = CODEX_GOAL_OBJECTIVE_MAX_LENGTH - Array.from(fixedPrompt).length;
+    const exactObjective = `${'x'.repeat(objectiveLength - 1)}😀`;
+    const exactPrompt = buildNativeGoalCommand({ objective: exactObjective, launchStrategy: 'direct' });
+    const oversizedPrompt = buildNativeGoalCommand({ objective: `${exactObjective}x`, launchStrategy: 'direct' });
+
+    assert.equal(Array.from(exactPrompt).length, CODEX_GOAL_OBJECTIVE_MAX_LENGTH);
+    assert.equal(codexGoalPromptValidationError(exactPrompt), null);
+    assert.match(codexGoalPromptValidationError(oversizedPrompt) || '', /Final Codex goal prompt/);
   });
 
   test('Claude changes only persistence/resume arguments in goal mode', () => {

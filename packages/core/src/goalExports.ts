@@ -11,6 +11,7 @@ export {
     CODEX_GOAL_OBJECTIVE_MAX_LENGTH,
     buildGoalPolicyEnvironment,
     buildNativeGoalCommand,
+    codexGoalPromptValidationError,
     goalJobId,
     goalAttemptLabel,
     type GoalDesiredState,

@@ -3,8 +3,13 @@ import readline from 'node:readline';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
 import type { AgentExecutionResult, TokenUsage } from '../types.js';
+import {
+    boundedProviderDiagnostic,
+    boundedProviderOutput,
+    MAX_PROVIDER_OUTPUT_BYTES,
+} from './utils/boundedProviderOutput.js';
 
-const MAX_LIVE_OUTPUT_BYTES = 1024 * 1024;
+const MAX_LIVE_OUTPUT_BYTES = MAX_PROVIDER_OUTPUT_BYTES;
 const MAX_SUMMARY_PARTS = 100;
 const APPEND_BOUNDED_OUTPUT_SCRIPT = `
 local combined = (redis.call('get', KEYS[1]) or '') .. ARGV[1]
@@ -19,11 +24,7 @@ return string.len(combined)
 `;
 
 export function boundedCodexJsonlTail(value: string, maximum = MAX_LIVE_OUTPUT_BYTES): string {
-    if (Buffer.byteLength(value) <= maximum) return value;
-    let tail = value.slice(-maximum);
-    const boundary = tail.indexOf('\n');
-    if (boundary >= 0) tail = tail.slice(boundary + 1);
-    return tail;
+    return boundedProviderOutput(value, maximum);
 }
 
 interface RpcError { code?: number; message?: string }
@@ -84,7 +85,7 @@ export class AppServerConnection {
             maxRetriesPerRequest: 1,
         });
         child.stderr?.on('data', chunk => {
-            this.stderr = this.boundedTail(this.stderr + chunk.toString());
+            this.stderr = boundedProviderDiagnostic(this.stderr + chunk.toString());
         });
         const lines = readline.createInterface({ input: child.stdout! });
         lines.on('line', line => this.onLine(line));
@@ -130,6 +131,7 @@ export class AppServerConnection {
         }
         if (message.method === 'turn/completed') {
             const turn = asRecord(params.turn);
+            if (typeof turn.model === 'string') this.effectiveModel = turn.model;
             if (typeof turn.id === 'string') {
                 const waiter = this.turnWaiters.get(turn.id);
                 if (waiter) {
@@ -142,6 +144,7 @@ export class AppServerConnection {
         }
         if (message.method === 'item/completed') {
             const item = asRecord(params.item);
+            if (typeof item.model === 'string') this.effectiveModel = item.model;
             if (item.type === 'agentMessage' && typeof item.text === 'string') {
                 this.summaryParts.push(item.text);
                 if (this.summaryParts.length > MAX_SUMMARY_PARTS) this.summaryParts.shift();

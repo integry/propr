@@ -66,15 +66,35 @@ export async function fencedGoalUpdate(job: GoalJobData, values: Record<string, 
     return await attemptWhere(db('goals'), job).update({ ...values, updated_at: db.fn.now() }) === 1;
 }
 
+export function assertProviderIdentityMatches(
+    existing: Pick<GoalRow, 'session_id' | 'conversation_id'>,
+    sessionId: string,
+    conversationId?: string,
+): void {
+    if (existing.session_id && existing.session_id !== sessionId) {
+        throw new Error(`Provider resumed session "${sessionId}" instead of persisted session "${existing.session_id}"`);
+    }
+    if (conversationId && existing.conversation_id && existing.conversation_id !== conversationId) {
+        throw new Error(`Provider resumed conversation "${conversationId}" instead of persisted conversation "${existing.conversation_id}"`);
+    }
+}
+
 export async function saveFencedGoalSession(
     job: GoalJobData,
     sessionId: string,
     conversationId?: string,
 ): Promise<boolean> {
-    return fencedGoalUpdate(job, {
-        session_id: sessionId,
-        ...(conversationId ? { conversation_id: conversationId } : {}),
-        attempt_heartbeat_at: db.fn.now(),
+    return db.transaction(async trx => {
+        const existing = await attemptWhere(trx<GoalRow>('goals'), job)
+            .first('session_id', 'conversation_id');
+        if (!existing) return false;
+        assertProviderIdentityMatches(existing, sessionId, conversationId);
+        return await attemptWhere(trx('goals'), job).update({
+            session_id: existing.session_id ?? sessionId,
+            conversation_id: existing.conversation_id ?? conversationId ?? null,
+            attempt_heartbeat_at: trx.fn.now(),
+            updated_at: trx.fn.now(),
+        }) === 1;
     });
 }
 
@@ -166,8 +186,11 @@ export function createGoalExecutionControl(job: GoalJobData): GoalExecutionContr
                 const existing = Array.isArray(metadata.goalOutputRecords)
                     ? metadata.goalOutputRecords.filter((value): value is string => typeof value === 'string')
                     : [];
-                const bounded = [...existing, ...records].slice(-1000);
-                while (Buffer.byteLength(bounded.join('\n')) > 1024 * 1024 && bounded.length > 1) bounded.shift();
+                const maximumBytes = 1024 * 1024;
+                const bounded = [...existing, ...records]
+                    .filter(record => Buffer.byteLength(record) <= maximumBytes)
+                    .slice(-1000);
+                while (Buffer.byteLength(bounded.join('\n')) > maximumBytes && bounded.length > 0) bounded.shift();
                 await trx('task_history').where({ history_id: history.history_id }).update({
                     metadata: JSON.stringify({ ...metadata, goalOutputRecords: bounded }),
                 });
