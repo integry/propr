@@ -102,6 +102,43 @@ after(async () => {
 });
 
 describe('strict event payload canonicalization', () => {
+  test('constrains persisted event sources to the internal and provider trust domains', async () => {
+    await assert.rejects(database('goal_events').insert({
+      goal_id: goalId,
+      sequence: 1,
+      source: 'scheduler',
+      kind: 'domain',
+      event_type: 'canonical-test',
+      payload_json: null,
+      idempotency_key: 'invalid-source',
+      lease_epoch: fence.leaseEpoch,
+      created_at: '2026-08-31T00:00:00.000Z',
+    }));
+    assert.equal(Number((await database('goal_events').count({ count: '*' }).first())?.count), 0);
+  });
+
+  test('rejects an internal retry that collides with a provider event', async () => {
+    await database('goal_events').insert({
+      goal_id: goalId,
+      sequence: 1,
+      source: 'provider',
+      kind: 'domain',
+      event_type: 'canonical-test',
+      payload_json: '{"value":1}',
+      idempotency_key: 'cross-source-retry',
+      lease_epoch: fence.leaseEpoch,
+      created_at: '2026-08-31T00:00:00.000Z',
+    });
+
+    await assert.rejects(
+      append({ value: 1 }, 'cross-source-retry'),
+      (error: GoalError) => error.code === 'goal_idempotency_conflict' && error.status === 409
+    );
+    const rows = await database('goal_events').where({ goal_id: goalId });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].source, 'provider');
+  });
+
   test('replays exact and recursively reordered safe payloads without changing array order or scalar types', async () => {
     const firstPayload = {
       z: [{ order: 1, nested: { beta: true, alpha: null } }, '1', 1, 0.1],

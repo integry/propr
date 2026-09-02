@@ -47,9 +47,14 @@ export class GoalEventRepository {
         idempotency_key: normalized.idempotencyKey,
       }).first();
       if (existing) {
-        if (existing.kind !== normalized.kind || existing.event_type !== normalized.eventType
+        if (existing.source !== 'internal'
+          || existing.kind !== normalized.kind || existing.event_type !== normalized.eventType
           || canonicalizeStoredPayload(existing.payload_json) !== normalized.payloadJson) {
-          throw new GoalError(GOAL_ERROR_CODES.idempotencyConflict, 'Event idempotency key was reused with a different payload', 409);
+          throw new GoalError(
+            GOAL_ERROR_CODES.idempotencyConflict,
+            'Event idempotency key was reused with a different source or payload',
+            409
+          );
         }
         return toEvent(existing);
       }

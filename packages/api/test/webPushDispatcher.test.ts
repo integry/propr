@@ -532,7 +532,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     const baseTime = Date.now() - 4_000;
     let nowCalls = 0;
     let lastNow = baseTime;
-    const requestTimeoutMs = 4_999;
+    const requestTimeoutMs = 29_999;
     const worker = dispatcher({
       sendNotification: async () => {
         const job = await database('push_delivery_jobs').first();
@@ -540,7 +540,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
         return success;
       },
     }, {
-      leaseMs: 5_000,
+      leaseMs: 30_000,
       requestTimeoutMs,
       now: () => {
         lastNow = baseTime + nowCalls * 1_000;
@@ -561,9 +561,9 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     const worker = dispatcher({
       sendNotification: async () => { sends += 1; return success; },
     }, {
-      leaseMs: 5_000,
-      requestTimeoutMs: 4_999,
-      now: () => new Date(baseTime + nowCalls++ * 2_000),
+      leaseMs: 30_000,
+      requestTimeoutMs: 29_999,
+      now: () => new Date(baseTime + nowCalls++ * 11_000),
     });
 
     assert.equal(await worker.runOnce(), 1);

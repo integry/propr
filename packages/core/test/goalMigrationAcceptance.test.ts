@@ -150,20 +150,18 @@ test('real pre-goal Knex chain passes the migration gate, reopen, and rollback',
   }
 });
 
-test('already-applied branch schema upgrades deterministically to one native session', async () => {
+test('obsolete branch schemas fail without rewriting unknown session or event data', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-goal-branch-upgrade-'));
   const database = openDatabase(join(directory, 'legacy.sqlite'), false);
   try {
     await database.schema.createTable('goals', (table) => {
       table.text('goal_id').primary();
-      table.text('agent').notNullable();
-      table.text('requested_model').notNullable();
-      table.text('merge_policy').notNullable();
     });
     await database.schema.createTable('goal_events', (table) => {
       table.increments('id').primary();
       table.text('goal_id').notNullable();
       table.integer('sequence').notNullable();
+      table.text('source').notNullable();
       table.text('kind').notNullable();
       table.text('event_type').notNullable();
       table.text('payload_json').nullable();
@@ -175,72 +173,36 @@ test('already-applied branch schema upgrades deterministically to one native ses
       table.text('node_id').primary();
       table.text('goal_id').notNullable();
     });
-    await database.schema.createTable('goal_node_dependencies', (table) => {
-      table.text('goal_id').notNullable();
-      table.text('node_id').notNullable();
-      table.text('depends_on_node_id').notNullable();
-    });
     await database.schema.createTable('goal_provider_sessions', (table) => {
       table.text('session_id').primary();
       table.text('goal_id').notNullable();
-      table.text('agent').notNullable();
-      table.text('provider_thread_id').nullable();
-      table.text('runtime_id').nullable();
-      table.text('worktree_id').nullable();
-      table.text('last_checkpoint').nullable();
-      table.text('effective_model').notNullable();
-      table.text('recovery_metadata_json').nullable();
-      table.integer('lease_generation').notNullable();
-      table.text('created_at').notNullable();
-      table.text('updated_at').notNullable();
-      table.unique(['goal_id', 'agent']);
+      table.text('sibling_session_column').notNullable();
     });
 
-    await database('goals').insert({
-      goal_id: 'legacy-goal', agent: 'claude',
-      requested_model: 'claude-opus-4-8', merge_policy: 'auto_squash',
-    });
+    await database('goals').insert({ goal_id: 'legacy-goal' });
     await database('goal_events').insert({
-      goal_id: 'legacy-goal', sequence: 1, kind: 'lifecycle',
+      goal_id: 'legacy-goal', sequence: 1, source: 'sibling-provider', kind: 'lifecycle',
       event_type: 'created', payload_json: null, idempotency_key: 'legacy-event',
       lease_epoch: 1, created_at: '2026-09-01T00:00:00.000Z',
     });
     await database('goal_nodes').insert({ node_id: 'old-node', goal_id: 'legacy-goal' });
-    await database('goal_node_dependencies').insert({
-      goal_id: 'legacy-goal', node_id: 'old-node', depends_on_node_id: 'old-node',
+    await database('goal_provider_sessions').insert({
+      session_id: 'legacy-session', goal_id: 'legacy-goal',
+      sibling_session_column: 'must-survive',
     });
-    const legacySession = {
-      goal_id: 'legacy-goal', provider_thread_id: 'thread', runtime_id: 'runtime',
-      worktree_id: 'worktree', last_checkpoint: 'checkpoint',
-      effective_model: 'claude-opus-4-8', recovery_metadata_json: null,
-      lease_generation: 1, created_at: '2026-09-01T00:00:00.000Z',
-      updated_at: '2026-09-01T00:00:00.000Z',
-    };
-    await database('goal_provider_sessions').insert([
-      { ...legacySession, session_id: 'selected-session', agent: 'claude' },
-      { ...legacySession, session_id: 'wrong-session', agent: 'codex' },
-    ]);
 
-    await simplifyGoalFoundation(database);
-
-    assert.equal((await database('goals').first()).merge_policy, 'manual');
-    assert.equal((await database('goal_events').first()).source, 'internal');
-    const tables = await database('sqlite_master').where({ type: 'table' })
-      .whereIn('name', ['goal_nodes', 'goal_node_dependencies']).pluck('name');
-    assert.deepEqual(tables, []);
-    const sessions = await database('goal_provider_sessions');
-    assert.equal(sessions.length, 1);
-    assert.equal(sessions[0].session_id, 'selected-session');
-    assert.equal(sessions[0].agent, 'claude');
-    assert.equal(sessions[0].requested_model, 'claude-opus-4-8');
-    assert.equal(sessions[0].native_status, null);
-
-    await assert.rejects(database('goal_provider_sessions').insert({
-      ...sessions[0], session_id: 'second-session', agent: 'codex',
-    }));
-    await assert.rejects(database('goals').where({ goal_id: 'legacy-goal' }).update({ agent: 'codex' }));
-    await assert.rejects(database('goals').where({ goal_id: 'legacy-goal' }).update({ merge_policy: 'auto' }));
-    assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), []);
+    await assert.rejects(
+      simplifyGoalFoundation(database),
+      /Unsupported unreleased goal branch schema.*unconstrained goal_events.source.*rebase #2059 and #2065/
+    );
+    assert.equal(await database.schema.hasTable('goal_nodes'), true);
+    const event = await database('goal_events').first();
+    assert.equal(event.idempotency_key, 'legacy-event');
+    assert.equal(event.source, 'sibling-provider');
+    assert.equal(
+      (await database('goal_provider_sessions').first()).sibling_session_column,
+      'must-survive'
+    );
   } finally {
     await database.destroy();
     await rm(directory, { recursive: true, force: true });
