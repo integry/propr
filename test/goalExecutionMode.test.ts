@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
 import { buildGoalPolicyEnvironment, buildNativeGoalCommand } from '../packages/core/src/goals.ts';
-import { claudeInitSupportsNativeGoal, codexHandshakeSupportsNativeGoal } from '../packages/core/src/agents/goalCapabilities.ts';
+import {
+  antigravityConversationIdentity,
+  claudeSessionIdentity,
+  codexHandshakeSupportsNativeGoal,
+} from '../packages/core/src/agents/goalCapabilities.ts';
 import { buildDockerArgs as buildClaudeDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
 import { buildCodexAppServerDockerArgs, buildCodexDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts';
 import { AntigravityAgent } from '../packages/core/src/agents/impl/AntigravityAgent.ts';
@@ -88,7 +92,9 @@ describe('native goal provider contract', () => {
     const initial = agent.buildDockerArgs({ ...common, executionMode: 'goal' });
     const resumed = agent.buildDockerArgs({ ...common, executionMode: 'goal', resumeConversationId: 'agy-conversation' });
     assert.ok(normal.includes('PROPR_EPHEMERAL_STATE=1'));
+    assert.ok(normal.some(argument => argument.endsWith(':/home/node/.gemini-source:rw')));
     assert.equal(initial.includes('PROPR_EPHEMERAL_STATE=1'), false);
+    assert.ok(initial.some(argument => argument.endsWith(':/home/node/.gemini:rw')));
     assert.deepEqual(resumed.slice(resumed.indexOf('--conversation'), resumed.indexOf('--conversation') + 2), ['--conversation', 'agy-conversation']);
   });
 
@@ -96,16 +102,27 @@ describe('native goal provider contract', () => {
     assert.equal(codexHandshakeSupportsNativeGoal([
       JSON.stringify({ id: 1, result: { userAgent: 'codex' } }),
       JSON.stringify({ id: 2, error: { code: -32000, message: 'Thread not found' } }),
+      JSON.stringify({ id: 3, error: { code: -32000, message: 'Thread not found' } }),
+      JSON.stringify({ id: 4, error: { code: -32000, message: 'Thread not found' } }),
+      JSON.stringify({ id: 5, error: { code: -32000, message: 'Thread not found' } }),
     ].join('\n')), true);
     assert.equal(codexHandshakeSupportsNativeGoal([
       JSON.stringify({ id: 1, result: {} }),
       JSON.stringify({ id: 2, error: { code: -32601, message: 'Method not found' } }),
+      JSON.stringify({ id: 3, error: { code: -32000, message: 'Thread not found' } }),
+      JSON.stringify({ id: 4, error: { code: -32000, message: 'Thread not found' } }),
+      JSON.stringify({ id: 5, error: { code: -32000, message: 'Thread not found' } }),
     ].join('\n')), false);
-    assert.deepEqual(claudeInitSupportsNativeGoal(JSON.stringify({
-      type: 'system', subtype: 'init', session_id: 'session-1', slash_commands: ['help', 'goal'],
-    })), { supported: true, sessionId: 'session-1' });
-    assert.equal(claudeInitSupportsNativeGoal(JSON.stringify({
-      type: 'system', subtype: 'init', session_id: 'session-2', slash_commands: ['help'],
-    })).supported, false);
+    assert.equal(claudeSessionIdentity(JSON.stringify({
+      type: 'system', subtype: 'init', session_id: 'session-1', slash_commands: ['help'],
+    })), 'session-1');
+    assert.equal(antigravityConversationIdentity([
+      JSON.stringify({ event: 'init', conversation_id: 'conversation-1', init: { model: 'gemini' } }),
+      JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-1', status: 'SUCCESS' } }),
+    ].join('\n')), 'conversation-1');
+    assert.equal(antigravityConversationIdentity([
+      JSON.stringify({ event: 'init', conversation_id: 'conversation-1', init: { model: 'gemini' } }),
+      JSON.stringify({ event: 'result', result: { conversation_id: 'different-conversation', status: 'SUCCESS' } }),
+    ].join('\n')), undefined);
   });
 });

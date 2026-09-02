@@ -15,26 +15,46 @@ class FakeConnection {
   effectiveModel?: string;
   closeError: Error | null = null;
   private goalReads = 0;
+  private goalStatus: string;
+  private objective = '/goal Ship it\n\nPolicy';
+  private turnResolver?: (message: Record<string, unknown>) => void;
 
-  constructor(private resume: boolean, private startOrder: 'before' | 'after', private alreadyComplete = false) {}
+  constructor(
+    private resume: boolean,
+    private startOrder: 'before' | 'after',
+    private alreadyComplete = false,
+    initialStatus = 'active',
+    private holdTurn = false,
+  ) { this.goalStatus = alreadyComplete ? 'complete' : initialStatus; }
 
   async request(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.requests.push({ method, params });
     if (method === 'initialize') return {};
     if (method === 'thread/start' || method === 'thread/resume') {
-      if (method === 'thread/resume') this.startNativeTurn();
+      if (method === 'thread/resume' && this.goalStatus === 'active') this.startNativeTurn();
       return { thread: { id: 'thread-1', sessionId: 'conversation-1' }, model: 'gpt-5.6' };
     }
     if (method === 'thread/goal/set') {
-      this.startNativeTurn();
-      return { goal: { status: 'active', objective: params.objective } };
+      if (typeof params.objective === 'string') this.objective = params.objective;
+      if (typeof params.status === 'string') this.goalStatus = params.status;
+      if (this.goalStatus === 'active') this.startNativeTurn();
+      return { goal: { status: this.goalStatus, objective: this.objective } };
     }
     if (method === 'thread/goal/get') {
       this.goalReads += 1;
-      const complete = this.alreadyComplete || this.goalReads > (this.resume ? 1 : 0);
-      return { goal: { status: complete ? 'complete' : 'active', objective: this.resume ? 'Ship it\n\nPolicy' : params.objective } };
+      const complete = this.alreadyComplete || (this.goalStatus === 'active' && this.goalReads > (this.resume ? 1 : 0));
+      if (complete) this.goalStatus = 'complete';
+      return { goal: { status: this.goalStatus, objective: this.objective } };
     }
-    if (method === 'turn/steer' || method === 'turn/interrupt') return {};
+    if (method === 'thread/goal/clear') {
+      this.goalStatus = 'cleared';
+      return {};
+    }
+    if (method === 'turn/interrupt') {
+      this.turnResolver?.({ params: { turn: { status: 'interrupted' } } });
+      return {};
+    }
+    if (method === 'turn/steer') return {};
     throw new Error(`Unexpected request ${method}`);
   }
 
@@ -42,6 +62,7 @@ class FakeConnection {
   takeStartedTurn(): string | null { return this.started.shift() ?? null; }
   discardStartedTurn(): void {}
   waitForTurn(): Promise<Record<string, unknown>> {
+    if (this.holdTurn) return new Promise(resolve => { this.turnResolver = resolve; });
     return Promise.resolve({ params: { turn: { status: 'completed' } } });
   }
   private startNativeTurn(): void {
@@ -54,15 +75,16 @@ class FakeConnection {
 function controls() {
   const delivered: string[] = [];
   const undeliverable: string[] = [];
+  let desiredState: 'running' | 'paused' | 'cancelled' = 'running';
   const control: GoalExecutionControl = {
-    load: async () => ({ desiredState: 'running', requestedModel: 'gpt-5.6', pendingInputs: [], controlGeneration: 0 }),
+    load: async () => ({ desiredState, requestedModel: 'gpt-5.6', pendingInputs: [], controlGeneration: 0 }),
     heartbeat: async () => {},
     setActiveTurn: async () => {},
     markInputDelivered: async id => { delivered.push(id); },
     markInputUndeliverable: async id => { undeliverable.push(id); },
     appendOutput: async () => {},
   };
-  return { control, delivered, undeliverable };
+  return { control, delivered, undeliverable, setDesiredState: (state: typeof desiredState) => { desiredState = state; } };
 }
 
 function options(control: GoalExecutionControl, resume = false, input = false): AgentTaskOptions {
@@ -102,6 +124,36 @@ describe('pinned Codex 0.146 native external-goal activation', () => {
     assert.deepEqual(state.delivered, []);
     assert.deepEqual(state.undeliverable, ['input-1']);
     assert.equal(connection.requests.some(request => request.method === 'turn/start' || request.method === 'turn/steer'), false);
+  });
+
+  test('fresh pause/crash then process restart resumes the native goal with a different FIFO input and immutable identity', async () => {
+    const freshState = controls();
+    freshState.setDesiredState('paused');
+    const fresh = new FakeConnection(false, 'before', false, 'active', true);
+    const paused = await runGoalProtocol(fresh as never, options(freshState.control), 'gpt-5.6');
+    assert.equal(paused.completion?.status, 'interrupted');
+    const nativePause = fresh.requests.find(request => request.method === 'thread/goal/set' && request.params.status === 'paused');
+    assert.equal(nativePause?.params.objective, '/goal Ship it\n\nPolicy');
+    assert.equal(fresh.requests.filter(request => request.method === 'turn/interrupt').length, 1);
+
+    const resumedState = controls();
+    const resumed = new FakeConnection(true, 'after', false, 'paused');
+    const completed = await runGoalProtocol(resumed as never, options(resumedState.control, true, true), 'gpt-5.6');
+    assert.equal(completed.completion?.status, 'completed');
+    assert.equal(resumed.requests.find(request => request.method === 'thread/goal/set')?.params.objective, '/goal Ship it\n\nPolicy');
+    assert.equal(resumed.requests.find(request => request.method === 'thread/goal/set')?.params.status, 'active');
+    assert.equal(resumed.requests.find(request => request.method === 'turn/steer')?.params.input instanceof Array, true);
+    assert.deepEqual(resumedState.delivered, ['input-1']);
+  });
+
+  test('cancel clears the native Codex goal before interrupting its active turn', async () => {
+    const state = controls();
+    state.setDesiredState('cancelled');
+    const connection = new FakeConnection(false, 'before', false, 'active', true);
+    const result = await runGoalProtocol(connection as never, options(state.control), 'gpt-5.6');
+    assert.equal(result.completion?.status, 'interrupted');
+    assert.equal(connection.requests.filter(request => request.method === 'thread/goal/clear').length, 1);
+    assert.equal(connection.requests.filter(request => request.method === 'turn/interrupt').length, 1);
   });
 });
 

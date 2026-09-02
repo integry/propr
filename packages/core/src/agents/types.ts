@@ -226,7 +226,7 @@ export type AgentTerminationReason = 'timeout' | 'max_turns';
 export interface Agent {
     readonly config: AgentConfig;
 
-    /** Whether this provider implementation has a native goal execution path. */
+    /** Whether this provider implements a proven durable goal/session path. */
     readonly goalCapable: boolean;
 
     /**

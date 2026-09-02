@@ -20,6 +20,7 @@ vi.mock('../contexts/useSocket', () => ({ useSocket: () => socket }));
 
 const capability = {
   agentId: 'agent-1', agentAlias: 'codex', agentType: 'codex', goalCapable: true,
+  lifecycle: { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' } as const,
   controls: { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true },
   models: ['gpt-5.6', 'gpt-5.6-fast'], defaultModel: 'gpt-5.6',
 };
@@ -61,16 +62,16 @@ describe('GoalsPage', () => {
     await screen.findByRole('option', { name: 'codex' });
     fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Ship the dashboard' } });
     fireEvent.click(screen.getByLabelText('Agent orchestrates through ProPR'));
-    fireEvent.click(screen.getByRole('button', { name: 'Start native goal' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
     await waitFor(() => expect(goalsApi.createGoal).toHaveBeenCalledWith(expect.objectContaining({ repository: 'acme/web', agentId: 'agent-1', model: 'gpt-5.6', objective: 'Ship the dashboard', launchStrategy: 'orchestrate' })));
     expect(await screen.findByText('Goal detail')).toBeInTheDocument();
   });
 
-  it('gates creation when the pinned provider lacks native goal capability', async () => {
+  it('gates creation when the pinned provider lacks a goal-session capability', async () => {
     vi.mocked(goalsApi.getGoalCapabilities).mockResolvedValue({ agents: [{ ...capability, goalCapable: false, reason: 'No /goal' }] });
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
     expect(await screen.findByText(/No pinned coding-agent runtime/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Start native goal' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Start goal' })).toBeDisabled();
   });
 
   it('projects native checklist, time, token, and repository artifact stats in the goal list', async () => {
@@ -96,6 +97,15 @@ describe('GoalsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: "What's done?" }));
     await waitFor(() => expect(goalsApi.sendGoalInput).toHaveBeenCalledWith('goal-1', { canned: 'done' }));
     expect(goalsApi.pauseGoal).not.toHaveBeenCalled();
+  });
+
+  it('accepts a correction while the initial provider identity is still pending', async () => {
+    vi.mocked(goalsApi.getGoal).mockResolvedValue({ goal: { ...goal, sessionId: null } });
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    const correction = await screen.findByLabelText('Correction or follow-up');
+    fireEvent.change(correction, { target: { value: 'Use the existing API shape.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(goalsApi.sendGoalInput).toHaveBeenCalledWith('goal-1', { message: 'Use the existing API shape.' }));
   });
 
   it('requests the next model separately from the effective model and exposes cancellation', async () => {

@@ -133,7 +133,7 @@ async function resolveCreationAgent(
   }
   const capability = (await getCapabilities()).find(item => item.agentId === agent.config.id);
   if (!capability?.goalCapable) {
-    return { error: capability?.reason || 'Selected agent does not support native /goal', status: 409 };
+    return { error: capability?.reason || 'Selected agent does not support the required goal/session contract', status: 409 };
   }
   return { agent };
 }
@@ -342,7 +342,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     // Codex pauses through native turn/interrupt. Other proven providers stop
     // their resumable noninteractive invocation and resume the exact session.
-    if (row.agent_type !== 'codex' && row.claimed_at && !row.pause_confirmed_at) {
+    if (row.agent_type !== 'codex' && row.claimed_at && row.session_id && !row.pause_confirmed_at) {
       await stop(row.current_task_id, {
         redisClient: deps.redisClient,
         requestedBy: req.user!.username,
@@ -420,9 +420,13 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     if (!row) return;
     const idempotencyKey = requiredIdempotencyKey(req, res);
     if (!idempotencyKey) return;
-    const resumeMessage = row.session_id ? GOAL_CONTINUE_INPUT : row.initial_prompt;
+    const nativeCodexResume = row.agent_type === 'codex' && Boolean(row.session_id);
+    const resumeMessage = row.session_id || row.claimed_at ? GOAL_CONTINUE_INPUT : row.initial_prompt;
     const resumeOperation = 'goal.resume';
-    const resumePayloadHash = mutationHash(resumeOperation, { goalId: row.goal_id, message: resumeMessage });
+    const resumePayloadHash = mutationHash(resumeOperation, {
+      goalId: row.goal_id,
+      ...(nativeCodexResume ? { transport: 'native-goal' } : { message: resumeMessage }),
+    });
     let resumeInserted = false;
     try {
       resumeInserted = !await existingMutation(deps.db, row, idempotencyKey, resumeOperation, resumePayloadHash);
@@ -435,7 +439,13 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
     if (row.result_state || row.desired_state === 'cancelled') return void res.status(409).json({ error: 'Goal is terminal' });
     if (row.desired_state !== 'paused') return void res.status(409).json({ error: 'Goal is not paused' });
-    if (resumeInserted) await addGoalInput(row, idempotencyKey, resumeMessage, 'resume');
+    if (resumeInserted) {
+      if (nativeCodexResume) {
+        await recordControlMutation(deps.db, row, idempotencyKey, resumeOperation, resumePayloadHash);
+      } else {
+        await addGoalInput(row, idempotencyKey, resumeMessage, 'resume');
+      }
+    }
     await deps.db('goals').where({
       goal_id: row.goal_id, owner_id: row.owner_id, run_generation: row.run_generation,
       run_claim: row.run_claim, desired_state: 'paused',
@@ -479,13 +489,21 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       });
       if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before cancellation could be claimed' });
     }
-    const stopped = await stop(row.current_task_id, {
-      redisClient: deps.redisClient,
-      requestedBy: req.user!.username,
-      reason: 'Goal cancelled by user.',
-      cancellationReason: 'goal_cancelled',
-      ensureCancelled: true,
-    });
+    // A live Codex App Server performs the native /goal clear equivalent before
+    // interrupting its turn. Session-resume providers use the existing container
+    // stop path because they have no native goal control plane.
+    const stopped = row.agent_type === 'codex' && row.claimed_at
+      ? {
+        success: true, taskId: row.current_task_id, containerStopped: false,
+        removedQueuedJobs: 0, message: 'Native Codex goal clear requested',
+      }
+      : await stop(row.current_task_id, {
+        redisClient: deps.redisClient,
+        requestedBy: req.user!.username,
+        reason: 'Goal cancelled by user.',
+        cancellationReason: 'goal_cancelled',
+        ensureCancelled: true,
+      });
     // A signalled worker has not necessarily crossed its stop boundary yet.
     // Leave the goal nonterminal so both an HTTP retry and leased recovery keep
     // reconciling cleanup. Directly stopped/not-running work can finalize now.
@@ -538,7 +556,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       updated_at: deps.db.fn.now(),
     });
     if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before the model request was saved' });
-    if (row.desired_state === 'running' && row.agent_type !== 'codex' && row.claimed_at) {
+    if (row.desired_state === 'running' && row.agent_type !== 'codex' && row.claimed_at && row.session_id) {
       await stop(row.current_task_id, {
         redisClient: deps.redisClient, requestedBy: req.user!.username,
         reason: 'Goal model change requested at the next provider boundary.',
@@ -602,6 +620,35 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       }).whereNull('result_state').update({
         control_generation: deps.db.raw('control_generation + 1'), updated_at: deps.db.fn.now(),
       });
+    } else if (!row.session_id) {
+      // Accept input even before the provider identity is emitted. The first
+      // invocation must still receive the immutable initial goal prompt; once
+      // its identity is durable the worker stops and resumes that exact session.
+      if (inputDisposition === 'inserted') await deps.db('goals').where({
+        goal_id: row.goal_id, owner_id: row.owner_id,
+        run_generation: row.run_generation, run_claim: row.run_claim, desired_state: 'running',
+      }).whereNull('result_state').update({
+        control_generation: deps.db.raw('control_generation + 1'), updated_at: deps.db.fn.now(),
+      });
+      const identified = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+      if (identified?.session_id && identified.desired_state === 'running') {
+        const paused = await deps.db('goals').where({
+          goal_id: identified.goal_id, owner_id: identified.owner_id,
+          run_generation: identified.run_generation, run_claim: identified.run_claim,
+          desired_state: 'running',
+        }).whereNull('result_state').update({
+          desired_state: 'paused', paused_at: deps.db.fn.now(),
+          pause_confirmed_at: identified.claimed_at ? null : deps.db.fn.now(), resume_requested: true,
+          updated_at: deps.db.fn.now(),
+        });
+        if (paused === 1 && identified.claimed_at) await stop(identified.current_task_id, {
+          redisClient: deps.redisClient, requestedBy: req.user!.username,
+          reason: 'Goal input queued for exact whole-session resume.',
+          cancellationReason: 'goal_control_boundary', markCancelled: async () => undefined,
+        });
+        const boundary = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+        if (paused === 1 && boundary?.pause_confirmed_at) await beginPausedContinuation(boundary);
+      }
     } else {
       await deps.db('goals').where({
         goal_id: row.goal_id, owner_id: row.owner_id,

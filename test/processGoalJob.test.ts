@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, mock, test } from 'node:test';
-import { processGoalJob } from '../src/jobs/processGoalJob.ts';
+import { executePreparedGoal, processGoalJob } from '../src/jobs/processGoalJob.ts';
 import type { GoalJobData } from '../packages/core/src/goalExports.ts';
+import type { AgentTaskOptions } from '../packages/core/src/agents/types.ts';
 
 after(async () => {
   const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+  const { closeStateManager } = await import('../packages/core/src/utils/workerStateManager.ts');
+  await closeStateManager();
   await closeConnection();
 });
 
@@ -51,4 +54,40 @@ test('processGoalJob fails provider success without the exact open draft PR', as
   assert.equal(finalize.mock.calls[0].arguments[1], 'failed');
   assert.match(finalize.mock.calls[0].arguments[2] as string, /required open draft PR/);
   assert.match((markFailed.mock.calls[0].arguments[1] as Error).message, /required open draft PR/);
+});
+
+test('goal execution keeps initial prompt identity separate from FIFO continuation input', async () => {
+  const data: GoalJobData = {
+    goalId: 'goal-identity', taskId: 'goal-task-identity', repoOwner: 'acme', repoName: 'repo',
+    generation: 0, claimId: 'claim-identity',
+  };
+  const initialPrompt = '/goal Ship it\n\nImmutable launch policy';
+  const correction = 'Use the existing API shape instead.';
+  const captured: AgentTaskOptions[] = [];
+  const agent = {
+    executeTask: async (options: AgentTaskOptions) => {
+      captured.push(options);
+      return { success: false, modelUsed: 'test-model', executionTimeMs: 1, logs: '', modifiedFiles: [] };
+    },
+  };
+  const goal = {
+    goal_id: data.goalId, initial_prompt: initialPrompt, session_id: null, conversation_id: null,
+    requested_model: 'test-model', current_task_id: data.taskId, agent_type: 'claude',
+  };
+  const prepared = {
+    goal, agent, githubToken: 'token', worktree: { worktreePath: '/tmp/worktree', branchName: 'goal/ship-it' },
+    pendingInput: { input_id: 'input-1', message: correction },
+  };
+
+  await executePreparedGoal(data, prepared as never);
+  await executePreparedGoal({ ...data, generation: 1 }, {
+    ...prepared, goal: { ...goal, session_id: 'session-1' },
+  } as never);
+
+  assert.equal(captured[0].prompt, initialPrompt);
+  assert.equal(captured[0].nativeGoalObjective, initialPrompt);
+  assert.equal(captured[0].initialControlInputId, undefined);
+  assert.equal(captured[1].prompt, correction);
+  assert.equal(captured[1].nativeGoalObjective, initialPrompt);
+  assert.equal(captured[1].resumeSessionId, 'session-1');
 });

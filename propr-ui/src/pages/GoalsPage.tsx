@@ -84,7 +84,7 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
     <form onSubmit={submit} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold"><Plus className="h-5 w-5" /> Start a goal</h2>
       {error && <p role="alert" className="mb-3 text-sm text-red-600">{error}</p>}
-      {agents.length > 0 && !agents.some(agent => agent.goalCapable) && <p className="mb-3 rounded bg-amber-50 p-3 text-sm text-amber-800">No pinned coding-agent runtime passed its native goal capability handshake.</p>}
+      {agents.length > 0 && !agents.some(agent => agent.goalCapable) && <p className="mb-3 rounded bg-amber-50 p-3 text-sm text-amber-800">No pinned coding-agent runtime passed its goal/session capability handshake.</p>}
       <div className="grid gap-4 md:grid-cols-2">
         <label className="text-sm font-medium text-slate-700">Repository
           <select aria-label="Repository" value={repository} onChange={event => setRepository(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 p-2" required>
@@ -116,7 +116,7 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
         <textarea aria-label="Objective" value={objective} onChange={event => setObjective(event.target.value)} rows={5} className="mt-1 w-full rounded-md border border-slate-300 p-2" required />
       </label>
       <label className="mt-3 flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={ultrafix} onChange={event => setUltrafix(event.target.checked)} /> Ask the coding agent to use Ultrafix</label>
-      <button type="submit" disabled={submitting || !repository || !agentId || !model || !objective.trim() || !selectedAgent?.goalCapable} className={`${buttonClass} mt-4 bg-primary-600 text-white hover:bg-primary-700`}>{submitting ? 'Starting…' : 'Start native goal'}</button>
+      <button type="submit" disabled={submitting || !repository || !agentId || !model || !objective.trim() || !selectedAgent?.goalCapable} className={`${buttonClass} mt-4 bg-primary-600 text-white hover:bg-primary-700`}>{submitting ? 'Starting…' : 'Start goal'}</button>
     </form>
   );
 }
@@ -129,7 +129,7 @@ function GoalList() {
   const refresh = useCallback(() => listGoals().then(data => setGoals(data.goals)).catch(err => setError((err as Error).message)), []);
   useEffect(() => { refresh(); const timer = window.setInterval(refresh, 10_000); return () => window.clearInterval(timer); }, [refresh]);
   return <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
-    <div><h1 className="text-2xl font-bold text-slate-900">Goals</h1><p className="mt-1 text-sm text-slate-600">Long-running work owned natively by your coding agent.</p></div>
+    <div><h1 className="text-2xl font-bold text-slate-900">Goals</h1><p className="mt-1 text-sm text-slate-600">Long-running work kept in one exact coding-agent session.</p></div>
     <CreateGoalForm onCreated={goal => navigate(`/goals/${goal.id}`)} />
     {error && <p role="alert" className="text-red-600">{error}</p>}
     <section className="space-y-3"><h2 className="text-lg font-semibold">Your goals</h2>
@@ -187,7 +187,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
     </header>
     {error && <p role="alert" className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
     {goal.failureReason && <p role="alert" className="rounded bg-red-50 p-3 text-sm text-red-700">{goal.failureReason}</p>}
-    {!terminal && <section className="rounded-lg border bg-white p-4"><div className="flex flex-wrap gap-2"><button disabled={busy || !goal.sessionId} onClick={() => continueWith({ canned: 'done' })} className={`${buttonClass} bg-slate-100`}>What's done?</button><button disabled={busy || !goal.sessionId} onClick={() => continueWith({ canned: 'left' })} className={`${buttonClass} bg-slate-100`}>What's left?</button></div><div className="mt-3 flex gap-2"><textarea aria-label="Correction or follow-up" value={message} onChange={event => setMessage(event.target.value)} rows={2} className="min-w-0 flex-1 rounded-md border border-slate-300 p-2" placeholder="Send a correction to the same coding-agent session…" /><button disabled={busy || !goal.sessionId || !message.trim()} onClick={() => continueWith({ message })} className={`${buttonClass} bg-primary-600 text-white`}><Send className="h-4 w-4" />Send</button></div>
+    {!terminal && <section className="rounded-lg border bg-white p-4"><div className="flex flex-wrap gap-2"><button disabled={busy} onClick={() => continueWith({ canned: 'done' })} className={`${buttonClass} bg-slate-100`}>What's done?</button><button disabled={busy} onClick={() => continueWith({ canned: 'left' })} className={`${buttonClass} bg-slate-100`}>What's left?</button></div><div className="mt-3 flex gap-2"><textarea aria-label="Correction or follow-up" value={message} onChange={event => setMessage(event.target.value)} rows={2} className="min-w-0 flex-1 rounded-md border border-slate-300 p-2" placeholder="Send a correction to the same coding-agent session…" /><button disabled={busy || !message.trim()} onClick={() => continueWith({ message })} className={`${buttonClass} bg-primary-600 text-white`}><Send className="h-4 w-4" />Send</button></div>
       <label className="mt-3 block text-sm text-slate-600">Model for next continuation <select value={goal.requestedModel} onChange={event => act(() => requestGoalModel(goal.id, event.target.value))} className="ml-2 rounded border p-1">{models.map(item => <option key={item} value={item}>{item}</option>)}</select></label>
     </section>}
     <section className="grid gap-5 lg:grid-cols-3"><div className="rounded-lg border bg-white p-4"><h2 className="font-semibold">Native todos</h2>{live.todos.length ? <TodoList liveDetails={live} history={[{ state: goal.taskState }]} /> : <p className="mt-3 text-sm text-slate-500">No provider todos yet.</p>}</div><div className="rounded-lg border bg-white p-4"><h2 className="font-semibold">Usage</h2><p className="mt-3 text-2xl font-bold">{totalTokens.toLocaleString()}</p>{goal.liveSummary.nativeGoal && <p className="mt-1 text-xs text-slate-500">Native goal: {goal.liveSummary.nativeGoal.status} · {duration(goal.liveSummary.nativeGoal.timeUsedSeconds * 1000)}</p>}<RealTimeStats tokenUsage={live.tokenUsage || undefined} /></div><div className="rounded-lg border bg-white p-4"><h2 className="font-semibold">Session</h2><p className="mt-3 break-all text-sm text-slate-600">{goal.sessionId || 'Waiting for provider identity'}</p></div></section>

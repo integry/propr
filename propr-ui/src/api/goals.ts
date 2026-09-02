@@ -5,6 +5,11 @@ export interface GoalCapability {
   agentAlias: string;
   agentType: string;
   goalCapable: boolean;
+  lifecycle: {
+    launch: 'native-goal' | 'goal-prompt';
+    resume: 'native-goal' | 'whole-session';
+    runningInput: 'live-steer' | 'safe-boundary-resume';
+  } | null;
   controls: {
     liveInput: boolean;
     inputAtBoundary: boolean;

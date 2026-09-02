@@ -209,9 +209,9 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
     const agent = registry.getAgentById(claimed.agent_id) || registry.getAgentByAlias(claimed.agent_alias);
-    if (!agent?.goalCapable) throw new Error(`Agent ${claimed.agent_alias} has no native goal execution path`);
+    if (!agent?.goalCapable) throw new Error(`Agent ${claimed.agent_alias} has no goal-session execution path`);
     const capability = (await registry.getGoalCapabilities()).find(item => item.agentId === agent.config.id);
-    if (!capability?.goalCapable) throw new Error(capability?.reason || `Pinned ${claimed.agent_alias} runtime has no native goal transport`);
+    if (!capability?.goalCapable) throw new Error(capability?.reason || `Pinned ${claimed.agent_alias} runtime has no proven goal-session transport`);
 
     const octokit = await getAuthenticatedOctokit();
     const githubToken = await octokit.auth({ type: 'installation' }) as { token: string };
@@ -229,10 +229,12 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
     return { ready: true, value: { goal: boundaryGoal, agent, githubToken: githubToken.token, worktree, pendingInput } };
 }
 
-async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
+export async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<AgentExecutionResult> {
     const { goal, agent, githubToken, worktree, pendingInput } = prepared;
-    const prompt = pendingInput?.message
-        ?? (goal.session_id ? GOAL_CONTINUE_INPUT : goal.initial_prompt);
+    const freshSession = !goal.session_id;
+    const prompt = freshSession
+        ? goal.initial_prompt
+        : pendingInput?.message ?? GOAL_CONTINUE_INPUT;
     const control = createGoalExecutionControl(data);
     const executionController = new AbortController();
     return runWithExecutionAbortSignal(
@@ -249,7 +251,7 @@ async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAtte
             nativeGoalObjective: goal.initial_prompt,
             resumeSessionId: goal.session_id ?? undefined,
             resumeConversationId: goal.conversation_id ?? undefined,
-            initialControlInputId: pendingInput?.input_id,
+            initialControlInputId: goal.agent_type === 'codex' ? pendingInput?.input_id : undefined,
             goalControl: control,
             environment: buildGoalPolicyEnvironment(),
             onSessionId: async (sessionId, conversationId) => {
@@ -257,8 +259,27 @@ async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAtte
                     job: data, goal, model: goal.requested_model, sessionId, conversationId,
                     acknowledgeControls: !pendingInput,
                 });
-                if (pendingInput && goal.agent_type !== 'codex') {
+                if (pendingInput && goal.agent_type !== 'codex' && !freshSession) {
                     await control.markInputDelivered(pendingInput.input_id, `session:${sessionId}`);
+                }
+                if (freshSession && goal.agent_type !== 'codex') {
+                    const boundary = await control.load();
+                    if (boundary.desiredState !== 'running') {
+                        executionController.abort(new Error('Goal stopped after its whole-session identity was persisted'));
+                    } else if (boundary.pendingInputs.length > 0) {
+                        const paused = await db('goals').where({
+                            goal_id: data.goalId, current_task_id: data.taskId,
+                            run_generation: data.generation, run_claim: data.claimId,
+                            desired_state: 'running',
+                        }).whereNull('result_state').update({
+                            desired_state: 'paused', paused_at: db.fn.now(), pause_confirmed_at: null,
+                            resume_requested: true, attempt_heartbeat_at: db.fn.now(),
+                            updated_at: db.fn.now(),
+                        });
+                        if (paused === 1 || (await control.load()).desiredState !== 'running') {
+                            executionController.abort(new Error('Goal correction queued for whole-session resume'));
+                        }
+                    }
                 }
             },
             onContainerId: createContainerIdCallback(
@@ -271,7 +292,7 @@ async function executePreparedGoal(data: GoalJobData, prepared: PreparedGoalAtte
 
 async function acknowledgeNonCodexInput(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<void> {
     const { pendingInput, goal } = prepared;
-    if (!pendingInput || goal.agent_type === 'codex') return;
+    if (!pendingInput || goal.agent_type === 'codex' || !goal.session_id) return;
     await db.transaction(async trx => {
         const owned = await trx('goals').where({
             goal_id: data.goalId,

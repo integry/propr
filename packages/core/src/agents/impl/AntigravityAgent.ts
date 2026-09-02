@@ -81,6 +81,10 @@ function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyW
     }
 }
 
+function antigravityConfigMountTarget(executionMode: 'task' | 'goal'): string {
+    return executionMode === 'goal' ? '/home/node/.gemini' : ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH;
+}
+
 function getAntigravityTranscriptRoot(): string {
     return process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT || DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT;
 }
@@ -97,10 +101,6 @@ export class AntigravityAgent implements Agent {
 
     private getRuntimeName(): 'antigravity' {
         return 'antigravity';
-    }
-
-    private getContainerConfigPath(): string {
-        return ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH;
     }
 
     private getCliCommand(): string {
@@ -439,6 +439,7 @@ export class AntigravityAgent implements Agent {
         const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false, executionMode = 'task', resumeConversationId } = params;
         assertRepositoryInspectionMode(repositoryInspection, readOnlyWorkspace);
         const configPath = this.getHostConfigPath();
+        const configMountTarget = antigravityConfigMountTarget(executionMode);
         const envVars = buildAgentEnvironmentArgs(repositoryInspection, this.config.envVars, environment);
         const shortTaskId = createContainerExecutionId(taskId);
         const taskType = executionMode === 'goal' ? 'goal' : executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
@@ -448,12 +449,12 @@ export class AntigravityAgent implements Agent {
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
             ...(repositoryInspection ? [] : ['-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`]),
-            '-v', `${configPath}:${this.getContainerConfigPath()}:rw`,
+            '-v', `${configPath}:${configMountTarget}:rw`,
             ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
             '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true',
             ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
             ...(executionMode === 'task' ? ['-e', 'PROPR_EPHEMERAL_STATE=1'] : []),
-            '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${this.getContainerConfigPath()}`,
+            '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${configMountTarget}`,
             ...(repositoryInspection ? [
                 '-e', 'PROPR_REPOSITORY_INSPECTION=1',
                 '-e', `PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG=${buildAntigravityRepositoryScoutMcpConfig()}`,

@@ -29,9 +29,8 @@ interface NativeGoalSnapshot {
     objective?: string;
 }
 
-function externalGoalObjective(options: AgentTaskOptions): string {
-    const objective = options.nativeGoalObjective!;
-    return objective.startsWith('/goal ') ? objective.slice('/goal '.length) : objective;
+function nativeGoalObjective(options: AgentTaskOptions): string {
+    return options.nativeGoalObjective!;
 }
 
 function cleanModelName(model: string | undefined): string | undefined {
@@ -99,7 +98,7 @@ async function openGoalThread(
             threadId: thread.id,
             // App Server 0.146 activates the external goal and continues the
             // thread itself. Keep all launch policy in that one native prompt.
-            objective: externalGoalObjective(options),
+            objective: nativeGoalObjective(options),
             status: 'active',
         });
     }
@@ -119,6 +118,7 @@ async function waitForNativeGoalTurn(
     connection: AppServerConnection,
     threadId: string,
     control: NonNullable<AgentTaskOptions['goalControl']>,
+    objective: string,
 ): Promise<string | null> {
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
@@ -126,10 +126,32 @@ async function waitForNativeGoalTurn(
         if (turnId) return turnId;
         if (connection.closeError) throw connection.closeError;
         await control.heartbeat();
-        if ((await control.load()).desiredState !== 'running') return null;
+        const desiredState = (await control.load()).desiredState;
+        if (desiredState !== 'running') {
+            await applyNativeGoalStop(connection, { threadId, desiredState, objective });
+            return null;
+        }
         await new Promise(resolve => setTimeout(resolve, 400));
     }
     throw new Error('Codex App Server goal remained active without starting its next native turn');
+}
+
+async function applyNativeGoalStop(
+    connection: AppServerConnection,
+    options: {
+        threadId: string;
+        desiredState: 'paused' | 'cancelled';
+        objective: string;
+        turnId?: string;
+    },
+): Promise<void> {
+    const { threadId, desiredState, objective, turnId } = options;
+    if (desiredState === 'cancelled') {
+        await connection.request('thread/goal/clear', { threadId });
+    } else {
+        await connection.request('thread/goal/set', { threadId, objective, status: 'paused' });
+    }
+    if (turnId) await connection.request('turn/interrupt', { threadId, turnId }).catch(() => undefined);
 }
 
 async function observeNativeGoal(
@@ -139,6 +161,7 @@ async function observeNativeGoal(
     options: AgentTaskOptions,
 ): Promise<{ status: string; error?: string }> {
     const control = options.goalControl!;
+    const objective = nativeGoalObjective(options);
     let turnId = initialTurnId;
     let firstTurn = true;
     while (true) {
@@ -154,10 +177,12 @@ async function observeNativeGoal(
             await control.markInputDelivered(options.initialControlInputId, turnId);
         }
         firstTurn = false;
-        const completion = await observeActiveTurnWithThread(connection, threadId, turnId, control);
+        const completion = await observeActiveTurnWithThread(connection, threadId, turnId, options);
         await control.setActiveTurn(null);
         if (completion.status !== 'completed') return completion;
-        if ((await control.load()).desiredState !== 'running') {
+        const desiredState = (await control.load()).desiredState;
+        if (desiredState !== 'running') {
+            await applyNativeGoalStop(connection, { threadId, desiredState, objective });
             return { status: 'interrupted', error: 'Goal stopped at a provider turn boundary' };
         }
         const goal = nativeGoalSnapshot(await connection.request('thread/goal/get', { threadId }));
@@ -165,7 +190,7 @@ async function observeNativeGoal(
         if (goal.status !== 'active') {
             return { status: 'failed', error: `Codex native goal entered ${goal.status} status` };
         }
-        const nextTurnId = await waitForNativeGoalTurn(connection, threadId, control);
+        const nextTurnId = await waitForNativeGoalTurn(connection, threadId, control, objective);
         if (!nextTurnId) return { status: 'interrupted', error: 'Goal stopped between provider turns' };
         turnId = nextTurnId;
     }
@@ -180,7 +205,7 @@ export async function runGoalProtocol(
     const thread = await openGoalThread(connection, options, model);
     if (options.resumeSessionId) {
         const recoveredGoal = nativeGoalSnapshot(await connection.request('thread/goal/get', { threadId: thread.id }));
-        if (recoveredGoal.objective !== externalGoalObjective(options)) {
+        if (recoveredGoal.objective !== nativeGoalObjective(options)) {
             throw new Error('Persisted Codex thread belongs to a different native goal objective');
         }
         if (recoveredGoal.status === 'complete') {
@@ -192,7 +217,13 @@ export async function runGoalProtocol(
             }
             return { thread, completion: { status: 'completed' }, effectiveModel: model };
         }
-        if (recoveredGoal.status !== 'active') {
+        if (['paused', 'blocked', 'usageLimited'].includes(recoveredGoal.status)) {
+            await connection.request('thread/goal/set', {
+                threadId: thread.id,
+                objective: nativeGoalObjective(options),
+                status: 'active',
+            });
+        } else if (recoveredGoal.status !== 'active') {
             return {
                 thread,
                 completion: { status: 'failed', error: `Codex native goal resumed in ${recoveredGoal.status} status` },
@@ -202,12 +233,23 @@ export async function runGoalProtocol(
     }
     const boundary = await control.load();
     if (boundary.desiredState !== 'running') {
-        return { thread, effectiveModel: cleanModelName(boundary.requestedModel) || model };
+        const startedTurnId = connection.takeStartedTurn(thread.id) ?? undefined;
+        await applyNativeGoalStop(connection, {
+            threadId: thread.id,
+            desiredState: boundary.desiredState,
+            objective: nativeGoalObjective(options),
+            ...(startedTurnId ? { turnId: startedTurnId } : {}),
+        });
+        return {
+            thread,
+            completion: { status: 'interrupted', error: 'Goal stopped before provider turn observation' },
+            effectiveModel: cleanModelName(boundary.requestedModel) || model,
+        };
     }
     const effectiveModel = cleanModelName(boundary.requestedModel) || model;
     // Applying/resuming an active external goal calls continue_if_idle() in the
     // pinned App Server. Starting another turn here races that native turn.
-    const turnId = await waitForNativeGoalTurn(connection, thread.id, control);
+    const turnId = await waitForNativeGoalTurn(connection, thread.id, control, nativeGoalObjective(options));
     if (!turnId) return { thread, effectiveModel };
     connection.effectiveModel = effectiveModel;
     const completion = await observeNativeGoal(connection, thread.id, turnId, options);
@@ -292,8 +334,10 @@ async function observeActiveTurnWithThread(
     connection: AppServerConnection,
     threadId: string,
     turnId: string,
-    control: NonNullable<AgentTaskOptions['goalControl']>,
+    options: AgentTaskOptions,
 ): Promise<{ status: string; error?: string }> {
+    const control = options.goalControl!;
+    const objective = nativeGoalObjective(options);
     let completed: RpcMessage | null = null;
     const completion = connection.waitForTurn(turnId).then(message => { completed = message; });
     let interrupted = false;
@@ -305,7 +349,9 @@ async function observeActiveTurnWithThread(
         if (snapshot.desiredState !== 'running') {
             if (!interrupted) {
                 interrupted = true;
-                await connection.request('turn/interrupt', { threadId, turnId }).catch(() => undefined);
+                await applyNativeGoalStop(connection, {
+                    threadId, desiredState: snapshot.desiredState, objective, turnId,
+                });
             }
             continue;
         }

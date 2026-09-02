@@ -1,6 +1,7 @@
 export {
     GOAL_CAPABILITY_COMMANDS,
-    claudeInitSupportsNativeGoal,
+    antigravityConversationIdentity,
+    claudeSessionIdentity,
     codexHandshakeSupportsNativeGoal,
     type GoalCapability,
 } from './agents/goalCapabilities.js';

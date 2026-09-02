@@ -62,6 +62,14 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
                 ...common, goal_id: 'goal-5', owner_id: 'owner-2', current_task_id: 'goal-task-5',
                 desired_state: 'running', pause_confirmed_at: null, claimed_at: new Date().toISOString(),
             },
+            {
+                ...common, goal_id: 'goal-6', owner_id: 'owner-2', current_task_id: 'goal-task-6',
+                desired_state: 'running', pause_confirmed_at: null, claimed_at: null, session_id: null,
+            },
+            {
+                ...common, goal_id: 'goal-7', owner_id: 'owner-2', current_task_id: 'goal-task-7',
+                agent_alias: 'codex', agent_type: 'codex',
+            },
         ]);
         const routes = createGoalRoutes({
             db: database,
@@ -198,6 +206,29 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.equal(Boolean(boundary.resume_requested), true);
         assert.equal(boundary.control_generation, 1);
         assert.ok(stopped.includes('goal-task-3'));
+
+        const preSessionInput = response();
+        const preSessionRequest = request('owner-2', { goalId: 'goal-6' }, { message: 'Keep the initial goal, then apply this correction.' });
+        preSessionRequest.get = () => 'owner-pre-session-input-1';
+        await routes.input(preSessionRequest, preSessionInput.res);
+        assert.equal(preSessionInput.state.status, 200);
+        const preSessionBoundary = await database('goals').where({ goal_id: 'goal-6' }).first();
+        assert.equal(preSessionBoundary.desired_state, 'running');
+        assert.equal(preSessionBoundary.run_generation, 2);
+        assert.equal(preSessionBoundary.control_generation, 1);
+        assert.equal(stopped.includes('goal-task-6'), false);
+        assert.equal((await database('goal_inputs').where({ goal_id: 'goal-6' }).first()).state, 'pending');
+
+        const nativeResume = response();
+        const nativeResumeRequest = request('owner-2', { goalId: 'goal-7' });
+        nativeResumeRequest.get = () => 'owner-native-resume-1';
+        await routes.resume(nativeResumeRequest, nativeResume.res);
+        assert.equal(nativeResume.state.status, 200);
+        assert.equal(queued.length, 2);
+        const nativeResumeRecord = await database('goal_inputs').where({ goal_id: 'goal-7', operation: 'goal.resume' }).first();
+        assert.equal(nativeResumeRecord.kind, 'control');
+        assert.equal(nativeResumeRecord.state, 'delivered');
+        assert.equal(nativeResumeRecord.message, '');
 
         const pauseRequest = request('owner-2', { goalId: 'goal-4' });
         pauseRequest.get = () => 'owner-pause-1';
