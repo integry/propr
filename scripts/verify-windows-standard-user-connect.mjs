@@ -105,7 +105,7 @@ const reasonCodeAllowlist = Object.freeze([
 ]);
 const nativeStageAllowlist = Object.freeze([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
-  "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
+  "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr", "spawn:cleanup",
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
@@ -226,8 +226,7 @@ try {
   currentStage = "native-timing";
   const nativeAuthority = await import(windowsAuthorityModule);
   const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = (
-    WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT
-    * nativeAuthority.WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS
+    WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT * nativeAuthority.WINDOWS_INSPECTION_TIMEOUT_MS
   ) + WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;
   const probeFd = openSync(
     fixture,

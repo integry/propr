@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
   closeSync,
   constants,
@@ -16,11 +16,10 @@ import type {
 } from "./connectRootAuthority.js";
 
 // Hosted alternate-user Windows can spend more than fifteen seconds entering
-// the fixed PowerShell/Reflection.Emit boundary. Each production call gets one
-// bounded cold-start allowance. The cumulative cap is a fixed four-process
-// proof ceiling and is independent of the 32-entry input-schema bound.
+// the fixed PowerShell/Reflection.Emit boundary. All one-target brokers start
+// concurrently and share this single wall-clock allowance.
 export const WINDOWS_INSPECTION_TIMEOUT_MS = 60_000;
-export const WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS = 240_000;
+export const WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS = 5_000;
 export const WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS = 60_000;
 const WINDOWS_INSPECTION_MAX_BYTES = 128 * 1024;
 const WINDOWS_NATIVE_PROBE_MAX_BYTES = 2 * 1024;
@@ -29,7 +28,7 @@ const GLOBAL_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
 
 export const WINDOWS_NATIVE_STAGE_CODES = Object.freeze([
   "resolver:env", "resolver:canonical", "resolver:global-open", "resolver:global-id",
-  "spawn:create", "spawn:error", "spawn:timeout", "spawn:cumulative-timeout", "spawn:status", "spawn:stderr",
+  "spawn:create", "spawn:error", "spawn:timeout", "spawn:status", "spawn:stderr", "spawn:cleanup",
   "probe:entry", "probe:baseline", "probe:reflection-emit", "probe:win32", "probe:standard-handle", "probe:output",
   "broker:ps-version", "broker:job", "broker:fd", "broker:fd-duplicate", "broker:index-info-initial",
   "broker:security-info", "broker:acl", "broker:json", "broker:current-user-sid",
@@ -213,7 +212,7 @@ try {
   }
   $stage=83
   $entry=[pscustomobject][ordered]@{
-    index=__PROPR_INDEX__;kind='__PROPR_ENTRY_KIND__';authorityKind='__PROPR_AUTHORITY_KIND__';currentUserSid=$currentSid;ownerSid=$ownerSid
+    currentUserSid=$currentSid;ownerSid=$ownerSid
     daclProtected=$daclProtected;reparsePoint=$reparsePoint
     volumeSerialNumber=$beforeVolumeDecimal
     fileId=$beforeIdDecimal
@@ -378,19 +377,29 @@ function resolveWindowsPowerShell(): HeldExecutable {
 
 function revalidateWindowsPowerShell(executable: HeldExecutable): void {
   let namedFd: number | undefined;
+  let globalFd: number | undefined;
   try {
     try { namedFd = openSync(executable.path, constants.O_RDONLY | constants.O_NOFOLLOW); } catch {
       throw stageError("resolver:global-id");
     }
+    try {
+      globalFd = openSync(
+        `${GLOBAL_SYSTEM_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+    } catch { throw stageError("resolver:global-id"); }
     const held = fstatSync(executable.fd, { bigint: true });
     const named = fstatSync(namedFd, { bigint: true });
+    const global = fstatSync(globalFd, { bigint: true });
     if (
-      !held.isFile() || !named.isFile()
+      !held.isFile() || !named.isFile() || !global.isFile()
       || held.dev.toString(10) !== executable.device || held.ino.toString(10) !== executable.file
       || named.dev.toString(10) !== executable.device || named.ino.toString(10) !== executable.file
+      || global.dev.toString(10) !== executable.device || global.ino.toString(10) !== executable.file
     ) throw stageError("resolver:global-id");
   } finally {
     if (namedFd !== undefined) closeSync(namedFd);
+    if (globalFd !== undefined) closeSync(globalFd);
   }
 }
 
@@ -431,33 +440,29 @@ export function windowsBrokerFailureStage(status: number | null): WindowsNativeS
   return status === null ? "spawn:status" : (stages[status] ?? "spawn:status");
 }
 
-function inspectionSource(target: WindowsAuthorityTarget, index: number): string {
-  const entryKind = target.kind === "env" ? "file" : "directory";
-  return WINDOWS_INSPECTION_SOURCE
-    .replace("__PROPR_INDEX__", String(index))
-    .replace("__PROPR_ENTRY_KIND__", entryKind)
-    .replace("__PROPR_AUTHORITY_KIND__", target.kind);
-}
-
 /** The fixed inspector receives no caller-controlled executable/module/profile/temp authority. */
 export function windowsPowerShellEnvironment(systemRoot: string): Readonly<Record<string, string>> {
   if (!ordinaryDosPath(systemRoot)) throw stageError("resolver:env");
   return Object.freeze({ SystemRoot: systemRoot, WINDIR: systemRoot });
 }
 
-function spawnPowerShell(
+function powerShellArguments(source: string): readonly string[] {
+  const encoded = Buffer.from(source, "utf16le").toString("base64");
+  if (encoded.length > 28_000) throw stageError("spawn:create");
+  return [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded,
+  ];
+}
+
+function spawnPowerShellSync(
   executable: HeldExecutable,
   source: string,
   stdin: "ignore" | number,
   timeout = WINDOWS_INSPECTION_TIMEOUT_MS,
   maxBuffer = WINDOWS_INSPECTION_MAX_BYTES,
 ) {
-  const encoded = Buffer.from(source, "utf16le").toString("base64");
-  if (encoded.length > 28_000) throw stageError("spawn:create");
   try {
-    return spawnSync(executable.path, [
-      "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded,
-    ], {
+    return spawnSync(executable.path, powerShellArguments(source), {
       shell: false,
       windowsHide: true,
       encoding: "buffer",
@@ -467,6 +472,18 @@ function spawnPowerShell(
       killSignal: "SIGKILL",
       maxBuffer,
       stdio: [stdin, "pipe", "pipe"],
+    });
+  } catch { throw stageError("spawn:create"); }
+}
+
+function spawnInspectionBroker(executable: HeldExecutable, pinnedFd: number): ChildProcess {
+  try {
+    return spawn(executable.path, powerShellArguments(WINDOWS_INSPECTION_SOURCE), {
+      shell: false,
+      windowsHide: true,
+      cwd: win32.dirname(executable.path),
+      env: windowsPowerShellEnvironment(executable.systemRoot),
+      stdio: [pinnedFd, "pipe", "pipe"],
     });
   } catch { throw stageError("spawn:create"); }
 }
@@ -528,49 +545,188 @@ export function parseWindowsNativeProbeOutput(
   return records;
 }
 
-function assertSpawnSuccess(result: ReturnType<typeof spawnSync>): void {
-  if (result.error) {
-    if ((result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") throw stageError("spawn:timeout");
-    throw stageError("spawn:error");
+export type WindowsBrokerInspection = Omit<WindowsAuthorityInspection, "index" | "kind" | "authorityKind">;
+
+const WINDOWS_BROKER_ENTRY_KEYS = Object.freeze([
+  "currentUserSid", "ownerSid", "daclProtected", "reparsePoint", "volumeSerialNumber", "fileId",
+  "verifiedVolumeSerialNumber", "verifiedFileId", "rules",
+]);
+
+export function parseWindowsBrokerDocument(value: Buffer | string): WindowsBrokerInspection {
+  const text = strictUtf8(value);
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { throw stageError("parent:json-parse"); }
+  if (JSON.stringify(parsed) !== text) throw stageError("parent:json-canonical");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw stageError("parent:document-shape");
   }
-  if (result.signal) throw stageError(result.signal === "SIGKILL" ? "spawn:timeout" : "spawn:status");
-  if (result.status !== 0) throw stageError(windowsBrokerFailureStage(result.status));
-  const stderrBytes = typeof result.stderr === "string"
-    ? Buffer.byteLength(result.stderr, "utf8")
-    : (result.stderr?.byteLength ?? 0);
-  if (stderrBytes !== 0) throw stageError("spawn:stderr");
+  const document = parsed as Record<string, unknown>;
+  if (Object.keys(document).sort().join(",") !== "entries,version" || document.version !== 1
+    || !Array.isArray(document.entries)) throw stageError("parent:document-shape");
+  if (document.entries.length !== 1) throw stageError("parent:entry-count");
+  const entry = document.entries[0];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)
+    || Object.keys(entry).sort().join(",") !== [...WINDOWS_BROKER_ENTRY_KEYS].sort().join(",")) {
+    throw stageError("parent:entry-shape");
+  }
+  return entry as WindowsBrokerInspection;
 }
 
-export function windowsInspectionTimeoutForElapsed(elapsedMs: number): number {
-  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) throw stageError("spawn:cumulative-timeout");
-  const remaining = WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS - Math.floor(elapsedMs);
-  if (remaining <= 0) throw stageError("spawn:cumulative-timeout");
-  return Math.min(WINDOWS_INSPECTION_TIMEOUT_MS, remaining);
+interface InspectionBrokerState {
+  readonly child: ChildProcess;
+  readonly stdout: Buffer[];
+  closed: boolean;
 }
 
-export function runWindowsReadOnlyInspection(
+/**
+ * Start all fixed one-target brokers before yielding and supervise them under
+ * one deadline. A resolved batch proves that every broker closed after both
+ * output streams drained; a rejected batch first terminates every live broker.
+ */
+export interface WindowsInspectionBrokerBatchOptions {
+  readonly entryCount: number;
+  readonly startBroker: (index: number) => ChildProcess;
+  readonly deadlineMs: number;
+  readonly cleanupTimeoutMs: number;
+  readonly maxOutputBytes: number;
+}
+
+export function runWindowsInspectionBrokerBatch({
+  entryCount,
+  startBroker,
+  deadlineMs,
+  cleanupTimeoutMs,
+  maxOutputBytes,
+}: WindowsInspectionBrokerBatchOptions): Promise<readonly Buffer[]> {
+  if (!Number.isInteger(entryCount) || entryCount < 1 || entryCount > WINDOWS_INSPECTION_MAX_ENTRIES
+    || !Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > WINDOWS_INSPECTION_TIMEOUT_MS
+    || !Number.isInteger(cleanupTimeoutMs) || cleanupTimeoutMs < 1
+    || cleanupTimeoutMs > WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS
+    || !Number.isInteger(maxOutputBytes) || maxOutputBytes < 1
+    || maxOutputBytes > WINDOWS_INSPECTION_MAX_BYTES) throw stageError("spawn:create");
+  return new Promise((resolve, reject) => {
+    const brokers: InspectionBrokerState[] = [];
+    let aggregateBytes = 0;
+    let closedCount = 0;
+    let spawningComplete = false;
+    let failure: WindowsNativeStageError | undefined;
+    let settled = false;
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const settle = (): void => {
+      if (settled || !spawningComplete || closedCount !== brokers.length) return;
+      settled = true;
+      clearTimeout(deadlineTimer);
+      if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
+      if (failure) reject(failure);
+      else resolve(brokers.map((broker) => Buffer.concat(broker.stdout)));
+    };
+    const terminateLiveBrokers = (): void => {
+      for (const broker of brokers) {
+        if (broker.closed || broker.child.exitCode !== null || broker.child.signalCode !== null) continue;
+        try { broker.child.kill("SIGKILL"); } catch { /* close/error decides the fixed result. */ }
+      }
+    };
+    const fail = (stage: WindowsNativeStageCode): void => {
+      if (failure || settled) return;
+      failure = stageError(stage);
+      clearTimeout(deadlineTimer);
+      terminateLiveBrokers();
+      cleanupTimer = setTimeout(() => {
+        if (settled) return;
+        terminateLiveBrokers();
+        settled = true;
+        reject(stageError("spawn:cleanup"));
+      }, cleanupTimeoutMs);
+      settle();
+    };
+    const accept = (broker: InspectionBrokerState, stream: "stdout" | "stderr", chunk: unknown): void => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      aggregateBytes += bytes.byteLength;
+      if (aggregateBytes > maxOutputBytes) {
+        fail("parent:utf8");
+        return;
+      }
+      if (stream === "stderr") {
+        if (bytes.byteLength > 0) fail("spawn:stderr");
+        return;
+      }
+      broker.stdout.push(bytes);
+    };
+
+    const deadlineTimer = setTimeout(() => fail("spawn:timeout"), deadlineMs);
+    try {
+      for (let index = 0; index < entryCount; index += 1) {
+        const child = startBroker(index);
+        const broker: InspectionBrokerState = { child, stdout: [], closed: false };
+        brokers.push(broker);
+        if (!child.stdout || !child.stderr) {
+          fail("spawn:create");
+          break;
+        }
+        child.stdout.on("data", (chunk) => accept(broker, "stdout", chunk));
+        child.stderr.on("data", (chunk) => accept(broker, "stderr", chunk));
+        child.once("error", (error) => fail(
+          (error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? "spawn:timeout" : "spawn:error",
+        ));
+        child.once("close", (status, signal) => {
+          if (broker.closed) return;
+          broker.closed = true;
+          closedCount += 1;
+          if (!failure) {
+            if (signal !== null) fail("spawn:status");
+            else if (status !== 0) fail(windowsBrokerFailureStage(status));
+          }
+          settle();
+        });
+      }
+    } catch (error) {
+      fail(error instanceof WindowsNativeStageError ? error.stage : "spawn:create");
+    } finally {
+      spawningComplete = true;
+      if (failure) terminateLiveBrokers();
+      settle();
+    }
+  });
+}
+
+function revalidateWindowsTargets(targets: readonly WindowsAuthorityTarget[]): void {
+  try {
+    for (const target of targets) {
+      const held = fstatSync(target.pinnedFd, { bigint: true });
+      if (held.dev.toString(10) !== target.expectedIdentity.device
+        || held.ino.toString(10) !== target.expectedIdentity.file) throw new Error();
+    }
+  } catch { throw stageError("parent:post-bind"); }
+}
+
+export async function runWindowsReadOnlyInspection(
   targets: readonly WindowsAuthorityTarget[],
-): readonly WindowsAuthorityInspection[] {
+): Promise<readonly WindowsAuthorityInspection[]> {
   if (targets.length < 1 || targets.length > WINDOWS_INSPECTION_MAX_ENTRIES) {
     throw stageError("parent:entry-count");
   }
   const executable = resolveWindowsPowerShell();
-  const inspections: WindowsAuthorityInspection[] = [];
-  let totalOutputBytes = 0;
-  const inspectionStarted = performance.now();
   try {
+    revalidateWindowsPowerShell(executable);
+    revalidateWindowsTargets(targets);
+    const outputs = await runWindowsInspectionBrokerBatch({
+      entryCount: targets.length,
+      startBroker: (index) => spawnInspectionBroker(executable, targets[index].pinnedFd),
+      deadlineMs: WINDOWS_INSPECTION_TIMEOUT_MS,
+      cleanupTimeoutMs: WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS,
+      maxOutputBytes: WINDOWS_INSPECTION_MAX_BYTES,
+    });
+    const inspections: WindowsAuthorityInspection[] = [];
     for (let index = 0; index < targets.length; index += 1) {
       const target = targets[index];
-      const timeout = windowsInspectionTimeoutForElapsed(performance.now() - inspectionStarted);
-      const result = spawnPowerShell(executable, inspectionSource(target, index), target.pinnedFd, timeout);
-      assertSpawnSuccess(result);
-      totalOutputBytes += typeof result.stdout === "string"
-        ? Buffer.byteLength(result.stdout, "utf8")
-        : (result.stdout?.byteLength ?? 0);
-      if (totalOutputBytes > WINDOWS_INSPECTION_MAX_BYTES) throw stageError("parent:utf8");
-      const entries = parseWindowsInspectionDocument(result.stdout ?? Buffer.alloc(0));
-      if (entries.length !== 1) throw stageError("parent:entry-count");
-      const entry = entries[0];
+      const raw = parseWindowsBrokerDocument(outputs[index]);
+      const entry: WindowsAuthorityInspection = {
+        index,
+        kind: target.kind === "env" ? "file" : "directory",
+        authorityKind: target.kind,
+        ...raw,
+      };
       try {
         if (
           entry.index !== index
@@ -582,16 +738,15 @@ export function runWindowsReadOnlyInspection(
           || BigInt(entry.fileId) !== BigInt(entry.verifiedFileId)
         ) throw new Error();
       } catch { throw stageError("parent:descriptor-bind"); }
-      const after = fstatSync(target.pinnedFd, { bigint: true });
-      if (after.dev.toString(10) !== target.expectedIdentity.device || after.ino.toString(10) !== target.expectedIdentity.file) {
-        throw stageError("parent:post-bind");
-      }
       inspections.push(entry);
     }
-    revalidateWindowsPowerShell(executable);
     return inspections;
   } finally {
-    closeSync(executable.fd);
+    try {
+      revalidateWindowsTargets(targets);
+    } finally {
+      try { revalidateWindowsPowerShell(executable); } finally { closeSync(executable.fd); }
+    }
   }
 }
 
@@ -610,7 +765,7 @@ export function runWindowsNativeTimingProbe(targetFd: number): WindowsNativeTimi
   const executable = resolveWindowsPowerShell();
   try {
     const started = performance.now();
-    const result = spawnPowerShell(
+    const result = spawnPowerShellSync(
       executable,
       WINDOWS_NATIVE_TIMING_PROBE_SOURCE,
       targetFd,

@@ -384,7 +384,8 @@ describe('packaged Connect fixed failure milestone attribution', () => {
     });
     assert.equal(diagnosticReads, 1);
     assert.equal(result.category, 'timeout-before-ready');
-    assert.equal(result.lastMilestone, 'connect-proof');
+    assert.deepEqual(result.records, [{ event: 'desktop.renderer.connect_discovery.proof' }]);
+    assert.equal(Object.hasOwn(result, 'lastMilestone'), false);
   });
 
   test('does not read evidence after success or unproven tree termination', async () => {
@@ -407,7 +408,7 @@ describe('packaged Connect fixed failure milestone attribution', () => {
     });
     assert.equal(failedTermination.result.category, 'timeout-before-ready');
     assert.equal(diagnosticReads, 0);
-    assert.equal(failedTermination.result.lastMilestone, undefined);
+    assert.equal(Object.hasOwn(failedTermination.result, 'lastMilestone'), false);
     assert.doesNotMatch(JSON.stringify(failedTermination.result), /private-user|SENTINEL/u);
   });
 });

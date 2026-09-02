@@ -5,10 +5,9 @@ import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 import {
   parseWindowsNativeProbeOutput,
-  WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS,
+  WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS,
   WINDOWS_INSPECTION_TIMEOUT_MS,
   WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS,
-  windowsInspectionTimeoutForElapsed,
   WindowsNativeStageError,
   windowsNativeTimingBucket,
 } from '../packages/cli/src/connectWindowsAuthority.js';
@@ -321,7 +320,7 @@ test('the ordinary-user Windows proof retains native security paths and bounds r
   }
   assert.match(
     processMock,
-    /if \(mode === "valid-authority"\) return result\(0, authorityDocument\(args, options, mode\)\);/,
+    /else if \(mode !== "nonzero"\) child\.stdout\.write\(authorityDocument\(args, options, mode, invocation\)\);/,
   );
   assert.match(harness, /\{ name: "path-aba", mode: "path-aba", reason: "INVALID_ROOT" \}/);
   assert.match(harness, /\{ name: "authority-missing-system-root", systemRootMode: "missing", nativeStage: "resolver:env" \}/);
@@ -360,7 +359,7 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
   ]);
   assert.deepEqual([...definitions.nativeStageAllowlist], [
     'resolver:env', 'resolver:canonical', 'resolver:global-open', 'resolver:global-id',
-    'spawn:create', 'spawn:error', 'spawn:timeout', 'spawn:cumulative-timeout', 'spawn:status', 'spawn:stderr',
+    'spawn:create', 'spawn:error', 'spawn:timeout', 'spawn:status', 'spawn:stderr', 'spawn:cleanup',
     'probe:entry', 'probe:baseline', 'probe:reflection-emit', 'probe:win32', 'probe:standard-handle', 'probe:output',
     'broker:ps-version', 'broker:job', 'broker:fd', 'broker:fd-duplicate', 'broker:index-info-initial',
     'broker:security-info', 'broker:acl', 'broker:json', 'broker:current-user-sid',
@@ -463,6 +462,10 @@ test('the staged hosted probe and production inspector both use the inherited st
   assert.match(productionSource, /GetStdHandle\(-10\)/);
   assert.doesNotMatch(productionSource, /_get_osfhandle|AssignProcessToJobObject|CreateJobObject|Start-Process|CreateProcess/);
   assert.match(windowsAuthority, /stdio: \[stdin, "pipe", "pipe"\]/);
+  assert.match(windowsAuthority, /stdio: \[pinnedFd, "pipe", "pipe"\]/);
+  assert.doesNotMatch(productionSource, /__PROPR_|\bindex=|\bkind=|authorityKind=/);
+  assert.match(windowsAuthority, /powerShellArguments\(WINDOWS_INSPECTION_SOURCE\)/);
+  assert.doesNotMatch(windowsAuthority, /inspectionSource\(target|\.replace\("__PROPR_/);
   assert.match(windowsAuthority, /WINDOWS_INSPECTOR_CREATES_CHILD_PROCESSES = false/);
   assert.match(windowsAuthority, /WINDOWS_INSPECTOR_WRITES_FILESYSTEM = false/);
 });
@@ -510,47 +513,35 @@ test('the staged probe accepts only ordered milestone tokens and coarse timing b
   assert.match(windowsAuthority, /GetFileInformationByHandle/);
 });
 
-test('the diagnostic allowance precedes a cumulatively bounded production standard-handle proof', () => {
+test('the diagnostic allowance precedes one bounded concurrent standard-handle proof', () => {
   assert.equal(WINDOWS_NATIVE_TIMING_PROBE_TIMEOUT_MS, 60_000);
   assert.equal(WINDOWS_INSPECTION_TIMEOUT_MS, 60_000);
-  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 240_000);
+  assert.equal(WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS, 5_000);
   assert.match(
     windowsAuthority,
-    /export const WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS = 240_000;/,
+    /export const WINDOWS_INSPECTION_TIMEOUT_MS = 60_000;/,
   );
   assert.match(harness, /const WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT = 2;/);
   assert.match(harness, /const WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS = 15_000;/);
   assert.match(
     harness,
-    /const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = \(\s*WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT\s*\* nativeAuthority\.WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS\s*\) \+ WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;/,
+    /const WINDOWS_PRODUCT_SCENARIO_TIMEOUT_MS = \(\s*WINDOWS_PRODUCT_AUTHORITY_PHASE_COUNT \* nativeAuthority\.WINDOWS_INSPECTION_TIMEOUT_MS\s*\) \+ WINDOWS_PRODUCT_SCENARIO_OVERHEAD_MS;/,
   );
   const windowsProductScenarioTimeoutMs = (
-    2 * WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS
+    2 * WINDOWS_INSPECTION_TIMEOUT_MS
   ) + 15_000;
-  assert.equal(windowsProductScenarioTimeoutMs, 495_000);
+  assert.equal(windowsProductScenarioTimeoutMs, 135_000);
   assert.equal(Number.isFinite(windowsProductScenarioTimeoutMs), true);
   assert.equal(Number.isSafeInteger(windowsProductScenarioTimeoutMs), true);
-  assert.equal(WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS, 4 * WINDOWS_INSPECTION_TIMEOUT_MS);
-  assert.notEqual(
-    WINDOWS_INSPECTION_CUMULATIVE_TIMEOUT_MS / WINDOWS_INSPECTION_TIMEOUT_MS,
-    32,
+  assert.ok(WINDOWS_INSPECTION_CLEANUP_TIMEOUT_MS < WINDOWS_INSPECTION_TIMEOUT_MS);
+  assert.match(windowsAuthority, /startBroker: \(index\) => spawnInspectionBroker\(executable, targets\[index\]\.pinnedFd\)/u);
+  assert.match(windowsAuthority, /const deadlineTimer = setTimeout\(\(\) => fail\("spawn:timeout"\), deadlineMs\)/u);
+  assert.match(windowsAuthority, /deadlineMs: WINDOWS_INSPECTION_TIMEOUT_MS/u);
+  const productionInspection = windowsAuthority.slice(
+    windowsAuthority.indexOf('export async function runWindowsReadOnlyInspection'),
+    windowsAuthority.indexOf('function probeFailureStage'),
   );
-  assert.equal(windowsInspectionTimeoutForElapsed(0), 60_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(60_000), 60_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(120_000), 60_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(180_000), 60_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(180_001), 59_999);
-  assert.equal(windowsInspectionTimeoutForElapsed(210_000), 30_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(225_000), 15_000);
-  assert.equal(windowsInspectionTimeoutForElapsed(239_999.9), 1);
-  assert.throws(
-    () => windowsInspectionTimeoutForElapsed(240_000),
-    (error) => error instanceof WindowsNativeStageError && error.stage === 'spawn:cumulative-timeout',
-  );
-  assert.throws(
-    () => windowsInspectionTimeoutForElapsed(240_001),
-    (error) => error instanceof WindowsNativeStageError && error.stage === 'spawn:cumulative-timeout',
-  );
+  assert.doesNotMatch(productionInspection, /spawnSync|windowsInspectionTimeoutForElapsed/u);
   const probeCall = harness.indexOf('runWindowsNativeTimingProbe(probeFd)');
   const productionMatrix = harness.indexOf('for (const scenario of cases)', probeCall);
   const productionSpawn = harness.indexOf('const result = spawnSync(process.execPath', productionMatrix);
@@ -570,7 +561,7 @@ test('the hostile path ABA remains replaced through validation and is rejected a
   assert.match(processMock, /process\.once\("exit", \(\) => \{/);
   const replacement = processMock.indexOf('writeFileSync(envPath');
   const exitHook = processMock.indexOf('process.once("exit"', replacement);
-  const spawn = processMock.indexOf('return originalSpawnSync(command, args, options);', replacement);
+  const spawn = processMock.indexOf('return originalSpawn(command, args, options);', replacement);
   const restore = processMock.indexOf('renameSync(detached, envPath);', replacement);
   assert.ok(
     replacement < exitHook && exitHook < restore && restore < spawn,

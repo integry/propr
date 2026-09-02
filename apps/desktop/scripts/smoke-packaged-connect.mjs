@@ -275,12 +275,13 @@ try {
   if (outcome.ok && cleanup.ok) {
     process.stdout.write(`Packaged Connect discovery passed for ${process.platform}-${process.arch}: ${authorityMechanism()}.\n`);
   } else {
+    // Keep this exact #2056 producer schema: event/category/capture/records
+    // with optional secondary, and no top-level milestone extension.
     process.stderr.write(`${JSON.stringify({
       event: 'packaged_connect.smoke_failed',
       category: outcome.category,
       capture: outcome.capture,
       records: outcome.records,
-      ...(outcome.lastMilestone ? { lastMilestone: outcome.lastMilestone } : {}),
       ...(outcome.secondary?.length ? { secondary: outcome.secondary } : {}),
     })}\n`);
     process.exitCode = 1;

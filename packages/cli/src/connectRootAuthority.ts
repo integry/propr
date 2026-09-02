@@ -385,7 +385,7 @@ async function nativeWindowsAcls(
   entries: readonly WindowsAuthorityTarget[],
 ): Promise<readonly WindowsAuthorityInspection[]> {
   try {
-    return runWindowsReadOnlyInspection(entries);
+    return await runWindowsReadOnlyInspection(entries);
   } catch (error) {
     if (error instanceof WindowsNativeStageError) reportWindowsNativeStage(error.stage);
     throw new WindowsAuthorityInspectionError();

@@ -82,6 +82,10 @@ jobs:
       - name: Package the target-native desktop app
         run: npm run desktop:package
 
+      - name: Run native concurrent Windows authority broker regressions
+        if: matrix.platform == 'win32'
+        run: node apps/desktop/scripts/windows-authority-batch-regression.mjs
+
       - name: Run packaged Linux main-to-renderer discovery
         if: matrix.platform == 'linux'
         shell: bash

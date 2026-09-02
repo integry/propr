@@ -28,6 +28,8 @@ const diagnosticEvents = new Set([
   'desktop.main_process.uncaught_exception',
   CONNECT_READY_EVENT,
   'desktop.renderer.connect_discovery.phase',
+  // #2056 must enumerate this event in its nested diagnostic-record allowlist.
+  'desktop.renderer.connect_discovery.proof',
   'desktop.renderer.connect_discovery.status',
   'desktop.renderer.gone',
   'desktop.renderer.ready',
@@ -71,6 +73,9 @@ const failureMilestones = new Map([
   [CONNECT_READY_EVENT, 'ready-publication'],
 ]);
 const allowedFailureMilestones = new Set(failureMilestones.values());
+const failureMilestoneEvents = new Map(
+  [...failureMilestones].map(([event, milestone]) => [milestone, event]),
+);
 
 export const boundedChildDiagnostics = records => records.flatMap(record => {
   if (!record || typeof record !== 'object' || !diagnosticEvents.has(record.event)) return [];
@@ -462,6 +467,9 @@ export const runPackagedConnectLifecycle = async ({
       });
       close = await waitForClose(child, streamDrainTimeoutMs);
       streamsDrained = await drainChildStreams(child, streamDrainTimeoutMs);
+      // These two categories are intentionally fixed protocol values. The
+      // #2056 PowerShell parser must enumerate child-remained-alive and
+      // ready-duplicate in its lifecycle allowlist; they are not a broad union.
       primary = terminationSucceeded && close.closed && streamsDrained
         ? 'child-remained-alive'
         : 'tree-termination';
@@ -500,7 +508,6 @@ export const runPackagedConnectLifecycle = async ({
     child.stderr?.destroy();
     child.unref?.();
   }
-  let lastMilestone;
   const failureDiagnosticsAuthorized = primary !== 'ready-clean-exit'
     && close?.closed
     && streamsDrained
@@ -512,7 +519,12 @@ export const runPackagedConnectLifecycle = async ({
         streamDrainTimeoutMs,
       );
       const candidate = boundedMilestone.timedOut ? undefined : boundedMilestone.value;
-      if (allowedFailureMilestones.has(candidate)) lastMilestone = candidate;
+      if (allowedFailureMilestones.has(candidate)) {
+        const event = failureMilestoneEvents.get(candidate);
+        // Evidence is appended only to the bounded diagnostic input. It never
+        // increments readyRecordCount and can never authorize READY.
+        if (event && records.length < RECORD_MAX_COUNT) records.push({ event });
+      }
     } catch { /* Diagnostic attribution cannot replace the primary lifecycle result. */ }
   }
   return {
@@ -520,7 +532,6 @@ export const runPackagedConnectLifecycle = async ({
     category: primary,
     capture: captureResult.capture,
     records: boundedChildDiagnostics(records),
-    ...(lastMilestone ? { lastMilestone } : {}),
     ...(secondary.length ? { secondary } : {}),
   };
 };
