@@ -6,6 +6,7 @@ param(
   [object]$TerminationTimeoutMilliseconds = 30 * 1000,
   [object]$FixtureRoot,
   [object]$FixtureEarlyInitializationChild,
+  [switch]$FixtureResultEmissionFailure,
   [object]$StartupFailureClass,
   [object]$ProtocolFixture
 )
@@ -203,6 +204,9 @@ try {
   }
   if ([bool]$FixtureEarlyInitializationChild) {
     $bodyParameters.FixtureEarlyInitializationChild = $true
+  }
+  if ([bool]$FixtureResultEmissionFailure) {
+    $bodyParameters.FixtureResultEmissionFailure = $true
   }
   $LASTEXITCODE = $null
   & $bodyPath @bodyParameters

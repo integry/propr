@@ -225,6 +225,8 @@ public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
     public int StandardErrorCount { get; private set; }
     public string ObservedLineCategory { get; private set; }
     public int ObservedLineNumber { get; private set; }
+    public int StartupRecordLineNumber { get; private set; }
+    public int TerminalRecordLineNumber { get; private set; }
     public string StartupClass { get; private set; }
     public int StartupProcessExit { get; private set; }
     public int StartupLine { get; private set; }
@@ -292,6 +294,7 @@ public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
             startupSeen = true;
             ObservedLineCategory = "STARTUP";
             ObservedLineNumber = LineCount;
+            StartupRecordLineNumber = LineCount;
             if (ready.Success) StartupClass = "READY";
             else
             {
@@ -316,6 +319,7 @@ public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
             terminalSeen = true;
             ObservedLineCategory = "TERMINAL";
             ObservedLineNumber = LineCount;
+            TerminalRecordLineNumber = LineCount;
             Result = terminal.Groups[1].Value;
             ControllerStatus = terminal.Groups[2].Value;
             ReportedExitCode = Int32.Parse(terminal.Groups[3].Value);
@@ -1143,6 +1147,7 @@ function Invoke-WorkflowCleanupController(
   [bool]$SignalCancellationAfterStartup = $false,
   [bool]$BeginTimeoutAfterStartup = $false,
   [bool]$InjectTreeTerminationFailure = $false,
+  [bool]$FixtureResultEmissionFailure = $false,
   [string]$ProtocolFixture = ''
 ) {
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -1166,6 +1171,9 @@ function Invoke-WorkflowCleanupController(
   }
   if ($FixtureEarlyInitializationChild) {
     $startInfo.ArgumentList.Add('-FixtureEarlyInitializationChild')
+  }
+  if ($FixtureResultEmissionFailure) {
+    $startInfo.ArgumentList.Add('-FixtureResultEmissionFailure')
   }
   if ($StartupFailureClass) {
     $startInfo.ArgumentList.Add('-StartupFailureClass')
@@ -1309,6 +1317,11 @@ function Invoke-WorkflowCleanupController(
       StartupLine = if ($capture.StartupClass -ceq 'READY') { '' } else {
         [string]$capture.StartupLine
       }
+      ProtocolLineCount = $capture.LineCount
+      ProtocolStandardErrorCount = $capture.StandardErrorCount
+      ProtocolStartupClass = $capture.StartupClass
+      ProtocolStartupLineNumber = $capture.StartupRecordLineNumber
+      ProtocolTerminalLineNumber = $capture.TerminalRecordLineNumber
     }
   } catch {
     if ($_.Exception.Message -like 'PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:*') {
@@ -1596,6 +1609,25 @@ function Test-WorkflowCleanupProtocolStateMachine {
         $result.ControllerStatus -ceq $exactPair.Status) `
       "$($exactPair.Fixture) did not preserve its exact status/exit pair"
   }
+
+  $resultEmissionFailure = Invoke-WorkflowCleanupController `
+    -InvocationIdentifier 'PROTOCOL_REGRESSION' `
+    -ManifestPath $dummyInstaller `
+    -RunId ([Guid]::NewGuid().ToString('N')) `
+    -FixtureRoot $testRoot `
+    -InvocationTimeoutMilliseconds 5000 `
+    -FixtureResultEmissionFailure $true
+  Assert-True ($resultEmissionFailure.ExitCode -eq 125 -and
+      $resultEmissionFailure.ReportedExitCode -eq 125 -and
+      $resultEmissionFailure.Result -ceq 'FAILED' -and
+      $resultEmissionFailure.ControllerStatus -ceq
+        'CONTROLLER_RESULT_EMISSION_EMIT_UNCLASSIFIED' -and
+      $resultEmissionFailure.ProtocolLineCount -eq 2 -and
+      $resultEmissionFailure.ProtocolStandardErrorCount -eq 0 -and
+      $resultEmissionFailure.ProtocolStartupClass -ceq 'READY' -and
+      $resultEmissionFailure.ProtocolStartupLineNumber -eq 1 -and
+      $resultEmissionFailure.ProtocolTerminalLineNumber -eq 2) `
+    'post-startup result-emission failure did not preserve the exact fixed protocol'
 
   foreach ($cancellationAfterStartup in @($false, $true)) {
     $cancel = [Threading.EventWaitHandle]::new(
@@ -2203,7 +2235,14 @@ function Test-PreExistingCleanupOwnership {
     $replacementRetryDiagnostic =
       Get-SanitizedWorkflowCleanupResultDiagnostic $replacementRetry
     Assert-True ($replacementRetry.ExitCode -eq 0 -and
-        $replacementRetry.Result -ceq 'COMPLETE') `
+        $replacementRetry.ReportedExitCode -eq 0 -and
+        $replacementRetry.Result -ceq 'COMPLETE' -and
+        $replacementRetry.ControllerStatus -ceq 'EMPTY_OR_CLEANED' -and
+        $replacementRetry.ProtocolLineCount -eq 2 -and
+        $replacementRetry.ProtocolStandardErrorCount -eq 0 -and
+        $replacementRetry.ProtocolStartupClass -ceq 'READY' -and
+        $replacementRetry.ProtocolStartupLineNumber -eq 1 -and
+        $replacementRetry.ProtocolTerminalLineNumber -eq 2) `
       "standalone cleanup did not retry to exact success after authority restoration:$replacementRetryDiagnostic"
     Assert-OwnedResourcesGone $replacementOwned
     Assert-True (!(Test-Path -LiteralPath $replacementOwned.ManifestPath)) `

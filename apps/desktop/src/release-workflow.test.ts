@@ -908,7 +908,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppWorkflowCleanup, /Set-CaughtControllerFailure/);
     assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /Console\]::SetError|\btrap\b|controllerBody/);
     assert.match(installedWindowsAppWorkflowCleanup, /\[Console\]::Out\.WriteLine/);
-    assert.equal(installedWindowsAppWorkflowCleanup.match(/\[Console\]::Out\.WriteLine/g)?.length, 2);
+    assert.equal(installedWindowsAppWorkflowCleanup.match(/\[Console\]::Out\.WriteLine/g)?.length, 3);
     assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /Write-Host/);
     assert.match(
       installedWindowsAppWorkflowCleanup,
@@ -933,7 +933,15 @@ describe('desktop trusted release workflow', () => {
       /WORKFLOW_CLEANUP:STARTUP:FAILED:[\s\S]*WORKFLOW_CLEANUP:TERMINAL:/,
     );
     assert.match(installedWindowsAppWorkflowCleanup, /WORKFLOW_CLEANUP:STARTUP:READY/);
-    assert.match(installedWindowsAppWorkflowCleanup, /WORKFLOW_CLEANUP:TERMINAL:RESULT:\{0\}/);
+    assert.match(installedWindowsAppWorkflowCleanup, /Get-FixedResultRecord/);
+    assert.match(
+      installedWindowsAppWorkflowCleanup,
+      /CONTROLLER_RESULT_EMISSION_EMIT_UNCLASSIFIED[\s\S]*EXIT_CODE:125/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanup,
+      /\$ProtocolState\.TerminalRecordWritten = \$true\n\s+\[Console\]::Out\.Flush\(\)/,
+    );
     assert.equal(
       installedWindowsAppWorkflowCleanupWrapper.match(/\[Console\]::Out\.WriteLine/g)?.length,
       2,
@@ -949,7 +957,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppWorkflowCleanup,
-      /if \(\$fixedResult -ceq 'COMPLETE' -and \$cleanupTreeZeroVerified -and/,
+      /if \(\$fixedResult -ceq 'COMPLETE'\)[\s\S]*!\$cleanupTreeZeroVerified -or !\$validatedManifestPath[\s\S]*AUTHORITY_FINALIZATION_FAILURE/,
     );
     assert.match(
       installedWindowsAppSupervisor,
@@ -1027,6 +1035,10 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /MISMATCHED_MANIFEST_EXIT_125/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /MISMATCHED_CHILD_STDOUT_EXIT_21/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /EXACT_MANIFEST_20[\s\S]*EXACT_FINALIZATION_FAILURE_125/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /FixtureResultEmissionFailure[\s\S]*CONTROLLER_RESULT_EMISSION_EMIT_UNCLASSIFIED/,
+    );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /TREE_TERMINATION:FAILED/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
@@ -1114,6 +1126,14 @@ describe('desktop trusted release workflow', () => {
       /standalone cleanup did not retry to exact success after authority restoration:\$replacementRetryDiagnostic/,
     );
     assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /\$replacementRetry\.ProtocolLineCount -eq 2[\s\S]*\$replacementRetry\.ProtocolStandardErrorCount -eq 0[\s\S]*\$replacementRetry\.ProtocolStartupLineNumber -eq 1[\s\S]*\$replacementRetry\.ProtocolTerminalLineNumber -eq 2/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_WINDOWS_SUPERVISOR_TESTS:\$\{Architecture\}:PASSED/,
+    );
+    assert.match(
       installedWindowsAppSupervisor,
       /FIXTURE_FINALIZATION:' \+\s*'WORKER_TREE_TERMINATION:\{0\}'\) -f/,
     );
@@ -1198,7 +1218,7 @@ describe('desktop trusted release workflow', () => {
     assert.ok(
       fixedResultWrite > installedWindowsAppWorkflowCleanup.indexOf('$resource.Dispose()')
         && fixedResultWrite > installedWindowsAppWorkflowCleanup.indexOf(
-          'if ($fixedResult -ceq \'COMPLETE\' -and $validatedManifestPath)',
+          'if ($fixedResult -ceq \'COMPLETE\')',
         ),
       'fixed controller evidence must be emitted after bounded finalization',
     );
