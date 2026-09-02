@@ -390,7 +390,8 @@ const launch = async mode => {
       throw new Error(`Packaged ${mode} smoke missed exact current-user main-boundary evidence`);
     }
     const currentUserBoundary = currentUserBoundaryRecords[0];
-    if (currentUserBoundary.schemaVersion !== 1 || currentUserBoundary.rendererValidations !== 3
+    if (currentUserBoundary.schemaVersion !== 2 || currentUserBoundary.rendererValidations !== 3
+      || JSON.stringify(currentUserBoundary.rendererScopeGenerations) !== '[1,2,3]'
       || currentUserBoundary.exactGet !== true || currentUserBoundary.scopeHeaderCount !== 1
       || currentUserBoundary.activeBindingPresent !== true
       || currentUserBoundary.profileGenerationCurrent !== true

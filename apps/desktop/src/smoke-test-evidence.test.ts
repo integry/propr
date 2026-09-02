@@ -126,10 +126,13 @@ describe('packaged smoke evidence', () => {
       );
 
       const currentUserEvidence = {
-        schemaVersion: 1 as const,
+        schemaVersion: 2 as const,
         correlation: 'current-scope-user-validation' as const,
         requestObserved: true as const,
         method: 'get' as const,
+        rendererScopeGeneration: 1,
+        scopeGenerationQueryCount: 1 as const,
+        scopeGenerationQueryValid: true,
         scopeHeaderCount: 1 as const,
         activeBindingPresent: true,
         activeScopeGeneration: 0,
@@ -145,11 +148,12 @@ describe('packaged smoke evidence', () => {
       };
       assert.deepEqual(validatePackagedCurrentUserBoundaryEvidence([
         currentUserEvidence,
-        { ...currentUserEvidence, activeScopeGeneration: 1 },
-        { ...currentUserEvidence, activeScopeGeneration: 2 },
+        { ...currentUserEvidence, rendererScopeGeneration: 2, activeScopeGeneration: 1 },
+        { ...currentUserEvidence, rendererScopeGeneration: 3, activeScopeGeneration: 2 },
       ], false), {
-        schemaVersion: 1,
+        schemaVersion: 2,
         rendererValidations: 3,
+        rendererScopeGenerations: [1, 2, 3],
         exactGet: true,
         scopeHeaderCount: 1,
         activeBindingPresent: true,
@@ -165,8 +169,8 @@ describe('packaged smoke evidence', () => {
       assert.throws(
         () => validatePackagedCurrentUserBoundaryEvidence([
           currentUserEvidence,
-          currentUserEvidence,
-          { ...currentUserEvidence, rendererBearerPresent: true },
+          { ...currentUserEvidence, rendererScopeGeneration: 2 },
+          { ...currentUserEvidence, rendererScopeGeneration: 3, rendererBearerPresent: true },
         ], false),
         /current-user main-boundary evidence failed/,
       );

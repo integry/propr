@@ -297,6 +297,12 @@ export const getCurrentUser = async (options: CurrentUserValidationOptions = {})
   const currentUserUrl = activeScopePresent
     ? `${API_BASE_URL}/api/auth/user?${CURRENT_USER_SCOPE_GENERATION_QUERY}=${scopeGeneration}`
     : `${API_BASE_URL}/api/auth/user`;
+  if (activeScopePresent) {
+    reportPackagedAcceptanceCurrentUser({
+      phase: 'request-issued', scopeGeneration, activeScopePresent,
+      responseStatus: 0, classification: 'pending', schemaAccepted: false,
+    });
+  }
   const response = await apiFetch(currentUserUrl, activeScopePresent
     ? { credentials: 'include' }
     : { credentials: 'include', cache: 'no-store' });

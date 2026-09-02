@@ -79,14 +79,13 @@ export const useCurrentUserBootstrap = ({
     }
 
     setRefreshingScope({ configurationKey, scopeGeneration });
-    if (activeScopePresent) {
-      reportPackagedAcceptanceCurrentUser({
-        phase: 'request-issued', scopeGeneration, activeScopePresent,
-        responseStatus: 0, classification: 'pending', schemaAccepted: false,
-      });
-    }
-    const request = Promise.resolve()
-      .then(() => getCurrentUser({ scopeGeneration, activeScopePresent }))
+    // Start the production request while the configuration key, generation,
+    // and active desktop scope above are still one synchronous snapshot. The
+    // request boundary itself emits request-issued evidence; reporting it here
+    // before a deferred call could claim a renderer request that never entered
+    // apiFetch.
+    const currentUserRequest = getCurrentUser({ scopeGeneration, activeScopePresent });
+    const request = currentUserRequest
       .then(user => {
         if (currentConfigurationKeyRef.current !== configurationKey
           || scopeGenerationRef.current.generation !== scopeGeneration) {

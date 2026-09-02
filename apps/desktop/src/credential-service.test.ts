@@ -669,15 +669,18 @@ describe('main-process desktop credential service', () => {
       reportCurrentUserValidation: record => evidence.push(record),
     });
 
-    const currentUserUrl = `${profile.apiBaseUrl}/api/auth/user`;
+    const currentUserUrl = `${profile.apiBaseUrl}/api/auth/user?proprDesktopScopeGeneration=7`;
     assert.deepEqual(service.prepareRequest(currentUserUrl, {
       ...transportHeaders('N'.repeat(22)),
     }, { method: 'GET', resourceType: 'xhr' }), { cancel: true });
     assert.deepEqual(evidence.at(-1), {
-      schemaVersion: 1,
+      schemaVersion: 2,
       correlation: 'current-scope-user-validation',
       requestObserved: true,
       method: 'get',
+      rendererScopeGeneration: 7,
+      scopeGenerationQueryCount: 1,
+      scopeGenerationQueryValid: true,
       scopeHeaderCount: 1,
       activeBindingPresent: false,
       activeScopeGeneration: 0,
@@ -733,10 +736,13 @@ describe('main-process desktop credential service', () => {
       Authorization: `Bearer ${token('A')}`,
     });
     assert.deepEqual(evidence.at(-1), {
-      schemaVersion: 1,
+      schemaVersion: 2,
       correlation: 'current-scope-user-validation',
       requestObserved: true,
       method: 'get',
+      rendererScopeGeneration: 7,
+      scopeGenerationQueryCount: 1,
+      scopeGenerationQueryValid: true,
       scopeHeaderCount: 1,
       activeBindingPresent: true,
       activeScopeGeneration: 0,

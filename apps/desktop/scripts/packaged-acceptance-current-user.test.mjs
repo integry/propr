@@ -20,6 +20,9 @@ const rendererRecords = [
 ];
 const acceptedMain = {
   journey,
+  rendererScopeGeneration: 1,
+  scopeGenerationQueryCount: 1,
+  scopeGenerationQueryValid: true,
   scopeHeaderCount: 1,
   activeBindingPresent: true,
   activeScopeGeneration: 0,
@@ -36,6 +39,7 @@ const acceptedMain = {
 const fixtureRecords = [{
   journey,
   source: 'renderer',
+  scopeGeneration: 1,
   requestArrived: true,
   authorizationPresent: true,
   authorizationMatchesActivatedBearer: true,
@@ -137,6 +141,19 @@ describe('packaged current-user acceptance correlation', () => {
 
   it('accepts the current scope with main-only bearer custody', () => {
     assert.equal(classify(acceptedMain), 'none');
+  });
+
+  it('rejects a main or upstream record from another renderer generation', () => {
+    assert.equal(classify({
+      ...acceptedMain, rendererScopeGeneration: 2,
+    }), 'current-user-main-generation-correlation-invalid');
+    assert.equal(currentUserValidationFailureCategory({
+      journey,
+      evidenceInvalid: false,
+      rendererRecords,
+      mainRecords: [acceptedMain],
+      fixtureRecords: [{ ...fixtureRecords[0], scopeGeneration: 2 }],
+    }), 'current-user-upstream-generation-correlation-invalid');
   });
 
   it('correlates main evidence by journey and upstream evidence by renderer request origin', () => {

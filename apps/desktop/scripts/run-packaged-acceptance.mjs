@@ -178,6 +178,9 @@ const captureMainCurrentUserEvidence = (line, journey) => {
       correlation: record.correlation,
       requestObserved: record.requestObserved,
       method: record.method,
+      rendererScopeGeneration: record.rendererScopeGeneration,
+      scopeGenerationQueryCount: record.scopeGenerationQueryCount,
+      scopeGenerationQueryValid: record.scopeGenerationQueryValid,
       scopeHeaderCount: record.scopeHeaderCount,
       activeBindingPresent: record.activeBindingPresent,
       activeScopeGeneration: record.activeScopeGeneration,
@@ -192,8 +195,13 @@ const captureMainCurrentUserEvidence = (line, journey) => {
       rejectionCategory: record.rejectionCategory,
     };
     const valid = record.event === MAIN_CURRENT_USER_EVENT
-      && evidence.schemaVersion === 1 && evidence.correlation === 'current-scope-user-validation'
+      && evidence.schemaVersion === 2 && evidence.correlation === 'current-scope-user-validation'
       && evidence.requestObserved === true && evidence.method === 'get'
+      && (evidence.rendererScopeGeneration === null
+        || (Number.isSafeInteger(evidence.rendererScopeGeneration) && evidence.rendererScopeGeneration >= 0))
+      && Number.isSafeInteger(evidence.scopeGenerationQueryCount)
+      && evidence.scopeGenerationQueryCount >= 0 && evidence.scopeGenerationQueryCount <= 2
+      && typeof evidence.scopeGenerationQueryValid === 'boolean'
       && Number.isSafeInteger(evidence.scopeHeaderCount) && evidence.scopeHeaderCount >= 0 && evidence.scopeHeaderCount <= 2
       && Number.isSafeInteger(evidence.activeScopeGeneration) && evidence.activeScopeGeneration >= 0
       && CURRENT_USER_PROXY_CATEGORIES.has(evidence.rejectionCategory)
@@ -367,6 +375,7 @@ const createFixture = async (mode, fixedOrigin) => {
         journey: activeJourney,
         correlation: 'current-scope-user-validation',
         source,
+        scopeGeneration: currentUserShape.scopeGeneration,
         requestArrived: true,
         authorizationPresent: typeof request.headers.authorization === 'string',
         authorizationMatchesActivatedBearer: request.headers.authorization === `Bearer ${INSTANCE_TOKEN}`,

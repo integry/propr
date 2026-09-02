@@ -50,6 +50,7 @@ describe('current-user response schema', () => {
 
     await expect(getCurrentUser({ scopeGeneration: 3, activeScopePresent: true })).resolves.toEqual(validUser);
     expect(info.mock.calls.map(call => call[1])).toEqual([
+      expect.objectContaining({ phase: 'request-issued', scopeGeneration: 3, classification: 'pending' }),
       expect.objectContaining({ phase: 'response-completed', responseStatus: 200, classification: 'success' }),
       expect.objectContaining({ phase: 'parsed-user-accepted', scopeGeneration: 3, schemaAccepted: true }),
     ]);

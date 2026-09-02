@@ -101,10 +101,15 @@ export type DesktopCurrentUserProxyRejectionCategory =
   | 'stale-scope';
 
 export interface DesktopCurrentUserProxyEvidence {
-  schemaVersion: 1;
+  schemaVersion: 2;
   correlation: 'current-scope-user-validation';
   requestObserved: true;
   method: 'get';
+  /** Renderer cache-boundary generation parsed from the one canonical query. */
+  rendererScopeGeneration: number | null;
+  /** Exact for zero/one; two means two or more, keeping adversarial evidence bounded. */
+  scopeGenerationQueryCount: 0 | 1 | 2;
+  scopeGenerationQueryValid: boolean;
   /** Exact for zero/one; two means two or more, keeping adversarial evidence bounded. */
   scopeHeaderCount: 0 | 1 | 2;
   activeBindingPresent: boolean;
@@ -248,6 +253,25 @@ const requestOrigin = (value: string): { origin: string; pathname: string; url: 
   } catch {
     return null;
   }
+};
+
+const CURRENT_USER_SCOPE_GENERATION_QUERY = 'proprDesktopScopeGeneration';
+
+const currentUserScopeGeneration = (url: URL): {
+  count: 0 | 1 | 2;
+  generation: number | null;
+  valid: boolean;
+} => {
+  const values = url.searchParams.getAll(CURRENT_USER_SCOPE_GENERATION_QUERY);
+  const count = Math.min(values.length, 2) as 0 | 1 | 2;
+  if (values.length !== 1 || [...url.searchParams].length !== 1) {
+    return { count, generation: null, valid: false };
+  }
+  const value = values[0];
+  const generation = /^(?:0|[1-9]\d{0,15})$/.test(value) ? Number(value) : NaN;
+  const valid = Number.isSafeInteger(generation)
+    && url.search === `?${CURRENT_USER_SCOPE_GENERATION_QUERY}=${value}`;
+  return { count, generation: valid ? generation : null, valid };
 };
 
 const parseCode = async (response: Response): Promise<string | undefined> => {
@@ -1158,6 +1182,9 @@ export class DesktopCredentialService {
     const isCurrentUserRequest = !trustedMainRequest
       && target?.pathname === '/api/auth/user'
       && (details.method ?? 'GET').toUpperCase() === 'GET';
+    const rendererCurrentUserGeneration = target && isCurrentUserRequest
+      ? currentUserScopeGeneration(target.url)
+      : { count: 0 as const, generation: null, valid: false };
     const reportHandshake = (
       accepted: boolean,
       rejectionCategory: DesktopWebSocketRejectionCategory,
@@ -1195,10 +1222,13 @@ export class DesktopCredentialService {
       if (!isCurrentUserRequest) return;
       try {
         this.#reportCurrentUserValidation({
-          schemaVersion: 1,
+          schemaVersion: 2,
           correlation: 'current-scope-user-validation',
           requestObserved: true,
           method: 'get',
+          rendererScopeGeneration: rendererCurrentUserGeneration.generation,
+          scopeGenerationQueryCount: rendererCurrentUserGeneration.count,
+          scopeGenerationQueryValid: rendererCurrentUserGeneration.valid,
           scopeHeaderCount: Math.min(scopeValues.length, 2) as 0 | 1 | 2,
           activeBindingPresent: active !== null,
           activeScopeGeneration: active?.profileGeneration ?? 0,

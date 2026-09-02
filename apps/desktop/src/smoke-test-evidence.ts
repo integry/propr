@@ -51,8 +51,9 @@ export interface PackagedSmokeCurrentUserEvidenceBuffer {
 }
 
 export interface PackagedCurrentUserBoundarySummary {
-  schemaVersion: 1;
+  schemaVersion: 2;
   rendererValidations: 3;
+  rendererScopeGenerations: [1, 2, 3];
   exactGet: true;
   scopeHeaderCount: 1;
   activeBindingPresent: true;
@@ -66,11 +67,14 @@ export interface PackagedCurrentUserBoundarySummary {
   accepted: true;
 }
 
-const exactCurrentUserEvidence = (evidence: DesktopCurrentUserProxyEvidence): boolean =>
-  evidence.schemaVersion === 1
+const exactCurrentUserEvidence = (evidence: DesktopCurrentUserProxyEvidence, generation: number): boolean =>
+  evidence.schemaVersion === 2
   && evidence.correlation === 'current-scope-user-validation'
   && evidence.requestObserved === true
   && evidence.method === 'get'
+  && evidence.rendererScopeGeneration === generation
+  && evidence.scopeGenerationQueryCount === 1
+  && evidence.scopeGenerationQueryValid === true
   && evidence.scopeHeaderCount === 1
   && evidence.activeBindingPresent === true
   && Number.isSafeInteger(evidence.activeScopeGeneration)
@@ -90,12 +94,14 @@ export const validatePackagedCurrentUserBoundaryEvidence = (
   evidence: readonly DesktopCurrentUserProxyEvidence[],
   overflowed: boolean,
 ): PackagedCurrentUserBoundarySummary => {
-  if (overflowed || evidence.length !== 3 || evidence.some(record => !exactCurrentUserEvidence(record))) {
+  if (overflowed || evidence.length !== 3
+    || evidence.some((record, index) => !exactCurrentUserEvidence(record, index + 1))) {
     throw new Error('Packaged current-user main-boundary evidence failed');
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     rendererValidations: 3,
+    rendererScopeGenerations: [1, 2, 3],
     exactGet: true,
     scopeHeaderCount: 1,
     activeBindingPresent: true,

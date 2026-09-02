@@ -62,6 +62,10 @@ export const currentUserValidationFailureCategory = ({
   if (main.length === 0) return 'current-user-main-proxy-not-observed';
   if (main.length !== 1) return 'current-user-main-proxy-duplicate';
   const observed = main[0];
+  if (!observed.scopeGenerationQueryValid || observed.scopeGenerationQueryCount !== 1
+    || observed.rendererScopeGeneration !== generation) {
+    return 'current-user-main-generation-correlation-invalid';
+  }
   if (observed.scopeHeaderCount !== 1) {
     if (observed.scopeHeaderCount === 0 && !observed.accepted
       && observed.rejectionCategory === 'scope-missing') return 'current-user-main-scope-missing';
@@ -92,6 +96,7 @@ export const currentUserValidationFailureCategory = ({
     && record.source === 'renderer');
   if (fixture.length === 0) return 'current-user-upstream-request-not-arrived';
   if (fixture.length !== 1) return 'current-user-upstream-request-duplicate';
+  if (fixture[0].scopeGeneration !== generation) return 'current-user-upstream-generation-correlation-invalid';
   if (!fixture[0].authorizationPresent || !fixture[0].authorizationMatchesActivatedBearer
     || fixture[0].cookiePresent) return 'current-user-upstream-bearer-custody-invalid';
   if (fixture[0].responseStatus !== 200) return `current-user-response-http-${fixture[0].responseStatus}`;
