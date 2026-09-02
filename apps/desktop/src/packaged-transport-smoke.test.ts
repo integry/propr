@@ -4,25 +4,54 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 describe('packaged transport smoke sequencing', () => {
-  it('seeds adversarial origin storage before the first renderer credential binding', () => {
+  it('proves activation cleanup before credentialless reseed, rollback, and all-origin cleanup', () => {
     const smoke = readFileSync(
       fileURLToPath(new URL('./packaged-transport-smoke.ts', import.meta.url)),
       'utf8',
     );
-    const seedStorage = smoke.indexOf('    await seedStorage();');
-    const seededState = smoke.indexOf("if (!await storageState('present'))", seedStorage);
-    const firstActivation = smoke.indexOf('const first = await smoke.activate(', seededState);
+    const initialSeed = smoke.indexOf('    await seedStorage();');
+    const preactivationPresent = smoke.indexOf(
+      'if (!await storageState(bothOriginsPresent))',
+      initialSeed,
+    );
+    const firstActivation = smoke.indexOf('const first = await smoke.activate(', preactivationPresent);
     const staleSocketEvidence = smoke.indexOf(
       "log('desktop.transport_smoke.stale_socket_boundary'",
       firstActivation,
     );
-    const retainedState = smoke.indexOf("if (!await storageState('present'))", staleSocketEvidence);
-    const allOriginCleanup = smoke.indexOf('await clearDesktopInstanceCookies(', retainedState);
+    const activationCleanupSplit = smoke.indexOf(
+      'if (!await storageState(activationCleanupSplit))',
+      staleSocketEvidence,
+    );
+    const credentiallessReseed = smoke.indexOf('    await seedStorage();', activationCleanupSplit);
+    const reseededPresent = smoke.indexOf(
+      'if (!await storageState(bothOriginsPresent))',
+      credentiallessReseed,
+    );
+    const rollback = smoke.indexOf(
+      'const rollback = await profiles.readProfileCredential(profileId);',
+      reseededPresent,
+    );
+    const rollbackPresent = smoke.indexOf(
+      '|| !await storageState(bothOriginsPresent)',
+      rollback,
+    );
+    const allOriginCleanup = smoke.indexOf('await clearDesktopInstanceCookies(', rollbackPresent);
+    const absentBeforeCommit = smoke.indexOf(
+      'precommitStorageCleared = await storageState(bothOriginsAbsent);',
+      allOriginCleanup,
+    );
+    const absentAfterCommit = smoke.indexOf(
+      '!await storageState(bothOriginsAbsent)',
+      absentBeforeCommit,
+    );
 
-    assert.notEqual(seedStorage, -1);
-    assert.equal(smoke.match(/^    await seedStorage\(\);$/gm)?.length, 1);
-    assert.ok(seedStorage < seededState && seededState < firstActivation);
-    assert.ok(firstActivation < staleSocketEvidence && staleSocketEvidence < retainedState);
-    assert.ok(retainedState < allOriginCleanup);
+    assert.notEqual(initialSeed, -1);
+    assert.ok(initialSeed < preactivationPresent && preactivationPresent < firstActivation);
+    assert.ok(firstActivation < staleSocketEvidence && staleSocketEvidence < activationCleanupSplit);
+    assert.ok(activationCleanupSplit < credentiallessReseed && credentiallessReseed < reseededPresent);
+    assert.ok(reseededPresent < rollback && rollback < rollbackPresent);
+    assert.ok(rollbackPresent < allOriginCleanup);
+    assert.ok(allOriginCleanup < absentBeforeCommit && absentBeforeCommit < absentAfterCommit);
   });
 });
