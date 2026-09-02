@@ -1713,16 +1713,6 @@ try {
       Assert-MsiRolledBackCleanBaseline $manifest
     }
   }
-  $ownershipPromoted = $false
-  foreach ($record in @($manifest.Users)) {
-    if (Resolve-ProvisionalOwnedUser $record) { $ownershipPromoted = $true }
-    if (Promote-UncapturedOwnedProfiles $record $manifest) {
-      $ownershipPromoted = $true
-    }
-  }
-  if ($ownershipPromoted) {
-    Write-DurableOwnershipManifest $manifestPath $manifest
-  }
   foreach ($record in @($manifest.RegistryValues)) {
     if (!$record.Owned) { continue }
     $current = Get-RegistryValueSnapshot ([string]$record.Path) ([string]$record.Name)
@@ -1741,6 +1731,16 @@ try {
   }
   if ($cleanupFailed) {
     throw 'owned resource authority collision'
+  }
+  $ownershipPromoted = $false
+  foreach ($record in @($manifest.Users)) {
+    if (Resolve-ProvisionalOwnedUser $record) { $ownershipPromoted = $true }
+    if (Promote-UncapturedOwnedProfiles $record $manifest) {
+      $ownershipPromoted = $true
+    }
+  }
+  if ($ownershipPromoted) {
+    Write-DurableOwnershipManifest $manifestPath $manifest
   }
   if ($allowAuthenticatedMsiUninstall -and !$cleanupFailed) {
     $msiExitCode = 1618

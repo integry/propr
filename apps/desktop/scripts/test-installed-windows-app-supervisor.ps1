@@ -1326,17 +1326,6 @@ function Get-SanitizedWorkflowCleanupResultDiagnostic($Result) {
   return $diagnostic
 }
 
-function Get-SanitizedResourceCollisionControllerDiagnostic($Result, [string]$Field) {
-  return (
-    (Get-SanitizedSupervisorInvocationDiagnostic `
-      $script:currentSupervisorInvocationTest `
-      'RESOURCE_COLLISION' `
-      'WORKFLOW_CLEANUP_CONTROLLER' `
-      'CONTROLLER_RESULT_FIELD' `
-      $Field) + ':' + (Get-SanitizedWorkflowCleanupResultDiagnostic $Result)
-  )
-}
-
 function Get-SupervisorFixtureSha256Hex([byte[]]$Bytes) {
   $sha256 = [Security.Cryptography.SHA256]::Create()
   try {
@@ -2219,10 +2208,6 @@ function Get-SupervisorAttributionTotalityCases {
     'CALLSITE_CONTROLLER_RESULT_EXIT_CODE',
     'CALLSITE_CONTROLLER_RESULT_REPORTED_EXIT_CODE',
     'CALLSITE_CONTROLLER_RESULT_RESULT',
-    'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_EXIT_CODE',
-    'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_REPORTED_EXIT_CODE',
-    'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_RESULT',
-    'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_CONTROLLER_STATUS',
     'CALLSITE_RESOURCE_COLLISION_REPLACEMENT_SURVIVAL_READ',
     'CALLSITE_RESOURCE_COLLISION_MANIFEST_PRESERVATION',
     'CALLSITE_EARLY_PROCESS_STATE_PATH',
@@ -3348,34 +3333,6 @@ function Test-SupervisorInvocationAttributionTotality {
         Scenario='EARLY_INITIALIZATION_TIMEOUT'
         Phase='WORKFLOW_CLEANUP_CONTROLLER'
         Callsite='CONTROLLER_RESULT_FIELD'; Field='RESULT'
-      },
-      [PSCustomObject]@{
-        CaseId='CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_EXIT_CODE'
-        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
-        Scenario='RESOURCE_COLLISION'
-        Phase='WORKFLOW_CLEANUP_CONTROLLER'
-        Callsite='CONTROLLER_RESULT_FIELD'; Field='EXIT_CODE'
-      },
-      [PSCustomObject]@{
-        CaseId='CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_REPORTED_EXIT_CODE'
-        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
-        Scenario='RESOURCE_COLLISION'
-        Phase='WORKFLOW_CLEANUP_CONTROLLER'
-        Callsite='CONTROLLER_RESULT_FIELD'; Field='REPORTED_EXIT_CODE'
-      },
-      [PSCustomObject]@{
-        CaseId='CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_RESULT'
-        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
-        Scenario='RESOURCE_COLLISION'
-        Phase='WORKFLOW_CLEANUP_CONTROLLER'
-        Callsite='CONTROLLER_RESULT_FIELD'; Field='RESULT'
-      },
-      [PSCustomObject]@{
-        CaseId='CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_CONTROLLER_STATUS'
-        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
-        Scenario='RESOURCE_COLLISION'
-        Phase='WORKFLOW_CLEANUP_CONTROLLER'
-        Callsite='CONTROLLER_RESULT_FIELD'; Field='CONTROLLER_STATUS'
       },
       [PSCustomObject]@{
         CaseId='CALLSITE_RESOURCE_COLLISION_REPLACEMENT_SURVIVAL_READ'
@@ -5008,8 +4965,12 @@ function Test-PreExistingCleanupOwnership {
         -Field 'EXIT_CODE' `
         -Action {
           Assert-True ($failedWorkflowCleanup.ExitCode -eq 21) `
-            (Get-SanitizedResourceCollisionControllerDiagnostic `
-              $failedWorkflowCleanup 'EXIT_CODE')
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'EXIT_CODE')
         }
       Invoke-SupervisorAttributedOperation `
         -Scenario 'RESOURCE_COLLISION' `
@@ -5018,8 +4979,12 @@ function Test-PreExistingCleanupOwnership {
         -Field 'REPORTED_EXIT_CODE' `
         -Action {
           Assert-True ($failedWorkflowCleanup.ReportedExitCode -eq 21) `
-            (Get-SanitizedResourceCollisionControllerDiagnostic `
-              $failedWorkflowCleanup 'REPORTED_EXIT_CODE')
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'REPORTED_EXIT_CODE')
         }
       Invoke-SupervisorAttributedOperation `
         -Scenario 'RESOURCE_COLLISION' `
@@ -5028,8 +4993,12 @@ function Test-PreExistingCleanupOwnership {
         -Field 'RESULT' `
         -Action {
           Assert-True ($failedWorkflowCleanup.Result -ceq 'FAILED') `
-            (Get-SanitizedResourceCollisionControllerDiagnostic `
-              $failedWorkflowCleanup 'RESULT')
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'RESULT')
         }
       Invoke-SupervisorAttributedOperation `
         -Scenario 'RESOURCE_COLLISION' `
@@ -5039,8 +5008,12 @@ function Test-PreExistingCleanupOwnership {
         -Action {
           Assert-True ($failedWorkflowCleanup.ControllerStatus -ceq
               'OWNED_RESOURCE_CLEANUP_FAILURE') `
-            (Get-SanitizedResourceCollisionControllerDiagnostic `
-              $failedWorkflowCleanup 'CONTROLLER_STATUS')
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'CONTROLLER_STATUS')
         }
       $collisionResourcesAfter =
         Get-OwnedResourcePreservationSnapshot $workflowOwned

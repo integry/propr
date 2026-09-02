@@ -630,11 +630,11 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisorBehaviorTest,
       /Get-SupervisorInvocationFields[\s\S]*'CONTROLLER_STATUS'/,
     );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Get-SanitizedResourceCollisionControllerDiagnostic/,
+    );
     for (const caseId of [
-      'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_EXIT_CODE',
-      'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_REPORTED_EXIT_CODE',
-      'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_RESULT',
-      'CALLSITE_RESOURCE_COLLISION_CONTROLLER_RESULT_CONTROLLER_STATUS',
       'CALLSITE_RESOURCE_COLLISION_REPLACEMENT_SURVIVAL_READ',
       'CALLSITE_RESOURCE_COLLISION_MANIFEST_PRESERVATION',
     ]) {
@@ -692,9 +692,27 @@ describe('desktop trusted release workflow', () => {
       resourceCollisionAssertions,
       /-Scenario 'RESOURCE_COLLISION'[\s\S]*-Phase 'RESOURCE_ASSERTION'[\s\S]*-Callsite 'REPLACEMENT_SURVIVAL_READ'[\s\S]*-Field 'REGISTRY_VALUE'/,
     );
+    for (const resourceField of [
+      'OWNED_ROOT',
+      'INSTALL_ROOT',
+      'EXECUTABLE',
+      'SHORTCUT_FOLDER',
+      'SHORTCUT',
+      'SMOKE_DIRECTORY',
+      'REGISTRY_PATH',
+      'REGISTRY_VALUE',
+      'USER_NAME',
+      'PROFILE_PATH',
+    ]) {
+      assert.match(resourceCollisionAssertions, new RegExp(`'${resourceField}'`));
+    }
     assert.match(
       resourceCollisionAssertions,
-      /-Scenario 'RESOURCE_COLLISION'[\s\S]*-Phase 'MANIFEST_ASSERTION'[\s\S]*-Callsite 'MANIFEST_PRESERVATION'[\s\S]*-Field 'MANIFEST_PATH'[\s\S]*\$collisionManifestState -ceq 'ACTIVE'/,
+      /-Scenario 'RESOURCE_COLLISION'[\s\S]*-Phase 'MANIFEST_ASSERTION'[\s\S]*-Callsite 'MANIFEST_PRESERVATION'[\s\S]*-Field 'MANIFEST_PATH'[\s\S]*\$collisionManifestAfter -ceq \$collisionManifestBefore[\s\S]*\$collisionManifestState -ceq 'ACTIVE'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /\$collisionManifestBefore = Get-Content[\s\S]*\$collisionResourcesBefore =[\s\S]*Get-OwnedResourcePreservationSnapshot[\s\S]*'RESOURCE_COLLISION' \$workflowManifest[\s\S]*\$collisionResourcesAfter =[\s\S]*Get-OwnedResourcePreservationSnapshot[\s\S]*Set-ItemProperty[\s\S]*-Name 'ProPRInstalledAppOwner' -Value \(\[string\]\$workflowOwned\.Token\)[\s\S]*'WORKFLOW_RETRY' \$workflowManifest[\s\S]*Assert-OwnedResourcesGone \$workflowOwned/,
     );
     assert.match(
       installedWindowsAppCleanup,
@@ -719,6 +737,22 @@ describe('desktop trusted release workflow', () => {
         < installedWindowsAppCleanup.indexOf('if ($allowAuthenticatedMsiUninstall'),
       'ownership collision must stop before cleanup mutation',
     );
+    for (const promotionProducer of [
+      'Resolve-ProvisionalOwnedUser $record',
+      'Promote-UncapturedOwnedProfiles $record $manifest',
+      'Write-DurableOwnershipManifest $manifestPath $manifest',
+    ]) {
+      assert.ok(
+        installedWindowsAppCleanup.indexOf("if ($cleanupFailed) {\n    throw 'owned resource authority collision'\n  }")
+          < installedWindowsAppCleanup.indexOf(promotionProducer),
+        `${promotionProducer} must occur after ownership collision guard`,
+      );
+      assert.ok(
+        installedWindowsAppCleanup.indexOf(promotionProducer)
+          < installedWindowsAppCleanup.indexOf('if ($allowAuthenticatedMsiUninstall'),
+        `${promotionProducer} must still occur before cleanup mutation on the no-collision path`,
+      );
+    }
     const fixtureProcessStateReader = installedWindowsAppSupervisorBehaviorTest.slice(
       installedWindowsAppSupervisorBehaviorTest.indexOf('function Read-FixtureProcessState'),
       installedWindowsAppSupervisorBehaviorTest.indexOf('function Read-FixtureResourceState'),
