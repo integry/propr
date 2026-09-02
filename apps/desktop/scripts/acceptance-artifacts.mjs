@@ -72,7 +72,7 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const canonicalRelative = (root, path) => relative(root, path).split(sep).join('/');
 const isSha256 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const isInteger = value => Number.isInteger(value) && value >= 0;
-const MAX_SCROLLBAR_INSET_CSS_PIXELS = 64;
+const MAX_VIEWPORT_INSET_CSS_PIXELS = 64;
 
 const assertExactKeys = (value, expected, description) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${description} must be an object`);
@@ -99,6 +99,7 @@ const assertViewportMetricEvidence = (evidence, config, description) => {
   assertExactKeys(evidence.rendererViewport, ['width', 'height'], `${description} renderer viewport`);
   assertExactKeys(evidence.documentClientViewport, ['width', 'height'], `${description} document client viewport`);
   assertExactKeys(evidence.scrollbarInsets, ['width', 'height'], `${description} scrollbar insets`);
+  assertExactKeys(evidence.visualViewportInsets, ['width', 'height'], `${description} visual viewport insets`);
   assertExactKeys(evidence.layoutViewport, ['width', 'height'], `${description} layout viewport`);
   assertExactKeys(evidence.cdpVisualViewport, ['width', 'height', 'scale'], `${description} CDP visual viewport`);
   assertExactKeys(evidence.rendererVisualViewport, ['width', 'height', 'scale'], `${description} renderer visual viewport`);
@@ -108,19 +109,25 @@ const assertViewportMetricEvidence = (evidence, config, description) => {
   const scrollbarInsetsAreValid = ['width', 'height'].every(axis => (
     Number.isFinite(evidence.scrollbarInsets[axis])
     && evidence.scrollbarInsets[axis] >= 0
-    && evidence.scrollbarInsets[axis] <= MAX_SCROLLBAR_INSET_CSS_PIXELS
+    && evidence.scrollbarInsets[axis] <= MAX_VIEWPORT_INSET_CSS_PIXELS
     && evidence.scrollbarInsets[axis]
       === evidence.rendererViewport[axis] - evidence.documentClientViewport[axis]
+  ));
+  const visualViewportInsetsAreValid = ['width', 'height'].every(axis => (
+    Number.isFinite(evidence.visualViewportInsets[axis])
+    && evidence.visualViewportInsets[axis] >= 0
+    && evidence.visualViewportInsets[axis] <= MAX_VIEWPORT_INSET_CSS_PIXELS
+    && evidence.visualViewportInsets[axis]
+      === evidence.rendererViewport[axis] - evidence.rendererVisualViewport[axis]
   ));
   if (JSON.stringify(evidence.requestedViewport) !== JSON.stringify(config.viewport)
     || JSON.stringify(evidence.playwrightViewport) !== JSON.stringify(config.viewport)
     || JSON.stringify(evidence.rendererViewport) !== JSON.stringify(expectedEffective)
     || !scrollbarInsetsAreValid
+    || !visualViewportInsetsAreValid
     || JSON.stringify(evidence.layoutViewport) !== JSON.stringify(evidence.documentClientViewport)
-    || evidence.cdpVisualViewport.width !== expectedEffective.width
-    || evidence.cdpVisualViewport.height !== expectedEffective.height
-    || evidence.cdpVisualViewport.scale !== 1
-    || JSON.stringify(evidence.rendererVisualViewport) !== JSON.stringify({ ...expectedEffective, scale: 1 })
+    || JSON.stringify(evidence.rendererVisualViewport) !== JSON.stringify(evidence.cdpVisualViewport)
+    || evidence.rendererVisualViewport.scale !== 1
     || JSON.stringify(evidence.effectiveVisibleCssSpan) !== JSON.stringify(expectedEffective)
     || evidence.geometryZoom.width !== config.zoom || evidence.geometryZoom.height !== config.zoom
     || evidence.requestedDeviceScaleFactor !== config.deviceScaleFactor
@@ -358,7 +365,7 @@ const validateScreenshotEntry = (entry, expectedName) => {
   assertExactKeys(entry, [
     'name', 'journey', 'variant', 'width', 'height', 'physicalPngDimensions', 'reducedMotion',
     'requestedViewport', 'playwrightViewport', 'rendererViewport', 'documentClientViewport',
-    'scrollbarInsets', 'layoutViewport',
+    'scrollbarInsets', 'visualViewportInsets', 'layoutViewport',
     'cdpVisualViewport', 'rendererVisualViewport', 'effectiveVisibleCssSpan', 'geometryZoom',
     'requestedDeviceScaleFactor', 'rendererDevicePixelRatio', 'requestedZoomFactor',
     'appliedZoomFactor', 'zoomResetFactor', 'zoomMechanism',
@@ -387,7 +394,7 @@ const validateAccessibility = accessibility => {
     'schemaVersion', 'generatedAt', 'serious', 'critical', 'findings', 'checks', 'keyboardOrder',
     'visibleFocus', 'modalFocusTrap', 'modalFocusRestore', 'accessibleNames', 'liveAnnouncements',
   ], 'Acceptance accessibility report');
-  if (accessibility.schemaVersion !== 5 || accessibility.generatedAt !== FIXED_TIME
+  if (accessibility.schemaVersion !== 6 || accessibility.generatedAt !== FIXED_TIME
     || accessibility.serious !== 0 || accessibility.critical !== 0 || accessibility.findings?.length !== 0
     || accessibility.keyboardOrder !== true || accessibility.visibleFocus !== true
     || accessibility.modalFocusTrap !== true || accessibility.modalFocusRestore !== true
@@ -408,7 +415,7 @@ const validateAccessibility = accessibility => {
       'name', 'journey', 'variant', 'serious', 'critical', 'accessibleNames', 'locale', 'timezone',
       'fontLoaded', 'reducedMotion', 'animationsDisabled', 'rendererTime', 'physicalPngDimensions',
       'requestedViewport', 'playwrightViewport', 'rendererViewport', 'documentClientViewport',
-      'scrollbarInsets', 'layoutViewport',
+      'scrollbarInsets', 'visualViewportInsets', 'layoutViewport',
       'cdpVisualViewport', 'rendererVisualViewport', 'effectiveVisibleCssSpan', 'geometryZoom',
       'requestedDeviceScaleFactor', 'rendererDevicePixelRatio', 'requestedZoomFactor',
       'appliedZoomFactor', 'zoomResetFactor', 'zoomMechanism',
@@ -477,7 +484,7 @@ export const validateAcceptanceEvidence = (accessibility, manifest, summary, san
     'schemaVersion', 'generatedAt', 'platform', 'arch', 'executableBoundary', 'deterministicInputs',
     'nativePackageCoverage', 'screenshots', 'supporting',
   ], 'Acceptance manifest');
-  if (manifest.schemaVersion !== 5 || manifest.platform !== 'linux' || manifest.arch !== 'x64'
+  if (manifest.schemaVersion !== 6 || manifest.platform !== 'linux' || manifest.arch !== 'x64'
     || manifest.generatedAt !== FIXED_TIME || manifest.executableBoundary !== 'packaged-electron-main-preload-renderer'
     || manifest.screenshots?.length !== expectedScreenshotNames().length) {
     throw new Error('Acceptance manifest is incomplete or non-deterministic');
@@ -577,7 +584,7 @@ export const writeAcceptanceManifest = async (outputDirectory, screenshotMetadat
     supporting.push({ name, bytes: bytes.length, sha256: sha256(bytes) });
   }
   const manifest = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     generatedAt: FIXED_TIME,
     platform: 'linux',
     arch: 'x64',

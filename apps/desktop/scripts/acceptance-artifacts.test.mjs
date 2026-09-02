@@ -62,9 +62,15 @@ const viewportMetricEvidenceFor = config => {
     height: config.viewport.height / config.zoom,
   };
   const scrollbarInsets = config.zoom === 2 ? { width: 8, height: 0 } : { width: 0, height: 0 };
+  const visualViewportInsets = config.zoom === 2 ? { width: 7.5, height: 0 } : { width: 0, height: 0 };
   const documentClientViewport = {
     width: rendererViewport.width - scrollbarInsets.width,
     height: rendererViewport.height - scrollbarInsets.height,
+  };
+  const rendererVisualViewport = {
+    width: rendererViewport.width - visualViewportInsets.width,
+    height: rendererViewport.height - visualViewportInsets.height,
+    scale: 1,
   };
   return {
     requestedViewport: { ...config.viewport },
@@ -72,9 +78,10 @@ const viewportMetricEvidenceFor = config => {
     rendererViewport,
     documentClientViewport,
     scrollbarInsets,
+    visualViewportInsets,
     layoutViewport: { ...documentClientViewport },
-    cdpVisualViewport: { ...rendererViewport, scale: 1 },
-    rendererVisualViewport: { ...rendererViewport, scale: 1 },
+    cdpVisualViewport: { ...rendererVisualViewport },
+    rendererVisualViewport,
     effectiveVisibleCssSpan: { ...rendererViewport },
     geometryZoom: { width: config.zoom, height: config.zoom },
     requestedDeviceScaleFactor: config.deviceScaleFactor,
@@ -91,7 +98,7 @@ const viewportMetricEvidenceFor = config => {
 };
 
 const accessibilityFor = () => ({
-  schemaVersion: 5,
+  schemaVersion: 6,
   generatedAt: FIXED_TIME,
   serious: 0,
   critical: 0,
@@ -204,8 +211,16 @@ describe('packaged acceptance artifact contract', () => {
     try {
       const evidence = await createCompleteArtifactSet(root);
       assert.equal(evidence.manifest.screenshots.length, 60);
-      assert.equal(evidence.manifest.schemaVersion, 5);
-      assert.equal(evidence.accessibility.schemaVersion, 5);
+      assert.equal(evidence.manifest.schemaVersion, 6);
+      assert.equal(evidence.accessibility.schemaVersion, 6);
+      const zoomEvidence = evidence.manifest.screenshots.find(entry => entry.variant === 'zoom-200');
+      assert.deepEqual(zoomEvidence.rendererViewport, { width: 640, height: 410 });
+      assert.deepEqual(zoomEvidence.documentClientViewport, { width: 632, height: 410 });
+      assert.deepEqual(zoomEvidence.layoutViewport, { width: 632, height: 410 });
+      assert.deepEqual(zoomEvidence.rendererVisualViewport, { width: 632.5, height: 410, scale: 1 });
+      assert.deepEqual(zoomEvidence.cdpVisualViewport, { width: 632.5, height: 410, scale: 1 });
+      assert.deepEqual(zoomEvidence.scrollbarInsets, { width: 8, height: 0 });
+      assert.deepEqual(zoomEvidence.visualViewportInsets, { width: 7.5, height: 0 });
       assert.deepEqual(evidence.manifest.screenshots.map(entry => entry.name), expectedScreenshotNames());
       assert.ok(evidence.manifest.screenshots.every(entry => entry.bytes > 24 && entry.sha256 === entry.repeatabilitySha256));
       assert.deepEqual(evidence.manifest.supporting.map(entry => entry.name), [
@@ -263,11 +278,20 @@ describe('packaged acceptance artifact contract', () => {
       for (const mutate of [
         entry => { entry.layoutViewport.width += 1; },
         entry => { entry.scrollbarInsets.width += 1; },
+        entry => { entry.visualViewportInsets.width += 1; },
+        entry => { entry.rendererVisualViewport.width += 0.5; },
+        entry => { entry.cdpVisualViewport.width += 0.5; },
         entry => {
           entry.documentClientViewport.width = entry.rendererViewport.width - 65;
           entry.layoutViewport.width = entry.documentClientViewport.width;
           entry.scrollbarInsets.width = 65;
         },
+        entry => {
+          entry.visualViewportInsets.width = 65;
+          entry.rendererVisualViewport.width = entry.rendererViewport.width - 65;
+          entry.cdpVisualViewport.width = entry.rendererVisualViewport.width;
+        },
+        entry => { entry.visualViewportInsets.width = Number.NaN; },
       ]) {
         const invalidScrollbarManifest = structuredClone(evidence.manifest);
         mutate(invalidScrollbarManifest.screenshots.find(entry => entry.variant === 'zoom-200'));
@@ -276,6 +300,12 @@ describe('packaged acceptance artifact contract', () => {
           /zoom-200.*viewport metric evidence changed/,
         );
       }
+      const invalidAccessibility = structuredClone(evidence.accessibility);
+      invalidAccessibility.checks.find(check => check.variant === 'zoom-200').visualViewportInsets.width = 8;
+      assert.throws(
+        () => validateAcceptanceEvidence(invalidAccessibility, evidence.manifest, evidence.summary, evidence.sanitizedLog),
+        /zoom-200.*viewport metric evidence changed/,
+      );
       const duplicateManifest = structuredClone(evidence.manifest);
       const duplicateZoom = duplicateManifest.screenshots.find(entry => entry.variant === 'zoom-200');
       const matchingHighDpi = duplicateManifest.screenshots.find(entry => (

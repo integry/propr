@@ -2,7 +2,7 @@ const defaultSleep = milliseconds => new Promise(resolve => setTimeout(resolve, 
 
 const closeEnough = (actual, expected) => Number.isFinite(actual) && Math.abs(actual - expected) < 0.01;
 const ELECTRON_ZOOM_MECHANISM = 'electron-web-frame';
-const MAX_SCROLLBAR_INSET_CSS_PIXELS = 64;
+const MAX_VIEWPORT_INSET_CSS_PIXELS = 64;
 
 const diagnosticSuffix = diagnostics => `; measurements=${JSON.stringify(diagnostics)}`;
 
@@ -163,6 +163,10 @@ export const configureElectronRendererVariant = async (
     width: renderer?.width - documentClientViewport.width,
     height: renderer?.height - documentClientViewport.height,
   };
+  const visualViewportInsets = {
+    width: renderer?.width - rendererVisualViewport.width,
+    height: renderer?.height - rendererVisualViewport.height,
+  };
   // Keep failure output limited to explicitly selected numeric geometry. This
   // makes a native CDP mismatch actionable without serializing page content.
   const measurementDiagnostics = {
@@ -174,6 +178,7 @@ export const configureElectronRendererVariant = async (
     cdpVisualViewport,
     rendererVisualViewport,
     scrollbarInsets,
+    visualViewportInsets,
     geometryZoom,
   };
 
@@ -184,21 +189,19 @@ export const configureElectronRendererVariant = async (
   assertRendererMetrics(renderer?.devicePixelRatio, deviceScaleFactor * zoom, 'renderer device pixel ratio', measurementDiagnostics);
   assertRendererMetrics(geometryZoom.width, zoom, 'measured renderer geometry width ratio', measurementDiagnostics);
   assertRendererMetrics(geometryZoom.height, zoom, 'measured renderer geometry height ratio', measurementDiagnostics);
-  for (const [axis, inset] of Object.entries(scrollbarInsets)) {
-    if (!Number.isFinite(inset) || inset < 0 || inset > MAX_SCROLLBAR_INSET_CSS_PIXELS) {
-      throw new Error(`Packaged Electron ${axis} scrollbar inset is invalid: expected 0-${MAX_SCROLLBAR_INSET_CSS_PIXELS}, received ${inset}${diagnosticSuffix(measurementDiagnostics)}`);
+  for (const [kind, insets] of Object.entries({ scrollbar: scrollbarInsets, 'visual viewport': visualViewportInsets })) {
+    for (const [axis, inset] of Object.entries(insets)) {
+      if (!Number.isFinite(inset) || inset < 0 || inset > MAX_VIEWPORT_INSET_CSS_PIXELS) {
+        throw new Error(`Packaged Electron ${axis} ${kind} inset is invalid: expected 0-${MAX_VIEWPORT_INSET_CSS_PIXELS}, received ${inset}${diagnosticSuffix(measurementDiagnostics)}`);
+      }
     }
   }
   assertExactRendererMetric(layoutViewport.width, documentClientViewport.width, 'layout viewport width versus document client width', measurementDiagnostics);
   assertExactRendererMetric(layoutViewport.height, documentClientViewport.height, 'layout viewport height versus document client height', measurementDiagnostics);
-  assertRendererMetrics(rendererVisualViewport.width, expectedEffective.width, 'renderer visual viewport width', measurementDiagnostics);
-  assertRendererMetrics(rendererVisualViewport.height, expectedEffective.height, 'renderer visual viewport height', measurementDiagnostics);
-  assertRendererMetrics(rendererVisualViewport.scale, 1, 'raw renderer page scale', measurementDiagnostics);
-  // Assert raw CDP visual metrics last so a future Electron semantic change is
-  // reported with all independently measured viewport and scrollbar evidence.
-  assertRendererMetrics(cdpVisualViewport.width, expectedEffective.width, 'CDP visual viewport width', measurementDiagnostics);
-  assertRendererMetrics(cdpVisualViewport.height, expectedEffective.height, 'CDP visual viewport height', measurementDiagnostics);
-  assertRendererMetrics(cdpVisualViewport.scale, 1, 'raw CDP page scale', measurementDiagnostics);
+  assertExactRendererMetric(rendererVisualViewport.width, cdpVisualViewport.width, 'renderer visual viewport width versus raw CDP visual width', measurementDiagnostics);
+  assertExactRendererMetric(rendererVisualViewport.height, cdpVisualViewport.height, 'renderer visual viewport height versus raw CDP visual height', measurementDiagnostics);
+  assertExactRendererMetric(rendererVisualViewport.scale, cdpVisualViewport.scale, 'renderer visual viewport scale versus raw CDP visual scale', measurementDiagnostics);
+  assertExactRendererMetric(rendererVisualViewport.scale, 1, 'raw renderer page scale', measurementDiagnostics);
   if (renderer?.reducedMotion !== reducedMotion) {
     throw new Error(`Packaged Electron reduced-motion emulation changed: expected ${reducedMotion}, received ${renderer?.reducedMotion}${diagnosticSuffix(measurementDiagnostics)}`);
   }
@@ -209,6 +212,7 @@ export const configureElectronRendererVariant = async (
     rendererViewport: { width: renderer.width, height: renderer.height },
     documentClientViewport,
     scrollbarInsets,
+    visualViewportInsets,
     layoutViewport,
     cdpVisualViewport,
     rendererVisualViewport,
