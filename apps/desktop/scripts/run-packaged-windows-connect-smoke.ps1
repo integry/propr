@@ -539,6 +539,73 @@ function Read-PackagedConnectSmokeFailure {
     Stop-PackagedConnect 'artifact-type'
   }
 
+  Set-CaptureParseSubphase 'capture-event-cardinality'
+  if ($null -eq $failureRecord -or $failureRecord -is [Array] -or
+      $failureRecord -is [string] -or $failureRecord -is [ValueType] -or
+      !($failureRecord.event -is [string]) -or
+      $failureRecord.event -cnotin @(
+        'packaged_connect.artifact_failed','packaged_connect.smoke_failed'
+      )) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+
+  if ($failureRecord.event -ceq 'packaged_connect.artifact_failed') {
+    $artifactPhases = @(
+      'staged-contract','staged-tree','staged-architecture','ordinary-user-preflight'
+    )
+    Set-CaptureParseSubphase 'capture-lifecycle-phase'
+    if (!($failureRecord.phase -is [string]) -or
+        $artifactPhases -cnotcontains $failureRecord.phase) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    $artifactRequiresSubphase = $failureRecord.phase -cin @(
+      'staged-contract','ordinary-user-preflight'
+    )
+    $artifactProperties = @('event','category','phase')
+    if ($artifactRequiresSubphase) { $artifactProperties += 'subphase' }
+    Set-CaptureParseSubphase 'capture-schema-cardinality'
+    if (!(Test-ExactJsonProperties $failureRecord $artifactProperties) -or
+        !($failureRecord.category -is [string])) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    Set-CaptureParseSubphase 'capture-lifecycle-category'
+    $artifactCategories = if ($failureRecord.phase -ceq 'staged-contract') {
+      @('artifact-type')
+    } elseif ($failureRecord.phase -ceq 'staged-tree') {
+      @('artifact-missing','artifact-inaccessible','artifact-type')
+    } elseif ($failureRecord.phase -ceq 'staged-architecture') {
+      @('artifact-missing','artifact-inaccessible','artifact-type','architecture-mismatch')
+    } else {
+      @('artifact-inaccessible','artifact-type')
+    }
+    if ($artifactCategories -cnotcontains $failureRecord.category) {
+      Stop-PackagedConnect 'artifact-type'
+    }
+
+    Set-CaptureParseSubphase 'capture-lifecycle-subphase'
+    if ($failureRecord.phase -ceq 'staged-contract') {
+      if (!($failureRecord.subphase -is [string]) -or
+          $childStagedContractSubphases -cnotcontains $failureRecord.subphase) {
+        Stop-PackagedConnect 'artifact-type'
+      }
+    } elseif ($failureRecord.phase -ceq 'ordinary-user-preflight') {
+      if (!($failureRecord.subphase -is [string]) -or
+          $childFailureSubphases -cnotcontains $failureRecord.subphase) {
+        Stop-PackagedConnect 'artifact-type'
+      }
+    }
+
+    $script:failurePhase = $failureRecord.phase
+    $script:failureSubphase = if ($artifactRequiresSubphase) {
+      $failureRecord.subphase
+    } else {
+      $null
+    }
+    return $failureRecord.category
+  }
+
   Set-CaptureParseSubphase 'capture-schema-cardinality'
   $hasSecondary = $null -ne $failureRecord -and
     $null -ne $failureRecord.PSObject.Properties['secondary']
@@ -548,12 +615,6 @@ function Read-PackagedConnectSmokeFailure {
       !($failureRecord.category -is [string]) -or
       !($failureRecord.capture -is [string]) -or
       !($failureRecord.records -is [Array])) {
-    Stop-PackagedConnect 'artifact-type'
-  }
-
-  Set-CaptureParseSubphase 'capture-event-cardinality'
-  if (!($failureRecord.event -is [string]) -or
-      $failureRecord.event -cne 'packaged_connect.smoke_failed') {
     Stop-PackagedConnect 'artifact-type'
   }
 
@@ -672,7 +733,8 @@ function Read-PackagedConnectSmokeFailure {
       }
     }
   }
-  return $failureRecord.category
+  Set-LifecycleFailureSubphase $failureRecord.category
+  return 'spawn-failed'
 }
 
 $hostLauncherNativeSource = @'
@@ -1292,9 +1354,8 @@ if ($LifecycleTestMode -eq 'capture-parser') {
     $authenticatedRunnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')
     $privilegedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
     $stderr = $CaptureParserTestPath
-    $lifecycleFailure = Read-PackagedConnectSmokeFailure $stderr
-    Set-LifecycleFailureSubphase $lifecycleFailure
-    Stop-PackagedConnect 'spawn-failed'
+    $childFailureCategory = Read-PackagedConnectSmokeFailure $stderr
+    Stop-PackagedConnect $childFailureCategory
   } catch {
     Set-PrimaryFailureFromException $_.Exception
   }
@@ -1650,9 +1711,8 @@ try {
     }
     if ($process.ExitCode -ne 0) {
       try {
-        $lifecycleFailure = Read-PackagedConnectSmokeFailure $stderr
-        Set-LifecycleFailureSubphase $lifecycleFailure
-        Stop-PackagedConnect 'spawn-failed'
+        $childFailureCategory = Read-PackagedConnectSmokeFailure $stderr
+        Stop-PackagedConnect $childFailureCategory
       } catch {
         if ($_.Exception.Message -clike 'PROPR_PACKAGED_CONNECT_FAILURE:*') { throw }
         Stop-PackagedConnect 'artifact-type'

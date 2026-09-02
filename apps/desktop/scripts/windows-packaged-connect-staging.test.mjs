@@ -881,14 +881,17 @@ test('the workflow stages before alternate credentials and the harness preflight
     orchestrator.indexOf('function Read-PackagedConnectSmokeFailure'),
     orchestrator.indexOf('$hostLauncherNativeSource'),
   );
+  assert.match(captureParser, /packaged_connect\.artifact_failed/u);
   assert.match(captureParser, /packaged_connect\.smoke_failed/u);
-  assert.doesNotMatch(captureParser, /packaged_connect\.(?:artifact_failed|child_failed)/u);
+  assert.doesNotMatch(captureParser, /packaged_connect\.child_failed/u);
   assert.match(captureParser, /Test-UniqueJsonPropertyNames \$jsonLine/u);
   assert.match(captureParser, /\[Text\.UTF8Encoding\]::new\(\$false, \$true\)/u);
   assert.match(captureParser, /\$captureItem\.Length -lt 1 -or \$captureItem\.Length -gt 65536/u);
   assert.match(captureParser, /\$diagnosticRecords\.Count -gt 20/u);
   assert.match(captureParser, /\$captureOwner\.Value -cne \$privilegedSid\.Value/u);
-  assert.match(orchestrator, /Set-LifecycleFailureSubphase \$lifecycleFailure[\s\S]*?Stop-PackagedConnect 'spawn-failed'/u);
+  assert.match(captureParser, /Set-LifecycleFailureSubphase \$failureRecord\.category[\s\S]*?return 'spawn-failed'/u);
+  assert.match(captureParser, /\$script:failurePhase = \$failureRecord\.phase/u);
+  assert.match(orchestrator, /Read-PackagedConnectSmokeFailure \$stderr[\s\S]*?Stop-PackagedConnect \$childFailureCategory/u);
   assert.match(orchestrator, /catch \{\s*Set-PrimaryFailureFromException \$_\.Exception\s*\}/u);
   assert.match(orchestrator, /\$primaryPhase -ceq 'ordinary-user-preflight'[\s\S]*?\$primarySubphase = 'host-state-contract'/u);
   assert.match(orchestrator, /\$subphaseEvidence = ":subphase=\$primarySubphase"/u);
@@ -932,10 +935,10 @@ test('the workflow stages before alternate credentials and the harness preflight
   );
 });
 
-windowsTest('the PS5.1 smoke-failure parser accepts only the exact bounded producer schema', async context => {
+windowsTest('the PS5.1 child-failure parser accepts only the two exact bounded producer schemas', async context => {
   const runnerTemp = process.env.RUNNER_TEMP;
   assert.equal(typeof runnerTemp, 'string');
-  const baseRecord = {
+  const smokeRecord = {
     event: 'packaged_connect.smoke_failed',
     category: 'timeout-before-ready',
     capture: 'complete',
@@ -948,34 +951,111 @@ windowsTest('the PS5.1 smoke-failure parser accepts only the exact bounded produ
     }],
     secondary: ['tree-termination-failed'],
   };
-  const validLine = `${JSON.stringify(baseRecord)}\n`;
+  const stagedContractRecord = {
+    event: 'packaged_connect.artifact_failed',
+    category: 'artifact-type',
+    phase: 'staged-contract',
+    subphase: 'parent-to-runner-binding',
+  };
+  const stagedTreeRecord = {
+    event: 'packaged_connect.artifact_failed',
+    category: 'artifact-inaccessible',
+    phase: 'staged-tree',
+  };
+  const stagedArchitectureRecord = {
+    event: 'packaged_connect.artifact_failed',
+    category: 'architecture-mismatch',
+    phase: 'staged-architecture',
+  };
+  const ordinaryPreflightRecord = {
+    event: 'packaged_connect.artifact_failed',
+    category: 'artifact-inaccessible',
+    phase: 'ordinary-user-preflight',
+    subphase: 'executable-read',
+  };
+  const smokeLine = `${JSON.stringify(smokeRecord)}\n`;
+  const artifactLine = `${JSON.stringify(stagedContractRecord)}\n`;
   const cases = [
-    ['valid', validLine,
+    ['valid-smoke', smokeLine,
       'category=spawn-failed:phase=application-runtime:subphase=timeout-before-ready'],
+    ['valid-staged-contract', artifactLine,
+      'category=artifact-type:phase=staged-contract:subphase=parent-to-runner-binding'],
+    ['valid-staged-tree', `${JSON.stringify(stagedTreeRecord)}\n`,
+      'category=artifact-inaccessible:phase=staged-tree'],
+    ['valid-staged-architecture', `${JSON.stringify(stagedArchitectureRecord)}\n`,
+      'category=architecture-mismatch:phase=staged-architecture'],
+    ['valid-ordinary-user-preflight', `${JSON.stringify(ordinaryPreflightRecord)}\n`,
+      'category=artifact-inaccessible:phase=ordinary-user-preflight:subphase=executable-read'],
     ['malformed', '{"event":\n',
       'category=artifact-type:phase=capture-parse:subphase=capture-json'],
-    ['duplicate-field', validLine.replace(
+    ['smoke-duplicate-field', smokeLine.replace(
       '{"event":"packaged_connect.smoke_failed",',
       '{"event":"packaged_connect.smoke_failed","event":"packaged_connect.smoke_failed",',
     ), 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
-    ['extra-field', `${JSON.stringify({ ...baseRecord, detail: 'fixed' })}\n`,
+    ['artifact-duplicate-field', artifactLine.replace(
+      '"phase":"staged-contract",',
+      '"phase":"staged-contract","phase":"staged-contract",',
+    ), 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['smoke-extra-field', `${JSON.stringify({ ...smokeRecord, detail: 'fixed' })}\n`,
       'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
-    ['missing-field', `${JSON.stringify({
-      event: baseRecord.event, category: baseRecord.category, records: baseRecord.records,
+    ['artifact-extra-field', `${JSON.stringify({ ...stagedContractRecord, detail: 'fixed' })}\n`,
+      'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['smoke-missing-field', `${JSON.stringify({
+      event: smokeRecord.event, category: smokeRecord.category, records: smokeRecord.records,
     })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
-    ['duplicate-line', `${validLine}${validLine}`,
+    ['artifact-missing-field', `${JSON.stringify({
+      event: stagedContractRecord.event,
+      category: stagedContractRecord.category,
+      phase: stagedContractRecord.phase,
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['smoke-cross-schema-phase', `${JSON.stringify({
+      ...smokeRecord, phase: 'staged-tree',
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['smoke-cross-schema-subphase', `${JSON.stringify({
+      ...smokeRecord, subphase: 'fixed-parent-leaf',
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['artifact-cross-schema-capture', `${JSON.stringify({
+      ...stagedContractRecord, capture: 'complete',
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['artifact-cross-schema-records', `${JSON.stringify({
+      ...stagedContractRecord, records: [],
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['artifact-cross-schema-secondary', `${JSON.stringify({
+      ...stagedContractRecord, secondary: ['tree-termination-failed'],
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['smoke-multiline', `${smokeLine}${smokeLine}`,
+      'category=artifact-type:phase=capture-parse:subphase=capture-line-cardinality'],
+    ['artifact-multiline', `${artifactLine}${artifactLine}`,
       'category=artifact-type:phase=capture-parse:subphase=capture-line-cardinality'],
     ['oversized', Buffer.alloc(65_537, 0x61),
       'category=artifact-type:phase=capture-parse:subphase=capture-size'],
-    ['wrong-event', `${JSON.stringify({ ...baseRecord, event: 'packaged_connect.artifact_failed' })}\n`,
+    ['wrong-event', `${JSON.stringify({ ...smokeRecord, event: 'packaged_connect.child_failed' })}\n`,
       'category=artifact-type:phase=capture-parse:subphase=capture-event-cardinality'],
-    ['wrong-category', `${JSON.stringify({ ...baseRecord, category: 'arbitrary-runtime-error' })}\n`,
+    ['smoke-wrong-category', `${JSON.stringify({
+      ...smokeRecord, category: 'arbitrary-runtime-error',
+    })}\n`,
       'category=artifact-type:phase=capture-parse:subphase=capture-lifecycle-category'],
-    ['wrong-record-category', `${JSON.stringify({
-      ...baseRecord,
-      records: [{ ...baseRecord.records[0], category: 'arbitrary-category' }],
+    ['artifact-wrong-category', `${JSON.stringify({
+      ...stagedContractRecord, category: 'artifact-inaccessible',
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-lifecycle-category'],
+    ['artifact-wrong-phase', `${JSON.stringify({
+      ...stagedContractRecord, phase: 'application-runtime',
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-lifecycle-phase'],
+    ['artifact-wrong-required-subphase', `${JSON.stringify({
+      ...stagedContractRecord, subphase: 'executable-read',
     })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-lifecycle-subphase'],
-    ['sensitive', `${JSON.stringify({ ...baseRecord, detail: 'environment-secret-SENTINEL' })}\n`,
+    ['artifact-forbidden-subphase', `${JSON.stringify({
+      ...stagedTreeRecord, subphase: 'executable-read',
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-schema-cardinality'],
+    ['smoke-wrong-record-category', `${JSON.stringify({
+      ...smokeRecord,
+      records: [{ ...smokeRecord.records[0], category: 'arbitrary-category' }],
+    })}\n`, 'category=artifact-type:phase=capture-parse:subphase=capture-lifecycle-subphase'],
+    ['smoke-sensitive', `${JSON.stringify({ ...smokeRecord, category: 'environment-secret-SENTINEL' })}\n`,
+      'category=artifact-type:phase=capture-parse:subphase=capture-redaction'],
+    ['artifact-sensitive', `${JSON.stringify({
+      ...stagedContractRecord, subphase: 'environment-secret-SENTINEL',
+    })}\n`,
       'category=artifact-type:phase=capture-parse:subphase=capture-redaction'],
     ['invalid-utf8', Buffer.from([0xc3, 0x28, 0x0a]),
       'category=artifact-type:phase=capture-parse:subphase=capture-utf8'],
