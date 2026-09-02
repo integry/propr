@@ -17,7 +17,7 @@ import {
 import { DesktopConnectDiscoveryService } from './connect-discovery';
 import { DeepLinkDelivery } from './deep-link-delivery';
 import { clearDesktopInstanceCookies } from './desktop-session';
-import { DesktopCredentialService } from './credential-service';
+import { DesktopCredentialService, type DesktopPairingBrowserRequest } from './credential-service';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
@@ -97,6 +97,8 @@ let activePackagedTransportSmoke: PackagedTransportSmoke | null = null;
 interface PackagedConnectSmoke {
   configRoot: string;
   fetch: typeof globalThis.fetch;
+  journeyEndpoint?: string;
+  journeyPhase?: 'pair' | 'reprobe';
 }
 
 const packagedConnectSmoke = (): PackagedConnectSmoke | null => {
@@ -108,6 +110,21 @@ const packagedConnectSmoke = (): PackagedConnectSmoke | null => {
   const contained = relative(temporaryRoot, configRoot);
   if (!contained || contained.startsWith('..') || isAbsolute(contained)) {
     throw new Error('Packaged Connect smoke config root is outside the temporary directory');
+  }
+  const suppliedJourneyEndpoint = process.env.PROPR_DESKTOP_CONNECT_JOURNEY_ENDPOINT;
+  const suppliedJourneyPhase = process.env.PROPR_DESKTOP_CONNECT_JOURNEY_PHASE;
+  let journeyEndpoint: string | undefined;
+  let journeyPhase: 'pair' | 'reprobe' | undefined;
+  if (suppliedJourneyEndpoint !== undefined || suppliedJourneyPhase !== undefined) {
+    const normalized = normalizeApiBaseUrl(suppliedJourneyEndpoint ?? '');
+    if (!normalized) throw new Error('Packaged Connect journey requires a bounded non-Windows loopback fixture');
+    const parsed = new URL(normalized);
+    if (process.platform === 'win32' || parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1'
+      || (suppliedJourneyPhase !== 'pair' && suppliedJourneyPhase !== 'reprobe')) {
+      throw new Error('Packaged Connect journey requires a bounded non-Windows loopback fixture');
+    }
+    journeyEndpoint = normalized;
+    journeyPhase = suppliedJourneyPhase;
   }
   const endpoint = 'https://t-packaged123.propr.dev';
   const publicInstanceIdentity = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -131,7 +148,7 @@ const packagedConnectSmoke = (): PackagedConnectSmoke | null => {
       },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
-  return { configRoot, fetch };
+  return { configRoot, fetch, journeyEndpoint, journeyPhase };
 };
 
 const packagedTransportSmoke = (): PackagedTransportSmoke | null => {
@@ -381,7 +398,12 @@ const inspectPackagedReducedNativeWindow = (): Record<string, unknown> => {
   }
 };
 
-const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<void> => {
+const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<{
+  selectedPlatform: string;
+  selectedArch: string;
+  authorityMechanism: string;
+  rendererSchemaValid: true;
+}> => {
   const proof = await window.webContents.executeJavaScript(`(async () => {
     const bridge = window.proprDesktop;
     const metadata = await bridge.app.getMetadata();
@@ -413,6 +435,12 @@ const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<
     rendererSchemaValid: true,
   } as const;
   log('info', 'desktop.renderer.connect_discovery.ready', readyFields);
+  return readyFields;
+};
+
+const publishPackagedConnectReady = async (readyFields: Awaited<
+  ReturnType<typeof runPackagedConnectDiscoverySmoke>
+>): Promise<void> => {
   await new Promise<void>((resolveReady, rejectReady) => {
     process.stdout.write(`${JSON.stringify({
       timestamp: new Date().toISOString(),
@@ -423,6 +451,166 @@ const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<
       if (error) rejectReady(new Error('Packaged Connect READY publication failed'));
       else resolveReady();
     });
+  });
+};
+
+const openPackagedJourneyApproval = async (request: DesktopPairingBrowserRequest): Promise<void> => {
+  await openApprovedDesktopPairingUrl(request, {
+    openExternal: async url => {
+      const approvalWindow = new BrowserWindow({
+        show: false,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
+      });
+      try {
+        await approvalWindow.loadURL(url);
+      } finally {
+        if (!approvalWindow.isDestroyed()) approvalWindow.destroy();
+      }
+    },
+  });
+};
+
+const runPackagedConnectJourneySmoke = async (
+  window: BrowserWindow,
+  profiles: ProfileStore,
+  credentials: DesktopCredentialService,
+  endpoint: string,
+  phase: 'pair' | 'reprobe',
+): Promise<void> => {
+  const security = profiles.security();
+  if (!security.available || security.backend === 'basic_text') {
+    throw new Error('Packaged Connect journey requires the production OS credential backend');
+  }
+  if (phase === 'pair') {
+    const setMode = async (mode: 'success' | 'malformed' | 'oversized' | 'expiry' | 'cancel') => {
+      const response = await session.defaultSession.fetch(`${endpoint}/__packaged/control/${mode}`, {
+        method: 'POST', redirect: 'manual',
+      });
+      if (response.status !== 204) throw new Error('Packaged Connect fixture control failed');
+    };
+    for (const mode of ['malformed', 'oversized'] as const) {
+      await setMode(mode);
+      const result = await credentials.probe({
+        id: `negative-${mode}`,
+        label: `Packaged ${mode}`,
+        apiBaseUrl: endpoint,
+      });
+      if (result.status === 'ready' || result.status === 'incompatible') {
+        throw new Error('Strict packaged discovery accepted invalid identity');
+      }
+    }
+    await setMode('expiry');
+    await credentials.pair({
+      id: 'negative-expiry', label: 'Packaged expiry', apiBaseUrl: endpoint,
+    }).then(
+      () => { throw new Error('Packaged pairing expiry unexpectedly succeeded'); },
+      error => {
+        if (!(error instanceof Error) || !/expired/i.test(error.message)) {
+          throw new Error('Packaged pairing expiry classification failed');
+        }
+      },
+    );
+    await setMode('cancel');
+    const cancelledPairing = credentials.pair({
+      id: 'negative-cancel', label: 'Packaged cancel', apiBaseUrl: endpoint,
+    });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    credentials.cancelPairing('negative-cancel');
+    await cancelledPairing.then(
+      () => { throw new Error('Packaged pairing cancellation unexpectedly succeeded'); },
+      error => {
+        if (!(error instanceof Error) || !/cancelled/i.test(error.message)) {
+          throw new Error('Packaged pairing cancellation classification failed');
+        }
+      },
+    );
+    const failedProfiles = await profiles.list();
+    if (failedProfiles.profiles.some(profile => profile.id.startsWith('negative-'))) {
+      throw new Error('Failed packaged pairing left stale profile or credential state');
+    }
+    await setMode('success');
+  }
+  const proof = await window.webContents.executeJavaScript(`(async () => {
+    const waitFor = async predicate => {
+      const deadline = performance.now() + 15000;
+      do {
+        const value = predicate();
+        if (value) return value;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      } while (performance.now() < deadline);
+      throw new Error('Packaged Connect journey renderer state timed out');
+    };
+    const setInput = (input, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    if (${JSON.stringify(phase)} === 'pair') {
+      const chooser = await waitFor(() => document.querySelector('.desktop-welcome-card'));
+      const connect = Array.from(chooser.querySelectorAll('button.desktop-choice-button'))
+        .find(button => button.textContent?.includes('Connect to an existing instance'));
+      if (!(connect instanceof HTMLButtonElement)) throw new Error('Manual connection action was missing');
+      connect.click();
+      const form = await waitFor(() => document.querySelector('form.desktop-profile-form'));
+      const inputs = form.querySelectorAll('input');
+      if (inputs.length !== 2) throw new Error('Manual connection form was incomplete');
+      setInput(inputs[0], 'Packaged remote');
+      setInput(inputs[1], ${JSON.stringify(endpoint)});
+      form.requestSubmit();
+      const authenticate = await waitFor(() => Array.from(document.querySelectorAll('.desktop-connection-card button'))
+        .find(button => button.textContent?.includes('Sign in in browser')));
+      authenticate.click();
+    }
+    const dashboard = await waitFor(() => document.querySelector('.desktop-app'));
+    const connection = await waitFor(() => document.querySelector('.desktop-connection-pill.desktop-connection-ready'));
+    await waitFor(() => document.querySelector('.desktop-titlebar'));
+    return {
+      connected: dashboard instanceof HTMLElement && connection instanceof HTMLButtonElement,
+      rendererContractsContainSecret: JSON.stringify([window.proprDesktop, dashboard.dataset]).includes('propr_it_'),
+      title: connection.getAttribute('aria-label'),
+    };
+  })()`);
+  if (proof?.connected !== true || proof?.rendererContractsContainSecret !== false
+    || !proof?.title?.startsWith('Connected: Packaged remote')) {
+    throw new Error('Packaged Connect dashboard did not reach its connected state');
+  }
+  const requiredAuthenticatedRequests = phase === 'pair' ? 1 : 2;
+  const evidenceDeadline = Date.now() + 10_000;
+  let transportEvidence = { authenticatedRest: 0, authenticatedSockets: 0 };
+  do {
+    const response = await session.defaultSession.fetch(`${endpoint}/__packaged/evidence`, {
+      credentials: 'omit',
+      redirect: 'manual',
+    });
+    if (response.status !== 200) throw new Error('Packaged Connect transport evidence was unavailable');
+    const candidate: unknown = await response.json();
+    if (candidate !== null && typeof candidate === 'object') {
+      const record = candidate as Record<string, unknown>;
+      if (Number.isInteger(record.authenticatedRest) && Number.isInteger(record.authenticatedSockets)) {
+        transportEvidence = {
+          authenticatedRest: record.authenticatedRest as number,
+          authenticatedSockets: record.authenticatedSockets as number,
+        };
+      }
+    }
+    if (transportEvidence.authenticatedRest >= requiredAuthenticatedRequests
+      && transportEvidence.authenticatedSockets >= requiredAuthenticatedRequests) break;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  } while (Date.now() < evidenceDeadline);
+  if (transportEvidence.authenticatedRest < requiredAuthenticatedRequests
+    || transportEvidence.authenticatedSockets < requiredAuthenticatedRequests) {
+    throw new Error('Packaged Connect authenticated transport proof timed out');
+  }
+  log('info', 'desktop.renderer.connect_journey.ready', {
+    phase,
+    storageBackend: security.backend,
+    manualUrl: phase === 'pair',
+    publicDiscovery: true,
+    browserApproval: phase === 'pair',
+    persistedReprobe: phase === 'reprobe',
+    restBearer: true,
+    socketIo: true,
+    dashboardConnected: true,
   });
 };
 
@@ -828,7 +1016,9 @@ if (!hasSingleInstanceLock) {
     const credentials = new DesktopCredentialService({
       profiles,
       fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
-      openPairingBrowser: request => openApprovedDesktopPairingUrl(request, shell),
+      openPairingBrowser: connectSmoke?.journeyEndpoint
+        ? openPackagedJourneyApproval
+        : request => openApprovedDesktopPairingUrl(request, shell),
       clientName: `ProPR Desktop (${process.platform})`,
       reportRevocationFailure: diagnostic => {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
@@ -875,7 +1065,17 @@ if (!hasSingleInstanceLock) {
     mainWindow = await createMainWindow();
 
     if (connectSmoke) {
-      await runPackagedConnectDiscoverySmoke(mainWindow);
+      const readyFields = await runPackagedConnectDiscoverySmoke(mainWindow);
+      if (connectSmoke.journeyEndpoint && connectSmoke.journeyPhase) {
+        await runPackagedConnectJourneySmoke(
+          mainWindow,
+          profiles,
+          credentials,
+          connectSmoke.journeyEndpoint,
+          connectSmoke.journeyPhase,
+        );
+      }
+      await publishPackagedConnectReady(readyFields);
       app.quit();
     } else if (transportSmoke) {
       await runPackagedTransportSmoke(mainWindow, profiles, credentials, transportSmoke);

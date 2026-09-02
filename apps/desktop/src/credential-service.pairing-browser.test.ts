@@ -32,10 +32,13 @@ const json = (body: unknown, status = 200): Response => new Response(JSON.string
 });
 
 const discovery = {
+  schemaVersion: 1 as const,
   product: 'ProPR',
   version: '0.8.15',
   apiCompatibility: PROPR_API_COMPATIBILITY,
   uiCompatibility: PROPR_UI_COMPATIBILITY,
+  canonicalEndpoint: null,
+  publicInstanceIdentity: '123e4567-e89b-42d3-a456-426614174000',
   desktopAuthentication: {
     protocolVersion: 2 as const,
     browserPairing: true,

@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY } from '@propr/shared';
-import { ProprClient, ProprClientError } from '../src/index.js';
+import {
+  DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED,
+  ProprClient,
+  ProprClientError,
+} from '../src/index.js';
 
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), {
   status,
@@ -9,10 +13,13 @@ const json = (body: unknown, status = 200): Response => new Response(JSON.string
 });
 
 const discovery = {
+  schemaVersion: 1 as const,
   product: 'ProPR',
   version: '0.8.15',
   apiCompatibility: PROPR_API_COMPATIBILITY,
   uiCompatibility: PROPR_UI_COMPATIBILITY,
+  canonicalEndpoint: null,
+  publicInstanceIdentity: '123e4567-e89b-42d3-a456-426614174000',
   desktopAuthentication: {
     protocolVersion: 2 as const,
     browserPairing: true,
@@ -71,6 +78,78 @@ class PairingClock {
 }
 
 describe('desktop instance protocol', () => {
+  it('strictly classifies only the credential-free public discovery 401', async () => {
+    let discoveryBodyRead = false;
+    const legacy = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async (_input, init) => {
+        assert.equal(init?.credentials, 'omit');
+        assert.equal(init?.redirect, 'manual');
+        const response = new Response('{"private":"proxy policy detail"}', {
+          status: 401, headers: { 'Content-Type': 'application/json' },
+        });
+        response.text = async () => {
+          discoveryBodyRead = true;
+          throw new Error('the 401 body must not be consumed');
+        };
+        response.json = async () => {
+          discoveryBodyRead = true;
+          throw new Error('the 401 body must not be consumed');
+        };
+        return response;
+      },
+    });
+    await assert.rejects(legacy.discoverDesktop(), (error: unknown) =>
+      error instanceof ProprClientError
+        && error.kind === 'invalid_response'
+        && error.status === 401
+        && error.code === DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED);
+    assert.equal(discoveryBodyRead, false);
+
+    const operational = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async () => json({ code: 'AUTHENTICATION_REQUIRED' }, 401),
+    });
+    await assert.rejects(operational.request('/api/tasks'), (error: unknown) =>
+      error instanceof ProprClientError
+        && error.kind === 'http'
+        && error.status === 401
+        && error.code === 'AUTHENTICATION_REQUIRED');
+
+    const htmlPolicy = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async () => new Response('<h1>Policy login required</h1>', {
+        status: 401, headers: { 'Content-Type': 'text/html' },
+      }),
+    });
+    await assert.rejects(htmlPolicy.discoverDesktop(), (error: unknown) =>
+      error instanceof ProprClientError
+        && error.kind === 'invalid_response'
+        && error.status === 401
+        && error.code === undefined);
+  });
+
+  it('uses the shared strict wire parser for malformed and oversized discovery', async () => {
+    const valid = JSON.stringify(discovery);
+    for (const body of [
+      JSON.stringify((({ publicInstanceIdentity: _omitted, ...rest }) => rest)(discovery)),
+      JSON.stringify({ ...discovery, unexpected: true }),
+      valid.replace('"product":"ProPR"', '"product":"ProPR","product":"ProPR"'),
+      `${valid}${' '.repeat(8 * 1024)}`,
+    ]) {
+      const client = new ProprClient({
+        baseUrl: 'https://propr.example.test',
+        authentication: { type: 'none' },
+        fetch: async () => new Response(body, { headers: { 'Content-Type': 'application/json' } }),
+      });
+      await assert.rejects(client.discoverDesktop(), (error: unknown) =>
+        error instanceof ProprClientError && error.kind === 'invalid_response');
+    }
+  });
+
   it('discovers capabilities, opens approval, and polls to a single opaque token', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     let polls = 0;

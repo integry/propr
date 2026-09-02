@@ -1,10 +1,20 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import {
-  chmod, lstat, mkdir, mkdtemp, readFile, realpath, writeFile,
+  chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:http';
 import { basename, dirname, join, relative, resolve } from 'node:path';
+import { Server as SocketIOServer } from 'socket.io';
+import {
+  DESKTOP_RENDERER_ORIGIN,
+  DESKTOP_TRANSPORT_SCOPE_HEADER,
+  DESKTOP_TRANSPORT_SCOPE_QUERY,
+  PROPR_API_COMPATIBILITY,
+  PROPR_UI_COMPATIBILITY,
+} from '@propr/shared';
 import {
   preservePrimaryWithCleanup,
   removeAuthorizedConnectFixture,
@@ -66,6 +76,250 @@ const nativeHashes = {
 let packagedConnectPhase = 'fixture-setup';
 let windowsStagedContract;
 let windowsStagedHandoff;
+
+const createPackagedJourneyFixture = async () => {
+  const pairingId = `dpr_${'P'.repeat(22)}`;
+  const deviceSecret = 'D'.repeat(43);
+  const activationTicket = 'A'.repeat(43);
+  const token = `propr_it_${'T'.repeat(43)}`;
+  const receipt = 'R'.repeat(22);
+  const requests = [];
+  let endpoint;
+  let approved = false;
+  let active = false;
+  let binding;
+  let mode = 'success';
+  const cors = {
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-ProPR-Desktop-Transport-Scope',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Origin': DESKTOP_RENDERER_ORIGIN,
+    'Access-Control-Allow-Private-Network': 'true',
+    'Cache-Control': 'no-store',
+    'Content-Type': 'application/json',
+  };
+  const readJson = request => new Promise((resolveBody, rejectBody) => {
+    const chunks = [];
+    let bytes = 0;
+    request.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > 16 * 1024) {
+        rejectBody(new Error('oversized request'));
+        request.destroy();
+      } else chunks.push(chunk);
+    });
+    request.on('end', () => {
+      try { resolveBody(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch (error) { rejectBody(error); }
+    });
+    request.on('error', rejectBody);
+  });
+  const server = createServer(async (request, response) => {
+    const record = {
+      method: request.method,
+      url: request.url,
+      authorization: request.headers.authorization ?? null,
+      origin: request.headers.origin ?? null,
+      transportScope: request.headers[DESKTOP_TRANSPORT_SCOPE_HEADER.toLowerCase()] ?? null,
+      socketIo: false,
+    };
+    requests.push(record);
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, cors);
+      response.end();
+      return;
+    }
+    try {
+      if (request.method === 'POST' && request.url?.startsWith('/__packaged/control/')) {
+        const requestedMode = request.url.slice('/__packaged/control/'.length);
+        if (!['success', 'malformed', 'oversized', 'expiry', 'cancel'].includes(requestedMode)) {
+          throw new Error('invalid fixture mode');
+        }
+        mode = requestedMode;
+        approved = false;
+        binding = undefined;
+        response.writeHead(204, cors);
+        response.end();
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/__packaged/evidence') {
+        const authenticatedRest = requests.filter(item => item.socketIo === false
+          && item.url === '/api/auth/user'
+          && item.authorization === `Bearer ${token}`
+          && typeof item.transportScope === 'string');
+        const authenticatedSockets = requests.filter(item => item.socketIo === true
+          && item.authorization === `Bearer ${token}`);
+        response.writeHead(200, cors);
+        response.end(JSON.stringify({
+          authenticatedRest: authenticatedRest.length,
+          authenticatedSockets: authenticatedSockets.length,
+        }));
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/api/desktop/discovery') {
+        response.writeHead(200, cors);
+        if (mode === 'malformed') {
+          response.end('{"product":"ProPR"}');
+          return;
+        }
+        if (mode === 'oversized') {
+          response.end(`{"ignored":"${'x'.repeat(9 * 1024)}"}`);
+          return;
+        }
+        response.end(JSON.stringify({
+          schemaVersion: 1,
+          product: 'ProPR',
+          version: '0.8.15',
+          apiCompatibility: PROPR_API_COMPATIBILITY,
+          uiCompatibility: PROPR_UI_COMPATIBILITY,
+          canonicalEndpoint: null,
+          publicInstanceIdentity: identity,
+          desktopAuthentication: {
+            protocolVersion: 2,
+            browserPairing: true,
+            instanceBearerTokens: true,
+            socketIoBearerAuthentication: true,
+          },
+        }));
+        return;
+      }
+      if (request.method === 'POST' && request.url === '/api/desktop/pairings') {
+        binding = await readJson(request);
+        response.writeHead(201, cors);
+        response.end(JSON.stringify({
+          pairingId,
+          deviceSecret,
+          approvalUrl: `${endpoint}/api/desktop/pairings/${pairingId}/browser`,
+          expiresAt: new Date(Date.now() + (mode === 'expiry' ? 200 : 60_000)).toISOString(),
+          interval: 1,
+        }));
+        return;
+      }
+      if (request.method === 'GET' && request.url === `/api/desktop/pairings/${pairingId}/browser`) {
+        approved = true;
+        response.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Type': 'text/html' });
+        response.end('<!doctype html><title>Desktop approved</title><p>Approved</p>');
+        return;
+      }
+      if (request.method === 'POST' && request.url === `/api/desktop/pairings/${pairingId}/poll`) {
+        const body = await readJson(request);
+        if (body.deviceSecret !== deviceSecret || !approved || !binding) throw new Error('pairing not approved');
+        if (mode === 'cancel' || mode === 'expiry') {
+          response.writeHead(202, cors);
+          response.end('{"status":"pending","interval":1}');
+          return;
+        }
+        response.writeHead(200, cors);
+        response.end(JSON.stringify({
+          status: 'provisional', token, tokenType: 'Bearer', activationTicket,
+          activationExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          instanceId: binding.instanceId,
+          origin: binding.origin,
+          scope: binding.scope,
+          credentialGeneration: binding.credentialGeneration,
+        }));
+        return;
+      }
+      if (request.method === 'POST' && request.url === `/api/desktop/pairings/${pairingId}/activate`) {
+        const body = await readJson(request);
+        if (body.deviceSecret !== deviceSecret || body.activationTicket !== activationTicket) {
+          throw new Error('activation binding rejected');
+        }
+        active = true;
+        response.writeHead(200, cors);
+        response.end(JSON.stringify({
+          status: 'active', receipt, activatedAt: new Date().toISOString(), expiresAt: null,
+        }));
+        return;
+      }
+      if (request.method === 'DELETE' && request.url === '/api/desktop/tokens/current') {
+        active = false;
+        response.writeHead(204, cors);
+        response.end();
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/api/auth/user'
+        && active && record.authorization === `Bearer ${token}`) {
+        response.writeHead(200, cors);
+        response.end(JSON.stringify({
+          id: 'packaged-owner', login: 'packaged-owner', username: 'packaged-owner',
+          displayName: 'Packaged Owner', email: null, avatarUrl: null,
+          role: 'admin', permissions: [], authorizationSource: 'bootstrap',
+        }));
+        return;
+      }
+      if (request.method === 'GET' && record.authorization === `Bearer ${token}`) {
+        response.writeHead(200, cors);
+        response.end('{}');
+        return;
+      }
+    } catch {
+      response.writeHead(400, cors);
+      response.end('{"code":"INVALID_SMOKE_REQUEST"}');
+      return;
+    }
+    response.writeHead(401, cors);
+    response.end('{"code":"INVALID_INSTANCE_TOKEN"}');
+  });
+  const io = new SocketIOServer(server, {
+    path: '/socket.io/',
+    transports: ['websocket'],
+    cors: { origin: DESKTOP_RENDERER_ORIGIN, credentials: false },
+  });
+  io.of('/').use((socket, next) => {
+    const scopes = new URL(socket.handshake.url, 'http://fixture.invalid')
+      .searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
+    requests.push({
+      method: 'SOCKET.IO',
+      url: socket.handshake.url,
+      authorization: socket.handshake.headers.authorization ?? null,
+      origin: socket.handshake.headers.origin ?? null,
+      transportScope: scopes[0] ?? null,
+      socketIo: true,
+    });
+    if (!active || socket.handshake.headers.authorization !== `Bearer ${token}`
+      || scopes.length !== 1 || socket.handshake.auth?.[DESKTOP_TRANSPORT_SCOPE_QUERY] !== scopes[0]) {
+      const error = new Error('INVALID_INSTANCE_TOKEN');
+      error.data = { code: 'INVALID_INSTANCE_TOKEN' };
+      next(error);
+      return;
+    }
+    next();
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Packaged journey fixture did not bind');
+  endpoint = `http://127.0.0.1:${address.port}`;
+  return {
+    endpoint,
+    requests,
+    secrets: [deviceSecret, activationTicket, token],
+    async close() {
+      await io.close();
+      await new Promise((resolveClose, rejectClose) => {
+        server.close(error => error ? rejectClose(error) : resolveClose());
+      });
+    },
+  };
+};
+
+const directoryContainsPlaintext = async (root, needles) => {
+  const visit = async path => {
+    const entries = await readdir(path, { withFileTypes: true });
+    for (const entry of entries) {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) {
+        if (await visit(child)) return true;
+      } else if (entry.isFile()) {
+        const contents = await readFile(child);
+        if (needles.some(needle => contents.includes(Buffer.from(needle)))) return true;
+      }
+    }
+    return false;
+  };
+  return visit(root);
+};
 
 if (process.platform === 'win32') {
   try {
@@ -219,6 +473,7 @@ const protectWindowsEntries = entries => {
 let canonicalTemp;
 let fixture;
 let generatedFixtureLeaf;
+let journeyFixture;
 let outcome = { ok: false, category: 'fixture-setup', capture: 'complete', records: [] };
 let failurePhase = 'fixture-setup';
 try {
@@ -263,11 +518,13 @@ try {
     || relative(canonicalTemp, configRoot) !== join(generatedFixtureLeaf, 'config')) {
     throw new Error('Connect smoke fixture escaped its fixed root');
   }
+  if (process.platform !== 'win32') journeyFixture = await createPackagedJourneyFixture();
   failurePhase = 'package-validation';
   await assertPackageAuthority();
   const treeKillerPath = await windowsTreeKiller();
   const sensitiveNeedles = [
     ...secrets, fixture, configRoot, stackRoot, identity,
+    ...(journeyFixture?.secrets ?? []),
     ...packagedConnectArtifactSensitiveNeedles({
       platform: process.platform,
       artifactRoot,
@@ -284,6 +541,9 @@ try {
     PROPR_CONNECTOR_TOKEN: secrets[1],
     PROPR_RELAY_TOKEN: secrets[2],
     GITHUB_TOKEN: secrets[3],
+    ...(journeyFixture ? {
+      PROPR_DESKTOP_CONNECT_JOURNEY_ENDPOINT: journeyFixture.endpoint,
+    } : {}),
   };
   delete childEnvironment.PROPR_DESKTOP_CONNECT_STAGING_PARENT;
   delete childEnvironment.PROPR_DESKTOP_CONNECT_STAGING_LEAF;
@@ -291,32 +551,84 @@ try {
     if (executable !== binaryPath) return spawn(executable, args, options);
     const child = spawn(binaryPath, ['--disable-gpu', `--user-data-dir=${userDataPath}`], {
       ...options,
-      env: childEnvironment,
+      env: options.env,
     });
     return child;
   };
   failurePhase = 'lifecycle-internal';
-  outcome = await runPackagedConnectLifecycle({
-    binaryPath,
-    args: ['--disable-gpu', `--user-data-dir=${userDataPath}`],
-    platform: process.platform,
-    arch: process.arch,
-    authorityMechanism: authorityMechanism(),
-    sensitiveNeedles,
-    treeKillerPath,
-    env: childEnvironment,
-    spawn: spawnLifecycleProcess,
-  });
+  const runPhase = async phase => await runPackagedConnectLifecycle({
+      binaryPath,
+      args: ['--disable-gpu', `--user-data-dir=${userDataPath}`],
+      platform: process.platform,
+      arch: process.arch,
+      authorityMechanism: authorityMechanism(),
+      sensitiveNeedles,
+      treeKillerPath,
+      env: {
+        ...childEnvironment,
+        ...(journeyFixture ? { PROPR_DESKTOP_CONNECT_JOURNEY_PHASE: phase } : {}),
+      },
+      spawn: spawnLifecycleProcess,
+    });
+  outcome = await runPhase('pair');
+  if (outcome.ok && journeyFixture) {
+    outcome = await runPhase('reprobe');
+    if (outcome.ok) {
+      const applicationRequests = journeyFixture.requests.filter(request => request.method !== 'OPTIONS');
+      const discoveries = applicationRequests.filter(request => request.url === '/api/desktop/discovery');
+      const bootstrap = applicationRequests.filter(request =>
+        request.url === '/api/desktop/pairings'
+        || /^\/api\/desktop\/pairings\/[^/]+\/(?:poll|activate)$/u.test(request.url ?? '')
+        || /\/browser$/u.test(request.url ?? ''));
+      const pairingStarts = bootstrap.filter(request => request.url === '/api/desktop/pairings');
+      const pairingBrowsers = bootstrap.filter(request => /\/browser$/u.test(request.url ?? ''));
+      const pairingActivations = bootstrap.filter(request => /\/activate$/u.test(request.url ?? ''));
+      const authenticatedRest = applicationRequests.filter(request =>
+        request.socketIo === false
+        && request.url === '/api/auth/user'
+        && request.authorization === `Bearer ${journeyFixture.secrets[2]}`);
+      const authenticatedSockets = applicationRequests.filter(request =>
+        request.socketIo === true && request.authorization === `Bearer ${journeyFixture.secrets[2]}`);
+      const socketScopes = new Set(authenticatedSockets.map(request =>
+        new URL(request.url, 'http://fixture.invalid').searchParams.get(DESKTOP_TRANSPORT_SCOPE_QUERY)));
+      const restScopes = new Set(authenticatedRest.map(request => request.transportScope));
+      const firstBearer = applicationRequests.findIndex(request => request.authorization !== null);
+      const firstIdentity = applicationRequests.findIndex(request => request.url === '/api/desktop/discovery');
+      const plaintextPersisted = await directoryContainsPlaintext(userDataPath, journeyFixture.secrets);
+      if (discoveries.length !== 5
+        || pairingStarts.length !== 3
+        || pairingBrowsers.length !== 3
+        || pairingActivations.length !== 1
+        || bootstrap.some(request => request.authorization !== null)
+        || authenticatedRest.length < 2
+        || authenticatedSockets.length < 2
+        || restScopes.has(null)
+        || restScopes.size < 2
+        || socketScopes.has(null)
+        || socketScopes.size < 2
+        || [...restScopes].some(scope => !socketScopes.has(scope))
+        || plaintextPersisted
+        || firstIdentity < 0
+        || firstBearer <= firstIdentity) {
+        outcome = { ok: false, category: 'journey-evidence', capture: 'complete', records: [] };
+      }
+    }
+  }
 } catch {
   outcome = { ok: false, category: failurePhase, capture: 'complete', records: [] };
 } finally {
   let cleanup = { ok: true };
+  if (journeyFixture) {
+    try { await journeyFixture.close(); }
+    catch { cleanup = { ok: false, category: 'fixture-cleanup-failed' }; }
+  }
   if (fixture && canonicalTemp && generatedFixtureLeaf) {
-    cleanup = await removeAuthorizedConnectFixture({
+    const directoryCleanup = await removeAuthorizedConnectFixture({
       fixture,
       canonicalTemporaryParent: canonicalTemp,
       generatedLeaf: generatedFixtureLeaf,
     });
+    if (!directoryCleanup.ok) cleanup = directoryCleanup;
   }
   if (!cleanup.ok) {
     outcome = preservePrimaryWithCleanup(outcome, cleanup);

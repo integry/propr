@@ -8,6 +8,10 @@ export type ProprClientErrorKind =
   | 'invalid_response'
   | 'compatibility';
 
+/** The exact credential-free public discovery request was authentication-gated. */
+export const DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED =
+  'DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED' as const;
+
 export interface ProprClientErrorOptions {
   kind: ProprClientErrorKind;
   status?: number;

@@ -141,6 +141,7 @@ export {
   PUBLIC_INSTANCE_IDENTITY_FILENAME,
   isPublicInstanceIdentity,
   parseProprDesktopDiscovery,
+  parseProprDesktopDiscoveryJson,
   parsePublicInstanceIdentityDocument,
   type PublicInstanceIdentityDocument,
   type ProprDesktopDiscovery,

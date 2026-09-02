@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
+  DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED,
   ProprClient,
   ProprClientError,
   type PairingProtocolRequestOptions,
@@ -680,16 +681,15 @@ export class DesktopCredentialService {
     try {
       discovery = await discoveryClient.discoverDesktop(8_000, operation.signal);
     } catch (error) {
-      // The generic auth guard in releases that predate desktop discovery
-      // answers an unknown /api/desktop/discovery route with 401. Signing in
-      // cannot make those releases pairable: discovery and pairing bootstrap
-      // must both be public protocol endpoints. Classify that stable legacy
-      // response as incompatible instead of presenting a transient outage or
-      // sending the user into an authentication loop.
-      if (error instanceof ProprClientError && error.kind === 'http' && error.status === 401) {
+      // Only the client's typed signal for the exact credential-free public
+      // discovery request is actionable here. Generic HTTP 401s, malformed
+      // identity, redirects, and authenticated operation failures stay strict.
+      if (error instanceof ProprClientError
+        && error.kind === 'invalid_response'
+        && error.code === DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED) {
         return {
           status: 'incompatible',
-          message: 'This instance does not support secure desktop connections. Update ProPR on the instance, then try again.',
+          message: 'This instance requires authentication for public desktop discovery. Check its proxy configuration or update ProPR, then try again.',
         };
       }
       return {

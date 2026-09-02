@@ -74,10 +74,13 @@ const terminalRevocation = (
   code: 'TOKEN_NOT_FOUND' | 'INSTANCE_TOKEN_REVOKED' | 'INSTANCE_TOKEN_EXPIRED' = 'TOKEN_NOT_FOUND',
 ): Response => json(terminalRevocationBody(init, code), code === 'TOKEN_NOT_FOUND' ? 404 : 401);
 const discovery = {
+  schemaVersion: 1 as const,
   product: 'ProPR',
   version: '0.8.15',
   apiCompatibility: PROPR_API_COMPATIBILITY,
   uiCompatibility: PROPR_UI_COMPATIBILITY,
+  canonicalEndpoint: null,
+  publicInstanceIdentity: '123e4567-e89b-42d3-a456-426614174000',
   desktopAuthentication: {
     protocolVersion: 2 as const,
     browserPairing: true,
@@ -149,7 +152,7 @@ describe('main-process desktop credential service', () => {
 
     assert.deepEqual(result, {
       status: 'incompatible',
-      message: 'This instance does not support secure desktop connections. Update ProPR on the instance, then try again.',
+      message: 'This instance requires authentication for public desktop discovery. Check its proxy configuration or update ProPR, then try again.',
     });
     assert.deepEqual(requests, [{
       url: 'https://legacy.example.test/api/desktop/discovery',
