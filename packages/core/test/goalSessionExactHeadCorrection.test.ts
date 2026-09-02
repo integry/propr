@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
+import Database from 'better-sqlite3';
 import type {
     GoalBeginTurnRequest, GoalProviderCancelRequest, GoalProviderOpenContext, GoalProviderOpenRequest,
     GoalModelChangeRequest, GoalProviderSessionSnapshot, GoalSessionAdapter, GoalSessionEvent, GoalSessionState,
@@ -8,13 +12,16 @@ import { openSupervisedCodexAppServer } from '../src/agents/goalSession/CodexApp
 import { decodeDurableGoalSessionState } from '../src/agents/goalSession/durableStateSecurity.js';
 import { GoalSessionSupervisor } from '../src/agents/goalSession/GoalSessionSupervisor.js';
 import { GoalSessionContractError } from '../src/agents/goalSession/errors.js';
+import { issueGoalSupervisedOpenPlan } from '../src/agents/goalSession/goalSessionOpen.js';
 import { InMemoryGoalSessionPorts } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
+import { createSqliteGoalSessionRuntimePorts } from '../src/agents/goalSession/SqliteGoalSessionControlDomain.js';
 import { sanitizeNewRecoveryMetadata, sanitizeRecoveryMetadata } from '../src/agents/goalSession/recoveryMetadata.js';
 import {
     rebuildIteratorResult, rebuildMessageAcknowledgement, rebuildModelAcknowledgement,
     rebuildPauseAcknowledgement, rebuildProviderSnapshot, rebuildReconcileResult,
     untrustedProviderResult,
 } from '../src/agents/goalSession/providerResultBoundary.js';
+import { createProductionSchema, recovery } from './productionGoalSessionTestSupport.js';
 
 const identity = { goalId: 'exact-correction-goal', sessionId: 'exact-correction-session' };
 const repository = { repository: 'integry/propr', worktreePath: '/tmp/exact-correction', branch: 'correction' };
@@ -423,6 +430,53 @@ test('Codex response loss fails closed and persisted exact identity is the only 
     assert.equal(malformed.writes.some(write => write.method === 'thread/start'), false);
 });
 
+test('production Supervisor crash/reopen issues one total Codex thread/start and keeps durable doubt terminal', async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-response-loss-supervisor-'));
+    const filename = path.join(directory, 'control.sqlite');
+    createProductionSchema(filename);
+    const transports: LineTransport[] = [];
+    const plan = issueGoalSupervisedOpenPlan({
+        repository, requestedModel: 'gpt-5.6-sol', providerHomeTarget: '/home/node/.codex', credentialTargets: [],
+    }, {
+        createTransport: async () => {
+            const transport = new LostThreadStartTransport();
+            transports.push(transport);
+            return transport;
+        },
+        cancelPending: async () => undefined,
+        transferPending: () => undefined,
+    });
+    const adapter: GoalSessionAdapter = {
+        provider: 'codex', supportsDeterministicOpen: true,
+        capabilities: { nativeSessionId: 'eager', steering: 'active_turn', pause: 'after_turn', modelChange: 'next_turn' },
+        publishOperationBarrier: async () => undefined,
+        openSession: request => openSupervisedCodexAppServer(request.openContext!, request.persisted),
+        beginTurn: async function* () { yield { type: 'completion', outcome: 'succeeded' }; },
+        resumeSession: async (_request, snapshot) => snapshot,
+        requestModelChange: async request => ({ requestedModel: request.model, appliesAt: 'next_turn' }),
+        cancel: async () => undefined, cancelPending: async () => undefined,
+        reconcile: async () => ({ outcome: 'failed', reason: 'unused' }),
+    };
+    let database = new Database(filename);
+    const first = new GoalSessionSupervisor(
+        adapter, createSqliteGoalSessionRuntimePorts(database, recovery), () => 'codex-response-attempt',
+    );
+    await assert.rejects(first.openSession({ ...identity, provider: 'codex', controllerEpoch: 1, supervisedOpen: plan }),
+        (error: unknown) => error instanceof GoalSessionContractError && error.code === 'PROVIDER_OPEN_IN_DOUBT');
+    database.close();
+    database = new Database(filename);
+    const runtime = createSqliteGoalSessionRuntimePorts(database, recovery);
+    const replacement = new GoalSessionSupervisor(adapter, runtime, () => 'codex-replacement-attempt');
+    await assert.rejects(replacement.openSession({
+        ...identity, provider: 'codex', controllerEpoch: 2, supervisedOpen: plan,
+    }), /failed provider session cannot be resumed/);
+    assert.equal(transports.length, 1);
+    assert.equal(transports.flatMap(transport => transport.writes).filter(write => write.method === 'thread/start').length, 1);
+    assert.equal((await runtime.state.load(identity))?.status, 'failed');
+    database.close();
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+});
+
 test('hardened supervisor constructs eager-open transport only under its exact durable control claim', async () => {
     const ports = new InMemoryGoalSessionPorts();
     const adapter: GoalSessionAdapter = {
@@ -450,9 +504,10 @@ test('hardened supervisor constructs eager-open transport only under its exact d
     let factoryCalled = false;
     const opened = await supervisor.openSession({
         ...identity, provider: 'codex', controllerEpoch: 1,
-        supervisedOpen: {
+        supervisedOpen: issueGoalSupervisedOpenPlan({
             repository, requestedModel: 'gpt-5.6-sol', providerHomeTarget: '/home/node/.codex',
             credentialTargets: ['/home/node/.codex/auth.json'],
+        }, {
             createTransport: async claim => {
                 factoryCalled = true;
                 const durable = await ports.load(identity);
@@ -468,7 +523,9 @@ test('hardened supervisor constructs eager-open transport only under its exact d
                 assert.match(claim.deterministicOpenKey, /^[A-Za-z0-9._:-]+$/);
                 return transport;
             },
-        },
+            cancelPending: async () => { await transport.cancel(); },
+            transferPending: () => undefined,
+        }),
     });
     assert.equal(factoryCalled, true);
     assert.equal(opened.status, 'idle');

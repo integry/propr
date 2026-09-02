@@ -5,8 +5,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { mock, test } from 'node:test';
+import Database from 'better-sqlite3';
 import type { GoalSessionAdapter } from '../src/agents/goalSession/contract.js';
 import { InMemoryGoalSessionPorts } from '../src/agents/goalSession/InMemoryGoalSessionPorts.js';
+import { createSqliteGoalSessionRuntimePorts } from '../src/agents/goalSession/SqliteGoalSessionControlDomain.js';
+import { createProductionSchema, recovery } from './productionGoalSessionTestSupport.js';
 
 const spawnCalls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
 let stdinHandler: ((data: string) => void) | undefined;
@@ -589,14 +592,18 @@ test('start rejects unapproved, broad, sensitive, and symlink-aliased mount sour
 
 test('production Codex factory composes claimed supervisor, duplex, and exact App Server open', async t => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-factory-open-'));
-    const ports = new InMemoryGoalSessionPorts();
-    const runtime = ports.asRuntimePorts();
-    const containers = new GoalContainerSupervisor(base, runtime.events, undefined, {
+    const filename = path.join(base, 'control.sqlite');
+    createProductionSchema(filename);
+    const supervisorDatabase = new Database(filename);
+    const containerDatabase = new Database(filename);
+    const runtime = createSqliteGoalSessionRuntimePorts(supervisorDatabase, recovery);
+    const containerRuntime = createSqliteGoalSessionRuntimePorts(containerDatabase, recovery);
+    const containers = new GoalContainerSupervisor(base, containerRuntime.events, undefined, {
         isolation: {
             environmentKeys: [], worktreePaths: [approvedWorktree],
             providerHomeTargets: ['/home/node/.codex'], credentialMounts: [],
         },
-        providerFirstEffects: runtime.providerFirstEffects,
+        providerFirstEffects: containerRuntime.providerFirstEffects,
     });
     const repository = {
         repository: 'integry/propr', worktreePath: approvedWorktree, branch: 'factory-open', headSha: 'abcdef',
@@ -616,6 +623,7 @@ test('production Codex factory composes claimed supervisor, duplex, and exact Ap
         resumeSession: async (_request, snapshot) => snapshot,
         requestModelChange: async request => ({ requestedModel: request.model, appliesAt: 'next_turn' }),
         cancel: async () => undefined,
+        cancelPending: (request, pending) => factory.cancelPending(request, pending),
         reconcile: async () => ({ outcome: 'failed', reason: 'unused' }),
     };
     child.exitCode = null;
@@ -640,7 +648,10 @@ test('production Codex factory composes claimed supervisor, duplex, and exact Ap
             }
         });
     };
-    t.after(() => { stdinHandler = undefined; child.exitCode = null; child.stdin.writableEnded = false; });
+    t.after(() => {
+        stdinHandler = undefined; child.exitCode = null; child.stdin.writableEnded = false;
+        supervisorDatabase.close(); containerDatabase.close();
+    });
 
     const supervisor = new GoalSessionSupervisor(adapter, runtime);
     const opened = await supervisor.openSession({

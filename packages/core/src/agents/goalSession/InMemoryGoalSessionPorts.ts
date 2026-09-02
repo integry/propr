@@ -32,6 +32,7 @@ import {
 import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { assertProviderFirstEffectState } from './providerFirstEffect.js';
 import { assertStartedProviderEffect } from './providerEffectProtocol.js';
+import { assertGoalProviderEffectStage } from './providerOperationBoundary.js';
 
 export class GoalSessionScopeError extends Error {
     constructor(message = 'A provider session is owned by a different goal') {
@@ -95,6 +96,7 @@ export class InMemoryGoalSessionPorts implements
         _stage: GoalProviderEffectStage,
         effect: () => GoalStartedProviderEffect<T>,
     ): Promise<T> {
+        assertGoalProviderEffectStage(_stage);
         const state = this.states.get(keyOf(fence));
         assertProviderFirstEffectState(state ? clone(state) : null, fence);
         const started = effect();

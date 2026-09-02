@@ -29,6 +29,7 @@ import {
     createProviderOperationFence, createProviderResumeRequest, providerFirstEffectStream,
     rollbackStartedProviderPrimitive, startedProviderEffect,
 } from './providerEffectProtocol.js';
+import { assertGoalProviderEffectStage } from './providerOperationBoundary.js';
 
 /**
  * Low-level, fenced state and event primitives shared by every high-level goal
@@ -152,7 +153,7 @@ export abstract class GoalSessionCore {
     /** Starts the primitive while the authoritative state row is transaction-locked. */
     protected providerFirstEffect<T>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>,
         stage: GoalProviderEffectStage = 'provider_primitive'): Promise<T> {
-        return this.ports.providerFirstEffects.start(fence, stage, effect);
+        assertGoalProviderEffectStage(stage); return this.ports.providerFirstEffects.start(fence, stage, effect);
     }
 
     protected startedProviderEffect<T>(completion: Promise<T>, rollbackOrCancel: () => void | Promise<void>): GoalStartedProviderEffect<T> {

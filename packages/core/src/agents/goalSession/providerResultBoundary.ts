@@ -7,7 +7,9 @@ import type {
     GoalSessionJsonValue,
 } from './contract.js';
 import { isSafeIdentifier } from './safeIdentifier.js';
-import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
+import {
+    GoalSessionContractError, isProviderOpenInDoubtError, StaleGoalSessionFenceError,
+} from './errors.js';
 import { sanitizeNewRecoveryMetadata } from './recoveryMetadata.js';
 import { safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
 
@@ -21,6 +23,7 @@ export async function untrustedProviderResult<T, R>(
         return rebuild(await effect());
     } catch (error) {
         if (error instanceof StaleGoalSessionFenceError) throw error;
+        if (isProviderOpenInDoubtError(error)) throw error;
         throw safeProviderException(error);
     }
 }

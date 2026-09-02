@@ -1,5 +1,6 @@
 import type {
-    GoalProviderOpenRequest, GoalProviderSessionSnapshot, GoalRepositoryIdentity,
+    GoalPendingCancellationContext, GoalProviderCancelRequest, GoalProviderOpenRequest,
+    GoalProviderSessionSnapshot, GoalRepositoryIdentity,
 } from './contract.js';
 import { openSupervisedCodexAppServer, SUPERVISED_CODEX_MODEL } from './CodexAppServerOpen.js';
 import type {
@@ -7,6 +8,7 @@ import type {
 } from './GoalContainerSupervisor.js';
 import { GoalSessionContractError } from './errors.js';
 import type { GoalSupervisedOpenPlan } from './goalSessionOpen.js';
+import { issueGoalSupervisedOpenPlan } from './goalSessionOpen.js';
 import { createProviderProtocolDuplex } from './providerProtocolDuplex.js';
 
 export interface SupervisedCodexAppServerFactoryOptions {
@@ -23,6 +25,7 @@ export interface SupervisedCodexAppServerFactoryOptions {
 export interface GoalProviderOpenFactory {
     readonly plan: GoalSupervisedOpenPlan;
     open(request: GoalProviderOpenRequest): Promise<GoalProviderSessionSnapshot>;
+    cancelPending(request: GoalProviderCancelRequest, pending: GoalPendingCancellationContext): Promise<void>;
 }
 
 export function createSupervisedCodexAppServerFactory(
@@ -30,15 +33,19 @@ export function createSupervisedCodexAppServerFactory(
     options: SupervisedCodexAppServerFactoryOptions,
 ): GoalProviderOpenFactory {
     const credentialTargets = (options.credentialMounts ?? []).map(mount => mount.target);
-    const plan: GoalSupervisedOpenPlan = {
+    const fields: GoalSupervisedOpenPlan = {
         repository: options.repository,
         requestedModel: SUPERVISED_CODEX_MODEL,
         providerHomeTarget: '/home/node/.codex',
         credentialTargets,
+    };
+    const plan = issueGoalSupervisedOpenPlan(fields, {
         async createTransport(claim) {
             const duplex = createProviderProtocolDuplex(options.maxProtocolQueueBytes);
-            const started = await containers.startOpen({
-                goalId: claim.operationFence.goalId,
+            let started: Awaited<ReturnType<GoalContainerSupervisor['startOpen']>>;
+            try {
+                started = await containers.startOpen({
+                    goalId: claim.operationFence.goalId,
                 sessionId: claim.operationFence.sessionId,
                 controllerEpoch: claim.operationFence.controllerEpoch,
                 executionId: claim.executionId,
@@ -52,12 +59,22 @@ export function createSupervisedCodexAppServerFactory(
                 providerHomeTarget: '/home/node/.codex',
                 environment: options.environment,
                 credentialMounts: options.credentialMounts,
-                outputObserver: duplex.observer,
-            });
+                    outputObserver: duplex.observer,
+                });
+            } catch (error) {
+                await containers.cancelPendingOpen(claim).catch(() => undefined);
+                throw error;
+            }
             duplex.bindExecution(started.execution);
             return duplex.transport;
         },
-    };
+        async cancelPending(claim) {
+            await containers.cancelPendingOpen(claim);
+        },
+        transferPending(claim) {
+            containers.transferPendingOpen(claim);
+        },
+    });
     return {
         plan,
         async open(request) {
@@ -65,6 +82,12 @@ export function createSupervisedCodexAppServerFactory(
                 'Claimed Codex App Server context is missing', 'OPEN_CONTEXT_MISSING',
             );
             return openSupervisedCodexAppServer(request.openContext, request.persisted);
+        },
+        async cancelPending(request, pending) {
+            await containers.cancelPendingOpenAttempt({
+                goalId: request.goalId, sessionId: request.sessionId,
+                attemptId: pending.initializationIntent.attemptId,
+            });
         },
     };
 }

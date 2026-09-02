@@ -69,6 +69,17 @@ export interface GoalProviderOperationFence extends GoalSessionIdentity {
 /** Closed identity for one real external stage within a logical operation. */
 export type GoalProviderEffectStage = 'provider_primitive' | 'stream_first_next' | 'container_spawn';
 
+const PROVIDER_EFFECT_STAGES: ReadonlySet<string> = new Set([
+    'provider_primitive', 'stream_first_next', 'container_spawn',
+]);
+
+/** Runtime boundary for JavaScript callers and values decoded from persistence. */
+export function assertGoalProviderEffectStage(value: unknown): asserts value is GoalProviderEffectStage {
+    if (typeof value !== 'string' || !PROVIDER_EFFECT_STAGES.has(value)) {
+        throw new Error('Provider effect stage is not one of the three internal stages');
+    }
+}
+
 export interface GoalStartedProviderEffectCleanup {
     readonly kind: 'rollback_or_cancel';
     readonly run: () => void | Promise<void>;

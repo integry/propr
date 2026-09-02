@@ -7,7 +7,7 @@ import {
     CODEX_APP_SERVER_METHODS_0146, CODEX_APP_SERVER_PROTOCOL_0146, CODEX_CLI_VERSION_0146,
     type CodexThreadResponse0146, type CodexThreadResumeParams0146, type CodexThreadStartParams0146,
 } from './codexAppServer0146Bindings.generated.js';
-import { GoalSessionContractError } from './errors.js';
+import { GoalSessionContractError, providerOpenInDoubtError } from './errors.js';
 import { isSafeIdentifier } from './safeIdentifier.js';
 import { sanitizeNewRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 import { assertExactThreadFields, assertExactThreadResponseFields } from './codexAppServer0146Validation.js';
@@ -89,9 +89,7 @@ export async function openSupervisedCodexAppServer(
         }, 'codex');
         return { providerSessionId: identity.threadId, recoveryMetadata, model: SUPERVISED_CODEX_MODEL };
     } catch (error) {
-        if (newThreadRequestStarted && !persisted) throw new GoalSessionContractError(
-            'Codex thread creation is in doubt; exact identifiers were not persisted', 'PROVIDER_OPEN_IN_DOUBT',
-        );
+        if (newThreadRequestStarted && !persisted) throw providerOpenInDoubtError();
         if (error instanceof GoalSessionContractError) throw error;
         throw new GoalSessionContractError('Codex App Server open failed safely', 'PROVIDER_OPERATION_FAILED');
     } finally {

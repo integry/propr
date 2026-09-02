@@ -1,4 +1,4 @@
-import { appendFile, mkdir, realpath, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
     executeSupervisedDockerCommand,
@@ -11,6 +11,9 @@ import type {
     GoalSessionEventSink,
     GoalSessionFence,
 } from './contract.js';
+import type { GoalSupervisedOpenClaim } from './goalSessionOpen.js';
+import { PendingOpenOwnership } from './pendingOpenOwnership.js';
+import { cleanTerminalGoalSession } from './terminalContainerCleanup.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { startedProviderEffect } from './providerEffectProtocol.js';
 import { assertSafeCallerTurnIdentity } from './safeIdentifier.js';
@@ -18,7 +21,7 @@ import { sanitizeGoalSessionEvent } from './securityBoundary.js';
 import { isSensitiveHostSourcePath } from './worktreeIdentity.js';
 import {
     buildGoalContainerLayout, buildGoalOpenContainerLayout, DEFAULT_GOAL_CONTAINER_RETENTION,
-    GOAL_SCOPE_PATTERN, validateAbsolutePath, validateBindMountPath,
+    validateAbsolutePath, validateBindMountPath,
     type GoalContainerIsolationPolicy, type GoalContainerLayout, type GoalContainerRetentionPolicy,
     type GoalCredentialMount, type StartGoalContainerRequest, type StartGoalOpenContainerRequest,
 } from './goalContainerLayout.js';
@@ -235,6 +238,7 @@ function assertContainerOperationFence(
 export class GoalContainerSupervisor {
     private readonly isolation: GoalContainerIsolationPolicy;
     private readonly providerFirstEffects?: GoalProviderFirstEffectPort;
+    private readonly pendingOpen = new PendingOpenOwnership();
 
     constructor(
         private readonly baseDirectory: string,
@@ -254,10 +258,19 @@ export class GoalContainerSupervisor {
         return this.startScoped(request, 'turn');
     }
 
-    async startOpen(
-        request: StartGoalOpenContainerRequest,
-    ): Promise<{ layout: GoalContainerLayout; execution: SupervisedDockerExecution }> {
+    async startOpen(request: StartGoalOpenContainerRequest): Promise<{ layout: GoalContainerLayout; execution: SupervisedDockerExecution }> {
         return this.startScoped(request, 'open');
+    }
+
+    /** Idempotently releases a process still owned by its exact eager-open attempt. */
+    async cancelPendingOpen(claim: Readonly<GoalSupervisedOpenClaim>): Promise<void> { await this.pendingOpen.cancel(claim); }
+
+    async cancelPendingOpenAttempt(identity: { goalId: string; sessionId: string; attemptId: string }): Promise<void> {
+        await this.pendingOpen.cancelIdentity(identity); }
+
+    /** Transfers cleanup ownership to the now-persisted provider session. */
+    transferPendingOpen(claim: Readonly<GoalSupervisedOpenClaim>): void {
+        this.pendingOpen.transfer(claim);
     }
 
     private async startScoped(
@@ -387,6 +400,13 @@ export class GoalContainerSupervisor {
                 }
             },
                 });
+                if (scope === 'open') {
+                    this.pendingOpen.register({
+                        executionId: request.executionId, attemptId: request.attemptId,
+                        deterministicOpenKey: (request as StartGoalOpenContainerRequest).deterministicOpenKey,
+                        operationGeneration: operationFence.generation, operationFence,
+                    }, started);
+                }
                 return startedProviderEffect(Promise.resolve(started), () =>
                     started.cancel(new Error('Authoritative Docker-start transaction failed')));
             },
@@ -428,30 +448,8 @@ export class GoalContainerSupervisor {
         outcome: 'succeeded' | 'cancelled' | 'failed',
         currentTime = new Date(),
     ): Promise<boolean> {
-        if (currentTime < this.retentionDeadline(terminalAt, outcome)) return false;
-        const realGoals = await realpath(path.join(await realpath(this.baseDirectory), 'goals')).catch(() => null);
-        if (!realGoals) return false;
-
-        // Derived-layout ownership: the lexical target must be an immediate child
-        // of the real goals directory whose name is an opaque, derived goal scope,
-        // exactly as buildGoalContainerLayout produces it.
-        const lexicalRoot = path.resolve(layout.sessionRoot);
-        if (path.dirname(lexicalRoot) !== realGoals || !GOAL_SCOPE_PATTERN.test(path.basename(lexicalRoot))) {
-            throw new Error('Refusing to clean a path outside the goal container resource directory');
-        }
-        let resolvedRoot: string;
-        try {
-            resolvedRoot = await realpath(lexicalRoot);
-        } catch {
-            return false; // Already removed.
-        }
-        // Lexical/resolved identity: a session root that is (or traverses) a
-        // symlink resolves to a different real path than its derived location.
-        // Rejecting the mismatch spares both external and in-tree sibling targets.
-        if (resolvedRoot !== lexicalRoot) {
-            throw new Error('Refusing to clean a symlinked goal session directory');
-        }
-        await rm(resolvedRoot, { recursive: true, force: true });
-        return true;
+        return cleanTerminalGoalSession({
+            baseDirectory: this.baseDirectory, retention: this.retention, layout, terminalAt, outcome, currentTime,
+        });
     }
 }

@@ -19,11 +19,12 @@ export type {
     RunGoalTurnRequest,
     RunGoalTurnResult,
 } from './GoalSessionSupervisor.js';
-export {
-    GoalSessionScopeError,
-    InMemoryGoalSessionPorts,
-} from './InMemoryGoalSessionPorts.js';
+export { GoalSessionScopeError } from './InMemoryGoalSessionPorts.js';
 export { AuthoritativeGoalSessionRuntimePorts } from './AuthoritativeGoalSessionRuntimePorts.js';
+export {
+    createSqliteGoalSessionRuntimePorts,
+    SqliteGoalSessionControlDomain,
+} from './SqliteGoalSessionControlDomain.js';
 export {
     DEFAULT_GOAL_CONTAINER_RETENTION,
     GoalContainerSupervisor,

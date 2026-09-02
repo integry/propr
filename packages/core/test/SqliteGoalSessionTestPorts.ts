@@ -74,7 +74,7 @@ export class SqliteGoalSessionTestPorts {
             );
             CREATE TABLE IF NOT EXISTS goal_session_runtime_provider_effects (
                 scope TEXT NOT NULL, operation_id TEXT NOT NULL, kind TEXT NOT NULL,
-                stage TEXT NOT NULL, status TEXT NOT NULL,
+                stage TEXT NOT NULL, status TEXT NOT NULL, outcome_json TEXT,
                 PRIMARY KEY (scope, operation_id, stage)
             );
             INSERT OR IGNORE INTO goal_session_runtime_model_sequences(scope, next_sequence)
@@ -139,7 +139,7 @@ export class SqliteGoalSessionTestPorts {
     async claimProviderEffect(
         fence: GoalProviderOperationFence,
         stage: GoalProviderEffectStage,
-    ): Promise<'claimed' | 'already_claimed'> {
+    ): Promise<import('../src/agents/goalSession/AuthoritativeGoalSessionRuntimePorts.js').GoalProviderEffectClaimResult> {
         return this.database.transaction(() => {
             this.assertGoalScope(fence);
             assertProviderFirstEffectState(this.readState(fence), fence);
@@ -147,9 +147,27 @@ export class SqliteGoalSessionTestPorts {
                 `INSERT OR IGNORE INTO goal_session_runtime_provider_effects
                     (scope, operation_id, kind, stage, status) VALUES (?, ?, ?, ?, 'claimed')`,
             ).run(scope(fence), fence.operationId, fence.kind, stage);
-            return result.changes === 1 ? 'claimed' as const : 'already_claimed' as const;
+            if (result.changes === 1) return { status: 'claimed' as const };
+            const existing = this.database.prepare(`SELECT status, outcome_json
+                FROM goal_session_runtime_provider_effects WHERE scope = ? AND operation_id = ? AND stage = ?`)
+                .get(scope(fence), fence.operationId, stage) as { status: string; outcome_json: string | null };
+            return existing.status === 'settled'
+                ? { status: 'settled' as const, outcome: JSON.parse(existing.outcome_json ?? 'null') }
+                : { status: 'terminal_in_doubt' as const };
         }).immediate();
     }
+
+    async settleProviderEffect(
+        fence: GoalProviderOperationFence,
+        stage: GoalProviderEffectStage,
+        outcome: unknown,
+    ): Promise<void> {
+        this.database.prepare(`UPDATE goal_session_runtime_provider_effects SET status = 'settled', outcome_json = ?
+            WHERE scope = ? AND operation_id = ? AND stage = ?`)
+            .run(JSON.stringify(outcome ?? null), scope(fence), fence.operationId, stage);
+    }
+
+    async markProviderEffectRecoverable(): Promise<void> {}
 
     async runClaimedProviderEffect<T>(
         fence: GoalProviderOperationFence,

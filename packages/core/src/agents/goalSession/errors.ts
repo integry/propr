@@ -20,3 +20,18 @@ export class UnsupportedGoalSessionTransitionError extends GoalSessionContractEr
         this.name = 'UnsupportedGoalSessionTransitionError';
     }
 }
+
+const PROVIDER_OPEN_IN_DOUBT_ERRORS = new WeakSet<GoalSessionContractError>();
+
+/** Internal Codex transport signal; adapter-supplied lookalikes are untrusted. */
+export function providerOpenInDoubtError(): GoalSessionContractError {
+    const error = new GoalSessionContractError(
+        'Codex thread creation is in doubt; exact identifiers were not persisted', 'PROVIDER_OPEN_IN_DOUBT',
+    );
+    PROVIDER_OPEN_IN_DOUBT_ERRORS.add(error);
+    return error;
+}
+
+export function isProviderOpenInDoubtError(value: unknown): value is GoalSessionContractError {
+    return value instanceof GoalSessionContractError && PROVIDER_OPEN_IN_DOUBT_ERRORS.has(value);
+}

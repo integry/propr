@@ -561,6 +561,10 @@ export type GoalProviderReconcileResult =
  * operationGeneration below the newest generation they have observed, before
  * starting any provider side effect. operationId/token supplies idempotency;
  * generation supplies replacement/cancellation ordering.
+ * Every non-open primitive reached through GoalProviderFirstEffectPort must be
+ * idempotent by its exact operation fence because an unresolved durable start
+ * is re-invoked after process recovery. A non-idempotent eager open is instead
+ * terminal/in-doubt unless its validated outcome was durably settled.
  */
 export interface GoalSessionAdapter {
     readonly provider: string;

@@ -370,6 +370,39 @@ test('post-start receipt/commit failures clean up and permanently fence retry', 
     }
 });
 
+test('delayed completion rejection is observed after receipt failure even when cleanup also fails', async t => {
+    for (const cleanupFails of [false, true]) {
+        await t.test(cleanupFails ? 'cleanup_failure' : 'cleanup_success', async () => {
+            const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'slice-one-delayed-rejection-'));
+            const filename = path.join(directory, 'runtime.sqlite');
+            const ports = new SqliteGoalSessionTestPorts(filename);
+            const unhandled: unknown[] = [];
+            const observe = (reason: unknown) => { unhandled.push(reason); };
+            process.on('unhandledRejection', observe);
+            try {
+                const { state, fence } = operationCase('open', `delayed-${cleanupFails}`);
+                await ports.create(state);
+                ports.setProviderFault('receipt_write');
+                let rejectCompletion!: (error: Error) => void;
+                const completion = new Promise<void>((_resolve, reject) => { rejectCompletion = reject; });
+                await assert.rejects(ports.asRuntimePorts().providerFirstEffects.start(
+                    fence, 'provider_primitive', () => startedProviderEffect(completion, () => {
+                        if (cleanupFails) throw new Error('cleanup failed');
+                    }),
+                ), cleanupFails ? /cleanup failed/ : /receipt-write failure/);
+                rejectCompletion(new Error('delayed process rejection'));
+                await new Promise<void>(resolve => setImmediate(resolve));
+                await new Promise<void>(resolve => setImmediate(resolve));
+                assert.deepEqual(unhandled, []);
+            } finally {
+                process.off('unhandledRejection', observe);
+                ports.close();
+                fs.rmSync(directory, { recursive: true, force: true });
+            }
+        });
+    }
+});
+
 test('cleanup failure and synchronous throw remain durable in-doubt without reentry', async t => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'slice-one-cleanup-'));
     const filename = path.join(directory, 'runtime.sqlite');

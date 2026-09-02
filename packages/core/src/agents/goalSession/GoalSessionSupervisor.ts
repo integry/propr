@@ -1,6 +1,4 @@
-import type {
-    GoalProviderOpenContext, GoalSessionState,
-} from './contract.js';
+import type { GoalSessionState } from './contract.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
     GoalSessionContractError,
@@ -19,10 +17,11 @@ import {
 import { assertCredentialFreeRecoveryMetadata, sanitizeRecoveryMetadata } from './recoveryMetadata.js';
 import { safeFailureDiagnostic } from './securityBoundary.js';
 import { rebuildProviderSnapshot } from './providerResultBoundary.js';
+import { throwPersistedProviderOpenFailure } from './providerOpenFailure.js';
 import { credentialFreeRepositoryIdentity } from './repositorySecurity.js';
 import {
-    durableCodexOpenKey, validateClaimedEagerOpenContext, validateSupervisedOpenPlan,
-    type GoalSupervisedOpenClaim, type OpenGoalSessionRequest,
+    createOptionalClaimedOpenContext, durableCodexOpenKey, validateSupervisedOpenPlan,
+    type GoalOwnedOpenContext, type OpenGoalSessionRequest,
 } from './goalSessionOpen.js';
 import {
     assertProviderIdentity,
@@ -317,6 +316,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
         deterministicOpenKey: string | undefined,
     ): Promise<GoalSessionState> {
         const persisted = state.providerSessionId ? persistedSnapshot(state) : undefined;
+        let claimedOpen: GoalOwnedOpenContext | undefined;
         try {
             if (!state.providerOpenAttemptId) {
                 throw new GoalSessionContractError('Provider open attempt was not durably claimed', 'OPEN_ATTEMPT_MISSING');
@@ -328,9 +328,18 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
             const operationFence = this.providerOperationFence(
                 request, operationGeneration, { kind: 'open', operationId: providerOpenAttemptId },
             );
-            const openContext = await this.resolveClaimedOpenContext(
-                request, state, deterministicOpenKey, operationGeneration,
-            );
+            const executionId = this.controlOperationId('open-execution', state);
+            claimedOpen = await createOptionalClaimedOpenContext({
+                adapter: this.adapter, plan: request.supervisedOpen, executionId,
+                attemptId: providerOpenAttemptId, openKey: deterministicOpenKey ?? durableCodexOpenKey(state),
+                operationGeneration,
+                operationFence: this.providerOperationFence(request, operationGeneration, {
+                    kind: 'open', operationId: providerOpenAttemptId,
+                    executionId, attemptId: providerOpenAttemptId,
+                }),
+                requireCurrent: () => this.requireProviderGeneration(request, operationGeneration),
+            });
+            const openContext = claimedOpen?.context;
             const authoritative = await this.requireProviderGeneration(request, operationGeneration);
             if (authoritative.providerOpenAttemptId !== providerOpenAttemptId) {
                 throw new StaleGoalSessionFenceError('Provider open claim was durably replaced');
@@ -366,55 +375,14 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 failureReason: undefined,
             }));
             if (!saved) throw new StaleGoalSessionFenceError('Session ownership changed while provider identity was being persisted');
+            claimedOpen?.transfer();
             return saved;
         } catch (error) {
-            if (error instanceof StaleGoalSessionFenceError || error instanceof GoalSessionContractError) throw error;
-            await this.ports.state.compareAndSet(state, nextState(state, {
-                status: 'failed',
-                failureReason: safeFailureDiagnostic((error as Error).message, 'Unable to create or resume provider session safely'),
-            }));
-            throw error;
+            await claimedOpen?.cancel().catch(() => undefined);
+            return throwPersistedProviderOpenFailure(this.ports.state, state, error);
         }
     }
 
-    private async resolveClaimedOpenContext(
-        request: OpenGoalSessionRequest,
-        state: GoalSessionState,
-        deterministicKey: string | undefined,
-        operationGeneration: number,
-    ): Promise<GoalProviderOpenContext | undefined> {
-        if (!request.supervisedOpen) return undefined;
-        const openKey = deterministicKey ?? durableCodexOpenKey(state);
-        if (!openKey || !state.providerOpenAttemptId) throw new GoalSessionContractError(
-            'Supervised open claim is missing its durable identity', 'OPEN_ATTEMPT_MISSING',
-        );
-        const executionId = this.controlOperationId('open-execution', state);
-        const claim: GoalSupervisedOpenClaim = {
-            executionId,
-            attemptId: state.providerOpenAttemptId,
-            deterministicOpenKey: openKey,
-            operationGeneration,
-            operationFence: this.providerOperationFence(
-                request, operationGeneration, {
-                    kind: 'open', operationId: state.providerOpenAttemptId,
-                    executionId, attemptId: state.providerOpenAttemptId,
-                },
-            ),
-        };
-        const authoritative = await this.requireProviderGeneration(request, operationGeneration);
-        if (authoritative.providerOpenAttemptId !== claim.attemptId) {
-            throw new StaleGoalSessionFenceError('Supervised provider transport claim was durably replaced');
-        }
-        const transport = await request.supervisedOpen.createTransport(Object.freeze({ ...claim }));
-        return validateClaimedEagerOpenContext(this.adapter, {
-            ...claim,
-            repository: request.supervisedOpen.repository,
-            requestedModel: request.supervisedOpen.requestedModel,
-            providerHomeTarget: request.supervisedOpen.providerHomeTarget,
-            credentialTargets: [...request.supervisedOpen.credentialTargets],
-            transport,
-        });
-    }
 }
 
 export { GoalSessionContractError, StaleGoalSessionFenceError, UnsupportedGoalSessionTransitionError } from './errors.js';

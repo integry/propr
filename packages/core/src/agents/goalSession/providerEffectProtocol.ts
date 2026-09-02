@@ -4,6 +4,7 @@ import type {
 } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
 import { persistedSnapshot } from './support.js';
+import { assertGoalProviderEffectStage } from './providerOperationBoundary.js';
 
 const STARTED_PROVIDER_EFFECTS = new WeakSet<object>();
 
@@ -50,6 +51,10 @@ export function startedProviderEffect<T>(
             'Provider first effect must expose native completion and cleanup ownership', 'INVALID_FIRST_EFFECT_HANDLE',
         );
     }
+    // Observe rejection at ownership acceptance, before a receipt/COMMIT failure
+    // can divert control into cleanup. The original promise remains unchanged
+    // and still rejects for its normal consumer.
+    void completion.catch(() => undefined);
     const cleanup = Object.freeze({ kind: 'rollback_or_cancel' as const, run: rollbackOrCancel });
     const handle = Object.create(null) as GoalStartedProviderEffect<T>;
     Object.defineProperties(handle, {
@@ -143,6 +148,7 @@ export function providerFirstEffectStream<T>(
     fence: GoalProviderOperationFence,
     create: () => AsyncIterable<T>,
 ): AsyncIterable<T> {
+    assertGoalProviderEffectStage('stream_first_next');
     let iterator: AsyncIterator<T> | undefined;
     let started = false;
     return {

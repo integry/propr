@@ -9,8 +9,12 @@ import { GoalSessionContractError } from './errors.js';
 import {
     assertStartedProviderEffect, cleanupStartedProviderEffect, startedProviderEffectCleanup,
 } from './providerEffectProtocol.js';
+import { assertGoalProviderEffectStage } from './providerOperationBoundary.js';
 
-export type GoalProviderEffectClaimResult = 'claimed' | 'already_claimed';
+export type GoalProviderEffectClaimResult =
+    | { status: 'claimed' | 'recoverable' }
+    | { status: 'settled'; outcome: unknown }
+    | { status: 'terminal_in_doubt' };
 
 /**
  * Control-owned transaction hook. Implementations persist the stage claim before
@@ -28,6 +32,15 @@ export interface GoalProviderEffectTransactionDomain {
         stage: GoalProviderEffectStage,
         effect: () => GoalStartedProviderEffect<T>,
     ): Promise<GoalStartedProviderEffect<T>>;
+    settleProviderEffect(
+        fence: GoalProviderOperationFence,
+        stage: GoalProviderEffectStage,
+        outcome: unknown,
+    ): Promise<void>;
+    markProviderEffectRecoverable(
+        fence: GoalProviderOperationFence,
+        stage: GoalProviderEffectStage,
+    ): Promise<void>;
 }
 
 /** Ports supplied by the one authoritative migrated control repository. */
@@ -55,6 +68,8 @@ export class AuthoritativeGoalSessionRuntimePorts implements GoalProviderFirstEf
             || !domain.messages || !domain.modelChanges || !domain.providerEffects
             || typeof domain.providerEffects.claimProviderEffect !== 'function'
             || typeof domain.providerEffects.runClaimedProviderEffect !== 'function'
+            || typeof domain.providerEffects.settleProviderEffect !== 'function'
+            || typeof domain.providerEffects.markProviderEffectRecoverable !== 'function'
             || typeof recovery?.inspectContainer !== 'function' || typeof recovery.inspectRepository !== 'function') {
             throw new GoalSessionContractError(
                 'Goal runtime requires an authoritative transaction domain', 'AUTHORITATIVE_DOMAIN_MISSING',
@@ -80,8 +95,10 @@ export class AuthoritativeGoalSessionRuntimePorts implements GoalProviderFirstEf
         stage: GoalProviderEffectStage,
         effect: () => GoalStartedProviderEffect<T>,
     ): Promise<T> {
+        assertGoalProviderEffectStage(stage);
         const claim = await this.domain.providerEffects.claimProviderEffect(fence, stage);
-        if (claim !== 'claimed') throw new GoalSessionContractError(
+        if (claim.status === 'settled') return claim.outcome as T;
+        if (claim.status === 'terminal_in_doubt') throw new GoalSessionContractError(
             'Provider effect stage is already claimed and remains in doubt', 'PROVIDER_EFFECT_IN_DOUBT',
         );
         let started: GoalStartedProviderEffect<T> | undefined;
@@ -114,6 +131,13 @@ export class AuthoritativeGoalSessionRuntimePorts implements GoalProviderFirstEf
             }
             throw error;
         }
-        return committed.completion;
+        try {
+            const outcome = await committed.completion;
+            await this.domain.providerEffects.settleProviderEffect(fence, stage, outcome);
+            return outcome;
+        } catch (error) {
+            await this.domain.providerEffects.markProviderEffectRecoverable(fence, stage).catch(() => undefined);
+            throw error;
+        }
     }
 }

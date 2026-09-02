@@ -22,12 +22,98 @@ export interface GoalSupervisedOpenClaim {
 }
 
 export interface GoalSupervisedOpenPlan {
-    repository: GoalRepositoryIdentity;
-    requestedModel: string;
-    providerHomeTarget: string;
-    credentialTargets: string[];
-    /** Preflights asynchronously; the contained Docker spawn owns its own authoritative stage. */
+    readonly repository: GoalRepositoryIdentity;
+    readonly requestedModel: string;
+    readonly providerHomeTarget: string;
+    readonly credentialTargets: readonly string[];
+}
+
+interface GoalSupervisedOpenPlanInternals {
     createTransport(claim: Readonly<GoalSupervisedOpenClaim>): Promise<GoalProviderDuplexTransport>;
+    cancelPending(claim: Readonly<GoalSupervisedOpenClaim>): Promise<void>;
+    transferPending(claim: Readonly<GoalSupervisedOpenClaim>): void;
+}
+
+const SUPERVISED_OPEN_PLANS = new WeakMap<object, GoalSupervisedOpenPlanInternals>();
+
+/** Issues the only runtime-valid supervised-open plan. */
+export function issueGoalSupervisedOpenPlan(
+    fields: GoalSupervisedOpenPlan,
+    internals: GoalSupervisedOpenPlanInternals,
+): GoalSupervisedOpenPlan {
+    const plan = Object.freeze(Object.assign(Object.create(null), {
+        repository: Object.freeze({ ...fields.repository }),
+        requestedModel: fields.requestedModel,
+        providerHomeTarget: fields.providerHomeTarget,
+        credentialTargets: Object.freeze([...fields.credentialTargets]),
+    })) as GoalSupervisedOpenPlan;
+    SUPERVISED_OPEN_PLANS.set(plan, internals);
+    return plan;
+}
+
+export function supervisedOpenPlanInternals(plan: GoalSupervisedOpenPlan): GoalSupervisedOpenPlanInternals {
+    const internals = SUPERVISED_OPEN_PLANS.get(plan);
+    if (!internals) throw new GoalSessionContractError(
+        'Supervised open plan was not issued by the production factory', 'UNSAFE_PROVIDER_VALUE',
+    );
+    return internals;
+}
+
+export interface GoalOwnedOpenContext {
+    context: GoalProviderOpenContext;
+    cancel(): Promise<void>;
+    transfer(): void;
+}
+
+export async function createClaimedOpenContext(options: {
+    adapter: Pick<GoalSessionAdapter, 'provider' | 'capabilities'>;
+    plan: GoalSupervisedOpenPlan;
+    claim: GoalSupervisedOpenClaim;
+    requireCurrent(): Promise<GoalSessionState>;
+}): Promise<GoalOwnedOpenContext> {
+    const exactClaim = Object.freeze({ ...options.claim });
+    const internals = supervisedOpenPlanInternals(options.plan);
+    const transport = await internals.createTransport(exactClaim);
+    try {
+        const current = await options.requireCurrent();
+        if (current.providerOpenAttemptId !== exactClaim.attemptId) {
+            throw new GoalSessionContractError('Supervised provider transport was cancelled after spawn', 'STALE_FENCE');
+        }
+        const context = await validateClaimedEagerOpenContext(options.adapter, {
+            ...exactClaim, repository: options.plan.repository,
+            requestedModel: options.plan.requestedModel, providerHomeTarget: options.plan.providerHomeTarget,
+            credentialTargets: [...options.plan.credentialTargets], transport,
+        });
+        return {
+            context, cancel: () => internals.cancelPending(exactClaim),
+            transfer: () => internals.transferPending(exactClaim),
+        };
+    } catch (error) {
+        await internals.cancelPending(exactClaim).catch(() => undefined);
+        throw error;
+    }
+}
+
+export function createOptionalClaimedOpenContext(options: {
+    adapter: Pick<GoalSessionAdapter, 'provider' | 'capabilities'>;
+    plan?: GoalSupervisedOpenPlan;
+    executionId: string; attemptId: string; openKey?: string; operationGeneration: number;
+    operationFence: GoalProviderOperationFence;
+    requireCurrent(): Promise<GoalSessionState>;
+}): Promise<GoalOwnedOpenContext | undefined> {
+    if (!options.plan) return Promise.resolve(undefined);
+    if (!options.openKey) throw new GoalSessionContractError(
+        'Supervised open claim is missing its durable identity', 'OPEN_ATTEMPT_MISSING',
+    );
+    return createClaimedOpenContext({
+        adapter: options.adapter, plan: options.plan,
+        claim: {
+            executionId: options.executionId, attemptId: options.attemptId,
+            deterministicOpenKey: options.openKey, operationGeneration: options.operationGeneration,
+            operationFence: options.operationFence,
+        },
+        requireCurrent: options.requireCurrent,
+    });
 }
 
 export async function validateClaimedEagerOpenContext(
@@ -69,11 +155,12 @@ export async function validateSupervisedOpenPlan(
     adapter: Pick<GoalSessionAdapter, 'provider' | 'capabilities'>,
     plan: GoalSupervisedOpenPlan,
 ): Promise<void> {
+    supervisedOpenPlanInternals(plan);
     if (adapter.provider !== 'codex' || adapter.capabilities.nativeSessionId !== 'eager') {
         throw new GoalSessionContractError('Supervised eager open is Codex-only', 'UNSAFE_PROVIDER_VALUE');
     }
     if (plan.requestedModel !== SUPERVISED_CODEX_MODEL || plan.providerHomeTarget !== '/home/node/.codex'
-        || typeof plan.createTransport !== 'function') throw new GoalSessionContractError(
+        || !Object.isFrozen(plan) || Object.getPrototypeOf(plan) !== null) throw new GoalSessionContractError(
         'Supervised Codex open plan is not canonical', 'UNSAFE_PROVIDER_VALUE',
     );
     const repository = await credentialFreeRepositoryIdentity(plan.repository);
