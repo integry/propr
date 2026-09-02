@@ -343,7 +343,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(nativeArtifactLifecycle, /inspectArtifactArchitecture/);
     assert.match(nativeArtifactLifecycle, /assertSafeExtractedTree/);
     assert.match(nativeArtifactLifecycle, /assertProfileAuthority/);
-    assert.match(nativeArtifactLifecycle, /LaunchServices-registration\+open-bundle-dispatch/);
+    assert.match(nativeArtifactLifecycle, /LaunchServices-registration\+open-exact-application-dispatch/);
     assert.match(nativeArtifactLifecycle, /xdg-mime-registration\+gio-dispatch/);
     assert.doesNotMatch(nativeArtifactLifecycle, /xattr|spctl|--no-sandbox|--disable-sandbox/);
   });

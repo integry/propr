@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { DeepLinkDelivery, type DeepLinkWindow } from './deep-link-delivery';
+import {
+  DeepLinkDelivery,
+  deepLinkAcknowledgementTimeoutMs,
+  type DeepLinkWindow,
+} from './deep-link-delivery';
 import type { DesktopDeepLinkDelivery } from './shared/contract';
 
 describe('desktop deep-link delivery', () => {
@@ -12,6 +16,11 @@ describe('desktop deep-link delivery', () => {
     },
   });
   const tick = () => new Promise(resolve => setImmediate(resolve));
+
+  it('keeps the production acknowledgement deadline while bounding a native-smoke allowance', () => {
+    assert.equal(deepLinkAcknowledgementTimeoutMs(false), 5_000);
+    assert.equal(deepLinkAcknowledgementTimeoutMs(true), 15_000);
+  });
 
   it('queues across the load boundary and waits for renderer consumption in order', async () => {
     const sent: DesktopDeepLinkDelivery[] = [];

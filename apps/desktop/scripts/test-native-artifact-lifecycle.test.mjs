@@ -8,13 +8,14 @@ import { inspect } from 'node:util';
 import {
   assertArtifactSet,
   assertSafeExtractedTree,
-  classifyFirstEvidenceDeadline,
+  classifyFirstEvidenceFailure,
   closeProfileApi,
   DmgMountAuthority,
   extractDmg,
   extractRpm,
   inspectRunningProcessGroupMembers,
   LaunchServicesAuthority,
+  NativeLifecycleEvidenceWaitFailure,
   NativeLifecycleFailure,
   NativeLifecycleOperationFailure,
   OwnedProcessGroups,
@@ -90,6 +91,28 @@ describe('native staged artifact lifecycle authority', () => {
       assert.throws(() => process.kill(-child.pid, 0), error => error?.code === 'ESRCH');
     } finally {
       await groups.cleanup();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('reads fixed evidence before classifying a clean child exit', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-native-exited-evidence-'));
+    const complete = join(directory, 'complete.jsonl');
+    const incomplete = join(directory, 'incomplete.jsonl');
+    const exitedChild = { exitCode: 0, signalCode: null };
+    try {
+      await writeFile(complete, [
+        JSON.stringify({ event: 'first' }),
+        JSON.stringify({ event: 'second' }),
+      ].join('\n'));
+      await writeFile(incomplete, `${JSON.stringify({ event: 'first' })}\n`);
+
+      await assert.doesNotReject(waitForEvents(complete, ['first', 'second'], exitedChild, 10));
+      await assert.rejects(waitForEvents(incomplete, ['first', 'second'], exitedChild, 10), error => (
+        error instanceof NativeLifecycleEvidenceWaitFailure
+        && error.resultClass === 'CLEAN_EXIT'
+      ));
+    } finally {
       await rm(directory, { recursive: true, force: true });
     }
   });
@@ -212,23 +235,55 @@ describe('native staged artifact lifecycle authority', () => {
     assert.equal(authority.mounted, true);
   });
 
-  test('reports a fixed non-secret operation stage and classifies a stalled custody probe', async () => {
+  test('classifies first-evidence exits by fixed non-secret milestone and result class', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-native-stage-'));
     const evidence = join(directory, 'evidence.jsonl');
     const privateFailure = new Error('failed at /private/profile with https://secret.invalid/token');
     try {
-      await writeFile(evidence, [
-        JSON.stringify({ event: 'desktop.smoke.authorized' }),
-        JSON.stringify({ event: 'desktop.native.secure_storage_probe.started' }),
-      ].join('\n'));
-      assert.equal(await classifyFirstEvidenceDeadline(evidence), 'FIRST_SECURE_STORAGE_PROBE');
+      const cases = [
+        { event: null, milestone: 'NO_EVIDENCE', stage: 'FIRST_INITIAL_EVIDENCE' },
+        { event: 'desktop.smoke.authorized', milestone: 'AUTHORIZED', stage: 'FIRST_INITIAL_EVIDENCE' },
+        { event: 'desktop.native.identity_verified', milestone: 'IDENTITY', stage: 'FIRST_INITIAL_EVIDENCE' },
+        {
+          event: 'desktop.deeplink.delivery_failed',
+          milestone: 'DEEP_LINK_DELIVERY_FAILURE',
+          stage: 'FIRST_INITIAL_EVIDENCE',
+        },
+        { event: 'desktop.deeplink.cold_manual_once', milestone: 'COLD_ACK', stage: 'FIRST_INITIAL_EVIDENCE' },
+        {
+          event: 'desktop.native.secure_storage_probe.started',
+          milestone: 'SECURE_STORAGE_STARTED',
+          stage: 'FIRST_SECURE_STORAGE_PROBE',
+        },
+        {
+          event: 'desktop.native.secure_storage_probe.completed',
+          milestone: 'SECURE_STORAGE_COMPLETED',
+          stage: 'FIRST_RENDERER_READY',
+        },
+        { event: 'desktop.renderer.ready', milestone: 'RENDERER', stage: 'FIRST_RENDERER_READY' },
+      ];
+      for (const fixture of cases) {
+        await writeFile(evidence, fixture.event ? `${JSON.stringify({ event: fixture.event })}\n` : '');
+        assert.deepEqual(await classifyFirstEvidenceFailure(evidence, 'FAILED_EXIT'), {
+          milestone: fixture.milestone,
+          resultClass: 'FAILED_EXIT',
+          stage: fixture.stage,
+        });
+      }
 
-      const operationFailure = new NativeLifecycleOperationFailure('FIRST_SECURE_STORAGE_PROBE', privateFailure);
+      const classification = await classifyFirstEvidenceFailure(evidence, 'FAILED_EXIT');
+      const operationFailure = new NativeLifecycleOperationFailure(
+        classification.stage,
+        privateFailure,
+        classification,
+      );
       const aggregate = new NativeLifecycleFailure(operationFailure, [{
         label: 'process-groups',
         error: new Error('private cleanup output'),
       }]);
-      assert.match(aggregate.message, /stage:FIRST_SECURE_STORAGE_PROBE/);
+      assert.match(aggregate.message, /stage:FIRST_RENDERER_READY/);
+      assert.match(aggregate.message, /milestone:RENDERER/);
+      assert.match(aggregate.message, /result:FAILED_EXIT/);
       assert.doesNotMatch(String(aggregate), /private\/profile|secret\.invalid|private cleanup output/);
       assert.doesNotMatch(JSON.stringify(aggregate), /private\/profile|secret\.invalid|private cleanup output/);
       assert.doesNotMatch(inspect(aggregate), /private\/profile|secret\.invalid|private cleanup output/);
@@ -257,6 +312,30 @@ describe('native staged artifact lifecycle authority', () => {
     stale.registered = true;
     await assert.rejects(stale.assertGone(), /remained registered/);
     assert.equal(stale.registered, true);
+  });
+
+  test('registers before dispatching through the exact copied macOS application path', async () => {
+    const applicationRoot = '/private/copied/ProPR Desktop.app';
+    const link = 'propr://connect?api=https%3A%2F%2Ft-native-evidence.propr.dev';
+    const calls = [];
+    const authority = new LaunchServicesAuthority(applicationRoot, { FIXED: 'environment' }, {
+      runCommand: async (file, args, options) => {
+        calls.push({ file, args, options });
+        return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+      },
+    });
+
+    await assert.rejects(authority.dispatch(link), /must be registered/);
+    await authority.register();
+    await authority.dispatch(link);
+
+    assert.equal(calls[0].args[0], '-f');
+    assert.equal(calls[0].args[1], applicationRoot);
+    assert.deepEqual(calls[1], {
+      file: '/usr/bin/open',
+      args: ['-a', applicationRoot, link],
+      options: { env: { FIXED: 'environment' }, timeout: 15_000 },
+    });
   });
 
   test('retains the copied application until unregister and exact absence both succeed', async () => {

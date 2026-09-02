@@ -154,6 +154,8 @@ export const NATIVE_LIFECYCLE_OPERATION_STAGES = Object.freeze([
   'WARM_MANUAL_DISPATCH',
   'WARM_MANUAL_EVIDENCE',
   'PROTOCOL_DISPATCH',
+  'LS_REGISTER',
+  'OPEN_DISPATCH',
   'PROTOCOL_EVIDENCE',
   'WARM_OPEN_DISPATCH',
   'WARM_OPEN_EVIDENCE',
@@ -171,14 +173,57 @@ export const NATIVE_LIFECYCLE_OPERATION_STAGES = Object.freeze([
   'FINAL_VALIDATION',
 ]);
 
+export const NATIVE_LIFECYCLE_EVIDENCE_RESULT_CLASSES = Object.freeze([
+  'CLEAN_EXIT',
+  'FAILED_EXIT',
+  'SIGNALLED',
+  'EVIDENCE_DEADLINE',
+]);
+
+export const FIRST_EVIDENCE_MILESTONES = Object.freeze([
+  'NO_EVIDENCE',
+  'AUTHORIZED',
+  'IDENTITY',
+  'DEEP_LINK_DELIVERY_FAILURE',
+  'COLD_ACK',
+  'SECURE_STORAGE_STARTED',
+  'SECURE_STORAGE_COMPLETED',
+  'RENDERER',
+]);
+
+export class NativeLifecycleEvidenceWaitFailure extends Error {
+  constructor(resultClass) {
+    if (!NATIVE_LIFECYCLE_EVIDENCE_RESULT_CLASSES.includes(resultClass)) {
+      throw new Error('Native lifecycle evidence result class is invalid');
+    }
+    super(resultClass === 'EVIDENCE_DEADLINE'
+      ? 'Native application evidence deadline expired'
+      : 'Native application exited before producing required evidence');
+    this.name = 'NativeLifecycleEvidenceWaitFailure';
+    this.resultClass = resultClass;
+  }
+}
+
 export class NativeLifecycleOperationFailure extends Error {
-  constructor(stage, operationError) {
+  constructor(stage, operationError, evidenceClassification) {
     if (!NATIVE_LIFECYCLE_OPERATION_STAGES.includes(stage)) {
       throw new Error('Native lifecycle failure stage is invalid');
     }
-    super(`Native lifecycle operation failed [stage:${stage}]`);
+    if (evidenceClassification
+      && (!FIRST_EVIDENCE_MILESTONES.includes(evidenceClassification.milestone)
+        || !NATIVE_LIFECYCLE_EVIDENCE_RESULT_CLASSES.includes(evidenceClassification.resultClass))) {
+      throw new Error('Native lifecycle evidence failure classification is invalid');
+    }
+    const classification = evidenceClassification
+      ? ` [milestone:${evidenceClassification.milestone}] [result:${evidenceClassification.resultClass}]`
+      : '';
+    super(`Native lifecycle operation failed [stage:${stage}]${classification}`);
     this.name = 'NativeLifecycleOperationFailure';
     this.stage = stage;
+    if (evidenceClassification) {
+      this.milestone = evidenceClassification.milestone;
+      this.resultClass = evidenceClassification.resultClass;
+    }
     Object.defineProperty(this, 'operationError', { value: operationError, enumerable: false });
   }
 }
@@ -186,11 +231,15 @@ export class NativeLifecycleOperationFailure extends Error {
 export class NativeLifecycleFailure extends AggregateError {
   constructor(primaryError, cleanupFailures) {
     const cleanupLabels = cleanupFailures.map(failure => failure.label).sort();
-    const stage = primaryError instanceof NativeLifecycleOperationFailure
-      ? ` [stage:${primaryError.stage}]`
+    const classification = primaryError instanceof NativeLifecycleOperationFailure
+      ? [
+          ` [stage:${primaryError.stage}]`,
+          ...(primaryError.milestone ? [` [milestone:${primaryError.milestone}]`] : []),
+          ...(primaryError.resultClass ? [` [result:${primaryError.resultClass}]`] : []),
+        ].join('')
       : '';
     const message = primaryError
-      ? `Native lifecycle failed${stage}; cleanup also failed: ${cleanupLabels.join(', ')}`
+      ? `Native lifecycle failed${classification}; cleanup also failed: ${cleanupLabels.join(', ')}`
       : `Native lifecycle cleanup failed: ${cleanupLabels.join(', ')}`;
     const safeErrors = [
       ...(primaryError ? [new Error(
@@ -723,25 +772,47 @@ const validateIdentity = async ({ target, kind, application }) => {
   }
 };
 
+const readFixedEvidenceEvents = async path => {
+  const records = (await readFile(path, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  if (records.some(record => Object.keys(record).length !== 1 || typeof record.event !== 'string')) {
+    throw new Error('Native application emitted secret-capable evidence fields');
+  }
+  return records.map(record => record.event);
+};
+
 export const waitForEvents = async (path, events, child, timeout = PROCESS_TIMEOUT_MS) => {
   const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const exited = child.exitCode !== null
-      || (child.signalCode !== undefined && child.signalCode !== null);
-    if (exited) throw new Error('Native application exited before producing required evidence');
+  const hasRequiredEvents = async () => {
+    const names = await readFixedEvidenceEvents(path);
+    return events.every(event => names.includes(event));
+  };
+  while (true) {
     try {
-      const records = (await readFile(path, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-      const names = records.map(record => record.event);
-      if (records.some(record => Object.keys(record).length !== 1 || typeof record.event !== 'string')) {
-        throw new Error('Native application emitted secret-capable evidence fields');
-      }
-      if (events.every(event => names.includes(event))) return;
+      if (await hasRequiredEvents()) return;
     } catch (error) {
       if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
     }
-    await new Promise(resolveWait => setTimeout(resolveWait, 50));
+    const signalled = child.signalCode !== undefined && child.signalCode !== null;
+    const exited = child.exitCode !== null || signalled;
+    if (exited) {
+      // Exit can become observable after the first read even though the child's
+      // final fsynced event preceded that exit. Re-read the now-stable file once.
+      try {
+        if (await hasRequiredEvents()) return;
+      } catch (error) {
+        if (error?.code !== 'ENOENT') {
+          if (error instanceof SyntaxError) throw new Error('Native application evidence was malformed');
+          throw error;
+        }
+      }
+      const resultClass = signalled ? 'SIGNALLED' : child.exitCode === 0 ? 'CLEAN_EXIT' : 'FAILED_EXIT';
+      throw new NativeLifecycleEvidenceWaitFailure(resultClass);
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await delay(Math.min(50, remaining));
   }
-  throw new Error('Native application evidence deadline expired');
+  throw new NativeLifecycleEvidenceWaitFailure('EVIDENCE_DEADLINE');
 };
 
 const assertEvidenceOrdering = async (path, requiredEvents) => {
@@ -812,6 +883,14 @@ export class LaunchServicesAuthority {
   async register() {
     await this.runCommand(LAUNCH_SERVICES, ['-f', this.applicationRoot], { env: this.environment, timeout: 30_000 });
     this.registered = true;
+  }
+
+  async dispatch(link) {
+    if (!this.registered) throw new Error('Copied application must be registered before LaunchServices dispatch');
+    await this.runCommand('/usr/bin/open', ['-a', this.applicationRoot, link], {
+      env: this.environment,
+      timeout: 15_000,
+    });
   }
 
   async unregister() {
@@ -911,12 +990,6 @@ export const removeLifecycleRootsWithAuthority = async ({
     await attempt('work-postcondition', () => assertWorkRootAbsent(workRoot));
   }
   return failures;
-};
-
-const macProtocolDispatch = async ({ launchServices, link, env }) => {
-  await launchServices.register();
-  await run('/usr/bin/open', ['-b', APP_ID, link], { env, timeout: 15_000 });
-  return 'LaunchServices-registration+open-bundle-dispatch';
 };
 
 const assertProfileAuthority = async profile => {
@@ -1114,25 +1187,29 @@ const assertDefaultUserDataUntouched = async target => {
   }
 };
 
-export const classifyFirstEvidenceDeadline = async path => {
-  try {
-    const events = new Set((await readFile(path, 'utf8'))
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map(line => JSON.parse(line)?.event));
-    if (events.has('desktop.native.secure_storage_probe.started')
-      && !events.has('desktop.native.secure_storage_probe.completed')) {
-      return 'FIRST_SECURE_STORAGE_PROBE';
-    }
-    if (events.has('desktop.native.secure_storage_probe.completed')
-      && !events.has('desktop.renderer.ready')) {
-      return 'FIRST_RENDERER_READY';
-    }
-  } catch {
-    // The fixed initial-evidence stage remains actionable when no valid evidence exists.
+export const classifyFirstEvidenceFailure = async (path, resultClass) => {
+  if (!NATIVE_LIFECYCLE_EVIDENCE_RESULT_CLASSES.includes(resultClass)) {
+    throw new Error('Native lifecycle evidence result class is invalid');
   }
-  return 'FIRST_INITIAL_EVIDENCE';
+  let milestone = 'NO_EVIDENCE';
+  try {
+    const events = new Set(await readFixedEvidenceEvents(path));
+    if (events.has('desktop.smoke.authorized')) milestone = 'AUTHORIZED';
+    if (events.has('desktop.native.identity_verified')) milestone = 'IDENTITY';
+    if (events.has('desktop.deeplink.delivery_failed')) milestone = 'DEEP_LINK_DELIVERY_FAILURE';
+    if (events.has('desktop.deeplink.cold_manual_once')) milestone = 'COLD_ACK';
+    if (events.has('desktop.native.secure_storage_probe.started')) milestone = 'SECURE_STORAGE_STARTED';
+    if (events.has('desktop.native.secure_storage_probe.completed')) milestone = 'SECURE_STORAGE_COMPLETED';
+    if (events.has('desktop.renderer.ready')) milestone = 'RENDERER';
+  } catch {
+    // Only fixed classifications may cross the native-gate diagnostic boundary.
+  }
+  const stage = milestone === 'SECURE_STORAGE_STARTED'
+    ? 'FIRST_SECURE_STORAGE_PROBE'
+    : ['SECURE_STORAGE_COMPLETED', 'RENDERER'].includes(milestone)
+      ? 'FIRST_RENDERER_READY'
+      : 'FIRST_INITIAL_EVIDENCE';
+  return { milestone, resultClass, stage };
 };
 
 const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
@@ -1147,6 +1224,7 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
   let launchServices;
   let sandboxPrepared = false;
   let primaryError;
+  let evidenceClassification;
   let operationStage = 'PREPARE_WORK_ROOT';
   try {
     await chmod(workRoot, 0o700);
@@ -1207,8 +1285,9 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
     try {
       await waitForEvents(firstEvidence, ['desktop.renderer.ready', 'desktop.deeplink.cold_manual_once'], first.child);
     } catch (error) {
-      if (error instanceof Error && error.message === 'Native application evidence deadline expired') {
-        operationStage = await classifyFirstEvidenceDeadline(firstEvidence);
+      if (error instanceof NativeLifecycleEvidenceWaitFailure) {
+        evidenceClassification = await classifyFirstEvidenceFailure(firstEvidence, error.resultClass);
+        operationStage = evidenceClassification.stage;
       }
       throw error;
     }
@@ -1219,10 +1298,23 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
     if (target.platform === 'darwin') {
       launchServices = new LaunchServicesAuthority(application.applicationRoot, dispatchEnvironment);
     }
-    operationStage = 'PROTOCOL_DISPATCH';
-    const protocol = target.platform === 'linux'
-      ? await linuxProtocolDispatch({ application, profile, link: WARM_TUNNEL, env: dispatchEnvironment, processGroups })
-      : await macProtocolDispatch({ launchServices, link: WARM_TUNNEL, env: dispatchEnvironment });
+    let protocol;
+    if (target.platform === 'linux') {
+      operationStage = 'PROTOCOL_DISPATCH';
+      protocol = await linuxProtocolDispatch({
+        application,
+        profile,
+        link: WARM_TUNNEL,
+        env: dispatchEnvironment,
+        processGroups,
+      });
+    } else {
+      operationStage = 'LS_REGISTER';
+      await launchServices.register();
+      operationStage = 'OPEN_DISPATCH';
+      await launchServices.dispatch(WARM_TUNNEL);
+      protocol = 'LaunchServices-registration+open-exact-application-dispatch';
+    }
     operationStage = 'PROTOCOL_EVIDENCE';
     await waitForEvents(firstEvidence, ['desktop.deeplink.warm_tunnel_once'], first.child);
     operationStage = 'WARM_OPEN_DISPATCH';
@@ -1305,6 +1397,7 @@ const lifecycleForArtifact = async ({ target, kind, artifact, report }) => {
     primaryError = new NativeLifecycleOperationFailure(
       operationStage,
       errorFrom(error, 'Native lifecycle operation failed'),
+      evidenceClassification,
     );
   }
 

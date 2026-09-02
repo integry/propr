@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, screen, session, shell } from 'electron';
 import type { Rectangle } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
-import { DeepLinkDelivery } from './deep-link-delivery';
+import { DeepLinkDelivery, deepLinkAcknowledgementTimeoutMs } from './deep-link-delivery';
 import { handleDeepLinkDeliveryFailure } from './deep-link-failure-policy';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
@@ -155,6 +155,9 @@ const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
       log,
     });
   },
+  Date.now,
+  1_000,
+  deepLinkAcknowledgementTimeoutMs(nativeSmokePhase !== undefined),
 );
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;

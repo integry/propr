@@ -4,6 +4,15 @@ import type {
   DesktopDeepLinkDelivery,
 } from './shared/contract';
 
+export const DEFAULT_DEEP_LINK_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
+export const NATIVE_SMOKE_DEEP_LINK_ACKNOWLEDGEMENT_TIMEOUT_MS = 15_000;
+
+export const deepLinkAcknowledgementTimeoutMs = (nativeArtifactSmoke: boolean): number => (
+  nativeArtifactSmoke
+    ? NATIVE_SMOKE_DEEP_LINK_ACKNOWLEDGEMENT_TIMEOUT_MS
+    : DEFAULT_DEEP_LINK_ACKNOWLEDGEMENT_TIMEOUT_MS
+);
+
 export interface DeepLinkWindow {
   isDestroyed(): boolean;
   webContents: {
@@ -38,7 +47,7 @@ export class DeepLinkDelivery<TWindow extends DeepLinkWindow> {
     private readonly failed: (error: Error) => void = () => undefined,
     private readonly now: () => number = Date.now,
     private readonly duplicateWindowMs = 1_000,
-    private readonly acknowledgementTimeoutMs = 5_000,
+    private readonly acknowledgementTimeoutMs = DEFAULT_DEEP_LINK_ACKNOWLEDGEMENT_TIMEOUT_MS,
   ) {
     if (!Number.isFinite(duplicateWindowMs) || duplicateWindowMs < 0
       || !Number.isFinite(acknowledgementTimeoutMs) || acknowledgementTimeoutMs <= 0) {
