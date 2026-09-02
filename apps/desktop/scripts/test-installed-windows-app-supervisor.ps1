@@ -1379,6 +1379,15 @@ public static class ProprSupervisorFixtureRegistryNative
         out int lpType,
         byte[] lpData,
         ref int lpcbData);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int RegSetValueEx(
+        SafeRegistryHandle hKey,
+        string lpValueName,
+        int Reserved,
+        int dwType,
+        byte[] lpData,
+        int cbData);
 }
 '@
 }
@@ -1454,7 +1463,29 @@ function Get-SupervisorFixtureDirectoryDigest([string]$Path) {
   }
 }
 
-function Get-SupervisorFixtureRegistryDigest([string]$Path) {
+function Set-SupervisorFixtureRegistryValueNativeBytes(
+  $Key,
+  [string]$Name,
+  [int]$Type,
+  [byte[]]$Bytes
+) {
+  Add-SupervisorFixtureRegistryNativeApi
+  $valueBytes = if ($null -eq $Bytes) { [byte[]]@() } else { [byte[]]$Bytes }
+  $result = [ProprSupervisorFixtureRegistryNative]::RegSetValueEx(
+    $Key.Handle,
+    $Name,
+    0,
+    $Type,
+    $valueBytes,
+    $valueBytes.Length
+  )
+  if ($result -ne 0) { throw 'registry value set failed' }
+}
+
+function Get-SupervisorFixtureRegistryDigest(
+  [string]$Path,
+  [switch]$AttributeHkcuNativeValueRead
+) {
   try {
     if (!(Test-Path -LiteralPath $Path)) { return 'MISSING' }
     $root = Get-Item -LiteralPath $Path -ErrorAction Stop
@@ -1466,15 +1497,21 @@ function Get-SupervisorFixtureRegistryDigest([string]$Path) {
       $records.Add(('K|{0}' -f [Convert]::ToBase64String(
         [Text.Encoding]::UTF8.GetBytes([string]$entry.Relative))))
       foreach ($valueName in @($entry.Key.GetValueNames() | Sort-Object -CaseSensitive)) {
-        $nativeValue = Invoke-HkcuDesktopFixtureOperation `
-          -Callsite 'NATIVE_VALUE_READ' `
-          -Field 'REGISTRY_VALUE' `
-          -Action {
-            Get-SupervisorFixtureRegistryValueNativeBytes $entry.Key ([string]$valueName)
-          }
+        $digestKey = $entry.Key
+        $digestValueName = [string]$valueName
+        $nativeValue = if ($AttributeHkcuNativeValueRead) {
+          Invoke-HkcuDesktopFixtureOperation `
+            -Callsite 'NATIVE_VALUE_READ' `
+            -Field 'REGISTRY_VALUE' `
+            -Action {
+              Get-SupervisorFixtureRegistryValueNativeBytes $digestKey $digestValueName
+            }
+        } else {
+          Get-SupervisorFixtureRegistryValueNativeBytes $digestKey $digestValueName
+        }
         $records.Add(('V|{0}|{1}|{2}' -f
-          [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$valueName)),
-          ('{0}:{1}' -f $entry.Key.GetValueKind($valueName).ToString(), $nativeValue.Type),
+          [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($digestValueName)),
+          ('{0}:{1}' -f $entry.Key.GetValueKind($digestValueName).ToString(), $nativeValue.Type),
           [Convert]::ToBase64String([byte[]]$nativeValue.Bytes)))
       }
       foreach ($child in @(Get-ChildItem -LiteralPath $entry.Key.PSPath -ErrorAction Stop |
@@ -1491,6 +1528,12 @@ function Get-SupervisorFixtureRegistryDigest([string]$Path) {
     if (Test-SupervisorInvocationDiagnosticExact $diagnosticMessage) { throw }
     return 'INVALID'
   }
+}
+
+function Get-HkcuFixtureRegistryDigest([string]$Path) {
+  Get-SupervisorFixtureRegistryDigest `
+    -Path $Path `
+    -AttributeHkcuNativeValueRead
 }
 
 function Get-SupervisorFixtureRegistryValueDigest([string]$Path, [string]$Name) {
@@ -1551,7 +1594,7 @@ function New-HkcuDesktopFixtureBoundaryState([string]$DesktopKey) {
     Relocated = $false
     OriginalAbsentProven = $false
     ForcePostRestoreDigestMismatch = $false
-    ForceRecoveryRenameFailure = $false
+    ForceRecoveryBackupCollision = $false
   }
 }
 
@@ -1585,7 +1628,7 @@ function Initialize-HkcuDesktopFixtureBoundary($Boundary) {
         -Callsite 'BASELINE_DIGEST' `
         -Field 'REGISTRY_ROOT' `
         -Action {
-          Get-SupervisorFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+          Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
         }
       Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $baselineDigest)
       $Boundary.BaselineDigest = $baselineDigest
@@ -1632,7 +1675,7 @@ function Restore-HkcuDesktopFixtureBoundary(
         -Callsite 'BASELINE_DIGEST' `
         -Field 'REGISTRY_ROOT' `
         -Action {
-          Get-SupervisorFixtureRegistryDigest ([string]$Boundary.BackupPath)
+          Get-HkcuFixtureRegistryDigest ([string]$Boundary.BackupPath)
         }
       Assert-HkcuDesktopFixtureOperation ($backupDigest -ceq [string]$Boundary.BaselineDigest)
       if (Test-Path -LiteralPath $Boundary.DesktopKey) {
@@ -1652,7 +1695,7 @@ function Restore-HkcuDesktopFixtureBoundary(
         -Callsite 'BASELINE_DIGEST' `
         -Field 'REGISTRY_ROOT' `
         -Action {
-          Get-SupervisorFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+          Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
         }
       if ($Boundary.ForcePostRestoreDigestMismatch) {
         $restoredDigest = 'INVALID'
@@ -1663,7 +1706,7 @@ function Restore-HkcuDesktopFixtureBoundary(
           -Field 'REGISTRY_PATH' `
           -Action {
             try {
-              if ($Boundary.ForceRecoveryRenameFailure -and
+              if ($Boundary.ForceRecoveryBackupCollision -and
                   !(Test-Path -LiteralPath $Boundary.BackupPath)) {
                 [void](New-Item -Path $Boundary.BackupPath -Force -ErrorAction Stop)
               }
@@ -1677,10 +1720,10 @@ function Restore-HkcuDesktopFixtureBoundary(
               throw 'post-restore digest mismatch'
             } catch {
               $desktopDigest = if (Test-Path -LiteralPath $Boundary.DesktopKey) {
-                Get-SupervisorFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+                Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
               } else { 'MISSING' }
               $backupDigestAfterRecovery = if (Test-Path -LiteralPath $Boundary.BackupPath) {
-                Get-SupervisorFixtureRegistryDigest ([string]$Boundary.BackupPath)
+                Get-HkcuFixtureRegistryDigest ([string]$Boundary.BackupPath)
               } else { 'MISSING' }
               Assert-HkcuDesktopFixtureOperation (
                 $desktopDigest -ceq [string]$Boundary.BaselineDigest -or
@@ -5852,11 +5895,8 @@ function Set-HkcuFixtureBoundaryValueKinds([string]$Path) {
         [string[]]@('alpha', '', 'omega'),
         [Microsoft.Win32.RegistryValueKind]::MultiString
       )
-      $key.SetValue(
-        'NoneValue',
-        [byte[]]@(9, 8, 7),
-        [Microsoft.Win32.RegistryValueKind]::None
-      )
+      Set-SupervisorFixtureRegistryValueNativeBytes `
+        $key 'NoneValue' 0 ([byte[]]@(9, 8, 7))
       $nested = Join-Path $Path 'Nested'
       $child = Join-Path $nested 'Child'
       [void](New-Item -Path $child -Force -ErrorAction Stop)
@@ -5895,20 +5935,109 @@ function Assert-HkcuFixtureBoundaryValueKinds([string]$Path) {
       $multi.Length -eq 3 -and $multi[0] -ceq 'alpha' -and
       $multi[1] -ceq '' -and $multi[2] -ceq 'omega') `
     (Get-HkcuFixtureBoundaryDiagnostic)
-  $none = Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'NATIVE_VALUE_READ' `
-    -Field 'REGISTRY_VALUE' `
-    -Action {
-      Get-SupervisorFixtureRegistryValueNativeBytes $key 'NoneValue'
-    }
-  Assert-True ($key.GetValueKind('NoneValue').ToString() -ceq 'None' -and
-      $none.Type -eq 0 -and $none.Bytes.Length -eq 3 -and
-      $none.Bytes[0] -eq 9 -and $none.Bytes[2] -eq 7) `
-    (Get-HkcuFixtureBoundaryDiagnostic)
+  Assert-HkcuFixtureNativeNoneValue $key ([byte[]]@(9, 8, 7))
   $child = Join-Path (Join-Path $Path 'Nested') 'Child'
   $childKey = Get-Item -LiteralPath $child -ErrorAction Stop
   Assert-True ([string]$childKey.GetValue('NestedValue') -ceq 'nested-string') `
     (Get-HkcuFixtureBoundaryDiagnostic)
+}
+
+function Assert-HkcuFixtureNativeNoneValue($Key, [byte[]]$ExpectedBytes) {
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'NATIVE_VALUE_READ' `
+    -Field 'REGISTRY_VALUE' `
+    -Action {
+      $none = Get-SupervisorFixtureRegistryValueNativeBytes $Key 'NoneValue'
+      $actualBytes = [byte[]]$none.Bytes
+      Assert-HkcuDesktopFixtureOperation `
+        ($Key.GetValueKind('NoneValue').ToString() -ceq 'None')
+      Assert-HkcuDesktopFixtureOperation ($none.Type -eq 0)
+      Assert-HkcuDesktopFixtureOperation ($actualBytes.Length -eq $ExpectedBytes.Length)
+      for ($index = 0; $index -lt $ExpectedBytes.Length; $index++) {
+        Assert-HkcuDesktopFixtureOperation `
+          ($actualBytes[$index] -eq $ExpectedBytes[$index])
+      }
+    }
+}
+
+function Assert-HkcuFixtureNativeNoneValueFailure($Key) {
+  $expectedNativeReadFailure = Get-SanitizedSupervisorInvocationDiagnostic `
+    'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+    'HKCU_BASELINE_RESTORE' `
+    'FIXTURE_SETUP' `
+    'NATIVE_VALUE_READ' `
+    'REGISTRY_VALUE'
+  try {
+    Assert-HkcuFixtureNativeNoneValue $Key ([byte[]]@(9, 8, 7))
+    Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
+  } catch {
+    Assert-True ([string]$_.Exception.Message -ceq $expectedNativeReadFailure) `
+      (Get-HkcuFixtureBoundaryDiagnostic)
+  }
+}
+
+function Test-HkcuFixtureNativeNoneValueReadRegression(
+  [string]$TypePath,
+  [string]$LengthPath,
+  [string]$BytePath
+) {
+  Set-HkcuFixtureBoundaryValueKinds $TypePath
+  $typeKey = Get-Item -LiteralPath $TypePath -ErrorAction Stop
+  $typeKey.SetValue(
+    'NoneValue',
+    [byte[]]@(9, 8, 7),
+    [Microsoft.Win32.RegistryValueKind]::Binary
+  )
+  Assert-HkcuFixtureNativeNoneValueFailure $typeKey
+
+  Set-HkcuFixtureBoundaryValueKinds $LengthPath
+  $lengthKey = Get-Item -LiteralPath $LengthPath -ErrorAction Stop
+  Set-SupervisorFixtureRegistryValueNativeBytes `
+    $lengthKey 'NoneValue' 0 ([byte[]]@(9, 8))
+  Assert-HkcuFixtureNativeNoneValueFailure $lengthKey
+
+  Set-HkcuFixtureBoundaryValueKinds $BytePath
+  $byteKey = Get-Item -LiteralPath $BytePath -ErrorAction Stop
+  Set-SupervisorFixtureRegistryValueNativeBytes `
+    $byteKey 'NoneValue' 0 ([byte[]]@(9, 8, 6))
+  Assert-HkcuFixtureNativeNoneValueFailure $byteKey
+}
+
+function Test-SupervisorFixtureRegistryDigestAttributionRegression([string]$Path) {
+  [void](New-Item -Path $Path -Force -ErrorAction Stop)
+  $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+  $key.SetValue('SyntheticValue', 'value', [Microsoft.Win32.RegistryValueKind]::String)
+  $originalNativeReader =
+    (Get-Command Get-SupervisorFixtureRegistryValueNativeBytes -CommandType Function).ScriptBlock
+  function Get-SupervisorFixtureRegistryValueNativeBytes { throw 'synthetic registry read failure' }
+  try {
+    Invoke-SupervisorAttributedBoundary `
+      -Test 'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      -Scenario 'RESOURCE_COLLISION' `
+      -Phase 'RESOURCE_ASSERTION' `
+      -Callsite 'REPLACEMENT_SURVIVAL_READ' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        Assert-True ((Get-SupervisorFixtureRegistryDigest $Path) -ceq 'INVALID') `
+          'shared registry digest rewrote non-HKCU read attribution'
+      }
+    $expectedHkcuNativeReadFailure = Get-SanitizedSupervisorInvocationDiagnostic `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_BASELINE_RESTORE' `
+      'FIXTURE_SETUP' `
+      'NATIVE_VALUE_READ' `
+      'REGISTRY_VALUE'
+    try {
+      Get-HkcuFixtureRegistryDigest $Path | Out-Null
+      Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
+    } catch {
+      Assert-True ([string]$_.Exception.Message -ceq $expectedHkcuNativeReadFailure) `
+        (Get-HkcuFixtureBoundaryDiagnostic)
+    }
+  } finally {
+    Set-Item -Path Function:\Get-SupervisorFixtureRegistryValueNativeBytes `
+      -Value $originalNativeReader
+  }
 }
 
 function Test-HkcuDesktopFixtureBoundaryRegression {
@@ -5921,8 +6050,12 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
   $absentForeignDesktop = Join-Path $absentForeignParent 'Desktop'
   $failureParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
   $failureDesktop = Join-Path $failureParent 'Desktop'
-  $recoveryFailureParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
-  $recoveryFailureDesktop = Join-Path $recoveryFailureParent 'Desktop'
+  $recoveryCollisionParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $recoveryCollisionDesktop = Join-Path $recoveryCollisionParent 'Desktop'
+  $noneTypePath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $noneLengthPath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $noneBytePath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $digestAttributionPath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
   Invoke-SupervisorAttributedOperation `
     -Scenario 'HKCU_BASELINE_RESTORE' `
     -Phase 'FIXTURE_SETUP' `
@@ -5930,8 +6063,11 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
     -Field 'REGISTRY_PATH' `
     -Action {
       try {
+        Test-HkcuFixtureNativeNoneValueReadRegression `
+          $noneTypePath $noneLengthPath $noneBytePath
+        Test-SupervisorFixtureRegistryDigestAttributionRegression $digestAttributionPath
         Set-HkcuFixtureBoundaryValueKinds $presentDesktop
-        $presentDigest = Get-SupervisorFixtureRegistryDigest $presentDesktop
+        $presentDigest = Get-HkcuFixtureRegistryDigest $presentDesktop
         Assert-True (Test-HkcuFixtureRegistryDigest $presentDigest) `
           (Get-HkcuFixtureBoundaryDiagnostic)
         $presentBoundary = New-HkcuDesktopFixtureBoundaryState $presentDesktop
@@ -5940,18 +6076,20 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
             $presentBoundary.Relocated -and
             !(Test-Path -LiteralPath $presentDesktop) -and
             (Test-Path -LiteralPath $presentBoundary.BackupPath) -and
-            (Get-SupervisorFixtureRegistryDigest $presentBoundary.BackupPath) -ceq
+            (Get-HkcuFixtureRegistryDigest $presentBoundary.BackupPath) -ceq
               $presentDigest) (Get-HkcuFixtureBoundaryDiagnostic)
         [void](New-Item -Path $presentDesktop -Force -ErrorAction Stop)
         $presentFixtureOwned = $true
         (Get-Item -LiteralPath $presentDesktop).SetValue(
           'installed', [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
         Restore-HkcuDesktopFixtureBoundary $presentBoundary $presentFixtureOwned
-        Assert-True ((Get-SupervisorFixtureRegistryDigest $presentDesktop) -ceq
+        Assert-True ((Get-HkcuFixtureRegistryDigest $presentDesktop) -ceq
             $presentDigest) (Get-HkcuFixtureBoundaryDiagnostic)
         Assert-True (!(Test-Path -LiteralPath $presentBoundary.BackupPath)) `
           (Get-HkcuFixtureBoundaryDiagnostic)
         Assert-HkcuFixtureBoundaryValueKinds $presentDesktop
+        Assert-True ((Get-HkcuFixtureRegistryDigest $presentDesktop) -ceq
+            $presentDigest) (Get-HkcuFixtureBoundaryDiagnostic)
 
         [void](New-Item -Path $absentParent -Force -ErrorAction Stop)
         $absentBoundary = New-HkcuDesktopFixtureBoundaryState $absentDesktop
@@ -6012,37 +6150,41 @@ function Test-HkcuDesktopFixtureBoundaryRegression {
             (Test-Path -LiteralPath $failureDesktop)) `
           (Get-HkcuFixtureBoundaryDiagnostic)
 
-        Set-HkcuFixtureBoundaryValueKinds $recoveryFailureDesktop
-        $recoveryFailureDigest =
-          Get-SupervisorFixtureRegistryDigest $recoveryFailureDesktop
-        $recoveryFailureBoundary =
-          New-HkcuDesktopFixtureBoundaryState $recoveryFailureDesktop
-        Initialize-HkcuDesktopFixtureBoundary $recoveryFailureBoundary
-        $recoveryFailureBoundary.ForcePostRestoreDigestMismatch = $true
-        $recoveryFailureBoundary.ForceRecoveryRenameFailure = $true
-        $expectedRecoveryFailure = Get-SanitizedSupervisorInvocationDiagnostic `
+        Set-HkcuFixtureBoundaryValueKinds $recoveryCollisionDesktop
+        $recoveryCollisionDigest =
+          Get-HkcuFixtureRegistryDigest $recoveryCollisionDesktop
+        $recoveryCollisionBoundary =
+          New-HkcuDesktopFixtureBoundaryState $recoveryCollisionDesktop
+        Initialize-HkcuDesktopFixtureBoundary $recoveryCollisionBoundary
+        $recoveryCollisionBoundary.ForcePostRestoreDigestMismatch = $true
+        $recoveryCollisionBoundary.ForceRecoveryBackupCollision = $true
+        $expectedRecoveryCollision = Get-SanitizedSupervisorInvocationDiagnostic `
           'HKCU_INSTALLED_VALUE_OWNERSHIP' `
           'HKCU_BASELINE_RESTORE' `
           'FIXTURE_SETUP' `
           'RECOVERY_RELOCATE' `
           'REGISTRY_PATH'
         try {
-          Restore-HkcuDesktopFixtureBoundary $recoveryFailureBoundary $false
+          Restore-HkcuDesktopFixtureBoundary $recoveryCollisionBoundary $false
           Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
         } catch {
-          Assert-True ([string]$_.Exception.Message -ceq $expectedRecoveryFailure) `
+          Assert-True ([string]$_.Exception.Message -ceq $expectedRecoveryCollision) `
             (Get-HkcuFixtureBoundaryDiagnostic)
         }
-        Assert-True ((Test-Path -LiteralPath $recoveryFailureDesktop) -and
-            (Get-SupervisorFixtureRegistryDigest $recoveryFailureDesktop) -ceq
-              $recoveryFailureDigest) (Get-HkcuFixtureBoundaryDiagnostic)
+        Assert-True ((Test-Path -LiteralPath $recoveryCollisionDesktop) -and
+            (Get-HkcuFixtureRegistryDigest $recoveryCollisionDesktop) -ceq
+              $recoveryCollisionDigest) (Get-HkcuFixtureBoundaryDiagnostic)
       } finally {
         foreach ($path in @(
             $parent,
             $absentParent,
             $absentForeignParent,
             $failureParent,
-            $recoveryFailureParent
+            $recoveryCollisionParent,
+            $noneTypePath,
+            $noneLengthPath,
+            $noneBytePath,
+            $digestAttributionPath
           )) {
           if (Test-Path -LiteralPath $path) {
             Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
