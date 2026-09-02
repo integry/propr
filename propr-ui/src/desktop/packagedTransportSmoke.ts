@@ -43,6 +43,25 @@ declare global {
 
 const INVALID_INSTANCE_TOKEN = 'INVALID_INSTANCE_TOKEN';
 
+const rendererSocketOptions = (transportScope: string) => ({
+  transports: ['websocket'] as ['websocket'],
+  forceNew: true,
+  reconnection: true,
+  withCredentials: false,
+  query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: transportScope },
+});
+
+/** Keep the rejected reconnect bound to the immutable scope recorded for that Manager. */
+export const staleReconnectQuery = (
+  recordedTransportScope: string,
+  currentTransportScope: string,
+): Record<string, string> => {
+  if (recordedTransportScope === currentTransportScope) {
+    throw new Error('Packaged stale Socket.IO activation was not rotated');
+  }
+  return { [DESKTOP_TRANSPORT_SCOPE_QUERY]: recordedTransportScope };
+};
+
 const waitForSocket = (socket: Socket, expected: 'connect' | 'connect_error'): Promise<void> =>
   new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
@@ -109,13 +128,7 @@ export const installPackagedTransportSmokeHarness = (): void => {
     async connectSocket() {
       const scope = getDesktopConnectionScope();
       if (!scope) throw new Error('Packaged Socket.IO scope is unavailable');
-      const socket = proprClient.connectSocket({
-        transports: ['websocket'],
-        forceNew: true,
-        reconnection: true,
-        withCredentials: false,
-        query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: scope.transportScope },
-      });
+      const socket = proprClient.connectSocket(rendererSocketOptions(scope.transportScope));
       const id = nextSocketId++;
       sockets.set(id, { socket, profileId: scope.profileId, transportScope: scope.transportScope });
       await waitForSocket(socket, 'connect');
@@ -137,13 +150,25 @@ export const installPackagedTransportSmokeHarness = (): void => {
         throw new Error('Packaged stale Socket.IO activation was not rotated');
       }
       record.socket.disconnect();
-      record.socket.io.opts.query = { [DESKTOP_TRANSPORT_SCOPE_QUERY]: currentScope.transportScope };
+      record.socket.io.opts.query = staleReconnectQuery(
+        record.transportScope,
+        currentScope.transportScope,
+      );
       const rejected = waitForSocket(record.socket, 'connect_error');
       try {
         record.socket.connect();
         await rejected;
       } finally {
         record.socket.disconnect();
+      }
+
+      // A distinct Manager carrying only the newly activated opaque scope must
+      // still succeed after main rejects the recorded stale scope above.
+      const freshSocket = proprClient.connectSocket(rendererSocketOptions(currentScope.transportScope));
+      try {
+        await waitForSocket(freshSocket, 'connect');
+      } finally {
+        freshSocket.disconnect();
       }
     },
     disconnectSocket(id) { sockets.get(id)?.socket.disconnect(); },

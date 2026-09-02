@@ -1,23 +1,32 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TASK_UPDATE } from '@propr/shared';
+import {
+  DESKTOP_TRANSPORT_SCOPE_QUERY,
+  DRAFT_UPDATE,
+  INDEXING_UPDATE,
+  QUEUE_STATS_UPDATE,
+  TASK_LIVE_UPDATE,
+  TASK_UPDATE,
+} from '@propr/shared';
 import { SocketProvider } from './SocketProvider';
 import { useSocket } from './useSocket';
 
 type Handler = (value?: unknown) => void;
 const sockets = vi.hoisted(() => [] as Array<{
   handlers: Map<string, Handler>;
+  options: Record<string, unknown>;
   connect: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
   emit: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
 }>);
-const connectSocketMock = vi.hoisted(() => vi.fn((_options?: Record<string, unknown>) => {
+const connectSocketMock = vi.hoisted(() => vi.fn((options: Record<string, unknown>) => {
   const handlers = new Map<string, Handler>();
   const socket = {
     handlers,
+    options,
     connect: vi.fn(),
     disconnect: vi.fn(),
     emit: vi.fn(),
@@ -93,9 +102,15 @@ describe('SocketProvider', () => {
       withCredentials: false,
       query: { proprDesktopTransportScope: 'AAAAAAAAAAAAAAAAAAAAAA' },
     }));
-    const options = connectSocketMock.mock.calls[0][0];
+    const options = sockets[0].options;
+    const query = options.query as Record<string, unknown>;
+    expect(Object.keys(query)).toEqual([DESKTOP_TRANSPORT_SCOPE_QUERY]);
+    expect(query[DESKTOP_TRANSPORT_SCOPE_QUERY]).toBe('AAAAAAAAAAAAAAAAAAAAAA');
     expect(Object.prototype.hasOwnProperty.call(options, 'auth')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(options, 'extraHeaders')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(options, 'bearer')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(options, 'authorization')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(options, 'cookie')).toBe(false);
     expect(JSON.stringify(options)).not.toMatch(/bearer|authorization|cookie/i);
   });
 
