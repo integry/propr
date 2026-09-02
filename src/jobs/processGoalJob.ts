@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- native goal execution and its fenced result reconciliation share one worker boundary */
 import fs from 'node:fs';
 import type { Job } from 'bullmq';
 import {
@@ -392,6 +393,7 @@ async function scheduleFurtherWork(
     return { status: 'recovering' };
 }
 
+// eslint-disable-next-line complexity -- preserve the ordered post-execution fences and terminal reconciliation
 async function handleGoalResult(
     data: GoalJobData,
     prepared: PreparedGoalAttempt,

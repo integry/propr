@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- goal creation and lifecycle controls share one owner-scoped HTTP boundary */
 import { createHash, randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { Knex } from 'knex';
@@ -54,6 +55,7 @@ function mutationHash(operation: string, payload: Record<string, unknown>): stri
 
 class IdempotencyConflictError extends Error {}
 
+// eslint-disable-next-line max-params -- the mutation identity tuple is deliberately explicit at this persistence boundary
 async function existingMutation(
   db: Knex,
   row: GoalRow,
@@ -73,6 +75,7 @@ async function existingMutation(
   return existing;
 }
 
+// eslint-disable-next-line max-params -- the mutation identity tuple is deliberately explicit at this persistence boundary
 async function recordControlMutation(
   db: Knex,
   row: GoalRow,
@@ -522,6 +525,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
 
+  // eslint-disable-next-line complexity -- model changes coordinate persisted state, provider stop semantics, and idempotency
   const requestModel = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (!row) return;
@@ -572,6 +576,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
 
+  // eslint-disable-next-line complexity -- input delivery branches by persisted lifecycle and provider resume capability
   const input = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (!row) return;

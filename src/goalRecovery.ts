@@ -245,6 +245,8 @@ async function reconcileGoalTask(goal: RecoverableGoal): Promise<void> {
     if (!changed) throw new Error(`Task ${goal.current_task_id} changed during terminal reconciliation`);
 }
 
+// The branches mirror the durable goal lifecycle states and their fencing rules.
+// eslint-disable-next-line complexity -- keep recovery decisions in one auditable state-machine boundary
 async function recoverGoal(options: {
     database: Knex;
     queue: GoalRecoveryQueue;
