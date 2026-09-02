@@ -205,10 +205,13 @@ export abstract class GoalTurnRunner extends GoalTurnStreamRunner {
             await this.publishProviderOperationBarrier(fence, intent.operationGeneration);
             await this.requireProviderGeneration(fence, intent.operationGeneration);
             snapshot = await this.providerResult(
-                () => this.providerFirstEffect(providerRequest.operationFence,
-                    () => this.startedProviderEffect(
-                        this.adapter.resumeSession(providerRequest, persistedSnapshot(state)),
-                    )),
+                () => this.providerFirstEffect(providerRequest.operationFence, () => {
+                    const completion = this.adapter.resumeSession(providerRequest, persistedSnapshot(state));
+                    return this.startedProviderEffect(
+                        completion,
+                        () => this.rollbackProviderPrimitive(providerRequest.operationFence, state),
+                    );
+                }),
                 value => rebuildProviderSnapshot(value, this.adapter.provider),
             );
         } catch (error) {

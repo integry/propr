@@ -23,7 +23,7 @@ export {
     GoalSessionScopeError,
     InMemoryGoalSessionPorts,
 } from './InMemoryGoalSessionPorts.js';
-export { SqliteGoalSessionRuntimePorts } from './SqliteGoalSessionRuntimePorts.js';
+export { AuthoritativeGoalSessionRuntimePorts } from './AuthoritativeGoalSessionRuntimePorts.js';
 export {
     DEFAULT_GOAL_CONTAINER_RETENTION,
     GoalContainerSupervisor,

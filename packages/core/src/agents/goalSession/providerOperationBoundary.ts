@@ -66,6 +66,14 @@ export interface GoalProviderOperationFence extends GoalSessionIdentity {
     readonly attemptId?: string;
 }
 
+/** Closed identity for one real external stage within a logical operation. */
+export type GoalProviderEffectStage = 'provider_primitive' | 'stream_first_next' | 'container_spawn';
+
+export interface GoalStartedProviderEffectCleanup {
+    readonly kind: 'rollback_or_cancel';
+    readonly run: () => void | Promise<void>;
+}
+
 /**
  * Proof that a provider primitive was synchronously and irrevocably started.
  * The authoritative transaction is committed after this handle is returned;
@@ -73,6 +81,8 @@ export interface GoalProviderOperationFence extends GoalSessionIdentity {
  */
 export interface GoalStartedProviderEffect<T> {
     readonly completion: Promise<T>;
+    /** Owns the already-started primitive if its authoritative transaction fails. */
+    readonly cleanup: GoalStartedProviderEffectCleanup;
 }
 
 /**
@@ -85,7 +95,11 @@ export interface GoalStartedProviderEffect<T> {
  * after releasing the authoritative transaction.
  */
 export interface GoalProviderFirstEffectPort {
-    start<T>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>): Promise<T>;
+    start<T>(
+        fence: GoalProviderOperationFence,
+        stage: GoalProviderEffectStage,
+        effect: () => GoalStartedProviderEffect<T>,
+    ): Promise<T>;
 }
 
 /** Monotonic provider-visible high-water publication. */

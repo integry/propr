@@ -134,20 +134,18 @@ export abstract class GoalSessionRecoveryControls extends GoalSessionControls {
                     executionId: recovery.execution.executionId, attemptId: recovery.execution.attemptId,
                 },
             );
-            result = await this.providerResult(() => this.providerFirstEffect(operationFence, () => this.startedProviderEffect(this.adapter.reconcile({
-                goalId: identity.goalId,
-                sessionId: identity.sessionId,
-                ...recovery.execution,
-                controllerEpoch,
-                operationToken: state.recoveryAttempt!.operationToken,
-                operationGeneration: state.recoveryAttempt!.operationGeneration,
+            result = await this.providerResult(() => this.providerFirstEffect(operationFence, () => {
+                const completion = this.adapter.reconcile({
+                    goalId: identity.goalId, sessionId: identity.sessionId, ...recovery.execution, controllerEpoch,
+                    operationToken: state.recoveryAttempt!.operationToken,
+                    operationGeneration: state.recoveryAttempt!.operationGeneration,
                 operationPhase: 'provider_in_doubt',
                 operationLeaseExpiresAt: state.recoveryAttempt!.leaseExpiresAt,
-                operationFence,
-                persisted: persistedSnapshot(state),
-                container: prepared.container,
-                repository: prepared.repository,
-            }))), value => rebuildReconcileResult(value, this.adapter.provider));
+                    operationFence, persisted: persistedSnapshot(state), container: prepared.container,
+                    repository: prepared.repository,
+                });
+                return this.startedProviderEffect(completion, () => this.rollbackProviderPrimitive(operationFence, state));
+            }), value => rebuildReconcileResult(value, this.adapter.provider));
         } catch (error) {
             await this.requireLiveRecoveryLease(
                 prepared.fence, recovery.execution, state.recoveryAttempt!.operationToken,

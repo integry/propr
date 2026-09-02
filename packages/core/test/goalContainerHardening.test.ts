@@ -50,7 +50,11 @@ const isolation = {
     credentialMounts: [{ source: approvedCredential, target: '/home/node/.creds' }],
 };
 const firstEffects = {
-    start: async <T>(_fence: unknown, effect: () => { completion: Promise<T> }): Promise<T> => effect().completion,
+    start: async <T>(
+        _fence: unknown,
+        _stage: unknown,
+        effect: () => { completion: Promise<T> },
+    ): Promise<T> => effect().completion,
 };
 
 function baseRequest() {

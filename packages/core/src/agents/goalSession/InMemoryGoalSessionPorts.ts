@@ -6,6 +6,7 @@ import type {
     GoalRepositoryIdentity,
     GoalRepositoryInspection,
     GoalProviderFirstEffectPort,
+    GoalProviderEffectStage,
     GoalProviderOperationFence,
     GoalStartedProviderEffect,
     GoalSessionControlFence,
@@ -89,7 +90,11 @@ export class InMemoryGoalSessionPorts implements
         };
     }
 
-    async start<T>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>): Promise<T> {
+    async start<T>(
+        fence: GoalProviderOperationFence,
+        _stage: GoalProviderEffectStage,
+        effect: () => GoalStartedProviderEffect<T>,
+    ): Promise<T> {
         const state = this.states.get(keyOf(fence));
         assertProviderFirstEffectState(state ? clone(state) : null, fence);
         const started = effect();

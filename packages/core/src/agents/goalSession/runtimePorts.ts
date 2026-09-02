@@ -21,3 +21,8 @@ export interface GoalSessionRuntimePorts {
     /** Same authoritative transaction domain as state; never a process-local mutex. */
     providerFirstEffects: GoalProviderFirstEffectPort;
 }
+
+export type {
+    GoalProviderEffectClaimResult, GoalProviderEffectTransactionDomain,
+    GoalSessionAuthoritativeTransactionDomain,
+} from './AuthoritativeGoalSessionRuntimePorts.js';

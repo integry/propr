@@ -331,7 +331,7 @@ export class GoalContainerSupervisor {
             ...request.command,
         ];
         const execution = await this.providerFirstEffects.start<SupervisedDockerExecution>(
-            operationFence, () => {
+            operationFence, 'container_spawn', () => {
                 const started = executeSupervisedDockerCommand(dockerArgs, {
             goalId: request.goalId,
             sessionId: request.sessionId,
@@ -387,7 +387,8 @@ export class GoalContainerSupervisor {
                 }
             },
                 });
-                return startedProviderEffect(Promise.resolve(started));
+                return startedProviderEffect(Promise.resolve(started), () =>
+                    started.cancel(new Error('Authoritative Docker-start transaction failed')));
             },
         );
         // Completion notifications are observed and rebuilt; they never create

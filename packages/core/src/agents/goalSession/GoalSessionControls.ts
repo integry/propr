@@ -59,15 +59,15 @@ export abstract class GoalSessionControls extends GoalCancellationControls {
                 executionId: execution.executionId, attemptId: execution.attemptId,
             },
         );
-        const acknowledgement = await this.providerResult(() => this.providerFirstEffect(operationFence, () => this.startedProviderEffect(this.adapter.deliverMessage!(
-            {
+        const acknowledgement = await this.providerResult(() => this.providerFirstEffect(operationFence, () => {
+            const completion = this.adapter.deliverMessage!({
                 goalId: request.goalId, sessionId: request.sessionId,
                 controllerEpoch: request.controllerEpoch, turnId: request.turnId,
                 ...execution, operationGeneration, operationFence,
                 messageId: request.messageId, body: safeDiagnostic(message.body, '[redacted corrective message]'),
-            },
-            persistedSnapshot(state),
-        ))), rebuildMessageAcknowledgement);
+            }, persistedSnapshot(state));
+            return this.startedProviderEffect(completion, () => this.rollbackProviderPrimitive(operationFence, state));
+        }), rebuildMessageAcknowledgement);
         if (acknowledgement.messageId !== request.messageId) {
             throw new GoalSessionContractError('Provider acknowledged a different corrective message', 'MESSAGE_ACK_MISMATCH');
         }
@@ -121,11 +121,14 @@ export abstract class GoalSessionControls extends GoalCancellationControls {
                 attemptId: state.activeTurn?.attemptId,
             },
         );
-        const acknowledgement = await this.providerResult(() => this.providerFirstEffect(operationFence, () => this.startedProviderEffect(this.adapter.requestPause!({
-            goalId: request.goalId, sessionId: request.sessionId, controllerEpoch: request.controllerEpoch,
-            reason: request.reason ? safeFailureDiagnostic(request.reason, 'Operator requested pause') : undefined,
-            operationGeneration, operationFence,
-        }, persistedSnapshot(state)))), rebuildPauseAcknowledgement);
+        const acknowledgement = await this.providerResult(() => this.providerFirstEffect(operationFence, () => {
+            const completion = this.adapter.requestPause!({
+                goalId: request.goalId, sessionId: request.sessionId, controllerEpoch: request.controllerEpoch,
+                reason: request.reason ? safeFailureDiagnostic(request.reason, 'Operator requested pause') : undefined,
+                operationGeneration, operationFence,
+            }, persistedSnapshot(state));
+            return this.startedProviderEffect(completion, () => this.rollbackProviderPrimitive(operationFence, state));
+        }), rebuildPauseAcknowledgement);
         if (acknowledgement.appliesAt === 'after_turn') {
             throw new GoalSessionContractError('Active-turn provider returned an after-turn pause acknowledgement', 'CAPABILITY_ACK_MISMATCH');
         }
@@ -175,7 +178,13 @@ export abstract class GoalSessionControls extends GoalCancellationControls {
             await this.requireProviderGeneration(request, intent.operationGeneration);
             snapshot = await this.providerResult(() => this.providerFirstEffect(
                 providerRequest.operationFence,
-                () => this.startedProviderEffect(this.adapter.resumeSession(providerRequest, persistedSnapshot(state))),
+                () => {
+                    const completion = this.adapter.resumeSession(providerRequest, persistedSnapshot(state));
+                    return this.startedProviderEffect(
+                        completion,
+                        () => this.rollbackProviderPrimitive(providerRequest.operationFence, state),
+                    );
+                },
             ), value => rebuildProviderSnapshot(value, this.adapter.provider));
         } catch (error) {
             await this.expireResumeOperation(request, intent.operationId, intent.operationGeneration);

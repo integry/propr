@@ -11,9 +11,7 @@ import type {
     GoalTerminalCommit,
     GoalResumeKind,
     GoalResumeIntent,
-    GoalProviderResumeRequest,
-    GoalProviderOperationFence,
-    GoalStartedProviderEffect,
+    GoalProviderResumeRequest, GoalProviderOperationFence, GoalProviderEffectStage, GoalStartedProviderEffect,
 } from './contract.js';
 import { GoalSessionContractError, StaleGoalSessionFenceError } from './errors.js';
 import { assertSafeProviderIdentifier, safeProviderException, sanitizeGoalSessionEvent } from './securityBoundary.js';
@@ -28,7 +26,8 @@ import {
 import { completesAtAfterTurnPause, needsAfterTurnPauseAudit } from './turnCompletionProtocol.js';
 import { controlOperationId, mintFreshAttemptId } from './controlOperationIdentity.js';
 import {
-    createProviderOperationFence, createProviderResumeRequest, providerFirstEffectStream, startedProviderEffect,
+    createProviderOperationFence, createProviderResumeRequest, providerFirstEffectStream,
+    rollbackStartedProviderPrimitive, startedProviderEffect,
 } from './providerEffectProtocol.js';
 
 /**
@@ -146,24 +145,26 @@ export abstract class GoalSessionCore {
     }
 
     protected async providerEffect<T>(effect: () => T | Promise<T>): Promise<T> {
-        try {
-            return await effect();
-        } catch (error) {
-            throw safeProviderException(error);
-        }
+        try { return await effect(); }
+        catch (error) { throw safeProviderException(error); }
     }
 
     /** Starts the primitive while the authoritative state row is transaction-locked. */
-    protected async providerFirstEffect<T>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>): Promise<T> {
-        return this.ports.providerFirstEffects.start(fence, effect);
+    protected providerFirstEffect<T>(fence: GoalProviderOperationFence, effect: () => GoalStartedProviderEffect<T>,
+        stage: GoalProviderEffectStage = 'provider_primitive'): Promise<T> {
+        return this.ports.providerFirstEffects.start(fence, stage, effect);
     }
 
-    protected startedProviderEffect<T>(completion: Promise<T>): GoalStartedProviderEffect<T> { return startedProviderEffect(completion); }
+    protected startedProviderEffect<T>(completion: Promise<T>, rollbackOrCancel: () => void | Promise<void>): GoalStartedProviderEffect<T> {
+        return startedProviderEffect(completion, rollbackOrCancel);
+    }
 
-    protected providerFirstEffectStream<T>(
-        fence: GoalProviderOperationFence,
-        create: () => AsyncIterable<T>,
-    ): AsyncIterable<T> {
+    protected rollbackProviderPrimitive(fence: GoalProviderOperationFence, state: GoalSessionState): Promise<void> {
+        return rollbackStartedProviderPrimitive(this.adapter, fence, state);
+    }
+
+    protected providerFirstEffectStream<T>(fence: GoalProviderOperationFence,
+        create: () => AsyncIterable<T>): AsyncIterable<T> {
         return providerFirstEffectStream(this.ports.providerFirstEffects, fence, create);
     }
 

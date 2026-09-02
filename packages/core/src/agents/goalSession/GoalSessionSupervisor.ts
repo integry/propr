@@ -336,21 +336,22 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
                 throw new StaleGoalSessionFenceError('Provider open claim was durably replaced');
             }
             const effectiveOpenKey = deterministicOpenKey ?? openContext?.deterministicOpenKey;
-            const snapshot = await this.providerResult(() => this.providerFirstEffect(operationFence, () => this.startedProviderEffect(this.adapter.openSession({
-                goalId: request.goalId,
-                sessionId: request.sessionId,
-                provider: request.provider,
-                controllerEpoch: request.controllerEpoch,
-                persisted,
-                deterministicOpenKey: effectiveOpenKey,
-                attemptId: providerOpenAttemptId,
-                operationGeneration,
-                operationFence,
-                openContext: openContext ? {
-                    ...openContext,
+            const snapshot = await this.providerResult(() => this.providerFirstEffect(operationFence, () => {
+                const completion = this.adapter.openSession({
+                    goalId: request.goalId, sessionId: request.sessionId,
+                    provider: request.provider, controllerEpoch: request.controllerEpoch, persisted,
                     deterministicOpenKey: effectiveOpenKey,
-                } : undefined,
-            }))), value => rebuildProviderSnapshot(value, this.adapter.provider));
+                    attemptId: providerOpenAttemptId, operationGeneration, operationFence,
+                    openContext: openContext ? {
+                        ...openContext,
+                        deterministicOpenKey: effectiveOpenKey,
+                    } : undefined,
+                });
+                return this.startedProviderEffect(
+                    completion,
+                    () => openContext?.transport.cancel() ?? this.rollbackProviderPrimitive(operationFence, state),
+                );
+            }), value => rebuildProviderSnapshot(value, this.adapter.provider));
             assertCredentialFreeRecoveryMetadata(snapshot.recoveryMetadata, this.adapter.provider);
             assertProviderIdentity(state, snapshot);
             const preserveIntentModel = this.adapter.capabilities.modelChange === 'next_safe_boundary'
@@ -404,10 +405,7 @@ export class GoalSessionSupervisor extends GoalSessionRecoveryControls {
         if (authoritative.providerOpenAttemptId !== claim.attemptId) {
             throw new StaleGoalSessionFenceError('Supervised provider transport claim was durably replaced');
         }
-        const transport = await this.providerFirstEffect(
-            claim.operationFence,
-            () => request.supervisedOpen!.createTransport(Object.freeze({ ...claim })),
-        );
+        const transport = await request.supervisedOpen.createTransport(Object.freeze({ ...claim }));
         return validateClaimedEagerOpenContext(this.adapter, {
             ...claim,
             repository: request.supervisedOpen.repository,

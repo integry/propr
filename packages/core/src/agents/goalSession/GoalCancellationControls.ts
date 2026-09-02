@@ -46,7 +46,8 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
             fence, state.providerOperationGeneration ?? request.operationGeneration, intent.cancellationId,
         );
         state = await this.markBarrierPublished(fence, state);
-        if (completion.won && signalError && !(signalError instanceof CancellationTimedOut)) throw signalError;
+        if (completion.won && signalError && !(signalError instanceof CancellationTimedOut)
+            && !isDurablyClaimedCancellation(signalError)) throw signalError;
         return state;
     }
 
@@ -60,11 +61,14 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
             await this.publishProviderOperationBarrier(fence, request.operationGeneration, intent.cancellationId);
             const authoritative = await this.requireControlledStateForBarrier(fence);
             assertCancellationAuthority(authoritative, request);
-            const signal = this.providerFirstEffect<void>(request.operationFence, () => this.startedProviderEffect(
-                intent.pendingContext
+            const signal = this.providerFirstEffect<void>(request.operationFence, () => {
+                const completion = intent.pendingContext
                     ? this.adapter.cancelPending!(request, intent.pendingContext)
-                    : this.adapter.cancel(request, persistedSnapshot(state)),
-            ));
+                    : this.adapter.cancel(request, persistedSnapshot(state));
+                // Cancellation is itself the ownership release. On a transaction
+                // failure, settling this idempotent cancellation completes cleanup.
+                return this.startedProviderEffect(completion, async () => { await completion; });
+            });
             await boundedCancellation(signal);
             return undefined;
         } catch (error) {
@@ -220,6 +224,11 @@ export abstract class GoalCancellationControls extends GoalImmediateModelControl
             } : undefined,
         };
     }
+}
+
+function isDurablyClaimedCancellation(error: unknown): boolean {
+    return error instanceof StaleGoalSessionFenceError
+        || error instanceof GoalSessionContractError && error.code === 'PROVIDER_EFFECT_IN_DOUBT';
 }
 
 const CANCELLATION_TIMEOUT_MS = 1_000;

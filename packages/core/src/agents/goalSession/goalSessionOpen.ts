@@ -1,6 +1,6 @@
 import type {
     GoalProviderDuplexTransport, GoalProviderOpenContext, GoalProviderOperationFence,
-    GoalRepositoryIdentity, GoalSessionAdapter, GoalSessionIdentity, GoalSessionState, GoalStartedProviderEffect,
+    GoalRepositoryIdentity, GoalSessionAdapter, GoalSessionIdentity, GoalSessionState,
 } from './contract.js';
 import { GoalSessionContractError } from './errors.js';
 import { credentialFreeRepositoryIdentity } from './repositorySecurity.js';
@@ -26,7 +26,8 @@ export interface GoalSupervisedOpenPlan {
     requestedModel: string;
     providerHomeTarget: string;
     credentialTargets: string[];
-    createTransport(claim: Readonly<GoalSupervisedOpenClaim>): GoalStartedProviderEffect<GoalProviderDuplexTransport>;
+    /** Preflights asynchronously; the contained Docker spawn owns its own authoritative stage. */
+    createTransport(claim: Readonly<GoalSupervisedOpenClaim>): Promise<GoalProviderDuplexTransport>;
 }
 
 export async function validateClaimedEagerOpenContext(
