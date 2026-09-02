@@ -2352,7 +2352,14 @@ function Get-SupervisorInvocationCallsites {
     'EARLY_PROCESS_STATE_READ',
     'HKCU_BASELINE_STATE',
     'REGRESSION_ROOT_KEY_SETUP',
-    'REGRESSION_VALUE_KIND_SETUP',
+    'REGRESSION_VALUE_KIND_KEY_OPEN',
+    'REGRESSION_VALUE_KIND_DEFAULT_STRING',
+    'REGRESSION_VALUE_KIND_STRING',
+    'REGRESSION_VALUE_KIND_EXPAND_STRING',
+    'REGRESSION_VALUE_KIND_BINARY',
+    'REGRESSION_VALUE_KIND_DWORD',
+    'REGRESSION_VALUE_KIND_QWORD',
+    'REGRESSION_VALUE_KIND_MULTI_STRING',
     'REGRESSION_NATIVE_NONE_WRITE',
     'REGRESSION_NESTED_KEY_SETUP',
     'REGRESSION_NESTED_VALUE_SETUP',
@@ -2575,7 +2582,14 @@ function Get-SupervisorAttributionTotalityCases {
     'CALLSITE_EARLY_MANIFEST_PRESERVATION',
     'CALLSITE_HKCU_BASELINE_STATE',
     'CALLSITE_HKCU_REGRESSION_ROOT_KEY_SETUP',
-    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_SETUP',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_KEY_OPEN',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_DEFAULT_STRING',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_STRING',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_EXPAND_STRING',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_BINARY',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_DWORD',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_QWORD',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_MULTI_STRING',
     'CALLSITE_HKCU_REGRESSION_NATIVE_NONE_WRITE',
     'CALLSITE_HKCU_REGRESSION_NESTED_KEY_SETUP',
     'CALLSITE_HKCU_REGRESSION_NESTED_VALUE_SETUP',
@@ -3776,11 +3790,60 @@ function Test-SupervisorInvocationAttributionTotality {
         Callsite='REGRESSION_ROOT_KEY_SETUP'; Field='REGISTRY_PATH'
       },
       [PSCustomObject]@{
-        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_SETUP'
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_KEY_OPEN'
         Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
         Scenario='HKCU_BASELINE_RESTORE'
         Phase='FIXTURE_SETUP'
-        Callsite='REGRESSION_VALUE_KIND_SETUP'; Field='REGISTRY_VALUE'
+        Callsite='REGRESSION_VALUE_KIND_KEY_OPEN'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_DEFAULT_STRING'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_DEFAULT_STRING'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_STRING'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_STRING'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_EXPAND_STRING'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_EXPAND_STRING'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_BINARY'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_BINARY'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_DWORD'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_DWORD'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_QWORD'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_QWORD'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_MULTI_STRING'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_MULTI_STRING'; Field='REGISTRY_VALUE'
       },
       [PSCustomObject]@{
         CaseId='CALLSITE_HKCU_REGRESSION_NATIVE_NONE_WRITE'
@@ -5956,29 +6019,64 @@ function Set-HkcuFixtureBoundaryValueKinds([string]$Path) {
       [void](New-Item -Path $Path -Force -ErrorAction Stop)
       Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $Path)
     }
+  $key = Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN' `
+    -Field 'REGISTRY_PATH' `
+    -Action {
+      Get-Item -LiteralPath $Path -ErrorAction Stop
+    }
   Invoke-HkcuDesktopFixtureOperation `
-    -Callsite 'REGRESSION_VALUE_KIND_SETUP' `
+    -Callsite 'REGRESSION_VALUE_KIND_DEFAULT_STRING' `
     -Field 'REGISTRY_VALUE' `
     -Action {
-      $key = Get-Item -LiteralPath $Path -ErrorAction Stop
       $key.SetValue('', 'default-string', [Microsoft.Win32.RegistryValueKind]::String)
+    }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_VALUE_KIND_STRING' `
+    -Field 'REGISTRY_VALUE' `
+    -Action {
       $key.SetValue('StringValue', 'plain-string', [Microsoft.Win32.RegistryValueKind]::String)
+    }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_VALUE_KIND_EXPAND_STRING' `
+    -Field 'REGISTRY_VALUE' `
+    -Action {
       $key.SetValue(
         'ExpandStringValue',
         '%TEMP%\propr-fixture',
         [Microsoft.Win32.RegistryValueKind]::ExpandString
       )
+    }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_VALUE_KIND_BINARY' `
+    -Field 'REGISTRY_VALUE' `
+    -Action {
       $key.SetValue(
         'BinaryValue',
         [byte[]]@(0, 1, 2, 127, 128, 255),
         [Microsoft.Win32.RegistryValueKind]::Binary
       )
+    }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_VALUE_KIND_DWORD' `
+    -Field 'REGISTRY_VALUE' `
+    -Action {
       $key.SetValue('DWordValue', [int]305419896, [Microsoft.Win32.RegistryValueKind]::DWord)
+    }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_VALUE_KIND_QWORD' `
+    -Field 'REGISTRY_VALUE' `
+    -Action {
       $key.SetValue(
         'QWordValue',
         [long]1311768467463790320,
         [Microsoft.Win32.RegistryValueKind]::QWord
       )
+    }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_VALUE_KIND_MULTI_STRING' `
+    -Field 'REGISTRY_VALUE' `
+    -Action {
       $key.SetValue(
         'MultiStringValue',
         [string[]]@('alpha', '', 'omega'),

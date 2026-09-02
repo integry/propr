@@ -639,7 +639,14 @@ describe('desktop trusted release workflow', () => {
       'CALLSITE_RESOURCE_COLLISION_MANIFEST_PRESERVATION',
       'CALLSITE_HKCU_BASELINE_STATE',
       'CALLSITE_HKCU_REGRESSION_ROOT_KEY_SETUP',
-      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_SETUP',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_KEY_OPEN',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_DEFAULT_STRING',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_STRING',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_EXPAND_STRING',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_BINARY',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_DWORD',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_QWORD',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_MULTI_STRING',
       'CALLSITE_HKCU_REGRESSION_NATIVE_NONE_WRITE',
       'CALLSITE_HKCU_REGRESSION_NESTED_KEY_SETUP',
       'CALLSITE_HKCU_REGRESSION_NESTED_VALUE_SETUP',
@@ -1173,11 +1180,47 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /function Set-HkcuFixtureBoundaryValueKinds[\s\S]*Callsite 'REGRESSION_ROOT_KEY_SETUP'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_SETUP'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_NATIVE_NONE_WRITE'[\s\S]*Field 'NATIVE_RETURN_CODE'[\s\S]*Callsite 'REGRESSION_NESTED_KEY_SETUP'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_NESTED_VALUE_SETUP'[\s\S]*Field 'REGISTRY_VALUE'/,
+      /function Set-HkcuFixtureBoundaryValueKinds[\s\S]*Callsite 'REGRESSION_ROOT_KEY_SETUP'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_DEFAULT_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_EXPAND_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_BINARY'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_DWORD'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_QWORD'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_MULTI_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_NATIVE_NONE_WRITE'[\s\S]*Field 'NATIVE_RETURN_CODE'[\s\S]*Callsite 'REGRESSION_NESTED_KEY_SETUP'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_NESTED_VALUE_SETUP'[\s\S]*Field 'REGISTRY_VALUE'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Get-Item -LiteralPath \$Path -ErrorAction Stop/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_DEFAULT_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\('', 'default-string', \[Microsoft\.Win32\.RegistryValueKind\]::String\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\('StringValue', 'plain-string', \[Microsoft\.Win32\.RegistryValueKind\]::String\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_EXPAND_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\(\s*'ExpandStringValue',\s*'%TEMP%\\propr-fixture',\s*\[Microsoft\.Win32\.RegistryValueKind\]::ExpandString/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_BINARY'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\(\s*'BinaryValue',\s*\[byte\[\]\]@\(0, 1, 2, 127, 128, 255\),\s*\[Microsoft\.Win32\.RegistryValueKind\]::Binary/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_DWORD'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\('DWordValue', \[int\]305419896, \[Microsoft\.Win32\.RegistryValueKind\]::DWord\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_QWORD'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\(\s*'QWordValue',\s*\[long\]1311768467463790320,\s*\[Microsoft\.Win32\.RegistryValueKind\]::QWord/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_MULTI_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\(\s*'MultiStringValue',\s*\[string\[\]\]@\('alpha', '', 'omega'\),\s*\[Microsoft\.Win32\.RegistryValueKind\]::MultiString/,
     );
     assert.doesNotMatch(
       installedWindowsAppSupervisorBehaviorTest,
       /Callsite 'REGRESSION_VALUE_SETUP'[\s\S]*Field 'REGISTRY_VALUE'/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_SETUP'[\s\S]*Field 'REGISTRY_VALUE'/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
@@ -1218,7 +1261,14 @@ describe('desktop trusted release workflow', () => {
     for (const callsite of [
       'HKCU_BASELINE_STATE',
       'REGRESSION_ROOT_KEY_SETUP',
-      'REGRESSION_VALUE_KIND_SETUP',
+      'REGRESSION_VALUE_KIND_KEY_OPEN',
+      'REGRESSION_VALUE_KIND_DEFAULT_STRING',
+      'REGRESSION_VALUE_KIND_STRING',
+      'REGRESSION_VALUE_KIND_EXPAND_STRING',
+      'REGRESSION_VALUE_KIND_BINARY',
+      'REGRESSION_VALUE_KIND_DWORD',
+      'REGRESSION_VALUE_KIND_QWORD',
+      'REGRESSION_VALUE_KIND_MULTI_STRING',
       'REGRESSION_NATIVE_NONE_WRITE',
       'REGRESSION_NESTED_KEY_SETUP',
       'REGRESSION_NESTED_VALUE_SETUP',
