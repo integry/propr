@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { currentUserValidationFailureCategory } from './packaged-acceptance-current-user.mjs';
+import {
+  currentUserValidationFailureCategory,
+  scopedCurrentUserRequestGeneration,
+} from './packaged-acceptance-current-user.mjs';
 
 const journey = 'dashboard-profile-manager';
 const rendererRecords = [
@@ -44,6 +47,31 @@ const classify = mainRecord => currentUserValidationFailureCategory({
   rendererRecords,
   mainRecords: [mainRecord],
   fixtureRecords,
+});
+
+describe('packaged scoped current-user request URL', () => {
+  it('accepts one canonical bounded desktop generation parameter', () => {
+    assert.equal(scopedCurrentUserRequestGeneration(
+      'GET', '/api/auth/user?proprDesktopScopeGeneration=0',
+    ), 0);
+    assert.equal(scopedCurrentUserRequestGeneration(
+      'GET', `/api/auth/user?proprDesktopScopeGeneration=${Number.MAX_SAFE_INTEGER}`,
+    ), Number.MAX_SAFE_INTEGER);
+  });
+
+  it('rejects hosted, non-GET, duplicate, unrelated, and unbounded query forms', () => {
+    for (const [method, url] of [
+      ['GET', '/api/auth/user'],
+      ['POST', '/api/auth/user?proprDesktopScopeGeneration=1'],
+      ['GET', '/api/auth/user?proprDesktopScopeGeneration=1&proprDesktopScopeGeneration=2'],
+      ['GET', '/api/auth/user?proprDesktopScopeGeneration=1&credential=secret'],
+      ['GET', '/api/auth/user?proprDesktopScopeGeneration=01'],
+      ['GET', '/api/auth/user?proprDesktopScopeGeneration=9007199254740992'],
+      ['GET', '/api/smoke/rest?proprDesktopScopeGeneration=1'],
+    ]) {
+      assert.equal(scopedCurrentUserRequestGeneration(method, url), null, `${method} ${url}`);
+    }
+  });
 });
 
 describe('packaged current-user acceptance correlation', () => {

@@ -66,7 +66,21 @@ describe('current-user response schema', () => {
     }));
   });
 
-  it('uses a generation cache key without introducing a fetch cache mode or cache headers', async () => {
+  it('preserves the exact hosted-web URL and no-store request contract', async () => {
+    apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(validUser), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(getCurrentUser()).resolves.toEqual(validUser);
+
+    expect(apiFetch).toHaveBeenCalledOnce();
+    expect(apiFetch).toHaveBeenCalledWith('https://example.test/api/auth/user', {
+      credentials: 'include',
+      cache: 'no-store',
+    });
+  });
+
+  it('uses a bounded desktop generation cache key without fetch cache inputs', async () => {
     apiFetch.mockImplementation(async () => new Response(JSON.stringify(validUser), {
       status: 200, headers: { 'Content-Type': 'application/json' },
     }));

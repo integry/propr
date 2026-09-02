@@ -232,6 +232,29 @@ describe('demo mode API helpers', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it('preserves hosted current-user cache bypass without a desktop query or scope header', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'user-1',
+      login: 'operator',
+      username: 'operator',
+      displayName: 'Operations',
+      email: null,
+      avatarUrl: null,
+      role: 'admin',
+      permissions: ['instance.manage_settings'],
+      authorizationSource: 'local',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    await getCurrentUser();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [input, init] = fetchMock.mock.calls[0];
+    expect(input).toBe('/api/auth/user');
+    expect(init).toEqual({ credentials: 'include', cache: 'no-store' });
+    expect(new URLSearchParams(String(input).split('?')[1])).toEqual(new URLSearchParams());
+    expect(new Headers(init?.headers).has('X-ProPR-Desktop-Transport-Scope')).toBe(false);
+  });
+
   it('sends scoped current-user GETs without browser cache-control inputs', async () => {
     setApiBaseUrl('https://example.test');
     setDesktopConnectionScope({

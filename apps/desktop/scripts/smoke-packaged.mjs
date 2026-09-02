@@ -18,6 +18,7 @@ import {
   createSmokeChildEnvironment,
   removePrivateSmokeProfile,
 } from './packaged-smoke-support.mjs';
+import { scopedCurrentUserRequestGeneration } from './packaged-acceptance-current-user.mjs';
 
 const READY_EVENT = 'desktop.renderer.ready';
 const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
@@ -128,6 +129,7 @@ const fixtures = [];
 const listenTransportFixture = async name => {
   const socketBoundary = { authenticationAttempts: 0, rejectedAuthenticationAttempts: 0, connections: 0 };
   const server = createServer((request, response) => {
+    const currentUserScopeGeneration = scopedCurrentUserRequestGeneration(request.method, request.url);
     const record = {
       fixture: name,
       method: request.method,
@@ -163,10 +165,10 @@ const listenTransportFixture = async name => {
       response.end();
       return;
     }
-    if ((request.url === '/api/auth/user' || request.url === '/api/smoke/rest')
+    if ((currentUserScopeGeneration !== null || request.url === '/api/smoke/rest')
       && /^Bearer propr_it_[A-Za-z0-9_-]{43}$/.test(record.authorization ?? '')) {
       response.writeHead(200, { ...corsHeaders, 'Set-Cookie': 'remote=must-not-persist; HttpOnly; SameSite=None' });
-      response.end(request.url === '/api/auth/user' ? '{"username":"packaged-smoke"}' : '{"ok":true}');
+      response.end(currentUserScopeGeneration !== null ? '{"username":"packaged-smoke"}' : '{"ok":true}');
       return;
     }
     response.writeHead(401, corsHeaders);
@@ -402,9 +404,18 @@ const launch = async mode => {
         throw new Error(`Packaged ${mode} ${name} fixture observed an unexpected Socket.IO boundary count`);
       }
       const fixtureRequests = authenticated.filter(request => request.fixture === name);
+      const currentUserRequests = fixtureRequests.filter(request => {
+        if (request.method !== 'GET') return false;
+        try {
+          return new URL(request.url, 'http://fixture.invalid').pathname === '/api/auth/user';
+        } catch {
+          return false;
+        }
+      });
       const namespaceConnections = fixtureRequests.filter(request => request.socketIo);
       const allNamespaceAttempts = runRequests.filter(request => request.fixture === name && request.socketIo);
-      if (!fixtureRequests.some(request => request.url === '/api/auth/user')
+      if (currentUserRequests.length === 0
+        || currentUserRequests.some(request => scopedCurrentUserRequestGeneration(request.method, request.url) === null)
         || !fixtureRequests.some(request => request.url === '/api/smoke/rest')
         || namespaceConnections.length < (name === 'second' ? 2 : 1)
         || allNamespaceAttempts.length !== namespaceConnections.length
@@ -417,7 +428,15 @@ const launch = async mode => {
       }
     }
     if (runRequests.some(request => request.cookie !== null)
-      || runRequests.some(request => secrets.some(secret => request.url?.includes(secret)))) {
+      || runRequests.some(request => secrets.some(secret => {
+        if (request.url?.includes(secret)) return true;
+        try {
+          return [...new URL(request.url, 'http://fixture.invalid').searchParams]
+            .some(([key, value]) => key.includes(secret) || value.includes(secret));
+        } catch {
+          return false;
+        }
+      }))) {
       throw new Error('Packaged renderer transport sent cookies or placed a credential in a URL');
     }
     if (secrets.some(secret => output.includes(secret) || launchArguments.some(argument => argument.includes(secret)))) {

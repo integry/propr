@@ -34,7 +34,10 @@ import {
 } from './acceptance-artifacts.mjs';
 import { PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS } from './packaged-acceptance-clock.mjs';
 import { analyzeExistingElectronRenderer } from './packaged-acceptance-axe.mjs';
-import { currentUserValidationFailureCategory as classifyCurrentUserValidation } from './packaged-acceptance-current-user.mjs';
+import {
+  currentUserValidationFailureCategory as classifyCurrentUserValidation,
+  scopedCurrentUserRequestGeneration,
+} from './packaged-acceptance-current-user.mjs';
 import {
   captureElectronRendererScreenshot,
   forEachElectronRendererVariant,
@@ -352,7 +355,7 @@ const createFixture = async (mode, fixedOrigin) => {
       return json(response, 200, { status: 'cancelled', cancelledAt: FIXED_TIME });
     }
     if (request.method === 'DELETE' && request.url === '/api/desktop/tokens/current') return json(response, 204, {});
-    if (request.method === 'GET' && requestUrl.pathname === '/api/auth/user') {
+    if (scopedCurrentUserRequestGeneration(request.method, request.url) !== null) {
       authChecks += 1;
       const source = request.headers.origin === DESKTOP_RENDERER_ORIGIN ? 'renderer' : 'main';
       const record = {

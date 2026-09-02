@@ -1,3 +1,23 @@
+export const CURRENT_USER_SCOPE_GENERATION_QUERY = 'proprDesktopScopeGeneration';
+
+export const scopedCurrentUserRequestGeneration = (method, url) => {
+  if (method !== 'GET' || typeof url !== 'string') return null;
+  let parsed;
+  try {
+    parsed = new URL(url, 'http://fixture.invalid');
+  } catch {
+    return null;
+  }
+  if (parsed.pathname !== '/api/auth/user') return null;
+  const entries = [...parsed.searchParams];
+  if (entries.length !== 1 || entries[0][0] !== CURRENT_USER_SCOPE_GENERATION_QUERY) return null;
+  const value = entries[0][1];
+  if (!/^(?:0|[1-9]\d{0,15})$/.test(value)
+    || parsed.search !== `?${CURRENT_USER_SCOPE_GENERATION_QUERY}=${value}`) return null;
+  const generation = Number(value);
+  return Number.isSafeInteger(generation) ? generation : null;
+};
+
 export const currentUserValidationFailureCategory = ({
   journey,
   evidenceInvalid,

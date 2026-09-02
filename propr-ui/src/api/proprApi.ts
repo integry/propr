@@ -294,10 +294,12 @@ export const getCurrentUser = async (options: CurrentUserValidationOptions = {})
     ? requestedScopeGeneration
     : 0;
   const activeScopePresent = options.activeScopePresent === true;
-  const currentUserUrl = `${API_BASE_URL}/api/auth/user?${CURRENT_USER_SCOPE_GENERATION_QUERY}=${scopeGeneration}`;
-  const response = await apiFetch(currentUserUrl, {
-    credentials: 'include',
-  });
+  const currentUserUrl = activeScopePresent
+    ? `${API_BASE_URL}/api/auth/user?${CURRENT_USER_SCOPE_GENERATION_QUERY}=${scopeGeneration}`
+    : `${API_BASE_URL}/api/auth/user`;
+  const response = await apiFetch(currentUserUrl, activeScopePresent
+    ? { credentials: 'include' }
+    : { credentials: 'include', cache: 'no-store' });
   const classification = await currentUserResponseClassification(response);
   if (activeScopePresent) {
     reportPackagedAcceptanceCurrentUser({
