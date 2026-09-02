@@ -10,7 +10,11 @@ param(
     'host-node-resolution',
     'host-node-canonical-authority',
     'host-launcher-native-initialization',
-    'host-launcher-selected-path',
+    'host-launcher-selected-path-input',
+    'host-launcher-selected-path-extra-colon',
+    'host-launcher-selected-path-get-full-path',
+    'host-launcher-selected-path-absolute-shape',
+    'host-launcher-selected-path-canonical-equality',
     'host-launcher-source-open',
     'host-launcher-source-type',
     'host-launcher-source-identity',
@@ -66,7 +70,11 @@ $hostFailureSubphases = @(
   'host-node-resolution',
   'host-node-canonical-authority',
   'host-launcher-native-initialization',
-  'host-launcher-selected-path',
+  'host-launcher-selected-path-input',
+  'host-launcher-selected-path-extra-colon',
+  'host-launcher-selected-path-get-full-path',
+  'host-launcher-selected-path-absolute-shape',
+  'host-launcher-selected-path-canonical-equality',
   'host-launcher-source-open',
   'host-launcher-source-type',
   'host-launcher-source-identity',
@@ -407,21 +415,42 @@ function Initialize-HostLauncherNative {
 }
 
 function Get-BoundedAbsoluteWindowsPath {
-  param([Parameter(Mandatory=$true)][string]$Path)
+  param(
+    [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Path,
+    [switch]$SelectedPathPredicates
+  )
+  if ($SelectedPathPredicates) {
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-selected-path-input'
+  }
   if ([String]::IsNullOrEmpty($Path) -or $Path.Length -gt 259 -or $Path -cmatch '[\x00-\x1f\x7f]' -or
       $Path.StartsWith('\\?\', [StringComparison]::Ordinal) -or
       $Path.StartsWith('\\.\', [StringComparison]::Ordinal) -or
       $Path.StartsWith('\??\', [StringComparison]::Ordinal)) {
     Stop-PackagedConnect 'artifact-type'
   }
+  if ($SelectedPathPredicates) {
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-selected-path-extra-colon'
+  }
+  if ($Path.Length -gt 2 -and $Path.Substring(2).Contains(':')) {
+    Stop-PackagedConnect 'artifact-type'
+  }
+  if ($SelectedPathPredicates) {
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-selected-path-get-full-path'
+  }
   try {
     $fullPath = [IO.Path]::GetFullPath($Path)
   } catch {
     Stop-PackagedConnect 'artifact-type'
   }
-  $driveAbsolute = $fullPath -cmatch '^[A-Za-z]:\\' -and !$fullPath.Substring(2).Contains(':')
-  $uncAbsolute = $fullPath -cmatch '^\\\\[^\\:]+\\[^\\:]+\\' -and !$fullPath.Substring(2).Contains(':')
+  if ($SelectedPathPredicates) {
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-selected-path-absolute-shape'
+  }
+  $driveAbsolute = $fullPath -cmatch '^[A-Za-z]:\\'
+  $uncAbsolute = $fullPath -cmatch '^\\\\[^\\:]+\\[^\\:]+\\'
   if (!$driveAbsolute -and !$uncAbsolute) { Stop-PackagedConnect 'artifact-type' }
+  if ($SelectedPathPredicates) {
+    Set-OrdinaryUserPreflightSubphase 'host-launcher-selected-path-canonical-equality'
+  }
   if (![String]::Equals($fullPath, $Path, [StringComparison]::OrdinalIgnoreCase)) {
     Stop-PackagedConnect 'artifact-type'
   }
@@ -452,7 +481,7 @@ function Assert-OrdinaryHostLauncherHandle {
 
 function Get-TrustedHostLauncher {
   param(
-    [Parameter(Mandatory=$true)][string]$Path,
+    [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Path,
     [scriptblock]$TestOnlyBeforeFinalReopen,
     [scriptblock]$TestOnlyBeforeSourceReopen
   )
@@ -463,8 +492,7 @@ function Get-TrustedHostLauncher {
   try {
     Set-OrdinaryUserPreflightSubphase 'host-launcher-native-initialization'
     Initialize-HostLauncherNative
-    Set-OrdinaryUserPreflightSubphase 'host-launcher-selected-path'
-    $selectedPath = Get-BoundedAbsoluteWindowsPath $Path
+    $selectedPath = Get-BoundedAbsoluteWindowsPath -Path $Path -SelectedPathPredicates
     Set-OrdinaryUserPreflightSubphase 'host-launcher-source-open'
     $sourceHandle = [ProprHostLauncherNative]::Open($selectedPath, $false)
     Set-OrdinaryUserPreflightSubphase 'host-launcher-source-type'

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { describe, test } from 'node:test';
@@ -31,7 +31,11 @@ const hostPreflightSubphases = Object.freeze([
 ]);
 const launcherAuthoritySubphases = Object.freeze([
   'host-launcher-native-initialization',
-  'host-launcher-selected-path',
+  'host-launcher-selected-path-input',
+  'host-launcher-selected-path-extra-colon',
+  'host-launcher-selected-path-get-full-path',
+  'host-launcher-selected-path-absolute-shape',
+  'host-launcher-selected-path-canonical-equality',
   'host-launcher-source-open',
   'host-launcher-source-type',
   'host-launcher-source-identity',
@@ -609,6 +613,27 @@ test('the workflow stages before alternate credentials and the harness preflight
   assert.match(orchestrator, /FILE_ID_INFO[\s\S]*?GetFileInformationByHandleEx[\s\S]*?FileIdInfo = 18/u);
   assert.match(orchestrator, /FILE_SHARE_READ\s*\n\s*: FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE/u);
   assert.match(orchestrator, /\$Path\.Length -gt 259[\s\S]*?\[\\x00-\\x1f\\x7f\]/u);
+  const selectedPathValidation = orchestrator.slice(
+    orchestrator.indexOf('function Get-BoundedAbsoluteWindowsPath'),
+    orchestrator.indexOf('function ConvertFrom-NativeFinalPath'),
+  );
+  const selectedPathPredicateTransitions = [
+    ['host-launcher-selected-path-input', '[String]::IsNullOrEmpty($Path)'],
+    ['host-launcher-selected-path-extra-colon', "$Path.Substring(2).Contains(':')"],
+    ['host-launcher-selected-path-get-full-path', '$fullPath = [IO.Path]::GetFullPath($Path)'],
+    ['host-launcher-selected-path-absolute-shape', "$driveAbsolute = $fullPath -cmatch '^[A-Za-z]:\\\\'"],
+    ['host-launcher-selected-path-canonical-equality', '[String]::Equals($fullPath, $Path'],
+  ];
+  let previousSelectedPathPredicate = -1;
+  for (const [subphase, predicate] of selectedPathPredicateTransitions) {
+    const transition = selectedPathValidation.indexOf(
+      `Set-OrdinaryUserPreflightSubphase '${subphase}'`,
+    );
+    const predicateIndex = selectedPathValidation.indexOf(predicate);
+    assert.ok(previousSelectedPathPredicate < transition && transition < predicateIndex,
+      `${subphase} must identify only its selected-path predicate`);
+    previousSelectedPathPredicate = predicateIndex;
+  }
   assert.match(orchestrator, /function Get-CanonicalItem[\s\S]*?FileAttributes\]::ReparsePoint/u);
   assert.match(orchestrator, /function Assert-PackageTreeTypes[\s\S]*?FileAttributes\]::ReparsePoint/u);
   assert.match(orchestrator, /\$childFailureSubphases -cnotcontains \$record\.subphase/u);
@@ -676,8 +701,14 @@ windowsTest('each host preflight failure transition emits one fixed redacted sub
 });
 
 windowsTest('the host launcher accepts only a stable final ordinary-file identity', async context => {
-  const root = await mkdtemp(join(tmpdir(), 'propr-launcher-authority-'));
-  context.after(() => rm(root, { force: true, recursive: true }));
+  const producedRoot = await mkdtemp(join(tmpdir(), 'propr-launcher-authority-'));
+  context.after(() => rm(producedRoot, { force: true, recursive: true }));
+  // PowerShell 5.1 expands an existing 8.3 path in GetFullPath, so join fixtures only below this final spelling.
+  const root = await realpath(producedRoot);
+  const rootEntry = await lstat(root);
+  assert.equal(rootEntry.isDirectory(), true);
+  assert.equal(rootEntry.isSymbolicLink(), false);
+  assert.equal(await realpath(root), root, 'the native fixture producer must return its canonical root');
   const target = join(root, 'node-target.exe');
   const otherTarget = join(root, 'node-other.exe');
   const alias = join(root, 'node-alias.exe');
@@ -694,6 +725,14 @@ windowsTest('the host launcher accepts only a stable final ordinary-file identit
   await symlink(join(root, 'missing-target.exe'), brokenAlias, 'file');
   await symlink(target, retargetedAlias, 'file');
   await mkdir(directory);
+
+  if (producedRoot.toUpperCase() !== root.toUpperCase()) {
+    assertLauncherAuthorityRejected(
+      runLauncherAuthorityTest(join(producedRoot, 'node-target.exe')),
+      'artifact-type',
+      'host-launcher-selected-path-canonical-equality',
+    );
+  }
 
   for (const [caseName, acceptedPath] of [['normal', target], ['alias', alias]]) {
     const result = runLauncherAuthorityTest(acceptedPath, caseName);
@@ -720,17 +759,21 @@ windowsTest('the host launcher accepts only a stable final ordinary-file identit
     'artifact-type',
     'host-launcher-source-type',
   );
-  for (const rejectedPath of [
-    String.raw`\\.\NUL`,
-    'node.exe',
-    `${root}\\${'x'.repeat(260)}`,
-    `${root}\\control-${String.fromCharCode(1)}.exe`,
-  ]) {
-    assertLauncherAuthorityRejected(
-      runLauncherAuthorityTest(rejectedPath),
-      'artifact-type',
-      'host-launcher-selected-path',
-    );
+  const selectedPathRejections = [
+    ['', 'host-launcher-selected-path-input'],
+    [String.raw`\\.\NUL`, 'host-launcher-selected-path-input'],
+    [String.raw`\\?\C:\ordinary.exe`, 'host-launcher-selected-path-input'],
+    [String.raw`\??\C:\ordinary.exe`, 'host-launcher-selected-path-input'],
+    [`${root}\\${'x'.repeat(260)}`, 'host-launcher-selected-path-input'],
+    [`${root}\\control-${String.fromCharCode(1)}.exe`, 'host-launcher-selected-path-input'],
+    [String.raw`C:\invalid|path.exe`, 'host-launcher-selected-path-get-full-path'],
+    [String.raw`\\server\share`, 'host-launcher-selected-path-absolute-shape'],
+    [String.raw`C:\ordinary.exe:alternate-stream`, 'host-launcher-selected-path-extra-colon'],
+    ['node.exe', 'host-launcher-selected-path-canonical-equality'],
+    [String.raw`C:\ordinary\..\ordinary.exe`, 'host-launcher-selected-path-canonical-equality'],
+  ];
+  for (const [rejectedPath, subphase] of selectedPathRejections) {
+    assertLauncherAuthorityRejected(runLauncherAuthorityTest(rejectedPath), 'artifact-type', subphase);
   }
 });
 
