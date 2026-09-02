@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
 import { after, describe, test } from 'node:test';
