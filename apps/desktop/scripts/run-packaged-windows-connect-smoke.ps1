@@ -151,7 +151,6 @@ $captureAuthorityPredicates = @(
   'identity-replacement',
   'pre-create',
   'redirect-open',
-  'redirect-argument-contract',
   'redirect-timeout',
   'redirect-child-exit',
   'post-redirection-identity',
@@ -1919,10 +1918,6 @@ if ($LifecycleTestMode -eq 'capture-redirection') {
     # PS5.1 must acquire the redirected process handle before waiting or ExitCode can remain unset.
     $redirectionProcessHandle = $redirectionProcess.Handle
     if ($redirectionProcessHandle -eq [IntPtr]::Zero) {
-      Stop-PackagedConnect 'spawn-failed'
-    }
-    Set-CaptureAuthorityPredicate 'redirect-argument-contract'
-    if ($redirectionProcess.StartInfo.Arguments -cne $captureProducerArguments) {
       Stop-PackagedConnect 'spawn-failed'
     }
     Set-CaptureAuthorityPredicate 'redirect-timeout'

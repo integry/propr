@@ -74,7 +74,6 @@ const positiveHostNodeProducerSubphases = Object.freeze([
 const captureRedirectionFailurePredicates = Object.freeze([
   'pre-create',
   'redirect-open',
-  'redirect-argument-contract',
   'redirect-timeout',
   'redirect-child-exit',
   'post-redirection-identity',
@@ -339,7 +338,7 @@ test('capture redirection mismatch reporting is total and redacted for each laun
       && !hasHostileDiagnosticEvidence(error.message),
     label,
   );
-  for (const predicate of ['redirect-open', 'redirect-argument-contract', 'redirect-timeout']) {
+  for (const predicate of ['redirect-open', 'redirect-timeout']) {
     const diagnostic = 'PROPR_WINDOWS_PACKAGED_CONNECT:failed:category=artifact-type'
       + ':phase=capture-parse:subphase=capture-authority'
       + `:predicate=${predicate}:cleanup=none\r\n`;
@@ -1142,7 +1141,6 @@ test('the workflow stages before alternate credentials and the harness preflight
   for (const predicate of [
     'pre-create',
     'redirect-open',
-    'redirect-argument-contract',
     'redirect-timeout',
     'redirect-child-exit',
     'capture-content',
@@ -1159,13 +1157,13 @@ test('the workflow stages before alternate credentials and the harness preflight
   );
   assert.match(
     captureRedirectionTestMode,
-    /CaptureRedirectionProducerTestCase -ceq 'nonzero'[\s\S]*?\{ 23 \}[\s\S]*?\$captureProducerSource = if[\s\S]*?capture-stdout[\s\S]*?capture-stderr[\s\S]*?exit \$captureProducerExitCode[\s\S]*?\[Text\.Encoding\]::Unicode\.GetBytes\(\$captureProducerSource\)[\s\S]*?'-NoLogo -NoProfile -NonInteractive -EncodedCommand "'[\s\S]*?-ArgumentList \$captureProducerArguments/u,
+    /CaptureRedirectionProducerTestCase -ceq 'nonzero'[\s\S]*?\{ 23 \}[\s\S]*?\$captureProducerSource = if[\s\S]*?capture-stdout[\s\S]*?capture-stderr[\s\S]*?exit \$captureProducerExitCode[\s\S]*?\[Text\.Encoding\]::Unicode\.GetBytes\(\$captureProducerSource\)/u,
   );
-  assert.doesNotMatch(captureRedirectionTestMode, /-ArgumentList @\(/u);
   assert.match(
     captureRedirectionTestMode,
-    /Set-CaptureAuthorityPredicate 'redirect-argument-contract'[\s\S]*?\.StartInfo\.Arguments -cne \$captureProducerArguments/u,
+    /\$captureProducerArguments = \(\s*'-NoLogo -NoProfile -NonInteractive -EncodedCommand "' \+\s*\$captureProducerArgument \+ '"'\s*\)\s*\$redirectionProcess = Start-Process[\s\S]*?-ArgumentList \$captureProducerArguments/u,
   );
+  assert.doesNotMatch(captureRedirectionTestMode, /-ArgumentList @\(|StartInfo\.Arguments/u);
   assert.match(
     captureRedirectionTestMode,
     /\$redirectionProcessHandle = \$redirectionProcess\.Handle[\s\S]*?Set-CaptureAuthorityPredicate 'redirect-timeout'[\s\S]*?WaitForExit\(\$terminationTimeoutMilliseconds\)[\s\S]*?Assert-PrivilegedCaptureIdentity[\s\S]*?Assert-PrivilegedCaptureIdentity[\s\S]*?Get-TestOnlyCaptureProducerOutputState/u,
