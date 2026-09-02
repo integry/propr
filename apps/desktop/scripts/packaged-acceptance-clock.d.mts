@@ -1,0 +1,2 @@
+export const PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS: number;
+export const PACKAGED_ACCEPTANCE_TIME: string;

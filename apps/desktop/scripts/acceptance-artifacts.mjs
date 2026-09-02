@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
+import { PACKAGED_ACCEPTANCE_TIME } from './packaged-acceptance-clock.mjs';
 
-export const FIXED_TIME = '2026-01-02T03:04:05.000Z';
+export const FIXED_TIME = PACKAGED_ACCEPTANCE_TIME;
 export const ACCEPTANCE_ARTIFACT_LEAF = 'desktop-acceptance-artifacts';
 export const ACCEPTANCE_PROFILE_PREFIX = 'propr-desktop-acceptance-';
 export const ACCEPTANCE_SURFACES_PREFIX = 'propr-acceptance-surfaces-';

@@ -26,6 +26,7 @@ import {
   verifyAcceptanceArtifacts,
   writeAcceptanceManifest,
 } from './acceptance-artifacts.mjs';
+import { PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS } from './packaged-acceptance-clock.mjs';
 import { analyzeExistingElectronRenderer } from './packaged-acceptance-axe.mjs';
 import {
   captureElectronRendererScreenshot,
@@ -45,7 +46,7 @@ const ACTIVATION_TICKET = 'A'.repeat(43);
 const PAIRING_ID = `dpr_${'P'.repeat(22)}`;
 const RECEIPT = 'R'.repeat(22);
 const SENTINELS = [DEVICE_SECRET, INSTANCE_TOKEN, ACTIVATION_TICKET];
-const FIXED_MILLIS = Date.parse(FIXED_TIME);
+const FIXED_MILLIS = PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS;
 const consoleRecords = [];
 const pendingConsoleRecords = [];
 const pageErrorRecords = [];

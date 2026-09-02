@@ -35,7 +35,10 @@ import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
-import { authorizePackagedAcceptanceTest } from './acceptance-test-authorization';
+import {
+  authorizePackagedAcceptanceTest,
+  packagedAcceptancePairingTiming,
+} from './acceptance-test-authorization';
 import { registerPackagedAcceptanceZoomIpc } from './acceptance-zoom';
 import { AcceptanceSetupController } from './acceptance-setup-controller';
 import {
@@ -93,6 +96,7 @@ try {
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 const packagedAcceptanceTest = packagedAcceptanceUserDataDirectory !== null;
+const acceptancePairingTiming = packagedAcceptancePairingTiming(packagedAcceptanceUserDataDirectory);
 const transportSmoke = packagedTransportSmoke(packagedSmokeTest);
 const inertSetupActions = new Proxy({} as SetupActions, {
   get() {
@@ -485,7 +489,7 @@ if (!hasSingleInstanceLock) {
       reportRevocationFailure: diagnostic => {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
       },
-      ...(packagedAcceptanceTest ? { pairingTiming: { sleep: async () => undefined } } : {}),
+      ...(acceptancePairingTiming ? { pairingTiming: acceptancePairingTiming } : {}),
     });
     const sessionSecurity = configureSessionSecurity(credentials);
     const credentialInitialization = await credentials.initialize();

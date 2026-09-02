@@ -1,4 +1,5 @@
 import { basename, isAbsolute, resolve } from 'node:path';
+import { PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS } from '../scripts/packaged-acceptance-clock.mjs';
 
 export const PACKAGED_ACCEPTANCE_USER_DATA_PREFIX = 'propr-desktop-acceptance-';
 const ACCEPTANCE_USER_DATA_LEAF = /^propr-desktop-acceptance-[A-Za-z0-9]+$/;
@@ -9,6 +10,11 @@ interface AcceptanceAuthorizationInput {
   environmentTriggered: boolean;
   isPackaged: boolean;
   platform: NodeJS.Platform;
+}
+
+interface PackagedAcceptancePairingTiming {
+  now(): number;
+  sleep(milliseconds: number, signal?: AbortSignal): Promise<void>;
 }
 
 /**
@@ -44,3 +50,17 @@ export const authorizePackagedAcceptanceTest = ({
   }
   return requested;
 };
+
+/**
+ * Keep the deterministic protocol clock behind the same authorization result
+ * as the other packaged-acceptance-only behavior. A null result covers normal
+ * production, packaged smoke, and ordinary development launches.
+ */
+export const packagedAcceptancePairingTiming = (
+  authorizedUserDataDirectory: string | null,
+): PackagedAcceptancePairingTiming | undefined => authorizedUserDataDirectory === null
+  ? undefined
+  : {
+      now: () => PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS,
+      sleep: async (_milliseconds, _signal) => undefined,
+    };
