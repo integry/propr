@@ -60,4 +60,38 @@ describe('desktop deep-link delivery', () => {
 
     assert.equal(sent.filter(({ value }) => value === connectUrl).length, 1);
   });
+
+  it('coalesces duplicate OS notifications without swallowing a later intentional activation', () => {
+    const sent: Array<{ channel: string; value: string }> = [];
+    const delivered: string[] = [];
+    let now = 1_000;
+    const link = 'propr://open?path=%2Ftasks';
+    const delivery = new DeepLinkDelivery<DeepLinkWindow>(
+      'desktop:deep-link',
+      [],
+      value => delivered.push(value),
+      () => now,
+      1_000,
+    );
+    delivery.setWindow(createWindow(sent));
+
+    assert.equal(delivery.deliver(link), true);
+    assert.equal(delivery.deliver(link), false);
+    now += 1_001;
+    assert.equal(delivery.deliver(link), true);
+
+    assert.deepEqual(sent.map(item => item.value), [link, link]);
+    assert.deepEqual(delivered, [link, link]);
+  });
+
+  it('deduplicates a cold link reported through both argv and open-url', () => {
+    const sent: Array<{ channel: string; value: string }> = [];
+    const link = 'propr://connect?api=https%3A%2F%2Ft-native-evidence.propr.dev';
+    const delivery = new DeepLinkDelivery<DeepLinkWindow>('desktop:deep-link', [link], undefined, () => 10);
+
+    assert.equal(delivery.deliver(link), false);
+    delivery.setWindow(createWindow(sent));
+
+    assert.deepEqual(sent, [{ channel: 'desktop:deep-link', value: link }]);
+  });
 });

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   createPackagedSmokeEvidenceSink,
+  NATIVE_SMOKE_EVIDENCE_FILES,
   PACKAGED_SMOKE_EVIDENCE_EVENTS,
   PACKAGED_SMOKE_EVIDENCE_FILE,
 } from './smoke-test-evidence';
@@ -71,6 +72,19 @@ describe('packaged smoke evidence', () => {
       assert.deepEqual(records.slice(0, lifecycle.length).map(record => record.event), lifecycle);
       assert.equal(records.length, PACKAGED_SMOKE_EVIDENCE_EVENTS.length);
       assert.ok(Buffer.byteLength(contents, 'utf8') < 1024);
+    });
+  });
+
+  it('uses separate fixed event-only files for native first launch and relaunch', () => {
+    withSmokeDirectory(directory => {
+      const first = createPackagedSmokeEvidenceSink(directory, 'first');
+      const relaunch = createPackagedSmokeEvidenceSink(directory, 'relaunch');
+      assert.ok(first && relaunch);
+      first.write('desktop.native.profile_fresh');
+      relaunch.write('desktop.native.profile_preserved');
+      first.close();
+      relaunch.close();
+      assert.deepEqual(readdirSync(directory).sort(), Object.values(NATIVE_SMOKE_EVIDENCE_FILES).sort());
     });
   });
 });
