@@ -14,10 +14,10 @@ const TOKEN_REFRESH_TIMEOUT_MS = 20_000;
 const REFRESH_LEASE_MS = TOKEN_REFRESH_TIMEOUT_MS + 5_000;
 const REFRESH_LEASE_POLL_MS = 100;
 const ENCRYPTION_CONTEXT = 'propr:visual-preview-oauth:v1';
-// GitHub App user access tokens (`ghu_`) act on behalf of the signed-in user
-// and are distinct from installation tokens (`ghs_`). Hosted/Connect login
-// commonly returns the former, including a refresh token when expiry is on.
-const SUPPORTED_TOKEN_PATTERN = /^(?:gho_|ghu_|ghp_|github_pat_)/;
+// GitHub CLI's attachment uploader accepts OAuth App and personal-access
+// tokens. It deliberately rejects both GitHub App user (`ghu_`) and
+// installation (`ghs_`) tokens before making an upload request.
+const SUPPORTED_TOKEN_PATTERN = /^(?:gho_|ghp_|github_pat_)/;
 
 export const VISUAL_PREVIEW_UPLOAD_TOKEN_ENV = 'GITHUB_VISUAL_PREVIEW_TOKEN';
 export const VISUAL_PREVIEW_CREDENTIAL_KEY_ENV = 'PROPR_CREDENTIAL_ENCRYPTION_KEY';
@@ -165,7 +165,7 @@ function assertSupportedToken(token: string): string {
   if (!isSupportedVisualPreviewUploadToken(normalized)) {
     throw new VisualPreviewCredentialError(
       'VISUAL_PREVIEW_AUTH_UNSUPPORTED',
-      'GitHub visual-preview uploads require a user OAuth token or personal access token; GitHub App installation tokens are not supported.',
+      'GitHub visual-preview uploads require an OAuth App token or personal access token; GitHub App user and installation tokens are not supported.',
     );
   }
   return normalized;

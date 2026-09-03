@@ -42,19 +42,14 @@ test('encrypts a captured administrator credential and resolves it for a worker'
   assert.equal(await service.resolveUploadToken(), 'gho_access-secret');
 });
 
-test('accepts an expiring GitHub App user access token from browser login', async () => {
+test('rejects GitHub App user and installation tokens before storing them', async () => {
   const service = createService();
-  assert.equal(await service.captureFromLogin({
-    githubUserId: '1',
-    githubUsername: 'admin',
-    source: 'github',
-    accessToken: 'ghu_user-access-secret',
-    refreshToken: 'ghr_refresh-secret',
-    accessTokenExpiresAt: Date.now() + 28_800_000,
-  }), true);
-
-  assert.equal(await service.resolveUploadToken(), 'ghu_user-access-secret');
-  assert.equal((await service.getStatus()).status, 'active');
+  for (const accessToken of ['ghu_user-access', 'ghs_installation']) {
+    await assert.rejects(service.replace({
+      githubUserId: '1', githubUsername: 'admin', source: 'github', accessToken,
+    }), /GitHub App user and installation tokens are not supported/);
+  }
+  assert.equal((await service.getStatus()).status, 'missing');
 });
 
 test('does not silently replace a healthy credential when another admin logs in', async () => {
@@ -146,12 +141,4 @@ test('serializes refreshes across service instances sharing SQLite', async () =>
   await Promise.all([first.refreshIfNeeded(), second.refreshIfNeeded()]);
   assert.equal(refreshRequests, 1);
   assert.equal(await second.resolveUploadToken(), 'gho_once-access');
-});
-
-test('rejects GitHub App installation tokens before storing them', async () => {
-  const service = createService();
-  await assert.rejects(service.replace({
-    githubUserId: '1', githubUsername: 'admin', source: 'github', accessToken: 'ghs_installation',
-  }), /GitHub App installation tokens are not supported/);
-  assert.equal((await service.getStatus()).status, 'missing');
 });

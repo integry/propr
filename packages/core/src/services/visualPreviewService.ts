@@ -363,9 +363,11 @@ export function renderVisualPreviewUploadFailureSection(
     parts.push('### Restore preview uploads');
     parts.push(
       'An instance administrator must open the ProPR Web UI, go to **Settings → Visual preview uploads**, '
-      + 'and select **Use my GitHub login**. If the current login is expired or ineligible, log out and sign in '
-      + 'with GitHub again first. If `GITHUB_VISUAL_PREVIEW_TOKEN` is set, remove or replace that override because '
-      + 'it takes precedence over the Web UI credential. Then request the visual preview again.',
+      + 'and select **Use my GitHub login** when that login is backed by a GitHub OAuth App token (`gho_`). '
+      + 'GitHub rejects GitHub App user (`ghu_`) and installation (`ghs_`) tokens for attachments. If the current '
+      + 'login is ineligible, configure Web UI login with a GitHub OAuth App, or set `GITHUB_VISUAL_PREVIEW_TOKEN` '
+      + 'to an OAuth App token, classic PAT, or fine-grained PAT with repository write access. The environment '
+      + 'override takes precedence over the Web UI credential. Then request the visual preview again.',
     );
   }
   if (evidence.toolSuggestions.length > 0) {

@@ -64,6 +64,7 @@ test('returns visual-preview auth status without exposing stored token material'
     status: 'active',
     githubUsername: 'admin',
     currentUsername: 'admin',
+    currentLoginTokenType: 'supported',
     canUseCurrentLogin: true,
   });
   assert.doesNotMatch(JSON.stringify(recorder.getBody()), /browser-secret/);
@@ -94,7 +95,39 @@ test('rejects a current login whose GitHub token cannot upload attachments', asy
 
   assert.equal(recorder.getStatus(), 409);
   assert.deepEqual(recorder.getBody(), {
-    error: 'The current GitHub login did not provide an OAuth token supported by GitHub media uploads. Log out and sign in again.',
+    error: 'The current GitHub login did not provide an OAuth App token or personal access token supported by GitHub attachment uploads.',
+    code: 'VISUAL_PREVIEW_LOGIN_TOKEN_UNSUPPORTED',
+  });
+});
+
+test('identifies a GitHub App user login without exposing its token', async () => {
+  const service = {
+    getStatus: async () => ({ configured: false, status: 'missing' as const }),
+  } as unknown as VisualPreviewOAuthCredentialService;
+  const routes = createVisualPreviewAuthRoutes({ service });
+  const recorder = responseRecorder();
+
+  await routes.getStatus({ user: user({ accessToken: 'ghu_browser-secret' }) } as Request, recorder.response);
+
+  assert.deepEqual(recorder.getBody(), {
+    configured: false,
+    status: 'missing',
+    currentUsername: 'admin',
+    currentLoginTokenType: 'github_app_user',
+    canUseCurrentLogin: false,
+  });
+  assert.doesNotMatch(JSON.stringify(recorder.getBody()), /browser-secret/);
+});
+
+test('explains why a GitHub App user login cannot be selected', async () => {
+  const routes = createVisualPreviewAuthRoutes({ service: {} as VisualPreviewOAuthCredentialService });
+  const recorder = responseRecorder();
+
+  await routes.useCurrentLogin({ user: user({ accessToken: 'ghu_browser-secret' }) } as Request, recorder.response);
+
+  assert.equal(recorder.getStatus(), 409);
+  assert.deepEqual(recorder.getBody(), {
+    error: 'The current login uses a GitHub App user token, which GitHub attachment uploads reject. Configure Web UI login with a GitHub OAuth App or use GITHUB_VISUAL_PREVIEW_TOKEN with an OAuth App token or PAT.',
     code: 'VISUAL_PREVIEW_LOGIN_TOKEN_UNSUPPORTED',
   });
 });

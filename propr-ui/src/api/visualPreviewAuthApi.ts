@@ -8,6 +8,7 @@ export interface VisualPreviewAuthStatus {
   status: VisualPreviewAuthStatusValue;
   githubUsername?: string;
   currentUsername?: string;
+  currentLoginTokenType?: 'supported' | 'github_app_user' | 'unsupported' | 'missing';
   canUseCurrentLogin: boolean;
   accessTokenExpiresAt?: number;
   refreshTokenExpiresAt?: number;

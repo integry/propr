@@ -17,6 +17,9 @@ function statusDescription(status: VisualPreviewAuthStatus | null): string {
   if (status?.status === 'active' && status.githubUsername) {
     return `Uploads use the GitHub login for @${status.githubUsername}. Expiring OAuth credentials are refreshed automatically.`;
   }
+  if (status?.currentLoginTokenType === 'github_app_user') {
+    return 'Your current login uses a GitHub App user token, which GitHub attachment uploads reject. Configure Web UI login with a GitHub OAuth App, or set GITHUB_VISUAL_PREVIEW_TOKEN to an OAuth App token or PAT.';
+  }
   return 'Connect an administrator GitHub login so background workers can attach generated screenshots and videos to pull requests.';
 }
 
@@ -74,6 +77,8 @@ const VisualPreviewAuthSection: React.FC = () => {
 
   const active = status?.status === 'active';
   const environmentManaged = status?.source === 'environment';
+  const canConnectCurrentLogin = !active && status?.canUseCurrentLogin;
+  const canRetryLogin = !active && status?.currentLoginTokenType !== 'github_app_user';
 
   return (
     <div className="border-t border-gray-200 pt-6">
@@ -91,7 +96,7 @@ const VisualPreviewAuthSection: React.FC = () => {
 
       {!environmentManaged && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {status?.canUseCurrentLogin && status.status !== 'reauth_required' ? (
+          {canConnectCurrentLogin ? (
             <button
               type="button"
               onClick={() => void connect()}
@@ -101,7 +106,7 @@ const VisualPreviewAuthSection: React.FC = () => {
               {saving ? <LoaderCircle size={13} className="animate-spin" /> : <Check size={13} />}
               Use my GitHub login
             </button>
-          ) : (
+          ) : canRetryLogin ? (
             <button
               type="button"
               onClick={() => { void logout(); }}
@@ -111,7 +116,7 @@ const VisualPreviewAuthSection: React.FC = () => {
               <LogIn size={13} />
               Sign in with GitHub again
             </button>
-          )}
+          ) : null}
           {status?.configured && (
             <button
               type="button"

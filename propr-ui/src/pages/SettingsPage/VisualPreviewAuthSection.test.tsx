@@ -25,6 +25,7 @@ describe('VisualPreviewAuthSection', () => {
       configured: false,
       status: 'missing',
       currentUsername: 'admin',
+      currentLoginTokenType: 'supported',
       canUseCurrentLogin: true,
     });
   });
@@ -36,6 +37,7 @@ describe('VisualPreviewAuthSection', () => {
       status: 'active',
       githubUsername: 'admin',
       currentUsername: 'admin',
+      currentLoginTokenType: 'supported',
       canUseCurrentLogin: true,
     });
     render(<VisualPreviewAuthSection />);
@@ -45,19 +47,45 @@ describe('VisualPreviewAuthSection', () => {
     expect(await screen.findByText(/Uploads use the GitHub login for @admin/)).toBeInTheDocument();
   });
 
-  it('offers a fresh GitHub sign-in when the session token is incompatible', async () => {
+  it('replaces an expired stored credential when the current login is supported', async () => {
     getStatus.mockResolvedValue({
       configured: true,
       source: 'github',
       status: 'reauth_required',
       githubUsername: 'admin',
       currentUsername: 'admin',
+      currentLoginTokenType: 'supported',
+      canUseCurrentLogin: true,
+    });
+    useCurrentLogin.mockResolvedValue({
+      configured: true,
+      source: 'github',
+      status: 'active',
+      githubUsername: 'admin',
+      currentUsername: 'admin',
+      currentLoginTokenType: 'supported',
       canUseCurrentLogin: true,
     });
     render(<VisualPreviewAuthSection />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Sign in with GitHub again' }));
-    expect(logout).toHaveBeenCalledOnce();
+    fireEvent.click(await screen.findByRole('button', { name: 'Use my GitHub login' }));
+    await waitFor(() => expect(useCurrentLogin).toHaveBeenCalledOnce());
+    expect(logout).not.toHaveBeenCalled();
+  });
+
+  it('explains that repeating a GitHub App login cannot enable uploads', async () => {
+    getStatus.mockResolvedValue({
+      configured: false,
+      status: 'missing',
+      currentUsername: 'admin',
+      currentLoginTokenType: 'github_app_user',
+      canUseCurrentLogin: false,
+    });
+    render(<VisualPreviewAuthSection />);
+
+    expect(await screen.findByText(/GitHub App user token/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Use my GitHub login' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Sign in with GitHub again' })).not.toBeInTheDocument();
   });
 
   it('shows environment-managed credentials without replacement controls', async () => {
@@ -66,6 +94,7 @@ describe('VisualPreviewAuthSection', () => {
       source: 'environment',
       status: 'active',
       currentUsername: 'admin',
+      currentLoginTokenType: 'github_app_user',
       canUseCurrentLogin: true,
     });
     render(<VisualPreviewAuthSection />);

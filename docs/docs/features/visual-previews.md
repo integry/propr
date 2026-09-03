@@ -8,22 +8,25 @@ Visual previews let a ProPR implementation show its user-visible result directly
 
 The feature is opt-in per repository. Existing repository configurations remain disabled after an upgrade.
 
-GitHub attachment uploads require a user OAuth credential because GitHub App
-installation tokens cannot upload user attachments. When an instance
-administrator signs in to the Web UI, ProPR automatically stores their compatible
-OAuth credential, encrypted in the shared database. Open **Settings → Visual
-preview uploads** to see which account is connected or explicitly replace it
-with the current administrator login. Normal GitHub API, commit, and pull-request
-operations continue to use the GitHub App installation token.
+GitHub attachment uploads require a GitHub OAuth App token (`gho_`) or personal
+access token. GitHub's uploader rejects both GitHub App user (`ghu_`) and
+installation (`ghs_`) tokens even though those tokens work for normal GitHub API
+operations. When an instance administrator's Web UI login is backed by a GitHub
+OAuth App, ProPR automatically stores its compatible credential, encrypted in
+the shared database. Open **Settings → Visual preview uploads** to see which
+account is connected or explicitly replace it with the current administrator
+login. Normal GitHub API, commit, and pull-request operations continue to use
+the GitHub App installation token.
 
 Expiring OAuth credentials are refreshed on API startup and every 30 minutes
 while the stack is running. Each successful refresh rotates the access and
 refresh tokens, so an administrator does not need to sign in every six months
 while the stack can keep refreshing them. A revoked grant, an expired unused
 refresh token, or a changed encryption secret requires a fresh administrator
-login. `GITHUB_VISUAL_PREVIEW_TOKEN` remains available as an advanced environment
-override for an OAuth token, classic PAT, or fine-grained PAT belonging to a user
-with write access to every preview-enabled repository.
+login. If Web UI login uses a GitHub App rather than an OAuth App, configure
+`GITHUB_VISUAL_PREVIEW_TOKEN` with an OAuth App token, classic PAT, or
+fine-grained PAT belonging to a user with write access to every preview-enabled
+repository.
 
 ## Configure A Repository
 
