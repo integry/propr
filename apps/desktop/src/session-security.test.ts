@@ -252,6 +252,12 @@ describe('production desktop session security', () => {
           Authorization: `Bearer ${TOKEN}`,
         },
       });
+      assert.deepEqual(await intercepted(
+        `${ACTIVE_ORIGIN}/api/desktop/pairings/dpr_${'A'.repeat(22)}/browser`,
+        scopeHeaders,
+        mainRenderer.id,
+        'mainFrame',
+      ), { cancel: true });
       assert.deepEqual(await intercepted(`${ACTIVE_ORIGIN}/api/auth/user`, scopeHeaders, foreignRenderer.id), {
         cancel: true,
       });

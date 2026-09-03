@@ -23,6 +23,10 @@ import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
 import { openApprovedDesktopPairingUrl } from './pairing-browser';
+import {
+  createPackagedApprovalNavigation,
+  packagedApprovalPartition,
+} from './packaged-approval-session';
 import { createDesktopShutdownCoordinator } from './shutdown';
 import {
   deepLinkFromArguments,
@@ -452,14 +456,37 @@ const openPackagedJourneyApproval = async (request: DesktopPairingBrowserRequest
   reportPackagedConnectJourneyStage('JOURNEY_PAIR_BROWSER_APPROVAL');
   await openApprovedDesktopPairingUrl(request, {
     openExternal: async url => {
-      const approvalWindow = new BrowserWindow({
-        show: false,
-        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
-      });
+      const approvalSession = session.fromPartition(
+        packagedApprovalPartition(randomBytes(16).toString('hex')),
+        { cache: false },
+      );
+      let approvalWindow: BrowserWindow | null = null;
+      let navigation: ReturnType<typeof createPackagedApprovalNavigation> | null = null;
       try {
-        await approvalWindow.loadURL(url);
+        approvalWindow = new BrowserWindow({
+          show: false,
+          webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            session: approvalSession,
+            webSecurity: true,
+          },
+        });
+        navigation = createPackagedApprovalNavigation({
+          approvalUrl: url,
+          approvalSession,
+          approvalWindow,
+          defaultSession: session.defaultSession,
+        });
+        await navigation.navigate();
       } finally {
-        if (!approvalWindow.isDestroyed()) approvalWindow.destroy();
+        if (navigation) {
+          await navigation.cleanup();
+        } else {
+          if (approvalWindow && !approvalWindow.isDestroyed()) approvalWindow.destroy();
+          await approvalSession.clearStorageData();
+        }
       }
     },
   });
