@@ -4,6 +4,9 @@ import { normalizeOptionalBranchName } from './branchNameValidation.js';
 
 const MAX_VISUAL_PREVIEW_INSTRUCTIONS_LENGTH = 4000;
 
+// Keep API input normalization side-effect-free. Importing the core package at
+// runtime initializes GitHub authentication, while this validator is also used
+// by standalone tooling and unit tests.
 function normalizeStoredVisualPreviewSettings(value: unknown): VisualPreviewSettings {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return { enabled: false, types: ['image'] };
@@ -91,16 +94,23 @@ export function preserveRepoVisualPreview(
   incomingRepos: unknown[]
 ): RepoToMonitor[] {
   const explicitByRepository = new Map<string, VisualPreviewSettings>();
+  const changedByRepository = new Map<string, VisualPreviewSettings>();
   normalizedRepos.forEach((repo, index) => {
     const incoming = incomingRepos[index] as Partial<RepoToMonitor>;
     if (incoming.visualPreview !== undefined) {
-      explicitByRepository.set(repo.name.trim().toLowerCase(), normalizeStoredVisualPreviewSettings(repo.visualPreview));
+      const repositoryKey = repo.name.trim().toLowerCase();
+      const normalized = normalizeStoredVisualPreviewSettings(repo.visualPreview);
+      if (!explicitByRepository.has(repositoryKey)) explicitByRepository.set(repositoryKey, normalized);
+      const previous = previousRepos.find(candidate => candidate.id === repo.id);
+      if (JSON.stringify(normalized) !== JSON.stringify(normalizeStoredVisualPreviewSettings(previous?.visualPreview))) {
+        changedByRepository.set(repositoryKey, normalized);
+      }
     }
   });
 
   return normalizedRepos.map(repo => {
     const repositoryKey = repo.name.trim().toLowerCase();
-    const explicit = explicitByRepository.get(repositoryKey);
+    const explicit = changedByRepository.get(repositoryKey) || explicitByRepository.get(repositoryKey);
     if (explicit) return { ...repo, visualPreview: explicit };
 
     const previous = previousRepos.find(candidate => candidate.name.trim().toLowerCase() === repositoryKey);
@@ -109,6 +119,7 @@ export function preserveRepoVisualPreview(
 }
 
 function normalizeVisualPreviewTypes(value: unknown, repoName: string): ValidationResult<VisualPreviewType[]> {
+  if (value === undefined) return success(['image']);
   if (!Array.isArray(value)) {
     return failure(`Invalid visualPreview.types format for ${repoName}: must be an array`);
   }

@@ -5,9 +5,9 @@ import {
     generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
     resolveModelAlias, getPendingPrCommentsKey,
-    describeAgentTermination, resolveAgentTerminationReason,
+    buildVisualPreviewPrompt, describeAgentTermination, resolveAgentTerminationReason,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
-    type CommentJobData, type UnprocessedComment, type WorkerStateManager,
+    type CommentJobData, type UnprocessedComment, type WorkerStateManager, type VisualPreviewSettings,
 } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
 import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.js';
@@ -131,11 +131,13 @@ export interface PromptOptions {
     commandMode?: string;
     /** Formatted section of AI review comments gathered for /fix */
     reviewCommentsSection?: string;
+    visualPreviewSettings?: VisualPreviewSettings;
 }
 
 export function buildPrompt(options: PromptOptions): string {
-    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount, commandMode, reviewCommentsSection } = options;
+    const { pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo, repoOwner, repoName, commentCount, commandMode, reviewCommentsSection, visualPreviewSettings } = options;
     const environmentRepairInstructions = getFixEnvironmentRepairInstructions(commandMode);
+    const visualPreviewInstructions = visualPreviewSettings ? buildVisualPreviewPrompt(visualPreviewSettings) : '';
     return `You are working on pull request #${pullRequestNumber} to apply follow-up changes.
 
 **New Request${commentCount > 1 ? 's' : ''}:**
@@ -154,6 +156,7 @@ ${reviewCommentsSection
 - DO NOT create a new pull request
 - The repository is ${repoOwner}/${repoName}
 ${environmentRepairInstructions}
+${visualPreviewInstructions}
 
 **Context:**
 - This is a follow-up to an existing pull request #${pullRequestNumber}.

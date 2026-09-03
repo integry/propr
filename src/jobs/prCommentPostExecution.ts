@@ -3,12 +3,17 @@ import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import {
     commitChanges,
+    collectVisualPreviewEvidence,
     db,
     getRepoUrl,
     getAuthenticatedOctokit,
+    loadRepositoryVisualPreviewSettings,
     pushBranch,
+    appendVisualPreviewSection,
+    renderVisualPreviewSection,
     resolveAgentTerminationReason,
     TaskStates,
+    VISUAL_PREVIEW_SLOT,
 } from '@propr/core';
 import type {
     ClaudeCodeResponse,
@@ -24,6 +29,7 @@ import { markReviewFindingsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
+import { publishPullRequestCommentVisualPreviews } from '../github/visualPreviewAttachments.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -126,6 +132,79 @@ export function getPostExecutionDisposition(result: ClaudeCodeResponse): 'comple
     return resolveAgentTerminationReason(result) ? 'partial' : 'failed';
 }
 
+interface CompletionCommentPublicationOptions {
+    state: ReadyPostExecutionState;
+    context: PostExecutionContext;
+    commitResult: Awaited<ReturnType<typeof commitChanges>>;
+    changesSummary: string;
+    commitMessage: string;
+    llm: string | null | undefined;
+    taskUrl: string;
+    unprocessedReviewComments: AIReviewComment[];
+}
+
+async function publishCompletionComment(options: CompletionCommentPublicationOptions): Promise<{ data: { html_url: string; body?: string } }> {
+    const { state, context, commitResult, changesSummary, commitMessage, llm, taskUrl, unprocessedReviewComments } = options;
+    const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
+    const visualPreviewSettings = await loadRepositoryVisualPreviewSettings(`${repoOwner}/${repoName}`);
+    const visualPreviewEvidence = await collectVisualPreviewEvidence({
+        worktreePath: state.worktreeInfo.worktreePath,
+        changedFiles: commitResult?.filesChanged || [],
+        settings: visualPreviewSettings
+    });
+    const hasVisualPreviewContent = visualPreviewEvidence.assets.length > 0 || visualPreviewEvidence.toolSuggestions.length > 0;
+    const visualPreviewSection = commitResult && hasVisualPreviewContent
+        ? renderVisualPreviewSection(visualPreviewEvidence, { owner: repoOwner, repo: repoName, commitHash: commitResult.commitHash })
+        : '';
+    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
+    const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(comment => comment.id) : undefined;
+    const prCommentTemplate = await buildCompletionComment(commitResult, state.unprocessedComments, {
+        changesSummary,
+        commitMessage,
+        llm,
+        authorsText: state.authorsText,
+        undoContext,
+        taskUrl,
+        consumedReviewCommentIds,
+        visualPreviewSection: hasVisualPreviewContent ? VISUAL_PREVIEW_SLOT : undefined
+    }, state.claudeResult);
+    const prCommentBody = appendVisualPreviewSection(prCommentTemplate, visualPreviewSection);
+
+    if (!commitResult || visualPreviewEvidence.assets.length === 0) {
+        return state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+            owner: repoOwner,
+            repo: repoName,
+            comment_id: state.startingWorkComment.data.id,
+            body: prCommentBody
+        }) as Promise<{ data: { html_url: string; body?: string } }>;
+    }
+
+    try {
+        const githubToken = await state.octokit.auth({ type: 'installation' }) as GitHubToken;
+        const published = await publishPullRequestCommentVisualPreviews({
+            owner: repoOwner,
+            repo: repoName,
+            pullRequestNumber,
+            commitHash: commitResult.commitHash,
+            body: prCommentTemplate,
+            evidence: visualPreviewEvidence,
+            authToken: githubToken.token,
+            worktreePath: state.worktreeInfo.worktreePath,
+            octokit: state.octokit,
+            startingCommentId: state.startingWorkComment.data.id
+        });
+        return { data: published };
+    } catch (previewError) {
+        correlatedLogger.warn({ pullRequestNumber, error: (previewError as Error).message }, 'Could not upload visual previews; publishing committed-file links in the completion comment');
+        return state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+            owner: repoOwner,
+            repo: repoName,
+            comment_id: state.startingWorkComment.data.id,
+            body: prCommentBody
+        }) as Promise<{ data: { html_url: string; body?: string } }>;
+    }
+}
+
 export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
     const {
         state,
@@ -155,10 +234,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     }
     if (commitResult?.filesChanged?.length) state.claudeResult.modifiedFiles = commitResult.filesChanged;
 
-    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
-    const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(c => c.id) : undefined;
-    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl, consumedReviewCommentIds }, state.claudeResult);
-    const completionComment = await state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
+    const completionComment = await publishCompletionComment({ state, context, commitResult, changesSummary, commitMessage, llm, taskUrl, unprocessedReviewComments });
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
 
     if (unprocessedReviewComments.length > 0) {

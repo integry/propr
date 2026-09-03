@@ -38,6 +38,20 @@ test('repository config accepts visual preview types and trims instructions', ()
   }
 });
 
+test('repository config defaults omitted visual preview types', () => {
+  const normalized = normalizeRepoConfig({
+    id: 'repo-1',
+    name: 'integry/propr',
+    enabled: true,
+    visualPreview: { enabled: false }
+  });
+
+  assert.equal(normalized.ok, true);
+  if (normalized.ok) {
+    assert.deepEqual(normalized.value.visualPreview, { enabled: false, types: ['image'] });
+  }
+});
+
 test('repository config rejects invalid visual preview settings', () => {
   const invalidValues = [
     { enabled: 'true', types: ['image'] },

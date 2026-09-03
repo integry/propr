@@ -11,12 +11,7 @@ import { saveSettingsWithRollback } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
-import {
-  normalizeRepoConfig,
-  preserveRepoAutoFollowup,
-  preserveRepoVisualPreview,
-  withDefaultRepoOptions
-} from './configRepoValidation.js';
+import { normalizeRepoConfig, preserveRepoAutoFollowup, preserveRepoVisualPreview, withDefaultRepoOptions } from './configRepoValidation.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;

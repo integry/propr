@@ -2,7 +2,16 @@ import type { Logger } from 'pino';
 import { setTimeout } from 'timers/promises';
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { WorktreeInfo, CommitResult, WorkerStateManager } from '@propr/core';
-import { cleanupWorktree, commitChanges, pushBranch, TaskStates, describeAgentTermination, resolveAgentTerminationReason } from '@propr/core';
+import {
+    cleanupWorktree,
+    collectVisualPreviewEvidence,
+    commitChanges,
+    loadRepositoryVisualPreviewSettings,
+    pushBranch,
+    TaskStates,
+    describeAgentTermination,
+    resolveAgentTerminationReason
+} from '@propr/core';
 import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
@@ -241,7 +250,24 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
 
         postProcessingResult = await createPullRequest(
             octokit, issueRef, worktreeInfo,
-            { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, issueTitle: currentIssueData.data.title }
+            {
+                commitResult,
+                claudeResult,
+                modelName,
+                repoValidation,
+                PR_LABEL,
+                correlatedLogger,
+                issueTitle: currentIssueData.data.title,
+                visualPreview: {
+                    evidence: await collectVisualPreviewEvidence({
+                        worktreePath: worktreeInfo.worktreePath,
+                        changedFiles: commitResult.filesChanged || [],
+                        settings: await loadRepositoryVisualPreviewSettings(`${issueRef.repoOwner}/${issueRef.repoName}`)
+                    }),
+                    authToken: githubToken.token,
+                    worktreePath: worktreeInfo.worktreePath
+                }
+            }
         );
 
         // Update plan issue status to 'under_review' if PR was created successfully

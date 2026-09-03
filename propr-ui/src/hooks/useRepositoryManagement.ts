@@ -7,7 +7,6 @@ import {
   getRepositoriesIndexingStatus,
   stopRepositoryIndexing,
   RepositoryIndexingStatus,
-  MonitoredRepo,
   getUserRepoPreferences,
   updateUserRepoPreferences,
   UserRepoPreferences
@@ -18,10 +17,18 @@ import { IndexingUpdatePayload } from '@propr/shared';
 import { buildUpdatedStatus } from '../utils/indexingStatusHelpers';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
 import { isCommittedConfigWriteError } from '../api/apiClient';
+import {
+  buildRepositoriesForDisplay,
+  defaultVisualPreview,
+  getRepositoryConfigKey,
+  parseVisualPreview,
+  updateRepositoryVisualPreview,
+  type ManagedRepo,
+  type VisualPreviewSettings
+} from './repositoryVisualPreview';
 
 const generateId = (): string => crypto.randomUUID();
 const TERMINAL_INDEXING_STATUSES = new Set<RepositoryIndexingStatus['indexing_status']>(['idle', 'completed', 'failed']);
-const getRepositoryConfigKey = (name: string): string => name.trim().toLowerCase();
 
 function shouldIgnoreStaleProgressUpdate(
   payload: IndexingUpdatePayload,
@@ -39,30 +46,7 @@ function shouldIgnoreStaleProgressUpdate(
   return currentStatus ? hasSeenTerminalSocketUpdate && TERMINAL_INDEXING_STATUSES.has(currentStatus.indexing_status) : false;
 }
 
-export type VisualPreviewSettings = NonNullable<MonitoredRepo['visualPreview']>;
-
-export type Repo = Omit<MonitoredRepo, 'autoFollowupOnFailedCi' | 'visualPreview'> & {
-  autoFollowupOnFailedCi: boolean;
-  visualPreview: VisualPreviewSettings;
-};
-
-const defaultVisualPreview = (): VisualPreviewSettings => ({ enabled: false, types: ['image'] });
-
-function parseVisualPreview(value: unknown): VisualPreviewSettings {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return defaultVisualPreview();
-  const candidate = value as Record<string, unknown>;
-  const types = Array.isArray(candidate.types)
-    ? [...new Set(candidate.types.filter((type): type is 'image' | 'video' => type === 'image' || type === 'video'))]
-    : [];
-  const instructions = typeof candidate.instructions === 'string' && candidate.instructions.trim()
-    ? candidate.instructions.trim()
-    : undefined;
-  return {
-    enabled: candidate.enabled === true,
-    types: types.length > 0 ? types : ['image'],
-    ...(instructions ? { instructions } : {})
-  };
-}
+export type Repo = ManagedRepo;
 
 export interface UseRepositoryManagementResult {
   repos: Repo[];
@@ -381,13 +365,8 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
 
   const handleUpdateVisualPreview = (repoId: string, settings: VisualPreviewSettings) => {
     if (!canManageRepositories) return;
-    const targetRepo = repos.find(repo => repo.id === repoId);
-    if (!targetRepo) return;
-    const repositoryKey = getRepositoryConfigKey(targetRepo.name);
-    const normalizedSettings = parseVisualPreview(settings);
-    const newRepos = repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
-      ? { ...repo, visualPreview: normalizedSettings }
-      : repo);
+    const newRepos = updateRepositoryVisualPreview(repos, repoId, settings);
+    if (newRepos === repos) return;
     setRepos(newRepos);
     performAutoSave(newRepos);
   };
@@ -426,21 +405,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const handleRetry = () => { setError(null); void loadRepos().catch(() => undefined); };
 
   const hiddenCount = repos.filter(r => r.hidden).length;
-  const autoCiFollowupByRepository = new Map<string, boolean>();
-  const visualPreviewByRepository = new Map<string, VisualPreviewSettings>();
-  for (const repo of repos) {
-    const key = getRepositoryConfigKey(repo.name);
-    autoCiFollowupByRepository.set(key, autoCiFollowupByRepository.get(key) === true || repo.autoFollowupOnFailedCi);
-    const previousPreview = visualPreviewByRepository.get(key);
-    if (!previousPreview || (!previousPreview.enabled && repo.visualPreview.enabled)) {
-      visualPreviewByRepository.set(key, repo.visualPreview);
-    }
-  }
-  const reposForDisplay = repos.map(repo => ({
-    ...repo,
-    autoFollowupOnFailedCi: autoCiFollowupByRepository.get(getRepositoryConfigKey(repo.name)) === true,
-    visualPreview: visualPreviewByRepository.get(getRepositoryConfigKey(repo.name)) || defaultVisualPreview()
-  }));
+  const reposForDisplay = buildRepositoriesForDisplay(repos);
   const filteredRepos = showHiddenRepos ? reposForDisplay : reposForDisplay.filter(r => !r.hidden);
 
   return {

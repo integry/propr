@@ -105,7 +105,7 @@ test('POST repository config persists an enabled option without enabling other r
   ]);
 });
 
-test('POST repository config synchronizes visual previews across branch entries', async () => {
+test('POST repository config synchronizes changed visual previews across branch entries', async () => {
   const saveMonitoredRepos = mock.fn(async () => true);
   const routes = createConfigRoutes({
     redisClient: {
@@ -116,7 +116,22 @@ test('POST repository config synchronizes visual previews across branch entries'
       lTrim: mock.fn(async () => 'OK')
     } as never,
     configStore: {
-      loadMonitoredReposRaw: async () => [],
+      loadMonitoredReposRaw: async () => [
+        {
+          id: 'repo-main',
+          name: 'integry/propr',
+          enabled: true,
+          baseBranch: 'main',
+          visualPreview: { enabled: false, types: ['image'] }
+        },
+        {
+          id: 'repo-release',
+          name: 'integry/propr',
+          enabled: true,
+          baseBranch: 'release',
+          visualPreview: { enabled: false, types: ['image'] }
+        }
+      ],
       saveMonitoredRepos,
       clearRemovedRepositoryIndexData: async () => {}
     },
@@ -135,7 +150,13 @@ test('POST repository config synchronizes visual previews across branch entries'
     body: {
       repos_to_monitor: [
         { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', visualPreview },
-        { id: 'repo-release', name: 'integry/propr', enabled: true, baseBranch: 'release' }
+        {
+          id: 'repo-release',
+          name: 'integry/propr',
+          enabled: true,
+          baseBranch: 'release',
+          visualPreview: { enabled: false, types: ['image'] }
+        }
       ]
     }
   } as never, response as never);

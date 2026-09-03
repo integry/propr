@@ -174,6 +174,7 @@ export type { IssueLink, ExecutionResult, EpicPRResult, EnsureEpicPROptions } fr
 export { validateAttachmentBaseUrlConfig } from './services/taskExecutionHelpers.js';
 export { AttachmentService } from './services/attachmentService.js';
 export type { Attachment, MulterFile } from './services/attachmentService.js';
+export * from './services/visualPreviewService.js';
 export { PLANNER_SYSTEM_PROMPT, GRANULARITY_INSTRUCTIONS, getPlannerPrompt, REFINER_SYSTEM_PROMPT } from './claude/prompts/plannerPrompts.js';
 export type { Plan, PlanItem, RefinementResponse } from './claude/prompts/plannerPrompts.js';
 export { parseLlmJson, JsonParseError } from './utils/jsonUtils.js';

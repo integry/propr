@@ -11,7 +11,9 @@ const resolveAgentTerminationReason = mock.fn((result: { terminationReason?: 'ti
 await mock.module('@propr/core', {
     namedExports: {
         cleanupWorktree: mock.fn(async () => undefined),
+        collectVisualPreviewEvidence: mock.fn(async () => ({ assets: [], toolSuggestions: [] })),
         commitChanges,
+        loadRepositoryVisualPreviewSettings: mock.fn(async () => ({ enabled: false, types: ['image'] })),
         pushBranch,
         AI_COMMIT_AUTHOR: { name: 'ProPR AI', email: 'ai@propr.dev' },
         TaskStates: { CANCELLED: 'cancelled' },

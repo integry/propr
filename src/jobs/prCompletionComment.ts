@@ -26,6 +26,7 @@ export interface CommentContext {
     undoContext?: UndoLinkContext;
     taskUrl?: string;
     consumedReviewCommentIds?: number[];
+    visualPreviewSection?: string;
 }
 
 export interface UndoLinkContext {
@@ -142,7 +143,7 @@ export async function buildCompletionComment(
     commentContext: CommentContext,
     claudeResult: ClaudeCodeResponse
 ): Promise<string> {
-    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds } = commentContext;
+    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds, visualPreviewSection } = commentContext;
     const terminationReason = resolveAgentTerminationReason(claudeResult);
     const partial = !claudeResult.success && terminationReason !== undefined;
 
@@ -179,6 +180,10 @@ export async function buildCompletionComment(
 
         if (partial) {
             prCommentBody += '## Remaining Work\n\nThe agent stopped before validating every request. Review this partial commit against the follow-up instructions and complete any unaddressed implementation, tests, or documentation.\n\n';
+        }
+
+        if (visualPreviewSection) {
+            prCommentBody += `${visualPreviewSection}\n\n`;
         }
 
         prCommentBody += await buildMetricsSection(claudeResult, llm, authorsText, false);

@@ -132,6 +132,7 @@ export {
 
 export type {
   MonitoredRepo,
+  VisualPreviewSettings,
   GetReposResponse,
   AddRepoOptions,
   UpdateRepoOptions,
