@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { execa } from 'execa';
 import {
   appendVisualPreviewSection,
@@ -19,6 +21,14 @@ interface AttachmentCommandOptions {
 }
 
 export type AttachmentCommandRunner = (options: AttachmentCommandOptions) => Promise<{ stdout: string }>;
+
+interface VisualPreviewAssetUploadOptions {
+  absolutePath: string;
+  authToken: string;
+  repositoryId: number;
+}
+
+export type VisualPreviewAssetUploader = (options: VisualPreviewAssetUploadOptions) => Promise<string>;
 
 export { VISUAL_PREVIEW_UPLOAD_TOKEN_ENV };
 
@@ -106,6 +116,92 @@ const runAttachmentCommand: AttachmentCommandRunner = async ({ args, authToken, 
   }
 };
 
+const CONTENT_TYPE_BY_EXTENSION: Record<string, string> = {
+  '.gif': 'image/gif',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.mov': 'video/quicktime',
+  '.mp4': 'video/mp4',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.webm': 'video/webm',
+  '.webp': 'image/webp',
+};
+
+async function responseErrorDetail(response: Response): Promise<string> {
+  const rawBody = redactSecrets((await response.text()).trim()).replace(/\s+/g, ' ').slice(0, 1000);
+  if (!rawBody) return '';
+  try {
+    const parsed = JSON.parse(rawBody) as { message?: unknown; errors?: unknown };
+    const message = typeof parsed.message === 'string' ? parsed.message : '';
+    const errors = Array.isArray(parsed.errors)
+      ? parsed.errors.filter((error): error is string => typeof error === 'string').join('; ')
+      : '';
+    return [message, errors].filter(Boolean).join('; ');
+  } catch {
+    return rawBody;
+  }
+}
+
+async function markRejectedUploadCredential(): Promise<void> {
+  try {
+    await markVisualPreviewOAuthCredentialReauthRequired('github_rejected_token');
+  } catch {
+    // Preserve the original upload error. The Settings status can recover
+    // once database access is restored.
+  }
+}
+
+export const uploadVisualPreviewAsset: VisualPreviewAssetUploader = async ({
+  absolutePath,
+  authToken,
+  repositoryId,
+}) => {
+  const contentType = CONTENT_TYPE_BY_EXTENSION[path.extname(absolutePath).toLowerCase()];
+  if (!contentType) throw new Error(`Unsupported visual preview attachment type: ${path.basename(absolutePath)}`);
+
+  const body = await readFile(absolutePath);
+  const uploadUrl = new URL('https://uploads.github.com/user-attachments/assets');
+  uploadUrl.searchParams.set('name', path.basename(absolutePath));
+  uploadUrl.searchParams.set('content_type', contentType);
+  uploadUrl.searchParams.set('repository_id', String(repositoryId));
+
+  let response: Response;
+  try {
+    response = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${authToken}`,
+        'Content-Length': String(body.byteLength),
+        'Content-Type': 'application/octet-stream',
+        'User-Agent': 'ProPR',
+      },
+      body,
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (error) {
+    throw new Error(`GitHub could not upload ${path.basename(absolutePath)}: ${(error as Error).message}`);
+  }
+
+  if (!response.ok) {
+    const detail = await responseErrorDetail(response);
+    const suffix = detail ? `: ${detail}` : '';
+    const message = response.status === 404
+      ? `GitHub could not upload ${path.basename(absolutePath)} because the token owner does not have write access to the repository${suffix}`
+      : `GitHub could not upload ${path.basename(absolutePath)} (HTTP ${response.status})${suffix}`;
+    if (response.status === 401) await markRejectedUploadCredential();
+    if ([401, 403, 404].includes(response.status)) throw new VisualPreviewUploadAuthenticationError(message);
+    throw new Error(message);
+  }
+
+  const payload = await response.json() as { url?: unknown };
+  if (typeof payload.url !== 'string' || !payload.url.startsWith('https://github.com/user-attachments/')) {
+    throw new Error('GitHub uploaded a visual preview but did not return a valid attachment URL');
+  }
+  return payload.url;
+};
+
 interface BaseVisualPreviewPublicationOptions {
   owner: string;
   repo: string;
@@ -115,6 +211,7 @@ interface BaseVisualPreviewPublicationOptions {
   authToken?: string;
   worktreePath: string;
   runCommand?: AttachmentCommandRunner;
+  uploadAsset?: VisualPreviewAssetUploader;
 }
 
 function attachmentArguments(evidence: VisualPreviewEvidence): string[] {
@@ -128,6 +225,20 @@ function bodyWithLocalPreviews(options: BaseVisualPreviewPublicationOptions): st
   return appendVisualPreviewSection(options.body, section);
 }
 
+function bodyWithUploadedPreviews(options: BaseVisualPreviewPublicationOptions, uploadedUrls: readonly string[]): string {
+  if (uploadedUrls.length !== options.evidence.assets.length) {
+    throw new Error('GitHub did not return an attachment URL for every visual preview');
+  }
+  const evidence = {
+    ...options.evidence,
+    assets: options.evidence.assets.map((asset, index) => ({
+      ...asset,
+      absolutePath: uploadedUrls[index],
+    })),
+  };
+  return appendVisualPreviewSection(options.body, renderVisualPreviewSection(evidence, { useLocalPaths: true }));
+}
+
 function assertUploadedBodyHasNoLocalPaths(body: unknown, evidence: VisualPreviewEvidence): asserts body is string {
   if (typeof body !== 'string') {
     throw new Error('GitHub uploaded visual previews but did not return the published body');
@@ -137,6 +248,23 @@ function assertUploadedBodyHasNoLocalPaths(body: unknown, evidence: VisualPrevie
   if (leakedPath) {
     throw new Error('GitHub did not replace a local visual preview path with an uploaded attachment URL');
   }
+}
+
+function assertUploadedBodyContainsUrls(body: string, uploadedUrls: readonly string[]): void {
+  const missingUrl = uploadedUrls.find(url => !body.includes(url));
+  if (missingUrl) throw new Error('GitHub published a visual preview comment without every uploaded attachment URL');
+}
+
+async function resolveRepositoryId(options: PublishPullRequestCommentVisualPreviewOptions): Promise<number> {
+  const response = await options.octokit.request<{ data: { id?: unknown } }>('GET /repos/{owner}/{repo}', {
+    owner: options.owner,
+    repo: options.repo,
+  });
+  const repositoryId = response.data.id;
+  if (typeof repositoryId !== 'number' || !Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
+    throw new Error('Could not determine which GitHub repository should own the visual preview attachments');
+  }
+  return repositoryId;
 }
 
 export interface PublishPullRequestVisualPreviewOptions extends BaseVisualPreviewPublicationOptions {
@@ -180,83 +308,39 @@ export interface PublishedVisualPreviewComment {
   body: string;
 }
 
-function parseCommentId(url: string): number | null {
-  const match = url.match(/#issuecomment-(\d+)\b/);
-  return match ? Number(match[1]) : null;
-}
-
 export async function publishPullRequestCommentVisualPreviews(
   options: PublishPullRequestCommentVisualPreviewOptions
 ): Promise<PublishedVisualPreviewComment> {
   if (options.evidence.assets.length === 0) {
     throw new Error('Cannot publish an attachment comment without preview assets');
   }
-  const runner = options.runCommand || runAttachmentCommand;
-  let publishedCommentId: number | null = null;
-  try {
-    const result = await runner({
-      args: [
-        'pr', 'comment', String(options.pullRequestNumber),
-        '--repo', `${options.owner}/${options.repo}`,
-        '--body', bodyWithLocalPreviews(options),
-        ...attachmentArguments(options.evidence)
-      ],
-      authToken: options.authToken ?? await resolveVisualPreviewUploadToken(),
-      cwd: options.worktreePath
-    });
-    const commentUrl = result.stdout.trim().split('\n').find(line => line.includes('#issuecomment-')) || result.stdout.trim();
-    if (!commentUrl) throw new Error('GitHub CLI uploaded previews but did not return a comment URL');
-    publishedCommentId = parseCommentId(commentUrl);
-    if (!publishedCommentId) throw new Error('GitHub CLI uploaded previews but did not return a comment ID');
+  const authToken = options.authToken ?? await resolveVisualPreviewUploadToken();
+  const repositoryId = await resolveRepositoryId(options);
+  const uploader = options.uploadAsset ?? uploadVisualPreviewAsset;
+  const uploadedUrls: string[] = [];
+  for (const asset of options.evidence.assets) {
+    uploadedUrls.push(await uploader({
+      absolutePath: asset.absolutePath,
+      authToken,
+      repositoryId,
+    }));
+  }
 
-    const response = await options.octokit.request<{ data: { body?: string } }>('GET /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+  const body = bodyWithUploadedPreviews(options, uploadedUrls);
+  const updatedStartingComment = await options.octokit.request<{ data: { html_url: string; body?: string } }>(
+    'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
+    {
       owner: options.owner,
       repo: options.repo,
-      comment_id: publishedCommentId
-    });
-    assertUploadedBodyHasNoLocalPaths(response.data.body, options.evidence);
-
-    const updatedStartingComment = await options.octokit.request<{ data: { html_url: string; body?: string } }>(
-      'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
-      {
-        owner: options.owner,
-        repo: options.repo,
-        comment_id: options.startingCommentId,
-        body: response.data.body
-      }
-    );
-
-    try {
-      await options.octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-        owner: options.owner,
-        repo: options.repo,
-        comment_id: publishedCommentId
-      });
-    } catch {
-      // The bot-owned completion comment is already updated. Leaving the
-      // temporary uploader comment is preferable to losing the preview.
+      comment_id: options.startingCommentId,
+      body,
     }
+  );
+  assertUploadedBodyHasNoLocalPaths(updatedStartingComment.data.body, options.evidence);
+  assertUploadedBodyContainsUrls(updatedStartingComment.data.body, uploadedUrls);
 
-    return {
-      html_url: updatedStartingComment.data.html_url,
-      body: updatedStartingComment.data.body || response.data.body
-    };
-  } catch (error) {
-    publishedCommentId ||= parseCommentId(typeof (error as { stdout?: unknown })?.stdout === 'string'
-      ? (error as { stdout: string }).stdout
-      : '');
-    if (publishedCommentId) {
-      try {
-        await options.octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-          owner: options.owner,
-          repo: options.repo,
-          comment_id: publishedCommentId
-        });
-      } catch {
-        // Best-effort cleanup; the caller replaces the work comment with a
-        // text-only explanation that contains no local filesystem paths.
-      }
-    }
-    throw error;
-  }
+  return {
+    html_url: updatedStartingComment.data.html_url,
+    body: updatedStartingComment.data.body,
+  };
 }

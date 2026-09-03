@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { after, test } from 'node:test';
 
 process.env.PROPR_DEMO_MODE = 'true';
@@ -7,7 +10,8 @@ const [{ db }, {
   publishPullRequestCommentVisualPreviews,
   publishPullRequestVisualPreviews,
   resolveVisualPreviewUploadToken,
-  isVisualPreviewUploadAuthenticationError
+  isVisualPreviewUploadAuthenticationError,
+  uploadVisualPreviewAsset,
 }] = await Promise.all([
   import('@propr/core'),
   import('../src/github/visualPreviewAttachments.js')
@@ -93,8 +97,9 @@ test('rejects a pull request upload when GitHub leaves a local path in the body'
   }), /did not replace a local visual preview path/);
 });
 
-test('copies uploaded media into the bot-owned work comment and removes the uploader comment', async () => {
+test('uploads media before updating the existing work comment without creating another comment', async () => {
   const requests: Array<{ endpoint: string; options: Record<string, unknown> }> = [];
+  const uploads: Array<{ absolutePath: string; authToken: string; repositoryId: number }> = [];
   const published = await publishPullRequestCommentVisualPreviews({
     owner: 'integry',
     repo: 'propr',
@@ -107,33 +112,41 @@ test('copies uploaded media into the bot-owned work comment and removes the uplo
     octokit: {
       request: async <T>(endpoint: string, options: Record<string, unknown>) => {
         requests.push({ endpoint, options });
+        if (endpoint === 'GET /repos/{owner}/{repo}') {
+          return { data: { id: 987 } } as T;
+        }
         if (endpoint.startsWith('PATCH ')) {
           return { data: {
             html_url: 'https://github.com/integry/propr/pull/42#issuecomment-100',
-            body: 'Follow-up complete with uploaded URL'
+            body: options.body,
           } } as T;
         }
-        return { data: { body: 'Follow-up complete with uploaded URL' } } as T;
+        throw new Error(`Unexpected endpoint: ${endpoint}`);
       }
     },
-    runCommand: async () => ({ stdout: 'https://github.com/integry/propr/pull/42#issuecomment-200' })
+    uploadAsset: async options => {
+      uploads.push(options);
+      return 'https://github.com/user-attachments/assets/asset-id';
+    },
   });
 
-  assert.deepEqual(published, {
-    html_url: 'https://github.com/integry/propr/pull/42#issuecomment-100',
-    body: 'Follow-up complete with uploaded URL'
-  });
+  assert.equal(published.html_url, 'https://github.com/integry/propr/pull/42#issuecomment-100');
+  assert.match(published.body, /https:\/\/github\.com\/user-attachments\/assets\/asset-id/);
+  assert.doesNotMatch(published.body, /\/worktree\/\.propr\/previews/);
   assert.deepEqual(requests.map(request => request.endpoint), [
-    'GET /repos/{owner}/{repo}/issues/comments/{comment_id}',
+    'GET /repos/{owner}/{repo}',
     'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
-    'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}'
   ]);
   assert.equal(requests[1].options.comment_id, 100);
-  assert.equal(requests[2].options.comment_id, 200);
+  assert.deepEqual(uploads, [{
+    absolutePath: '/worktree/.propr/previews/desktop.png',
+    authToken: 'installation-token',
+    repositoryId: 987,
+  }]);
 });
 
-test('removes a partially published attachment comment before surfacing upload failure', async () => {
-  const deletedCommentIds: unknown[] = [];
+test('does not update the work comment when a direct attachment upload fails', async () => {
+  const requests: string[] = [];
   await assert.rejects(() => publishPullRequestCommentVisualPreviews({
     owner: 'integry',
     repo: 'propr',
@@ -144,23 +157,19 @@ test('removes a partially published attachment comment before surfacing upload f
     worktreePath: '/worktree',
     startingCommentId: 100,
     octokit: {
-      request: async <T>(_endpoint: string, options: Record<string, unknown>) => {
-        deletedCommentIds.push(options.comment_id);
-        return {} as T;
+      request: async <T>(endpoint: string) => {
+        requests.push(endpoint);
+        return { data: { id: 987 } } as T;
       }
     },
-    runCommand: async () => {
-      throw Object.assign(new Error('one attachment failed'), {
-        stdout: 'https://github.com/integry/propr/pull/42#issuecomment-201'
-      });
-    }
-  }), /one attachment failed/);
+    uploadAsset: async () => { throw new Error('attachment upload failed'); },
+  }), /attachment upload failed/);
 
-  assert.deepEqual(deletedCommentIds, [201]);
+  assert.deepEqual(requests, ['GET /repos/{owner}/{repo}']);
 });
 
-test('deletes an uploaded comment whose fetched body still contains a local path', async () => {
-  const deletedCommentIds: unknown[] = [];
+test('rejects an updated work comment whose response still contains a local path', async () => {
+  const requests: string[] = [];
   await assert.rejects(() => publishPullRequestCommentVisualPreviews({
     owner: 'integry',
     repo: 'propr',
@@ -172,15 +181,51 @@ test('deletes an uploaded comment whose fetched body still contains a local path
     startingCommentId: 100,
     octokit: {
       request: async <T>(endpoint: string, options: Record<string, unknown>) => {
-        if (endpoint.startsWith('GET ')) {
-          return { data: { body: '![Desktop settings](/worktree/.propr/previews/desktop.png)' } } as T;
+        requests.push(endpoint);
+        if (endpoint === 'GET /repos/{owner}/{repo}') {
+          return { data: { id: 987 } } as T;
         }
-        deletedCommentIds.push(options.comment_id);
-        return {} as T;
+        return { data: {
+          html_url: 'https://github.com/integry/propr/pull/42#issuecomment-100',
+          body: '![Desktop settings](/worktree/.propr/previews/desktop.png)',
+          comment_id: options.comment_id,
+        } } as T;
       }
     },
-    runCommand: async () => ({ stdout: 'https://github.com/integry/propr/pull/42#issuecomment-202' })
+    uploadAsset: async () => 'https://github.com/user-attachments/assets/asset-id',
   }), /did not replace a local visual preview path/);
 
-  assert.deepEqual(deletedCommentIds, [202]);
+  assert.deepEqual(requests, [
+    'GET /repos/{owner}/{repo}',
+    'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
+  ]);
+});
+
+test('uploads an attachment directly to the repository-scoped GitHub endpoint', async t => {
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'propr-upload-test-'));
+  const assetPath = path.join(temporaryDirectory, 'desktop.png');
+  const assetBody = Buffer.from('preview bytes');
+  await writeFile(assetPath, assetBody);
+  t.after(async () => rm(temporaryDirectory, { recursive: true, force: true }));
+
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, 'https://uploads.github.com');
+    assert.equal(url.pathname, '/user-attachments/assets');
+    assert.equal(url.searchParams.get('name'), 'desktop.png');
+    assert.equal(url.searchParams.get('content_type'), 'image/png');
+    assert.equal(url.searchParams.get('repository_id'), '987');
+    assert.equal(init?.method, 'POST');
+    assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer preview-token');
+    assert.deepEqual(Buffer.from(init?.body as Uint8Array), assetBody);
+    return new Response(JSON.stringify({
+      url: 'https://github.com/user-attachments/assets/direct-asset-id',
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+  });
+
+  assert.equal(await uploadVisualPreviewAsset({
+    absolutePath: assetPath,
+    authToken: 'preview-token',
+    repositoryId: 987,
+  }), 'https://github.com/user-attachments/assets/direct-asset-id');
 });
