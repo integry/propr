@@ -123,7 +123,7 @@ export class AntigravityAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, environment, taskId, prNumber } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, environment, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const transcriptPath = this.createTransientTranscriptPath(taskId);
@@ -148,7 +148,7 @@ export class AntigravityAgent implements Agent {
             );
 
             const executionTime = Date.now() - startTime;
-            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath });
+            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath, metadata });
         } catch (error) {
             return this.handleExecutionError(error, Date.now() - startTime, issueRef, effectiveModel);
         } finally {
@@ -168,9 +168,9 @@ export class AntigravityAgent implements Agent {
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined;
         prompt: string; worktreePath: string; worktreeGitContent: string | null; onSessionId?: (sessionId: string, conversationId?: string) => void;
         taskId?: string; prNumber?: number; isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
-        transcriptPath?: string;
+        transcriptPath?: string; metadata?: Record<string, unknown>;
     }): Promise<AgentExecutionResult> {
-        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath } = opts;
+        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath, metadata } = opts;
         logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Antigravity agent execution completed');
 
         const parsed = this.resolveSessionOutput(result.stdout, transcriptPath, onSessionId);
@@ -191,7 +191,7 @@ export class AntigravityAgent implements Agent {
             terminationReason
         };
 
-        await this.persistImplementationLog({ executionTime, issueRef, resolvedModel, finalTokenUsage, agentResult, taskId, prNumber, isRetry, retryReason, usageMetrics });
+        await this.persistImplementationLog({ executionTime, issueRef, resolvedModel, finalTokenUsage, agentResult, taskId, prNumber, isRetry, retryReason, usageMetrics, metadata });
 
         if (!agentResult.success) logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias }, 'Antigravity agent execution failed');
         else { logger.info({ issueNumber: issueRef.number, model: resolvedModel, agentAlias: this.config.alias }, 'Antigravity agent execution succeeded'); verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent); }
@@ -328,16 +328,16 @@ export class AntigravityAgent implements Agent {
         executionTime: number; issueRef: { number: number; repoOwner: string; repoName: string };
         resolvedModel: string; finalTokenUsage?: TokenUsage;
         agentResult: AgentExecutionResult; taskId?: string; prNumber?: number;
-        isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
+        isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null; metadata?: Record<string, unknown>;
     }): Promise<void> {
-        const { executionTime, issueRef, resolvedModel, finalTokenUsage, agentResult, taskId, prNumber, isRetry, retryReason, usageMetrics } = opts;
+        const { executionTime, issueRef, resolvedModel, finalTokenUsage, agentResult, taskId, prNumber, isRetry, retryReason, usageMetrics, metadata } = opts;
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
         const logEntry = createLlmLogFromAnalysis({
             executionType: 'implementation', modelUsed: resolvedModel, executionTimeMs: executionTime,
             success: agentResult.success, tokenUsage: finalTokenUsage,
             error: agentResult.success ? undefined : (agentResult.logs || 'Execution failed'),
             sessionId: agentResult.sessionId, draftId: taskId, repository, agentAlias: this.config.alias,
-            metadata: { isRetry, retryReason },
+            metadata: { ...metadata, isRetry, retryReason },
             usageMetrics: usageMetrics ? { preCall: usageMetrics.preCall, postCall: usageMetrics.postCall, delta: usageMetrics.delta, timestamp: usageMetrics.timestamp, agent: usageMetrics.agent } : undefined,
             usageMetricRecords: usageMetrics?.records,
             workRef: buildTaskWorkRef(taskId, issueRef.number, repository, prNumber),

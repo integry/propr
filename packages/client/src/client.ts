@@ -11,7 +11,10 @@ import {
   type NormalizeApiBaseUrlOptions,
   type ProprApiBaseUrl,
 } from './baseUrl.js';
-import { DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED, ProprClientError } from './errors.js';
+import {
+  DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED,
+  ProprClientError,
+} from './errors.js';
 import {
   buildSocketConnection,
   connectProprSocket,
@@ -86,6 +89,79 @@ const assertTimeout = (timeoutMs: number): void => {
       kind: 'configuration',
     });
   }
+};
+
+const createDesktopDiscoveryDeadline = (timeoutMs: number, callerSignal?: AbortSignal) => {
+  assertTimeout(timeoutMs);
+  const controller = new AbortController();
+  let rejectDeadline!: (reason: unknown) => void;
+  let timedOut = false;
+  let deadlineSettled = false;
+  let deadlineReason: unknown;
+  const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+  // A caller may already be aborted before any operation is raced.
+  void deadline.catch(() => undefined);
+  const timeoutReason = new Error('desktop discovery timed out');
+  const abortReason = new Error('desktop discovery was cancelled');
+  const settleDeadline = (reason: unknown): boolean => {
+    if (deadlineSettled) return false;
+    deadlineSettled = true;
+    deadlineReason = reason;
+    rejectDeadline(reason);
+    return true;
+  };
+  const timeout = setTimeout(() => {
+    if (!settleDeadline(timeoutReason)) return;
+    timedOut = true;
+    controller.abort(timeoutReason);
+  }, Math.max(1, timeoutMs));
+  const onAbort = (): void => {
+    if (!settleDeadline(abortReason)) return;
+    controller.abort(callerSignal?.reason);
+  };
+  if (callerSignal?.aborted) onAbort();
+  else callerSignal?.addEventListener('abort', onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    race: <T>(operation: Promise<T>, disposeLateValue?: (value: T) => void): Promise<T> => {
+      const observed = Promise.resolve(operation);
+      if (deadlineSettled) {
+        observed.then(
+          value => { try { disposeLateValue?.(value); } catch { /* best-effort ownership cleanup */ } },
+          () => undefined,
+        );
+        return Promise.reject(deadlineReason);
+      }
+      return new Promise<T>((resolve, reject) => {
+        let settled = false;
+        deadline.catch(error => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        });
+        observed.then(
+          value => {
+            if (settled || deadlineSettled) {
+              try { disposeLateValue?.(value); } catch { /* best-effort ownership cleanup */ }
+              return;
+            }
+            settled = true;
+            resolve(value);
+          },
+          error => {
+            if (settled) return;
+            settled = true;
+            reject(error);
+          },
+        );
+      });
+    },
+    timedOut: (): boolean => timedOut,
+    dispose: (): void => {
+      clearTimeout(timeout);
+      callerSignal?.removeEventListener('abort', onAbort);
+    },
+  };
 };
 
 export class ProprClient {
@@ -235,13 +311,39 @@ export class ProprClient {
   }
 
   async discoverDesktop(timeoutMs = 8000, signal?: AbortSignal): Promise<ProprDesktopDiscovery> {
-    const response = await this.fetch(this.url('/api/desktop/discovery'), {
-      cache: 'no-store',
-      credentials: 'omit',
-      headers: { Accept: 'application/json' },
-      redirect: 'manual',
-      signal,
-    }, { timeoutMs });
+    const deadline = createDesktopDiscoveryDeadline(timeoutMs, signal);
+    if (signal?.aborted) {
+      deadline.dispose();
+      throw new ProprClientError('Desktop discovery was cancelled.', {
+        kind: 'aborted', cause: signal.reason,
+      });
+    }
+    let response: Response;
+    try {
+      response = await deadline.race(
+        this.fetchImplementation(this.resolveRequestTarget(this.url('/api/desktop/discovery')), {
+          cache: 'no-store',
+          credentials: 'omit',
+          headers: { Accept: 'application/json' },
+          redirect: 'manual',
+          signal: deadline.signal,
+        }),
+        lateResponse => {
+          try { void lateResponse.body?.cancel().catch(() => undefined); } catch { /* hostile late response */ }
+        },
+      );
+    } catch (cause) {
+      deadline.dispose();
+      if (deadline.timedOut()) {
+        throw new ProprClientError('Desktop discovery timed out.', { kind: 'timeout', cause });
+      }
+      if (signal?.aborted) {
+        throw new ProprClientError('Desktop discovery was cancelled.', { kind: 'aborted', cause });
+      }
+      if (cause instanceof ProprClientError) throw cause;
+      throw new ProprClientError('The ProPR API could not be reached.', { kind: 'network', cause });
+    }
+    try {
     const discoveryContentType = response.headers.get('content-type')
       ?.split(';', 1)[0]?.trim().toLowerCase();
     if (!response.ok || response.redirected || discoveryContentType !== 'application/json') {
@@ -266,20 +368,10 @@ export class ProprClient {
     const reader = response.body?.getReader();
     const chunks: Uint8Array[] = [];
     let received = 0;
-    let rejectDeadline!: (reason: unknown) => void;
-    let bodyTimedOut = false;
-    const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
-    const bodyTimer = setTimeout(() => {
-      bodyTimedOut = true;
-      rejectDeadline(new Error('desktop discovery body timed out'));
-    }, Math.max(1, timeoutMs));
-    const onAbort = (): void => rejectDeadline(signal?.reason ?? new Error('desktop discovery was cancelled'));
-    if (signal?.aborted) onAbort();
-    else signal?.addEventListener('abort', onAbort, { once: true });
     try {
       if (reader) {
         while (true) {
-          const part = await Promise.race([reader.read(), deadline]);
+          const part = await deadline.race(reader.read());
           if (part.done) break;
           received += part.value.byteLength;
           if (received > PROPR_CONNECT_DISCOVERY_MAX_BYTES) throw new Error('oversized');
@@ -288,16 +380,16 @@ export class ProprClient {
       }
     } catch (cause) {
       try { void reader?.cancel().catch(() => undefined); } catch { /* best-effort body cancellation */ }
-      if (bodyTimedOut) throw new ProprClientError('Desktop discovery timed out.', { kind: 'timeout', cause });
-      if (signal?.aborted) throw new ProprClientError('Desktop discovery was cancelled.', { kind: 'aborted', cause });
+      if (deadline.timedOut()) {
+        throw new ProprClientError('Desktop discovery timed out.', { kind: 'timeout', cause });
+      }
+      if (signal?.aborted) {
+        throw new ProprClientError('Desktop discovery was cancelled.', { kind: 'aborted', cause });
+      }
       throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
         kind: 'invalid_response', status: response.status, cause,
       });
-    } finally {
-      clearTimeout(bodyTimer);
-      signal?.removeEventListener('abort', onAbort);
-      try { reader?.releaseLock(); } catch { /* hostile streams may retain a pending read */ }
-    }
+    } finally { try { reader?.releaseLock(); } catch { /* hostile streams may retain a pending read */ } }
     const contentEncoding = response.headers.get('content-encoding')?.trim().toLowerCase();
     if (declaredLength !== null && (!contentEncoding || contentEncoding === 'identity')
       && Number(declaredLength) !== received) {
@@ -325,6 +417,9 @@ export class ProprClient {
       metadata,
     );
     return parseDesktopDiscovery(metadata, compatibility);
+    } finally {
+      deadline.dispose();
+    }
   }
 
   async startDesktopPairing(

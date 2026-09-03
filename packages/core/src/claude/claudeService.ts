@@ -29,6 +29,7 @@ import type { ReasoningLevel } from '@propr/shared';
 import { loadSummarizationSettings } from '../config/configManager.js';
 import { resolveConfiguredModel } from '../config/configuredModel.js';
 import { resolveAgentTerminationReason } from '../agents/termination.js';
+import type { SyntheticRoutingSession } from '../services/syntheticRoutingService.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
@@ -103,6 +104,8 @@ export interface RunLightweightLLMAnalysisOptions {
     reasoningLevel?: ReasoningLevel;
     /** Whether an omitted reasoning level may inherit the configured per-model/global levels. Defaults to false. */
     useConfiguredReasoningLevel?: boolean;
+    /** Preselected call-scoped route used by context-sensitive callers. */
+    routingSession?: SyntheticRoutingSession;
 }
 
 /** @deprecated Use AgentRegistry.getDefaultAgent().executeTask() instead. */
@@ -298,10 +301,11 @@ interface AgentExecutionParams {
     reasoningLevel?: ReasoningLevel;
     useConfiguredReasoningLevel?: boolean;
     correlatedLogger: ReturnType<typeof logger.withCorrelation>;
+    routingSession?: SyntheticRoutingSession;
 }
 
 async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<AnalysisResult | null> {
-    const { agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel, correlatedLogger } = params;
+    const { agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel, correlatedLogger, routingSession } = params;
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
@@ -313,7 +317,10 @@ async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<Analys
 
     const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
     correlatedLogger.info({ agentAlias, resolvedModel, taskId, executionType }, 'Using agent-specific lightweight LLM analysis');
-    return await agent.analyze(prompt, { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel });
+    const analyzeOptions = { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel };
+    return routingSession
+        ? await routingSession.analyze(prompt, analyzeOptions)
+        : await agent.analyze(prompt, analyzeOptions);
 }
 
 function buildWorkRef(opts: {
@@ -381,7 +388,7 @@ async function executeClaudeAnalysis(
 }
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, taskId, prNumber, issueRef, executionType = 'other', metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel } = options;
+    const { prompt, model, correlationId, taskId, prNumber, issueRef, executionType = 'other', metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel, routingSession } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { agentAlias, modelOverride, effectiveModel } = parseAgentModelFormat(model, correlatedLogger);
@@ -393,7 +400,7 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
             // Pass all logging fields to agent - agent handles persistence internally
             const analysisResult = await tryExecuteWithAgent({
                 agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType,
-                correlationId, repository, metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel, correlatedLogger
+                correlationId, repository, metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel, correlatedLogger, routingSession
             });
             if (analysisResult !== null) {
                 if (!analysisResult.success) {

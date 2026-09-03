@@ -1,17 +1,12 @@
 import type {
   ProprApiCompatibilityResult,
-  ProprDesktopAuthenticationCapabilities,
+  ProprDesktopDiscovery as SharedProprDesktopDiscovery,
 } from '@propr/shared';
-import { canonicalProprHttpUrlOrigin } from '@propr/shared';
+import { canonicalProprHttpUrlOrigin, parseProprDesktopDiscovery } from '@propr/shared';
 import type { ProprClient } from './client.js';
 import { ProprClientError } from './errors.js';
 
-export interface ProprDesktopDiscovery {
-  product: string;
-  version: string;
-  apiCompatibility: string;
-  uiCompatibility: string;
-  desktopAuthentication: ProprDesktopAuthenticationCapabilities;
+export interface ProprDesktopDiscovery extends SharedProprDesktopDiscovery {
   compatibility: ProprApiCompatibilityResult;
 }
 
@@ -109,34 +104,17 @@ const validBinding = (value: unknown): value is ProprDesktopPairingBinding => {
     && /^[A-Za-z0-9_-]{22}$/.test(binding.credentialGeneration);
 };
 
-const validCapabilities = (value: unknown): value is ProprDesktopAuthenticationCapabilities => {
-  if (!value || typeof value !== 'object') return false;
-  const capabilities = value as Record<string, unknown>;
-  return capabilities.protocolVersion === 2
-    && typeof capabilities.browserPairing === 'boolean'
-    && typeof capabilities.instanceBearerTokens === 'boolean'
-    && typeof capabilities.socketIoBearerAuthentication === 'boolean';
-};
-
 export const parseDesktopDiscovery = (
   value: unknown,
   compatibility: ProprApiCompatibilityResult,
 ): ProprDesktopDiscovery => {
-  const body = record(value);
-  if (body.product !== 'ProPR' || !string(body.version) || !string(body.apiCompatibility)
-    || !string(body.uiCompatibility) || !validCapabilities(body.desktopAuthentication)) {
+  const body = parseProprDesktopDiscovery(value);
+  if (!body) {
     throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
       kind: 'invalid_response',
     });
   }
-  return {
-    product: body.product,
-    version: body.version,
-    apiCompatibility: body.apiCompatibility,
-    uiCompatibility: body.uiCompatibility,
-    desktopAuthentication: body.desktopAuthentication,
-    compatibility,
-  };
+  return { ...body, compatibility };
 };
 
 export const parseDesktopPairingStart = (

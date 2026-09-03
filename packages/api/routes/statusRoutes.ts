@@ -16,9 +16,11 @@ import {
   AgentRegistry,
   getIndexingQueue as loadIndexingQueue,
   loadAgents as loadAgentConfigs,
+  loadSyntheticAgents as loadSyntheticAgentConfigs,
   loadSummarizationRuntimeState
 } from '@propr/core';
 import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
+import type { SyntheticAgentConfig } from '@propr/shared';
 import path from 'node:path';
 import os from 'node:os';
 import { applyRoutingStatus, parseConnectAccountStatus, type RoutingState } from './connectAccountStatus.js';
@@ -28,6 +30,7 @@ interface StatusRoutesDeps {
   redisClient: RedisClientType;
   agentRegistry?: StatusAgentRegistry;
   loadAgents?: () => Promise<AgentConfig[]>;
+  loadSyntheticAgents?: () => Promise<SyntheticAgentConfig[]>;
   getIndexingQueue?: () => Promise<IndexingStatusQueue>;
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
@@ -53,9 +56,9 @@ type ServiceStatus = 'connected' | 'disconnected' | 'active' | 'queued' | 'idle'
 
 interface AgentStatus {
   id: string;
-  type: AgentConfig['type'];
+  type: AgentConfig['type'] | 'synthetic';
   alias: string;
-  status: 'connected' | 'disconnected';
+  status: 'connected' | 'disconnected' | 'degraded';
 }
 
 export function createStatusRoutes(deps: StatusRoutesDeps) {
@@ -63,6 +66,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     redisClient,
     agentRegistry = AgentRegistry.getInstance() as StatusAgentRegistry,
     loadAgents = loadAgentConfigs,
+    loadSyntheticAgents: configuredSyntheticLoader,
     getIndexingQueue = loadIndexingQueue,
     agentStatusCacheTtlMs = 5000,
     agentHealthTimeoutMs = 1500,
@@ -71,6 +75,11 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     projectSystemSnapshot,
     getPublicInstanceIdentity: loadPublicInstanceIdentity = getOrCreatePublicInstanceIdentity,
   } = deps;
+  // Unit/integration callers that replace the direct config loader predate
+  // synthetic pools. Treat that fixture as an empty synthetic document unless
+  // it explicitly supplies one; production still uses persisted configuration.
+  const loadSyntheticAgents = configuredSyntheticLoader
+    ?? (deps.loadAgents ? async () => [] : loadSyntheticAgentConfigs);
   let agentStatusCache: { expiresAt: number; statuses: AgentStatus[] } | undefined;
 
   function getCompatibility(_req: Request, res: Response): void {
@@ -233,7 +242,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       return agentStatusCache.statuses;
     }
 
-    const statuses = await getAgentStatuses(loadAgents, agentRegistry, agentHealthTimeoutMs);
+    const statuses = await getAgentStatuses(loadAgents, loadSyntheticAgents, agentRegistry, agentHealthTimeoutMs);
     agentStatusCache = {
       statuses,
       expiresAt: currentTime + agentStatusCacheTtlMs
@@ -393,15 +402,24 @@ function formatCooldownUntil(until: string): string {
 
 async function getAgentStatuses(
   loadAgents: () => Promise<AgentConfig[]>,
+  loadSyntheticAgents: () => Promise<SyntheticAgentConfig[]>,
   registry: StatusAgentRegistry,
   healthTimeoutMs: number
 ): Promise<AgentStatus[]> {
   let configuredAgents: AgentConfig[];
+  let syntheticAgents: SyntheticAgentConfig[] = [];
   try {
     configuredAgents = await loadAgents();
   } catch (error) {
     console.error('Error loading agent status configuration:', error);
     return [];
+  }
+  try {
+    syntheticAgents = await loadSyntheticAgents();
+  } catch (error) {
+    // Synthetic configuration availability must not suppress or downgrade
+    // unrelated direct-agent health.
+    console.error('Error loading synthetic agent status configuration:', error);
   }
 
   try {
@@ -410,7 +428,7 @@ async function getAgentStatuses(
     console.error('Error initializing agent registry for status:', error);
   }
 
-  if (configuredAgents.length === 0) {
+  if (configuredAgents.length === 0 && syntheticAgents.length === 0) {
     const defaultAgent = registry.getAgentById('default-claude-agent') ?? registry.getAgentByAlias('default');
     if (defaultAgent?.config.type === 'claude') {
       return [await buildRegisteredAgentStatus(defaultAgent, healthTimeoutMs)];
@@ -421,7 +439,7 @@ async function getAgentStatuses(
   const registeredById = new Map(registry.getAllAgents().map(agent => [agent.config.id, agent]));
   const registeredByAlias = new Map(registry.getAllAgents().map(agent => [agent.config.alias, agent]));
 
-  return Promise.all(configuredAgents
+  const directStatuses = await Promise.all(configuredAgents
     .filter(agent => agent.enabled)
     .map(async (config) => {
       const registeredAgent = registeredById.get(config.id) ?? registeredByAlias.get(config.alias);
@@ -430,6 +448,27 @@ async function getAgentStatuses(
       }
       return buildRegisteredAgentStatus(registeredAgent, healthTimeoutMs);
     }));
+
+  const syntheticStatuses = await Promise.all(syntheticAgents
+    .filter(pool => pool.enabled)
+    .map(async pool => {
+      const registered = registeredById.get(pool.id) ?? registeredByAlias.get(pool.alias);
+      if (!registered) return { id: pool.id, type: 'synthetic' as const, alias: pool.alias, status: 'degraded' as const };
+      let healthy = false;
+      try {
+        healthy = await withTimeout(registered.healthCheck(), healthTimeoutMs, false);
+      } catch {
+        healthy = false;
+      }
+      return {
+        id: pool.id,
+        type: 'synthetic' as const,
+        alias: pool.alias,
+        status: healthy ? 'connected' as const : 'degraded' as const,
+      };
+    }));
+
+  return [...directStatuses, ...syntheticStatuses];
 }
 
 function getDefaultClaudeConfig(): AgentConfig {

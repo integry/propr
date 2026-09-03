@@ -44,7 +44,7 @@ if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ]; then
   exit 1
 fi
 
-for required_tool in docker grep sed cut basename cp mv; do
+for required_tool in docker curl grep sed cut basename cp mv sleep; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then
         echo "Error: Required tool '$required_tool' is not installed"
         exit 1
@@ -187,8 +187,10 @@ write_sanitized_preview_env() {
 
 # Re-inject a small allowlist of auth keys (stripped by sanitization) from the
 # staging env into the preview env, copying each value verbatim. Used to restore
-# real GitHub login and prod session sharing for maintainer-gated previews.
-# Only call with non-secret-bearing key names you have deliberately vetted.
+# real GitHub login, backend GitHub access, and prod session sharing for
+# maintainer-gated previews. Every key in this allowlist is a credential and must
+# be deliberately vetted; the checkout is excluded from fork previews and the
+# generated .env is excluded from the Docker build context.
 reinject_env_keys() {
     source_env_file=$1
     dest_env_file=$2
@@ -254,19 +256,21 @@ fi
 # Docker Compose env_file entries are relative to the PR checkout, but the PR
 # checkout is also the Docker build context. We start from a sanitized preview
 # .env (no secrets), then re-inject ONLY the auth keys needed for real GitHub
-# login and prod session sharing. All other secrets (webhook/app/system
-# secrets, tokens, DB password, PEM files) stay stripped. This deliberately
-# places OAuth + session secrets into PR-controlled source, so access is gated:
+# login, relay-backed GitHub API access, and prod session sharing. All other
+# secrets (webhook/app/system secrets, agent tokens, DB password, PEM files)
+# stay stripped. This deliberately places the allowlisted credentials into
+# PR-controlled source, so access is gated:
 # the pr-preview.yml authorize job restricts deploys to same-repo PRs approved
 # by a write/admin collaborator applying the preview-env label; forks are blocked.
 PREVIEW_ENV_FILE="$REPO_ROOT/.env"
 if [ -n "${PR_SOURCE_DIR:-}" ]; then
     write_sanitized_preview_env "$ENV_FILE" "$PREVIEW_ENV_FILE"
     reinject_env_keys "$ENV_FILE" "$PREVIEW_ENV_FILE" \
-        GH_OAUTH_CLIENT_ID GH_OAUTH_CLIENT_SECRET GH_OAUTH_CALLBACK_URL SESSION_SECRET
+        GH_OAUTH_CLIENT_ID GH_OAUTH_CLIENT_SECRET GH_OAUTH_CALLBACK_URL SESSION_SECRET \
+        PROPR_GH_RELAY_TOKEN
     set_env_var "$PREVIEW_ENV_FILE" "ENABLE_GITHUB_WEBHOOKS" "false"
     set_env_var "$PREVIEW_ENV_FILE" "ENABLE_BEARER_AUTH" "false"
-    echo "Preview env re-injects OAuth/session keys for real login; webhooks and bearer auth disabled"
+    echo "Preview env re-injects OAuth/session and relay auth keys; webhooks and bearer auth disabled"
 elif [ -n "$ENV_FILE" ] && [ "$ENV_FILE" != "$PREVIEW_ENV_FILE" ]; then
     cp "$ENV_FILE" "$PREVIEW_ENV_FILE"
 fi
@@ -316,8 +320,7 @@ $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${
 CONTAINER_ID=$(STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" ps -q api 2>/dev/null || true)
 
 if [ -n "$CONTAINER_ID" ]; then
-    echo "Preview environment deployed successfully!"
-    echo "API container: $CONTAINER_ID"
+    echo "API container created: $CONTAINER_ID"
 
     # Copy database from staging site. Prefer an explicit STAGING_DB_PATH, then
     # DB_FILENAME from the staging env file, then the historical default.
@@ -342,7 +345,69 @@ if [ -n "$CONTAINER_ID" ]; then
     else
         echo "Warning: Staging database not found at $SEED_DB_PATH"
     fi
+else
+    echo "Warning: Docker Compose did not return an API container; startup verification will report diagnostics"
 fi
+
+# `docker compose up -d` succeeds once containers are created, even when an
+# entrypoint exits immediately. Wait for the API endpoint and then verify every
+# backend process is still running so a broken preview cannot be announced as
+# successfully deployed.
+service_is_running() {
+    service_name=$1
+    service_container_id=$(STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" \
+        $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG \
+        -p "propr-pr-${PR_NUMBER}" ps -q "$service_name" 2>/dev/null || true)
+
+    if [ -z "$service_container_id" ]; then
+        return 1
+    fi
+
+    [ "$(docker inspect --format '{{.State.Running}}' "$service_container_id" 2>/dev/null || true)" = "true" ]
+}
+
+API_HEALTHY=false
+attempt=1
+while [ "$attempt" -le 30 ]; do
+    if ! service_is_running api; then
+        break
+    fi
+    if curl --fail --silent --show-error --max-time 2 "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+        API_HEALTHY=true
+        break
+    fi
+    sleep 2
+    attempt=$((attempt + 1))
+done
+
+FAILED_SERVICES=""
+for service_name in api daemon worker analysis-worker indexing-worker; do
+    if ! service_is_running "$service_name"; then
+        FAILED_SERVICES="${FAILED_SERVICES} ${service_name}"
+    fi
+done
+
+if [ "$API_HEALTHY" != "true" ] || [ -n "$FAILED_SERVICES" ]; then
+    if [ "$API_HEALTHY" != "true" ]; then
+        echo "Error: Preview API did not become healthy at http://127.0.0.1:${API_PORT}/health"
+    fi
+    if [ -n "$FAILED_SERVICES" ]; then
+        echo "Error: Preview backend services are not running:${FAILED_SERVICES}"
+    fi
+    echo "Backend container status:"
+    STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" \
+        $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG \
+        -p "propr-pr-${PR_NUMBER}" ps -a || true
+    echo "Backend startup logs:"
+    STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" \
+        $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG \
+        -p "propr-pr-${PR_NUMBER}" logs --no-color --tail=100 \
+        api daemon worker analysis-worker indexing-worker || true
+    exit 1
+fi
+
+echo "Preview environment deployed successfully!"
+echo "API health check passed: http://127.0.0.1:${API_PORT}/health"
 
 UI_URL="https://pr-${PR_NUMBER}.gitfix.dev"
 

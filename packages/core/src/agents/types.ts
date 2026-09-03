@@ -68,6 +68,9 @@ export interface AgentTaskOptions {
     /** Per-execution environment variables to inject into the agent container. */
     environment?: Record<string, string>;
 
+    /** Additional structured fields persisted with the execution LLM log. */
+    metadata?: Record<string, unknown>;
+
     // Task ID for abort signal checking
     taskId?: string;
 

@@ -17,6 +17,7 @@ import {
   ExpandButton,
   ExpandedRowDetails,
   PaginationFooter,
+  SyntheticRoutingModelSummary,
 } from './LlmLogsPageComponents';
 import { UsageBadge } from '../components/ui/UsageBadge';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
@@ -374,7 +375,8 @@ const LlmLogsPage: React.FC = () => {
                           )}
                         </td>
                         <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                          {log.modelName || '-'}
+                          <div>{log.modelName || '-'}</div>
+                          <SyntheticRoutingModelSummary value={log.metadata?.syntheticRouting} />
                         </td>
                         <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap">
                           <UsageBadge

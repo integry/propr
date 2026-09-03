@@ -124,9 +124,10 @@ export function parseProprDesktopDiscovery(value: unknown): ProprDesktopDiscover
 }
 
 /**
- * Parse discovery from its bounded wire representation. JSON.parse accepts
- * duplicate object members, so discovery performs a structural pass before
- * the schema parser. This keeps every client on the same fail-closed contract.
+ * Parse discovery from its bounded wire representation.  JSON.parse silently
+ * accepts duplicate object members, so discovery uses this small structural
+ * pass before the schema parser.  Keeping it here makes CLI, client and desktop
+ * consumers agree on duplicate, size and schema rejection.
  */
 export function parseProprDesktopDiscoveryJson(contents: string): ProprDesktopDiscovery | null {
   if (typeof contents !== 'string'

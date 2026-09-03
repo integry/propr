@@ -3,10 +3,6 @@ import os from 'os';
 import logger from '../utils/logger.js';
 import { Agent, AgentConfig } from './types.js';
 import { ClaudeAgent } from './impl/ClaudeAgent.js';
-import { CodexAgent } from './impl/CodexAgent.js';
-import { AntigravityAgent } from './impl/AntigravityAgent.js';
-import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
-import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
 import { ensureAgentBundleImage, ensureAgentDockerImage, executeDockerCommand } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
@@ -16,6 +12,8 @@ import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 import { loadAgentRuntimePackageState, resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
 import { AGENT_DEFAULTS } from '../config/modelDefinitions.js';
+import { SyntheticAgentRegistry, type BeginSyntheticRoutingOptions, type SyntheticRoutingSession } from './SyntheticAgentRegistry.js';
+import { createAgentFromConfig } from './createAgentFromConfig.js';
 
 export interface AgentRegistryOperationalStatus {
     unifiedAgentImage: {
@@ -46,6 +44,7 @@ export class AgentRegistry {
     private pendingBackgroundRefresh: Promise<void> | null = null;
     private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
     private unifiedAgentImageRetryTimer: NodeJS.Timeout | null = null;
+    private syntheticAgents = new SyntheticAgentRegistry(this.agents, this.agentsByAlias);
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -143,6 +142,8 @@ export class AgentRegistry {
                 }
             }
 
+            await this.syntheticAgents.register();
+
             await this.captureRuntimePackageStateVersion();
             this.initialized = true;
             logger.info({
@@ -174,6 +175,10 @@ export class AgentRegistry {
      */
     getAgentByAlias(alias: string): Agent | undefined {
         return this.agentsByAlias.get(alias);
+    }
+
+    beginRoutingSession(options: BeginSyntheticRoutingOptions): SyntheticRoutingSession {
+        return this.syntheticAgents.begin(options);
     }
 
     /**
@@ -428,20 +433,7 @@ export class AgentRegistry {
      * This is the factory method that handles different agent types.
      */
     createAgentFromConfig(config: AgentConfig): Agent {
-        switch (config.type) {
-            case 'claude':
-                return new ClaudeAgent(config);
-            case 'codex':
-                return new CodexAgent(config);
-            case 'antigravity':
-                return new AntigravityAgent(config);
-            case 'opencode':
-                return new OpenCodeAgent(config);
-            case 'vibe':
-                return new VibeAgent(config);
-            default:
-                throw new Error(`Unknown agent type: ${config.type}`);
-        }
+        return createAgentFromConfig(config);
     }
 
     /**
@@ -495,6 +487,8 @@ export class AgentRegistry {
         this.agents.set(defaultConfig.id, agent);
         this.agentsByAlias.set(defaultConfig.alias, agent);
 
+        await this.syntheticAgents.register();
+
         logger.info({
             agentId: defaultConfig.id,
             agentAlias: defaultConfig.alias,
@@ -512,6 +506,7 @@ export class AgentRegistry {
             // Clear agents and state
             this.agents.clear();
             this.agentsByAlias.clear();
+            this.syntheticAgents.clear();
             this.initialized = false;
 
             // Close database connection

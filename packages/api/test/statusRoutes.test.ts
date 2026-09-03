@@ -10,11 +10,13 @@ import {
   PROPR_VERSION,
   parseProprDesktopDiscovery,
 } from '@propr/shared';
+import type { SyntheticAgentConfig } from '@propr/shared';
 
 type StatusRoutesDeps = {
   redisClient: RedisClientType;
   agentRegistry?: StatusAgentRegistry;
   loadAgents?: () => Promise<AgentConfig[]>;
+  loadSyntheticAgents?: () => Promise<SyntheticAgentConfig[]>;
   getIndexingQueue?: () => Promise<{ getJobCounts: (...statuses: string[]) => Promise<Record<string, number>> }>;
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
@@ -390,6 +392,48 @@ test('/api/status caches agent health checks briefly', async () => {
 
   assert.equal(healthChecks, 1);
   assert.deepEqual(first.body().agents, second.body().agents);
+});
+
+test('/api/status marks an unavailable synthetic pool degraded without downgrading direct agents', async () => {
+  const direct = createAgentConfig();
+  const syntheticConfig: SyntheticAgentConfig = {
+    id: '11111111-1111-4111-8111-111111111111',
+    alias: 'balanced-pool',
+    enabled: true,
+    defaultModel: 'balanced',
+    models: [{
+      id: 'balanced',
+      enabled: true,
+      strategy: 'round_robin',
+      members: [{
+        id: '22222222-2222-4222-8222-222222222222',
+        directAgentAlias: direct.alias,
+        model: direct.supportedModels[0],
+        enabled: true,
+        priority: 100,
+      }],
+    }],
+  };
+  const syntheticFacade = createAgent({
+    ...direct,
+    id: syntheticConfig.id,
+    alias: syntheticConfig.alias,
+    supportedModels: ['balanced'],
+    defaultModel: 'balanced',
+  }, async () => false);
+  const body = await readStatus({
+    loadAgents: async () => [direct],
+    loadSyntheticAgents: async () => [syntheticConfig],
+    agentRegistry: createRegistry([
+      createAgent(direct, async () => true),
+      syntheticFacade,
+    ]),
+  });
+
+  assert.deepEqual(body.agents, [
+    { id: direct.id, type: direct.type, alias: direct.alias, status: 'connected' },
+    { id: syntheticConfig.id, type: 'synthetic', alias: syntheticConfig.alias, status: 'degraded' },
+  ]);
 });
 
 test('/api/status reports resolved auth mode and event intake mode', async () => {

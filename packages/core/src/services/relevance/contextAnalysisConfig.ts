@@ -1,4 +1,4 @@
-export const DEFAULT_CONTEXT_ANALYSIS_TIMEOUT_MS = 30 * 60 * 1000;
+export const DEFAULT_CONTEXT_ANALYSIS_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** Resolve the relevance-analysis deadline, falling back safely on invalid input. */
 export function resolveContextAnalysisTimeoutMs(

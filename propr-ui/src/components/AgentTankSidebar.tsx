@@ -202,6 +202,15 @@ const AgentRow: React.FC<AgentRowProps> = ({ agent, expanded, onToggle }) => {
       <div
         className={`flex items-center justify-between ${hasMultipleMetrics ? 'cursor-pointer hover:bg-gray-50 -mx-1 px-1 rounded' : ''}`}
         onClick={hasMultipleMetrics ? onToggle : undefined}
+        role={hasMultipleMetrics ? 'button' : undefined}
+        tabIndex={hasMultipleMetrics ? 0 : undefined}
+        aria-expanded={hasMultipleMetrics ? expanded : undefined}
+        onKeyDown={hasMultipleMetrics ? event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onToggle();
+          }
+        } : undefined}
       >
         <div className="flex items-center gap-1.5 text-gray-600">
           {hasMultipleMetrics && (
@@ -239,7 +248,12 @@ const AgentRow: React.FC<AgentRowProps> = ({ agent, expanded, onToggle }) => {
   );
 };
 
-const AgentTankSidebar: React.FC = () => {
+interface AgentTankSidebarProps {
+  allowManualRefresh?: boolean;
+  className?: string;
+}
+
+const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh = true, className }) => {
   const [data, setData] = useState<AgentTankUsageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -292,19 +306,21 @@ const AgentTankSidebar: React.FC = () => {
   if (agents.length === 0) return null;
 
   return (
-    <div className="px-4 py-3 border-t border-gray-200">
+    <div className={`px-4 py-3 border-t ${className || 'border-gray-200'}`}>
       <div className="flex items-center justify-between mb-2">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
           Usage
         </span>
-        <button
-          onClick={() => fetchUsage(true)}
-          disabled={refreshing}
-          className="text-gray-400 hover:text-primary-600 disabled:opacity-50"
-          title="Refresh usage"
-        >
-          <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
-        </button>
+        {allowManualRefresh && (
+          <button
+            onClick={() => fetchUsage(true)}
+            disabled={refreshing}
+            className="text-gray-400 hover:text-primary-600 disabled:opacity-50"
+            title="Refresh usage"
+          >
+            <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
+          </button>
+        )}
       </div>
       <div className="space-y-0">
         {agents.map(agent => (
@@ -320,4 +336,5 @@ const AgentTankSidebar: React.FC = () => {
   );
 };
 
+export { AgentTankSidebar as AgentTankUsage };
 export default AgentTankSidebar;

@@ -113,7 +113,7 @@ afterEach(async () => {
 });
 
 describe('DesktopCredentialService pairing browser sink', () => {
-  it('pairs a manually entered remote through browser approval, persistence, probe, and activation end to end', async () => {
+  it('pairs through the browser journey and rejects a response URL replacement', async () => {
     const opened: string[] = [];
     const requests: Array<{ url: string; authorization: string | null }> = [];
     let browserApproved = false;
@@ -143,6 +143,7 @@ describe('DesktopCredentialService pairing browser sink', () => {
     assert.deepEqual(opened, [approvalUrl]);
     assert.deepEqual(requests.map(request => request.url), [
       `${origin}/api/desktop/discovery`,
+      `${origin}/api/desktop/discovery`,
       `${origin}/api/desktop/pairings`,
       `${origin}/api/desktop/pairings/${pairingId}/poll`,
       `${origin}/api/desktop/pairings/${pairingId}/activate`,
@@ -150,26 +151,24 @@ describe('DesktopCredentialService pairing browser sink', () => {
       `${origin}/api/auth/user`,
     ]);
     assert.deepEqual(requests.map(request => request.authorization), [
-      null, null, null, null, null, `Bearer ${instanceToken}`,
+      null, null, null, null, null, null, `Bearer ${instanceToken}`,
     ]);
     assert.deepEqual(service.prepareRequest(
       `${origin}/api/tasks`,
       { [DESKTOP_TRANSPORT_SCOPE_HEADER]: activated.transportScope },
     ).requestHeaders, { Authorization: `Bearer ${instanceToken}` });
     assert.equal(JSON.stringify([initialProbe, paired, probed, activated, opened]).includes(instanceToken), false);
-  });
 
-  it('rejects a URL replaced after the credential service receives the API response', async () => {
-    const opened: string[] = [];
-    const service = await createService(request => openApprovedDesktopPairingUrl({
+    const replacedOpened: string[] = [];
+    const replacedService = await createService(request => openApprovedDesktopPairingUrl({
       ...request,
       approvalUrl: `${origin}/api/desktop/pairings/dpr_${'B'.repeat(22)}/browser`,
-    }, { openExternal: async url => { opened.push(url); } }));
+    }, { openExternal: async url => { replacedOpened.push(url); } }));
 
     await assert.rejects(
-      service.pair({ id: 'profile-a', label: 'A', apiBaseUrl: origin }),
+      replacedService.pair({ id: 'profile-a', label: 'A', apiBaseUrl: origin }),
       /Desktop pairing browser request was rejected/,
     );
-    assert.deepEqual(opened, []);
+    assert.deepEqual(replacedOpened, []);
   });
 });

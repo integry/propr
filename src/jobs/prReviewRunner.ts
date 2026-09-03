@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import { buildAnalysisSafetySuffix, getAuthenticatedOctokit } from '@propr/core';
-import type { AgentRegistry, AnalysisResult } from '@propr/core';
+import type { AgentRegistry, AnalysisResult, AnalyzeOptions, SyntheticRoutingSession } from '@propr/core';
 import type { ReasoningLevel } from '@propr/shared';
 import type { Redis } from 'ioredis';
 import { calculateReviewCost } from './reviewContextHelpers.js';
@@ -15,6 +15,10 @@ export interface ReviewAssignment {
     agentAlias: string;
     model: string;
     label: string;
+    /** Physical route selected before the shared review budget was calculated. */
+    routingSession?: SyntheticRoutingSession;
+    physicalAgentAlias?: string;
+    physicalModel?: string;
 }
 export interface ReviewResult {
     assignment: ReviewAssignment;
@@ -61,7 +65,9 @@ export async function runSingleReview(
     const { agentAlias, model, label } = assignment;
     correlatedLogger.info({ pullRequestNumber, agentAlias, model, label }, 'Starting review analysis');
 
-    const agent = registry.getAgentByAlias(agentAlias);
+    const executionAgentAlias = assignment.physicalAgentAlias || agentAlias;
+    const executionModel = assignment.physicalModel || model;
+    const agent = registry.getAgentByAlias(executionAgentAlias);
     if (!agent) {
         const errorMsg = `Agent not found for alias: ${agentAlias}`;
         correlatedLogger.error({ agentAlias }, errorMsg);
@@ -78,7 +84,7 @@ export async function runSingleReview(
     if (promptResult.truncatedSections.length > 0) {
         correlatedLogger.warn({
             pullRequestNumber,
-            model,
+            model: executionModel,
             maxContextTokens: ctx.reviewMaxContextTokens,
             estimatedTokens: promptResult.estimatedTokens,
             truncatedSections: promptResult.truncatedSections,
@@ -86,8 +92,8 @@ export async function runSingleReview(
     }
 
     try {
-        const analysisResult = await agent.analyze(reviewPrompt, {
-            model,
+        const analyzeOptions: AnalyzeOptions = {
+            model: executionModel,
             taskId,
             prNumber: pullRequestNumber,
             repository: `${repoOwner}/${repoName}`,
@@ -95,7 +101,10 @@ export async function runSingleReview(
             responseFormat: 'text',
             reasoningLevel: ctx.reasoningLevel,
             timeoutMs: REVIEW_TIMEOUT_MS,
-        });
+        };
+        const analysisResult = assignment.routingSession
+            ? await assignment.routingSession.analyze(reviewPrompt, analyzeOptions)
+            : await agent.analyze(reviewPrompt, analyzeOptions);
         correlatedLogger.info({
             pullRequestNumber, model: analysisResult.modelUsed, success: analysisResult.success,
             executionTimeMs: analysisResult.executionTimeMs, responseLength: analysisResult.response.length,

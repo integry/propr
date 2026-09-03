@@ -30,6 +30,8 @@ import {
     down as removeBadgePreference,
     up as addBadgePreference
 } from '../src/db/migrations/20260824010000_add_notification_badge_preference.js';
+import { up as addSystemFailureState } from '../src/db/migrations/20260829000000_add_notification_system_failure_state.js';
+import { up as addPullRequestState } from '../src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 
 let database: Knex;
 let service: NotificationService;
@@ -96,6 +98,8 @@ beforeEach(async () => {
     await addPreferenceApis(database);
     await addBadgePreference(database);
     await addAdvertisedActions(database);
+    await addSystemFailureState(database);
+    await addPullRequestState(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -350,6 +354,296 @@ describe('notification service', { concurrency: false }, () => {
         assert.equal(otherUser.notifications[0].readAt, null);
         assert.equal(otherUser.notifications[1].dismissedAt, null);
         assert.equal(await service.dismissNotification('user-b', 'event-a'), null);
+    });
+
+    test('dismisses every active Inbox receipt for only the requested user', async () => {
+        await createEvent('event-a', '2026-08-02T07:00:00.000Z', ['user-a', 'user-b']);
+        await createEvent('event-b', '2026-08-02T08:00:00.000Z', ['user-a', 'user-b']);
+        await createEvent('event-push-only', '2026-08-02T09:00:00.000Z', [{
+            userId: 'user-a', inboxEnabled: false, pushEnabled: true
+        }]);
+        await service.markNotificationRead('user-a', 'event-a');
+
+        assert.deepEqual(await service.dismissAllNotifications('user-a'), { unreadCount: 0 });
+        assert.deepEqual(await service.dismissAllNotifications('user-a'), { unreadCount: 0 });
+        assert.deepEqual((await service.listNotifications('user-a')).notifications, []);
+        assert.deepEqual(
+            (await service.listNotifications('user-a', { includeDismissed: true }))
+                .notifications.map(notification => notification.id),
+            ['event-b', 'event-a']
+        );
+        assert.deepEqual(
+            (await service.listNotifications('user-b')).notifications.map(notification => notification.id),
+            ['event-b', 'event-a']
+        );
+        const pushOnlyReceipt = await database('notification_user_states')
+            .where({ user_id: 'user-a', event_id: 'event-push-only' })
+            .first();
+        assert.equal(pushOnlyReceipt, undefined, 'push-only recipients stay outside the Inbox');
+        assert.equal(
+            await database('notification_events').count('* as count').first()
+                .then(row => Number(row?.count)),
+            3,
+            'immutable event audit rows remain'
+        );
+    });
+
+    test('dismisses all PR-related receipts without deleting audit events', async () => {
+        const recipients = ['user-a', 'user-b'];
+        await service.createNotificationEvent({
+            eventId: 'pr-task-event',
+            deduplicationKey: 'pr-task-event-key',
+            kind: 'task',
+            target: {
+                type: 'task', repository: 'integry/propr', taskId: 'pr-task', prNumber: 42
+            },
+            title: 'Implementation completed', body: 'Implementation completed.', recipients
+        });
+        await service.createNotificationEvent({
+            eventId: 'pr-review-event',
+            deduplicationKey: 'pr-review-event-key',
+            kind: 'review',
+            target: {
+                type: 'review', repository: 'integry/propr', taskId: 'review-task', prNumber: 42
+            },
+            title: 'Review completed', body: 'Review completed.', recipients
+        });
+        await service.createNotificationEvent({
+            eventId: 'pr-attention-event',
+            deduplicationKey: 'pr-attention-event-key',
+            kind: 'pull_request',
+            target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+            title: 'Pull request needs attention', body: 'PR needs attention.', recipients
+        });
+        await service.createNotificationEvent({
+            eventId: 'other-pr-event',
+            deduplicationKey: 'other-pr-event-key',
+            kind: 'pull_request',
+            target: { type: 'pull_request', repository: 'integry/propr', prNumber: 43 },
+            title: 'Other pull request', body: 'Another PR.', recipients
+        });
+
+        assert.equal(await service.dismissNotificationsForPullRequest('integry/propr', 42), 6);
+        assert.equal(await service.dismissNotificationsForPullRequest('integry/propr', 42), 0);
+        assert.equal(
+            await database('notification_events').count('* as count').first()
+                .then(row => Number(row?.count)),
+            4,
+            'immutable event audit rows remain',
+        );
+        assert.deepEqual(
+            (await service.listNotifications('user-a')).notifications.map(item => item.id),
+            ['other-pr-event']
+        );
+        assert.equal(
+            (await service.listNotifications('user-a', { includeDismissed: true }))
+                .notifications.length,
+            4
+        );
+    });
+
+    test('rolls back PR-attention creation when atomic supersession fails', async () => {
+        await service.createPullRequestAttentionNotificationEvent(
+            'integry/propr',
+            42,
+            {
+                eventId: 'first-attention-event',
+                deduplicationKey: 'first-attention-key',
+                kind: 'pull_request',
+                target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+                title: 'Pull request needs attention',
+                body: 'First attention card.',
+                occurredAt: '2026-08-02T08:00:00.000Z'
+            },
+            ['user-a']
+        );
+        await database.raw(`
+            CREATE TRIGGER reject_attention_supersession
+            BEFORE UPDATE OF dismissed_at ON notification_user_states
+            BEGIN
+                SELECT RAISE(ABORT, 'forced supersession failure');
+            END
+        `);
+
+        await assert.rejects(
+            service.createPullRequestAttentionNotificationEvent(
+                'integry/propr',
+                42,
+                {
+                    eventId: 'second-attention-event',
+                    deduplicationKey: 'second-attention-key',
+                    kind: 'pull_request',
+                    target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+                    title: 'Pull request needs attention',
+                    body: 'Second attention card.',
+                    occurredAt: '2026-08-02T09:00:00.000Z'
+                },
+                ['user-a']
+            ),
+            /forced supersession failure/
+        );
+
+        assert.deepEqual(
+            await database('notification_events')
+                .where({ kind: 'pull_request' })
+                .pluck('event_id'),
+            ['first-attention-event'],
+            'the new audit event and receipt roll back with supersession'
+        );
+        assert.deepEqual(
+            (await service.listNotifications('user-a')).notifications.map(item => item.id),
+            ['first-attention-event']
+        );
+    });
+
+    test('reconciles pre-state system cards during healthy and unhealthy bootstrap', async () => {
+        for (const component of ['redis', 'worker']) {
+            await service.createNotificationEvent({
+                eventId: `legacy-${component}-failure`,
+                deduplicationKey: `legacy-${component}-failure-key`,
+                kind: 'system_failure',
+                severity: 'error',
+                target: { type: 'system_failure', component },
+                title: 'System component unhealthy',
+                body: `${component} is not reporting a healthy status.`,
+                occurredAt: '2026-08-02T08:00:00.000Z'
+            }, ['user-a']);
+        }
+        assert.equal(
+            await database('notification_system_failure_state').count('* as count').first()
+                .then(row => Number(row?.count)),
+            0,
+            'simulates receipts created before the durable state migration was populated'
+        );
+
+        await service.reconcileSystemFailureTransition({
+            component: 'redis',
+            status: 'connected',
+            healthy: true,
+            snapshotAt: '2026-08-02T09:00:00.000Z',
+            eventFor: () => {
+                throw new Error('healthy initialization must not create an event');
+            }
+        }, ['user-a']);
+        await service.reconcileSystemFailureTransition({
+            component: 'worker',
+            status: 'stopped',
+            healthy: false,
+            snapshotAt: '2026-08-02T09:00:00.000Z',
+            eventFor: (status, failureStartedAt) => ({
+                eventId: 'current-worker-failure',
+                deduplicationKey: `current-worker:${status}:${failureStartedAt}`,
+                kind: 'system_failure',
+                severity: 'error',
+                target: { type: 'system_failure', component: 'worker' },
+                title: 'System component unhealthy',
+                body: 'worker is not reporting a healthy status.',
+                occurredAt: failureStartedAt
+            })
+        }, ['user-a']);
+
+        const active = await database('notification_user_states as receipt')
+            .join('notification_events as event', 'event.event_id', 'receipt.event_id')
+            .whereNull('receipt.dismissed_at')
+            .select('event.event_id');
+        assert.deepEqual(active, [{ event_id: 'current-worker-failure' }]);
+        assert.equal(
+            await database('notification_events')
+                .where({ kind: 'system_failure' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            3,
+            'legacy audit events are preserved'
+        );
+        assert.deepEqual(
+            await database('notification_system_failure_state')
+                .select('component', 'failure_status')
+                .orderBy('component'),
+            [
+                { component: 'redis', failure_status: null },
+                { component: 'worker', failure_status: 'stopped' }
+            ]
+        );
+    });
+
+    test('serializes system transitions so an older writer cannot dismiss the current failure', async () => {
+        const temporaryDirectory = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'propr-system-transition-race-')
+        );
+        const databasePath = path.join(temporaryDirectory, 'notifications.db');
+        const olderDatabase = createDatabase(databasePath);
+        try {
+            await up(olderDatabase);
+            await addPreferenceApis(olderDatabase);
+            await addBadgePreference(olderDatabase);
+            await addAdvertisedActions(olderDatabase);
+            await addSystemFailureState(olderDatabase);
+            const olderService = new NotificationService({
+                database: olderDatabase,
+                now: () => new Date('2026-08-02T10:00:00.000Z'),
+                generateId: () => 'older-failure-event'
+            });
+            const newerService = new NotificationService({
+                database: olderDatabase,
+                now: () => new Date('2026-08-02T10:00:01.000Z'),
+                generateId: () => 'newer-failure-event'
+            });
+            let releaseOlder: (() => void) | undefined;
+            const olderPaused = new Promise<void>(resolve => {
+                releaseOlder = resolve;
+            });
+            let signalOlderEvent: (() => void) | undefined;
+            const olderReachedEvent = new Promise<void>(resolve => {
+                signalOlderEvent = resolve;
+            });
+            const eventFor = (status: string, occurredAt: string) => ({
+                deduplicationKey: `system:${status}:${occurredAt}`,
+                kind: 'system_failure' as const,
+                severity: 'error' as const,
+                target: { type: 'system_failure' as const, component: 'redis' },
+                title: 'System component unhealthy',
+                body: 'redis is not reporting a healthy status.',
+                actions: ['dismiss' as const],
+                occurredAt
+            });
+            const olderProjection = olderService.reconcileSystemFailureTransition({
+                component: 'redis',
+                status: 'disconnected',
+                healthy: false,
+                snapshotAt: '2026-08-02T09:00:00.000Z',
+                eventFor: async (status, occurredAt) => {
+                    signalOlderEvent?.();
+                    await olderPaused;
+                    return eventFor(status, occurredAt);
+                }
+            }, ['user-a']);
+            await olderReachedEvent;
+
+            const newerProjection = newerService.reconcileSystemFailureTransition({
+                component: 'redis',
+                status: 'connection-error',
+                healthy: false,
+                snapshotAt: '2026-08-02T09:00:01.000Z',
+                eventFor
+            }, ['user-a']);
+            // The newer instance is now in flight while the older instance is
+            // paused inside its transaction. Releasing the older callback lets
+            // SQLite serialize both writes without a post-commit stale window.
+            releaseOlder?.();
+            await Promise.all([olderProjection, newerProjection]);
+
+            const active = await olderDatabase('notification_user_states as receipt')
+                .join('notification_events as event', 'event.event_id', 'receipt.event_id')
+                .whereNull('receipt.dismissed_at')
+                .select('event.deduplication_key');
+            assert.deepEqual(active, [{
+                deduplication_key: 'system:connection-error:2026-08-02T09:00:01.000Z'
+            }]);
+        } finally {
+            await olderDatabase.destroy();
+            fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+        }
     });
 
     test('rejects malformed pagination inputs and clamps large valid limits', async () => {
