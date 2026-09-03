@@ -48,6 +48,7 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
   const [error, setError] = useState<string | null>(null);
   const selectedAgent = agents.find(agent => agent.agentId === agentId);
   const unsupportedAgents = agents.filter(agent => !agent.goalCapable);
+  const showRuntimeDiagnostics = agents.length > 0 && unsupportedAgents.length === agents.length;
 
   const applyCapabilities = useCallback((capabilities: GoalCapability[]) => {
     setAgents(capabilities);
@@ -99,8 +100,8 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
     <form onSubmit={submit} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold"><Plus className="h-5 w-5" /> Start a goal</h2>
       {error && <p role="alert" className="mb-3 text-sm text-red-600">{error}</p>}
-      {unsupportedAgents.length > 0 && <div className="mb-3 rounded bg-amber-50 p-3 text-sm text-amber-800">
-        <p>{unsupportedAgents.length === agents.length ? 'No configured coding-agent runtime currently supports goals.' : 'Some configured coding-agent runtimes do not support goals.'}</p>
+      {showRuntimeDiagnostics && <div className="mb-3 rounded bg-amber-50 p-3 text-sm text-amber-800">
+        <p>No configured coding-agent runtime currently supports goals.</p>
         <ul className="mt-2 list-disc space-y-1 pl-5">
           {unsupportedAgents.map(agent => <li key={agent.agentId}><span className="font-medium">{agent.agentAlias}:</span> {agent.reason || 'Required goal/session transport is unavailable'}</li>)}
         </ul>
