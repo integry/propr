@@ -10,7 +10,7 @@ const pullGate = new Promise<void>(resolve => {
 });
 
 await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
-    exports: {
+    namedExports: {
         executeDockerCommand: mock.fn(async (_command: string, args: string[]) => {
             if (args[0] === 'images') {
                 imageChecks += 1;
