@@ -4,7 +4,7 @@ export type VisualPreviewAuthStatusValue = 'active' | 'reauth_required' | 'missi
 
 export interface VisualPreviewAuthStatus {
   configured: boolean;
-  source?: 'github' | 'connect' | 'environment';
+  source?: 'github' | 'connect' | 'static_token' | 'environment';
   status: VisualPreviewAuthStatusValue;
   githubUsername?: string;
   currentUsername?: string;
@@ -19,6 +19,17 @@ export interface VisualPreviewAuthStatus {
 export async function getVisualPreviewAuthStatus(): Promise<VisualPreviewAuthStatus> {
   const response = await apiFetch(`${API_BASE_URL}/api/config/visual-preview-auth`, {
     credentials: 'include',
+  });
+  await handleApiResponse(response);
+  return response.json();
+}
+
+export async function connectVisualPreviewPersonalAccessToken(token: string): Promise<VisualPreviewAuthStatus> {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/visual-preview-auth/token`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
   });
   await handleApiResponse(response);
   return response.json();

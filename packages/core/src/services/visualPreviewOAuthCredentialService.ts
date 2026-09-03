@@ -22,7 +22,7 @@ const SUPPORTED_TOKEN_PATTERN = /^(?:gho_|ghp_|github_pat_)/;
 export const VISUAL_PREVIEW_UPLOAD_TOKEN_ENV = 'GITHUB_VISUAL_PREVIEW_TOKEN';
 export const VISUAL_PREVIEW_CREDENTIAL_KEY_ENV = 'PROPR_CREDENTIAL_ENCRYPTION_KEY';
 
-export type VisualPreviewOAuthSource = 'github' | 'connect';
+export type VisualPreviewOAuthSource = 'github' | 'connect' | 'static_token';
 export type VisualPreviewOAuthStatus = 'active' | 'reauth_required';
 
 export interface VisualPreviewOAuthCredentialInput {
@@ -387,6 +387,10 @@ export class VisualPreviewOAuthCredentialService {
   ): Promise<VisualPreviewOAuthCredentialGrant | null> {
     const current = await this.credentialQuery().first();
     if (!current || current.github_user_id !== githubUserId) return null;
+    // A manually supplied or CLI-imported token is dedicated to background
+    // preview uploads. Never copy it into the administrator's browser session
+    // or try to refresh it as an OAuth grant.
+    if (current.source === 'static_token') return null;
     const refreshStatus = await this.refreshIfNeeded(force);
     if (refreshStatus === 'reauth-required') return { status: 'reauth_required' };
     const row = await this.credentialQuery().first();

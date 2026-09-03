@@ -68,6 +68,20 @@ test('does not silently replace a healthy credential when another admin logs in'
   assert.equal(await service.resolveUploadToken(), 'gho_second');
 });
 
+test('keeps a personal access token dedicated to uploads instead of copying it into a browser session', async () => {
+  const service = createService();
+  await service.replace({
+    githubUserId: '1',
+    githubUsername: 'preview-bot',
+    source: 'static_token',
+    accessToken: 'github_pat_preview-secret',
+  });
+
+  assert.equal(await service.resolveUploadToken(), 'github_pat_preview-secret');
+  assert.equal(await service.refreshAndGetForOwner('1', true), null);
+  assert.equal((await service.getStatus()).status, 'active');
+});
+
 test('refreshes an expiring OAuth grant and rotates both persisted tokens', async () => {
   let refreshBody: Record<string, string> | undefined;
   const service = createService((async (_input, init) => {

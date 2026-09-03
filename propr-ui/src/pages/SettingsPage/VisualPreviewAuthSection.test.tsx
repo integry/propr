@@ -5,18 +5,19 @@ import {
   disconnectVisualPreviewAuth,
   getVisualPreviewAuthStatus,
   connectCurrentGitHubLoginForVisualPreviews,
+  connectVisualPreviewPersonalAccessToken,
 } from '../../api/visualPreviewAuthApi';
-import { logout } from '../../api/proprApi';
 
 vi.mock('../../api/visualPreviewAuthApi', () => ({
   disconnectVisualPreviewAuth: vi.fn(),
   getVisualPreviewAuthStatus: vi.fn(),
   connectCurrentGitHubLoginForVisualPreviews: vi.fn(),
+  connectVisualPreviewPersonalAccessToken: vi.fn(),
 }));
-vi.mock('../../api/proprApi', () => ({ logout: vi.fn() }));
 
 const getStatus = vi.mocked(getVisualPreviewAuthStatus);
 const useCurrentLogin = vi.mocked(connectCurrentGitHubLoginForVisualPreviews);
+const usePersonalAccessToken = vi.mocked(connectVisualPreviewPersonalAccessToken);
 
 describe('VisualPreviewAuthSection', () => {
   beforeEach(() => {
@@ -70,7 +71,6 @@ describe('VisualPreviewAuthSection', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Use my GitHub login' }));
     await waitFor(() => expect(useCurrentLogin).toHaveBeenCalledOnce());
-    expect(logout).not.toHaveBeenCalled();
   });
 
   it('explains that repeating a GitHub App login cannot enable uploads', async () => {
@@ -83,9 +83,31 @@ describe('VisualPreviewAuthSection', () => {
     });
     render(<VisualPreviewAuthSection />);
 
-    expect(await screen.findByText(/GitHub App user token/)).toBeInTheDocument();
+    expect(await screen.findByText(/GitHub App token/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Use my GitHub login' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Sign in with GitHub again' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add personal access token' })).toBeInTheDocument();
+  });
+
+  it('validates and stores a personal access token without rendering it afterward', async () => {
+    usePersonalAccessToken.mockResolvedValue({
+      configured: true,
+      source: 'static_token',
+      status: 'active',
+      githubUsername: 'preview-bot',
+      currentUsername: 'admin',
+      currentLoginTokenType: 'github_app_user',
+      canUseCurrentLogin: false,
+    });
+    render(<VisualPreviewAuthSection />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add personal access token' }));
+    const input = screen.getByLabelText('GitHub personal access token');
+    fireEvent.change(input, { target: { value: 'github_pat_preview-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+    await waitFor(() => expect(usePersonalAccessToken).toHaveBeenCalledWith('github_pat_preview-secret'));
+    expect(await screen.findByText(/owned by @preview-bot/)).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('github_pat_preview-secret')).not.toBeInTheDocument();
   });
 
   it('shows environment-managed credentials without replacement controls', async () => {

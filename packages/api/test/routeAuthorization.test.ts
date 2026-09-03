@@ -85,6 +85,7 @@ const managementRequests = [
   ['GET', '/api/admin/members'],
   ['GET', '/api/config/visual-preview-auth'],
   ['POST', '/api/config/visual-preview-auth'],
+  ['PUT', '/api/config/visual-preview-auth/token'],
   ['DELETE', '/api/config/visual-preview-auth'],
   ['GET', '/api/agent-runtime/packages'],
   ['POST', '/api/agent-runtime/packages/verify'],

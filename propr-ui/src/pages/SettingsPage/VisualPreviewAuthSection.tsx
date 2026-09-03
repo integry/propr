@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Check, LoaderCircle, LogIn, Unplug } from 'lucide-react';
-import { logout } from '../../api/proprApi';
+import { Check, KeyRound, LoaderCircle, Unplug, X } from 'lucide-react';
 import {
   disconnectVisualPreviewAuth,
   getVisualPreviewAuthStatus,
   connectCurrentGitHubLoginForVisualPreviews,
+  connectVisualPreviewPersonalAccessToken,
   type VisualPreviewAuthStatus,
 } from '../../api/visualPreviewAuthApi';
 
@@ -14,14 +14,126 @@ function statusDescription(status: VisualPreviewAuthStatus | null): string {
       ? 'A server-managed credential is configured through GITHUB_VISUAL_PREVIEW_TOKEN.'
       : 'GITHUB_VISUAL_PREVIEW_TOKEN is set but is not a supported upload credential. Remove or replace it and restart the worker.';
   }
+  if (status?.status === 'active' && status.source === 'static_token' && status.githubUsername) {
+    return `Uploads use an encrypted upload token owned by @${status.githubUsername}.`;
+  }
   if (status?.status === 'active' && status.githubUsername) {
     return `Uploads use the GitHub login for @${status.githubUsername}. Expiring OAuth credentials are refreshed automatically.`;
   }
   if (status?.currentLoginTokenType === 'github_app_user') {
-    return 'Your current login uses a GitHub App user token, which GitHub attachment uploads reject. Configure Web UI login with a GitHub OAuth App, or set GITHUB_VISUAL_PREVIEW_TOKEN to an OAuth App token or PAT.';
+    return 'Your normal login uses a GitHub App token, which GitHub attachment uploads reject. Add a personal access token once for preview uploads.';
   }
-  return 'Connect an administrator GitHub login so background workers can attach generated screenshots and videos to pull requests.';
+  return 'Add a GitHub personal access token so background workers can attach generated screenshots and videos to pull requests.';
 }
+
+interface VisualPreviewAuthControlsProps {
+  status: VisualPreviewAuthStatus | null;
+  saving: boolean;
+  onConnectCurrentLogin: () => Promise<void>;
+  onDisconnect: () => Promise<void>;
+  onSaveToken: (token: string) => Promise<boolean>;
+  onClearError: () => void;
+}
+
+const VisualPreviewAuthControls: React.FC<VisualPreviewAuthControlsProps> = ({
+  status,
+  saving,
+  onConnectCurrentLogin,
+  onDisconnect,
+  onSaveToken,
+  onClearError,
+}) => {
+  const [editingToken, setEditingToken] = useState(false);
+  const [token, setToken] = useState('');
+  const active = status?.status === 'active';
+  const canConnectCurrentLogin = !active && status?.canUseCurrentLogin;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const submittedToken = token.trim();
+    if (!submittedToken) return;
+    setToken('');
+    if (await onSaveToken(submittedToken)) setEditingToken(false);
+  };
+
+  return (
+    <div className="mt-3">
+      <div className="flex flex-wrap items-center gap-2">
+        {canConnectCurrentLogin && (
+          <button
+            type="button"
+            onClick={() => void onConnectCurrentLogin()}
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 rounded bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+          >
+            {saving ? <LoaderCircle size={13} className="animate-spin" /> : <Check size={13} />}
+            Use my GitHub login
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => { setEditingToken(value => !value); onClearError(); }}
+          disabled={saving}
+          className={`${canConnectCurrentLogin ? 'border border-gray-300 text-gray-600 hover:bg-gray-50' : 'bg-gray-900 text-white hover:bg-gray-800'} inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium disabled:opacity-50`}
+        >
+          {editingToken ? <X size={13} /> : <KeyRound size={13} />}
+          {editingToken ? 'Cancel' : active || status?.configured ? 'Replace token' : 'Add personal access token'}
+        </button>
+        {status?.configured && (
+          <button
+            type="button"
+            onClick={() => void onDisconnect()}
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+          >
+            <Unplug size={13} />
+            Disconnect
+          </button>
+        )}
+      </div>
+
+      {editingToken && (
+        <form onSubmit={(event) => void submit(event)} className="mt-3 rounded border border-gray-200 bg-gray-50 p-3">
+          <label htmlFor="visual-preview-token" className="block text-xs font-medium text-gray-700">
+            GitHub personal access token
+          </label>
+          <div className="mt-1.5 flex flex-col gap-2 sm:flex-row">
+            <input
+              id="visual-preview-token"
+              type="password"
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              maxLength={512}
+              placeholder="github_pat_… or ghp_…"
+              className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-900 focus:border-gray-500 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={saving || !token.trim()}
+              className="inline-flex items-center justify-center gap-1.5 rounded bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+            >
+              {saving && <LoaderCircle size={13} className="animate-spin" />}
+              Save token
+            </button>
+          </div>
+          <p className="mt-2 text-[11px] leading-4 text-gray-500">
+            The token is sent once, validated with GitHub, and encrypted at rest. Give it access to every repository where previews are uploaded.{' '}
+            <a
+              href="https://github.com/settings/personal-access-tokens/new"
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-gray-700 underline hover:text-gray-900"
+            >
+              Create a fine-grained token
+            </a>
+          </p>
+        </form>
+      )}
+    </div>
+  );
+};
 
 const VisualPreviewAuthSection: React.FC = () => {
   const [status, setStatus] = useState<VisualPreviewAuthStatus | null>(null);
@@ -67,6 +179,20 @@ const VisualPreviewAuthSection: React.FC = () => {
     }
   };
 
+  const saveToken = async (submittedToken: string): Promise<boolean> => {
+    setSaving(true);
+    setError(null);
+    try {
+      setStatus(await connectVisualPreviewPersonalAccessToken(submittedToken));
+      return true;
+    } catch (requestError) {
+      setError((requestError as Error).message);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="border-t border-gray-200 pt-6 text-xs text-gray-500">
@@ -77,8 +203,6 @@ const VisualPreviewAuthSection: React.FC = () => {
 
   const active = status?.status === 'active';
   const environmentManaged = status?.source === 'environment';
-  const canConnectCurrentLogin = !active && status?.canUseCurrentLogin;
-  const canRetryLogin = !active && status?.currentLoginTokenType !== 'github_app_user';
 
   return (
     <div className="border-t border-gray-200 pt-6">
@@ -95,40 +219,14 @@ const VisualPreviewAuthSection: React.FC = () => {
       </p>
 
       {!environmentManaged && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {canConnectCurrentLogin ? (
-            <button
-              type="button"
-              onClick={() => void connect()}
-              disabled={saving}
-              className="inline-flex items-center gap-1.5 rounded bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-            >
-              {saving ? <LoaderCircle size={13} className="animate-spin" /> : <Check size={13} />}
-              Use my GitHub login
-            </button>
-          ) : canRetryLogin ? (
-            <button
-              type="button"
-              onClick={() => { void logout(); }}
-              disabled={saving}
-              className="inline-flex items-center gap-1.5 rounded bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-            >
-              <LogIn size={13} />
-              Sign in with GitHub again
-            </button>
-          ) : null}
-          {status?.configured && (
-            <button
-              type="button"
-              onClick={() => void disconnect()}
-              disabled={saving}
-              className="inline-flex items-center gap-1.5 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-            >
-              <Unplug size={13} />
-              Disconnect
-            </button>
-          )}
-        </div>
+        <VisualPreviewAuthControls
+          status={status}
+          saving={saving}
+          onConnectCurrentLogin={connect}
+          onDisconnect={disconnect}
+          onSaveToken={saveToken}
+          onClearError={() => setError(null)}
+        />
       )}
 
       {error && <p className="mt-2 text-xs text-red-600">{error}</p>}

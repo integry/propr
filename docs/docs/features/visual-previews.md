@@ -18,15 +18,27 @@ account is connected or explicitly replace it with the current administrator
 login. Normal GitHub API, commit, and pull-request operations continue to use
 the GitHub App installation token.
 
+When normal Web UI login uses a GitHub App, an administrator can instead paste
+a personal access token in **Settings → Visual preview uploads**. ProPR validates
+the token with GitHub and encrypts it before storing it. No CLI, callback URL, or
+service restart is required. The token must have access to every repository where
+preview media will be attached.
+
 Expiring OAuth credentials are refreshed on API startup and every 30 minutes
 while the stack is running. Each successful refresh rotates the access and
 refresh tokens, so an administrator does not need to sign in every six months
 while the stack can keep refreshing them. A revoked grant, an expired unused
 refresh token, or a changed encryption secret requires a fresh administrator
-login. If Web UI login uses a GitHub App rather than an OAuth App, configure
-`GITHUB_VISUAL_PREVIEW_TOKEN` with an OAuth App token, classic PAT, or
-fine-grained PAT belonging to a user with write access to every preview-enabled
-repository.
+login. Personal access tokens are not refreshable OAuth grants; replace a
+revoked or expired PAT in **Settings → Visual preview uploads**. As an advanced
+server-managed alternative, configure `GITHUB_VISUAL_PREVIEW_TOKEN` with an
+OAuth App token, classic PAT, or fine-grained PAT belonging to a user with write
+access to every preview-enabled repository.
+
+`propr setup` also reuses an upload-compatible token from an existing `gh` CLI
+session when no working preview credential is already configured. GitHub CLI
+does not expose a refresh token to ProPR, so an expired or revoked imported token
+must be replaced in Settings or re-imported by running setup again.
 
 ## Configure A Repository
 

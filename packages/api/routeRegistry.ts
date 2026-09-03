@@ -75,6 +75,7 @@ export function createManagementRouteEntries({
     ['get', '/api/config/agent-tank/detect', requireManageAgents, configRoutes.getAgentTankDetect],
     ['get', '/api/config/visual-preview-auth', requireManageSettings, visualPreviewAuthRoutes.getStatus],
     ['post', '/api/config/visual-preview-auth', requireManageSettings, visualPreviewAuthRoutes.useCurrentLogin],
+    ['put', '/api/config/visual-preview-auth/token', requireManageSettings, visualPreviewAuthRoutes.usePersonalAccessToken],
     ['delete', '/api/config/visual-preview-auth', requireManageSettings, visualPreviewAuthRoutes.disconnect],
 
     ['get', '/api/admin/members', requireManageMembers, adminRoutes.listMembers],
