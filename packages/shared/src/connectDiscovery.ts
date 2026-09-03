@@ -122,3 +122,89 @@ export function parseProprDesktopDiscovery(value: unknown): ProprDesktopDiscover
     },
   };
 }
+
+/**
+ * Parse discovery from its bounded wire representation.  JSON.parse silently
+ * accepts duplicate object members, so discovery uses this small structural
+ * pass before the schema parser.  Keeping it here makes CLI, client and desktop
+ * consumers agree on duplicate, size and schema rejection.
+ */
+export function parseProprDesktopDiscoveryJson(contents: string): ProprDesktopDiscovery | null {
+  if (typeof contents !== 'string'
+    || new TextEncoder().encode(contents).byteLength > PROPR_CONNECT_DISCOVERY_MAX_BYTES) return null;
+
+  let offset = 0;
+  const whitespace = (): void => {
+    while (offset < contents.length && /[\x20\t\r\n]/.test(contents[offset])) offset += 1;
+  };
+  const stringToken = (): string | null => {
+    if (contents[offset] !== '"') return null;
+    const start = offset;
+    offset += 1;
+    while (offset < contents.length) {
+      const character = contents[offset++];
+      if (character === '"') {
+        try { return JSON.parse(contents.slice(start, offset)) as string; } catch { return null; }
+      }
+      if (character === '\\') {
+        const escape = contents[offset++];
+        if (escape === 'u') {
+          if (!/^[0-9a-fA-F]{4}$/.test(contents.slice(offset, offset + 4))) return null;
+          offset += 4;
+        } else if (!escape || !'"\\/bfnrt'.includes(escape)) return null;
+      } else if (character.charCodeAt(0) < 0x20) return null;
+    }
+    return null;
+  };
+  const value = (): boolean => {
+    whitespace();
+    if (contents[offset] === '{') {
+      offset += 1;
+      whitespace();
+      const keys = new Set<string>();
+      if (contents[offset] === '}') { offset += 1; return true; }
+      while (offset < contents.length) {
+        const key = stringToken();
+        if (key === null || keys.has(key)) return false;
+        keys.add(key);
+        whitespace();
+        if (contents[offset++] !== ':') return false;
+        if (!value()) return false;
+        whitespace();
+        const separator = contents[offset++];
+        if (separator === '}') return true;
+        if (separator !== ',') return false;
+        whitespace();
+      }
+      return false;
+    }
+    if (contents[offset] === '[') {
+      offset += 1;
+      whitespace();
+      if (contents[offset] === ']') { offset += 1; return true; }
+      while (offset < contents.length) {
+        if (!value()) return false;
+        whitespace();
+        const separator = contents[offset++];
+        if (separator === ']') return true;
+        if (separator !== ',') return false;
+      }
+      return false;
+    }
+    if (contents[offset] === '"') return stringToken() !== null;
+    const primitive = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/
+      .exec(contents.slice(offset))?.[0];
+    if (!primitive) return false;
+    offset += primitive.length;
+    return true;
+  };
+
+  if (!value()) return null;
+  whitespace();
+  if (offset !== contents.length) return null;
+  try {
+    return parseProprDesktopDiscovery(JSON.parse(contents) as unknown);
+  } catch {
+    return null;
+  }
+}

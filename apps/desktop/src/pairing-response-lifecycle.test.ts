@@ -5,6 +5,7 @@ import { join, relative } from 'node:path';
 import { describe, it } from 'node:test';
 import type { App, IpcMain, IpcMainInvokeEvent, Session } from 'electron';
 import type { PairingProtocolRequestOptions } from '@propr/client';
+import { PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY } from '@propr/shared';
 import { DesktopCredentialService } from './credential-service';
 import { registerIpcHandlers } from './ipc';
 import type { LocalLifecycleController } from './lifecycle';
@@ -197,6 +198,21 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
       );
 
       const fetchImplementation: typeof globalThis.fetch = async (input, init) => {
+        if (input.toString().endsWith('/api/desktop/discovery')) return json({
+          schemaVersion: 1,
+          product: 'ProPR',
+          version: '0.8.15',
+          apiCompatibility: PROPR_API_COMPATIBILITY,
+          uiCompatibility: PROPR_UI_COMPATIBILITY,
+          canonicalEndpoint: null,
+          publicInstanceIdentity: '123e4567-e89b-42d3-a456-426614174000',
+          desktopAuthentication: {
+            protocolVersion: 2,
+            browserPairing: true,
+            instanceBearerTokens: true,
+            socketIoBearerAuthentication: true,
+          },
+        });
         counts.fetchStart += 1;
         const url = input.toString();
         const signal = init?.signal ?? undefined;
@@ -322,7 +338,11 @@ describe('desktop pairing service IPC native shutdown lifecycle', () => {
         assert.equal(pendingBeforeShutdown.length, provisionalCouldExist ? 1 : 0);
         if (provisionalCouldExist) {
           assert.deepEqual(pendingBeforeShutdown[0].credential, {
-            version: 1, profileId, origin, token: provisionalToken,
+            version: 2,
+            profileId,
+            origin,
+            publicInstanceIdentity: '123e4567-e89b-42d3-a456-426614174000',
+            token: provisionalToken,
           });
         }
         assert.equal(await store.readCredential(profileId), null);

@@ -9,10 +9,13 @@ const json = (body: unknown, status = 200): Response => new Response(JSON.string
 });
 
 const discovery = {
+  schemaVersion: 1 as const,
   product: 'ProPR',
   version: '0.8.15',
   apiCompatibility: PROPR_API_COMPATIBILITY,
   uiCompatibility: PROPR_UI_COMPATIBILITY,
+  canonicalEndpoint: null,
+  publicInstanceIdentity: '123e4567-e89b-42d3-a456-426614174000',
   desktopAuthentication: {
     protocolVersion: 2 as const,
     browserPairing: true,
@@ -71,6 +74,119 @@ class PairingClock {
 }
 
 describe('desktop instance protocol', () => {
+  it('uses the shared strict wire parser for missing, extra, malformed, duplicate, and oversized discovery', async () => {
+    const valid = JSON.stringify(discovery);
+    const invalidBodies = [
+      JSON.stringify((({ publicInstanceIdentity: _omitted, ...rest }) => rest)(discovery)),
+      JSON.stringify({ ...discovery, account: 'must-not-be-present' }),
+      '{',
+      valid.replace('"product":"ProPR"', '"product":"ProPR","product":"ProPR"'),
+      `${valid}${' '.repeat(8 * 1024)}`,
+      JSON.stringify({ ...discovery, publicInstanceIdentity: discovery.publicInstanceIdentity.toUpperCase() }),
+      JSON.stringify({ ...discovery, desktopAuthentication: {
+        ...discovery.desktopAuthentication, protocolVersion: 1,
+      } }),
+    ];
+    for (const body of invalidBodies) {
+      const client = new ProprClient({
+        baseUrl: 'https://propr.example.test',
+        authentication: { type: 'none' },
+        fetch: async () => new Response(body, { headers: { 'Content-Type': 'application/json' } }),
+      });
+      await assert.rejects(client.discoverDesktop(), (error: unknown) =>
+        error instanceof ProprClientError && error.kind === 'invalid_response');
+    }
+  });
+
+  it('bounds discovery headers and body with one deadline and preserves caller cancellation', async () => {
+    let headerSignal: AbortSignal | null = null;
+    let resolveLateTimeout!: (response: Response) => void;
+    const stalledHeaders = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async (_input, init) => {
+        headerSignal = init?.signal ?? null;
+        return new Promise<Response>(resolve => { resolveLateTimeout = resolve; });
+      },
+    });
+    await assert.rejects(bounded(stalledHeaders.discoverDesktop(20), 500), (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'timeout');
+    assert.equal(headerSignal?.aborted, true);
+    let timedOutBodyCancelled = 0;
+    resolveLateTimeout(new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([1])); },
+      cancel() { timedOutBodyCancelled += 1; },
+    })));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(timedOutBodyCancelled, 1);
+
+    let bodyCancelled = 0;
+    const stalledBody = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"schemaVersion":1'));
+        },
+        cancel() { bodyCancelled += 1; },
+      }), { headers: { 'Content-Type': 'application/json' } }),
+    });
+    await assert.rejects(bounded(stalledBody.discoverDesktop(20), 500), (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'timeout');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(bodyCancelled, 1);
+
+    const controller = new AbortController();
+    let resolveLateCancellation!: (response: Response) => void;
+    const cancelled = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async () => new Promise<Response>(resolve => { resolveLateCancellation = resolve; }),
+    }).discoverDesktop(1_000, controller.signal);
+    controller.abort('caller cancelled');
+    await assert.rejects(bounded(cancelled, 500), (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'aborted');
+    let abortedBodyCancelled = 0;
+    resolveLateCancellation(new Response(new ReadableStream<Uint8Array>({
+      start(streamController) { streamController.enqueue(new Uint8Array([1])); },
+      cancel() { abortedBodyCancelled += 1; },
+    })));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(abortedBodyCancelled, 1);
+
+    const preAborted = new AbortController();
+    preAborted.abort('already cancelled');
+    let preAbortedRequests = 0;
+    await assert.rejects(new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async () => {
+        preAbortedRequests += 1;
+        return json(discovery);
+      },
+    }).discoverDesktop(1_000, preAborted.signal), (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'aborted');
+    assert.equal(preAbortedRequests, 0);
+
+    const synchronouslyCancelled = new AbortController();
+    let synchronousBodyCancelled = 0;
+    const synchronousCancellation = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      authentication: { type: 'none' },
+      fetch: async () => {
+        synchronouslyCancelled.abort('cancelled during fetch');
+        return new Response(new ReadableStream<Uint8Array>({
+          start(streamController) { streamController.enqueue(new Uint8Array([1])); },
+          cancel() { synchronousBodyCancelled += 1; },
+        }));
+      },
+    }).discoverDesktop(1_000, synchronouslyCancelled.signal);
+    await assert.rejects(synchronousCancellation, (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'aborted');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(synchronousBodyCancelled, 1);
+  });
+
   it('discovers capabilities, opens approval, and polls to a single opaque token', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     let polls = 0;

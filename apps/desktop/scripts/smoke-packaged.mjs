@@ -103,11 +103,14 @@ const corsHeaders = {
   'Cache-Control': 'no-store',
   'Content-Type': 'application/json',
 };
-const discovery = JSON.stringify({
+const discovery = publicInstanceIdentity => JSON.stringify({
+  schemaVersion: 1,
   product: 'ProPR',
   version: '0.8.15',
   apiCompatibility: PROPR_API_COMPATIBILITY,
   uiCompatibility: PROPR_UI_COMPATIBILITY,
+  canonicalEndpoint: null,
+  publicInstanceIdentity,
   desktopAuthentication: {
     protocolVersion: 2,
     browserPairing: true,
@@ -182,7 +185,9 @@ const listenFixture = async name => {
     }
     if (request.url === '/api/desktop/discovery') {
       response.writeHead(200, { ...corsHeaders, 'Set-Cookie': 'discovery=must-not-persist; HttpOnly; SameSite=None' });
-      response.end(discovery);
+      response.end(discovery(name === 'first'
+        ? 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+        : 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'));
       return;
     }
     if (request.method === 'DELETE' && request.url === '/api/desktop/tokens/current') {

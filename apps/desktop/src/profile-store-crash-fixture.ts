@@ -36,9 +36,10 @@ if (requestedStep.startsWith('detach:')) {
 await store.commitPairedProfile(
   { id: 'profile-1', label: 'Replacement', apiBaseUrl: 'https://propr.example.com' },
   {
-    version: 1,
+    version: 2,
     profileId: 'profile-1',
     origin: 'https://propr.example.com',
+    publicInstanceIdentity: '123e4567-e89b-42d3-a456-426614174000',
     token: `propr_it_${'B'.repeat(43)}`,
   },
   baseline,

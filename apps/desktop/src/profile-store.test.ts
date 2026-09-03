@@ -43,6 +43,13 @@ const encryption = (available = true, backend = 'keychain'): EncryptionProvider 
 });
 
 const credential = (profileId: string, tokenCharacter = 'A') => ({
+  version: 2 as const,
+  profileId,
+  origin: 'https://propr.example.com',
+  publicInstanceIdentity: '123e4567-e89b-42d3-a456-426614174000',
+  token: `propr_it_${tokenCharacter.repeat(43)}`,
+});
+const legacyCredential = (profileId: string, tokenCharacter = 'A') => ({
   version: 1 as const,
   profileId,
   origin: 'https://propr.example.com',
@@ -78,12 +85,12 @@ const seedRecoveryMode = async (
     }));
     await writeFile(
       join(credentials, `${legacyProfile.id}.bin`),
-      encryption().encrypt(JSON.stringify(credential(legacyProfile.id))),
+      encryption().encrypt(JSON.stringify(legacyCredential(legacyProfile.id))),
     );
     return;
   }
   const slot = `${legacyProfile.id}.00000000-0000-4000-8000-000000000001.bin`;
-  await writeFile(join(credentials, slot), encryption().encrypt(JSON.stringify(credential(legacyProfile.id))));
+  await writeFile(join(credentials, slot), encryption().encrypt(JSON.stringify(legacyCredential(legacyProfile.id))));
   await writeFile(join(desktop, 'profiles.json'), JSON.stringify({
     version: 2,
     activeProfileId: legacyProfile.id,
@@ -251,7 +258,7 @@ describe('desktop profile store', () => {
     assert.equal((await readdir(join(desktop, 'credentials'))).length, 1);
   });
 
-  it('migrates legacy fixed credentials through the atomic state pointer and removes the old slot', async () => {
+  it('fails legacy unbound credentials closed while preserving profile metadata', async () => {
     const directory = await createDirectory();
     const desktop = join(directory, 'desktop');
     const credentials = join(desktop, 'credentials');
@@ -263,21 +270,20 @@ describe('desktop profile store', () => {
     await writeFile(join(desktop, 'profiles.json'), JSON.stringify({
       version: 1, activeProfileId: profile.id, profiles: [profile],
     }));
-    const legacyCredential = credential(profile.id, 'A');
-    await writeFile(join(credentials, `${profile.id}.bin`), encryption().encrypt(JSON.stringify(legacyCredential)));
+    const oldCredential = legacyCredential(profile.id, 'A');
+    await writeFile(join(credentials, `${profile.id}.bin`), encryption().encrypt(JSON.stringify(oldCredential)));
 
     const store = new ProfileStore(directory, encryption());
     const migrated = await store.readProfileCredential(profile.id);
-    assert.deepEqual({ ...migrated, identityEpoch: undefined }, {
-      profile, credential: legacyCredential, identityEpoch: undefined, activeProfileId: profile.id,
+    assert.deepEqual(migrated, {
+      profile, credential: null, identityEpoch: null, activeProfileId: null,
     });
-    assert.match(migrated.identityEpoch ?? '', /^[A-Za-z0-9_-]{22}$/);
     const state = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as {
       version: number; credentialSlots: Record<string, string>;
     };
     assert.equal(state.version, 3);
-    assert.match(state.credentialSlots[profile.id], /^profile-1\.[0-9a-f-]{36}\.bin$/);
-    assert.deepEqual(await readdir(credentials), [state.credentialSlots[profile.id]]);
+    assert.deepEqual(state.credentialSlots, {});
+    assert.deepEqual(await readdir(credentials), []);
   });
 
   it('migrates the exact-head numeric unsealed journal only when its valid mirror matches exactly', async () => {
@@ -748,9 +754,9 @@ describe('desktop profile store', () => {
           } else {
             const snapshot = await recovered.readProfileCredential(legacyProfile.id);
             assert.deepEqual(snapshot.profile, legacyProfile, `${mode}/${step}/${restart}`);
-            assert.deepEqual(snapshot.credential, credential(legacyProfile.id), `${mode}/${step}/${restart}`);
-            assert.equal(snapshot.activeProfileId, legacyProfile.id, `${mode}/${step}/${restart}`);
-            assert.match(snapshot.identityEpoch ?? '', /^[A-Za-z0-9_-]{22}$/, `${mode}/${step}/${restart}`);
+            assert.equal(snapshot.credential, null, `${mode}/${step}/${restart}`);
+            assert.equal(snapshot.activeProfileId, null, `${mode}/${step}/${restart}`);
+            assert.equal(snapshot.identityEpoch, null, `${mode}/${step}/${restart}`);
           }
           const state = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as { version: number };
           assert.equal(state.version, 3, `${mode}/${step}/${restart}`);

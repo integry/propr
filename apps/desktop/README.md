@@ -65,7 +65,10 @@ Electron `safeStorage` before they are written separately. If OS encryption is u
 `basic_text` backend—the app reports that state and refuses to persist credentials; there is no plaintext
 fallback. Profiles remain usable because they contain only a display label and validated API endpoint.
 
-Opaque instance tokens are bound to profile ID plus normalized origin in encrypted main-process storage. Electron's
+Opaque instance tokens and the strict-discovery public identity are bound to profile ID, normalized origin, and
+credential generation in encrypted main-process storage. The renderer cannot provide or override the identity.
+Launch, profile switch, pairing, revocation, and every Socket.IO reconnect perform credential-free strict discovery;
+an absent, malformed, or changed identity sends no stored bearer and requires a fresh pairing generation. Electron's
 session request boundary strips renderer-supplied Authorization and Cookie headers from every HTTP(S) and WS(S)
 request, including inactive or mismatched profile origins, then injects the active bearer only for matching REST and
 Socket.IO requests. Set-Cookie is stripped from remote responses, so the packaged renderer has no parallel cookie
