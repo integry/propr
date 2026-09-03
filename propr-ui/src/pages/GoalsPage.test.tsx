@@ -67,6 +67,19 @@ describe('GoalsPage', () => {
     expect(await screen.findByText('Goal detail')).toBeInTheDocument();
   });
 
+  it('hides unsupported runtime diagnostics when at least one agent supports goals', async () => {
+    vi.mocked(goalsApi.getGoalCapabilities).mockResolvedValue({ agents: [
+      capability,
+      { ...capability, agentId: 'agent-2', agentAlias: 'opencode', agentType: 'opencode', goalCapable: false, reason: 'OpenCode does not support goal sessions' },
+    ] });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+
+    await screen.findByRole('option', { name: 'codex' });
+    expect(screen.getByRole('option', { name: 'opencode — unsupported' })).toBeDisabled();
+    expect(screen.queryByText('OpenCode does not support goal sessions')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Recheck runtimes' })).not.toBeInTheDocument();
+  });
+
   it('shows each unsupported provider reason, gates creation, and can recheck runtimes', async () => {
     vi.mocked(goalsApi.getGoalCapabilities)
       .mockResolvedValueOnce({ agents: [
@@ -75,7 +88,8 @@ describe('GoalsPage', () => {
       ] })
       .mockResolvedValueOnce({ agents: [capability] });
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
-    expect(await screen.findByText('Codex schema lacks thread/goal/clear')).toBeInTheDocument();
+    expect(await screen.findByText('No configured coding-agent runtime currently supports goals.')).toBeInTheDocument();
+    expect(screen.getByText('Codex schema lacks thread/goal/clear')).toBeInTheDocument();
     expect(screen.getByText('Antigravity lacks --conversation')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start goal' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Recheck runtimes' }));
