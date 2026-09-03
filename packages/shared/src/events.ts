@@ -153,6 +153,8 @@ export interface TaskLiveUpdatePayload {
 export interface QueueStatsData {
   waiting: number;
   active: number;
+  /** Active native goal jobs included in the aggregate active count. */
+  activeGoals?: number;
   completed: number;
   failed: number;
   delayed: number;

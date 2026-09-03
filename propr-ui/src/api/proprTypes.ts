@@ -83,6 +83,7 @@ export interface TaskAnalysisResponse {
 
 export interface QueueStats {
   active: number;
+  activeGoals?: number;
   activeJobs?: LiveQueueJob[];
   waiting: number;
   completed: number;

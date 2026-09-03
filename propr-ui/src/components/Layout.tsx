@@ -25,12 +25,23 @@ interface NavItem {
   icon: React.FC<{ className?: string }>;
 }
 
+function WorkCountBadge({ name, taskCount, goalCount }: { name: string; taskCount: number; goalCount: number }) {
+  const count = name === 'Tasks' ? taskCount : name === 'Goals' ? goalCount : 0;
+  if (count <= 0) return null;
+  return (
+    <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
+      {count}
+    </span>
+  );
+}
+
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const { addToast } = useToast();
   const { isDemoMode } = useDemoMode();
   const { isConnected, subscribeToQueueStats, unsubscribeFromQueueStats, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates, onQueueStatsUpdate, onIndexingUpdate, onDraftUpdate } = useSocket();
-  const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
+  const [activeQueueCount, setActiveQueueCount] = useState<number>(0);
+  const [activeGoalCount, setActiveGoalCount] = useState<number>(0);
   const [generatingPlansCount, setGeneratingPlansCount] = useState<number>(0);
   const user = useCurrentUser();
   const { unreadCount } = useNotificationCenter();
@@ -38,16 +49,15 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   // Track repository indexing statuses for toast notifications
   const repoStatusesRef = useRef<Map<string, string>>(new Map());
 
-  // Update favicon to show combined count of tasks + plans
-  // Note: activeTaskCount currently includes plans due to backend bug, which satisfies the requirement
-  useDynamicFavicon(activeTaskCount);
+  // Keep the favicon's existing aggregate active-work count.
+  useDynamicFavicon(activeQueueCount);
 
   // Track system readiness for proactive sidebar indicators
   const { hasAgents, hasRepos, hasTasks } = useSystemReadiness();
 
-  // Calculate display task count for sidebar by subtracting plans (clamped to 0)
-  // This is a workaround for the backend including plan generation jobs in activeTaskCount
-  const displayTaskCount = Math.max(0, activeTaskCount - generatingPlansCount);
+  // The queue's active count aggregates task, plan, and goal jobs. Give each
+  // first-class work type its own sidebar count.
+  const displayTaskCount = Math.max(0, activeQueueCount - generatingPlansCount - activeGoalCount);
 
   const navigation: NavItem[] = [
     { name: 'Dashboard', href: '/', icon: HomeIcon },
@@ -99,7 +109,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   // Handle queue stats updates via WebSocket
   const handleQueueStatsUpdate = useCallback((payload: QueueStatsUpdatePayload) => {
-    setActiveTaskCount(payload.stats.active || 0);
+    const activeCount = payload.stats.active || 0;
+    setActiveQueueCount(activeCount);
+    setActiveGoalCount(Math.min(activeCount, Math.max(0, payload.stats.activeGoals || 0)));
   }, []);
 
   // Handle indexing updates via WebSocket for toast notifications
@@ -207,11 +219,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               >
                 <item.icon className="w-5 h-5 mr-3" />
                 {item.name}
-                {item.name === 'Tasks' && displayTaskCount > 0 && (
-                  <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
-                    {displayTaskCount}
-                  </span>
-                )}
+                <WorkCountBadge name={item.name} taskCount={displayTaskCount} goalCount={activeGoalCount} />
                 {item.name === 'Inbox' && unreadCount !== null && unreadCount > 0 && (
                   <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-primary-500 px-1.5 text-xs font-semibold leading-5 text-white">
                     {unreadCount > 99 ? '99+' : unreadCount}

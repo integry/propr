@@ -33,9 +33,11 @@ export function createQueueRoutes(deps: QueueRoutesDeps) {
       ]);
       const liveJobs = serializeLiveJobs(activeJobs);
       const active = liveJobs.length;
+      const activeGoals = liveJobs.filter(job => job.name === 'processGoal').length;
       res.json({
         waiting,
         active,
+        activeGoals,
         activeJobs: liveJobs,
         completed,
         failed,
