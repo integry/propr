@@ -47,6 +47,22 @@ export interface Goal {
   sessionId: string | null;
   conversationId: string | null;
   finalPr: { number: number | null; url: string } | null;
+  checkpoint: {
+    intervalMinutes: number | null;
+    count: number;
+    lastAt: string | null;
+    lastCommitSha: string | null;
+    error: string | null;
+    pending: boolean;
+    latest: {
+      kind: 'bootstrap' | 'manual' | 'automatic' | 'final';
+      state: 'pending' | 'processing' | 'completed' | 'skipped' | 'failed';
+      commitSha: string | null;
+      error: string | null;
+      createdAt: string;
+      completedAt: string | null;
+    } | null;
+  } | null;
   artifacts: unknown[];
   artifactStats: { issues: number; openIssues: number; pullRequests: number; openPullRequests: number };
   liveSummary: {
@@ -96,10 +112,12 @@ export const getGoalCapabilities = async (recheck = false) =>
   request<{ agents: GoalCapability[] }>(`/api/goals/capabilities${recheck ? '?recheck=true' : ''}`);
 export const listGoals = async () => request<{ goals: Goal[] }>('/api/goals');
 export const getGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`);
-export const createGoal = async (body: { repository: string; objective: string; launchStrategy: GoalLaunchStrategy; agentId: string; model: string; baseBranch?: string; maxParallelTasks?: number; ultrafix?: boolean }) =>
+export const createGoal = async (body: { repository: string; objective: string; launchStrategy: GoalLaunchStrategy; agentId: string; model: string; baseBranch?: string; maxParallelTasks?: number; ultrafix?: boolean; checkpointIntervalMinutes?: number }) =>
   request<{ goal: Goal }>('/api/goals', idempotentMutation('POST', body));
 export const pauseGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/pause`, idempotentMutation('POST'));
 export const resumeGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/resume`, idempotentMutation('POST'));
 export const cancelGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/cancel`, idempotentMutation('POST'));
 export const requestGoalModel = async (id: string, model: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/model`, idempotentMutation('PATCH', { model }));
 export const sendGoalInput = async (id: string, body: { message?: string; canned?: 'done' | 'left' }) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/input`, idempotentMutation('POST', body));
+export const checkpointGoal = async (id: string, commitMessage?: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/checkpoint`, idempotentMutation('POST', commitMessage ? { commitMessage } : {}));
+export const requestGoalCheckpointInterval = async (id: string, minutes: number) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/checkpoint-frequency`, idempotentMutation('PATCH', { minutes }));

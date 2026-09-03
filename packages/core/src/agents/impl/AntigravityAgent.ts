@@ -140,7 +140,9 @@ export class AntigravityAgent implements Agent {
 
         try {
             const prompt = executionMode === 'goal' ? customPrompt : this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
-            await setWorktreeOwnership(worktreePath, issueRef.number);
+            await setWorktreeOwnership(worktreePath, issueRef.number, {
+                protectGitMetadata: executionMode === 'goal' && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
+            });
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId, transcriptPath, executionMode, resumeConversationId: resumeConversationId || resumeSessionId });
 
@@ -442,7 +444,13 @@ export class AntigravityAgent implements Agent {
         assertRepositoryInspectionMode(repositoryInspection, readOnlyWorkspace);
         const configPath = this.getHostConfigPath();
         const configMountTarget = antigravityConfigMountTarget(executionMode);
-        const envVars = buildAgentEnvironmentArgs(repositoryInspection, this.config.envVars, environment);
+        const workerOwnedGoalGit = executionMode === 'goal'
+            && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct';
+        const envVars = buildAgentEnvironmentArgs(
+            repositoryInspection || workerOwnedGoalGit,
+            this.config.envVars,
+            environment,
+        );
         const shortTaskId = createContainerExecutionId(taskId);
         const taskType = executionMode === 'goal' ? 'goal' : executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
         const runtimeName = this.getRuntimeName();
@@ -450,9 +458,16 @@ export class AntigravityAgent implements Agent {
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-            ...(repositoryInspection ? [] : ['-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`]),
+            ...(workerOwnedGoalGit
+                ? ['-v', `${path.join(worktreePath, '.git')}:/home/node/workspace/.git:ro`]
+                : []),
+            ...(repositoryInspection ? [] : [
+                '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace || workerOwnedGoalGit ? 'ro' : 'rw'}`,
+            ]),
             '-v', `${configPath}:${configMountTarget}:rw`,
-            ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
+            ...(repositoryInspection || workerOwnedGoalGit
+                ? []
+                : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
             '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true',
             ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
             ...(executionMode === 'task' ? ['-e', 'PROPR_EPHEMERAL_STATE=1'] : []),

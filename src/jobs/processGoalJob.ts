@@ -30,15 +30,17 @@ import {
     fencedGoal,
     fencedGoalUpdate,
     firstPendingGoalInput,
+    nextGoalCheckpoint,
     saveFencedGoalSession,
     type GoalRow,
 } from './goalAttemptState.js';
 import { enqueueNextGoalAttempt } from './goalAttemptScheduling.js';
+import { publishDirectGoalCheckpoint } from './goalCheckpointPublisher.js';
 
 function isRecoverableInterruption(result: AgentExecutionResult): boolean {
     if (result.terminationReason) return true;
     if (result.exitCode != null && [125, 137, 143].includes(result.exitCode)) return true;
-    return /(?:docker|container|socket hang up|ECONNRESET|ECONNREFUSED|SIGKILL|terminated|execution aborted|App Server exited)/i
+    return /(?:docker|container|socket hang up|ECONNRESET|ECONNREFUSED|SIGKILL|terminated|execution aborted|checkpoint boundary|App Server exited)/i
         .test(result.error || '');
 }
 
@@ -223,7 +225,7 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
     const octokit = await getAuthenticatedOctokit();
     const githubToken = await octokit.auth({ type: 'installation' }) as { token: string };
     const worktree = await ensureGoalWorktree(claimed, data, githubToken.token);
-    const boundaryGoal = await fencedGoal(data);
+    let boundaryGoal = await fencedGoal(data);
     if (!boundaryGoal) return { ready: false, result: { status: 'skipped', reason: 'goal_boundary_fence' } };
     if (boundaryGoal.desired_state === 'paused') {
         await fencedGoalUpdate(data, { pause_confirmed_at: db.fn.now(), active_turn_id: null });
@@ -232,6 +234,11 @@ async function prepareClaimedGoalAttempt(data: GoalJobData, claimed: GoalRow): P
         return { ready: false, result: { status: 'paused' } };
     }
     if (boundaryGoal.desired_state !== 'running') return { ready: false, result: { status: 'skipped', reason: 'goal_boundary_fence' } };
+    if (boundaryGoal.launch_strategy === 'direct' && !boundaryGoal.final_pr_url) {
+        await publishDirectGoalCheckpoint(data, { kind: 'bootstrap' });
+        boundaryGoal = await fencedGoal(data);
+        if (!boundaryGoal) return { ready: false, result: { status: 'skipped', reason: 'goal_bootstrap_fence' } };
+    }
     const pendingInput = await firstPendingGoalInput(boundaryGoal);
     return { ready: true, value: { goal: boundaryGoal, agent, githubToken: githubToken.token, worktree, pendingInput } };
 }
@@ -244,9 +251,23 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
         : pendingInput?.message ?? GOAL_CONTINUE_INPUT;
     const control = createGoalExecutionControl(data);
     const executionController = new AbortController();
-    return runWithExecutionAbortSignal(
-        executionController.signal,
-        () => agent.executeTask({
+    let sessionReady = Boolean(goal.session_id);
+    let checkpointPoll = Promise.resolve();
+    const checkpointTimer = goal.launch_strategy === 'direct' && goal.agent_type !== 'codex'
+        ? setInterval(() => {
+            checkpointPoll = checkpointPoll.then(async () => {
+                if (executionController.signal.aborted || !sessionReady) return;
+                const boundary = await control.load();
+                if (boundary.desiredState === 'running' && boundary.checkpoint) {
+                    executionController.abort(new Error('Goal checkpoint boundary requested'));
+                }
+            }).catch(error => logger.warn({ error: (error as Error).message }, 'Failed to inspect direct-goal checkpoint boundary'));
+        }, 2_000)
+        : null;
+    try {
+        return await runWithExecutionAbortSignal(
+            executionController.signal,
+            () => agent.executeTask({
             worktreePath: worktree.worktreePath,
             issueRef: { number: 0, repoOwner: data.repoOwner, repoName: data.repoName },
             prompt,
@@ -260,12 +281,13 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
             resumeConversationId: goal.conversation_id ?? undefined,
             initialControlInputId: goal.agent_type === 'codex' ? pendingInput?.input_id : undefined,
             goalControl: control,
-            environment: buildGoalPolicyEnvironment(),
+            environment: buildGoalPolicyEnvironment(goal.launch_strategy),
             onSessionId: async (sessionId, conversationId) => {
                 await saveSessionAndTaskState({
                     job: data, goal, sessionId, conversationId,
                     acknowledgeControls: !pendingInput,
                 });
+                sessionReady = true;
                 if (pendingInput && goal.agent_type !== 'codex' && !freshSession) {
                     await control.markInputDelivered(pendingInput.input_id, `session:${sessionId}`);
                 }
@@ -292,9 +314,13 @@ export async function executePreparedGoal(data: GoalJobData, prepared: PreparedG
             onContainerId: createContainerIdCallback(
                 goal.current_task_id, getStateManager(), logger as never, worktree.worktreePath,
             ),
-        }),
-        goalAttemptLabel(data.generation, data.claimId),
-    );
+            }),
+            goalAttemptLabel(data.generation, data.claimId),
+        );
+    } finally {
+        if (checkpointTimer) clearInterval(checkpointTimer);
+        await checkpointPoll;
+    }
 }
 
 async function acknowledgeNonCodexInput(data: GoalJobData, prepared: PreparedGoalAttempt): Promise<void> {
@@ -416,14 +442,33 @@ async function handleGoalResult(
     }
     await operations.acknowledgeInput(data, prepared);
     await operations.recordMetrics(goal, data, result);
-    const boundaryStop = await operations.handleStopped(data, goal, await operations.fencedGoal(data));
+    const boundary = await operations.fencedGoal(data);
+    if (boundary?.launch_strategy === 'direct' && boundary.desired_state !== 'cancelled') {
+        const checkpoint = await operations.nextCheckpoint(boundary!);
+        if (checkpoint) await operations.publishCheckpoint(data, {
+            checkpointId: checkpoint.id,
+            kind: checkpoint.kind,
+            commitMessage: checkpoint.commitMessage,
+        });
+    }
+    const boundaryStop = await operations.handleStopped(data, goal, boundary);
     if (boundaryStop) return boundaryStop;
-    const artifacts = await operations.saveProviderResult(data, { ...goal, branch_name: worktree.branchName }, result);
+    let artifacts = await operations.saveProviderResult(data, { ...goal, branch_name: worktree.branchName }, result);
     const latest = await operations.fencedGoal(data);
     const stopped = await operations.handleStopped(data, goal, latest);
     if (stopped) return stopped;
     const furtherWork = await operations.scheduleFurtherWork(data, latest!, result);
     if (furtherWork) return furtherWork;
+    if (goal.launch_strategy === 'direct') {
+        await operations.publishCheckpoint(data, { kind: 'final' });
+        const checkpointedGoal = await operations.fencedGoal(data);
+        if (!checkpointedGoal) return { status: 'skipped', reason: 'goal_final_checkpoint_fence' };
+        artifacts = await operations.saveProviderResult(
+            data,
+            { ...checkpointedGoal, branch_name: worktree.branchName },
+            result,
+        );
+    }
 
     const missingFinalPr = result.success && !artifacts.finalPr;
     const failure = missingFinalPr
@@ -454,6 +499,8 @@ interface GoalResultOperations {
     handleStopped: typeof handleStoppedGoal;
     saveProviderResult: typeof saveProviderResult;
     scheduleFurtherWork: typeof scheduleFurtherWork;
+    publishCheckpoint: typeof publishDirectGoalCheckpoint;
+    nextCheckpoint: typeof nextGoalCheckpoint;
     finalizeGoal: typeof finalizeGoal;
     markTaskReconciled: typeof markGoalTaskReconciled;
     stateManager(): Pick<ReturnType<typeof getStateManager>, 'markTaskCompleted' | 'markTaskFailed'>;
@@ -467,6 +514,8 @@ const defaultGoalResultOperations: GoalResultOperations = {
     handleStopped: handleStoppedGoal,
     saveProviderResult,
     scheduleFurtherWork,
+    publishCheckpoint: publishDirectGoalCheckpoint,
+    nextCheckpoint: nextGoalCheckpoint,
     finalizeGoal,
     markTaskReconciled: markGoalTaskReconciled,
     stateManager: getStateManager,

@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { CirclePause, CirclePlay, CircleStop, ExternalLink, Plus, Send } from 'lucide-react';
+import { CirclePause, CirclePlay, CircleStop, ExternalLink, GitCommit, Plus, Send } from 'lucide-react';
 import { getInstanceCatalog } from '../api/proprApi';
 import type { InstanceCatalogRepository } from '../api/proprTypes';
 import {
-  cancelGoal, createGoal, getGoal, getGoalCapabilities, listGoals, pauseGoal,
-  requestGoalModel, resumeGoal, sendGoalInput,
+  cancelGoal, checkpointGoal, createGoal, getGoal, getGoalCapabilities, listGoals, pauseGoal,
+  requestGoalCheckpointInterval, requestGoalModel, resumeGoal, sendGoalInput,
   type Goal, type GoalCapability, type GoalLaunchStrategy,
 } from '../api/goals';
 import { useTaskLiveData } from '../components/TaskDetails/useTaskLiveData';
@@ -43,6 +43,7 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
   const [launchStrategy, setLaunchStrategy] = useState<GoalLaunchStrategy>('direct');
   const [parallelism, setParallelism] = useState('');
   const [ultrafix, setUltrafix] = useState(false);
+  const [checkpointInterval, setCheckpointInterval] = useState('15');
   const [submitting, setSubmitting] = useState(false);
   const [rechecking, setRechecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -89,6 +90,7 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
       const result = await createGoal({
         repository, agentId, model, objective, launchStrategy,
         ...(parallelism ? { maxParallelTasks: Number(parallelism) } : {}),
+        ...(launchStrategy === 'direct' ? { checkpointIntervalMinutes: Number(checkpointInterval) } : {}),
         ultrafix,
       });
       onCreated(result.goal);
@@ -130,10 +132,14 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
       <fieldset className="mt-4">
         <legend className="text-sm font-medium text-slate-700">Goal launch strategy</legend>
         <div className="mt-2 grid gap-3 md:grid-cols-2">
-          <label className="flex cursor-pointer gap-3 rounded-md border border-slate-200 p-3 text-sm text-slate-700"><input aria-label="Agent implements directly" type="radio" name="launch-strategy" value="direct" checked={launchStrategy === 'direct'} onChange={() => setLaunchStrategy('direct')} /><span><strong className="block text-slate-900">Agent implements directly</strong>Best for a simple goal. The agent opens a draft implementation PR early and keeps updating it.</span></label>
+          <label className="flex cursor-pointer gap-3 rounded-md border border-slate-200 p-3 text-sm text-slate-700"><input aria-label="Agent implements directly" type="radio" name="launch-strategy" value="direct" checked={launchStrategy === 'direct'} onChange={() => setLaunchStrategy('direct')} /><span><strong className="block text-slate-900">Agent implements directly</strong>ProPR opens the draft PR before work begins and safely commits the agent's changes at checkpoints.</span></label>
           <label className="flex cursor-pointer gap-3 rounded-md border border-slate-200 p-3 text-sm text-slate-700"><input aria-label="Agent orchestrates through ProPR" type="radio" name="launch-strategy" value="orchestrate" checked={launchStrategy === 'orchestrate'} onChange={() => setLaunchStrategy('orchestrate')} /><span><strong className="block text-slate-900">Agent orchestrates through ProPR</strong>The agent owns decomposition, creates issues, and starts and monitors their implementation through ProPR.</span></label>
         </div>
       </fieldset>
+      {launchStrategy === 'direct' && <label className="mt-4 block text-sm font-medium text-slate-700">Checkpoint frequency (minutes)
+        <input aria-label="Checkpoint frequency" type="number" min="5" max="120" step="1" value={checkpointInterval} onChange={event => setCheckpointInterval(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 p-2 md:w-48" required />
+        <span className="mt-1 block text-xs font-normal text-slate-500">Automatic commits run at safe provider-turn boundaries, from 5 to 120 minutes.</span>
+      </label>}
       <label className="mt-4 block text-sm font-medium text-slate-700">Objective
         <textarea aria-label="Objective" value={objective} onChange={event => setObjective(event.target.value)} rows={5} className="mt-1 w-full rounded-md border border-slate-300 p-2" required />
       </label>
@@ -204,9 +210,14 @@ function GoalDetails({ goalId }: { goalId: string }) {
     <Link to="/goals" className="text-sm text-primary-600 hover:underline">← All goals</Link>
     <header className="rounded-lg border bg-white p-5"><div className="flex flex-wrap items-start justify-between gap-4"><div><h1 className="text-xl font-bold text-slate-900">{goal.objective}</h1><p className="mt-2 text-sm text-slate-500">{goal.repository} · {goal.agent.alias}</p></div><GoalState goal={goal} /></div>
       <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-7"><div><dt className="text-slate-500">Launch strategy</dt><dd className="font-medium">{goal.launchStrategy === 'direct' ? 'Agent implements directly' : 'Agent orchestrates through ProPR'}</dd></div><div><dt className="text-slate-500">Requested model</dt><dd className="font-medium">{goal.requestedModel}</dd></div><div><dt className="text-slate-500">Effective model</dt><dd className="font-medium">{goal.effectiveModel || 'Pending provider report'}</dd></div><div><dt className="text-slate-500">Current task</dt><dd className="font-medium">{live.currentTask || goal.taskState}</dd></div><div><dt className="text-slate-500">Elapsed</dt><dd className="font-medium">{duration(goal.elapsedMs)}</dd></div><div><dt className="text-slate-500">Active</dt><dd className="font-medium">{duration(goal.activeMs)}</dd></div><div><dt className="text-slate-500">Paused</dt><dd className="font-medium">{duration(goal.pausedMs)}</dd></div></dl>
-      <div className="mt-4 flex flex-wrap gap-2">{goal.desiredState === 'running' && mutable && <button disabled={busy} onClick={() => act(() => pauseGoal(goal.id))} className={`${buttonClass} bg-amber-100 text-amber-800`}><CirclePause className="h-4 w-4" />Pause</button>}{goal.desiredState === 'paused' && mutable && <button disabled={busy} onClick={() => act(() => resumeGoal(goal.id))} className={`${buttonClass} bg-green-100 text-green-800`}><CirclePlay className="h-4 w-4" />{goal.pausePending ? 'Resume after safe boundary' : 'Resume'}</button>}{mutable && <button disabled={busy} onClick={() => act(() => cancelGoal(goal.id))} className={`${buttonClass} bg-red-100 text-red-800`}><CircleStop className="h-4 w-4" />Cancel</button>}<Link to={`/tasks/${goal.taskId}`} className={`${buttonClass} bg-slate-100 text-slate-700`}>Open task history</Link>{goal.finalPr && <a href={goal.finalPr.url} target="_blank" rel="noreferrer" className={`${buttonClass} bg-primary-50 text-primary-700`}>Review final PR <ExternalLink className="h-4 w-4" /></a>}</div>
+      <div className="mt-4 flex flex-wrap gap-2">{goal.desiredState === 'running' && mutable && <button disabled={busy} onClick={() => act(() => pauseGoal(goal.id))} className={`${buttonClass} bg-amber-100 text-amber-800`}><CirclePause className="h-4 w-4" />Pause</button>}{goal.desiredState === 'paused' && mutable && <button disabled={busy} onClick={() => act(() => resumeGoal(goal.id))} className={`${buttonClass} bg-green-100 text-green-800`}><CirclePlay className="h-4 w-4" />{goal.pausePending ? 'Resume after safe boundary' : 'Resume'}</button>}{goal.launchStrategy === 'direct' && goal.desiredState === 'running' && mutable && <button disabled={busy || goal.checkpoint?.pending} onClick={() => act(() => checkpointGoal(goal.id))} className={`${buttonClass} bg-indigo-100 text-indigo-800`}><GitCommit className="h-4 w-4" />{goal.checkpoint?.pending ? 'Checkpoint pending' : 'Checkpoint now'}</button>}{mutable && <button disabled={busy} onClick={() => act(() => cancelGoal(goal.id))} className={`${buttonClass} bg-red-100 text-red-800`}><CircleStop className="h-4 w-4" />Cancel</button>}<Link to={`/tasks/${goal.taskId}`} className={`${buttonClass} bg-slate-100 text-slate-700`}>Open task history</Link>{goal.finalPr && <a href={goal.finalPr.url} target="_blank" rel="noreferrer" className={`${buttonClass} bg-primary-50 text-primary-700`}>{goal.launchStrategy === 'direct' ? 'Open draft PR' : 'Review final PR'} <ExternalLink className="h-4 w-4" /></a>}</div>
       {cancelling && <p className="mt-3 rounded bg-amber-50 p-3 text-sm text-amber-800">Cancelling at the provider boundary and cleaning up the active session…</p>}
       <p className="mt-3 text-xs text-slate-500">{goal.artifactStats.openIssues}/{goal.artifactStats.issues} open issues · {goal.artifactStats.openPullRequests}/{goal.artifactStats.pullRequests} open PRs</p>
+      {goal.checkpoint && <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md bg-indigo-50 p-3 text-sm text-indigo-900">
+        <span>{goal.checkpoint.count} checkpoint commit{goal.checkpoint.count === 1 ? '' : 's'}{goal.checkpoint.lastAt ? ` · last ${new Date(goal.checkpoint.lastAt).toLocaleString()}` : ''}</span>
+        {mutable && <label>Every <select aria-label="Checkpoint frequency" disabled={busy} value={goal.checkpoint.intervalMinutes || 15} onChange={event => act(() => requestGoalCheckpointInterval(goal.id, Number(event.target.value)))} className="mx-1 rounded border border-indigo-200 bg-white p-1"><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option><option value="120">120 minutes</option></select></label>}
+        {goal.checkpoint.error && <span className="text-red-700">Checkpoint error: {goal.checkpoint.error}</span>}
+      </div>}
       {goal.artifacts.length > 0 && <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">{goal.artifacts.map((artifact, index) => { const item = artifact as { type?: string; number?: number; url?: string }; return item.url ? <a key={item.url} href={item.url} target="_blank" rel="noreferrer" className="rounded bg-slate-100 px-2 py-1 hover:underline">{item.type === 'pull_request' ? 'PR' : 'Issue'} #{item.number}</a> : <span key={index} />; })}</div>}
       <details className="mt-4 rounded-md bg-slate-50 p-3 text-sm"><summary className="cursor-pointer font-medium text-slate-700">Initial provider prompt</summary><pre className="mt-3 whitespace-pre-wrap break-words font-mono text-xs text-slate-600">{goal.initialPrompt}</pre></details>
     </header>

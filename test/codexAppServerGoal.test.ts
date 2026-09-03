@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
-import { runGoalProtocol } from '../packages/core/src/agents/impl/codexAppServer.ts';
+import {
+  CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS,
+  runGoalProtocol,
+} from '../packages/core/src/agents/impl/codexAppServer.ts';
 import { boundedCodexJsonlTail } from '../packages/core/src/agents/impl/codexAppServerConnection.ts';
 import type { AgentTaskOptions, GoalExecutionControl } from '../packages/core/src/agents/types.ts';
 
@@ -11,7 +14,7 @@ after(async () => {
 
 class FakeConnection {
   started: string[] = [];
-  requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  requests: Array<{ method: string; params: Record<string, unknown>; timeoutMs?: number }> = [];
   effectiveModel?: string;
   closeError: Error | null = null;
   private goalReads = 0;
@@ -28,8 +31,12 @@ class FakeConnection {
     private reportedModel = 'gpt-5.6',
   ) { this.goalStatus = alreadyComplete ? 'complete' : initialStatus; }
 
-  async request(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    this.requests.push({ method, params });
+  async request(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<Record<string, unknown>> {
+    this.requests.push({ method, params, timeoutMs });
     if (method === 'initialize') return {};
     if (method === 'thread/start' || method === 'thread/resume') {
       if (method === 'thread/resume' && this.goalStatus === 'active') this.startNativeTurn();
@@ -60,6 +67,7 @@ class FakeConnection {
   }
 
   notify(): void {}
+  completeGoal(): void { this.goalStatus = 'complete'; }
   takeStartedTurn(): string | null { return this.started.shift() ?? null; }
   discardStartedTurn(): void {}
   waitForTurn(): Promise<Record<string, unknown>> {
@@ -73,19 +81,32 @@ class FakeConnection {
   }
 }
 
-function controls() {
+function controls(onCheckpoint?: () => void) {
   const delivered: string[] = [];
   const undeliverable: string[] = [];
+  const checkpoints: string[] = [];
   let desiredState: 'running' | 'paused' | 'cancelled' = 'running';
+  let checkpoint: { id?: string; kind: 'manual' | 'automatic'; commitMessage?: string } | null = null;
   const control: GoalExecutionControl = {
-    load: async () => ({ desiredState, requestedModel: 'gpt-5.6', pendingInputs: [], controlGeneration: 0 }),
+    load: async () => ({
+      desiredState, requestedModel: 'gpt-5.6', pendingInputs: [], controlGeneration: 0, checkpoint,
+    }),
     heartbeat: async () => {},
     setActiveTurn: async () => {},
     markInputDelivered: async id => { delivered.push(id); },
     markInputUndeliverable: async id => { undeliverable.push(id); },
+    publishCheckpoint: async (request, turnId) => {
+      checkpoints.push(`${request.kind}:${turnId}`);
+      checkpoint = null;
+      onCheckpoint?.();
+    },
     appendOutput: async () => {},
   };
-  return { control, delivered, undeliverable, setDesiredState: (state: typeof desiredState) => { desiredState = state; } };
+  return {
+    control, delivered, undeliverable, checkpoints,
+    setDesiredState: (state: typeof desiredState) => { desiredState = state; },
+    requestCheckpoint: (request: NonNullable<typeof checkpoint>) => { checkpoint = request; },
+  };
 }
 
 function options(control: GoalExecutionControl, resume = false, input = false): AgentTaskOptions {
@@ -184,6 +205,57 @@ describe('pinned Codex 0.146 native external-goal activation', () => {
     assert.equal(result.effectiveModel, 'provider-effective-model');
     assert.equal(connection.effectiveModel, 'provider-effective-model');
     assert.equal(connection.requests.find(request => request.method === 'thread/start')?.params.model, 'requested-model');
+  });
+
+  test('allows repository setup to finish before initialize times out', async () => {
+    const state = controls();
+    const connection = new FakeConnection(false, 'before');
+
+    await runGoalProtocol(connection as never, options(state.control), 'gpt-5.6');
+
+    assert.equal(
+      connection.requests.find(request => request.method === 'initialize')?.timeoutMs,
+      CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS,
+    );
+    assert.equal(
+      connection.requests.find(request => request.method === 'thread/start')?.timeoutMs,
+      undefined,
+      'ordinary requests retain the default RPC timeout',
+    );
+  });
+
+  test('pauses native auto-continuation while the worker publishes a checkpoint', async () => {
+    const state = controls();
+    state.requestCheckpoint({ id: 'checkpoint-1', kind: 'manual' });
+    const connection = new FakeConnection(false, 'before');
+
+    const result = await runGoalProtocol(connection as never, options(state.control), 'gpt-5.6');
+
+    assert.equal(result.completion?.status, 'completed');
+    assert.deepEqual(state.checkpoints, ['manual:turn-native']);
+    assert.deepEqual(
+      connection.requests
+        .filter(request => request.method === 'thread/goal/set')
+        .map(request => request.params.status),
+      ['paused', 'active', 'paused', 'active'],
+    );
+  });
+
+  test('does not reactivate a native goal that completed while its final turn was checkpointed', async () => {
+    const connection = new FakeConnection(false, 'before');
+    const state = controls(() => connection.completeGoal());
+    state.requestCheckpoint({ kind: 'automatic' });
+
+    const result = await runGoalProtocol(connection as never, options(state.control), 'gpt-5.6');
+
+    assert.equal(result.completion?.status, 'completed');
+    assert.deepEqual(state.checkpoints, ['automatic:turn-native']);
+    assert.deepEqual(
+      connection.requests
+        .filter(request => request.method === 'thread/goal/set')
+        .map(request => request.params.status),
+      ['paused', 'active', 'paused'],
+    );
   });
 });
 

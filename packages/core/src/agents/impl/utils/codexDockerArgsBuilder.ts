@@ -1,3 +1,4 @@
+import path from 'node:path';
 import logger from '../../../utils/logger.js';
 import type { AgentConfig } from '../../types.js';
 import { resolveConfigPath, type CodexRuntimeReasoningLevel } from '../../../config/configManager.js';
@@ -156,7 +157,12 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
 
     const dockerImage = config.dockerImage;
     const configPath = resolveConfigPath(config.configPath);
-    const envVars = buildEnvironmentVariableArgs([config.envVars, environment], repositoryInspection);
+    const workerOwnedGoalGit = params.executionMode === 'goal'
+        && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct';
+    const envVars = buildEnvironmentVariableArgs(
+        [config.envVars, environment],
+        repositoryInspection || workerOwnedGoalGit,
+    );
     const streamConfig = resolveCodexStreamConfig({
         ...process.env,
         ...config.envVars,
@@ -176,9 +182,16 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
         '--network', 'bridge',
         '--user', '0:0',
         '-v', `${worktreePath}:${workspaceTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-        ...(repositoryInspection ? [] : ['-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`]),
+        ...(workerOwnedGoalGit
+            ? ['-v', `${path.join(worktreePath, '.git')}:/home/node/workspace/.git:ro`]
+            : []),
+        ...(repositoryInspection ? [] : [
+            '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace || workerOwnedGoalGit ? 'ro' : 'rw'}`,
+        ]),
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-        ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
+        ...(repositoryInspection || workerOwnedGoalGit
+            ? []
+            : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         ...envVars,
         '-w', '/home/node/workspace',

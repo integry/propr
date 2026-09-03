@@ -113,7 +113,9 @@ export class ClaudeAgent implements Agent {
                 customPrompt, issueRef, branchName, modelName: effectiveModel, issueDetails, isRetry, retryReason
             });
 
-            await setWorktreeOwnership(worktreePath, issueRef.number);
+            await setWorktreeOwnership(worktreePath, issueRef.number, {
+                protectGitMetadata: executionMode === 'goal' && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
+            });
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
             effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);

@@ -53,11 +53,12 @@ describe('native goal provider contract', () => {
     });
     assert.match(prompt, /^\/goal Ship the dashboard/);
     assert.match(prompt, /Agent implements directly/);
-    assert.match(prompt, /Open a draft implementation PR early/);
+    assert.match(prompt, /ProPR creates the draft PR before execution/);
+    assert.match(prompt, /Do not run git commit, git push/);
+    assert.match(prompt, /safe checkpoint commits/);
     assert.match(prompt, /at most 3 implementation tasks in parallel/);
     assert.match(prompt, /Ultrafix policy: Enabled/);
-    assert.match(prompt, /Finish with a draft PR/);
-    assert.match(prompt, /validate that each artifact exists/);
+    assert.match(prompt, /ProPR publishes and validates the final checkpoint/);
   });
 
   test('builds orchestration as agent-owned prompt policy without scheduler state', () => {
@@ -70,7 +71,9 @@ describe('native goal provider contract', () => {
     assert.match(prompt, /You—not a ProPR planner—own every planning and hierarchy decision/);
     assert.match(prompt, /No maximum parallel task count was selected/);
     assert.match(prompt, /Ultrafix policy: Disabled/);
-    assert.deepEqual(buildGoalPolicyEnvironment(), { PROPR_EXECUTION_MODE: 'goal' });
+    assert.deepEqual(buildGoalPolicyEnvironment('orchestrate'), {
+      PROPR_EXECUTION_MODE: 'goal', PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate',
+    });
   });
 
   test('validates the fully rendered Codex prompt with Unicode character semantics', () => {
@@ -94,6 +97,35 @@ describe('native goal provider contract', () => {
     assert.equal(initial.includes('--no-session-persistence'), false);
     assert.equal(initial.includes('--max-turns'), false);
     assert.deepEqual(resumed.slice(resumed.indexOf('--resume'), resumed.indexOf('--resume') + 2), ['--resume', 'claude-session']);
+  });
+
+  test('direct goals expose writable files but reserve Git and GitHub publication for the worker', () => {
+    const environment = {
+      PROPR_EXECUTION_MODE: 'goal',
+      PROPR_GOAL_LAUNCH_STRATEGY: 'direct',
+      GH_TOKEN: 'must-not-leak',
+    };
+    const claude = buildClaudeDockerArgs(baseConfig('claude'), 1000, {
+      ...common, executionMode: 'goal', environment,
+    });
+    const codex = buildCodexAppServerDockerArgs(baseConfig('codex'), {
+      ...common, executionMode: 'goal', environment,
+    });
+    const antigravity = new AntigravityAgent(baseConfig('antigravity')) as unknown as {
+      buildDockerArgs(params: typeof common & {
+        executionMode: 'goal'; environment: Record<string, string>;
+      }): string[];
+    };
+    const agy = antigravity.buildDockerArgs({ ...common, executionMode: 'goal', environment });
+
+    for (const args of [claude, codex, agy]) {
+      assert.ok(args.includes('/tmp/worktree:/home/node/workspace:rw'));
+      assert.ok(args.includes('/tmp/worktree/.git:/home/node/workspace/.git:ro'));
+      assert.ok(args.includes('/tmp/git-processor:/tmp/git-processor:ro'));
+      assert.equal(args.some(argument => argument === 'GH_TOKEN=token'), false);
+      assert.equal(args.some(argument => argument === 'GITHUB_TOKEN=token'), false);
+      assert.equal(args.some(argument => argument.includes('must-not-leak')), false);
+    }
   });
 
   test('Codex keeps one-shot arguments unchanged and goal mode exposes App Server', () => {

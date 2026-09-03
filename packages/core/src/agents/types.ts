@@ -100,11 +100,19 @@ export interface GoalControlInput {
     message: string;
 }
 
+export interface GoalCheckpointRequest {
+    id?: string;
+    kind: 'manual' | 'automatic';
+    commitMessage?: string;
+}
+
 export interface GoalControlSnapshot {
     desiredState: 'running' | 'paused' | 'cancelled';
     requestedModel: string;
     pendingInputs: GoalControlInput[];
     controlGeneration: number;
+    /** Direct-goal publication requested for the next safe provider boundary. */
+    checkpoint: GoalCheckpointRequest | null;
 }
 
 export interface GoalExecutionControl {
@@ -113,6 +121,7 @@ export interface GoalExecutionControl {
     setActiveTurn(turnId: string | null): Promise<void>;
     markInputDelivered(inputId: string, turnId: string): Promise<void>;
     markInputUndeliverable(inputId: string, reason: string): Promise<void>;
+    publishCheckpoint(request: GoalCheckpointRequest, turnId: string): Promise<void>;
     appendOutput(records: string[]): Promise<void>;
 }
 

@@ -5,6 +5,9 @@ export type GoalLaunchStrategy = typeof GOAL_LAUNCH_STRATEGIES[number];
 
 export const GOAL_CONTINUE_INPUT = 'Continue working toward the goal.';
 export const CODEX_GOAL_OBJECTIVE_MAX_LENGTH = 4_000;
+export const DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES = 15;
+export const MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES = 5;
+export const MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES = 120;
 
 /** Codex measures goal objectives as Unicode code points, not UTF-16 units. */
 export function codexGoalPromptValidationError(prompt: string): string | null {
@@ -16,7 +19,9 @@ export function codexGoalPromptValidationError(prompt: string): string | null {
 const launchInstructions: Record<GoalLaunchStrategy, string> = {
     direct: [
         'Launch strategy — Agent implements directly:',
-        'Implement the goal yourself. Open a draft implementation PR early, then keep pushing commits to that same PR as work progresses.',
+        'Implement the goal yourself in the prepared worktree. ProPR creates the draft PR before execution and owns all commits and pushes.',
+        'Do not run git commit, git push, change branches, rewrite .git metadata, or create another implementation PR.',
+        'Finish coherent provider turns as work progresses so ProPR can publish safe checkpoint commits to the draft PR.',
     ].join('\n'),
     orchestrate: [
         'Launch strategy — Agent orchestrates through ProPR:',
@@ -38,6 +43,16 @@ export function buildNativeGoalCommand(options: {
     const ultrafixPolicy = options.ultrafix
         ? 'Ultrafix policy: Enabled. Run Ultrafix as part of delivery before final completion.'
         : 'Ultrafix policy: Disabled. Do not run Ultrafix unless later steering input explicitly requests it.';
+    const deliveryRequirements = options.launchStrategy === 'direct'
+        ? [
+            '- Finish with validated implementation files; ProPR publishes and validates the final checkpoint on its draft PR.',
+            '- Report any GitHub artifact you intentionally create so ProPR can record it.',
+        ]
+        : [
+            '- Finish with a draft PR containing the final implementation.',
+            '- Track every GitHub issue and PR you create, validate that each artifact exists and is in the expected state, and report its URL so ProPR can record it.',
+            '- Validate the final draft PR and its related artifacts before declaring the goal complete.',
+        ];
     return [
         `/goal ${options.objective}`,
         '',
@@ -45,9 +60,7 @@ export function buildNativeGoalCommand(options: {
         parallelPolicy,
         ultrafixPolicy,
         'Delivery requirements:',
-        '- Finish with a draft PR containing the final implementation.',
-        '- Track every GitHub issue and PR you create, validate that each artifact exists and is in the expected state, and report its URL so ProPR can record it.',
-        '- Validate the final draft PR and its related artifacts before declaring the goal complete.',
+        ...deliveryRequirements,
     ].join('\n');
 }
 
@@ -59,6 +72,9 @@ export function goalAttemptLabel(generation: number, claimId: string): string {
     return `${generation}:${claimId}`;
 }
 
-export function buildGoalPolicyEnvironment(): Record<string, string> {
-    return { PROPR_EXECUTION_MODE: 'goal' };
+export function buildGoalPolicyEnvironment(launchStrategy?: GoalLaunchStrategy): Record<string, string> {
+    return {
+        PROPR_EXECUTION_MODE: 'goal',
+        ...(launchStrategy ? { PROPR_GOAL_LAUNCH_STRATEGY: launchStrategy } : {}),
+    };
 }

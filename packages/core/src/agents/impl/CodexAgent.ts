@@ -107,7 +107,9 @@ export class CodexAgent implements Agent {
     }
 
     private async executeNativeGoal(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        await setWorktreeOwnership(options.worktreePath, options.issueRef.number);
+        await setWorktreeOwnership(options.worktreePath, options.issueRef.number, {
+            protectGitMetadata: options.environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
+        });
         const worktreeGitContent = verifyWorktreeStructure(options.worktreePath, options.issueRef.number);
         const result = await executeCodexAppServerGoal(this.config, options, this.timeoutMs);
         if (result.success) {

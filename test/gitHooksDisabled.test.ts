@@ -72,6 +72,23 @@ test('commitChanges disables every repository commit hook', async () => {
     }
 });
 
+test('commitChanges can create the empty bootstrap commit required for an early draft PR', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-goal-bootstrap-'));
+    try {
+        const repoPath = path.join(tempDir, 'repo');
+        await git(tempDir, ['init', repoPath]);
+        await configureRepository(repoPath);
+
+        const result = await commitChanges(repoPath, 'chore(goal): initialize draft', null, { allowEmpty: true });
+
+        assert.ok(result?.commitHash);
+        assert.equal(await git(repoPath, ['log', '-1', '--format=%s']), 'chore(goal): initialize draft');
+        assert.equal(await git(repoPath, ['status', '--porcelain']), '');
+    } finally {
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
+
 test('pushBranch disables repository pre-push hooks', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-hookless-push-'));
     try {

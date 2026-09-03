@@ -6,11 +6,17 @@ import {
     getExecutionOwnershipContext,
     resolveExecutionArgs,
 } from '../../claude/docker/dockerExecutionOwnership.js';
-import type { AgentConfig, AgentExecutionResult, AgentTaskOptions } from '../types.js';
+import type {
+    AgentConfig,
+    AgentExecutionResult,
+    AgentTaskOptions,
+    GoalCheckpointRequest,
+} from '../types.js';
 import { AppServerConnection, asRecord, type RpcMessage } from './codexAppServerConnection.js';
 import { buildCodexAppServerDockerArgs } from './utils/codexDockerArgsBuilder.js';
 
 const execFileAsync = promisify(execFile);
+export const CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface ThreadIdentity {
     id: string;
@@ -51,7 +57,13 @@ function extractThread(result: Record<string, unknown>, fallbackSessionId?: stri
     };
 }
 
-function turnStatus(message: RpcMessage): { status: string; error?: string } {
+interface TurnCompletion {
+    status: string;
+    error?: string;
+    checkpoint?: GoalCheckpointRequest;
+}
+
+function turnStatus(message: RpcMessage): TurnCompletion {
     if (message.error) return { status: 'failed', error: message.error.message };
     const turn = asRecord(message.params?.turn);
     const error = asRecord(turn.error);
@@ -81,7 +93,14 @@ async function openGoalThread(
     options: AgentTaskOptions,
     model: string | undefined,
 ): Promise<ThreadIdentity> {
-    await connection.request('initialize', { clientInfo: { name: 'propr', title: 'ProPR', version: '1' } });
+    // The request is buffered while the repository setup hook and container
+    // entrypoint run. Large repositories can legitimately take longer than the
+    // ordinary RPC timeout before App Server begins consuming stdin.
+    await connection.request(
+        'initialize',
+        { clientInfo: { name: 'propr', title: 'ProPR', version: '1' } },
+        CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS,
+    );
     connection.notify('initialized');
     const result = options.resumeSessionId
         ? await connection.request('thread/resume', { threadId: options.resumeSessionId, ...(model ? { model } : {}) })
@@ -183,11 +202,31 @@ async function observeNativeGoal(
         const completion = await observeActiveTurnWithThread(connection, threadId, turnId, options);
         await control.setActiveTurn(null);
         if (completion.status !== 'completed') return completion;
-        const desiredState = (await control.load()).desiredState;
+        let boundary = await control.load();
+        const checkpoint = completion.checkpoint ?? boundary.checkpoint;
+        let completedDuringCheckpoint = false;
+        if (checkpoint) {
+            if (!completion.checkpoint) {
+                await connection.request('thread/goal/set', {
+                    threadId, objective, status: 'paused',
+                });
+            }
+            await control.publishCheckpoint(checkpoint, turnId);
+            boundary = await control.load();
+            const nativeBoundary = nativeGoalSnapshot(await connection.request('thread/goal/get', { threadId }));
+            completedDuringCheckpoint = nativeBoundary.status === 'complete';
+            if (boundary.desiredState === 'running' && nativeBoundary.status === 'paused') {
+                await connection.request('thread/goal/set', {
+                    threadId, objective, status: 'active',
+                });
+            }
+        }
+        const desiredState = boundary.desiredState;
         if (desiredState !== 'running') {
             await applyNativeGoalStop(connection, { threadId, desiredState, objective });
             return { status: 'interrupted', error: 'Goal stopped at a provider turn boundary' };
         }
+        if (completedDuringCheckpoint) return completion;
         const goal = nativeGoalSnapshot(await connection.request('thread/goal/get', { threadId }));
         if (goal.status === 'complete') return completion;
         if (goal.status !== 'active') {
@@ -349,12 +388,13 @@ async function observeActiveTurnWithThread(
     threadId: string,
     turnId: string,
     options: AgentTaskOptions,
-): Promise<{ status: string; error?: string }> {
+): Promise<TurnCompletion> {
     const control = options.goalControl!;
     const objective = nativeGoalObjective(options);
     let completed: RpcMessage | null = null;
     const completion = connection.waitForTurn(turnId).then(message => { completed = message; });
     let interrupted = false;
+    let checkpoint: GoalCheckpointRequest | undefined;
     while (!completed) {
         await Promise.race([completion, new Promise(resolve => setTimeout(resolve, 400))]);
         if (completed) break;
@@ -369,6 +409,15 @@ async function observeActiveTurnWithThread(
             }
             continue;
         }
+        if (!checkpoint && snapshot.checkpoint) {
+            checkpoint = snapshot.checkpoint;
+            // Pausing the external goal does not interrupt the current turn. It
+            // prevents native auto-continuation from racing the worker's git
+            // checkpoint after this turn reaches its safe boundary.
+            await connection.request('thread/goal/set', {
+                threadId, objective, status: 'paused',
+            });
+        }
         for (const input of snapshot.pendingInputs) {
             await connection.request('turn/steer', {
                 threadId,
@@ -379,5 +428,5 @@ async function observeActiveTurnWithThread(
             await control.markInputDelivered(input.id, turnId);
         }
     }
-    return turnStatus(completed!);
+    return { ...turnStatus(completed!), ...(checkpoint ? { checkpoint } : {}) };
 }

@@ -118,13 +118,14 @@ function buildBaseDockerArgs(options: {
     inspectionArgs: string[];
     reasoningLevel?: ClaudeRuntimeReasoningLevel | '';
     readOnlyWorkspace: boolean;
+    workerOwnedGoalGit: boolean;
     executionMode: 'task' | 'goal';
     resumeSessionId?: string;
 }): string[] {
     const {
         config, maxTurns, worktreePath, workspaceMountTarget, configPath, containerName,
         githubToken, envVars, claudeJsonMount, inspectionArgs, reasoningLevel, readOnlyWorkspace,
-        executionMode, resumeSessionId,
+        workerOwnedGoalGit, executionMode, resumeSessionId,
     } = options;
     return [
         'run', '--rm', '-i',
@@ -134,11 +135,16 @@ function buildBaseDockerArgs(options: {
         '--network', 'bridge',
         '--user', '0:0',
         '-v', `${worktreePath}:${workspaceMountTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-        ...(readOnlyWorkspace ? [] : ['-v', '/tmp/git-processor:/tmp/git-processor:rw']),
+        ...(workerOwnedGoalGit
+            ? ['-v', `${path.join(worktreePath, '.git')}:/home/node/workspace/.git:ro`]
+            : []),
+        ...(readOnlyWorkspace ? [] : [
+            '-v', `/tmp/git-processor:/tmp/git-processor:${workerOwnedGoalGit ? 'ro' : 'rw'}`,
+        ]),
         '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
         '-v', `${configPath}:/home/node/.claude:rw`,
         ...claudeJsonMount,
-        ...(readOnlyWorkspace ? [] : ['-e', `GH_TOKEN=${githubToken}`]),
+        ...(readOnlyWorkspace || workerOwnedGoalGit ? [] : ['-e', `GH_TOKEN=${githubToken}`]),
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         ...envVars,
         '-w', '/home/node/workspace',
@@ -189,7 +195,12 @@ export function buildDockerArgs(
     const workspaceMountTarget = repositoryInspection
         ? REPOSITORY_SCOUT_CONTAINER_ROOT
         : '/home/node/workspace';
-    const envVars = buildEnvironmentVariableArgs([config.envVars, environment], readOnlyWorkspace);
+    const workerOwnedGoalGit = executionMode === 'goal'
+        && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct';
+    const envVars = buildEnvironmentVariableArgs(
+        [config.envVars, environment],
+        readOnlyWorkspace || workerOwnedGoalGit,
+    );
     const dockerArgs = buildBaseDockerArgs({
         config,
         maxTurns,
@@ -203,6 +214,7 @@ export function buildDockerArgs(
         inspectionArgs,
         reasoningLevel,
         readOnlyWorkspace,
+        workerOwnedGoalGit,
         executionMode,
         resumeSessionId,
     });

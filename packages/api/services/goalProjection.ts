@@ -54,6 +54,11 @@ export interface GoalProjectionRow {
   paused_at: string | null;
   paused_ms: number;
   completed_at: string | null;
+  checkpoint_interval_minutes: number | null;
+  last_checkpoint_at: string | null;
+  last_checkpoint_commit_sha: string | null;
+  checkpoint_count: number;
+  checkpoint_error: string | null;
 }
 
 function parseStats(value: GoalProjectionRow['artifact_stats']): GoalArtifactStats {
@@ -86,6 +91,14 @@ export async function serializeGoal(
     .where({ task_id: row.current_task_id })
     .orderBy('timestamp', 'desc')
     .first();
+  const latestCheckpoint = row.launch_strategy === 'direct'
+    ? await db('goal_checkpoints').where({ goal_id: row.goal_id, owner_id: row.owner_id })
+      .orderBy('created_at', 'desc').first()
+    : null;
+  const pendingCheckpoint = row.launch_strategy === 'direct'
+    ? await db('goal_checkpoints').where({ goal_id: row.goal_id, owner_id: row.owner_id })
+      .whereIn('state', ['pending', 'processing']).first('checkpoint_id')
+    : null;
   const timing = goalTiming(row);
   return {
     id: row.goal_id,
@@ -115,6 +128,22 @@ export async function serializeGoal(
     sessionId: row.session_id,
     conversationId: row.conversation_id,
     finalPr: row.final_pr_url ? { number: row.final_pr_number, url: row.final_pr_url } : null,
+    checkpoint: row.launch_strategy === 'direct' ? {
+      intervalMinutes: row.checkpoint_interval_minutes,
+      count: Number(row.checkpoint_count || 0),
+      lastAt: row.last_checkpoint_at,
+      lastCommitSha: row.last_checkpoint_commit_sha,
+      error: row.checkpoint_error,
+      pending: Boolean(pendingCheckpoint),
+      latest: latestCheckpoint ? {
+        kind: latestCheckpoint.kind,
+        state: latestCheckpoint.state,
+        commitSha: latestCheckpoint.commit_sha,
+        error: latestCheckpoint.error,
+        createdAt: latestCheckpoint.created_at,
+        completedAt: latestCheckpoint.completed_at,
+      } : null,
+    } : null,
     artifacts: parseGoalArtifacts(row.artifact_refs as string | null),
     artifactStats: parseStats(row.artifact_stats),
     liveSummary: {

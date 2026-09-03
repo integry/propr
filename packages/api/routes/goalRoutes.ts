@@ -6,7 +6,10 @@ import type { Queue } from 'bullmq';
 import {
   AgentRegistry,
   GOAL_CONTINUE_INPUT,
+  DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   GOAL_LAUNCH_STRATEGIES,
+  MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
+  MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   buildNativeGoalCommand,
   codexGoalPromptValidationError,
   getAuthenticatedOctokit,
@@ -68,7 +71,14 @@ async function existingMutation(
     throw new IdempotencyConflictError('Idempotency-Key was already used for a different goal, operation, or payload');
   }
   const existing = await db('goal_inputs').where({ owner_id: row.owner_id, idempotency_key: key }).first();
-  if (!existing) return null;
+  if (!existing) {
+    const checkpoint = await db('goal_checkpoints').where({ owner_id: row.owner_id, idempotency_key: key }).first();
+    if (!checkpoint) return null;
+    if (checkpoint.goal_id !== row.goal_id || checkpoint.operation !== operation || checkpoint.payload_hash !== payloadHash) {
+      throw new IdempotencyConflictError('Idempotency-Key was already used for a different goal, operation, or payload');
+    }
+    return checkpoint;
+  }
   if (existing.goal_id !== row.goal_id || existing.operation !== operation || existing.payload_hash !== payloadHash) {
     throw new IdempotencyConflictError('Idempotency-Key was already used for a different goal, operation, or payload');
   }
@@ -115,6 +125,14 @@ function validateCreateBody(body: Record<string, unknown>): string | null {
   if (body.baseBranch != null && (typeof body.baseBranch !== 'string' || body.baseBranch.length > 255)) return 'baseBranch is invalid';
   if (body.maxParallelTasks != null && (!Number.isSafeInteger(body.maxParallelTasks) || Number(body.maxParallelTasks) < 1 || Number(body.maxParallelTasks) > 32)) return 'maxParallelTasks must be an integer from 1 to 32';
   if (body.ultrafix != null && typeof body.ultrafix !== 'boolean') return 'ultrafix must be a boolean';
+  if (body.checkpointIntervalMinutes != null) {
+    if (body.launchStrategy !== 'direct') return 'checkpointIntervalMinutes only applies to direct goals';
+    if (!Number.isSafeInteger(body.checkpointIntervalMinutes)
+      || Number(body.checkpointIntervalMinutes) < MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES
+      || Number(body.checkpointIntervalMinutes) > MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES) {
+      return `checkpointIntervalMinutes must be an integer from ${MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES} to ${MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES}`;
+    }
+  }
   return null;
 }
 
@@ -217,9 +235,13 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       repository: body.repository, objective: body.objective, launchStrategy: body.launchStrategy,
       agentId: body.agentId, model: body.model, baseBranch: body.baseBranch ?? null,
       maxParallelTasks: body.maxParallelTasks ?? null, ultrafix: body.ultrafix === true,
+      checkpointIntervalMinutes: body.launchStrategy === 'direct'
+        ? body.checkpointIntervalMinutes ?? DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES
+        : null,
     });
     const inputUse = await deps.db('goal_inputs').where({ owner_id: ownerId, idempotency_key: createKey }).first('input_id');
-    if (inputUse) return void res.status(409).json({ error: 'Idempotency-Key was already used for a different operation or payload' });
+    const checkpointUse = await deps.db('goal_checkpoints').where({ owner_id: ownerId, idempotency_key: createKey }).first('checkpoint_id');
+    if (inputUse || checkpointUse) return void res.status(409).json({ error: 'Idempotency-Key was already used for a different operation or payload' });
     const existing = await deps.db<GoalRow>('goals').where({
       owner_id: ownerId,
       create_idempotency_key: createKey,
@@ -269,6 +291,9 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       requested_model: body.model,
       max_parallel_tasks: body.maxParallelTasks || null,
       ultrafix: body.ultrafix === true,
+      checkpoint_interval_minutes: launchStrategy === 'direct'
+        ? body.checkpointIntervalMinutes ?? DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES
+        : null,
       desired_state: 'running',
       current_task_id: taskId,
       run_generation: 0,
@@ -677,5 +702,77 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
 
-  return { capabilities, list, get, create, pause, resume, cancel, requestModel, input, requireGoalTaskOwnership };
+  const checkpoint = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    const key = requiredIdempotencyKey(req, res);
+    if (!key) return;
+    const commitMessage = req.body?.commitMessage;
+    if (commitMessage != null && (typeof commitMessage !== 'string' || !commitMessage.trim() || commitMessage.length > 500)) {
+      return void res.status(400).json({ error: 'commitMessage must be a non-empty string of at most 500 characters' });
+    }
+    if (row.launch_strategy !== 'direct') return void res.status(409).json({ error: 'Checkpoints only apply to direct goals' });
+    if (row.result_state || row.desired_state === 'cancelled') return void res.status(409).json({ error: 'Goal is terminal' });
+    if (row.desired_state !== 'running') return void res.status(409).json({ error: 'Resume the goal before requesting a checkpoint' });
+    const operation = 'goal.checkpoint';
+    const message = typeof commitMessage === 'string' ? commitMessage.trim() : null;
+    const payloadHash = mutationHash(operation, { goalId: row.goal_id, commitMessage: message });
+    try {
+      if (!await existingMutation(deps.db, row, key, operation, payloadHash)) {
+        await deps.db('goal_checkpoints').insert({
+          checkpoint_id: randomUUID(), goal_id: row.goal_id, owner_id: row.owner_id,
+          idempotency_key: key, operation, payload_hash: payloadHash,
+          kind: 'manual', commit_message: message, state: 'pending',
+          requested_generation: row.run_generation, requested_claim: row.run_claim,
+          created_at: deps.db.fn.now(),
+        });
+      }
+    } catch (error) {
+      if (error instanceof IdempotencyConflictError) return void res.status(409).json({ error: error.message });
+      const raced = await existingMutation(deps.db, row, key, operation, payloadHash);
+      if (!raced) throw error;
+    }
+    const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+    res.status(202).json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+  };
+
+  const requestCheckpointInterval = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    const key = requiredIdempotencyKey(req, res);
+    if (!key) return;
+    const minutes = req.body?.minutes;
+    if (!Number.isSafeInteger(minutes)
+      || Number(minutes) < MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES
+      || Number(minutes) > MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES) {
+      return void res.status(400).json({
+        error: `minutes must be an integer from ${MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES} to ${MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES}`,
+      });
+    }
+    if (row.launch_strategy !== 'direct') return void res.status(409).json({ error: 'Checkpoint frequency only applies to direct goals' });
+    if (row.result_state || row.desired_state === 'cancelled') return void res.status(409).json({ error: 'Goal is terminal' });
+    const operation = 'goal.checkpoint-frequency';
+    const payloadHash = mutationHash(operation, { goalId: row.goal_id, minutes });
+    try {
+      if (await existingMutation(deps.db, row, key, operation, payloadHash)) {
+        return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+      }
+    } catch (error) {
+      if (error instanceof IdempotencyConflictError) return void res.status(409).json({ error: error.message });
+      throw error;
+    }
+    const changed = await deps.db('goals').where({
+      goal_id: row.goal_id, owner_id: row.owner_id,
+      run_generation: row.run_generation, run_claim: row.run_claim,
+    }).whereNull('result_state').update({ checkpoint_interval_minutes: minutes, updated_at: deps.db.fn.now() });
+    if (changed !== 1) return void res.status(409).json({ error: 'Goal state changed before checkpoint frequency was saved' });
+    await recordControlMutation(deps.db, row, key, operation, payloadHash);
+    const updated = await deps.db<GoalRow>('goals').where({ goal_id: row.goal_id }).first();
+    res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
+  };
+
+  return {
+    capabilities, list, get, create, pause, resume, cancel, requestModel, input,
+    checkpoint, requestCheckpointInterval, requireGoalTaskOwnership,
+  };
 }

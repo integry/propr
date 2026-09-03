@@ -8,6 +8,7 @@ import { getInstanceCatalog, getTaskLiveDetails } from '../api/proprApi';
 vi.mock('../api/goals', () => ({
   getGoalCapabilities: vi.fn(), listGoals: vi.fn(), getGoal: vi.fn(), createGoal: vi.fn(),
   pauseGoal: vi.fn(), resumeGoal: vi.fn(), cancelGoal: vi.fn(), requestGoalModel: vi.fn(), sendGoalInput: vi.fn(),
+  checkpointGoal: vi.fn(), requestGoalCheckpointInterval: vi.fn(),
 }));
 vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn(), getTaskLiveDetails: vi.fn() }));
 const socket = vi.hoisted(() => ({
@@ -33,6 +34,7 @@ const goal: goalsApi.Goal = {
   control: { requestGeneration: 0, acknowledgedGeneration: 0, pending: false },
   failureReason: null, pausePending: false,
   taskId: 'goal-task-1', sessionId: 'thread-1', conversationId: null, finalPr: null, artifacts: [],
+  checkpoint: null,
   artifactStats: { issues: 1, openIssues: 1, pullRequests: 1, openPullRequests: 1 },
   liveSummary: { currentTask: 'Implement API', todos: [{ id: 'todo-1', content: 'Implement API', status: 'in_progress' },], tokenUsage: { input_tokens: 10, output_tokens: 5 }, nativeGoal: null },
   taskState: 'claude_execution', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
@@ -54,6 +56,8 @@ describe('GoalsPage', () => {
     vi.mocked(goalsApi.sendGoalInput).mockResolvedValue({ goal });
     vi.mocked(goalsApi.cancelGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'cancelled', resultState: null } });
     vi.mocked(goalsApi.requestGoalModel).mockResolvedValue({ goal: { ...goal, requestedModel: 'gpt-5.6-fast' } });
+    vi.mocked(goalsApi.checkpointGoal).mockResolvedValue({ goal });
+    vi.mocked(goalsApi.requestGoalCheckpointInterval).mockResolvedValue({ goal });
   });
 
   it('creates exactly one native goal from repository, agent, model and objective', async () => {
@@ -65,6 +69,18 @@ describe('GoalsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
     await waitFor(() => expect(goalsApi.createGoal).toHaveBeenCalledWith(expect.objectContaining({ repository: 'acme/web', agentId: 'agent-1', model: 'gpt-5.6', objective: 'Ship the dashboard', launchStrategy: 'orchestrate' })));
     expect(await screen.findByText('Goal detail')).toBeInTheDocument();
+  });
+
+  it('configures worker checkpoints only for direct goals', async () => {
+    vi.mocked(goalsApi.createGoal).mockResolvedValue({ goal: { ...goal, launchStrategy: 'direct' } });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /><Route path="/goals/:goalId" element={<div>Goal detail</div>} /></Routes></MemoryRouter>);
+    await screen.findByRole('option', { name: 'codex' });
+    fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Ship the dashboard' } });
+    fireEvent.change(screen.getByLabelText('Checkpoint frequency'), { target: { value: '30' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
+    await waitFor(() => expect(goalsApi.createGoal).toHaveBeenCalledWith(expect.objectContaining({
+      launchStrategy: 'direct', checkpointIntervalMinutes: 30,
+    })));
   });
 
   it('hides unsupported runtime diagnostics when at least one agent supports goals', async () => {
@@ -145,6 +161,28 @@ describe('GoalsPage', () => {
     expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Correction or follow-up')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Model for next continuation')).not.toBeInTheDocument();
+  });
+
+  it('requests worker-owned checkpoint commits and adjusts their safe-boundary frequency', async () => {
+    const directGoal: goalsApi.Goal = {
+      ...goal,
+      launchStrategy: 'direct',
+      finalPr: { number: 42, url: 'https://github.com/acme/web/pull/42' },
+      checkpoint: {
+        intervalMinutes: 15, count: 2, lastAt: new Date().toISOString(), lastCommitSha: 'abc123',
+        error: null, pending: false, latest: null,
+      },
+    };
+    vi.mocked(goalsApi.getGoal).mockResolvedValue({ goal: directGoal });
+    vi.mocked(goalsApi.checkpointGoal).mockResolvedValue({ goal: { ...directGoal, checkpoint: { ...directGoal.checkpoint!, pending: true } } });
+    vi.mocked(goalsApi.requestGoalCheckpointInterval).mockResolvedValue({ goal: { ...directGoal, checkpoint: { ...directGoal.checkpoint!, intervalMinutes: 30 } } });
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Checkpoint now' }));
+    await waitFor(() => expect(goalsApi.checkpointGoal).toHaveBeenCalledWith('goal-1'));
+    expect(await screen.findByRole('button', { name: 'Checkpoint pending' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Checkpoint frequency'), { target: { value: '30' } });
+    await waitFor(() => expect(goalsApi.requestGoalCheckpointInterval).toHaveBeenCalledWith('goal-1', 30));
+    expect(screen.getByRole('link', { name: /Open draft PR/ })).toHaveAttribute('href', directGoal.finalPr!.url);
   });
 
   it('re-subscribes after reconnect and merges incremental native output', async () => {
