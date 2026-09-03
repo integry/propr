@@ -18,7 +18,11 @@ import { DesktopConnectDiscoveryService } from './connect-discovery';
 import { DeepLinkDelivery } from './deep-link-delivery';
 import { clearDesktopInstanceCookies } from './desktop-session';
 import { DesktopCredentialService, type DesktopPairingBrowserRequest } from './credential-service';
-import { registerIpcHandlers } from './ipc';
+import {
+  registerIpcHandlers,
+  type DesktopAcceptanceOperation,
+  type DesktopAcceptanceOperationStatus,
+} from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
@@ -37,13 +41,18 @@ import {
   rendererContentSecurityPolicy,
   validatedDevServerUrl,
 } from './security';
-import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
+import {
+  DESKTOP_PROTOCOL,
+  IPC_CHANNELS,
+  type DesktopAcceptanceJourneyStage,
+} from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
 import {
   configureDesktopSessionSecurity,
   type DesktopNetworkPermissionEvidence,
+  type DesktopRendererOwnershipEvidence,
 } from './session-security';
 import {
   createBrowserWindowOptions,
@@ -60,6 +69,8 @@ const PACKAGED_LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_window.ready';
 const PACKAGED_CONNECT_DISCOVERY_MILESTONE_EVENT = 'desktop.renderer.connect_discovery.milestone';
 const PACKAGED_CONNECT_JOURNEY_STAGE_EVENT = 'desktop.renderer.connect_journey.stage';
+const PACKAGED_CONNECT_JOURNEY_OPERATION_EVENT = 'desktop.renderer.connect_journey.operation';
+const PACKAGED_CONNECT_RENDERER_OWNERSHIP_EVENT = 'desktop.renderer.connect_request_ownership';
 type PackagedConnectJourneyStage =
   | 'JOURNEY_DISCOVERY_RENDERER'
   | 'JOURNEY_DISCOVERY_VALIDATED'
@@ -72,9 +83,19 @@ type PackagedConnectJourneyStage =
   | 'JOURNEY_PAIR_MANUAL_FORM'
   | 'JOURNEY_PAIR_BROWSER_APPROVAL'
   | 'JOURNEY_PAIR_ACTIVATION_DASHBOARD'
+  | 'JOURNEY_PAIR_AUTHENTICATION_REQUIRED'
+  | 'JOURNEY_PAIR_CREDENTIAL_COMMITTED'
+  | 'JOURNEY_PAIR_AUTHENTICATED_REPROBE_READY'
+  | 'JOURNEY_PAIR_ACTIVATION_COMMITTED'
+  | 'JOURNEY_PAIR_ACTIVATION_PUBLISHED'
+  | 'JOURNEY_PAIR_REACT_CONNECTED'
   | 'JOURNEY_PAIR_TRANSPORT'
   | 'JOURNEY_PAIR_COMPLETE'
   | 'JOURNEY_REPROBE_ACTIVATION_DASHBOARD'
+  | 'JOURNEY_REPROBE_AUTHENTICATED_REPROBE_READY'
+  | 'JOURNEY_REPROBE_ACTIVATION_COMMITTED'
+  | 'JOURNEY_REPROBE_ACTIVATION_PUBLISHED'
+  | 'JOURNEY_REPROBE_REACT_CONNECTED'
   | 'JOURNEY_REPROBE_TRANSPORT'
   | 'JOURNEY_REPROBE_COMPLETE';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
@@ -120,6 +141,7 @@ interface PackagedTransportSmoke {
   shutdownMode: 'success' | 'retry' | 'forced-timeout';
 }
 let activePackagedTransportSmoke: PackagedTransportSmoke | null = null;
+let activePackagedConnectJourney = false;
 
 interface PackagedConnectSmoke {
   configRoot: string;
@@ -215,6 +237,60 @@ const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?:
 
 const reportPackagedConnectJourneyStage = (code: PackagedConnectJourneyStage): void => {
   log('info', PACKAGED_CONNECT_JOURNEY_STAGE_EVENT, { code });
+};
+
+interface PackagedJourneyStageTracker {
+  record(stage: DesktopAcceptanceJourneyStage): void;
+  waitFor(stage: DesktopAcceptanceJourneyStage): Promise<void>;
+}
+
+const createPackagedJourneyStageTracker = (
+  phase: 'pair' | 'reprobe',
+): PackagedJourneyStageTracker => {
+  const seen = new Set<DesktopAcceptanceJourneyStage>();
+  const waiters = new Map<DesktopAcceptanceJourneyStage, Set<() => void>>();
+  const stageCodes: Partial<Record<DesktopAcceptanceJourneyStage, PackagedConnectJourneyStage>> = phase === 'pair'
+    ? {
+        AUTHENTICATION_REQUIRED: 'JOURNEY_PAIR_AUTHENTICATION_REQUIRED',
+        CREDENTIAL_COMMITTED: 'JOURNEY_PAIR_CREDENTIAL_COMMITTED',
+        AUTHENTICATED_REPROBE_READY: 'JOURNEY_PAIR_AUTHENTICATED_REPROBE_READY',
+        ACTIVATION_COMMITTED: 'JOURNEY_PAIR_ACTIVATION_COMMITTED',
+        ACTIVATION_PUBLISHED: 'JOURNEY_PAIR_ACTIVATION_PUBLISHED',
+        REACT_CONNECTED: 'JOURNEY_PAIR_REACT_CONNECTED',
+      }
+    : {
+        AUTHENTICATED_REPROBE_READY: 'JOURNEY_REPROBE_AUTHENTICATED_REPROBE_READY',
+        ACTIVATION_COMMITTED: 'JOURNEY_REPROBE_ACTIVATION_COMMITTED',
+        ACTIVATION_PUBLISHED: 'JOURNEY_REPROBE_ACTIVATION_PUBLISHED',
+        REACT_CONNECTED: 'JOURNEY_REPROBE_REACT_CONNECTED',
+      };
+  return {
+    record(stage) {
+      const code = stageCodes[stage];
+      if (!code) throw new Error('Packaged Connect journey reported an invalid phase stage');
+      if (seen.has(stage)) return;
+      seen.add(stage);
+      reportPackagedConnectJourneyStage(code);
+      for (const resolveWaiter of waiters.get(stage) ?? []) resolveWaiter();
+      waiters.delete(stage);
+    },
+    waitFor(stage) {
+      if (seen.has(stage)) return Promise.resolve();
+      return new Promise<void>((resolveStage, rejectStage) => {
+        const timer = setTimeout(() => {
+          waiters.get(stage)?.delete(resolve);
+          rejectStage(new Error('Packaged Connect journey renderer stage timed out'));
+        }, 15_000);
+        const resolve = () => {
+          clearTimeout(timer);
+          resolveStage();
+        };
+        const current = waiters.get(stage) ?? new Set();
+        current.add(resolve);
+        waiters.set(stage, current);
+      });
+    },
+  };
 };
 
 process.on('uncaughtExceptionMonitor', () => {
@@ -490,7 +566,6 @@ const openPackagedJourneyApproval = async (request: DesktopPairingBrowserRequest
       }
     },
   });
-  reportPackagedConnectJourneyStage('JOURNEY_PAIR_ACTIVATION_DASHBOARD');
 };
 
 const runPackagedConnectJourneySmoke = async (
@@ -499,6 +574,7 @@ const runPackagedConnectJourneySmoke = async (
   credentials: DesktopCredentialService,
   endpoint: string,
   phase: 'pair' | 'reprobe',
+  stages: PackagedJourneyStageTracker,
 ): Promise<void> => {
   reportPackagedConnectJourneyStage('JOURNEY_STORAGE_BACKEND');
   const security = profiles.security();
@@ -564,7 +640,8 @@ const runPackagedConnectJourneySmoke = async (
   reportPackagedConnectJourneyStage(phase === 'pair'
     ? 'JOURNEY_PAIR_MANUAL_FORM'
     : 'JOURNEY_REPROBE_ACTIVATION_DASHBOARD');
-  const proof = await window.webContents.executeJavaScript(`(async () => {
+  if (phase === 'pair') {
+    const submitted = await window.webContents.executeJavaScript(`(async () => {
     const waitFor = async predicate => {
       const deadline = performance.now() + 15000;
       do {
@@ -579,22 +656,47 @@ const runPackagedConnectJourneySmoke = async (
       setter.call(input, value);
       input.dispatchEvent(new Event('input', { bubbles: true }));
     };
-    if (${JSON.stringify(phase)} === 'pair') {
-      const chooser = await waitFor(() => document.querySelector('.desktop-welcome-card'));
-      const connect = Array.from(chooser.querySelectorAll('button.desktop-choice-button'))
-        .find(button => button.textContent?.includes('Connect to an existing instance'));
-      if (!(connect instanceof HTMLButtonElement)) throw new Error('Manual connection action was missing');
-      connect.click();
-      const form = await waitFor(() => document.querySelector('form.desktop-profile-form'));
-      const inputs = form.querySelectorAll('input');
-      if (inputs.length !== 2) throw new Error('Manual connection form was incomplete');
-      setInput(inputs[0], 'Packaged remote');
-      setInput(inputs[1], ${JSON.stringify(endpoint)});
-      form.requestSubmit();
-      const authenticate = await waitFor(() => Array.from(document.querySelectorAll('.desktop-connection-card button'))
-        .find(button => button.textContent?.includes('Sign in in browser')));
+    const chooser = await waitFor(() => document.querySelector('.desktop-welcome-card'));
+    const connect = Array.from(chooser.querySelectorAll('button.desktop-choice-button'))
+      .find(button => button.textContent?.includes('Connect to an existing instance'));
+    if (!(connect instanceof HTMLButtonElement)) return false;
+    connect.click();
+    const form = await waitFor(() => document.querySelector('form.desktop-profile-form'));
+    const inputs = form.querySelectorAll('input');
+    if (inputs.length !== 2) return false;
+    setInput(inputs[0], 'Packaged remote');
+    setInput(inputs[1], ${JSON.stringify(endpoint)});
+    form.requestSubmit();
+    await waitFor(() => Array.from(document.querySelectorAll('.desktop-connection-card button'))
+      .find(button => button.textContent?.includes('Sign in in browser')));
+    return true;
+  })()`);
+    if (submitted !== true) throw new Error('Packaged Connect manual profile submission failed');
+    await stages.waitFor('AUTHENTICATION_REQUIRED');
+    const clicked = await window.webContents.executeJavaScript(`(() => {
+      const authenticate = Array.from(document.querySelectorAll('.desktop-connection-card button'))
+        .find(button => button.textContent?.includes('Sign in in browser'));
+      if (!(authenticate instanceof HTMLButtonElement)) return false;
       authenticate.click();
-    }
+      return true;
+    })()`);
+    if (clicked !== true) throw new Error('Packaged Connect authentication action was missing');
+    await stages.waitFor('CREDENTIAL_COMMITTED');
+  }
+  await stages.waitFor('AUTHENTICATED_REPROBE_READY');
+  await stages.waitFor('ACTIVATION_COMMITTED');
+  await stages.waitFor('ACTIVATION_PUBLISHED');
+  await stages.waitFor('REACT_CONNECTED');
+  const proof = await window.webContents.executeJavaScript(`(async () => {
+    const waitFor = async predicate => {
+      const deadline = performance.now() + 15000;
+      do {
+        const value = predicate();
+        if (value) return value;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      } while (performance.now() < deadline);
+      throw new Error('Packaged Connect journey renderer state timed out');
+    };
     const dashboard = await waitFor(() => document.querySelector('.desktop-app'));
     const connection = await waitFor(() => document.querySelector('.desktop-connection-pill.desktop-connection-ready'));
     await waitFor(() => document.querySelector('.desktop-titlebar'));
@@ -830,6 +932,7 @@ const runPackagedTransportSmoke = async (
 
 const createMainWindow = async (
   transportSmoke: PackagedTransportSmoke | null = activePackagedTransportSmoke,
+  connectJourney = activePackagedConnectJourney,
 ): Promise<BrowserWindow> => {
   const workArea = selectInitialWindowWorkArea(screen);
   const window = new BrowserWindow(
@@ -904,7 +1007,7 @@ const createMainWindow = async (
     log('info', 'desktop.renderer.profile_api.ready', { origin: DESKTOP_RENDERER_ORIGIN });
   }
   let mvpFlowProof: Record<string, unknown> = { connectDiscovery: true };
-  if (packagedSmokeTest && !transportSmoke) {
+  if (packagedSmokeTest && !transportSmoke && !connectJourney) {
     const profileFlow = await window.webContents.executeJavaScript(`(async () => {
       const bridge = window.proprDesktop;
       const local = await bridge.profiles.save({ label: 'Local setup', apiBaseUrl: 'http://localhost:4000' });
@@ -956,7 +1059,7 @@ const createMainWindow = async (
       throw new Error('Packaged desktop transport smoke did not preserve the MVP bridge boundaries');
     }
   }
-  if (packagedSmokeTest) {
+  if (packagedSmokeTest && !connectJourney) {
     log('info', 'desktop.renderer.mvp_flows.ready', mvpFlowProof);
     log('info', PACKAGED_LAYOUT_READY_EVENT, { layout: await inspectPackagedLayout(window) });
     log('info', PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT, {
@@ -1000,7 +1103,11 @@ if (!hasSingleInstanceLock) {
     const transportSmoke = packagedTransportSmoke();
     activePackagedTransportSmoke = transportSmoke;
     const connectSmoke = packagedConnectSmoke();
+    activePackagedConnectJourney = Boolean(connectSmoke?.journeyEndpoint);
     if (transportSmoke && connectSmoke) throw new Error('Packaged desktop smoke modes are mutually exclusive');
+    const journeyStages = connectSmoke?.journeyPhase
+      ? createPackagedJourneyStageTracker(connectSmoke.journeyPhase)
+      : null;
 
     const productionEncryption: EncryptionProvider = {
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -1072,6 +1179,9 @@ if (!hasSingleInstanceLock) {
         reportNetworkPermissionDecision: (evidence: DesktopNetworkPermissionEvidence) => {
           log('info', 'desktop.renderer.connect_network_permission', { ...evidence });
         },
+        reportRendererOwnershipDecision: (evidence: DesktopRendererOwnershipEvidence) => {
+          log('info', PACKAGED_CONNECT_RENDERER_OWNERSHIP_EVENT, { ...evidence });
+        },
       } : {}),
     });
     const credentialInitialization = await credentials.initialize();
@@ -1093,6 +1203,17 @@ if (!hasSingleInstanceLock) {
       devServerUrl,
       packagedRendererUrl,
       openExternal: openAllowedExternalUrl,
+      ...(journeyStages ? {
+        reportAcceptanceJourneyStage: (stage: DesktopAcceptanceJourneyStage) => {
+          journeyStages.record(stage);
+        },
+        reportAcceptanceOperation: (
+          operation: DesktopAcceptanceOperation,
+          status: DesktopAcceptanceOperationStatus,
+        ) => {
+          log('info', PACKAGED_CONNECT_JOURNEY_OPERATION_EVENT, { operation, status });
+        },
+      } : {}),
     });
     const shutdownLifecycle = transportSmoke?.shutdownMode === 'forced-timeout'
       ? { shutdown: () => new Promise<void>(() => undefined) }
@@ -1117,12 +1238,14 @@ if (!hasSingleInstanceLock) {
       reportPackagedConnectJourneyStage('JOURNEY_DISCOVERY_RENDERER');
       const readyFields = await runPackagedConnectDiscoverySmoke(mainWindow);
       if (connectSmoke.journeyEndpoint && connectSmoke.journeyPhase) {
+        if (!journeyStages) throw new Error('Packaged Connect journey stage tracker was unavailable');
         await runPackagedConnectJourneySmoke(
           mainWindow,
           profiles,
           credentials,
           connectSmoke.journeyEndpoint,
           connectSmoke.journeyPhase,
+          journeyStages,
         );
       }
       await publishPackagedConnectReady(readyFields);

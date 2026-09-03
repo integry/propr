@@ -122,6 +122,11 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
       return fromDiscoveryCandidate(candidate);
     },
   },
+  ...(bridge.acceptance ? {
+    acceptance: {
+      reportJourneyStage: stage => bridge.acceptance!.reportJourneyStage(stage),
+    },
+  } : {}),
   authentication: {
     async authenticate(profile) {
       const security = await bridge.storage.security();

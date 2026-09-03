@@ -31,6 +31,23 @@ export interface DesktopNetworkPermissionEvidence {
   requestingOriginAuthorityEqual: boolean;
 }
 
+export interface DesktopRendererOwnershipEvidence {
+  schemaVersion: 1;
+  resourceCategory: 'xhr' | 'webSocket' | 'other';
+  mainRendererPresent: boolean;
+  mainRendererLive: boolean;
+  webContentsIdMatches: boolean;
+  webContentsAbsentOrMatches: boolean;
+  mainFrameLive: boolean;
+  rendererDocumentTrusted: boolean;
+  rendererDocumentAuthorityEqual: boolean;
+  frameOmitted: boolean;
+  framePresent: boolean;
+  frameMatchesMainFrame: boolean;
+  frameExplicitlyForeign: boolean;
+  rendererOwned: boolean;
+}
+
 const rendererAuthority = (value: string): string | null => {
   try {
     const url = new URL(value);
@@ -82,6 +99,7 @@ interface ConfigureDesktopSessionSecurityOptions {
   getMainRenderer(): WebContents | null;
   isTrustedRendererUrl(value: string): boolean;
   reportNetworkPermissionDecision?(evidence: DesktopNetworkPermissionEvidence): void;
+  reportRendererOwnershipDecision?(evidence: DesktopRendererOwnershipEvidence): void;
 }
 
 /** Install the production permission, concrete-request, and response boundary on one session. */
@@ -93,6 +111,7 @@ export const configureDesktopSessionSecurity = ({
   getMainRenderer,
   isTrustedRendererUrl,
   reportNetworkPermissionDecision = () => undefined,
+  reportRendererOwnershipDecision = () => undefined,
 }: ConfigureDesktopSessionSecurityOptions): {
   close(): void;
   dispose(): void;
@@ -186,15 +205,64 @@ export const configureDesktopSessionSecurity = ({
   desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {
     const mainRenderer = getMainRenderer();
     const requestingFrame = details.frame;
-    const rendererOwned = mainRenderer !== null
-      && !mainRenderer.isDestroyed()
-      && details.webContentsId === mainRenderer.id
-      && (details.webContents === undefined || details.webContents === mainRenderer)
-      && requestingFrame !== undefined
-      && requestingFrame !== null
+    const mainFrame = mainRenderer?.mainFrame;
+    const mainRendererLive = mainRenderer !== null && !mainRenderer.isDestroyed();
+    const mainFrameLive = mainRendererLive
+      && mainFrame !== undefined
+      && mainFrame !== null
+      && !mainFrame.detached
+      && mainFrame.parent === null;
+    const rendererDocumentUrl = mainRendererLive ? mainRenderer.getURL() : '';
+    const mainFrameUrl = mainFrameLive ? mainFrame.url : '';
+    const rendererDocumentTrusted = mainFrameLive
+      && isTrustedRendererUrl(rendererDocumentUrl)
+      && isTrustedRendererUrl(mainFrameUrl);
+    const rendererDocumentAuthorityEqual = rendererDocumentTrusted
+      && rendererAuthority(rendererDocumentUrl) !== null
+      && rendererAuthority(rendererDocumentUrl) === rendererAuthority(mainFrameUrl)
+      && rendererDocumentUrl === mainFrameUrl;
+    const webContentsIdMatches = mainRendererLive && details.webContentsId === mainRenderer.id;
+    const webContentsAbsentOrMatches = mainRendererLive
+      && (details.webContents === undefined || details.webContents === mainRenderer);
+    const frameOmitted = requestingFrame === undefined;
+    const framePresent = requestingFrame !== undefined && requestingFrame !== null;
+    const frameMatchesMainFrame = framePresent
+      && mainFrame !== undefined
+      && mainFrame !== null
+      && requestingFrame === mainFrame
       && !requestingFrame.detached
-      && requestingFrame === mainRenderer.mainFrame
       && isTrustedRendererUrl(requestingFrame.url);
+    const resourceCategory = details.resourceType === 'xhr'
+      ? 'xhr'
+      : details.resourceType === 'webSocket'
+        ? 'webSocket'
+        : 'other';
+    const rendererOwned = mainRendererLive
+      && webContentsIdMatches
+      && webContentsAbsentOrMatches
+      && frameMatchesMainFrame;
+    if (details.webContentsId !== undefined) {
+      try {
+        reportRendererOwnershipDecision({
+          schemaVersion: 1,
+          resourceCategory,
+          mainRendererPresent: mainRenderer !== null,
+          mainRendererLive,
+          webContentsIdMatches,
+          webContentsAbsentOrMatches,
+          mainFrameLive,
+          rendererDocumentTrusted,
+          rendererDocumentAuthorityEqual,
+          frameOmitted,
+          framePresent,
+          frameMatchesMainFrame,
+          frameExplicitlyForeign: framePresent && !frameMatchesMainFrame,
+          rendererOwned,
+        });
+      } catch {
+        // Fixed diagnostics cannot alter the renderer ownership decision.
+      }
+    }
     void credentials.prepareRequestAsync(details.url, details.requestHeaders, {
       method: details.method,
       ...(enableRendererNetworkBoundary ? { rendererOwned } : {}),

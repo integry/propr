@@ -8,6 +8,8 @@ export const CONNECT_READY_EVENT = 'desktop.renderer.connect_discovery.ready';
 export const CONNECT_DISCOVERY_MILESTONE_EVENT = 'desktop.renderer.connect_discovery.milestone';
 export const CONNECT_JOURNEY_STAGE_EVENT = 'desktop.renderer.connect_journey.stage';
 export const CONNECT_NETWORK_PERMISSION_EVENT = 'desktop.renderer.connect_network_permission';
+export const CONNECT_JOURNEY_OPERATION_EVENT = 'desktop.renderer.connect_journey.operation';
+export const CONNECT_RENDERER_OWNERSHIP_EVENT = 'desktop.renderer.connect_request_ownership';
 export const CHILD_CAPTURE_MAX_BYTES = 64 * 1024;
 export const CHILD_DIAGNOSTIC_MAX_RECORDS = 20;
 
@@ -29,6 +31,8 @@ const diagnosticEvents = new Set([
   CONNECT_DISCOVERY_MILESTONE_EVENT,
   CONNECT_JOURNEY_STAGE_EVENT,
   CONNECT_NETWORK_PERMISSION_EVENT,
+  CONNECT_JOURNEY_OPERATION_EVENT,
+  CONNECT_RENDERER_OWNERSHIP_EVENT,
   'desktop.renderer.connect_discovery.phase',
   'desktop.renderer.connect_discovery.status',
   'desktop.renderer.gone',
@@ -58,9 +62,19 @@ const journeyStageCodes = new Set([
   'JOURNEY_PAIR_MANUAL_FORM',
   'JOURNEY_PAIR_BROWSER_APPROVAL',
   'JOURNEY_PAIR_ACTIVATION_DASHBOARD',
+  'JOURNEY_PAIR_AUTHENTICATION_REQUIRED',
+  'JOURNEY_PAIR_CREDENTIAL_COMMITTED',
+  'JOURNEY_PAIR_AUTHENTICATED_REPROBE_READY',
+  'JOURNEY_PAIR_ACTIVATION_COMMITTED',
+  'JOURNEY_PAIR_ACTIVATION_PUBLISHED',
+  'JOURNEY_PAIR_REACT_CONNECTED',
   'JOURNEY_PAIR_TRANSPORT',
   'JOURNEY_PAIR_COMPLETE',
   'JOURNEY_REPROBE_ACTIVATION_DASHBOARD',
+  'JOURNEY_REPROBE_AUTHENTICATED_REPROBE_READY',
+  'JOURNEY_REPROBE_ACTIVATION_COMMITTED',
+  'JOURNEY_REPROBE_ACTIVATION_PUBLISHED',
+  'JOURNEY_REPROBE_REACT_CONNECTED',
   'JOURNEY_REPROBE_TRANSPORT',
   'JOURNEY_REPROBE_COMPLETE',
 ]);
@@ -102,6 +116,25 @@ const networkPermissionBooleanFields = [
   'requestingOriginAuthorityValid',
   'requestingOriginAuthorityEqual',
 ];
+const journeyOperations = new Set(['PROFILE_SAVE', 'PAIR', 'PROBE', 'ACTIVATE']);
+const journeyOperationStatuses = new Set([
+  'COMPLETED', 'READY', 'AUTHENTICATION_REQUIRED', 'INCOMPATIBLE', 'OFFLINE', 'REJECTED',
+]);
+const rendererOwnershipResourceCategories = new Set(['xhr', 'webSocket', 'other']);
+const rendererOwnershipBooleanFields = [
+  'mainRendererPresent',
+  'mainRendererLive',
+  'webContentsIdMatches',
+  'webContentsAbsentOrMatches',
+  'mainFrameLive',
+  'rendererDocumentTrusted',
+  'rendererDocumentAuthorityEqual',
+  'frameOmitted',
+  'framePresent',
+  'frameMatchesMainFrame',
+  'frameExplicitlyForeign',
+  'rendererOwned',
+];
 
 const boundedNetworkPermissionEvidence = record => {
   if (record.schemaVersion !== 1
@@ -118,11 +151,33 @@ const boundedNetworkPermissionEvidence = record => {
   };
 };
 
+const boundedJourneyOperationEvidence = record => {
+  if (!journeyOperations.has(record.operation) || !journeyOperationStatuses.has(record.status)) return {};
+  return { operation: record.operation, status: record.status };
+};
+
+const boundedRendererOwnershipEvidence = record => {
+  if (record.schemaVersion !== 1
+    || !rendererOwnershipResourceCategories.has(record.resourceCategory)
+    || rendererOwnershipBooleanFields.some(field => typeof record[field] !== 'boolean')) return {};
+  return {
+    schemaVersion: 1,
+    resourceCategory: record.resourceCategory,
+    ...Object.fromEntries(rendererOwnershipBooleanFields.map(field => [field, record[field]])),
+  };
+};
+
 export const boundedChildDiagnostics = records => {
   const diagnostics = records.flatMap(record => {
     if (!record || typeof record !== 'object' || !diagnosticEvents.has(record.event)) return [];
     if (record.event === CONNECT_NETWORK_PERMISSION_EVENT) {
       return [{ event: record.event, ...boundedNetworkPermissionEvidence(record) }];
+    }
+    if (record.event === CONNECT_JOURNEY_OPERATION_EVENT) {
+      return [{ event: record.event, ...boundedJourneyOperationEvidence(record) }];
+    }
+    if (record.event === CONNECT_RENDERER_OWNERSHIP_EVENT) {
+      return [{ event: record.event, ...boundedRendererOwnershipEvidence(record) }];
     }
     const nestedCode = record.error && typeof record.error === 'object' ? record.error.code : undefined;
     const candidateCode = typeof record.code === 'string' ? record.code : nestedCode;
@@ -146,11 +201,18 @@ export const boundedChildDiagnostics = records => {
     }];
   });
   const bounded = diagnostics.slice(0, CHILD_DIAGNOSTIC_MAX_RECORDS);
-  const latestJourneyStage = diagnostics.findLast(record => typeof record.code === 'string'
-    && (record.event === CONNECT_DISCOVERY_MILESTONE_EVENT
-      || record.event === CONNECT_JOURNEY_STAGE_EVENT));
-  if (latestJourneyStage && !bounded.includes(latestJourneyStage)) {
-    bounded[bounded.length - 1] = latestJourneyStage;
+  if (diagnostics.length > CHILD_DIAGNOSTIC_MAX_RECORDS) {
+    const latestCriticalEvidence = [
+      diagnostics.findLast(record => record.event === CONNECT_JOURNEY_OPERATION_EVENT),
+      diagnostics.findLast(record => record.event === CONNECT_RENDERER_OWNERSHIP_EVENT),
+      diagnostics.findLast(record => typeof record.code === 'string'
+        && (record.event === CONNECT_DISCOVERY_MILESTONE_EVENT
+          || record.event === CONNECT_JOURNEY_STAGE_EVENT)),
+    ].filter(Boolean);
+    const withoutLatestCriticalEvidence = bounded.filter(record => !latestCriticalEvidence.includes(record));
+    return withoutLatestCriticalEvidence
+      .slice(0, CHILD_DIAGNOSTIC_MAX_RECORDS - latestCriticalEvidence.length)
+      .concat(latestCriticalEvidence);
   }
   return bounded;
 };

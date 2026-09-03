@@ -16,6 +16,7 @@ import {
   configureDesktopSessionSecurity,
   desktopNetworkPermissionAllowed,
   type DesktopNetworkPermissionEvidence,
+  type DesktopRendererOwnershipEvidence,
 } from './session-security';
 
 const RENDERER_URL = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
@@ -152,6 +153,7 @@ describe('production desktop session security', () => {
       let permissionRequest: PermissionRequest = () => undefined;
       let beforeSendHeaders: BeforeSendHeaders = () => undefined;
       const evidence: DesktopNetworkPermissionEvidence[] = [];
+      const ownershipEvidence: DesktopRendererOwnershipEvidence[] = [];
       const desktopSession = {
         setPermissionCheckHandler: (handler: PermissionCheck | null) => {
           if (handler) permissionCheck = handler;
@@ -191,6 +193,7 @@ describe('production desktop session security', () => {
         getMainRenderer: () => mainRenderer,
         isTrustedRendererUrl: value => value === RENDERER_URL,
         reportNetworkPermissionDecision: record => evidence.push(record),
+        reportRendererOwnershipDecision: record => ownershipEvidence.push(record),
       });
 
       const check = (
@@ -232,13 +235,14 @@ describe('production desktop session security', () => {
         webContentsId = mainRenderer.id,
         resourceType = 'xhr',
         frame: WebFrameMain | null = mainFrame,
+        omitFrame = false,
       ) => await new Promise<Record<string, unknown>>(resolve => beforeSendHeaders({
         url,
         method: 'GET',
         resourceType,
         requestHeaders: headers,
         webContentsId,
-        frame,
+        ...(!omitFrame ? { frame } : {}),
       }, resolve));
       const scopeHeaders = {
         Origin: DESKTOP_RENDERER_ORIGIN,
@@ -252,6 +256,17 @@ describe('production desktop session security', () => {
           Authorization: `Bearer ${TOKEN}`,
         },
       });
+      assert.deepEqual(await intercepted(
+        `${ACTIVE_ORIGIN}/api/auth/user`, scopeHeaders, mainRenderer.id, 'xhr', mainFrame, true,
+      ), { cancel: true });
+      assert.equal(ownershipEvidence.at(-1)?.frameOmitted, true);
+      assert.equal(ownershipEvidence.at(-1)?.rendererOwned, false);
+      assert.deepEqual(await intercepted(
+        `${ACTIVE_ORIGIN}/api/auth/user`, scopeHeaders, mainRenderer.id, 'other', mainFrame, true,
+      ), { cancel: true });
+      assert.deepEqual(await intercepted(
+        `${ACTIVE_ORIGIN}/api/auth/user`, scopeHeaders, mainRenderer.id, 'xhr', null,
+      ), { cancel: true });
       assert.deepEqual(await intercepted(
         `${ACTIVE_ORIGIN}/api/desktop/pairings/dpr_${'A'.repeat(22)}/browser`,
         scopeHeaders,

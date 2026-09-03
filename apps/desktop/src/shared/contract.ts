@@ -22,7 +22,16 @@ export const IPC_CHANNELS = Object.freeze({
   lifecycleStop: 'desktop:lifecycle-stop',
   lifecycleRestart: 'desktop:lifecycle-restart',
   deepLink: 'desktop:deep-link',
+  acceptanceJourneyStage: 'desktop:acceptance-journey-stage',
 } as const);
+
+export type DesktopAcceptanceJourneyStage =
+  | 'AUTHENTICATION_REQUIRED'
+  | 'CREDENTIAL_COMMITTED'
+  | 'AUTHENTICATED_REPROBE_READY'
+  | 'ACTIVATION_COMMITTED'
+  | 'ACTIVATION_PUBLISHED'
+  | 'REACT_CONNECTED';
 
 export type DesktopPlatform = 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku'
   | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
@@ -141,5 +150,9 @@ export interface DesktopBridge {
     start(): Promise<LocalLifecycleOperationResult>;
     stop(): Promise<LocalLifecycleOperationResult>;
     restart(): Promise<LocalLifecycleOperationResult>;
+  };
+  /** @internal Present only in an authorized packaged Connect acceptance process. */
+  acceptance?: {
+    reportJourneyStage(stage: DesktopAcceptanceJourneyStage): Promise<void>;
   };
 }

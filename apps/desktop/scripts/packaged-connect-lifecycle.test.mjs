@@ -9,7 +9,9 @@ import {
   CHILD_CAPTURE_MAX_BYTES,
   CONNECT_DISCOVERY_MILESTONE_EVENT,
   CONNECT_JOURNEY_STAGE_EVENT,
+  CONNECT_JOURNEY_OPERATION_EVENT,
   CONNECT_NETWORK_PERMISSION_EVENT,
+  CONNECT_RENDERER_OWNERSHIP_EVENT,
   CONNECT_READY_EVENT,
   createIdempotentJourneyFixtureClose,
   isExactReadyRecord,
@@ -141,6 +143,30 @@ describe('packaged Connect bounded child lifecycle', () => {
           url: 'https://not-returned.example.test/private',
         });
         app.write({ event: CONNECT_JOURNEY_STAGE_EVENT, code: 'UNBOUNDED_STAGE' });
+        app.write({
+          event: CONNECT_JOURNEY_OPERATION_EVENT,
+          operation: 'PROBE',
+          status: 'AUTHENTICATION_REQUIRED',
+          error: 'not-returned',
+        });
+        app.write({
+          event: CONNECT_RENDERER_OWNERSHIP_EVENT,
+          schemaVersion: 1,
+          resourceCategory: 'xhr',
+          mainRendererPresent: true,
+          mainRendererLive: true,
+          webContentsIdMatches: true,
+          webContentsAbsentOrMatches: true,
+          mainFrameLive: true,
+          rendererDocumentTrusted: true,
+          rendererDocumentAuthorityEqual: true,
+          frameOmitted: true,
+          framePresent: false,
+          frameMatchesMainFrame: false,
+          frameExplicitlyForeign: false,
+          rendererOwned: false,
+          url: 'not-returned',
+        });
         app.close(0, null);
       },
     });
@@ -148,8 +174,30 @@ describe('packaged Connect bounded child lifecycle', () => {
     assert.deepEqual(result.records, [
       { event: CONNECT_JOURNEY_STAGE_EVENT, code: 'JOURNEY_PAIR_TRANSPORT' },
       { event: CONNECT_JOURNEY_STAGE_EVENT },
+      {
+        event: CONNECT_JOURNEY_OPERATION_EVENT,
+        operation: 'PROBE',
+        status: 'AUTHENTICATION_REQUIRED',
+      },
+      {
+        event: CONNECT_RENDERER_OWNERSHIP_EVENT,
+        schemaVersion: 1,
+        resourceCategory: 'xhr',
+        mainRendererPresent: true,
+        mainRendererLive: true,
+        webContentsIdMatches: true,
+        webContentsAbsentOrMatches: true,
+        mainFrameLive: true,
+        rendererDocumentTrusted: true,
+        rendererDocumentAuthorityEqual: true,
+        frameOmitted: true,
+        framePresent: false,
+        frameMatchesMainFrame: false,
+        frameExplicitlyForeign: false,
+        rendererOwned: false,
+      },
     ]);
-    assert.doesNotMatch(JSON.stringify(result), /not-returned|UNBOUNDED_STAGE|url/u);
+    assert.doesNotMatch(JSON.stringify(result), /not-returned|UNBOUNDED_STAGE|url|error/u);
   });
 
   test('retains the latest bounded journey stage when earlier diagnostics fill the cap', async () => {
@@ -158,15 +206,27 @@ describe('packaged Connect bounded child lifecycle', () => {
         for (let index = 0; index < 20; index += 1) {
           app.write({ event: 'desktop.app.ready', code: 'DETAIL_REDACTED' });
         }
+        app.write({
+          event: CONNECT_JOURNEY_OPERATION_EVENT,
+          operation: 'ACTIVATE',
+          status: 'REJECTED',
+          error: 'not-returned',
+        });
         app.write({ event: CONNECT_JOURNEY_STAGE_EVENT, code: 'JOURNEY_PAIR_ACTIVATION_DASHBOARD' });
         app.close(0, null);
       },
     });
     assert.equal(result.records.length, 20);
+    assert.deepEqual(result.records.at(-2), {
+      event: CONNECT_JOURNEY_OPERATION_EVENT,
+      operation: 'ACTIVATE',
+      status: 'REJECTED',
+    });
     assert.deepEqual(result.records.at(-1), {
       event: CONNECT_JOURNEY_STAGE_EVENT,
       code: 'JOURNEY_PAIR_ACTIVATION_DASHBOARD',
     });
+    assert.doesNotMatch(JSON.stringify(result), /not-returned/u);
   });
 
   test('returns only fixed secret-free Local Network Access decision evidence', async () => {
@@ -240,8 +300,16 @@ describe('packaged Connect bounded child lifecycle', () => {
 
     const manual = main.indexOf("'JOURNEY_PAIR_MANUAL_FORM'");
     const browser = main.indexOf("reportPackagedConnectJourneyStage('JOURNEY_PAIR_BROWSER_APPROVAL')");
-    const activation = main.indexOf("reportPackagedConnectJourneyStage('JOURNEY_PAIR_ACTIVATION_DASHBOARD')");
-    assert.ok(manual >= 0 && browser >= 0 && browser < activation);
+    const credential = main.indexOf("'JOURNEY_PAIR_CREDENTIAL_COMMITTED'");
+    const reprobeReady = main.indexOf("'JOURNEY_PAIR_AUTHENTICATED_REPROBE_READY'");
+    const activation = main.indexOf("'JOURNEY_PAIR_ACTIVATION_COMMITTED'");
+    const publication = main.indexOf("'JOURNEY_PAIR_ACTIVATION_PUBLISHED'");
+    const react = main.indexOf("'JOURNEY_PAIR_REACT_CONNECTED'");
+    assert.ok(manual >= 0 && browser >= 0 && credential >= 0 && reprobeReady >= 0
+      && activation >= 0 && publication >= 0 && react >= 0);
+    assert.match(main, /await stages\.waitFor\('CREDENTIAL_COMMITTED'\)[\s\S]*?await stages\.waitFor\('AUTHENTICATED_REPROBE_READY'\)[\s\S]*?await stages\.waitFor\('ACTIVATION_COMMITTED'\)[\s\S]*?await stages\.waitFor\('ACTIVATION_PUBLISHED'\)[\s\S]*?await stages\.waitFor\('REACT_CONNECTED'\)/u);
+    assert.match(main, /if \(packagedSmokeTest && !transportSmoke && !connectJourney\)/u);
+    assert.match(main, /if \(packagedSmokeTest && !connectJourney\) \{/u);
     assert.doesNotMatch(main, /JOURNEY_PAIR_RENDERER|JOURNEY_REPROBE_RENDERER/u);
   });
 

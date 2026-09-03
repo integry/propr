@@ -597,6 +597,7 @@ try {
         || /\/browser$/u.test(request.url ?? ''));
       const pairingStarts = bootstrap.filter(request => request.url === '/api/desktop/pairings');
       const pairingBrowsers = bootstrap.filter(request => /\/browser$/u.test(request.url ?? ''));
+      const pairingPolls = bootstrap.filter(request => /\/poll$/u.test(request.url ?? ''));
       const pairingActivations = bootstrap.filter(request => /\/activate$/u.test(request.url ?? ''));
       const authenticatedRest = applicationRequests.filter(request =>
         request.socketIo === false
@@ -610,9 +611,11 @@ try {
       const firstBearer = applicationRequests.findIndex(request => request.authorization !== null);
       const firstIdentity = applicationRequests.findIndex(request => request.url === '/api/desktop/discovery');
       const plaintextPersisted = await directoryContainsPlaintext(userDataPath, journeyFixture.secrets);
-      if (discoveries.length !== 5
+      if (discoveries.length !== 8
+        || discoveries.some(request => request.authorization !== null)
         || pairingStarts.length !== 3
         || pairingBrowsers.length !== 3
+        || pairingPolls.length < 3
         || pairingActivations.length !== 1
         || bootstrap.some(request => request.authorization !== null)
         || authenticatedRest.length < 2
