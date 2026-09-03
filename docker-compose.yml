@@ -109,6 +109,9 @@ services:
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       - PROPR_MANAGED_CREDENTIALS_DIR=${HOME:?HOME must be set}/.propr/agent-credentials
+      # Dedicated user credential for GitHub's attachment endpoint. This is
+      # separate from the App installation token used for normal GitHub work.
+      - GITHUB_VISUAL_PREVIEW_TOKEN=${GITHUB_VISUAL_PREVIEW_TOKEN:-}
       - PROPR_CONTAINERIZED=1
     depends_on:
       redis:
