@@ -1,6 +1,7 @@
 import { execa } from 'execa';
 import {
   appendVisualPreviewSection,
+  redactSecrets,
   renderVisualPreviewSection,
   type VisualPreviewEvidence
 } from '@propr/core';
@@ -28,8 +29,16 @@ const runAttachmentCommand: AttachmentCommandRunner = async ({ args, authToken, 
     });
     return { stdout: result.stdout };
   } catch (error) {
-    const wrappedError = new Error('GitHub CLI could not upload visual preview attachments') as Error & { stdout?: string };
-    const stdout = (error as { stdout?: unknown })?.stdout;
+    const commandError = error as { code?: unknown; stderr?: unknown; stdout?: unknown };
+    const detail = commandError.code === 'ENOENT'
+      ? 'gh executable was not found in PATH'
+      : typeof commandError.stderr === 'string' && commandError.stderr.trim()
+        ? redactSecrets(commandError.stderr.trim()).replace(/\s+/g, ' ').slice(0, 1000)
+        : '';
+    const wrappedError = new Error(
+      `GitHub CLI could not upload visual preview attachments${detail ? `: ${detail}` : ''}`
+    ) as Error & { stdout?: string };
+    const stdout = commandError.stdout;
     if (typeof stdout === 'string') wrappedError.stdout = stdout;
     throw wrappedError;
   }
