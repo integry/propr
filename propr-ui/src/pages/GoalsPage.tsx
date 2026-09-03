@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { CirclePause, CirclePlay, CircleStop, ExternalLink, GitCommit, Plus, Send } from 'lucide-react';
+import {
+  Activity, CheckCircle2, Circle, CircleDot, CirclePause, CirclePlay, CircleStop, Clock3,
+  Coins, ExternalLink, GitCommit, GitPullRequest, Github, ListTodo, LoaderCircle, Plus, Send,
+} from 'lucide-react';
 import { getInstanceCatalog } from '../api/proprApi';
 import type { InstanceCatalogRepository } from '../api/proprTypes';
 import {
@@ -12,7 +15,11 @@ import { useTaskLiveData } from '../components/TaskDetails/useTaskLiveData';
 import TodoList from '../components/TaskDetails/TodoList';
 import RealTimeStats from '../components/TaskDetails/RealTimeStats';
 import ExecutionEventLog from '../components/TaskDetails/ExecutionEventLog';
+import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
+import { ProviderLogo } from '../components/ui/ProviderLogo';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { formatAgentLabel } from '../utils/agentStatus';
+import { getModelDisplayName } from '../utils/modelDisplay';
 
 const buttonClass = 'inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50';
 const duration = (milliseconds: number) => {
@@ -26,6 +33,11 @@ const tokenTotal = (usage: { input_tokens?: number | null; output_tokens?: numbe
   ? (usage.input_tokens || 0) + (usage.output_tokens || 0)
     + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0)
   : 0;
+
+const capabilityAgentLabel = (agent: GoalCapability, agents: GoalCapability[]) => formatAgentLabel(
+  { type: agent.agentType, alias: agent.agentAlias },
+  agents.map(candidate => ({ type: candidate.agentType, alias: candidate.agentAlias })),
+);
 
 function GoalState({ goal }: { goal: Goal }) {
   const state = goal.resultState || (goal.desiredState === 'cancelled' ? 'cancelling' : goal.desiredState);
@@ -50,6 +62,12 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
   const selectedAgent = agents.find(agent => agent.agentId === agentId);
   const unsupportedAgents = agents.filter(agent => !agent.goalCapable);
   const showRuntimeDiagnostics = agents.length > 0 && unsupportedAgents.length === agents.length;
+  const repositoryOptions = useMemo<RepoOption[]>(() => repositories.map(repo => ({
+    name: repo.name,
+    enabled: repo.enabled,
+    ...(repo.alias ? { displayName: repo.alias } : {}),
+    ...(repo.baseBranch ? { baseBranch: repo.baseBranch } : {}),
+  })), [repositories]);
 
   const applyCapabilities = useCallback((capabilities: GoalCapability[]) => {
     setAgents(capabilities);
@@ -110,19 +128,17 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
         <button type="button" disabled={rechecking} onClick={recheckCapabilities} className="mt-2 font-medium underline disabled:opacity-50">{rechecking ? 'Rechecking…' : 'Recheck runtimes'}</button>
       </div>}
       <div className="grid gap-4 md:grid-cols-2">
-        <label className="text-sm font-medium text-slate-700">Repository
-          <select aria-label="Repository" value={repository} onChange={event => setRepository(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 p-2" required>
-            {repositories.map(repo => <option key={repo.name} value={repo.name}>{repo.alias || repo.name}</option>)}
-          </select>
-        </label>
+        <div className="text-sm font-medium text-slate-700">Repository
+          <RepositorySelector repos={repositoryOptions} selectedRepo={repository} onRepoChange={setRepository} className="mt-1" />
+        </div>
         <label className="text-sm font-medium text-slate-700">Coding agent
           <select aria-label="Coding agent" value={agentId} onChange={event => setAgentId(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 p-2" required>
-            {agents.map(agent => <option key={agent.agentId} value={agent.agentId} disabled={!agent.goalCapable}>{agent.agentAlias}{agent.goalCapable ? '' : ' — unsupported'}</option>)}
+            {agents.map(agent => <option key={agent.agentId} value={agent.agentId} disabled={!agent.goalCapable}>{capabilityAgentLabel(agent, agents)}{agent.goalCapable ? '' : ' — unsupported'}</option>)}
           </select>
         </label>
         <label className="text-sm font-medium text-slate-700">Model
           <select aria-label="Model" value={model} onChange={event => setModel(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 p-2" required>
-            {(selectedAgent?.models || []).map(item => <option key={item} value={item}>{item}</option>)}
+            {(selectedAgent?.models || []).map(item => <option key={item} value={item}>{getModelDisplayName(item)}</option>)}
           </select>
         </label>
         <label className="text-sm font-medium text-slate-700">Maximum parallel tasks (optional)
@@ -156,15 +172,25 @@ function GoalList() {
   useDocumentTitle('Goals');
   const refresh = useCallback(() => listGoals().then(data => setGoals(data.goals)).catch(err => setError((err as Error).message)), []);
   useEffect(() => { refresh(); const timer = window.setInterval(refresh, 10_000); return () => window.clearInterval(timer); }, [refresh]);
+  const goalAgents = goals.map(goal => ({ type: goal.agent.type, alias: goal.agent.alias }));
   return <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
     <div><h1 className="text-2xl font-bold text-slate-900">Goals</h1><p className="mt-1 text-sm text-slate-600">Long-running work kept in one exact coding-agent session.</p></div>
     <CreateGoalForm onCreated={goal => navigate(`/goals/${goal.id}`)} />
     {error && <p role="alert" className="text-red-600">{error}</p>}
     <section className="space-y-3"><h2 className="text-lg font-semibold">Your goals</h2>
-      {goals.length === 0 ? <p className="rounded-lg border border-dashed p-8 text-center text-sm text-slate-500">No goals yet.</p> : goals.map(goal => <Link key={goal.id} to={`/goals/${goal.id}`} className="block rounded-lg border border-slate-200 bg-white p-4 hover:border-primary-300">
-        <div className="flex items-start justify-between gap-4"><div><div className="font-semibold text-slate-900">{goal.objective}</div><div className="mt-1 text-sm text-slate-500">{goal.repository} · {goal.agent.alias} · {goal.requestedModel}</div></div><GoalState goal={goal} /></div>
-        <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-3"><span>Current: {goal.liveSummary.currentTask || goal.taskState}</span><span>{(goal.liveSummary.nativeGoal?.tokensUsed ?? tokenTotal(goal.liveSummary.tokenUsage)).toLocaleString()} tokens · {duration(goal.liveSummary.nativeGoal ? goal.liveSummary.nativeGoal.timeUsedSeconds * 1000 : goal.activeMs)} active</span><span>{goal.artifactStats.openIssues}/{goal.artifactStats.issues} open issues · {goal.artifactStats.openPullRequests}/{goal.artifactStats.pullRequests} open PRs</span></div>
-        {goal.liveSummary.todos.length > 0 && <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">{goal.liveSummary.todos.map(todo => <li key={todo.id}>{todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○'} {todo.content}</li>)}</ul>}
+      {goals.length === 0 ? <p className="rounded-lg border border-dashed p-8 text-center text-sm text-slate-500">No goals yet.</p> : goals.map(goal => <Link key={goal.id} to={`/goals/${goal.id}`} className="block rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition hover:border-primary-300 hover:shadow-md">
+        <div className="flex items-start justify-between gap-4"><h3 className="line-clamp-2 min-w-0 font-semibold leading-5 text-slate-900" title={goal.objective}>{goal.objective}</h3><GoalState goal={goal} /></div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1"><Github className="h-3.5 w-3.5 text-slate-500" />{goal.repository}</span>
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-50 px-2.5 py-1 text-violet-700"><ProviderLogo provider={goal.agent.type} className="h-3.5 w-3.5" />{formatAgentLabel(goal.agent, goalAgents)}</span>
+          <span className="inline-flex items-center rounded-full bg-cyan-50 px-2.5 py-1 text-cyan-700">{getModelDisplayName(goal.requestedModel)}</span>
+        </div>
+        <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-3">
+          <span className="flex items-center gap-1.5"><Activity className="h-3.5 w-3.5 flex-none text-blue-500" />Current: {goal.liveSummary.currentTask || goal.taskState}</span>
+          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1"><span className="inline-flex items-center gap-1.5"><Coins className="h-3.5 w-3.5 text-amber-500" />{(goal.liveSummary.nativeGoal?.tokensUsed ?? tokenTotal(goal.liveSummary.tokenUsage)).toLocaleString()} tokens</span><span aria-hidden="true">·</span><span className="inline-flex items-center gap-1.5"><Clock3 className="h-3.5 w-3.5 text-indigo-500" />{duration(goal.liveSummary.nativeGoal ? goal.liveSummary.nativeGoal.timeUsedSeconds * 1000 : goal.activeMs)} active</span></span>
+          <span className="flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-1 text-blue-700"><CircleDot className="h-3.5 w-3.5" />{goal.artifactStats.openIssues}/{goal.artifactStats.issues} open issues</span><span className="inline-flex items-center gap-1.5 rounded-full bg-purple-50 px-2 py-1 text-purple-700"><GitPullRequest className="h-3.5 w-3.5" />{goal.artifactStats.openPullRequests}/{goal.artifactStats.pullRequests} open PRs</span></span>
+        </div>
+        {goal.liveSummary.todos.length > 0 && <div className="mt-3 flex gap-2 border-t border-slate-100 pt-3"><ListTodo className="mt-0.5 h-3.5 w-3.5 flex-none text-slate-400" /><ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">{goal.liveSummary.todos.map(todo => <li key={todo.id} className="inline-flex items-center gap-1.5">{todo.status === 'completed' ? <CheckCircle2 className="h-3.5 w-3.5 text-green-500" /> : todo.status === 'in_progress' ? <LoaderCircle className="h-3.5 w-3.5 text-blue-500" /> : <Circle className="h-3.5 w-3.5 text-slate-400" />}{todo.content}</li>)}</ul></div>}
       </Link>)}</section>
   </div>;
 }

@@ -23,13 +23,13 @@ const capability = {
   agentId: 'agent-1', agentAlias: 'codex', agentType: 'codex', goalCapable: true,
   lifecycle: { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' } as const,
   controls: { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true },
-  models: ['gpt-5.6', 'gpt-5.6-fast'], defaultModel: 'gpt-5.6',
+  models: ['gpt-5.6-sol', 'gpt-5.6-luna'], defaultModel: 'gpt-5.6-sol',
 };
 const goal: goalsApi.Goal = {
   id: 'goal-1', owner: 'owner', repository: 'acme/web', objective: 'Ship the dashboard',
   launchStrategy: 'orchestrate', initialPrompt: '/goal Ship the dashboard\n\nLaunch strategy — Agent orchestrates through ProPR',
   baseBranch: null, branchName: 'goal/dashboard', worktreePath: '/tmp/worktree',
-  agent: { id: 'agent-1', alias: 'codex', type: 'codex' }, requestedModel: 'gpt-5.6', effectiveModel: 'gpt-5.6',
+  agent: { id: 'agent-1', alias: 'codex', type: 'codex' }, requestedModel: 'gpt-5.6-sol', effectiveModel: 'gpt-5.6-sol',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,
   control: { requestGeneration: 0, acknowledgedGeneration: 0, pending: false },
   failureReason: null, pausePending: false,
@@ -55,7 +55,7 @@ describe('GoalsPage', () => {
     vi.mocked(goalsApi.pauseGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'paused', pausedAt: new Date().toISOString() } });
     vi.mocked(goalsApi.sendGoalInput).mockResolvedValue({ goal });
     vi.mocked(goalsApi.cancelGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'cancelled', resultState: null } });
-    vi.mocked(goalsApi.requestGoalModel).mockResolvedValue({ goal: { ...goal, requestedModel: 'gpt-5.6-fast' } });
+    vi.mocked(goalsApi.requestGoalModel).mockResolvedValue({ goal: { ...goal, requestedModel: 'gpt-5.6-luna' } });
     vi.mocked(goalsApi.checkpointGoal).mockResolvedValue({ goal });
     vi.mocked(goalsApi.requestGoalCheckpointInterval).mockResolvedValue({ goal });
   });
@@ -63,18 +63,20 @@ describe('GoalsPage', () => {
   it('creates exactly one native goal from repository, agent, model and objective', async () => {
     vi.mocked(goalsApi.createGoal).mockResolvedValue({ goal });
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /><Route path="/goals/:goalId" element={<div>Goal detail</div>} /></Routes></MemoryRouter>);
-    await screen.findByRole('option', { name: 'codex' });
+    await screen.findByRole('option', { name: 'Codex' });
+    expect(screen.getByRole('button', { name: /acme.*web/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'GPT-5.6 Sol' })).toHaveValue('gpt-5.6-sol');
     fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Ship the dashboard' } });
     fireEvent.click(screen.getByLabelText('Agent orchestrates through ProPR'));
     fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
-    await waitFor(() => expect(goalsApi.createGoal).toHaveBeenCalledWith(expect.objectContaining({ repository: 'acme/web', agentId: 'agent-1', model: 'gpt-5.6', objective: 'Ship the dashboard', launchStrategy: 'orchestrate' })));
+    await waitFor(() => expect(goalsApi.createGoal).toHaveBeenCalledWith(expect.objectContaining({ repository: 'acme/web', agentId: 'agent-1', model: 'gpt-5.6-sol', objective: 'Ship the dashboard', launchStrategy: 'orchestrate' })));
     expect(await screen.findByText('Goal detail')).toBeInTheDocument();
   });
 
   it('configures worker checkpoints only for direct goals', async () => {
     vi.mocked(goalsApi.createGoal).mockResolvedValue({ goal: { ...goal, launchStrategy: 'direct' } });
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /><Route path="/goals/:goalId" element={<div>Goal detail</div>} /></Routes></MemoryRouter>);
-    await screen.findByRole('option', { name: 'codex' });
+    await screen.findByRole('option', { name: 'Codex' });
     fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Ship the dashboard' } });
     fireEvent.change(screen.getByLabelText('Checkpoint frequency'), { target: { value: '30' } });
     fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
@@ -90,8 +92,8 @@ describe('GoalsPage', () => {
     ] });
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
 
-    await screen.findByRole('option', { name: 'codex' });
-    expect(screen.getByRole('option', { name: 'opencode — unsupported' })).toBeDisabled();
+    await screen.findByRole('option', { name: 'Codex' });
+    expect(screen.getByRole('option', { name: 'Opencode — unsupported' })).toBeDisabled();
     expect(screen.queryByText('OpenCode does not support goal sessions')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Recheck runtimes' })).not.toBeInTheDocument();
   });
@@ -124,9 +126,14 @@ describe('GoalsPage', () => {
       },
     }] });
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
-    expect(await screen.findByText('330 tokens · 42s active')).toBeInTheDocument();
-    expect(screen.getByText('1/1 open issues · 1/1 open PRs')).toBeInTheDocument();
-    expect(screen.getByText('◉ Implement API')).toBeInTheDocument();
+    expect(await screen.findByText('330 tokens')).toBeInTheDocument();
+    expect(screen.getByText('42s active')).toBeInTheDocument();
+    expect(screen.getByText('1/1 open issues')).toBeInTheDocument();
+    expect(screen.getByText('1/1 open PRs')).toBeInTheDocument();
+    expect(screen.getByText('Implement API')).toBeInTheDocument();
+    expect(screen.getByText(goal.objective)).toHaveClass('line-clamp-2');
+    expect(screen.getAllByText('Codex')).toHaveLength(2);
+    expect(screen.getAllByText('GPT-5.6 Sol')).toHaveLength(2);
   });
 
   it('renders existing task live details and sends canned status input through the same session', async () => {
@@ -152,8 +159,8 @@ describe('GoalsPage', () => {
   it('requests the next model separately from the effective model and exposes cancellation', async () => {
     render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
     await screen.findByRole('button', { name: 'Cancel' });
-    fireEvent.change(screen.getByLabelText('Model for next continuation'), { target: { value: 'gpt-5.6-fast' } });
-    await waitFor(() => expect(goalsApi.requestGoalModel).toHaveBeenCalledWith('goal-1', 'gpt-5.6-fast'));
+    fireEvent.change(screen.getByLabelText('Model for next continuation'), { target: { value: 'gpt-5.6-luna' } });
+    await waitFor(() => expect(goalsApi.requestGoalModel).toHaveBeenCalledWith('goal-1', 'gpt-5.6-luna'));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(goalsApi.cancelGoal).toHaveBeenCalledWith('goal-1'));
     expect(await screen.findByText('cancelling')).toBeInTheDocument();
