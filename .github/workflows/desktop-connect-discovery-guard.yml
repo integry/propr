@@ -111,7 +111,45 @@ jobs:
 
       - name: Run packaged Darwin main-to-renderer discovery
         if: matrix.platform == 'darwin'
-        run: npm run smoke:connect-package -w @propr/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain_root="$(mktemp -d)"
+          keychain_path="$keychain_root/propr-packaged-connect-smoke.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          original_keychains=()
+          while IFS= read -r keychain; do
+            keychain="${keychain#"${keychain%%[![:space:]]*}"}"
+            keychain="${keychain#\"}"
+            keychain="${keychain%\"}"
+            if [[ -n "$keychain" ]]; then
+              original_keychains+=("$keychain")
+            fi
+          done < <(security list-keychains -d user)
+          IFS= read -r original_default < <(security default-keychain -d user)
+          original_default="${original_default#"${original_default%%[![:space:]]*}"}"
+          original_default="${original_default#\"}"
+          original_default="${original_default%\"}"
+          cleanup_keychain() {
+            if (( ${#original_keychains[@]} > 0 )); then
+              security list-keychains -d user -s "${original_keychains[@]}" || true
+            else
+              security list-keychains -d user -s || true
+            fi
+            if [[ -n "$original_default" ]]; then
+              security default-keychain -d user -s "$original_default" || true
+            fi
+            security delete-keychain "$keychain_path" || true
+            rm -rf -- "$keychain_root"
+          }
+          trap cleanup_keychain EXIT
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -d user -s "$keychain_path"
+          unset keychain_password
+          npm run smoke:connect-package -w @propr/desktop
 
       - name: Run packaged Windows main-to-renderer discovery as an ordinary user
         if: matrix.platform == 'win32'

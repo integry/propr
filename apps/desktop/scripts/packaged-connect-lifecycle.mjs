@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 export const CONNECT_READY_EVENT = 'desktop.renderer.connect_discovery.ready';
 export const CONNECT_DISCOVERY_MILESTONE_EVENT = 'desktop.renderer.connect_discovery.milestone';
 export const CONNECT_JOURNEY_STAGE_EVENT = 'desktop.renderer.connect_journey.stage';
+export const CONNECT_NETWORK_PERMISSION_EVENT = 'desktop.renderer.connect_network_permission';
 export const CHILD_CAPTURE_MAX_BYTES = 64 * 1024;
 export const CHILD_DIAGNOSTIC_MAX_RECORDS = 20;
 
@@ -27,6 +28,7 @@ const diagnosticEvents = new Set([
   CONNECT_READY_EVENT,
   CONNECT_DISCOVERY_MILESTONE_EVENT,
   CONNECT_JOURNEY_STAGE_EVENT,
+  CONNECT_NETWORK_PERMISSION_EVENT,
   'desktop.renderer.connect_discovery.phase',
   'desktop.renderer.connect_discovery.status',
   'desktop.renderer.gone',
@@ -53,10 +55,12 @@ const journeyStageCodes = new Set([
   'JOURNEY_NEGATIVE_EXPIRY',
   'JOURNEY_NEGATIVE_CANCEL',
   'JOURNEY_NEGATIVE_STATE',
-  'JOURNEY_PAIR_RENDERER',
+  'JOURNEY_PAIR_MANUAL_FORM',
+  'JOURNEY_PAIR_BROWSER_APPROVAL',
+  'JOURNEY_PAIR_ACTIVATION_DASHBOARD',
   'JOURNEY_PAIR_TRANSPORT',
   'JOURNEY_PAIR_COMPLETE',
-  'JOURNEY_REPROBE_RENDERER',
+  'JOURNEY_REPROBE_ACTIVATION_DASHBOARD',
   'JOURNEY_REPROBE_TRANSPORT',
   'JOURNEY_REPROBE_COMPLETE',
 ]);
@@ -80,10 +84,46 @@ const diagnosticCategories = new Set([
   'type-mismatch',
   'unexpected',
 ]);
+const networkPermissionCategories = new Set([
+  'local-network-access',
+  'local-network',
+  'loopback-network',
+]);
+const networkPermissionDecisions = new Set(['check', 'request']);
+const networkPermissionBooleanFields = [
+  'activeBindingCurrent',
+  'webContentsPresent',
+  'webContentsEqualsMainWindow',
+  'mainWindowPresent',
+  'isMainFrame',
+  'requestingUrlPresent',
+  'requestingUrlTrusted',
+  'rendererDocumentUrlTrusted',
+  'requestingOriginAuthorityValid',
+  'requestingOriginAuthorityEqual',
+];
+
+const boundedNetworkPermissionEvidence = record => {
+  if (record.schemaVersion !== 1
+    || !networkPermissionCategories.has(record.permissionCategory)
+    || !networkPermissionDecisions.has(record.decision)
+    || typeof record.allowed !== 'boolean'
+    || networkPermissionBooleanFields.some(field => typeof record[field] !== 'boolean')) return {};
+  return {
+    schemaVersion: 1,
+    permissionCategory: record.permissionCategory,
+    decision: record.decision,
+    allowed: record.allowed,
+    ...Object.fromEntries(networkPermissionBooleanFields.map(field => [field, record[field]])),
+  };
+};
 
 export const boundedChildDiagnostics = records => {
   const diagnostics = records.flatMap(record => {
     if (!record || typeof record !== 'object' || !diagnosticEvents.has(record.event)) return [];
+    if (record.event === CONNECT_NETWORK_PERMISSION_EVENT) {
+      return [{ event: record.event, ...boundedNetworkPermissionEvidence(record) }];
+    }
     const nestedCode = record.error && typeof record.error === 'object' ? record.error.code : undefined;
     const candidateCode = typeof record.code === 'string' ? record.code : nestedCode;
     const phase = typeof record.phase === 'string' ? record.phase : undefined;

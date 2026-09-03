@@ -22,6 +22,10 @@ import {
   runPackagedConnectLifecycle,
 } from './packaged-connect-lifecycle.mjs';
 import {
+  createPackagedConnectLaunchArguments,
+  spawnPackagedConnectBinary,
+} from './packaged-connect-launch.mjs';
+import {
   canonicalizeWindowsFixtureEntry,
   encodedWindowsFixtureAcl,
   windowsPowerShell51Path,
@@ -549,18 +553,27 @@ try {
   };
   delete childEnvironment.PROPR_DESKTOP_CONNECT_STAGING_PARENT;
   delete childEnvironment.PROPR_DESKTOP_CONNECT_STAGING_LEAF;
+  const launchArguments = createPackagedConnectLaunchArguments({
+    platform: process.platform,
+    userDataPath,
+  });
   const spawnLifecycleProcess = (executable, args, options) => {
     if (executable !== binaryPath) return spawn(executable, args, options);
-    const child = spawn(binaryPath, ['--disable-gpu', `--user-data-dir=${userDataPath}`], {
-      ...options,
-      env: options.env,
+    const child = spawnPackagedConnectBinary({
+      binaryPath,
+      launchArguments: args,
+      options: {
+        ...options,
+        env: options.env,
+      },
+      spawn,
     });
     return child;
   };
   failurePhase = 'lifecycle-internal';
   const runPhase = async phase => await runPackagedConnectLifecycle({
       binaryPath,
-      args: ['--disable-gpu', `--user-data-dir=${userDataPath}`],
+      args: launchArguments,
       platform: process.platform,
       arch: process.arch,
       authorityMechanism: authorityMechanism(),

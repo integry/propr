@@ -38,6 +38,10 @@ import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
 import {
+  configureDesktopSessionSecurity,
+  type DesktopNetworkPermissionEvidence,
+} from './session-security';
+import {
   createBrowserWindowOptions,
   MINIMUM_BROWSER_WINDOW_SIZE,
   selectInitialWindowWorkArea,
@@ -61,10 +65,12 @@ type PackagedConnectJourneyStage =
   | 'JOURNEY_NEGATIVE_EXPIRY'
   | 'JOURNEY_NEGATIVE_CANCEL'
   | 'JOURNEY_NEGATIVE_STATE'
-  | 'JOURNEY_PAIR_RENDERER'
+  | 'JOURNEY_PAIR_MANUAL_FORM'
+  | 'JOURNEY_PAIR_BROWSER_APPROVAL'
+  | 'JOURNEY_PAIR_ACTIVATION_DASHBOARD'
   | 'JOURNEY_PAIR_TRANSPORT'
   | 'JOURNEY_PAIR_COMPLETE'
-  | 'JOURNEY_REPROBE_RENDERER'
+  | 'JOURNEY_REPROBE_ACTIVATION_DASHBOARD'
   | 'JOURNEY_REPROBE_TRANSPORT'
   | 'JOURNEY_REPROBE_COMPLETE';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
@@ -231,41 +237,6 @@ const registerProtocolClient = (): void => {
 
 const deliverDeepLink = (value: string): void => {
   deepLinkDelivery.deliver(value);
-};
-
-const configureSessionSecurity = (credentials: DesktopCredentialService): {
-  close(): void;
-  dispose(): void;
-} => {
-  const desktopSession = session.defaultSession;
-  desktopSession.setPermissionCheckHandler(() => false);
-  desktopSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    void credentials.prepareRequestAsync(details.url, details.requestHeaders, {
-      method: details.method,
-      resourceType: details.resourceType,
-    }).then(callback, () => callback({ cancel: true }));
-  });
-  desktopSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...credentials.sanitizeResponseHeaders(details.url, details.responseHeaders ?? {}),
-        'Content-Security-Policy': [rendererContentSecurityPolicy(!app.isPackaged)],
-      },
-    });
-  });
-  return {
-    close() {
-      desktopSession.webRequest.onBeforeSendHeaders((_details, callback) => callback({ cancel: true }));
-      desktopSession.webRequest.onHeadersReceived((_details, callback) => callback({ cancel: true }));
-    },
-    dispose() {
-      desktopSession.setPermissionCheckHandler(null);
-      desktopSession.setPermissionRequestHandler(null);
-      desktopSession.webRequest.onBeforeSendHeaders(null);
-      desktopSession.webRequest.onHeadersReceived(null);
-    },
-  };
 };
 
 const configurePackagedRendererProtocol = (): (() => void) => {
@@ -478,6 +449,7 @@ const publishPackagedConnectReady = async (readyFields: Awaited<
 };
 
 const openPackagedJourneyApproval = async (request: DesktopPairingBrowserRequest): Promise<void> => {
+  reportPackagedConnectJourneyStage('JOURNEY_PAIR_BROWSER_APPROVAL');
   await openApprovedDesktopPairingUrl(request, {
     openExternal: async url => {
       const approvalWindow = new BrowserWindow({
@@ -491,6 +463,7 @@ const openPackagedJourneyApproval = async (request: DesktopPairingBrowserRequest
       }
     },
   });
+  reportPackagedConnectJourneyStage('JOURNEY_PAIR_ACTIVATION_DASHBOARD');
 };
 
 const runPackagedConnectJourneySmoke = async (
@@ -502,7 +475,8 @@ const runPackagedConnectJourneySmoke = async (
 ): Promise<void> => {
   reportPackagedConnectJourneyStage('JOURNEY_STORAGE_BACKEND');
   const security = profiles.security();
-  if (!security.available || security.backend === 'basic_text') {
+  const requiredStorageBackend = process.platform === 'linux' ? 'gnome_libsecret' : 'os-protected';
+  if (!security.available || security.backend !== requiredStorageBackend) {
     throw new Error('Packaged Connect journey requires the production OS credential backend');
   }
   if (phase === 'pair') {
@@ -561,8 +535,8 @@ const runPackagedConnectJourneySmoke = async (
     await setMode('success');
   }
   reportPackagedConnectJourneyStage(phase === 'pair'
-    ? 'JOURNEY_PAIR_RENDERER'
-    : 'JOURNEY_REPROBE_RENDERER');
+    ? 'JOURNEY_PAIR_MANUAL_FORM'
+    : 'JOURNEY_REPROBE_ACTIVATION_DASHBOARD');
   const proof = await window.webContents.executeJavaScript(`(async () => {
     const waitFor = async predicate => {
       const deadline = performance.now() + 15000;
@@ -1060,7 +1034,19 @@ if (!hasSingleInstanceLock) {
       snapshotConnectIdentityClaim: (profileId, origin) =>
         connectDiscovery.snapshotIdentityClaim(profileId, origin),
     });
-    const sessionSecurity = configureSessionSecurity(credentials);
+    const sessionSecurity = configureDesktopSessionSecurity({
+      contentSecurityPolicy: () => rendererContentSecurityPolicy(!app.isPackaged),
+      credentials,
+      desktopSession: session.defaultSession,
+      enableRendererNetworkBoundary: process.platform !== 'win32',
+      getMainRenderer: () => mainWindow?.webContents ?? null,
+      isTrustedRendererUrl: value => isTrustedRendererUrl(value, devServerUrl, packagedRendererUrl),
+      ...(connectSmoke?.journeyEndpoint ? {
+        reportNetworkPermissionDecision: (evidence: DesktopNetworkPermissionEvidence) => {
+          log('info', 'desktop.renderer.connect_network_permission', { ...evidence });
+        },
+      } : {}),
+    });
     const credentialInitialization = await credentials.initialize();
     if (credentialInitialization.status === 'degraded') {
       log('warn', 'desktop.credential_revocation.startup_degraded', {

@@ -9,6 +9,7 @@ import {
   CHILD_CAPTURE_MAX_BYTES,
   CONNECT_DISCOVERY_MILESTONE_EVENT,
   CONNECT_JOURNEY_STAGE_EVENT,
+  CONNECT_NETWORK_PERMISSION_EVENT,
   CONNECT_READY_EVENT,
   createIdempotentJourneyFixtureClose,
   isExactReadyRecord,
@@ -157,15 +158,47 @@ describe('packaged Connect bounded child lifecycle', () => {
         for (let index = 0; index < 20; index += 1) {
           app.write({ event: 'desktop.app.ready', code: 'DETAIL_REDACTED' });
         }
-        app.write({ event: CONNECT_JOURNEY_STAGE_EVENT, code: 'JOURNEY_PAIR_RENDERER' });
+        app.write({ event: CONNECT_JOURNEY_STAGE_EVENT, code: 'JOURNEY_PAIR_ACTIVATION_DASHBOARD' });
         app.close(0, null);
       },
     });
     assert.equal(result.records.length, 20);
     assert.deepEqual(result.records.at(-1), {
       event: CONNECT_JOURNEY_STAGE_EVENT,
-      code: 'JOURNEY_PAIR_RENDERER',
+      code: 'JOURNEY_PAIR_ACTIVATION_DASHBOARD',
     });
+  });
+
+  test('returns only fixed secret-free Local Network Access decision evidence', async () => {
+    const fixed = {
+      event: CONNECT_NETWORK_PERMISSION_EVENT,
+      schemaVersion: 1,
+      permissionCategory: 'loopback-network',
+      decision: 'request',
+      allowed: true,
+      activeBindingCurrent: true,
+      webContentsPresent: true,
+      webContentsEqualsMainWindow: true,
+      mainWindowPresent: true,
+      isMainFrame: true,
+      requestingUrlPresent: true,
+      requestingUrlTrusted: true,
+      rendererDocumentUrlTrusted: true,
+      requestingOriginAuthorityValid: true,
+      requestingOriginAuthorityEqual: true,
+    };
+    const { result } = await run({
+      onApp: app => {
+        app.write({ ...fixed, url: 'not-returned' });
+        app.write({ ...fixed, permissionCategory: 'notifications', requestingUrl: 'not-returned' });
+        app.close(0, null);
+      },
+    });
+    assert.deepEqual(result.records, [
+      fixed,
+      { event: CONNECT_NETWORK_PERMISSION_EVENT },
+    ]);
+    assert.doesNotMatch(JSON.stringify(result), /not-returned|"url":|"requestingUrl":/u);
   });
 
   test('fails closed when an otherwise allowlisted journey stage contains a secret', async () => {
@@ -204,6 +237,12 @@ describe('packaged Connect bounded child lifecycle', () => {
     const reprobe = harness.indexOf("outcome = await runPhase('reprobe')");
     const persistedEvidence = harness.indexOf('const applicationRequests = journeyFixture.requests');
     assert.ok(pair >= 0 && pair < reprobe && reprobe < persistedEvidence);
+
+    const manual = main.indexOf("'JOURNEY_PAIR_MANUAL_FORM'");
+    const browser = main.indexOf("reportPackagedConnectJourneyStage('JOURNEY_PAIR_BROWSER_APPROVAL')");
+    const activation = main.indexOf("reportPackagedConnectJourneyStage('JOURNEY_PAIR_ACTIVATION_DASHBOARD')");
+    assert.ok(manual >= 0 && browser >= 0 && browser < activation);
+    assert.doesNotMatch(main, /JOURNEY_PAIR_RENDERER|JOURNEY_REPROBE_RENDERER/u);
   });
 
   test('forces a ready app with a hung descendant through an exact bounded taskkill invocation', async () => {
