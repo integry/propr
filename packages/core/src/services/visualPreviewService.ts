@@ -215,7 +215,12 @@ export async function collectVisualPreviewEvidence({
 }
 
 function safeTemporaryName(taskId: string): string {
-  const normalized = taskId.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+  const sanitized = taskId.replace(/[^a-zA-Z0-9_-]+/g, '-');
+  let start = 0;
+  let end = sanitized.length;
+  while (sanitized[start] === '-') start += 1;
+  while (end > start && sanitized[end - 1] === '-') end -= 1;
+  const normalized = sanitized.slice(start, Math.min(end, start + 80));
   return normalized || 'task';
 }
 
