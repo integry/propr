@@ -227,10 +227,7 @@ describe('main-process desktop credential service', () => {
           url: input.toString(),
           authorization: new Headers(init?.headers).get('Authorization'),
         });
-        return json({
-          code: 'AUTHENTICATION_REQUIRED',
-          error: 'private legacy authentication detail',
-        }, 401);
+        return json({ error: 'Unauthorized' }, 401);
       },
     });
     credentialServices.push(legacyService);
@@ -249,7 +246,40 @@ describe('main-process desktop credential service', () => {
       url: 'https://legacy.example.test/api/desktop/discovery',
       authorization: null,
     }]);
-    assert.doesNotMatch(JSON.stringify(legacyResult), /private legacy authentication detail|AUTHENTICATION_REQUIRED/);
+    assert.doesNotMatch(JSON.stringify(legacyResult), /Unauthorized|AUTHENTICATION_REQUIRED/);
+
+    const rejectedLegacyBodies = [
+      '{"error":"Unauthorized","policy":"private policy detail"}',
+      '{"error":"Unauthorized","error":"Unauthorized"}',
+      '{"code":"AUTHENTICATION_REQUIRED"}',
+    ];
+    for (const [index, body] of rejectedLegacyBodies.entries()) {
+      const adversarialStore = await createStore();
+      let adversarialRequests = 0;
+      const adversarialService = new DesktopCredentialService({
+        profiles: adversarialStore,
+        clientName: 'Adversarial legacy remote test',
+        openPairingBrowser: async () => undefined,
+        fetch: async (_input, init) => {
+          adversarialRequests += 1;
+          assert.equal(new Headers(init?.headers).get('Authorization'), null);
+          return new Response(body, {
+            status: 401, headers: { 'Content-Type': 'application/json' },
+          });
+        },
+      });
+      credentialServices.push(adversarialService);
+
+      const rejected = await adversarialService.probe({
+        id: `rejected-legacy-${index}`,
+        label: 'Rejected legacy remote',
+        apiBaseUrl: `https://rejected-${index}.example.test`,
+      });
+
+      assert.equal(rejected.status, 'authentication-required');
+      assert.equal(adversarialRequests, 1);
+      assert.doesNotMatch(JSON.stringify(rejected), /private policy detail|Unauthorized|AUTHENTICATION_REQUIRED/);
+    }
   });
 
   it('revalidates an old Socket.IO reconnect and sends zero bearer requests after identity rotation', async () => {

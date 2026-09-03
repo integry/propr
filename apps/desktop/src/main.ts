@@ -50,6 +50,23 @@ const PACKAGED_RENDERER_SCHEME = 'propr-app';
 const PACKAGED_RENDERER_HOST = 'renderer';
 const PACKAGED_LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const PACKAGED_REDUCED_NATIVE_WINDOW_READY_EVENT = 'desktop.native.reduced_window.ready';
+const PACKAGED_CONNECT_DISCOVERY_MILESTONE_EVENT = 'desktop.renderer.connect_discovery.milestone';
+const PACKAGED_CONNECT_JOURNEY_STAGE_EVENT = 'desktop.renderer.connect_journey.stage';
+type PackagedConnectJourneyStage =
+  | 'JOURNEY_DISCOVERY_RENDERER'
+  | 'JOURNEY_DISCOVERY_VALIDATED'
+  | 'JOURNEY_STORAGE_BACKEND'
+  | 'JOURNEY_NEGATIVE_MALFORMED'
+  | 'JOURNEY_NEGATIVE_OVERSIZED'
+  | 'JOURNEY_NEGATIVE_EXPIRY'
+  | 'JOURNEY_NEGATIVE_CANCEL'
+  | 'JOURNEY_NEGATIVE_STATE'
+  | 'JOURNEY_PAIR_RENDERER'
+  | 'JOURNEY_PAIR_TRANSPORT'
+  | 'JOURNEY_PAIR_COMPLETE'
+  | 'JOURNEY_REPROBE_RENDERER'
+  | 'JOURNEY_REPROBE_TRANSPORT'
+  | 'JOURNEY_REPROBE_COMPLETE';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 let packagedSmokeUserDataDirectory: string | null = null;
@@ -184,6 +201,10 @@ const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?:
       code: fields ? 'DETAIL_REDACTED' : undefined,
     }));
   }
+};
+
+const reportPackagedConnectJourneyStage = (code: PackagedConnectJourneyStage): void => {
+  log('info', PACKAGED_CONNECT_JOURNEY_STAGE_EVENT, { code });
 };
 
 process.on('uncaughtExceptionMonitor', () => {
@@ -434,7 +455,9 @@ const runPackagedConnectDiscoverySmoke = async (window: BrowserWindow): Promise<
         : 'inherited-standard-handle',
     rendererSchemaValid: true,
   } as const;
-  log('info', 'desktop.renderer.connect_discovery.ready', readyFields);
+  log('info', PACKAGED_CONNECT_DISCOVERY_MILESTONE_EVENT, {
+    code: 'JOURNEY_DISCOVERY_VALIDATED',
+  });
   return readyFields;
 };
 
@@ -477,6 +500,7 @@ const runPackagedConnectJourneySmoke = async (
   endpoint: string,
   phase: 'pair' | 'reprobe',
 ): Promise<void> => {
+  reportPackagedConnectJourneyStage('JOURNEY_STORAGE_BACKEND');
   const security = profiles.security();
   if (!security.available || security.backend === 'basic_text') {
     throw new Error('Packaged Connect journey requires the production OS credential backend');
@@ -489,6 +513,9 @@ const runPackagedConnectJourneySmoke = async (
       if (response.status !== 204) throw new Error('Packaged Connect fixture control failed');
     };
     for (const mode of ['malformed', 'oversized'] as const) {
+      reportPackagedConnectJourneyStage(mode === 'malformed'
+        ? 'JOURNEY_NEGATIVE_MALFORMED'
+        : 'JOURNEY_NEGATIVE_OVERSIZED');
       await setMode(mode);
       const result = await credentials.probe({
         id: `negative-${mode}`,
@@ -499,6 +526,7 @@ const runPackagedConnectJourneySmoke = async (
         throw new Error('Strict packaged discovery accepted invalid identity');
       }
     }
+    reportPackagedConnectJourneyStage('JOURNEY_NEGATIVE_EXPIRY');
     await setMode('expiry');
     await credentials.pair({
       id: 'negative-expiry', label: 'Packaged expiry', apiBaseUrl: endpoint,
@@ -510,6 +538,7 @@ const runPackagedConnectJourneySmoke = async (
         }
       },
     );
+    reportPackagedConnectJourneyStage('JOURNEY_NEGATIVE_CANCEL');
     await setMode('cancel');
     const cancelledPairing = credentials.pair({
       id: 'negative-cancel', label: 'Packaged cancel', apiBaseUrl: endpoint,
@@ -524,12 +553,16 @@ const runPackagedConnectJourneySmoke = async (
         }
       },
     );
+    reportPackagedConnectJourneyStage('JOURNEY_NEGATIVE_STATE');
     const failedProfiles = await profiles.list();
     if (failedProfiles.profiles.some(profile => profile.id.startsWith('negative-'))) {
       throw new Error('Failed packaged pairing left stale profile or credential state');
     }
     await setMode('success');
   }
+  reportPackagedConnectJourneyStage(phase === 'pair'
+    ? 'JOURNEY_PAIR_RENDERER'
+    : 'JOURNEY_REPROBE_RENDERER');
   const proof = await window.webContents.executeJavaScript(`(async () => {
     const waitFor = async predicate => {
       const deadline = performance.now() + 15000;
@@ -574,6 +607,9 @@ const runPackagedConnectJourneySmoke = async (
     || !proof?.title?.startsWith('Connected: Packaged remote')) {
     throw new Error('Packaged Connect dashboard did not reach its connected state');
   }
+  reportPackagedConnectJourneyStage(phase === 'pair'
+    ? 'JOURNEY_PAIR_TRANSPORT'
+    : 'JOURNEY_REPROBE_TRANSPORT');
   const requiredAuthenticatedRequests = phase === 'pair' ? 1 : 2;
   const evidenceDeadline = Date.now() + 10_000;
   let transportEvidence = { authenticatedRest: 0, authenticatedSockets: 0 };
@@ -601,17 +637,9 @@ const runPackagedConnectJourneySmoke = async (
     || transportEvidence.authenticatedSockets < requiredAuthenticatedRequests) {
     throw new Error('Packaged Connect authenticated transport proof timed out');
   }
-  log('info', 'desktop.renderer.connect_journey.ready', {
-    phase,
-    storageBackend: security.backend,
-    manualUrl: phase === 'pair',
-    publicDiscovery: true,
-    browserApproval: phase === 'pair',
-    persistedReprobe: phase === 'reprobe',
-    restBearer: true,
-    socketIo: true,
-    dashboardConnected: true,
-  });
+  reportPackagedConnectJourneyStage(phase === 'pair'
+    ? 'JOURNEY_PAIR_COMPLETE'
+    : 'JOURNEY_REPROBE_COMPLETE');
 };
 
 const runPackagedTransportSmoke = async (
@@ -1073,6 +1101,7 @@ if (!hasSingleInstanceLock) {
     mainWindow = await createMainWindow();
 
     if (connectSmoke) {
+      reportPackagedConnectJourneyStage('JOURNEY_DISCOVERY_RENDERER');
       const readyFields = await runPackagedConnectDiscoverySmoke(mainWindow);
       if (connectSmoke.journeyEndpoint && connectSmoke.journeyPhase) {
         await runPackagedConnectJourneySmoke(

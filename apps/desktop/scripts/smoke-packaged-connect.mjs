@@ -16,6 +16,7 @@ import {
   PROPR_UI_COMPATIBILITY,
 } from '@propr/shared';
 import {
+  createIdempotentJourneyFixtureClose,
   preservePrimaryWithCleanup,
   removeAuthorizedConnectFixture,
   runPackagedConnectLifecycle,
@@ -291,16 +292,17 @@ const createPackagedJourneyFixture = async () => {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Packaged journey fixture did not bind');
   endpoint = `http://127.0.0.1:${address.port}`;
+  const close = createIdempotentJourneyFixtureClose({
+    closeSocketServer: () => io.close(),
+    closeHttpServer: () => new Promise((resolveClose, rejectClose) => {
+      server.close(error => error ? rejectClose(error) : resolveClose());
+    }),
+  });
   return {
     endpoint,
     requests,
     secrets: [deviceSecret, activationTicket, token],
-    async close() {
-      await io.close();
-      await new Promise((resolveClose, rejectClose) => {
-        server.close(error => error ? rejectClose(error) : resolveClose());
-      });
-    },
+    close,
   };
 };
 

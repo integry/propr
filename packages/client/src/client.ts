@@ -83,6 +83,45 @@ const isCompatibilityMetadata = (value: unknown): value is Partial<ProprCompatib
   );
 };
 
+const isExactLegacyDiscoveryAuthenticationBody = (contents: string): boolean => {
+  let offset = 0;
+  const whitespace = (): void => {
+    while (offset < contents.length && /[\x20\t\r\n]/.test(contents[offset])) offset += 1;
+  };
+  const stringToken = (): string | null => {
+    if (contents[offset] !== '"') return null;
+    const start = offset;
+    offset += 1;
+    while (offset < contents.length) {
+      const character = contents[offset++];
+      if (character === '"') {
+        try { return JSON.parse(contents.slice(start, offset)) as string; } catch { return null; }
+      }
+      if (character === '\\') {
+        const escape = contents[offset++];
+        if (escape === 'u') {
+          if (!/^[0-9a-fA-F]{4}$/.test(contents.slice(offset, offset + 4))) return null;
+          offset += 4;
+        } else if (!escape || !'"\\/bfnrt'.includes(escape)) return null;
+      } else if (character.charCodeAt(0) < 0x20) return null;
+    }
+    return null;
+  };
+
+  whitespace();
+  if (contents[offset++] !== '{') return false;
+  whitespace();
+  if (stringToken() !== 'error') return false;
+  whitespace();
+  if (contents[offset++] !== ':') return false;
+  whitespace();
+  if (stringToken() !== 'Unauthorized') return false;
+  whitespace();
+  if (contents[offset++] !== '}') return false;
+  whitespace();
+  return offset === contents.length;
+};
+
 const assertTimeout = (timeoutMs: number): void => {
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
     throw new ProprClientError('Request timeouts must be finite, non-negative numbers.', {
@@ -346,15 +385,16 @@ export class ProprClient {
     try {
     const discoveryContentType = response.headers.get('content-type')
       ?.split(';', 1)[0]?.trim().toLowerCase();
-    if (!response.ok || response.redirected || discoveryContentType !== 'application/json') {
+    const legacyAuthenticationCandidate = response.status === 401
+      && !response.redirected
+      && discoveryContentType === 'application/json';
+    if ((!response.ok && !legacyAuthenticationCandidate)
+      || response.redirected
+      || discoveryContentType !== 'application/json') {
       try { void response.body?.cancel().catch(() => undefined); } catch { /* best-effort response disposal */ }
-      const authenticationGated = response.status === 401
-        && !response.redirected
-        && discoveryContentType === 'application/json';
       throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
         kind: 'invalid_response',
         status: response.status,
-        ...(authenticationGated ? { code: DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED } : {}),
       });
     }
     const declaredLength = response.headers.get('content-length');
@@ -387,7 +427,8 @@ export class ProprClient {
         throw new ProprClientError('Desktop discovery was cancelled.', { kind: 'aborted', cause });
       }
       throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
-        kind: 'invalid_response', status: response.status, cause,
+        kind: 'invalid_response', status: response.status,
+        ...(legacyAuthenticationCandidate ? {} : { cause }),
       });
     } finally { try { reader?.releaseLock(); } catch { /* hostile streams may retain a pending read */ } }
     const contentEncoding = response.headers.get('content-encoding')?.trim().toLowerCase();
@@ -404,7 +445,17 @@ export class ProprClient {
     try { contents = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
     catch (cause) {
       throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
-        kind: 'invalid_response', status: response.status, cause,
+        kind: 'invalid_response', status: response.status,
+        ...(legacyAuthenticationCandidate ? {} : { cause }),
+      });
+    }
+    if (legacyAuthenticationCandidate) {
+      throw new ProprClientError('The ProPR instance returned invalid desktop discovery metadata.', {
+        kind: 'invalid_response',
+        status: response.status,
+        ...(isExactLegacyDiscoveryAuthenticationBody(contents)
+          ? { code: DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED }
+          : {}),
       });
     }
     const metadata = parseProprDesktopDiscoveryJson(contents);

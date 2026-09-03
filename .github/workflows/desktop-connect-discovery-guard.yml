@@ -75,6 +75,12 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Install native Linux package and credential tools
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio dbus-x11 fakeroot gnome-keyring libsecret-1-0 rpm zip
+
       - name: Verify encoded Windows PowerShell ACL helper success streams
         if: matrix.platform == 'win32'
         run: npm run test:windows-fixture-acl -w @propr/desktop
@@ -94,7 +100,14 @@ jobs:
           sudo chown root:root "$sandbox"
           sudo chmod 4755 "$sandbox"
           test "$(stat -c '%U:%G:%a' "$sandbox")" = 'root:root:4755'
-          dbus-run-session -- xvfb-run --auto-servernum npm run smoke:connect-package -w @propr/desktop
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export XDG_DATA_HOME="$1"
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run smoke:connect-package -w @propr/desktop
+          ' bash "$keyring_root"
 
       - name: Run packaged Darwin main-to-renderer discovery
         if: matrix.platform == 'darwin'

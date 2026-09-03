@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { lstat, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, test } from 'node:test';
 import {
   CHILD_CAPTURE_MAX_BYTES,
+  CONNECT_DISCOVERY_MILESTONE_EVENT,
+  CONNECT_JOURNEY_STAGE_EVENT,
   CONNECT_READY_EVENT,
+  createIdempotentJourneyFixtureClose,
   isExactReadyRecord,
   preservePrimaryWithCleanup,
   removeAuthorizedConnectFixture,
@@ -104,6 +107,103 @@ describe('packaged Connect bounded child lifecycle', () => {
       records: [{ event: CONNECT_READY_EVENT }],
     });
     assert.equal(invocations.length, 1);
+  });
+
+  test('does not accept an intermediate discovery milestone as terminal readiness', async () => {
+    const { result } = await run({
+      onApp: app => {
+        app.write({
+          event: CONNECT_DISCOVERY_MILESTONE_EVENT,
+          code: 'JOURNEY_DISCOVERY_VALIDATED',
+          ignored: 'bounded-extra-field',
+        });
+        app.close(0, null);
+      },
+    });
+    assert.deepEqual(result, {
+      ok: false,
+      category: 'child-exit-before-ready',
+      capture: 'complete',
+      records: [{
+        event: CONNECT_DISCOVERY_MILESTONE_EVENT,
+        code: 'JOURNEY_DISCOVERY_VALIDATED',
+      }],
+    });
+  });
+
+  test('returns only exact allowlisted journey stages', async () => {
+    const { result } = await run({
+      onApp: app => {
+        app.write({
+          event: CONNECT_JOURNEY_STAGE_EVENT,
+          code: 'JOURNEY_PAIR_TRANSPORT',
+          url: 'https://not-returned.example.test/private',
+        });
+        app.write({ event: CONNECT_JOURNEY_STAGE_EVENT, code: 'UNBOUNDED_STAGE' });
+        app.close(0, null);
+      },
+    });
+    assert.equal(result.category, 'child-exit-before-ready');
+    assert.deepEqual(result.records, [
+      { event: CONNECT_JOURNEY_STAGE_EVENT, code: 'JOURNEY_PAIR_TRANSPORT' },
+      { event: CONNECT_JOURNEY_STAGE_EVENT },
+    ]);
+    assert.doesNotMatch(JSON.stringify(result), /not-returned|UNBOUNDED_STAGE|url/u);
+  });
+
+  test('retains the latest bounded journey stage when earlier diagnostics fill the cap', async () => {
+    const { result } = await run({
+      onApp: app => {
+        for (let index = 0; index < 20; index += 1) {
+          app.write({ event: 'desktop.app.ready', code: 'DETAIL_REDACTED' });
+        }
+        app.write({ event: CONNECT_JOURNEY_STAGE_EVENT, code: 'JOURNEY_PAIR_RENDERER' });
+        app.close(0, null);
+      },
+    });
+    assert.equal(result.records.length, 20);
+    assert.deepEqual(result.records.at(-1), {
+      event: CONNECT_JOURNEY_STAGE_EVENT,
+      code: 'JOURNEY_PAIR_RENDERER',
+    });
+  });
+
+  test('fails closed when an otherwise allowlisted journey stage contains a secret', async () => {
+    const { result } = await run({
+      onApp: app => {
+        app.write({
+          event: CONNECT_JOURNEY_STAGE_EVENT,
+          code: 'JOURNEY_REPROBE_TRANSPORT',
+          detail: 'secret-SENTINEL',
+        });
+        app.close(0, null);
+      },
+    });
+    assert.equal(result.category, 'output-rejected');
+    assert.deepEqual(result.records, [{
+      event: CONNECT_JOURNEY_STAGE_EVENT,
+      code: 'JOURNEY_REPROBE_TRANSPORT',
+    }]);
+    assert.doesNotMatch(JSON.stringify(result), /SENTINEL|detail/u);
+  });
+
+  test('publishes the sole terminal READY only after each real journey phase', async () => {
+    const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
+    assert.equal((main.match(/'desktop\.renderer\.connect_discovery\.ready'/gu) ?? []).length, 1);
+    const connectBranch = main.slice(
+      main.indexOf('if (connectSmoke) {'),
+      main.indexOf('} else if (transportSmoke)'),
+    );
+    const discovery = connectBranch.indexOf('await runPackagedConnectDiscoverySmoke');
+    const journey = connectBranch.indexOf('await runPackagedConnectJourneySmoke');
+    const ready = connectBranch.indexOf('await publishPackagedConnectReady');
+    assert.ok(discovery >= 0 && discovery < journey && journey < ready);
+
+    const harness = await readFile(new URL('./smoke-packaged-connect.mjs', import.meta.url), 'utf8');
+    const pair = harness.indexOf("outcome = await runPhase('pair')");
+    const reprobe = harness.indexOf("outcome = await runPhase('reprobe')");
+    const persistedEvidence = harness.indexOf('const applicationRequests = journeyFixture.requests');
+    assert.ok(pair >= 0 && pair < reprobe && reprobe < persistedEvidence);
   });
 
   test('forces a ready app with a hung descendant through an exact bounded taskkill invocation', async () => {
@@ -363,6 +463,33 @@ describe('packaged Connect fixture cleanup', () => {
       clearTimeout(timer);
     }
   };
+
+  test('closes the journey fixture once and tolerates only the already-stopped server condition', async () => {
+    let socketCloses = 0;
+    let httpCloses = 0;
+    const close = createIdempotentJourneyFixtureClose({
+      closeSocketServer: async () => { socketCloses += 1; },
+      closeHttpServer: async () => {
+        httpCloses += 1;
+        throw Object.assign(new Error('server already stopped'), { code: 'ERR_SERVER_NOT_RUNNING' });
+      },
+    });
+    const first = close();
+    const second = close();
+    assert.equal(first, second);
+    await Promise.all([first, second, close()]);
+    assert.equal(socketCloses, 1);
+    assert.equal(httpCloses, 1);
+
+    const failure = createIdempotentJourneyFixtureClose({
+      closeSocketServer: async () => undefined,
+      closeHttpServer: async () => {
+        throw Object.assign(new Error('/private/path-SENTINEL'), { code: 'EIO' });
+      },
+    });
+    await assert.rejects(failure(), { code: 'EIO' });
+    assert.equal(failure(), failure());
+  });
 
   test('retries a transient Windows EBUSY only inside the authorized fixture', async () => {
     let attempts = 0;

@@ -79,25 +79,15 @@ class PairingClock {
 
 describe('desktop instance protocol', () => {
   it('strictly classifies only the credential-free public discovery 401', async () => {
-    let discoveryBodyRead = false;
     const legacy = new ProprClient({
       baseUrl: 'https://propr.example.test',
       authentication: { type: 'none' },
       fetch: async (_input, init) => {
         assert.equal(init?.credentials, 'omit');
         assert.equal(init?.redirect, 'manual');
-        const response = new Response('{"private":"proxy policy detail"}', {
+        return new Response('{ "error": "Unauthorized" }', {
           status: 401, headers: { 'Content-Type': 'application/json' },
         });
-        response.text = async () => {
-          discoveryBodyRead = true;
-          throw new Error('the 401 body must not be consumed');
-        };
-        response.json = async () => {
-          discoveryBodyRead = true;
-          throw new Error('the 401 body must not be consumed');
-        };
-        return response;
       },
     });
     await assert.rejects(legacy.discoverDesktop(), (error: unknown) =>
@@ -105,7 +95,69 @@ describe('desktop instance protocol', () => {
         && error.kind === 'invalid_response'
         && error.status === 401
         && error.code === DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED);
-    assert.equal(discoveryBodyRead, false);
+
+    const oversized = `{"error":"Unauthorized","padding":"${'x'.repeat(8 * 1024)}"}`;
+    const invalidResponses = [
+      new Response(null, { status: 401, headers: { 'Content-Type': 'application/json' } }),
+      new Response('<h1>Policy login required</h1>', {
+        status: 401, headers: { 'Content-Type': 'text/html' },
+      }),
+      new Response('{"error":', {
+        status: 401, headers: { 'Content-Type': 'application/json' },
+      }),
+      new Response('{"error":"Unauthorized","error":"Unauthorized"}', {
+        status: 401, headers: { 'Content-Type': 'application/json' },
+      }),
+      new Response('{"error":"Unauthorized","code":"PROXY_POLICY"}', {
+        status: 401, headers: { 'Content-Type': 'application/json' },
+      }),
+      new Response('{"code":"AUTHENTICATION_REQUIRED"}', {
+        status: 401, headers: { 'Content-Type': 'application/json' },
+      }),
+      new Response('{"error":"private proxy policy detail"}', {
+        status: 401, headers: { 'Content-Type': 'application/json' },
+      }),
+      new Response('{"error":"Unauthorized"}', {
+        status: 401,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': '8193' },
+      }),
+      new Response(oversized, {
+        status: 401, headers: { 'Content-Type': 'application/json' },
+      }),
+      new Response(new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x7d]), {
+        status: 401, headers: { 'Content-Type': 'application/json' },
+      }),
+      new Response('{"error":"Unauthorized"}', {
+        status: 401,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': '1' },
+      }),
+      new Response('{"error":"Unauthorized"}', {
+        status: 401, headers: { 'Content-Type': 'application/problem+json' },
+      }),
+    ];
+    const redirected = new Response('{"error":"Unauthorized"}', {
+      status: 401, headers: { 'Content-Type': 'application/json' },
+    });
+    Object.defineProperty(redirected, 'redirected', { value: true });
+    invalidResponses.push(redirected);
+
+    for (const response of invalidResponses) {
+      const client = new ProprClient({
+        baseUrl: 'https://propr.example.test',
+        authentication: { type: 'none' },
+        fetch: async () => response,
+      });
+      await assert.rejects(client.discoverDesktop(), (error: unknown) => {
+        assert.ok(error instanceof ProprClientError);
+        assert.equal(error.kind, 'invalid_response');
+        assert.equal(error.status, 401);
+        assert.equal(error.code, undefined);
+        assert.equal(error.body, undefined);
+        assert.equal(error.cause, undefined);
+        assert.doesNotMatch(JSON.stringify(error), /private proxy policy detail|Unauthorized/u);
+        return true;
+      });
+    }
 
     const operational = new ProprClient({
       baseUrl: 'https://propr.example.test',
@@ -118,18 +170,6 @@ describe('desktop instance protocol', () => {
         && error.status === 401
         && error.code === 'AUTHENTICATION_REQUIRED');
 
-    const htmlPolicy = new ProprClient({
-      baseUrl: 'https://propr.example.test',
-      authentication: { type: 'none' },
-      fetch: async () => new Response('<h1>Policy login required</h1>', {
-        status: 401, headers: { 'Content-Type': 'text/html' },
-      }),
-    });
-    await assert.rejects(htmlPolicy.discoverDesktop(), (error: unknown) =>
-      error instanceof ProprClientError
-        && error.kind === 'invalid_response'
-        && error.status === 401
-        && error.code === undefined);
   });
 
   it('uses the shared strict wire parser for missing, extra, malformed, duplicate, and oversized discovery', async () => {
@@ -184,10 +224,10 @@ describe('desktop instance protocol', () => {
       authentication: { type: 'none' },
       fetch: async () => new Response(new ReadableStream<Uint8Array>({
         start(controller) {
-          controller.enqueue(new TextEncoder().encode('{"schemaVersion":1'));
+          controller.enqueue(new TextEncoder().encode('{"error":"Unauthor'));
         },
         cancel() { bodyCancelled += 1; },
-      }), { headers: { 'Content-Type': 'application/json' } }),
+      }), { status: 401, headers: { 'Content-Type': 'application/json' } }),
     });
     await assert.rejects(bounded(stalledBody.discoverDesktop(20), 500), (error: unknown) =>
       error instanceof ProprClientError && error.kind === 'timeout');
