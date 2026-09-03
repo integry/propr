@@ -43,7 +43,8 @@ test('GET repository config returns false for legacy entries with a missing opti
       id: 'repo-1',
       name: 'integry/propr',
       enabled: true,
-      autoFollowupOnFailedCi: false
+      autoFollowupOnFailedCi: false,
+      visualPreview: { enabled: false, types: ['image'] }
     }]
   });
 });
@@ -86,6 +87,7 @@ test('POST repository config persists an enabled option without enabling other r
       name: 'integry/propr',
       enabled: true,
       autoFollowupOnFailedCi: true,
+      visualPreview: { enabled: false, types: ['image'] },
       alias: undefined,
       baseBranch: undefined,
       defaultBranch: undefined
@@ -95,11 +97,54 @@ test('POST repository config persists an enabled option without enabling other r
       name: 'integry/other',
       enabled: true,
       autoFollowupOnFailedCi: false,
+      visualPreview: { enabled: false, types: ['image'] },
       alias: undefined,
       baseBranch: undefined,
       defaultBranch: undefined
     }
   ]);
+});
+
+test('POST repository config synchronizes visual previews across branch entries', async () => {
+  const saveMonitoredRepos = mock.fn(async () => true);
+  const routes = createConfigRoutes({
+    redisClient: {
+      set: mock.fn(async () => 'OK'),
+      eval: mock.fn(async () => 1),
+      publish: mock.fn(async () => 1),
+      lPush: mock.fn(async () => 1),
+      lTrim: mock.fn(async () => 'OK')
+    } as never,
+    configStore: {
+      loadMonitoredReposRaw: async () => [],
+      saveMonitoredRepos,
+      clearRemovedRepositoryIndexData: async () => {}
+    },
+    database: {
+      transaction: async (callback: (transaction: never) => Promise<unknown>) => callback({} as never)
+    } as never
+  });
+  const response = createResponse();
+  const visualPreview = {
+    enabled: true,
+    types: ['image', 'video'],
+    instructions: 'Show desktop and mobile.'
+  };
+
+  await routes.postRepos({
+    body: {
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', visualPreview },
+        { id: 'repo-release', name: 'integry/propr', enabled: true, baseBranch: 'release' }
+      ]
+    }
+  } as never, response as never);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(
+    saveMonitoredRepos.mock.calls[0]?.arguments[0].map(repo => repo.visualPreview),
+    [visualPreview, visualPreview]
+  );
 });
 
 test('POST repository config preserves an omitted option for existing repositories', async () => {

@@ -39,9 +39,30 @@ function shouldIgnoreStaleProgressUpdate(
   return currentStatus ? hasSeenTerminalSocketUpdate && TERMINAL_INDEXING_STATUSES.has(currentStatus.indexing_status) : false;
 }
 
-export type Repo = Omit<MonitoredRepo, 'autoFollowupOnFailedCi'> & {
+export type VisualPreviewSettings = NonNullable<MonitoredRepo['visualPreview']>;
+
+export type Repo = Omit<MonitoredRepo, 'autoFollowupOnFailedCi' | 'visualPreview'> & {
   autoFollowupOnFailedCi: boolean;
+  visualPreview: VisualPreviewSettings;
 };
+
+const defaultVisualPreview = (): VisualPreviewSettings => ({ enabled: false, types: ['image'] });
+
+function parseVisualPreview(value: unknown): VisualPreviewSettings {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return defaultVisualPreview();
+  const candidate = value as Record<string, unknown>;
+  const types = Array.isArray(candidate.types)
+    ? [...new Set(candidate.types.filter((type): type is 'image' | 'video' => type === 'image' || type === 'video'))]
+    : [];
+  const instructions = typeof candidate.instructions === 'string' && candidate.instructions.trim()
+    ? candidate.instructions.trim()
+    : undefined;
+  return {
+    enabled: candidate.enabled === true,
+    types: types.length > 0 ? types : ['image'],
+    ...(instructions ? { instructions } : {})
+  };
+}
 
 export interface UseRepositoryManagementResult {
   repos: Repo[];
@@ -60,6 +81,7 @@ export interface UseRepositoryManagementResult {
   handleRemoveRepo: (repoId: string) => void;
   handleToggleRepo: (repoId: string) => void;
   handleToggleAutoCiFollowup: (repoId: string) => void;
+  handleUpdateVisualPreview: (repoId: string, settings: VisualPreviewSettings) => void;
   handleToggleStar: (repoId: string) => Promise<void>;
   handleToggleHidden: (repoId: string) => Promise<void>;
   handleToggleShowHidden: () => void;
@@ -104,18 +126,19 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
         .map((repo: unknown): Repo | null => {
           if (typeof repo === 'string') {
             const userPref = prefs[repo] || {};
-            return { id: generateId(), name: repo, enabled: true, autoFollowupOnFailedCi: false, starred: userPref.starred, hidden: userPref.hidden };
+            return { id: generateId(), name: repo, enabled: true, autoFollowupOnFailedCi: false, visualPreview: defaultVisualPreview(), starred: userPref.starred, hidden: userPref.hidden };
           } else if (repo && typeof repo === 'object') {
             const repoObj = repo as Record<string, unknown>;
             const name = (repoObj.name as string) || (repoObj.full_name as string);
             const enabled = typeof repoObj.enabled === 'boolean' ? repoObj.enabled : true;
             const autoFollowupOnFailedCi = repoObj.autoFollowupOnFailedCi === true;
+            const visualPreview = parseVisualPreview(repoObj.visualPreview);
             const id = (repoObj.id as string) || generateId();
             const alias = repoObj.alias as string | undefined;
             const baseBranch = repoObj.baseBranch as string | undefined;
             const userPref = name ? (prefs[name] || {}) : {};
             if (name) {
-              return { id, name, enabled, autoFollowupOnFailedCi, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
+              return { id, name, enabled, autoFollowupOnFailedCi, visualPreview, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
             }
           }
           return null;
@@ -305,15 +328,17 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       alert(`Repository "${newRepo}"${branchInfo} has already been added to the list.`);
       return false;
     }
+    const repositoryKey = getRepositoryConfigKey(newRepo);
+    const existingVisualPreview = repos.find(repo => getRepositoryConfigKey(repo.name) === repositoryKey)?.visualPreview;
     const newEntry: Repo = {
       id: generateId(),
       name: newRepo,
       enabled: true,
       autoFollowupOnFailedCi,
+      visualPreview: existingVisualPreview || defaultVisualPreview(),
       alias: newAlias.trim() || undefined,
       baseBranch: newBaseBranch.trim() || undefined
     };
-    const repositoryKey = getRepositoryConfigKey(newRepo);
     const newRepos = [
       ...repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
         ? { ...repo, autoFollowupOnFailedCi: repo.autoFollowupOnFailedCi || autoFollowupOnFailedCi }
@@ -354,6 +379,19 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     performAutoSave(newRepos);
   };
 
+  const handleUpdateVisualPreview = (repoId: string, settings: VisualPreviewSettings) => {
+    if (!canManageRepositories) return;
+    const targetRepo = repos.find(repo => repo.id === repoId);
+    if (!targetRepo) return;
+    const repositoryKey = getRepositoryConfigKey(targetRepo.name);
+    const normalizedSettings = parseVisualPreview(settings);
+    const newRepos = repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+      ? { ...repo, visualPreview: normalizedSettings }
+      : repo);
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
   const handleToggleStar = async (repoId: string) => {
     const repo = repos.find(r => r.id === repoId);
     if (!repo) return;
@@ -389,20 +427,26 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
 
   const hiddenCount = repos.filter(r => r.hidden).length;
   const autoCiFollowupByRepository = new Map<string, boolean>();
+  const visualPreviewByRepository = new Map<string, VisualPreviewSettings>();
   for (const repo of repos) {
     const key = getRepositoryConfigKey(repo.name);
     autoCiFollowupByRepository.set(key, autoCiFollowupByRepository.get(key) === true || repo.autoFollowupOnFailedCi);
+    const previousPreview = visualPreviewByRepository.get(key);
+    if (!previousPreview || (!previousPreview.enabled && repo.visualPreview.enabled)) {
+      visualPreviewByRepository.set(key, repo.visualPreview);
+    }
   }
   const reposForDisplay = repos.map(repo => ({
     ...repo,
-    autoFollowupOnFailedCi: autoCiFollowupByRepository.get(getRepositoryConfigKey(repo.name)) === true
+    autoFollowupOnFailedCi: autoCiFollowupByRepository.get(getRepositoryConfigKey(repo.name)) === true,
+    visualPreview: visualPreviewByRepository.get(getRepositoryConfigKey(repo.name)) || defaultVisualPreview()
   }));
   const filteredRepos = showHiddenRepos ? reposForDisplay : reposForDisplay.filter(r => !r.hidden);
 
   return {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, loadRepos, handleStopIndexing, handleReindexRepo, handleAddRepo,
-    handleRemoveRepo, handleToggleRepo, handleToggleAutoCiFollowup, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
+    handleRemoveRepo, handleToggleRepo, handleToggleAutoCiFollowup, handleUpdateVisualPreview, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
     handleRetry, setError
   };
 }
