@@ -114,7 +114,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
 
 
 FROM agent-base AS codex-cli
-ARG CODEX_CLI_VERSION=0.146.0
+ARG CODEX_CLI_VERSION=0.151.0
 USER root
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
     && npm cache clean --force \
@@ -192,7 +192,7 @@ RUN set -eu; \
 
 FROM agent-base AS final
 ARG CLAUDE_CLI_VERSION=2.1.220
-ARG CODEX_CLI_VERSION=0.146.0
+ARG CODEX_CLI_VERSION=0.151.0
 ARG ANTIGRAVITY_CLI_VERSION=1.1.13
 ARG OPENCODE_CLI_VERSION=1.18.9
 ARG VIBE_CLI_VERSION=2.23.1

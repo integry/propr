@@ -24,6 +24,8 @@ import type { AgentConfig } from '../packages/core/src/agents/types.js';
 after(async () => closeConnection());
 
 const ensureGitRepositoryMock = mock.fn();
+const ensureRepoClonedMock = mock.fn(async () => '/tmp/review-context-repository');
+const createWorktreeFromExistingBranchMock = mock.fn(async () => ({ worktreePath: '/tmp' }));
 let loadedSettings: Record<string, unknown> = {};
 const loadSettingsMock = mock.fn(async () => loadedSettings);
 const resolveLlmLabelMock = mock.fn(async (label: string) => {
@@ -32,9 +34,9 @@ const resolveLlmLabelMock = mock.fn(async (label: string) => {
 });
 await mock.module('@propr/core', {
     namedExports: {
-        createWorktreeFromExistingBranch: mock.fn(),
+        createWorktreeFromExistingBranch: createWorktreeFromExistingBranchMock,
         ensureGitRepository: ensureGitRepositoryMock,
-        ensureRepoCloned: mock.fn(),
+        ensureRepoCloned: ensureRepoClonedMock,
         getRepoUrl: mock.fn(),
         loadSettings: loadSettingsMock,
         resolveLlmLabel: resolveLlmLabelMock,
@@ -174,6 +176,66 @@ test('context scout considers dedicated, fast, and reviewer candidates before de
     assert.deepEqual(getAgentByAlias.mock.calls.map(call => call.arguments[0]), ['dedicated', 'fast', 'reviewer']);
     for (const agent of agents.values()) assert.equal(agent.analyze.mock.callCount(), 0);
     assert.equal(ensureGitRepositoryMock.mock.callCount(), initialEnsureGitCalls);
+});
+
+test('context scout continues after an unsafe route and an exhausted synthetic fallback', async () => {
+    const logger = { info: mock.fn(), warn: mock.fn(), error: mock.fn(), debug: mock.fn() };
+    const agents = new Map([
+        ['dedicated', { config: { type: 'claude', alias: 'dedicated' }, analyze: mock.fn() }],
+        ['unsafe', { config: { type: 'future-agent', alias: 'unsafe' }, analyze: mock.fn() }],
+        ['fast', { config: { type: 'claude', alias: 'fast' }, analyze: mock.fn() }],
+        ['reviewer', { config: { type: 'codex', alias: 'reviewer' }, analyze: mock.fn() }],
+    ]);
+    const reviewerAnalyze = mock.fn(async () => ({
+        success: true,
+        response: '{"references":[]}',
+        modelUsed: 'reviewer-model',
+        executionTimeMs: 1,
+    }));
+    const beginRoutingSession = mock.fn((routingOptions: { requestedAgentAlias: string }) => {
+        if (routingOptions.requestedAgentAlias === 'dedicated') {
+            return { select: mock.fn(async () => ({ physicalAgentAlias: 'unsafe', physicalModel: 'unsafe-model' })) };
+        }
+        if (routingOptions.requestedAgentAlias === 'fast') {
+            return { select: mock.fn(async () => { throw new Error('synthetic pool exhausted'); }) };
+        }
+        return {
+            select: mock.fn(async () => ({ physicalAgentAlias: 'reviewer', physicalModel: 'reviewer-model' })),
+            analyze: reviewerAnalyze,
+        };
+    });
+
+    const result = await prepareRelatedReviewContext({
+        registry: {
+            getAgentByAlias: (alias: string) => agents.get(alias),
+            beginRoutingSession,
+        } as never,
+        fallbackAssignment: { agentAlias: 'reviewer', model: 'reviewer-model' },
+        configuredModel: 'dedicated:context-model',
+        fastAnalysisModel: 'fast:analysis-model',
+        state: { localRepoPath: undefined, worktreeInfo: undefined },
+        githubToken: 'github-secret',
+        branchName: 'feature',
+        prDiff: 'diff',
+        changedFiles: ['src/changed.ts'],
+        originalTaskSpec: 'objective',
+        pullRequestNumber: 1762,
+        repoOwner: 'integry',
+        repoName: 'propr',
+        taskId: 'task-fallback',
+        correlationId: 'correlation-fallback',
+        correlatedLogger: logger as never,
+    });
+
+    assert.equal(result, '');
+    assert.deepEqual(
+        beginRoutingSession.mock.calls.map(call => call.arguments[0].requestedAgentAlias),
+        ['dedicated', 'fast', 'reviewer'],
+    );
+    const eligibility = beginRoutingSession.mock.calls[0].arguments[0].physicalAgentEligibility as (agent: unknown) => boolean;
+    assert.equal(eligibility(agents.get('reviewer')), true);
+    assert.equal(eligibility(agents.get('unsafe')), false);
+    assert.equal(reviewerAnalyze.mock.callCount(), 1);
 });
 
 test('Claude scout Docker args expose only the confined repository MCP tools', () => {

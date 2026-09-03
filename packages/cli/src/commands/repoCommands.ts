@@ -154,12 +154,17 @@ function displayReposTable(repos: MonitoredRepo[]): void {
     "Status".length,
     ...repos.map((r) => formatEnabled(r.enabled).length)
   );
+  const autoCiFollowupWidth = Math.max(
+    "Auto CI follow-up".length,
+    ...repos.map((r) => formatEnabled(r.autoFollowupOnFailedCi).length)
+  );
 
   const header = [
     "Repository".padEnd(nameWidth),
     "Alias".padEnd(aliasWidth),
     "Branch".padEnd(branchWidth),
     "Status".padEnd(statusWidth),
+    "Auto CI follow-up".padEnd(autoCiFollowupWidth),
   ].join("  ");
 
   console.log(header);
@@ -171,6 +176,7 @@ function displayReposTable(repos: MonitoredRepo[]): void {
       (truncate(repo.alias, 20) || "-").padEnd(aliasWidth),
       (truncate(repo.baseBranch, 20) || "-").padEnd(branchWidth),
       formatEnabled(repo.enabled).padEnd(statusWidth),
+      formatEnabled(repo.autoFollowupOnFailedCi).padEnd(autoCiFollowupWidth),
     ].join("  ");
 
     console.log(row);
@@ -242,6 +248,7 @@ Examples:
     .description("Add a repository to the monitored list for ProPR")
     .option("-a, --alias <alias>", "Display alias for the repository")
     .option("-b, --branch <branch>", "Base branch name (default: main/master)")
+    .option("--auto-ci-followup", "Enable automatic follow-up when CI fails (default: off)")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
@@ -249,11 +256,12 @@ Argument:
 Examples:
   $ propr repo add myorg/myrepo
   $ propr repo add myorg/myrepo -a "My Project" -b develop
+  $ propr repo add myorg/myrepo --auto-ci-followup
 `)
     .action(
       async (
         fullName: string,
-        options: { alias?: string; branch?: string }
+        options: { alias?: string; branch?: string; autoCiFollowup?: boolean }
       ) => {
         try {
           if (!fullName.includes("/")) {
@@ -279,6 +287,7 @@ Examples:
             alias: options.alias,
             baseBranch: options.branch,
             enabled: true,
+            autoFollowupOnFailedCi: options.autoCiFollowup ?? false,
           });
 
           if (result.success) {
@@ -290,6 +299,9 @@ Examples:
             if (options.branch) {
               console.log(`  Base branch: ${options.branch}`);
             }
+            console.log(
+              `  Automatic CI follow-up: ${formatEnabled(options.autoCiFollowup ?? false)}`
+            );
             console.log("");
             console.log(
               `Total monitored repositories: ${result.repos_to_monitor.length}`
@@ -397,24 +409,28 @@ Example:
   // repo toggle
   repo
     .command("toggle <fullName>")
-    .description("Enable or disable monitoring for a repository")
+    .description("Update monitoring or automatic CI follow-up for a repository")
     .option("--enable", "Enable monitoring for the repository")
     .option("--disable", "Disable monitoring for the repository")
+    .option("--auto-ci-followup", "Enable automatic follow-up when CI fails")
+    .option("--no-auto-ci-followup", "Disable automatic follow-up when CI fails")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
 
 Note:
-  Exactly one of --enable or --disable must be specified.
+  Specify at least one monitoring or automatic CI follow-up option.
 
 Examples:
   $ propr repo toggle myorg/myrepo --enable
   $ propr repo toggle myorg/myrepo --disable
+  $ propr repo toggle myorg/myrepo --auto-ci-followup
+  $ propr repo toggle myorg/myrepo --no-auto-ci-followup
 `)
     .action(
       async (
         fullName: string,
-        options: { enable?: boolean; disable?: boolean }
+        options: { enable?: boolean; disable?: boolean; autoCiFollowup?: boolean }
       ) => {
         try {
           if (options.enable && options.disable) {
@@ -424,14 +440,16 @@ Examples:
             process.exit(1);
           }
 
-          if (!options.enable && !options.disable) {
+          if (!options.enable && !options.disable && options.autoCiFollowup === undefined) {
             console.error(
-              "Error: Must specify either --enable or --disable."
+              "Error: Must specify --enable, --disable, --auto-ci-followup, or --no-auto-ci-followup."
             );
             console.log("");
             console.log("Usage:");
             console.log(`  propr repo toggle ${fullName} --enable`);
             console.log(`  propr repo toggle ${fullName} --disable`);
+            console.log(`  propr repo toggle ${fullName} --auto-ci-followup`);
+            console.log(`  propr repo toggle ${fullName} --no-auto-ci-followup`);
             process.exit(1);
           }
 
@@ -444,19 +462,27 @@ Examples:
             process.exit(1);
           }
 
-          const enableState = options.enable ? true : false;
-          const actionWord = enableState ? "Enabling" : "Disabling";
+          const enabled = options.enable ? true : options.disable ? false : undefined;
+          console.log(`Updating repository settings: ${fullName}...`);
 
-          console.log(`${actionWord} monitoring for repository: ${fullName}...`);
-
-          const result = await updateRepo(fullName, { enabled: enableState });
+          const result = await updateRepo(fullName, {
+            ...(enabled !== undefined && { enabled }),
+            ...(options.autoCiFollowup !== undefined && {
+              autoFollowupOnFailedCi: options.autoCiFollowup,
+            }),
+          });
 
           if (result.success) {
-            const statusWord = enableState ? "enabled" : "disabled";
             console.log("");
-            console.log(
-              `Successfully ${statusWord} monitoring for repository: ${fullName}`
-            );
+            console.log(`Successfully updated repository: ${fullName}`);
+            if (enabled !== undefined) {
+              console.log(`  Monitoring: ${formatEnabled(enabled)}`);
+            }
+            if (options.autoCiFollowup !== undefined) {
+              console.log(
+                `  Automatic CI follow-up: ${formatEnabled(options.autoCiFollowup)}`
+              );
+            }
           } else {
             console.error("Failed to update repository.");
             process.exit(1);

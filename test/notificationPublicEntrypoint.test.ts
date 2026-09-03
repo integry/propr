@@ -23,6 +23,11 @@ test('builds and exposes the notification contract from @propr/shared', async (c
   );
   const packageDist = path.join(packageDirectory, 'dist');
   fs.mkdirSync(packageDirectory, { recursive: true });
+  fs.symlinkSync(
+    path.join(workspace, 'node_modules', 'zod'),
+    path.join(temporaryDirectory, 'node_modules', 'zod'),
+    'junction',
+  );
   fs.copyFileSync(
     path.join(workspace, 'packages/shared/package.json'),
     path.join(packageDirectory, 'package.json'),

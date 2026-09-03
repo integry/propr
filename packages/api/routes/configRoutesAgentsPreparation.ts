@@ -21,13 +21,13 @@ export const DEFAULT_PREPARATION_DEPS: AgentPreparationDeps = {
 export function resolveDefaultAgentAlias(
   processedAgents: AgentConfig[],
   currentDefault: string | undefined,
+  additionalEnabledAliases: Iterable<string> = [],
 ): string | undefined {
   const enabledAgents = processedAgents.filter(agent => agent.enabled);
-  if (enabledAgents.length === 0) return undefined;
-  if (!currentDefault || !enabledAgents.some(agent => agent.alias === currentDefault)) {
-    return enabledAgents[0].alias;
-  }
-  return currentDefault;
+  const enabledAliases = new Set(enabledAgents.map(agent => agent.alias));
+  for (const alias of additionalEnabledAliases) enabledAliases.add(alias);
+  if (currentDefault && enabledAliases.has(currentDefault)) return currentDefault;
+  return enabledAgents[0]?.alias;
 }
 
 function requiresExplicitVersionSpec(versionType: CliVersionType): boolean {

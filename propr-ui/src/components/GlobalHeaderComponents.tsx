@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, CheckCircle, Rocket, ExternalLink } from 'lucide-react';
+import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, CheckCircle, Rocket, ExternalLink, Layers3 } from 'lucide-react';
 import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
@@ -285,7 +285,7 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
     if (!status) return 'bg-gray-400';
     const lower = status.toLowerCase();
     if (['running', 'connected', 'authenticated', 'ready', 'idle', 'active'].includes(lower)) return 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]';
-    if (lower === 'queued') return 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
+    if (lower === 'queued' || lower === 'degraded') return 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
     return 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]';
   };
   const getOverallHealthColor = (): string => {
@@ -299,7 +299,7 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
     if (!status) return 'text-gray-400';
     const lower = status.toLowerCase();
     if (['running', 'connected', 'authenticated', 'ready', 'idle', 'active'].includes(lower)) return 'text-green-500';
-    if (lower === 'queued') return 'text-amber-500';
+    if (lower === 'queued' || lower === 'degraded') return 'text-amber-500';
     return 'text-red-500';
   };
   const renderStatusRow = (label: string, status?: string) => (
@@ -338,7 +338,9 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
   const renderAgentStatusRow = (agent: HeaderStats['systemHealth']['agents'][number]) => (
     <div className="flex justify-between items-center gap-4 whitespace-nowrap text-sm">
       <span className="flex items-center gap-2 text-slate-700">
-        <ProviderLogo provider={agent.type || agent.alias} className={`w-3.5 h-3.5 flex-shrink-0 ${getStatusTextColor(agent.status)}`} />
+        {agent.type === 'synthetic'
+          ? <Layers3 className={`w-3.5 h-3.5 flex-shrink-0 ${getStatusTextColor(agent.status)}`} />
+          : <ProviderLogo provider={agent.type || agent.alias} className={`w-3.5 h-3.5 flex-shrink-0 ${getStatusTextColor(agent.status)}`} />}
         <span>{formatAgentLabel(agent, systemHealth.agents)}</span>
       </span>
       <span className="flex-shrink-0 font-medium text-slate-500">{agent.status || 'Unknown'}</span>

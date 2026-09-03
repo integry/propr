@@ -250,12 +250,17 @@ durations are integer milliseconds.
 ```bash
 propr repo list                              # Monitored repositories
 propr repo add owner/repo -a "Alias" -b dev  # Add with alias and base branch
+propr repo add owner/repo --auto-ci-followup # Enable automatic follow-up for failed CI
 propr repo remove owner/repo
 propr repo toggle owner/repo --enable        # Enable/disable monitoring
+propr repo toggle owner/repo --auto-ci-followup     # Enable failed-CI follow-up
+propr repo toggle owner/repo --no-auto-ci-followup  # Disable failed-CI follow-up
 propr repo index owner/repo                  # Full reindex
 propr repo index owner/repo --incremental    # Incremental reindex
 propr repo status                            # Indexing status for all repos
 ```
+
+Automatic CI follow-up is configured per repository and is **off by default**. Enable it only for repositories whose CI failures are high-quality, trusted signals; noisy or flaky checks can otherwise create unnecessary follow-up work. `propr repo list` shows the current setting for every monitored repository.
 
 ## Agents
 
@@ -269,11 +274,17 @@ propr agent add --file agent-config.json     # From a JSON file (or `-` for stdi
 propr agent enable my-agent                  # Enable / disable without deleting
 propr agent disable my-agent
 propr agent delete my-agent --force
+
+propr agent pool list --json > pools.json
+propr agent pool apply pools.json       # Also accepts '-' for stdin
+propr agent pool delete balanced-pool
 ```
 
 Agent types: `claude`, `codex`, `antigravity`, `opencode`, `vibe`.
 
 See [Agents and Models](./agents-and-models.md) for the model catalog, label formats, and per-agent credential setup, including the OpenCode host-authentication steps and the `XDG_DATA_HOME` requirement for file-based OpenCode auth.
+
+Synthetic pool commands replace one complete, nested configuration document. JSON from `pool list --json` can be passed unchanged to `pool apply`; validation failures retain the backend's nested field message. See [Synthetic Pools](./synthetic-pools.md) for schemas and routing behavior.
 
 ## To-Dos
 
