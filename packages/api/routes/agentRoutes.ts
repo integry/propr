@@ -11,6 +11,7 @@ import {
   toProprOpenCodeModelId,
   type Agent,
   type AgentRegistry,
+  SyntheticAgent,
 } from '@propr/core';
 import { AGENT_DEFAULTS, isManagedAgentConfigPath } from '@propr/shared';
 import { requireManageAgents } from '../permissionGuards.js';
@@ -19,6 +20,7 @@ const execFileAsync = promisify(execFile);
 
 interface AgentChatQuery {
   agentId: string;
+  syntheticConfigId?: string;
   model?: string;
 }
 
@@ -35,6 +37,31 @@ interface AgentChatResult {
   response?: string;
   error?: string;
   durationMs: number;
+  syntheticConfigId?: string;
+  virtualAgentAlias?: string;
+  virtualModel?: string;
+  physicalAgentAlias?: string;
+  physicalModel?: string;
+  attemptNumber?: number;
+}
+
+interface ChatRoutingMetadata {
+  virtualAgentAlias?: string;
+  virtualModel?: string;
+  physicalAgentAlias?: string;
+  physicalModel?: string;
+  attemptNumber?: number;
+}
+
+function chatRoutingFields(metadata: Record<string, unknown> | undefined): ChatRoutingMetadata {
+  if (!metadata) return {};
+  return {
+    virtualAgentAlias: typeof metadata.virtualAgentAlias === 'string' ? metadata.virtualAgentAlias : undefined,
+    virtualModel: typeof metadata.virtualModel === 'string' ? metadata.virtualModel : undefined,
+    physicalAgentAlias: typeof metadata.physicalAgentAlias === 'string' ? metadata.physicalAgentAlias : undefined,
+    physicalModel: typeof metadata.physicalModel === 'string' ? metadata.physicalModel : undefined,
+    attemptNumber: typeof metadata.attemptNumber === 'number' ? metadata.attemptNumber : undefined,
+  };
 }
 
 function resolveHostPath(configPath: string): string {
@@ -130,6 +157,58 @@ function canonicalChatModel(agent: Agent, model: string | undefined): string {
     : fallbackModel;
 }
 
+async function executeChatQuery(
+  registry: AgentRegistry,
+  query: AgentChatQuery,
+  prompt: string,
+  context: string | undefined,
+): Promise<AgentChatResult> {
+  const requestedAgentId = query.syntheticConfigId || query.agentId;
+  const agent = await resolveChatAgent(registry, requestedAgentId);
+
+  if (!agent) {
+    return {
+      agentId: requestedAgentId,
+      model: query.model || 'default',
+      error: 'Agent not found',
+      durationMs: 0,
+    };
+  }
+
+  const start = Date.now();
+  const routingSession = agent instanceof SyntheticAgent
+    ? agent.beginRoutingSession(query.model)
+    : undefined;
+
+  try {
+    const analysisResult = routingSession
+      ? await routingSession.analyze(prompt, { context, model: query.model })
+      : await agent.analyze(prompt, { context, model: query.model });
+    const routing = chatRoutingFields(routingSession?.routingMetadata);
+    return {
+      agentId: requestedAgentId,
+      ...(query.syntheticConfigId ? { syntheticConfigId: query.syntheticConfigId } : {}),
+      agentAlias: agent.config.alias,
+      model: routing.virtualModel || canonicalChatModel(agent, analysisResult.modelUsed || query.model),
+      ...routing,
+      response: analysisResult.response,
+      error: analysisResult.success === false ? (analysisResult.error || 'Analysis failed') : undefined,
+      durationMs: Date.now() - start,
+    };
+  } catch (error) {
+    const routing = chatRoutingFields(routingSession?.routingMetadata);
+    return {
+      agentId: requestedAgentId,
+      ...(query.syntheticConfigId ? { syntheticConfigId: query.syntheticConfigId } : {}),
+      agentAlias: agent.config.alias,
+      model: routing.virtualModel || canonicalChatModel(agent, query.model),
+      ...routing,
+      error: (error as Error).message,
+      durationMs: Date.now() - start,
+    };
+  }
+}
+
 export function createAgentRoutes() {
   const router = Router();
 
@@ -171,38 +250,7 @@ export function createAgentRoutes() {
       // use the same agent credentials concurrently.
       const results: AgentChatResult[] = [];
       for (const query of queries) {
-          const agent = await resolveChatAgent(registry, query.agentId);
-
-          if (!agent) {
-            results.push({
-              agentId: query.agentId,
-              model: query.model || 'default',
-              error: 'Agent not found',
-              durationMs: 0
-            });
-            continue;
-          }
-
-          const start = Date.now();
-          try {
-            const analysisResult = await agent.analyze(prompt, { context, model: query.model });
-            results.push({
-              agentId: query.agentId,
-              agentAlias: agent.config.alias,
-              model: canonicalChatModel(agent, analysisResult.modelUsed || query.model),
-              response: analysisResult.response,
-              error: analysisResult.success === false ? (analysisResult.error || 'Analysis failed') : undefined,
-              durationMs: Date.now() - start
-            });
-          } catch (err) {
-            results.push({
-              agentId: query.agentId,
-              agentAlias: agent.config.alias,
-              model: canonicalChatModel(agent, query.model),
-              error: (err as Error).message,
-              durationMs: Date.now() - start
-            });
-          }
+        results.push(await executeChatQuery(registry, query, prompt, context));
       }
 
       res.json({ results });

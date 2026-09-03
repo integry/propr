@@ -35,6 +35,17 @@ export interface HistoryItemMetadata {
   ultrafixScore?: number;
   ultrafixNextAction?: string;
   ultrafixStopReason?: string;
+  syntheticRouting?: {
+    virtualAgentAlias?: string;
+    virtualModel?: string;
+    physicalAgentAlias?: string;
+    physicalModel?: string;
+    memberId?: string;
+    callId?: string;
+    attemptNumber?: number;
+    selectionReason?: string;
+    requiredTokens?: number;
+  };
 }
 
 export interface HistoryItem {

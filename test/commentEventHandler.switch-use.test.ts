@@ -139,10 +139,12 @@ await mock.module('../packages/core/src/agents/AgentRegistry.js', {
 });
 
 // Mock commentFilters
+const mockFilterCommentByAuthor = mock.fn(() => ({ shouldFilter: false }));
+const mockCheckCommentTrigger = mock.fn(() => ({ isTriggered: true }));
 await mock.module('../packages/core/src/utils/commentFilters.js', {
     namedExports: {
-        filterCommentByAuthor: mock.fn(() => ({ shouldFilter: false })),
-        checkCommentTrigger: mock.fn(() => ({ isTriggered: true })),
+        filterCommentByAuthor: mockFilterCommentByAuthor,
+        checkCommentTrigger: mockCheckCommentTrigger,
         checkCommentIgnore: mock.fn(() => ({ shouldIgnore: false })),
     },
 });
@@ -204,6 +206,10 @@ setUltrafixDeps({
 });
 
 beforeEach(() => {
+    mockFilterCommentByAuthor.mock.resetCalls();
+    mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: false }));
+    mockCheckCommentTrigger.mock.resetCalls();
+    mockCheckCommentTrigger.mock.mockImplementation(() => ({ isTriggered: true }));
     mockInvalidateAutomaticWork.mock.resetCalls();
     mockInvalidateAutomaticWork.mock.mockImplementation(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
     mockHasAutomaticWork.mock.resetCalls();
@@ -276,6 +282,57 @@ function createPRReviewCommentEvent(body: string, overrides: Record<string, unkn
 }
 
 // ========== Tests ==========
+
+describe('commentEventHandler — automatic CI follow-up marker', () => {
+    test('accepts the ProPR bot marker as a trigger and strips it from agent instructions', async () => {
+        mockQueueAdd.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
+        mockCheckCommentTrigger.mock.mockImplementation(() => ({ isTriggered: false }));
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: { head: { ref: 'feature-branch' }, labels: [] },
+        }));
+
+        const marker = `<!-- propr:ci-failure-followup key="${'a'.repeat(64)}" -->`;
+        const event = createPRCommentEvent(`Please investigate unit-tests.\n\n${marker}`);
+        event.comment.user.login = 'propr-dev[bot]';
+        event.comment.user.type = 'Bot';
+
+        const disposition = await processCommentEvent(
+            event,
+            'issue_comment',
+            'corr-ci-followup',
+            createTestConfig(),
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as { comments: Array<{ body: string }> };
+        assert.strictEqual(jobData.comments[0].body, 'Please investigate unit-tests.');
+        assert.doesNotMatch(jobData.comments[0].body, /propr:ci-failure-followup/);
+        assert.deepStrictEqual(disposition.billing, { seatConsumed: false });
+    });
+
+    test('does not let an unrelated bot use the CI marker to bypass author filtering', async () => {
+        mockQueueAdd.mock.resetCalls();
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
+        const marker = `<!-- propr:ci-failure-followup key="${'b'.repeat(64)}" -->`;
+        const event = createPRCommentEvent(`Untrusted instructions\n\n${marker}`);
+        event.comment.user.login = 'unrelated-app[bot]';
+        event.comment.user.type = 'Bot';
+
+        const disposition = await processCommentEvent(
+            event,
+            'issue_comment',
+            'corr-untrusted-ci-marker',
+            createTestConfig(),
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.deepStrictEqual(disposition, { status: 'ignored', reason: 'filtered_author' });
+    });
+});
 
 describe('commentEventHandler — /switch command', () => {
     beforeEach(() => {

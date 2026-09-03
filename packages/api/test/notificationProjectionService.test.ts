@@ -1,87 +1,25 @@
 import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
-import knex, { type Knex } from 'knex';
+import type { Knex } from 'knex';
 import { closeConnection, NotificationService } from '@propr/core';
 import { DRAFT_UPDATE, INDEXING_UPDATE, TASK_UPDATE } from '@propr/shared';
-import { up as createNotificationSchema } from '../../core/src/db/migrations/20260802000000_create_notification_schema.js';
-import { up as addNotificationPreferenceApis } from '../../core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
-import { up as addAdvertisedActions } from '../../core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
 import { NotificationProjectionService } from '../services/notificationProjectionService.js';
+import {
+  countNotificationEvents, countUndismissedNotificationReceipts,
+  createNotificationProjectionTestHarness,
+} from './notificationProjectionTestHarness.js';
 
 let database: Knex;
 let clock: number;
 let projection: NotificationProjectionService;
 
-function iso(offsetMs = 0): string {
-  return new Date(clock + offsetMs).toISOString();
-}
-
-async function eventCount(): Promise<number> {
-  return database('notification_events')
-    .count('* as count')
-    .first()
-    .then(row => Number(row?.count ?? 0));
-}
-
-async function createProjectionTables(db: Knex): Promise<void> {
-  await db.schema.createTable('tasks', table => {
-    table.text('task_id').primary();
-    table.text('repository').notNullable();
-    table.integer('issue_number').nullable();
-    table.integer('pr_number').nullable();
-    table.text('task_type').notNullable();
-    table.text('initial_job_data').nullable();
-  });
-  await db.schema.createTable('task_history', table => {
-    table.increments('history_id').primary();
-    table.text('task_id').notNullable();
-    table.text('state').notNullable();
-    table.text('timestamp').notNullable();
-    table.text('metadata').nullable();
-  });
-  await db.schema.createTable('task_drafts', table => {
-    table.text('draft_id').primary();
-    table.text('user_id').notNullable();
-    table.text('repository').notNullable();
-  });
-  await db.schema.createTable('instance_members', table => {
-    table.text('github_user_id').primary();
-    table.text('role').notNullable();
-  });
-}
+const iso = (offsetMs = 0): string => new Date(clock + offsetMs).toISOString();
 
 beforeEach(async () => {
   clock = Date.now() - 60_000;
-  database = knex({
-    client: 'better-sqlite3',
-    connection: { filename: ':memory:' },
-    useNullAsDefault: true,
-    pool: {
-      afterCreate(connection: { pragma(statement: string): void }, done: (error: Error | null, connection: unknown) => void) {
-        connection.pragma('foreign_keys = ON');
-        connection.pragma('recursive_triggers = ON');
-        done(null, connection);
-      },
-    },
-  });
-  await createProjectionTables(database);
-  await createNotificationSchema(database);
-  await addNotificationPreferenceApis(database);
-  await addAdvertisedActions(database);
-  const notificationService = new NotificationService({
-    database,
-    now: () => new Date(clock),
-  });
-  projection = new NotificationProjectionService({
-    database,
-    notificationService,
-    now: () => new Date(clock),
-    stalledAfterMs: 10_000,
-  });
-  await database('instance_members').insert([
-    { github_user_id: 'admin-user', role: 'admin' },
-    { github_user_id: 'member-user', role: 'member' },
-  ]);
+  ({ database, projection } = await createNotificationProjectionTestHarness(
+    () => new Date(clock),
+  ));
 });
 
 afterEach(async () => {
@@ -120,11 +58,15 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     );
   });
 
-  test('separates implementation, review, and sanitized PR-attention events', async () => {
+  test('emits one descriptive notification for each completed task', async () => {
     const implementationAt = iso();
     await database('tasks').insert({
       task_id: 'implementation-1', repository: 'integry/propr', issue_number: 1719,
-      pr_number: null, task_type: 'issue', initial_job_data: '{}',
+      pr_number: null, task_type: 'issue',
+      initial_job_data: JSON.stringify({
+        title: 'Follow-up PR #42: Deduplicate Inbox notifications',
+        subtitle: 'Keep only the newest actionable Inbox update.',
+      }),
     });
     await database('task_history').insert({
       task_id: 'implementation-1', state: 'completed', timestamp: implementationAt,
@@ -151,7 +93,11 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     await database('tasks').insert({
       task_id: 'pr-comments-batch-integry-propr-7', repository: 'integry/propr',
       issue_number: 1719, pr_number: null, task_type: 'issue',
-      initial_job_data: JSON.stringify({ number: 7, commentBody: 'SECRET COMMENT' }),
+      initial_job_data: JSON.stringify({
+        number: 7,
+        title: 'Review PR #7 notification behavior',
+        commentBody: 'SECRET COMMENT',
+      }),
     });
     await database('task_history').insert({
       task_id: 'pr-comments-batch-integry-propr-7', state: 'completed',
@@ -166,14 +112,24 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     });
 
     const events = await database('notification_events')
-      .select('kind', 'title', 'action_json')
-      .orderBy('occurred_at') as Array<{ kind: string; title: string; action_json: string | null }>;
+      .select('kind', 'title', 'body', 'action_json')
+      .orderBy('occurred_at') as Array<{
+        kind: string; title: string; body: string; action_json: string | null;
+      }>;
     assert.deepEqual(
       events.map(event => event.kind).sort(),
-      ['pull_request', 'pull_request', 'review', 'task'],
+      ['pull_request', 'review'],
     );
-    assert.ok(events.some(event => event.title === 'Implementation completed'));
-    assert.ok(events.some(event => event.title === 'Review completed'));
+    assert.deepEqual(events.map(event => ({ title: event.title, body: event.body })), [
+      {
+        title: 'PR #42 ready for review',
+        body: 'Keep only the newest actionable Inbox update.',
+      },
+      {
+        title: 'Review completed for PR #7',
+        body: 'Review PR #7 notification behavior',
+      },
+    ]);
     const implementationPrEvent = events.find(event =>
       event.action_json?.includes('/pull/42'));
     assert.equal(
@@ -181,7 +137,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       'https://github.com/integry/propr/pull/42',
     );
     assert.doesNotMatch(JSON.stringify(events), /evil\.example|SECRET/);
-    assert.equal(await eventCount(), 4);
+    assert.equal(await countNotificationEvents(database), 2);
   });
 
   test('ignores stale task transitions and emits one stalled event per unchanged activity', async () => {
@@ -236,7 +192,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
 
     const events = await database('notification_events').select('*');
     assert.equal(events.length, 1);
-    assert.equal(events[0].title, 'Task failed');
+    assert.equal(events[0].title, 'Task failed for issue #99');
     assert.doesNotMatch(JSON.stringify(events[0]), /SECRET/);
     assert.deepEqual(
       (await database('notification_user_states').pluck('user_id')).sort(),
@@ -269,12 +225,10 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         advertised_actions_json: string;
       }>;
     assert.deepEqual(events.map(event => event.title), [
-      'Implementation completed',
-      'Pull request needs attention',
+      'PR #42 ready for review',
     ]);
     assert.ok(events.every(event => event.action_json === null));
     assert.deepEqual(events.map(event => JSON.parse(event.advertised_actions_json)), [
-      ['dismiss'],
       ['dismiss'],
     ]);
   });
@@ -325,10 +279,14 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
 
     const listed = await new NotificationService({ database }).listNotifications('admin-user');
     const lifecycleEvents = listed.notifications.filter(notification => [
-      'Task failed', 'Implementation completed', 'Review completed',
+      'Task failed for issue #101',
+      'Implementation completed for issue #102',
+      'Review completed for PR #7',
     ].includes(notification.title));
     assert.deepEqual(lifecycleEvents.map(notification => notification.title).sort(), [
-      'Implementation completed', 'Review completed', 'Task failed',
+      'Implementation completed for issue #102',
+      'Review completed for PR #7',
+      'Task failed for issue #101',
     ]);
     assert.ok(lifecycleEvents.every(notification => !notification.actions.includes('follow_up')));
   });
@@ -373,14 +331,14 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     await projection.projectIndexingUpdate(payload);
     await projection.projectIndexingUpdate(payload);
 
-    assert.equal(await eventCount(), 1);
+    assert.equal(await countNotificationEvents(database), 1);
     assert.deepEqual(
       await database('notification_user_states').pluck('user_id'),
       ['admin-user'],
     );
   });
 
-  test('deduplicates one unhealthy period and allows a later failure after recovery', async () => {
+  test('deduplicates system failures across instances and dismisses them on recovery', async () => {
     const unhealthy = {
       timestamp: iso(), api: 'healthy', redis: 'disconnected', daemon: 'running',
       worker: 'running', githubAuth: 'connected', githubEventIntakeStatus: 'active',
@@ -388,25 +346,46 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       warnings: [{ message: 'SECRET SYSTEM ERROR' }],
     };
     await projection.projectSystemSnapshot(unhealthy);
+    const secondProjection = new NotificationProjectionService({
+      database,
+      notificationService: new NotificationService({ database, now: () => new Date(clock) }),
+      now: () => new Date(clock),
+    });
     clock += 1_000;
-    await projection.projectSystemSnapshot({ ...unhealthy, timestamp: iso() });
+    await secondProjection.projectSystemSnapshot({ ...unhealthy, timestamp: iso() });
     await projection.projectSystemSnapshot({
       ...unhealthy,
       timestamp: new Date(clock - 2_000).toISOString(),
       redis: 'connected',
     });
     clock += 1_000;
-    await projection.projectSystemSnapshot({ ...unhealthy, timestamp: iso(), redis: 'connected' });
+    await secondProjection.projectSystemSnapshot({
+      ...unhealthy, timestamp: iso(), redis: 'connected',
+    });
+
+    let events = await database('notification_events').where({ kind: 'system_failure' });
+    assert.equal(events.length, 1);
+    assert.equal(
+      await countUndismissedNotificationReceipts(database, 'system_failure'),
+      0,
+      'healthy recovery closes the active card',
+    );
+
     clock += 1_000;
     await projection.projectSystemSnapshot({ ...unhealthy, timestamp: iso() });
 
-    const events = await database('notification_events').where({ kind: 'system_failure' });
+    events = await database('notification_events').where({ kind: 'system_failure' });
     assert.equal(events.length, 2);
     assert.doesNotMatch(JSON.stringify(events), /SECRET SYSTEM ERROR/);
     assert.deepEqual(
       await database('notification_user_states').distinct('user_id').pluck('user_id'),
       ['admin-user'],
     );
+    assert.equal(
+      await countUndismissedNotificationReceipts(database, 'system_failure'),
+      1,
+    );
+    secondProjection.close();
   });
 
   test('logs and isolates projection persistence failures', async () => {
@@ -417,6 +396,9 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         createNotificationEvent: async () => {
           throw new Error('database unavailable');
         },
+        createPullRequestAttentionNotificationEvent: async () => null,
+        createPullRequestNotificationEvent: async () => null,
+        reconcileSystemFailureTransition: async () => ({ accepted: true, event: null }),
       },
       logger: { warn: message => warnings.push(message) },
     });

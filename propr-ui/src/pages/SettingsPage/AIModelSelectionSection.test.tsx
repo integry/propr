@@ -97,6 +97,41 @@ describe('AIModelSelectionSection', () => {
     expect(onEnabledChange).toHaveBeenCalledWith(false);
   });
 
+  it('offers synthetic catalog models for planning and review', () => {
+    render(
+      <AIModelSelectionSection
+        settings={{
+          analysis_model_fast: '', planner_context_model: '', planner_generation_model: '',
+          default_agent_alias: '', model_reasoning_level: '', pr_review_model: '', pr_review_prompt: '',
+          pr_review_context_enabled: true, pr_review_context_model: '', pr_review_max_context_tokens: 0
+        }}
+        summarizationSettings={{ enabled: true, agent_alias: '' }}
+        agents={[]}
+        catalogAgents={[{
+          id: 'pool-balanced',
+          kind: 'synthetic',
+          alias: 'balanced',
+          enabled: true,
+          supportedModels: ['virtual-code']
+        }]}
+        onSettingChange={vi.fn()}
+        onReviewPromptChange={vi.fn()}
+        onReviewPromptBlur={vi.fn()}
+        onReviewContextEnabledChange={vi.fn()}
+        onReviewMaxContextTokensChange={vi.fn()}
+        onReviewMaxContextTokensBlur={vi.fn()}
+        onSummarizationModelChange={vi.fn()}
+        onSummarizationFallbackModelChange={vi.fn()}
+        onDefaultAgentChange={vi.fn()}
+      />
+    );
+
+    for (const label of ['Plan Context Analysis Model', 'Plan Generation Model', 'Default PR Review Model', 'Context Scout Model']) {
+      expect(within(screen.getByLabelText(label)).getByRole('option', { name: 'balanced - virtual-code' }))
+        .toHaveValue('balanced:virtual-code');
+    }
+  });
+
   it('does not put a raw attacker flow on the AI Agents link when no active flow exists', () => {
     expect(buildAiAgentsSettingsHref('app.propr.dev')).toBe('/ai-agents');
   });
