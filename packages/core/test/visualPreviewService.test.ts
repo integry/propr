@@ -121,6 +121,9 @@ test('renders upload-ready local media without committed-file fallbacks', async 
   assert.match(failure, /could not be uploaded to GitHub/);
   assert.match(failure, /No preview files were committed/);
   assert.doesNotMatch(failure, /desktop view\.png/);
+  const authenticationFailure = renderVisualPreviewUploadFailureSection(evidence, { authenticationFailure: true });
+  assert.match(authenticationFailure, /Settings → Visual preview uploads/);
+  assert.match(authenticationFailure, /Use my GitHub login/);
   assert.equal(appendVisualPreviewSection(`Before\n\n${VISUAL_PREVIEW_SLOT}\n\nAfter`, failure), `Before\n\n${failure}\n\nAfter`);
 });
 

@@ -8,12 +8,22 @@ Visual previews let a ProPR implementation show its user-visible result directly
 
 The feature is opt-in per repository. Existing repository configurations remain disabled after an upgrade.
 
-GitHub attachment uploads also require `GITHUB_VISUAL_PREVIEW_TOKEN` in the
-stack `.env`. Use an OAuth token, classic personal access token, or fine-grained
-personal access token for a user with write access to every repository where
-previews are enabled. GitHub App installation tokens cannot upload user
-attachments, so ProPR keeps this credential separate from its normal App
-authentication.
+GitHub attachment uploads require a user OAuth credential because GitHub App
+installation tokens cannot upload user attachments. When an instance
+administrator signs in to the Web UI, ProPR automatically stores their compatible
+OAuth credential, encrypted in the shared database. Open **Settings → Visual
+preview uploads** to see which account is connected or explicitly replace it
+with the current administrator login. Normal GitHub API, commit, and pull-request
+operations continue to use the GitHub App installation token.
+
+Expiring OAuth credentials are refreshed on API startup and every 30 minutes
+while the stack is running. Each successful refresh rotates the access and
+refresh tokens, so an administrator does not need to sign in every six months
+while the stack can keep refreshing them. A revoked grant, an expired unused
+refresh token, or a changed encryption secret requires a fresh administrator
+login. `GITHUB_VISUAL_PREVIEW_TOKEN` remains available as an advanced environment
+override for an OAuth token, classic PAT, or fine-grained PAT belonging to a user
+with write access to every preview-enabled repository.
 
 ## Configure A Repository
 
@@ -49,6 +59,6 @@ Supported image formats are PNG, JPEG, GIF, SVG, and WebP. Supported video forma
 
 ## Publication And Upload Failures
 
-ProPR publishes previews as [GitHub attachments](https://cli.github.com/manual/gh_pr_edit) so images render inline and videos use GitHub's media presentation. It then fetches the published PR or comment body and verifies that GitHub replaced every temporary local path with a hosted attachment URL. Temporary files are deleted after publication. If upload or verification fails, ProPR publishes a text-only explanation; preview media is not added to Git as a fallback.
+ProPR publishes previews as [GitHub attachments](https://cli.github.com/manual/gh_pr_edit) so images render inline and videos use GitHub's media presentation. It then fetches the published PR or comment body and verifies that GitHub replaced every temporary local path with a hosted attachment URL. Temporary files are deleted after publication. If upload or verification fails, ProPR publishes a text-only explanation; preview media is not added to Git as a fallback. When the failure is a missing, unsupported, expired, or rejected user credential, that explanation includes the exact Settings reconnection steps in the affected pull request.
 
 Preview generation is evidence, not a replacement for automated tests. A preview failure does not discard an otherwise valid implementation; the PR explains missing tool support when the agent can identify it.

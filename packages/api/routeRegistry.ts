@@ -6,6 +6,7 @@ import type {
   createAgentVersionRoutes,
   createConfigRoutes,
   createInstanceCatalogRoutes,
+  createVisualPreviewAuthRoutes,
 } from './routes/index.js';
 import {
   requireAgentTankUsageAccess,
@@ -26,6 +27,7 @@ interface ManagementRouteDeps {
   agentRuntimeRoutes: ReturnType<typeof createAgentRuntimeRoutes>;
   agentVersionRoutes: ReturnType<typeof createAgentVersionRoutes>;
   configRoutes: ReturnType<typeof createConfigRoutes>;
+  visualPreviewAuthRoutes: ReturnType<typeof createVisualPreviewAuthRoutes>;
 }
 
 interface MemberCatalogRouteDeps {
@@ -38,6 +40,7 @@ export function createManagementRouteEntries({
   agentRuntimeRoutes,
   agentVersionRoutes,
   configRoutes,
+  visualPreviewAuthRoutes,
 }: ManagementRouteDeps): RouteEntry[] {
   return [
     ['get', '/api/config/followup-keywords', requireManageSettings, configRoutes.getFollowupKeywords],
@@ -70,6 +73,9 @@ export function createManagementRouteEntries({
     ['get', '/api/config/agent-tank/usage', requireAgentTankUsageAccess, configRoutes.getAgentTankUsage],
     ['post', '/api/config/agent-tank/refresh', requireManageAgents, configRoutes.postAgentTankRefresh],
     ['get', '/api/config/agent-tank/detect', requireManageAgents, configRoutes.getAgentTankDetect],
+    ['get', '/api/config/visual-preview-auth', requireManageSettings, visualPreviewAuthRoutes.getStatus],
+    ['post', '/api/config/visual-preview-auth', requireManageSettings, visualPreviewAuthRoutes.useCurrentLogin],
+    ['delete', '/api/config/visual-preview-auth', requireManageSettings, visualPreviewAuthRoutes.disconnect],
 
     ['get', '/api/admin/members', requireManageMembers, adminRoutes.listMembers],
     ['get', '/api/admin/role-audit', requireManageMembers, adminRoutes.listRoleAudit],

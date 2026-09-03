@@ -52,6 +52,7 @@ function createAuthorizationTestApp() {
       agentRuntimeRoutes: handlerCollection(),
       agentVersionRoutes: handlerCollection(),
       configRoutes: handlerCollection(),
+      visualPreviewAuthRoutes: handlerCollection(),
     }),
   ];
   assertNoDuplicateRoutes(routes);
@@ -82,6 +83,9 @@ const managementRequests = [
   ['POST', '/api/config/synthetic-agents'],
   ['GET', '/api/config/agent-tank/usage'],
   ['GET', '/api/admin/members'],
+  ['GET', '/api/config/visual-preview-auth'],
+  ['POST', '/api/config/visual-preview-auth'],
+  ['DELETE', '/api/config/visual-preview-auth'],
   ['GET', '/api/agent-runtime/packages'],
   ['POST', '/api/agent-runtime/packages/verify'],
   ['GET', '/api/agents/codex/images'],

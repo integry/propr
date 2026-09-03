@@ -31,7 +31,10 @@ import { markReviewFindingsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
-import { publishPullRequestCommentVisualPreviews } from '../github/visualPreviewAttachments.js';
+import {
+    isVisualPreviewUploadAuthenticationError,
+    publishPullRequestCommentVisualPreviews,
+} from '../github/visualPreviewAttachments.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -195,7 +198,10 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
             owner: repoOwner,
             repo: repoName,
             comment_id: state.startingWorkComment.data.id,
-            body: appendVisualPreviewSection(prCommentTemplate, renderVisualPreviewUploadFailureSection(visualPreviewEvidence))
+            body: appendVisualPreviewSection(prCommentTemplate, renderVisualPreviewUploadFailureSection(
+                visualPreviewEvidence,
+                { authenticationFailure: isVisualPreviewUploadAuthenticationError(previewError) }
+            ))
         }) as Promise<{ data: { html_url: string; body?: string } }>;
     }
 }

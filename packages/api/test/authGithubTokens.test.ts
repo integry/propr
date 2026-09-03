@@ -145,6 +145,40 @@ test('ensureAuthenticated reports a temporary error when refresh fails recoverab
   assert.equal(req.destroyCalls, 0);
 });
 
+test('refreshes a Connect-issued session through the relay', async () => {
+  configureDemoMode(false);
+  const previousRelayUrl = process.env.PROPR_GH_RELAY_URL;
+  const previousRelayToken = process.env.PROPR_GH_RELAY_TOKEN;
+  process.env.PROPR_GH_RELAY_URL = 'https://relay.example.test/v1';
+  process.env.PROPR_GH_RELAY_TOKEN = 'prt_relay';
+  const req = createRequest(createUser({
+    accessToken: 'connect-access-token',
+    oauthSource: 'connect',
+  }));
+  const { response } = createJsonResponse();
+  let refreshRequest: Request | undefined;
+  globalThis.fetch = async (input, init) => {
+    refreshRequest = new Request(input, init);
+    return Response.json({
+      access_token: 'gho_fresh-connect-token',
+      refresh_token: 'ghr_fresh-connect-refresh',
+      expires_in: 3600,
+    });
+  };
+
+  try {
+    assert.equal(await runEnsureAuthenticated(req, response), true);
+    assert.equal(refreshRequest?.url, 'https://relay.example.test/v1/auth/instance-grants/refresh');
+    assert.equal(refreshRequest?.headers.get('authorization'), 'Bearer prt_relay');
+    assert.deepEqual(JSON.parse(await refreshRequest!.text()), { refresh_token: 'refresh-token' });
+  } finally {
+    if (previousRelayUrl === undefined) delete process.env.PROPR_GH_RELAY_URL;
+    else process.env.PROPR_GH_RELAY_URL = previousRelayUrl;
+    if (previousRelayToken === undefined) delete process.env.PROPR_GH_RELAY_TOKEN;
+    else process.env.PROPR_GH_RELAY_TOKEN = previousRelayToken;
+  }
+});
+
 test('ensureAuthenticated coalesces concurrent expired-token refreshes for one session', async () => {
   configureDemoMode(false);
   const req1 = createRequest(createUser({ accessToken: 'expired-token-1' }));

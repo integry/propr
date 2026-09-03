@@ -25,7 +25,10 @@ export {
     type GenericErrorOptions
 } from './errorHandlers.js';
 import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult } from '@propr/core';
-import { publishPullRequestVisualPreviews } from '../github/visualPreviewAttachments.js';
+import {
+    isVisualPreviewUploadAuthenticationError,
+    publishPullRequestVisualPreviews,
+} from '../github/visualPreviewAttachments.js';
 
 export type RepoValidation = RepoValidationResult;
 
@@ -267,7 +270,10 @@ Comment on this PR to request refinements — the AI agent monitors comments and
                         owner: issueRef.repoOwner,
                         repo: issueRef.repoName,
                         pull_number: prResponse.data.number,
-                        body: appendVisualPreviewSection(basePrBody, renderVisualPreviewUploadFailureSection(visualPreview.evidence))
+                        body: appendVisualPreviewSection(basePrBody, renderVisualPreviewUploadFailureSection(
+                            visualPreview.evidence,
+                            { authenticationFailure: isVisualPreviewUploadAuthenticationError(previewError) }
+                        ))
                     });
                 } catch (fallbackError) {
                     correlatedLogger.warn({ prNumber: prResponse.data.number, error: (fallbackError as Error).message }, 'Could not publish the text-only visual preview upload explanation');

@@ -346,12 +346,28 @@ export function renderVisualPreviewSection(
   return parts.join('\n\n');
 }
 
-export function renderVisualPreviewUploadFailureSection(evidence: VisualPreviewEvidence): string {
+export interface RenderVisualPreviewUploadFailureOptions {
+  authenticationFailure?: boolean;
+}
+
+export function renderVisualPreviewUploadFailureSection(
+  evidence: VisualPreviewEvidence,
+  options: RenderVisualPreviewUploadFailureOptions = {},
+): string {
   const parts = [
     VISUAL_PREVIEW_MARKER,
     '## Visual preview',
     'Preview media was generated but could not be uploaded to GitHub. No preview files were committed.'
   ];
+  if (options.authenticationFailure) {
+    parts.push('### Restore preview uploads');
+    parts.push(
+      'An instance administrator must open the ProPR Web UI, go to **Settings → Visual preview uploads**, '
+      + 'and select **Use my GitHub login**. If the current login is expired or ineligible, log out and sign in '
+      + 'with GitHub again first. If `GITHUB_VISUAL_PREVIEW_TOKEN` is set, remove or replace that override because '
+      + 'it takes precedence over the Web UI credential. Then request the visual preview again.',
+    );
+  }
   if (evidence.toolSuggestions.length > 0) {
     parts.push('### Suggested agent tools');
     parts.push(evidence.toolSuggestions

@@ -6,7 +6,8 @@ process.env.PROPR_DEMO_MODE = 'true';
 const [{ db }, {
   publishPullRequestCommentVisualPreviews,
   publishPullRequestVisualPreviews,
-  resolveVisualPreviewUploadToken
+  resolveVisualPreviewUploadToken,
+  isVisualPreviewUploadAuthenticationError
 }] = await Promise.all([
   import('@propr/core'),
   import('../src/github/visualPreviewAttachments.js')
@@ -26,17 +27,21 @@ const evidence = {
   toolSuggestions: []
 };
 
-test('resolves the dedicated visual preview upload credential', () => {
-  assert.equal(resolveVisualPreviewUploadToken({
+test('resolves the dedicated visual preview upload credential', async () => {
+  assert.equal(await resolveVisualPreviewUploadToken({
     GITHUB_VISUAL_PREVIEW_TOKEN: '  gho_preview-token  '
   }), 'gho_preview-token');
 });
 
-test('explains why the GitHub App credential cannot be used for attachments', () => {
-  assert.throws(
-    () => resolveVisualPreviewUploadToken({}),
-    /GitHub App installation tokens cannot upload attachments/
-  );
+test('explains why the GitHub App credential cannot be used for attachments', async () => {
+  let caught: unknown;
+  try {
+    await resolveVisualPreviewUploadToken({});
+  } catch (error) {
+    caught = error;
+  }
+  assert.match((caught as Error).message, /GitHub App installation tokens cannot upload attachments/);
+  assert.equal(isVisualPreviewUploadAuthenticationError(caught), true);
 });
 
 test('edits a pull request with uploaded visual preview attachments', async () => {
@@ -88,7 +93,7 @@ test('rejects a pull request upload when GitHub leaves a local path in the body'
   }), /did not replace a local visual preview path/);
 });
 
-test('publishes an attached completion comment before removing the transient work comment', async () => {
+test('copies uploaded media into the bot-owned work comment and removes the uploader comment', async () => {
   const requests: Array<{ endpoint: string; options: Record<string, unknown> }> = [];
   const published = await publishPullRequestCommentVisualPreviews({
     owner: 'integry',
@@ -102,6 +107,12 @@ test('publishes an attached completion comment before removing the transient wor
     octokit: {
       request: async <T>(endpoint: string, options: Record<string, unknown>) => {
         requests.push({ endpoint, options });
+        if (endpoint.startsWith('PATCH ')) {
+          return { data: {
+            html_url: 'https://github.com/integry/propr/pull/42#issuecomment-100',
+            body: 'Follow-up complete with uploaded URL'
+          } } as T;
+        }
         return { data: { body: 'Follow-up complete with uploaded URL' } } as T;
       }
     },
@@ -109,14 +120,16 @@ test('publishes an attached completion comment before removing the transient wor
   });
 
   assert.deepEqual(published, {
-    html_url: 'https://github.com/integry/propr/pull/42#issuecomment-200',
+    html_url: 'https://github.com/integry/propr/pull/42#issuecomment-100',
     body: 'Follow-up complete with uploaded URL'
   });
   assert.deepEqual(requests.map(request => request.endpoint), [
     'GET /repos/{owner}/{repo}/issues/comments/{comment_id}',
+    'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
     'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}'
   ]);
   assert.equal(requests[1].options.comment_id, 100);
+  assert.equal(requests[2].options.comment_id, 200);
 });
 
 test('removes a partially published attachment comment before surfacing upload failure', async () => {

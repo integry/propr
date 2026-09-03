@@ -1,8 +1,14 @@
 import { execa } from 'execa';
 import {
   appendVisualPreviewSection,
+  isSupportedVisualPreviewUploadToken,
+  isVisualPreviewCredentialError,
+  markVisualPreviewOAuthCredentialReauthRequired,
   redactSecrets,
   renderVisualPreviewSection,
+  resolveVisualPreviewUploadToken as resolveStoredVisualPreviewUploadToken,
+  VisualPreviewCredentialError,
+  VISUAL_PREVIEW_UPLOAD_TOKEN_ENV,
   type VisualPreviewEvidence
 } from '@propr/core';
 
@@ -14,20 +20,46 @@ interface AttachmentCommandOptions {
 
 export type AttachmentCommandRunner = (options: AttachmentCommandOptions) => Promise<{ stdout: string }>;
 
-export const VISUAL_PREVIEW_UPLOAD_TOKEN_ENV = 'GITHUB_VISUAL_PREVIEW_TOKEN';
+export { VISUAL_PREVIEW_UPLOAD_TOKEN_ENV };
+
+export class VisualPreviewUploadAuthenticationError extends Error {
+  readonly code = 'VISUAL_PREVIEW_AUTH_REJECTED';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'VisualPreviewUploadAuthenticationError';
+  }
+}
+
+export function isVisualPreviewUploadAuthenticationError(error: unknown): boolean {
+  return isVisualPreviewCredentialError(error) || error instanceof VisualPreviewUploadAuthenticationError || (
+    error instanceof Error
+    && 'code' in error
+    && typeof (error as { code?: unknown }).code === 'string'
+    && (error as { code: string }).code.startsWith('VISUAL_PREVIEW_AUTH_')
+  );
+}
 
 /**
  * GitHub's user-attachment endpoint does not accept GitHub App installation
  * tokens. Keep this credential separate from the installation token used for
  * normal API requests and git operations.
  */
-export function resolveVisualPreviewUploadToken(
-  environment: NodeJS.ProcessEnv = process.env
-): string {
+export async function resolveVisualPreviewUploadToken(
+  environment?: NodeJS.ProcessEnv
+): Promise<string> {
+  if (!environment) return resolveStoredVisualPreviewUploadToken();
   const token = environment[VISUAL_PREVIEW_UPLOAD_TOKEN_ENV]?.trim();
-  if (token) return token;
+  if (token && isSupportedVisualPreviewUploadToken(token)) return token;
+  if (token) {
+    throw new VisualPreviewCredentialError(
+      'VISUAL_PREVIEW_AUTH_UNSUPPORTED',
+      `${VISUAL_PREVIEW_UPLOAD_TOKEN_ENV} is not a GitHub OAuth or personal access token supported by attachment uploads.`,
+    );
+  }
 
-  throw new Error(
+  throw new VisualPreviewCredentialError(
+    'VISUAL_PREVIEW_AUTH_MISSING',
     `${VISUAL_PREVIEW_UPLOAD_TOKEN_ENV} is not configured; GitHub attachment uploads require `
     + 'an OAuth token, classic personal access token, or fine-grained personal access token '
     + 'for a user with write access to the repository. GitHub App installation tokens cannot upload attachments.'
@@ -55,9 +87,19 @@ const runAttachmentCommand: AttachmentCommandRunner = async ({ args, authToken, 
       : typeof commandError.stderr === 'string' && commandError.stderr.trim()
         ? redactSecrets(commandError.stderr.trim()).replace(/\s+/g, ' ').slice(0, 1000)
         : '';
-    const wrappedError = new Error(
-      `GitHub CLI could not upload visual preview attachments${detail ? `: ${detail}` : ''}`
-    ) as Error & { stdout?: string };
+    const message = `GitHub CLI could not upload visual preview attachments${detail ? `: ${detail}` : ''}`;
+    const authFailure = /unsupported authentication type|bad credentials|authentication failed|http 401|requires authentication|not logged in/i.test(detail);
+    if (authFailure) {
+      try {
+        await markVisualPreviewOAuthCredentialReauthRequired('github_rejected_token');
+      } catch {
+        // Preserve the original upload error. The Settings status can recover
+        // once database access is restored.
+      }
+    }
+    const wrappedError = (authFailure
+      ? new VisualPreviewUploadAuthenticationError(message)
+      : new Error(message)) as Error & { stdout?: string };
     const stdout = commandError.stdout;
     if (typeof stdout === 'string') wrappedError.stdout = stdout;
     throw wrappedError;
@@ -114,7 +156,7 @@ export async function publishPullRequestVisualPreviews(options: PublishPullReque
       '--body', bodyWithLocalPreviews(options),
       ...attachmentArguments(options.evidence)
     ],
-    authToken: options.authToken ?? resolveVisualPreviewUploadToken(),
+    authToken: options.authToken ?? await resolveVisualPreviewUploadToken(),
     cwd: options.worktreePath
   });
   const response = await options.octokit.request<{ data: { body?: string } }>('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
@@ -159,7 +201,7 @@ export async function publishPullRequestCommentVisualPreviews(
         '--body', bodyWithLocalPreviews(options),
         ...attachmentArguments(options.evidence)
       ],
-      authToken: options.authToken ?? resolveVisualPreviewUploadToken(),
+      authToken: options.authToken ?? await resolveVisualPreviewUploadToken(),
       cwd: options.worktreePath
     });
     const commentUrl = result.stdout.trim().split('\n').find(line => line.includes('#issuecomment-')) || result.stdout.trim();
@@ -174,18 +216,31 @@ export async function publishPullRequestCommentVisualPreviews(
     });
     assertUploadedBodyHasNoLocalPaths(response.data.body, options.evidence);
 
+    const updatedStartingComment = await options.octokit.request<{ data: { html_url: string; body?: string } }>(
+      'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
+      {
+        owner: options.owner,
+        repo: options.repo,
+        comment_id: options.startingCommentId,
+        body: response.data.body
+      }
+    );
+
     try {
       await options.octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
         owner: options.owner,
         repo: options.repo,
-        comment_id: options.startingCommentId
+        comment_id: publishedCommentId
       });
     } catch {
-      // The attached completion comment is already published. Leaving the
-      // transient work comment is preferable to posting the completion twice.
+      // The bot-owned completion comment is already updated. Leaving the
+      // temporary uploader comment is preferable to losing the preview.
     }
 
-    return { html_url: commentUrl, body: response.data.body };
+    return {
+      html_url: updatedStartingComment.data.html_url,
+      body: updatedStartingComment.data.body || response.data.body
+    };
   } catch (error) {
     publishedCommentId ||= parseCommentId(typeof (error as { stdout?: unknown })?.stdout === 'string'
       ? (error as { stdout: string }).stdout
