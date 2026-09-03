@@ -178,14 +178,12 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
     }
 
     try {
-        const githubToken = await state.octokit.auth({ type: 'installation' }) as GitHubToken;
         const published = await publishPullRequestCommentVisualPreviews({
             owner: repoOwner,
             repo: repoName,
             pullRequestNumber,
             body: prCommentTemplate,
             evidence: visualPreviewEvidence,
-            authToken: githubToken.token,
             worktreePath: state.worktreeInfo.worktreePath,
             octokit: state.octokit,
             startingCommentId: state.startingWorkComment.data.id

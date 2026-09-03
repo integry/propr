@@ -14,6 +14,26 @@ interface AttachmentCommandOptions {
 
 export type AttachmentCommandRunner = (options: AttachmentCommandOptions) => Promise<{ stdout: string }>;
 
+export const VISUAL_PREVIEW_UPLOAD_TOKEN_ENV = 'GITHUB_VISUAL_PREVIEW_TOKEN';
+
+/**
+ * GitHub's user-attachment endpoint does not accept GitHub App installation
+ * tokens. Keep this credential separate from the installation token used for
+ * normal API requests and git operations.
+ */
+export function resolveVisualPreviewUploadToken(
+  environment: NodeJS.ProcessEnv = process.env
+): string {
+  const token = environment[VISUAL_PREVIEW_UPLOAD_TOKEN_ENV]?.trim();
+  if (token) return token;
+
+  throw new Error(
+    `${VISUAL_PREVIEW_UPLOAD_TOKEN_ENV} is not configured; GitHub attachment uploads require `
+    + 'an OAuth token, classic personal access token, or fine-grained personal access token '
+    + 'for a user with write access to the repository. GitHub App installation tokens cannot upload attachments.'
+  );
+}
+
 const runAttachmentCommand: AttachmentCommandRunner = async ({ args, authToken, cwd }) => {
   try {
     const result = await execa('gh', args, {
@@ -49,7 +69,8 @@ interface BaseVisualPreviewPublicationOptions {
   repo: string;
   body: string;
   evidence: VisualPreviewEvidence;
-  authToken: string;
+  /** Optional injection used by callers with an already-resolved upload credential. */
+  authToken?: string;
   worktreePath: string;
   runCommand?: AttachmentCommandRunner;
 }
@@ -93,7 +114,7 @@ export async function publishPullRequestVisualPreviews(options: PublishPullReque
       '--body', bodyWithLocalPreviews(options),
       ...attachmentArguments(options.evidence)
     ],
-    authToken: options.authToken,
+    authToken: options.authToken ?? resolveVisualPreviewUploadToken(),
     cwd: options.worktreePath
   });
   const response = await options.octokit.request<{ data: { body?: string } }>('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
@@ -138,7 +159,7 @@ export async function publishPullRequestCommentVisualPreviews(
         '--body', bodyWithLocalPreviews(options),
         ...attachmentArguments(options.evidence)
       ],
-      authToken: options.authToken,
+      authToken: options.authToken ?? resolveVisualPreviewUploadToken(),
       cwd: options.worktreePath
     });
     const commentUrl = result.stdout.trim().split('\n').find(line => line.includes('#issuecomment-')) || result.stdout.trim();

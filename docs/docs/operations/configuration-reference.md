@@ -22,6 +22,7 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `HOST_GH_PRIVATE_KEY` | Unset | Absolute host path to the `.pem`. The CLI/launcher bind-mounts it read-only into the app containers and overrides `GH_PRIVATE_KEY_PATH`, so the key can live anywhere on the host. No `~`. | App mode via the `propr` CLI or launcher. |
 | `GH_OAUTH_CLIENT_ID` / `GH_OAUTH_CLIENT_SECRET` | Placeholders | GitHub OAuth App credentials for Web UI login. | Always, for UI login. |
 | `GH_OAUTH_CALLBACK_URL` | Derived: `<API host>/api/auth/github/callback` | OAuth callback served by the API. Leave commented so tunnel-mode derivation wins; an active localhost value is used as-is even in tunnel mode. Register the URL — derived or explicit — in your GitHub OAuth App. | Override only. |
+| `GITHUB_VISUAL_PREVIEW_TOKEN` | Unset | OAuth token, classic PAT, or fine-grained PAT used only to upload visual-preview attachments. GitHub's user-attachment endpoint rejects App installation tokens; the token's user must have write access to each target repository. | Repositories with visual previews enabled. |
 | `SESSION_SECRET` | Placeholder | Signs browser session cookies. | Always. |
 | `ENABLE_BEARER_AUTH` | `true` (any value except `false` enables it) | Bearer token auth for the CLI. Set `false` to allow session login only. | Optional. |
 | `PROPR_DEMO_MODE` | `false` | `true`/`1` allows read-only access without GitHub OAuth and blocks all mutating API requests. Use a curated config/database for public demos. | Demo deployments. |

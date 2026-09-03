@@ -60,7 +60,6 @@ interface CreatePROptions {
     issueTitle: string;
     visualPreview?: {
         evidence: VisualPreviewEvidence;
-        authToken: string;
         worktreePath: string;
     };
 }
@@ -257,7 +256,6 @@ Comment on this PR to request refinements — the AI agent monitors comments and
                     pullRequestNumber: prResponse.data.number,
                     body: basePrBody,
                     evidence: visualPreview.evidence,
-                    authToken: visualPreview.authToken,
                     worktreePath: visualPreview.worktreePath,
                     octokit
                 });

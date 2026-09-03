@@ -5,7 +5,8 @@ process.env.PROPR_DEMO_MODE = 'true';
 
 const [{ db }, {
   publishPullRequestCommentVisualPreviews,
-  publishPullRequestVisualPreviews
+  publishPullRequestVisualPreviews,
+  resolveVisualPreviewUploadToken
 }] = await Promise.all([
   import('@propr/core'),
   import('../src/github/visualPreviewAttachments.js')
@@ -24,6 +25,19 @@ const evidence = {
   }],
   toolSuggestions: []
 };
+
+test('resolves the dedicated visual preview upload credential', () => {
+  assert.equal(resolveVisualPreviewUploadToken({
+    GITHUB_VISUAL_PREVIEW_TOKEN: '  gho_preview-token  '
+  }), 'gho_preview-token');
+});
+
+test('explains why the GitHub App credential cannot be used for attachments', () => {
+  assert.throws(
+    () => resolveVisualPreviewUploadToken({}),
+    /GitHub App installation tokens cannot upload attachments/
+  );
+});
 
 test('edits a pull request with uploaded visual preview attachments', async () => {
   let invocation: { args: string[]; authToken: string; cwd: string } | undefined;

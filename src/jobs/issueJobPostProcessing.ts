@@ -264,7 +264,6 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
                 issueTitle: currentIssueData.data.title,
                 visualPreview: {
                     evidence: preparedVisualPreview.evidence,
-                    authToken: githubToken.token,
                     worktreePath: worktreeInfo.worktreePath
                 }
             }

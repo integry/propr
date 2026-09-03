@@ -8,6 +8,13 @@ Visual previews let a ProPR implementation show its user-visible result directly
 
 The feature is opt-in per repository. Existing repository configurations remain disabled after an upgrade.
 
+GitHub attachment uploads also require `GITHUB_VISUAL_PREVIEW_TOKEN` in the
+stack `.env`. Use an OAuth token, classic personal access token, or fine-grained
+personal access token for a user with write access to every repository where
+previews are enabled. GitHub App installation tokens cannot upload user
+attachments, so ProPR keeps this credential separate from its normal App
+authentication.
+
 ## Configure A Repository
 
 On **Repositories**, turn on **Visual previews** beneath the repository entry. Choose **Images**, **Videos**, or both, then optionally add capture instructions such as:
