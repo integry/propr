@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
+import { simpleGit } from 'simple-git';
 import {
   appendVisualPreviewSection,
   buildVisualPreviewPrompt,
+  cleanupPreparedVisualPreviewEvidence,
   collectVisualPreviewEvidence,
+  prepareVisualPreviewEvidence,
   renderVisualPreviewSection,
+  renderVisualPreviewUploadFailureSection,
   VISUAL_PREVIEW_MARKER,
   VISUAL_PREVIEW_SLOT
 } from '../src/services/visualPreviewService.js';
@@ -87,7 +91,7 @@ test('collects only changed, selected, regular preview files and applies manifes
   }]);
 });
 
-test('renders upload-ready local media and stable committed-file fallbacks', async () => {
+test('renders upload-ready local media without committed-file fallbacks', async () => {
   const worktree = await createWorktree();
   const relativePath = '.propr/previews/desktop view.png';
   const absolutePath = path.join(worktree, relativePath);
@@ -104,20 +108,21 @@ test('renders upload-ready local media and stable committed-file fallbacks', asy
   };
 
   const local = renderVisualPreviewSection(evidence, {
-    owner: 'integry', repo: 'propr', commitHash: 'abc123', useLocalPaths: true
+    useLocalPaths: true
   });
   assert.match(local, new RegExp(VISUAL_PREVIEW_MARKER));
   assert.match(local, /Settings \\\[desktop\\\]/);
   assert.match(local, /\(<.*desktop view\.png>\)/);
 
-  const fallback = renderVisualPreviewSection(evidence, {
-    owner: 'integry', repo: 'propr', commitHash: 'abc123'
-  });
-  assert.match(fallback, /github\.com\/integry\/propr\/blob\/abc123\/\.propr\/previews\/desktop%20view\.png\?raw=true/);
-  assert.equal(appendVisualPreviewSection(`Before\n\n${VISUAL_PREVIEW_SLOT}\n\nAfter`, fallback), `Before\n\n${fallback}\n\nAfter`);
+  assert.equal(renderVisualPreviewSection(evidence, {}), '');
+  const failure = renderVisualPreviewUploadFailureSection(evidence);
+  assert.match(failure, /could not be uploaded to GitHub/);
+  assert.match(failure, /No preview files were committed/);
+  assert.doesNotMatch(failure, /desktop view\.png/);
+  assert.equal(appendVisualPreviewSection(`Before\n\n${VISUAL_PREVIEW_SLOT}\n\nAfter`, failure), `Before\n\n${failure}\n\nAfter`);
 });
 
-test('renders committed videos as playable links and local videos as upload references', () => {
+test('renders videos only as local upload references', () => {
   const evidence = {
     assets: [{
       relativePath: '.propr/previews/walkthrough.mp4',
@@ -129,13 +134,79 @@ test('renders committed videos as playable links and local videos as upload refe
   };
 
   const local = renderVisualPreviewSection(evidence, {
-    owner: 'integry', repo: 'propr', commitHash: 'abc123', useLocalPaths: true
+    useLocalPaths: true
   });
   assert.match(local, /!\[\]\(\/worktree\/\.propr\/previews\/walkthrough\.mp4\)/);
+  assert.equal(renderVisualPreviewSection(evidence, {}), '');
+});
 
-  const fallback = renderVisualPreviewSection(evidence, {
-    owner: 'integry', repo: 'propr', commitHash: 'abc123'
+test('removing an empty preview slot preserves unrelated body whitespace', () => {
+  const body = `  Before\n\n\nUnrelated spacing\n\n${VISUAL_PREVIEW_SLOT}\n\nAfter  `;
+  assert.equal(
+    appendVisualPreviewSection(body, ''),
+    '  Before\n\n\nUnrelated spacing\n\n\n\nAfter  '
+  );
+});
+
+test('stages changed previews outside the repository and restores the preview directory to HEAD', async () => {
+  const worktree = await createWorktree();
+  const git = simpleGit(worktree);
+  await git.init();
+  await git.addConfig('user.name', 'ProPR Test');
+  await git.addConfig('user.email', 'test@propr.dev');
+  await writeFile(path.join(worktree, '.propr/previews/tracked.png'), 'original');
+  await git.add('.');
+  await git.commit('initial preview');
+
+  await writeFile(path.join(worktree, '.propr/previews/tracked.png'), 'updated');
+  await writeFile(path.join(worktree, '.propr/previews/desktop.png'), 'desktop');
+  await writeFile(path.join(worktree, '.propr/previews/manifest.json'), JSON.stringify({
+    previews: [{ path: 'desktop.png', title: 'Desktop settings' }]
+  }));
+  await git.add('.propr/previews');
+
+  const prepared = await prepareVisualPreviewEvidence({
+    worktreePath: worktree,
+    settings: { enabled: true, types: ['image'] },
+    taskId: 'task/42'
   });
-  assert.match(fallback, /\[Watch Settings walkthrough\]\(https:\/\/github\.com\/integry\/propr\/blob\/abc123\/\.propr\/previews\/walkthrough\.mp4\?raw=true\)/);
-  assert.doesNotMatch(fallback, /!\[\]/);
+
+  assert.ok(prepared.temporaryDirectory?.startsWith(path.join(tmpdir(), 'propr-previews', 'task-42-')));
+  assert.deepEqual(prepared.evidence.assets.map(asset => asset.title), ['Desktop settings', 'Tracked']);
+  assert.equal(await readFile(prepared.evidence.assets[0].absolutePath, 'utf8'), 'desktop');
+  assert.equal(await readFile(path.join(worktree, '.propr/previews/tracked.png'), 'utf8'), 'original');
+  await assert.rejects(access(path.join(worktree, '.propr/previews/desktop.png')));
+  await assert.rejects(access(path.join(worktree, '.propr/previews/manifest.json')));
+  assert.equal((await git.status()).files.length, 0);
+
+  const stagedDirectory = prepared.temporaryDirectory;
+  await cleanupPreparedVisualPreviewEvidence(prepared);
+  await assert.rejects(access(stagedDirectory!));
+});
+
+test('stages previews even when the repository ignores the transient directory', async () => {
+  const worktree = await createWorktree();
+  const git = simpleGit(worktree);
+  await git.init();
+  await git.addConfig('user.name', 'ProPR Test');
+  await git.addConfig('user.email', 'test@propr.dev');
+  await writeFile(path.join(worktree, '.gitignore'), '.propr/previews/\n');
+  await git.add('.gitignore');
+  await git.commit('ignore runtime previews');
+
+  await writeFile(path.join(worktree, '.propr/previews/mobile.png'), 'mobile');
+  await writeFile(path.join(worktree, '.propr/previews/manifest.json'), JSON.stringify({
+    previews: [{ path: 'mobile.png', title: 'Mobile settings' }]
+  }));
+
+  const prepared = await prepareVisualPreviewEvidence({
+    worktreePath: worktree,
+    settings: { enabled: true, types: ['image'] },
+    taskId: 'ignored-preview'
+  });
+
+  assert.deepEqual(prepared.evidence.assets.map(asset => asset.title), ['Mobile settings']);
+  assert.equal(await readFile(prepared.evidence.assets[0].absolutePath, 'utf8'), 'mobile');
+  await assert.rejects(access(path.join(worktree, '.propr/previews')));
+  await cleanupPreparedVisualPreviewEvidence(prepared);
 });

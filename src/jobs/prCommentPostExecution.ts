@@ -3,14 +3,16 @@ import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import {
     commitChanges,
-    collectVisualPreviewEvidence,
+    cleanupPreparedVisualPreviewEvidence,
     db,
     getRepoUrl,
     getAuthenticatedOctokit,
     loadRepositoryVisualPreviewSettings,
+    prepareVisualPreviewEvidence,
     pushBranch,
     appendVisualPreviewSection,
     renderVisualPreviewSection,
+    renderVisualPreviewUploadFailureSection,
     resolveAgentTerminationReason,
     TaskStates,
     VISUAL_PREVIEW_SLOT,
@@ -141,20 +143,16 @@ interface CompletionCommentPublicationOptions {
     llm: string | null | undefined;
     taskUrl: string;
     unprocessedReviewComments: AIReviewComment[];
+    visualPreviewEvidence: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>>['evidence'];
 }
 
 async function publishCompletionComment(options: CompletionCommentPublicationOptions): Promise<{ data: { html_url: string; body?: string } }> {
-    const { state, context, commitResult, changesSummary, commitMessage, llm, taskUrl, unprocessedReviewComments } = options;
+    const { state, context, commitResult, changesSummary, commitMessage, llm, taskUrl, unprocessedReviewComments, visualPreviewEvidence } = options;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
-    const visualPreviewSettings = await loadRepositoryVisualPreviewSettings(`${repoOwner}/${repoName}`);
-    const visualPreviewEvidence = await collectVisualPreviewEvidence({
-        worktreePath: state.worktreeInfo.worktreePath,
-        changedFiles: commitResult?.filesChanged || [],
-        settings: visualPreviewSettings
-    });
-    const hasVisualPreviewContent = visualPreviewEvidence.assets.length > 0 || visualPreviewEvidence.toolSuggestions.length > 0;
-    const visualPreviewSection = commitResult && hasVisualPreviewContent
-        ? renderVisualPreviewSection(visualPreviewEvidence, { owner: repoOwner, repo: repoName, commitHash: commitResult.commitHash })
+    const hasVisualPreviewContent = Boolean(commitResult)
+        && (visualPreviewEvidence.assets.length > 0 || visualPreviewEvidence.toolSuggestions.length > 0);
+    const visualPreviewSection = hasVisualPreviewContent
+        ? renderVisualPreviewSection({ assets: [], toolSuggestions: visualPreviewEvidence.toolSuggestions }, {})
         : '';
     const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
     const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(comment => comment.id) : undefined;
@@ -185,7 +183,6 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
             owner: repoOwner,
             repo: repoName,
             pullRequestNumber,
-            commitHash: commitResult.commitHash,
             body: prCommentTemplate,
             evidence: visualPreviewEvidence,
             authToken: githubToken.token,
@@ -195,12 +192,12 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
         });
         return { data: published };
     } catch (previewError) {
-        correlatedLogger.warn({ pullRequestNumber, error: (previewError as Error).message }, 'Could not upload visual previews; publishing committed-file links in the completion comment');
+        correlatedLogger.warn({ pullRequestNumber, error: (previewError as Error).message }, 'Could not upload visual previews; publishing a text-only explanation');
         return state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
             owner: repoOwner,
             repo: repoName,
             comment_id: state.startingWorkComment.data.id,
-            body: prCommentBody
+            body: appendVisualPreviewSection(prCommentTemplate, renderVisualPreviewUploadFailureSection(visualPreviewEvidence))
         }) as Promise<{ data: { html_url: string; body?: string } }>;
     }
 }
@@ -228,41 +225,65 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
     }
 
-    const { commitResult, changesSummary, commitMessage } = await commitAndPush(state, { repoOwner, repoName, pullRequestNumber }, llm);
-    if (partial && !commitResult) {
-        throw new Error(`Agent execution ${terminationReason === 'timeout' ? 'timed out' : 'reached the maximum turn limit'} before producing changes to publish`);
-    }
-    if (commitResult?.filesChanged?.length) state.claudeResult.modifiedFiles = commitResult.filesChanged;
-
-    const completionComment = await publishCompletionComment({ state, context, commitResult, changesSummary, commitMessage, llm, taskUrl, unprocessedReviewComments });
-    correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
-
-    if (unprocessedReviewComments.length > 0) {
-        await markReviewFindingsProcessed(unprocessedReviewComments, {
-            repoOwner,
-            repoName,
-            pullRequestNumber,
-            redisClient,
-            correlatedLogger,
-            prProcessingLockKey,
-            prProcessingLockToken,
+    let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
+    try {
+        preparedVisualPreview = await prepareVisualPreviewEvidence({
+            worktreePath: state.worktreeInfo.worktreePath,
+            settings: await loadRepositoryVisualPreviewSettings(`${repoOwner}/${repoName}`),
+            taskId
         });
-    }
-
-    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
-
-    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-        reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
-        commitHash: commitResult?.commitHash,
-        historyMetadata: {
-            commandMode: job.data.commandMode || 'default',
-            githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
-            ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
-            ...(partial && { incompleteExecution: { reason: terminationReason } }),
-            ...ultrafixHistoryMeta,
+        const { commitResult, changesSummary, commitMessage } = await commitAndPush(state, { repoOwner, repoName, pullRequestNumber }, llm);
+        if (partial && !commitResult) {
+            throw new Error(`Agent execution ${terminationReason === 'timeout' ? 'timed out' : 'reached the maximum turn limit'} before producing changes to publish`);
         }
-    });
+        if (commitResult?.filesChanged?.length) state.claudeResult.modifiedFiles = commitResult.filesChanged;
 
-    await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
-    return { commitHash: commitResult?.commitHash, partial };
+        const completionComment = await publishCompletionComment({
+            state,
+            context,
+            commitResult,
+            changesSummary,
+            commitMessage,
+            llm,
+            taskUrl,
+            unprocessedReviewComments,
+            visualPreviewEvidence: preparedVisualPreview.evidence
+        });
+        correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
+
+        if (unprocessedReviewComments.length > 0) {
+            await markReviewFindingsProcessed(unprocessedReviewComments, {
+                repoOwner,
+                repoName,
+                pullRequestNumber,
+                redisClient,
+                correlatedLogger,
+                prProcessingLockKey,
+                prProcessingLockToken,
+            });
+        }
+
+        const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
+
+        await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
+            reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
+            commitHash: commitResult?.commitHash,
+            historyMetadata: {
+                commandMode: job.data.commandMode || 'default',
+                githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
+                ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
+                ...(partial && { incompleteExecution: { reason: terminationReason } }),
+                ...ultrafixHistoryMeta,
+            }
+        });
+
+        await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
+        return { commitHash: commitResult?.commitHash, partial };
+    } finally {
+        try {
+            await cleanupPreparedVisualPreviewEvidence(preparedVisualPreview);
+        } catch (cleanupError) {
+            correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Could not clean up staged visual previews');
+        }
+    }
 }

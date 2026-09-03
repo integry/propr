@@ -36,12 +36,12 @@ When enabled, the implementation agent evaluates the completed change:
 - Captures focus on the change rather than generic application screens and must not contain credentials, personal data, or unrelated content.
 - If capture is blocked, the agent can recommend the concrete browser, emulator, or media tool that should be added to the agent image.
 
-Generated files live under `.propr/previews/`. Optional titles, descriptions, and tool recommendations are recorded in `.propr/previews/manifest.json`. Only preview files changed by the current implementation commit are published, which prevents an old capture from being presented as evidence for a later change.
+Agents generate files under the transient `.propr/previews/` runtime directory. Optional titles, descriptions, and tool recommendations are recorded in `.propr/previews/manifest.json`. Before committing, ProPR copies accepted files to worker-owned temporary storage and removes the runtime directory from the worktree. Preview files are therefore never included in the implementation commit.
 
 Supported image formats are PNG, JPEG, GIF, SVG, and WebP. Supported video formats are MP4, MOV, and WebM; H.264 MP4 is the most broadly compatible choice. Each attachment must be smaller than 10 MB.
 
-## Publication And Fallbacks
+## Publication And Upload Failures
 
-ProPR first adds commit-pinned repository links, then attempts to replace them with [GitHub attachments](https://cli.github.com/manual/gh_pr_edit) so images render inline and videos use GitHub's media presentation. When attachment upload is unavailable, images remain embedded from the implementation commit and videos remain explicit links to the committed recording. This keeps the evidence reachable without relying on mutable branch URLs.
+ProPR publishes previews as [GitHub attachments](https://cli.github.com/manual/gh_pr_edit) so images render inline and videos use GitHub's media presentation. It then fetches the published PR or comment body and verifies that GitHub replaced every temporary local path with a hosted attachment URL. Temporary files are deleted after publication. If upload or verification fails, ProPR publishes a text-only explanation; preview media is not added to Git as a fallback.
 
 Preview generation is evidence, not a replacement for automated tests. A preview failure does not discard an otherwise valid implementation; the PR explains missing tool support when the agent can identify it.

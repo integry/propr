@@ -11,6 +11,7 @@ import {
     isEpicBranch,
     appendVisualPreviewSection,
     renderVisualPreviewSection,
+    renderVisualPreviewUploadFailureSection,
     resolveAgentTerminationReason,
     type VisualPreviewEvidence
 } from '@propr/core';
@@ -204,11 +205,10 @@ ${completionComment}
 
 Comment on this PR to request refinements — the AI agent monitors comments and will update the implementation based on your feedback. Keep iterating until you're satisfied!`;
     const visualPreviewSection = visualPreview && commitResult
-        ? renderVisualPreviewSection(visualPreview.evidence, {
-            owner: issueRef.repoOwner,
-            repo: issueRef.repoName,
-            commitHash: commitResult.commitHash
-        })
+        ? renderVisualPreviewSection({
+            assets: [],
+            toolSuggestions: visualPreview.evidence.toolSuggestions
+        }, {})
         : '';
     const prBody = appendVisualPreviewSection(basePrBody, visualPreviewSection);
 
@@ -255,24 +255,24 @@ Comment on this PR to request refinements — the AI agent monitors comments and
                     owner: issueRef.repoOwner,
                     repo: issueRef.repoName,
                     pullRequestNumber: prResponse.data.number,
-                    commitHash: commitResult.commitHash,
                     body: basePrBody,
                     evidence: visualPreview.evidence,
                     authToken: visualPreview.authToken,
-                    worktreePath: visualPreview.worktreePath
+                    worktreePath: visualPreview.worktreePath,
+                    octokit
                 });
                 correlatedLogger.info({ prNumber: prResponse.data.number, previewCount: visualPreview.evidence.assets.length }, 'Uploaded visual previews to pull request');
             } catch (previewError) {
-                correlatedLogger.warn({ prNumber: prResponse.data.number, error: (previewError as Error).message }, 'Could not upload visual previews; committed-file links remain in the pull request body');
+                correlatedLogger.warn({ prNumber: prResponse.data.number, error: (previewError as Error).message }, 'Could not upload visual previews; publishing a text-only explanation');
                 try {
                     await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
                         owner: issueRef.repoOwner,
                         repo: issueRef.repoName,
                         pull_number: prResponse.data.number,
-                        body: prBody
+                        body: appendVisualPreviewSection(basePrBody, renderVisualPreviewUploadFailureSection(visualPreview.evidence))
                     });
                 } catch (fallbackError) {
-                    correlatedLogger.warn({ prNumber: prResponse.data.number, error: (fallbackError as Error).message }, 'Could not restore committed-file visual preview links after a partial attachment upload');
+                    correlatedLogger.warn({ prNumber: prResponse.data.number, error: (fallbackError as Error).message }, 'Could not publish the text-only visual preview upload explanation');
                 }
             }
         }

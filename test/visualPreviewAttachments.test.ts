@@ -27,16 +27,22 @@ const evidence = {
 
 test('edits a pull request with uploaded visual preview attachments', async () => {
   let invocation: { args: string[]; authToken: string; cwd: string } | undefined;
+  const requests: Array<{ endpoint: string; options: Record<string, unknown> }> = [];
 
   await publishPullRequestVisualPreviews({
     owner: 'integry',
     repo: 'propr',
     pullRequestNumber: 42,
-    commitHash: 'abc123',
     body: 'Implementation summary',
     evidence,
     authToken: 'installation-token',
     worktreePath: '/worktree',
+    octokit: {
+      request: async <T>(endpoint: string, options: Record<string, unknown>) => {
+        requests.push({ endpoint, options });
+        return { data: { body: '![Desktop settings](https://github.com/user-attachments/assets/asset-id)' } } as T;
+      }
+    },
     runCommand: async options => {
       invocation = options;
       return { stdout: '' };
@@ -49,6 +55,23 @@ test('edits a pull request with uploaded visual preview attachments', async () =
   assert.deepEqual(invocation.args.slice(-2), ['--attach', '/worktree/.propr/previews/desktop.png']);
   assert.equal(invocation.authToken, 'installation-token');
   assert.equal(invocation.args.includes('installation-token'), false);
+  assert.deepEqual(requests.map(request => request.endpoint), ['GET /repos/{owner}/{repo}/pulls/{pull_number}']);
+});
+
+test('rejects a pull request upload when GitHub leaves a local path in the body', async () => {
+  await assert.rejects(() => publishPullRequestVisualPreviews({
+    owner: 'integry',
+    repo: 'propr',
+    pullRequestNumber: 42,
+    body: 'Implementation summary',
+    evidence,
+    authToken: 'installation-token',
+    worktreePath: '/worktree',
+    octokit: {
+      request: async <T>() => ({ data: { body: '![Desktop settings](/worktree/.propr/previews/desktop.png)' } }) as T
+    },
+    runCommand: async () => ({ stdout: '' })
+  }), /did not replace a local visual preview path/);
 });
 
 test('publishes an attached completion comment before removing the transient work comment', async () => {
@@ -57,7 +80,6 @@ test('publishes an attached completion comment before removing the transient wor
     owner: 'integry',
     repo: 'propr',
     pullRequestNumber: 42,
-    commitHash: 'abc123',
     body: 'Follow-up complete',
     evidence,
     authToken: 'installation-token',
@@ -89,7 +111,6 @@ test('removes a partially published attachment comment before surfacing upload f
     owner: 'integry',
     repo: 'propr',
     pullRequestNumber: 42,
-    commitHash: 'abc123',
     body: 'Follow-up complete',
     evidence,
     authToken: 'installation-token',
@@ -109,4 +130,30 @@ test('removes a partially published attachment comment before surfacing upload f
   }), /one attachment failed/);
 
   assert.deepEqual(deletedCommentIds, [201]);
+});
+
+test('deletes an uploaded comment whose fetched body still contains a local path', async () => {
+  const deletedCommentIds: unknown[] = [];
+  await assert.rejects(() => publishPullRequestCommentVisualPreviews({
+    owner: 'integry',
+    repo: 'propr',
+    pullRequestNumber: 42,
+    body: 'Follow-up complete',
+    evidence,
+    authToken: 'installation-token',
+    worktreePath: '/worktree',
+    startingCommentId: 100,
+    octokit: {
+      request: async <T>(endpoint: string, options: Record<string, unknown>) => {
+        if (endpoint.startsWith('GET ')) {
+          return { data: { body: '![Desktop settings](/worktree/.propr/previews/desktop.png)' } } as T;
+        }
+        deletedCommentIds.push(options.comment_id);
+        return {} as T;
+      }
+    },
+    runCommand: async () => ({ stdout: 'https://github.com/integry/propr/pull/42#issuecomment-202' })
+  }), /did not replace a local visual preview path/);
+
+  assert.deepEqual(deletedCommentIds, [202]);
 });

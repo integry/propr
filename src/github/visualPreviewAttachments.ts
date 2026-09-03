@@ -38,7 +38,6 @@ const runAttachmentCommand: AttachmentCommandRunner = async ({ args, authToken, 
 interface BaseVisualPreviewPublicationOptions {
   owner: string;
   repo: string;
-  commitHash: string;
   body: string;
   evidence: VisualPreviewEvidence;
   authToken: string;
@@ -52,16 +51,27 @@ function attachmentArguments(evidence: VisualPreviewEvidence): string[] {
 
 function bodyWithLocalPreviews(options: BaseVisualPreviewPublicationOptions): string {
   const section = renderVisualPreviewSection(options.evidence, {
-    owner: options.owner,
-    repo: options.repo,
-    commitHash: options.commitHash,
     useLocalPaths: true
   });
   return appendVisualPreviewSection(options.body, section);
 }
 
+function assertUploadedBodyHasNoLocalPaths(body: unknown, evidence: VisualPreviewEvidence): asserts body is string {
+  if (typeof body !== 'string') {
+    throw new Error('GitHub uploaded visual previews but did not return the published body');
+  }
+  const leakedPath = evidence.assets.find(asset => body.includes(asset.absolutePath)
+    || body.includes(asset.absolutePath.replaceAll(' ', '%20')));
+  if (leakedPath) {
+    throw new Error('GitHub did not replace a local visual preview path with an uploaded attachment URL');
+  }
+}
+
 export interface PublishPullRequestVisualPreviewOptions extends BaseVisualPreviewPublicationOptions {
   pullRequestNumber: number;
+  octokit: {
+    request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
+  };
 }
 
 export async function publishPullRequestVisualPreviews(options: PublishPullRequestVisualPreviewOptions): Promise<void> {
@@ -77,6 +87,12 @@ export async function publishPullRequestVisualPreviews(options: PublishPullReque
     authToken: options.authToken,
     cwd: options.worktreePath
   });
+  const response = await options.octokit.request<{ data: { body?: string } }>('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+    owner: options.owner,
+    repo: options.repo,
+    pull_number: options.pullRequestNumber
+  });
+  assertUploadedBodyHasNoLocalPaths(response.data.body, options.evidence);
 }
 
 export interface PublishPullRequestCommentVisualPreviewOptions extends BaseVisualPreviewPublicationOptions {
@@ -104,9 +120,9 @@ export async function publishPullRequestCommentVisualPreviews(
     throw new Error('Cannot publish an attachment comment without preview assets');
   }
   const runner = options.runCommand || runAttachmentCommand;
-  let result: { stdout: string };
+  let publishedCommentId: number | null = null;
   try {
-    result = await runner({
+    const result = await runner({
       args: [
         'pr', 'comment', String(options.pullRequestNumber),
         '--repo', `${options.owner}/${options.repo}`,
@@ -116,53 +132,46 @@ export async function publishPullRequestCommentVisualPreviews(
       authToken: options.authToken,
       cwd: options.worktreePath
     });
+    const commentUrl = result.stdout.trim().split('\n').find(line => line.includes('#issuecomment-')) || result.stdout.trim();
+    if (!commentUrl) throw new Error('GitHub CLI uploaded previews but did not return a comment URL');
+    publishedCommentId = parseCommentId(commentUrl);
+    if (!publishedCommentId) throw new Error('GitHub CLI uploaded previews but did not return a comment ID');
+
+    const response = await options.octokit.request<{ data: { body?: string } }>('GET /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+      owner: options.owner,
+      repo: options.repo,
+      comment_id: publishedCommentId
+    });
+    assertUploadedBodyHasNoLocalPaths(response.data.body, options.evidence);
+
+    try {
+      await options.octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+        owner: options.owner,
+        repo: options.repo,
+        comment_id: options.startingCommentId
+      });
+    } catch {
+      // The attached completion comment is already published. Leaving the
+      // transient work comment is preferable to posting the completion twice.
+    }
+
+    return { html_url: commentUrl, body: response.data.body };
   } catch (error) {
-    const partialCommentId = parseCommentId(typeof (error as { stdout?: unknown })?.stdout === 'string'
+    publishedCommentId ||= parseCommentId(typeof (error as { stdout?: unknown })?.stdout === 'string'
       ? (error as { stdout: string }).stdout
       : '');
-    if (partialCommentId) {
+    if (publishedCommentId) {
       try {
         await options.octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
           owner: options.owner,
           repo: options.repo,
-          comment_id: partialCommentId
+          comment_id: publishedCommentId
         });
       } catch {
-        // Best-effort cleanup; the caller still publishes the complete fallback.
+        // Best-effort cleanup; the caller replaces the work comment with a
+        // text-only explanation that contains no local filesystem paths.
       }
     }
     throw error;
   }
-
-  const commentUrl = result.stdout.trim().split('\n').find(line => line.includes('#issuecomment-')) || result.stdout.trim();
-  if (!commentUrl) throw new Error('GitHub CLI uploaded previews but did not return a comment URL');
-
-  let publishedBody = options.body;
-  const commentId = parseCommentId(commentUrl);
-  if (commentId) {
-    try {
-      const response = await options.octokit.request<{ data: { body?: string } }>('GET /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-        owner: options.owner,
-        repo: options.repo,
-        comment_id: commentId
-      });
-      publishedBody = response.data.body || publishedBody;
-    } catch {
-      // The attachment comment itself is authoritative; body retrieval is only
-      // used to enrich task history with GitHub's rewritten attachment URLs.
-    }
-  }
-
-  try {
-    await options.octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-      owner: options.owner,
-      repo: options.repo,
-      comment_id: options.startingCommentId
-    });
-  } catch {
-    // The attached completion comment is already published. Leaving the
-    // transient work comment is preferable to posting the completion twice.
-  }
-
-  return { html_url: commentUrl, body: publishedBody };
 }
