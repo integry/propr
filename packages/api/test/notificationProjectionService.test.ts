@@ -122,8 +122,8 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     );
     assert.deepEqual(events.map(event => ({ title: event.title, body: event.body })), [
       {
-        title: 'PR #42 ready for review',
-        body: 'Keep only the newest actionable Inbox update.',
+        title: 'Keep only the newest actionable Inbox update.',
+        body: 'PR #42 is ready for review.',
       },
       {
         title: 'Review completed for PR #7',
@@ -138,6 +138,29 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     );
     assert.doesNotMatch(JSON.stringify(events), /evil\.example|SECRET/);
     assert.equal(await countNotificationEvents(database), 2);
+  });
+
+  test('uses the issue title instead of boilerplate completion text', async () => {
+    await database('tasks').insert({
+      task_id: 'implementation-description', repository: 'integry/propr', issue_number: 2103,
+      pr_number: null, task_type: 'issue',
+      initial_job_data: JSON.stringify({
+        title: 'New Issue: Inbox notification cleanup',
+        subtitle: 'Preparing a PR for issue #2103',
+      }),
+    });
+
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'implementation-description', state: 'completed',
+      repository: 'integry/propr', issueNumber: 2103, timestamp: iso(),
+    });
+
+    const event = await database('notification_events').first();
+    assert.equal(event.title, 'Inbox notification cleanup');
+    assert.equal(
+      event.body,
+      'Issue #2103 is complete. Open task details to review the result.',
+    );
   });
 
   test('ignores stale task transitions and emits one stalled event per unchanged activity', async () => {
@@ -167,6 +190,77 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       { kind: 'task', title: 'Task appears stalled' },
     ]);
     assert.deepEqual(JSON.parse(events[0].advertised_actions_json), ['stop', 'dismiss']);
+  });
+
+  test('actively dismisses stalled cards when their task reaches a terminal state', async () => {
+    const processingAt = iso(-30_000);
+    await database('tasks').insert({
+      task_id: 'task-resolved', repository: 'integry/propr', issue_number: 12,
+      pr_number: null, task_type: 'issue', initial_job_data: '{}',
+    });
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'task-resolved', state: 'processing',
+      repository: 'integry/propr', issueNumber: 12, timestamp: processingAt,
+    });
+    await projection.detectStalledActivities();
+    assert.equal(await countUndismissedNotificationReceipts(database, 'task'), 2);
+
+    clock += 1_000;
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'task-resolved', state: 'failed',
+      repository: 'integry/propr', issueNumber: 12, timestamp: iso(),
+    });
+
+    const active = await new NotificationService({ database }).listNotifications('admin-user');
+    assert.deepEqual(active.notifications.map(notification => notification.title), [
+      'Task failed for issue #12',
+    ]);
+    const delayedStall = await new NotificationService({
+      database, now: () => new Date(clock),
+    }).createSourceActivityNotificationEvent({
+      type: 'task', key: 'task-resolved', repository: 'integry/propr',
+      lastActivityAt: processingAt,
+    }, {
+      eventId: 'delayed-stalled-card', deduplicationKey: 'delayed-stalled-card',
+      kind: 'task', severity: 'warning',
+      target: {
+        type: 'task', repository: 'integry/propr', taskId: 'task-resolved', issueNumber: 12,
+      },
+      title: 'Task appears stalled', body: 'This delayed card must not be created.',
+      occurredAt: processingAt,
+    }, ['admin-user']);
+    assert.equal(delayedStall, null, 'a delayed detector cannot resurrect a stale card');
+    assert.equal(await countNotificationEvents(database), 2, 'audit events are retained');
+  });
+
+  test('passively dismisses a stale activity card created after resolution', async () => {
+    await database('tasks').insert({
+      task_id: 'task-passive-cleanup', repository: 'integry/propr', issue_number: 13,
+      pr_number: null, task_type: 'issue', initial_job_data: '{}',
+    });
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'task-passive-cleanup', state: 'failed',
+      repository: 'integry/propr', issueNumber: 13, timestamp: iso(),
+    });
+    const notifications = new NotificationService({ database, now: () => new Date(clock) });
+    await notifications.createNotificationEvent({
+      eventId: 'legacy-stalled-card', deduplicationKey: 'legacy-stalled-card',
+      kind: 'task', severity: 'warning',
+      target: {
+        type: 'task', repository: 'integry/propr', taskId: 'task-passive-cleanup',
+        issueNumber: 13,
+      },
+      title: 'Task appears stalled', body: 'This legacy card is no longer relevant.',
+      occurredAt: iso(),
+    }, ['admin-user']);
+    assert.equal(await countUndismissedNotificationReceipts(database, 'task'), 3);
+
+    assert.equal(await projection.cleanupResolvedActivities(), 1);
+    assert.equal(await projection.cleanupResolvedActivities(), 0);
+    const active = await notifications.listNotifications('admin-user');
+    assert.deepEqual(active.notifications.map(notification => notification.title), [
+      'Task failed for issue #13',
+    ]);
   });
 
   test('projects a task failure once without copying error details', async () => {
@@ -280,11 +374,11 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     const listed = await new NotificationService({ database }).listNotifications('admin-user');
     const lifecycleEvents = listed.notifications.filter(notification => [
       'Task failed for issue #101',
-      'Implementation completed for issue #102',
+      'Issue #102 implementation completed',
       'Review completed for PR #7',
     ].includes(notification.title));
     assert.deepEqual(lifecycleEvents.map(notification => notification.title).sort(), [
-      'Implementation completed for issue #102',
+      'Issue #102 implementation completed',
       'Review completed for PR #7',
       'Task failed for issue #101',
     ]);
@@ -398,6 +492,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         },
         createPullRequestAttentionNotificationEvent: async () => null,
         createPullRequestNotificationEvent: async () => null,
+        createSourceActivityNotificationEvent: async () => null,
         reconcileSystemFailureTransition: async () => ({ accepted: true, event: null }),
       },
       logger: { warn: message => warnings.push(message) },

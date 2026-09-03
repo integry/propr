@@ -29,6 +29,7 @@ interface ProjectionLogger {
 type NotificationEventWriter = Pick<NotificationService,
   'createNotificationEvent' | 'createPullRequestNotificationEvent'
   | 'createPullRequestAttentionNotificationEvent'
+  | 'createSourceActivityNotificationEvent'
   | 'reconcileSystemFailureTransition'>;
 
 export interface NotificationProjectionOptions {
@@ -116,15 +117,23 @@ function compactDisplayText(value: unknown): string | undefined {
     : `${characters.slice(0, 319).join('')}…`;
 }
 
+function cleanTaskDescription(value: unknown): string | undefined {
+  const compact = compactDisplayText(value)?.replace(/^New Issue:\s*/i, '').trim();
+  if (!compact || /^(?:implementation (?:is )?complete(?:d)?|preparing (?:a )?(?:pr|pull request))\b/i.test(compact)) {
+    return undefined;
+  }
+  return compact;
+}
+
 function taskDescription(initial: Record<string, unknown>): string | undefined {
   const issueRef = typeof initial.issueRef === 'object'
     && initial.issueRef !== null
     && !Array.isArray(initial.issueRef)
     ? initial.issueRef as Record<string, unknown>
     : {};
-  return compactDisplayText(initial.subtitle)
-    ?? compactDisplayText(initial.title)
-    ?? compactDisplayText(issueRef.title);
+  return cleanTaskDescription(initial.subtitle)
+    ?? cleanTaskDescription(initial.title)
+    ?? cleanTaskDescription(issueRef.title);
 }
 
 function stableKey(scope: string, ...parts: unknown[]): string {
@@ -255,6 +264,9 @@ export class NotificationProjectionService {
 
   startStalledDetector(): void {
     if (this.stalledTimer) return;
+    void this.bestEffort('resolved activity cleanup', async () => {
+      await this.cleanupResolvedActivities();
+    });
     this.stalledTimer = setInterval(() => {
       void this.bestEffort('stalled activity', () => this.detectStalledActivities());
     }, this.stalledCheckIntervalMs);
@@ -367,6 +379,7 @@ export class NotificationProjectionService {
   }
 
   async detectStalledActivities(): Promise<void> {
+    await this.cleanupResolvedActivities();
     const cutoff = normalizeISO8601Timestamp(this.now().getTime() - this.stalledAfterMs);
     const rows = await this.database<SourceActivityRow>('notification_source_activity')
       .select(
@@ -382,7 +395,10 @@ export class NotificationProjectionService {
       if (row.activity_type === 'task') {
         const issueNumber = positiveInteger(metadata.issueNumber);
         const prNumber = positiveInteger(metadata.prNumber);
-        await this.createPullRequestAwareEvent({
+        await this.notifications.createSourceActivityNotificationEvent({
+          type: 'task', key: row.activity_key, repository: row.repository,
+          lastActivityAt: row.last_activity_at,
+        }, {
           deduplicationKey: stableKey(
             'task-stalled', row.activity_key, row.status, row.last_activity_at,
           ),
@@ -397,9 +413,13 @@ export class NotificationProjectionService {
           body: `Active work for ${row.repository} has not reported progress.`,
           actions: taskActions({ active: true }),
           occurredAt: row.last_activity_at,
-        }, await this.loadInstanceMemberRecipients(), row.repository, prNumber);
+        }, await this.loadInstanceMemberRecipients());
       } else {
-        await this.notifications.createNotificationEvent({
+        await this.notifications.createSourceActivityNotificationEvent({
+          type: 'indexing', key: row.activity_key, repository: row.repository,
+          ...(row.branch === null ? {} : { branch: row.branch }),
+          lastActivityAt: row.last_activity_at,
+        }, {
           deduplicationKey: stableKey(
             'indexing-stalled', row.activity_key, row.status, row.last_activity_at,
           ),
@@ -416,6 +436,16 @@ export class NotificationProjectionService {
         }, await this.loadAdministratorRecipients());
       }
     }
+  }
+
+  /**
+   * Passively heals stale warning cards left by a missed lifecycle event or an
+   * older server version. Immutable notification events remain available for
+   * audit; only their active Inbox receipts are dismissed.
+   */
+  async cleanupResolvedActivities(): Promise<number> {
+    return this.database.transaction(transaction =>
+      this.dismissResolvedActivityReceipts(transaction));
   }
 
   async projectSystemSnapshot(
@@ -529,11 +559,12 @@ export class NotificationProjectionService {
         ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
         ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
       },
-      title: context.issueNumber === undefined
+      title: context.description ?? (context.issueNumber === undefined
         ? 'Implementation completed'
-        : `Implementation completed for issue #${context.issueNumber}`,
-      body: context.description
-        ?? `Implementation work for ${context.repository} is complete.`,
+        : `Issue #${context.issueNumber} implementation completed`),
+      body: context.issueNumber === undefined
+        ? 'Open task details to review the completed work.'
+        : `Issue #${context.issueNumber} is complete. Open task details to review the result.`,
       actions: taskActions({
         followup: context.followupEligible,
         hasPullRequest: pullRequestUrl !== undefined,
@@ -559,9 +590,8 @@ export class NotificationProjectionService {
         target: {
           type: 'pull_request', repository: context.repository, prNumber,
         },
-        title: `PR #${prNumber} ready for review`,
-        body: context.description
-          ?? `Implementation is complete; review the changes in ${context.repository}.`,
+        title: context.description ?? `PR #${prNumber} ready for review`,
+        body: `PR #${prNumber} is ready for review.`,
         actions: [
           ...(pullRequestUrl === undefined ? [] : ['open_pr' as const]),
           'dismiss',
@@ -680,8 +710,60 @@ export class NotificationProjectionService {
         .select('status', 'last_activity_at')
         .where({ activity_type: input.type, activity_key: input.key })
         .first() as { status?: unknown; last_activity_at?: unknown } | undefined;
-      return stored?.status === input.status && stored.last_activity_at === input.occurredAt;
+      const accepted = stored?.status === input.status
+        && stored.last_activity_at === input.occurredAt;
+      if (accepted && completedAt !== null) {
+        await this.dismissResolvedActivityReceipts(transaction);
+      }
+      return accepted;
     });
+  }
+
+  private async dismissResolvedActivityReceipts(
+    transaction: Knex.Transaction,
+  ): Promise<number> {
+    const timestamp = normalizeISO8601Timestamp(this.now());
+    const resolvedEvents = transaction('notification_events as event')
+      .select('event.event_id')
+      .where({ 'event.severity': 'warning' })
+      .andWhere((warning) => {
+        warning.where((task) => {
+          task.where({ 'event.kind': 'task' }).whereExists(function resolvedTask() {
+            this.select(transaction.raw('1'))
+              .from('notification_source_activity as activity')
+              .where({ 'activity.activity_type': 'task' })
+              .whereNotNull('activity.completed_at')
+              .whereRaw(
+                "activity.activity_key = json_extract(event.target_json, '$.taskId')",
+              );
+          });
+        }).orWhere((indexing) => {
+          indexing.where({ 'event.kind': 'indexing' })
+            .whereExists(function resolvedIndexing() {
+              this.select(transaction.raw('1'))
+                .from('notification_source_activity as activity')
+                .where({ 'activity.activity_type': 'indexing' })
+                .whereNotNull('activity.completed_at')
+                .whereRaw(
+                  "activity.repository = json_extract(event.target_json, '$.repository')",
+                )
+                .whereRaw(
+                  "activity.branch IS json_extract(event.target_json, '$.branch')",
+                );
+            });
+        });
+      });
+    const changed = await transaction('notification_user_states')
+      .where({ inbox_enabled: true })
+      .whereNull('dismissed_at')
+      .whereIn('event_id', resolvedEvents)
+      .update({
+        dismissed_at: transaction.raw(
+          'CASE WHEN created_at > ? THEN created_at ELSE ? END',
+          [timestamp, timestamp],
+        ),
+      });
+    return Number(changed);
   }
 
   private async loadInstanceMemberRecipients(): Promise<NotificationRecipient[]> {
