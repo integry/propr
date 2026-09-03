@@ -29,13 +29,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'node:crypto';
 import { resolveAgentTerminationReason } from '../termination.js';
-import { createContainerExecutionId } from './utils/containerExecutionId.js';
-import { buildAntigravityContainerName } from './utils/antigravityContainerName.js';
-import {
-    buildAntigravityRepositoryScoutMcpConfig,
-    buildAntigravityRepositoryScoutPermissions,
-    REPOSITORY_SCOUT_CONTAINER_ROOT,
-} from './utils/repositoryScoutMcpServer.js';
+import { buildAntigravityDockerArgs } from './utils/antigravityDockerArgsBuilder.js';
 import {
     readBoundedProviderOutputFile,
 } from './utils/boundedProviderOutput.js';
@@ -45,9 +39,7 @@ export { UsageLimitError };
 
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
-const ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH = '/home/node/.gemini-source';
 const DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT = '/tmp/git-processor/propr-cache/transcripts/antigravity';
-const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 
 function isSuccessfulAnalysisResult(
     result: { timedOut?: boolean; exitCode: number | null },
@@ -62,31 +54,6 @@ function resolveAntigravityModelIdentity(reportedModel: string | undefined, requ
 function resolveAntigravityExecutionError(terminalStatus: 'success' | 'error' | undefined, protocolError: string | undefined, hasStreamEnvelopes: boolean, modelIdentityError: string | undefined): string | undefined { return resolveAntigravityProtocolError(terminalStatus, protocolError, hasStreamEnvelopes) ?? modelIdentityError; }
 
 function resolveAntigravityEvidenceConflict(stdoutModel: string | undefined, transcriptModel: string | undefined, stdoutConversation: string | undefined, transcriptConversation: string | undefined): string | undefined { if (stdoutConversation && transcriptConversation && stdoutConversation !== transcriptConversation) return `Conflicting Antigravity conversation identities: stdout reported "${stdoutConversation}" but transcript reported "${transcriptConversation}"`; const stdout = stdoutModel && normalizeAntigravityModelId(stdoutModel); const transcript = transcriptModel && normalizeAntigravityModelId(transcriptModel); return stdout && transcript && stdout !== transcript ? `Conflicting Antigravity model identities: stdout reported "${stdout}" but transcript reported "${transcript}"` : undefined; }
-
-function buildAgentEnvironmentArgs(
-    repositoryInspection: boolean,
-    ...sources: Array<Record<string, string> | undefined>
-): string[] {
-    const args: string[] = [];
-    for (const source of sources) {
-        if (!source) continue;
-        for (const [key, value] of Object.entries(source)) {
-            if (repositoryInspection && GITHUB_CREDENTIAL_ENV_PATTERN.test(key.toUpperCase())) continue;
-            args.push('-e', `${key}=${value}`);
-        }
-    }
-    return args;
-}
-
-function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyWorkspace: boolean): void {
-    if (repositoryInspection && !readOnlyWorkspace) {
-        throw new Error('Repository inspection requires a read-only workspace');
-    }
-}
-
-function antigravityConfigMountTarget(executionMode: 'task' | 'goal'): string {
-    return executionMode === 'goal' ? '/home/node/.gemini' : ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH;
-}
 
 function getAntigravityTranscriptRoot(): string {
     return process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT || DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT;
@@ -441,46 +408,15 @@ export class AntigravityAgent implements Agent {
 
     private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string }): string[] {
         const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false, executionMode = 'task', resumeConversationId } = params;
-        assertRepositoryInspectionMode(repositoryInspection, readOnlyWorkspace);
         const configPath = this.getHostConfigPath();
-        const configMountTarget = antigravityConfigMountTarget(executionMode);
-        const workerOwnedGoalGit = executionMode === 'goal'
-            && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct';
-        const envVars = buildAgentEnvironmentArgs(
-            repositoryInspection || workerOwnedGoalGit,
-            this.config.envVars,
-            environment,
-        );
-        const shortTaskId = createContainerExecutionId(taskId);
-        const taskType = executionMode === 'goal' ? 'goal' : executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
         const runtimeName = this.getRuntimeName();
-        const containerName = buildAntigravityContainerName(this.config.alias || runtimeName, taskType, shortTaskId, modelName);
-        const dockerArgs: string[] = [
-            'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
-            '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-            ...(workerOwnedGoalGit
-                ? ['-v', `${path.join(worktreePath, '.git')}:/home/node/workspace/.git:ro`]
-                : []),
-            ...(repositoryInspection ? [] : [
-                '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace || workerOwnedGoalGit ? 'ro' : 'rw'}`,
-            ]),
-            '-v', `${configPath}:${configMountTarget}:rw`,
-            ...(repositoryInspection || workerOwnedGoalGit
-                ? []
-                : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
-            '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true',
-            ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
-            ...(executionMode === 'task' ? ['-e', 'PROPR_EPHEMERAL_STATE=1'] : []),
-            '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${configMountTarget}`,
-            ...(repositoryInspection ? [
-                '-e', 'PROPR_REPOSITORY_INSPECTION=1',
-                '-e', `PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG=${buildAntigravityRepositoryScoutMcpConfig()}`,
-                '-e', `PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_PERMISSIONS=${buildAntigravityRepositoryScoutPermissions()}`,
-            ] : []),
-            ...(transcriptPath ? ['-e', `PROPR_ANTIGRAVITY_TRANSCRIPT_PATH=${transcriptPath}`] : []),
-            ...envVars, '-w', '/home/node/workspace',
-            this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(repositoryInspection), 'propr-antigravity'
-        ];
+        const dockerArgs = buildAntigravityDockerArgs({
+            worktreePath, githubToken, modelName, issueNumber, environment,
+            configEnvironment: this.config.envVars, taskId, executionType, transcriptPath,
+            readOnlyWorkspace, repositoryInspection, executionMode, configPath,
+            dockerImage: this.config.dockerImage, agentAlias: this.config.alias,
+            shellCommand: this.buildAntigravityShellCommand(repositoryInspection),
+        });
         // The prompt is delivered through non-TTY stdin, not as an argv element,
         // to avoid spawn E2BIG on large repo-context prompts. Only CLI flags such
         // as the model selection are appended here.

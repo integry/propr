@@ -80,6 +80,39 @@ function goalTiming(row: GoalProjectionRow): { elapsedMs: number; pausedMs: numb
   return { elapsedMs, pausedMs, activeMs: Math.max(0, elapsedMs - pausedMs) };
 }
 
+function checkpointProjection(
+  row: GoalProjectionRow,
+  latestCheckpoint: Record<string, unknown> | undefined,
+  pendingCheckpoint: Record<string, unknown> | undefined,
+) {
+  if (row.launch_strategy !== 'direct') return null;
+  return {
+    intervalMinutes: row.checkpoint_interval_minutes,
+    count: Number(row.checkpoint_count || 0),
+    lastAt: row.last_checkpoint_at,
+    lastCommitSha: row.last_checkpoint_commit_sha,
+    error: row.checkpoint_error,
+    pending: Boolean(pendingCheckpoint),
+    latest: latestCheckpoint ? {
+      kind: latestCheckpoint.kind,
+      state: latestCheckpoint.state,
+      commitSha: latestCheckpoint.commit_sha,
+      error: latestCheckpoint.error,
+      createdAt: latestCheckpoint.created_at,
+      completedAt: latestCheckpoint.completed_at,
+    } : null,
+  };
+}
+
+function liveSummary(live: Awaited<ReturnType<typeof projectTaskLiveDetails>>) {
+  return {
+    currentTask: live?.currentTask ?? null,
+    todos: live?.todos ?? [],
+    tokenUsage: live?.tokenUsage ?? null,
+    nativeGoal: live?.nativeGoal ?? null,
+  };
+}
+
 export async function serializeGoal(
   db: Knex,
   redis: RedisClientType,
@@ -128,30 +161,10 @@ export async function serializeGoal(
     sessionId: row.session_id,
     conversationId: row.conversation_id,
     finalPr: row.final_pr_url ? { number: row.final_pr_number, url: row.final_pr_url } : null,
-    checkpoint: row.launch_strategy === 'direct' ? {
-      intervalMinutes: row.checkpoint_interval_minutes,
-      count: Number(row.checkpoint_count || 0),
-      lastAt: row.last_checkpoint_at,
-      lastCommitSha: row.last_checkpoint_commit_sha,
-      error: row.checkpoint_error,
-      pending: Boolean(pendingCheckpoint),
-      latest: latestCheckpoint ? {
-        kind: latestCheckpoint.kind,
-        state: latestCheckpoint.state,
-        commitSha: latestCheckpoint.commit_sha,
-        error: latestCheckpoint.error,
-        createdAt: latestCheckpoint.created_at,
-        completedAt: latestCheckpoint.completed_at,
-      } : null,
-    } : null,
+    checkpoint: checkpointProjection(row, latestCheckpoint, pendingCheckpoint),
     artifacts: parseGoalArtifacts(row.artifact_refs as string | null),
     artifactStats: parseStats(row.artifact_stats),
-    liveSummary: {
-      currentTask: live?.currentTask ?? null,
-      todos: live?.todos ?? [],
-      tokenUsage: live?.tokenUsage ?? null,
-      nativeGoal: live?.nativeGoal ?? null,
-    },
+    liveSummary: liveSummary(live),
     taskState: latestHistory?.state ?? 'pending',
     createdAt: row.created_at,
     updatedAt: row.updated_at,

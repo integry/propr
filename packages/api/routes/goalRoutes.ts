@@ -125,15 +125,55 @@ function validateCreateBody(body: Record<string, unknown>): string | null {
   if (body.baseBranch != null && (typeof body.baseBranch !== 'string' || body.baseBranch.length > 255)) return 'baseBranch is invalid';
   if (body.maxParallelTasks != null && (!Number.isSafeInteger(body.maxParallelTasks) || Number(body.maxParallelTasks) < 1 || Number(body.maxParallelTasks) > 32)) return 'maxParallelTasks must be an integer from 1 to 32';
   if (body.ultrafix != null && typeof body.ultrafix !== 'boolean') return 'ultrafix must be a boolean';
-  if (body.checkpointIntervalMinutes != null) {
-    if (body.launchStrategy !== 'direct') return 'checkpointIntervalMinutes only applies to direct goals';
-    if (!Number.isSafeInteger(body.checkpointIntervalMinutes)
-      || Number(body.checkpointIntervalMinutes) < MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES
-      || Number(body.checkpointIntervalMinutes) > MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES) {
-      return `checkpointIntervalMinutes must be an integer from ${MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES} to ${MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES}`;
-    }
+  return validateCreateCheckpointInterval(body);
+}
+
+function validateCreateCheckpointInterval(body: Record<string, unknown>): string | null {
+  if (body.checkpointIntervalMinutes == null) return null;
+  if (body.launchStrategy !== 'direct') return 'checkpointIntervalMinutes only applies to direct goals';
+  if (!Number.isSafeInteger(body.checkpointIntervalMinutes)
+    || Number(body.checkpointIntervalMinutes) < MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES
+    || Number(body.checkpointIntervalMinutes) > MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES) {
+    return `checkpointIntervalMinutes must be an integer from ${MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES} to ${MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES}`;
   }
   return null;
+}
+
+function buildCreateIdentity(body: Record<string, unknown>): { operation: string; payloadHash: string } {
+  const operation = 'goal.create';
+  const payloadHash = mutationHash(operation, {
+    repository: body.repository, objective: body.objective, launchStrategy: body.launchStrategy,
+    agentId: body.agentId, model: body.model, baseBranch: body.baseBranch ?? null,
+    maxParallelTasks: body.maxParallelTasks ?? null, ultrafix: body.ultrafix === true,
+    checkpointIntervalMinutes: body.launchStrategy === 'direct'
+      ? body.checkpointIntervalMinutes ?? DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES
+      : null,
+  });
+  return { operation, payloadHash };
+}
+
+async function findExistingGoalCreation(options: {
+  db: Knex;
+  ownerId: string;
+  key: string;
+  operation: string;
+  payloadHash: string;
+}): Promise<GoalRow | null> {
+  const { db, ownerId, key, operation, payloadHash } = options;
+  const inputUse = await db('goal_inputs').where({ owner_id: ownerId, idempotency_key: key }).first('input_id');
+  const checkpointUse = await db('goal_checkpoints').where({ owner_id: ownerId, idempotency_key: key }).first('checkpoint_id');
+  if (inputUse || checkpointUse) {
+    throw new IdempotencyConflictError('Idempotency-Key was already used for a different operation or payload');
+  }
+  const existing = await db<GoalRow>('goals').where({
+    owner_id: ownerId,
+    create_idempotency_key: key,
+  }).first();
+  if (existing
+    && (existing.create_idempotency_operation !== operation || existing.create_payload_hash !== payloadHash)) {
+    throw new IdempotencyConflictError('Idempotency-Key was already used for a different operation or payload');
+  }
+  return existing ?? null;
 }
 
 type AgentSelection = { agent: Agent } | { error: string; status: number };
@@ -230,28 +270,17 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
     const createKey = requiredIdempotencyKey(req, res);
     if (!createKey) return;
-    const createOperation = 'goal.create';
-    const createPayloadHash = mutationHash(createOperation, {
-      repository: body.repository, objective: body.objective, launchStrategy: body.launchStrategy,
-      agentId: body.agentId, model: body.model, baseBranch: body.baseBranch ?? null,
-      maxParallelTasks: body.maxParallelTasks ?? null, ultrafix: body.ultrafix === true,
-      checkpointIntervalMinutes: body.launchStrategy === 'direct'
-        ? body.checkpointIntervalMinutes ?? DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES
-        : null,
-    });
-    const inputUse = await deps.db('goal_inputs').where({ owner_id: ownerId, idempotency_key: createKey }).first('input_id');
-    const checkpointUse = await deps.db('goal_checkpoints').where({ owner_id: ownerId, idempotency_key: createKey }).first('checkpoint_id');
-    if (inputUse || checkpointUse) return void res.status(409).json({ error: 'Idempotency-Key was already used for a different operation or payload' });
-    const existing = await deps.db<GoalRow>('goals').where({
-      owner_id: ownerId,
-      create_idempotency_key: createKey,
-    }).first();
-    if (existing) {
-      if (existing.create_idempotency_operation !== createOperation || existing.create_payload_hash !== createPayloadHash) {
-        return void res.status(409).json({ error: 'Idempotency-Key was already used for a different operation or payload' });
-      }
-      return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, existing) });
+    const { operation: createOperation, payloadHash: createPayloadHash } = buildCreateIdentity(body);
+    let existing: GoalRow | null;
+    try {
+      existing = await findExistingGoalCreation({
+        db: deps.db, ownerId, key: createKey, operation: createOperation, payloadHash: createPayloadHash,
+      });
+    } catch (error) {
+      if (error instanceof IdempotencyConflictError) return void res.status(409).json({ error: error.message });
+      throw error;
     }
+    if (existing) return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, existing) });
 
     const launchStrategy = body.launchStrategy as GoalLaunchStrategy;
     const initialPrompt = buildNativeGoalCommand({
