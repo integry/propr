@@ -173,7 +173,9 @@ async function performGitHubTokenRefresh(req: Request, force: boolean): Promise<
         }
     }
 
-    if (!user.refreshToken) return { status: 'reauth-required' };
+    if (!user.refreshToken) {
+        return { status: force ? 'reauth-required' : 'not-needed' };
+    }
 
     const now = Date.now();
     const needsRefresh = force || (user.tokenExpiresAt && (user.tokenExpiresAt - now) < TOKEN_REFRESH_BUFFER_MS);

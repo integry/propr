@@ -285,7 +285,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
             redirectAuthError(res, 'web_auth_not_configured');
             return;
         }
-        passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo', 'offline_access'] })(req, res, next);
+        passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo'] })(req, res, next);
     });
 
     if (demoModeAtStartup) {
@@ -448,7 +448,7 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
             // Temporary proactive-refresh failures do not invalidate a token
             // whose recorded expiry is still in the future.
             const refreshResult = await refreshGitHubTokenWithResult(req);
-            if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
+            if (req.user?.githubAuthInvalid) {
                 if (req.user?.githubAuthInvalid) await clearSessionForReauth(req);
                 res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
                 return;
