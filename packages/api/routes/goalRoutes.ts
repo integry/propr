@@ -579,6 +579,50 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     res.json({ goal: await serializeGoal(deps.db, deps.redisClient, updated!) });
   };
 
+  const remove = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    const needsStop = !row.result_state && (
+      row.desired_state === 'running'
+      || row.desired_state === 'cancelled'
+      || (row.desired_state === 'paused' && !row.pause_confirmed_at)
+    );
+    if (needsStop) {
+      if (row.desired_state !== 'cancelled') {
+        const fenced = await deps.db('goals').where({
+          goal_id: row.goal_id, owner_id: row.owner_id,
+          run_generation: row.run_generation, run_claim: row.run_claim,
+        }).whereNull('result_state').update({
+          desired_state: 'cancelled', paused_at: null, updated_at: deps.db.fn.now(),
+        });
+        if (fenced !== 1) return void res.status(409).json({ error: 'Goal state changed before deletion could stop it' });
+      }
+      const stopped = await stop(row.current_task_id, {
+        redisClient: deps.redisClient,
+        requestedBy: req.user!.username,
+        reason: 'Goal stopped before deletion.',
+        cancellationReason: 'goal_deleted',
+        ensureCancelled: true,
+      });
+      if (stopped.abortSignalled && !stopped.containerStopped) {
+        return void res.status(409).json({
+          error: 'Goal is still stopping',
+          message: 'The stop request was sent. Try deleting the goal again after the active execution has stopped.',
+        });
+      }
+    }
+    await deps.db.transaction(async trx => {
+      await trx('goals').where({ goal_id: row.goal_id, owner_id: row.owner_id }).delete();
+      await trx('llm_execution_details').whereIn('execution_id', function selectGoalExecutions() {
+        this.select('execution_id').from('llm_executions').where({ task_id: row.current_task_id });
+      }).delete();
+      await trx('llm_executions').where({ task_id: row.current_task_id }).delete();
+      await trx('task_history').where({ task_id: row.current_task_id }).delete();
+      await trx('tasks').where({ task_id: row.current_task_id }).delete();
+    });
+    res.status(204).send();
+  };
+
   // eslint-disable-next-line complexity -- model changes coordinate persisted state, provider stop semantics, and idempotency
   const requestModel = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
@@ -801,7 +845,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   };
 
   return {
-    capabilities, list, get, create, pause, resume, cancel, requestModel, input,
+    capabilities, list, get, create, pause, resume, cancel, remove, requestModel, input,
     checkpoint, requestCheckpointInterval, requireGoalTaskOwnership,
   };
 }

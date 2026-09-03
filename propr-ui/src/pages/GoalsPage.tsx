@@ -2,12 +2,12 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Activity, CheckCircle2, Circle, CircleDot, CirclePause, CirclePlay, CircleStop, Clock3,
-  Coins, ExternalLink, GitCommit, GitPullRequest, Github, ListTodo, LoaderCircle, Plus, Send,
+  Coins, ExternalLink, GitCommit, GitPullRequest, Github, ListTodo, LoaderCircle, Plus, Send, Trash2,
 } from 'lucide-react';
 import { getInstanceCatalog } from '../api/proprApi';
 import type { InstanceCatalogRepository } from '../api/proprTypes';
 import {
-  cancelGoal, checkpointGoal, createGoal, getGoal, getGoalCapabilities, listGoals, pauseGoal,
+  cancelGoal, checkpointGoal, createGoal, deleteGoal, getGoal, getGoalCapabilities, listGoals, pauseGoal,
   requestGoalCheckpointInterval, requestGoalModel, resumeGoal, sendGoalInput,
   type Goal, type GoalCapability, type GoalLaunchStrategy,
 } from '../api/goals';
@@ -198,6 +198,7 @@ function GoalList() {
 // The detail surface intentionally composes all goal controls and existing task projections.
 // eslint-disable-next-line complexity
 function GoalDetails({ goalId }: { goalId: string }) {
+  const navigate = useNavigate();
   const [goal, setGoal] = useState<Goal | null>(null);
   const [message, setMessage] = useState('');
   const [models, setModels] = useState<string[]>([]);
@@ -224,6 +225,14 @@ function GoalDetails({ goalId }: { goalId: string }) {
       setGoal((await sendGoalInput(goal.id, body)).goal); setMessage('');
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   };
+  const remove = async () => {
+    if (!goal || !window.confirm('Delete this goal? If it is running, it will be stopped first. This action cannot be undone.')) return;
+    setBusy(true); setError(null);
+    try {
+      await deleteGoal(goal.id);
+      navigate('/goals', { replace: true });
+    } catch (err) { setError((err as Error).message); setBusy(false); }
+  };
   const totalTokens = useMemo(
     () => tokenTotal(live.tokenUsage || null) || goal?.liveSummary.nativeGoal?.tokensUsed || 0,
     [goal?.liveSummary.nativeGoal?.tokensUsed, live.tokenUsage],
@@ -236,7 +245,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
     <Link to="/goals" className="text-sm text-primary-600 hover:underline">← All goals</Link>
     <header className="rounded-lg border bg-white p-5"><div className="flex flex-wrap items-start justify-between gap-4"><div><h1 className="text-xl font-bold text-slate-900">{goal.objective}</h1><p className="mt-2 text-sm text-slate-500">{goal.repository} · {goal.agent.alias}</p></div><GoalState goal={goal} /></div>
       <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-7"><div><dt className="text-slate-500">Launch strategy</dt><dd className="font-medium">{goal.launchStrategy === 'direct' ? 'Agent implements directly' : 'Agent orchestrates through ProPR'}</dd></div><div><dt className="text-slate-500">Requested model</dt><dd className="font-medium">{goal.requestedModel}</dd></div><div><dt className="text-slate-500">Effective model</dt><dd className="font-medium">{goal.effectiveModel || 'Pending provider report'}</dd></div><div><dt className="text-slate-500">Current task</dt><dd className="font-medium">{live.currentTask || goal.taskState}</dd></div><div><dt className="text-slate-500">Elapsed</dt><dd className="font-medium">{duration(goal.elapsedMs)}</dd></div><div><dt className="text-slate-500">Active</dt><dd className="font-medium">{duration(goal.activeMs)}</dd></div><div><dt className="text-slate-500">Paused</dt><dd className="font-medium">{duration(goal.pausedMs)}</dd></div></dl>
-      <div className="mt-4 flex flex-wrap gap-2">{goal.desiredState === 'running' && mutable && <button disabled={busy} onClick={() => act(() => pauseGoal(goal.id))} className={`${buttonClass} bg-amber-100 text-amber-800`}><CirclePause className="h-4 w-4" />Pause</button>}{goal.desiredState === 'paused' && mutable && <button disabled={busy} onClick={() => act(() => resumeGoal(goal.id))} className={`${buttonClass} bg-green-100 text-green-800`}><CirclePlay className="h-4 w-4" />{goal.pausePending ? 'Resume after safe boundary' : 'Resume'}</button>}{goal.launchStrategy === 'direct' && goal.desiredState === 'running' && mutable && <button disabled={busy || goal.checkpoint?.pending} onClick={() => act(() => checkpointGoal(goal.id))} className={`${buttonClass} bg-indigo-100 text-indigo-800`}><GitCommit className="h-4 w-4" />{goal.checkpoint?.pending ? 'Checkpoint pending' : 'Checkpoint now'}</button>}{mutable && <button disabled={busy} onClick={() => act(() => cancelGoal(goal.id))} className={`${buttonClass} bg-red-100 text-red-800`}><CircleStop className="h-4 w-4" />Cancel</button>}<Link to={`/tasks/${goal.taskId}`} className={`${buttonClass} bg-slate-100 text-slate-700`}>Open task history</Link>{goal.finalPr && <a href={goal.finalPr.url} target="_blank" rel="noreferrer" className={`${buttonClass} bg-primary-50 text-primary-700`}>{goal.launchStrategy === 'direct' ? 'Open draft PR' : 'Review final PR'} <ExternalLink className="h-4 w-4" /></a>}</div>
+      <div className="mt-4 flex flex-wrap gap-2">{goal.desiredState === 'running' && mutable && <button disabled={busy} onClick={() => act(() => pauseGoal(goal.id))} className={`${buttonClass} bg-amber-100 text-amber-800`}><CirclePause className="h-4 w-4" />Pause</button>}{goal.desiredState === 'paused' && mutable && <button disabled={busy} onClick={() => act(() => resumeGoal(goal.id))} className={`${buttonClass} bg-green-100 text-green-800`}><CirclePlay className="h-4 w-4" />{goal.pausePending ? 'Resume after safe boundary' : 'Resume'}</button>}{goal.launchStrategy === 'direct' && goal.desiredState === 'running' && mutable && <button disabled={busy || goal.checkpoint?.pending} onClick={() => act(() => checkpointGoal(goal.id))} className={`${buttonClass} bg-indigo-100 text-indigo-800`}><GitCommit className="h-4 w-4" />{goal.checkpoint?.pending ? 'Checkpoint pending' : 'Checkpoint now'}</button>}{mutable && <button disabled={busy} onClick={() => act(() => cancelGoal(goal.id))} className={`${buttonClass} bg-red-100 text-red-800`}><CircleStop className="h-4 w-4" />Cancel</button>}<Link to={`/tasks/${goal.taskId}`} className={`${buttonClass} bg-slate-100 text-slate-700`}>Open task history</Link>{goal.finalPr && <a href={goal.finalPr.url} target="_blank" rel="noreferrer" className={`${buttonClass} bg-primary-50 text-primary-700`}>{goal.launchStrategy === 'direct' ? 'Open draft PR' : 'Review final PR'} <ExternalLink className="h-4 w-4" /></a>}<button disabled={busy} onClick={remove} className={`${buttonClass} border border-red-200 bg-white text-red-700 hover:bg-red-50`}><Trash2 className="h-4 w-4" />Delete goal</button></div>
       {cancelling && <p className="mt-3 rounded bg-amber-50 p-3 text-sm text-amber-800">Cancelling at the provider boundary and cleaning up the active session…</p>}
       <p className="mt-3 text-xs text-slate-500">{goal.artifactStats.openIssues}/{goal.artifactStats.issues} open issues · {goal.artifactStats.openPullRequests}/{goal.artifactStats.pullRequests} open PRs</p>
       {goal.checkpoint && <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md bg-indigo-50 p-3 text-sm text-indigo-900">

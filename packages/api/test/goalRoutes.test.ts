@@ -20,6 +20,7 @@ function response() {
     const res = {
         status(code: number) { state.status = code; return this; },
         json(body: unknown) { state.body = body; return this; },
+        send(body?: unknown) { state.body = body; return this; },
     } as unknown as Response;
     return { res, state };
 }
@@ -39,6 +40,16 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
             table.string('task_id');
             table.string('state');
             table.timestamp('timestamp');
+        });
+        await database.schema.createTable('tasks', table => {
+            table.string('task_id').primary();
+        });
+        await database.schema.createTable('llm_executions', table => {
+            table.string('execution_id').primary();
+            table.string('task_id');
+        });
+        await database.schema.createTable('llm_execution_details', table => {
+            table.string('execution_id');
         });
         const common = {
             owner_login: 'alice', repository: 'acme/repo', objective: 'Ship it',
@@ -78,7 +89,15 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
                 launch_strategy: 'orchestrate', desired_state: 'running', pause_confirmed_at: null,
                 claimed_at: new Date().toISOString(),
             },
+            {
+                ...common, goal_id: 'goal-9', owner_id: 'owner-2', current_task_id: 'goal-task-9',
+                desired_state: 'running', pause_confirmed_at: null, claimed_at: new Date().toISOString(),
+            },
         ]);
+        await database('tasks').insert({ task_id: 'goal-task-9' });
+        await database('task_history').insert({ task_id: 'goal-task-9', state: 'claude_execution', timestamp: new Date().toISOString() });
+        await database('llm_executions').insert({ execution_id: 'goal-execution-9', task_id: 'goal-task-9' });
+        await database('llm_execution_details').insert({ execution_id: 'goal-execution-9' });
         const routes = createGoalRoutes({
             db: database,
             taskQueue: {
@@ -102,7 +121,7 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
                 stopped.push(taskId);
                 const attempt = (stopAttempts.get(taskId) ?? 0) + 1;
                 stopAttempts.set(taskId, attempt);
-                return taskId === 'goal-task-2' && attempt === 1
+                return (taskId === 'goal-task-2' || taskId === 'goal-task-9') && attempt === 1
                     ? { success: true, containerStopped: false, removedQueuedJobs: 0, abortSignalled: true } as never
                     : { success: true, containerStopped: true, removedQueuedJobs: 0 } as never;
             },
@@ -333,6 +352,25 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.ok(stopped.includes('goal-task-2'));
         assert.equal(stopped.filter(taskId => taskId === 'goal-task-2').length, 2);
         assert.equal((await database('goals').where({ goal_id: 'goal-2' }).first()).result_state, 'cancelled');
+
+        const hiddenDelete = response();
+        await routes.remove(request('owner-1', { goalId: 'goal-9' }), hiddenDelete.res);
+        assert.equal(hiddenDelete.state.status, 404);
+        assert.ok(await database('goals').where({ goal_id: 'goal-9' }).first());
+
+        const stoppingDelete = response();
+        await routes.remove(request('owner-2', { goalId: 'goal-9' }), stoppingDelete.res);
+        assert.equal(stoppingDelete.state.status, 409);
+        assert.equal((await database('goals').where({ goal_id: 'goal-9' }).first()).desired_state, 'cancelled');
+
+        const deleted = response();
+        await routes.remove(request('owner-2', { goalId: 'goal-9' }), deleted.res);
+        assert.equal(deleted.state.status, 204);
+        assert.equal(await database('goals').where({ goal_id: 'goal-9' }).first(), undefined);
+        assert.equal(await database('tasks').where({ task_id: 'goal-task-9' }).first(), undefined);
+        assert.equal(await database('task_history').where({ task_id: 'goal-task-9' }).first(), undefined);
+        assert.equal(await database('llm_executions').where({ task_id: 'goal-task-9' }).first(), undefined);
+        assert.equal(await database('llm_execution_details').where({ execution_id: 'goal-execution-9' }).first(), undefined);
     } finally {
         await database.destroy();
         await closeConnection();

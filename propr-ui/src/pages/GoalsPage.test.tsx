@@ -7,7 +7,7 @@ import { getInstanceCatalog, getTaskLiveDetails } from '../api/proprApi';
 
 vi.mock('../api/goals', () => ({
   getGoalCapabilities: vi.fn(), listGoals: vi.fn(), getGoal: vi.fn(), createGoal: vi.fn(),
-  pauseGoal: vi.fn(), resumeGoal: vi.fn(), cancelGoal: vi.fn(), requestGoalModel: vi.fn(), sendGoalInput: vi.fn(),
+  pauseGoal: vi.fn(), resumeGoal: vi.fn(), cancelGoal: vi.fn(), deleteGoal: vi.fn(), requestGoalModel: vi.fn(), sendGoalInput: vi.fn(),
   checkpointGoal: vi.fn(), requestGoalCheckpointInterval: vi.fn(),
 }));
 vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn(), getTaskLiveDetails: vi.fn() }));
@@ -55,6 +55,7 @@ describe('GoalsPage', () => {
     vi.mocked(goalsApi.pauseGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'paused', pausedAt: new Date().toISOString() } });
     vi.mocked(goalsApi.sendGoalInput).mockResolvedValue({ goal });
     vi.mocked(goalsApi.cancelGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'cancelled', resultState: null } });
+    vi.mocked(goalsApi.deleteGoal).mockResolvedValue();
     vi.mocked(goalsApi.requestGoalModel).mockResolvedValue({ goal: { ...goal, requestedModel: 'gpt-5.6-luna' } });
     vi.mocked(goalsApi.checkpointGoal).mockResolvedValue({ goal });
     vi.mocked(goalsApi.requestGoalCheckpointInterval).mockResolvedValue({ goal });
@@ -168,6 +169,15 @@ describe('GoalsPage', () => {
     expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Correction or follow-up')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Model for next continuation')).not.toBeInTheDocument();
+  });
+
+  it('confirms deletion and returns to the goals list after the server stops and removes the goal', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /><Route path="/goals" element={<div>Goals list</div>} /></Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete goal' }));
+    await waitFor(() => expect(goalsApi.deleteGoal).toHaveBeenCalledWith('goal-1'));
+    expect(await screen.findByText('Goals list')).toBeInTheDocument();
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('stopped first'));
   });
 
   it('requests worker-owned checkpoint commits and adjusts their safe-boundary frequency', async () => {

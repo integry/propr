@@ -283,7 +283,7 @@ function setupRoutes(): void {
   app.use(['/api/task/:taskId', '/api/task/:taskId/*path', '/api/tasks/:taskId', '/api/execution/:sessionId', '/api/execution/:sessionId/*path', '/api/llm-metrics/:correlationId'], goalRoutes.requireGoalTaskOwnership);
 
   const operationalRoutes: RouteEntry[] = [
-    ['get', '/api/goals/capabilities', goalRoutes.capabilities], ['get', '/api/goals', goalRoutes.list], ['post', '/api/goals', goalRoutes.create], ['get', '/api/goals/:goalId', goalRoutes.get],
+    ['get', '/api/goals/capabilities', goalRoutes.capabilities], ['get', '/api/goals', goalRoutes.list], ['post', '/api/goals', goalRoutes.create], ['get', '/api/goals/:goalId', goalRoutes.get], ['delete', '/api/goals/:goalId', goalRoutes.remove],
     ['post', '/api/goals/:goalId/pause', goalRoutes.pause], ['post', '/api/goals/:goalId/resume', goalRoutes.resume], ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel], ['patch', '/api/goals/:goalId/model', goalRoutes.requestModel], ['post', '/api/goals/:goalId/input', goalRoutes.input],
     ['post', '/api/goals/:goalId/checkpoint', goalRoutes.checkpoint], ['patch', '/api/goals/:goalId/checkpoint-frequency', goalRoutes.requestCheckpointInterval],
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
