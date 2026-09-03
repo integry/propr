@@ -39,7 +39,9 @@ test('visual preview prompt is conditional and carries repository instructions',
 
   assert.match(prompt, /perceptible visually/);
   assert.match(prompt, /never expand the implementation scope/);
+  assert.match(prompt, /explicitly asks to generate or refresh previews/);
   assert.match(prompt, /\.propr\/previews\/manifest\.json/);
+  assert.match(prompt, /Do not link to local preview or manifest paths/);
   assert.match(prompt, /image and video/);
   assert.match(prompt, /Capture separate desktop and mobile views\./);
   assert.match(prompt, /toolSuggestions/);

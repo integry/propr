@@ -3,7 +3,7 @@ import type { UnprocessedComment } from '@propr/core';
 import { buildMetricsSection } from './prCommentJobUtils.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
-import { describeAgentTermination, resolveAgentTerminationReason } from '@propr/core';
+import { describeAgentTermination, resolveAgentTerminationReason, VISUAL_PREVIEW_DIRECTORY } from '@propr/core';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
 function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
@@ -150,6 +150,9 @@ export async function buildCompletionComment(
     const cleanBody = (text: string) => {
         return text
             .replace(/^(PR|Comment by|Model):.*/gm, '')
+            .split('\n')
+            .filter(line => !line.replaceAll('\\', '/').includes(`${VISUAL_PREVIEW_DIRECTORY}/`))
+            .join('\n')
             .replace(/\n{3,}/g, '\n\n')
             .trim();
     };
@@ -211,7 +214,9 @@ export async function buildCompletionComment(
             noChangesBody += `## Analysis Summary\n\n${cleanBody(changesSummary)}\n\n`;
         }
 
-        noChangesBody += `No code changes were necessary based on the current state of the branch.\n\n`;
+        noChangesBody += visualPreviewSection
+            ? `No code changes were necessary based on the current state of the branch. Visual preview results are included below.\n\n${visualPreviewSection}\n\n`
+            : `No code changes were necessary based on the current state of the branch.\n\n`;
         noChangesBody += await buildMetricsSection(claudeResult, llm, authorsText, true);
 
         if (taskUrl) {

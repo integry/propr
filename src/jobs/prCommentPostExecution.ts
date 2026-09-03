@@ -149,8 +149,8 @@ interface CompletionCommentPublicationOptions {
 async function publishCompletionComment(options: CompletionCommentPublicationOptions): Promise<{ data: { html_url: string; body?: string } }> {
     const { state, context, commitResult, changesSummary, commitMessage, llm, taskUrl, unprocessedReviewComments, visualPreviewEvidence } = options;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
-    const hasVisualPreviewContent = Boolean(commitResult)
-        && (visualPreviewEvidence.assets.length > 0 || visualPreviewEvidence.toolSuggestions.length > 0);
+    const hasVisualPreviewContent = visualPreviewEvidence.assets.length > 0
+        || visualPreviewEvidence.toolSuggestions.length > 0;
     const visualPreviewSection = hasVisualPreviewContent
         ? renderVisualPreviewSection({ assets: [], toolSuggestions: visualPreviewEvidence.toolSuggestions }, {})
         : '';
@@ -168,7 +168,7 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
     }, state.claudeResult);
     const prCommentBody = appendVisualPreviewSection(prCommentTemplate, visualPreviewSection);
 
-    if (!commitResult || visualPreviewEvidence.assets.length === 0) {
+    if (visualPreviewEvidence.assets.length === 0) {
         return state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
             owner: repoOwner,
             repo: repoName,

@@ -377,11 +377,12 @@ export function buildVisualPreviewPrompt(settings: VisualPreviewSettings): strin
   return `
 **VISUAL PREVIEW REQUIREMENT:**
 Visual previews are enabled for this repository. After implementing and testing, decide whether the result is perceptible visually to a user. If it is not visually perceptible, do not create preview files. If it is visually perceptible:
-- Treat previews as evidence only: never expand the implementation scope, and do not create or update preview files when the current request produces no implementation changes.
+- Treat previews as evidence only: never expand the implementation scope. Do not create or update preview files when the current request produces no implementation changes, unless the user explicitly asks to generate or refresh previews for changes already present on the branch.
 - Generate focused ${requestedTypes} preview evidence of the current change using the project’s existing, relevant tooling (for example a headless browser, Storybook, an Android/iOS emulator, or a project-native renderer).
 - Capture the changed state itself, not generic application screens. Use realistic viewport/device states and follow the repository-specific instructions below when present.
 - Store each preview under the transient runtime directory \`${VISUAL_PREVIEW_DIRECTORY}/\`; never commit that directory yourself. Use portable filenames and only these formats: PNG/JPEG/GIF/SVG/WebP for images; MP4/MOV/WebM for videos. Keep every file below 10 MB. For video, prefer H.264 in MP4 for browser compatibility.
 - Write \`${VISUAL_PREVIEW_MANIFEST}\` with this shape: \`{"previews":[{"path":".propr/previews/desktop.png","title":"Desktop dialog","description":"The changed dialog at desktop width"}],"toolSuggestions":[{"name":"Playwright Chromium","reason":"Needed to capture the running web UI"}]}\`. The manifest may contain an empty previews array when capture is blocked.
+- Do not link to local preview or manifest paths in your final response. ProPR reads the manifest and publishes the preview attachments separately.
 - Do not fabricate a preview or hand-draw a substitute. If the project cannot be run or the needed capture tool is unavailable, record concise, actionable \`toolSuggestions\` in the manifest describing what should be installed in the agent image and why.
 - Never include credentials, tokens, personal data, or unrelated screens in preview media.
 ${additionalInstructions}`;
