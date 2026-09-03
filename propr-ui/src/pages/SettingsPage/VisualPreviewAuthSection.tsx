@@ -8,6 +8,8 @@ import {
   type VisualPreviewAuthStatus,
 } from '../../api/visualPreviewAuthApi';
 
+const FINE_GRAINED_TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new?name=ProPR%20visual%20previews&description=Uploads%20generated%20preview%20media%20to%20pull%20requests&pull_requests=write';
+
 function statusDescription(status: VisualPreviewAuthStatus | null): string {
   if (status?.source === 'environment') {
     return status.status === 'active'
@@ -118,16 +120,40 @@ const VisualPreviewAuthControls: React.FC<VisualPreviewAuthControlsProps> = ({
               Save token
             </button>
           </div>
+          <div className="mt-3 rounded border border-gray-200 bg-white p-3 text-[11px] leading-4 text-gray-600">
+            <p className="font-semibold text-gray-700">Fine-grained token requirements</p>
+            <ol className="mt-1.5 list-decimal space-y-1 pl-4">
+              <li>Choose the organization or user that owns the repositories as the resource owner.</li>
+              <li>Select every repository where ProPR will upload visual previews.</li>
+              <li>
+                Under repository permissions, set <span className="font-medium text-gray-700">Pull requests</span> to{' '}
+                <span className="font-medium text-gray-700">Read and write</span>. Metadata read access is added automatically;
+                no other repository permission is required.
+              </li>
+              <li>
+                Use an account with push access to those repositories. Complete organization approval or SAML SSO authorization,
+                if required.
+              </li>
+            </ol>
+            <p className="mt-2">
+              GitHub will prefill the token name and Pull requests permission; you still choose the owner, repositories, and expiration.{' '}
+              <a
+                href={FINE_GRAINED_TOKEN_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-gray-700 underline hover:text-gray-900"
+              >
+                Create token on GitHub
+              </a>
+            </p>
+            <p className="mt-2 text-gray-500">
+              A fine-grained token can cover only one resource owner. If preview-enabled repositories span multiple owners, use a
+              classic token with <code className="font-mono">repo</code>, or <code className="font-mono">public_repo</code> when
+              every repository is public.
+            </p>
+          </div>
           <p className="mt-2 text-[11px] leading-4 text-gray-500">
-            The token is sent once, validated with GitHub, and encrypted at rest. Give it access to every repository where previews are uploaded.{' '}
-            <a
-              href="https://github.com/settings/personal-access-tokens/new"
-              target="_blank"
-              rel="noreferrer"
-              className="font-medium text-gray-700 underline hover:text-gray-900"
-            >
-              Create a fine-grained token
-            </a>
+            The token is sent once, validated with GitHub, and encrypted at rest. It is never displayed again after saving.
           </p>
         </form>
       )}

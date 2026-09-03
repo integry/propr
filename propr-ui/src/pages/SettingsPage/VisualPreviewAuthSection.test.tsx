@@ -110,6 +110,23 @@ describe('VisualPreviewAuthSection', () => {
     expect(screen.queryByDisplayValue('github_pat_preview-secret')).not.toBeInTheDocument();
   });
 
+  it('shows the exact GitHub permissions needed for preview uploads', async () => {
+    render(<VisualPreviewAuthSection />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add personal access token' }));
+
+    expect(screen.getByText('Fine-grained token requirements')).toBeInTheDocument();
+    expect(screen.getByText('Pull requests')).toBeInTheDocument();
+    expect(screen.getByText('Read and write')).toBeInTheDocument();
+    expect(screen.getByText(/Use an account with push access/)).toBeInTheDocument();
+    expect(screen.getByText(/organization approval or SAML SSO authorization/)).toBeInTheDocument();
+    expect(screen.getByText(/classic token with/)).toHaveTextContent('repo');
+    expect(screen.getByText(/classic token with/)).toHaveTextContent('public_repo');
+
+    const createTokenLink = screen.getByRole('link', { name: 'Create token on GitHub' });
+    expect(createTokenLink).toHaveAttribute('href', expect.stringContaining('pull_requests=write'));
+  });
+
   it('shows environment-managed credentials without replacement controls', async () => {
     getStatus.mockResolvedValue({
       configured: true,

@@ -21,8 +21,16 @@ the GitHub App installation token.
 When normal Web UI login uses a GitHub App, an administrator can instead paste
 a personal access token in **Settings → Visual preview uploads**. ProPR validates
 the token with GitHub and encrypts it before storing it. No CLI, callback URL, or
-service restart is required. The token must have access to every repository where
-preview media will be attached.
+service restart is required. For a fine-grained token, choose the organization or
+user that owns the repositories as the resource owner, include every
+preview-enabled repository, and grant the repository permission **Pull requests:
+Read and write**. GitHub adds read-only metadata access automatically; no other
+repository permission is required. The token owner must have push access to the
+repositories and must complete any organization approval or SAML SSO authorization.
+Fine-grained tokens can target only one resource owner. If the repositories span
+multiple owners, use a classic PAT with `repo`, or `public_repo` if every repository
+is public. Settings links to GitHub's token form with the fine-grained permission
+preselected.
 
 Expiring OAuth credentials are refreshed on API startup and every 30 minutes
 while the stack is running. Each successful refresh rotates the access and
