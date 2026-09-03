@@ -185,9 +185,11 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
     }
     const engineMiddleware: RequestHandler[] = [];
 
-    // Keep unauthenticated OAuth/session endpoints bounded independently from
-    // the general API quota. Register this before session and Passport work.
-    app.use('/api/auth', createAuthRequestRateLimiter());
+    // Keep OAuth starts and callbacks bounded independently from the general
+    // API quota. Session checks, logout, and auth metadata remain covered by
+    // the general API limiter and must not exhaust the much smaller OAuth
+    // bucket during normal UI use.
+    app.use('/api/auth/github', createAuthRequestRateLimiter());
 
     if (!demoModeAtStartup) {
         // Create Redis client for session store
