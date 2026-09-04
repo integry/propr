@@ -89,7 +89,8 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinVerifier, /ADHOC_SIGNATURE_LINE = \/\^\\s\*signature\\s\*=\\s\*adhoc\\s\*\$\/iu/u);
     assert.match(darwinVerifier, /identifiers\.length !== 1/u);
     assert.match(darwinVerifier, /identifiers\[0\] !== REQUIRED_IDENTIFIER/u);
-    assert.doesNotMatch(darwinVerifier, /Signature size=/u);
+    assert.match(darwinVerifier, /signatureSizes\.length !== 1/u);
+    assert.match(darwinVerifier, /POSITIVE_SIGNATURE_SIZE\.test\(signatureSizes\[0\]\)/u);
     assert.match(darwinVerifier, /DESIGNATED_REQUIREMENT_PREFIX/u);
     assert.match(darwinVerifier, /DESIGNATED_REQUIREMENT_GRAMMAR/u);
     assert.match(darwinVerifier, /designatedLines\.length !== 1/u);
@@ -204,12 +205,12 @@ describe('packaged Connect target-native credential setup', () => {
       'KEYCHAIN_EVIDENCE_FAILURE',
       'ADHOC_SIGNATURE_FAILURE',
       'IDENTIFIER_METADATA_FAILURE',
+      'SIGNATURE_METADATA_FAILURE',
       'REQUIREMENT_EVIDENCE_FAILURE',
       'EVIDENCE_ASSERTION_FAILURE',
     ]) {
       assert.match(darwinVerifier, new RegExp(`['"]${diagnostic}['"]`, 'u'));
     }
-    assert.doesNotMatch(darwinVerifier, /SIGNATURE_METADATA_FAILURE/u);
     assert.match(darwinSigner, /DARWIN_PACKAGED_CONNECT_DIAGNOSTIC:\$\{classifyDarwinSigningFailure\(error\)\}/u);
     assert.doesNotMatch(darwinSigner, /process\.stderr\.write\([^\n]*(?:application|keychain|certificateSha1|stderr|stdout)/u);
     assert.match(darwinRunner, /run_bounded_forward "\$COMMAND_TIMEOUT_MS" node "\$signature_verifier" establish/u);

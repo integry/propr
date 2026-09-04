@@ -197,23 +197,15 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     }
   });
 
-  test('accepts missing signature size with exact identifier metadata variants', async () => {
-    for (const fixture of [
-      { signatureLine: null },
-      { signatureLine: 'Signature size=0' },
-      { signatureLine: 'Signature size=01' },
-      { identifierLine: `Identifier=${REQUIRED_IDENTIFIER}` },
-      { identifierLine: `  iDeNtIfIeR  =  ${REQUIRED_IDENTIFIER}  ` },
-    ]) {
-      await withPrivateProofPath(async proofPath => {
-        await verifyEstablish(proofPath, fixture);
-      });
-    }
+  test('rejects empty signature details', () => {
+    assert.throws(
+      () => assertDarwinSigningEvidence(validEvidence({ signatureDetails: '' })),
+      isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.identifierMetadataFailure),
+    );
   });
 
-  test('rejects missing, wrong, duplicate, and conflicting identifier metadata distinctly', async () => {
+  test('rejects missing, wrong, duplicate, and conflicting identifier metadata distinctly', () => {
     for (const signatureDetails of [
-      '',
       'Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop',
       'Signature size=1024',
       'Identifier=dev.other.desktop',
@@ -224,6 +216,21 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
       assert.throws(
         () => assertDarwinSigningEvidence(validEvidence({ signatureDetails })),
         isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.identifierMetadataFailure),
+      );
+    }
+  });
+
+  test('rejects missing, zero, duplicate, and conflicting signature-size metadata distinctly', () => {
+    for (const signatureDetails of [
+      `Identifier=${REQUIRED_IDENTIFIER}`,
+      `Identifier=${REQUIRED_IDENTIFIER}\nSignature size=0`,
+      `Identifier=${REQUIRED_IDENTIFIER}\nSignature size=01`,
+      `Identifier=${REQUIRED_IDENTIFIER}\nSignature size=1024\nSignature size=1024`,
+      `Identifier=${REQUIRED_IDENTIFIER}\nSignature size=1024\nSIGNATURE SIZE = 2048`,
+    ]) {
+      assert.throws(
+        () => assertDarwinSigningEvidence(validEvidence({ signatureDetails })),
+        isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure),
       );
     }
   });
@@ -243,6 +250,24 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
         keychain,
         runCommand: createVerifierSimulator({ identifierLine: null }).runCommand,
       }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.identifierMetadataFailure));
+    });
+  });
+
+  test('requires positive signature-size evidence during both native inspections', async () => {
+    await withPrivateProofPath(async proofPath => {
+      await assert.rejects(
+        verifyEstablish(proofPath, { signatureLine: null }),
+        isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure),
+      );
+      await verifyEstablish(proofPath);
+      await assert.rejects(verifyDarwinPackagedConnectSignature({
+        mode: 'stable',
+        application,
+        expectedCertificateSha1: fingerprint,
+        proofPath,
+        keychain,
+        runCommand: createVerifierSimulator({ signatureLine: 'Signature size=0' }).runCommand,
+      }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure));
     });
   });
 
@@ -342,12 +367,11 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     });
   });
 
-  test('accepts realistic verbose metadata with an exact identifier and omitted signature size', () => {
+  test('accepts realistic verbose metadata with exactly one identifier and positive signature size', () => {
     for (const signatureDetails of [
-      `Identifier=${REQUIRED_IDENTIFIER}`,
-      `Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop\nIdentifier=${REQUIRED_IDENTIFIER}`,
       `Identifier=${REQUIRED_IDENTIFIER}\nSignature size=1024`,
-      `Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop\r\n  IDENTIFIER = ${REQUIRED_IDENTIFIER}  \r\nFormat=app bundle with Mach-O thin (arm64)`,
+      `Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop\nIdentifier=${REQUIRED_IDENTIFIER}\nSignature size=2048`,
+      `Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop\r\n  IDENTIFIER = ${REQUIRED_IDENTIFIER}  \r\nFormat=app bundle with Mach-O thin (arm64)\r\n  SIGNATURE SIZE = 4096  `,
     ]) {
       assert.equal(
         assertDarwinSigningEvidence(validEvidence({ signatureDetails })),

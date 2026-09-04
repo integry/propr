@@ -44,8 +44,8 @@ executable and fuse inspection without launching a window. Release CI launches b
 inspects macOS and Windows packages on their native runners, validates DMG/ZIP/DEB/RPM/MSI packages, and validates
 configured OS signatures.
 
-Darwin packaged Connect acceptance first inspects the normal unsigned package, then generates a one-run root and
-code-signing certificate in an isolated default keychain and signs only that smoke artifact. The signature uses an
+Darwin packaged Connect acceptance first inspects the normal unsigned package, then generates a one-run self-signed
+CA:false code-signing leaf in an isolated default keychain and signs only that smoke artifact. The signature uses an
 explicit certificate-bound designated requirement that is verified before the pair process and again after the
 reprobe process. Chromium creates and reopens its real Safe Storage key in the same disposable keychain; the harness
 does not pre-seed or widen access to that item. A signal-aware exit trap restores the runner's original keychain list

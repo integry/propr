@@ -13,6 +13,8 @@ const SHA1_PATTERN = /^[A-F0-9]{40}$/u;
 const CERTIFICATE_LINE = /^\s*SHA-1 hash:\s*([A-Fa-f0-9]{40})\s*$/gmu;
 const ADHOC_SIGNATURE_LINE = /^\s*signature\s*=\s*adhoc\s*$/iu;
 const IDENTIFIER_LINE = /^\s*identifier\s*=\s*(.*?)\s*$/iu;
+const SIGNATURE_SIZE_LINE = /^\s*signature\s+size\s*=\s*(.*?)\s*$/iu;
+const POSITIVE_SIGNATURE_SIZE = /^[1-9][0-9]*$/u;
 const DESIGNATED_REQUIREMENT_PREFIX = /^designated\s*=>/iu;
 const DESIGNATED_REQUIREMENT_GRAMMAR = /^designated\s*=>\s*identifier\s+"([^"]+)"\s+and\s+certificate\s+leaf\s*=\s*H\s*"([A-F0-9]{40})"$/iu;
 const VERIFICATION_TIMEOUT_MS = 20_000;
@@ -27,6 +29,7 @@ export const DARWIN_VERIFICATION_DIAGNOSTICS = Object.freeze({
   keychainEvidenceFailure: 'KEYCHAIN_EVIDENCE_FAILURE',
   adhocSignatureFailure: 'ADHOC_SIGNATURE_FAILURE',
   identifierMetadataFailure: 'IDENTIFIER_METADATA_FAILURE',
+  signatureMetadataFailure: 'SIGNATURE_METADATA_FAILURE',
   requirementEvidenceFailure: 'REQUIREMENT_EVIDENCE_FAILURE',
   evidenceAssertionFailure: 'EVIDENCE_ASSERTION_FAILURE',
 });
@@ -116,6 +119,23 @@ const assertIdentifierMetadata = signatureDetails => {
   }
 };
 
+const assertSignatureMetadata = signatureDetails => {
+  try {
+    const signatureSizes = normalizeLines(signatureDetails)
+      .map(line => line.match(SIGNATURE_SIZE_LINE))
+      .filter(match => match !== null)
+      .map(match => match[1]);
+    if (signatureSizes.length !== 1 || !POSITIVE_SIGNATURE_SIZE.test(signatureSizes[0])) {
+      throw new Error('invalid-signature-display-evidence');
+    }
+  } catch (cause) {
+    throw verificationFailure(
+      DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure,
+      cause,
+    );
+  }
+};
+
 const assertDesignatedRequirement = (
   designatedRequirement,
   expectedSha1,
@@ -157,6 +177,7 @@ export const assertDarwinSigningEvidence = ({
   const expected = expectedRequirementsFor(expectedCertificateSha1);
   assertNotAdhocSignature(signatureDetails);
   assertIdentifierMetadata(signatureDetails);
+  assertSignatureMetadata(signatureDetails);
   return assertDesignatedRequirement(
     designatedRequirement,
     expected.expectedSha1,
