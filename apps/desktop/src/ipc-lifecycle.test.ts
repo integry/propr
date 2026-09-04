@@ -85,6 +85,49 @@ describe('desktop IPC shutdown gate', () => {
     ]);
   });
 
+  it('clears the renderer policy when the authoritative profile read fails after a save commit', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    let saveCommitted = false;
+    const credentials = {
+      saveProfile: async (input: { id: string; label: string; apiBaseUrl: string }) => {
+        saveCommitted = true;
+        return input;
+      },
+      listProfiles: async () => { throw new Error('post-save profile read failed'); },
+    } as unknown as DesktopCredentialService;
+    const reconciledOrigins: Array<string | null> = [];
+    registerIpcHandlers({
+      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+      ipcMain: {
+        handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+        removeHandler: (channel: string) => { handlers.delete(channel); },
+      } as unknown as IpcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      connectDiscovery,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession: {} as Session,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+      onRendererActiveProfileChanged: origin => { reconciledOrigins.push(origin); },
+    });
+    const event = {
+      senderFrame: { url: 'propr-renderer://app/index.html' },
+    } as unknown as IpcMainInvokeEvent;
+
+    await assert.rejects(
+      Promise.resolve(handlers.get(IPC_CHANNELS.profilesSave)!(event, {
+        id: 'profile-a', label: 'A edited', apiBaseUrl: 'http://localhost:4100',
+      })),
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
+    );
+
+    assert.equal(saveCommitted, true);
+    assert.deepEqual(reconciledOrigins, [null]);
+  });
+
   it('clears the renderer policy after re-pairing an active profile at a changed local origin', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
     const activeProfile = {

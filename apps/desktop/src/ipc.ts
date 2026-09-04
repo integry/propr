@@ -115,7 +115,13 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   };
   const reconcileRendererActiveProfile = async (): Promise<void> => {
     if (!options.onRendererActiveProfileChanged) return;
-    const current = await options.credentials.listProfiles();
+    let current;
+    try {
+      current = await options.credentials.listProfiles();
+    } catch (error) {
+      options.onRendererActiveProfileChanged(null);
+      throw error;
+    }
     const activeOrigin = current.profiles
       .find(profile => profile.id === current.activeProfileId)?.apiBaseUrl ?? null;
     options.onRendererActiveProfileChanged(activeOrigin);
