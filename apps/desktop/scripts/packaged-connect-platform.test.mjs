@@ -110,7 +110,7 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(packagedConnectSmoke, /authenticatedRestCount: authenticatedRest\.length/u);
     assert.match(packagedConnectSmoke, /authenticatedSocketCount: socketEvidence\.authenticatedSocketCount/u);
     const establish = darwinRunner.indexOf('node "$signature_verifier" establish');
-    const smoke = darwinRunner.indexOf('npm run smoke:connect-package');
+    const smoke = darwinRunner.indexOf('node "$script_directory/smoke-packaged-connect.mjs"');
     const stable = darwinRunner.indexOf('node "$signature_verifier" stable');
     assert.ok(establish >= 0 && establish < smoke && smoke < stable);
     assert.match(packagedConnectSmoke, /const runPhase = async phase => await runPackagedConnectLifecycle\([\s\S]*?spawn: spawnLifecycleProcess/u);
@@ -169,6 +169,9 @@ describe('packaged Connect target-native credential setup', () => {
   });
 
   test('Darwin bounds setup, nested signing, verification, journey, cleanup, and the wrapper', () => {
+    assert.match(boundedDarwinRunner, /case 'node': return spawn\(process\.execPath, arguments_, options\)/u);
+    assert.match(boundedDarwinRunner, /case 'security': return spawn\('\/usr\/bin\/security', arguments_, options\)/u);
+    assert.doesNotMatch(boundedDarwinRunner, /nodeSpawn\(argv\[1\]/u);
     assert.match(boundedDarwinRunner, /detached: platform !== 'win32'/u);
     assert.match(boundedDarwinRunner, /process\.kill\(-child\.pid, signal\)/u);
     assert.match(boundedDarwinRunner, /GROUP_GUARD_RELEASE/u);
@@ -185,7 +188,7 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinRunner, /run_bounded "\$COMMAND_TIMEOUT_MS" \/usr\/bin\/security/gmu);
     assert.match(darwinRunner, /run_bounded "\$COMMAND_TIMEOUT_MS" \/usr\/bin\/openssl/gmu);
     assert.match(darwinRunner, /run_bounded_forward "\$SIGNING_TIMEOUT_MS" node "\$application_signer"/u);
-    assert.match(darwinRunner, /run_bounded_forward "\$JOURNEY_TIMEOUT_MS" npm run smoke:connect-package/u);
+    assert.match(darwinRunner, /cd "\$repository_root\/apps\/desktop"[\s\S]*?run_bounded_forward "\$JOURNEY_TIMEOUT_MS" node "\$script_directory\/smoke-packaged-connect\.mjs"/u);
   });
 
   test('Darwin failure diagnostics are fixed, classified, and secret-safe', () => {

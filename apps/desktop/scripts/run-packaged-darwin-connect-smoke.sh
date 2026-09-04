@@ -238,7 +238,10 @@ verify_initial_signature() {
 }
 
 run_pair_and_reprobe() {
-  run_bounded_forward "$JOURNEY_TIMEOUT_MS" npm run smoke:connect-package -w @propr/desktop
+  (
+    cd "$repository_root/apps/desktop" || exit 1
+    run_bounded_forward "$JOURNEY_TIMEOUT_MS" node "$script_directory/smoke-packaged-connect.mjs"
+  )
 }
 
 verify_stable_signature() {

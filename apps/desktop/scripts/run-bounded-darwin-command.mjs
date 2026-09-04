@@ -10,6 +10,42 @@ const GROUP_GUARD_ARGUMENT = '--internal-process-group-guard';
 const GROUP_GUARD_RELEASE = 'release-process-group-guard';
 const GROUP_GUARD_RESULT = 'process-group-command-result';
 
+const trustedCommandId = executable => {
+  switch (executable) {
+    case 'bash':
+    case '/bin/bash': return 'bash';
+    case 'codesign':
+    case '/usr/bin/codesign': return 'codesign';
+    case 'mktemp':
+    case '/usr/bin/mktemp': return 'mktemp';
+    case 'node': return 'node';
+    case 'openssl':
+    case '/usr/bin/openssl': return 'openssl';
+    case 'rm':
+    case '/bin/rm': return 'rm';
+    case 'security':
+    case '/usr/bin/security': return 'security';
+    default:
+      if (executable === process.execPath) return 'node';
+      throw new BoundedProcessError('invalid-input');
+  }
+};
+
+// Keep every executable literal at the process-creation boundary. The identifier can come
+// from the CLI or the guard's argv, but it can only select one of these fixed programs.
+const spawnTrustedCommand = (spawn, commandId, arguments_, options) => {
+  switch (commandId) {
+    case 'bash': return spawn('/bin/bash', arguments_, options);
+    case 'codesign': return spawn('/usr/bin/codesign', arguments_, options);
+    case 'mktemp': return spawn('/usr/bin/mktemp', arguments_, options);
+    case 'node': return spawn(process.execPath, arguments_, options);
+    case 'openssl': return spawn('/usr/bin/openssl', arguments_, options);
+    case 'rm': return spawn('/bin/rm', arguments_, options);
+    case 'security': return spawn('/usr/bin/security', arguments_, options);
+    default: throw new BoundedProcessError('invalid-input');
+  }
+};
+
 export class BoundedProcessError extends Error {
   constructor(reason, result) {
     super(`bounded-process-${reason}`);
@@ -65,12 +101,18 @@ const runProcessGroupGuard = async argv => {
     }
   };
 
-  const command = nodeSpawn(argv[1], argv.slice(2), {
-    detached: false,
-    shell: false,
-    windowsHide: true,
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
+  let command;
+  try {
+    command = spawnTrustedCommand(nodeSpawn, argv[1], argv.slice(2), {
+      detached: false,
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+  } catch {
+    publishResult({ exitCode: 1, signal: null, spawnError: true });
+    return;
+  }
   command.once('error', () => publishResult({
     exitCode: 1, signal: null, spawnError: true,
   }));
@@ -96,12 +138,13 @@ export const runBoundedProcess = async ({
   signalSource = process,
 }) => {
   if (typeof executable !== 'string' || executable.length === 0
-    || !Array.isArray(arguments_)
+    || !Array.isArray(arguments_) || !arguments_.every(argument => typeof argument === 'string')
     || !Number.isInteger(timeoutMs) || timeoutMs <= 0
     || !Number.isInteger(terminationGraceMs) || terminationGraceMs <= 0
     || !Number.isInteger(maxOutputBytes) || maxOutputBytes <= 0) {
     throw new BoundedProcessError('invalid-input');
   }
+  const commandId = trustedCommandId(executable);
 
   const stdoutChunks = [];
   const stderrChunks = [];
@@ -152,18 +195,19 @@ export const runBoundedProcess = async ({
 
   try {
     const guardProcessGroup = platform !== 'win32';
-    child = spawn(
-      guardProcessGroup ? process.execPath : executable,
-      guardProcessGroup
-        ? [fileURLToPath(import.meta.url), GROUP_GUARD_ARGUMENT, '--', executable, ...arguments_]
-        : arguments_, {
+    const spawnOptions = {
       detached: platform !== 'win32',
       shell: false,
       windowsHide: true,
       stdio: guardProcessGroup
         ? ['ignore', 'pipe', 'pipe', 'ipc']
         : ['ignore', 'pipe', 'pipe'],
-    });
+    };
+    child = guardProcessGroup
+      ? spawn(process.execPath, [
+        fileURLToPath(import.meta.url), GROUP_GUARD_ARGUMENT, '--', commandId, ...arguments_,
+      ], spawnOptions)
+      : spawnTrustedCommand(spawn, commandId, arguments_, spawnOptions);
     const processError = new Promise(resolve => {
       child.once('error', error => resolve({ operationError: error }));
     });
