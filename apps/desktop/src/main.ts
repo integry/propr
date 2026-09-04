@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, crashReporter, ipcMain, net, protocol, safeStorage, screen, session, shell } from 'electron';
+import { app, BrowserWindow, crashReporter, ipcMain, Menu, net, protocol, safeStorage, screen, session, shell } from 'electron';
 import type { Rectangle } from 'electron';
 import {
   DESKTOP_RENDERER_ORIGIN,
@@ -15,9 +15,21 @@ import {
   discoverConfiguredConnect,
 } from '@propr/cli/desktop-discovery';
 import { DesktopConnectDiscoveryService } from './connect-discovery';
+import { configureApplicationMenu } from './application-menu';
+import {
+  authorizePackagedAcceptanceTest,
+  packagedAcceptancePairingTiming,
+  PACKAGED_ACCEPTANCE_LOOPBACK_ORIGINS,
+} from './acceptance-test-authorization';
+import { registerPackagedAcceptanceZoomIpc } from './acceptance-zoom';
 import { DeepLinkDelivery } from './deep-link-delivery';
 import { clearDesktopInstanceCookies } from './desktop-session';
-import { DesktopCredentialService, type DesktopPairingBrowserRequest } from './credential-service';
+import {
+  DesktopCredentialService,
+  type DesktopCurrentUserProxyEvidence,
+  type DesktopPairingBrowserRequest,
+  type DesktopWebSocketHandshakeEvidence,
+} from './credential-service';
 import {
   registerIpcHandlers,
   type DesktopAcceptanceOperation,
@@ -116,8 +128,16 @@ let packagedConnectJourneyDiagnosticState: PackagedConnectJourneyDiagnosticState
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 let packagedSmokeUserDataDirectory: string | null = null;
+let packagedAcceptanceUserDataDirectory: string | null = null;
 let packagedSmokeEvidence: ReturnType<typeof createPackagedSmokeEvidenceSink> = null;
 try {
+  packagedAcceptanceUserDataDirectory = authorizePackagedAcceptanceTest({
+    argv: process.argv,
+    defaultUserDataDirectory: join(app.getPath('appData'), app.name),
+    environmentTriggered: process.env.PROPR_DESKTOP_ACCEPTANCE_TEST === '1',
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+  });
   packagedSmokeUserDataDirectory = authorizePackagedSmokeTest({
     argv: process.argv,
     defaultUserDataDirectory: join(app.getPath('appData'), app.name),
@@ -134,10 +154,20 @@ try {
     packagedSmokeEvidence = createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory);
     packagedSmokeEvidence?.write('desktop.smoke.authorized');
   }
+  if (packagedAcceptanceUserDataDirectory) {
+    if (packagedSmokeUserDataDirectory) throw new Error('Desktop test modes are mutually exclusive');
+    const acceptanceDirectoryStats = lstatSync(packagedAcceptanceUserDataDirectory);
+    if (!acceptanceDirectoryStats.isDirectory() || acceptanceDirectoryStats.isSymbolicLink()) {
+      throw new Error('Packaged desktop acceptance --user-data-dir must be an existing non-link directory');
+    }
+    app.setPath('userData', packagedAcceptanceUserDataDirectory);
+  }
 } catch {
   process.exit(1);
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
+const packagedAcceptanceTest = packagedAcceptanceUserDataDirectory !== null;
+const acceptancePairingTiming = packagedAcceptancePairingTiming(packagedAcceptanceUserDataDirectory);
 let mainWindow: BrowserWindow | null = null;
 const initialDeepLink = deepLinkFromArguments(process.argv);
 const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
@@ -994,6 +1024,12 @@ const createMainWindow = async (
   const window = new BrowserWindow(
     createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged, workArea),
   );
+  const disposeAcceptanceZoomIpc = registerPackagedAcceptanceZoomIpc({
+    authorized: packagedAcceptanceTest,
+    ipcMain,
+    webContents: window.webContents,
+  });
+  window.once('closed', disposeAcceptanceZoomIpc);
   const readyToShow = new Promise<void>(resolveReady => window.once('ready-to-show', resolveReady));
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -1150,6 +1186,7 @@ if (!hasSingleInstanceLock) {
 
   registerProtocolClient();
   void app.whenReady().then(async () => {
+    configureApplicationMenu(Menu, app.isPackaged);
     logger = createDesktopLogger(
       join(app.getPath('logs'), 'desktop.jsonl'),
       () => packagedSmokeEvidence?.write('desktop.log.write_failed'),
@@ -1166,7 +1203,9 @@ if (!hasSingleInstanceLock) {
     const smokeProfileOrigin = packagedSmokeTest
       ? normalizeApiBaseUrl(process.env.PROPR_DESKTOP_SMOKE_PROFILE_API_URL ?? '')
       : null;
-    let rendererPolicyOrigins: readonly string[] = transportSmoke
+    let rendererPolicyOrigins: readonly string[] = packagedAcceptanceTest
+      ? PACKAGED_ACCEPTANCE_LOOPBACK_ORIGINS
+      : transportSmoke
       ? [transportSmoke.firstOrigin, transportSmoke.secondOrigin]
       : connectSmoke?.journeyEndpoint
         ? [connectSmoke.journeyEndpoint]
@@ -1242,13 +1281,24 @@ if (!hasSingleInstanceLock) {
       fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
       openPairingBrowser: packagedJourneyApprovals
         ? packagedJourneyApprovals.open
-        : request => openApprovedDesktopPairingUrl(request, shell),
+        : packagedAcceptanceTest
+          ? async () => undefined
+          : request => openApprovedDesktopPairingUrl(request, shell),
       clientName: `ProPR Desktop (${process.platform})`,
       reportRevocationFailure: diagnostic => {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
       },
+      ...(packagedAcceptanceTest ? {
+        reportWebSocketHandshake: (evidence: DesktopWebSocketHandshakeEvidence) => {
+          log('info', 'desktop.acceptance.websocket_handshake', { ...evidence });
+        },
+        reportCurrentUserValidation: (evidence: DesktopCurrentUserProxyEvidence) => {
+          log('info', 'desktop.acceptance.current_user_proxy', { ...evidence });
+        },
+      } : {}),
       snapshotConnectIdentityClaim: (profileId, origin) =>
         connectDiscovery.snapshotIdentityClaim(profileId, origin),
+      ...(acceptancePairingTiming ? { pairingTiming: acceptancePairingTiming } : {}),
     });
     const sessionSecurity = configureDesktopSessionSecurity({
       contentSecurityPolicy,
@@ -1257,7 +1307,14 @@ if (!hasSingleInstanceLock) {
       enableRendererNetworkBoundary: process.platform !== 'win32',
       getMainRenderer: () => mainWindow?.webContents ?? null,
       isTrustedRendererUrl: value => isTrustedRendererUrl(value, devServerUrl, packagedRendererUrl),
-      ...(connectSmoke?.journeyEndpoint ? {
+      ...(packagedAcceptanceTest ? {
+        reportNetworkPermissionDecision: (evidence: DesktopNetworkPermissionEvidence) => {
+          log('info', 'desktop.acceptance.network_permission', { ...evidence });
+        },
+        reportRendererOwnershipDecision: (evidence: DesktopRendererOwnershipEvidence) => {
+          log('info', 'desktop.acceptance.renderer_ownership', { ...evidence });
+        },
+      } : connectSmoke?.journeyEndpoint ? {
         reportNetworkPermissionDecision: (evidence: DesktopNetworkPermissionEvidence) => {
           log('info', 'desktop.renderer.connect_network_permission', { ...evidence });
         },
@@ -1273,10 +1330,12 @@ if (!hasSingleInstanceLock) {
       });
     }
     if (app.isPackaged && !rendererPolicyPinnedForSmoke) {
-      const current = await credentials.listProfiles();
-      const activeOrigin = current.profiles
-        .find(profile => profile.id === current.activeProfileId)?.apiBaseUrl;
-      rendererPolicyOrigins = activeOrigin?.startsWith('http://') ? [activeOrigin] : [];
+      if (!packagedAcceptanceTest) {
+        const current = await credentials.listProfiles();
+        const activeOrigin = current.profiles
+          .find(profile => profile.id === current.activeProfileId)?.apiBaseUrl;
+        rendererPolicyOrigins = activeOrigin?.startsWith('http://') ? [activeOrigin] : [];
+      }
     }
     const lifecycle = new LocalLifecycleController();
     const registeredIpc = registerIpcHandlers({
@@ -1293,6 +1352,7 @@ if (!hasSingleInstanceLock) {
       openExternal: openAllowedExternalUrl,
       ...(app.isPackaged && !rendererPolicyPinnedForSmoke ? {
         onRendererActiveProfileChanged: (origin: string | null) => {
+          if (packagedAcceptanceTest) return;
           const nextOrigins = origin?.startsWith('http://') ? [origin] : [];
           if (rendererPolicyOrigins.length === nextOrigins.length
             && rendererPolicyOrigins.every((value, index) => value === nextOrigins[index])) return;
@@ -1376,7 +1436,7 @@ if (!hasSingleInstanceLock) {
           windowsSignerPins: __PROPR_DESKTOP_WINDOWS_SIGNER_PINS__,
         }
       : undefined;
-    if (app.isPackaged && process.platform !== 'win32' && updateConfig && !packagedSmokeTest) {
+    if (app.isPackaged && process.platform !== 'win32' && updateConfig && !packagedSmokeTest && !packagedAcceptanceTest) {
       const runUpdateCheck = () => {
         void checkForSignedUpdates({
           config: updateConfig,

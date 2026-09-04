@@ -11,6 +11,11 @@ import { managedRecoveryMessage, managedRediscoveryUnavailableMessage, safeConne
 import { mergeProfiles, recoverableError, settleAuthenticationCancellation, type ExperienceState } from './desktopExperienceState';
 import { DESKTOP_ACCESS_INVALID_EVENT, type DesktopAccessInvalidEventDetail, type DesktopAdapters, type DesktopConnectionResult, type DesktopProfile } from './types';
 import { useDesktopDeepLinks } from './useDesktopDeepLinks';
+import {
+  PackagedAcceptanceLocalSetup,
+  packagedAcceptanceSetupSurface,
+  type PackagedAcceptanceSetupSurface,
+} from './PackagedAcceptanceLocalSetup';
 import './desktop.css';
 
 interface DesktopExperienceProps {
@@ -26,6 +31,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   const [managerOpen, setManagerOpen] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [acceptanceSetup, setAcceptanceSetup] = useState<PackagedAcceptanceSetupSurface | null>(null);
   const connectionAttempt = useRef(0);
   const activeProfileId = useRef<string | null>(null);
   const stateRef = useRef(state);
@@ -235,6 +241,11 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   const setupLocal = async () => {
     cancelDiscovery();
+    const acceptanceSurface = packagedAcceptanceSetupSurface();
+    if (acceptanceSurface) {
+      setAcceptanceSetup(acceptanceSurface);
+      return;
+    }
     setBusy(true);
     setOperationError(null);
     try {
@@ -369,6 +380,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   const content = () => {
     if (state.phase === 'loading') return <div className="desktop-loading"><LoaderCircle className="desktop-spin" /><span>Opening ProPR…</span></div>;
+    if (acceptanceSetup) return <PackagedAcceptanceLocalSetup initial={acceptanceSetup} onBack={() => setAcceptanceSetup(null)} />;
     if (state.phase === 'connecting') return <ConnectionPanel profile={state.profile} onBack={choose} onRetry={retry} onAuthenticate={() => undefined} onHelp={() => undefined} onReenter={() => undefined} onRediscover={() => undefined} />;
     if (state.phase === 'recovery-review') return <ManagedRecoveryReview profile={state.profile} onCancel={() => { cancelDiscovery(); setState({ phase: 'blocked', profile: state.profile, result: { status: 'offline', message: managedRecoveryMessage } }); }} onConfirm={() => void connect(state.candidate)} />;
     if (state.phase === 'blocked') return <ConnectionPanel profile={state.profile} result={state.result} onBack={choose} onRetry={retry} onAuthenticate={() => void runBlockedAction(state.profile, async () => {

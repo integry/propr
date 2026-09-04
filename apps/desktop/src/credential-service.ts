@@ -53,8 +53,63 @@ export interface CredentialServiceDependencies {
     code: 'network' | 'http' | 'local-cleanup';
     status?: number;
   }): void;
+  /** Fixed, bounded, secret-free evidence for packaged acceptance. */
+  reportWebSocketHandshake?(evidence: DesktopWebSocketHandshakeEvidence): void;
+  /** Fixed, bounded, secret-free evidence for scoped renderer user validation. */
+  reportCurrentUserValidation?(evidence: DesktopCurrentUserProxyEvidence): void;
   /** Main-owned Connect evidence; renderer input can never provide this snapshot. */
   snapshotConnectIdentityClaim?(profileId: string, origin: string): DesktopConnectIdentityClaimSnapshot;
+}
+
+export type DesktopWebSocketRejectionCategory =
+  | 'none' | 'untrusted-http-origin' | 'wrong-path' | 'wrong-transport'
+  | 'wrong-resource-type' | 'scope-missing' | 'scope-duplicate'
+  | 'scope-malformed' | 'no-active-binding' | 'stale-generation'
+  | 'wrong-origin' | 'stale-scope';
+
+export interface DesktopWebSocketHandshakeEvidence {
+  schemaVersion: 1;
+  path: 'socket-io' | 'other';
+  transport: 'websocket' | 'other';
+  resource: 'websocket' | 'other';
+  scopeQueryPresent: boolean;
+  scopeQueryCount: number;
+  scopeEqualsActive: boolean;
+  activeBindingPresent: boolean;
+  profileGenerationCurrent: boolean;
+  originEqualsActive: boolean;
+  rendererBearerPresent: boolean;
+  rendererCookiePresent: boolean;
+  outboundBearerPresent: boolean;
+  bearerMainInjected: boolean;
+  accepted: boolean;
+  rejectionCategory: DesktopWebSocketRejectionCategory;
+}
+
+export type DesktopCurrentUserProxyRejectionCategory =
+  | 'none' | 'scope-missing' | 'scope-duplicate' | 'scope-malformed'
+  | 'no-active-binding' | 'stale-generation' | 'wrong-origin' | 'stale-scope';
+
+export interface DesktopCurrentUserProxyEvidence {
+  schemaVersion: 2;
+  correlation: 'current-scope-user-validation';
+  requestObserved: true;
+  method: 'get';
+  rendererScopeGeneration: number | null;
+  scopeGenerationQueryCount: 0 | 1 | 2;
+  scopeGenerationQueryValid: boolean;
+  scopeHeaderCount: 0 | 1 | 2;
+  activeBindingPresent: boolean;
+  activeScopeGeneration: number;
+  profileGenerationCurrent: boolean;
+  scopeEqualsActive: boolean;
+  originEqualsActive: boolean;
+  rendererBearerPresent: boolean;
+  rendererCookiePresent: boolean;
+  outboundBearerPresent: boolean;
+  bearerMainInjected: boolean;
+  accepted: boolean;
+  rejectionCategory: DesktopCurrentUserProxyRejectionCategory;
 }
 
 export interface DesktopPairingBrowserRequest {
@@ -177,6 +232,24 @@ const requestOrigin = (value: string): { origin: string; pathname: string; url: 
   } catch {
     return null;
   }
+};
+
+const CURRENT_USER_SCOPE_GENERATION_QUERY = 'proprDesktopScopeGeneration';
+const currentUserScopeGeneration = (url: URL): {
+  count: 0 | 1 | 2;
+  generation: number | null;
+  valid: boolean;
+} => {
+  const values = url.searchParams.getAll(CURRENT_USER_SCOPE_GENERATION_QUERY);
+  const count = Math.min(values.length, 2) as 0 | 1 | 2;
+  if (values.length !== 1 || !/^(?:0|[1-9]\d{0,15})$/.test(values[0])) {
+    return { count, generation: null, valid: false };
+  }
+  const generation = Number(values[0]);
+  const exact = url.search === `?${CURRENT_USER_SCOPE_GENERATION_QUERY}=${values[0]}`;
+  return Number.isSafeInteger(generation) && exact
+    ? { count, generation, valid: true }
+    : { count, generation: null, valid: false };
 };
 
 const parseCode = async (response: Response): Promise<string | undefined> => {
@@ -334,6 +407,8 @@ export class DesktopCredentialService {
   readonly #pairingTiming: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
   readonly #pairingProtocol: PairingProtocolRequestOptions;
   readonly #reportRevocationFailure: NonNullable<CredentialServiceDependencies['reportRevocationFailure']>;
+  readonly #reportWebSocketHandshake: NonNullable<CredentialServiceDependencies['reportWebSocketHandshake']>;
+  readonly #reportCurrentUserValidation: NonNullable<CredentialServiceDependencies['reportCurrentUserValidation']>;
   readonly #revocationDeadlines: RevocationDeadlines;
   readonly #snapshotConnectIdentityClaim: NonNullable<CredentialServiceDependencies['snapshotConnectIdentityClaim']>;
   readonly #internalRequestKey = randomBytes(32).toString('base64url');
@@ -363,6 +438,8 @@ export class DesktopCredentialService {
     this.#pairingTiming = dependencies.pairingTiming ?? {};
     this.#pairingProtocol = dependencies.pairingProtocol ?? {};
     this.#reportRevocationFailure = dependencies.reportRevocationFailure ?? (() => undefined);
+    this.#reportWebSocketHandshake = dependencies.reportWebSocketHandshake ?? (() => undefined);
+    this.#reportCurrentUserValidation = dependencies.reportCurrentUserValidation ?? (() => undefined);
     this.#revocationDeadlines = boundedRevocationDeadlines(dependencies.revocationDeadlines);
     this.#snapshotConnectIdentityClaim = dependencies.snapshotConnectIdentityClaim ?? (() => ({
       status: 'unclaimed',
@@ -1068,10 +1145,8 @@ export class DesktopCredentialService {
   ): DesktopRequestDecision {
     if (this.#closed) return { cancel: true };
     const headers = { ...originalHeaders };
-    if (/^(?:https?|wss?):/i.test(url)) {
-      const httpUrl = url.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
-      if (!canonicalProprHttpUrlOrigin(httpUrl)) return { cancel: true };
-    }
+    const canonicalTarget = !/^(?:https?|wss?):/i.test(url)
+      || canonicalProprHttpUrlOrigin(url.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:')) !== null;
     const internalHeader = headerName(headers, 'x-propr-desktop-main-request');
     const trustedMainRequest = internalHeader !== undefined
       && headers[internalHeader] === this.#internalRequestKey;
@@ -1080,44 +1155,130 @@ export class DesktopCredentialService {
     const scopeValues = headerValues(headers, DESKTOP_TRANSPORT_SCOPE_HEADER);
     removeHeader(headers, DESKTOP_TRANSPORT_SCOPE_HEADER);
 
+    const target = requestOrigin(url);
+    const rendererAuthorizationPresent = !trustedMainRequest
+      && headerValues(originalHeaders, 'authorization').length > 0;
+    const rendererCookiePresent = !trustedMainRequest
+      && headerValues(originalHeaders, 'cookie').length > 0;
+    const path = target?.pathname === '/socket.io/' ? 'socket-io' : 'other';
+    const transportValues = target?.url.searchParams.getAll('transport') ?? [];
+    const transport = transportValues.length === 1 && transportValues[0] === 'websocket'
+      ? 'websocket' : 'other';
+    const resource = details.resourceType?.toLowerCase() === 'websocket'
+      || headerValues(originalHeaders, 'upgrade').some(value => value.toLowerCase() === 'websocket')
+      ? 'websocket' : 'other';
+    const socketScopeValues = target?.url.searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY) ?? [];
+    const active = this.#active;
+    const activeIsCurrent = active !== null
+      && this.#generation(active.profileId) === active.profileGeneration
+      && this.#selectionGeneration === active.selectionGeneration
+      && active.connectClaim.isCurrent();
+    const scopeEqualsActive = socketScopeValues.length === 1
+      && active !== null && socketScopeValues[0] === active.transportScope;
+    const isSocketCandidate = path === 'socket-io' || socketScopeValues.length > 0;
+    const isCurrentUserRequest = !trustedMainRequest
+      && target?.pathname === '/api/auth/user'
+      && (details.method ?? 'GET').toUpperCase() === 'GET';
+    const rendererCurrentUserGeneration = target && isCurrentUserRequest
+      ? currentUserScopeGeneration(target.url)
+      : { count: 0 as const, generation: null, valid: false };
+    const reportHandshake = (
+      accepted: boolean,
+      rejectionCategory: DesktopWebSocketRejectionCategory,
+      bearerMainInjected = false,
+    ): void => {
+      if (!isSocketCandidate || trustedMainRequest) return;
+      try {
+        this.#reportWebSocketHandshake({
+          schemaVersion: 1, path, transport, resource,
+          scopeQueryPresent: socketScopeValues.length > 0,
+          scopeQueryCount: socketScopeValues.length,
+          scopeEqualsActive,
+          activeBindingPresent: active !== null,
+          profileGenerationCurrent: activeIsCurrent,
+          originEqualsActive: target !== null && active !== null && target.origin === active.origin,
+          rendererBearerPresent: rendererAuthorizationPresent,
+          rendererCookiePresent,
+          outboundBearerPresent: headerValues(headers, 'authorization').length > 0,
+          bearerMainInjected,
+          accepted,
+          rejectionCategory,
+        });
+      } catch {
+        // Acceptance diagnostics cannot alter the authorization decision.
+      }
+    };
+    const reportCurrentUser = (
+      accepted: boolean,
+      rejectionCategory: DesktopCurrentUserProxyRejectionCategory,
+      bearerMainInjected = false,
+    ): void => {
+      if (!isCurrentUserRequest) return;
+      try {
+        this.#reportCurrentUserValidation({
+          schemaVersion: 2,
+          correlation: 'current-scope-user-validation',
+          requestObserved: true,
+          method: 'get',
+          rendererScopeGeneration: rendererCurrentUserGeneration.generation,
+          scopeGenerationQueryCount: rendererCurrentUserGeneration.count,
+          scopeGenerationQueryValid: rendererCurrentUserGeneration.valid,
+          scopeHeaderCount: Math.min(scopeValues.length, 2) as 0 | 1 | 2,
+          activeBindingPresent: active !== null,
+          activeScopeGeneration: active?.profileGeneration ?? 0,
+          profileGenerationCurrent: activeIsCurrent,
+          scopeEqualsActive: scopeValues.length === 1 && active !== null
+            && scopeValues[0] === active.transportScope,
+          originEqualsActive: target !== null && active !== null && target.origin === active.origin,
+          rendererBearerPresent: rendererAuthorizationPresent,
+          rendererCookiePresent,
+          outboundBearerPresent: headerValues(headers, 'authorization').length > 0,
+          bearerMainInjected,
+          accepted,
+          rejectionCategory,
+        });
+      } catch {
+        // Acceptance diagnostics cannot alter the authorization decision.
+      }
+    };
+
     // The packaged renderer has no cookie identity on any remote HTTP(S) or
     // WS(S) origin. It also cannot supply its own bearer. Main-process bearer
     // requests are distinguished by the per-process secret marker above.
     removeHeader(headers, 'cookie');
     if (!trustedMainRequest) removeHeader(headers, 'authorization');
 
-    const target = requestOrigin(url);
+    if (!canonicalTarget) {
+      reportHandshake(false, 'untrusted-http-origin');
+      return { cancel: true };
+    }
     if (target && target.url.protocol === 'http:' && !normalizeApiBaseUrl(target.origin)) {
+      reportHandshake(false, 'untrusted-http-origin');
       return { cancel: true };
     }
     if (trustedMainRequest) return { requestHeaders: headers };
 
     const markedRestRequest = scopeValues.length > 0;
     if (markedRestRequest && (scopeValues.length !== 1 || !TRANSPORT_SCOPE_PATTERN.test(scopeValues[0]))) {
+      reportCurrentUser(false, scopeValues.length !== 1 ? 'scope-duplicate' : 'scope-malformed');
       return { cancel: true };
     }
     if (!trustedMainRequest && target
       && (target.pathname.startsWith('/api/desktop/pairings')
         || target.pathname.startsWith('/api/desktop/tokens'))) return { cancel: true };
 
-    const active = this.#active;
-    const activeIsCurrent = active !== null
-      && this.#generation(active.profileId) === active.profileGeneration
-      && this.#selectionGeneration === active.selectionGeneration
-      && active.connectClaim.isCurrent();
     const isApiRequest = target?.pathname.startsWith('/api/') === true;
-    const socketScopeValues = target?.url.searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY) ?? [];
-    const isSocketCandidate = target?.pathname === '/socket.io/' || socketScopeValues.length > 0;
-    const isSocketUpgrade = target?.pathname === '/socket.io/'
-      && target.url.searchParams.get('transport') === 'websocket'
-      && (details.resourceType === 'webSocket'
-        || headerValues(originalHeaders, 'upgrade').some(value => value.toLowerCase() === 'websocket'));
+    const isSocketUpgrade = path === 'socket-io' && transport === 'websocket' && resource === 'websocket';
 
     // Session security supplies this ownership bit at the actual WebContents
     // boundary. A foreign renderer may load only unmarked credentialless
     // resources; it can never exercise a REST/Socket scope or receive a bearer.
     if (details.rendererOwned === false) {
-      if (markedRestRequest || isSocketCandidate) return { cancel: true };
+      if (markedRestRequest || isSocketCandidate) {
+        reportHandshake(false, 'stale-generation');
+        reportCurrentUser(false, 'stale-generation');
+        return { cancel: true };
+      }
       return { requestHeaders: headers };
     }
 
@@ -1125,21 +1286,47 @@ export class DesktopCredentialService {
     // The live main renderer must therefore remain pinned to the exact current
     // origin even for sanitized traffic that does not carry a transport scope.
     if (details.rendererOwned === true && target
-      && (!activeIsCurrent || target.origin !== active.origin)) return { cancel: true };
+      && (!activeIsCurrent || target.origin !== active.origin)) {
+      reportHandshake(false, !active ? 'no-active-binding' : !activeIsCurrent ? 'stale-generation' : 'wrong-origin');
+      reportCurrentUser(false, !active ? 'no-active-binding' : !activeIsCurrent ? 'stale-generation' : 'wrong-origin');
+      return { cancel: true };
+    }
+
+    if (isSocketCandidate && !isSocketUpgrade) {
+      reportHandshake(false, path !== 'socket-io'
+        ? 'wrong-path' : transport !== 'websocket' ? 'wrong-transport' : 'wrong-resource-type');
+      return { cancel: true };
+    }
 
     if (isSocketUpgrade && target) {
-      if (socketScopeValues.length !== 1 || !TRANSPORT_SCOPE_PATTERN.test(socketScopeValues[0])
-        || !activeIsCurrent || active !== verifiedSocketCredential || target.origin !== active.origin
-        || socketScopeValues[0] !== active.transportScope) return { cancel: true };
+      const rejection = socketScopeValues.length === 0 ? 'scope-missing'
+        : socketScopeValues.length !== 1 ? 'scope-duplicate'
+          : !TRANSPORT_SCOPE_PATTERN.test(socketScopeValues[0]) ? 'scope-malformed'
+            : !active ? 'no-active-binding'
+              : !activeIsCurrent || active !== verifiedSocketCredential ? 'stale-generation'
+                : target.origin !== active.origin ? 'wrong-origin'
+                  : socketScopeValues[0] !== active.transportScope ? 'stale-scope' : null;
+      if (rejection) {
+        reportHandshake(false, rejection);
+        return { cancel: true };
+      }
+      if (!active) return { cancel: true };
       headers.Authorization = `Bearer ${active.token}`;
+      reportHandshake(true, 'none', true);
       return { requestHeaders: headers };
     }
 
     if (!markedRestRequest) return { requestHeaders: headers };
-    if (!target || !isApiRequest || !activeIsCurrent || target.origin !== active.origin
-      || scopeValues[0] !== active.transportScope) return { cancel: true };
+    if (!target || !isApiRequest || !active || !activeIsCurrent || target.origin !== active.origin
+      || scopeValues[0] !== active.transportScope) {
+      reportCurrentUser(false, !active ? 'no-active-binding'
+        : !activeIsCurrent ? 'stale-generation'
+          : target?.origin !== active.origin ? 'wrong-origin' : 'stale-scope');
+      return { cancel: true };
+    }
     if (details.method?.toUpperCase() === 'OPTIONS') return { requestHeaders: headers };
     headers.Authorization = `Bearer ${active.token}`;
+    reportCurrentUser(true, 'none', true);
     return { requestHeaders: headers };
   }
 
