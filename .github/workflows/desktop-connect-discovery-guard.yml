@@ -115,7 +115,13 @@ jobs:
       - name: Run packaged Darwin main-to-renderer discovery
         if: matrix.platform == 'darwin'
         shell: bash
-        run: bash apps/desktop/scripts/run-packaged-darwin-connect-smoke.sh '${{ matrix.arch }}'
+        run: >-
+          node apps/desktop/scripts/run-bounded-darwin-command.mjs
+          --timeout-ms 480000
+          --termination-grace-ms 90000
+          --max-output-bytes 1048576
+          --forward-output true
+          -- bash apps/desktop/scripts/run-packaged-darwin-connect-smoke.sh '${{ matrix.arch }}'
 
       - name: Run packaged Windows main-to-renderer discovery as an ordinary user
         if: matrix.platform == 'win32'

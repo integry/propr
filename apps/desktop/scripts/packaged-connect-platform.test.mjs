@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFile as nodeExecFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { describe, test } from 'node:test';
+import { promisify } from 'node:util';
+
+const execFile = promisify(nodeExecFile);
 
 const workflow = await readFile(
   new URL('../../../.github/workflows/desktop-connect-discovery-guard.yml', import.meta.url),
@@ -13,6 +17,14 @@ const darwinRunner = await readFile(
 const forgeConfig = await readFile(new URL('../forge.config.ts', import.meta.url), 'utf8');
 const darwinSigner = await readFile(
   new URL('./sign-darwin-packaged-connect.mjs', import.meta.url),
+  'utf8',
+);
+const darwinVerifier = await readFile(
+  new URL('./verify-darwin-packaged-connect-signature.mjs', import.meta.url),
+  'utf8',
+);
+const boundedDarwinRunner = await readFile(
+  new URL('./run-bounded-darwin-command.mjs', import.meta.url),
   'utf8',
 );
 
@@ -41,22 +53,24 @@ describe('packaged Connect target-native credential setup', () => {
     const darwinLaunch = workflow.indexOf('- name: Run packaged Darwin main-to-renderer discovery');
     assert.ok(inspect >= 0 && inspect < darwinLaunch);
     assert.match(workflow, /- name: Inspect the unsigned target-native desktop app\n\s+run: npm run desktop:smoke:inspect/u);
-    assert.match(darwin, /bash apps\/desktop\/scripts\/run-packaged-darwin-connect-smoke\.sh '\$\{\{ matrix\.arch \}\}'/u);
+    assert.match(darwin, /node apps\/desktop\/scripts\/run-bounded-darwin-command\.mjs[\s\S]*?--timeout-ms 480000[\s\S]*?-- bash apps\/desktop\/scripts\/run-packaged-darwin-connect-smoke\.sh '\$\{\{ matrix\.arch \}\}'/u);
     assert.doesNotMatch(forgeConfig, /PACKAGED_CONNECT.*SIGN|SMOKE.*SIGN/iu);
     assert.match(forgeConfig, /\.\.\.\(macSigning \? \{[\s\S]*?osxSign: \{[\s\S]*?identity: macSigning\.PROPR_DESKTOP_MAC_SIGNING_IDENTITY/u);
     assert.doesNotMatch(`${forgeConfig}\n${darwinRunner}\n${darwinSigner}`, /Developer ID Application/u);
   });
 
   test('Darwin creates one ephemeral certificate-backed identity and proves it across both launches', () => {
-    assert.match(darwinRunner, /keychain_root="\$\(mktemp -d\)"/u);
-    assert.match(darwinRunner, /keychain_password="\$\(\/usr\/bin\/openssl rand -hex 32\)"/u);
-    assert.match(darwinRunner, /identity_password="\$\(\/usr\/bin\/openssl rand -hex 32\)"/u);
+    assert.match(darwinRunner, /keychain_root="\$\(run_bounded_forward[^\n]*\/usr\/bin\/mktemp -d\)"/u);
+    assert.match(darwinRunner, /keychain_password="\$\(run_bounded_forward[\s\S]*?\/usr\/bin\/openssl rand -hex 32\)"/u);
+    assert.match(darwinRunner, /identity_password="\$\(run_bounded_forward[\s\S]*?\/usr\/bin\/openssl rand -hex 32\)"/u);
     assert.match(darwinRunner, /extendedKeyUsage = critical,codeSigning/u);
-    assert.match(darwinRunner, /\/usr\/bin\/security add-trusted-cert -r trustRoot -p codeSign/u);
-    assert.match(darwinRunner, /\/usr\/bin\/security import "\$identity_archive"[\s\S]*?-T \/usr\/bin\/codesign/u);
-    assert.match(darwinRunner, /\/usr\/bin\/security set-key-partition-list -S apple-tool:,apple:,codesign:/u);
-    assert.match(darwinRunner, /node "\$application_signer" "\$application" "\$keychain_path" "\$identity_sha1"/u);
+    assert.match(darwinRunner, /\/usr\/bin\/security add-trusted-cert \\[\s\S]*?-r trustRoot -p codeSign/u);
+    assert.match(darwinRunner, /\/usr\/bin\/security import "\$identity_archive" \\[\s\S]*?-T \/usr\/bin\/codesign/u);
+    assert.match(darwinRunner, /\/usr\/bin\/security set-key-partition-list \\[\s\S]*?-S apple-tool:,apple:,codesign:/u);
+    assert.match(darwinRunner, /run_bounded "\$SIGNING_TIMEOUT_MS" node "\$application_signer"/u);
     assert.match(darwinSigner, /identityValidation: true/u);
+    assert.match(darwinSigner, /batchCodesignCalls: true/u);
+    assert.match(darwinSigner, /preEmbedProvisioningProfile: false/u);
     assert.match(darwinSigner, /timestamp: 'none'/u);
     assert.match(darwinSigner, /certificate leaf = H"\$\{certificateSha1\}"/u);
     assert.match(darwinSigner, /ignore: \[PACKAGED_CONNECT_NATIVE_ARTIFACTS\]/u);
@@ -67,16 +81,73 @@ describe('packaged Connect target-native credential setup', () => {
     assert.ok(establish >= 0 && establish < smoke && smoke < stable);
   });
 
+  test('Darwin emits only allowlisted fixed stage markers around every blocking phase', async () => {
+    const expectedStages = [
+      'KEY_CERTIFICATE_GENERATION',
+      'KEYCHAIN_CREATION_SELECTION',
+      'TRUST_INSTALLATION',
+      'IDENTITY_IMPORT',
+      'PARTITION_LIST_UPDATE',
+      'APPLICATION_SIGNING',
+      'INITIAL_SIGNATURE_VERIFICATION',
+      'PAIR_REPROBE_JOURNEY',
+      'STABLE_SIGNATURE_VERIFICATION',
+      'TRUST_REMOVAL',
+      'KEYCHAIN_RESTORATION_DELETION',
+      'TEMPORARY_FILE_CLEANUP',
+    ];
+    const invokedStages = [...darwinRunner.matchAll(/^\s*run_stage ([A-Z_]+)\b/gmu)]
+      .map(match => match[1]);
+    assert.deepEqual(new Set(invokedStages), new Set(expectedStages));
+    assert.equal(invokedStages.length, expectedStages.length);
+    assert.match(darwinRunner, /case "\$code" in\n\s+STARTED\|PASSED\|FAILED\)/u);
+    assert.match(darwinRunner, /printf 'DARWIN_PACKAGED_CONNECT_SETUP:%s:%s\\n' "\$stage" "\$code"/u);
+    assert.doesNotMatch(darwinRunner, /stage_marker[^\n]*(?:password|certificate_serial|identity_sha1)/u);
+
+    const markerFunction = darwinRunner.slice(
+      darwinRunner.indexOf('stage_marker() {'),
+      darwinRunner.indexOf('\n\nrun_bounded()'),
+    );
+    const markerCalls = expectedStages
+      .flatMap(stage => ['STARTED', 'PASSED', 'FAILED']
+        .map(code => `stage_marker ${stage} ${code}`))
+      .join('\n');
+    const { stdout } = await execFile('/bin/bash', ['-c', `${markerFunction}\n${markerCalls}`], {
+      encoding: 'utf8', timeout: 2_000, maxBuffer: 16 * 1024,
+    });
+    assert.deepEqual(stdout.trim().split('\n'), expectedStages.flatMap(stage => [
+      'STARTED', 'PASSED', 'FAILED',
+    ].map(code => `DARWIN_PACKAGED_CONNECT_SETUP:${stage}:${code}`)));
+    await assert.rejects(execFile('/bin/bash', ['-c', `${markerFunction}\nstage_marker BAD SECRET`], {
+      encoding: 'utf8', timeout: 2_000, maxBuffer: 16 * 1024,
+    }));
+  });
+
+  test('Darwin bounds setup, nested signing, verification, journey, cleanup, and the wrapper', () => {
+    assert.match(boundedDarwinRunner, /detached: platform !== 'win32'/u);
+    assert.match(boundedDarwinRunner, /process\.kill\(-child\.pid, signal\)/u);
+    assert.match(boundedDarwinRunner, /signalProcessGroup\(child, 'SIGTERM'/u);
+    assert.match(boundedDarwinRunner, /signalProcessGroup\(child, 'SIGKILL'/u);
+    assert.match(boundedDarwinRunner, /maximumBytes - state\.bytes/u);
+    assert.match(darwinVerifier, /timeout: VERIFICATION_TIMEOUT_MS/u);
+    assert.match(darwinVerifier, /maxBuffer: VERIFICATION_MAX_BUFFER/u);
+    assert.match(darwinRunner, /run_bounded "\$COMMAND_TIMEOUT_MS" \/usr\/bin\/security/gmu);
+    assert.match(darwinRunner, /run_bounded "\$COMMAND_TIMEOUT_MS" \/usr\/bin\/openssl/gmu);
+    assert.match(darwinRunner, /run_bounded "\$SIGNING_TIMEOUT_MS" node "\$application_signer"/u);
+    assert.match(darwinRunner, /run_bounded_forward "\$JOURNEY_TIMEOUT_MS" npm run smoke:connect-package/u);
+  });
+
   test('Darwin restores keychain state and deletes identity, trust, credentials, and files on every exit', () => {
     assert.match(darwinRunner, /trap cleanup_keychain EXIT/u);
-    assert.match(darwinRunner, /trap 'exit 129' HUP/u);
-    assert.match(darwinRunner, /trap 'exit 130' INT/u);
-    assert.match(darwinRunner, /trap 'exit 143' TERM/u);
-    assert.match(darwinRunner, /\/usr\/bin\/security remove-trusted-cert "\$root_certificate"/u);
-    assert.match(darwinRunner, /\/usr\/bin\/security list-keychains -d user -s "\$\{original_keychains\[@\]\}"/u);
-    assert.match(darwinRunner, /\/usr\/bin\/security default-keychain -d user -s "\$original_default"/u);
+    assert.match(darwinRunner, /trap 'exit_for_signal 129' HUP/u);
+    assert.match(darwinRunner, /trap 'exit_for_signal 130' INT/u);
+    assert.match(darwinRunner, /trap 'exit_for_signal 143' TERM/u);
+    assert.match(darwinRunner, /if \[\[ -n "\$active_stage" \]\]; then\n\s+stage_marker "\$active_stage" FAILED/u);
+    assert.match(darwinRunner, /run_bounded "\$CLEANUP_TIMEOUT_MS" \/usr\/bin\/security remove-trusted-cert "\$root_certificate"/u);
+    assert.match(darwinRunner, /\/usr\/bin\/security list-keychains -d user -s \\[\s\S]*?"\$\{original_keychains\[@\]\}"/u);
+    assert.match(darwinRunner, /\/usr\/bin\/security default-keychain -d user -s \\[\s\S]*?"\$original_default"/u);
     assert.match(darwinRunner, /\/usr\/bin\/security delete-keychain "\$keychain_path"/u);
-    assert.match(darwinRunner, /rm -rf -- "\$keychain_root"/u);
+    assert.match(darwinRunner, /run_bounded "\$CLEANUP_TIMEOUT_MS" \/bin\/rm -rf -- "\$keychain_root"/u);
     assert.match(darwinRunner, /if \(\( cleanup_status != 0 \)\)[\s\S]*?primary_status=1/u);
   });
 

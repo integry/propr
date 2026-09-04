@@ -18,56 +18,128 @@ repository_root="$(cd "$script_directory/../../.." && pwd -P)"
 application="$repository_root/apps/desktop/out/propr-desktop-darwin-$architecture/propr-desktop.app"
 signature_verifier="$script_directory/verify-darwin-packaged-connect-signature.mjs"
 application_signer="$script_directory/sign-darwin-packaged-connect.mjs"
-if [[ ! -d "$application" || ! -f "$signature_verifier" || ! -f "$application_signer" ]]; then
+bounded_runner="$script_directory/run-bounded-darwin-command.mjs"
+if [[ ! -d "$application" || ! -f "$signature_verifier" || ! -f "$application_signer"
+  || ! -f "$bounded_runner" ]]; then
   echo 'Packaged Darwin Connect acceptance artifact is missing.' >&2
   exit 1
 fi
 cd "$repository_root"
 
-original_keychain_output="$(/usr/bin/security list-keychains -d user)"
-original_default="$(/usr/bin/security default-keychain -d user)"
-original_keychains=()
-while IFS= read -r keychain; do
-  keychain="${keychain#"${keychain%%[![:space:]]*}"}"
-  keychain="${keychain#\"}"
-  keychain="${keychain%\"}"
-  if [[ -n "$keychain" ]]; then
-    original_keychains+=("$keychain")
+readonly COMMAND_TIMEOUT_MS=30000
+readonly CLEANUP_TIMEOUT_MS=10000
+readonly SIGNING_TIMEOUT_MS=180000
+readonly JOURNEY_TIMEOUT_MS=240000
+readonly TERMINATION_GRACE_MS=5000
+readonly MAX_OUTPUT_BYTES=262144
+
+stage_marker() {
+  local stage="$1"
+  local code="$2"
+  case "$stage" in
+    KEY_CERTIFICATE_GENERATION|KEYCHAIN_CREATION_SELECTION|TRUST_INSTALLATION|IDENTITY_IMPORT|PARTITION_LIST_UPDATE|APPLICATION_SIGNING|INITIAL_SIGNATURE_VERIFICATION|PAIR_REPROBE_JOURNEY|STABLE_SIGNATURE_VERIFICATION|TRUST_REMOVAL|KEYCHAIN_RESTORATION_DELETION|TEMPORARY_FILE_CLEANUP) ;;
+    *) return 1 ;;
+  esac
+  case "$code" in
+    STARTED|PASSED|FAILED) ;;
+    *) return 1 ;;
+  esac
+  printf 'DARWIN_PACKAGED_CONNECT_SETUP:%s:%s\n' "$stage" "$code"
+}
+
+run_bounded() {
+  local timeout_ms="$1"
+  shift
+  node "$bounded_runner" --timeout-ms "$timeout_ms" \
+    --termination-grace-ms "$TERMINATION_GRACE_MS" \
+    --max-output-bytes "$MAX_OUTPUT_BYTES" --forward-output false -- "$@"
+}
+
+run_bounded_forward() {
+  local timeout_ms="$1"
+  shift
+  node "$bounded_runner" --timeout-ms "$timeout_ms" \
+    --termination-grace-ms "$TERMINATION_GRACE_MS" \
+    --max-output-bytes "$MAX_OUTPUT_BYTES" --forward-output true -- "$@"
+}
+
+run_stage() {
+  local stage="$1"
+  shift
+  active_stage="$stage"
+  stage_marker "$stage" STARTED
+  if "$@"; then
+    stage_marker "$stage" PASSED
+    active_stage=''
+    return 0
+  else
+    local stage_status=$?
+    stage_marker "$stage" FAILED
+    active_stage=''
+    return "$stage_status"
   fi
-done <<< "$original_keychain_output"
-original_default="${original_default#"${original_default%%[![:space:]]*}"}"
-original_default="${original_default#\"}"
-original_default="${original_default%\"}"
+}
 
 umask 077
-keychain_root="$(mktemp -d)"
-keychain_path="$keychain_root/propr-packaged-connect-smoke.keychain-db"
-root_private_key="$keychain_root/root-private.pem"
-root_certificate="$keychain_root/root-certificate.pem"
-leaf_private_key="$keychain_root/leaf-private.pem"
-leaf_request="$keychain_root/leaf-request.pem"
-leaf_certificate="$keychain_root/leaf-certificate.pem"
-identity_archive="$keychain_root/identity.p12"
-root_config="$keychain_root/root.cnf"
-leaf_config="$keychain_root/leaf.cnf"
-requirement_proof="$keychain_root/designated-requirement.txt"
+keychain_root=''
+keychain_path=''
+root_private_key=''
+root_certificate=''
+leaf_private_key=''
+leaf_request=''
+leaf_certificate=''
+identity_archive=''
+root_config=''
+leaf_config=''
+requirement_proof=''
+identity_sha1=''
+original_default=''
+original_keychains=()
+trust_installed=0
+keychain_created=0
+keychain_state_captured=0
+active_stage=''
+
+remove_trust() {
+  if (( trust_installed == 0 )); then return 0; fi
+  run_bounded "$CLEANUP_TIMEOUT_MS" /usr/bin/security remove-trusted-cert "$root_certificate"
+}
+
+restore_and_delete_keychain() {
+  local restore_status=0
+  if (( keychain_state_captured != 0 )); then
+    if (( ${#original_keychains[@]} > 0 )); then
+      run_bounded "$CLEANUP_TIMEOUT_MS" /usr/bin/security list-keychains -d user -s \
+        "${original_keychains[@]}" || restore_status=1
+    else
+      run_bounded "$CLEANUP_TIMEOUT_MS" /usr/bin/security list-keychains -d user -s \
+        || restore_status=1
+    fi
+    if [[ -n "$original_default" ]]; then
+      run_bounded "$CLEANUP_TIMEOUT_MS" /usr/bin/security default-keychain -d user -s \
+        "$original_default" || restore_status=1
+    fi
+  fi
+  if (( keychain_created != 0 )); then
+    run_bounded "$CLEANUP_TIMEOUT_MS" /usr/bin/security delete-keychain "$keychain_path" \
+      || restore_status=1
+  fi
+  return "$restore_status"
+}
+
+remove_temporary_files() {
+  if [[ -z "$keychain_root" ]]; then return 0; fi
+  run_bounded "$CLEANUP_TIMEOUT_MS" /bin/rm -rf -- "$keychain_root"
+}
 
 cleanup_keychain() {
   local primary_status=$?
   local cleanup_status=0
   trap - EXIT HUP INT TERM
   set +e
-  /usr/bin/security remove-trusted-cert "$root_certificate" >/dev/null 2>&1 || cleanup_status=1
-  if (( ${#original_keychains[@]} > 0 )); then
-    /usr/bin/security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || cleanup_status=1
-  else
-    /usr/bin/security list-keychains -d user -s >/dev/null 2>&1 || cleanup_status=1
-  fi
-  if [[ -n "$original_default" ]]; then
-    /usr/bin/security default-keychain -d user -s "$original_default" >/dev/null 2>&1 || cleanup_status=1
-  fi
-  /usr/bin/security delete-keychain "$keychain_path" >/dev/null 2>&1 || cleanup_status=1
-  rm -rf -- "$keychain_root" || cleanup_status=1
+  run_stage TRUST_REMOVAL remove_trust || cleanup_status=1
+  run_stage KEYCHAIN_RESTORATION_DELETION restore_and_delete_keychain || cleanup_status=1
+  run_stage TEMPORARY_FILE_CLEANUP remove_temporary_files || cleanup_status=1
   unset keychain_password identity_password certificate_serial
   if (( cleanup_status != 0 )); then
     echo 'Packaged Darwin Connect acceptance cleanup failed.' >&2
@@ -75,72 +147,145 @@ cleanup_keychain() {
   fi
   exit "$primary_status"
 }
+
+exit_for_signal() {
+  local exit_code="$1"
+  if [[ -n "$active_stage" ]]; then
+    stage_marker "$active_stage" FAILED
+    active_stage=''
+  fi
+  exit "$exit_code"
+}
 trap cleanup_keychain EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'exit_for_signal 129' HUP
+trap 'exit_for_signal 130' INT
+trap 'exit_for_signal 143' TERM
 
-cat > "$root_config" <<'EOF'
-[req]
-distinguished_name = root_name
-x509_extensions = root_extensions
-prompt = no
+create_and_select_keychain() {
+  local original_keychain_output
+  original_keychain_output="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" \
+    /usr/bin/security list-keychains -d user)" || return $?
+  while IFS= read -r keychain; do
+    keychain="${keychain#"${keychain%%[![:space:]]*}"}"
+    keychain="${keychain#\"}"
+    keychain="${keychain%\"}"
+    if [[ -n "$keychain" ]]; then original_keychains+=("$keychain"); fi
+  done <<< "$original_keychain_output"
+  original_default="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" \
+    /usr/bin/security default-keychain -d user)" || return $?
+  original_default="${original_default#"${original_default%%[![:space:]]*}"}"
+  original_default="${original_default#\"}"
+  original_default="${original_default%\"}"
+  keychain_state_captured=1
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/security create-keychain \
+    -p "$keychain_password" "$keychain_path" || return $?
+  keychain_created=1
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/security set-keychain-settings \
+    -lut 21600 "$keychain_path" || return $?
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/security unlock-keychain \
+    -p "$keychain_password" "$keychain_path" || return $?
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/security list-keychains \
+    -d user -s "$keychain_path" || return $?
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/security default-keychain \
+    -d user -s "$keychain_path"
+}
 
-[root_name]
-CN = ProPR Packaged Connect CI Root
+generate_key_and_certificates() {
+  local fingerprint_output
+  keychain_root="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" /usr/bin/mktemp -d)" || return $?
+  [[ -n "$keychain_root" ]] || return 1
+  keychain_path="$keychain_root/propr-packaged-connect-smoke.keychain-db"
+  root_private_key="$keychain_root/root-private.pem"
+  root_certificate="$keychain_root/root-certificate.pem"
+  leaf_private_key="$keychain_root/leaf-private.pem"
+  leaf_request="$keychain_root/leaf-request.pem"
+  leaf_certificate="$keychain_root/leaf-certificate.pem"
+  identity_archive="$keychain_root/identity.p12"
+  root_config="$keychain_root/root.cnf"
+  leaf_config="$keychain_root/leaf.cnf"
+  requirement_proof="$keychain_root/designated-requirement.txt"
+  keychain_password="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" \
+    /usr/bin/openssl rand -hex 32)" || return $?
+  identity_password="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" \
+    /usr/bin/openssl rand -hex 32)" || return $?
+  builtin printf '%s\n' '[req]' 'distinguished_name = root_name' \
+    'x509_extensions = root_extensions' 'prompt = no' '' '[root_name]' \
+    'CN = ProPR Packaged Connect CI Root' '' '[root_extensions]' \
+    'basicConstraints = critical,CA:TRUE,pathlen:0' \
+    'keyUsage = critical,keyCertSign,cRLSign' 'subjectKeyIdentifier = hash' \
+    'authorityKeyIdentifier = keyid:always' > "$root_config" || return $?
+  builtin printf '%s\n' '[leaf_extensions]' \
+    'basicConstraints = critical,CA:FALSE' 'keyUsage = critical,digitalSignature' \
+    'extendedKeyUsage = critical,codeSigning' 'subjectKeyIdentifier = hash' \
+    'authorityKeyIdentifier = keyid,issuer' > "$leaf_config" || return $?
 
-[root_extensions]
-basicConstraints = critical,CA:TRUE,pathlen:0
-keyUsage = critical,keyCertSign,cRLSign
-subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid:always
-EOF
+  certificate_serial="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" \
+    /usr/bin/openssl rand -hex 16)" || return $?
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/openssl req -new -x509 -newkey rsa:2048 \
+    -sha256 -nodes -days 1 -config "$root_config" -keyout "$root_private_key" \
+    -out "$root_certificate" || return $?
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/openssl req -new -newkey rsa:2048 \
+    -sha256 -nodes -subj '/CN=ProPR Packaged Connect CI' -keyout "$leaf_private_key" \
+    -out "$leaf_request" || return $?
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/openssl x509 -req -sha256 -days 1 \
+    -in "$leaf_request" -CA "$root_certificate" -CAkey "$root_private_key" \
+    -set_serial "0x$certificate_serial" -extfile "$leaf_config" \
+    -extensions leaf_extensions -out "$leaf_certificate" || return $?
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/openssl pkcs12 -export \
+    -inkey "$leaf_private_key" -in "$leaf_certificate" -out "$identity_archive" \
+    -passout "pass:$identity_password" || return $?
+  fingerprint_output="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" /usr/bin/openssl x509 \
+    -in "$leaf_certificate" -noout -fingerprint -sha1)" || return $?
+  identity_sha1="${fingerprint_output##*=}"
+  identity_sha1="${identity_sha1//:/}"
+  if [[ ! "$identity_sha1" =~ ^[A-F0-9]{40}$ ]]; then
+    echo 'Disposable Darwin signing certificate fingerprint is invalid.' >&2
+    return 1
+  fi
+}
 
-cat > "$leaf_config" <<'EOF'
-[leaf_extensions]
-basicConstraints = critical,CA:FALSE
-keyUsage = critical,digitalSignature
-extendedKeyUsage = critical,codeSigning
-subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid,issuer
-EOF
+install_trust() {
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/security add-trusted-cert \
+    -r trustRoot -p codeSign -k "$keychain_path" "$root_certificate" || return $?
+  trust_installed=1
+}
 
-keychain_password="$(/usr/bin/openssl rand -hex 32)"
-identity_password="$(/usr/bin/openssl rand -hex 32)"
-certificate_serial="$(/usr/bin/openssl rand -hex 16)"
-/usr/bin/openssl req -new -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
-  -config "$root_config" -keyout "$root_private_key" -out "$root_certificate" >/dev/null 2>&1
-/usr/bin/openssl req -new -newkey rsa:2048 -sha256 -nodes \
-  -subj '/CN=ProPR Packaged Connect CI' \
-  -keyout "$leaf_private_key" -out "$leaf_request" >/dev/null 2>&1
-/usr/bin/openssl x509 -req -sha256 -days 1 -in "$leaf_request" \
-  -CA "$root_certificate" -CAkey "$root_private_key" -set_serial "0x$certificate_serial" \
-  -extfile "$leaf_config" -extensions leaf_extensions -out "$leaf_certificate" >/dev/null 2>&1
-/usr/bin/openssl pkcs12 -export -inkey "$leaf_private_key" -in "$leaf_certificate" \
-  -out "$identity_archive" -passout "pass:$identity_password" >/dev/null 2>&1
-identity_sha1="$(/usr/bin/openssl x509 -in "$leaf_certificate" -noout -fingerprint -sha1 \
-  | sed -E 's/^.*=//; s/://g')"
-if [[ ! "$identity_sha1" =~ ^[A-F0-9]{40}$ ]]; then
-  echo 'Disposable Darwin signing certificate fingerprint is invalid.' >&2
-  exit 1
-fi
+import_identity() {
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/security import "$identity_archive" \
+    -k "$keychain_path" -P "$identity_password" -T /usr/bin/codesign
+}
 
-/usr/bin/security create-keychain -p "$keychain_password" "$keychain_path"
-/usr/bin/security set-keychain-settings -lut 21600 "$keychain_path"
-/usr/bin/security unlock-keychain -p "$keychain_password" "$keychain_path"
-/usr/bin/security list-keychains -d user -s "$keychain_path"
-/usr/bin/security default-keychain -d user -s "$keychain_path"
-/usr/bin/security add-trusted-cert -r trustRoot -p codeSign -k "$keychain_path" \
-  "$root_certificate" >/dev/null
-/usr/bin/security import "$identity_archive" -k "$keychain_path" -P "$identity_password" \
-  -T /usr/bin/codesign >/dev/null
-/usr/bin/security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
-  -k "$keychain_password" "$keychain_path" >/dev/null
+update_partition_list() {
+  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/security set-key-partition-list \
+    -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+}
+
+sign_application() {
+  run_bounded "$SIGNING_TIMEOUT_MS" node "$application_signer" \
+    "$application" "$keychain_path" "$identity_sha1"
+}
+
+verify_initial_signature() {
+  run_bounded "$COMMAND_TIMEOUT_MS" node "$signature_verifier" establish \
+    "$application" "$keychain_path" "$identity_sha1" "$requirement_proof"
+}
+
+run_pair_and_reprobe() {
+  run_bounded_forward "$JOURNEY_TIMEOUT_MS" npm run smoke:connect-package -w @propr/desktop
+}
+
+verify_stable_signature() {
+  run_bounded "$COMMAND_TIMEOUT_MS" node "$signature_verifier" stable \
+    "$application" "$keychain_path" "$identity_sha1" "$requirement_proof"
+}
+
+run_stage KEY_CERTIFICATE_GENERATION generate_key_and_certificates
+run_stage KEYCHAIN_CREATION_SELECTION create_and_select_keychain
+run_stage TRUST_INSTALLATION install_trust
+run_stage IDENTITY_IMPORT import_identity
+run_stage PARTITION_LIST_UPDATE update_partition_list
 unset keychain_password identity_password certificate_serial
-
-node "$application_signer" "$application" "$keychain_path" "$identity_sha1"
-node "$signature_verifier" establish "$application" "$keychain_path" "$identity_sha1" "$requirement_proof"
-
-npm run smoke:connect-package -w @propr/desktop
-
-node "$signature_verifier" stable "$application" "$keychain_path" "$identity_sha1" "$requirement_proof"
+run_stage APPLICATION_SIGNING sign_application
+run_stage INITIAL_SIGNATURE_VERIFICATION verify_initial_signature
+run_stage PAIR_REPROBE_JOURNEY run_pair_and_reprobe
+run_stage STABLE_SIGNATURE_VERIFICATION verify_stable_signature

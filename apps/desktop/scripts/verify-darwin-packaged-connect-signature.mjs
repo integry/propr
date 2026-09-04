@@ -8,6 +8,15 @@ import { fileURLToPath } from 'node:url';
 const execFile = promisify(nodeExecFile);
 const REQUIRED_IDENTIFIER = 'dev.propr.desktop';
 const SHA1_PATTERN = /^[A-F0-9]{40}$/u;
+const VERIFICATION_TIMEOUT_MS = 20_000;
+const VERIFICATION_MAX_BUFFER = 256 * 1024;
+
+const runVerificationCommand = (executable, arguments_) => execFile(executable, arguments_, {
+  encoding: 'utf8',
+  maxBuffer: VERIFICATION_MAX_BUFFER,
+  timeout: VERIFICATION_TIMEOUT_MS,
+  killSignal: 'SIGKILL',
+});
 
 const normalizeLines = value => value.replace(/\r\n?/gu, '\n').split('\n');
 
@@ -52,19 +61,15 @@ export const assertDarwinSigningEvidence = ({
 
 const inspectDarwinSigningEvidence = async ({ application, keychain }) => {
   const [identityResult, signatureResult, requirementResult] = await Promise.all([
-    execFile('/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning', keychain], {
-      encoding: 'utf8', maxBuffer: 256 * 1024,
-    }),
-    execFile('/usr/bin/codesign', ['-d', '--verbose=4', application], {
-      encoding: 'utf8', maxBuffer: 256 * 1024,
-    }),
-    execFile('/usr/bin/codesign', ['-d', '-r-', application], {
-      encoding: 'utf8', maxBuffer: 256 * 1024,
-    }),
+    runVerificationCommand('/usr/bin/security', [
+      'find-identity', '-v', '-p', 'codesigning', keychain,
+    ]),
+    runVerificationCommand('/usr/bin/codesign', ['-d', '--verbose=4', application]),
+    runVerificationCommand('/usr/bin/codesign', ['-d', '-r-', application]),
   ]);
-  await execFile('/usr/bin/codesign', ['--verify', '--deep', '--strict', application], {
-    encoding: 'utf8', maxBuffer: 256 * 1024,
-  });
+  await runVerificationCommand('/usr/bin/codesign', [
+    '--verify', '--deep', '--strict', application,
+  ]);
   return {
     identities: `${identityResult.stdout}\n${identityResult.stderr}`,
     signatureDetails: `${signatureResult.stdout}\n${signatureResult.stderr}`,

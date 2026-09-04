@@ -22,6 +22,9 @@ export const signDarwinPackagedConnectApplication = async ({
     identity: certificateSha1,
     keychain,
     identityValidation: true,
+    // Preserve inside-out signing while avoiding one noninteractive codesign process per binary.
+    batchCodesignCalls: true,
+    preEmbedProvisioningProfile: false,
     preAutoEntitlements: false,
     strictVerify: true,
     // These native artifacts have committed byte hashes checked by the smoke.
