@@ -105,8 +105,7 @@ const assertIdentifierMetadata = signatureDetails => {
       .map(line => line.match(IDENTIFIER_LINE))
       .filter(match => match !== null)
       .map(match => match[1]);
-    if (identifiers.length > 1
-      || (identifiers.length === 1 && identifiers[0] !== REQUIRED_IDENTIFIER)) {
+    if (identifiers.length !== 1 || identifiers[0] !== REQUIRED_IDENTIFIER) {
       throw new Error('invalid-identifier-display-evidence');
     }
   } catch (cause) {

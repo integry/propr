@@ -82,13 +82,12 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinSigner, /'--sign', certificateSha1/u);
     assert.match(darwinSigner, /'--keychain', keychain/u);
     assert.match(darwinSigner, /'--timestamp=none'/u);
-    assert.match(darwinSigner, /'--preserve-metadata=identifier,entitlements,flags'/u);
     assert.match(darwinVerifier, /'find-certificate', '-a', '-Z', keychain/u);
     assert.match(darwinVerifier, /\['-d', '--verbose=4', application\]/u);
     assert.doesNotMatch(darwinVerifier, /'--test-requirement'|['"`]?-R(?:=|['"`])/u);
     assert.match(darwinVerifier, /fingerprints\.length !== 1 \|\| fingerprints\[0\] !== expectedSha1/u);
     assert.match(darwinVerifier, /ADHOC_SIGNATURE_LINE = \/\^\\s\*signature\\s\*=\\s\*adhoc\\s\*\$\/iu/u);
-    assert.match(darwinVerifier, /identifiers\.length > 1/u);
+    assert.match(darwinVerifier, /identifiers\.length !== 1/u);
     assert.match(darwinVerifier, /identifiers\[0\] !== REQUIRED_IDENTIFIER/u);
     assert.doesNotMatch(darwinVerifier, /Signature size=/u);
     assert.match(darwinVerifier, /DESIGNATED_REQUIREMENT_PREFIX/u);
@@ -117,6 +116,15 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(packagedConnectSmoke, /outcome = await runPhase\('pair'\);[\s\S]*?if \(outcome\.ok && journeyFixture\) \{\s*outcome = await runPhase\('reprobe'\);/u);
     assert.match(workflow, /target: darwin-x64\s+runner: macos-15-intel\s+platform: darwin\s+arch: x64/u);
     assert.match(workflow, /target: darwin-arm64\s+runner: macos-15\s+platform: darwin\s+arch: arm64/u);
+  });
+
+  test('Darwin root signing sets, but never preserves, the required identifier', () => {
+    assert.match(darwinSigner, /isApplication \? \[\s*'--identifier', REQUIRED_IDENTIFIER,\s*'--preserve-metadata=entitlements,flags',\s*\] : \[\s*'--preserve-metadata=identifier,entitlements,flags',\s*\]/u);
+    const rootMetadataBranch = /isApplication \? \[([\s\S]*?)\] : \[/u.exec(darwinSigner)?.[1];
+    assert.ok(rootMetadataBranch);
+    assert.match(rootMetadataBranch, /'--identifier', REQUIRED_IDENTIFIER/u);
+    assert.match(rootMetadataBranch, /'--preserve-metadata=entitlements,flags'/u);
+    assert.doesNotMatch(rootMetadataBranch, /--preserve-metadata=identifier,/u);
   });
 
   test('Darwin emits only allowlisted fixed stage markers around every blocking phase', async () => {

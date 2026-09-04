@@ -197,14 +197,13 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     }
   });
 
-  test('accepts missing signature size and optional valid identifier metadata variants', async () => {
+  test('accepts missing signature size with exact identifier metadata variants', async () => {
     for (const fixture of [
       { signatureLine: null },
       { signatureLine: 'Signature size=0' },
       { signatureLine: 'Signature size=01' },
       { identifierLine: `Identifier=${REQUIRED_IDENTIFIER}` },
       { identifierLine: `  iDeNtIfIeR  =  ${REQUIRED_IDENTIFIER}  ` },
-      { identifierLine: null, signatureLine: null },
     ]) {
       await withPrivateProofPath(async proofPath => {
         await verifyEstablish(proofPath, fixture);
@@ -212,8 +211,11 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     }
   });
 
-  test('rejects wrong, duplicate, and conflicting identifier metadata distinctly', async () => {
+  test('rejects missing, wrong, duplicate, and conflicting identifier metadata distinctly', async () => {
     for (const signatureDetails of [
+      '',
+      'Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop',
+      'Signature size=1024',
       'Identifier=dev.other.desktop',
       'Identifier=DEV.PROPR.DESKTOP',
       `Identifier=${REQUIRED_IDENTIFIER}\nIdentifier=${REQUIRED_IDENTIFIER}`,
@@ -224,6 +226,24 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
         isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.identifierMetadataFailure),
       );
     }
+  });
+
+  test('requires root identifier evidence during both initial and stable native inspections', async () => {
+    await withPrivateProofPath(async proofPath => {
+      await assert.rejects(
+        verifyEstablish(proofPath, { identifierLine: null }),
+        isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.identifierMetadataFailure),
+      );
+      await verifyEstablish(proofPath);
+      await assert.rejects(verifyDarwinPackagedConnectSignature({
+        mode: 'stable',
+        application,
+        expectedCertificateSha1: fingerprint,
+        proofPath,
+        keychain,
+        runCommand: createVerifierSimulator({ identifierLine: null }).runCommand,
+      }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.identifierMetadataFailure));
+    });
   });
 
   test('rejects the wrong embedded requirement leaf distinctly', async () => {
@@ -322,12 +342,11 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     });
   });
 
-  test('accepts realistic verbose metadata with omitted redundant fields', () => {
+  test('accepts realistic verbose metadata with an exact identifier and omitted signature size', () => {
     for (const signatureDetails of [
-      '',
-      'Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop',
       `Identifier=${REQUIRED_IDENTIFIER}`,
-      'Signature size=1024',
+      `Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop\nIdentifier=${REQUIRED_IDENTIFIER}`,
+      `Identifier=${REQUIRED_IDENTIFIER}\nSignature size=1024`,
       `Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop\r\n  IDENTIFIER = ${REQUIRED_IDENTIFIER}  \r\nFormat=app bundle with Mach-O thin (arm64)`,
     ]) {
       assert.equal(

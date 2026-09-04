@@ -68,20 +68,33 @@ describe('Darwin packaged Connect direct signing', () => {
     assert.ok(signedTargets.indexOf(helper) < signedTargets.indexOf(mainExecutable));
     for (const call of signingCalls) {
       assert.equal(call.executable, '/usr/bin/codesign');
-      assert.deepEqual(call.arguments.slice(0, 7), [
-        '--sign', fingerprint,
-        '--force',
-        '--keychain', keychain,
-        '--timestamp=none',
-        '--preserve-metadata=identifier,entitlements,flags',
-      ]);
       assert.equal(call.forwardOutput, false);
       assert.equal(call.timeoutMs, 30_000);
       assert.equal(call.terminationGraceMs, 1_000);
     }
-    assert.ok(signingCalls.at(-1).arguments.includes(
-      `-r=designated => identifier "dev.propr.desktop" and certificate leaf = H"${fingerprint}"`,
-    ));
+    const nestedArguments = targets => [
+      '--sign', fingerprint,
+      '--force',
+      '--keychain', keychain,
+      '--timestamp=none',
+      '--preserve-metadata=identifier,entitlements,flags',
+      ...targets,
+    ];
+    assert.deepEqual(signingCalls.map(call => call.arguments), [
+      nestedArguments([helperExecutable]),
+      nestedArguments([framework, helper]),
+      nestedArguments([mainExecutable]),
+      [
+        '--sign', fingerprint,
+        '--force',
+        '--keychain', keychain,
+        '--timestamp=none',
+        '--identifier', 'dev.propr.desktop',
+        '--preserve-metadata=entitlements,flags',
+        `-r=designated => identifier "dev.propr.desktop" and certificate leaf = H"${fingerprint}"`,
+        application,
+      ],
+    ]);
     assert.deepEqual(calls.at(-1).arguments, [
       '--verify', '--deep', '--strict', application,
     ]);

@@ -10,6 +10,7 @@ const CERTIFICATE_LINE = /^\s*SHA-1 hash:\s*([A-Fa-f0-9]{40})\s*$/gmu;
 const PACKAGED_CONNECT_NATIVE_ARTIFACTS = /\/Resources\/app\.asar\.unpacked\/\.vite\/native\/prebuilds\//u;
 const CODESIGN_TIMEOUT_MS = 30_000;
 const CODESIGN_MAX_OUTPUT_BYTES = 256 * 1024;
+const REQUIRED_IDENTIFIER = 'dev.propr.desktop';
 const MACH_O_MAGICS = new Set([
   0xFEEDFACE, 0xFEEDFACF, 0xCEFAEDFE, 0xCFFAEDFE,
   0xCAFEBABE, 0xBEBAFECA, 0xCAFEBABF, 0xBFBAFECA,
@@ -141,7 +142,7 @@ export const signDarwinPackagedConnectApplication = async ({
     certificateSha1,
   );
 
-  const designatedRequirement = `designated => identifier "dev.propr.desktop" and certificate leaf = H"${certificateSha1}"`;
+  const designatedRequirement = `designated => identifier "${REQUIRED_IDENTIFIER}" and certificate leaf = H"${certificateSha1}"`;
   const discovered = (await discover(join(application, 'Contents')))
     .filter(filePath => !PACKAGED_CONNECT_NATIVE_ARTIFACTS.test(filePath));
   const targets = [...discovered, application]
@@ -159,7 +160,12 @@ export const signDarwinPackagedConnectApplication = async ({
       '--force',
       '--keychain', keychain,
       '--timestamp=none',
-      '--preserve-metadata=identifier,entitlements,flags',
+      ...(isApplication ? [
+        '--identifier', REQUIRED_IDENTIFIER,
+        '--preserve-metadata=entitlements,flags',
+      ] : [
+        '--preserve-metadata=identifier,entitlements,flags',
+      ]),
       ...(isApplication ? [`-r=${designatedRequirement}`] : []),
       ...targetGroup,
     ];
