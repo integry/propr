@@ -100,14 +100,20 @@ describe('packaged Connect bounded child lifecycle', () => {
   test('requires exact three starts, three browser approvals, one poll, and one activation', async () => {
     const harness = await readFile(new URL('./smoke-packaged-connect.mjs', import.meta.url), 'utf8');
     const accounting = harness.slice(
-      harness.indexOf('if (discoveries.length !== 8'),
-      harness.indexOf('|| bootstrap.some(request => request.authorization !== null)'),
+      harness.indexOf('const evidenceFailure = evaluatePackagedConnectEvidence'),
+      harness.indexOf('if (evidenceFailure)'),
     );
-    assert.match(accounting, /pairingStarts\.length !== 3/u);
-    assert.match(accounting, /pairingBrowsers\.length !== 3/u);
-    assert.match(accounting, /pairingPolls\.length !== 1/u);
-    assert.match(accounting, /pairingActivations\.length !== 1/u);
-    assert.doesNotMatch(accounting, /pairingPolls\.length < 3/u);
+    assert.match(accounting, /pairingStartCount: pairingStarts\.length/u);
+    assert.match(accounting, /pairingBrowserCount: pairingBrowsers\.length/u);
+    assert.match(accounting, /pairingPollCount: pairingPolls\.length/u);
+    assert.match(accounting, /pairingActivationCount: pairingActivations\.length/u);
+
+    const evaluator = await readFile(new URL('./packaged-connect-evidence.mjs', import.meta.url), 'utf8');
+    assert.match(evaluator, /evidence\.pairingStartCount !== 3/u);
+    assert.match(evaluator, /evidence\.pairingBrowserCount !== 3/u);
+    assert.match(evaluator, /evidence\.pairingPollCount !== 1/u);
+    assert.match(evaluator, /evidence\.pairingActivationCount !== 1/u);
+    assert.doesNotMatch(evaluator, /pairingPollCount < 3/u);
   });
 
   test('accepts an exact ready proof followed by a clean exit', async () => {
