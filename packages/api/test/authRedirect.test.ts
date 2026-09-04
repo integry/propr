@@ -10,6 +10,8 @@ const originalFrontendUrl = process.env.FRONTEND_URL;
 const originalCookieDomain = process.env.COOKIE_DOMAIN;
 const originalApiPublicUrl = process.env.API_PUBLIC_URL;
 const originalRedirectAllowedHosts = process.env.AUTH_REDIRECT_ALLOWED_HOSTS;
+const originalAuthRateLimitMax = process.env.PROPR_AUTH_RATE_LIMIT_MAX;
+const originalAuthRateLimitWindowMs = process.env.PROPR_AUTH_RATE_LIMIT_WINDOW_MS;
 
 async function fetchFromApp(app: express.Express, path: string): Promise<globalThis.Response> {
   const server = app.listen(0, '127.0.0.1');
@@ -35,10 +37,36 @@ afterEach(() => {
   else process.env.API_PUBLIC_URL = originalApiPublicUrl;
   if (originalRedirectAllowedHosts === undefined) delete process.env.AUTH_REDIRECT_ALLOWED_HOSTS;
   else process.env.AUTH_REDIRECT_ALLOWED_HOSTS = originalRedirectAllowedHosts;
+  if (originalAuthRateLimitMax === undefined) delete process.env.PROPR_AUTH_RATE_LIMIT_MAX;
+  else process.env.PROPR_AUTH_RATE_LIMIT_MAX = originalAuthRateLimitMax;
+  if (originalAuthRateLimitWindowMs === undefined) delete process.env.PROPR_AUTH_RATE_LIMIT_WINDOW_MS;
+  else process.env.PROPR_AUTH_RATE_LIMIT_WINDOW_MS = originalAuthRateLimitWindowMs;
 });
 
 after(async () => {
   await closeConnection();
+});
+
+test('ordinary auth metadata requests do not consume the OAuth attempt quota', async () => {
+  process.env.PROPR_DEMO_MODE = 'true';
+  process.env.FRONTEND_URL = 'https://app.example.com';
+  process.env.PROPR_AUTH_RATE_LIMIT_MAX = '2';
+  process.env.PROPR_AUTH_RATE_LIMIT_WINDOW_MS = '60000';
+  const app = express();
+  setupAuth(app);
+
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal((await fetchFromApp(app, '/api/auth/demo-mode')).status, 200);
+  }
+
+  assert.equal((await fetchFromApp(app, '/api/auth/github')).status, 302);
+  assert.equal((await fetchFromApp(app, '/api/auth/github/callback')).status, 302);
+  const limited = await fetchFromApp(app, '/api/auth/github');
+  assert.equal(limited.status, 429);
+  assert.deepEqual(await limited.json(), {
+    code: 'RATE_LIMIT_EXCEEDED',
+    error: 'Too many requests. Please try again later.',
+  });
 });
 
 test('auth redirect allowlist treats FRONTEND_URL as exact host only', async () => {

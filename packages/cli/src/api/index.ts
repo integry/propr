@@ -38,6 +38,12 @@ export {
   updateAgentRuntimePackages,
   verifyAgentRuntimePackages,
 } from './agentRuntime.js';
+
+export {
+  getVisualPreviewAuthStatus,
+  saveVisualPreviewUploadToken,
+} from './visualPreviewAuth.js';
+export type { VisualPreviewAuthStatus } from './visualPreviewAuth.js';
 export type {
   AgentRuntimeBuildStatus,
   AgentRuntimeImageVerification,
@@ -132,6 +138,7 @@ export {
 
 export type {
   MonitoredRepo,
+  VisualPreviewSettings,
   GetReposResponse,
   AddRepoOptions,
   UpdateRepoOptions,

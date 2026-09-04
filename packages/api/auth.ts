@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- browser, bearer, and socket authentication share session state */
 import passport from 'passport';
 import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
 import session from 'express-session';
@@ -8,7 +9,7 @@ import type { Express, Request, Response, NextFunction, RequestHandler } from 'e
 import { validateSessionSecret } from '@propr/shared';
 import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
-import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenIfNeeded, refreshGitHubTokenWithResult } from './authGithubTokens.js';
+import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenWithResult } from './authGithubTokens.js';
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
@@ -32,6 +33,7 @@ import {
     resolveInstanceAuthorization,
     type InstanceAuthorization,
 } from './authorization.js';
+import { captureVisualPreviewCredentialFromAdminLogin } from './services/visualPreviewOAuth.js';
 import './authTypes.js';
 
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
@@ -87,7 +89,7 @@ export function createGitHubOAuthStrategy(config: GitHubOAuthStrategyConfig): Gi
         state: true as unknown as string,
     },
     // eslint-disable-next-line max-params
-    function verifyCallback(accessToken: string, refreshToken: string, params: { expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) {
+    function verifyCallback(accessToken: string, refreshToken: string, params: { expires_in?: number; refresh_token_expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) {
         console.log('User authenticated:', profile.username);
 
         const tokenExpiresAt = params.expires_in ? Date.now() + (params.expires_in * 1000) : undefined;
@@ -101,6 +103,10 @@ export function createGitHubOAuthStrategy(config: GitHubOAuthStrategyConfig): Gi
             accessToken,
             refreshToken: refreshToken || undefined,
             tokenExpiresAt,
+            refreshTokenExpiresAt: params.refresh_token_expires_in
+                ? Date.now() + (params.refresh_token_expires_in * 1000)
+                : undefined,
+            oauthSource: 'github',
         };
         return done(null, user);
     });
@@ -136,13 +142,27 @@ export function createConnectCallbackHandler(
                     redirectAuthError(res, 'session_unavailable');
                     return;
                 }
-                completeAuthenticatedSession(req, res);
+                void completeAuthenticatedSessionWithPreviewCredential(req, res);
             });
         } catch (error) {
             console.error('Connect instance login failed:', error);
             redirectAuthError(res, 'connect_login_failed');
         }
     };
+}
+
+async function completeAuthenticatedSessionWithPreviewCredential(req: Request, res: Response): Promise<void> {
+    if (req.user && isUserWhitelisted(req.user.username)) {
+        try {
+            const captured = await captureVisualPreviewCredentialFromAdminLogin(req.user);
+            if (captured) console.log(`[visual-preview] Captured OAuth upload credential for administrator ${req.user.username}`);
+        } catch (error) {
+            // Preview uploads are optional; a storage or encryption issue must not
+            // prevent an otherwise valid administrator from logging in.
+            console.warn('[visual-preview] Could not capture OAuth upload credential during login:', (error as Error).message);
+        }
+    }
+    completeAuthenticatedSession(req, res);
 }
 
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): SocketAuthMiddlewareBundle {
@@ -165,9 +185,11 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
     }
     const engineMiddleware: RequestHandler[] = [];
 
-    // Keep unauthenticated OAuth/session endpoints bounded independently from
-    // the general API quota. Register this before session and Passport work.
-    app.use('/api/auth', createAuthRequestRateLimiter());
+    // Keep OAuth starts and callbacks bounded independently from the general
+    // API quota. Session checks, logout, and auth metadata remain covered by
+    // the general API limiter and must not exhaust the much smaller OAuth
+    // bucket during normal UI use.
+    app.use('/api/auth/github', createAuthRequestRateLimiter());
 
     if (!demoModeAtStartup) {
         // Create Redis client for session store
@@ -274,7 +296,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
     } else if (browserAuthMode === 'github') {
         app.get('/api/auth/github/callback',
             passport.authenticate('github', { failureRedirect: '/login' }),
-            completeAuthenticatedSession
+            completeAuthenticatedSessionWithPreviewCredential
         );
     } else if (browserAuthMode === 'connect') {
         app.get('/api/auth/github/callback', createConnectCallbackHandler());
@@ -380,6 +402,8 @@ export async function authenticateSocketRequest(
     throw new SocketAuthenticationError('AUTHENTICATION_REQUIRED', 'Authentication required');
 }
 
+// Session, bearer, demo, and refresh outcomes are intentionally centralized.
+// eslint-disable-next-line complexity
 export async function ensureAuthenticated(req: Request, res: Response, next: NextFunction): Promise<void> {
     if (isDemoMode()) {
         res.set('X-ProPR-Demo-Mode', 'true');
@@ -419,10 +443,19 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
                 return;
             }
         } else {
-            // Proactively refresh token in background if needed.
-            refreshGitHubTokenIfNeeded(req).catch((err) => {
-                console.error('Background token refresh failed:', err);
-            });
+            // Await synchronization with the durable upload grant before a
+            // downstream route can use an access token invalidated by rotation.
+            // Temporary proactive-refresh failures do not invalidate a token
+            // whose recorded expiry is still in the future.
+            const refreshResult = await refreshGitHubTokenWithResult(req);
+            if (req.user?.githubAuthInvalid) {
+                if (req.user?.githubAuthInvalid) await clearSessionForReauth(req);
+                res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
+                return;
+            }
+            if (refreshResult.status === 'temporarily-unavailable') {
+                console.warn('Proactive GitHub token refresh was temporarily unavailable; continuing with the unexpired session token');
+            }
         }
         return next();
     }

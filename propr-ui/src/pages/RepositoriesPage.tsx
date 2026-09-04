@@ -23,7 +23,7 @@ const RepositoriesPage: React.FC = () => {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, handleStopIndexing, handleReindexRepo, handleAddRepo,
     handleRemoveRepo, handleToggleRepo, handleToggleStar, handleToggleHidden,
-    handleToggleAutoCiFollowup,
+    handleToggleAutoCiFollowup, handleUpdateVisualPreview,
     handleToggleShowHidden, handleRetry
   } = useRepositoryManagement();
 
@@ -127,6 +127,7 @@ const RepositoriesPage: React.FC = () => {
                 selectedRepoId={selectedRepoId}
                 onToggle={handleToggleRepo}
                 onToggleAutoCiFollowup={handleToggleAutoCiFollowup}
+                onUpdateVisualPreview={handleUpdateVisualPreview}
                 onRemove={handleRemoveRepo}
                 onStopIndexing={handleStopIndexing}
                 onReindex={handleReindexRepo}
@@ -156,6 +157,7 @@ const RepositoriesPage: React.FC = () => {
                   selectedRepoId={selectedRepoId}
                   onToggle={handleToggleRepo}
                   onToggleAutoCiFollowup={handleToggleAutoCiFollowup}
+                  onUpdateVisualPreview={handleUpdateVisualPreview}
                   onRemove={handleRemoveRepo}
                   onStopIndexing={handleStopIndexing}
                   onReindex={handleReindexRepo}

@@ -4,7 +4,7 @@
 
 import {
   TaskStates, AgentRegistry, generateClaudePrompt, updateFileChangesFromWorktree, recordLLMMetrics,
-  resolveAgentTerminationReason
+  resolveAgentTerminationReason, loadRepositoryVisualPreviewSettings
 } from '@propr/core';
 import type { AgentExecutionResult, ClaudeCodeResponse, ClaudeResult } from '@propr/core';
 import type { ExecutionParams, JobContext } from './types.js';
@@ -82,6 +82,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     repoOwner: issueRef.repoOwner,
     repoName: issueRef.repoName
   };
+  const visualPreviewSettingsPromise = loadRepositoryVisualPreviewSettings(`${issueRef.repoOwner}/${issueRef.repoName}`);
 
   // Localize remote images in issue body and comments
   const issueBodyHtml = (currentIssueData.data as { body_html?: string }).body_html;
@@ -109,7 +110,8 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       created_at: currentIssueData.data.created_at,
       user: currentIssueData.data.user
     },
-    baseBranch: issueRef.baseBranch || null
+    baseBranch: issueRef.baseBranch || null,
+    visualPreviewSettings: await visualPreviewSettingsPromise
   });
 
   // Start periodic file changes updates during agent execution

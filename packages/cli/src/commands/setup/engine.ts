@@ -335,6 +335,11 @@ export interface BackendHealth {
   accessFailure?: "unauthorized" | "forbidden";
 }
 
+export interface VisualPreviewCredentialSetupResult {
+  status: 'configured' | 'already-configured' | 'environment-managed' | 'missing' | 'unsupported';
+  githubUsername?: string;
+}
+
 /** Classify an HTTP access failure from the protected backend status route. */
 export function classifyBackendAccessError(error: unknown): BackendHealth | undefined {
   const httpStatus = (error as { status?: unknown } | null)?.status;
@@ -379,6 +384,8 @@ export interface SetupActions extends AgentSetupActions {
   isStackRunning(rootDir: string): Promise<boolean>;
   startStack(params: StartStackParams): Promise<void>;
   checkBackendHealth(params: BackendHealthParams): Promise<BackendHealth>;
+  /** Seed preview uploads from the authenticated gh CLI session when possible. */
+  configureVisualPreviewCredential(rootDir: string): Promise<VisualPreviewCredentialSetupResult>;
   addRepository(selection: RepoSelection, rootDir: string): Promise<void>;
   resolveUiUrl(rootDir: string): Promise<string>;
   /** Open `url` in the host's default browser (best-effort; may reject). */
@@ -572,6 +579,21 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
         await sleep(2_000);
       } while (Date.now() < deadline);
       return { healthy: false, detail: `backend not healthy within ${Math.round(timeoutMs / 1000)}s (${lastError})` };
+    },
+    async configureVisualPreviewCredential(rootDir) {
+      const token = configManager?.getGithubToken()?.trim();
+      if (!token) return { status: 'missing' };
+      if (!/^(?:gho_|ghp_|github_pat_)/.test(token)) return { status: 'unsupported' };
+
+      const { getVisualPreviewAuthStatus, saveVisualPreviewUploadToken } = await import('../../api/visualPreviewAuth.js');
+      const client = await localApiClient(rootDir);
+      const current = await getVisualPreviewAuthStatus(client);
+      if (current.status === 'active') {
+        return { status: 'already-configured', githubUsername: current.githubUsername };
+      }
+      if (current.source === 'environment') return { status: 'environment-managed' };
+      const configured = await saveVisualPreviewUploadToken(token, client);
+      return { status: 'configured', githubUsername: configured.githubUsername };
     },
     async addRepository({ fullName, alias, baseBranch }, rootDir) {
       const { addRepo } = await import("../../api/repos.js");
@@ -1347,6 +1369,27 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       nextAction: "Run `propr start` to see the full startup output.",
     });
     return finish();
+  }
+
+  // Reuse an upload-compatible token from `gh auth token` when setup already
+  // authenticated the operator through the CLI. This is best-effort and does
+  // not make an otherwise healthy setup fail; the same credential can always
+  // be added later in Settings without restarting the stack.
+  if (backendReady && resolvedAuth.mode !== 'demo') {
+    try {
+      const previewCredential = await actions.configureVisualPreviewCredential(rootDir);
+      if (previewCredential.status === 'configured') {
+        log(`visual previews: configured from the gh CLI session${previewCredential.githubUsername ? ` (@${previewCredential.githubUsername})` : ''}`);
+      } else if (previewCredential.status === 'already-configured') {
+        log('visual previews: upload credential already configured');
+      } else if (previewCredential.status === 'unsupported') {
+        log('visual previews: the gh CLI token type cannot upload attachments; add a PAT in Settings');
+      } else if (previewCredential.status === 'environment-managed') {
+        log('visual previews: GITHUB_VISUAL_PREVIEW_TOKEN is invalid; replace or remove that environment override');
+      }
+    } catch (error) {
+      log(`visual previews: could not import the gh CLI token (${(error as Error).message}); add a PAT in Settings`);
+    }
   }
 
   // 7. Enable agents in the running backend — add the selected agents that are

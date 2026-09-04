@@ -15,6 +15,7 @@ const PROJECT_ROOT = process.env.PROPR_ROOT
     || (fs.existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
 const AGENT_DOCKERFILE = 'Dockerfile.agent';
 const SAFE_BUILD_VERSION = /^[0-9A-Za-z][0-9A-Za-z.!+_-]*$/;
+const pendingImagePreparations = new Map<string, Promise<VersionedImageBuildResult>>();
 
 export interface VersionedImageBuildResult {
     success: boolean;
@@ -48,7 +49,7 @@ function bundleBuildArgs(versions: AgentCliVersionMatrix): string[] {
     ];
 }
 
-async function imageExists(image: string): Promise<boolean> {
+export async function agentDockerImageExists(image: string): Promise<boolean> {
     const result = await executeDockerCommand('docker', ['images', '-q', image]);
     return result.exitCode === 0 && Boolean(result.stdout.trim());
 }
@@ -120,16 +121,16 @@ function scheduleBundleImageCleanup(imageTag: string): void {
     });
 }
 
-export async function ensureAgentBundleImage(
+async function prepareAgentBundleImage(
     versions: AgentCliVersionMatrix,
     contentHash: string,
-    basePath: string = PROJECT_ROOT
+    basePath: string,
+    imageTag: string,
 ): Promise<VersionedImageBuildResult> {
-    const imageTag = generateAgentBundleImageTag(versions, contentHash);
     logger.info({ imageTag, versions, contentHash }, 'Ensuring unified agent Docker image exists...');
 
     try {
-        if (await imageExists(imageTag)) return { success: true, imageTag };
+        if (await agentDockerImageExists(imageTag)) return { success: true, imageTag };
         if (await pullImage(imageTag)) return { success: true, imageTag };
         const built = await buildBundle(imageTag, versions, basePath);
         if (built.success) scheduleBundleImageCleanup(imageTag);
@@ -141,18 +142,48 @@ export async function ensureAgentBundleImage(
     }
 }
 
+/**
+ * Pulls or builds one bundle tag at most once per process at a time. Registry
+ * refreshes can arrive concurrently (HTTP requests, config notifications, and
+ * startup), but they must all await the same Docker operation.
+ */
+export function ensureAgentBundleImage(
+    versions: AgentCliVersionMatrix,
+    contentHash: string,
+    basePath: string = PROJECT_ROOT
+): Promise<VersionedImageBuildResult> {
+    const imageTag = generateAgentBundleImageTag(versions, contentHash);
+    const pending = pendingImagePreparations.get(imageTag);
+    if (pending) return pending;
+
+    const preparation = prepareAgentBundleImage(versions, contentHash, basePath, imageTag)
+        .finally(() => {
+            pendingImagePreparations.delete(imageTag);
+        });
+    pendingImagePreparations.set(imageTag, preparation);
+    return preparation;
+}
+
 /** Ensures a directly configured image such as propr/agent:latest is available. */
 export async function ensureAgentDockerImage(_agentType: string, dockerImage: string): Promise<boolean> {
-    try {
-        if (await imageExists(dockerImage)) return true;
-        if (await pullImage(dockerImage)) return true;
-        const versions = getDefaultAgentCliVersionMatrix();
-        const built = await buildBundle(dockerImage, versions, PROJECT_ROOT);
-        return built.success;
-    } catch (error) {
-        logger.error({ dockerImage, error: (error as Error).message }, 'Error ensuring agent Docker image');
-        return false;
-    }
+    const pending = pendingImagePreparations.get(dockerImage);
+    if (pending) return (await pending).success;
+
+    const preparation = (async (): Promise<VersionedImageBuildResult> => {
+        try {
+            if (await agentDockerImageExists(dockerImage)) return { success: true, imageTag: dockerImage };
+            if (await pullImage(dockerImage)) return { success: true, imageTag: dockerImage };
+            const versions = getDefaultAgentCliVersionMatrix();
+            return buildBundle(dockerImage, versions, PROJECT_ROOT);
+        } catch (error) {
+            logger.error({ dockerImage, error: (error as Error).message }, 'Error ensuring agent Docker image');
+            return { success: false, imageTag: dockerImage, error: (error as Error).message };
+        }
+    })().finally(() => {
+        pendingImagePreparations.delete(dockerImage);
+    });
+    pendingImagePreparations.set(dockerImage, preparation);
+    return (await preparation).success;
 }
 
 export async function buildClaudeDockerImage(): Promise<boolean> {
