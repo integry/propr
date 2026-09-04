@@ -1,0 +1,112 @@
+#!/usr/bin/env node
+
+import { execFile as nodeExecFile } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+
+const execFile = promisify(nodeExecFile);
+const REQUIRED_IDENTIFIER = 'dev.propr.desktop';
+const SHA1_PATTERN = /^[A-F0-9]{40}$/u;
+
+const normalizeLines = value => value.replace(/\r\n?/gu, '\n').split('\n');
+
+export const assertDarwinSigningEvidence = ({
+  expectedCertificateSha1,
+  identities,
+  signatureDetails,
+  designatedRequirement,
+  previousDesignatedRequirement,
+}) => {
+  const expectedSha1 = expectedCertificateSha1.toUpperCase();
+  if (!SHA1_PATTERN.test(expectedSha1)) throw new Error('invalid-certificate-fingerprint');
+
+  const validIdentities = normalizeLines(identities)
+    .map(line => /^\s*\d+\)\s+([A-Fa-f0-9]{40})\s+"[^"]+"\s*$/u.exec(line)?.[1]?.toUpperCase())
+    .filter(Boolean);
+  if (validIdentities.length !== 1 || validIdentities[0] !== expectedSha1
+    || !normalizeLines(identities).some(line => /^\s*1 valid identities found\s*$/u.test(line))) {
+    throw new Error('identity-not-unique');
+  }
+
+  const details = normalizeLines(signatureDetails);
+  if (details.some(line => line === 'Signature=adhoc')
+    || !details.some(line => line.startsWith('Authority=') && line.length > 'Authority='.length)
+    || !details.includes(`Identifier=${REQUIRED_IDENTIFIER}`)) {
+    throw new Error('signature-not-certificate-backed');
+  }
+
+  const requirements = normalizeLines(designatedRequirement)
+    .filter(line => line.startsWith('designated =>'));
+  if (requirements.length !== 1
+    || !requirements[0].includes(`identifier "${REQUIRED_IDENTIFIER}"`)
+    || !requirements[0].toUpperCase().includes(`CERTIFICATE LEAF = H"${expectedSha1}"`)) {
+    throw new Error('designated-requirement-not-bound');
+  }
+  if (previousDesignatedRequirement !== undefined
+    && requirements[0] !== previousDesignatedRequirement.trim()) {
+    throw new Error('designated-requirement-changed');
+  }
+  return requirements[0];
+};
+
+const inspectDarwinSigningEvidence = async ({ application, keychain }) => {
+  const [identityResult, signatureResult, requirementResult] = await Promise.all([
+    execFile('/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning', keychain], {
+      encoding: 'utf8', maxBuffer: 256 * 1024,
+    }),
+    execFile('/usr/bin/codesign', ['-d', '--verbose=4', application], {
+      encoding: 'utf8', maxBuffer: 256 * 1024,
+    }),
+    execFile('/usr/bin/codesign', ['-d', '-r-', application], {
+      encoding: 'utf8', maxBuffer: 256 * 1024,
+    }),
+  ]);
+  await execFile('/usr/bin/codesign', ['--verify', '--deep', '--strict', application], {
+    encoding: 'utf8', maxBuffer: 256 * 1024,
+  });
+  return {
+    identities: `${identityResult.stdout}\n${identityResult.stderr}`,
+    signatureDetails: `${signatureResult.stdout}\n${signatureResult.stderr}`,
+    designatedRequirement: `${requirementResult.stdout}\n${requirementResult.stderr}`,
+  };
+};
+
+export const verifyDarwinPackagedConnectSignature = async ({
+  mode,
+  application,
+  keychain,
+  expectedCertificateSha1,
+  proofPath,
+}) => {
+  if (mode !== 'establish' && mode !== 'stable') throw new Error('invalid-verification-mode');
+  const previousDesignatedRequirement = mode === 'stable'
+    ? await readFile(proofPath, 'utf8')
+    : undefined;
+  const evidence = await inspectDarwinSigningEvidence({ application, keychain });
+  const requirement = assertDarwinSigningEvidence({
+    expectedCertificateSha1,
+    previousDesignatedRequirement,
+    ...evidence,
+  });
+  if (mode === 'establish') {
+    await writeFile(proofPath, `${requirement}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  }
+};
+
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isMain) {
+  const [mode, application, keychain, expectedCertificateSha1, proofPath] = process.argv.slice(2);
+  try {
+    if (process.platform !== 'darwin'
+      || !mode || !application || !keychain || !expectedCertificateSha1 || !proofPath) {
+      throw new Error('invalid-invocation');
+    }
+    await verifyDarwinPackagedConnectSignature({
+      mode, application, keychain, expectedCertificateSha1, proofPath,
+    });
+  } catch {
+    process.stderr.write(`Darwin packaged Connect signing identity ${mode === 'stable' ? 'changed' : 'could not be established'}.\n`);
+    process.exitCode = 1;
+  }
+}
