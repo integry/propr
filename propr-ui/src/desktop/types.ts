@@ -1,5 +1,10 @@
 export type DesktopPlatform = 'macos' | 'windows' | 'linux';
 
+export type DesktopDeepLinkConsumption = {
+  kind: 'connect-confirmation' | 'open-queued' | 'open-navigated';
+  target: string;
+};
+
 export interface DesktopProfile {
   id: string;
   name: string;
@@ -91,7 +96,7 @@ export interface DesktopManagedTunnelRecoveryAdapter {
 export interface DesktopAdapters {
   platform: DesktopPlatform;
   app: {
-    onDeepLink(listener: (url: string) => void): () => void;
+    onDeepLink(listener: (url: string) => DesktopDeepLinkConsumption | null): () => void;
   };
   profiles: DesktopProfileAdapter;
   discovery: DesktopDiscoveryAdapter;

@@ -116,7 +116,7 @@ describe('packaged smoke profile authorization', () => {
       'utf8',
     );
     const isolation = main.indexOf("app.setPath('userData', packagedSmokeUserDataDirectory)");
-    const sink = main.indexOf('createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory)');
+    const sink = main.indexOf('createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory, nativeSmokePhase)');
     const authorized = main.indexOf("packagedSmokeEvidence?.write('desktop.smoke.authorized')");
     const appReady = main.indexOf("log('info', 'desktop.app.ready'");
     const shutdownCoordinator = main.indexOf('const shutdown = createDesktopShutdownCoordinator({');

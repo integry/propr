@@ -15,7 +15,8 @@ import {
   discoverConfiguredConnect,
 } from '@propr/cli/desktop-discovery';
 import { DesktopConnectDiscoveryService } from './connect-discovery';
-import { DeepLinkDelivery } from './deep-link-delivery';
+import { DeepLinkDelivery, deepLinkAcknowledgementTimeoutMs } from './deep-link-delivery';
+import { handleDeepLinkDeliveryFailure } from './deep-link-failure-policy';
 import { clearDesktopInstanceCookies } from './desktop-session';
 import { DesktopCredentialService, type DesktopPairingBrowserRequest } from './credential-service';
 import {
@@ -48,10 +49,12 @@ import {
   DESKTOP_PROTOCOL,
   IPC_CHANNELS,
   type DesktopAcceptanceJourneyStage,
+  type DesktopDeepLinkConsumption,
 } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
+import { configureNativeSmokeLogsPath } from './smoke-log-path';
 import {
   configureDesktopSessionSecurity,
   type DesktopNetworkPermissionEvidence,
@@ -75,6 +78,12 @@ const PACKAGED_CONNECT_JOURNEY_STAGE_EVENT = 'desktop.renderer.connect_journey.s
 const PACKAGED_CONNECT_JOURNEY_FAILURE_EVENT = 'desktop.renderer.connect_journey.failure';
 const PACKAGED_CONNECT_JOURNEY_OPERATION_EVENT = 'desktop.renderer.connect_journey.operation';
 const PACKAGED_CONNECT_RENDERER_OWNERSHIP_EVENT = 'desktop.renderer.connect_request_ownership';
+const NATIVE_COLD_MANUAL_LINK = 'propr://connect?api=http%3A%2F%2Flocalhost%3A44111';
+const NATIVE_COLD_TUNNEL_LINK = 'propr://connect?api=https%3A%2F%2Ft-native-relaunch.propr.dev';
+const NATIVE_WARM_MANUAL_LINK = 'propr://connect?api=http%3A%2F%2F127.0.0.1%3A44112';
+const NATIVE_WARM_TUNNEL_LINK = 'propr://connect?api=https%3A%2F%2Ft-native-evidence.propr.dev';
+const NATIVE_WARM_OPEN_LINK = 'propr://open?path=%2Ftasks%3Fstatus%3Dopen';
+type NativeSmokePhase = 'first' | 'relaunch';
 type PackagedConnectJourneyStage =
   | 'JOURNEY_DISCOVERY_RENDERER'
   | 'JOURNEY_DISCOVERY_VALIDATED'
@@ -117,6 +126,7 @@ const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAM
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 let packagedSmokeUserDataDirectory: string | null = null;
 let packagedSmokeEvidence: ReturnType<typeof createPackagedSmokeEvidenceSink> = null;
+let nativeSmokePhase: NativeSmokePhase | undefined;
 try {
   packagedSmokeUserDataDirectory = authorizePackagedSmokeTest({
     argv: process.argv,
@@ -126,12 +136,25 @@ try {
     platform: process.platform,
   });
   if (packagedSmokeUserDataDirectory) {
+    const requestedNativePhase = process.env.PROPR_DESKTOP_NATIVE_ARTIFACT_PHASE;
+    if (requestedNativePhase !== undefined) {
+      if (requestedNativePhase !== 'first' && requestedNativePhase !== 'relaunch') {
+        throw new Error('Packaged desktop native artifact phase is invalid');
+      }
+      nativeSmokePhase = requestedNativePhase;
+    }
     const smokeDirectoryStats = lstatSync(packagedSmokeUserDataDirectory);
     if (!smokeDirectoryStats.isDirectory() || smokeDirectoryStats.isSymbolicLink()) {
       throw new Error('Packaged desktop smoke --user-data-dir must be an existing non-link directory');
     }
     app.setPath('userData', packagedSmokeUserDataDirectory);
-    packagedSmokeEvidence = createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory);
+    configureNativeSmokeLogsPath({
+      app,
+      authorizedNativeSmoke: nativeSmokePhase !== undefined,
+      platform: process.platform,
+      userDataDirectory: packagedSmokeUserDataDirectory,
+    });
+    packagedSmokeEvidence = createPackagedSmokeEvidenceSink(packagedSmokeUserDataDirectory, nativeSmokePhase);
     packagedSmokeEvidence?.write('desktop.smoke.authorized');
   }
 } catch {
@@ -139,11 +162,12 @@ try {
 }
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 let mainWindow: BrowserWindow | null = null;
+let nativeSmokeWindow: BrowserWindow | null = null;
 const initialDeepLink = deepLinkFromArguments(process.argv);
-const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
-  IPC_CHANNELS.deepLink,
-  initialDeepLink ? [initialDeepLink] : [],
-);
+const nativeObservedEvents = new Set<string>();
+let nativeRendererReady = false;
+let nativeCompletionStarted = false;
+let nativeProfiles: ProfileStore | null = null;
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
 if (process.platform === 'win32') {
@@ -248,6 +272,179 @@ const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?:
       code: fields ? 'DETAIL_REDACTED' : undefined,
     }));
   }
+};
+
+const recordNativeEvent = (event: string): void => {
+  if (!nativeSmokePhase) return;
+  if (event.endsWith('_once') && nativeObservedEvents.has(event)) {
+    packagedSmokeEvidence?.write('desktop.app.start_failed');
+    app.exit(1);
+    return;
+  }
+  nativeObservedEvents.add(event);
+  packagedSmokeEvidence?.write(event);
+};
+
+const nativeEventForDeliveredLink = (value: string): string | null => {
+  if (nativeSmokePhase === 'first') {
+    if (value === NATIVE_COLD_MANUAL_LINK) return 'desktop.deeplink.cold_manual_once';
+    if (value === NATIVE_WARM_MANUAL_LINK) return 'desktop.deeplink.warm_manual_once';
+    if (value === NATIVE_WARM_TUNNEL_LINK) return 'desktop.deeplink.warm_tunnel_once';
+    if (value === NATIVE_WARM_OPEN_LINK) return 'desktop.deeplink.warm_open_once';
+  }
+  if (nativeSmokePhase === 'relaunch' && value === NATIVE_COLD_TUNNEL_LINK) {
+    return 'desktop.deeplink.cold_tunnel_once';
+  }
+  return null;
+};
+
+const assertNativeRendererConsumption = (
+  value: string,
+  consumption: DesktopDeepLinkConsumption,
+  window: BrowserWindow,
+): void => {
+  const expected = value === NATIVE_COLD_MANUAL_LINK
+    ? { kind: 'connect-confirmation', target: 'http://localhost:44111' }
+    : value === NATIVE_COLD_TUNNEL_LINK
+      ? { kind: 'connect-confirmation', target: 'https://t-native-relaunch.propr.dev' }
+      : value === NATIVE_WARM_MANUAL_LINK
+        ? { kind: 'connect-confirmation', target: 'http://127.0.0.1:44112' }
+        : value === NATIVE_WARM_TUNNEL_LINK
+          ? { kind: 'connect-confirmation', target: 'https://t-native-evidence.propr.dev' }
+          : value === NATIVE_WARM_OPEN_LINK
+            ? { kind: 'open-queued', target: '/tasks?status=open' }
+            : null;
+  if (!expected) return;
+  if (consumption.kind !== expected.kind || consumption.target !== expected.target) {
+    throw new Error('Native renderer deep-link acknowledgement did not prove the intended state');
+  }
+  if (nativeSmokePhase
+    && [NATIVE_WARM_MANUAL_LINK, NATIVE_WARM_TUNNEL_LINK, NATIVE_WARM_OPEN_LINK].includes(value)
+    && nativeSmokeWindow !== window) {
+    throw new Error('Native warm deep link did not reach the already-running renderer');
+  }
+};
+
+const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
+  IPC_CHANNELS.deepLink,
+  initialDeepLink ? [initialDeepLink] : [],
+  (value, consumption, window) => {
+    assertNativeRendererConsumption(value, consumption, window);
+    const event = nativeEventForDeliveredLink(value);
+    if (event) recordNativeEvent(event);
+    maybeCompleteNativeFirstLaunch();
+  },
+  () => {
+    handleDeepLinkDeliveryFailure(nativeSmokePhase !== undefined, {
+      exit: code => app.exit(code),
+      log,
+    });
+  },
+  Date.now,
+  1_000,
+  deepLinkAcknowledgementTimeoutMs(nativeSmokePhase !== undefined),
+);
+
+const runNativeSecureStorageProbe = async (): Promise<void> => {
+  if (nativeSmokePhase !== 'first' || !nativeProfiles) return;
+  recordNativeEvent('desktop.native.secure_storage_probe.started');
+  const storage = nativeProfiles.security();
+  const credential = {
+    version: 2 as const,
+    profileId: 'native-local',
+    origin: 'http://localhost:44221',
+    publicInstanceIdentity: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    token: `propr_it_${'a'.repeat(43)}`,
+  };
+  const credentialWrite = await nativeProfiles.writeCredential(credential);
+  if (process.platform === 'linux') {
+    if (storage.available || credentialWrite.stored
+      || await nativeProfiles.readCredential('native-local') !== null) {
+      throw new Error('Native Linux fallback-only proof unexpectedly claimed libsecret custody');
+    }
+    recordNativeEvent('desktop.native.secure_storage_fallback_refused');
+  } else if (storage.available) {
+    const stored = await nativeProfiles.readCredential('native-local');
+    if (storage.backend === 'basic_text' || !credentialWrite.stored
+      || stored?.token !== credential.token || stored.origin !== credential.origin) {
+      throw new Error('Native secure-storage custody probe did not use OS encryption');
+    }
+    await nativeProfiles.removeCredential('native-local');
+    if (await nativeProfiles.readCredential('native-local') !== null) {
+      throw new Error('Native secure-storage custody probe cleanup failed');
+    }
+    const pending = await nativeProfiles.pendingRevocations();
+    if (pending.length !== 1 || pending[0].credential.token !== credential.token
+      || !await nativeProfiles.completePendingRevocation(
+        pending[0].id,
+        pending[0].credential,
+        pending[0].credentialGeneration,
+      )) {
+      throw new Error('Native secure-storage custody probe cleanup failed');
+    }
+  } else if (credentialWrite.stored || await nativeProfiles.readCredential('native-local') !== null) {
+    throw new Error('Native secure-storage custody probe allowed plaintext fallback');
+  }
+  if (process.platform === 'darwin' && (!storage.available || storage.backend !== 'os-protected')) {
+    throw new Error('Native macOS artifact did not retain Keychain-backed custody');
+  }
+  recordNativeEvent('desktop.native.secure_storage_probe.completed');
+  recordNativeEvent('desktop.native.secure_storage_enforced');
+};
+
+function maybeCompleteNativeFirstLaunch(): void {
+  const required = [
+    'desktop.deeplink.cold_manual_once',
+    'desktop.deeplink.warm_manual_once',
+    'desktop.deeplink.warm_tunnel_once',
+    'desktop.deeplink.warm_open_once',
+    'desktop.deeplink.rejected_malformed',
+    'desktop.deeplink.rejected_oversized',
+    'desktop.deeplink.rejected_unsafe_scheme',
+  ];
+  if (nativeSmokePhase !== 'first' || !nativeRendererReady || nativeCompletionStarted
+    || !required.every(event => nativeObservedEvents.has(event)) || !mainWindow || !nativeProfiles) return;
+  nativeCompletionStarted = true;
+  const window = mainWindow;
+  void (async () => {
+    const uiRequiresConfirmation = await window.webContents.executeJavaScript(`(async () => {
+      const deadline = performance.now() + 2000;
+      do {
+        const input = Array.from(document.querySelectorAll('label')).find(label =>
+          label.textContent?.includes('Instance URL'))?.querySelector('input');
+        if (input?.value === 'https://t-native-evidence.propr.dev') return true;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      } while (performance.now() < deadline);
+      return false;
+    })()`);
+    const stored = await nativeProfiles!.list();
+    const deepLinkedEndpoints = new Set([
+      'http://localhost:44111',
+      'http://127.0.0.1:44112',
+      'https://t-native-evidence.propr.dev',
+    ]);
+    if (!uiRequiresConfirmation || stored.activeProfileId !== 'native-local' || stored.profiles.length !== 2
+      || stored.profiles.some(profile => deepLinkedEndpoints.has(profile.apiBaseUrl))) {
+      throw new Error('Native deep-link endpoint was trusted without UI confirmation');
+    }
+    recordNativeEvent('desktop.deeplink.confirmation_required');
+    app.quit();
+  })().catch(error => {
+    log('error', 'desktop.app.start_failed', { error });
+    app.exit(1);
+  });
+}
+
+const recordNativeRejectedArguments = (argv: readonly string[]): void => {
+  if (nativeSmokePhase !== 'first') return;
+  if (argv.includes('native-evidence-malformed')) recordNativeEvent('desktop.deeplink.rejected_malformed');
+  if (argv.includes('https://native-evidence.invalid/unsafe')) {
+    recordNativeEvent('desktop.deeplink.rejected_unsafe_scheme');
+  }
+  if (argv.some(value => value.length > 2_048 && value.startsWith('propr://connect?api='))) {
+    recordNativeEvent('desktop.deeplink.rejected_oversized');
+  }
+  maybeCompleteNativeFirstLaunch();
 };
 
 const reportPackagedConnectJourneyStage = (
@@ -1036,7 +1233,32 @@ const createMainWindow = async (
   if (preloadBridgeExposed !== true) {
     throw new Error('Desktop preload bridge was not exposed to the renderer');
   }
+  if (nativeSmokePhase && !nativeSmokeWindow) nativeSmokeWindow = window;
   deepLinkDelivery.setWindow(window);
+  if (nativeSmokePhase) {
+    await deepLinkDelivery.whenIdle();
+    const expectedInitialApi = nativeSmokePhase === 'first'
+      ? 'http://localhost:44111'
+      : 'https://t-native-relaunch.propr.dev';
+    const initialEndpointVisible = await window.webContents.executeJavaScript(`(async () => {
+      const deadline = performance.now() + 2000;
+      do {
+        const input = Array.from(document.querySelectorAll('label')).find(label =>
+          label.textContent?.includes('Instance URL'))?.querySelector('input');
+        if (input?.value === ${JSON.stringify(expectedInitialApi)}) return true;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      } while (performance.now() < deadline);
+      return false;
+    })()`);
+    if (!initialEndpointVisible) throw new Error('Native cold deep link did not reach the confirmation UI');
+    if (nativeSmokePhase === 'first') {
+      await runNativeSecureStorageProbe();
+      recordNativeEvent('desktop.native.profile_fresh');
+    } else {
+      recordNativeEvent('desktop.native.profile_preserved');
+      recordNativeEvent('desktop.deeplink.confirmation_required');
+    }
+  }
   const smokeProfileApiUrl = process.env.PROPR_DESKTOP_SMOKE_PROFILE_API_URL;
   if (packagedSmokeTest && !transportSmoke && smokeProfileApiUrl) {
     const normalizedSmokeApiUrl = normalizeApiBaseUrl(smokeProfileApiUrl);
@@ -1063,43 +1285,7 @@ const createMainWindow = async (
     log('info', 'desktop.renderer.profile_api.ready', { origin: DESKTOP_RENDERER_ORIGIN });
   }
   let mvpFlowProof: Record<string, unknown> = { connectDiscovery: true };
-  if (packagedSmokeTest && !transportSmoke && !connectJourney) {
-    const profileFlow = await window.webContents.executeJavaScript(`(async () => {
-      const bridge = window.proprDesktop;
-      const local = await bridge.profiles.save({ label: 'Local setup', apiBaseUrl: 'http://localhost:4000' });
-      const remote = await bridge.profiles.save({ label: 'ProPR Connect', apiBaseUrl: 'https://connect.propr.dev' });
-      await bridge.profiles.setActive(remote.id);
-      const profiles = await bridge.profiles.list();
-      const lifecycle = await bridge.lifecycle.start();
-      const deadline = performance.now() + 2000;
-      let connectDeepLink = false;
-      do {
-        const labels = Array.from(document.querySelectorAll('.desktop-welcome-card form > label'));
-        connectDeepLink = labels[1]?.querySelector('input')?.value === 'https://connect.propr.dev';
-        if (connectDeepLink) break;
-        await new Promise(resolve => setTimeout(resolve, 25));
-      } while (performance.now() < deadline);
-      return {
-        active: profiles.activeProfileId === remote.id,
-        local: profiles.profiles.some(profile => profile.id === local.id && profile.apiBaseUrl === 'http://localhost:4000'),
-        remote: profiles.profiles.some(profile => profile.id === remote.id && profile.apiBaseUrl === 'https://connect.propr.dev'),
-        lifecycleBoundary: lifecycle.ok === false && lifecycle.code === 'not-implemented',
-        connectDeepLink,
-      };
-    })()`);
-    if (!profileFlow?.active || !profileFlow?.local || !profileFlow?.remote
-      || !profileFlow?.lifecycleBoundary || !profileFlow?.connectDeepLink) {
-      throw new Error('Packaged desktop local/remote/API profile flow failed');
-    }
-    mvpFlowProof = {
-      connectDiscovery: true,
-      localProfile: profileFlow.local,
-      remoteActiveProfile: profileFlow.active && profileFlow.remote,
-      lifecycleBoundary: profileFlow.lifecycleBoundary,
-      connectUiPopulated: profileFlow.connectDeepLink,
-    };
-    await closePackagedProfileEditorAndWaitForWelcomeChooser(window);
-  } else if (packagedSmokeTest) {
+  const assertPackagedMvpBoundary = async (): Promise<void> => {
     const boundary = await window.webContents.executeJavaScript(`(async () => {
       const bridge = window.proprDesktop;
       const metadata = await bridge.app.getMetadata();
@@ -1114,6 +1300,49 @@ const createMainWindow = async (
     if (!boundary?.packaged || !boundary?.profiles || !boundary?.lifecycleBoundary) {
       throw new Error('Packaged desktop transport smoke did not preserve the MVP bridge boundaries');
     }
+  };
+  if (packagedSmokeTest && !transportSmoke && !connectJourney) {
+    if (nativeSmokePhase) {
+      await assertPackagedMvpBoundary();
+    } else {
+      const profileFlow = await window.webContents.executeJavaScript(`(async () => {
+        const bridge = window.proprDesktop;
+        const local = await bridge.profiles.save({ label: 'Local setup', apiBaseUrl: 'http://localhost:4000' });
+        const remote = await bridge.profiles.save({ label: 'ProPR Connect', apiBaseUrl: 'https://connect.propr.dev' });
+        await bridge.profiles.setActive(remote.id);
+        const profiles = await bridge.profiles.list();
+        const lifecycle = await bridge.lifecycle.start();
+        const deadline = performance.now() + 2000;
+        let connectDeepLink = false;
+        do {
+          const labels = Array.from(document.querySelectorAll('.desktop-welcome-card form > label'));
+          connectDeepLink = labels[1]?.querySelector('input')?.value === 'https://connect.propr.dev';
+          if (connectDeepLink) break;
+          await new Promise(resolve => setTimeout(resolve, 25));
+        } while (performance.now() < deadline);
+        return {
+          active: profiles.activeProfileId === remote.id,
+          local: profiles.profiles.some(profile => profile.id === local.id && profile.apiBaseUrl === 'http://localhost:4000'),
+          remote: profiles.profiles.some(profile => profile.id === remote.id && profile.apiBaseUrl === 'https://connect.propr.dev'),
+          lifecycleBoundary: lifecycle.ok === false && lifecycle.code === 'not-implemented',
+          connectDeepLink,
+        };
+      })()`);
+      if (!profileFlow?.active || !profileFlow?.local || !profileFlow?.remote
+        || !profileFlow?.lifecycleBoundary || !profileFlow?.connectDeepLink) {
+        throw new Error('Packaged desktop local/remote/API profile flow failed');
+      }
+      mvpFlowProof = {
+        connectDiscovery: true,
+        localProfile: profileFlow.local,
+        remoteActiveProfile: profileFlow.active && profileFlow.remote,
+        lifecycleBoundary: profileFlow.lifecycleBoundary,
+        connectUiPopulated: profileFlow.connectDeepLink,
+      };
+      await closePackagedProfileEditorAndWaitForWelcomeChooser(window);
+    }
+  } else if (packagedSmokeTest) {
+    await assertPackagedMvpBoundary();
   }
   if (packagedSmokeTest && !connectJourney) {
     log('info', 'desktop.renderer.mvp_flows.ready', mvpFlowProof);
@@ -1123,6 +1352,8 @@ const createMainWindow = async (
     });
   }
   log('info', 'desktop.renderer.ready', { preloadBridgeExposed: true });
+  nativeRendererReady = true;
+  maybeCompleteNativeFirstLaunch();
   return window;
 };
 
@@ -1141,6 +1372,7 @@ if (!hasSingleInstanceLock) {
     if (shutdownStarted) return;
     const deepLink = deepLinkFromArguments(argv);
     if (deepLink) deliverDeepLink(deepLink);
+    else recordNativeRejectedArguments(argv);
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
@@ -1155,6 +1387,16 @@ if (!hasSingleInstanceLock) {
       () => packagedSmokeEvidence?.write('desktop.log.write_failed'),
     );
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
+    if (nativeSmokePhase) {
+      const expectedVersion = process.env.PROPR_DESKTOP_NATIVE_EXPECTED_VERSION;
+      const expectedPlatform = process.env.PROPR_DESKTOP_NATIVE_EXPECTED_PLATFORM;
+      const expectedArch = process.env.PROPR_DESKTOP_NATIVE_EXPECTED_ARCH;
+      if (!expectedVersion || app.getVersion() !== expectedVersion
+        || expectedPlatform !== process.platform || expectedArch !== process.arch) {
+        throw new Error('Native artifact application identity, version, or architecture mismatch');
+      }
+      recordNativeEvent('desktop.native.identity_verified');
+    }
     const transportSmoke = packagedTransportSmoke();
     activePackagedTransportSmoke = transportSmoke;
     const connectSmoke = packagedConnectSmoke();
@@ -1272,6 +1514,32 @@ if (!hasSingleInstanceLock) {
         retryPending: credentialInitialization.retryPending,
       });
     }
+    if (nativeSmokePhase) {
+      const current = await profiles.list();
+      const expected = new Map([
+        ['native-local', 'http://localhost:44221'],
+        ['native-tunnel', 'https://t-preserved.propr.dev'],
+      ]);
+      if (nativeSmokePhase === 'first') {
+        if (current.activeProfileId !== null || current.profiles.length !== 0) {
+          throw new Error('Native first launch did not start with an isolated profile');
+        }
+        await profiles.save({
+          id: 'native-local',
+          label: 'Preserved local profile',
+          apiBaseUrl: expected.get('native-local')!,
+        });
+        await profiles.save({
+          id: 'native-tunnel',
+          label: 'Native ProPR Connect tunnel',
+          apiBaseUrl: expected.get('native-tunnel')!,
+        });
+        await profiles.setActive('native-local');
+      } else if (current.activeProfileId !== 'native-local' || current.profiles.length !== expected.size
+        || current.profiles.some(profile => expected.get(profile.id) !== profile.apiBaseUrl)) {
+        throw new Error('Native relaunch did not preserve the non-secret profile state exactly');
+      }
+    }
     if (app.isPackaged && !rendererPolicyPinnedForSmoke) {
       const current = await credentials.listProfiles();
       const activeOrigin = current.profiles
@@ -1279,6 +1547,7 @@ if (!hasSingleInstanceLock) {
       rendererPolicyOrigins = activeOrigin?.startsWith('http://') ? [activeOrigin] : [];
     }
     const lifecycle = new LocalLifecycleController();
+    nativeProfiles = profiles;
     const registeredIpc = registerIpcHandlers({
       app,
       ipcMain,
@@ -1291,6 +1560,8 @@ if (!hasSingleInstanceLock) {
       devServerUrl,
       packagedRendererUrl,
       openExternal: openAllowedExternalUrl,
+      acknowledgeDeepLink: (event, acknowledgement) =>
+        deepLinkDelivery.acknowledgeSender(event.sender, acknowledgement),
       ...(app.isPackaged && !rendererPolicyPinnedForSmoke ? {
         onRendererActiveProfileChanged: (origin: string | null) => {
           const nextOrigins = origin?.startsWith('http://') ? [origin] : [];
@@ -1321,6 +1592,7 @@ if (!hasSingleInstanceLock) {
     const shutdown = createDesktopShutdownCoordinator({
       credentials,
       lifecycle: shutdownLifecycle,
+      deepLinks: deepLinkDelivery,
       ipc: registeredIpc,
       profiles,
       sessionSecurity,
@@ -1362,7 +1634,7 @@ if (!hasSingleInstanceLock) {
         log('info', 'desktop.app.shutdown_retry_requested');
         app.quit();
       }
-    } else if (packagedSmokeTest) {
+    } else if (packagedSmokeTest && nativeSmokePhase !== 'first') {
       app.quit();
     } else {
       mainWindow.show();

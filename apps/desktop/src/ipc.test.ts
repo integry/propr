@@ -2,8 +2,33 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Session } from 'electron';
 import { clearDesktopInstanceCookies, logoutDesktopSession } from './desktop-session';
+import { isValidDesktopDeepLinkAcknowledgement } from './ipc';
 
 describe('desktop session IPC operations', () => {
+  it('accepts only acknowledgements semantically bound to the delivered deep link', () => {
+    const connect = {
+      deliveryId: 1,
+      url: 'propr://connect?api=https%3A%2F%2Fconnect.propr.dev',
+      consumption: { kind: 'connect-confirmation', target: 'https://connect.propr.dev' },
+    };
+    const open = {
+      deliveryId: 2,
+      url: 'propr://open?path=%2Ftasks%3Fstatus%3Dopen',
+      consumption: { kind: 'open-queued', target: '/tasks?status=open' },
+    };
+    assert.equal(isValidDesktopDeepLinkAcknowledgement(connect), true);
+    assert.equal(isValidDesktopDeepLinkAcknowledgement(open), true);
+    assert.equal(isValidDesktopDeepLinkAcknowledgement({
+      ...connect,
+      consumption: { kind: 'connect-confirmation', target: 'https://attacker.example' },
+    }), false);
+    assert.equal(isValidDesktopDeepLinkAcknowledgement({
+      ...open,
+      consumption: { kind: 'open-navigated', target: '/plans' },
+    }), false);
+    assert.equal(isValidDesktopDeepLinkAcknowledgement({ ...connect, extra: true }), false);
+  });
+
   it('logs out through the active Electron session with credentials and without following redirects', async () => {
     const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
     const desktopSession: Pick<Session, 'fetch'> = {

@@ -66,9 +66,16 @@ describe('DesktopExperience', () => {
 
     expect(await screen.findByRole('heading', { name: 'Let’s set up this computer' })).toBeInTheDocument();
     vi.clearAllMocks();
-    act(() => deepLinks.receive('propr://connect?api=https%3A%2F%2Fconnect.propr.dev'));
+    let consumption: ReturnType<DesktopDeepLinkInbox['receive']> = null;
+    act(() => {
+      consumption = deepLinks.receive('propr://connect?api=https%3A%2F%2Fconnect.propr.dev');
+    });
 
     expect(await screen.findByRole('status')).toHaveTextContent(/untrusted instance address/i);
+    expect(consumption).toEqual({
+      kind: 'connect-confirmation',
+      target: 'https://connect.propr.dev',
+    });
     expect(screen.getByLabelText('Instance URL')).toHaveValue('https://connect.propr.dev');
     expect(screen.getByRole('button', { name: 'Connect' })).toBeInTheDocument();
     expect(adapters.discovery.discover).not.toHaveBeenCalled();
@@ -119,9 +126,13 @@ describe('DesktopExperience', () => {
     render(<DesktopExperience adapters={adapters} deepLinks={deepLinks}><div>Connected app</div></DesktopExperience>);
 
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
-    act(() => deepLinks.receive('propr://open?path=%2Ftasks%3Fstatus%3Dopen'));
+    let consumption: ReturnType<DesktopDeepLinkInbox['receive']> = null;
+    act(() => {
+      consumption = deepLinks.receive('propr://open?path=%2Ftasks%3Fstatus%3Dopen');
+    });
 
     expect(window.location.hash).toBe('#/tasks?status=open');
+    expect(consumption).toEqual({ kind: 'open-navigated', target: '/tasks?status=open' });
     expect(screen.queryByLabelText('Instance URL')).not.toBeInTheDocument();
   });
 
@@ -132,11 +143,15 @@ describe('DesktopExperience', () => {
 
     expect(await screen.findByRole('heading', { name: 'Let’s set up this computer' })).toBeInTheDocument();
     vi.clearAllMocks();
-    act(() => deepLinks.receive('propr://connect?api=SENTINEL_ATTACKER_VALUE&token=secret'));
+    let consumption: ReturnType<DesktopDeepLinkInbox['receive']> = null;
+    act(() => {
+      consumption = deepLinks.receive('propr://connect?api=SENTINEL_ATTACKER_VALUE&token=secret');
+    });
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('ProPR Desktop could not use that link. Choose an instance and try again.');
     expect(alert).not.toHaveTextContent('SENTINEL_ATTACKER_VALUE');
+    expect(consumption).toBeNull();
     expect(adapters.connection.probe).not.toHaveBeenCalled();
     expect(adapters.authentication.authenticate).not.toHaveBeenCalled();
     expect(adapters.profiles.save).not.toHaveBeenCalled();

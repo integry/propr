@@ -26,6 +26,10 @@ const verifyDarwinImage = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/verify-darwin-image.mjs', import.meta.url)),
   'utf8',
 ));
+const nativeArtifactLifecycle = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/test-native-artifact-lifecycle.mjs', import.meta.url)),
+  'utf8',
+));
 const releasePreflight = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/release-preflight.mjs', import.meta.url)),
   'utf8',
@@ -305,6 +309,34 @@ describe('desktop trusted release workflow', () => {
         < releaseArtifacts.indexOf('createNativeDmgEvidence({'),
       'staging must inspect the copied canonical DMG before binding native evidence',
     );
+  });
+
+  test('exercises every staged Linux and macOS format through the native lifecycle gate', () => {
+    const validation = job('package', 'finalize');
+    const stage = validation.indexOf('Stage architecture-verified validation artifacts with native DMG mount evidence');
+    const lifecycle = validation.indexOf('Exercise staged native install, deep-link, relaunch, and removal lifecycle');
+    const upload = validation.indexOf('Upload unsigned validation target');
+    assert.ok(stage >= 0 && lifecycle > stage && upload > lifecycle);
+    assert.match(validation, /if: matrix\.platform == 'linux' \|\| matrix\.platform == 'darwin'/);
+    assert.match(validation, /dbus-run-session -- xvfb-run --auto-servernum/);
+    assert.match(validation, /run-packaged-darwin-connect-smoke\.sh[\s\S]*native-lifecycle/);
+    assert.match(validation, /--artifact-directory "desktop-release-\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}"/);
+    assert.match(forgeConfig, /mimeType: \['x-scheme-handler\/propr'\]/);
+
+    for (const kind of ['deb', 'rpm', 'zip', 'dmg']) {
+      assert.ok(nativeArtifactLifecycle.includes(`kind === '${kind}'`)
+        || nativeArtifactLifecycle.includes(`kind !== '${kind}'`));
+    }
+    for (const evidence of [
+      'cold_manual_once', 'cold_tunnel_once', 'warm_manual_once', 'warm_tunnel_once', 'warm_open_once',
+      'rejected_malformed', 'rejected_oversized', 'rejected_unsafe_scheme', 'confirmation_required',
+    ]) assert.ok(nativeArtifactLifecycle.includes(`desktop.deeplink.${evidence}`));
+    assert.match(nativeArtifactLifecycle, /inspectArtifactArchitecture/);
+    assert.match(nativeArtifactLifecycle, /assertSafeExtractedTree/);
+    assert.match(nativeArtifactLifecycle, /assertProfileAuthority/);
+    assert.match(nativeArtifactLifecycle, /LaunchServices-registration\+open-exact-application-dispatch/);
+    assert.match(nativeArtifactLifecycle, /xdg-mime-registration\+gio-dispatch/);
+    assert.doesNotMatch(nativeArtifactLifecycle, /xattr|spctl|--no-sandbox|--disable-sandbox/);
   });
 
 
