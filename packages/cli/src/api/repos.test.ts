@@ -4,9 +4,9 @@ import type { ApiClient } from './client.js';
 import { addRepo, updateRepo, type MonitoredRepo } from './repos.js';
 
 function createClient(repos: MonitoredRepo[]): { client: ApiClient; postedRepos: () => MonitoredRepo[] } {
-  let savedRepos: MonitoredRepo[] = [];
+  let savedRepos = repos;
   const client = {
-    get: async () => ({ data: { repos_to_monitor: repos } }),
+    get: async () => ({ data: { repos_to_monitor: savedRepos } }),
     post: async (_path: string, options: { body: { repos_to_monitor: MonitoredRepo[] } }) => {
       savedRepos = options.body.repos_to_monitor;
       return { data: { success: true, repos_to_monitor: savedRepos } };
@@ -28,6 +28,33 @@ test('addRepo preserves existing failed-CI options and defaults the new reposito
 
   assert.equal(postedRepos()[0]?.autoFollowupOnFailedCi, true);
   assert.equal(postedRepos()[1]?.autoFollowupOnFailedCi, false);
+  assert.deepEqual(postedRepos()[1]?.visualPreview, { enabled: false, types: ['image'] });
+});
+
+test('updateRepo merges visual preview fields without dropping existing instructions', async () => {
+  const { client, postedRepos } = createClient([{
+    id: 'repo-1',
+    name: 'integry/propr',
+    enabled: true,
+    autoFollowupOnFailedCi: false,
+    visualPreview: { enabled: false, types: ['image'], instructions: 'Show mobile.' }
+  }]);
+
+  await updateRepo('integry/propr', {
+    visualPreview: { enabled: true, types: ['image', 'video'] }
+  }, client);
+
+  assert.deepEqual(postedRepos()[0]?.visualPreview, {
+    enabled: true,
+    types: ['image', 'video'],
+    instructions: 'Show mobile.'
+  });
+
+  await updateRepo('integry/propr', { visualPreview: { instructions: null } }, client);
+  assert.deepEqual(postedRepos()[0]?.visualPreview, {
+    enabled: true,
+    types: ['image', 'video']
+  });
 });
 
 test('updateRepo writes the failed-CI option without changing other repositories', async () => {

@@ -114,6 +114,12 @@ export async function redeemConnectAuthorizationCode(options: {
         email: null,
         avatarUrl: body.avatar_url,
         accessToken: body.access_token,
+        refreshToken: body.refresh_token,
+        tokenExpiresAt: body.expires_in ? Date.now() + body.expires_in * 1000 : undefined,
+        refreshTokenExpiresAt: body.refresh_token_expires_in
+            ? Date.now() + body.refresh_token_expires_in * 1000
+            : undefined,
+        oauthSource: 'connect',
     };
 }
 
@@ -183,6 +189,9 @@ function isRedeemedIdentity(value: unknown): value is {
     username: string;
     avatar_url: string | null;
     access_token: string;
+    refresh_token?: string;
+    expires_in?: number;
+    refresh_token_expires_in?: number;
 } {
     if (typeof value !== 'object' || value === null) return false;
     const candidate = value as Record<string, unknown>;
@@ -190,6 +199,10 @@ function isRedeemedIdentity(value: unknown): value is {
         isGitHubLogin(candidate.username) &&
         (candidate.avatar_url === null || typeof candidate.avatar_url === 'string') &&
         typeof candidate.access_token === 'string' &&
-        candidate.access_token.length > 0
+        candidate.access_token.length > 0 &&
+        (candidate.refresh_token === undefined || typeof candidate.refresh_token === 'string') &&
+        (candidate.expires_in === undefined || (typeof candidate.expires_in === 'number' && candidate.expires_in > 0)) &&
+        (candidate.refresh_token_expires_in === undefined
+            || (typeof candidate.refresh_token_expires_in === 'number' && candidate.refresh_token_expires_in > 0))
     );
 }

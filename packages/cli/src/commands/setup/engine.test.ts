@@ -57,6 +57,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     isStackRunning: async () => false,
     startStack: async () => undefined,
     checkBackendHealth: async () => ({ healthy: true, detail: "API healthy" }),
+    configureVisualPreviewCredential: async () => ({ status: 'already-configured' }),
     addRepository: async () => undefined,
     resolveUiUrl: async () => "http://localhost:3000",
     openUrl: async () => undefined,
@@ -96,6 +97,66 @@ test("re-running on an initialized stack leaves it intact and completes", async 
   assert.equal(scaffoldCalled, false, "scaffoldStack must not run when .env already exists");
   assert.equal(statusOf(result.state, "init-stack"), "skipped");
   assert.equal(result.completed, true);
+});
+
+test("imports an upload-compatible gh token after the backend becomes healthy", async () => {
+  let configuredRoot: string | undefined;
+  const log: string[] = [];
+  const result = await runSetup({
+    root: "/stack",
+    reporter: { onLog: (line) => log.push(line) },
+    actions: mockActions({
+      configureVisualPreviewCredential: async (rootDir) => {
+        configuredRoot = rootDir;
+        return { status: 'configured', githubUsername: 'octocat' };
+      },
+    }),
+  });
+
+  assert.equal(result.completed, true);
+  assert.equal(configuredRoot, '/stack');
+  assert.ok(log.includes('visual previews: configured from the gh CLI session (@octocat)'));
+});
+
+test("keeps visual-preview credential failures non-blocking and secrets out of reporter output", async () => {
+  const sentinels = [
+    "ghp_TOKEN_SENTINEL_123456789",
+    "Bearer BEARER_SENTINEL_123456789",
+    "https://secret.example/SENSITIVE_PATH_SENTINEL",
+    "SENSITIVE_USERNAME_SENTINEL",
+  ];
+  const logOutput: string[] = [];
+  const progressOutput: string[] = [];
+  let healthChecks = 0;
+  let attempts = 0;
+
+  const result = await runSetup({
+    root: "/stack",
+    reporter: {
+      onLog: (line) => logOutput.push(line),
+      onProgress: (event) => progressOutput.push(JSON.stringify(event)),
+    },
+    actions: mockActions({
+      checkBackendHealth: async () => {
+        healthChecks += 1;
+        return { healthy: true, detail: "API healthy" };
+      },
+      configureVisualPreviewCredential: async () => {
+        attempts += 1;
+        throw new Error(sentinels.join(" "));
+      },
+    }),
+  });
+
+  assert.equal(result.completed, true);
+  assert.equal(statusOf(result.state, "start-stack"), "done");
+  assert.equal(healthChecks, 1);
+  assert.equal(attempts, 1);
+  assert.ok(logOutput.includes("visual previews: could not import the gh CLI token; add a PAT in Settings"));
+  for (const sentinel of sentinels) {
+    assert.equal(logOutput.join("\n").includes(sentinel), false);
+    assert.equal(progressOutput.join("\n").includes(sentinel), false);
+  }
 });
 
 test("an incomplete stack root (missing dirs) is re-scaffolded even when .env exists", async () => {

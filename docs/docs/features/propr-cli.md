@@ -255,12 +255,16 @@ propr repo remove owner/repo
 propr repo toggle owner/repo --enable        # Enable/disable monitoring
 propr repo toggle owner/repo --auto-ci-followup     # Enable failed-CI follow-up
 propr repo toggle owner/repo --no-auto-ci-followup  # Disable failed-CI follow-up
+propr repo toggle owner/repo --visual-previews --preview-types image,video
+propr repo toggle owner/repo --no-visual-previews
 propr repo index owner/repo                  # Full reindex
 propr repo index owner/repo --incremental    # Incremental reindex
 propr repo status                            # Indexing status for all repos
 ```
 
 Automatic CI follow-up is configured per repository and is **off by default**. Enable it only for repositories whose CI failures are high-quality, trusted signals; noisy or flaky checks can otherwise create unnecessary follow-up work. `propr repo list` shows the current setting for every monitored repository.
+
+Visual previews are also per-repository and **off by default**. `--preview-types` accepts `image`, `video`, or `image,video`; use `--preview-instructions` to add project-specific capture details. See [Visual Previews](./visual-previews.md) for generation and publication behavior.
 
 ## Agents
 

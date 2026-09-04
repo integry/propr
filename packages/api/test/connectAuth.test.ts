@@ -174,3 +174,30 @@ test('binds the Connect identity username to the validated token owner', async (
   assert.equal(user.username, 'verified-owner');
   assert.equal(user.displayName, 'verified-owner');
 });
+
+test('preserves expiring OAuth grant fields returned by Connect', async () => {
+  const before = Date.now();
+  const user = await redeemConnectAuthorizationCode({
+    code: 'pia_code',
+    relayUrl: 'https://webhook.propr.dev/v1',
+    relayToken: 'prt_relay_secret',
+    fetchImpl: (async (input) => {
+      if (String(input) === 'https://api.github.com/user') {
+        return Response.json({ id: 583231, login: 'octocat' });
+      }
+      return Response.json({
+        username: 'octocat',
+        avatar_url: null,
+        access_token: 'gho_user_secret',
+        refresh_token: 'ghr_refresh_secret',
+        expires_in: 28_800,
+        refresh_token_expires_in: 15_897_600,
+      });
+    }) as typeof fetch,
+  });
+
+  assert.equal(user.oauthSource, 'connect');
+  assert.equal(user.refreshToken, 'ghr_refresh_secret');
+  assert.ok((user.tokenExpiresAt || 0) >= before + 28_800_000);
+  assert.ok((user.refreshTokenExpiresAt || 0) >= before + 15_897_600_000);
+});

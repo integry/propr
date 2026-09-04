@@ -51,6 +51,9 @@ FROM node:22-alpine AS runtime
 
 WORKDIR /usr/src/app
 
+ARG GH_VERSION=2.99.0
+ARG TARGETARCH
+
 # Runtime-only packages. No python/make/g++ — native modules were built in stage 1.
 #   git      — simple-git operations
 #   sudo     — worktree ownership changes
@@ -58,6 +61,16 @@ WORKDIR /usr/src/app
 #   curl/jq  — deploy-pr.sh script
 #   util-linux-misc — script(1), the PTY bridge for browser agent logins
 RUN apk add --no-cache git sudo docker-cli curl jq tini util-linux-misc \
+    && gh_arch="${TARGETARCH:-amd64}" \
+    && case "$gh_arch" in amd64|arm64) ;; *) echo "Unsupported GitHub CLI architecture: $gh_arch" >&2; exit 1 ;; esac \
+    && gh_archive="gh_${GH_VERSION}_linux_${gh_arch}.tar.gz" \
+    && curl -fsSLO "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${gh_archive}" \
+    && curl -fsSLO "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_checksums.txt" \
+    && grep "  ${gh_archive}$" "gh_${GH_VERSION}_checksums.txt" | sha256sum -c - \
+    && tar -xzf "$gh_archive" \
+    && install -m 0755 "gh_${GH_VERSION}_linux_${gh_arch}/bin/gh" /usr/local/bin/gh \
+    && rm -rf "$gh_archive" "gh_${GH_VERSION}_checksums.txt" "gh_${GH_VERSION}_linux_${gh_arch}" \
+    && gh --version \
     && mkdir -p /tmp/git-processor \
     && git config --system --add safe.directory /usr/src/app/repos \
     && git config --system --add safe.directory /tmp/pr-worktrees \
