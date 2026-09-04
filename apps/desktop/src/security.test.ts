@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import {
+  createLatestRendererReloader,
   deepLinkFromArguments,
   applyDevelopmentRendererCsp,
   connectApiBaseUrlFromDeepLink,
@@ -299,6 +300,29 @@ describe('desktop URL security', () => {
     assert.match(policy, /connect-src 'self' https: wss:/);
     assert.doesNotMatch(policy, /(?:^|\s)http:(?:\s|;|$)/);
     assert.doesNotMatch(policy, /(?:^|\s)ws:(?:\s|;|$)/);
+  });
+
+  it('reloads only the latest current renderer across replacement and overlapping policy changes', () => {
+    const scheduled: Array<() => void> = [];
+    const reloads: string[] = [];
+    const renderer = (name: string) => ({
+      isDestroyed: () => false,
+      reload: () => { reloads.push(name); },
+    });
+    let currentRenderer = renderer('first');
+    const reloadLatest = createLatestRendererReloader(
+      () => currentRenderer,
+      callback => { scheduled.push(callback); },
+    );
+
+    reloadLatest();
+    currentRenderer = renderer('replacement');
+    reloadLatest();
+    currentRenderer = renderer('current');
+    scheduled[0]();
+    scheduled[1]();
+
+    assert.deepEqual(reloads, ['current']);
   });
 
   it('relaxes inline scripts only while Vite serves the development renderer', () => {

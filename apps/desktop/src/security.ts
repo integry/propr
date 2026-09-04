@@ -231,6 +231,26 @@ export const rendererContentSecurityPolicy = (
   "frame-src 'none'",
 ].join('; ');
 
+interface ReloadableRenderer {
+  isDestroyed(): boolean;
+  reload(): void;
+}
+
+export const createLatestRendererReloader = (
+  getCurrentRenderer: () => ReloadableRenderer | null,
+  schedule: (callback: () => void) => void = callback => { setTimeout(callback, 0); },
+): (() => void) => {
+  let generation = 0;
+  return () => {
+    const scheduledGeneration = ++generation;
+    schedule(() => {
+      if (generation !== scheduledGeneration) return;
+      const renderer = getCurrentRenderer();
+      if (renderer && !renderer.isDestroyed()) renderer.reload();
+    });
+  };
+};
+
 export const applyDevelopmentRendererCsp = (html: string): string => {
   const packagedPolicy = rendererContentSecurityPolicy();
   if (!html.includes(packagedPolicy)) {

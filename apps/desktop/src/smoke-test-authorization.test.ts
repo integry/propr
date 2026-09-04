@@ -168,4 +168,16 @@ describe('packaged smoke profile authorization', () => {
     assert.ok(persistedProfileRead < policyInitialization);
     assert.ok(policyInitialization < createWindow);
   });
+
+  it('does not install dynamic profile reconciliation for a pinned packaged smoke policy', () => {
+    const main = readFileSync(fileURLToPath(new URL('./main.ts', import.meta.url)), 'utf8');
+    const callbackGuard = main.indexOf('...(app.isPackaged && !rendererPolicyPinnedForSmoke ? {');
+    const callback = main.indexOf('onRendererActiveProfileChanged:', callbackGuard);
+    const callbackGuardEnd = main.indexOf('} : {}),', callback);
+    const registrationEnd = main.indexOf('});', callbackGuardEnd);
+
+    assert.notEqual(callbackGuard, -1);
+    assert.ok(callbackGuard < callback && callback < callbackGuardEnd);
+    assert.ok(callbackGuardEnd < registrationEnd);
+  });
 });

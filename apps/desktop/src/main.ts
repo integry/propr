@@ -35,6 +35,7 @@ import {
 } from './packaged-approval-session';
 import { createDesktopShutdownCoordinator } from './shutdown';
 import {
+  createLatestRendererReloader,
   deepLinkFromArguments,
   isSafeExternalUrl,
   isTrustedRendererUrl,
@@ -1172,8 +1173,10 @@ if (!hasSingleInstanceLock) {
         : smokeProfileOrigin
           ? [smokeProfileOrigin]
           : [];
-    let rendererPolicyReloadGeneration = 0;
     const rendererPolicyPinnedForSmoke = rendererPolicyOrigins.length > 0 && packagedSmokeTest;
+    const reloadCurrentRendererForPolicyChange = createLatestRendererReloader(
+      () => mainWindow?.webContents ?? null,
+    );
     const contentSecurityPolicy = (): string => rendererContentSecurityPolicy(
       !app.isPackaged,
       rendererPolicyOrigins,
@@ -1286,22 +1289,18 @@ if (!hasSingleInstanceLock) {
       devServerUrl,
       packagedRendererUrl,
       openExternal: openAllowedExternalUrl,
-      onRendererActiveProfileChanged: (origin, renderer) => {
-        if (!app.isPackaged || rendererPolicyPinnedForSmoke) return;
-        const nextOrigins = origin?.startsWith('http://') ? [origin] : [];
-        if (rendererPolicyOrigins.length === nextOrigins.length
-          && rendererPolicyOrigins.every((value, index) => value === nextOrigins[index])) return;
-        rendererPolicyOrigins = nextOrigins;
-        const reloadGeneration = ++rendererPolicyReloadGeneration;
-        // The next document receives the exact policy in both its meta tag and
-        // response header. Until then, the existing CSP and request boundary
-        // both fail closed for the new active endpoint.
-        setTimeout(() => {
-          if (rendererPolicyReloadGeneration === reloadGeneration && !renderer.isDestroyed()) {
-            renderer.reload();
-          }
-        }, 0);
-      },
+      ...(app.isPackaged && !rendererPolicyPinnedForSmoke ? {
+        onRendererActiveProfileChanged: (origin: string | null) => {
+          const nextOrigins = origin?.startsWith('http://') ? [origin] : [];
+          if (rendererPolicyOrigins.length === nextOrigins.length
+            && rendererPolicyOrigins.every((value, index) => value === nextOrigins[index])) return;
+          rendererPolicyOrigins = nextOrigins;
+          // The next document receives the exact policy in both its meta tag and
+          // response header. Until then, the existing CSP and request boundary
+          // both fail closed for the new active endpoint.
+          reloadCurrentRendererForPolicyChange();
+        },
+      } : {}),
       ...(journeyStages ? {
         reportAcceptanceJourneyStage: (stage: DesktopAcceptanceJourneyStage) => {
           journeyStages.record(stage);
