@@ -132,6 +132,49 @@ describe('packaged Connect bounded child lifecycle', () => {
     assert.equal(invocations.length, 1);
   });
 
+  test('requires and preserves the expected fixed storage-backend report before readiness', async () => {
+    const accepted = await run({
+      expectedStorageBackend: 'os-protected',
+      onApp: app => {
+        app.write({
+          event: CONNECT_JOURNEY_STAGE_EVENT,
+          code: 'JOURNEY_STORAGE_BACKEND',
+          storageBackend: 'os-protected',
+        });
+        app.write(readyRecord());
+        queueMicrotask(() => app.close(0, null));
+      },
+    });
+    assert.equal(accepted.result.ok, true);
+    assert.deepEqual(accepted.result.records, [
+      {
+        event: CONNECT_JOURNEY_STAGE_EVENT,
+        code: 'JOURNEY_STORAGE_BACKEND',
+        storageBackend: 'os-protected',
+      },
+      { event: CONNECT_READY_EVENT },
+    ]);
+
+    for (const storageBackend of [undefined, 'gnome_libsecret']) {
+      const rejected = await run({
+        expectedStorageBackend: 'os-protected',
+        onApp: app => {
+          if (storageBackend) {
+            app.write({
+              event: CONNECT_JOURNEY_STAGE_EVENT,
+              code: 'JOURNEY_STORAGE_BACKEND',
+              storageBackend,
+            });
+          }
+          app.write(readyRecord());
+          queueMicrotask(() => app.close(0, null));
+        },
+      });
+      assert.equal(rejected.result.ok, false);
+      assert.equal(rejected.result.category, 'ready-validation');
+    }
+  });
+
   test('does not accept an intermediate discovery milestone as terminal readiness', async () => {
     const { result } = await run({
       onApp: app => {

@@ -87,10 +87,12 @@ describe('Darwin packaged Connect direct signing', () => {
     ]);
   });
 
-  test('fails before codesign when the imported certificate is absent or ambiguous', async () => {
+  test('fails before codesign when the imported certificate is absent, duplicate, or wrong', async () => {
     for (const stdout of [
       '',
+      `SHA-1 hash: ${fingerprint}\nSHA-1 hash: ${fingerprint}\n`,
       `SHA-1 hash: ${fingerprint}\nSHA-1 hash: ${'B'.repeat(40)}\n`,
+      `SHA-1 hash: ${'B'.repeat(40)}\n`,
     ]) {
       await assert.rejects(signDarwinPackagedConnectApplication({
         application,

@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash, X509Certificate } from 'node:crypto';
-import { lstat, readFile, readdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, resolve } from 'node:path';
+import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { runBoundedProcess } from './run-bounded-darwin-command.mjs';
 import {
@@ -12,14 +10,14 @@ import {
 
 const REQUIRED_IDENTIFIER = 'dev.propr.desktop';
 const SHA1_PATTERN = /^[A-F0-9]{40}$/u;
+const CERTIFICATE_LINE = /^\s*SHA-1 hash:\s*([A-Fa-f0-9]{40})\s*$/gmu;
 const VERIFICATION_TIMEOUT_MS = 20_000;
 const VERIFICATION_TERMINATION_GRACE_MS = 1_000;
 const VERIFICATION_MAX_OUTPUT_BYTES = 256 * 1024;
 
 export const DARWIN_VERIFICATION_DIAGNOSTICS = Object.freeze({
+  certificateLookupFailure: 'CERTIFICATE_LOOKUP_FAILURE',
   signatureDisplayFailure: 'SIGNATURE_DISPLAY_FAILURE',
-  certificateExtractionFailure: 'CERTIFICATE_EXTRACTION_FAILURE',
-  expectedRequirementFailure: 'EXPECTED_REQUIREMENT_FAILURE',
   embeddedRequirementFailure: 'EMBEDDED_REQUIREMENT_FAILURE',
   strictVerifyFailure: 'STRICT_VERIFY_FAILURE',
   evidenceAssertionFailure: 'EVIDENCE_ASSERTION_FAILURE',
@@ -30,10 +28,10 @@ const verificationFailure = (diagnostic, cause) => new DarwinSigningDiagnosticEr
   cause,
 );
 
-const runVerificationCommand = async (runCommand, arguments_, diagnostic) => {
+const runVerificationCommand = async (runCommand, executable, arguments_, diagnostic) => {
   try {
     return await runCommand({
-      executable: '/usr/bin/codesign',
+      executable,
       arguments: arguments_,
       timeoutMs: VERIFICATION_TIMEOUT_MS,
       terminationGraceMs: VERIFICATION_TERMINATION_GRACE_MS,
@@ -64,25 +62,13 @@ const expectedRequirementsFor = expectedCertificateSha1 => {
   }
 };
 
-const assertExtractedCertificate = async ({
-  certificatePrefix,
-  expectedCertificateSha1,
-}) => {
+const assertExactKeychainCertificate = (certificateDetails, expectedCertificateSha1) => {
   try {
     const { expectedSha1 } = expectedRequirementsFor(expectedCertificateSha1);
-    const prefixName = basename(certificatePrefix);
-    const prefixFiles = (await readdir(dirname(certificatePrefix)))
-      .filter(entry => entry.startsWith(prefixName));
-    if (prefixFiles.length !== 1 || prefixFiles[0] !== `${prefixName}0`) {
-      throw new Error('invalid-extracted-certificate-count');
-    }
-    const leafPath = `${certificatePrefix}0`;
-    const stats = await lstat(leafPath);
-    if (!stats.isFile()) throw new Error('invalid-extracted-certificate-file');
-    const leaf = new X509Certificate(await readFile(leafPath));
-    const extractedSha1 = createHash('sha1').update(leaf.raw).digest('hex').toUpperCase();
-    if (extractedSha1 !== expectedSha1) {
-      throw new Error('unexpected-extracted-certificate');
+    const fingerprints = [...certificateDetails.matchAll(CERTIFICATE_LINE)]
+      .map(match => match[1].toUpperCase());
+    if (fingerprints.length !== 1 || fingerprints[0] !== expectedSha1) {
+      throw new Error('invalid-keychain-certificate-evidence');
     }
   } catch (cause) {
     if (cause instanceof DarwinSigningDiagnosticError
@@ -107,8 +93,11 @@ export const assertDarwinSigningEvidence = ({
     const details = normalizeLines(signatureDetails).map(line => line.trim());
     const identifiers = details.filter(line => line.startsWith('Identifier='));
     const signatures = details.filter(line => line.startsWith('Signature'));
+    const signatureSize = signatures.length === 1
+      ? signatures[0].match(/^Signature size=([1-9]\d*)$/u)
+      : null;
     if (signatures.length !== 1
-      || !/^Signature size=\d+$/u.test(signatures[0])
+      || !signatureSize
       || identifiers.length !== 1
       || identifiers[0] !== `Identifier=${REQUIRED_IDENTIFIER}`) {
       throw new Error('invalid-signature-display-evidence');
@@ -139,29 +128,36 @@ export const assertDarwinSigningEvidence = ({
 
 export const inspectDarwinSigningEvidence = async ({
   application,
+  keychain,
   expectedCertificateSha1,
-  certificatePrefix,
   runCommand = runBoundedProcess,
 }) => {
   expectedRequirementsFor(expectedCertificateSha1);
+  const certificateResult = await runVerificationCommand(
+    runCommand,
+    '/usr/bin/security',
+    ['find-certificate', '-a', '-Z', keychain],
+    DARWIN_VERIFICATION_DIAGNOSTICS.certificateLookupFailure,
+  );
+  assertExactKeychainCertificate(
+    `${certificateResult.stdout}\n${certificateResult.stderr}`,
+    expectedCertificateSha1,
+  );
   const signatureResult = await runVerificationCommand(
     runCommand,
+    '/usr/bin/codesign',
     ['-d', '--verbose=4', application],
     DARWIN_VERIFICATION_DIAGNOSTICS.signatureDisplayFailure,
   );
-  await runVerificationCommand(
-    runCommand,
-    ['-d', '--extract-certificates', certificatePrefix, application],
-    DARWIN_VERIFICATION_DIAGNOSTICS.certificateExtractionFailure,
-  );
-  await assertExtractedCertificate({ certificatePrefix, expectedCertificateSha1 });
   const requirementResult = await runVerificationCommand(
     runCommand,
+    '/usr/bin/codesign',
     ['-d', '-r-', application],
     DARWIN_VERIFICATION_DIAGNOSTICS.embeddedRequirementFailure,
   );
   await runVerificationCommand(
     runCommand,
+    '/usr/bin/codesign',
     ['--verify', '--deep', '--strict', application],
     DARWIN_VERIFICATION_DIAGNOSTICS.strictVerifyFailure,
   );
@@ -183,14 +179,13 @@ export const verifyDarwinPackagedConnectSignature = async ({
   application,
   expectedCertificateSha1,
   proofPath,
-  certificatePrefix,
+  keychain,
   runCommand = runBoundedProcess,
 }) => {
   if (mode !== 'establish' && mode !== 'stable') {
     throw verificationFailure(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure);
   }
-  if (!certificatePrefix
-    || resolve(dirname(certificatePrefix)) !== resolve(dirname(proofPath))) {
+  if (!keychain || !keychain.endsWith('.keychain-db')) {
     throw verificationFailure(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure);
   }
   let previousDesignatedRequirement;
@@ -206,8 +201,8 @@ export const verifyDarwinPackagedConnectSignature = async ({
   }
   const evidence = await inspectDarwinSigningEvidence({
     application,
+    keychain,
     expectedCertificateSha1,
-    certificatePrefix,
     runCommand,
   });
   const requirement = assertDarwinSigningEvidence({
@@ -232,16 +227,16 @@ export const verifyDarwinPackagedConnectSignature = async ({
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
   const [
-    mode, application, expectedCertificateSha1, proofPath, certificatePrefix,
+    mode, application, expectedCertificateSha1, proofPath, keychain,
   ] = process.argv.slice(2);
   try {
     if (process.platform !== 'darwin'
       || !mode || !application || !expectedCertificateSha1 || !proofPath
-      || !certificatePrefix) {
+      || !keychain) {
       throw verificationFailure(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure);
     }
     await verifyDarwinPackagedConnectSignature({
-      mode, application, expectedCertificateSha1, proofPath, certificatePrefix,
+      mode, application, expectedCertificateSha1, proofPath, keychain,
     });
   } catch (error) {
     process.stderr.write(darwinSigningDiagnosticLine(error));

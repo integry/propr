@@ -27,6 +27,7 @@ const packagedConnectSmoke = await readFile(
   new URL('./smoke-packaged-connect.mjs', import.meta.url),
   'utf8',
 );
+const desktopMain = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
 const boundedDarwinRunner = await readFile(
   new URL('./run-bounded-darwin-command.mjs', import.meta.url),
   'utf8',
@@ -82,22 +83,26 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinSigner, /'--keychain', keychain/u);
     assert.match(darwinSigner, /'--timestamp=none'/u);
     assert.match(darwinSigner, /'--preserve-metadata=identifier,entitlements,flags'/u);
+    assert.match(darwinVerifier, /'find-certificate', '-a', '-Z', keychain/u);
     assert.match(darwinVerifier, /\['-d', '--verbose=4', application\]/u);
-    assert.match(darwinVerifier, /\['-d', '--extract-certificates', certificatePrefix, application\]/u);
     assert.doesNotMatch(darwinVerifier, /'--test-requirement'|['"`]?-R(?:=|['"`])/u);
     assert.match(darwinVerifier, /identifier "\$\{REQUIRED_IDENTIFIER\}" and certificate leaf = H"\$\{expectedSha1\}"/u);
-    assert.match(darwinVerifier, /new X509Certificate\(await readFile\(leafPath\)\)/u);
-    assert.match(darwinVerifier, /prefixFiles\.length !== 1 \|\| prefixFiles\[0\] !== `\$\{prefixName\}0`/u);
-    assert.match(darwinVerifier, /if \(!stats\.isFile\(\)\)/u);
-    assert.match(darwinVerifier, /extractedSha1 !== expectedSha1/u);
+    assert.match(darwinVerifier, /fingerprints\.length !== 1 \|\| fingerprints\[0\] !== expectedSha1/u);
+    assert.match(darwinVerifier, /\^Signature size=\(\[1-9\]\\d\*\)\$/u);
+    assert.match(darwinVerifier, /requirementMatch\[1\]\.toUpperCase\(\) !== expected\.expectedSha1/u);
     assert.doesNotMatch(darwinVerifier, /Authority=/u);
-    assert.doesNotMatch(darwinVerifier, /find-certificate/u);
+    assert.doesNotMatch(darwinVerifier, /extract-certificates/u);
     assert.doesNotMatch(darwinVerifier, /find-identity/u);
     assert.match(darwinSigner, /certificate leaf = H"\$\{certificateSha1\}"/u);
     assert.match(darwinSigner, /filter\(filePath => !PACKAGED_CONNECT_NATIVE_ARTIFACTS\.test\(filePath\)\)/u);
     assert.match(darwinSigner, /'--verify', '--deep', '--strict', application/u);
     assert.match(darwinVerifier, /'--verify', '--deep', '--strict', application/u);
     assert.match(darwinVerifier, /previousDesignatedRequirement !== designatedRequirement/u);
+    assert.match(desktopMain, /storageBackend: requiredStorageBackend/u);
+    assert.match(packagedConnectSmoke, /expectedStorageBackend: 'os-protected'/u);
+    assert.match(packagedConnectSmoke, /outcome = await runPhase\('pair'\);[\s\S]*?outcome = await runPhase\('reprobe'\)/u);
+    assert.match(packagedConnectSmoke, /authenticatedRestCount: authenticatedRest\.length/u);
+    assert.match(packagedConnectSmoke, /authenticatedSocketCount: socketEvidence\.authenticatedSocketCount/u);
     const establish = darwinRunner.indexOf('node "$signature_verifier" establish');
     const smoke = darwinRunner.indexOf('npm run smoke:connect-package');
     const stable = darwinRunner.indexOf('node "$signature_verifier" stable');
@@ -178,9 +183,8 @@ describe('packaged Connect target-native credential setup', () => {
       assert.match(darwinSigner, new RegExp(`['"]${diagnostic}['"]`, 'u'));
     }
     for (const diagnostic of [
+      'CERTIFICATE_LOOKUP_FAILURE',
       'SIGNATURE_DISPLAY_FAILURE',
-      'CERTIFICATE_EXTRACTION_FAILURE',
-      'EXPECTED_REQUIREMENT_FAILURE',
       'EMBEDDED_REQUIREMENT_FAILURE',
       'STRICT_VERIFY_FAILURE',
       'EVIDENCE_ASSERTION_FAILURE',
@@ -203,10 +207,8 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinRunner, /\/usr\/bin\/security list-keychains -d user -s \\[\s\S]*?"\$\{original_keychains\[@\]\}"/u);
     assert.match(darwinRunner, /\/usr\/bin\/security default-keychain -d user -s \\[\s\S]*?"\$original_default"/u);
     assert.match(darwinRunner, /\/usr\/bin\/security delete-keychain "\$keychain_path"/u);
-    assert.match(darwinRunner, /initial_certificate_prefix="\$keychain_root\/initial-certificate-"/u);
-    assert.match(darwinRunner, /stable_certificate_prefix="\$keychain_root\/stable-certificate-"/u);
-    assert.match(darwinRunner, /"\$requirement_proof" "\$initial_certificate_prefix"/u);
-    assert.match(darwinRunner, /"\$requirement_proof" "\$stable_certificate_prefix"/u);
+    assert.doesNotMatch(darwinRunner, /certificate_prefix/u);
+    assert.match(darwinRunner, /"\$requirement_proof" "\$keychain_path"/u);
     assert.match(darwinRunner, /run_bounded "\$CLEANUP_TIMEOUT_MS" \/bin\/rm -rf -- "\$keychain_root"/u);
     assert.match(darwinRunner, /if \(\( cleanup_status != 0 \)\)[\s\S]*?primary_status=1/u);
   });
