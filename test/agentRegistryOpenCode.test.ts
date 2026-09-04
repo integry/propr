@@ -98,6 +98,46 @@ test('AgentRegistry registers enabled OpenCode configs by alias', async () => {
     );
 });
 
+test('AgentRegistry only prepares images through the explicit worker lifecycle', async () => {
+    const registry = AgentRegistry.getInstance();
+    const preparationModes: boolean[] = [];
+    (registry as unknown as {
+        ensureUnifiedAgentImage: (_configs: AgentConfig[], prepareImages: boolean) => Promise<string>;
+        registeredAgentImagesAvailable: () => Promise<boolean>;
+    }).ensureUnifiedAgentImage = async (_configs, prepareImages) => {
+        preparationModes.push(prepareImages);
+        return 'propr/agent:prepared';
+    };
+    (registry as unknown as {
+        registeredAgentImagesAvailable: () => Promise<boolean>;
+    }).registeredAgentImagesAvailable = async () => true;
+
+    await registry.refresh();
+    await registry.prepareImagesAndRefresh();
+
+    assert.deepStrictEqual(preparationModes, [false, true]);
+});
+
+test('AgentRegistry coalesces concurrent refreshes in one process', async () => {
+    const registry = AgentRegistry.getInstance();
+    let refreshes = 0;
+    (registry as unknown as {
+        ensureUnifiedAgentImage: () => Promise<string>;
+    }).ensureUnifiedAgentImage = async () => {
+        refreshes += 1;
+        await new Promise<void>(resolve => setImmediate(resolve));
+        return 'propr/agent:prepared';
+    };
+
+    await Promise.all([
+        registry.refresh(),
+        registry.refresh(),
+        registry.refresh(),
+    ]);
+
+    assert.strictEqual(refreshes, 1);
+});
+
 test('AgentRegistry degrades without throwing when unified image is unavailable', async () => {
     const registry = AgentRegistry.getInstance();
     failImageChecks(registry);
@@ -106,6 +146,21 @@ test('AgentRegistry degrades without throwing when unified image is unavailable'
 
     assert.strictEqual(registry.isInitialized(), true);
     assert.deepStrictEqual(registry.getAllAgents(), []);
+});
+
+test('AgentRegistry keeps working agents while a replacement image is unavailable', async () => {
+    const registry = AgentRegistry.getInstance();
+    (registry as unknown as {
+        ensureUnifiedAgentImage: () => Promise<string | null>;
+    }).ensureUnifiedAgentImage = async () => 'propr/agent:working';
+
+    await registry.refresh();
+    (registry as unknown as {
+        ensureUnifiedAgentImage: () => Promise<string | null>;
+    }).ensureUnifiedAgentImage = async () => null;
+    await registry.prepareImagesAndRefresh();
+
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:working');
 });
 
 test('AgentRegistry exposes unified image degraded status', async () => {
