@@ -575,6 +575,15 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /if: always\(\) && matrix\.platform == 'win32'/);
       assert.match(section, /-OwnershipManifest \$env:PROPR_WINDOWS_INSTALLED_APP_MANIFEST/);
       assert.match(section, /-ExpectedRunId \$env:PROPR_WINDOWS_INSTALLED_APP_RUN_ID/);
+      assert.match(section, /\$supervisorHost = \(Get-Process -Id \$PID -ErrorAction Stop\)\.Path/);
+      assert.match(section, /& \$supervisorHost -NoLogo -NoProfile -NonInteractive `\n\s+-File apps\/desktop\/scripts\/test-installed-windows-app-supervisor\.ps1/);
+      assert.match(section, /6>&1 \|\n\s+Tee-Object -Variable supervisorOutput/);
+      assert.match(section, /if \(\$supervisorExitCode -ne 0\) \{ exit \$supervisorExitCode \}/);
+      assert.match(section, /\$supervisorLines = @\(\$supervisorOutput \| ForEach-Object \{ \[string\]\$_ \}\)/);
+      assert.match(
+        section,
+        /PROPR_WINDOWS_SUPERVISOR_TESTS:\$\{\{ matrix\.arch \}\}:PASSED/,
+      );
     }
   });
 
@@ -587,8 +596,320 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingCleanupOwnership/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Start-ExternallyInterruptibleSupervisor/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Invoke-WorkflowCleanupController/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-SupervisorInvocationAttributionTotality/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:\{0\}:' \+\s*'SCENARIO:\{1\}:PHASE:\{2\}:CALLSITE:\{3\}:FIELD:\{4\}:FAILED/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-SupervisorInvocationDiagnosticExact/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Get-SupervisorAttributionTotalityAssertionMessage/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /CASE:\{0\}:EXPECTED:\{1\}:OBSERVED:\{2\}/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /CaseId='BOUNDARY_BOOTSTRAP_TIMEOUT'[\s\S]*\$caseExpectedTest = \[string\]\$case\.Test[\s\S]*Invoke-SupervisorAttributedTest -Test \$caseExpectedTest -Action/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Test-WorkflowCleanupProtocolMismatchDiagnosticExact[\s\S]*PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Test-SupervisorInvocationDiagnosticExact \$diagnosticMessage\) -or\s*\(Test-WorkflowCleanupProtocolMismatchDiagnosticExact \$diagnosticMessage\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /foreach \(\$callsiteName in Get-SupervisorInvocationCallsites\)[\s\S]*foreach \(\$fieldName in Get-SupervisorInvocationFields\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Get-SupervisorInvocationFields[\s\S]*'CONTROLLER_STATUS'/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Get-SanitizedResourceCollisionControllerDiagnostic/,
+    );
+    for (const caseId of [
+      'CALLSITE_RESOURCE_COLLISION_REPLACEMENT_SURVIVAL_READ',
+      'CALLSITE_RESOURCE_COLLISION_MANIFEST_PRESERVATION',
+      'CALLSITE_HKCU_BASELINE_STATE',
+      'CALLSITE_HKCU_REGRESSION_ROOT_KEY_SETUP',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_KEY_OPEN',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_DEFAULT_STRING',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_STRING',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_EXPAND_STRING',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_BINARY',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_DWORD',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_QWORD',
+      'CALLSITE_HKCU_REGRESSION_VALUE_KIND_MULTI_STRING',
+      'CALLSITE_HKCU_REGRESSION_NATIVE_NONE_WRITE',
+      'CALLSITE_HKCU_REGRESSION_NESTED_KEY_SETUP',
+      'CALLSITE_HKCU_REGRESSION_NESTED_VALUE_SETUP',
+      'CALLSITE_HKCU_NATIVE_VALUE_READ',
+      'CALLSITE_HKCU_BASELINE_DIGEST',
+      'CALLSITE_HKCU_BASELINE_RELOCATE',
+      'CALLSITE_HKCU_TARGET_OWNERSHIP',
+      'CALLSITE_HKCU_BASELINE_RESTORE',
+      'CALLSITE_HKCU_RECOVERY_RELOCATE',
+      'CALLSITE_HKCU_FINAL_BASELINE_DIGEST',
+      'CALLSITE_HKCU_FINAL_BACKUP_ABSENCE',
+    ]) {
+      assert.match(
+        installedWindowsAppSupervisorBehaviorTest,
+        new RegExp(`CaseId='${caseId}'`),
+      );
+    }
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Test-CriticalGatePublisherPowerShellCompatibility/,
+    );
+    assert.doesNotMatch(installedWindowsAppSupervisorBehaviorTest, /-clike 'PROPR_WINDOWS_SUPERVISOR_INVOCATION:\*'/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /FIELD:EXECUTABLE_BACKUP:FAILED:\$secretNeedle[\s\S]*Assert-SupervisorInvocationDiagnosticBounded/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_WINDOWS_SUPERVISOR_INVOCATION_ATTRIBUTION:TOTAL:PASSED/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Invoke-SupervisorAttributedTest 'BOOTSTRAP_TIMEOUT'[\s\S]*Invoke-SupervisorAttributedTest 'PROVISIONAL_USER_MARKER_OWNERSHIP'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Assert-SupervisorInvocationDiagnosticBounded[\s\S]*Cannot bind argument[\s\S]*LiteralPath[\s\S]*Registry::[\s\S]*stdout[\s\S]*stderr/,
+    );
+    const resourceCollisionAssertions = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        "$failedWorkflowCleanup = Invoke-WorkflowCleanupController `\n        'RESOURCE_COLLISION'",
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        "$workflowCleanup = Invoke-WorkflowCleanupController `\n        'WORKFLOW_RETRY'",
+      ),
+    );
+    for (const field of [
+      'EXIT_CODE',
+      'REPORTED_EXIT_CODE',
+      'RESULT',
+      'CONTROLLER_STATUS',
+    ]) {
+      assert.match(
+        resourceCollisionAssertions,
+        new RegExp(
+          "-Scenario 'RESOURCE_COLLISION'[\\s\\S]*" +
+            "-Phase 'WORKFLOW_CLEANUP_CONTROLLER'[\\s\\S]*" +
+            "-Callsite 'CONTROLLER_RESULT_FIELD'[\\s\\S]*" +
+            `-Field '${field}'`,
+        ),
+      );
+    }
+    assert.match(
+      resourceCollisionAssertions,
+      /-Scenario 'RESOURCE_COLLISION'[\s\S]*-Phase 'RESOURCE_ASSERTION'[\s\S]*-Callsite 'REPLACEMENT_SURVIVAL_READ'[\s\S]*-Field 'REGISTRY_VALUE'/,
+    );
+    for (const resourceField of [
+      'OWNED_ROOT',
+      'INSTALL_ROOT',
+      'EXECUTABLE',
+      'SHORTCUT_FOLDER',
+      'SHORTCUT',
+      'SMOKE_DIRECTORY',
+      'REGISTRY_PATH',
+      'REGISTRY_VALUE',
+      'USER_NAME',
+      'PROFILE_PATH',
+    ]) {
+      assert.match(resourceCollisionAssertions, new RegExp(`'${resourceField}'`));
+    }
+    assert.match(
+      resourceCollisionAssertions,
+      /-Scenario 'RESOURCE_COLLISION'[\s\S]*-Phase 'MANIFEST_ASSERTION'[\s\S]*-Callsite 'MANIFEST_PRESERVATION'[\s\S]*-Field 'MANIFEST_PATH'[\s\S]*\$collisionManifestAfter -ceq \$collisionManifestBefore[\s\S]*\$collisionManifestState -ceq 'ACTIVE'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /\$collisionManifestBefore = Get-Content[\s\S]*\$collisionResourcesBefore =[\s\S]*Get-OwnedResourcePreservationSnapshot[\s\S]*'RESOURCE_COLLISION' \$workflowManifest[\s\S]*\$collisionResourcesAfter =[\s\S]*Get-OwnedResourcePreservationSnapshot[\s\S]*Set-ItemProperty[\s\S]*-Name 'ProPRInstalledAppOwner' -Value \(\[string\]\$workflowOwned\.Token\)[\s\S]*'WORKFLOW_RETRY' \$workflowManifest[\s\S]*Assert-OwnedResourcesGone \$workflowOwned/,
+    );
+    assert.match(
+      installedWindowsAppCleanup,
+      /\$currentOwnerToken = Get-ItemPropertyValue[\s\S]*\$cleanupFailed = \$true/,
+    );
+    assert.ok(
+      installedWindowsAppCleanup.indexOf('$currentOwnerToken = Get-ItemPropertyValue')
+        < installedWindowsAppCleanup.indexOf(
+          "if ([string]$manifest.MsiTransactionState -ceq 'COMMITTED') {\n    Assert-MsiManagedFileSystemAuthority $manifest\n  }",
+        ),
+      'registry ownership collision preflight must precede committed MSI file-system authority',
+    );
+    assert.ok(
+      installedWindowsAppCleanup.indexOf(
+        "if ([string]$manifest.MsiTransactionState -ceq 'COMMITTED') {\n    Assert-MsiManagedFileSystemAuthority $manifest\n  }",
+      )
+        < installedWindowsAppCleanup.indexOf("if ($cleanupFailed) {\n    throw 'owned resource authority collision'\n  }"),
+      'committed MSI file-system authority must complete before collision exit',
+    );
+    assert.ok(
+      installedWindowsAppCleanup.indexOf("if ($cleanupFailed) {\n    throw 'owned resource authority collision'\n  }")
+        < installedWindowsAppCleanup.indexOf('if ($allowAuthenticatedMsiUninstall'),
+      'ownership collision must stop before cleanup mutation',
+    );
+    for (const promotionProducer of [
+      'Resolve-ProvisionalOwnedUser $record',
+      'Promote-UncapturedOwnedProfiles $record $manifest',
+      'Write-DurableOwnershipManifest $manifestPath $manifest',
+    ]) {
+      assert.ok(
+        installedWindowsAppCleanup.indexOf("if ($cleanupFailed) {\n    throw 'owned resource authority collision'\n  }")
+          < installedWindowsAppCleanup.indexOf(promotionProducer),
+        `${promotionProducer} must occur after ownership collision guard`,
+      );
+      assert.ok(
+        installedWindowsAppCleanup.indexOf(promotionProducer)
+          < installedWindowsAppCleanup.indexOf('if ($allowAuthenticatedMsiUninstall'),
+        `${promotionProducer} must still occur before cleanup mutation on the no-collision path`,
+      );
+    }
+    const fixtureProcessStateReader = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Read-FixtureProcessState'),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Read-FixtureResourceState'),
+    );
+    for (const callsite of [
+      'PROCESS_STATE_DIRECTORY_INPUT',
+      'PROCESS_STATE_PATH_CONSTRUCTION',
+      'PROCESS_STATE_PUBLICATION_WAIT',
+      'PROCESS_STATE_READ_PARSE',
+      'PROCESS_STATE_WORKER_PID',
+      'PROCESS_STATE_DESCENDANT_PID',
+    ]) {
+      assert.match(fixtureProcessStateReader, new RegExp(callsite));
+      assert.match(installedWindowsAppSupervisorBehaviorTest, new RegExp(`'${callsite}'`));
+    }
+    assert.doesNotMatch(
+      fixtureProcessStateReader,
+      /throw 'fixture did not publish process state'/,
+    );
+    const fixtureResourceStateReader = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Read-FixtureResourceState'),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Assert-ProcessTreeGone'),
+    );
+    for (const callsite of [
+      'RESOURCE_STATE_DIRECTORY_INPUT',
+      'RESOURCE_STATE_PATH_CONSTRUCTION',
+      'RESOURCE_STATE_PUBLICATION_WAIT',
+      'RESOURCE_STATE_READ_PARSE',
+    ]) {
+      assert.match(fixtureResourceStateReader, new RegExp(callsite));
+      assert.match(installedWindowsAppSupervisorBehaviorTest, new RegExp(`'${callsite}'`));
+    }
+    assert.match(fixtureResourceStateReader, /RESOURCE_STATE_PATH/);
+    assert.match(fixtureResourceStateReader, /ElapsedMilliseconds -ge 45000/);
+    const criticalCancellation = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Invoke-CriticalCancellationScenario',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Test-MsiTransactionInterruptionGates',
+      ),
+    );
+    assert.match(criticalCancellation, /CRITICAL_RESULT_FIELD[\s\S]*STATE_DIRECTORY/);
+    assert.match(criticalCancellation, /ElapsedMilliseconds -ge 45000/);
+    assert.doesNotMatch(
+      criticalCancellation,
+      /'PROCESS_STATE'\s+`\s+'PROCESS_STATE_PATH'\s+`\s+'STATE_DIRECTORY'/,
+    );
+    const msiInterruptionGates = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Test-MsiTransactionInterruptionGates',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Test-BootstrapTimeout'),
+    );
+    for (const token of [
+      'CRITICAL_RESULT_FIELD',
+      'CRITICAL_OUTPUT_MARKER',
+      'MSI_TRANSACTION_MARKER',
+      'POST_TERMINATION_CLEANUP_MARKER',
+    ]) {
+      assert.match(msiInterruptionGates, new RegExp(token));
+    }
+    const ownedResourceAssertion = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Test-OwnedRegistryValueAbsent',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Convert-FixtureAuthorityFieldToken',
+      ),
+    );
+    for (const callsite of [
+      'FINAL_FILESYSTEM_DIRECTORY_ABSENCE',
+      'FINAL_FILESYSTEM_FILE_ABSENCE',
+      'FINAL_SHORTCUT_ABSENCE',
+      'FINAL_REGISTRY_VALUE_ABSENCE',
+      'FINAL_REGISTRY_PATH_ABSENCE',
+      'FINAL_REGISTRY_ROOT_ABSENCE',
+      'FINAL_USER_ABSENCE',
+      'FINAL_PROFILE_ABSENCE',
+    ]) {
+      assert.match(ownedResourceAssertion, new RegExp(callsite));
+      assert.match(installedWindowsAppSupervisorBehaviorTest, new RegExp(`'${callsite}'`));
+    }
+    for (const field of [
+      'OWNED_ROOT',
+      'INSTALL_ROOT',
+      'EXECUTABLE',
+      'SHORTCUT_FOLDER',
+      'SHORTCUT',
+      'SMOKE_DIRECTORY',
+      'REGISTRY_VALUE',
+      'REGISTRY_PATH',
+      'REGISTRY_ROOT',
+      'USER_NAME',
+      'USER_SID',
+    ]) {
+      assert.match(ownedResourceAssertion, new RegExp(field));
+    }
+    assert.doesNotMatch(ownedResourceAssertion, /cleanupStopwatch/i);
+    assert.doesNotMatch(ownedResourceAssertion, /ElapsedMilliseconds -ge 5000/);
+    assert.doesNotMatch(
+      ownedResourceAssertion,
+      /Set-SupervisorInvocationContext[\s\S]*'RESOURCE_ASSERTION'\s*\)/,
+    );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-PreExistingAppPathsAuthority/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-ProcessTreeGone/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Assert-OwnedFixtureAuthorityComplete/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_SUPERVISOR_FIXTURE_AUTHORITY:SCENARIO:\{0\}:' \+\s*'PHASE:RESOURCE_STATE:FIELD:\{1\}:INVALID/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorFixture,
+      /\$registryRoot = "Registry::HKEY_LOCAL_MACHINE\\Software\\ProPRSupervisorFixture\\\$\(\$manifest\.RunId\)"[\s\S]*RegistryRoot = \$registryRoot/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorFixture,
+      /ExecutableBackup -NotePropertyValue \$backup -Force[\s\S]*ByteIdenticalReplacement[\s\S]*-NotePropertyValue \$true -Force/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorFixture,
+      /\[IO\.FileOptions\]::WriteThrough[\s\S]*\$stream\.Flush\(\$true\)[\s\S]*\[IO\.Directory\]::Exists\(\$gatePath\)[\s\S]*\[IO\.File\]::Delete\(\$gatePath\)[\s\S]*\[IO\.File\]::Move\(\$temporaryGatePath, \$gatePath\)/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisorFixture,
+      /\[IO\.File\]::Move\(\$temporaryGatePath, \$gatePath, \$true\)/,
+    );
+    assert.ok(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        "Assert-OwnedFixtureAuthorityComplete $owned 'OWNED_RESOURCES_THEN_DEADLINE'",
+      )
+        < installedWindowsAppSupervisorBehaviorTest.indexOf(
+          'Test-Path -LiteralPath $owned.RegistryRoot',
+        ),
+      'fixture authority must be checked before LiteralPath cleanup assertions',
+    );
     assert.match(installedWindowsAppSupervisorBehaviorTest, /WindowsIdentity\]::GetCurrent\(\)/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
@@ -600,6 +921,59 @@ describe('desktop trusted release workflow', () => {
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /PROPR_WINDOWS_SUPERVISOR_OWNERSHIP:PRE_EXISTING_AUTHORITIES:PRESERVED/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Initialize-HkcuDesktopFixtureBoundary[\s\S]*Callsite 'BASELINE_RELOCATE'[\s\S]*Callsite 'BASELINE_DIGEST'[\s\S]*Get-HkcuFixtureRegistryDigest \(\[string\]\$Boundary\.DesktopKey\)[\s\S]*\[Guid\]::NewGuid\(\)\.ToString\('D'\)[\s\S]*Assert-HkcuDesktopFixtureOperation \(!\(Test-Path -LiteralPath \$Boundary\.BackupPath\)\)[\s\S]*Rename-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Assert-HkcuDesktopFixtureOperation \(!\(Test-Path -LiteralPath \$Boundary\.DesktopKey\)\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Restore-HkcuDesktopFixtureBoundary[\s\S]*if \(!\$Boundary\.BaselinePresent\)[\s\S]*Callsite 'TARGET_OWNERSHIP'[\s\S]*Assert-HkcuDesktopFixtureOperation \$TargetOwnedByFixture[\s\S]*Remove-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Callsite 'BASELINE_DIGEST'[\s\S]*Get-HkcuFixtureRegistryDigest \(\[string\]\$Boundary\.BackupPath\)[\s\S]*Callsite 'TARGET_OWNERSHIP'[\s\S]*Assert-HkcuDesktopFixtureOperation \$TargetOwnedByFixture[\s\S]*Remove-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*Assert-HkcuDesktopFixtureOperation \(!\(Test-Path -LiteralPath \$Boundary\.DesktopKey\)\)[\s\S]*Rename-Item -LiteralPath \$Boundary\.BackupPath[\s\S]*Callsite 'RECOVERY_RELOCATE'[\s\S]*Rename-Item -LiteralPath \$Boundary\.DesktopKey[\s\S]*-ErrorAction Stop[\s\S]*\$recoveredBackupDigest = try \{[\s\S]*Get-HkcuFixtureRegistryDigest \(\[string\]\$Boundary\.BackupPath\)[\s\S]*\$recoveredBackupDigest -ceq \[string\]\$Boundary\.BaselineDigest[\s\S]*Callsite 'FINAL_BASELINE_DIGEST'[\s\S]*Callsite 'FINAL_BACKUP_ABSENCE'/,
+    );
+    const registryDigestFunction = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Get-SupervisorFixtureRegistryDigest',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Get-HkcuFixtureRegistryDigest',
+      ),
+    );
+    assert.match(registryDigestFunction, /\[switch\]\$AttributeHkcuNativeValueRead/);
+    assert.match(
+      registryDigestFunction,
+      /if \(\$AttributeHkcuNativeValueRead\)[\s\S]*Invoke-HkcuDesktopFixtureOperation[\s\S]*else \{[\s\S]*Get-SupervisorFixtureRegistryValueNativeBytes/,
+    );
+    const hkcuDigestFunction = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Get-HkcuFixtureRegistryDigest',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Get-SupervisorFixtureRegistryValueDigest',
+      ),
+    );
+    assert.match(hkcuDigestFunction, /-AttributeHkcuNativeValueRead/);
+    const ownedResourceSnapshot = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Get-OwnedResourcePreservationSnapshot',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Assert-OwnedResourcePreservationSnapshot',
+      ),
+    );
+    assert.match(
+      ownedResourceSnapshot,
+      /Get-SupervisorFixtureRegistryDigest \(\[string\]\$Owned\.RegistryPath\)/,
+    );
+    assert.doesNotMatch(ownedResourceSnapshot, /AttributeHkcuNativeValueRead/);
+    assert.doesNotMatch(ownedResourceSnapshot, /Invoke-HkcuDesktopFixtureOperation/);
+    assert.doesNotMatch(ownedResourceSnapshot, /Get-HkcuFixtureRegistryDigest/);
+    const hkcuDesktopBoundaryRestore = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Restore-HkcuDesktopFixtureBoundary'),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Get-OwnedResourcePreservationSnapshot'),
+    );
+    assert.doesNotMatch(
+      hkcuDesktopBoundaryRestore,
+      /ErrorAction SilentlyContinue/,
     );
     assert.doesNotMatch(
       installedWindowsAppSupervisorBehaviorTest,
@@ -717,6 +1091,270 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /HKCU_INSTALLED_ABSENCE_ASSERTION/);
     assert.match(installedWindowsAppTest, /HKCU_INSTALLED_FALLBACK/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /Test-HkcuInstalledValueOwnership/);
+    const hkcuInstalledValueOwnership = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Test-HkcuInstalledValueOwnership'),
+      installedWindowsAppSupervisorBehaviorTest.indexOf('function Test-ProvisionalUserMarkerOwnership'),
+    );
+    assert.match(
+      hkcuInstalledValueOwnership,
+      /Test-HkcuDesktopFixtureBoundaryRegression[\s\S]*\$hkcuBoundary = New-HkcuDesktopFixtureBoundaryState \$desktopKey[\s\S]*\$desktopKeyFixtureOwned = \$false[\s\S]*try \{[\s\S]*Initialize-HkcuDesktopFixtureBoundary \$hkcuBoundary[\s\S]*\} finally \{[\s\S]*Restore-HkcuDesktopFixtureBoundary \$hkcuBoundary \$desktopKeyFixtureOwned/,
+    );
+    assert.doesNotMatch(
+      hkcuInstalledValueOwnership,
+      /HKCU installed-value fixture baseline was not clean/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Test-HkcuDesktopFixtureBoundaryRegression[\s\S]*Test-HkcuFixtureNativeNoneValueReadRegression[\s\S]*Test-SupervisorFixtureRegistryDigestAttributionRegression[\s\S]*Set-HkcuFixtureBoundaryValueKinds \$presentDesktop[\s\S]*\(Get-HkcuFixtureRegistryDigest \$presentBoundary\.BackupPath\) -ceq[\s\S]*Assert-HkcuFixtureBoundaryValueKinds \$presentDesktop[\s\S]*!\$absentBoundary\.BaselinePresent[\s\S]*\[string\]::IsNullOrWhiteSpace\(\[string\]\$absentBoundary\.BackupPath\)[\s\S]*Restore-HkcuDesktopFixtureBoundary \$absentForeignBoundary \$false[\s\S]*Test-Path -LiteralPath \$absentForeignDesktop[\s\S]*Restore-HkcuDesktopFixtureBoundary \$failureBoundary \$false[\s\S]*Test-Path -LiteralPath \$failureBoundary\.BackupPath[\s\S]*ForcePostRestoreDigestMismatch = \$true[\s\S]*ForceRecoveryBackupCollision = \$true[\s\S]*Restore-HkcuDesktopFixtureBoundary \$recoveryCollisionBoundary \$false[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryCollisionDesktop/,
+    );
+    const hkcuBoundaryRegression = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Test-HkcuDesktopFixtureBoundaryRegression',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Test-HkcuInstalledValueOwnership',
+      ),
+    );
+    assert.match(
+      hkcuBoundaryRegression,
+      /\$presentDigest = Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'[\s\S]*Get-HkcuFixtureRegistryDigest \$presentDesktop/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Initialize-HkcuDesktopFixtureBoundary[\s\S]*-Callsite 'BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'\s+`\n\s+-Action \{\n\s+\$digest = Get-HkcuFixtureRegistryDigest \(\[string\]\$Boundary\.DesktopKey\)\n\s+Assert-HkcuDesktopFixtureOperation \(Test-HkcuFixtureRegistryDigest \$digest\)\n\s+\$digest\n\s+\}\n\s+\$Boundary\.BaselineDigest = \$baselineDigest/,
+    );
+    assert.match(
+      hkcuBoundaryRegression,
+      /Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'[\s\S]*Assert-HkcuDesktopFixtureOperation \(\n\s+\(Get-HkcuFixtureRegistryDigest \$presentBoundary\.BackupPath\) -ceq\n\s+\$presentDigest\n\s+\)/,
+    );
+    assert.equal(
+      (hkcuBoundaryRegression.match(
+        /Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'FINAL_BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'\s+`\n\s+-Action \{\n\s+Assert-HkcuDesktopFixtureOperation \(\n\s+\(Get-HkcuFixtureRegistryDigest \$presentDesktop\) -ceq \$presentDigest/g,
+      ) ?? []).length,
+      2,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Assert-HkcuFixtureDigestFailureAttribution[\s\S]*\$actual = \[string\]\$_\.Exception\.Message[\s\S]*Assert-HkcuDesktopFixtureOperation \(\$actual -ceq \$expected\)[\s\S]*Assert-HkcuDesktopFixtureOperation \(\$actual -cne \$broadBaseline\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Test-HkcuFixtureDigestFailureAttributionRegression[\s\S]*Initialize-HkcuDesktopFixtureBoundary \$initializeInvalidBoundary[\s\S]*'BASELINE_DIGEST'[\s\S]*Restore-HkcuDesktopFixtureBoundary \$backupEqualityBoundary \$false[\s\S]*'BASELINE_DIGEST'[\s\S]*ForcePostRestoreDigestMismatch = \$true[\s\S]*Restore-HkcuDesktopFixtureBoundary \$postRestoreEqualityBoundary \$false[\s\S]*'BASELINE_DIGEST'[\s\S]*Get-HkcuFixtureRegistryDigest \$postRestoreEqualityBoundary\.BackupPath[\s\S]*ForcePostRestoreDigestMismatch = \$true[\s\S]*\$recoveryProofBadDigest[\s\S]*'RECOVERY_RELOCATE'[\s\S]*Restore-HkcuDesktopFixtureBoundary \$recoveryProofBoundary \$false[\s\S]*\$expectedRecoveryProofFailure[\s\S]*-Callsite 'FINAL_BASELINE_DIGEST'[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryProofBoundary\.BackupPath[\s\S]*'FINAL_BASELINE_DIGEST'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /\$recoveryProofBackupDigestReads = @\{ Value = 0 \}[\s\S]*\$recoveryProofBackupDigestReads\.Value =[\s\S]*\[int\]\$recoveryProofBackupDigestReads\.Value \+ 1[\s\S]*if \(\[int\]\$recoveryProofBackupDigestReads\.Value -eq 2\) \{[\s\S]*return \$recoveryProofBadDigest[\s\S]*return \(& \$originalHkcuDigestForRecoveryProof \$Path\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /finally \{[\s\S]*Set-Item -Path Function:\\Get-HkcuFixtureRegistryDigest[\s\S]*-Value \$originalHkcuDigestForRecoveryProof[\s\S]*Assert-True \(\$actualRecoveryProofFailure -ceq \$expectedRecoveryProofFailure\)[\s\S]*\[int\]\$recoveryProofBackupDigestReads\.Value -eq 3[\s\S]*\$recoveryProofDigestCallOrder\.Count -eq 4[\s\S]*'BackupPath,DesktopKey,BackupPath,BackupPath'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /-Callsite 'FINAL_BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryProofBoundary\.BackupPath\) -ceq[\s\S]*\$recoveryProofDigest[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryProofBoundary\.BackupPath\) -ceq[\s\S]*\[string\]\$recoveryProofBoundary\.BaselineDigest/,
+    );
+    assert.match(
+      hkcuBoundaryRegression,
+      /\$recoveryCollisionDigest = Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryCollisionDesktop/,
+    );
+    assert.match(
+      hkcuBoundaryRegression,
+      /Invoke-HkcuDesktopFixtureOperation\s+`\n\s+-Callsite 'FINAL_BASELINE_DIGEST'\s+`\n\s+-Field 'REGISTRY_ROOT'[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryCollisionDesktop[\s\S]*\$recoveryCollisionDigest/,
+    );
+    assert.match(
+      hkcuBoundaryRegression,
+      /ForceRecoveryBackupCollision = \$true[\s\S]*Restore-HkcuDesktopFixtureBoundary \$recoveryCollisionBoundary \$false/,
+    );
+    assert.match(
+      hkcuBoundaryRegression,
+      /ForceRecoveryRenameFailure = \$true[\s\S]*Restore-HkcuDesktopFixtureBoundary \$recoveryRenameFailureBoundary \$false[\s\S]*Get-HkcuFixtureRegistryDigest \$recoveryRenameFailureDesktop/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /ForceRecoveryRenameFailure[\s\S]*\$recoveryBackupLeaf = 'ProPRInvalid\\RecoveryBackup'[\s\S]*Rename-Item -LiteralPath \$Boundary\.DesktopKey\s+`\n\s+-NewName \$recoveryBackupLeaf -ErrorAction Stop/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /RegSetValueEx/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_NATIVE_NONE_WRITE'[\s\S]*Field 'NATIVE_RETURN_CODE'[\s\S]*Set-SupervisorFixtureRegistryValueNativeBytes\s+`\n\s+\$key 'NoneValue' 0 \(\[byte\[\]\]@\(9, 8, 7\)\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Get-HkcuSupervisorFixtureRelativeSubKeyPath[\s\S]*\$providerPrefix = 'Registry::HKEY_CURRENT_USER\\'[\s\S]*\$fixturePrefix = 'Software\\ProPRSupervisorFixture\\'[\s\S]*!\$pathText\.Contains\('\/'\)[\s\S]*StartsWith\(\$providerPrefix, \[StringComparison\]::Ordinal\)[\s\S]*StartsWith\(\$fixturePrefix, \[StringComparison\]::Ordinal\)[\s\S]*!\[string\]::IsNullOrWhiteSpace\(\$fixtureRelativePath\)[\s\S]*\$fixtureRelativePath -ceq \$fixtureRelativePath\.Trim\(\)[\s\S]*\$segment -ceq \$segment\.Trim\(\)[\s\S]*\$segment -cne '\.' -and \$segment -cne '\.\.'[\s\S]*!\$segment\.Contains\(':'\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Open-HkcuSupervisorFixtureWritableSubKey[\s\S]*Get-HkcuSupervisorFixtureRelativeSubKeyPath \$Path[\s\S]*\[Microsoft\.Win32\.Registry\]::CurrentUser\.OpenSubKey\(\$relativePath, \$true\)[\s\S]*Assert-HkcuDesktopFixtureOperation \(\$null -ne \$key\)[\s\S]*return \$key/,
+    );
+    const acceptsHkcuSupervisorFixturePath = (path: string): boolean => {
+      const providerPrefix = 'Registry::HKEY_CURRENT_USER\\';
+      const fixturePrefix = 'Software\\ProPRSupervisorFixture\\';
+      if (!path || path.trim() === '' || path.includes('/')) return false;
+      if (!path.startsWith(providerPrefix)) return false;
+      const relativePath = path.slice(providerPrefix.length);
+      if (!relativePath.startsWith(fixturePrefix)) return false;
+      const fixtureRelativePath = relativePath.slice(fixturePrefix.length);
+      if (!fixtureRelativePath || fixtureRelativePath.trim() !== fixtureRelativePath) {
+        return false;
+      }
+      return fixtureRelativePath.split('\\').every(segment =>
+        segment !== '' &&
+        segment === segment.trim() &&
+        segment !== '.' &&
+        segment !== '..' &&
+        !segment.includes(':'),
+      );
+    };
+    assert.equal(
+      acceptsHkcuSupervisorFixturePath(
+        'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\accepted\\Nested',
+      ),
+      true,
+    );
+    for (const rejectedPath of [
+      'Registry::HKEY_CURRENT_USER',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\',
+      'Registry::HKEY_LOCAL_MACHINE\\Software\\ProPRSupervisorFixture\\foreign',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPR\\Desktop',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\..\\Desktop',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\malformed/child',
+      'Registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\segment\\ child',
+      'registry::HKEY_CURRENT_USER\\Software\\ProPRSupervisorFixture\\lowercase',
+      '',
+    ]) {
+      assert.equal(acceptsHkcuSupervisorFixturePath(rejectedPath), false);
+    }
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Set-HkcuFixtureBoundaryValueKinds[\s\S]*Callsite 'REGRESSION_ROOT_KEY_SETUP'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_DEFAULT_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_EXPAND_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_BINARY'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_DWORD'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_QWORD'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_VALUE_KIND_MULTI_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*Callsite 'REGRESSION_NATIVE_NONE_WRITE'[\s\S]*Field 'NATIVE_RETURN_CODE'[\s\S]*Callsite 'REGRESSION_NESTED_KEY_SETUP'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Callsite 'REGRESSION_NESTED_VALUE_SETUP'[\s\S]*Field 'REGISTRY_VALUE'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN'[\s\S]*Field 'REGISTRY_PATH'[\s\S]*Open-HkcuSupervisorFixtureWritableSubKey \$Path/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Set-HkcuFixtureBoundaryValueKinds[\s\S]*finally \{\n\s+if \(\$null -ne \$key\) \{ \$key\.Dispose\(\) \}[\s\S]*finally \{\n\s+if \(\$null -ne \$childKeyRef\.Value\) \{ \$childKeyRef\.Value\.Dispose\(\) \}/,
+    );
+    assert.doesNotMatch(
+      hkcuBoundaryRegression,
+      /\(Get-Item -LiteralPath \$[A-Za-z]+\)\.SetValue\(/,
+    );
+    assert.doesNotMatch(
+      hkcuInstalledValueOwnership,
+      /\(Get-Item -LiteralPath \$desktopKey\)\.SetValue\(/,
+    );
+    assert.match(
+      hkcuInstalledValueOwnership,
+      /New-ItemProperty -LiteralPath \$desktopKey -Name \$installedName\s+`\n\s+-Value \$sentinelInstalled -PropertyType String -Force -ErrorAction Stop/,
+    );
+    assert.match(
+      hkcuInstalledValueOwnership,
+      /New-ItemProperty -LiteralPath \$desktopKey -Name \$installedName\s+`\n\s+-Value \(\[int\]1\) -PropertyType DWord -Force -ErrorAction Stop/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_DEFAULT_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\('', 'default-string', \[Microsoft\.Win32\.RegistryValueKind\]::String\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\('StringValue', 'plain-string', \[Microsoft\.Win32\.RegistryValueKind\]::String\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_EXPAND_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\(\s*'ExpandStringValue',\s*'%TEMP%\\propr-fixture',\s*\[Microsoft\.Win32\.RegistryValueKind\]::ExpandString/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_BINARY'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\(\s*'BinaryValue',\s*\[byte\[\]\]@\(0, 1, 2, 127, 128, 255\),\s*\[Microsoft\.Win32\.RegistryValueKind\]::Binary/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_DWORD'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\('DWordValue', \[int\]305419896, \[Microsoft\.Win32\.RegistryValueKind\]::DWord\)/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_QWORD'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\(\s*'QWordValue',\s*\[long\]1311768467463790320,\s*\[Microsoft\.Win32\.RegistryValueKind\]::QWord/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_MULTI_STRING'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*\$key\.SetValue\(\s*'MultiStringValue',\s*\[string\[\]\]@\('alpha', '', 'omega'\),\s*\[Microsoft\.Win32\.RegistryValueKind\]::MultiString/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_SETUP'[\s\S]*Field 'REGISTRY_VALUE'/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Callsite 'REGRESSION_VALUE_KIND_SETUP'[\s\S]*Field 'REGISTRY_VALUE'/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /function Assert-HkcuFixtureNativeNoneValue[\s\S]*Callsite 'NATIVE_VALUE_READ'[\s\S]*Field 'REGISTRY_VALUE'[\s\S]*GetValueKind\('NoneValue'\)[\s\S]*\$none\.Type -eq 0[\s\S]*\$actualBytes\.Length -eq \$ExpectedBytes\.Length[\s\S]*\$actualBytes\[\$index\] -eq \$ExpectedBytes\[\$index\]/,
+    );
+    for (const valueKind of [
+      'StringValue',
+      'ExpandStringValue',
+      'BinaryValue',
+      'DWordValue',
+      'QWordValue',
+      'MultiStringValue',
+      'NoneValue',
+      'NestedValue',
+    ]) {
+      assert.match(installedWindowsAppSupervisorBehaviorTest, new RegExp(valueKind));
+    }
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Get-HkcuFixtureBoundaryDiagnostic[\s\S]*HKCU_INSTALLED_VALUE_OWNERSHIP[\s\S]*HKCU_BASELINE_RESTORE[\s\S]*FIXTURE_SETUP[\s\S]*HKCU_BASELINE_STATE[\s\S]*REGISTRY_PATH/,
+    );
+    for (const scenario of [
+      'HKCU_BASELINE_RESTORE',
+      'HKCU_PENDING_RECEIPT',
+      'HKCU_NONEMPTY',
+      'HKCU_EMPTY',
+      'HKCU_CONFLICT',
+      'HKCU_PROVISIONAL',
+    ]) {
+      assert.match(
+        hkcuInstalledValueOwnership,
+        new RegExp(
+          "Set-SupervisorInvocationContext\\s+`\\n\\s+'HKCU_INSTALLED_VALUE_OWNERSHIP'\\s+`\\n\\s+" +
+            "'" + scenario + "'\\s+`\\n\\s+'FIXTURE_SETUP'\\s+`\\n\\s+'HKCU_BASELINE_STATE'\\s+`\\n\\s+'REGISTRY_PATH'",
+        ),
+      );
+    }
+    for (const callsite of [
+      'HKCU_BASELINE_STATE',
+      'REGRESSION_ROOT_KEY_SETUP',
+      'REGRESSION_VALUE_KIND_KEY_OPEN',
+      'REGRESSION_VALUE_KIND_DEFAULT_STRING',
+      'REGRESSION_VALUE_KIND_STRING',
+      'REGRESSION_VALUE_KIND_EXPAND_STRING',
+      'REGRESSION_VALUE_KIND_BINARY',
+      'REGRESSION_VALUE_KIND_DWORD',
+      'REGRESSION_VALUE_KIND_QWORD',
+      'REGRESSION_VALUE_KIND_MULTI_STRING',
+      'REGRESSION_NATIVE_NONE_WRITE',
+      'REGRESSION_NESTED_KEY_SETUP',
+      'REGRESSION_NESTED_VALUE_SETUP',
+      'NATIVE_VALUE_READ',
+      'BASELINE_DIGEST',
+      'BASELINE_RELOCATE',
+      'TARGET_OWNERSHIP',
+      'BASELINE_RESTORE',
+      'RECOVERY_RELOCATE',
+      'FINAL_BASELINE_DIGEST',
+      'FINAL_BACKUP_ABSENCE',
+    ]) {
+      assert.match(
+        installedWindowsAppSupervisorBehaviorTest,
+        new RegExp(`Get-SupervisorInvocationCallsites[\\s\\S]*'${callsite}'`),
+      );
+    }
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SupervisorInvocationFields[\s\S]*'NATIVE_RETURN_CODE'/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SupervisorInvocationFields[\s\S]*'REGISTRY_PATH'/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /OWNED_RESOURCES_NORMAL_SUCCESS/);
     assert.match(installedWindowsAppSupervisorBehaviorTest, /typed authenticated empty-state receipt/);
     assert.match(
@@ -894,7 +1532,13 @@ describe('desktop trusted release workflow', () => {
         < installedWindowsAppCleanup.indexOf("Add-Type -TypeDefinition @'"),
       'cleanup worker ownership handshake must precede cold type loading',
     );
-    assert.match(installedWindowsAppSupervisorBehaviorTest, /early-initialization child cleanup/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /-FixtureEarlyInitializationChild/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /workflow-cleanup-early-processes\.json/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /'WorkerPid','DescendantPid'/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /\$processStatePidValue -gt 0/);
     assert.match(installedWindowsAppCleanup, /workflow-cleanup-early-processes\.json/);
     assert.match(installedWindowsAppWorkflowCleanup, /MANIFEST_VALIDATION_FAILURE/);
     assert.match(installedWindowsAppWorkflowCleanup, /OWNED_RESOURCE_CLEANUP_FAILURE/);
@@ -908,11 +1552,11 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppWorkflowCleanup, /Set-CaughtControllerFailure/);
     assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /Console\]::SetError|\btrap\b|controllerBody/);
     assert.match(installedWindowsAppWorkflowCleanup, /\[Console\]::Out\.WriteLine/);
-    assert.equal(installedWindowsAppWorkflowCleanup.match(/\[Console\]::Out\.WriteLine/g)?.length, 2);
+    assert.equal(installedWindowsAppWorkflowCleanup.match(/\[Console\]::Out\.WriteLine/g)?.length, 3);
     assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /Write-Host/);
     assert.match(
       installedWindowsAppWorkflowCleanup,
-      /Add-Type -TypeDefinition @'[\s\S]*'@\n\ntry \{\n\$controllerPhase = 'PARAMETER_VALIDATION'[\s\S]*\$controllerPhase = 'PROCESS_WAIT'[\s\S]*\n\} catch \{\n\s+Set-CaughtControllerFailure \$_\n\}/,
+      /Add-Type -TypeDefinition @'[\s\S]*'@[\s\S]*Write-StartupRecord\n\ntry \{\n\$controllerPhase = 'PARAMETER_VALIDATION'[\s\S]*\$controllerPhase = 'PROCESS_WAIT'[\s\S]*\n\} catch \{\n\s+Set-CaughtControllerFailure \$_\n\}/,
     );
     assert.doesNotMatch(installedWindowsAppWorkflowCleanup, /\$invokeController|StartupFailureClass/);
     assert.match(
@@ -925,9 +1569,47 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppWorkflowCleanupWrapper,
+      /^\[CmdletBinding\(PositionalBinding=\$false\)\]\nparam\(/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /\[switch\]\$FixtureEarlyInitializationChild/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /\[(?:object|string)\]\$FixtureEarlyInitializationChild/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /if \(\[bool\]\$FixtureEarlyInitializationChild\) \{\n\s+\$bodyParameters\.FixtureEarlyInitializationChild = \$true\n\s+\}/,
+    );
+    assert.doesNotMatch(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /\$bodyParameters\.FixtureEarlyInitializationChild\s*=\s*\$false/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /Test-WorkflowCleanupWrapperParserRegression[\s\S]*FixtureEarlyInitializationChild[\s\S]*FORWARD_FALSE[\s\S]*FORWARD_TRUE[\s\S]*arbitrary/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
       /'PARSER'[\s\S]*'PARAMETER_BINDING'[\s\S]*'TYPE_LOAD'[\s\S]*'OTHER'/,
     );
     assert.match(installedWindowsAppWorkflowCleanupWrapper, /Write-StartupFailure \$_/);
+    assert.match(
+      installedWindowsAppWorkflowCleanupWrapper,
+      /WORKFLOW_CLEANUP:STARTUP:FAILED:[\s\S]*WORKFLOW_CLEANUP:TERMINAL:/,
+    );
+    assert.match(installedWindowsAppWorkflowCleanup, /WORKFLOW_CLEANUP:STARTUP:READY/);
+    assert.match(installedWindowsAppWorkflowCleanup, /Get-FixedResultRecord/);
+    assert.match(
+      installedWindowsAppWorkflowCleanup,
+      /CONTROLLER_RESULT_EMISSION_EMIT_UNCLASSIFIED[\s\S]*EXIT_CODE:125/,
+    );
+    assert.match(
+      installedWindowsAppWorkflowCleanup,
+      /\$ProtocolState\.TerminalRecordWritten = \$true\n\s+\[Console\]::Out\.Flush\(\)/,
+    );
     assert.equal(
       installedWindowsAppWorkflowCleanupWrapper.match(/\[Console\]::Out\.WriteLine/g)?.length,
       2,
@@ -943,7 +1625,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppWorkflowCleanup,
-      /if \(\$fixedResult -ceq 'COMPLETE' -and \$cleanupTreeZeroVerified -and/,
+      /if \(\$fixedResult -ceq 'COMPLETE'\)[\s\S]*!\$cleanupTreeZeroVerified -or !\$validatedManifestPath[\s\S]*AUTHORITY_FINALIZATION_FAILURE/,
     );
     assert.match(
       installedWindowsAppSupervisor,
@@ -975,24 +1657,57 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisorFixture,
       /'OWNED_RESOURCES_THEN_DEADLINE' \{[\s\S]*Write-FixtureMarker[\s\S]*New-OwnedFixtureResources/,
     );
-    const controllerStatusParser = installedWindowsAppSupervisorBehaviorTest.indexOf(
-      '$statusMatch = Get-WorkflowCleanupControllerStatusMatch',
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /ProPRWorkflowCleanupProtocolCapture/);
+    const controllerJobAssignment = installedWindowsAppSupervisorBehaviorTest.indexOf(
+      '$job.AddProcess($process.Handle)',
     );
-    assert.notEqual(controllerStatusParser, -1);
+    const controllerCaptureStart = installedWindowsAppSupervisorBehaviorTest.indexOf(
+      '$capture.Start($process)',
+    );
     assert.ok(
-      controllerStatusParser
-        < installedWindowsAppSupervisorBehaviorTest.indexOf('if ($errorOutput.Length -ne 0)'),
-      'controller fixed stdout must be parsed before bounded stderr classification',
+      controllerJobAssignment !== -1 && controllerJobAssignment < controllerCaptureStart,
+      'controller root must enter the outer Job Object before bounded stream capture starts',
+    );
+    const workflowCleanupInvocation = installedWindowsAppSupervisorBehaviorTest.slice(
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Invoke-WorkflowCleanupController',
+      ),
+      installedWindowsAppSupervisorBehaviorTest.indexOf(
+        'function Test-WorkflowCleanupStartupProtocol',
+      ),
+    );
+    assert.doesNotMatch(workflowCleanupInvocation, /\.ReadToEnd\(\)|\bOutput = \$output/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' \+\s*'INVOCATION:\{0\}:OBSERVED:\{1\}:LINE_COUNT:\{2\}:STDERR_COUNT:\{3\}:/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /PROPR_WORKFLOW_CLEANUP_FIXTURE:\{0\}:STATUS:\{1\}:EXIT_CODE:\{2\}/,
+      /PROCESS_EXIT:\{4\}:LIFECYCLE:\{5\}:TREE_TERMINATION:\{6\}:' \+\s*'STARTUP_CLASS:\{7\}:LINE_NUMBER:\{8\}/,
     );
-    assert.match(installedWindowsAppSupervisorBehaviorTest, /Get-SanitizedControllerStartupDiagnostic/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /\[ValidateSet\([\s\S]*'STARTUP_PROTOCOL'[\s\S]*'PROTOCOL_REGRESSION'/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /ONE_LINE_STARTUP[\s\S]*DUPLICATE_STARTUP[\s\S]*REORDERED_RECORDS/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /TIMEOUT_BEFORE_STARTUP[\s\S]*TIMEOUT_AFTER_STARTUP[\s\S]*STREAM_DRAIN_RACE/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /foreach \(\$cancellationAfterStartup in @\(\$false, \$true\)\)/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /CANCELLED_BEFORE_STARTUP[\s\S]*CANCELLED_AFTER_STARTUP/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /SignalCancellationAfterStartup/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /WaitForNoActiveProcesses\(3000\)/);
+    assert.match(
+      installedWindowsAppWorkflowCleanup,
+      /WaitForNoActiveProcesses\(\s*\$TerminationTimeoutMilliseconds\)/,
+    );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /STARTUP_CLASS:\{0\}:PROCESS_EXIT:\{1\}:LINE:\{2\}/,
+      /MANIFEST_VALIDATION_FAILURE[\s\S]*return exitCode == 20[\s\S]*CHILD_STDOUT[\s\S]*return exitCode == 122/,
     );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /MISMATCHED_MANIFEST_EXIT_125/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /MISMATCHED_CHILD_STDOUT_EXIT_21/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /EXACT_MANIFEST_20[\s\S]*EXACT_FINALIZATION_FAILURE_125/);
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /FixtureResultEmissionFailure[\s\S]*CONTROLLER_RESULT_EMISSION_EMIT_UNCLASSIFIED/,
+    );
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /TREE_TERMINATION:FAILED/);
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /'PARSER'[\s\S]*'PARAMETER_BINDING'[\s\S]*'TYPE_LOAD'[\s\S]*'OTHER'/,
@@ -1064,7 +1779,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /Get-WorkflowCleanupControllerStatusMatch[\s\S]*workflow cleanup parser accepted malformed startup metadata/,
+      /Get-WorkflowCleanupControllerStatusMatch[\s\S]*workflow cleanup parser accepted a malformed terminal record/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
@@ -1072,11 +1787,19 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /did not publish durable nonprovisional authority:\$duringCaptureDiagnostic/,
+      /CRITICAL_OUTPUT_MARKER[\s\S]*MSI_TRANSACTION_MARKER[\s\S]*WATCHDOG:MSI_TRANSACTION:COMMITTED/,
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
       /standalone cleanup did not retry to exact success after authority restoration:\$replacementRetryDiagnostic/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /\$replacementRetry\.ProtocolLineCount -eq 2[\s\S]*\$replacementRetry\.ProtocolStandardErrorCount -eq 0[\s\S]*\$replacementRetry\.ProtocolStartupLineNumber -eq 1[\s\S]*\$replacementRetry\.ProtocolTerminalLineNumber -eq 2/,
+    );
+    assert.match(
+      installedWindowsAppSupervisorBehaviorTest,
+      /PROPR_WINDOWS_SUPERVISOR_TESTS:\$\{Architecture\}:PASSED/,
     );
     assert.match(
       installedWindowsAppSupervisor,
@@ -1131,7 +1854,7 @@ describe('desktop trusted release workflow', () => {
       installedWindowsAppSupervisorBehaviorTest,
       /OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE/,
     );
-    assert.match(installedWindowsAppSupervisorBehaviorTest, /LINE_COUNT:\{0\}:STDERR_COUNT:\{1\}/);
+    assert.match(installedWindowsAppSupervisorBehaviorTest, /LINE_COUNT:\{2\}:STDERR_COUNT:\{3\}/);
     assert.match(installedWindowsAppCleanup, /smoke user-data object owner is not authorized/);
     assert.match(installedWindowsAppCleanup, /smoke user-data object ACL is not authorized/);
     assert.match(installedWindowsAppCleanup, /entries\.Count -ge 50000/);
@@ -1155,7 +1878,7 @@ describe('desktop trusted release workflow', () => {
     );
     assert.match(
       installedWindowsAppSupervisorBehaviorTest,
-      /timed-out workflow cleanup discarded authenticated recovery authority[\s\S]*failed workflow cleanup discarded authenticated recovery authority[\s\S]*retry to fixed cleanup success/,
+      /timed-out workflow cleanup discarded authenticated recovery authority[\s\S]*\$collisionManifestState -ceq 'ACTIVE'[\s\S]*retry to fixed cleanup success/,
     );
     const fixedResultWrite = installedWindowsAppWorkflowCleanup.indexOf(
       'Write-FixedResult $fixedResult',
@@ -1163,7 +1886,7 @@ describe('desktop trusted release workflow', () => {
     assert.ok(
       fixedResultWrite > installedWindowsAppWorkflowCleanup.indexOf('$resource.Dispose()')
         && fixedResultWrite > installedWindowsAppWorkflowCleanup.indexOf(
-          'if ($fixedResult -ceq \'COMPLETE\' -and $validatedManifestPath)',
+          'if ($fixedResult -ceq \'COMPLETE\')',
         ),
       'fixed controller evidence must be emitted after bounded finalization',
     );

@@ -5,7 +5,8 @@ param(
   [object]$CleanupTimeoutMilliseconds = 4 * 60 * 1000,
   [object]$TerminationTimeoutMilliseconds = 30 * 1000,
   [object]$FixtureRoot,
-  [switch]$FixtureEarlyInitializationChild
+  [switch]$FixtureEarlyInitializationChild,
+  [switch]$FixtureResultEmissionFailure
 )
 
 enum WorkflowCleanupControllerPhase {
@@ -46,12 +47,90 @@ $validatedManifestPath = $null
 [WorkflowCleanupControllerPhase]$controllerPhase = 'INITIALIZATION'
 [WorkflowCleanupControllerLine]$controllerLine = 'TYPE_LOAD'
 $cleanupTreeZeroVerified = $false
+$protocolState = @{ TerminalRecordWritten = $false }
 
-function Write-FixedResult([ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result) {
-  [Console]::Out.WriteLine("PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:$Result")
+function Write-StartupRecord {
   [Console]::Out.WriteLine(
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:{0}:EXIT_CODE:{1}' -f `
-      $script:fixedStatus, $script:fixedExitCode)
+    'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STARTUP:READY')
+  [Console]::Out.Flush()
+}
+
+function Get-FixedResultRecord(
+  [ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result,
+  [string]$Status,
+  [int]$ExitCode
+) {
+  $fixedFailureStatuses = @(
+    'CONTROLLER_FAILURE','TERMINATION_FAILURE',
+    'ACTIVE_PROCESS_AFTER_ROOT_EXIT','PROCESS_FINALIZATION_TIMEOUT',
+    'PROCESS_FINALIZATION_FAILURE','STREAM_DRAIN_TIMEOUT',
+    'STREAM_DRAIN_FAILURE','RESOURCE_FINALIZATION_FAILURE',
+    'AUTHORITY_FINALIZATION_FAILURE','STARTUP_FAILURE'
+  )
+  $controllerFailureStatus = $Status -cmatch (
+    '^CONTROLLER_(INITIALIZATION|PARAMETER_VALIDATION|PATH_VALIDATION|' +
+    'PROCESS_START|PROCESS_WAIT|PROCESS_FINALIZATION|STREAM_FINALIZATION|' +
+    'RESOURCE_FINALIZATION|AUTHORITY_FINALIZATION|RESULT_EMISSION)_' +
+    '(TYPE_LOAD|PARAMETERS|PATHS|START|WAIT|TERMINATE|DRAIN|DISPOSE|' +
+    'AUTHORITY|EMIT)_(AUTHENTICATION|CLOSE|INVALID_ARGUMENT|INVALID_DATA|' +
+    'INVALID_OPERATION|LIMIT|NOT_ENABLED|NOT_FOUND|OPEN|STOPPED|' +
+    'PERMISSION|READ|BUSY|UNAVAILABLE|SECURITY|WRITE|UNCLASSIFIED)$')
+  $valid = switch -CaseSensitive ($Status) {
+    'EMPTY_OR_CLEANED' {
+      $Result -ceq 'COMPLETE' -and $ExitCode -eq 0
+      break
+    }
+    'MANIFEST_VALIDATION_FAILURE' {
+      $Result -ceq 'FAILED' -and $ExitCode -eq 20
+      break
+    }
+    'OWNED_RESOURCE_CLEANUP_FAILURE' {
+      $Result -ceq 'FAILED' -and $ExitCode -eq 21
+      break
+    }
+    { $_ -cin @('CHILD_STDOUT','CHILD_STDOUT_LIMIT') } {
+      $Result -ceq 'FAILED' -and $ExitCode -eq 122
+      break
+    }
+    { $_ -cin @('CHILD_STDERR','CHILD_STDERR_LIMIT') } {
+      $Result -ceq 'FAILED' -and $ExitCode -eq 123
+      break
+    }
+    'TIMEOUT' {
+      $Result -ceq 'TIMED_OUT' -and $ExitCode -eq 124
+      break
+    }
+    default {
+      $Result -ceq 'FAILED' -and $ExitCode -eq 125 -and
+        ($Status -cin $fixedFailureStatuses -or $controllerFailureStatus)
+    }
+  }
+  if (!$valid) {
+    throw [InvalidOperationException]::new('fixed controller result is inconsistent')
+  }
+  return ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:RESULT:' +
+    $Result + ':STATUS:' + $Status + ':EXIT_CODE:' +
+    $ExitCode.ToString([Globalization.CultureInfo]::InvariantCulture))
+}
+
+function Write-FixedResult(
+  [ValidateSet('COMPLETE','FAILED','TIMED_OUT')][string]$Result,
+  [string]$Status,
+  [int]$ExitCode,
+  [hashtable]$ProtocolState,
+  [bool]$InjectEmissionFailure = $false
+) {
+  if ($ProtocolState.TerminalRecordWritten) {
+    throw [InvalidOperationException]::new('terminal record was already emitted')
+  }
+  $record = Get-FixedResultRecord $Result $Status $ExitCode
+  if ($InjectEmissionFailure) {
+    throw [InvalidOperationException]::new('fixed result-emission fixture')
+  }
+  [Console]::Out.WriteLine($record)
+  # WriteLine completed one newline-terminated record.  Mark it before Flush so
+  # a later flush exception cannot cause a duplicate fallback record.
+  $ProtocolState.TerminalRecordWritten = $true
   [Console]::Out.Flush()
 }
 
@@ -318,6 +397,12 @@ public sealed class ProPRWorkflowCleanupOutputDrain : IDisposable
 }
 '@
 
+# Reaching this boundary proves that the whole body parsed and its fixed native
+# types loaded.  Publish and flush the startup record before parameter or path
+# validation can begin; the terminal record is emitted only after all process,
+# stream, resource, and authority finalization has completed.
+Write-StartupRecord
+
 try {
 $controllerPhase = 'PARAMETER_VALIDATION'
 $controllerLine = 'PARAMETERS'
@@ -346,6 +431,9 @@ $ExpectedRunId = [string]$ExpectedRunId
 $FixtureRoot = if ($null -eq $FixtureRoot) { $null } else { [string]$FixtureRoot }
 $CleanupTimeoutMilliseconds = $cleanupTimeout
 $TerminationTimeoutMilliseconds = $terminationTimeout
+if ($FixtureResultEmissionFailure -and !$FixtureRoot) {
+  throw 'result-emission fixture requires a fixture scope'
+}
 
   $controllerPhase = 'PATH_VALIDATION'
   $controllerLine = 'PATHS'
@@ -409,6 +497,22 @@ $TerminationTimeoutMilliseconds = $terminationTimeout
     $outputDrain = [ProPRWorkflowCleanupOutputDrain]::new()
     $outputDrain.Start($cleanupProcess)
     [void]$cleanupReadyEvent.Set()
+    if ($FixtureEarlyInitializationChild) {
+      $controllerPhase = 'PROCESS_WAIT'
+      $controllerLine = 'WAIT'
+      # This fixture's timeout covers cleanup of the published early tree, not
+      # native host cold-start time before the PID state exists.
+      $fixtureEarlyStatePath = Join-Path `
+        $FixtureRoot 'workflow-cleanup-early-processes.json'
+      $fixtureEarlyStateWatch = [Diagnostics.Stopwatch]::StartNew()
+      while (![IO.File]::Exists($fixtureEarlyStatePath)) {
+        if ($cleanupProcess.HasExited) { break }
+        if ($fixtureEarlyStateWatch.ElapsedMilliseconds -ge 15000) {
+          throw 'early initialization fixture did not publish process state'
+        }
+        [Threading.Thread]::Sleep(25)
+      }
+    }
   } catch {
     try {
       $cleanupTreeZeroVerified = $cleanupJob.TerminateAndWait(
@@ -442,7 +546,8 @@ $TerminationTimeoutMilliseconds = $terminationTimeout
       $fixedExitCode = 125
     }
   } else {
-    $cleanupTreeZeroVerified = $cleanupJob.HasNoActiveProcesses()
+    $cleanupTreeZeroVerified = $cleanupJob.WaitForNoActiveProcesses(
+      $TerminationTimeoutMilliseconds)
     if (!$cleanupTreeZeroVerified) {
       try {
         $cleanupTreeZeroVerified = $cleanupJob.TerminateAndWait(
@@ -526,28 +631,46 @@ foreach ($resource in @($outputDrain, $cleanupJob, $cleanupProcess, $cleanupRead
   }
 }
 
-if ($fixedResult -ceq 'COMPLETE' -and $cleanupTreeZeroVerified -and
-    $validatedManifestPath) {
-  try {
-    $controllerPhase = 'AUTHORITY_FINALIZATION'
-    $controllerLine = 'AUTHORITY'
-    foreach ($path in @("$validatedManifestPath.new", $validatedManifestPath)) {
-      if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
-    }
-  } catch {
+if ($fixedResult -ceq 'COMPLETE') {
+  $controllerPhase = 'AUTHORITY_FINALIZATION'
+  $controllerLine = 'AUTHORITY'
+  if (!$cleanupTreeZeroVerified -or !$validatedManifestPath) {
     $fixedResult = 'FAILED'
     $fixedStatus = 'AUTHORITY_FINALIZATION_FAILURE'
     $fixedExitCode = 125
+  } else {
+    try {
+      foreach ($path in @("$validatedManifestPath.new", $validatedManifestPath)) {
+        if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
+      }
+    } catch {
+      $fixedResult = 'FAILED'
+      $fixedStatus = 'AUTHORITY_FINALIZATION_FAILURE'
+      $fixedExitCode = 125
+    }
   }
 }
 
 try {
   $controllerPhase = 'RESULT_EMISSION'
   $controllerLine = 'EMIT'
-  Write-FixedResult $fixedResult
+  Write-FixedResult $fixedResult $fixedStatus $fixedExitCode $protocolState `
+    ([bool]$FixtureResultEmissionFailure)
 } catch {
-  Set-CaughtControllerFailure $_
-  exit 125
+  if (!$protocolState.TerminalRecordWritten) {
+    $fixedResult = 'FAILED'
+    $fixedStatus = 'CONTROLLER_RESULT_EMISSION_EMIT_UNCLASSIFIED'
+    $fixedExitCode = 125
+    try {
+      [Console]::Out.WriteLine(
+        ('PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+          'RESULT:FAILED:' +
+          'STATUS:CONTROLLER_RESULT_EMISSION_EMIT_UNCLASSIFIED:' +
+          'EXIT_CODE:125'))
+      $protocolState.TerminalRecordWritten = $true
+      [Console]::Out.Flush()
+    } catch {}
+  }
 }
 
 exit $fixedExitCode

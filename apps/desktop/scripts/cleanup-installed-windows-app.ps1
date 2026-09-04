@@ -80,10 +80,14 @@ if ($FixtureEarlyInitializationChild) {
     $fixtureChild = [Diagnostics.Process]::new()
     $fixtureChild.StartInfo = $fixtureChildStartInfo
     if (!$fixtureChild.Start()) { exit 1 }
+    if ($PID -le 0 -or $fixtureChild.Id -le 0) { exit 1 }
     $fixtureStatePath = Join-Path $fixtureEarlyRoot 'workflow-cleanup-early-processes.json'
     $fixtureStateTemporaryPath = "$fixtureStatePath.$PID.new"
     $fixtureStateBytes = [Text.Encoding]::ASCII.GetBytes((
-      [ordered]@{ WorkerPid = $PID; DescendantPid = $fixtureChild.Id } |
+      [ordered]@{
+        WorkerPid = [int]$PID
+        DescendantPid = [int]$fixtureChild.Id
+      } |
         ConvertTo-Json -Compress
     ))
     $fixtureStateStream = [IO.FileStream]::new(
@@ -1567,9 +1571,10 @@ try {
         throw 'registry manifest scope is invalid'
       }
       if (!(Test-Path -LiteralPath $path)) { continue }
-      if ([string](Get-ItemPropertyValue -LiteralPath $path -Name $ownerRegistryValue `
-          -ErrorAction Stop) -cne [string]$record.Token) {
-        throw 'registry manifest token is invalid'
+      $currentOwnerToken = Get-ItemPropertyValue -LiteralPath $path `
+        -Name $ownerRegistryValue -ErrorAction SilentlyContinue
+      if ([string]$currentOwnerToken -cne [string]$record.Token) {
+        $cleanupFailed = $true
       }
     } else {
       $expectedPath = if ($kind -eq 'PROTOCOL') {
@@ -1708,16 +1713,6 @@ try {
       Assert-MsiRolledBackCleanBaseline $manifest
     }
   }
-  $ownershipPromoted = $false
-  foreach ($record in @($manifest.Users)) {
-    if (Resolve-ProvisionalOwnedUser $record) { $ownershipPromoted = $true }
-    if (Promote-UncapturedOwnedProfiles $record $manifest) {
-      $ownershipPromoted = $true
-    }
-  }
-  if ($ownershipPromoted) {
-    Write-DurableOwnershipManifest $manifestPath $manifest
-  }
   foreach ($record in @($manifest.RegistryValues)) {
     if (!$record.Owned) { continue }
     $current = Get-RegistryValueSnapshot ([string]$record.Path) ([string]$record.Name)
@@ -1733,6 +1728,19 @@ try {
   }
   if ([string]$manifest.MsiTransactionState -ceq 'COMMITTED') {
     Assert-MsiManagedFileSystemAuthority $manifest
+  }
+  if ($cleanupFailed) {
+    throw 'owned resource authority collision'
+  }
+  $ownershipPromoted = $false
+  foreach ($record in @($manifest.Users)) {
+    if (Resolve-ProvisionalOwnedUser $record) { $ownershipPromoted = $true }
+    if (Promote-UncapturedOwnedProfiles $record $manifest) {
+      $ownershipPromoted = $true
+    }
+  }
+  if ($ownershipPromoted) {
+    Write-DurableOwnershipManifest $manifestPath $manifest
   }
   if ($allowAuthenticatedMsiUninstall -and !$cleanupFailed) {
     $msiExitCode = 1618

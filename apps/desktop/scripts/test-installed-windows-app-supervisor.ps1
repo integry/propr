@@ -23,6 +23,11 @@ $conflictingFixtureRegistryPath = $null
 $dummyInstallerProductCode = ('{' + [Guid]::NewGuid().ToString().ToUpperInvariant() + '}')
 $dummyInstallerEntryIdentity = $null
 $dummyInstallerSha256 = $null
+$script:currentSupervisorInvocationTest = 'UNATTRIBUTED'
+$script:currentSupervisorInvocationScenario = 'UNATTRIBUTED'
+$script:currentSupervisorInvocationPhase = 'UNATTRIBUTED'
+$script:currentSupervisorInvocationCallsite = 'GENERAL'
+$script:currentSupervisorInvocationField = 'NONE'
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (!$Condition) { throw $Message }
@@ -36,6 +41,416 @@ function Assert-NotContains([string]$Text, [string]$Forbidden, [string]$Message)
   Assert-True (!$Text.Contains($Forbidden, [StringComparison]::OrdinalIgnoreCase)) $Message
 }
 
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
+
+public sealed class ProPRWorkflowCleanupInvocationJob : IDisposable
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    private const int JobObjectExtendedLimitInformation = 9;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private SafeFileHandle handle;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateJobObject(IntPtr attributes, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(
+        SafeFileHandle job, int informationClass, IntPtr information, uint length);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(SafeFileHandle job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(
+        SafeFileHandle job, int informationClass,
+        out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION information,
+        uint length, IntPtr returnLength);
+
+    public ProPRWorkflowCleanupInvocationJob()
+    {
+        handle = CreateJobObject(IntPtr.Zero, null);
+        if (handle == null || handle.IsInvalid)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "invocation job creation failed");
+        var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        int size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+        IntPtr buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            Marshal.StructureToPtr(limits, buffer, false);
+            if (!SetInformationJobObject(handle, JobObjectExtendedLimitInformation,
+                    buffer, (uint)size))
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "invocation job configuration failed");
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    public void AddProcess(IntPtr processHandle)
+    {
+        if (!AssignProcessToJobObject(handle, processHandle))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "invocation process ownership failed");
+    }
+
+    private uint ReadActiveProcessCount()
+    {
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION information;
+        uint size = (uint)Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));
+        if (!QueryInformationJobObject(handle, 1, out information, size, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "invocation accounting failed");
+        return information.ActiveProcesses;
+    }
+
+    public bool WaitForNoActiveProcesses(int timeoutMilliseconds)
+    {
+        var watch = Stopwatch.StartNew();
+        do
+        {
+            if (ReadActiveProcessCount() == 0) return true;
+            Thread.Sleep(25);
+        }
+        while (watch.ElapsedMilliseconds < timeoutMilliseconds);
+        return ReadActiveProcessCount() == 0;
+    }
+
+    public bool TerminateAndWait(uint exitCode, int timeoutMilliseconds)
+    {
+        if (!TerminateJobObject(handle, exitCode))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "invocation termination failed");
+        return WaitForNoActiveProcesses(timeoutMilliseconds);
+    }
+
+    public void Dispose() { if (handle != null) handle.Dispose(); }
+}
+
+public sealed class ProPRWorkflowCleanupProtocolCapture : IDisposable
+{
+    private const int LineCharacterLimit = 384;
+    private const int CountLimit = 4096;
+    private const string Prefix = "PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:";
+    private static readonly Regex ReadyStartup = new Regex(
+        "^" + Prefix + "STARTUP:READY$", RegexOptions.CultureInvariant);
+    private static readonly Regex FailedStartup = new Regex(
+        "^" + Prefix + "STARTUP:FAILED:CLASS:(PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):" +
+        "PROCESS_EXIT:(0|-?[1-9][0-9]*):LINE:(0|[1-9][0-9]{0,5})$",
+        RegexOptions.CultureInvariant);
+    private static readonly Regex Terminal = new Regex(
+        "^" + Prefix + "TERMINAL:RESULT:(COMPLETE|FAILED|TIMED_OUT):" +
+        "STATUS:([A-Z_]+):EXIT_CODE:(0|20|21|122|123|124|125)$",
+        RegexOptions.CultureInvariant);
+    private static readonly Regex ControllerFailure = new Regex(
+        "^CONTROLLER_(INITIALIZATION|PARAMETER_VALIDATION|PATH_VALIDATION|PROCESS_START|" +
+        "PROCESS_WAIT|PROCESS_FINALIZATION|STREAM_FINALIZATION|RESOURCE_FINALIZATION|" +
+        "AUTHORITY_FINALIZATION|RESULT_EMISSION)_(TYPE_LOAD|PARAMETERS|PATHS|START|WAIT|" +
+        "TERMINATE|DRAIN|DISPOSE|AUTHORITY|EMIT)_(AUTHENTICATION|CLOSE|INVALID_ARGUMENT|" +
+        "INVALID_DATA|INVALID_OPERATION|LIMIT|NOT_ENABLED|NOT_FOUND|OPEN|STOPPED|" +
+        "PERMISSION|READ|BUSY|UNAVAILABLE|SECURITY|WRITE|UNCLASSIFIED)$",
+        RegexOptions.CultureInvariant);
+    private static readonly string[] FixedStatuses = new string[] {
+        "CONTROLLER_FAILURE", "TIMEOUT", "TERMINATION_FAILURE",
+        "ACTIVE_PROCESS_AFTER_ROOT_EXIT", "EMPTY_OR_CLEANED",
+        "MANIFEST_VALIDATION_FAILURE", "OWNED_RESOURCE_CLEANUP_FAILURE",
+        "PROCESS_FINALIZATION_TIMEOUT", "PROCESS_FINALIZATION_FAILURE",
+        "STREAM_DRAIN_TIMEOUT", "CHILD_STDERR_LIMIT", "CHILD_STDERR",
+        "CHILD_STDOUT_LIMIT", "CHILD_STDOUT", "STREAM_DRAIN_FAILURE",
+        "RESOURCE_FINALIZATION_FAILURE", "AUTHORITY_FINALIZATION_FAILURE",
+        "STARTUP_FAILURE"
+    };
+
+    private StreamReader outputReader;
+    private StreamReader errorReader;
+    private Task outputTask;
+    private Task errorTask;
+    private readonly ManualResetEventSlim startupObserved = new ManualResetEventSlim(false);
+    private bool startupSeen;
+    private bool terminalSeen;
+    private bool defect;
+
+    public int LineCount { get; private set; }
+    public int StandardErrorCount { get; private set; }
+    public string ObservedLineCategory { get; private set; }
+    public int ObservedLineNumber { get; private set; }
+    public int StartupRecordLineNumber { get; private set; }
+    public int TerminalRecordLineNumber { get; private set; }
+    public string StartupClass { get; private set; }
+    public int StartupProcessExit { get; private set; }
+    public int StartupLine { get; private set; }
+    public string Result { get; private set; }
+    public string ControllerStatus { get; private set; }
+    public int ReportedExitCode { get; private set; }
+    public bool DrainFailed { get; private set; }
+
+    public ProPRWorkflowCleanupProtocolCapture()
+    {
+        ObservedLineCategory = "NONE";
+        StartupClass = "NONE";
+        Result = "INVALID";
+        ControllerStatus = "INVALID";
+        ReportedExitCode = -1;
+    }
+
+    private static bool IsFixedStatus(string value)
+    {
+        for (int i = 0; i < FixedStatuses.Length; i++)
+            if (String.Equals(FixedStatuses[i], value, StringComparison.Ordinal)) return true;
+        return ControllerFailure.IsMatch(value);
+    }
+
+    private static bool IsStatusExitPairValid(string status, int exitCode)
+    {
+        switch (status)
+        {
+            case "EMPTY_OR_CLEANED": return exitCode == 0;
+            case "MANIFEST_VALIDATION_FAILURE": return exitCode == 20;
+            case "OWNED_RESOURCE_CLEANUP_FAILURE": return exitCode == 21;
+            case "CHILD_STDOUT":
+            case "CHILD_STDOUT_LIMIT": return exitCode == 122;
+            case "CHILD_STDERR":
+            case "CHILD_STDERR_LIMIT": return exitCode == 123;
+            case "TIMEOUT": return exitCode == 124;
+            default:
+                return exitCode == 125 && IsFixedStatus(status);
+        }
+    }
+
+    private void SetDefect(string category)
+    {
+        if (!defect)
+        {
+            defect = true;
+            ObservedLineCategory = category;
+            ObservedLineNumber = Math.Min(3, Math.Max(1, LineCount));
+        }
+    }
+
+    private void CompleteLine(string line, bool oversized)
+    {
+        LineCount = Math.Min(3, LineCount + 1);
+        if (defect) return;
+        if (oversized) { SetDefect("OVERSIZED"); return; }
+
+        Match ready = ReadyStartup.Match(line);
+        Match failed = FailedStartup.Match(line);
+        Match terminal = Terminal.Match(line);
+        if (!startupSeen)
+        {
+            if (terminal.Success) { SetDefect("REORDERED"); return; }
+            if (!ready.Success && !failed.Success) { SetDefect("MALFORMED"); return; }
+            startupSeen = true;
+            ObservedLineCategory = "STARTUP";
+            ObservedLineNumber = LineCount;
+            StartupRecordLineNumber = LineCount;
+            if (ready.Success) StartupClass = "READY";
+            else
+            {
+                StartupClass = failed.Groups[1].Value;
+                int processExit;
+                int startupLine;
+                if (!Int32.TryParse(failed.Groups[2].Value, out processExit) ||
+                    !Int32.TryParse(failed.Groups[3].Value, out startupLine))
+                { SetDefect("MALFORMED"); return; }
+                StartupProcessExit = processExit;
+                StartupLine = startupLine;
+            }
+            startupObserved.Set();
+            return;
+        }
+
+        if (!terminalSeen)
+        {
+            if (ready.Success || failed.Success) { SetDefect("DUPLICATE"); return; }
+            if (!terminal.Success || !IsFixedStatus(terminal.Groups[2].Value))
+            { SetDefect("MALFORMED"); return; }
+            terminalSeen = true;
+            ObservedLineCategory = "TERMINAL";
+            ObservedLineNumber = LineCount;
+            TerminalRecordLineNumber = LineCount;
+            Result = terminal.Groups[1].Value;
+            ControllerStatus = terminal.Groups[2].Value;
+            ReportedExitCode = Int32.Parse(terminal.Groups[3].Value);
+            bool startupFailure = !String.Equals(StartupClass, "READY", StringComparison.Ordinal);
+            if ((startupFailure && (!String.Equals(Result, "FAILED", StringComparison.Ordinal) ||
+                    !String.Equals(ControllerStatus, "STARTUP_FAILURE", StringComparison.Ordinal) ||
+                    ReportedExitCode != 125)) ||
+                (!startupFailure && String.Equals(ControllerStatus, "STARTUP_FAILURE",
+                    StringComparison.Ordinal)) ||
+                (String.Equals(Result, "COMPLETE", StringComparison.Ordinal) &&
+                    (!String.Equals(ControllerStatus, "EMPTY_OR_CLEANED", StringComparison.Ordinal) ||
+                    ReportedExitCode != 0)) ||
+                (String.Equals(Result, "TIMED_OUT", StringComparison.Ordinal) &&
+                    (!String.Equals(ControllerStatus, "TIMEOUT", StringComparison.Ordinal) ||
+                    ReportedExitCode != 124)) ||
+                (String.Equals(Result, "FAILED", StringComparison.Ordinal) &&
+                    (String.Equals(ControllerStatus, "EMPTY_OR_CLEANED", StringComparison.Ordinal) ||
+                    String.Equals(ControllerStatus, "TIMEOUT", StringComparison.Ordinal) ||
+                    ReportedExitCode == 0)) ||
+                !IsStatusExitPairValid(ControllerStatus, ReportedExitCode))
+                SetDefect("MALFORMED");
+            return;
+        }
+
+        SetDefect((ready.Success || failed.Success || terminal.Success) ? "DUPLICATE" : "EXTRA");
+    }
+
+    private void PumpOutput()
+    {
+        var line = new StringBuilder();
+        var buffer = new char[256];
+        bool oversized = false;
+        while (true)
+        {
+            int count = outputReader.Read(buffer, 0, buffer.Length);
+            if (count == 0) break;
+            for (int i = 0; i < count; i++)
+            {
+                char value = buffer[i];
+                if (value == '\n')
+                {
+                    if (line.Length > 0 && line[line.Length - 1] == '\r')
+                        line.Length = line.Length - 1;
+                    CompleteLine(line.ToString(), oversized);
+                    line.Clear();
+                    oversized = false;
+                }
+                else if (value > 0x7f) oversized = true;
+                else if (line.Length < LineCharacterLimit) line.Append(value);
+                else oversized = true;
+            }
+        }
+        if (line.Length != 0 || oversized)
+        {
+            LineCount = Math.Min(3, LineCount + 1);
+            SetDefect(oversized ? "OVERSIZED" : "PARTIAL");
+        }
+    }
+
+    private void PumpError()
+    {
+        var buffer = new char[256];
+        while (true)
+        {
+            int count = errorReader.Read(buffer, 0, buffer.Length);
+            if (count == 0) return;
+            StandardErrorCount = Math.Min(CountLimit + 1, StandardErrorCount + count);
+        }
+    }
+
+    public void Start(Process process)
+    {
+        outputReader = process.StandardOutput;
+        errorReader = process.StandardError;
+        outputTask = Task.Factory.StartNew(PumpOutput, CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        errorTask = Task.Factory.StartNew(PumpError, CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+    }
+
+    public bool Finish(int timeoutMilliseconds)
+    {
+        if (outputTask == null || errorTask == null) return false;
+        try
+        {
+            if (!Task.WaitAll(new Task[] { outputTask, errorTask }, timeoutMilliseconds))
+                return false;
+        }
+        catch { DrainFailed = true; return false; }
+        return true;
+    }
+
+    public Task<bool> SignalCancellationAfterStartup(
+        EventWaitHandle cancellation, int timeoutMilliseconds)
+    {
+        if (cancellation == null) throw new ArgumentNullException("cancellation");
+        return Task.Factory.StartNew(() =>
+        {
+            if (!startupObserved.Wait(timeoutMilliseconds)) return false;
+            return cancellation.Set();
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+    }
+
+    public bool WaitForStartup(int timeoutMilliseconds)
+    {
+        return startupObserved.Wait(timeoutMilliseconds);
+    }
+
+    public bool IsProtocolValid(int processExitCode)
+    {
+        return !defect && startupSeen && terminalSeen && LineCount == 2 &&
+            StandardErrorCount == 0 && processExitCode == ReportedExitCode &&
+            IsStatusExitPairValid(ControllerStatus, ReportedExitCode) &&
+            (String.Equals(StartupClass, "READY", StringComparison.Ordinal) ||
+                StartupProcessExit == processExitCode);
+    }
+
+    public void Dispose()
+    {
+        try { if (outputReader != null) outputReader.Dispose(); } catch { }
+        try { if (errorReader != null) errorReader.Dispose(); } catch { }
+        startupObserved.Dispose();
+    }
+}
+'@
+
 function Test-WorkflowCleanupBodyParserRegression {
   $cleanupBodyPath = Join-Path $PSScriptRoot `
     'run-installed-windows-app-workflow-cleanup-body.ps1'
@@ -48,6 +463,140 @@ function Test-WorkflowCleanupBodyParserRegression {
   )
   Assert-True ($parseErrors.Count -eq 0) `
     'workflow cleanup production body failed whole-file parser regression'
+}
+
+function Test-WorkflowCleanupWrapperParserRegression {
+  $tokens = $null
+  $parseErrors = $null
+  $wrapperAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $workflowCleanupPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+  )
+  Assert-True ($parseErrors.Count -eq 0) `
+    'workflow cleanup wrapper failed whole-file parser regression'
+  $scriptText = Get-Content -LiteralPath $workflowCleanupPath -Raw -Encoding UTF8
+  Assert-True ($scriptText -cmatch (
+      '^\[CmdletBinding\(PositionalBinding=\$false\)\]\r?\nparam\(')) `
+    'workflow cleanup wrapper did not disable positional switch coercion'
+
+  $cmdletBinding = @($wrapperAst.ParamBlock.Attributes | Where-Object {
+      $_.TypeName.FullName -ceq 'CmdletBinding'
+    })
+  Assert-True ($cmdletBinding.Count -eq 1) `
+    'workflow cleanup wrapper has no single CmdletBinding contract'
+  $positionalBinding = @($cmdletBinding[0].NamedArguments | Where-Object {
+      $_.ArgumentName -ceq 'PositionalBinding'
+    })
+  Assert-True ($positionalBinding.Count -eq 1 -and
+      $positionalBinding[0].Argument.Extent.Text -ceq '$false') `
+    'workflow cleanup wrapper positional binding was not fail-closed'
+
+  $fixtureParameter = @($wrapperAst.ParamBlock.Parameters | Where-Object {
+      $_.Name.VariablePath.UserPath -ceq 'FixtureEarlyInitializationChild'
+    })
+  Assert-True ($fixtureParameter.Count -eq 1) `
+    'workflow cleanup wrapper fixture switch parameter is missing'
+  $fixtureParameterTypes = @($fixtureParameter[0].Attributes | ForEach-Object {
+      $_.TypeName.FullName
+    })
+  Assert-True (@($fixtureParameterTypes | Where-Object {
+        $_ -cmatch '^(?:switch|System\.Management\.Automation\.SwitchParameter)$'
+      }).Count -eq 1) `
+    'workflow cleanup wrapper fixture parameter does not accept a valueless flag'
+  Assert-True (@($fixtureParameterTypes | Where-Object {
+        $_ -cmatch '^(?:object|string|System\.Object|System\.String)$'
+      }).Count -eq 0) `
+    'workflow cleanup wrapper fixture parameter allows object or string coercion'
+  Assert-True ($null -eq $fixtureParameter[0].DefaultValue) `
+    'workflow cleanup wrapper fixture switch omission was not left false'
+  Assert-True ($scriptText -cmatch (
+      'if \(\[bool\]\$FixtureEarlyInitializationChild\) \{\s*' +
+      '\$bodyParameters\.FixtureEarlyInitializationChild = \$true\s*\}')) `
+    'workflow cleanup wrapper did not forward true only to the fixture body'
+  Assert-True ($scriptText -cnotmatch
+      '\$bodyParameters\.FixtureEarlyInitializationChild\s*=\s*\$false') `
+    'workflow cleanup wrapper forwarded a false fixture body value'
+
+  $probePath = Join-Path ([IO.Path]::GetTempPath()) (
+    "propr-workflow-cleanup-wrapper-switch-$([Guid]::NewGuid().ToString('N')).ps1")
+  $probeText = @'
+[CmdletBinding(PositionalBinding=$false)]
+param(
+  [switch]$FixtureEarlyInitializationChild
+)
+
+if ([bool]$FixtureEarlyInitializationChild) {
+  [Console]::Out.WriteLine('FORWARD_TRUE')
+} else {
+  [Console]::Out.WriteLine('FORWARD_FALSE')
+}
+'@
+  [IO.File]::WriteAllText(
+    $probePath,
+    $probeText,
+    [Text.UTF8Encoding]::new($false)
+  )
+  try {
+    function Invoke-FixtureSwitchBindingProbe(
+      [string]$Path,
+      [string[]]$Arguments
+    ) {
+      $startInfo = [Diagnostics.ProcessStartInfo]::new()
+      $startInfo.FileName = $hostPath
+      $startInfo.UseShellExecute = $false
+      $startInfo.RedirectStandardOutput = $true
+      $startInfo.RedirectStandardError = $true
+      foreach ($argument in @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $Path
+      )) {
+        $startInfo.ArgumentList.Add($argument)
+      }
+      foreach ($argument in $Arguments) {
+        $startInfo.ArgumentList.Add($argument)
+      }
+      $process = [Diagnostics.Process]::new()
+      $process.StartInfo = $startInfo
+      try {
+        if (!$process.Start()) { throw 'fixture switch binding probe did not start' }
+        if (!$process.WaitForExit(5000)) {
+          $process.Kill($true)
+          throw 'fixture switch binding probe timed out'
+        }
+        return [PSCustomObject]@{
+          ExitCode = $process.ExitCode
+          StandardOutput = $process.StandardOutput.ReadToEnd().Trim()
+          StandardError = $process.StandardError.ReadToEnd()
+        }
+      } finally {
+        $process.Dispose()
+      }
+    }
+
+    $omitted = Invoke-FixtureSwitchBindingProbe $probePath @()
+    Assert-True ($omitted.ExitCode -eq 0 -and
+        $omitted.StandardOutput -ceq 'FORWARD_FALSE' -and
+        $omitted.StandardError.Length -eq 0) `
+      'workflow cleanup wrapper fixture switch omission did not remain false'
+    $valueless = Invoke-FixtureSwitchBindingProbe `
+      $probePath @('-FixtureEarlyInitializationChild')
+    Assert-True ($valueless.ExitCode -eq 0 -and
+        $valueless.StandardOutput -ceq 'FORWARD_TRUE' -and
+        $valueless.StandardError.Length -eq 0) `
+      'workflow cleanup wrapper fixture switch did not accept a valueless flag'
+    $invalidString = Invoke-FixtureSwitchBindingProbe `
+      $probePath @('-FixtureEarlyInitializationChild', 'arbitrary')
+    Assert-True ($invalidString.ExitCode -ne 0 -and
+        $invalidString.StandardOutput.Length -eq 0) `
+      'workflow cleanup wrapper fixture switch accepted a stray string value'
+    $invalidObject = Invoke-FixtureSwitchBindingProbe `
+      $probePath @('-FixtureEarlyInitializationChild:[object]::new()')
+    Assert-True ($invalidObject.ExitCode -ne 0 -and
+        $invalidObject.StandardOutput.Length -eq 0) `
+      'workflow cleanup wrapper fixture switch accepted arbitrary object coercion'
+  } finally {
+    Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function New-StateDirectory([string]$Name) {
@@ -226,30 +775,170 @@ function New-SupervisorStartInfo(
 }
 
 function Read-FixtureProcessState([string]$StateDirectory) {
-  $statePath = Join-Path $StateDirectory 'processes.json'
-  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
-  while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
-    if ($stopwatch.ElapsedMilliseconds -ge 15000) {
-      throw 'fixture did not publish process state'
+  $processStateScenario = $script:currentSupervisorInvocationScenario
+  $processStateDirectory = $StateDirectory
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $processStateScenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'PROCESS_STATE_DIRECTORY_INPUT' `
+    -Field 'STATE_DIRECTORY' `
+    -Action {
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$processStateDirectory)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $processStateScenario `
+          'PROCESS_STATE' `
+          'PROCESS_STATE_DIRECTORY_INPUT' `
+          'STATE_DIRECTORY')
     }
-    Start-Sleep -Milliseconds 25
+  $processStatePath = Invoke-SupervisorAttributedOperation `
+    -Scenario $processStateScenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'PROCESS_STATE_PATH_CONSTRUCTION' `
+    -Field 'PROCESS_STATE_PATH' `
+    -Action {
+      $constructedProcessStatePath = Join-Path $processStateDirectory 'processes.json'
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$constructedProcessStatePath)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $processStateScenario `
+          'PROCESS_STATE' `
+          'PROCESS_STATE_PATH_CONSTRUCTION' `
+          'PROCESS_STATE_PATH')
+      $constructedProcessStatePath
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $processStateScenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'PROCESS_STATE_PUBLICATION_WAIT' `
+    -Field 'PROCESS_STATE_PATH' `
+    -Action {
+      $processStateWait = [Diagnostics.Stopwatch]::StartNew()
+      while (!(Test-Path -LiteralPath $processStatePath -PathType Leaf)) {
+        if ($processStateWait.ElapsedMilliseconds -ge 15000) {
+          Assert-True $false `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              $processStateScenario `
+              'PROCESS_STATE' `
+              'PROCESS_STATE_PUBLICATION_WAIT' `
+              'PROCESS_STATE_PATH')
+        }
+        Start-Sleep -Milliseconds 25
+      }
+    }
+  $processState = Invoke-SupervisorAttributedOperation `
+    -Scenario $processStateScenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'PROCESS_STATE_READ_PARSE' `
+    -Field 'PROCESS_STATE_PATH' `
+    -Action {
+      Get-Content -LiteralPath $processStatePath -Raw -Encoding ASCII |
+        ConvertFrom-Json -ErrorAction Stop
+    }
+  foreach ($processStatePidCase in @(
+      @{ Property = 'WorkerPid'; Callsite = 'PROCESS_STATE_WORKER_PID'; Field = 'WORKER_PID' },
+      @{ Property = 'DescendantPid'; Callsite = 'PROCESS_STATE_DESCENDANT_PID'; Field = 'DESCENDANT_PID' }
+    )) {
+    $processStatePropertyName = [string]$processStatePidCase.Property
+    $processStateCallsiteToken = [string]$processStatePidCase.Callsite
+    $processStateFieldToken = [string]$processStatePidCase.Field
+    Invoke-SupervisorAttributedOperation `
+      -Scenario $processStateScenario `
+      -Phase 'PROCESS_STATE' `
+      -Callsite $processStateCallsiteToken `
+      -Field $processStateFieldToken `
+      -Action {
+        $processStateProperty = $processState.PSObject.Properties[$processStatePropertyName]
+        $processStatePidValue = 0
+        Assert-True ($null -ne $processStateProperty -and [int]::TryParse(
+            [string]$processStateProperty.Value,
+            [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$processStatePidValue
+          ) -and $processStatePidValue -gt 0) `
+          (Get-SanitizedSupervisorInvocationDiagnostic `
+            $script:currentSupervisorInvocationTest `
+            $processStateScenario `
+            'PROCESS_STATE' `
+            $processStateCallsiteToken `
+            $processStateFieldToken)
+      }
   }
-  return Get-Content -LiteralPath $statePath -Raw -Encoding ASCII | ConvertFrom-Json
+  return $processState
 }
 
 function Read-FixtureResourceState([string]$StateDirectory) {
-  $statePath = Join-Path $StateDirectory 'resources.json'
-  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
-  while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
-    if ($stopwatch.ElapsedMilliseconds -ge 45000) {
-      throw 'fixture did not publish owned resource state'
+  $resourceStateScenario = $script:currentSupervisorInvocationScenario
+  $resourceStateDirectory = $StateDirectory
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $resourceStateScenario `
+    -Phase 'RESOURCE_STATE' `
+    -Callsite 'RESOURCE_STATE_DIRECTORY_INPUT' `
+    -Field 'STATE_DIRECTORY' `
+    -Action {
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$resourceStateDirectory)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $resourceStateScenario `
+          'RESOURCE_STATE' `
+          'RESOURCE_STATE_DIRECTORY_INPUT' `
+          'STATE_DIRECTORY')
     }
-    Start-Sleep -Milliseconds 25
-  }
-  return Get-Content -LiteralPath $statePath -Raw -Encoding ASCII | ConvertFrom-Json
+  $statePath = Invoke-SupervisorAttributedOperation `
+    -Scenario $resourceStateScenario `
+    -Phase 'RESOURCE_STATE' `
+    -Callsite 'RESOURCE_STATE_PATH_CONSTRUCTION' `
+    -Field 'RESOURCE_STATE_PATH' `
+    -Action {
+      $constructedResourceStatePath = Join-Path $resourceStateDirectory 'resources.json'
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$constructedResourceStatePath)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $resourceStateScenario `
+          'RESOURCE_STATE' `
+          'RESOURCE_STATE_PATH_CONSTRUCTION' `
+          'RESOURCE_STATE_PATH')
+      $constructedResourceStatePath
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $resourceStateScenario `
+    -Phase 'RESOURCE_STATE' `
+    -Callsite 'RESOURCE_STATE_PUBLICATION_WAIT' `
+    -Field 'RESOURCE_STATE_PATH' `
+    -Action {
+      $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+      while (!(Test-Path -LiteralPath $statePath -PathType Leaf)) {
+        if ($stopwatch.ElapsedMilliseconds -ge 45000) {
+          Assert-True $false `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              $resourceStateScenario `
+              'RESOURCE_STATE' `
+              'RESOURCE_STATE_PUBLICATION_WAIT' `
+              'RESOURCE_STATE_PATH')
+        }
+        Start-Sleep -Milliseconds 25
+      }
+    }
+  return Invoke-SupervisorAttributedOperation `
+    -Scenario $resourceStateScenario `
+    -Phase 'RESOURCE_STATE' `
+    -Callsite 'RESOURCE_STATE_READ_PARSE' `
+    -Field 'RESOURCE_STATE_PATH' `
+    -Action {
+      Get-Content -LiteralPath $statePath -Raw -Encoding ASCII |
+        ConvertFrom-Json -ErrorAction Stop
+    }
 }
 
 function Assert-ProcessTreeGone($State) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    $script:currentSupervisorInvocationPhase `
+    'PROCESS_TREE_ASSERTION' `
+    'PROCESS_TREE'
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
   do {
     $worker = Get-Process -Id ([int]$State.WorkerPid) -ErrorAction SilentlyContinue
@@ -258,6 +947,82 @@ function Assert-ProcessTreeGone($State) {
     Start-Sleep -Milliseconds 25
   } while ($stopwatch.ElapsedMilliseconds -lt 3000)
   throw 'owned worker process tree survived supervisor completion'
+}
+
+function Read-EarlyWorkflowCleanupProcessState(
+  [string]$Scenario,
+  [string]$StateDirectory
+) {
+  $statePath = Invoke-SupervisorAttributedOperation `
+    -Scenario $Scenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'EARLY_PROCESS_STATE_PATH' `
+    -Field 'STATE_DIRECTORY' `
+    -Action {
+      Assert-True (![string]::IsNullOrWhiteSpace($StateDirectory)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $Scenario `
+          'PROCESS_STATE' `
+          'EARLY_PROCESS_STATE_PATH' `
+          'STATE_DIRECTORY')
+      Join-Path $StateDirectory 'workflow-cleanup-early-processes.json'
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $Scenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'EARLY_PROCESS_STATE_PATH' `
+    -Field 'PROCESS_STATE_PATH' `
+    -Action {
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$statePath)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $Scenario `
+          'PROCESS_STATE' `
+          'EARLY_PROCESS_STATE_PATH' `
+          'PROCESS_STATE_PATH')
+      Assert-True (Test-Path -LiteralPath $statePath -PathType Leaf) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $Scenario `
+          'PROCESS_STATE' `
+          'EARLY_PROCESS_STATE_PATH' `
+          'PROCESS_STATE_PATH')
+    }
+  $state = Invoke-SupervisorAttributedOperation `
+    -Scenario $Scenario `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'EARLY_PROCESS_STATE_READ' `
+    -Field 'PROCESS_STATE_PATH' `
+    -Action {
+      Get-Content -LiteralPath $statePath -Raw -Encoding ASCII |
+        ConvertFrom-Json -ErrorAction Stop
+    }
+  foreach ($earlyStatePropertyName in @('WorkerPid','DescendantPid')) {
+    $earlyStateFieldToken = Convert-FixtureAuthorityFieldToken $earlyStatePropertyName
+    Invoke-SupervisorAttributedOperation `
+      -Scenario $Scenario `
+      -Phase 'PROCESS_STATE' `
+      -Callsite 'EARLY_PROCESS_STATE_READ' `
+      -Field $earlyStateFieldToken `
+      -Action {
+        $property = $state.PSObject.Properties[$earlyStatePropertyName]
+        $pidValue = 0
+        Assert-True ($null -ne $property -and [int]::TryParse(
+            [string]$property.Value,
+            [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$pidValue
+          ) -and $pidValue -gt 0) `
+          (Get-SanitizedSupervisorInvocationDiagnostic `
+            $script:currentSupervisorInvocationTest `
+            $Scenario `
+            'PROCESS_STATE' `
+            'EARLY_PROCESS_STATE_READ' `
+            $earlyStateFieldToken)
+      }
+  }
+  return $state
 }
 
 function Get-SanitizedSupervisorMarkerDiagnostic($Result) {
@@ -561,66 +1326,842 @@ function Get-SanitizedWorkflowCleanupResultDiagnostic($Result) {
   return $diagnostic
 }
 
-function Get-WorkflowCleanupControllerStatusMatch([string]$StatusLine) {
+function Get-SupervisorFixtureSha256Hex([byte[]]$Bytes) {
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($sha256.ComputeHash($Bytes)).Replace(
+      '-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
+function Get-SupervisorFixtureStringDigest([string]$Text) {
+  $bytes = [Text.Encoding]::UTF8.GetBytes([string]$Text)
+  return Get-SupervisorFixtureSha256Hex $bytes
+}
+
+function Get-SupervisorFixtureFileDigest([string]$Path) {
+  try {
+    if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { return 'MISSING' }
+    $stream = [IO.File]::Open(
+      $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+      $sha256 = [Security.Cryptography.SHA256]::Create()
+      try {
+        return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace(
+          '-', '').ToLowerInvariant()
+      } finally {
+        $sha256.Dispose()
+      }
+    } finally {
+      $stream.Dispose()
+    }
+  } catch {
+    return 'INVALID'
+  }
+}
+
+function Add-SupervisorFixtureRegistryNativeApi {
+  if ('ProprSupervisorFixtureRegistryNative' -as [type]) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class ProprSupervisorFixtureRegistryNative
+{
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int RegQueryValueEx(
+        SafeRegistryHandle hKey,
+        string lpValueName,
+        IntPtr lpReserved,
+        out int lpType,
+        byte[] lpData,
+        ref int lpcbData);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int RegSetValueEx(
+        SafeRegistryHandle hKey,
+        string lpValueName,
+        int Reserved,
+        int dwType,
+        byte[] lpData,
+        int cbData);
+}
+'@
+}
+
+function Get-SupervisorFixtureRegistryValueNativeBytes($Key, [string]$Name) {
+  Add-SupervisorFixtureRegistryNativeApi
+  $valueType = 0
+  $valueByteCount = 0
+  $result = [ProprSupervisorFixtureRegistryNative]::RegQueryValueEx(
+    $Key.Handle,
+    $Name,
+    [IntPtr]::Zero,
+    [ref]$valueType,
+    $null,
+    [ref]$valueByteCount
+  )
+  if ($result -ne 0 -and $result -ne 234) { throw 'registry value query failed' }
+  if ($valueByteCount -lt 0 -or $valueByteCount -gt (16 * 1024 * 1024)) {
+    throw 'registry value query failed'
+  }
+  $valueBytes = if ($valueByteCount -eq 0) {
+    [byte[]]@()
+  } else {
+    New-Object byte[] $valueByteCount
+  }
+  $result = [ProprSupervisorFixtureRegistryNative]::RegQueryValueEx(
+    $Key.Handle,
+    $Name,
+    [IntPtr]::Zero,
+    [ref]$valueType,
+    $valueBytes,
+    [ref]$valueByteCount
+  )
+  if ($result -ne 0) { throw 'registry value query failed' }
+  return [PSCustomObject]@{
+    Type = $valueType
+    Bytes = $valueBytes
+  }
+}
+
+function Get-SupervisorFixtureDirectoryDigest([string]$Path) {
+  try {
+    if (!(Test-Path -LiteralPath $Path -PathType Container)) { return 'MISSING' }
+    $root = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (!$root.PSIsContainer -or
+        ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      return 'INVALID'
+    }
+    $rootPath = $root.FullName.TrimEnd('\')
+    $records = [Collections.Generic.List[string]]::new()
+    $records.Add('D||')
+    foreach ($entry in @(Get-ChildItem -LiteralPath $rootPath -Recurse -Force `
+        -ErrorAction Stop | Sort-Object -Property FullName -CaseSensitive)) {
+      if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return 'INVALID'
+      }
+      $relativePath = $entry.FullName.Substring($rootPath.Length).TrimStart('\')
+      if (!$relativePath -or [IO.Path]::IsPathRooted($relativePath)) {
+        return 'INVALID'
+      }
+      $relative = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes($relativePath))
+      if ($entry.PSIsContainer) {
+        $records.Add(('D|{0}|' -f $relative))
+      } else {
+        $records.Add(('F|{0}|{1}' -f
+          $relative, (Get-SupervisorFixtureFileDigest $entry.FullName)))
+      }
+    }
+    return Get-SupervisorFixtureStringDigest ($records.ToArray() -join "`n")
+  } catch {
+    return 'INVALID'
+  }
+}
+
+function Set-SupervisorFixtureRegistryValueNativeBytes(
+  $Key,
+  [string]$Name,
+  [int]$Type,
+  [byte[]]$Bytes
+) {
+  Add-SupervisorFixtureRegistryNativeApi
+  $valueBytes = if ($null -eq $Bytes) { [byte[]]@() } else { [byte[]]$Bytes }
+  $result = [ProprSupervisorFixtureRegistryNative]::RegSetValueEx(
+    $Key.Handle,
+    $Name,
+    0,
+    $Type,
+    $valueBytes,
+    $valueBytes.Length
+  )
+  if ($result -ne 0) { throw 'registry value set failed' }
+}
+
+function Get-SupervisorFixtureRegistryDigest(
+  [string]$Path,
+  [switch]$AttributeHkcuNativeValueRead
+) {
+  try {
+    if (!(Test-Path -LiteralPath $Path)) { return 'MISSING' }
+    $root = Get-Item -LiteralPath $Path -ErrorAction Stop
+    $records = [Collections.Generic.List[string]]::new()
+    $pending = [Collections.Generic.Queue[object]]::new()
+    $pending.Enqueue([PSCustomObject]@{ Key = $root; Relative = '' })
+    while ($pending.Count -ne 0) {
+      $entry = $pending.Dequeue()
+      $records.Add(('K|{0}' -f [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes([string]$entry.Relative))))
+      foreach ($valueName in @($entry.Key.GetValueNames() | Sort-Object -CaseSensitive)) {
+        $digestKey = $entry.Key
+        $digestValueName = [string]$valueName
+        $nativeValue = if ($AttributeHkcuNativeValueRead) {
+          Invoke-HkcuDesktopFixtureOperation `
+            -Callsite 'NATIVE_VALUE_READ' `
+            -Field 'REGISTRY_VALUE' `
+            -Action {
+              Get-SupervisorFixtureRegistryValueNativeBytes $digestKey $digestValueName
+            }
+        } else {
+          Get-SupervisorFixtureRegistryValueNativeBytes $digestKey $digestValueName
+        }
+        $records.Add(('V|{0}|{1}|{2}' -f
+          [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($digestValueName)),
+          ('{0}:{1}' -f $entry.Key.GetValueKind($digestValueName).ToString(), $nativeValue.Type),
+          [Convert]::ToBase64String([byte[]]$nativeValue.Bytes)))
+      }
+      foreach ($child in @(Get-ChildItem -LiteralPath $entry.Key.PSPath -ErrorAction Stop |
+          Sort-Object -Property PSChildName -CaseSensitive)) {
+        $relative = if ($entry.Relative) {
+          '{0}\{1}' -f $entry.Relative, $child.PSChildName
+        } else { [string]$child.PSChildName }
+        $pending.Enqueue([PSCustomObject]@{ Key = $child; Relative = $relative })
+      }
+    }
+    return Get-SupervisorFixtureStringDigest ($records.ToArray() -join "`n")
+  } catch {
+    $diagnosticMessage = [string]$_.Exception.Message
+    if (Test-SupervisorInvocationDiagnosticExact $diagnosticMessage) { throw }
+    return 'INVALID'
+  }
+}
+
+function Get-HkcuFixtureRegistryDigest([string]$Path) {
+  Get-SupervisorFixtureRegistryDigest `
+    -Path $Path `
+    -AttributeHkcuNativeValueRead
+}
+
+function Get-SupervisorFixtureRegistryValueDigest([string]$Path, [string]$Name) {
+  if (!(Test-Path -LiteralPath $Path)) { return 'MISSING' }
+  try {
+    return Get-SupervisorFixtureStringDigest ([string](
+      Get-ItemPropertyValue -LiteralPath $Path -Name $Name -ErrorAction Stop))
+  } catch {
+    return 'MISSING'
+  }
+}
+
+function Test-HkcuFixtureRegistryDigest([string]$Digest) {
+  return [string]$Digest -cmatch '^[0-9a-f]{64}$'
+}
+
+function Get-HkcuFixtureBoundaryDiagnostic {
+  return Get-SanitizedSupervisorInvocationDiagnostic `
+    'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+    'HKCU_BASELINE_RESTORE' `
+    'FIXTURE_SETUP' `
+    'HKCU_BASELINE_STATE' `
+    'REGISTRY_PATH'
+}
+
+function Get-HkcuFixtureDigestDiagnostic([string]$Callsite) {
+  return Get-SanitizedSupervisorInvocationDiagnostic `
+    'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+    'HKCU_BASELINE_RESTORE' `
+    'FIXTURE_SETUP' `
+    $Callsite `
+    'REGISTRY_ROOT'
+}
+
+function Assert-HkcuDesktopFixtureOperation([bool]$Condition) {
+  if (!$Condition) { throw 'hkcu desktop fixture operation failed' }
+}
+
+function Split-HkcuFixtureRegistryPath([string]$Path) {
+  $normalizedPath = ([string]$Path).TrimEnd('\')
+  Assert-HkcuDesktopFixtureOperation (
+    $normalizedPath.StartsWith(
+      'Registry::HKEY_CURRENT_USER\',
+      [StringComparison]::OrdinalIgnoreCase
+    )
+  )
+  $separatorIndex = $normalizedPath.LastIndexOf('\')
+  Assert-HkcuDesktopFixtureOperation `
+    ($separatorIndex -gt 'Registry::HKEY_CURRENT_USER'.Length)
+  $leaf = $normalizedPath.Substring($separatorIndex + 1)
+  Assert-HkcuDesktopFixtureOperation (![string]::IsNullOrWhiteSpace($leaf))
+  return [PSCustomObject]@{
+    Parent = $normalizedPath.Substring(0, $separatorIndex)
+    Leaf = $leaf
+  }
+}
+
+function Get-HkcuSupervisorFixtureRelativeSubKeyPath([string]$Path) {
+  $providerPrefix = 'Registry::HKEY_CURRENT_USER\'
+  $fixturePrefix = 'Software\ProPRSupervisorFixture\'
+  $pathText = [string]$Path
+  Assert-HkcuDesktopFixtureOperation (![string]::IsNullOrWhiteSpace($pathText))
+  Assert-HkcuDesktopFixtureOperation (!$pathText.Contains('/'))
+  Assert-HkcuDesktopFixtureOperation (
+    $pathText.StartsWith($providerPrefix, [StringComparison]::Ordinal)
+  )
+  $relativePath = $pathText.Substring($providerPrefix.Length)
+  Assert-HkcuDesktopFixtureOperation (
+    $relativePath.StartsWith($fixturePrefix, [StringComparison]::Ordinal)
+  )
+  $fixtureRelativePath = $relativePath.Substring($fixturePrefix.Length)
+  Assert-HkcuDesktopFixtureOperation (![string]::IsNullOrWhiteSpace($fixtureRelativePath))
+  Assert-HkcuDesktopFixtureOperation ($fixtureRelativePath -ceq $fixtureRelativePath.Trim())
+  foreach ($segment in $fixtureRelativePath.Split('\')) {
+    Assert-HkcuDesktopFixtureOperation (![string]::IsNullOrWhiteSpace($segment))
+    Assert-HkcuDesktopFixtureOperation ($segment -ceq $segment.Trim())
+    Assert-HkcuDesktopFixtureOperation ($segment -cne '.' -and $segment -cne '..')
+    Assert-HkcuDesktopFixtureOperation (!$segment.Contains(':'))
+  }
+  return $relativePath
+}
+
+function Open-HkcuSupervisorFixtureWritableSubKey([string]$Path) {
+  $relativePath = Get-HkcuSupervisorFixtureRelativeSubKeyPath $Path
+  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($relativePath, $true)
+  Assert-HkcuDesktopFixtureOperation ($null -ne $key)
+  return $key
+}
+
+function New-HkcuDesktopFixtureBoundaryState([string]$DesktopKey) {
+  return [PSCustomObject]@{
+    DesktopKey = $DesktopKey
+    DesktopLeaf = $null
+    ParentKey = $null
+    BackupLeaf = $null
+    BackupPath = $null
+    BaselinePresent = $false
+    BaselineDigest = $null
+    Relocated = $false
+    OriginalAbsentProven = $false
+    ForcePostRestoreDigestMismatch = $false
+    ForceRecoveryBackupCollision = $false
+    ForceRecoveryRenameFailure = $false
+  }
+}
+
+function Invoke-HkcuDesktopFixtureOperation(
+  [string]$Callsite,
+  [string]$Field,
+  [scriptblock]$Action
+) {
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'HKCU_BASELINE_RESTORE' `
+    -Phase 'FIXTURE_SETUP' `
+    -Callsite $Callsite `
+    -Field $Field `
+    -Action $Action
+}
+
+function Initialize-HkcuDesktopFixtureBoundary($Boundary) {
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'BASELINE_RELOCATE' `
+    -Field 'REGISTRY_PATH' `
+    -Action {
+      $parts = Split-HkcuFixtureRegistryPath ([string]$Boundary.DesktopKey)
+      $Boundary.ParentKey = [string]$parts.Parent
+      $Boundary.DesktopLeaf = [string]$parts.Leaf
+      if (!(Test-Path -LiteralPath $Boundary.DesktopKey)) {
+        $Boundary.OriginalAbsentProven = $true
+        return
+      }
+      $Boundary.BaselinePresent = $true
+      $baselineDigest = Invoke-HkcuDesktopFixtureOperation `
+        -Callsite 'BASELINE_DIGEST' `
+        -Field 'REGISTRY_ROOT' `
+        -Action {
+          $digest = Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+          Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
+          $digest
+        }
+      $Boundary.BaselineDigest = $baselineDigest
+      $Boundary.BackupLeaf = [Guid]::NewGuid().ToString('D')
+      $Boundary.BackupPath = Join-Path `
+        ([string]$Boundary.ParentKey) ([string]$Boundary.BackupLeaf)
+      Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $Boundary.ParentKey)
+      Assert-HkcuDesktopFixtureOperation (!(Test-Path -LiteralPath $Boundary.BackupPath))
+      Rename-Item -LiteralPath $Boundary.DesktopKey `
+        -NewName ([string]$Boundary.BackupLeaf) -ErrorAction Stop
+      $Boundary.Relocated = $true
+      Assert-HkcuDesktopFixtureOperation (!(Test-Path -LiteralPath $Boundary.DesktopKey))
+      $Boundary.OriginalAbsentProven = $true
+    }
+}
+
+function Restore-HkcuDesktopFixtureBoundary(
+  $Boundary,
+  [bool]$TargetOwnedByFixture
+) {
+  if ($null -eq $Boundary) { return }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'BASELINE_RESTORE' `
+    -Field 'REGISTRY_PATH' `
+    -Action {
+      if (!$Boundary.BaselinePresent) {
+        if (Test-Path -LiteralPath $Boundary.DesktopKey) {
+          Invoke-HkcuDesktopFixtureOperation `
+            -Callsite 'TARGET_OWNERSHIP' `
+            -Field 'REGISTRY_PATH' `
+            -Action {
+              Assert-HkcuDesktopFixtureOperation $TargetOwnedByFixture
+            }
+          Remove-Item -LiteralPath $Boundary.DesktopKey -Recurse -Force `
+            -ErrorAction Stop
+        }
+        return
+      }
+      if (!$Boundary.Relocated) { return }
+      Assert-HkcuDesktopFixtureOperation `
+        (Test-HkcuFixtureRegistryDigest ([string]$Boundary.BaselineDigest))
+      Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $Boundary.BackupPath)
+      $backupDigest = Invoke-HkcuDesktopFixtureOperation `
+        -Callsite 'BASELINE_DIGEST' `
+        -Field 'REGISTRY_ROOT' `
+        -Action {
+          $digest = Get-HkcuFixtureRegistryDigest ([string]$Boundary.BackupPath)
+          Assert-HkcuDesktopFixtureOperation `
+            ($digest -ceq [string]$Boundary.BaselineDigest)
+          $digest
+        }
+      if (Test-Path -LiteralPath $Boundary.DesktopKey) {
+        Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'TARGET_OWNERSHIP' `
+          -Field 'REGISTRY_PATH' `
+          -Action {
+            Assert-HkcuDesktopFixtureOperation $TargetOwnedByFixture
+          }
+        Remove-Item -LiteralPath $Boundary.DesktopKey -Recurse -Force `
+          -ErrorAction Stop
+      }
+      Assert-HkcuDesktopFixtureOperation (!(Test-Path -LiteralPath $Boundary.DesktopKey))
+      Rename-Item -LiteralPath $Boundary.BackupPath `
+        -NewName ([string]$Boundary.DesktopLeaf) -ErrorAction Stop
+      $restoredDigestFailure = $null
+      try {
+        $restoredDigest = Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'BASELINE_DIGEST' `
+          -Field 'REGISTRY_ROOT' `
+          -Action {
+            $digest = Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+            Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
+            Assert-HkcuDesktopFixtureOperation `
+              ($digest -ceq [string]$Boundary.BaselineDigest)
+            $digest
+          }
+      } catch {
+        $restoredDigestFailure = [string]$_.Exception.Message
+        $restoredDigest = 'INVALID'
+      }
+      if ($Boundary.ForcePostRestoreDigestMismatch) {
+        $restoredDigestFailure = Get-HkcuFixtureDigestDiagnostic 'BASELINE_DIGEST'
+        $restoredDigest = 'INVALID'
+      }
+      if ($restoredDigest -cne [string]$Boundary.BaselineDigest) {
+        Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'RECOVERY_RELOCATE' `
+          -Field 'REGISTRY_PATH' `
+          -Action {
+            try {
+              if ($Boundary.ForceRecoveryBackupCollision -and
+                  !(Test-Path -LiteralPath $Boundary.BackupPath)) {
+                [void](New-Item -Path $Boundary.BackupPath -Force -ErrorAction Stop)
+              }
+              if ((Test-Path -LiteralPath $Boundary.DesktopKey) -and
+                  !(Test-Path -LiteralPath $Boundary.BackupPath)) {
+                $recoveryBackupLeaf = [string]$Boundary.BackupLeaf
+                if ($Boundary.ForceRecoveryRenameFailure) {
+                  $recoveryBackupLeaf = 'ProPRInvalid\RecoveryBackup'
+                }
+                Rename-Item -LiteralPath $Boundary.DesktopKey `
+                  -NewName $recoveryBackupLeaf -ErrorAction Stop
+              }
+              Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $Boundary.BackupPath)
+              Assert-HkcuDesktopFixtureOperation (!(Test-Path -LiteralPath $Boundary.DesktopKey))
+              $recoveredBackupDigest = try {
+                Get-HkcuFixtureRegistryDigest ([string]$Boundary.BackupPath)
+              } catch {
+                'INVALID'
+              }
+              Assert-HkcuDesktopFixtureOperation (
+                Test-HkcuFixtureRegistryDigest $recoveredBackupDigest)
+              Assert-HkcuDesktopFixtureOperation (
+                $recoveredBackupDigest -ceq [string]$Boundary.BaselineDigest)
+            } catch {
+              $desktopDigest = if (Test-Path -LiteralPath $Boundary.DesktopKey) {
+                try {
+                  Get-HkcuFixtureRegistryDigest ([string]$Boundary.DesktopKey)
+                } catch {
+                  'INVALID'
+                }
+              } else { 'MISSING' }
+              $backupDigestAfterRecovery = if (Test-Path -LiteralPath $Boundary.BackupPath) {
+                try {
+                  Get-HkcuFixtureRegistryDigest ([string]$Boundary.BackupPath)
+                } catch {
+                  'INVALID'
+                }
+              } else { 'MISSING' }
+              Assert-HkcuDesktopFixtureOperation (
+                $desktopDigest -ceq [string]$Boundary.BaselineDigest -or
+                  $backupDigestAfterRecovery -ceq [string]$Boundary.BaselineDigest
+              )
+              throw
+          }
+        }
+        throw $restoredDigestFailure
+      }
+      Invoke-HkcuDesktopFixtureOperation `
+        -Callsite 'FINAL_BASELINE_DIGEST' `
+        -Field 'REGISTRY_ROOT' `
+        -Action {
+          Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $restoredDigest)
+          Assert-HkcuDesktopFixtureOperation `
+            ($restoredDigest -ceq [string]$Boundary.BaselineDigest)
+        }
+      Invoke-HkcuDesktopFixtureOperation `
+        -Callsite 'FINAL_BACKUP_ABSENCE' `
+        -Field 'REGISTRY_PATH' `
+        -Action {
+          Assert-HkcuDesktopFixtureOperation (!(Test-Path -LiteralPath $Boundary.BackupPath))
+        }
+    }
+}
+
+function Get-OwnedResourcePreservationSnapshot($Owned) {
+  $user = Get-LocalUser -Name $Owned.UserName -ErrorAction SilentlyContinue
+  $profileMatches = try {
+    @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+      Where-Object {
+        $_.SID -ceq [string]$Owned.UserSid -and
+          [string]::Equals(
+            ([string]$_.LocalPath).TrimEnd('\'),
+            ([string]$Owned.ProfilePath).TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase)
+      })
+  } catch {
+    @()
+  }
+  $shortcutFolderDigest =
+    Get-SupervisorFixtureDirectoryDigest ([string]$Owned.ShortcutFolder)
+  $smokeDirectoryDigest =
+    Get-SupervisorFixtureDirectoryDigest ([string]$Owned.SmokeDirectory)
+  $ownedRootDigest =
+    Get-SupervisorFixtureDirectoryDigest ([string]$Owned.OwnedRoot)
+  $installRootDigest =
+    Get-SupervisorFixtureDirectoryDigest ([string]$Owned.InstallRoot)
+  $executableDigest = Get-SupervisorFixtureFileDigest ([string]$Owned.Executable)
+  $shortcutDigest = Get-SupervisorFixtureFileDigest ([string]$Owned.Shortcut)
+  $registryPathDigest =
+    Get-SupervisorFixtureRegistryDigest ([string]$Owned.RegistryPath)
+  $registryValueDigest = Get-SupervisorFixtureRegistryValueDigest `
+    ([string]$Owned.RegistryPath) 'ProPRInstalledAppOwner'
+  $userDigest = if ($null -eq $user) {
+    'MISSING'
+  } elseif ([string]$user.SID.Value -ceq [string]$Owned.UserSid) {
+    'MATCH'
+  } else {
+    'CHANGED'
+  }
+  $profileDigest = if ($profileMatches.Count -eq 1 -and
+      (Test-Path -LiteralPath $Owned.ProfilePath -PathType Container)) {
+    'MATCH'
+  } else {
+    'CHANGED'
+  }
+  return [PSCustomObject][ordered]@{
+    OWNED_ROOT = $ownedRootDigest
+    INSTALL_ROOT = $installRootDigest
+    EXECUTABLE = $executableDigest
+    SHORTCUT_FOLDER = $shortcutFolderDigest
+    SHORTCUT = $shortcutDigest
+    SMOKE_DIRECTORY = $smokeDirectoryDigest
+    REGISTRY_PATH = $registryPathDigest
+    REGISTRY_VALUE = $registryValueDigest
+    USER_NAME = $userDigest
+    PROFILE_PATH = $profileDigest
+  }
+}
+
+function Assert-OwnedResourcePreservationSnapshot(
+  $Before,
+  $After,
+  [string]$Field
+) {
+  $preservationBefore = $Before
+  $preservationAfter = $After
+  $preservationField = [string]$Field
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'RESOURCE_COLLISION' `
+    -Phase 'RESOURCE_ASSERTION' `
+    -Callsite 'REPLACEMENT_SURVIVAL_READ' `
+    -Field $preservationField `
+    -Action {
+      Assert-True ([string]$preservationBefore.$preservationField -ceq
+          [string]$preservationAfter.$preservationField) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'RESOURCE_COLLISION' `
+          'RESOURCE_ASSERTION' `
+          'REPLACEMENT_SURVIVAL_READ' `
+          $preservationField)
+    }
+}
+
+function Get-WorkflowCleanupControllerStatusMatch([string]$TerminalLine) {
   return [regex]::Match(
-    $StatusLine,
-    ('^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:([A-Z_]+):' +
-      'EXIT_CODE:([0-9]+)(?::STARTUP_CLASS:' +
-      '(PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):PROCESS_EXIT:(-?[0-9]+):' +
-      'LINE:([0-9]+))?$')
+    $TerminalLine,
+    ('^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:' +
+      'RESULT:(COMPLETE|FAILED|TIMED_OUT):STATUS:([A-Z_]+):' +
+      'EXIT_CODE:(0|20|21|122|123|124|125)$')
   )
 }
 
+function Test-OwnedRegistryValueAbsent([string]$Path, [string]$Name) {
+  if (!(Test-Path -LiteralPath $Path)) { return $true }
+  $property = Get-ItemProperty -LiteralPath $Path -Name $Name `
+    -ErrorAction SilentlyContinue
+  if ($null -eq $property) { return $true }
+  return $null -eq $property.PSObject.Properties[$Name]
+}
+
+function Assert-OwnedResourcePredicate(
+  [string]$Scenario,
+  [string]$Callsite,
+  [string]$Field,
+  [scriptblock]$Predicate
+) {
+  $predicateScenario = $Scenario
+  $predicateCallsite = $Callsite
+  $predicateField = $Field
+  Invoke-SupervisorAttributedOperation `
+    -Scenario $predicateScenario `
+    -Phase 'RESOURCE_ASSERTION' `
+    -Callsite $predicateCallsite `
+    -Field $predicateField `
+    -Action {
+      Assert-True (& $Predicate) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          $predicateScenario `
+          'RESOURCE_ASSERTION' `
+          $predicateCallsite `
+          $predicateField)
+    }
+}
+
 function Assert-OwnedResourcesGone($Owned) {
-  foreach ($ownedPath in @(
-    $Owned.OwnedRoot, $Owned.InstallRoot, $Owned.ShortcutFolder,
-    $Owned.Shortcut, $Owned.SmokeDirectory
-  )) {
-    Assert-True (!(Test-Path -LiteralPath $ownedPath)) `
-      'external cleanup left a run-owned file-system resource behind'
+  $resourceScenario = $script:currentSupervisorInvocationScenario
+  foreach ($ownedDirectoryCase in @(
+      @{ Path = $Owned.OwnedRoot; Field = 'OWNED_ROOT' },
+      @{ Path = $Owned.InstallRoot; Field = 'INSTALL_ROOT' },
+      @{ Path = $Owned.ShortcutFolder; Field = 'SHORTCUT_FOLDER' },
+      @{ Path = $Owned.SmokeDirectory; Field = 'SMOKE_DIRECTORY' }
+    )) {
+    $ownedDirectoryPath = [string]$ownedDirectoryCase.Path
+    $ownedDirectoryField = [string]$ownedDirectoryCase.Field
+    Assert-OwnedResourcePredicate `
+      -Scenario $resourceScenario `
+      -Callsite 'FINAL_FILESYSTEM_DIRECTORY_ABSENCE' `
+      -Field $ownedDirectoryField `
+      -Predicate { !(Test-Path -LiteralPath $ownedDirectoryPath) }
   }
-  Assert-True (!(Test-Path -LiteralPath $Owned.RegistryPath)) `
-    'external cleanup left a run-owned registry resource behind'
-  Assert-True (!(Test-Path -LiteralPath $Owned.RegistryRoot)) `
-    'external cleanup left the run-owned registry root behind'
-  Assert-True ($null -eq (Get-LocalUser -Name $Owned.UserName -ErrorAction SilentlyContinue)) `
-    'external cleanup left the run-owned local user behind'
-  $ownedProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
-    Where-Object { $_.SID -ceq $Owned.UserSid })
-  Assert-True ($ownedProfiles.Count -eq 0) `
-    'external cleanup left the run-owned profile behind'
+  $ownedExecutablePath = [string]$Owned.Executable
+  if (![string]::IsNullOrWhiteSpace($ownedExecutablePath)) {
+    Assert-OwnedResourcePredicate `
+      -Scenario $resourceScenario `
+      -Callsite 'FINAL_FILESYSTEM_FILE_ABSENCE' `
+      -Field 'EXECUTABLE' `
+      -Predicate { !(Test-Path -LiteralPath $ownedExecutablePath) }
+  }
+  $ownedShortcutPath = [string]$Owned.Shortcut
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_SHORTCUT_ABSENCE' `
+    -Field 'SHORTCUT' `
+    -Predicate { !(Test-Path -LiteralPath $ownedShortcutPath) }
+  $ownedRegistryPath = [string]$Owned.RegistryPath
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_REGISTRY_VALUE_ABSENCE' `
+    -Field 'REGISTRY_VALUE' `
+    -Predicate { Test-OwnedRegistryValueAbsent $ownedRegistryPath 'ProPRInstalledAppOwner' }
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_REGISTRY_PATH_ABSENCE' `
+    -Field 'REGISTRY_PATH' `
+    -Predicate { !(Test-Path -LiteralPath $ownedRegistryPath) }
+  $ownedRegistryRoot = [string]$Owned.RegistryRoot
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_REGISTRY_ROOT_ABSENCE' `
+    -Field 'REGISTRY_ROOT' `
+    -Predicate { !(Test-Path -LiteralPath $ownedRegistryRoot) }
+  $ownedUserName = [string]$Owned.UserName
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_USER_ABSENCE' `
+    -Field 'USER_NAME' `
+    -Predicate {
+      $null -eq (Get-LocalUser -Name $ownedUserName -ErrorAction SilentlyContinue)
+    }
+  $ownedUserSid = [string]$Owned.UserSid
+  Assert-OwnedResourcePredicate `
+    -Scenario $resourceScenario `
+    -Callsite 'FINAL_PROFILE_ABSENCE' `
+    -Field 'USER_SID' `
+    -Predicate {
+      $ownedProfiles = @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+        Where-Object { $_.SID -ceq $ownedUserSid })
+      $ownedProfiles.Count -eq 0
+    }
+}
+
+function Convert-FixtureAuthorityFieldToken([string]$Field) {
+  $token = ($Field -creplace '([a-z])([A-Z])', '$1_$2').ToUpperInvariant()
+  return Get-SanitizedSupervisorFieldToken $token
+}
+
+function Assert-FixtureStateFieldsComplete(
+  $State,
+  [string]$Scenario,
+  [string]$Callsite,
+  [string[]]$Fields
+) {
+  foreach ($field in $Fields) {
+    $fieldToken = Convert-FixtureAuthorityFieldToken $field
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      $script:currentSupervisorInvocationPhase `
+      $Callsite `
+      $fieldToken
+    $property = $State.PSObject.Properties[$field]
+    Assert-True ($null -ne $property -and
+        ![string]::IsNullOrWhiteSpace([string]$property.Value)) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        $script:currentSupervisorInvocationTest `
+        $Scenario `
+        $script:currentSupervisorInvocationPhase `
+        $Callsite `
+        $fieldToken)
+  }
 }
 
 function Restore-ReplacedFixtureAuthority($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE' `
+    'AUTHORITY_RESTORE_WRITE' `
+    'TOKEN'
+  Assert-FixtureStateFieldsComplete `
+    $Owned $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE_WRITE' @('OwnedRoot','Token')
   [IO.File]::WriteAllText(
     (Join-Path $Owned.OwnedRoot '.propr-installed-app-owner'),
     [string]$Owned.Token,
     [Text.Encoding]::ASCII
   )
   if ($Owned.PSObject.Properties['InstallRootBackup']) {
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_REMOVE' @('InstallRoot')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_REMOVE' `
+      'INSTALL_ROOT'
     Remove-Item -LiteralPath $Owned.InstallRoot -Recurse -Force -ErrorAction Stop
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_MOVE' @('InstallRootBackup','InstallRoot')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_MOVE' `
+      'INSTALL_ROOT_BACKUP'
     Move-Item -LiteralPath $Owned.InstallRootBackup -Destination $Owned.InstallRoot `
       -ErrorAction Stop
   } elseif ($Owned.PSObject.Properties['ExecutableBackup']) {
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_REMOVE' @('Executable')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_REMOVE' `
+      'EXECUTABLE'
     Remove-Item -LiteralPath $Owned.Executable -Force -ErrorAction Stop
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_MOVE' @('ExecutableBackup','Executable')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_MOVE' `
+      'EXECUTABLE_BACKUP'
     Move-Item -LiteralPath $Owned.ExecutableBackup -Destination $Owned.Executable `
       -ErrorAction Stop
   }
+  Assert-FixtureStateFieldsComplete `
+    $Owned $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE_WRITE' @('ShortcutFolder','Token')
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE' `
+    'AUTHORITY_RESTORE_WRITE' `
+    'SHORTCUT_FOLDER'
   [IO.File]::WriteAllText(
     (Join-Path $Owned.ShortcutFolder '.propr-installed-app-owner'),
     [string]$Owned.Token,
     [Text.Encoding]::ASCII
   )
   if ($Owned.PSObject.Properties['ShortcutBackup']) {
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_REMOVE' @('Shortcut')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_REMOVE' `
+      'SHORTCUT'
     Remove-Item -LiteralPath $Owned.Shortcut -Force -ErrorAction Stop
+    Assert-FixtureStateFieldsComplete `
+      $Owned $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE_MOVE' @('ShortcutBackup','Shortcut')
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      'AUTHORITY_RESTORE' `
+      'AUTHORITY_RESTORE_MOVE' `
+      'SHORTCUT_BACKUP'
     Move-Item -LiteralPath $Owned.ShortcutBackup -Destination $Owned.Shortcut `
       -ErrorAction Stop
   }
+  Assert-FixtureStateFieldsComplete `
+    $Owned $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE_WRITE' @('RegistryPath','Token')
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'AUTHORITY_RESTORE' `
+    'AUTHORITY_RESTORE_WRITE' `
+    'REGISTRY_PATH'
   Set-ItemProperty -LiteralPath $Owned.RegistryPath `
     -Name 'ProPRInstalledAppOwner' -Value ([string]$Owned.Token)
 }
 
 function Assert-ReplacedFixtureResourcesSurvive($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'RESOURCE_ASSERTION'
   Assert-True ((Get-Content -LiteralPath (Join-Path $Owned.InstallRoot 'foreign.txt') -Raw).Trim() `
       -ceq 'foreign-install-tree') `
     'replacement install tree was removed or changed'
@@ -632,6 +2173,15 @@ function Assert-ReplacedFixtureResourcesSurvive($Owned) {
 }
 
 function Assert-ReplacedExecutableSurvives($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'RESOURCE_ASSERTION' `
+    'REPLACEMENT_SURVIVAL_READ' `
+    'EXECUTABLE'
+  Assert-FixtureStateFieldsComplete `
+    $Owned $script:currentSupervisorInvocationScenario `
+    'REPLACEMENT_SURVIVAL_READ' @('Executable')
   $expected = if ($Owned.PSObject.Properties['ByteIdenticalReplacement']) {
     'owned-executable'
   } else { 'foreign-executable' }
@@ -640,11 +2190,19 @@ function Assert-ReplacedExecutableSurvives($Owned) {
 }
 
 function Assert-ReplacedShortcutSurvives($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'RESOURCE_ASSERTION'
   Assert-True ((Get-Content -LiteralPath $Owned.Shortcut -Raw).Trim() -ceq
       'foreign-shortcut') 'replacement shortcut was removed or changed'
 }
 
 function Assert-MsiPreflightPreservedResources($Owned) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $script:currentSupervisorInvocationScenario `
+    'RESOURCE_ASSERTION'
   foreach ($path in @(
       $Owned.OwnedRoot, $Owned.InstallRoot, $Owned.ShortcutFolder,
       $Owned.Shortcut, $Owned.SmokeDirectory, $Owned.RegistryPath
@@ -656,52 +2214,756 @@ function Assert-MsiPreflightPreservedResources($Owned) {
     'MSI file-system preflight failure removed the run-owned user'
 }
 
-function Get-SanitizedControllerStartupDiagnostic(
-  [string]$ErrorText,
-  [int]$ProcessExitCode
-) {
-  $classification = if ($ErrorText -match
-      '(?im)\bParserError\b|\bMissingEndCurlyBrace\b|\bUnexpectedToken\b|\bParseException\b') {
-    'PARSER'
-  } elseif ($ErrorText -match
-      '(?im)\bParameterBinding(?:Exception|ValidationException)?\b|cannot bind (?:argument|parameter)|parameter cannot be processed') {
-    'PARAMETER_BINDING'
-  } elseif ($ErrorText -match
-      '(?im)\bAdd-Type\b|\bTypeNotFound\b|unable to find type|error CS[0-9]{4}') {
-    'TYPE_LOAD'
-  } else {
-    'OTHER'
+function Get-SanitizedFixtureAuthorityDiagnostic($Scenario, $Field) {
+  $scenarioName = if ([string]$Scenario -cmatch '^[A-Z_]{1,64}$') {
+    [string]$Scenario
+  } else { 'INVALID' }
+  $fieldName = if ([string]$Field -cmatch '^[A-Za-z][A-Za-z0-9]{0,31}$') {
+    [string]$Field
+  } else { 'InvalidField' }
+  return ('PROPR_SUPERVISOR_FIXTURE_AUTHORITY:SCENARIO:{0}:' +
+    'PHASE:RESOURCE_STATE:FIELD:{1}:INVALID') -f $scenarioName, $fieldName
+}
+
+function Assert-OwnedFixtureAuthorityComplete($Owned, [string]$Scenario) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $Scenario `
+    'AUTHORITY_ASSERTION'
+  foreach ($field in @(
+      'OwnedRoot','InstallRoot','ShortcutFolder','Shortcut','SmokeDirectory',
+      'RegistryPath','RegistryRoot','UserName','UserSid','ProfilePath',
+      'ManifestPath','RunId','Token'
+    )) {
+    $property = $Owned.PSObject.Properties[$field]
+    Assert-True ($null -ne $property -and
+        ![string]::IsNullOrWhiteSpace([string]$property.Value)) `
+      (Get-SanitizedFixtureAuthorityDiagnostic $Scenario $field)
   }
-  $lineNumber = 0
-  $lineMatch = [regex]::Match(
-    $ErrorText,
-    '(?im)^\s*at .+?:(\d+)\s+char:\d+\s*$'
+  $expectedRegistryRoot =
+    "Registry::HKEY_LOCAL_MACHINE\Software\ProPRSupervisorFixture\$($Owned.RunId)"
+  Assert-True ([string]::Equals(
+      [string]$Owned.RegistryRoot,
+      $expectedRegistryRoot,
+      [StringComparison]::OrdinalIgnoreCase
+    )) (Get-SanitizedFixtureAuthorityDiagnostic $Scenario 'RegistryRoot')
+}
+
+function Get-SupervisorInvocationTests {
+  return @(
+    'UNATTRIBUTED',
+    'BOOTSTRAP_TIMEOUT',
+    'WINDOWS_POWERSHELL_CLEANUP_COMPATIBILITY',
+    'OPERATION_DEADLINE_AND_TREE_TERMINATION',
+    'NEGATIVE_WORKER_EXIT_FINALIZATION',
+    'FAIL_CLOSED_MARKERS',
+    'LIVE_CANCELLATION_AND_REDACTION',
+    'MSI_TRANSACTION_INTERRUPTION_GATES',
+    'PRIMARY_WORKER_FALLBACK_FOREIGN_DESCENDANTS',
+    'PRE_EXISTING_CLEANUP_OWNERSHIP',
+    'SMOKE_PROMOTION_INTERRUPTION_AUTHORITY',
+    'PRE_EXISTING_APP_PATHS_AUTHORITY',
+    'HKCU_INSTALLED_VALUE_OWNERSHIP',
+    'PROVISIONAL_USER_MARKER_OWNERSHIP',
+    'ATTRIBUTION_TOTALITY'
   )
-  if (!$lineMatch.Success) {
-    $lineMatch = [regex]::Match($ErrorText, '(?im)\bline\s+(\d+)\b')
-  }
-  if ($lineMatch.Success) {
-    [void]([int]::TryParse(
-      $lineMatch.Groups[1].Value,
+}
+
+function Get-SupervisorInvocationScenarios {
+  return @(
+    'UNATTRIBUTED',
+    'TEST',
+    'NO_MARKER',
+    'NO_MARKER_WINDOWS_POWERSHELL',
+    'VALID_THEN_DEADLINE',
+    'NEGATIVE_EXIT',
+    'MALFORMED_MARKER',
+    'TORN_MARKER',
+    'STALE_MARKER',
+    'INACCESSIBLE_MARKER',
+    'CANCELLATION',
+    'DURING_MSI',
+    'DURING_OWNERSHIP_CAPTURE',
+    'PRIMARY_FALLBACK_FOREIGN_DESCENDANTS',
+    'PRE_EXISTING_APP_PATHS',
+    'OWNED_RESOURCES_THEN_DEADLINE',
+    'OWNED_RESOURCES_FOR_INTERRUPTION',
+    'OWNED_RESOURCES_NORMAL_SUCCESS',
+    'OWNED_RESOURCES_REPLACED_THEN_DEADLINE',
+    'OWNED_EXECUTABLE_REPLACED_THEN_DEADLINE',
+    'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE',
+    'OWNED_SHORTCUT_REPLACED_THEN_DEADLINE',
+    'OWNED_PROFILE_PATH_MISMATCH_THEN_DEADLINE',
+    'OWNED_RESOURCES_FOREIGN_CHILD_THEN_DEADLINE',
+    'SMOKE_BEFORE_PROMOTION_THEN_DEADLINE',
+    'SMOKE_AFTER_PROMOTION_THEN_DEADLINE',
+    'SMOKE_AFTER_ARTIFACTS_THEN_DEADLINE',
+    'SMOKE_FOREIGN_DESCENDANT_THEN_DEADLINE',
+    'SMOKE_TOKEN_MISMATCH_THEN_DEADLINE',
+    'STARTUP_PROTOCOL',
+    'REPLACEMENT_RETRY',
+    'REPLACED_ENTRY_RETRY',
+    'PROFILE_ALTERNATE_LEAF',
+    'PROFILE_RETRY',
+    'EXECUTABLE_IDENTITY_RETRY',
+    'FOREIGN_CHILD_RETRY',
+    'TERMINATION_RETRY',
+    'PARAMETER_VALIDATION',
+    'EARLY_INITIALIZATION_TIMEOUT',
+    'CLEANUP_TIMEOUT',
+    'INSTALLER_REPLACEMENT',
+    'RESOURCE_COLLISION',
+    'WORKFLOW_RETRY',
+    'NORMAL_CLEANUP',
+    'MANIFEST_VALIDATION',
+    'SMOKE_PROMOTION_RETRY',
+    'SMOKE_TOKEN_MISSING',
+    'SMOKE_TOKEN_RETRY',
+    'APP_PATH_MISMATCH',
+    'HKCU_BASELINE_RESTORE',
+    'HKCU_PENDING_RECEIPT',
+    'HKCU_NONEMPTY',
+    'HKCU_EMPTY',
+    'HKCU_CONFLICT',
+    'HKCU_PROVISIONAL',
+    'USER_MARKER_OWNED',
+    'USER_MARKER_REPLACEMENT',
+    'PROTOCOL_REGRESSION'
+  )
+}
+
+function Get-SupervisorInvocationPhases {
+  return @(
+    'UNATTRIBUTED',
+    'TEST',
+    'FIXTURE_SETUP',
+    'SUPERVISOR_PROCESS',
+    'PROCESS_START',
+    'PROCESS_WAIT',
+    'PROCESS_OUTPUT',
+    'PROCESS_STATE',
+    'RESOURCE_STATE',
+    'RESOURCE_ASSERTION',
+    'AUTHORITY_ASSERTION',
+    'AUTHORITY_RESTORE',
+    'WORKFLOW_CLEANUP_CONTROLLER',
+    'PIPELINE_START',
+    'PIPELINE_STOP',
+    'MANIFEST_ASSERTION',
+    'CLEANUP_ASSERTION',
+    'HOSTILE_FAILURE',
+    'FINALIZER'
+  )
+}
+
+function Get-SupervisorInvocationCallsites {
+  return @(
+    'UNATTRIBUTED',
+    'GENERAL',
+    'CRITICAL_GATE_PATH',
+    'CRITICAL_GATE_READ',
+    'CRITICAL_RESULT_FIELD',
+    'CRITICAL_OUTPUT_MARKER',
+    'PROCESS_STATE_PATH',
+    'PROCESS_STATE_READ',
+    'PROCESS_STATE_DIRECTORY_INPUT',
+    'PROCESS_STATE_PATH_CONSTRUCTION',
+    'PROCESS_STATE_PUBLICATION_WAIT',
+    'PROCESS_STATE_READ_PARSE',
+    'PROCESS_STATE_WORKER_PID',
+    'PROCESS_STATE_DESCENDANT_PID',
+    'PROCESS_TREE_ASSERTION',
+    'RESOURCE_STATE_DIRECTORY_INPUT',
+    'RESOURCE_STATE_PATH_CONSTRUCTION',
+    'RESOURCE_STATE_PUBLICATION_WAIT',
+    'RESOURCE_STATE_READ_PARSE',
+    'CONTROLLER_INVOCATION_INPUT',
+    'CONTROLLER_PROTOCOL_PARSE',
+    'CONTROLLER_RESULT_FIELD',
+    'EARLY_PROCESS_STATE_PATH',
+    'EARLY_PROCESS_STATE_READ',
+    'HKCU_BASELINE_STATE',
+    'REGRESSION_ROOT_KEY_SETUP',
+    'REGRESSION_VALUE_KIND_KEY_OPEN',
+    'REGRESSION_VALUE_KIND_DEFAULT_STRING',
+    'REGRESSION_VALUE_KIND_STRING',
+    'REGRESSION_VALUE_KIND_EXPAND_STRING',
+    'REGRESSION_VALUE_KIND_BINARY',
+    'REGRESSION_VALUE_KIND_DWORD',
+    'REGRESSION_VALUE_KIND_QWORD',
+    'REGRESSION_VALUE_KIND_MULTI_STRING',
+    'REGRESSION_NATIVE_NONE_WRITE',
+    'REGRESSION_NESTED_KEY_SETUP',
+    'REGRESSION_NESTED_VALUE_SETUP',
+    'NATIVE_VALUE_READ',
+    'BASELINE_DIGEST',
+    'BASELINE_RELOCATE',
+    'TARGET_OWNERSHIP',
+    'BASELINE_RESTORE',
+    'RECOVERY_RELOCATE',
+    'FINAL_BASELINE_DIGEST',
+    'FINAL_BACKUP_ABSENCE',
+    'MANIFEST_PRESERVATION',
+    'RESOURCE_FIELD_VALIDATION',
+    'REPLACEMENT_SURVIVAL_READ',
+    'AUTHORITY_RESTORE_WRITE',
+    'AUTHORITY_RESTORE_REMOVE',
+    'AUTHORITY_RESTORE_MOVE',
+    'WORKFLOW_CLEANUP_RETRY',
+    'FINAL_FILESYSTEM_DIRECTORY_ABSENCE',
+    'FINAL_FILESYSTEM_FILE_ABSENCE',
+    'FINAL_SHORTCUT_ABSENCE',
+    'FINAL_REGISTRY_VALUE_ABSENCE',
+    'FINAL_REGISTRY_PATH_ABSENCE',
+    'FINAL_REGISTRY_ROOT_ABSENCE',
+    'FINAL_USER_ABSENCE',
+    'FINAL_PROFILE_ABSENCE',
+    'FINAL_ABSENCE_CHECK'
+  )
+}
+
+function Get-SupervisorInvocationFields {
+  return @(
+    'NONE',
+    'STATE_DIRECTORY',
+    'CRITICAL_GATE_PATH',
+    'CRITICAL_GATE_CONTENT',
+    'MSI_TRANSACTION_MARKER',
+    'POST_TERMINATION_CLEANUP_MARKER',
+    'PROCESS_STATE_PATH',
+    'RESOURCE_STATE_PATH',
+    'WORKER_PID',
+    'DESCENDANT_PID',
+    'PROCESS_TREE',
+    'PROTOCOL',
+    'EXIT_CODE',
+    'REPORTED_EXIT_CODE',
+    'RESULT',
+    'CONTROLLER_STATUS',
+    'OWNED_ROOT',
+    'INSTALL_ROOT',
+    'SHORTCUT_FOLDER',
+    'SHORTCUT',
+    'SMOKE_DIRECTORY',
+    'REGISTRY_PATH',
+    'REGISTRY_ROOT',
+    'REGISTRY_VALUE',
+    'NATIVE_RETURN_CODE',
+    'USER_NAME',
+    'USER_SID',
+    'PROFILE_PATH',
+    'MANIFEST_PATH',
+    'RUN_ID',
+    'TOKEN',
+    'EXECUTABLE',
+    'EXECUTABLE_BACKUP',
+    'SHORTCUT_BACKUP',
+    'INSTALL_ROOT_BACKUP',
+    'BYTE_IDENTICAL_REPLACEMENT'
+  )
+}
+
+function Get-SanitizedSupervisorInvocationToken([string]$Token, [string[]]$AllowList) {
+  if ($Token -cin $AllowList) { return $Token }
+  return 'UNATTRIBUTED'
+}
+
+function Get-SanitizedSupervisorFieldToken([string]$Token) {
+  if ($Token -cin (Get-SupervisorInvocationFields)) { return $Token }
+  return 'NONE'
+}
+
+function Get-SanitizedSupervisorInvocationDiagnostic(
+  [string]$Test,
+  [string]$Scenario,
+  [string]$Phase,
+  [string]$Callsite = 'GENERAL',
+  [string]$Field = 'NONE'
+) {
+  $testName = Get-SanitizedSupervisorInvocationToken $Test (Get-SupervisorInvocationTests)
+  $scenarioName = Get-SanitizedSupervisorInvocationToken $Scenario (Get-SupervisorInvocationScenarios)
+  $phaseName = Get-SanitizedSupervisorInvocationToken $Phase (Get-SupervisorInvocationPhases)
+  $callsiteName = Get-SanitizedSupervisorInvocationToken `
+    $Callsite (Get-SupervisorInvocationCallsites)
+  $fieldName = Get-SanitizedSupervisorFieldToken $Field
+  return ('PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:{0}:' +
+    'SCENARIO:{1}:PHASE:{2}:CALLSITE:{3}:FIELD:{4}:FAILED') -f `
+    $testName, $scenarioName, $phaseName, $callsiteName, $fieldName
+}
+
+function Set-SupervisorInvocationContext(
+  [string]$Test,
+  [string]$Scenario,
+  [string]$Phase,
+  [string]$Callsite = 'GENERAL',
+  [string]$Field = 'NONE'
+) {
+  $script:currentSupervisorInvocationTest =
+    Get-SanitizedSupervisorInvocationToken $Test (Get-SupervisorInvocationTests)
+  $script:currentSupervisorInvocationScenario =
+    Get-SanitizedSupervisorInvocationToken $Scenario (Get-SupervisorInvocationScenarios)
+  $script:currentSupervisorInvocationPhase =
+    Get-SanitizedSupervisorInvocationToken $Phase (Get-SupervisorInvocationPhases)
+  $script:currentSupervisorInvocationCallsite =
+    Get-SanitizedSupervisorInvocationToken $Callsite (Get-SupervisorInvocationCallsites)
+  $script:currentSupervisorInvocationField = Get-SanitizedSupervisorFieldToken $Field
+}
+
+function Test-SupervisorInvocationDiagnosticExact([string]$Diagnostic) {
+  $match = [regex]::Match(
+    [string]$Diagnostic,
+    ('^PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:([A-Z_]+):' +
+      'SCENARIO:([A-Z_]+):PHASE:([A-Z_]+):CALLSITE:([A-Z_]+):' +
+      'FIELD:([A-Z_]+):FAILED$')
+  )
+  if (!$match.Success) { return $false }
+  return $match.Groups[1].Value -cin (Get-SupervisorInvocationTests) -and
+    $match.Groups[2].Value -cin (Get-SupervisorInvocationScenarios) -and
+    $match.Groups[3].Value -cin (Get-SupervisorInvocationPhases) -and
+    $match.Groups[4].Value -cin (Get-SupervisorInvocationCallsites) -and
+    $match.Groups[5].Value -cin (Get-SupervisorInvocationFields)
+}
+
+function Test-WorkflowCleanupProtocolMismatchDiagnosticExact([string]$Diagnostic) {
+  $match = [regex]::Match(
+    [string]$Diagnostic,
+    ('^PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' +
+      'INVOCATION:([A-Z_]+):OBSERVED:' +
+      '(NONE|STARTUP|TERMINAL|MALFORMED|PARTIAL|DUPLICATE|REORDERED|EXTRA|OVERSIZED):' +
+      'LINE_COUNT:(0|1|2|3\+):STDERR_COUNT:(0|[1-9][0-9]{0,3}):' +
+      'PROCESS_EXIT:(0|20|21|122|123|124|125|INVALID):' +
+      'LIFECYCLE:(EXITED|PROCESS_CREATION_FAILURE|OWNERSHIP_FAILURE|' +
+      'TIMEOUT_BEFORE_STARTUP|TIMEOUT_AFTER_STARTUP|' +
+      'CANCELLED_BEFORE_STARTUP|CANCELLED_AFTER_STARTUP|' +
+      'ACTIVE_TREE_AFTER_EXIT|DRAIN_TIMEOUT|DRAIN_FAILURE):' +
+      'TREE_TERMINATION:(NOT_REQUIRED|COMPLETE|FAILED):' +
+      'STARTUP_CLASS:(NONE|READY|PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):' +
+      'LINE_NUMBER:([0-3])$'),
+    [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+  if (!$match.Success) { return $false }
+  $standardErrorCount = 0
+  if (![int]::TryParse(
+      $match.Groups[4].Value,
       [Globalization.NumberStyles]::None,
       [Globalization.CultureInfo]::InvariantCulture,
-      [ref]$lineNumber
-    ))
+      [ref]$standardErrorCount
+    ) -or $standardErrorCount -gt 4096) {
+    return $false
   }
-  $signedExit = $ProcessExitCode.ToString([Globalization.CultureInfo]::InvariantCulture)
-  $numericLine = $lineNumber.ToString([Globalization.CultureInfo]::InvariantCulture)
-  return 'STARTUP_CLASS:{0}:PROCESS_EXIT:{1}:LINE:{2}' -f `
-    $classification, $signedExit, $numericLine
+  return $match.Groups[1].Value -cin @(
+    'STARTUP_PROTOCOL','REPLACEMENT_RETRY','REPLACED_ENTRY_RETRY',
+    'PROFILE_ALTERNATE_LEAF','PROFILE_RETRY','EXECUTABLE_IDENTITY_RETRY',
+    'FOREIGN_CHILD_RETRY','TERMINATION_RETRY','PARAMETER_VALIDATION',
+    'EARLY_INITIALIZATION_TIMEOUT','CLEANUP_TIMEOUT','INSTALLER_REPLACEMENT',
+    'RESOURCE_COLLISION','WORKFLOW_RETRY','NORMAL_CLEANUP','MANIFEST_VALIDATION',
+    'SMOKE_PROMOTION_RETRY','SMOKE_TOKEN_MISSING','SMOKE_TOKEN_RETRY',
+    'APP_PATH_MISMATCH','HKCU_BASELINE_RESTORE','HKCU_PENDING_RECEIPT',
+    'HKCU_NONEMPTY','HKCU_EMPTY','HKCU_CONFLICT','HKCU_PROVISIONAL',
+    'USER_MARKER_OWNED','USER_MARKER_REPLACEMENT','PROTOCOL_REGRESSION'
+  )
+}
+
+function Get-SupervisorAttributionTotalityCases {
+  return @(
+    'GENERAL',
+    'BOUNDARY_BOOTSTRAP_TIMEOUT',
+    'BOUNDARY_WINDOWS_POWERSHELL_COMPATIBILITY',
+    'BOUNDARY_OPERATION_DEADLINE',
+    'BOUNDARY_NEGATIVE_WORKER_EXIT',
+    'BOUNDARY_FAIL_CLOSED_MARKER',
+    'BOUNDARY_LIVE_CANCELLATION',
+    'BOUNDARY_MSI_INTERRUPTION',
+    'BOUNDARY_PRIMARY_FALLBACK',
+    'BOUNDARY_PRE_EXISTING_CLEANUP',
+    'BOUNDARY_SMOKE_PROMOTION',
+    'BOUNDARY_APP_PATHS_AUTHORITY',
+    'BOUNDARY_HKCU_OWNERSHIP',
+    'BOUNDARY_USER_MARKER',
+    'CALLSITE_CRITICAL_GATE_PATH',
+    'CALLSITE_CRITICAL_GATE_READ',
+    'CALLSITE_CRITICAL_RESULT_EXIT_CODE',
+    'CALLSITE_CRITICAL_RESULT_STATE_DIRECTORY',
+    'CALLSITE_CRITICAL_OUTPUT_COMMITTED',
+    'CALLSITE_CRITICAL_OUTPUT_CLEANUP_COMPLETE',
+    'CALLSITE_PROCESS_STATE_READ',
+    'CALLSITE_FIXTURE_PROCESS_STATE_DIRECTORY_INPUT',
+    'CALLSITE_FIXTURE_PROCESS_STATE_PATH_CONSTRUCTION',
+    'CALLSITE_FIXTURE_PROCESS_STATE_PUBLICATION_WAIT',
+    'CALLSITE_FIXTURE_PROCESS_STATE_READ_PARSE',
+    'CALLSITE_FIXTURE_PROCESS_STATE_WORKER_PID',
+    'CALLSITE_FIXTURE_PROCESS_STATE_DESCENDANT_PID',
+    'CALLSITE_PROCESS_TREE_ASSERTION',
+    'CALLSITE_RESOURCE_STATE_DIRECTORY_INPUT',
+    'CALLSITE_RESOURCE_STATE_PATH_CONSTRUCTION',
+    'CALLSITE_RESOURCE_STATE_PUBLICATION_WAIT',
+    'CALLSITE_RESOURCE_STATE_READ_PARSE',
+    'CALLSITE_CONTROLLER_INPUT_MANIFEST',
+    'CALLSITE_CONTROLLER_INPUT_RUN_ID',
+    'CALLSITE_CONTROLLER_INPUT_STATE_DIRECTORY',
+    'CALLSITE_CONTROLLER_PROTOCOL_PARSE',
+    'CALLSITE_CONTROLLER_RESULT_EXIT_CODE',
+    'CALLSITE_CONTROLLER_RESULT_REPORTED_EXIT_CODE',
+    'CALLSITE_CONTROLLER_RESULT_RESULT',
+    'CALLSITE_RESOURCE_COLLISION_REPLACEMENT_SURVIVAL_READ',
+    'CALLSITE_RESOURCE_COLLISION_MANIFEST_PRESERVATION',
+    'CALLSITE_EARLY_PROCESS_STATE_PATH',
+    'CALLSITE_EARLY_PROCESS_STATE_READ',
+    'CALLSITE_EARLY_WORKER_PID',
+    'CALLSITE_EARLY_DESCENDANT_PID',
+    'CALLSITE_EARLY_PROCESS_TREE_ASSERTION',
+    'CALLSITE_EARLY_MANIFEST_PRESERVATION',
+    'CALLSITE_HKCU_BASELINE_STATE',
+    'CALLSITE_HKCU_REGRESSION_ROOT_KEY_SETUP',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_KEY_OPEN',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_DEFAULT_STRING',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_STRING',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_EXPAND_STRING',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_BINARY',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_DWORD',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_QWORD',
+    'CALLSITE_HKCU_REGRESSION_VALUE_KIND_MULTI_STRING',
+    'CALLSITE_HKCU_REGRESSION_NATIVE_NONE_WRITE',
+    'CALLSITE_HKCU_REGRESSION_NESTED_KEY_SETUP',
+    'CALLSITE_HKCU_REGRESSION_NESTED_VALUE_SETUP',
+    'CALLSITE_HKCU_NATIVE_VALUE_READ',
+    'CALLSITE_HKCU_BASELINE_DIGEST',
+    'CALLSITE_HKCU_BASELINE_RELOCATE',
+    'CALLSITE_HKCU_TARGET_OWNERSHIP',
+    'CALLSITE_HKCU_BASELINE_RESTORE',
+    'CALLSITE_HKCU_RECOVERY_RELOCATE',
+    'CALLSITE_HKCU_FINAL_BASELINE_DIGEST',
+    'CALLSITE_HKCU_FINAL_BACKUP_ABSENCE',
+    'CALLSITE_REPLACEMENT_SURVIVAL_READ',
+    'FIELD_EXECUTABLE_BACKUP',
+    'FIELD_MANIFEST_PATH',
+    'CALLSITE_WORKFLOW_CLEANUP_RETRY',
+    'CALLSITE_FINAL_ABSENCE_CHECK',
+    'CALLSITE_FINAL_OWNED_ROOT_ABSENCE',
+    'CALLSITE_FINAL_INSTALL_ROOT_ABSENCE',
+    'CALLSITE_FINAL_EXECUTABLE_ABSENCE',
+    'CALLSITE_FINAL_SHORTCUT_FOLDER_ABSENCE',
+    'CALLSITE_FINAL_SHORTCUT_ABSENCE',
+    'CALLSITE_FINAL_SMOKE_DIRECTORY_ABSENCE',
+    'CALLSITE_FINAL_REGISTRY_VALUE_ABSENCE',
+    'CALLSITE_FINAL_REGISTRY_PATH_ABSENCE',
+    'CALLSITE_FINAL_REGISTRY_ROOT_ABSENCE',
+    'CALLSITE_FINAL_USER_ABSENCE',
+    'CALLSITE_FINAL_PROFILE_ABSENCE',
+    'FORGED_PREFIX_SECRET',
+    'MISSING_GATE_STATE_DIRECTORY',
+    'MISSING_EXECUTABLE_BACKUP',
+    'NESTED_SHADOW_CRITICAL_GATE_PATH',
+    'NESTED_SHADOW_PROCESS_STATE_READ',
+    'ALLOWLISTED_TEST_SCENARIO_PHASE',
+    'ALLOWLISTED_CALLSITE_FIELD',
+    'POWERSHELL_GATE_PUBLICATION'
+  )
+}
+
+function Get-SanitizedSupervisorAttributionCaseToken([string]$Token) {
+  if ($Token -cin (Get-SupervisorAttributionTotalityCases)) { return $Token }
+  return 'GENERAL'
+}
+
+function Get-SupervisorInvocationDiagnosticClassification(
+  [string]$Diagnostic,
+  [string]$Expected
+) {
+  if ([string]::IsNullOrWhiteSpace($Diagnostic)) { return 'missing' }
+  if (Test-SupervisorInvocationDiagnosticExact $Diagnostic) {
+    if ($Diagnostic -ceq $Expected) { return 'exact' }
+    return 'sanitized-to-context'
+  }
+  return 'malformed'
+}
+
+function Get-SupervisorAttributionTotalityAssertionMessage(
+  [string]$CaseId,
+  [string]$ExpectedClassification,
+  [string]$ObservedClassification
+) {
+  $caseName = Get-SanitizedSupervisorAttributionCaseToken $CaseId
+  if ($ExpectedClassification -cnotin @(
+      'exact','sanitized-to-context','malformed','missing'
+    )) {
+    $ExpectedClassification = 'malformed'
+  }
+  if ($ObservedClassification -cnotin @(
+      'exact','sanitized-to-context','malformed','missing'
+    )) {
+    $ObservedClassification = 'malformed'
+  }
+  return ('supervisor invocation attribution totality diverged:' +
+    'CASE:{0}:EXPECTED:{1}:OBSERVED:{2}') -f `
+    $caseName, $ExpectedClassification, $ObservedClassification
+}
+
+function Invoke-SupervisorAttributedBoundary(
+  [string]$Test,
+  [string]$Scenario,
+  [string]$Phase,
+  [scriptblock]$Action,
+  [string]$Callsite = 'GENERAL',
+  [string]$Field = 'NONE'
+) {
+  $previousTest = $script:currentSupervisorInvocationTest
+  $previousScenario = $script:currentSupervisorInvocationScenario
+  $previousPhase = $script:currentSupervisorInvocationPhase
+  $previousCallsite = $script:currentSupervisorInvocationCallsite
+  $previousField = $script:currentSupervisorInvocationField
+  Set-SupervisorInvocationContext $Test $Scenario $Phase $Callsite $Field
+  try {
+    & $Action
+  } catch {
+    $diagnosticMessage = [string]$_.Exception.Message
+    if ((Test-SupervisorInvocationDiagnosticExact $diagnosticMessage) -or
+        (Test-WorkflowCleanupProtocolMismatchDiagnosticExact $diagnosticMessage)) {
+      throw
+    }
+    throw (Get-SanitizedSupervisorInvocationDiagnostic `
+      $script:currentSupervisorInvocationTest `
+      $script:currentSupervisorInvocationScenario `
+      $script:currentSupervisorInvocationPhase `
+      $script:currentSupervisorInvocationCallsite `
+      $script:currentSupervisorInvocationField)
+  } finally {
+    $script:currentSupervisorInvocationTest = $previousTest
+    $script:currentSupervisorInvocationScenario = $previousScenario
+    $script:currentSupervisorInvocationPhase = $previousPhase
+    $script:currentSupervisorInvocationCallsite = $previousCallsite
+    $script:currentSupervisorInvocationField = $previousField
+  }
+}
+
+function Invoke-SupervisorAttributedTest(
+  [string]$Test,
+  [scriptblock]$Action
+) {
+  Invoke-SupervisorAttributedBoundary `
+    -Test $Test `
+    -Scenario 'TEST' `
+    -Phase 'TEST' `
+    -Action $Action
+}
+
+function Invoke-SupervisorAttributedOperation(
+  [string]$Scenario,
+  [string]$Phase,
+  [string]$Callsite,
+  [string]$Field,
+  [scriptblock]$Action
+) {
+  Invoke-SupervisorAttributedBoundary `
+    -Test $script:currentSupervisorInvocationTest `
+    -Scenario $Scenario `
+    -Phase $Phase `
+    -Callsite $Callsite `
+    -Field $Field `
+    -Action $Action
+}
+
+function Assert-SupervisorInvocationDiagnosticBounded(
+  [string]$Diagnostic,
+  [string]$Test,
+  [string]$Scenario,
+  [string]$Phase,
+  [string]$Callsite = 'GENERAL',
+  [string]$Field = 'NONE',
+  [string]$CaseId = 'GENERAL'
+) {
+  $expected = Get-SanitizedSupervisorInvocationDiagnostic `
+    $Test $Scenario $Phase $Callsite $Field
+  Assert-True ($Diagnostic -ceq $expected) `
+    (Get-SupervisorAttributionTotalityAssertionMessage `
+      $CaseId 'exact' `
+      (Get-SupervisorInvocationDiagnosticClassification $Diagnostic $expected))
+  Assert-True ([Text.Encoding]::ASCII.GetByteCount($Diagnostic) -le 320) `
+    (Get-SupervisorAttributionTotalityAssertionMessage `
+      $CaseId 'exact' `
+      (Get-SupervisorInvocationDiagnosticClassification $Diagnostic $expected))
+  Assert-True ($Diagnostic -cmatch (
+      '^PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:[A-Z_]+:' +
+      'SCENARIO:[A-Z_]+:PHASE:[A-Z_]+:CALLSITE:[A-Z_]+:' +
+      'FIELD:[A-Z_]+:FAILED$'
+    )) (Get-SupervisorAttributionTotalityAssertionMessage `
+      $CaseId 'exact' `
+      (Get-SupervisorInvocationDiagnosticClassification $Diagnostic $expected))
+  foreach ($forbidden in @(
+      $secretNeedle,
+      $testRoot,
+      $dummyInstaller,
+      'Cannot bind argument',
+      'LiteralPath',
+      'Registry::',
+      'S-1-5-',
+      'fixture-user',
+      'credential',
+      'stdout',
+      'stderr'
+    )) {
+    Assert-NotContains $Diagnostic $forbidden `
+      (Get-SupervisorAttributionTotalityAssertionMessage `
+        $CaseId 'exact' `
+        (Get-SupervisorInvocationDiagnosticClassification $Diagnostic $expected))
+  }
+}
+
+function Test-CriticalGatePublisherPowerShellCompatibility {
+  $fixtureText = Get-Content -LiteralPath $fixtureWorkerPath -Raw -Encoding UTF8
+  $match = [regex]::Match(
+    $fixtureText,
+    '(?sm)function Write-FixtureCriticalGate\(\[string\]\$Name\) \{(?<body>.*?)^\}'
+  )
+  Assert-True ($match.Success) `
+    (Get-SupervisorAttributionTotalityAssertionMessage `
+      'POWERSHELL_GATE_PUBLICATION' 'exact' 'missing')
+  $body = $match.Groups['body'].Value
+  Assert-True ($body -cmatch '\[IO\.FileOptions\]::WriteThrough' -and
+      $body -cmatch '\$stream\.Flush\(\$true\)' -and
+      $body -cmatch '\[IO\.Directory\]::Exists\(\$gatePath\)' -and
+      $body -cmatch '\[IO\.File\]::Delete\(\$gatePath\)' -and
+      $body -cmatch '\[IO\.File\]::Move\(\$temporaryGatePath, \$gatePath\)' -and
+      $body -cnotmatch '\[IO\.File\]::Move\(\$temporaryGatePath, \$gatePath, \$true\)') `
+    (Get-SupervisorAttributionTotalityAssertionMessage `
+      'POWERSHELL_GATE_PUBLICATION' 'exact' 'malformed')
+}
+
+function Get-WorkflowCleanupProtocolMismatchDiagnostic(
+  [string]$InvocationIdentifier,
+  [string]$ObservedLineCategory,
+  [int]$LineCount,
+  [int]$StandardErrorCount,
+  [string]$ValidatedProcessExit,
+  [string]$LifecycleCategory,
+  [string]$TreeTerminationCategory,
+  [string]$StartupClass,
+  [int]$LineNumber
+) {
+  $invocations = @(
+    'STARTUP_PROTOCOL','REPLACEMENT_RETRY','REPLACED_ENTRY_RETRY',
+    'PROFILE_ALTERNATE_LEAF','PROFILE_RETRY','EXECUTABLE_IDENTITY_RETRY',
+    'FOREIGN_CHILD_RETRY','TERMINATION_RETRY','PARAMETER_VALIDATION',
+    'EARLY_INITIALIZATION_TIMEOUT','CLEANUP_TIMEOUT','INSTALLER_REPLACEMENT',
+    'RESOURCE_COLLISION','WORKFLOW_RETRY','NORMAL_CLEANUP','MANIFEST_VALIDATION',
+    'SMOKE_PROMOTION_RETRY','SMOKE_TOKEN_MISSING','SMOKE_TOKEN_RETRY',
+    'APP_PATH_MISMATCH','HKCU_BASELINE_RESTORE','HKCU_PENDING_RECEIPT',
+    'HKCU_NONEMPTY','HKCU_EMPTY','HKCU_CONFLICT','HKCU_PROVISIONAL',
+    'USER_MARKER_OWNED','USER_MARKER_REPLACEMENT','PROTOCOL_REGRESSION'
+  )
+  if ($InvocationIdentifier -cnotin $invocations) { $InvocationIdentifier = 'INVALID' }
+  if ($ObservedLineCategory -cnotin @(
+      'NONE','STARTUP','TERMINAL','MALFORMED','PARTIAL','DUPLICATE',
+      'REORDERED','EXTRA','OVERSIZED'
+    )) { $ObservedLineCategory = 'MALFORMED' }
+  if ($LifecycleCategory -cnotin @(
+      'EXITED','PROCESS_CREATION_FAILURE','OWNERSHIP_FAILURE',
+      'TIMEOUT_BEFORE_STARTUP','TIMEOUT_AFTER_STARTUP',
+      'CANCELLED_BEFORE_STARTUP','CANCELLED_AFTER_STARTUP',
+      'ACTIVE_TREE_AFTER_EXIT','DRAIN_TIMEOUT','DRAIN_FAILURE'
+    )) { $LifecycleCategory = 'DRAIN_FAILURE' }
+  if ($TreeTerminationCategory -cnotin @('NOT_REQUIRED','COMPLETE','FAILED')) {
+    $TreeTerminationCategory = 'FAILED'
+  }
+  if ($StartupClass -cnotin @(
+      'NONE','READY','PARSER','PARAMETER_BINDING','TYPE_LOAD','OTHER'
+    )) { $StartupClass = 'NONE' }
+  if ($ValidatedProcessExit -cnotmatch '^(?:0|20|21|122|123|124|125)$') {
+    $ValidatedProcessExit = 'INVALID'
+  }
+  $boundedLineCount = if ($LineCount -ge 3) { '3+' } else {
+    [Math]::Max(0, $LineCount).ToString([Globalization.CultureInfo]::InvariantCulture)
+  }
+  $boundedStderrCount = [Math]::Min(4096, [Math]::Max(0, $StandardErrorCount))
+  $boundedLineNumber = [Math]::Min(3, [Math]::Max(0, $LineNumber))
+  return (('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' +
+    'INVOCATION:{0}:OBSERVED:{1}:LINE_COUNT:{2}:STDERR_COUNT:{3}:' +
+    'PROCESS_EXIT:{4}:LIFECYCLE:{5}:TREE_TERMINATION:{6}:' +
+    'STARTUP_CLASS:{7}:LINE_NUMBER:{8}') -f `
+    $InvocationIdentifier, $ObservedLineCategory, $boundedLineCount,
+    $boundedStderrCount.ToString([Globalization.CultureInfo]::InvariantCulture),
+    $ValidatedProcessExit, $LifecycleCategory, $TreeTerminationCategory,
+    $StartupClass,
+    $boundedLineNumber.ToString([Globalization.CultureInfo]::InvariantCulture))
 }
 
 function Invoke-WorkflowCleanupController(
+  [Parameter(Mandatory=$true)]
+  [ValidateSet(
+    'STARTUP_PROTOCOL','REPLACEMENT_RETRY','REPLACED_ENTRY_RETRY',
+    'PROFILE_ALTERNATE_LEAF','PROFILE_RETRY','EXECUTABLE_IDENTITY_RETRY',
+    'FOREIGN_CHILD_RETRY','TERMINATION_RETRY','PARAMETER_VALIDATION',
+    'EARLY_INITIALIZATION_TIMEOUT','CLEANUP_TIMEOUT','INSTALLER_REPLACEMENT',
+    'RESOURCE_COLLISION','WORKFLOW_RETRY','NORMAL_CLEANUP','MANIFEST_VALIDATION',
+    'SMOKE_PROMOTION_RETRY','SMOKE_TOKEN_MISSING','SMOKE_TOKEN_RETRY',
+    'APP_PATH_MISMATCH','HKCU_BASELINE_RESTORE','HKCU_PENDING_RECEIPT',
+    'HKCU_NONEMPTY','HKCU_EMPTY','HKCU_CONFLICT','HKCU_PROVISIONAL',
+    'USER_MARKER_OWNED','USER_MARKER_REPLACEMENT','PROTOCOL_REGRESSION'
+  )][string]$InvocationIdentifier,
   [string]$ManifestPath,
   [string]$RunId,
   [string]$FixtureRoot,
   [object]$CleanupTimeoutMilliseconds = 30000,
   [bool]$FixtureEarlyInitializationChild = $false,
-  [string]$StartupFailureClass = ''
+  [string]$StartupFailureClass = '',
+  [object]$InvocationTimeoutMilliseconds = 40000,
+  [Threading.WaitHandle]$CancellationWaitHandle = $null,
+  [bool]$SignalCancellationAfterStartup = $false,
+  [bool]$BeginTimeoutAfterStartup = $false,
+  [bool]$InjectTreeTerminationFailure = $false,
+  [bool]$FixtureResultEmissionFailure = $false,
+  [string]$ProtocolFixture = ''
 ) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $InvocationIdentifier `
+    'WORKFLOW_CLEANUP_CONTROLLER'
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $InvocationIdentifier `
+    'WORKFLOW_CLEANUP_CONTROLLER' `
+    'CONTROLLER_INVOCATION_INPUT' `
+    'MANIFEST_PATH'
+  Assert-True (![string]::IsNullOrWhiteSpace([string]$ManifestPath)) `
+    (Get-SanitizedSupervisorInvocationDiagnostic `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'MANIFEST_PATH')
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $InvocationIdentifier `
+    'WORKFLOW_CLEANUP_CONTROLLER' `
+    'CONTROLLER_INVOCATION_INPUT' `
+    'RUN_ID'
+  Assert-True (![string]::IsNullOrWhiteSpace([string]$RunId)) `
+    (Get-SanitizedSupervisorInvocationDiagnostic `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'RUN_ID')
+  if ($FixtureRoot) {
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'STATE_DIRECTORY'
+    Assert-True (![string]::IsNullOrWhiteSpace([string]$FixtureRoot)) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        $script:currentSupervisorInvocationTest `
+        $InvocationIdentifier `
+        'WORKFLOW_CLEANUP_CONTROLLER' `
+        'CONTROLLER_INVOCATION_INPUT' `
+        'STATE_DIRECTORY')
+  }
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $InvocationIdentifier `
+    'WORKFLOW_CLEANUP_CONTROLLER' `
+    'CONTROLLER_PROTOCOL_PARSE' `
+    'PROTOCOL'
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $hostPath
   $startInfo.UseShellExecute = $false
@@ -718,72 +2980,212 @@ function Invoke-WorkflowCleanupController(
     $startInfo.ArgumentList.Add($argument)
   }
   if ($FixtureRoot) {
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'STATE_DIRECTORY'
     $startInfo.ArgumentList.Add('-FixtureRoot')
     $startInfo.ArgumentList.Add($FixtureRoot)
   }
   if ($FixtureEarlyInitializationChild) {
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'STATE_DIRECTORY'
     $startInfo.ArgumentList.Add('-FixtureEarlyInitializationChild')
+  }
+  if ($FixtureResultEmissionFailure) {
+    $startInfo.ArgumentList.Add('-FixtureResultEmissionFailure')
   }
   if ($StartupFailureClass) {
     $startInfo.ArgumentList.Add('-StartupFailureClass')
     $startInfo.ArgumentList.Add($StartupFailureClass)
   }
+  if ($ProtocolFixture) {
+    $startInfo.ArgumentList.Add('-ProtocolFixture')
+    $startInfo.ArgumentList.Add($ProtocolFixture)
+  }
+  $invocationTimeout = 0
+  if (![int]::TryParse(
+      [string]$InvocationTimeoutMilliseconds,
+      [Globalization.NumberStyles]::None,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [ref]$invocationTimeout
+    ) -or $invocationTimeout -lt 1 -or $invocationTimeout -gt 40000) {
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $InvocationIdentifier `
+      'WORKFLOW_CLEANUP_CONTROLLER' `
+      'CONTROLLER_INVOCATION_INPUT' `
+      'STATE_DIRECTORY'
+    throw 'workflow cleanup invocation timeout is invalid'
+  }
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    $InvocationIdentifier `
+    'WORKFLOW_CLEANUP_CONTROLLER' `
+    'CONTROLLER_PROTOCOL_PARSE' `
+    'PROTOCOL'
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
+  $job = $null
+  $capture = $null
+  $cancellationSignalTask = $null
+  $processStarted = $false
+  $lifecycleCategory = 'PROCESS_CREATION_FAILURE'
+  $treeTerminationCategory = 'NOT_REQUIRED'
+  $validatedProcessExit = 'INVALID'
+  $drainComplete = $false
+  $drainAttempted = $false
   try {
+    $job = [ProPRWorkflowCleanupInvocationJob]::new()
     if (!$process.Start()) { throw 'workflow cleanup fixture did not start' }
-    Assert-True ($process.WaitForExit(40000)) 'workflow cleanup fixture exceeded its bound'
-    $output = $process.StandardOutput.ReadToEnd()
-    $errorOutput = $process.StandardError.ReadToEnd()
-    $outputLines = @($output -split '\r?\n' | Where-Object { $_ })
-    $lineCount = if ($outputLines.Count -ge 3) { '3+' } else { [string]$outputLines.Count }
-    $stderrCount = [Math]::Min(4096, $errorOutput.Length)
-    if ($output.Length -gt 512 -or $outputLines.Count -ne 2) {
-      $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
-        $errorOutput ([int]$process.ExitCode)
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}:{2}' -f `
-        $lineCount, $stderrCount, $startupDiagnostic)
+    $processStarted = $true
+    try {
+      $job.AddProcess($process.Handle)
+    } catch {
+      $lifecycleCategory = 'OWNERSHIP_FAILURE'
+      throw
     }
-    $resultMatch = [regex]::Match(
-      $outputLines[0],
-      '^PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:(COMPLETE|FAILED|TIMED_OUT)$'
-    )
-    if (!$resultMatch.Success) {
-      $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
-        $errorOutput ([int]$process.ExitCode)
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}:{2}' -f `
-        $lineCount, $stderrCount, $startupDiagnostic)
+    $capture = [ProPRWorkflowCleanupProtocolCapture]::new()
+    $capture.Start($process)
+    if ($SignalCancellationAfterStartup) {
+      if ($CancellationWaitHandle -isnot [Threading.EventWaitHandle]) {
+        throw 'workflow cleanup after-startup cancellation event is invalid'
+      }
+      $cancellationSignalTask = $capture.SignalCancellationAfterStartup(
+        [Threading.EventWaitHandle]$CancellationWaitHandle, $invocationTimeout)
     }
-    $resultName = $resultMatch.Groups[1].Value
-    $statusMatch = Get-WorkflowCleanupControllerStatusMatch $outputLines[1]
-    if (!$statusMatch.Success) {
-      $startupDiagnostic = Get-SanitizedControllerStartupDiagnostic `
-        $errorOutput ([int]$process.ExitCode)
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:LINE_COUNT:{0}:STDERR_COUNT:{1}:{2}' -f `
-        $lineCount, $stderrCount, $startupDiagnostic)
+    $startupWindowTimedOut = $false
+    if ($BeginTimeoutAfterStartup) {
+      # The capture signals only after parsing one complete startup record.
+      $startupWindowTimedOut = !$capture.WaitForStartup(5000)
     }
-    $controllerStatus = $statusMatch.Groups[1].Value
-    $reportedExitCode = [int]$statusMatch.Groups[2].Value
-    if ($errorOutput.Length -ne 0) {
-      $stderrCode = if ($errorOutput.Length -gt 4096) {
-        'CONTROLLER_STDERR_LIMIT'
-      } else { 'CONTROLLER_STDERR_PRESENT' }
-      throw ('PROPR_WORKFLOW_CLEANUP_FIXTURE:{0}:STATUS:{1}:EXIT_CODE:{2}:' +
-        'LINE_COUNT:{3}:STDERR_COUNT:{4}' -f `
-        $stderrCode, $controllerStatus, $reportedExitCode, $lineCount, $stderrCount)
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $cancelled = $false
+    while (!$startupWindowTimedOut -and !$process.HasExited -and
+        $watch.ElapsedMilliseconds -lt $invocationTimeout) {
+      if ($null -ne $CancellationWaitHandle -and $CancellationWaitHandle.WaitOne(0)) {
+        $cancelled = $true
+        break
+      }
+      [Threading.Thread]::Sleep(25)
+    }
+    if (!$process.HasExited) {
+      $lifecycleCategory = if ($cancelled) {
+        'CANCELLED_BEFORE_STARTUP'
+      } else { 'TIMEOUT_BEFORE_STARTUP' }
+      $treeTerminationCategory = 'FAILED'
+      if (!$InjectTreeTerminationFailure) {
+        try {
+          if ($job.TerminateAndWait(125, 3000)) {
+            $treeTerminationCategory = 'COMPLETE'
+          }
+        } catch {}
+      }
+      [void]$process.WaitForExit(3000)
+    } else {
+      $lifecycleCategory = 'EXITED'
+      $drainAttempted = $true
+      $drainComplete = $capture.Finish(3000)
+      if (!$drainComplete) {
+        $lifecycleCategory = if ($capture.DrainFailed) {
+          'DRAIN_FAILURE'
+        } else { 'DRAIN_TIMEOUT' }
+      }
+      if ($process.ExitCode -in @(0,20,21,122,123,124,125)) {
+        $validatedProcessExit =
+          $process.ExitCode.ToString([Globalization.CultureInfo]::InvariantCulture)
+      }
+      if (!$job.WaitForNoActiveProcesses(3000)) {
+        $lifecycleCategory = 'ACTIVE_TREE_AFTER_EXIT'
+        $treeTerminationCategory = 'FAILED'
+        if (!$InjectTreeTerminationFailure) {
+          try {
+            if ($job.TerminateAndWait(125, 3000)) {
+              $treeTerminationCategory = 'COMPLETE'
+            }
+          } catch {}
+        }
+        if (!$drainComplete) {
+          $drainComplete = $capture.Finish(0)
+        }
+      }
+    }
+    if (!$drainAttempted) {
+      $drainAttempted = $true
+      $drainComplete = $capture.Finish(3000)
+    }
+    if (!$drainComplete -and $lifecycleCategory -ceq 'EXITED') {
+      $lifecycleCategory = if ($capture.DrainFailed) { 'DRAIN_FAILURE' } else { 'DRAIN_TIMEOUT' }
+    }
+    if ($lifecycleCategory -like '*BEFORE_STARTUP' -and
+        $capture.StartupClass -cne 'NONE') {
+      $lifecycleCategory = $lifecycleCategory.Replace('BEFORE_STARTUP', 'AFTER_STARTUP')
+    }
+    if ($process.HasExited -and $process.ExitCode -in @(0,20,21,122,123,124,125)) {
+      $validatedProcessExit =
+        $process.ExitCode.ToString([Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($lifecycleCategory -cne 'EXITED' -or
+        $treeTerminationCategory -cne 'NOT_REQUIRED' -or
+        !$drainComplete -or
+        !$capture.IsProtocolValid([int]$process.ExitCode)) {
+      throw (Get-WorkflowCleanupProtocolMismatchDiagnostic `
+        $InvocationIdentifier $capture.ObservedLineCategory $capture.LineCount `
+        $capture.StandardErrorCount $validatedProcessExit $lifecycleCategory `
+        $treeTerminationCategory $capture.StartupClass $capture.ObservedLineNumber)
     }
     return [PSCustomObject]@{
+      InvocationIdentifier = $InvocationIdentifier
       ExitCode = $process.ExitCode
-      Result = $resultName
-      ControllerStatus = $controllerStatus
-      ReportedExitCode = $reportedExitCode
-      StartupClass = [string]$statusMatch.Groups[3].Value
-      StartupProcessExit = [string]$statusMatch.Groups[4].Value
-      StartupLine = [string]$statusMatch.Groups[5].Value
-      Output = $output
+      Result = $capture.Result
+      ControllerStatus = $capture.ControllerStatus
+      ReportedExitCode = $capture.ReportedExitCode
+      StartupClass = if ($capture.StartupClass -ceq 'READY') { '' } else {
+        $capture.StartupClass
+      }
+      StartupProcessExit = if ($capture.StartupClass -ceq 'READY') { '' } else {
+        [string]$capture.StartupProcessExit
+      }
+      StartupLine = if ($capture.StartupClass -ceq 'READY') { '' } else {
+        [string]$capture.StartupLine
+      }
+      ProtocolLineCount = $capture.LineCount
+      ProtocolStandardErrorCount = $capture.StandardErrorCount
+      ProtocolStartupClass = $capture.StartupClass
+      ProtocolStartupLineNumber = $capture.StartupRecordLineNumber
+      ProtocolTerminalLineNumber = $capture.TerminalRecordLineNumber
     }
+  } catch {
+    if ($_.Exception.Message -like 'PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:*') {
+      throw
+    }
+    $lineCategory = if ($null -eq $capture) { 'NONE' } else {
+      $capture.ObservedLineCategory
+    }
+    $lineCount = if ($null -eq $capture) { 0 } else { $capture.LineCount }
+    $stderrCount = if ($null -eq $capture) { 0 } else { $capture.StandardErrorCount }
+    $startupClass = if ($null -eq $capture) { 'NONE' } else { $capture.StartupClass }
+    $lineNumber = if ($null -eq $capture) { 0 } else { $capture.ObservedLineNumber }
+    throw (Get-WorkflowCleanupProtocolMismatchDiagnostic `
+      $InvocationIdentifier $lineCategory $lineCount $stderrCount `
+      $validatedProcessExit $lifecycleCategory $treeTerminationCategory `
+      $startupClass $lineNumber)
   } finally {
-    if (!$process.HasExited) { try { $process.Kill($true) } catch {} }
+    if ($processStarted -and !$process.HasExited) {
+      try { if ($null -ne $job) { [void]$job.TerminateAndWait(125, 3000) } } catch {}
+      try { if (!$process.HasExited) { $process.Kill($true) } } catch {}
+    }
+    if ($null -ne $cancellationSignalTask) {
+      try { [void]$cancellationSignalTask.Wait(3000) } catch {}
+    }
+    if ($null -ne $capture) { $capture.Dispose() }
+    if ($null -ne $job) { $job.Dispose() }
     $process.Dispose()
   }
 }
@@ -791,7 +3193,8 @@ function Invoke-WorkflowCleanupController(
 function Test-WorkflowCleanupStartupProtocol {
   foreach ($failureClass in @('PARSER','PARAMETER_BINDING','TYPE_LOAD','OTHER')) {
     $result = Invoke-WorkflowCleanupController `
-      $dummyInstaller $([Guid]::NewGuid().ToString('N')) $testRoot 30000 $false `
+      'STARTUP_PROTOCOL' $dummyInstaller $([Guid]::NewGuid().ToString('N')) `
+      $testRoot 30000 $false `
       $failureClass
     Assert-True ($result.ExitCode -eq 125 -and
         $result.ReportedExitCode -eq 125 -and
@@ -812,12 +3215,12 @@ function Test-WorkflowCleanupStartupProtocol {
   }
 
   foreach ($invalidStatusLine in @(
-      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:EXIT_CODE:125:STARTUP_CLASS:INVALID:PROCESS_EXIT:125:LINE:12',
-      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:EXIT_CODE:125:STARTUP_CLASS:PARSER:PROCESS_EXIT:+125:LINE:12',
-      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:STATUS:STARTUP_FAILURE:EXIT_CODE:125:STARTUP_CLASS:PARSER:PROCESS_EXIT:125:LINE:-1'
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:RESULT:INVALID:STATUS:STARTUP_FAILURE:EXIT_CODE:125',
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:RESULT:FAILED:STATUS:STARTUP_FAILURE:EXIT_CODE:+125',
+      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:TERMINAL:RESULT:FAILED:STATUS:STARTUP_FAILURE:EXIT_CODE:126'
     )) {
     Assert-True (!(Get-WorkflowCleanupControllerStatusMatch $invalidStatusLine).Success) `
-      'workflow cleanup parser accepted malformed startup metadata'
+      'workflow cleanup parser accepted a malformed terminal record'
   }
 
   $validStartupMetadata = [PSCustomObject]@{
@@ -877,7 +3280,1018 @@ function Test-WorkflowCleanupStartupProtocol {
   [Console]::Out.Flush()
 }
 
+function Get-WorkflowCleanupStateMachineAssertionMessage(
+  [string]$Message,
+  [string]$Diagnostic,
+  [string]$Fixture
+) {
+  Assert-NotContains $Diagnostic $dummyInstaller `
+    "$Fixture diagnostic disclosed the dummy installer"
+  Assert-NotContains $Diagnostic $testRoot `
+    "$Fixture diagnostic disclosed a path"
+  $fixedMatch = [regex]::Match($Diagnostic, (
+      '^PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' +
+      'INVOCATION:PROTOCOL_REGRESSION:OBSERVED:' +
+      '(?<Observed>NONE|STARTUP|TERMINAL|MALFORMED|PARTIAL|DUPLICATE|REORDERED|EXTRA|OVERSIZED):' +
+      'LINE_COUNT:(?<LineCount>0|1|2|3\+):STDERR_COUNT:(?<StderrCount>[0-9]+):' +
+      'PROCESS_EXIT:(?<ProcessExit>0|20|21|122|123|124|125|INVALID):' +
+      'LIFECYCLE:(?<Lifecycle>EXITED|PROCESS_CREATION_FAILURE|OWNERSHIP_FAILURE|' +
+      'TIMEOUT_BEFORE_STARTUP|TIMEOUT_AFTER_STARTUP|' +
+      'CANCELLED_BEFORE_STARTUP|CANCELLED_AFTER_STARTUP|' +
+      'ACTIVE_TREE_AFTER_EXIT|DRAIN_TIMEOUT|DRAIN_FAILURE):' +
+      'TREE_TERMINATION:(?<TreeTermination>NOT_REQUIRED|COMPLETE|FAILED):' +
+      'STARTUP_CLASS:(?<StartupClass>NONE|READY|PARSER|PARAMETER_BINDING|TYPE_LOAD|OTHER):' +
+      'LINE_NUMBER:(?<LineNumber>[0-3])$'
+    ), [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+  Assert-True $fixedMatch.Success `
+    "$Fixture did not emit the fixed bounded diagnostic"
+  $lineCount = if ($fixedMatch.Groups['LineCount'].Value -ceq '3+') {
+    3
+  } else { [int]$fixedMatch.Groups['LineCount'].Value }
+  $expectedDiagnostic = Get-WorkflowCleanupProtocolMismatchDiagnostic `
+    'PROTOCOL_REGRESSION' $fixedMatch.Groups['Observed'].Value $lineCount `
+    ([int]$fixedMatch.Groups['StderrCount'].Value) `
+    $fixedMatch.Groups['ProcessExit'].Value $fixedMatch.Groups['Lifecycle'].Value `
+    $fixedMatch.Groups['TreeTermination'].Value $fixedMatch.Groups['StartupClass'].Value `
+    ([int]$fixedMatch.Groups['LineNumber'].Value)
+  Assert-True ($Diagnostic -ceq $expectedDiagnostic) `
+    "$Fixture diagnostic did not equal the fixed bounded value"
+  return "$Message`: $Diagnostic"
+}
+
+function Test-WorkflowCleanupProtocolStateMachine {
+  $scriptText = Get-Content -LiteralPath $PSCommandPath -Raw -Encoding UTF8
+  $expectedInvocations = @(
+    'STARTUP_PROTOCOL','REPLACEMENT_RETRY','REPLACED_ENTRY_RETRY',
+    'PROFILE_ALTERNATE_LEAF','PROFILE_RETRY','EXECUTABLE_IDENTITY_RETRY',
+    'FOREIGN_CHILD_RETRY','TERMINATION_RETRY','PARAMETER_VALIDATION',
+    'EARLY_INITIALIZATION_TIMEOUT','CLEANUP_TIMEOUT','INSTALLER_REPLACEMENT',
+    'RESOURCE_COLLISION','WORKFLOW_RETRY','NORMAL_CLEANUP','MANIFEST_VALIDATION',
+    'SMOKE_PROMOTION_RETRY','SMOKE_TOKEN_MISSING','SMOKE_TOKEN_RETRY',
+    'APP_PATH_MISMATCH','HKCU_BASELINE_RESTORE','HKCU_PENDING_RECEIPT',
+    'HKCU_NONEMPTY','HKCU_EMPTY','HKCU_CONFLICT','HKCU_PROVISIONAL',
+    'USER_MARKER_OWNED','USER_MARKER_REPLACEMENT','PROTOCOL_REGRESSION'
+  )
+  foreach ($identifier in $expectedInvocations) {
+    Assert-True ($scriptText -cmatch ((
+        "Invoke-WorkflowCleanupController\s+``\r?\n\s+(?:" +
+        "'|\-InvocationIdentifier\s+')") +
+        [regex]::Escape($identifier) + "'"
+      )) "workflow cleanup invocation identifier $identifier has no fixed callsite"
+  }
+
+  $cases = @(
+    [PSCustomObject]@{
+      Fixture='ONE_LINE_STARTUP'; Observed='STARTUP'; LineCount=1; ProcessExit=125
+      Lifecycle='EXITED'; TreeTermination='NOT_REQUIRED'; StartupClass='READY'; LineNumber=1
+    },
+    [PSCustomObject]@{ Fixture='MISSING_TERMINAL'; Observed='STARTUP'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='DUPLICATE_STARTUP'; Observed='DUPLICATE'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='EXTRA_RECORD'; Observed='EXTRA'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='REORDERED_RECORDS'; Observed='REORDERED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='OVERSIZED_RECORD'; Observed='OVERSIZED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='MALFORMED_RECORD'; Observed='MALFORMED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='PARTIAL_RECORD'; Observed='PARTIAL'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='STDERR_RECORD'; Observed='TERMINAL'; Lifecycle='EXITED'; Stderr=1 },
+    [PSCustomObject]@{ Fixture='INVALID_STARTUP_METADATA'; Observed='MALFORMED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='MISMATCHED_MANIFEST_EXIT_125'; Observed='MALFORMED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='MISMATCHED_CHILD_STDOUT_EXIT_21'; Observed='MALFORMED'; Lifecycle='EXITED' },
+    [PSCustomObject]@{ Fixture='TIMEOUT_BEFORE_STARTUP'; Observed='NONE'; Lifecycle='TIMEOUT_BEFORE_STARTUP' },
+    [PSCustomObject]@{
+      Fixture='TIMEOUT_AFTER_STARTUP'; Observed='STARTUP'; LineCount=1; ProcessExit=125
+      Lifecycle='TIMEOUT_AFTER_STARTUP'; TreeTermination='COMPLETE'
+      StartupClass='READY'; LineNumber=1; BeginTimeoutAfterStartup=$true
+    },
+    [PSCustomObject]@{
+      Fixture='STREAM_DRAIN_RACE'; Observed='TERMINAL'; LineCount=2; Stderr=0; ProcessExit=125
+      Lifecycle='ACTIVE_TREE_AFTER_EXIT'; TreeTermination='COMPLETE'
+      StartupClass='READY'; LineNumber=2; BeginTimeoutAfterStartup=$true
+    }
+  )
+  foreach ($case in $cases) {
+    $diagnostic = ''
+    # Startup-gated cases get a separate five-second startup phase above; their
+    # 250 ms countdown begins only after the complete startup record is captured.
+    $caseInvocationTimeout = if ($case.Fixture -in @(
+        'TIMEOUT_BEFORE_STARTUP','TIMEOUT_AFTER_STARTUP','STREAM_DRAIN_RACE'
+      )) { 250 } else { 1000 }
+    try {
+      [void](Invoke-WorkflowCleanupController `
+        -InvocationIdentifier 'PROTOCOL_REGRESSION' `
+        -ManifestPath $dummyInstaller `
+        -RunId ([Guid]::NewGuid().ToString('N')) `
+        -FixtureRoot $testRoot `
+        -InvocationTimeoutMilliseconds $caseInvocationTimeout `
+        -BeginTimeoutAfterStartup (
+          $case.PSObject.Properties['BeginTimeoutAfterStartup'] -and
+          $case.BeginTimeoutAfterStartup) `
+        -ProtocolFixture $case.Fixture)
+    } catch { $diagnostic = $_.Exception.Message }
+    $fixture = [string]$case.Fixture
+    Assert-Contains $diagnostic `
+      'PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:INVOCATION:PROTOCOL_REGRESSION:' `
+      (Get-WorkflowCleanupStateMachineAssertionMessage `
+        "$fixture did not emit an invocation-attributed fixed diagnostic" `
+        $diagnostic $fixture)
+    Assert-Contains $diagnostic ":OBSERVED:$($case.Observed):" `
+      (Get-WorkflowCleanupStateMachineAssertionMessage `
+        "$fixture did not retain its bounded observed-line category" `
+        $diagnostic $fixture)
+    Assert-Contains $diagnostic ":LIFECYCLE:$($case.Lifecycle):" `
+      (Get-WorkflowCleanupStateMachineAssertionMessage `
+        "$fixture did not retain its primary lifecycle category" `
+        $diagnostic $fixture)
+    if ($case.PSObject.Properties['Stderr']) {
+      Assert-Contains $diagnostic ":STDERR_COUNT:$($case.Stderr):" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its bounded stderr count" $diagnostic $fixture)
+    }
+    if ($case.PSObject.Properties['LineCount']) {
+      Assert-Contains $diagnostic ":LINE_COUNT:$($case.LineCount):" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its bounded line count" $diagnostic $fixture)
+      Assert-Contains $diagnostic ":PROCESS_EXIT:$($case.ProcessExit):" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its fixed process exit" $diagnostic $fixture)
+      Assert-Contains $diagnostic ":TREE_TERMINATION:$($case.TreeTermination):" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its tree outcome" $diagnostic $fixture)
+      Assert-Contains $diagnostic ":STARTUP_CLASS:$($case.StartupClass):" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its startup class" $diagnostic $fixture)
+      Assert-Contains $diagnostic ":LINE_NUMBER:$($case.LineNumber)" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          "$fixture did not retain its startup line number" $diagnostic $fixture)
+    }
+  }
+
+  foreach ($exactPair in @(
+      [PSCustomObject]@{ Fixture='EXACT_MANIFEST_20'; Status='MANIFEST_VALIDATION_FAILURE'; ExitCode=20; Result='FAILED' },
+      [PSCustomObject]@{ Fixture='EXACT_OWNED_RESOURCE_21'; Status='OWNED_RESOURCE_CLEANUP_FAILURE'; ExitCode=21; Result='FAILED' },
+      [PSCustomObject]@{ Fixture='EXACT_CHILD_STDOUT_122'; Status='CHILD_STDOUT'; ExitCode=122; Result='FAILED' },
+      [PSCustomObject]@{ Fixture='EXACT_CHILD_STDERR_123'; Status='CHILD_STDERR'; ExitCode=123; Result='FAILED' },
+      [PSCustomObject]@{ Fixture='EXACT_TIMEOUT_124'; Status='TIMEOUT'; ExitCode=124; Result='TIMED_OUT' },
+      [PSCustomObject]@{ Fixture='EXACT_CONTROLLER_FAILURE_125'; Status='CONTROLLER_FAILURE'; ExitCode=125; Result='FAILED' },
+      [PSCustomObject]@{ Fixture='EXACT_FINALIZATION_FAILURE_125'; Status='PROCESS_FINALIZATION_FAILURE'; ExitCode=125; Result='FAILED' }
+    )) {
+    $result = Invoke-WorkflowCleanupController `
+      -InvocationIdentifier 'PROTOCOL_REGRESSION' `
+      -ManifestPath $dummyInstaller `
+      -RunId ([Guid]::NewGuid().ToString('N')) `
+      -FixtureRoot $testRoot `
+      -InvocationTimeoutMilliseconds 1000 `
+      -ProtocolFixture $exactPair.Fixture
+    Assert-True ($result.ExitCode -eq $exactPair.ExitCode -and
+        $result.ReportedExitCode -eq $exactPair.ExitCode -and
+        $result.Result -ceq $exactPair.Result -and
+        $result.ControllerStatus -ceq $exactPair.Status) `
+      "$($exactPair.Fixture) did not preserve its exact status/exit pair"
+  }
+
+  $resultEmissionFailure = Invoke-WorkflowCleanupController `
+    -InvocationIdentifier 'PROTOCOL_REGRESSION' `
+    -ManifestPath $dummyInstaller `
+    -RunId ([Guid]::NewGuid().ToString('N')) `
+    -FixtureRoot $testRoot `
+    -InvocationTimeoutMilliseconds 5000 `
+    -FixtureResultEmissionFailure $true
+  Assert-True ($resultEmissionFailure.ExitCode -eq 125 -and
+      $resultEmissionFailure.ReportedExitCode -eq 125 -and
+      $resultEmissionFailure.Result -ceq 'FAILED' -and
+      $resultEmissionFailure.ControllerStatus -ceq
+        'CONTROLLER_RESULT_EMISSION_EMIT_UNCLASSIFIED' -and
+      $resultEmissionFailure.ProtocolLineCount -eq 2 -and
+      $resultEmissionFailure.ProtocolStandardErrorCount -eq 0 -and
+      $resultEmissionFailure.ProtocolStartupClass -ceq 'READY' -and
+      $resultEmissionFailure.ProtocolStartupLineNumber -eq 1 -and
+      $resultEmissionFailure.ProtocolTerminalLineNumber -eq 2) `
+    'post-startup result-emission failure did not preserve the exact fixed protocol'
+
+  foreach ($cancellationAfterStartup in @($false, $true)) {
+    $cancel = [Threading.EventWaitHandle]::new(
+      !$cancellationAfterStartup, [Threading.EventResetMode]::ManualReset)
+    try {
+      $diagnostic = ''
+      $fixture = if ($cancellationAfterStartup) {
+        'TIMEOUT_AFTER_STARTUP'
+      } else { 'TIMEOUT_BEFORE_STARTUP' }
+      try {
+        [void](Invoke-WorkflowCleanupController `
+          -InvocationIdentifier 'PROTOCOL_REGRESSION' `
+          -ManifestPath $dummyInstaller `
+          -RunId ([Guid]::NewGuid().ToString('N')) `
+          -FixtureRoot $testRoot `
+          -InvocationTimeoutMilliseconds 5000 `
+          -CancellationWaitHandle $cancel `
+          -SignalCancellationAfterStartup $cancellationAfterStartup `
+          -ProtocolFixture $fixture)
+      } catch { $diagnostic = $_.Exception.Message }
+      $expectedLifecycle = if ($cancellationAfterStartup) {
+        'CANCELLED_AFTER_STARTUP'
+      } else { 'CANCELLED_BEFORE_STARTUP' }
+      $fixture = "CANCELLATION_$expectedLifecycle"
+      Assert-Contains $diagnostic `
+        ('PROPR_WORKFLOW_CLEANUP_FIXTURE:PROTOCOL_MISMATCH:' +
+          'INVOCATION:PROTOCOL_REGRESSION:') `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          'workflow cleanup cancellation lost its exact invocation attribution' `
+          $diagnostic $fixture)
+      Assert-Contains $diagnostic ":LIFECYCLE:${expectedLifecycle}:" `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          'workflow cleanup cancellation lost its bounded lifecycle category' `
+          $diagnostic $fixture)
+      Assert-Contains $diagnostic ':TREE_TERMINATION:COMPLETE:' `
+        (Get-WorkflowCleanupStateMachineAssertionMessage `
+          'workflow cleanup cancellation did not terminate its complete owned tree' `
+          $diagnostic $fixture)
+    } finally { $cancel.Dispose() }
+  }
+
+  $treeFailureDiagnostic = ''
+  try {
+    [void](Invoke-WorkflowCleanupController `
+      -InvocationIdentifier 'PROTOCOL_REGRESSION' `
+      -ManifestPath $dummyInstaller `
+      -RunId ([Guid]::NewGuid().ToString('N')) `
+      -FixtureRoot $testRoot `
+      -InvocationTimeoutMilliseconds 250 `
+      -BeginTimeoutAfterStartup $true `
+      -InjectTreeTerminationFailure $true `
+      -ProtocolFixture 'TIMEOUT_AFTER_STARTUP')
+  } catch { $treeFailureDiagnostic = $_.Exception.Message }
+  Assert-Contains $treeFailureDiagnostic ':LIFECYCLE:TIMEOUT_AFTER_STARTUP:' `
+    (Get-WorkflowCleanupStateMachineAssertionMessage `
+      'tree-termination failure replaced the primary timeout outcome' `
+      $treeFailureDiagnostic 'TREE_TERMINATION_FAILURE')
+  Assert-Contains $treeFailureDiagnostic ':TREE_TERMINATION:FAILED:' `
+    (Get-WorkflowCleanupStateMachineAssertionMessage `
+      'tree-termination failure was not represented by its fixed category' `
+      $treeFailureDiagnostic 'TREE_TERMINATION_FAILURE')
+  Assert-Contains $treeFailureDiagnostic ':OBSERVED:STARTUP:LINE_COUNT:1:' `
+    (Get-WorkflowCleanupStateMachineAssertionMessage `
+      'tree-termination failure timeout began before complete startup capture' `
+      $treeFailureDiagnostic 'TREE_TERMINATION_FAILURE')
+  Assert-Contains $treeFailureDiagnostic ':STARTUP_CLASS:READY:LINE_NUMBER:1' `
+    (Get-WorkflowCleanupStateMachineAssertionMessage `
+      'tree-termination failure lost its exact startup proof' `
+      $treeFailureDiagnostic 'TREE_TERMINATION_FAILURE')
+
+  Write-Host 'PROPR_WINDOWS_SUPERVISOR_CONTROLLER_STATE_MACHINE:BOUNDED:PASSED'
+  [Console]::Out.Flush()
+}
+
+function Test-SupervisorInvocationAttributionTotality {
+  foreach ($case in @(
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_BOOTSTRAP_TIMEOUT'
+        Test='BOOTSTRAP_TIMEOUT'; Scenario='NO_MARKER'; Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_WINDOWS_POWERSHELL_COMPATIBILITY'
+        Test='WINDOWS_POWERSHELL_CLEANUP_COMPATIBILITY'
+        Scenario='NO_MARKER_WINDOWS_POWERSHELL'; Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_OPERATION_DEADLINE'
+        Test='OPERATION_DEADLINE_AND_TREE_TERMINATION'
+        Scenario='VALID_THEN_DEADLINE'; Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_NEGATIVE_WORKER_EXIT'
+        Test='NEGATIVE_WORKER_EXIT_FINALIZATION'
+        Scenario='NEGATIVE_EXIT'; Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_FAIL_CLOSED_MARKER'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='MALFORMED_MARKER'
+        Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_LIVE_CANCELLATION'
+        Test='LIVE_CANCELLATION_AND_REDACTION'; Scenario='CANCELLATION'
+        Phase='PROCESS_OUTPUT'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_MSI_INTERRUPTION'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
+        Phase='PROCESS_WAIT'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_PRIMARY_FALLBACK'
+        Test='PRIMARY_WORKER_FALLBACK_FOREIGN_DESCENDANTS'
+        Scenario='PRIMARY_FALLBACK_FOREIGN_DESCENDANTS'; Phase='SUPERVISOR_PROCESS'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_PRE_EXISTING_CLEANUP'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_THEN_DEADLINE'; Phase='RESOURCE_STATE'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_SMOKE_PROMOTION'
+        Test='SMOKE_PROMOTION_INTERRUPTION_AUTHORITY'
+        Scenario='SMOKE_BEFORE_PROMOTION_THEN_DEADLINE'; Phase='RESOURCE_STATE'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_APP_PATHS_AUTHORITY'
+        Test='PRE_EXISTING_APP_PATHS_AUTHORITY'; Scenario='PRE_EXISTING_APP_PATHS'
+        Phase='PROCESS_OUTPUT'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_HKCU_OWNERSHIP'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'; Scenario='HKCU_BASELINE_RESTORE'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+      },
+      [PSCustomObject]@{
+        CaseId='BOUNDARY_USER_MARKER'
+        Test='PROVISIONAL_USER_MARKER_OWNERSHIP'; Scenario='USER_MARKER_REPLACEMENT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_GATE_PATH'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'; Callsite='CRITICAL_GATE_PATH'; Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_GATE_READ'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'; Callsite='CRITICAL_GATE_READ'; Field='CRITICAL_GATE_CONTENT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_RESULT_EXIT_CODE'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='PROCESS_OUTPUT'; Callsite='CRITICAL_RESULT_FIELD'; Field='EXIT_CODE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_RESULT_STATE_DIRECTORY'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='PROCESS_OUTPUT'; Callsite='CRITICAL_RESULT_FIELD'; Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_OUTPUT_COMMITTED'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='PROCESS_OUTPUT'; Callsite='CRITICAL_OUTPUT_MARKER'
+        Field='MSI_TRANSACTION_MARKER'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CRITICAL_OUTPUT_CLEANUP_COMPLETE'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='PROCESS_OUTPUT'; Callsite='CRITICAL_OUTPUT_MARKER'
+        Field='POST_TERMINATION_CLEANUP_MARKER'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_PROCESS_STATE_READ'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_READ'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_DIRECTORY_INPUT'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_DIRECTORY_INPUT'; Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_PATH_CONSTRUCTION'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_PATH_CONSTRUCTION'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_PUBLICATION_WAIT'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_PUBLICATION_WAIT'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_READ_PARSE'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_READ_PARSE'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_WORKER_PID'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_WORKER_PID'; Field='WORKER_PID'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FIXTURE_PROCESS_STATE_DESCENDANT_PID'
+        Test='FAIL_CLOSED_MARKERS'; Scenario='INACCESSIBLE_MARKER'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_STATE_DESCENDANT_PID'; Field='DESCENDANT_PID'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_PROCESS_TREE_ASSERTION'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'; Callsite='PROCESS_TREE_ASSERTION'; Field='PROCESS_TREE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_RESOURCE_STATE_DIRECTORY_INPUT'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='RESOURCE_STATE'; Callsite='RESOURCE_STATE_DIRECTORY_INPUT'
+        Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_RESOURCE_STATE_PATH_CONSTRUCTION'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='RESOURCE_STATE'; Callsite='RESOURCE_STATE_PATH_CONSTRUCTION'
+        Field='RESOURCE_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_RESOURCE_STATE_PUBLICATION_WAIT'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='RESOURCE_STATE'; Callsite='RESOURCE_STATE_PUBLICATION_WAIT'
+        Field='RESOURCE_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_RESOURCE_STATE_READ_PARSE'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'; Scenario='DURING_OWNERSHIP_CAPTURE'
+        Phase='RESOURCE_STATE'; Callsite='RESOURCE_STATE_READ_PARSE'
+        Field='RESOURCE_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_INPUT_MANIFEST'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_INVOCATION_INPUT'; Field='MANIFEST_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_INPUT_RUN_ID'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_INVOCATION_INPUT'; Field='RUN_ID'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_INPUT_STATE_DIRECTORY'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_INVOCATION_INPUT'; Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_PROTOCOL_PARSE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_PROTOCOL_PARSE'; Field='PROTOCOL'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_RESULT_EXIT_CODE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_RESULT_FIELD'; Field='EXIT_CODE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_RESULT_REPORTED_EXIT_CODE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_RESULT_FIELD'; Field='REPORTED_EXIT_CODE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_CONTROLLER_RESULT_RESULT'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='WORKFLOW_CLEANUP_CONTROLLER'
+        Callsite='CONTROLLER_RESULT_FIELD'; Field='RESULT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_RESOURCE_COLLISION_REPLACEMENT_SURVIVAL_READ'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='RESOURCE_COLLISION'
+        Phase='RESOURCE_ASSERTION'
+        Callsite='REPLACEMENT_SURVIVAL_READ'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_RESOURCE_COLLISION_MANIFEST_PRESERVATION'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='RESOURCE_COLLISION'
+        Phase='MANIFEST_ASSERTION'
+        Callsite='MANIFEST_PRESERVATION'; Field='MANIFEST_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_PROCESS_STATE_PATH'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='PROCESS_STATE'
+        Callsite='EARLY_PROCESS_STATE_PATH'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_PROCESS_STATE_READ'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='PROCESS_STATE'
+        Callsite='EARLY_PROCESS_STATE_READ'; Field='PROCESS_STATE_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_WORKER_PID'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='PROCESS_STATE'
+        Callsite='EARLY_PROCESS_STATE_READ'; Field='WORKER_PID'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_DESCENDANT_PID'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='PROCESS_STATE'
+        Callsite='EARLY_PROCESS_STATE_READ'; Field='DESCENDANT_PID'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_PROCESS_TREE_ASSERTION'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='PROCESS_STATE'
+        Callsite='PROCESS_TREE_ASSERTION'; Field='PROCESS_TREE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_EARLY_MANIFEST_PRESERVATION'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='EARLY_INITIALIZATION_TIMEOUT'
+        Phase='MANIFEST_ASSERTION'
+        Callsite='MANIFEST_PRESERVATION'; Field='MANIFEST_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_BASELINE_STATE'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='HKCU_BASELINE_STATE'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_ROOT_KEY_SETUP'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_ROOT_KEY_SETUP'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_KEY_OPEN'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_KEY_OPEN'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_DEFAULT_STRING'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_DEFAULT_STRING'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_STRING'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_STRING'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_EXPAND_STRING'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_EXPAND_STRING'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_BINARY'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_BINARY'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_DWORD'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_DWORD'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_QWORD'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_QWORD'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_VALUE_KIND_MULTI_STRING'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_VALUE_KIND_MULTI_STRING'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_NATIVE_NONE_WRITE'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_NATIVE_NONE_WRITE'; Field='NATIVE_RETURN_CODE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_NESTED_KEY_SETUP'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_NESTED_KEY_SETUP'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_REGRESSION_NESTED_VALUE_SETUP'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='REGRESSION_NESTED_VALUE_SETUP'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_NATIVE_VALUE_READ'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='NATIVE_VALUE_READ'; Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_BASELINE_DIGEST'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='BASELINE_DIGEST'; Field='REGISTRY_ROOT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_BASELINE_RELOCATE'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='BASELINE_RELOCATE'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_TARGET_OWNERSHIP'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='TARGET_OWNERSHIP'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_BASELINE_RESTORE'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='BASELINE_RESTORE'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_RECOVERY_RELOCATE'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='RECOVERY_RELOCATE'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_FINAL_BASELINE_DIGEST'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='FINAL_BASELINE_DIGEST'; Field='REGISTRY_ROOT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_HKCU_FINAL_BACKUP_ABSENCE'
+        Test='HKCU_INSTALLED_VALUE_OWNERSHIP'
+        Scenario='HKCU_BASELINE_RESTORE'
+        Phase='FIXTURE_SETUP'
+        Callsite='FINAL_BACKUP_ABSENCE'; Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_REPLACEMENT_SURVIVAL_READ'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
+        Phase='RESOURCE_ASSERTION'; Callsite='REPLACEMENT_SURVIVAL_READ'; Field='EXECUTABLE'
+      },
+      [PSCustomObject]@{
+        CaseId='FIELD_EXECUTABLE_BACKUP'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
+        Phase='RESOURCE_ASSERTION'; Callsite='RESOURCE_FIELD_VALIDATION'; Field='EXECUTABLE_BACKUP'
+      },
+      [PSCustomObject]@{
+        CaseId='FIELD_MANIFEST_PATH'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
+        Phase='RESOURCE_ASSERTION'; Callsite='RESOURCE_FIELD_VALIDATION'; Field='MANIFEST_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_WORKFLOW_CLEANUP_RETRY'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
+        Phase='RESOURCE_ASSERTION'; Callsite='WORKFLOW_CLEANUP_RETRY'; Field='RUN_ID'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_ABSENCE_CHECK'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_ABSENCE_CHECK'; Field='MANIFEST_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_OWNED_ROOT_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_FILESYSTEM_DIRECTORY_ABSENCE'
+        Field='OWNED_ROOT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_INSTALL_ROOT_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_FILESYSTEM_DIRECTORY_ABSENCE'
+        Field='INSTALL_ROOT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_EXECUTABLE_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_FILESYSTEM_FILE_ABSENCE'
+        Field='EXECUTABLE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_SHORTCUT_FOLDER_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_FILESYSTEM_DIRECTORY_ABSENCE'
+        Field='SHORTCUT_FOLDER'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_SHORTCUT_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_SHORTCUT_ABSENCE'
+        Field='SHORTCUT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_SMOKE_DIRECTORY_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_FILESYSTEM_DIRECTORY_ABSENCE'
+        Field='SMOKE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_REGISTRY_VALUE_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_REGISTRY_VALUE_ABSENCE'
+        Field='REGISTRY_VALUE'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_REGISTRY_PATH_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_REGISTRY_PATH_ABSENCE'
+        Field='REGISTRY_PATH'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_REGISTRY_ROOT_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_REGISTRY_ROOT_ABSENCE'
+        Field='REGISTRY_ROOT'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_USER_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_USER_ABSENCE'
+        Field='USER_NAME'
+      },
+      [PSCustomObject]@{
+        CaseId='CALLSITE_FINAL_PROFILE_ABSENCE'
+        Test='PRE_EXISTING_CLEANUP_OWNERSHIP'
+        Scenario='OWNED_RESOURCES_FOR_INTERRUPTION'
+        Phase='RESOURCE_ASSERTION'; Callsite='FINAL_PROFILE_ABSENCE'
+        Field='USER_SID'
+      }
+    )) {
+    $diagnostic = ''
+    $caseExpectedTest = [string]$case.Test
+    $caseExpectedScenario = [string]$case.Scenario
+    $caseExpectedPhase = [string]$case.Phase
+    $caseExpectedCallsite = if ($case.PSObject.Properties['Callsite']) {
+      [string]$case.Callsite
+    } else { 'GENERAL' }
+    $caseExpectedField = if ($case.PSObject.Properties['Field']) {
+      [string]$case.Field
+    } else { 'NONE' }
+    $caseExpectedId = [string]$case.CaseId
+    try {
+      Invoke-SupervisorAttributedTest -Test $caseExpectedTest -Action {
+        Invoke-SupervisorAttributedBoundary `
+          -Test $caseExpectedTest `
+          -Scenario $caseExpectedScenario `
+          -Phase $caseExpectedPhase `
+          -Callsite $caseExpectedCallsite `
+          -Field $caseExpectedField `
+          -Action {
+            throw (
+              "Cannot bind argument to parameter 'LiteralPath' because it is null. " +
+              "$secretNeedle $testRoot Registry::HKEY_LOCAL_MACHINE S-1-5-21 " +
+              'manifest stdout stderr'
+            )
+          }
+      }
+    } catch {
+      $diagnostic = $_.Exception.Message
+    }
+    Assert-SupervisorInvocationDiagnosticBounded `
+      -Diagnostic $diagnostic `
+      -Test $caseExpectedTest `
+      -Scenario $caseExpectedScenario `
+      -Phase $caseExpectedPhase `
+      -Callsite $caseExpectedCallsite `
+      -Field $caseExpectedField `
+      -CaseId $caseExpectedId
+  }
+  foreach ($nestedShadowCase in @(
+      [PSCustomObject]@{
+        CaseId='NESTED_SHADOW_CRITICAL_GATE_PATH'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'
+        Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'
+        Callsite='CRITICAL_GATE_PATH'
+        Field='STATE_DIRECTORY'
+      },
+      [PSCustomObject]@{
+        CaseId='NESTED_SHADOW_PROCESS_STATE_READ'
+        Test='MSI_TRANSACTION_INTERRUPTION_GATES'
+        Scenario='DURING_MSI'
+        Phase='PROCESS_STATE'
+        Callsite='PROCESS_STATE_READ'
+        Field='PROCESS_STATE_PATH'
+      }
+    )) {
+    $nestedShadowDiagnostic = ''
+    $nestedExpectedTest = [string]$nestedShadowCase.Test
+    $nestedExpectedScenario = [string]$nestedShadowCase.Scenario
+    $nestedExpectedPhase = [string]$nestedShadowCase.Phase
+    $nestedExpectedCallsite = [string]$nestedShadowCase.Callsite
+    $nestedExpectedField = [string]$nestedShadowCase.Field
+    $nestedExpectedId = [string]$nestedShadowCase.CaseId
+    try {
+      Invoke-SupervisorAttributedBoundary `
+        -Test 'ATTRIBUTION_TOTALITY' `
+        -Scenario 'PROTOCOL_REGRESSION' `
+        -Phase 'TEST' `
+        -Callsite 'GENERAL' `
+        -Field 'NONE' `
+        -Action {
+          Invoke-SupervisorAttributedBoundary `
+            -Test $nestedExpectedTest `
+            -Scenario $nestedExpectedScenario `
+            -Phase $nestedExpectedPhase `
+            -Callsite $nestedExpectedCallsite `
+            -Field $nestedExpectedField `
+            -Action {
+              throw (
+                "Cannot bind argument to parameter 'LiteralPath' because it is null. " +
+                "$secretNeedle $testRoot Registry::HKEY_LOCAL_MACHINE S-1-5-21 " +
+                'manifest stdout stderr'
+              )
+            }
+        }
+    } catch {
+      $nestedShadowDiagnostic = $_.Exception.Message
+    }
+    Assert-SupervisorInvocationDiagnosticBounded `
+      -Diagnostic $nestedShadowDiagnostic `
+      -Test $nestedExpectedTest `
+      -Scenario $nestedExpectedScenario `
+      -Phase $nestedExpectedPhase `
+      -Callsite $nestedExpectedCallsite `
+      -Field $nestedExpectedField `
+      -CaseId $nestedExpectedId
+  }
+  $forgedDiagnostic = ''
+  try {
+    Invoke-SupervisorAttributedBoundary `
+      -Test 'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      -Scenario 'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      -Phase 'RESOURCE_ASSERTION' `
+      -Callsite 'RESOURCE_FIELD_VALIDATION' `
+      -Field 'EXECUTABLE_BACKUP' `
+      -Action {
+        throw (
+          'PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:PRE_EXISTING_CLEANUP_OWNERSHIP:' +
+          'SCENARIO:OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE:' +
+          'PHASE:RESOURCE_ASSERTION:CALLSITE:RESOURCE_FIELD_VALIDATION:' +
+          "FIELD:EXECUTABLE_BACKUP:FAILED:$secretNeedle"
+        )
+      }
+  } catch {
+    $forgedDiagnostic = $_.Exception.Message
+  }
+  Assert-SupervisorInvocationDiagnosticBounded `
+    -Diagnostic $forgedDiagnostic `
+    -Test 'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+    -Scenario 'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+    -Phase 'RESOURCE_ASSERTION' `
+    -Callsite 'RESOURCE_FIELD_VALIDATION' `
+    -Field 'EXECUTABLE_BACKUP' `
+    -CaseId 'FORGED_PREFIX_SECRET'
+
+  $missingGateStateDirectoryDiagnostic = ''
+  try {
+    Set-SupervisorInvocationContext `
+      -Test 'MSI_TRANSACTION_INTERRUPTION_GATES' `
+      -Scenario 'DURING_MSI' `
+      -Phase 'PROCESS_STATE' `
+      -Callsite 'CRITICAL_GATE_PATH' `
+      -Field 'STATE_DIRECTORY'
+    Assert-True (![string]::IsNullOrWhiteSpace('')) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        -Test 'MSI_TRANSACTION_INTERRUPTION_GATES' `
+        -Scenario 'DURING_MSI' `
+        -Phase 'PROCESS_STATE' `
+        -Callsite 'CRITICAL_GATE_PATH' `
+        -Field 'STATE_DIRECTORY')
+  } catch {
+    $missingGateStateDirectoryDiagnostic = $_.Exception.Message
+  }
+  Assert-SupervisorInvocationDiagnosticBounded `
+    -Diagnostic $missingGateStateDirectoryDiagnostic `
+    -Test 'MSI_TRANSACTION_INTERRUPTION_GATES' `
+    -Scenario 'DURING_MSI' `
+    -Phase 'PROCESS_STATE' `
+    -Callsite 'CRITICAL_GATE_PATH' `
+    -Field 'STATE_DIRECTORY' `
+    -CaseId 'MISSING_GATE_STATE_DIRECTORY'
+
+  $missingExecutableBackupDiagnostic = ''
+  try {
+    Set-SupervisorInvocationContext `
+      -Test 'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      -Scenario 'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      -Phase 'RESOURCE_ASSERTION' `
+      -Callsite 'RESOURCE_FIELD_VALIDATION' `
+      -Field 'EXECUTABLE_BACKUP'
+    Assert-FixtureStateFieldsComplete `
+      -State ([PSCustomObject]@{
+        Executable = 'EXECUTABLE'
+        ManifestPath = 'MANIFEST_PATH'
+        RunId = 'RUN_ID'
+      }) `
+      -Scenario 'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      -Callsite 'RESOURCE_FIELD_VALIDATION' `
+      -Fields @('ExecutableBackup')
+  } catch {
+    $missingExecutableBackupDiagnostic = $_.Exception.Message
+  }
+  Assert-SupervisorInvocationDiagnosticBounded `
+    -Diagnostic $missingExecutableBackupDiagnostic `
+    -Test 'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+    -Scenario 'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+    -Phase 'RESOURCE_ASSERTION' `
+    -Callsite 'RESOURCE_FIELD_VALIDATION' `
+    -Field 'EXECUTABLE_BACKUP' `
+    -CaseId 'MISSING_EXECUTABLE_BACKUP'
+  foreach ($testName in Get-SupervisorInvocationTests) {
+    foreach ($scenarioName in Get-SupervisorInvocationScenarios) {
+      foreach ($phaseName in Get-SupervisorInvocationPhases) {
+        $diagnostic = Get-SanitizedSupervisorInvocationDiagnostic `
+          -Test $testName `
+          -Scenario $scenarioName `
+          -Phase $phaseName
+        Assert-True ([Text.Encoding]::ASCII.GetByteCount($diagnostic) -le 320) `
+          (Get-SupervisorAttributionTotalityAssertionMessage `
+            'ALLOWLISTED_TEST_SCENARIO_PHASE' 'exact' 'malformed')
+        Assert-True ($diagnostic -cmatch (
+            '^PROPR_WINDOWS_SUPERVISOR_INVOCATION:TEST:[A-Z_]+:' +
+            'SCENARIO:[A-Z_]+:PHASE:[A-Z_]+:CALLSITE:[A-Z_]+:' +
+            'FIELD:[A-Z_]+:FAILED$'
+          )) (Get-SupervisorAttributionTotalityAssertionMessage `
+            'ALLOWLISTED_TEST_SCENARIO_PHASE' 'exact' `
+            (Get-SupervisorInvocationDiagnosticClassification `
+              $diagnostic $diagnostic))
+      }
+    }
+  }
+  foreach ($callsiteName in Get-SupervisorInvocationCallsites) {
+    foreach ($fieldName in Get-SupervisorInvocationFields) {
+      $diagnostic = Get-SanitizedSupervisorInvocationDiagnostic `
+        -Test 'ATTRIBUTION_TOTALITY' `
+        -Scenario 'PROTOCOL_REGRESSION' `
+        -Phase 'TEST' `
+        -Callsite $callsiteName `
+        -Field $fieldName
+      Assert-True ([Text.Encoding]::ASCII.GetByteCount($diagnostic) -le 320) `
+        (Get-SupervisorAttributionTotalityAssertionMessage `
+          'ALLOWLISTED_CALLSITE_FIELD' 'exact' 'malformed')
+      Assert-True (Test-SupervisorInvocationDiagnosticExact $diagnostic) `
+        (Get-SupervisorAttributionTotalityAssertionMessage `
+          'ALLOWLISTED_CALLSITE_FIELD' 'exact' `
+          (Get-SupervisorInvocationDiagnosticClassification `
+            $diagnostic $diagnostic))
+    }
+  }
+  Test-CriticalGatePublisherPowerShellCompatibility
+  Write-Host 'PROPR_WINDOWS_SUPERVISOR_INVOCATION_ATTRIBUTION:TOTAL:PASSED'
+  [Console]::Out.Flush()
+}
+
 function Start-ExternallyInterruptibleSupervisor([string]$StateDirectory) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest `
+    'OWNED_RESOURCES_FOR_INTERRUPTION' `
+    'PIPELINE_START'
   $scriptText = @'
 param($SupervisorPath, $Installer, $Architecture, $FixtureWorker, $Scenario,
   $StateDirectory, $Secret, $OwnedUser, $OwnedPassword,
@@ -932,6 +4346,8 @@ function Invoke-FixtureScenario(
   [string]$ExistingStateDirectory = '',
   [bool]$InjectTerminationFailure = $false
 ) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest $Scenario 'FIXTURE_SETUP'
   $stateDirectory = if ($ExistingStateDirectory) {
     $ExistingStateDirectory
   } else {
@@ -941,6 +4357,8 @@ function Invoke-FixtureScenario(
   $process.StartInfo = New-SupervisorStartInfo `
     $Scenario $stateDirectory '' $false '' '' $InjectTerminationFailure
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest $Scenario 'PROCESS_START'
   if (!$process.Start()) { throw 'supervisor test process did not start' }
   try {
     $completionBound = if ($Scenario -in @(
@@ -961,13 +4379,19 @@ function Invoke-FixtureScenario(
         'SMOKE_FOREIGN_DESCENDANT_THEN_DEADLINE',
         'SMOKE_TOKEN_MISMATCH_THEN_DEADLINE'
       )) { 90000 } else { 20000 }
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_WAIT'
     if (!$process.WaitForExit($completionBound)) {
       try { $process.Kill($true) } catch {}
       throw 'supervisor exceeded the executable test completion bound'
     }
     $stopwatch.Stop()
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_OUTPUT'
     $standardOutput = $process.StandardOutput.ReadToEnd()
     $standardError = $process.StandardError.ReadToEnd()
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_STATE'
     $state = Read-FixtureProcessState $stateDirectory
     Assert-ProcessTreeGone $state
     return [PSCustomObject]@{
@@ -983,6 +4407,8 @@ function Invoke-FixtureScenario(
 }
 
 function Invoke-CriticalCancellationScenario([string]$Scenario) {
+  Set-SupervisorInvocationContext `
+    $script:currentSupervisorInvocationTest $Scenario 'FIXTURE_SETUP'
   $stateDirectory = New-StateDirectory $Scenario.ToLowerInvariant()
   $eventName = "Local\ProPRInstalledAppCancellation-$([Guid]::NewGuid().ToString('N'))"
   $cancellation = [Threading.EventWaitHandle]::new(
@@ -991,23 +4417,73 @@ function Invoke-CriticalCancellationScenario([string]$Scenario) {
   $process.StartInfo = New-SupervisorStartInfo `
     $Scenario $stateDirectory $eventName $false
   try {
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_START'
     if (!$process.Start()) { throw 'critical-cancellation supervisor did not start' }
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      'PROCESS_STATE' `
+      'CRITICAL_GATE_PATH' `
+      'STATE_DIRECTORY'
+    Assert-True (![string]::IsNullOrWhiteSpace($stateDirectory)) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        $script:currentSupervisorInvocationTest `
+        $Scenario `
+        'PROCESS_STATE' `
+        'CRITICAL_GATE_PATH' `
+        'STATE_DIRECTORY')
     $gatePath = Join-Path $stateDirectory 'critical-gate.txt'
     $gateWait = [Diagnostics.Stopwatch]::StartNew()
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      'PROCESS_WAIT' `
+      'CRITICAL_GATE_PATH' `
+      'CRITICAL_GATE_PATH'
     while (!(Test-Path -LiteralPath $gatePath -PathType Leaf)) {
       if ($gateWait.ElapsedMilliseconds -ge 45000) {
         throw 'critical-cancellation fixture did not reach its interruption gate'
       }
       Start-Sleep -Milliseconds 25
     }
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      'PROCESS_STATE' `
+      'CRITICAL_GATE_READ' `
+      'CRITICAL_GATE_CONTENT'
     Assert-True ((Get-Content -LiteralPath $gatePath -Raw -Encoding ASCII) -ceq $Scenario) `
       'critical-cancellation fixture published the wrong interruption gate'
     [void]$cancellation.Set()
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_WAIT'
     Assert-True ($process.WaitForExit(90000)) `
       'critical-cancellation supervisor exceeded its fixed completion bound'
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest $Scenario 'PROCESS_OUTPUT'
     $output = $process.StandardOutput.ReadToEnd()
     $errorOutput = $process.StandardError.ReadToEnd()
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      'PROCESS_STATE' `
+      'PROCESS_TREE_ASSERTION' `
+      'PROCESS_TREE'
     Assert-ProcessTreeGone (Read-FixtureProcessState $stateDirectory)
+    Set-SupervisorInvocationContext `
+      $script:currentSupervisorInvocationTest `
+      $Scenario `
+      'PROCESS_OUTPUT' `
+      'CRITICAL_RESULT_FIELD' `
+      'STATE_DIRECTORY'
+    Assert-True (![string]::IsNullOrWhiteSpace($stateDirectory)) `
+      (Get-SanitizedSupervisorInvocationDiagnostic `
+        $script:currentSupervisorInvocationTest `
+        $Scenario `
+        'PROCESS_OUTPUT' `
+        'CRITICAL_RESULT_FIELD' `
+        'STATE_DIRECTORY')
     return [PSCustomObject]@{
       ExitCode = $process.ExitCode
       Output = $output
@@ -1023,30 +4499,141 @@ function Invoke-CriticalCancellationScenario([string]$Scenario) {
 
 function Test-MsiTransactionInterruptionGates {
   $duringMsi = Invoke-CriticalCancellationScenario 'DURING_MSI'
-  Assert-True ($duringMsi.ExitCode -eq 125) `
-    'DURING_MSI cancellation did not preserve the supervisor cancellation status'
-  Assert-Contains $duringMsi.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:GRACE' `
-    'DURING_MSI cancellation did not enter the fixed transaction grace'
-  Assert-Contains $duringMsi.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:ROLLED_BACK_CLEAN' `
-    'DURING_MSI cancellation did not prove the exact clean rollback receipt'
-  Assert-Contains $duringMsi.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
-    'DURING_MSI clean rollback did not complete bounded cleanup'
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_MSI' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_RESULT_FIELD' `
+    -Field 'EXIT_CODE' `
+    -Action {
+      Assert-True ($duringMsi.ExitCode -eq 125) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_MSI' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_RESULT_FIELD' `
+          'EXIT_CODE')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_MSI' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_OUTPUT_MARKER' `
+    -Field 'MSI_TRANSACTION_MARKER' `
+    -Action {
+      Assert-Contains $duringMsi.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:GRACE' `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_MSI' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_OUTPUT_MARKER' `
+          'MSI_TRANSACTION_MARKER')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_MSI' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_OUTPUT_MARKER' `
+    -Field 'MSI_TRANSACTION_MARKER' `
+    -Action {
+      Assert-Contains $duringMsi.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:ROLLED_BACK_CLEAN' `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_MSI' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_OUTPUT_MARKER' `
+          'MSI_TRANSACTION_MARKER')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_MSI' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_OUTPUT_MARKER' `
+    -Field 'POST_TERMINATION_CLEANUP_MARKER' `
+    -Action {
+      Assert-Contains $duringMsi.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_MSI' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_OUTPUT_MARKER' `
+          'POST_TERMINATION_CLEANUP_MARKER')
+    }
+  Set-SupervisorInvocationContext `
+    'MSI_TRANSACTION_INTERRUPTION_GATES' `
+    'DURING_MSI' `
+    'PROCESS_STATE' `
+    'FINAL_ABSENCE_CHECK' `
+    'OWNED_ROOT'
+  Assert-FixtureStateFieldsComplete `
+    $duringMsi 'DURING_MSI' 'FINAL_ABSENCE_CHECK' @('StateDirectory')
+  Set-SupervisorInvocationContext `
+    'MSI_TRANSACTION_INTERRUPTION_GATES' `
+    'DURING_MSI' `
+    'PROCESS_STATE' `
+    'FINAL_ABSENCE_CHECK' `
+    'OWNED_ROOT'
   Assert-True (!(Test-Path -LiteralPath (Join-Path $duringMsi.StateDirectory 'owned'))) `
     'DURING_MSI rollback did not retain the exact clean fixture baseline'
 
   $duringCapture = Invoke-CriticalCancellationScenario 'DURING_OWNERSHIP_CAPTURE'
-  $duringCaptureDiagnostic = Get-SanitizedCriticalCancellationDiagnostic $duringCapture
-  Assert-True ($duringCapture.ExitCode -eq 125) `
-    "DURING_OWNERSHIP_CAPTURE cancellation did not preserve cancellation status:$duringCaptureDiagnostic"
-  Assert-Contains $duringCapture.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:COMMITTED' `
-    "DURING_OWNERSHIP_CAPTURE did not publish durable nonprovisional authority:$duringCaptureDiagnostic"
-  Assert-Contains $duringCapture.Output `
-    'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
-    "DURING_OWNERSHIP_CAPTURE durable authority did not complete cleanup:$duringCaptureDiagnostic"
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_OWNERSHIP_CAPTURE' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_RESULT_FIELD' `
+    -Field 'EXIT_CODE' `
+    -Action {
+      Assert-True ($duringCapture.ExitCode -eq 125) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_OWNERSHIP_CAPTURE' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_RESULT_FIELD' `
+          'EXIT_CODE')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_OWNERSHIP_CAPTURE' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_OUTPUT_MARKER' `
+    -Field 'MSI_TRANSACTION_MARKER' `
+    -Action {
+      Assert-Contains $duringCapture.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:MSI_TRANSACTION:COMMITTED' `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_OWNERSHIP_CAPTURE' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_OUTPUT_MARKER' `
+          'MSI_TRANSACTION_MARKER')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_OWNERSHIP_CAPTURE' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_OUTPUT_MARKER' `
+    -Field 'POST_TERMINATION_CLEANUP_MARKER' `
+    -Action {
+      Assert-Contains $duringCapture.Output `
+        'PROPR_WINDOWS_INSTALLED_SMOKE:WATCHDOG:POST_TERMINATION_CLEANUP:COMPLETE' `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_OWNERSHIP_CAPTURE' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_OUTPUT_MARKER' `
+          'POST_TERMINATION_CLEANUP_MARKER')
+    }
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'DURING_OWNERSHIP_CAPTURE' `
+    -Phase 'PROCESS_OUTPUT' `
+    -Callsite 'CRITICAL_RESULT_FIELD' `
+    -Field 'STATE_DIRECTORY' `
+    -Action {
+      Assert-True (![string]::IsNullOrWhiteSpace([string]$duringCapture.StateDirectory)) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'DURING_OWNERSHIP_CAPTURE' `
+          'PROCESS_OUTPUT' `
+          'CRITICAL_RESULT_FIELD' `
+          'STATE_DIRECTORY')
+    }
   $capturedOwned = Read-FixtureResourceState $duringCapture.StateDirectory
   Assert-OwnedResourcesGone $capturedOwned
 }
@@ -1142,6 +4729,8 @@ function Test-FailClosedMarkers {
 }
 
 function Test-LiveCancellationAndRedaction {
+  Set-SupervisorInvocationContext `
+    'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'FIXTURE_SETUP'
   $stateDirectory = New-StateDirectory 'cancellation'
   $eventName = "Local\ProPRInstalledAppCancellation-$([Guid]::NewGuid().ToString('N'))"
   $cancellationEvent = [Threading.EventWaitHandle]::new(
@@ -1153,9 +4742,13 @@ function Test-LiveCancellationAndRedaction {
   $process.StartInfo = New-SupervisorStartInfo 'CANCELLATION' $stateDirectory $eventName $false
   $lines = [Collections.Generic.List[string]]::new()
   try {
+    Set-SupervisorInvocationContext `
+      'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'PROCESS_START'
     if (!$process.Start()) { throw 'cancellation supervisor did not start' }
     $liveAccepted = $false
     $readStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    Set-SupervisorInvocationContext `
+      'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'PROCESS_OUTPUT'
     while (!$liveAccepted -and $readStopwatch.ElapsedMilliseconds -lt 8000) {
       $lineTask = $process.StandardOutput.ReadLineAsync()
       if (!$lineTask.Wait(8000 - [int]$readStopwatch.ElapsedMilliseconds)) { break }
@@ -1169,7 +4762,11 @@ function Test-LiveCancellationAndRedaction {
     Assert-True $liveAccepted 'accepted transition was not observable live before cancellation'
     Assert-True (!$process.HasExited) 'supervisor exited before simulated cancellation'
     [void]$cancellationEvent.Set()
+    Set-SupervisorInvocationContext `
+      'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'PROCESS_WAIT'
     Assert-True ($process.WaitForExit(8000)) 'cancelled supervisor did not complete within the bound'
+    Set-SupervisorInvocationContext `
+      'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'PROCESS_OUTPUT'
     $remainingOutput = $process.StandardOutput.ReadToEnd()
     if ($remainingOutput) { $lines.Add($remainingOutput) }
     $standardError = $process.StandardError.ReadToEnd()
@@ -1185,6 +4782,8 @@ function Test-LiveCancellationAndRedaction {
       Assert-NotContains $output $forbidden 'live supervisor diagnostics were not redacted'
     }
     $state = Read-FixtureProcessState $stateDirectory
+    Set-SupervisorInvocationContext `
+      'LIVE_CANCELLATION_AND_REDACTION' 'CANCELLATION' 'PROCESS_STATE'
     Assert-ProcessTreeGone $state
     Assert-True ([string]::IsNullOrEmpty($standardError)) 'fixture cancellation wrote unexpected stderr'
   } finally {
@@ -1373,6 +4972,15 @@ function Test-PreExistingCleanupOwnership {
     }
 
     $owned = Read-FixtureResourceState $stateDirectory
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_RESOURCES_THEN_DEADLINE' `
+      'AUTHORITY_ASSERTION'
+    Assert-OwnedFixtureAuthorityComplete $owned 'OWNED_RESOURCES_THEN_DEADLINE'
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_RESOURCES_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION'
     foreach ($ownedPath in @(
       $owned.OwnedRoot, $owned.InstallRoot, $owned.ShortcutFolder,
       $owned.Shortcut, $owned.SmokeDirectory
@@ -1405,11 +5013,19 @@ function Test-PreExistingCleanupOwnership {
       'false standalone cleanup result discarded authenticated recovery authority'
     Restore-ReplacedFixtureAuthority $replacementOwned
     $replacementRetry = Invoke-WorkflowCleanupController `
-      $replacementOwned.ManifestPath $replacementOwned.RunId $replacementStateDirectory
+      'REPLACEMENT_RETRY' $replacementOwned.ManifestPath $replacementOwned.RunId `
+      $replacementStateDirectory
     $replacementRetryDiagnostic =
       Get-SanitizedWorkflowCleanupResultDiagnostic $replacementRetry
     Assert-True ($replacementRetry.ExitCode -eq 0 -and
-        $replacementRetry.Result -ceq 'COMPLETE') `
+        $replacementRetry.ReportedExitCode -eq 0 -and
+        $replacementRetry.Result -ceq 'COMPLETE' -and
+        $replacementRetry.ControllerStatus -ceq 'EMPTY_OR_CLEANED' -and
+        $replacementRetry.ProtocolLineCount -eq 2 -and
+        $replacementRetry.ProtocolStandardErrorCount -eq 0 -and
+        $replacementRetry.ProtocolStartupClass -ceq 'READY' -and
+        $replacementRetry.ProtocolStartupLineNumber -eq 1 -and
+        $replacementRetry.ProtocolTerminalLineNumber -eq 2) `
       "standalone cleanup did not retry to exact success after authority restoration:$replacementRetryDiagnostic"
     Assert-OwnedResourcesGone $replacementOwned
     Assert-True (!(Test-Path -LiteralPath $replacementOwned.ManifestPath)) `
@@ -1448,7 +5064,8 @@ function Test-PreExistingCleanupOwnership {
         "replacement $($replacementCase.Label) discarded ACTIVE recovery authority"
       Restore-ReplacedFixtureAuthority $replacedOwned
       $replacedRetry = Invoke-WorkflowCleanupController `
-        $replacedOwned.ManifestPath $replacedOwned.RunId $replacedStateDirectory
+        'REPLACED_ENTRY_RETRY' $replacedOwned.ManifestPath $replacedOwned.RunId `
+        $replacedStateDirectory
       Assert-True ($replacedRetry.ExitCode -eq 0 -and
           $replacedRetry.Result -ceq 'COMPLETE') `
         "replacement $($replacementCase.Label) authority did not retry to success"
@@ -1504,7 +5121,8 @@ function Test-PreExistingCleanupOwnership {
     $ownedProfileRecords[0].LocalPath = $runnerProfileBefore.CanonicalLocalPath
     Write-TestOwnershipManifest $profileMismatchOwned.ManifestPath $profileMismatchManifest
     $alternateLeafCleanup = Invoke-WorkflowCleanupController `
-      $profileMismatchOwned.ManifestPath $profileMismatchOwned.RunId $profileMismatchDirectory
+      'PROFILE_ALTERNATE_LEAF' $profileMismatchOwned.ManifestPath `
+      $profileMismatchOwned.RunId $profileMismatchDirectory
     Assert-True ($alternateLeafCleanup.ExitCode -eq 21 -and
         $alternateLeafCleanup.Result -ceq 'FAILED') `
       'alternate ProfilesDirectory leaf did not fail closed'
@@ -1520,7 +5138,8 @@ function Test-PreExistingCleanupOwnership {
     $ownedProfileRecords[0].LocalPath = [string]$profileMismatchOwned.ProfilePath
     Write-TestOwnershipManifest $profileMismatchOwned.ManifestPath $profileMismatchManifest
     $profileMismatchRetry = Invoke-WorkflowCleanupController `
-      $profileMismatchOwned.ManifestPath $profileMismatchOwned.RunId $profileMismatchDirectory
+      'PROFILE_RETRY' $profileMismatchOwned.ManifestPath `
+      $profileMismatchOwned.RunId $profileMismatchDirectory
     Assert-True ($profileMismatchRetry.ExitCode -eq 0 -and
         $profileMismatchRetry.Result -ceq 'COMPLETE') `
       'profile cleanup did not succeed after exact durable path restoration'
@@ -1533,21 +5152,101 @@ function Test-PreExistingCleanupOwnership {
       'byte-identical replace-via-move did not fail closed on entry identity'
     $byteIdenticalOwned = Read-FixtureResourceState $byteIdenticalDirectory
     Assert-ReplacedExecutableSurvives $byteIdenticalOwned
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'RESOURCE_FIELD_VALIDATION' `
+      'MANIFEST_PATH'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_FIELD_VALIDATION' `
+      @('ManifestPath','RunId','Executable','ExecutableBackup')
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'REPLACEMENT_SURVIVAL_READ' `
+      'MANIFEST_PATH'
     $byteIdenticalManifest = Get-Content -LiteralPath $byteIdenticalOwned.ManifestPath `
       -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
     Assert-True ($byteIdenticalManifest.State -ceq 'ACTIVE') `
       'byte-identical replace-via-move discarded ACTIVE recovery authority'
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'AUTHORITY_RESTORE_REMOVE' `
+      'EXECUTABLE'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'AUTHORITY_RESTORE_REMOVE' `
+      @('Executable')
     Remove-Item -LiteralPath $byteIdenticalOwned.Executable -Force -ErrorAction Stop
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'AUTHORITY_RESTORE_MOVE' `
+      'EXECUTABLE_BACKUP'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'AUTHORITY_RESTORE_MOVE' `
+      @('ExecutableBackup','Executable')
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'AUTHORITY_RESTORE_MOVE' `
+      'EXECUTABLE_BACKUP'
     Move-Item -LiteralPath $byteIdenticalOwned.ExecutableBackup `
       -Destination $byteIdenticalOwned.Executable -ErrorAction Stop
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'WORKFLOW_CLEANUP_RETRY' `
+      'RUN_ID'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'WORKFLOW_CLEANUP_RETRY' `
+      @('ManifestPath','RunId')
     $byteIdenticalRetry = Invoke-WorkflowCleanupController `
-      $byteIdenticalOwned.ManifestPath $byteIdenticalOwned.RunId $byteIdenticalDirectory
+      'EXECUTABLE_IDENTITY_RETRY' $byteIdenticalOwned.ManifestPath `
+      $byteIdenticalOwned.RunId $byteIdenticalDirectory
     Assert-True ($byteIdenticalRetry.ExitCode -eq 0 -and
         $byteIdenticalRetry.Result -ceq 'COMPLETE') `
       'byte-identical file cleanup did not succeed after exact entry identity restoration'
-    Assert-True (!(Test-Path -LiteralPath $byteIdenticalOwned.Executable) -and
-        !(Test-Path -LiteralPath $byteIdenticalOwned.ManifestPath)) `
-      'byte-identical file retry did not consume the exact owned entry and authority'
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'FINAL_ABSENCE_CHECK' `
+      'EXECUTABLE'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'FINAL_ABSENCE_CHECK' `
+      @('Executable')
+    Assert-True (!(Test-Path -LiteralPath $byteIdenticalOwned.Executable)) `
+      'byte-identical file retry did not consume the exact owned entry'
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'RESOURCE_ASSERTION' `
+      'FINAL_ABSENCE_CHECK' `
+      'MANIFEST_PATH'
+    Assert-FixtureStateFieldsComplete `
+      $byteIdenticalOwned `
+      'OWNED_EXECUTABLE_BYTE_IDENTICAL_REPLACED_THEN_DEADLINE' `
+      'FINAL_ABSENCE_CHECK' `
+      @('ManifestPath')
+    Assert-True (!(Test-Path -LiteralPath $byteIdenticalOwned.ManifestPath)) `
+      'byte-identical file retry did not consume the exact recovery authority'
 
     $foreignChildStateDirectory = New-StateDirectory 'in-place-foreign-child'
     $foreignChildResult = Invoke-FixtureScenario `
@@ -1569,7 +5268,8 @@ function Test-PreExistingCleanupOwnership {
       'in-place foreign-child failure did not preserve the ACTIVE manifest'
     Remove-Item -LiteralPath $foreignChildPath -Force -ErrorAction Stop
     $foreignChildRetry = Invoke-WorkflowCleanupController `
-      $foreignChildOwned.ManifestPath $foreignChildOwned.RunId $foreignChildStateDirectory
+      'FOREIGN_CHILD_RETRY' $foreignChildOwned.ManifestPath `
+      $foreignChildOwned.RunId $foreignChildStateDirectory
     Assert-True ($foreignChildRetry.ExitCode -eq 0 -and
         $foreignChildRetry.Result -ceq 'COMPLETE') `
       'in-place foreign-child cleanup did not retry to exact success'
@@ -1595,7 +5295,8 @@ function Test-PreExistingCleanupOwnership {
     Assert-True (Test-Path -LiteralPath $terminationFailureOwned.InstallRoot -PathType Container) `
       'cleanup mutated resources before worker-tree termination was verified'
     $terminationRetry = Invoke-WorkflowCleanupController `
-      $terminationFailureOwned.ManifestPath $terminationFailureOwned.RunId `
+      'TERMINATION_RETRY' $terminationFailureOwned.ManifestPath `
+      $terminationFailureOwned.RunId `
       $terminationFailureStateDirectory
     Assert-True ($terminationRetry.ExitCode -eq 0 -and
         $terminationRetry.Result -ceq 'COMPLETE') `
@@ -1618,12 +5319,28 @@ function Test-PreExistingCleanupOwnership {
       'pre-existing local user fixture unexpectedly acquired a profile'
 
     $gracefulStateDirectory = New-StateDirectory 'graceful-interruption'
+    Set-SupervisorInvocationContext `
+      'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      'OWNED_RESOURCES_FOR_INTERRUPTION' `
+      'PIPELINE_START'
     $graceful = Start-ExternallyInterruptibleSupervisor $gracefulStateDirectory
     try {
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'PROCESS_STATE'
       $gracefulProcessState = Read-FixtureProcessState $gracefulStateDirectory
       $gracefulOwned = Read-FixtureResourceState $gracefulStateDirectory
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'PIPELINE_STOP'
       $graceful.Pipeline.Stop()
       try { [void]$graceful.Pipeline.EndInvoke($graceful.AsyncResult) } catch {}
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'RESOURCE_ASSERTION'
       Assert-ProcessTreeGone $gracefulProcessState
       Assert-OwnedResourcesGone $gracefulOwned
     } finally {
@@ -1639,17 +5356,34 @@ function Test-PreExistingCleanupOwnership {
       'OWNED_RESOURCES_FOR_INTERRUPTION' $workflowStateDirectory '' $false `
       $workflowManifest $workflowRunId
     try {
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'PROCESS_START'
       if (!$workflowSupervisor.Start()) { throw 'workflow supervisor fixture did not start' }
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'PROCESS_STATE'
       $workflowProcessState = Read-FixtureProcessState $workflowStateDirectory
       $workflowOwned = Read-FixtureResourceState $workflowStateDirectory
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'PROCESS_WAIT'
       $workflowSupervisor.Kill($false)
       Assert-True ($workflowSupervisor.WaitForExit(5000)) `
         'killed workflow supervisor did not exit within the bound'
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_FOR_INTERRUPTION' `
+        'RESOURCE_ASSERTION'
       Assert-ProcessTreeGone $workflowProcessState
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'killed supervisor did not preserve the durable ownership manifest'
       $parameterFailure = Invoke-WorkflowCleanupController `
-        $workflowManifest $workflowRunId $workflowStateDirectory -1
+        'PARAMETER_VALIDATION' $workflowManifest $workflowRunId `
+        $workflowStateDirectory -1
       Assert-True ($parameterFailure.ExitCode -eq 125 -and
           $parameterFailure.Result -ceq 'FAILED' -and
           $parameterFailure.ControllerStatus.StartsWith(
@@ -1658,20 +5392,84 @@ function Test-PreExistingCleanupOwnership {
           )) 'controller parameter failure was not caught and phase-classified'
       Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
         'controller parameter failure discarded authenticated recovery authority'
-      $earlyInitializationTimeout = Invoke-WorkflowCleanupController `
-        $workflowManifest $workflowRunId $workflowStateDirectory 5000 $true
-      Assert-True ($earlyInitializationTimeout.ExitCode -eq 124 -and
-          $earlyInitializationTimeout.ReportedExitCode -eq 124 -and
-          $earlyInitializationTimeout.Result -ceq 'TIMED_OUT') `
-        'early-initialization child cleanup did not report its fixed timeout'
-      $earlyInitializationState = Get-Content -LiteralPath `
-        (Join-Path $workflowStateDirectory 'workflow-cleanup-early-processes.json') `
-        -Raw -Encoding ASCII | ConvertFrom-Json -ErrorAction Stop
-      Assert-ProcessTreeGone $earlyInitializationState
-      Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
-        'early-initialization timeout discarded authenticated recovery authority'
+      $earlyInitializationTimeout = Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_PROTOCOL_PARSE' `
+        -Field 'PROTOCOL' `
+        -Action {
+          Invoke-WorkflowCleanupController `
+            'EARLY_INITIALIZATION_TIMEOUT' $workflowManifest $workflowRunId `
+            $workflowStateDirectory 5000 $true
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_RESULT_FIELD' `
+        -Field 'EXIT_CODE' `
+        -Action {
+          Assert-True ($earlyInitializationTimeout.ExitCode -eq 124) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'EARLY_INITIALIZATION_TIMEOUT' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'EXIT_CODE')
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_RESULT_FIELD' `
+        -Field 'REPORTED_EXIT_CODE' `
+        -Action {
+          Assert-True ($earlyInitializationTimeout.ReportedExitCode -eq 124) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'EARLY_INITIALIZATION_TIMEOUT' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'REPORTED_EXIT_CODE')
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_RESULT_FIELD' `
+        -Field 'RESULT' `
+        -Action {
+          Assert-True ($earlyInitializationTimeout.Result -ceq 'TIMED_OUT') `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'EARLY_INITIALIZATION_TIMEOUT' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'RESULT')
+        }
+      $earlyInitializationState = Read-EarlyWorkflowCleanupProcessState `
+        'EARLY_INITIALIZATION_TIMEOUT' $workflowStateDirectory
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'PROCESS_STATE' `
+        -Callsite 'PROCESS_TREE_ASSERTION' `
+        -Field 'PROCESS_TREE' `
+        -Action {
+          Assert-ProcessTreeGone $earlyInitializationState
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'EARLY_INITIALIZATION_TIMEOUT' `
+        -Phase 'MANIFEST_ASSERTION' `
+        -Callsite 'MANIFEST_PRESERVATION' `
+        -Field 'MANIFEST_PATH' `
+        -Action {
+          Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'EARLY_INITIALIZATION_TIMEOUT' `
+              'MANIFEST_ASSERTION' `
+              'MANIFEST_PRESERVATION' `
+              'MANIFEST_PATH')
+        }
       $timedOutCleanup = Invoke-WorkflowCleanupController `
-        $workflowManifest $workflowRunId $workflowStateDirectory 1
+        'CLEANUP_TIMEOUT' $workflowManifest $workflowRunId $workflowStateDirectory 1
       Assert-True ($timedOutCleanup.ExitCode -eq 124 -and
           $timedOutCleanup.ReportedExitCode -eq 124 -and
           $timedOutCleanup.Result -ceq 'TIMED_OUT') `
@@ -1687,7 +5485,8 @@ function Test-PreExistingCleanupOwnership {
         (Get-FileHash -LiteralPath $dummyInstaller -Algorithm SHA256).Hash
       try {
         $replacedInstallerCleanup = Invoke-WorkflowCleanupController `
-          $workflowManifest $workflowRunId $workflowStateDirectory
+          'INSTALLER_REPLACEMENT' $workflowManifest $workflowRunId `
+          $workflowStateDirectory
         Assert-True ($replacedInstallerCleanup.ExitCode -eq 21 -and
             $replacedInstallerCleanup.ReportedExitCode -eq 21 -and
             $replacedInstallerCleanup.Result -ceq 'FAILED' -and
@@ -1717,30 +5516,152 @@ function Test-PreExistingCleanupOwnership {
 
       Set-ItemProperty -LiteralPath $workflowOwned.RegistryPath `
         -Name 'ProPRInstalledAppOwner' -Value 'foreign-owner'
+      $collisionManifestBefore = Get-Content -LiteralPath $workflowManifest -Raw `
+        -Encoding UTF8
+      $collisionResourcesBefore =
+        Get-OwnedResourcePreservationSnapshot $workflowOwned
       $failedWorkflowCleanup = Invoke-WorkflowCleanupController `
-        $workflowManifest $workflowRunId $workflowStateDirectory
-      Assert-True ($failedWorkflowCleanup.ExitCode -eq 21 -and
-          $failedWorkflowCleanup.ReportedExitCode -eq 21 -and
-          $failedWorkflowCleanup.Result -ceq 'FAILED' -and
-          $failedWorkflowCleanup.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
-        'workflow cleanup did not report a fixed replacement-collision failure'
-      Assert-True ((Get-ItemPropertyValue -LiteralPath $workflowOwned.RegistryPath `
-          -Name 'ProPRInstalledAppOwner') -ceq 'foreign-owner') `
-        'workflow cleanup removed a replacement registry object'
-      Assert-True (Test-Path -LiteralPath $workflowManifest -PathType Leaf) `
-        'failed workflow cleanup discarded authenticated recovery authority'
+        'RESOURCE_COLLISION' $workflowManifest $workflowRunId $workflowStateDirectory
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'RESOURCE_COLLISION' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_RESULT_FIELD' `
+        -Field 'EXIT_CODE' `
+        -Action {
+          Assert-True ($failedWorkflowCleanup.ExitCode -eq 21) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'EXIT_CODE')
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'RESOURCE_COLLISION' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_RESULT_FIELD' `
+        -Field 'REPORTED_EXIT_CODE' `
+        -Action {
+          Assert-True ($failedWorkflowCleanup.ReportedExitCode -eq 21) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'REPORTED_EXIT_CODE')
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'RESOURCE_COLLISION' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_RESULT_FIELD' `
+        -Field 'RESULT' `
+        -Action {
+          Assert-True ($failedWorkflowCleanup.Result -ceq 'FAILED') `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'RESULT')
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'RESOURCE_COLLISION' `
+        -Phase 'WORKFLOW_CLEANUP_CONTROLLER' `
+        -Callsite 'CONTROLLER_RESULT_FIELD' `
+        -Field 'CONTROLLER_STATUS' `
+        -Action {
+          Assert-True ($failedWorkflowCleanup.ControllerStatus -ceq
+              'OWNED_RESOURCE_CLEANUP_FAILURE') `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'WORKFLOW_CLEANUP_CONTROLLER' `
+              'CONTROLLER_RESULT_FIELD' `
+              'CONTROLLER_STATUS')
+        }
+      $collisionResourcesAfter =
+        Get-OwnedResourcePreservationSnapshot $workflowOwned
+      foreach ($collisionResourceField in @(
+          'OWNED_ROOT','INSTALL_ROOT','EXECUTABLE','SHORTCUT_FOLDER','SHORTCUT',
+          'SMOKE_DIRECTORY','REGISTRY_PATH','REGISTRY_VALUE','USER_NAME',
+          'PROFILE_PATH'
+        )) {
+        Assert-OwnedResourcePreservationSnapshot `
+          $collisionResourcesBefore $collisionResourcesAfter $collisionResourceField
+      }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'RESOURCE_COLLISION' `
+        -Phase 'RESOURCE_ASSERTION' `
+        -Callsite 'REPLACEMENT_SURVIVAL_READ' `
+        -Field 'REGISTRY_VALUE' `
+        -Action {
+          Assert-True ((Get-SupervisorFixtureRegistryValueDigest `
+              ([string]$workflowOwned.RegistryPath) 'ProPRInstalledAppOwner') -ceq
+              (Get-SupervisorFixtureStringDigest 'foreign-owner')) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'RESOURCE_ASSERTION' `
+              'REPLACEMENT_SURVIVAL_READ' `
+              'REGISTRY_VALUE')
+        }
+      Invoke-SupervisorAttributedOperation `
+        -Scenario 'RESOURCE_COLLISION' `
+        -Phase 'MANIFEST_ASSERTION' `
+        -Callsite 'MANIFEST_PRESERVATION' `
+        -Field 'MANIFEST_PATH' `
+        -Action {
+          $collisionManifestAfter = if (Test-Path -LiteralPath $workflowManifest `
+              -PathType Leaf) {
+            try {
+              Get-Content -LiteralPath $workflowManifest -Raw -Encoding UTF8
+            } catch {
+              ''
+            }
+          } else {
+            ''
+          }
+          Assert-True ($collisionManifestAfter -ceq $collisionManifestBefore) `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'MANIFEST_ASSERTION' `
+              'MANIFEST_PRESERVATION' `
+              'MANIFEST_PATH')
+          $collisionManifestState = try {
+            [string](($collisionManifestAfter | ConvertFrom-Json -ErrorAction Stop).State)
+          } catch {
+            'INVALID'
+          }
+          Assert-True ($collisionManifestState -ceq 'ACTIVE') `
+            (Get-SanitizedSupervisorInvocationDiagnostic `
+              $script:currentSupervisorInvocationTest `
+              'RESOURCE_COLLISION' `
+              'MANIFEST_ASSERTION' `
+              'MANIFEST_PRESERVATION' `
+              'MANIFEST_PATH')
+        }
 
       Set-ItemProperty -LiteralPath $workflowOwned.RegistryPath `
         -Name 'ProPRInstalledAppOwner' -Value ([string]$workflowOwned.Token)
+      Assert-True ((Get-SupervisorFixtureRegistryValueDigest `
+          ([string]$workflowOwned.RegistryPath) 'ProPRInstalledAppOwner') -ceq
+          (Get-SupervisorFixtureStringDigest ([string]$workflowOwned.Token))) `
+        (Get-SanitizedSupervisorInvocationDiagnostic `
+          $script:currentSupervisorInvocationTest `
+          'RESOURCE_COLLISION' `
+          'AUTHORITY_RESTORE' `
+          'AUTHORITY_RESTORE_WRITE' `
+          'REGISTRY_VALUE')
       $workflowCleanup = Invoke-WorkflowCleanupController `
-        $workflowManifest $workflowRunId $workflowStateDirectory
+        'WORKFLOW_RETRY' $workflowManifest $workflowRunId $workflowStateDirectory
       Assert-True ($workflowCleanup.ExitCode -eq 0 -and
           $workflowCleanup.ReportedExitCode -eq 0 -and
-          $workflowCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
-        'workflow cleanup controller did not retry to fixed cleanup success'
-      Assert-Contains $workflowCleanup.Output `
-        'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:COMPLETE' `
-        'workflow cleanup controller did not emit fixed completion evidence'
+          $workflowCleanup.Result -ceq 'COMPLETE' -and
+          $workflowCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED' -and
+          $workflowCleanup.InvocationIdentifier -ceq 'WORKFLOW_RETRY') `
+        ("workflow cleanup controller did not retry to fixed cleanup success:" +
+          (Get-SanitizedWorkflowCleanupResultDiagnostic $workflowCleanup))
       Assert-OwnedResourcesGone $workflowOwned
       Assert-True (!(Test-Path -LiteralPath $workflowManifest)) `
         'workflow cleanup did not consume the ownership manifest'
@@ -1758,12 +5679,28 @@ function Test-PreExistingCleanupOwnership {
       'OWNED_RESOURCES_NORMAL_SUCCESS' $normalStateDirectory '' $false `
       $normalManifest $normalRunId
     try {
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_NORMAL_SUCCESS' `
+        'PROCESS_START'
       if (!$normalSupervisor.Start()) { throw 'normal workflow supervisor fixture did not start' }
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_NORMAL_SUCCESS' `
+        'PROCESS_STATE'
       $normalOwned = Read-FixtureResourceState $normalStateDirectory
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_NORMAL_SUCCESS' `
+        'PROCESS_WAIT'
       Assert-True ($normalSupervisor.WaitForExit(40000)) `
         'normal workflow supervisor fixture exceeded its bound'
       Assert-True ($normalSupervisor.ExitCode -eq 0) `
         'normal workflow supervisor fixture did not complete successfully'
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+        'OWNED_RESOURCES_NORMAL_SUCCESS' `
+        'RESOURCE_ASSERTION'
       Assert-OwnedResourcesGone $normalOwned
       Assert-True (Test-Path -LiteralPath $normalManifest -PathType Leaf) `
         'normal supervisor did not preserve its empty ownership receipt'
@@ -1783,7 +5720,7 @@ function Test-PreExistingCleanupOwnership {
           @($normalReceipt.Profiles).Count -eq 0) `
         'normal supervisor did not produce a typed authenticated empty-state receipt'
       $normalCleanup = Invoke-WorkflowCleanupController `
-        $normalManifest $normalRunId $normalStateDirectory
+        'NORMAL_CLEANUP' $normalManifest $normalRunId $normalStateDirectory
       Assert-True ($normalCleanup.ExitCode -eq 0 -and
           $normalCleanup.ReportedExitCode -eq 0 -and
           $normalCleanup.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
@@ -1826,16 +5763,14 @@ function Test-PreExistingCleanupOwnership {
         )
       }
       $failedCleanup = Invoke-WorkflowCleanupController `
-        $badManifest $badRunId $workflowStateDirectory
+        'MANIFEST_VALIDATION' $badManifest $badRunId $workflowStateDirectory
       Assert-True ($failedCleanup.ExitCode -ne 0) `
         "$manifestCase workflow manifest did not fail closed"
       Assert-True ($failedCleanup.ExitCode -eq 20 -and
           $failedCleanup.ReportedExitCode -eq 20 -and
-          $failedCleanup.ControllerStatus -ceq 'MANIFEST_VALIDATION_FAILURE') `
+          $failedCleanup.ControllerStatus -ceq 'MANIFEST_VALIDATION_FAILURE' -and
+          $failedCleanup.InvocationIdentifier -ceq 'MANIFEST_VALIDATION') `
         "$manifestCase workflow manifest did not report fixed validation status"
-      Assert-Contains $failedCleanup.Output `
-        'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED' `
-        "$manifestCase workflow manifest did not emit fixed failure evidence"
       if ($manifestCase -ne 'MISSING') {
         Assert-True (Test-Path -LiteralPath $badManifest -PathType Leaf) `
           "$manifestCase workflow failure discarded authenticated recovery authority"
@@ -1929,7 +5864,8 @@ function Test-SmokePromotionInterruptionAuthority {
     'smoke foreign descendant did not preserve ACTIVE recovery authority'
   Remove-Item -LiteralPath $foreignOwned.ForeignSmokePath -Force -ErrorAction Stop
   $retry = Invoke-WorkflowCleanupController `
-    $foreignOwned.ManifestPath $foreignOwned.RunId $foreignStateDirectory
+    'SMOKE_PROMOTION_RETRY' $foreignOwned.ManifestPath $foreignOwned.RunId `
+    $foreignStateDirectory
   Assert-True ($retry.ExitCode -eq 0 -and $retry.Result -ceq 'COMPLETE') `
     'smoke foreign-descendant recovery did not retry to exact success'
   Assert-OwnedResourcesGone $foreignOwned
@@ -1947,14 +5883,15 @@ function Test-SmokePromotionInterruptionAuthority {
     'mismatched smoke ownership token discarded recovery authority'
   Remove-Item -LiteralPath $tokenPath -Force -ErrorAction Stop
   $missingToken = Invoke-WorkflowCleanupController `
-    $tokenOwned.ManifestPath $tokenOwned.RunId $tokenStateDirectory
+    'SMOKE_TOKEN_MISSING' $tokenOwned.ManifestPath $tokenOwned.RunId `
+    $tokenStateDirectory
   Assert-True ($missingToken.ExitCode -eq 20 -and $missingToken.Result -ceq 'FAILED') `
     'missing smoke ownership token did not fail manifest validation closed'
   Assert-True (Test-Path -LiteralPath $tokenOwned.ManifestPath -PathType Leaf) `
     'missing smoke ownership token discarded recovery authority'
   [IO.File]::WriteAllText($tokenPath, [string]$tokenOwned.Token, [Text.Encoding]::ASCII)
   $tokenRetry = Invoke-WorkflowCleanupController `
-    $tokenOwned.ManifestPath $tokenOwned.RunId $tokenStateDirectory
+    'SMOKE_TOKEN_RETRY' $tokenOwned.ManifestPath $tokenOwned.RunId $tokenStateDirectory
   Assert-True ($tokenRetry.ExitCode -eq 0 -and $tokenRetry.Result -ceq 'COMPLETE') `
     'restored exact smoke ownership token did not retry to cleanup success'
   Assert-OwnedResourcesGone $tokenOwned
@@ -1996,9 +5933,21 @@ function Test-PreExistingAppPathsAuthority {
     $process.StartInfo = New-SupervisorStartInfo `
       'PRE_EXISTING_APP_PATHS' $testRoot '' $true
     try {
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_APP_PATHS_AUTHORITY' `
+        'PRE_EXISTING_APP_PATHS' `
+        'PROCESS_START'
       if (!$process.Start()) { throw 'pre-existing registry supervisor did not start' }
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_APP_PATHS_AUTHORITY' `
+        'PRE_EXISTING_APP_PATHS' `
+        'PROCESS_WAIT'
       Assert-True ($process.WaitForExit(20000)) `
         'pre-existing registry supervisor exceeded its bound'
+      Set-SupervisorInvocationContext `
+        'PRE_EXISTING_APP_PATHS_AUTHORITY' `
+        'PRE_EXISTING_APP_PATHS' `
+        'PROCESS_OUTPUT'
       $output = $process.StandardOutput.ReadToEnd()
       $errorOutput = $process.StandardError.ReadToEnd()
       Assert-True ($process.ExitCode -ne 0) `
@@ -2064,16 +6013,14 @@ function Test-PreExistingAppPathsAuthority {
       [Text.Encoding]::UTF8
     )
     $mismatchCleanup = Invoke-WorkflowCleanupController `
-      $mismatchManifest $mismatchRunId ''
+      'APP_PATH_MISMATCH' $mismatchManifest $mismatchRunId ''
     Assert-True ($mismatchCleanup.ExitCode -ne 0) `
       'mismatched App Paths ownership identity did not fail closed'
     Assert-True ($mismatchCleanup.ExitCode -eq 20 -and
         $mismatchCleanup.ReportedExitCode -eq 20 -and
-        $mismatchCleanup.ControllerStatus -ceq 'MANIFEST_VALIDATION_FAILURE') `
+        $mismatchCleanup.ControllerStatus -ceq 'MANIFEST_VALIDATION_FAILURE' -and
+        $mismatchCleanup.InvocationIdentifier -ceq 'APP_PATH_MISMATCH') `
       'mismatched App Paths ownership did not report fixed validation status'
-    Assert-Contains $mismatchCleanup.Output `
-      'PROPR_WINDOWS_INSTALLED_SMOKE:WORKFLOW_CLEANUP:FAILED' `
-      'mismatched App Paths ownership did not emit fixed failure evidence'
     Assert-True ((Get-Item -LiteralPath $appPaths).GetValue('') -ceq $sentinelApplication) `
       'mismatched App Paths ownership removed the pre-existing executable value'
     Assert-True ((Get-Item -LiteralPath $appPaths).GetValue('Path') -ceq 'C:\pre-existing') `
@@ -2096,13 +6043,749 @@ function Test-PreExistingAppPathsAuthority {
   [Console]::Out.Flush()
 }
 
+function Set-HkcuFixtureBoundaryValueKinds([string]$Path) {
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_ROOT_KEY_SETUP' `
+    -Field 'REGISTRY_PATH' `
+    -Action {
+      [void](Get-HkcuSupervisorFixtureRelativeSubKeyPath $Path)
+      [void](New-Item -Path $Path -Force -ErrorAction Stop)
+      Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $Path)
+    }
+  $key = $null
+  try {
+    $key = Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_KEY_OPEN' `
+      -Field 'REGISTRY_PATH' `
+      -Action {
+        Open-HkcuSupervisorFixtureWritableSubKey $Path
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_DEFAULT_STRING' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue('', 'default-string', [Microsoft.Win32.RegistryValueKind]::String)
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_STRING' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue('StringValue', 'plain-string', [Microsoft.Win32.RegistryValueKind]::String)
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_EXPAND_STRING' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue(
+          'ExpandStringValue',
+          '%TEMP%\propr-fixture',
+          [Microsoft.Win32.RegistryValueKind]::ExpandString
+        )
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_BINARY' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue(
+          'BinaryValue',
+          [byte[]]@(0, 1, 2, 127, 128, 255),
+          [Microsoft.Win32.RegistryValueKind]::Binary
+        )
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_DWORD' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue('DWordValue', [int]305419896, [Microsoft.Win32.RegistryValueKind]::DWord)
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_QWORD' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue(
+          'QWordValue',
+          [long]1311768467463790320,
+          [Microsoft.Win32.RegistryValueKind]::QWord
+        )
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_VALUE_KIND_MULTI_STRING' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $key.SetValue(
+          'MultiStringValue',
+          [string[]]@('alpha', '', 'omega'),
+          [Microsoft.Win32.RegistryValueKind]::MultiString
+        )
+      }
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_NATIVE_NONE_WRITE' `
+      -Field 'NATIVE_RETURN_CODE' `
+      -Action {
+        Set-SupervisorFixtureRegistryValueNativeBytes `
+          $key 'NoneValue' 0 ([byte[]]@(9, 8, 7))
+      }
+  } finally {
+    if ($null -ne $key) { $key.Dispose() }
+  }
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'REGRESSION_NESTED_KEY_SETUP' `
+    -Field 'REGISTRY_PATH' `
+    -Action {
+      $nested = Join-Path $Path 'Nested'
+      $child = Join-Path $nested 'Child'
+      [void](Get-HkcuSupervisorFixtureRelativeSubKeyPath $child)
+      [void](New-Item -Path $child -Force -ErrorAction Stop)
+      Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $child)
+    }
+  $childKeyRef = @{ Value = $null }
+  try {
+    Invoke-HkcuDesktopFixtureOperation `
+      -Callsite 'REGRESSION_NESTED_VALUE_SETUP' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        $nested = Join-Path $Path 'Nested'
+        $child = Join-Path $nested 'Child'
+        $childKeyRef.Value = Open-HkcuSupervisorFixtureWritableSubKey $child
+        $childKeyRef.Value.SetValue(
+          'NestedValue',
+          'nested-string',
+          [Microsoft.Win32.RegistryValueKind]::String
+        )
+      }
+  } finally {
+    if ($null -ne $childKeyRef.Value) { $childKeyRef.Value.Dispose() }
+  }
+}
+
+function Assert-HkcuFixtureBoundaryValueKinds([string]$Path) {
+  $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+  Assert-True ($key.GetValueKind('').ToString() -ceq 'String' -and
+      [string]$key.GetValue('') -ceq 'default-string') `
+    (Get-HkcuFixtureBoundaryDiagnostic)
+  Assert-True ($key.GetValueKind('StringValue').ToString() -ceq 'String' -and
+      [string]$key.GetValue('StringValue') -ceq 'plain-string') `
+    (Get-HkcuFixtureBoundaryDiagnostic)
+  Assert-True ($key.GetValueKind('ExpandStringValue').ToString() -ceq 'ExpandString' -and
+      [string]$key.GetValue(
+        'ExpandStringValue',
+        $null,
+        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+      ) -ceq '%TEMP%\propr-fixture') (Get-HkcuFixtureBoundaryDiagnostic)
+  $binary = [byte[]]$key.GetValue('BinaryValue')
+  Assert-True ($key.GetValueKind('BinaryValue').ToString() -ceq 'Binary' -and
+      $binary.Length -eq 6 -and $binary[0] -eq 0 -and $binary[3] -eq 127 -and
+      $binary[4] -eq 128 -and $binary[5] -eq 255) `
+    (Get-HkcuFixtureBoundaryDiagnostic)
+  Assert-True ($key.GetValueKind('DWordValue').ToString() -ceq 'DWord' -and
+      [int]$key.GetValue('DWordValue') -eq 305419896) `
+    (Get-HkcuFixtureBoundaryDiagnostic)
+  Assert-True ($key.GetValueKind('QWordValue').ToString() -ceq 'QWord' -and
+      [long]$key.GetValue('QWordValue') -eq 1311768467463790320) `
+    (Get-HkcuFixtureBoundaryDiagnostic)
+  $multi = [string[]]$key.GetValue('MultiStringValue')
+  Assert-True ($key.GetValueKind('MultiStringValue').ToString() -ceq 'MultiString' -and
+      $multi.Length -eq 3 -and $multi[0] -ceq 'alpha' -and
+      $multi[1] -ceq '' -and $multi[2] -ceq 'omega') `
+    (Get-HkcuFixtureBoundaryDiagnostic)
+  Assert-HkcuFixtureNativeNoneValue $key ([byte[]]@(9, 8, 7))
+  $child = Join-Path (Join-Path $Path 'Nested') 'Child'
+  $childKey = Get-Item -LiteralPath $child -ErrorAction Stop
+  Assert-True ([string]$childKey.GetValue('NestedValue') -ceq 'nested-string') `
+    (Get-HkcuFixtureBoundaryDiagnostic)
+}
+
+function Assert-HkcuFixtureNativeNoneValue($Key, [byte[]]$ExpectedBytes) {
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'NATIVE_VALUE_READ' `
+    -Field 'REGISTRY_VALUE' `
+    -Action {
+      $none = Get-SupervisorFixtureRegistryValueNativeBytes $Key 'NoneValue'
+      $actualBytes = [byte[]]$none.Bytes
+      Assert-HkcuDesktopFixtureOperation `
+        ($Key.GetValueKind('NoneValue').ToString() -ceq 'None')
+      Assert-HkcuDesktopFixtureOperation ($none.Type -eq 0)
+      Assert-HkcuDesktopFixtureOperation ($actualBytes.Length -eq $ExpectedBytes.Length)
+      for ($index = 0; $index -lt $ExpectedBytes.Length; $index++) {
+        Assert-HkcuDesktopFixtureOperation `
+          ($actualBytes[$index] -eq $ExpectedBytes[$index])
+      }
+    }
+}
+
+function Assert-HkcuFixtureNativeNoneValueFailure($Key) {
+  $expectedNativeReadFailure = Get-SanitizedSupervisorInvocationDiagnostic `
+    'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+    'HKCU_BASELINE_RESTORE' `
+    'FIXTURE_SETUP' `
+    'NATIVE_VALUE_READ' `
+    'REGISTRY_VALUE'
+  try {
+    Assert-HkcuFixtureNativeNoneValue $Key ([byte[]]@(9, 8, 7))
+    Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
+  } catch {
+    Assert-True ([string]$_.Exception.Message -ceq $expectedNativeReadFailure) `
+      (Get-HkcuFixtureBoundaryDiagnostic)
+  }
+}
+
+function Test-HkcuFixtureNativeNoneValueReadRegression(
+  [string]$TypePath,
+  [string]$LengthPath,
+  [string]$BytePath
+) {
+  Set-HkcuFixtureBoundaryValueKinds $TypePath
+  $typeKey = $null
+  try {
+    $typeKey = Open-HkcuSupervisorFixtureWritableSubKey $TypePath
+    $typeKey.SetValue(
+      'NoneValue',
+      [byte[]]@(9, 8, 7),
+      [Microsoft.Win32.RegistryValueKind]::Binary
+    )
+    Assert-HkcuFixtureNativeNoneValueFailure $typeKey
+  } finally {
+    if ($null -ne $typeKey) { $typeKey.Dispose() }
+  }
+
+  Set-HkcuFixtureBoundaryValueKinds $LengthPath
+  $lengthKey = $null
+  try {
+    $lengthKey = Open-HkcuSupervisorFixtureWritableSubKey $LengthPath
+    Set-SupervisorFixtureRegistryValueNativeBytes `
+      $lengthKey 'NoneValue' 0 ([byte[]]@(9, 8))
+    Assert-HkcuFixtureNativeNoneValueFailure $lengthKey
+  } finally {
+    if ($null -ne $lengthKey) { $lengthKey.Dispose() }
+  }
+
+  Set-HkcuFixtureBoundaryValueKinds $BytePath
+  $byteKey = $null
+  try {
+    $byteKey = Open-HkcuSupervisorFixtureWritableSubKey $BytePath
+    Set-SupervisorFixtureRegistryValueNativeBytes `
+      $byteKey 'NoneValue' 0 ([byte[]]@(9, 8, 6))
+    Assert-HkcuFixtureNativeNoneValueFailure $byteKey
+  } finally {
+    if ($null -ne $byteKey) { $byteKey.Dispose() }
+  }
+}
+
+function Test-SupervisorFixtureRegistryDigestAttributionRegression([string]$Path) {
+  [void](New-Item -Path $Path -Force -ErrorAction Stop)
+  $key = $null
+  try {
+    $key = Open-HkcuSupervisorFixtureWritableSubKey $Path
+    $key.SetValue('SyntheticValue', 'value', [Microsoft.Win32.RegistryValueKind]::String)
+  } finally {
+    if ($null -ne $key) { $key.Dispose() }
+  }
+  $originalNativeReader =
+    (Get-Command Get-SupervisorFixtureRegistryValueNativeBytes -CommandType Function).ScriptBlock
+  function Get-SupervisorFixtureRegistryValueNativeBytes { throw 'synthetic registry read failure' }
+  try {
+    Invoke-SupervisorAttributedBoundary `
+      -Test 'PRE_EXISTING_CLEANUP_OWNERSHIP' `
+      -Scenario 'RESOURCE_COLLISION' `
+      -Phase 'RESOURCE_ASSERTION' `
+      -Callsite 'REPLACEMENT_SURVIVAL_READ' `
+      -Field 'REGISTRY_VALUE' `
+      -Action {
+        Assert-True ((Get-SupervisorFixtureRegistryDigest $Path) -ceq 'INVALID') `
+          'shared registry digest rewrote non-HKCU read attribution'
+      }
+    $expectedHkcuNativeReadFailure = Get-SanitizedSupervisorInvocationDiagnostic `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_BASELINE_RESTORE' `
+      'FIXTURE_SETUP' `
+      'NATIVE_VALUE_READ' `
+      'REGISTRY_VALUE'
+    try {
+      Get-HkcuFixtureRegistryDigest $Path | Out-Null
+      Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
+    } catch {
+      Assert-True ([string]$_.Exception.Message -ceq $expectedHkcuNativeReadFailure) `
+        (Get-HkcuFixtureBoundaryDiagnostic)
+    }
+  } finally {
+    Set-Item -Path Function:\Get-SupervisorFixtureRegistryValueNativeBytes `
+      -Value $originalNativeReader
+  }
+}
+
+function Assert-HkcuFixtureDigestFailureAttribution(
+  [scriptblock]$Action,
+  [string]$ExpectedCallsite
+) {
+  $expected = Get-HkcuFixtureDigestDiagnostic $ExpectedCallsite
+  $broadBaseline = Get-HkcuFixtureBoundaryDiagnostic
+  $actual = $null
+  try {
+    & $Action
+    Assert-HkcuDesktopFixtureOperation $false
+  } catch {
+    $actual = [string]$_.Exception.Message
+  }
+  Assert-HkcuDesktopFixtureOperation ($actual -ceq $expected)
+  Assert-HkcuDesktopFixtureOperation ($actual -cne $broadBaseline)
+}
+
+function Get-HkcuFixtureDifferentDigest([string]$Digest) {
+  $zeroDigest = '0' * 64
+  if ([string]$Digest -cne $zeroDigest) { return $zeroDigest }
+  return 'f' * 64
+}
+
+function Test-HkcuFixtureDigestFailureAttributionRegression(
+  [string]$InitializeInvalidPath,
+  [string]$BackupEqualityPath,
+  [string]$PostRestoreEqualityPath,
+  [string]$RecoveryProofPath,
+  [string]$FinalEqualityPath
+) {
+  Set-HkcuFixtureBoundaryValueKinds $InitializeInvalidPath
+  $originalHkcuDigest =
+    (Get-Command Get-HkcuFixtureRegistryDigest -CommandType Function).ScriptBlock
+  function Get-HkcuFixtureRegistryDigest { return 'INVALID' }
+  try {
+    $initializeInvalidBoundary =
+      New-HkcuDesktopFixtureBoundaryState $InitializeInvalidPath
+    Assert-HkcuFixtureDigestFailureAttribution `
+      { Initialize-HkcuDesktopFixtureBoundary $initializeInvalidBoundary } `
+      'BASELINE_DIGEST'
+    Assert-HkcuDesktopFixtureOperation (Test-Path -LiteralPath $InitializeInvalidPath)
+  } finally {
+    Set-Item -Path Function:\Get-HkcuFixtureRegistryDigest `
+      -Value $originalHkcuDigest
+  }
+
+  Set-HkcuFixtureBoundaryValueKinds $BackupEqualityPath
+  $backupEqualityBoundary = New-HkcuDesktopFixtureBoundaryState $BackupEqualityPath
+  Initialize-HkcuDesktopFixtureBoundary $backupEqualityBoundary
+  $backupEqualityBoundary.BaselineDigest =
+    Get-HkcuFixtureDifferentDigest ([string]$backupEqualityBoundary.BaselineDigest)
+  Assert-HkcuFixtureDigestFailureAttribution `
+    { Restore-HkcuDesktopFixtureBoundary $backupEqualityBoundary $false } `
+    'BASELINE_DIGEST'
+  Assert-HkcuDesktopFixtureOperation `
+    ((Test-Path -LiteralPath $backupEqualityBoundary.BackupPath) -and
+      !(Test-Path -LiteralPath $BackupEqualityPath))
+
+  Set-HkcuFixtureBoundaryValueKinds $PostRestoreEqualityPath
+  $postRestoreEqualityBoundary =
+    New-HkcuDesktopFixtureBoundaryState $PostRestoreEqualityPath
+  Initialize-HkcuDesktopFixtureBoundary $postRestoreEqualityBoundary
+  $postRestoreEqualityBoundary.ForcePostRestoreDigestMismatch = $true
+  Assert-HkcuFixtureDigestFailureAttribution `
+    { Restore-HkcuDesktopFixtureBoundary $postRestoreEqualityBoundary $false } `
+    'BASELINE_DIGEST'
+  Assert-HkcuDesktopFixtureOperation `
+    ((Test-Path -LiteralPath $postRestoreEqualityBoundary.BackupPath) -and
+      !(Test-Path -LiteralPath $PostRestoreEqualityPath))
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'FINAL_BASELINE_DIGEST' `
+    -Field 'REGISTRY_ROOT' `
+    -Action {
+      Assert-HkcuDesktopFixtureOperation (
+        (Get-HkcuFixtureRegistryDigest $postRestoreEqualityBoundary.BackupPath) -ceq
+          [string]$postRestoreEqualityBoundary.BaselineDigest
+      )
+    }
+
+  Set-HkcuFixtureBoundaryValueKinds $RecoveryProofPath
+  $recoveryProofDigest = Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'BASELINE_DIGEST' `
+    -Field 'REGISTRY_ROOT' `
+    -Action {
+      $digest = Get-HkcuFixtureRegistryDigest $RecoveryProofPath
+      Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
+      $digest
+    }
+  $recoveryProofBoundary = New-HkcuDesktopFixtureBoundaryState $RecoveryProofPath
+  Initialize-HkcuDesktopFixtureBoundary $recoveryProofBoundary
+  $recoveryProofBoundary.ForcePostRestoreDigestMismatch = $true
+  $recoveryProofBackupPath = [string]$recoveryProofBoundary.BackupPath
+  $recoveryProofBadDigest = Get-HkcuFixtureDifferentDigest $recoveryProofDigest
+  $recoveryProofDigestCallOrder =
+    [System.Collections.Generic.List[string]]::new()
+  $recoveryProofBackupDigestReads = @{ Value = 0 }
+  $originalHkcuDigestForRecoveryProof =
+    (Get-Command Get-HkcuFixtureRegistryDigest -CommandType Function).ScriptBlock
+  function Get-HkcuFixtureRegistryDigest([string]$Path) {
+    if ([string]::Equals(
+        [string]$Path,
+        [string]$recoveryProofBackupPath,
+        [StringComparison]::OrdinalIgnoreCase
+      )) {
+      $recoveryProofBackupDigestReads.Value =
+        [int]$recoveryProofBackupDigestReads.Value + 1
+      [void]$recoveryProofDigestCallOrder.Add('BackupPath')
+      if ([int]$recoveryProofBackupDigestReads.Value -eq 2) {
+        return $recoveryProofBadDigest
+      }
+      return (& $originalHkcuDigestForRecoveryProof $Path)
+    }
+    if ([string]::Equals(
+        [string]$Path,
+        [string]$recoveryProofBoundary.DesktopKey,
+        [StringComparison]::OrdinalIgnoreCase
+      )) {
+      [void]$recoveryProofDigestCallOrder.Add('DesktopKey')
+    } else {
+      [void]$recoveryProofDigestCallOrder.Add('Other')
+    }
+    & $originalHkcuDigestForRecoveryProof $Path
+  }
+  $expectedRecoveryProofFailure = Get-SanitizedSupervisorInvocationDiagnostic `
+    'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+    'HKCU_BASELINE_RESTORE' `
+    'FIXTURE_SETUP' `
+    'RECOVERY_RELOCATE' `
+    'REGISTRY_PATH'
+  $actualRecoveryProofFailure = $null
+  try {
+    Restore-HkcuDesktopFixtureBoundary $recoveryProofBoundary $false
+    Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
+  } catch {
+    $actualRecoveryProofFailure = [string]$_.Exception.Message
+  } finally {
+    Set-Item -Path Function:\Get-HkcuFixtureRegistryDigest `
+      -Value $originalHkcuDigestForRecoveryProof
+  }
+  Assert-True ($actualRecoveryProofFailure -ceq $expectedRecoveryProofFailure) `
+    (Get-HkcuFixtureBoundaryDiagnostic)
+  Assert-HkcuDesktopFixtureOperation (
+    [int]$recoveryProofBackupDigestReads.Value -eq 3
+  )
+  Assert-HkcuDesktopFixtureOperation (
+    $recoveryProofDigestCallOrder.Count -eq 4
+  )
+  Assert-HkcuDesktopFixtureOperation (
+    ([string]::Join(',', $recoveryProofDigestCallOrder.ToArray())) -ceq
+      'BackupPath,DesktopKey,BackupPath,BackupPath'
+  )
+  Assert-HkcuDesktopFixtureOperation `
+    ((Test-Path -LiteralPath $recoveryProofBoundary.BackupPath) -and
+      !(Test-Path -LiteralPath $RecoveryProofPath))
+  Invoke-HkcuDesktopFixtureOperation `
+    -Callsite 'FINAL_BASELINE_DIGEST' `
+    -Field 'REGISTRY_ROOT' `
+    -Action {
+      Assert-HkcuDesktopFixtureOperation (
+        (Get-HkcuFixtureRegistryDigest $recoveryProofBoundary.BackupPath) -ceq
+          $recoveryProofDigest
+      )
+      Assert-HkcuDesktopFixtureOperation (
+        (Get-HkcuFixtureRegistryDigest $recoveryProofBoundary.BackupPath) -ceq
+          [string]$recoveryProofBoundary.BaselineDigest
+      )
+    }
+
+  Set-HkcuFixtureBoundaryValueKinds $FinalEqualityPath
+  $finalDigest = Get-HkcuFixtureRegistryDigest $FinalEqualityPath
+  $differentFinalDigest = Get-HkcuFixtureDifferentDigest $finalDigest
+  Assert-HkcuFixtureDigestFailureAttribution `
+    {
+      Invoke-HkcuDesktopFixtureOperation `
+        -Callsite 'FINAL_BASELINE_DIGEST' `
+        -Field 'REGISTRY_ROOT' `
+        -Action {
+          Assert-HkcuDesktopFixtureOperation (
+            (Get-HkcuFixtureRegistryDigest $FinalEqualityPath) -ceq
+              $differentFinalDigest
+          )
+        }
+    } `
+    'FINAL_BASELINE_DIGEST'
+}
+
+function Test-HkcuDesktopFixtureBoundaryRegression {
+  $root = 'Registry::HKEY_CURRENT_USER\Software\ProPRSupervisorFixture'
+  $parent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $presentDesktop = Join-Path $parent 'Desktop'
+  $absentParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $absentDesktop = Join-Path $absentParent 'Desktop'
+  $absentForeignParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $absentForeignDesktop = Join-Path $absentForeignParent 'Desktop'
+  $failureParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $failureDesktop = Join-Path $failureParent 'Desktop'
+  $recoveryCollisionParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $recoveryCollisionDesktop = Join-Path $recoveryCollisionParent 'Desktop'
+  $recoveryRenameFailureParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $recoveryRenameFailureDesktop = Join-Path $recoveryRenameFailureParent 'Desktop'
+  $noneTypePath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $noneLengthPath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $noneBytePath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $digestAttributionPath = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $initializeInvalidParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $initializeInvalidDesktop = Join-Path $initializeInvalidParent 'Desktop'
+  $backupEqualityParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $backupEqualityDesktop = Join-Path $backupEqualityParent 'Desktop'
+  $postRestoreEqualityParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $postRestoreEqualityDesktop = Join-Path $postRestoreEqualityParent 'Desktop'
+  $recoveryProofParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $recoveryProofDesktop = Join-Path $recoveryProofParent 'Desktop'
+  $finalEqualityParent = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+  $finalEqualityDesktop = Join-Path $finalEqualityParent 'Desktop'
+  Invoke-SupervisorAttributedOperation `
+    -Scenario 'HKCU_BASELINE_RESTORE' `
+    -Phase 'FIXTURE_SETUP' `
+    -Callsite 'HKCU_BASELINE_STATE' `
+    -Field 'REGISTRY_PATH' `
+    -Action {
+      try {
+        Test-HkcuFixtureNativeNoneValueReadRegression `
+          $noneTypePath $noneLengthPath $noneBytePath
+        Test-SupervisorFixtureRegistryDigestAttributionRegression $digestAttributionPath
+        Test-HkcuFixtureDigestFailureAttributionRegression `
+          $initializeInvalidDesktop `
+          $backupEqualityDesktop `
+          $postRestoreEqualityDesktop `
+          $recoveryProofDesktop `
+          $finalEqualityDesktop
+        Set-HkcuFixtureBoundaryValueKinds $presentDesktop
+        $presentDigest = Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'BASELINE_DIGEST' `
+          -Field 'REGISTRY_ROOT' `
+          -Action {
+            $digest = Get-HkcuFixtureRegistryDigest $presentDesktop
+            Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
+            $digest
+          }
+        $presentBoundary = New-HkcuDesktopFixtureBoundaryState $presentDesktop
+        Initialize-HkcuDesktopFixtureBoundary $presentBoundary
+        Assert-True ($presentBoundary.BaselinePresent -and
+            $presentBoundary.Relocated -and
+            !(Test-Path -LiteralPath $presentDesktop) -and
+            (Test-Path -LiteralPath $presentBoundary.BackupPath)) `
+          (Get-HkcuFixtureBoundaryDiagnostic)
+        Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'BASELINE_DIGEST' `
+          -Field 'REGISTRY_ROOT' `
+          -Action {
+            Assert-HkcuDesktopFixtureOperation (
+              (Get-HkcuFixtureRegistryDigest $presentBoundary.BackupPath) -ceq
+                $presentDigest
+            )
+          }
+        [void](New-Item -Path $presentDesktop -Force -ErrorAction Stop)
+        $presentFixtureOwned = $true
+        $presentWritableKey = $null
+        try {
+          $presentWritableKey = Open-HkcuSupervisorFixtureWritableSubKey $presentDesktop
+          $presentWritableKey.SetValue(
+            'installed',
+            [int]1,
+            [Microsoft.Win32.RegistryValueKind]::DWord
+          )
+        } finally {
+          if ($null -ne $presentWritableKey) { $presentWritableKey.Dispose() }
+        }
+        Restore-HkcuDesktopFixtureBoundary $presentBoundary $presentFixtureOwned
+        Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'FINAL_BASELINE_DIGEST' `
+          -Field 'REGISTRY_ROOT' `
+          -Action {
+            Assert-HkcuDesktopFixtureOperation (
+              (Get-HkcuFixtureRegistryDigest $presentDesktop) -ceq $presentDigest
+            )
+          }
+        Assert-True (!(Test-Path -LiteralPath $presentBoundary.BackupPath)) `
+          (Get-HkcuFixtureBoundaryDiagnostic)
+        Assert-HkcuFixtureBoundaryValueKinds $presentDesktop
+        Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'FINAL_BASELINE_DIGEST' `
+          -Field 'REGISTRY_ROOT' `
+          -Action {
+            Assert-HkcuDesktopFixtureOperation (
+              (Get-HkcuFixtureRegistryDigest $presentDesktop) -ceq $presentDigest
+            )
+          }
+
+        [void](New-Item -Path $absentParent -Force -ErrorAction Stop)
+        $absentBoundary = New-HkcuDesktopFixtureBoundaryState $absentDesktop
+        Initialize-HkcuDesktopFixtureBoundary $absentBoundary
+        Assert-True (!$absentBoundary.BaselinePresent -and
+            [string]::IsNullOrWhiteSpace([string]$absentBoundary.BackupPath)) `
+          (Get-HkcuFixtureBoundaryDiagnostic)
+        [void](New-Item -Path $absentDesktop -Force -ErrorAction Stop)
+        Restore-HkcuDesktopFixtureBoundary $absentBoundary $true
+        Assert-True (!(Test-Path -LiteralPath $absentDesktop)) `
+          (Get-HkcuFixtureBoundaryDiagnostic)
+
+        [void](New-Item -Path $absentForeignParent -Force -ErrorAction Stop)
+        $absentForeignBoundary =
+          New-HkcuDesktopFixtureBoundaryState $absentForeignDesktop
+        Initialize-HkcuDesktopFixtureBoundary $absentForeignBoundary
+        Assert-True (!$absentForeignBoundary.BaselinePresent) `
+          (Get-HkcuFixtureBoundaryDiagnostic)
+        [void](New-Item -Path $absentForeignDesktop -Force -ErrorAction Stop)
+        $absentForeignWritableKey = $null
+        try {
+          $absentForeignWritableKey =
+            Open-HkcuSupervisorFixtureWritableSubKey $absentForeignDesktop
+          $absentForeignWritableKey.SetValue(
+            'foreign',
+            'preserve',
+            [Microsoft.Win32.RegistryValueKind]::String
+          )
+        } finally {
+          if ($null -ne $absentForeignWritableKey) {
+            $absentForeignWritableKey.Dispose()
+          }
+        }
+        $expectedOwnershipFailure = Get-SanitizedSupervisorInvocationDiagnostic `
+          'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+          'HKCU_BASELINE_RESTORE' `
+          'FIXTURE_SETUP' `
+          'TARGET_OWNERSHIP' `
+          'REGISTRY_PATH'
+        try {
+          Restore-HkcuDesktopFixtureBoundary $absentForeignBoundary $false
+          Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
+        } catch {
+          Assert-True ([string]$_.Exception.Message -ceq $expectedOwnershipFailure) `
+            (Get-HkcuFixtureBoundaryDiagnostic)
+        }
+        $absentForeignKey = Get-Item -LiteralPath $absentForeignDesktop -ErrorAction Stop
+        Assert-True ((Test-Path -LiteralPath $absentForeignDesktop) -and
+            [string]($absentForeignKey.GetValue('foreign')) -ceq 'preserve') `
+          (Get-HkcuFixtureBoundaryDiagnostic)
+
+        Set-HkcuFixtureBoundaryValueKinds $failureDesktop
+        $failureBoundary = New-HkcuDesktopFixtureBoundaryState $failureDesktop
+        Initialize-HkcuDesktopFixtureBoundary $failureBoundary
+        [void](New-Item -Path $failureDesktop -Force -ErrorAction Stop)
+        $expectedFailure = Get-SanitizedSupervisorInvocationDiagnostic `
+          'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+          'HKCU_BASELINE_RESTORE' `
+          'FIXTURE_SETUP' `
+          'TARGET_OWNERSHIP' `
+          'REGISTRY_PATH'
+        try {
+          Restore-HkcuDesktopFixtureBoundary $failureBoundary $false
+          Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
+        } catch {
+          Assert-True ([string]$_.Exception.Message -ceq $expectedFailure) `
+            (Get-HkcuFixtureBoundaryDiagnostic)
+        }
+        Assert-True ((Test-Path -LiteralPath $failureBoundary.BackupPath) -and
+            (Test-Path -LiteralPath $failureDesktop)) `
+          (Get-HkcuFixtureBoundaryDiagnostic)
+
+        Set-HkcuFixtureBoundaryValueKinds $recoveryCollisionDesktop
+        $recoveryCollisionDigest = Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'BASELINE_DIGEST' `
+          -Field 'REGISTRY_ROOT' `
+          -Action {
+            $digest = Get-HkcuFixtureRegistryDigest $recoveryCollisionDesktop
+            Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
+            $digest
+          }
+        $recoveryCollisionBoundary =
+          New-HkcuDesktopFixtureBoundaryState $recoveryCollisionDesktop
+        Initialize-HkcuDesktopFixtureBoundary $recoveryCollisionBoundary
+        $recoveryCollisionBoundary.ForcePostRestoreDigestMismatch = $true
+        $recoveryCollisionBoundary.ForceRecoveryBackupCollision = $true
+        $expectedRecoveryCollision = Get-SanitizedSupervisorInvocationDiagnostic `
+          'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+          'HKCU_BASELINE_RESTORE' `
+          'FIXTURE_SETUP' `
+          'RECOVERY_RELOCATE' `
+          'REGISTRY_PATH'
+        try {
+          Restore-HkcuDesktopFixtureBoundary $recoveryCollisionBoundary $false
+          Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
+        } catch {
+          Assert-True ([string]$_.Exception.Message -ceq $expectedRecoveryCollision) `
+            (Get-HkcuFixtureBoundaryDiagnostic)
+        }
+        Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'FINAL_BASELINE_DIGEST' `
+          -Field 'REGISTRY_ROOT' `
+          -Action {
+            Assert-HkcuDesktopFixtureOperation (
+              (Test-Path -LiteralPath $recoveryCollisionDesktop) -and
+                (Get-HkcuFixtureRegistryDigest $recoveryCollisionDesktop) -ceq
+                  $recoveryCollisionDigest
+            )
+          }
+
+        Set-HkcuFixtureBoundaryValueKinds $recoveryRenameFailureDesktop
+        $recoveryRenameFailureDigest = Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'BASELINE_DIGEST' `
+          -Field 'REGISTRY_ROOT' `
+          -Action {
+            $digest = Get-HkcuFixtureRegistryDigest $recoveryRenameFailureDesktop
+            Assert-HkcuDesktopFixtureOperation (Test-HkcuFixtureRegistryDigest $digest)
+            $digest
+          }
+        $recoveryRenameFailureBoundary =
+          New-HkcuDesktopFixtureBoundaryState $recoveryRenameFailureDesktop
+        Initialize-HkcuDesktopFixtureBoundary $recoveryRenameFailureBoundary
+        $recoveryRenameFailureBoundary.ForcePostRestoreDigestMismatch = $true
+        $recoveryRenameFailureBoundary.ForceRecoveryRenameFailure = $true
+        $expectedRecoveryRenameFailure = Get-SanitizedSupervisorInvocationDiagnostic `
+          'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+          'HKCU_BASELINE_RESTORE' `
+          'FIXTURE_SETUP' `
+          'RECOVERY_RELOCATE' `
+          'REGISTRY_PATH'
+        try {
+          Restore-HkcuDesktopFixtureBoundary $recoveryRenameFailureBoundary $false
+          Assert-True $false (Get-HkcuFixtureBoundaryDiagnostic)
+        } catch {
+          Assert-True ([string]$_.Exception.Message -ceq $expectedRecoveryRenameFailure) `
+            (Get-HkcuFixtureBoundaryDiagnostic)
+        }
+        Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'FINAL_BASELINE_DIGEST' `
+          -Field 'REGISTRY_ROOT' `
+          -Action {
+            Assert-HkcuDesktopFixtureOperation (
+              (Test-Path -LiteralPath $recoveryRenameFailureDesktop) -and
+                (Get-HkcuFixtureRegistryDigest $recoveryRenameFailureDesktop) -ceq
+                  $recoveryRenameFailureDigest
+            )
+          }
+        Invoke-HkcuDesktopFixtureOperation `
+          -Callsite 'FINAL_BACKUP_ABSENCE' `
+          -Field 'REGISTRY_PATH' `
+          -Action {
+            Assert-True (!(Test-Path -LiteralPath $recoveryRenameFailureBoundary.BackupPath)) `
+              (Get-HkcuFixtureBoundaryDiagnostic)
+          }
+      } finally {
+        foreach ($path in @(
+            $parent,
+            $absentParent,
+            $absentForeignParent,
+            $failureParent,
+            $recoveryCollisionParent,
+            $recoveryRenameFailureParent,
+            $noneTypePath,
+            $noneLengthPath,
+            $noneBytePath,
+            $digestAttributionPath,
+            $initializeInvalidParent,
+            $backupEqualityParent,
+            $postRestoreEqualityParent,
+            $recoveryProofParent,
+            $finalEqualityParent
+          )) {
+          if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+          }
+        }
+      }
+    }
+}
+
 function Test-HkcuInstalledValueOwnership {
   $desktopKey = 'Registry::HKEY_CURRENT_USER\Software\ProPR\Desktop'
   $installedName = 'installed'
   $sentinelInstalled = 'pre-existing-installed'
   $sentinelUnrelated = 'preserve-unrelated'
-  Assert-True (!(Test-Path -LiteralPath $desktopKey)) `
-    'HKCU installed-value fixture baseline was not clean'
 
   function New-HkcuManifest(
     [bool]$BaselineKeyExisted,
@@ -2160,18 +6843,30 @@ function Test-HkcuInstalledValueOwnership {
     return [PSCustomObject]@{ RunId = $runId; Path = $path }
   }
 
+  Test-HkcuDesktopFixtureBoundaryRegression
+  $hkcuBoundary = New-HkcuDesktopFixtureBoundaryState $desktopKey
+  $desktopKeyFixtureOwned = $false
   try {
+    Initialize-HkcuDesktopFixtureBoundary $hkcuBoundary
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_BASELINE_RESTORE' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, $sentinelInstalled, [Microsoft.Win32.RegistryValueKind]::String)
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      'Unrelated', $sentinelUnrelated, [Microsoft.Win32.RegistryValueKind]::String)
+    $desktopKeyFixtureOwned = $true
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value $sentinelInstalled -PropertyType String -Force -ErrorAction Stop)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name 'Unrelated' `
+      -Value $sentinelUnrelated -PropertyType String -Force -ErrorAction Stop)
     $baselineData = [Convert]::ToBase64String(
       [Text.Encoding]::UTF8.GetBytes($sentinelInstalled))
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value ([int]1) -PropertyType DWord -Force -ErrorAction Stop)
     $restoreManifest = New-HkcuManifest $true $true 'String' $baselineData $false
-    $restore = Invoke-WorkflowCleanupController $restoreManifest.Path $restoreManifest.RunId ''
+    $restore = Invoke-WorkflowCleanupController `
+      'HKCU_BASELINE_RESTORE' $restoreManifest.Path $restoreManifest.RunId ''
     Assert-True ($restore.ExitCode -eq 0 -and
         $restore.ControllerStatus -ceq 'EMPTY_OR_CLEANED') `
       'pre-existing HKCU installed value restoration did not complete'
@@ -2182,10 +6877,16 @@ function Test-HkcuInstalledValueOwnership {
     Assert-True ([string]$restoredKey.GetValue('Unrelated') -ceq $sentinelUnrelated) `
       'unrelated HKCU value was changed during baseline restoration'
 
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_PENDING_RECEIPT' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     $unchangedManifest = New-HkcuManifest `
       $true $true 'String' $baselineData $false $false $true
     $unchanged = Invoke-WorkflowCleanupController `
-      $unchangedManifest.Path $unchangedManifest.RunId ''
+      'HKCU_PENDING_RECEIPT' $unchangedManifest.Path $unchangedManifest.RunId ''
     Assert-True ($unchanged.ExitCode -eq 21 -and
         $unchanged.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
       'path-only pending MSI receipt was not rejected before uninstall'
@@ -2197,14 +6898,23 @@ function Test-HkcuInstalledValueOwnership {
       'rejected pending MSI receipt discarded authenticated recovery authority'
     Remove-Item -LiteralPath $unchangedManifest.Path -Force -ErrorAction Stop
 
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_NONEMPTY' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
+    $desktopKeyFixtureOwned = $false
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      'Unrelated', $sentinelUnrelated, [Microsoft.Win32.RegistryValueKind]::String)
+    $desktopKeyFixtureOwned = $true
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value ([int]1) -PropertyType DWord -Force -ErrorAction Stop)
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name 'Unrelated' `
+      -Value $sentinelUnrelated -PropertyType String -Force -ErrorAction Stop)
     $nonemptyManifest = New-HkcuManifest $false $false $null $null $true
-    $nonempty = Invoke-WorkflowCleanupController $nonemptyManifest.Path $nonemptyManifest.RunId ''
+    $nonempty = Invoke-WorkflowCleanupController `
+      'HKCU_NONEMPTY' $nonemptyManifest.Path $nonemptyManifest.RunId ''
     Assert-True ($nonempty.ExitCode -eq 0) `
       'run-owned HKCU value cleanup with unrelated values failed'
     $nonemptyKey = Get-Item -LiteralPath $desktopKey -ErrorAction Stop
@@ -2212,21 +6922,38 @@ function Test-HkcuInstalledValueOwnership {
         [string]$nonemptyKey.GetValue('Unrelated') -ceq $sentinelUnrelated) `
       'run-owned HKCU cleanup removed its nonempty key or unrelated value'
 
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_EMPTY' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
+    $desktopKeyFixtureOwned = $false
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $desktopKeyFixtureOwned = $true
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value ([int]1) -PropertyType DWord -Force -ErrorAction Stop)
     $emptyManifest = New-HkcuManifest $false $false $null $null $true
-    $empty = Invoke-WorkflowCleanupController $emptyManifest.Path $emptyManifest.RunId ''
+    $empty = Invoke-WorkflowCleanupController `
+      'HKCU_EMPTY' $emptyManifest.Path $emptyManifest.RunId ''
     Assert-True ($empty.ExitCode -eq 0 -and !(Test-Path -LiteralPath $desktopKey)) `
       'run-created empty HKCU key was not removed'
+    $desktopKeyFixtureOwned = $false
 
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_CONFLICT' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, 'foreign-conflict', [Microsoft.Win32.RegistryValueKind]::String)
+    $desktopKeyFixtureOwned = $true
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value 'foreign-conflict' -PropertyType String -Force -ErrorAction Stop)
     $conflictManifest = New-HkcuManifest $false $false $null $null $true
     $conflict = Invoke-WorkflowCleanupController `
-      $conflictManifest.Path $conflictManifest.RunId ''
+      'HKCU_CONFLICT' $conflictManifest.Path $conflictManifest.RunId ''
     Assert-True ($conflict.ExitCode -eq 21 -and
         $conflict.ReportedExitCode -eq 21 -and
         $conflict.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
@@ -2238,13 +6965,21 @@ function Test-HkcuInstalledValueOwnership {
       'conflicting HKCU cleanup discarded authenticated recovery authority'
     Remove-Item -LiteralPath $conflictManifest.Path -Force -ErrorAction Stop
 
+    Set-SupervisorInvocationContext `
+      'HKCU_INSTALLED_VALUE_OWNERSHIP' `
+      'HKCU_PROVISIONAL' `
+      'FIXTURE_SETUP' `
+      'HKCU_BASELINE_STATE' `
+      'REGISTRY_PATH'
     Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction Stop
+    $desktopKeyFixtureOwned = $false
     [void](New-Item -Path $desktopKey -Force -ErrorAction Stop)
-    (Get-Item -LiteralPath $desktopKey).SetValue(
-      $installedName, [int]1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $desktopKeyFixtureOwned = $true
+    [void](New-ItemProperty -LiteralPath $desktopKey -Name $installedName `
+      -Value ([int]1) -PropertyType DWord -Force -ErrorAction Stop)
     $provisionalManifest = New-HkcuManifest $false $false $null $null $true $true
     $provisional = Invoke-WorkflowCleanupController `
-      $provisionalManifest.Path $provisionalManifest.RunId ''
+      'HKCU_PROVISIONAL' $provisionalManifest.Path $provisionalManifest.RunId ''
     Assert-True ($provisional.ExitCode -eq 21 -and
         $provisional.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
       'provisional HKCU evidence authorized manual registry deletion'
@@ -2256,9 +6991,7 @@ function Test-HkcuInstalledValueOwnership {
       'provisional HKCU failure discarded authenticated recovery authority'
     Remove-Item -LiteralPath $provisionalManifest.Path -Force -ErrorAction Stop
   } finally {
-    if (Test-Path -LiteralPath $desktopKey) {
-      Remove-Item -LiteralPath $desktopKey -Recurse -Force -ErrorAction SilentlyContinue
-    }
+    Restore-HkcuDesktopFixtureBoundary $hkcuBoundary $desktopKeyFixtureOwned
   }
   Write-Host 'PROPR_WINDOWS_SUPERVISOR_OWNERSHIP:HKCU_INSTALLED_VALUE:PRESERVED'
   [Console]::Out.Flush()
@@ -2320,7 +7053,7 @@ function Test-ProvisionalUserMarkerOwnership {
     New-LocalUser -Name $positiveName -Password $password `
       -Description $positiveMarker -AccountNeverExpires -PasswordNeverExpires | Out-Null
     $positive = Invoke-WorkflowCleanupController `
-      $positiveManifest.Path $positiveManifest.RunId $testRoot
+      'USER_MARKER_OWNED' $positiveManifest.Path $positiveManifest.RunId $testRoot
     Assert-True ($positive.ExitCode -eq 0 -and
         $positive.Result -ceq 'COMPLETE') `
       'marker-bound provisional local-user recovery did not complete'
@@ -2333,7 +7066,8 @@ function Test-ProvisionalUserMarkerOwnership {
       -AccountNeverExpires -PasswordNeverExpires | Out-Null
     $replacementSid = (Get-LocalUser -Name $replacementName -ErrorAction Stop).SID.Value
     $replacement = Invoke-WorkflowCleanupController `
-      $replacementManifest.Path $replacementManifest.RunId $testRoot
+      'USER_MARKER_REPLACEMENT' $replacementManifest.Path `
+      $replacementManifest.RunId $testRoot
     Assert-True ($replacement.ExitCode -eq 21 -and
         $replacement.ControllerStatus -ceq 'OWNED_RESOURCE_CLEANUP_FAILURE') `
       'provisional username authorized replacement-account deletion'
@@ -2367,23 +7101,48 @@ Assert-True ($actualArchitecture -ceq $Architecture) `
   "supervisor behavior tests expected $Architecture but are running on $actualArchitecture"
 
 Test-WorkflowCleanupBodyParserRegression
+Test-WorkflowCleanupWrapperParserRegression
 [void](New-Item -ItemType Directory -Path $testRoot -ErrorAction Stop)
 Initialize-TestInstaller
 try {
   Test-WorkflowCleanupStartupProtocol
-  Test-BootstrapTimeout
-  Test-WindowsPowerShellCleanupCompatibility
-  Test-OperationDeadlineAndTreeTermination
-  Test-NegativeWorkerExitFinalization
-  Test-FailClosedMarkers
-  Test-LiveCancellationAndRedaction
-  Test-MsiTransactionInterruptionGates
-  Test-PrimaryWorkerFallbackForeignDescendants
-  Test-PreExistingCleanupOwnership
-  Test-SmokePromotionInterruptionAuthority
-  Test-PreExistingAppPathsAuthority
-  Test-HkcuInstalledValueOwnership
-  Test-ProvisionalUserMarkerOwnership
+  Test-WorkflowCleanupProtocolStateMachine
+  Test-SupervisorInvocationAttributionTotality
+  Invoke-SupervisorAttributedTest 'BOOTSTRAP_TIMEOUT' { Test-BootstrapTimeout }
+  Invoke-SupervisorAttributedTest 'WINDOWS_POWERSHELL_CLEANUP_COMPATIBILITY' {
+    Test-WindowsPowerShellCleanupCompatibility
+  }
+  Invoke-SupervisorAttributedTest 'OPERATION_DEADLINE_AND_TREE_TERMINATION' {
+    Test-OperationDeadlineAndTreeTermination
+  }
+  Invoke-SupervisorAttributedTest 'NEGATIVE_WORKER_EXIT_FINALIZATION' {
+    Test-NegativeWorkerExitFinalization
+  }
+  Invoke-SupervisorAttributedTest 'FAIL_CLOSED_MARKERS' { Test-FailClosedMarkers }
+  Invoke-SupervisorAttributedTest 'LIVE_CANCELLATION_AND_REDACTION' {
+    Test-LiveCancellationAndRedaction
+  }
+  Invoke-SupervisorAttributedTest 'MSI_TRANSACTION_INTERRUPTION_GATES' {
+    Test-MsiTransactionInterruptionGates
+  }
+  Invoke-SupervisorAttributedTest 'PRIMARY_WORKER_FALLBACK_FOREIGN_DESCENDANTS' {
+    Test-PrimaryWorkerFallbackForeignDescendants
+  }
+  Invoke-SupervisorAttributedTest 'PRE_EXISTING_CLEANUP_OWNERSHIP' {
+    Test-PreExistingCleanupOwnership
+  }
+  Invoke-SupervisorAttributedTest 'SMOKE_PROMOTION_INTERRUPTION_AUTHORITY' {
+    Test-SmokePromotionInterruptionAuthority
+  }
+  Invoke-SupervisorAttributedTest 'PRE_EXISTING_APP_PATHS_AUTHORITY' {
+    Test-PreExistingAppPathsAuthority
+  }
+  Invoke-SupervisorAttributedTest 'HKCU_INSTALLED_VALUE_OWNERSHIP' {
+    Test-HkcuInstalledValueOwnership
+  }
+  Invoke-SupervisorAttributedTest 'PROVISIONAL_USER_MARKER_OWNERSHIP' {
+    Test-ProvisionalUserMarkerOwnership
+  }
   Write-Host "PROPR_WINDOWS_SUPERVISOR_TESTS:${Architecture}:PASSED"
   [Console]::Out.Flush()
 } finally {

@@ -102,8 +102,17 @@ jobs:
         if: matrix.platform == 'win32'
         shell: pwsh
         run: |
-          & apps/desktop/scripts/test-installed-windows-app-supervisor.ps1 `
-            -Architecture '${{ matrix.arch }}'
+          $supervisorHost = (Get-Process -Id $PID -ErrorAction Stop).Path
+          & $supervisorHost -NoLogo -NoProfile -NonInteractive `
+            -File apps/desktop/scripts/test-installed-windows-app-supervisor.ps1 `
+            -Architecture '${{ matrix.arch }}' 6>&1 |
+            Tee-Object -Variable supervisorOutput
+          $supervisorExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+          if ($supervisorExitCode -ne 0) { exit $supervisorExitCode }
+          $supervisorLines = @($supervisorOutput | ForEach-Object { [string]$_ })
+          if ($supervisorLines -notcontains 'PROPR_WINDOWS_SUPERVISOR_TESTS:${{ matrix.arch }}:PASSED') {
+            throw 'installed-app supervisor final success marker was not observed'
+          }
 
       - name: Audit committed dependency resolution
         shell: bash
@@ -450,8 +459,17 @@ jobs:
         if: matrix.platform == 'win32'
         shell: pwsh
         run: |
-          & apps/desktop/scripts/test-installed-windows-app-supervisor.ps1 `
-            -Architecture '${{ matrix.arch }}'
+          $supervisorHost = (Get-Process -Id $PID -ErrorAction Stop).Path
+          & $supervisorHost -NoLogo -NoProfile -NonInteractive `
+            -File apps/desktop/scripts/test-installed-windows-app-supervisor.ps1 `
+            -Architecture '${{ matrix.arch }}' 6>&1 |
+            Tee-Object -Variable supervisorOutput
+          $supervisorExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+          if ($supervisorExitCode -ne 0) { exit $supervisorExitCode }
+          $supervisorLines = @($supervisorOutput | ForEach-Object { [string]$_ })
+          if ($supervisorLines -notcontains 'PROPR_WINDOWS_SUPERVISOR_TESTS:${{ matrix.arch }}:PASSED') {
+            throw 'installed-app supervisor final success marker was not observed'
+          }
 
       - name: Audit committed dependency resolution
         shell: bash
