@@ -1,12 +1,9 @@
 #!/usr/bin/env node
 
-import { X509Certificate } from 'node:crypto';
-import { lstat, readFile, readdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { runBoundedProcess } from './run-bounded-darwin-command.mjs';
 import {
-  DARWIN_SIGNING_DIAGNOSTICS,
   DarwinSigningDiagnosticError,
   darwinSigningDiagnosticLine,
 } from './sign-darwin-packaged-connect.mjs';
@@ -17,121 +14,133 @@ const VERIFICATION_TIMEOUT_MS = 20_000;
 const VERIFICATION_TERMINATION_GRACE_MS = 1_000;
 const VERIFICATION_MAX_OUTPUT_BYTES = 256 * 1024;
 
-const runVerificationCommand = (runCommand, executable, arguments_) => runCommand({
-  executable,
-  arguments: arguments_,
-  timeoutMs: VERIFICATION_TIMEOUT_MS,
-  terminationGraceMs: VERIFICATION_TERMINATION_GRACE_MS,
-  maxOutputBytes: VERIFICATION_MAX_OUTPUT_BYTES,
-  forwardOutput: false,
+export const DARWIN_VERIFICATION_DIAGNOSTICS = Object.freeze({
+  signatureDisplayFailure: 'SIGNATURE_DISPLAY_FAILURE',
+  expectedRequirementFailure: 'EXPECTED_REQUIREMENT_FAILURE',
+  embeddedRequirementFailure: 'EMBEDDED_REQUIREMENT_FAILURE',
+  strictVerifyFailure: 'STRICT_VERIFY_FAILURE',
+  evidenceAssertionFailure: 'EVIDENCE_ASSERTION_FAILURE',
 });
 
-const normalizeLines = value => value.replace(/\r\n?/gu, '\n').split('\n');
-
-const missingCertificateEvidence = cause => new DarwinSigningDiagnosticError(
-  DARWIN_SIGNING_DIAGNOSTICS.missingIdentityOrChain,
+const verificationFailure = (diagnostic, cause) => new DarwinSigningDiagnosticError(
+  diagnostic,
   cause,
 );
 
-export const readExtractedCertificateFingerprints = async ({
-  certificateDirectory,
-  certificatePrefix,
-}) => {
+const runVerificationCommand = async (runCommand, arguments_, diagnostic) => {
   try {
-    const prefixName = basename(certificatePrefix);
-    const expectedCertificateName = `${prefixName}0`;
-    const expectedCertificatePath = join(certificateDirectory, expectedCertificateName);
-    const entries = (await readdir(certificateDirectory, { withFileTypes: true }))
-      .filter(entry => entry.name.startsWith(prefixName));
-    if (entries.length !== 1
-      || entries[0].name !== expectedCertificateName
-      || !entries[0].isFile()) {
-      throw missingCertificateEvidence();
-    }
+    return await runCommand({
+      executable: '/usr/bin/codesign',
+      arguments: arguments_,
+      timeoutMs: VERIFICATION_TIMEOUT_MS,
+      terminationGraceMs: VERIFICATION_TERMINATION_GRACE_MS,
+      maxOutputBytes: VERIFICATION_MAX_OUTPUT_BYTES,
+      forwardOutput: false,
+    });
+  } catch (cause) {
+    throw verificationFailure(diagnostic, cause);
+  }
+};
 
-    const certificateFile = await lstat(expectedCertificatePath);
-    if (!certificateFile.isFile()) throw missingCertificateEvidence();
-    const certificateBytes = await readFile(expectedCertificatePath);
-    const leafCertificate = new X509Certificate(certificateBytes);
-    return [leafCertificate.fingerprint.replaceAll(':', '').toUpperCase()];
-  } catch (error) {
-    if (error instanceof DarwinSigningDiagnosticError) throw error;
-    throw missingCertificateEvidence(error);
+const normalizeLines = value => value.replace(/\r\n?/gu, '\n').split('\n');
+
+const expectedRequirementsFor = expectedCertificateSha1 => {
+  try {
+    const expectedSha1 = expectedCertificateSha1.toUpperCase();
+    if (!SHA1_PATTERN.test(expectedSha1)) throw new Error('invalid-certificate-fingerprint');
+    const expression = `identifier "${REQUIRED_IDENTIFIER}" and certificate leaf = H"${expectedSha1}"`;
+    return {
+      expectedSha1,
+      expression,
+    };
+  } catch (cause) {
+    throw verificationFailure(
+      DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure,
+      cause,
+    );
   }
 };
 
 export const assertDarwinSigningEvidence = ({
   expectedCertificateSha1,
-  certificateFingerprints,
   signatureDetails,
   designatedRequirement,
   previousDesignatedRequirement,
 }) => {
-  const expectedSha1 = expectedCertificateSha1.toUpperCase();
-  if (!SHA1_PATTERN.test(expectedSha1)) throw new Error('invalid-certificate-fingerprint');
+  try {
+    const expected = expectedRequirementsFor(expectedCertificateSha1);
+    const details = normalizeLines(signatureDetails).map(line => line.trim());
+    const identifiers = details.filter(line => line.startsWith('Identifier='));
+    if (details.includes('Signature=adhoc')
+      || identifiers.length !== 1
+      || identifiers[0] !== `Identifier=${REQUIRED_IDENTIFIER}`) {
+      throw new Error('invalid-signature-display-evidence');
+    }
 
-  const details = normalizeLines(signatureDetails).map(line => line.trim());
-  if (details.includes('Signature=adhoc')) {
-    throw new DarwinSigningDiagnosticError(DARWIN_SIGNING_DIAGNOSTICS.codesignFailure);
+    const requirements = normalizeLines(designatedRequirement)
+      .filter(line => line.startsWith('designated =>'));
+    const requirementMatch = requirements.length === 1
+      ? requirements[0].match(
+        /^designated => identifier "dev\.propr\.desktop" and certificate leaf = H"([A-Fa-f0-9]{40})"$/u,
+      )
+      : null;
+    if (!requirementMatch || requirementMatch[1].toUpperCase() !== expected.expectedSha1) {
+      throw new Error('invalid-embedded-requirement-evidence');
+    }
+    if (previousDesignatedRequirement !== undefined
+      && previousDesignatedRequirement !== `${requirements[0]}\n`) {
+      throw new Error('unstable-embedded-requirement-evidence');
+    }
+    return requirements[0];
+  } catch (cause) {
+    if (cause instanceof DarwinSigningDiagnosticError
+      && cause.diagnostic === DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure) {
+      throw cause;
+    }
+    throw verificationFailure(
+      DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure,
+      cause,
+    );
   }
-  if (!Array.isArray(certificateFingerprints)
-    || certificateFingerprints.length !== 1
-    || certificateFingerprints[0] !== expectedSha1) {
-    throw missingCertificateEvidence();
-  }
-  if (!details.includes(`Identifier=${REQUIRED_IDENTIFIER}`)) {
-    throw new DarwinSigningDiagnosticError(DARWIN_SIGNING_DIAGNOSTICS.codesignFailure);
-  }
-
-  const requirements = normalizeLines(designatedRequirement)
-    .filter(line => line.startsWith('designated =>'));
-  if (requirements.length !== 1
-    || !requirements[0].includes(`identifier "${REQUIRED_IDENTIFIER}"`)
-    || !requirements[0].toUpperCase().includes(`CERTIFICATE LEAF = H"${expectedSha1}"`)) {
-    throw new DarwinSigningDiagnosticError(DARWIN_SIGNING_DIAGNOSTICS.requirementsFailure);
-  }
-  if (previousDesignatedRequirement !== undefined
-    && requirements[0] !== previousDesignatedRequirement.trim()) {
-    throw new DarwinSigningDiagnosticError(DARWIN_SIGNING_DIAGNOSTICS.requirementsFailure);
-  }
-  return requirements[0];
 };
 
 export const inspectDarwinSigningEvidence = async ({
-  mode,
   application,
-  certificateDirectory,
+  expectedCertificateSha1,
   runCommand = runBoundedProcess,
 }) => {
-  const certificatePrefix = join(
-    certificateDirectory,
-    `codesign-${mode}-certificate-`,
+  const expected = expectedRequirementsFor(expectedCertificateSha1);
+  const signatureResult = await runVerificationCommand(
+    runCommand,
+    ['--display', '--verbose=4', application],
+    DARWIN_VERIFICATION_DIAGNOSTICS.signatureDisplayFailure,
   );
-  const signatureResult = await runVerificationCommand(runCommand, '/usr/bin/codesign', [
-    '--display', '--verbose=4', '--extract-certificates', certificatePrefix, application,
-  ]);
-  const signatureDetails = `${signatureResult.stdout}\n${signatureResult.stderr}`;
-  if (normalizeLines(signatureDetails).some(line => line.trim() === 'Signature=adhoc')) {
-    throw new DarwinSigningDiagnosticError(DARWIN_SIGNING_DIAGNOSTICS.codesignFailure);
-  }
-
-  const certificateFingerprints = await readExtractedCertificateFingerprints({
-    certificateDirectory,
-    certificatePrefix,
-  });
+  await runVerificationCommand(
+    runCommand,
+    ['--verify', '--test-requirement', `=${expected.expression}`, application],
+    DARWIN_VERIFICATION_DIAGNOSTICS.expectedRequirementFailure,
+  );
   const requirementResult = await runVerificationCommand(
     runCommand,
-    '/usr/bin/codesign',
     ['-d', '-r-', application],
+    DARWIN_VERIFICATION_DIAGNOSTICS.embeddedRequirementFailure,
   );
-  await runVerificationCommand(runCommand, '/usr/bin/codesign', [
-    '--verify', '--deep', '--strict', application,
-  ]);
-  return {
-    certificateFingerprints,
-    signatureDetails,
-    designatedRequirement: `${requirementResult.stdout}\n${requirementResult.stderr}`,
-  };
+  await runVerificationCommand(
+    runCommand,
+    ['--verify', '--deep', '--strict', application],
+    DARWIN_VERIFICATION_DIAGNOSTICS.strictVerifyFailure,
+  );
+  try {
+    return {
+      signatureDetails: `${signatureResult.stdout}\n${signatureResult.stderr}`,
+      designatedRequirement: `${requirementResult.stdout}\n${requirementResult.stderr}`,
+    };
+  } catch (cause) {
+    throw verificationFailure(
+      DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure,
+      cause,
+    );
+  }
 };
 
 export const verifyDarwinPackagedConnectSignature = async ({
@@ -139,15 +148,26 @@ export const verifyDarwinPackagedConnectSignature = async ({
   application,
   expectedCertificateSha1,
   proofPath,
+  runCommand = runBoundedProcess,
 }) => {
-  if (mode !== 'establish' && mode !== 'stable') throw new Error('invalid-verification-mode');
-  const previousDesignatedRequirement = mode === 'stable'
-    ? await readFile(proofPath, 'utf8')
-    : undefined;
+  if (mode !== 'establish' && mode !== 'stable') {
+    throw verificationFailure(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure);
+  }
+  let previousDesignatedRequirement;
+  if (mode === 'stable') {
+    try {
+      previousDesignatedRequirement = await readFile(proofPath, 'utf8');
+    } catch (cause) {
+      throw verificationFailure(
+        DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure,
+        cause,
+      );
+    }
+  }
   const evidence = await inspectDarwinSigningEvidence({
-    mode,
     application,
-    certificateDirectory: dirname(proofPath),
+    expectedCertificateSha1,
+    runCommand,
   });
   const requirement = assertDarwinSigningEvidence({
     expectedCertificateSha1,
@@ -155,7 +175,16 @@ export const verifyDarwinPackagedConnectSignature = async ({
     ...evidence,
   });
   if (mode === 'establish') {
-    await writeFile(proofPath, `${requirement}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    try {
+      await writeFile(proofPath, `${requirement}\n`, {
+        encoding: 'utf8', mode: 0o600, flag: 'wx',
+      });
+    } catch (cause) {
+      throw verificationFailure(
+        DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure,
+        cause,
+      );
+    }
   }
 };
 
@@ -165,7 +194,7 @@ if (isMain) {
   try {
     if (process.platform !== 'darwin'
       || !mode || !application || !expectedCertificateSha1 || !proofPath) {
-      throw new Error('invalid-invocation');
+      throw verificationFailure(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure);
     }
     await verifyDarwinPackagedConnectSignature({
       mode, application, expectedCertificateSha1, proofPath,

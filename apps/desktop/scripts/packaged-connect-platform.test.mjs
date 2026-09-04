@@ -78,10 +78,9 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinSigner, /'--keychain', keychain/u);
     assert.match(darwinSigner, /'--timestamp=none'/u);
     assert.match(darwinSigner, /'--preserve-metadata=identifier,entitlements,flags'/u);
-    assert.match(darwinVerifier, /'--extract-certificates', certificatePrefix/u);
-    assert.doesNotMatch(darwinVerifier, /--extract-certificates=/u);
-    assert.match(darwinVerifier, /new X509Certificate\(certificateBytes\)/u);
-    assert.match(darwinVerifier, /leafCertificate\.fingerprint\.replaceAll\(':', ''\)/u);
+    assert.match(darwinVerifier, /'--verify', '--test-requirement', `=\$\{expected\.expression\}`, application/u);
+    assert.match(darwinVerifier, /identifier "\$\{REQUIRED_IDENTIFIER\}" and certificate leaf = H"\$\{expectedSha1\}"/u);
+    assert.doesNotMatch(darwinVerifier, /extract-certificates|X509Certificate/u);
     assert.doesNotMatch(darwinVerifier, /Authority=/u);
     assert.doesNotMatch(darwinVerifier, /find-certificate/u);
     assert.doesNotMatch(darwinVerifier, /find-identity/u);
@@ -89,7 +88,7 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinSigner, /filter\(filePath => !PACKAGED_CONNECT_NATIVE_ARTIFACTS\.test\(filePath\)\)/u);
     assert.match(darwinSigner, /'--verify', '--deep', '--strict', application/u);
     assert.match(darwinVerifier, /'--verify', '--deep', '--strict', application/u);
-    assert.match(darwinVerifier, /certificateDirectory: dirname\(proofPath\)/u);
+    assert.match(darwinVerifier, /previousDesignatedRequirement !== `\$\{requirements\[0\]\}\\n`/u);
     const establish = darwinRunner.indexOf('node "$signature_verifier" establish');
     const smoke = darwinRunner.indexOf('npm run smoke:connect-package');
     const stable = darwinRunner.indexOf('node "$signature_verifier" stable');
@@ -164,6 +163,15 @@ describe('packaged Connect target-native credential setup', () => {
       'CODESIGN_FAILURE',
     ]) {
       assert.match(darwinSigner, new RegExp(`['"]${diagnostic}['"]`, 'u'));
+    }
+    for (const diagnostic of [
+      'SIGNATURE_DISPLAY_FAILURE',
+      'EXPECTED_REQUIREMENT_FAILURE',
+      'EMBEDDED_REQUIREMENT_FAILURE',
+      'STRICT_VERIFY_FAILURE',
+      'EVIDENCE_ASSERTION_FAILURE',
+    ]) {
+      assert.match(darwinVerifier, new RegExp(`['"]${diagnostic}['"]`, 'u'));
     }
     assert.match(darwinSigner, /DARWIN_PACKAGED_CONNECT_DIAGNOSTIC:\$\{classifyDarwinSigningFailure\(error\)\}/u);
     assert.doesNotMatch(darwinSigner, /process\.stderr\.write\([^\n]*(?:application|keychain|certificateSha1|stderr|stdout)/u);
