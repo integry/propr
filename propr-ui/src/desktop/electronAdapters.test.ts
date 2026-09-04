@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
-import type { DesktopBridge, DesktopProfile as StoredProfile } from '../../../apps/desktop/src/shared/contract';
+import type {
+  DesktopActivatedConnection,
+  DesktopBridge,
+  DesktopProfile as StoredProfile,
+} from '../../../apps/desktop/src/shared/contract';
 import { createElectronDesktopAdapters } from './electronAdapters';
 
 const desktopConnectionState = vi.hoisted(() => ({
@@ -32,7 +36,7 @@ const bridgeFixture = () => {
     version: '0.8.15',
     activationTicket: 'ticket-7',
   }));
-  const activate = vi.fn(async () => ({
+  const activate = vi.fn(async (): Promise<DesktopActivatedConnection> => ({
     status: 'ready' as const,
     profileId: storedProfile.id,
     transportScope: 'scope-7',
@@ -217,6 +221,30 @@ describe('Electron remote instance adapters', () => {
     expect(fixture.discard).toHaveBeenCalledWith({
       profileId: 'profile-2', transportScope: 'wrong-profile-scope',
     });
+  });
+
+  it('preserves the main-process replacement-policy reload marker', async () => {
+    const fixture = bridgeFixture();
+    fixture.activate.mockResolvedValueOnce({
+      status: 'ready',
+      profileId: storedProfile.id,
+      transportScope: 'scope-reload',
+      identityEpoch: 'R'.repeat(22),
+      rendererReloadRequired: true,
+    });
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+    const profile = (await adapters.profiles.list())[0];
+
+    const activated = await adapters.connection.activate?.(profile, {
+      status: 'ready', activationTicket: 'ticket-reload',
+    });
+
+    expect(activated).toEqual(expect.objectContaining({
+      status: 'ready',
+      transportScope: 'scope-reload',
+      rendererReloadRequired: true,
+    }));
+    expect(setDesktopConnectionScope).not.toHaveBeenCalled();
   });
 
   it('clears renderer storage after a successful same-origin profile switch', async () => {

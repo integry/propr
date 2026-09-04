@@ -142,6 +142,63 @@ describe('desktop IPC shutdown gate', () => {
     ]);
   });
 
+  it('schedules a replacement document before publishing a newly admitted renderer endpoint', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const ipcMain = {
+      handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+      removeHandler: (channel: string) => { handlers.delete(channel); },
+    } as unknown as IpcMain;
+    const profile = {
+      id: 'profile-loopback', label: 'Loopback', apiBaseUrl: 'http://127.42.7.9:43127',
+      createdAt: '2026-09-04T00:00:00.000Z', updatedAt: '2026-09-04T00:00:00.000Z',
+    };
+    let listCalls = 0;
+    const credentials = {
+      listProfiles: async () => ({
+        profiles: listCalls++ === 0 ? [] : [profile],
+        activeProfileId: listCalls === 1 ? null : profile.id,
+      }),
+      activate: async () => ({
+        status: 'ready', profileId: profile.id, transportScope: 'scope-loopback', identityEpoch: 'L'.repeat(22),
+      }),
+    } as unknown as DesktopCredentialService;
+    const admitted: string[] = [];
+    let reloads = 0;
+    registerIpcHandlers({
+      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+      ipcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      connectDiscovery,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession: { clearStorageData: async () => undefined } as unknown as Session,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+      admitRendererEndpoint: origin => {
+        admitted.push(origin);
+        return true;
+      },
+      scheduleRendererPolicyReload: () => { reloads += 1; },
+    });
+    const event = { senderFrame: { url: 'propr-renderer://app/index.html' } } as unknown as IpcMainInvokeEvent;
+
+    const activated = await Promise.resolve(
+      handlers.get(IPC_CHANNELS.connectionActivate)!(event, 'T'.repeat(43)),
+    );
+
+    assert.deepEqual(admitted, [profile.apiBaseUrl]);
+    assert.equal(reloads, 1);
+    assert.deepEqual(activated, {
+      status: 'ready',
+      profileId: profile.id,
+      transportScope: 'scope-loopback',
+      identityEpoch: 'L'.repeat(22),
+      rendererReloadRequired: true,
+    });
+  });
+
   it('rejects activation and discards its exact scope when origin storage clearing fails', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
     const ipcMain = {

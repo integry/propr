@@ -115,6 +115,9 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
         }
       });
       if (!isCurrentAttempt()) return;
+      // Main has already committed the active profile and schedules a reload.
+      // Do not publish an endpoint until the replacement document CSP is active.
+      if (result.status === 'ready' && result.rendererReloadRequired) return;
       setProfiles(current => mergeProfiles(current, [connectedProfile]));
       if (result.status !== 'ready') {
         setState({ phase: 'blocked', profile: connectedProfile, result });

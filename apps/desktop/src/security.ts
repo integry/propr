@@ -193,15 +193,83 @@ export const deepLinkFromArguments = (argv: readonly string[]): string | null =>
   return null;
 };
 
-export const rendererContentSecurityPolicy = (development = false): string => [
+const STATIC_RENDERER_CLEARTEXT_CONNECT_SOURCES = [
+  'http://localhost:*',
+  'http://*.localhost:*',
+  'http://127.0.0.1:*',
+  'http://[::1]:*',
+  'ws://localhost:*',
+  'ws://*.localhost:*',
+  'ws://127.0.0.1:*',
+  'ws://[::1]:*',
+] as const;
+
+const staticallyAllowedRendererLoopbackHostname = (hostname: string): boolean => {
+  const normalized = hostname.toLowerCase();
+  return normalized === 'localhost'
+    || normalized.endsWith('.localhost')
+    || normalized === '127.0.0.1'
+    || normalized === '[::1]';
+};
+
+const rendererEndpointOrigins = (apiBaseUrls: readonly string[]): Set<string> => {
+  const origins = new Set<string>();
+  for (const value of apiBaseUrls) {
+    const normalized = normalizeApiBaseUrl(value);
+    if (!normalized) continue;
+    const url = new URL(normalized);
+    if (url.protocol === 'http:' && isProprLoopbackHostname(url.hostname)) origins.add(normalized);
+  }
+  return origins;
+};
+
+const rendererProfileConnectSources = (apiBaseUrls: readonly string[]): string[] => {
+  const sources: string[] = [];
+  for (const origin of rendererEndpointOrigins(apiBaseUrls)) {
+    const url = new URL(origin);
+    if (staticallyAllowedRendererLoopbackHostname(url.hostname)) continue;
+    sources.push(origin, `ws://${url.host}`);
+  }
+  return sources.sort();
+};
+
+/** Match the generated connect-src boundary without relying on URL canonicalization aliases. */
+export const rendererCspAllowsConnectUrl = (
+  value: string,
+  apiBaseUrls: readonly string[] = [],
+): boolean => {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  if (parsed.username || parsed.password) return false;
+  if (parsed.protocol === 'https:' || parsed.protocol === 'wss:') return true;
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'ws:') return false;
+
+  const httpCandidate = parsed.protocol === 'ws:' ? `http:${value.slice('ws:'.length)}` : value;
+  const canonicalOrigin = canonicalProprHttpUrlOrigin(httpCandidate);
+  if (!canonicalOrigin) return false;
+  const canonicalUrl = new URL(canonicalOrigin);
+  if (staticallyAllowedRendererLoopbackHostname(canonicalUrl.hostname)) return true;
+  return rendererEndpointOrigins(apiBaseUrls).has(canonicalOrigin);
+};
+
+export const rendererContentSecurityPolicy = (
+  development = false,
+  apiBaseUrls: readonly string[] = [],
+): string => [
   "default-src 'self'",
   `script-src 'self'${development ? " 'unsafe-inline'" : ''}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  // Electron main applies the shared canonical origin rule before any request;
-  // scheme sources are required here because CSP cannot express IPv4 127/8.
-  "connect-src 'self' https: http: ws: wss:",
+  [
+    "connect-src 'self' https: wss:",
+    ...STATIC_RENDERER_CLEARTEXT_CONNECT_SOURCES,
+    ...rendererProfileConnectSources(apiBaseUrls),
+  ].join(' '),
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
@@ -214,4 +282,16 @@ export const applyDevelopmentRendererCsp = (html: string): string => {
     throw new Error('renderer.html is missing the packaged content security policy');
   }
   return html.replace(packagedPolicy, rendererContentSecurityPolicy(true));
+};
+
+/** Replace the build-time baseline with the policy prepared before packaged navigation. */
+export const applyPackagedRendererCsp = (
+  html: string,
+  apiBaseUrls: readonly string[],
+): string => {
+  const packagedPolicy = rendererContentSecurityPolicy();
+  if (!html.includes(packagedPolicy)) {
+    throw new Error('renderer.html is missing the packaged content security policy');
+  }
+  return html.replace(packagedPolicy, rendererContentSecurityPolicy(false, apiBaseUrls));
 };

@@ -30,6 +30,10 @@ interface RegisterIpcOptions {
   devServerUrl: string | undefined;
   packagedRendererUrl: string;
   openExternal(url: string): Promise<void>;
+  /** Extend the next packaged document policy after a validated activation. */
+  admitRendererEndpoint?(origin: string): boolean;
+  /** Reload after the activation response is delivered when its endpoint needs a new document policy. */
+  scheduleRendererPolicyReload?(): void;
   /** @internal Deterministic admitted-work accounting for lifecycle proof. */
   observeInvocation?(phase: 'entry' | 'exit', channel: string): void;
   /** @internal Fixed, secret-free packaged Connect acceptance evidence. */
@@ -165,6 +169,10 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
         .find(profile => profile.id === after.activeProfileId)?.apiBaseUrl;
       const origins = [previousOrigin, activatedOrigin].filter(origin => origin !== undefined);
       await clearDesktopInstanceCookies(options.desktopSession, origins);
+      if (activatedOrigin && options.admitRendererEndpoint?.(activatedOrigin)) {
+        options.scheduleRendererPolicyReload?.();
+        return { ...activated, rendererReloadRequired: true as const };
+      }
       return activated;
     } catch (error) {
       await options.credentials.discardActivation({

@@ -9,7 +9,7 @@ export interface DesktopProfile {
 }
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string; authentication?: string; activationTicket?: string; transportScope?: string; profileId?: string; identityEpoch?: string }
+  | { status: 'ready'; version?: string; authentication?: string; activationTicket?: string; transportScope?: string; profileId?: string; identityEpoch?: string; rendererReloadRequired?: true }
   | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };

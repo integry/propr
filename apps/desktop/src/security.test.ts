@@ -4,6 +4,7 @@ import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import {
   deepLinkFromArguments,
   applyDevelopmentRendererCsp,
+  applyPackagedRendererCsp,
   connectApiBaseUrlFromDeepLink,
   dashboardPathFromDeepLink,
   isSafeExternalUrl,
@@ -12,6 +13,7 @@ import {
   normalizeDesktopDashboardPath,
   normalizeDeepLink,
   rendererContentSecurityPolicy,
+  rendererCspAllowsConnectUrl,
   validatedDevServerUrl,
 } from './security';
 
@@ -245,7 +247,62 @@ describe('desktop URL security', () => {
     assert.match(policy, /frame-src 'none'/);
     assert.doesNotMatch(policy, /unsafe-eval/);
     assert.match(policy, /script-src 'self'(?:;|$)/);
-    assert.match(policy, /connect-src 'self' https: http: ws: wss:/);
+    assert.match(policy, /connect-src 'self' https: wss:/);
+    assert.doesNotMatch(policy, /(?:^|\s)http:(?:\s|;|$)/);
+    assert.doesNotMatch(policy, /(?:^|\s)ws:(?:\s|;|$)/);
+    assert.match(policy, /http:\/\/localhost:\*/);
+    assert.match(policy, /http:\/\/\*\.localhost:\*/);
+    assert.match(policy, /http:\/\/127\.0\.0\.1:\*/);
+    assert.match(policy, /http:\/\/\[::1\]:\*/);
+  });
+
+  it('limits cleartext renderer connections to canonical loopback policy sources', () => {
+    const configured = ['http://127.42.7.9:43127'];
+    for (const url of [
+      'http://localhost:4000/api/tasks',
+      'ws://localhost:4000/socket.io/',
+      'http://api.dev.localhost:5173/api/tasks',
+      'ws://api.dev.localhost:5173/socket.io/',
+      'http://127.0.0.1:65535/api/tasks',
+      'ws://127.0.0.1:65535/socket.io/',
+      'http://[::1]:4000/api/tasks',
+      'ws://[::1]:4000/socket.io/',
+      'http://127.42.7.9:43127/api/tasks',
+      'ws://127.42.7.9:43127/socket.io/',
+      'https://remote.example.test/api/tasks',
+      'wss://t-instance123.propr.dev/socket.io/',
+    ]) assert.equal(rendererCspAllowsConnectUrl(url, configured), true, url);
+
+    for (const url of [
+      'http://192.168.1.20:4000/api/tasks',
+      'ws://10.0.0.8:4000/socket.io/',
+      'http://example.test/api/tasks',
+      'ws://example.test/socket.io/',
+      'http://localhost.example.test:4000/api/tasks',
+      'http://localhost.:4000/api/tasks',
+      'ws://api.dev.localhost.:5173/socket.io/',
+      'ws://127.42.7.8:43127/socket.io/',
+      'http://127.1:4000/api/tasks',
+      'http://0177.0.0.1:4000/api/tasks',
+      'http://0x7f000001:4000/api/tasks',
+      'http://[::ffff:127.0.0.1]:4000/api/tasks',
+      'http://local%68ost:4000/api/tasks',
+    ]) assert.equal(rendererCspAllowsConnectUrl(url, configured), false, url);
+  });
+
+  it('injects exact non-default 127/8 HTTP and WebSocket sources into packaged HTML', () => {
+    const baseline = rendererContentSecurityPolicy();
+    const html = `<meta http-equiv="Content-Security-Policy" content="${baseline}">`;
+    const transformed = applyPackagedRendererCsp(html, [
+      'http://127.42.7.9:43127',
+      'http://192.168.1.20:4000',
+      'https://remote.example.test',
+    ]);
+
+    assert.match(transformed, /http:\/\/127\.42\.7\.9:43127/);
+    assert.match(transformed, /ws:\/\/127\.42\.7\.9:43127/);
+    assert.doesNotMatch(transformed, /192\.168\.1\.20/);
+    assert.doesNotMatch(transformed, /remote\.example\.test/);
   });
 
   it('relaxes inline scripts only while Vite serves the development renderer', () => {

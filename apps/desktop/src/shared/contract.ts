@@ -93,6 +93,8 @@ export interface DesktopConnectionScope {
 export interface DesktopActivatedConnection extends DesktopConnectionScope {
   status: 'ready';
   identityEpoch: string;
+  /** The main process committed a stricter replacement document policy and scheduled a reload. */
+  rendererReloadRequired?: true;
 }
 
 export interface DesktopAccessInvalidation extends DesktopConnectionScope {

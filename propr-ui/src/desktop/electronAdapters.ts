@@ -201,6 +201,7 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
         profileId: activated.profileId,
         transportScope: activated.transportScope,
         identityEpoch: activated.identityEpoch,
+        ...(activated.rendererReloadRequired ? { rendererReloadRequired: true as const } : {}),
       };
     },
     publishActivation(profile, result) {

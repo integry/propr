@@ -150,6 +150,29 @@ describe('DesktopExperience transport and fencing', () => {
     expect(apiMock.setApiBaseUrl).not.toHaveBeenCalled();
   });
 
+  it('does not publish renderer networking before a replacement document CSP reload', async () => {
+    const adapters = adaptersFor([localProfile], localProfile.id, async () => ({
+      status: 'ready', version: '0.8.15', activationTicket: 'ticket-loopback',
+    }));
+    adapters.connection.activate = vi.fn(async () => ({
+      status: 'ready' as const,
+      profileId: localProfile.id,
+      transportScope: 'scope-loopback',
+      identityEpoch: 'L'.repeat(22),
+      rendererReloadRequired: true as const,
+    }));
+    adapters.connection.publishActivation = vi.fn();
+
+    render(<DesktopExperience adapters={adapters}><div>Premature network app</div></DesktopExperience>);
+
+    await waitFor(() => expect(adapters.connection.activate).toHaveBeenCalledOnce());
+    expect(screen.getByRole('heading', { name: 'Connecting to This computer' })).toBeInTheDocument();
+    expect(screen.queryByText('Premature network app')).not.toBeInTheDocument();
+    expect(adapters.connection.publishActivation).not.toHaveBeenCalled();
+    expect(runtimeMock.setDesktopApiBaseUrl).not.toHaveBeenCalled();
+    expect(apiMock.setApiBaseUrl).not.toHaveBeenCalled();
+  });
+
   it('ignores a stale connection result after the adapters change', async () => {
     let resolveFirstProbe: ((result: DesktopConnectionResult) => void) | undefined;
     const firstProbe = vi.fn(() => new Promise<DesktopConnectionResult>(resolve => {

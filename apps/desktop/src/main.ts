@@ -35,12 +35,14 @@ import {
 } from './packaged-approval-session';
 import { createDesktopShutdownCoordinator } from './shutdown';
 import {
+  applyPackagedRendererCsp,
   deepLinkFromArguments,
   isSafeExternalUrl,
   isTrustedRendererUrl,
   normalizeApiBaseUrl,
   normalizeDeepLink,
   rendererContentSecurityPolicy,
+  rendererCspAllowsConnectUrl,
   validatedDevServerUrl,
 } from './security';
 import {
@@ -156,6 +158,23 @@ interface PackagedTransportSmoke {
 }
 let activePackagedTransportSmoke: PackagedTransportSmoke | null = null;
 let activePackagedConnectJourney = false;
+const rendererCspApiBaseUrls = new Set<string>();
+let loadedRendererCspApiBaseUrls = new Set<string>();
+
+const currentRendererContentSecurityPolicy = (): string => rendererContentSecurityPolicy(
+  !app.isPackaged,
+  [...rendererCspApiBaseUrls],
+);
+
+const admitRendererCspEndpoint = (origin: string): boolean => {
+  if (rendererCspAllowsConnectUrl(origin, [...loadedRendererCspApiBaseUrls])) return false;
+  const normalized = normalizeApiBaseUrl(origin);
+  if (!normalized || normalized !== origin || !rendererCspAllowsConnectUrl(origin, [origin])) {
+    throw new Error('Renderer CSP rejected an invalid profile endpoint');
+  }
+  rendererCspApiBaseUrls.add(origin);
+  return app.isPackaged;
+};
 
 interface PackagedConnectSmoke {
   configRoot: string;
@@ -353,7 +372,7 @@ const deliverDeepLink = (value: string): void => {
 };
 
 const configurePackagedRendererProtocol = (): (() => void) => {
-  protocol.handle(PACKAGED_RENDERER_SCHEME, request => {
+  protocol.handle(PACKAGED_RENDERER_SCHEME, async request => {
     const requestUrl = new URL(request.url);
     if (requestUrl.hostname !== PACKAGED_RENDERER_HOST) {
       return new Response(null, { status: 404 });
@@ -370,7 +389,18 @@ const configurePackagedRendererProtocol = (): (() => void) => {
     if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
       return new Response(null, { status: 403 });
     }
-    return net.fetch(pathToFileURL(filePath).href);
+    const response = await net.fetch(pathToFileURL(filePath).href);
+    if (requestedPath !== 'renderer.html' || !response.ok) return response;
+    const html = await response.text();
+    const transformed = applyPackagedRendererCsp(html, [...rendererCspApiBaseUrls]);
+    loadedRendererCspApiBaseUrls = new Set(rendererCspApiBaseUrls);
+    const headers = new Headers(response.headers);
+    headers.delete('content-length');
+    return new Response(transformed, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   });
   return () => { void protocol.unhandle(PACKAGED_RENDERER_SCHEME); };
 };
@@ -1164,6 +1194,8 @@ if (!hasSingleInstanceLock) {
       decrypt: value => safeStorage.decryptString(value),
     };
     const profiles = new ProfileStore(app.getPath('userData'), productionEncryption);
+    const initialProfiles = await profiles.list();
+    for (const profile of initialProfiles.profiles) rendererCspApiBaseUrls.add(profile.apiBaseUrl);
     const connectDiscovery = new DesktopConnectDiscoveryService(profiles, {
       supported: DESKTOP_CONNECT_DISCOVERY_PLATFORMS.has(process.platform),
       discover: async () => {
@@ -1213,7 +1245,7 @@ if (!hasSingleInstanceLock) {
         connectDiscovery.snapshotIdentityClaim(profileId, origin),
     });
     const sessionSecurity = configureDesktopSessionSecurity({
-      contentSecurityPolicy: () => rendererContentSecurityPolicy(!app.isPackaged),
+      contentSecurityPolicy: currentRendererContentSecurityPolicy,
       credentials,
       desktopSession: session.defaultSession,
       enableRendererNetworkBoundary: process.platform !== 'win32',
@@ -1247,6 +1279,13 @@ if (!hasSingleInstanceLock) {
       devServerUrl,
       packagedRendererUrl,
       openExternal: openAllowedExternalUrl,
+      admitRendererEndpoint: admitRendererCspEndpoint,
+      scheduleRendererPolicyReload: () => {
+        setTimeout(() => {
+          if (!mainWindow || mainWindow.isDestroyed()) return;
+          mainWindow.webContents.reload();
+        }, 0);
+      },
       ...(journeyStages ? {
         reportAcceptanceJourneyStage: (stage: DesktopAcceptanceJourneyStage) => {
           journeyStages.record(stage);
