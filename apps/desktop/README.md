@@ -49,7 +49,7 @@ code-signing certificate in an isolated default keychain and signs only that smo
 explicit certificate-bound designated requirement that is verified before the pair process and again after the
 reprobe process. Chromium creates and reopens its real Safe Storage key in the same disposable keychain; the harness
 does not pre-seed or widen access to that item. A signal-aware exit trap restores the runner's original keychain list
-and default, removes the temporary trust, deletes the keychain, and removes all generated certificate material.
+and default, deletes the disposable keychain, and removes all temporary signing material.
 
 The first-release Windows MVP packages only the normal desktop application. Native self-update installation authority
 is deferred to issue #2000: no broker, bootstrap, launcher, service, or authority custom action is built, copied into
