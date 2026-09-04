@@ -30,7 +30,7 @@ interface RegisterIpcOptions {
   devServerUrl: string | undefined;
   packagedRendererUrl: string;
   openExternal(url: string): Promise<void>;
-  onRendererEndpointActivated?(origin: string, renderer: WebContents): void;
+  onRendererActiveProfileChanged?(origin: string | null, renderer: WebContents): void;
   /** @internal Deterministic admitted-work accounting for lifecycle proof. */
   observeInvocation?(phase: 'entry' | 'exit', channel: string): void;
   /** @internal Fixed, secret-free packaged Connect acceptance evidence. */
@@ -113,6 +113,13 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       }
     });
   };
+  const reconcileRendererActiveProfile = async (event: IpcMainInvokeEvent): Promise<void> => {
+    if (!options.onRendererActiveProfileChanged) return;
+    const current = await options.credentials.listProfiles();
+    const activeOrigin = current.profiles
+      .find(profile => profile.id === current.activeProfileId)?.apiBaseUrl ?? null;
+    options.onRendererActiveProfileChanged(activeOrigin, event.sender);
+  };
 
   handle(IPC_CHANNELS.appMetadata, () => ({
     name: options.app.getName(),
@@ -128,20 +135,25 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   });
   handle(IPC_CHANNELS.storageSecurity, () => options.credentials.storageSecurity());
   handle(IPC_CHANNELS.profilesList, () => options.credentials.listProfiles());
-  handle(IPC_CHANNELS.profilesSave, (_event, input) => options.credentials.saveProfile(
-    input,
-    (previousOrigin, nextOrigin) => clearDesktopInstanceCookies(
-      options.desktopSession,
-      [previousOrigin, nextOrigin],
-    ),
-  ));
-  handle(IPC_CHANNELS.profilesRemove, async (_event, profileId) => {
+  handle(IPC_CHANNELS.profilesSave, async (event, input) => {
+    const profile = await options.credentials.saveProfile(
+      input,
+      (previousOrigin, nextOrigin) => clearDesktopInstanceCookies(
+        options.desktopSession,
+        [previousOrigin, nextOrigin],
+      ),
+    );
+    await reconcileRendererActiveProfile(event);
+    return profile;
+  });
+  handle(IPC_CHANNELS.profilesRemove, async (event, profileId) => {
     await options.credentials.removeProfile(
       profileId,
       origin => clearDesktopInstanceCookies(options.desktopSession, [origin]),
     );
+    await reconcileRendererActiveProfile(event);
   });
-  handle(IPC_CHANNELS.profilesSetActive, async (_event, profileId) => {
+  handle(IPC_CHANNELS.profilesSetActive, async (event, profileId) => {
     const current = await options.credentials.listProfiles();
     const previous = current.profiles.find(profile => profile.id === current.activeProfileId);
     const next = current.profiles.find(profile => profile.id === profileId);
@@ -151,6 +163,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       ...(next ? [next.apiBaseUrl] : []),
     ]);
     await options.credentials.setActiveProfile(profileId);
+    await reconcileRendererActiveProfile(event);
   });
   handle(IPC_CHANNELS.authenticationPair, (_event, profile) => options.credentials.pair(profile));
   handle(IPC_CHANNELS.authenticationCancel, (_event, profileId) => options.credentials.cancelPairing(profileId));
@@ -167,7 +180,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       const origins = [previousOrigin, activatedOrigin].filter(origin => origin !== undefined);
       await clearDesktopInstanceCookies(options.desktopSession, origins);
       if (!activatedOrigin) throw new Error('Desktop activation did not establish a renderer origin');
-      options.onRendererEndpointActivated?.(activatedOrigin, event.sender);
+      options.onRendererActiveProfileChanged?.(activatedOrigin, event.sender);
       return activated;
     } catch (error) {
       await options.credentials.discardActivation({

@@ -25,6 +25,8 @@ describe('desktop IPC shutdown gate', () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
     const cleared: Array<Parameters<Session['clearStorageData']>[0]> = [];
     let cleanupObservedBeforeSave = false;
+    const renderer = {};
+    let policyReconciliation: { origin: string | null; renderer: unknown } | null = null;
     const credentials = {
       saveProfile: async (
         input: { id: string; label: string; apiBaseUrl: string },
@@ -34,6 +36,13 @@ describe('desktop IPC shutdown gate', () => {
         cleanupObservedBeforeSave = cleared.length === 2;
         return input;
       },
+      listProfiles: async () => ({
+        profiles: [{
+          id: 'profile-a', label: 'A edited', apiBaseUrl: 'http://localhost:4100',
+          createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:01:00.000Z',
+        }],
+        activeProfileId: 'profile-a',
+      }),
     } as unknown as DesktopCredentialService;
     registerIpcHandlers({
       app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
@@ -52,24 +61,122 @@ describe('desktop IPC shutdown gate', () => {
       devServerUrl: undefined,
       packagedRendererUrl: 'propr-renderer://app/index.html',
       openExternal: async () => undefined,
+      onRendererActiveProfileChanged: (origin, changedRenderer) => {
+        policyReconciliation = { origin, renderer: changedRenderer };
+      },
     });
-    const event = { senderFrame: { url: 'propr-renderer://app/index.html' } } as unknown as IpcMainInvokeEvent;
+    const event = {
+      senderFrame: { url: 'propr-renderer://app/index.html' }, sender: renderer,
+    } as unknown as IpcMainInvokeEvent;
 
     await Promise.resolve(handlers.get(IPC_CHANNELS.profilesSave)!(event, {
-      id: 'profile-a', label: 'A edited', apiBaseUrl: 'https://new.example.test',
+      id: 'profile-a', label: 'A edited', apiBaseUrl: 'http://localhost:4100',
     }));
 
     assert.equal(cleanupObservedBeforeSave, true);
+    assert.deepEqual(policyReconciliation, { origin: 'http://localhost:4100', renderer });
     assert.deepEqual(cleared, [
       {
         origin: 'https://old.example.test',
         storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'],
       },
       {
-        origin: 'https://new.example.test',
+        origin: 'http://localhost:4100',
         storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'],
       },
     ]);
+  });
+
+  it('reconciles the renderer policy after setting a different active profile', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const profiles = [
+      {
+        id: 'profile-a', label: 'A', apiBaseUrl: 'http://localhost:4000',
+        createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+      },
+      {
+        id: 'profile-b', label: 'B', apiBaseUrl: 'http://127.0.0.1:4100',
+        createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+      },
+    ];
+    let activeProfileId: string | null = 'profile-a';
+    const credentials = {
+      listProfiles: async () => ({ profiles, activeProfileId }),
+      setActiveProfile: async (profileId: string | null) => { activeProfileId = profileId; },
+    } as unknown as DesktopCredentialService;
+    const renderer = {};
+    let policyReconciliation: { origin: string | null; renderer: unknown } | null = null;
+    registerIpcHandlers({
+      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+      ipcMain: {
+        handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+        removeHandler: (channel: string) => { handlers.delete(channel); },
+      } as unknown as IpcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      connectDiscovery,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession: { clearStorageData: async () => undefined } as unknown as Session,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+      onRendererActiveProfileChanged: (origin, changedRenderer) => {
+        policyReconciliation = { origin, renderer: changedRenderer };
+      },
+    });
+    const event = {
+      senderFrame: { url: 'propr-renderer://app/index.html' }, sender: renderer,
+    } as unknown as IpcMainInvokeEvent;
+
+    await Promise.resolve(handlers.get(IPC_CHANNELS.profilesSetActive)!(event, 'profile-b'));
+
+    assert.deepEqual(policyReconciliation, { origin: profiles[1].apiBaseUrl, renderer });
+  });
+
+  it('clears the renderer policy after removing the active profile', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    let removed = false;
+    const credentials = {
+      removeProfile: async (
+        _profileId: string,
+        beforeCommit: (origin: string) => Promise<void>,
+      ) => {
+        await beforeCommit('http://localhost:4000');
+        removed = true;
+        return 'http://localhost:4000';
+      },
+      listProfiles: async () => ({ profiles: [], activeProfileId: null }),
+    } as unknown as DesktopCredentialService;
+    const renderer = {};
+    let policyReconciliation: { origin: string | null; renderer: unknown } | null = null;
+    registerIpcHandlers({
+      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+      ipcMain: {
+        handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+        removeHandler: (channel: string) => { handlers.delete(channel); },
+      } as unknown as IpcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      connectDiscovery,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession: { clearStorageData: async () => undefined } as unknown as Session,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+      onRendererActiveProfileChanged: (origin, changedRenderer) => {
+        policyReconciliation = { origin, renderer: changedRenderer };
+      },
+    });
+    const event = {
+      senderFrame: { url: 'propr-renderer://app/index.html' }, sender: renderer,
+    } as unknown as IpcMainInvokeEvent;
+
+    await Promise.resolve(handlers.get(IPC_CHANNELS.profilesRemove)!(event, 'profile-a'));
+
+    assert.equal(removed, true);
+    assert.deepEqual(policyReconciliation, { origin: null, renderer });
   });
 
   it('clears both origins when activation edits the active profile URL without changing its ID', async () => {
@@ -104,7 +211,7 @@ describe('desktop IPC shutdown gate', () => {
       },
     } as unknown as Session;
     const renderer = {};
-    let policyActivation: { origin: string; renderer: unknown } | null = null;
+    let policyActivation: { origin: string | null; renderer: unknown } | null = null;
     registerIpcHandlers({
       app: {
         getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true,
@@ -119,7 +226,7 @@ describe('desktop IPC shutdown gate', () => {
       devServerUrl: undefined,
       packagedRendererUrl: 'propr-renderer://app/index.html',
       openExternal: async () => undefined,
-      onRendererEndpointActivated: (origin, activatedRenderer) => {
+      onRendererActiveProfileChanged: (origin, activatedRenderer) => {
         policyActivation = { origin, renderer: activatedRenderer };
       },
     });

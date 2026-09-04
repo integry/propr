@@ -1267,6 +1267,12 @@ if (!hasSingleInstanceLock) {
         retryPending: credentialInitialization.retryPending,
       });
     }
+    if (app.isPackaged && !rendererPolicyPinnedForSmoke) {
+      const current = await credentials.listProfiles();
+      const activeOrigin = current.profiles
+        .find(profile => profile.id === current.activeProfileId)?.apiBaseUrl;
+      rendererPolicyOrigins = activeOrigin?.startsWith('http://') ? [activeOrigin] : [];
+    }
     const lifecycle = new LocalLifecycleController();
     const registeredIpc = registerIpcHandlers({
       app,
@@ -1280,16 +1286,16 @@ if (!hasSingleInstanceLock) {
       devServerUrl,
       packagedRendererUrl,
       openExternal: openAllowedExternalUrl,
-      onRendererEndpointActivated: (origin, renderer) => {
+      onRendererActiveProfileChanged: (origin, renderer) => {
         if (!app.isPackaged || rendererPolicyPinnedForSmoke) return;
-        const nextOrigins = origin.startsWith('http://') ? [origin] : [];
+        const nextOrigins = origin?.startsWith('http://') ? [origin] : [];
         if (rendererPolicyOrigins.length === nextOrigins.length
           && rendererPolicyOrigins.every((value, index) => value === nextOrigins[index])) return;
         rendererPolicyOrigins = nextOrigins;
         const reloadGeneration = ++rendererPolicyReloadGeneration;
         // The next document receives the exact policy in both its meta tag and
         // response header. Until then, the existing CSP and request boundary
-        // both fail closed for the newly activated endpoint.
+        // both fail closed for the new active endpoint.
         setTimeout(() => {
           if (rendererPolicyReloadGeneration === reloadGeneration && !renderer.isDestroyed()) {
             renderer.reload();

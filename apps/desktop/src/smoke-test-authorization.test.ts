@@ -149,4 +149,23 @@ describe('packaged smoke profile authorization', () => {
       'desktop.app.shutdown',
     ]);
   });
+
+  it('loads the persisted active profile into the packaged policy before creating the first window', () => {
+    const main = readFileSync(fileURLToPath(new URL('./main.ts', import.meta.url)), 'utf8');
+    const initialization = main.indexOf('const credentialInitialization = await credentials.initialize();');
+    const persistedProfileRead = main.indexOf('const current = await credentials.listProfiles();', initialization);
+    const policyInitialization = main.indexOf(
+      "rendererPolicyOrigins = activeOrigin?.startsWith('http://') ? [activeOrigin] : [];",
+      persistedProfileRead,
+    );
+    const createWindow = main.indexOf('mainWindow = await createMainWindow()');
+
+    assert.notEqual(initialization, -1);
+    assert.notEqual(persistedProfileRead, -1);
+    assert.notEqual(policyInitialization, -1);
+    assert.notEqual(createWindow, -1);
+    assert.ok(initialization < persistedProfileRead);
+    assert.ok(persistedProfileRead < policyInitialization);
+    assert.ok(policyInitialization < createWindow);
+  });
 });
