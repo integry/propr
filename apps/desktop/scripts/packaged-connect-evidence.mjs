@@ -20,6 +20,21 @@ export const PACKAGED_CONNECT_EVIDENCE_FAILURE_CODES = Object.freeze([
   'PUBLIC_IDENTITY_ORDER_MISMATCH',
 ]);
 
+export const collectAcceptedSocketEvidence = ({ requests, authorization }) => {
+  const authenticatedSockets = requests.filter(request =>
+    request.socketIo === true
+    && request.accepted === true
+    && request.authorization === authorization);
+  const socketScopes = new Set(authenticatedSockets.map(request => request.transportScope));
+  return {
+    authenticatedSocketCount: authenticatedSockets.length,
+    socketHasNullScope: socketScopes.has(null),
+    socketScopeBindingMismatch: authenticatedSockets.some(request =>
+      request.socketQueryScopeCount !== 1 || request.socketAuthScope !== request.transportScope),
+    socketScopeCount: socketScopes.size,
+  };
+};
+
 const failureChecks = Object.freeze([
   // Pair contributes eight discoveries. The fresh reprobe process contributes
   // its profile probe plus the mandatory pre-Socket.IO identity gate.

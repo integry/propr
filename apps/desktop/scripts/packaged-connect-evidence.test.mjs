@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  collectAcceptedSocketEvidence,
   evaluatePackagedConnectEvidence,
   PACKAGED_CONNECT_EVIDENCE_FAILURE_CODES,
   PACKAGED_CONNECT_EVIDENCE_FAILURE_EVENT,
@@ -49,6 +50,49 @@ const failingEvidence = Object.freeze({
 describe('packaged Connect aggregate evidence', () => {
   test('accepts the complete fixed protocol evidence', () => {
     assert.equal(evaluatePackagedConnectEvidence(passingEvidence()), null);
+  });
+
+  test('accepts valid rotated Socket.IO bindings alongside the expected stale-auth rejection', () => {
+    const socketEvidence = collectAcceptedSocketEvidence({
+      authorization: 'Bearer fixture-token',
+      requests: [
+        {
+          socketIo: true,
+          accepted: true,
+          authorization: 'Bearer fixture-token',
+          transportScope: 'scope-before-rotation',
+          socketQueryScopeCount: 1,
+          socketAuthScope: 'scope-before-rotation',
+        },
+        {
+          socketIo: true,
+          accepted: true,
+          authorization: 'Bearer fixture-token',
+          transportScope: 'scope-after-rotation',
+          socketQueryScopeCount: 1,
+          socketAuthScope: 'scope-after-rotation',
+        },
+        {
+          socketIo: true,
+          accepted: false,
+          authorization: 'Bearer fixture-token',
+          transportScope: 'scope-after-rotation',
+          socketQueryScopeCount: 1,
+          socketAuthScope: 'scope-before-rotation',
+        },
+      ],
+    });
+
+    assert.deepEqual(socketEvidence, {
+      authenticatedSocketCount: 2,
+      socketHasNullScope: false,
+      socketScopeBindingMismatch: false,
+      socketScopeCount: 2,
+    });
+    assert.equal(evaluatePackagedConnectEvidence({
+      ...passingEvidence(),
+      ...socketEvidence,
+    }), null);
   });
 
   test('requires exactly eight pair discoveries and two fresh-process reprobe discoveries', () => {

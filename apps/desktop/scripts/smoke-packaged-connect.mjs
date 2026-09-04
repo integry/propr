@@ -25,7 +25,10 @@ import {
   createPackagedConnectLaunchArguments,
   spawnPackagedConnectBinary,
 } from './packaged-connect-launch.mjs';
-import { evaluatePackagedConnectEvidence } from './packaged-connect-evidence.mjs';
+import {
+  collectAcceptedSocketEvidence,
+  evaluatePackagedConnectEvidence,
+} from './packaged-connect-evidence.mjs';
 import {
   canonicalizeWindowsFixtureEntry,
   encodedWindowsFixtureAcl,
@@ -154,6 +157,7 @@ const createPackagedJourneyFixture = async () => {
           && item.authorization === `Bearer ${token}`
           && item.transportScope === null);
         const authenticatedSockets = requests.filter(item => item.socketIo === true
+          && item.accepted === true
           && item.authorization === `Bearer ${token}`
           && item.transportScope !== null
           && item.socketAuthScope === item.transportScope);
@@ -277,6 +281,10 @@ const createPackagedJourneyFixture = async () => {
   io.of('/').use((socket, next) => {
     const scopes = new URL(socket.handshake.url, 'http://fixture.invalid')
       .searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
+    const accepted = active
+      && socket.handshake.headers.authorization === `Bearer ${token}`
+      && scopes.length === 1
+      && socket.handshake.auth?.[DESKTOP_TRANSPORT_SCOPE_QUERY] === scopes[0];
     requests.push({
       method: 'SOCKET.IO',
       url: socket.handshake.url,
@@ -286,9 +294,9 @@ const createPackagedJourneyFixture = async () => {
       socketQueryScopeCount: scopes.length,
       socketAuthScope: socket.handshake.auth?.[DESKTOP_TRANSPORT_SCOPE_QUERY] ?? null,
       socketIo: true,
+      accepted,
     });
-    if (!active || socket.handshake.headers.authorization !== `Bearer ${token}`
-      || scopes.length !== 1 || socket.handshake.auth?.[DESKTOP_TRANSPORT_SCOPE_QUERY] !== scopes[0]) {
+    if (!accepted) {
       const error = new Error('INVALID_INSTANCE_TOKEN');
       error.data = { code: 'INVALID_INSTANCE_TOKEN' };
       next(error);
@@ -608,11 +616,10 @@ try {
         request.socketIo === false
         && request.url === '/api/auth/user'
         && request.authorization === `Bearer ${journeyFixture.secrets[2]}`);
-      const authenticatedSockets = applicationRequests.filter(request =>
-        request.socketIo === true
-        && request.authorization === `Bearer ${journeyFixture.secrets[2]}`);
-      const socketScopes = new Set(authenticatedSockets.map(request =>
-        new URL(request.url, 'http://fixture.invalid').searchParams.get(DESKTOP_TRANSPORT_SCOPE_QUERY)));
+      const socketEvidence = collectAcceptedSocketEvidence({
+        requests: applicationRequests,
+        authorization: `Bearer ${journeyFixture.secrets[2]}`,
+      });
       const restScopes = new Set(authenticatedRest.map(request => request.transportScope));
       const firstBearer = applicationRequests.findIndex(request => request.authorization !== null);
       const firstIdentity = applicationRequests.findIndex(request => request.url === '/api/desktop/discovery');
@@ -626,13 +633,12 @@ try {
         pairingActivationCount: pairingActivations.length,
         bootstrapAuthorizationPresent: bootstrap.some(request => request.authorization !== null),
         authenticatedRestCount: authenticatedRest.length,
-        authenticatedSocketCount: authenticatedSockets.length,
+        authenticatedSocketCount: socketEvidence.authenticatedSocketCount,
         restScopeCount: restScopes.size,
         restHasOnlyNullScope: restScopes.has(null),
-        socketHasNullScope: socketScopes.has(null),
-        socketScopeBindingMismatch: authenticatedSockets.some(request =>
-          request.socketQueryScopeCount !== 1 || request.socketAuthScope !== request.transportScope),
-        socketScopeCount: socketScopes.size,
+        socketHasNullScope: socketEvidence.socketHasNullScope,
+        socketScopeBindingMismatch: socketEvidence.socketScopeBindingMismatch,
+        socketScopeCount: socketEvidence.socketScopeCount,
         plaintextCredentialPersisted: plaintextPersisted,
         firstIdentityIndex: firstIdentity,
         firstBearerIndex: firstBearer,
