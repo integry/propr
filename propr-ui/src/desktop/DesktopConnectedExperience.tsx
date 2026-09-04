@@ -60,6 +60,9 @@ export const DesktopConnectedExperience: React.FC<DesktopConnectedExperienceProp
     authenticate: () => adapters.authentication.authenticate(profile),
     openConnectionHelp: () => adapters.externalBrowser.open('https://propr.dev'),
     retry,
+    ...(adapters.acceptance ? {
+      reportConnectedRendererReady: () => adapters.acceptance!.reportJourneyStage('REACT_CONNECTED'),
+    } : {}),
   };
 
   return (

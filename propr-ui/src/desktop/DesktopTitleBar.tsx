@@ -1,12 +1,24 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { ChevronDown, CircleAlert, CloudOff, RefreshCw, Wifi } from 'lucide-react';
 import { useDesktop } from './DesktopContext';
 
-export const DesktopTitleBar: React.FC = () => {
-  const desktop = useDesktop();
-  if (!desktop) return null;
+interface DesktopTitleBarProps {
+  /** Authenticated REST and Socket.IO are ready for the published desktop scope. */
+  transportReady?: boolean;
+}
 
-  const connected = desktop.connection.status === 'ready';
+export const DesktopTitleBar: React.FC<DesktopTitleBarProps> = ({ transportReady = false }) => {
+  const desktop = useDesktop();
+  const connected = desktop?.connection.status === 'ready';
+
+  useEffect(() => {
+    if (!connected || !transportReady) return;
+    void desktop?.reportConnectedRendererReady?.().catch(() => {
+      // Acceptance diagnostics must never alter the renderer lifecycle they observe.
+    });
+  }, [connected, desktop, transportReady]);
+
+  if (!desktop) return null;
   const incompatible = desktop.connection.status === 'incompatible';
   const label = connected ? 'Connected' : incompatible ? 'Update required' : 'Offline';
 
