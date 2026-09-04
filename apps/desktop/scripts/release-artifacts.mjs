@@ -9,18 +9,15 @@ import {
   inspectArtifactArchitecture,
   NATIVE_DMG_VALIDATOR,
 } from './release-architecture.mjs';
+import {
+  expectedProfileArtifacts,
+  releaseFileName,
+  resolveReleaseProfile,
+} from './release-profiles.mjs';
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const WINDOWS_SIGNER_PIN_PATTERN = /^(?:certificate|spki)-sha256:[a-f0-9]{64}$/;
-const TARGETS = new Map([
-  ['linux-x64', ['deb', 'rpm', 'zip']],
-  ['linux-arm64', ['deb', 'rpm', 'zip']],
-  ['darwin-x64', ['dmg', 'zip']],
-  ['darwin-arm64', ['dmg', 'zip']],
-  ['win32-x64', ['msi']],
-  ['win32-arm64', ['msi']],
-]);
 const DMG_HELPERS = [
   'propr-desktop Helper.app',
   'propr-desktop Helper (GPU).app',
@@ -443,21 +440,8 @@ const artifactKind = (path, platform) => {
   return ['deb', 'rpm', 'zip', 'dmg'].includes(extension) ? extension : undefined;
 };
 
-const releaseFileName = (version, platform, arch, kind) => {
-  const platformName = platform === 'darwin' ? 'macos' : platform === 'win32' ? 'windows' : 'linux';
-  return kind === 'msi'
-    ? `ProPR-Desktop-${version}-${platformName}-${arch}-Machine-Setup.msi`
-    : `ProPR-Desktop-${version}-${platformName}-${arch}.${kind}`;
-};
-
-const validateCanonicalArtifactMatrix = (artifacts, version, label) => {
-  const expected = new Map();
-  for (const [target, targetKinds] of TARGETS) {
-    const [platform, arch] = target.split('-');
-    for (const kind of targetKinds) {
-      expected.set(releaseFileName(version, platform, arch, kind), { platform, arch, kind });
-    }
-  }
+const validateCanonicalArtifactMatrix = (artifacts, version, label, profile) => {
+  const expected = expectedProfileArtifacts(profile, version);
   if (!Array.isArray(artifacts) || artifacts.length !== expected.size) {
     throw new Error(`${label} must contain the exact ${expected.size}-artifact matrix`);
   }
@@ -517,14 +501,16 @@ export const stageArtifacts = async ({
   platform,
   arch,
   version,
+  profile: profileName,
   env = process.env,
   inspectArchitecture = inspectArtifactArchitecture,
   privateDmgFixtureAuthority,
 }) => {
   if (!VERSION_PATTERN.test(version)) throw new Error(`Invalid desktop release version: ${version}`);
+  const profile = resolveReleaseProfile(profileName);
   const target = `${platform}-${arch}`;
-  const expectedKinds = TARGETS.get(target);
-  if (!expectedKinds) throw new Error(`Unsupported desktop release target: ${target}`);
+  const expectedKinds = profile.targets.get(target);
+  if (!expectedKinds) throw new Error(`Target ${target} is not allowed by release profile ${profile.name}`);
   if (platform === 'darwin' && process.platform === 'win32'
     && (inspectArchitecture === inspectArtifactArchitecture
       || !isScopedWindowsDmgFixtureAuthority(privateDmgFixtureAuthority))) {
@@ -627,6 +613,7 @@ export const stageArtifacts = async ({
   }
   const fragment = {
     schemaVersion: 2,
+    releaseProfile: profile.name,
     version,
     tag: `desktop-v${version}`,
     target,
@@ -638,7 +625,7 @@ export const stageArtifacts = async ({
   return fragment;
 };
 
-export const probePrivateDmgSnapshotIsolation = async ({ makeDirectory, arch, version, env = process.env }) => {
+export const probePrivateDmgSnapshotIsolation = async ({ makeDirectory, arch, version, profile, env = process.env }) => {
   if (process.platform !== 'darwin') {
     throw new Error('Private-snapshot DMG isolation probe is available only on native macOS');
   }
@@ -660,6 +647,7 @@ export const probePrivateDmgSnapshotIsolation = async ({ makeDirectory, arch, ve
       platform: 'darwin',
       arch,
       version,
+      profile,
       env,
       inspectArchitecture: arguments_ => inspectArtifactArchitecture({
         ...arguments_,
@@ -709,31 +697,39 @@ export const finalizeArtifacts = async ({
   inputDirectory,
   outputDirectory,
   version,
+  profile: profileName,
   inspectArchitecture = inspectArtifactArchitecture,
 }) => {
   if (!VERSION_PATTERN.test(version)) throw new Error(`Invalid desktop release version: ${version}`);
+  const profile = resolveReleaseProfile(profileName);
   const fragments = await readFragments(inputDirectory);
-  if (fragments.length !== TARGETS.size) {
-    throw new Error(`Expected ${TARGETS.size} release fragments, found ${fragments.length}`);
+  if (fragments.length !== profile.targets.size) {
+    throw new Error(`Expected ${profile.targets.size} release fragments, found ${fragments.length} for profile ${profile.name}`);
   }
   await rm(outputDirectory, { recursive: true, force: true });
   await mkdir(outputDirectory, { recursive: true });
 
   const seenTargets = new Set();
   const seenNames = new Set();
+  const consumedInputFiles = new Set();
   const artifacts = [];
   const nativeSigners = {};
   for (const { path, value } of fragments) {
-    if (value.schemaVersion !== 2 || value.version !== version || value.tag !== `desktop-v${version}`) {
+    consumedInputFiles.add(resolve(path));
+    if (value.schemaVersion !== 2 || value.releaseProfile !== profile.name
+      || value.version !== version || value.tag !== `desktop-v${version}`) {
       throw new Error(`Release fragment metadata does not match desktop-v${version}: ${path}`);
     }
-    const expectedKinds = TARGETS.get(value.target);
+    const expectedKinds = profile.targets.get(value.target);
     if (!expectedKinds || seenTargets.has(value.target)) throw new Error(`Duplicate or invalid target ${value.target}`);
     seenTargets.add(value.target);
     if (!Array.isArray(value.artifacts) || value.artifacts.length !== expectedKinds.length) {
       throw new Error(`Release fragment ${value.target} has an unexpected artifact count`);
     }
     const [targetPlatform, targetArch] = value.target.split('-');
+    if (targetPlatform === 'linux' && value.nativeSigner !== undefined) {
+      throw new Error(`Release fragment ${value.target} has foreign native signer evidence`);
+    }
     if (targetPlatform === 'win32' && value.installedApplicationValidated !== true) {
       throw new Error(`Release fragment ${value.target} skipped the installed ordinary-user application gate`);
     }
@@ -776,6 +772,7 @@ export const finalizeArtifacts = async ({
         throw new Error(`Release fragment ${value.target} attaches native DMG evidence to a non-DMG artifact`);
       }
       const source = join(dirname(path), artifact.fileName);
+      consumedInputFiles.add(resolve(source));
       let inspection;
       if (artifact.kind === 'dmg') {
         const held = await openHeldDmg(source);
@@ -822,14 +819,21 @@ export const finalizeArtifacts = async ({
       artifacts.push(artifact);
     }
   }
-  for (const target of TARGETS.keys()) {
+  for (const target of profile.targets.keys()) {
     if (!seenTargets.has(target)) throw new Error(`Missing release target ${target}`);
   }
-  const windowsSigners = ['win32-x64', 'win32-arm64'].map(target => nativeSigners[target]).filter(Boolean);
-  if (windowsSigners.length === 2 && JSON.stringify(windowsSigners[0]) !== JSON.stringify(windowsSigners[1])) {
+  const unexpectedInputFiles = (await recursiveFiles(inputDirectory))
+    .filter(path => !consumedInputFiles.has(resolve(path)));
+  if (unexpectedInputFiles.length) {
+    throw new Error(`Release profile ${profile.name} contains unexpected input artifacts`);
+  }
+  const windowsSigners = ['win32-x64', 'win32-arm64']
+    .filter(target => profile.targets.has(target)).map(target => nativeSigners[target]).filter(Boolean);
+  if (profile.windowsIncluded && windowsSigners.length === 2
+    && JSON.stringify(windowsSigners[0]) !== JSON.stringify(windowsSigners[1])) {
     throw new Error('Windows release targets contain mixed native signer evidence');
   }
-  validateCanonicalArtifactMatrix(artifacts, version, 'Final desktop release');
+  validateCanonicalArtifactMatrix(artifacts, version, 'Final desktop release', profile);
 
   artifacts.sort((left, right) => left.fileName.localeCompare(right.fileName));
   const publishedAt = process.env.SOURCE_DATE_EPOCH
@@ -837,6 +841,7 @@ export const finalizeArtifacts = async ({
     : new Date().toISOString();
   const manifest = {
     schemaVersion: 2,
+    releaseProfile: profile.name,
     channel: 'stable',
     version,
     tag: `desktop-v${version}`,
@@ -907,11 +912,13 @@ const createSignedFeeds = async (manifest, outputDirectory, env) => {
   return { feeds, feedFiles };
 };
 
-export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, version, env = process.env }) => {
+export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, version, profile: profileName, env = process.env }) => {
   if (!VERSION_PATTERN.test(version)) throw new Error(`Invalid desktop release version: ${version}`);
+  const profile = resolveReleaseProfile(profileName);
   const unsignedManifest = JSON.parse(await readFile(join(inputDirectory, 'desktop-release.json'), 'utf8'));
   if (
     unsignedManifest.schemaVersion !== 2
+    || unsignedManifest.releaseProfile !== profile.name
     || unsignedManifest.version !== version
     || unsignedManifest.tag !== `desktop-v${version}`
     || Object.keys(unsignedManifest.feeds ?? {}).length !== 0
@@ -919,7 +926,10 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
   ) {
     throw new Error('Unsigned release metadata is invalid');
   }
-  validateCanonicalArtifactMatrix(unsignedManifest.artifacts, version, 'Unsigned release metadata');
+  if (!profile.windowsIncluded && Object.hasOwn(unsignedManifest, 'windowsSignerPins')) {
+    throw new Error(`Unsigned release metadata contains Windows signer configuration forbidden by profile ${profile.name}`);
+  }
+  validateCanonicalArtifactMatrix(unsignedManifest.artifacts, version, 'Unsigned release metadata', profile);
   for (const artifact of unsignedManifest.artifacts) {
     const path = join(inputDirectory, artifact.fileName);
     if (basename(artifact.fileName) !== artifact.fileName
@@ -934,15 +944,19 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
     'PROPR_DESKTOP_UPDATE_PUBLIC_KEY',
     'PROPR_DESKTOP_UPDATE_MANIFEST_URL',
     'PROPR_DESKTOP_MAC_TEAM_ID',
-    'PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY',
-    'PROPR_DESKTOP_WINDOWS_SIGNER_PINS',
+    ...(profile.windowsIncluded ? [
+      'PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY',
+      'PROPR_DESKTOP_WINDOWS_SIGNER_PINS',
+    ] : []),
     ...configuredFeedDefinitions.map(([, name]) => name),
   ];
   const present = configurationNames.filter(name => env[name]?.trim());
   if (present.length !== configurationNames.length) {
     throw new Error(`Trusted update signing configuration is incomplete; missing ${configurationNames.filter(name => !env[name]?.trim()).join(', ')}`);
   }
-  const windowsSignerPins = parseWindowsSignerPins(env.PROPR_DESKTOP_WINDOWS_SIGNER_PINS);
+  const windowsSignerPins = profile.windowsIncluded
+    ? parseWindowsSignerPins(env.PROPR_DESKTOP_WINDOWS_SIGNER_PINS)
+    : undefined;
 
   for (const target of ['darwin-x64', 'darwin-arm64']) {
     const signer = readNativeSigner('darwin', {
@@ -957,7 +971,7 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
     }
   }
   const windowsSigners = [];
-  for (const target of ['win32-x64', 'win32-arm64']) {
+  for (const target of [...profile.targets.keys()].filter(candidate => candidate.startsWith('win32-'))) {
     const signer = readNativeSigner('win32', {
       PROPR_DESKTOP_ACTUAL_SIGNER_TYPE: unsignedManifest.nativeSigners?.[target]?.type,
       PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY: unsignedManifest.nativeSigners?.[target]?.identity,
@@ -971,7 +985,8 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
     }
     windowsSigners.push(signer);
   }
-  if (JSON.stringify(windowsSigners[0]) !== JSON.stringify(windowsSigners[1])) {
+  if (profile.windowsIncluded && (windowsSigners.length !== 2
+    || JSON.stringify(windowsSigners[0]) !== JSON.stringify(windowsSigners[1]))) {
     throw new Error('Windows release targets contain mixed native signer evidence');
   }
 
@@ -994,7 +1009,12 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
   await rm(outputDirectory, { recursive: true, force: true });
   await cp(inputDirectory, outputDirectory, { recursive: true });
   const { feeds, feedFiles } = await createSignedFeeds(unsignedManifest, outputDirectory, env);
-  const signedManifest = { ...unsignedManifest, manifestUrl, windowsSignerPins, feeds };
+  const signedManifest = {
+    ...unsignedManifest,
+    manifestUrl,
+    ...(profile.windowsIncluded ? { windowsSignerPins } : {}),
+    feeds,
+  };
   const manifestPayload = Buffer.from(`${JSON.stringify(signedManifest, null, 2)}\n`);
   const signaturePayload = Buffer.from(`${sign(null, manifestPayload, privateKey).toString('base64')}\n`);
   await writeFile(join(outputDirectory, 'desktop-release.json'), manifestPayload);
@@ -1024,40 +1044,48 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const makeDirectory = argument('--make-directory');
     const arch = argument('--arch');
     const version = argument('--version');
-    if (!makeDirectory || !arch || !version) {
-      throw new Error('Private-snapshot DMG isolation probe requires --make-directory, --arch, and --version');
+    const profile = argument('--profile');
+    if (!makeDirectory || !arch || !version || !profile) {
+      throw new Error('Private-snapshot DMG isolation probe requires --make-directory, --arch, --version, and --profile');
     }
     const result = await probePrivateDmgSnapshotIsolation({
       makeDirectory: resolve(makeDirectory),
       arch,
       version,
+      profile,
     });
     console.log(JSON.stringify({ privateSnapshotDmgIsolation: true, architecture: arch, ...result }));
   } else if (command === 'stage') {
     const version = argument('--version');
-    if (!version) throw new Error('--version is required');
+    const profile = argument('--profile');
+    if (!version || !profile) throw new Error('--version and --profile are required');
     await stageArtifacts({
       makeDirectory: resolve(argument('--make-directory') || 'out/make'),
       outputDirectory: resolve(argument('--output') || 'release-staging'),
       platform: argument('--platform') || process.platform,
       arch: argument('--arch') || process.arch,
       version,
+      profile,
     });
   } else if (command === 'finalize') {
     const version = argument('--version');
-    if (!version) throw new Error('--version is required');
+    const profile = argument('--profile');
+    if (!version || !profile) throw new Error('--version and --profile are required');
     await finalizeArtifacts({
       inputDirectory: resolve(argument('--input') || 'release-artifacts'),
       outputDirectory: resolve(argument('--output') || 'release-final'),
       version,
+      profile,
     });
   } else if (command === 'sign') {
     const version = argument('--version');
-    if (!version) throw new Error('--version is required');
+    const profile = argument('--profile');
+    if (!version || !profile) throw new Error('--version and --profile are required');
     await signReleaseMetadata({
       inputDirectory: resolve(argument('--input') || 'release-final'),
       outputDirectory: resolve(argument('--output') || 'release-signed'),
       version,
+      profile,
     });
   } else {
     throw new Error('Expected release-artifacts.mjs private-snapshot probe, stage, finalize, or sign command');

@@ -78,8 +78,8 @@ and default, deletes the disposable keychain, and removes all temporary signing 
 
 The first-release Windows MVP packages only the normal desktop application. Native self-update installation authority
 is deferred to issue #2000: no broker, bootstrap, launcher, service, or authority custom action is built, copied into
-`resources`, or installed by the MSI. Both Windows architectures remain mandatory release targets, and package/MSI
-inspection fails if any deferred authority resource appears.
+`resources`, or installed by the MSI. Both Windows architectures remain optional validation targets while Windows
+publication is deferred, and package/MSI inspection fails if any deferred authority resource appears.
 
 `desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
 the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release
@@ -116,21 +116,23 @@ not download, install, start, or execute ProPR runtime components.
 
 Desktop releases have their own `desktop-v<major>.<minor>.<patch>` tags. They do not use or require the monorepo's
 `v<version>` tag. `PROPR_DESKTOP_VERSION` propagates the tag version into the packaged application, renderer, native
-metadata, Linux packages, protected machine MSI, artifact names, and release manifest without changing the monorepo
+metadata, Linux packages, the deferred protected machine MSI, artifact names, and release manifest without changing the monorepo
 package versions.
 
-The native GitHub Actions matrix produces these assets for both x64 and arm64:
+The first production release uses the explicit, fail-closed `macos-linux-v1` profile. It produces exactly 10 native
+artifacts for these four targets: `linux-x64`, `linux-arm64`, `darwin-x64`, and `darwin-arm64`.
 
 | Platform | Native runner | Direct-distribution artifacts |
 | --- | --- | --- |
 | Linux | `ubuntu-24.04`, `ubuntu-24.04-arm` | DEB, RPM, ZIP |
 | macOS | `macos-15-intel`, `macos-15` | DMG, ZIP |
-| Windows | `windows-2025`, `windows-11-arm` | signed per-machine Program Files MSI |
 
-Every matrix job stages DEB/RPM/ZIP/DMG names as `ProPR-Desktop-<version>-<platform>-<arch>.<format>` and retains
-`ProPR-Desktop-<version>-windows-<arch>-Machine-Setup.msi` for Windows. The final job rejects
-missing targets or changed fragment checksums, emits `SHA256SUMS` and `desktop-release.json`, and attaches the complete
-set to the matching GitHub release. Production publication is triggered only by a new, non-forced
+Each Linux architecture contributes DEB, RPM, and ZIP (six artifacts); each macOS architecture contributes DMG and ZIP
+(four artifacts). Every matrix job stages names as `ProPR-Desktop-<version>-<platform>-<arch>.<format>`. Finalization,
+metadata signing, checksum aggregation, and publication all require the explicit profile and reject a missing,
+duplicate, or unexpected fragment or artifact—including every Windows artifact. They emit `SHA256SUMS` and
+`desktop-release.json` and attach the complete set to the matching GitHub release. Production publication is triggered
+only by a new, non-forced
 `desktop-v<major>.<minor>.<patch>` tag push; there is no manual dispatch path. A secretless preflight must succeed before
 any job can request the protected release environment or receive release secrets. Normal local packages are unsigned
 and have updates disabled:
@@ -169,7 +171,8 @@ unreviewed tag cannot enter the environment or obtain the App credential. The pr
 signing, notarization, update-signing, release-publication, or production deployment secret.
 
 Signing material is read only from the distinct approval-protected `desktop-release` GitHub environment and written
-to runner-temporary files/keychains. Every value below is mandatory for a production `desktop-v*` tag; unsigned and
+to runner-temporary files/keychains. Every macOS/update value below is mandatory for a production `desktop-v*` tag;
+Windows credentials are neither read nor required by `macos-linux-v1`. Unsigned and
 partially signed production releases fail before publication. Pull-request package validation and the preflight
 environment receive none of these secrets and explicitly check that release-secret environment variables are absent.
 
@@ -180,18 +183,12 @@ GitHub Actions secrets:
 - `PROPR_DESKTOP_APPLE_API_KEY_P8_BASE64`: base64 of the App Store Connect API `.p8` key.
 - `PROPR_DESKTOP_APPLE_API_KEY_ID`: App Store Connect API key ID.
 - `PROPR_DESKTOP_APPLE_API_ISSUER_ID`: App Store Connect issuer UUID.
-- `PROPR_DESKTOP_WINDOWS_CERTIFICATE_PFX_BASE64`: base64 of the Authenticode `.pfx`.
-- `PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD`: password for that `.pfx`.
 - `PROPR_DESKTOP_UPDATE_PRIVATE_KEY`: base64 Ed25519 PKCS#8 DER key used only to sign update-channel metadata.
 
 GitHub Actions variables (public configuration, not secrets):
 
 - `PROPR_DESKTOP_MAC_SIGNING_IDENTITY`: exact Developer ID Application identity.
 - `PROPR_DESKTOP_MAC_TEAM_ID`: exact Team ID embedded in signed macOS update builds and verified from produced apps.
-- `PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY`: exact Authenticode certificate subject expected by installed builds.
-- `PROPR_DESKTOP_WINDOWS_SIGNER_PINS`: sorted, unique comma-separated allowlist of one or more
-  `certificate-sha256:<64 lowercase hex>` or `spki-sha256:<64 lowercase hex>` fingerprints. Production Windows
-  packaging fails closed when this public operator pin is absent, malformed, or does not match the signing key.
 - `PROPR_DESKTOP_UPDATE_PUBLIC_KEY`: base64 Ed25519 SPKI DER public key matching the update private key.
 - `PROPR_DESKTOP_UPDATE_MANIFEST_URL`: stable HTTPS URL from which clients fetch `desktop-release.json`; the detached
   signature must be published beside it as `desktop-release.json.sig`.
@@ -224,12 +221,20 @@ bound macOS packages to their configured HTTPS URLs. The manifest URL must not c
 always the documented pathname plus `.sig`.
 
 Linux never checks for native updates. macOS remains a signed, check-only channel: it verifies the Ed25519 manifest,
-exact target/version/feed bytes, package URL/size/SHA-256, and actual Team ID/designated requirement. Windows self-update
-is explicitly `unsupported` for this release. The Windows build embeds no update URL or key even when update environment
-variables are present; its public check and apply boundaries return `unsupported` before any network, cache, artifact,
-signer, install-authority, or apply-capability call, and signed release metadata advertises no Windows feed.
+exact target/version/feed bytes, package URL/size/SHA-256, and actual Team ID/designated requirement.
 
-Windows still publishes exactly one timestamped Authenticode-signed machine-wide MSI for each x64 and ARM64 target,
-with the packaged application's signer and architecture inspected before staging. Per-user Squirrel Setup/NUPKG
-artifacts remain unsupported and are never staged, checksummed, advertised, or published. Unsigned developer packages
-remain update-disabled. Windows self-update installation work resumes only under issue #2000.
+### Deferred Windows publication
+
+Windows publication is deferred to a separately gated follow-up release. The source, security assertions, unit tests,
+native x64/ARM64 package jobs, machine-wide MSI checks, and ordinary-user runtime validation remain intact. Those two PR
+matrix entries use the deliberate `macos-linux-windows-v1` compatibility profile, are non-blocking for
+`macos-linux-v1`, and upload under an optional-Windows artifact namespace that canonical finalization never downloads.
+The six-target profile retains its 12-artifact contract for future activation, including Windows certificate subject,
+cryptographic pin, timestamp, installed-application, architecture, and signer-equality gates. It is not a production
+workflow mode yet. Per-user Squirrel Setup/NUPKG artifacts remain unsupported.
+
+Before a future Windows-inclusive mode can be enabled, operators must separately configure the Authenticode PFX and
+password, exact signing identity, and sorted certificate/SPKI SHA-256 pin allowlist. None of those values belongs in or
+can satisfy the first-release profile. For the current release, the external credentials that must be ready are the
+Developer ID Application P12/password, App Store Connect notarization key/key ID/issuer ID, Ed25519 update signing key
+pair, stable HTTPS manifest URL, and both architecture-specific macOS feed URLs listed above.

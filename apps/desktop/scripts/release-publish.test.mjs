@@ -1,25 +1,70 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { describe, test } from 'node:test';
 import { publishDesktopRelease } from './release-publish.mjs';
+import {
+  expectedProfileArtifacts,
+  MACOS_LINUX_RELEASE_PROFILE,
+  resolveReleaseProfile,
+} from './release-profiles.mjs';
 
 const releaseSha = '1'.repeat(40);
 const tagObjectSha = '2'.repeat(40);
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
-const createFinalAssets = async (extraCount = 1) => {
+const createFinalAssets = async () => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-publish-'));
+  const profile = resolveReleaseProfile(MACOS_LINUX_RELEASE_PROFILE);
+  const artifactFiles = new Map([...expectedProfileArtifacts(profile, '1.2.3')]
+    .map(([fileName]) => [fileName, Buffer.from(`${fileName}\n`)]));
+  const artifacts = [...expectedProfileArtifacts(profile, '1.2.3')].map(([fileName, artifact]) => {
+    const bytes = artifactFiles.get(fileName);
+    return { ...artifact, fileName, size: bytes.length, sha256: sha256(bytes) };
+  });
+  const feedFiles = new Map([
+    ['ProPR-Desktop-1.2.3-macos-x64-RELEASES.json', Buffer.from('{"target":"darwin-x64"}\n')],
+    ['ProPR-Desktop-1.2.3-macos-arm64-RELEASES.json', Buffer.from('{"target":"darwin-arm64"}\n')],
+  ]);
+  const manifest = {
+    schemaVersion: 2,
+    releaseProfile: MACOS_LINUX_RELEASE_PROFILE,
+    channel: 'stable',
+    version: '1.2.3',
+    tag: 'desktop-v1.2.3',
+    publishedAt: '2026-09-02T00:00:00.000Z',
+    manifestUrl: 'https://updates.example.test/stable/desktop-release.json',
+    feeds: {
+      'darwin-x64': {
+        target: 'darwin-x64',
+        feed: {
+          size: feedFiles.get('ProPR-Desktop-1.2.3-macos-x64-RELEASES.json').length,
+          sha256: sha256(feedFiles.get('ProPR-Desktop-1.2.3-macos-x64-RELEASES.json')),
+        },
+      },
+      'darwin-arm64': {
+        target: 'darwin-arm64',
+        feed: {
+          size: feedFiles.get('ProPR-Desktop-1.2.3-macos-arm64-RELEASES.json').length,
+          sha256: sha256(feedFiles.get('ProPR-Desktop-1.2.3-macos-arm64-RELEASES.json')),
+        },
+      },
+    },
+    nativeSigners: {
+      'darwin-x64': { type: 'apple-team-id' },
+      'darwin-arm64': { type: 'apple-team-id' },
+    },
+    artifacts,
+  };
   const files = new Map([
-    ['desktop-release.json', Buffer.from('{}\n')],
+    ...artifactFiles,
+    ...feedFiles,
+    ['desktop-release.json', Buffer.from(`${JSON.stringify(manifest)}\n`)],
     ['desktop-release.json.sig', Buffer.from('signed\n')],
   ]);
-  for (let index = 0; index < extraCount; index += 1) {
-    files.set(`ProPR-Desktop-asset-${String(index).padStart(3, '0')}.bin`, Buffer.from(`asset-${index}\n`));
-  }
   const checksums = [...files]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, bytes]) => `${sha256(bytes)}  ${name}`)
@@ -121,25 +166,25 @@ const publish = ({ directory, fetchImpl }) => publishDesktopRelease({
   releaseSha,
   tagObjectSha,
   directory,
+  profile: MACOS_LINUX_RELEASE_PROFILE,
   token: 'token',
   apiUrl: 'https://api.github.com',
   fetchImpl,
 });
 
 describe('atomic desktop release publication', () => {
-  test('creates a draft, paginates and verifies the exact final assets, then publishes', async () => {
-    const { directory } = await createFinalAssets(101);
+  test('creates a draft, verifies the exact profile assets, then publishes', async () => {
+    const { directory } = await createFinalAssets();
     const github = createGitHub();
     const result = await publish({ directory, fetchImpl: github.fetchImpl });
     assert.equal(result.draft, false);
     assert.equal(github.patchCalls, 1);
-    assert.equal(github.assets.length, 104);
-    assert(github.calls.includes('GET /releases/7/assets?per_page=100&page=2'));
+    assert.equal(github.assets.length, 15);
     assert(github.calls.lastIndexOf('GET /git/ref/tags/desktop-v1.2.3') < github.calls.indexOf('PATCH /releases/7'));
   });
 
   test('leaves a partial upload as a recoverable draft and resumes only matching assets', async () => {
-    const { directory, files } = await createFinalAssets(2);
+    const { directory, files } = await createFinalAssets();
     const github = createGitHub({ failUploadAt: 2 });
     await assert.rejects(publish({ directory, fetchImpl: github.fetchImpl }), /failed with HTTP 500/);
     assert.equal(github.release.draft, true);
@@ -192,6 +237,22 @@ describe('atomic desktop release publication', () => {
     await writeFile(join(directory, 'unexpected.bin'), 'unexpected');
     const github = createGitHub();
     await assert.rejects(publish({ directory, fetchImpl: github.fetchImpl }), /checksum allowlist/);
+    assert.equal(github.calls.length, 0);
+  });
+
+  test('rejects accidental Windows artifacts in the macOS/Linux manifest before any API call', async () => {
+    const { directory } = await createFinalAssets();
+    const manifestPath = join(directory, 'desktop-release.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.artifacts[0] = {
+      platform: 'win32',
+      arch: 'x64',
+      kind: 'msi',
+      fileName: 'ProPR-Desktop-1.2.3-windows-x64-Machine-Setup.msi',
+    };
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    const github = createGitHub();
+    await assert.rejects(publish({ directory, fetchImpl: github.fetchImpl }), /unexpected or duplicate artifact/);
     assert.equal(github.calls.length, 0);
   });
 });

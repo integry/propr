@@ -5,7 +5,6 @@ import {
   applySignedUpdate,
   checkForSignedUpdates,
   parseSignedUpdateManifest,
-  type SignedUpdateManifest,
 } from './signed-updates';
 
 const keys = generateKeyPairSync('ed25519');
@@ -52,9 +51,9 @@ test('signed macOS feeds accept only the canonical ZIP extension and matching ar
   const artifactUrl = `https://updates.example.test/darwin/x64/${fileName}`;
   const manifest = {
     schemaVersion: 2,
+    releaseProfile: 'macos-linux-v1',
     channel: 'stable',
     manifestUrl: config.manifestUrl,
-    windowsSignerPins: [],
     version: '1.2.4',
     tag: 'desktop-v1.2.4',
     publishedAt: '2026-08-30T00:00:00.000Z',
@@ -64,6 +63,23 @@ test('signed macOS feeds accept only the canonical ZIP extension and matching ar
         version: '1.2.4',
         feed: { url: 'https://updates.example.test/darwin/x64/RELEASES.json', size: 100, sha256: '1'.repeat(64) },
         artifact: { url: artifactUrl, fileName, kind: 'zip', size: 200, sha256: '2'.repeat(64) },
+        signer: {
+          type: 'apple-team-id',
+          identity: 'TEAM123456',
+          designatedRequirement: 'designated => identifier "dev.propr.desktop" and anchor apple generic',
+        },
+      },
+      'darwin-arm64': {
+        target: 'darwin-arm64',
+        version: '1.2.4',
+        feed: { url: 'https://updates.example.test/darwin/arm64/RELEASES.json', size: 101, sha256: '3'.repeat(64) },
+        artifact: {
+          url: 'https://updates.example.test/darwin/arm64/ProPR-Desktop-1.2.4-macos-arm64.zip',
+          fileName: 'ProPR-Desktop-1.2.4-macos-arm64.zip',
+          kind: 'zip',
+          size: 201,
+          sha256: '4'.repeat(64),
+        },
         signer: {
           type: 'apple-team-id',
           identity: 'TEAM123456',
@@ -101,6 +117,12 @@ test('signed macOS feeds accept only the canonical ZIP extension and matching ar
     () => parseSignedUpdateManifest(Buffer.from(JSON.stringify(wrongKind))),
     /artifact does not match its target or URL/,
   );
+  const windowsMetadata = structuredClone(manifest) as typeof manifest & { windowsSignerPins: string[] };
+  windowsMetadata.windowsSignerPins = [];
+  assert.throws(
+    () => parseSignedUpdateManifest(Buffer.from(JSON.stringify(windowsMetadata))),
+    /pin policy does not match its release profile/,
+  );
 });
 
 test('macOS signed-update check remains check-only and verifies its exact feed and artifact', {
@@ -115,11 +137,11 @@ test('macOS signed-update check remains check-only and verifies its exact feed a
     size: value.length,
     sha256: createHash('sha256').update(value).digest('hex'),
   });
-  const manifest: SignedUpdateManifest = {
+  const manifest = {
     schemaVersion: 2,
+    releaseProfile: 'macos-linux-v1',
     channel: 'stable',
     manifestUrl: config.manifestUrl,
-    windowsSignerPins: [],
     version: '1.2.4',
     tag: 'desktop-v1.2.4',
     publishedAt: '2026-08-30T00:00:00.000Z',
@@ -135,8 +157,29 @@ test('macOS signed-update check remains check-only and verifies its exact feed a
           designatedRequirement: 'designated => identifier "dev.propr.desktop" and anchor apple generic',
         },
       },
+      'darwin-arm64': {
+        target: 'darwin-arm64',
+        version: '1.2.4',
+        feed: {
+          url: 'https://updates.example.test/darwin/arm64/RELEASES.json',
+          size: 100,
+          sha256: '3'.repeat(64),
+        },
+        artifact: {
+          url: 'https://updates.example.test/darwin/arm64/ProPR-Desktop-1.2.4-macos-arm64.zip',
+          fileName: 'ProPR-Desktop-1.2.4-macos-arm64.zip',
+          kind: 'zip',
+          size: 200,
+          sha256: '4'.repeat(64),
+        },
+        signer: {
+          type: 'apple-team-id',
+          identity: 'TEAM123456',
+          designatedRequirement: 'designated => identifier "dev.propr.desktop" and anchor apple generic',
+        },
+      },
     },
-  };
+  } as const;
   const payload = Buffer.from(`${JSON.stringify(manifest)}\n`);
   const signature = Buffer.from(sign(null, payload, keys.privateKey).toString('base64'));
   let artifactRequests = 0;
