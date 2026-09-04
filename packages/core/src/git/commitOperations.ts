@@ -119,7 +119,7 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
         await git.add('.');
         // Unstage generated ProPR runtime directories. Repo-authored files such
         // as .propr/setup.sh and .propr/package.json should remain committable.
-        for (const generatedPath of ['.propr/assets', '.propr/cache', '.propr/.cache', '.propr/node_modules']) {
+        for (const generatedPath of ['.propr/assets', '.propr/cache', '.propr/.cache', '.propr/node_modules', '.propr/previews']) {
             try {
                 await git.raw(['reset', 'HEAD', '--', generatedPath]);
             } catch {

@@ -16,6 +16,7 @@ When ProPR finishes an implementation task, it handles the GitHub plumbing aroun
 - Pushes to GitHub
 - Opens a pull request linked to the source issue
 - Posts status back to GitHub
+- Attaches focused [visual previews](./visual-previews.md) when the repository enables them and the change has a visible result
 - Updates task and label state (`<trigger>-processing` → `<trigger>-done`, or `<trigger>-failed-*` on failure)
 
 This keeps the agent focused on code while ProPR handles the repeatable workflow around the code.

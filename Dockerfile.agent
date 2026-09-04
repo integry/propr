@@ -24,7 +24,7 @@ ARG CURL_VERSION_PREFIX=7.88.1-10+deb12u
 # install falls back to the latest available version when this prefix no longer
 # matches. That trades strict reproducibility for not breaking every build on a
 # gh release; the fallback logs a note to stderr when it triggers.
-ARG GH_VERSION_PREFIX=2.96.
+ARG GH_VERSION_PREFIX=2.99.
 ARG GIT_VERSION_PREFIX=1:2.39.5-0+deb12u
 ARG GOSU_VERSION_PREFIX=1.14-1
 ARG IPTABLES_VERSION_PREFIX=1.8.9-2

@@ -3,6 +3,7 @@ import { Github, RefreshCw, Star, Eye, EyeOff } from 'lucide-react';
 import { DeleteRepoDialog } from './DeleteRepoDialog';
 import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
+import { RepositoryVisualPreviewControl, type RepositoryVisualPreviewSettings } from './RepositoryVisualPreviewControl';
 
 type RepoStatusType = 'indexed' | 'indexing' | 'failed' | 'idle';
 
@@ -227,6 +228,7 @@ interface RepositoryListItemProps {
   indexingStatuses: Record<string, RepositoryIndexingStatus>;
   onToggle: (repoId: string) => void;
   onToggleAutoCiFollowup: (repoId: string) => void;
+  onUpdateVisualPreview: (repoId: string, settings: RepositoryVisualPreviewSettings) => void;
   onRemove: (repoId: string) => void | Promise<void>;
   onStopIndexing: (repoName: string, baseBranch?: string) => void;
   onReindex: (repoName: string, baseBranch?: string) => void;
@@ -242,6 +244,7 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
   indexingStatuses,
   onToggle,
   onToggleAutoCiFollowup,
+  onUpdateVisualPreview,
   onRemove,
   onStopIndexing,
   onReindex,
@@ -358,6 +361,11 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           <AutoCiFollowupControl
             repo={repo}
             onToggle={onToggleAutoCiFollowup}
+            isReadOnly={isReadOnly}
+          />
+          <RepositoryVisualPreviewControl
+            repo={repo}
+            onUpdate={onUpdateVisualPreview}
             isReadOnly={isReadOnly}
           />
         </div>

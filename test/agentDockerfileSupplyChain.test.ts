@@ -4,6 +4,23 @@ import test from 'node:test';
 
 const dockerfile = readFileSync(new URL('../Dockerfile.agent', import.meta.url), 'utf8');
 const buildScript = readFileSync(new URL('../scripts/build-images.sh', import.meta.url), 'utf8');
+const appDockerfiles = [
+  'Dockerfile',
+  'Dockerfile.node',
+  'docker/Dockerfile.app.prod',
+];
+
+for (const dockerfilePath of appDockerfiles) {
+  test(`${dockerfilePath} installs the pinned GitHub CLI used for preview attachments`, () => {
+    const appDockerfile = readFileSync(new URL(`../${dockerfilePath}`, import.meta.url), 'utf8');
+
+    assert.match(appDockerfile, /ARG GH_VERSION=2\.99\.0/);
+    assert.match(appDockerfile, /cli\/cli\/releases\/download\/v\$\{GH_VERSION\}/);
+    assert.match(appDockerfile, /sha256sum -c -/);
+    assert.match(appDockerfile, /\/usr\/local\/bin\/gh/);
+    assert.match(appDockerfile, /gh --version/);
+  });
+}
 
 test('Antigravity agent build uses a versioned artifact with a pinned checksum', () => {
   assert.match(dockerfile, /ARG ANTIGRAVITY_CLI_VERSION=\d+\.\d+\.\d+/);

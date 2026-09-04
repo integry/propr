@@ -2,7 +2,13 @@ import type { Logger } from 'pino';
 import { setTimeout } from 'timers/promises';
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { WorktreeInfo, CommitResult, WorkerStateManager } from '@propr/core';
-import { cleanupWorktree, commitChanges, pushBranch, TaskStates, describeAgentTermination, resolveAgentTerminationReason } from '@propr/core';
+import {
+    cleanupWorktree, cleanupPreparedVisualPreviewEvidence, commitChanges,
+    loadRepositoryVisualPreviewSettings, prepareVisualPreviewEvidence, pushBranch,
+    TaskStates,
+    describeAgentTermination,
+    resolveAgentTerminationReason
+} from '@propr/core';
 import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
@@ -178,6 +184,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
     const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, taskId, stateManager } = options;
     let commitResult: CommitResult | null = null;
     let postProcessingResult: PostProcessingResult | null = null;
+    let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
 
     try {
         if (!hasPublishableAgentWork(claudeResult)) {
@@ -197,6 +204,12 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
         if (claudeResult?.commitMessage) {
             commitMessage = claudeResult.commitMessage;
         }
+
+        preparedVisualPreview = await prepareVisualPreviewEvidence({
+            worktreePath: worktreeInfo.worktreePath,
+            settings: await loadRepositoryVisualPreviewSettings(`${issueRef.repoOwner}/${issueRef.repoName}`),
+            taskId: taskId || `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`
+        });
 
         commitResult = await commitChanges(
             worktreeInfo.worktreePath, commitMessage,
@@ -241,7 +254,19 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
 
         postProcessingResult = await createPullRequest(
             octokit, issueRef, worktreeInfo,
-            { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, issueTitle: currentIssueData.data.title }
+            {
+                commitResult,
+                claudeResult,
+                modelName,
+                repoValidation,
+                PR_LABEL,
+                correlatedLogger,
+                issueTitle: currentIssueData.data.title,
+                visualPreview: {
+                    evidence: preparedVisualPreview.evidence,
+                    worktreePath: worktreeInfo.worktreePath
+                }
+            }
         );
 
         // Update plan issue status to 'under_review' if PR was created successfully
@@ -264,6 +289,12 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
         // fallback. A failed/interrupted run with no commit must remain retryable.
         const canMarkDone = claudeResult.success || commitResult !== null;
         postProcessingResult = await handlePostProcessingFailure(options, postProcessingError, canMarkDone);
+    } finally {
+        try {
+            await cleanupPreparedVisualPreviewEvidence(preparedVisualPreview);
+        } catch (cleanupError) {
+            correlatedLogger.warn({ error: getErrorMessage(cleanupError) }, 'Could not clean up staged visual previews');
+        }
     }
 
     return { commitResult, postProcessingResult };
