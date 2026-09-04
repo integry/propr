@@ -53,8 +53,8 @@ and default, deletes the disposable keychain, and removes all temporary signing 
 
 The first-release Windows MVP packages only the normal desktop application. Native self-update installation authority
 is deferred to issue #2000: no broker, bootstrap, launcher, service, or authority custom action is built, copied into
-`resources`, or installed by the MSI. Both Windows architectures remain mandatory release targets, and package/MSI
-inspection fails if any deferred authority resource appears.
+`resources`, or installed by the MSI. Both Windows architectures remain optional validation targets while Windows
+publication is deferred, and package/MSI inspection fails if any deferred authority resource appears.
 
 `desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
 the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release

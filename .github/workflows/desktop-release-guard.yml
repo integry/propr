@@ -28,6 +28,7 @@ jobs:
     name: Native Windows durability (x64)
     if: github.event_name == 'pull_request'
     runs-on: windows-latest
+    continue-on-error: true
     timeout-minutes: 30
     env:
       PROPR_NATIVE_WINDOWS_DURABILITY_REQUIRED: '1'

@@ -308,6 +308,19 @@ describe('desktop trusted release workflow', () => {
   });
 
 
+  test('keeps standalone native Windows durability assertions runnable but non-blocking', () => {
+    const section = job('native-windows-durability', 'validation-version');
+    assert.match(section, /if: github\.event_name == 'pull_request'/);
+    assert.match(section, /runs-on: windows-latest/);
+    assert.match(section, /continue-on-error: true/);
+    assert.match(section, /PROPR_NATIVE_WINDOWS_DURABILITY_REQUIRED: '1'/);
+    assert.match(section, /npm run test:native-durability -w @propr\/desktop/);
+    assert.match(section, /npm run desktop:typecheck/);
+    assert.match(section, /npm run desktop:test/);
+    assert.match(section, /npm run desktop:package/);
+    assert.match(section, /npm run desktop:smoke/);
+  });
+
   test('keeps complete Windows validation assertions runnable but non-blocking and outside production', () => {
     const section = job('package', 'finalize');
     {
