@@ -189,7 +189,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cpio dbus-x11 fakeroot gnome-keyring libsecret-1-0 rpm zip
+          sudo apt-get install --yes cpio dbus-x11 desktop-file-utils fakeroot gnome-keyring libglib2.0-bin libsecret-1-0 rpm unzip xdg-utils xvfb zip
 
       - name: Package desktop app from clean checkout
         shell: bash
@@ -314,6 +314,23 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --make-directory apps/desktop/out/make \
             --output "desktop-release-${{ matrix.platform }}-${{ matrix.arch }}"
+
+      - name: Exercise staged native install, deep-link, relaunch, and removal lifecycle
+        if: matrix.platform == 'linux' || matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = linux ]; then
+            dbus-run-session -- xvfb-run --auto-servernum \
+              node apps/desktop/scripts/test-native-artifact-lifecycle.mjs \
+                --version "$PROPR_DESKTOP_VERSION" \
+                --platform linux \
+                --arch "${{ matrix.arch }}" \
+                --artifact-directory "desktop-release-${{ matrix.platform }}-${{ matrix.arch }}"
+          else
+            bash apps/desktop/scripts/run-packaged-darwin-connect-smoke.sh \
+              "${{ matrix.arch }}" native-lifecycle "$PROPR_DESKTOP_VERSION" \
+              "desktop-release-${{ matrix.platform }}-${{ matrix.arch }}"
+          fi
 
       - name: Upload unsigned validation target
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

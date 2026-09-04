@@ -124,6 +124,81 @@ PROPR_DESKTOP_ENABLE_RPM=1 \
 npm run make -w @propr/desktop -- --arch="$(node -p process.arch)"
 ```
 
+### Unsigned internal-RC install and removal (macOS/Linux)
+
+Choose the artifact whose `x64` or `arm64` suffix matches the machine. These are internal validation builds: they do
+not claim signing, notarization, or Gatekeeper approval, and the commands below do not weaken quarantine or trust
+policy. An unsigned macOS build may therefore be rejected on a normal end-user machine.
+
+Debian/Ubuntu DEB installation and native removal:
+
+```sh
+ARCH=x64 # use arm64 on an ARM64 Linux machine
+VERSION=0.8.15
+sudo apt install "./ProPR-Desktop-${VERSION}-linux-${ARCH}.deb"
+propr-desktop
+xdg-open 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000'
+xdg-open 'propr://connect?api=https%3A%2F%2Ft-your-tunnel.propr.dev'
+sudo apt remove propr-desktop
+```
+
+Fedora/RHEL-family RPM installation, followed by the package-manager-independent ZIP flow:
+
+```sh
+ARCH=x64 # use arm64 on an ARM64 Linux machine
+VERSION=0.8.15
+sudo rpm --install "ProPR-Desktop-${VERSION}-linux-${ARCH}.rpm"
+propr-desktop
+sudo rpm --erase propr-desktop
+
+install_root="$(mktemp -d)"
+unzip "ProPR-Desktop-${VERSION}-linux-${ARCH}.zip" -d "$install_root"
+"$install_root/propr-desktop-linux-${ARCH}/propr-desktop"
+rm -r "$install_root"
+```
+
+On Intel (`x64`) or Apple Silicon (`arm64`) macOS, mount and copy the DMG or extract the ZIP. Quit the app before
+removing it:
+
+```sh
+ARCH=arm64 # use x64 on an Intel Mac
+VERSION=0.8.15
+mount_point="$(mktemp -d)"
+hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" \
+  "ProPR-Desktop-${VERSION}-macos-${ARCH}.dmg"
+sudo ditto "$mount_point/propr-desktop.app" '/Applications/propr-desktop.app'
+hdiutil detach "$mount_point"
+rmdir "$mount_point"
+open '/Applications/propr-desktop.app'
+open 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000'
+open 'propr://connect?api=https%3A%2F%2Ft-your-tunnel.propr.dev'
+osascript -e 'tell application id "dev.propr.desktop" to quit'
+sudo rm -r '/Applications/propr-desktop.app'
+
+install_root="$(mktemp -d)"
+ditto -x -k "ProPR-Desktop-${VERSION}-macos-${ARCH}.zip" "$install_root"
+open "$install_root/propr-desktop.app"
+osascript -e 'tell application id "dev.propr.desktop" to quit'
+rm -r "$install_root"
+```
+
+The pull-request native gate runs DEB/RPM/ZIP on `ubuntu-24.04` and `ubuntu-24.04-arm`, and DMG/ZIP on
+`macos-15-intel` and `macos-15`. Every staged format is extracted or mounted and copied, launched, shut down,
+relaunched with the same isolated profile, and removed. It verifies the staged hash remains unchanged, executable
+architecture and native launcher registration, profile permissions and state preservation, warm OS protocol dispatch,
+renderer exactly-once acknowledgement, explicit confirmation of untrusted Connect candidates, and cleanup of owned
+processes, mounts, LaunchServices registration, profiles, and install roots.
+
+For copied macOS test apps only, CI reuses the packaged-Connect harness to generate one disposable, non-production
+code-signing identity in an isolated keychain. It signs the copied app (never the staged DMG/ZIP), verifies the same
+designated requirement before and after both launches, and restores the runner's original keychain list/default before
+deleting the identity and temporary keychain. This stabilizes the Safe Storage application identity without changing
+trust settings and is not evidence of Developer ID signing, notarization, Gatekeeper approval, or end-user launchability.
+Linux intentionally withholds the outer session bus from the artifact process: it proves plaintext/basic-text fallback
+is refused, but does not claim libsecret custody. Cold launches are direct argv; Linux package warm dispatch uses an
+isolated XDG MIME database and `gio`, ZIP warm dispatch is direct because ZIP has no registered launcher, and macOS
+warm dispatch uses LaunchServices against the exact copied bundle.
+
 ### CI preflight, signing, and notarization configuration
 
 Repository-ruleset inspection uses a dedicated GitHub App installed only on this repository. Configure the App with

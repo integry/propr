@@ -12,6 +12,11 @@ if [[ "$architecture" != 'arm64' && "$architecture" != 'x64' ]]; then
   echo 'Packaged Darwin Connect acceptance requires an explicit supported architecture.' >&2
   exit 1
 fi
+mode="${2:-connect}"
+if [[ "$mode" != 'connect' && "$mode" != 'native-lifecycle' ]]; then
+  echo 'Packaged Darwin acceptance mode is invalid.' >&2
+  exit 1
+fi
 
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repository_root="$(cd "$script_directory/../../.." && pwd -P)"
@@ -19,7 +24,10 @@ application="$repository_root/apps/desktop/out/propr-desktop-darwin-$architectur
 signature_verifier="$script_directory/verify-darwin-packaged-connect-signature.mjs"
 application_signer="$script_directory/sign-darwin-packaged-connect.mjs"
 bounded_runner="$script_directory/run-bounded-darwin-command.mjs"
-if [[ ! -d "$application" || ! -f "$signature_verifier" || ! -f "$application_signer"
+native_lifecycle="$script_directory/test-native-artifact-lifecycle.mjs"
+if [[ ( "$mode" == 'connect' && ! -d "$application" )
+  || ( "$mode" == 'native-lifecycle' && ! -f "$native_lifecycle" )
+  || ! -f "$signature_verifier" || ! -f "$application_signer"
   || ! -f "$bounded_runner" ]]; then
   echo 'Packaged Darwin Connect acceptance artifact is missing.' >&2
   exit 1
@@ -30,6 +38,7 @@ readonly COMMAND_TIMEOUT_MS=30000
 readonly CLEANUP_TIMEOUT_MS=10000
 readonly SIGNING_TIMEOUT_MS=180000
 readonly JOURNEY_TIMEOUT_MS=240000
+readonly NATIVE_LIFECYCLE_TIMEOUT_MS=1200000
 readonly TERMINATION_GRACE_MS=5000
 readonly MAX_OUTPUT_BYTES=262144
 
@@ -37,7 +46,7 @@ stage_marker() {
   local stage="$1"
   local code="$2"
   case "$stage" in
-    KEY_CERTIFICATE_GENERATION|KEYCHAIN_CREATION_SELECTION|IDENTITY_IMPORT|PARTITION_LIST_UPDATE|APPLICATION_SIGNING|INITIAL_SIGNATURE_VERIFICATION|PAIR_REPROBE_JOURNEY|STABLE_SIGNATURE_VERIFICATION|KEYCHAIN_RESTORATION_DELETION|TEMPORARY_FILE_CLEANUP) ;;
+    KEY_CERTIFICATE_GENERATION|KEYCHAIN_CREATION_SELECTION|IDENTITY_IMPORT|PARTITION_LIST_UPDATE|APPLICATION_SIGNING|INITIAL_SIGNATURE_VERIFICATION|PAIR_REPROBE_JOURNEY|NATIVE_ARTIFACT_LIFECYCLE|STABLE_SIGNATURE_VERIFICATION|KEYCHAIN_RESTORATION_DELETION|TEMPORARY_FILE_CLEANUP) ;;
     *) return 1 ;;
   esac
   case "$code" in
@@ -249,12 +258,30 @@ verify_stable_signature() {
     "$application" "$identity_sha1" "$requirement_proof" "$keychain_path"
 }
 
+run_native_artifact_lifecycle() {
+  local version="${1:-}"
+  local artifact_directory="${2:-}"
+  if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || ! -d "$artifact_directory" ]]; then
+    echo 'Native Darwin lifecycle arguments are invalid.' >&2
+    return 1
+  fi
+  PROPR_DESKTOP_NATIVE_SIGNING_KEYCHAIN="$keychain_path" \
+  PROPR_DESKTOP_NATIVE_SIGNING_CERTIFICATE_SHA1="$identity_sha1" \
+    run_bounded_forward "$NATIVE_LIFECYCLE_TIMEOUT_MS" node "$native_lifecycle" \
+      --version "$version" --platform darwin --arch "$architecture" \
+      --artifact-directory "$artifact_directory"
+}
+
 run_stage KEY_CERTIFICATE_GENERATION generate_key_and_certificates
 run_stage KEYCHAIN_CREATION_SELECTION create_and_select_keychain
 run_stage IDENTITY_IMPORT import_identity
 run_stage PARTITION_LIST_UPDATE update_partition_list
 unset keychain_password identity_password
-run_stage APPLICATION_SIGNING sign_application
-run_stage INITIAL_SIGNATURE_VERIFICATION verify_initial_signature
-run_stage PAIR_REPROBE_JOURNEY run_pair_and_reprobe
-run_stage STABLE_SIGNATURE_VERIFICATION verify_stable_signature
+if [[ "$mode" == 'connect' ]]; then
+  run_stage APPLICATION_SIGNING sign_application
+  run_stage INITIAL_SIGNATURE_VERIFICATION verify_initial_signature
+  run_stage PAIR_REPROBE_JOURNEY run_pair_and_reprobe
+  run_stage STABLE_SIGNATURE_VERIFICATION verify_stable_signature
+else
+  run_stage NATIVE_ARTIFACT_LIFECYCLE run_native_artifact_lifecycle "${3:-}" "${4:-}"
+fi

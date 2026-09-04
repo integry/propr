@@ -189,6 +189,7 @@ const config: ForgeConfig = {
           productName: 'ProPR Desktop',
           version: releaseVersion,
           bin: DESKTOP_EXECUTABLE_NAME,
+          mimeType: ['x-scheme-handler/propr'],
         },
       })]
       : []),
@@ -199,6 +200,7 @@ const config: ForgeConfig = {
           productName: 'ProPR Desktop',
           version: releaseVersion,
           bin: DESKTOP_EXECUTABLE_NAME,
+          mimeType: ['x-scheme-handler/propr'],
         },
       })]
       : []),

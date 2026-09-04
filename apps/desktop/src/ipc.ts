@@ -5,9 +5,14 @@ import type { DesktopConnectDiscoveryService } from './connect-discovery';
 import type { DesktopLogger } from './logger';
 import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
-import { isSafeExternalUrl, isTrustedRendererUrl } from './security';
+import {
+  connectApiBaseUrlFromDeepLink,
+  dashboardPathFromDeepLink,
+  isSafeExternalUrl,
+  isTrustedRendererUrl,
+} from './security';
 import { IPC_CHANNELS } from './shared/contract';
-import type { DesktopAcceptanceJourneyStage } from './shared/contract';
+import type { DesktopAcceptanceJourneyStage, DesktopDeepLinkAcknowledgement } from './shared/contract';
 
 export type DesktopAcceptanceOperation = 'PROFILE_SAVE' | 'PAIR' | 'PROBE' | 'ACTIVATE';
 export type DesktopAcceptanceOperationStatus =
@@ -30,6 +35,7 @@ interface RegisterIpcOptions {
   devServerUrl: string | undefined;
   packagedRendererUrl: string;
   openExternal(url: string): Promise<void>;
+  acknowledgeDeepLink?(event: IpcMainInvokeEvent, acknowledgement: DesktopDeepLinkAcknowledgement): boolean;
   onRendererActiveProfileChanged?(origin: string | null): void;
   /** @internal Deterministic admitted-work accounting for lifecycle proof. */
   observeInvocation?(phase: 'entry' | 'exit', channel: string): void;
@@ -76,6 +82,31 @@ const acceptanceStatus = (result: unknown): DesktopAcceptanceOperationStatus => 
   if (status === 'incompatible') return 'INCOMPATIBLE';
   if (status === 'offline') return 'OFFLINE';
   return 'COMPLETED';
+};
+
+export const isValidDesktopDeepLinkAcknowledgement = (
+  value: unknown,
+): value is DesktopDeepLinkAcknowledgement => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const acknowledgement = value as Record<string, unknown>;
+  if (Object.keys(acknowledgement).some(key => !['deliveryId', 'url', 'consumption'].includes(key))
+    || !Number.isSafeInteger(acknowledgement.deliveryId)
+    || (acknowledgement.deliveryId as number) <= 0
+    || typeof acknowledgement.url !== 'string'
+    || !acknowledgement.consumption || typeof acknowledgement.consumption !== 'object'
+    || Array.isArray(acknowledgement.consumption)) return false;
+  const consumption = acknowledgement.consumption as Record<string, unknown>;
+  if (Object.keys(consumption).some(key => !['kind', 'target'].includes(key))
+    || !['connect-confirmation', 'open-queued', 'open-navigated'].includes(consumption.kind as string)
+    || typeof consumption.target !== 'string' || consumption.target.length === 0
+    || consumption.target.length > 2_048) return false;
+  const expectedConnectTarget = connectApiBaseUrlFromDeepLink(acknowledgement.url);
+  const expectedOpenTarget = dashboardPathFromDeepLink(acknowledgement.url);
+  return expectedConnectTarget !== null
+    ? consumption.kind === 'connect-confirmation' && consumption.target === expectedConnectTarget
+    : expectedOpenTarget !== null
+      && (consumption.kind === 'open-queued' || consumption.kind === 'open-navigated')
+      && consumption.target === expectedOpenTarget;
 };
 
 export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcHandlers => {
@@ -140,6 +171,14 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
     arch: process.arch,
     packaged: options.app.isPackaged,
   }));
+  handle(IPC_CHANNELS.deepLinkAcknowledgement, (event, acknowledgement, ...args) => {
+    if (args.length || !isValidDesktopDeepLinkAcknowledgement(acknowledgement)) {
+      throw new Error('Invalid desktop deep-link acknowledgement');
+    }
+    if (!options.acknowledgeDeepLink?.(event, acknowledgement)) {
+      throw new Error('Unexpected desktop deep-link acknowledgement');
+    }
+  });
   handle(IPC_CHANNELS.authLogout, (_event, apiBaseUrl) => logoutDesktopSession(options.desktopSession, apiBaseUrl));
   handle(IPC_CHANNELS.openExternal, async (_event, value: unknown) => {
     if (typeof value !== 'string' || !isSafeExternalUrl(value)) throw new Error('External URL is not allowed');

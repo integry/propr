@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { isProprLoopbackHostname } from '@propr/shared';
-import { connectApiBaseUrlFromDeepLink } from '../../../apps/desktop/src/security';
+import { connectApiBaseUrlFromDeepLink, dashboardPathFromDeepLink } from '../../../apps/desktop/src/security';
 import { DesktopDeepLinkNavigation, type DesktopDeepLinkInbox } from '../desktop-deep-link';
-import type { DesktopProfile } from './types';
+import type { DesktopDeepLinkConsumption, DesktopProfile } from './types';
 
 const REJECTED_DEEP_LINK_MESSAGE = 'ProPR Desktop could not use that link. Choose an instance and try again.';
 const CONNECT_CANDIDATE_NOTICE = 'Review this untrusted instance address, then choose Connect to continue.';
@@ -55,7 +55,7 @@ export const useDesktopDeepLinks = ({
     },
     () => setDeepLinkError(REJECTED_DEEP_LINK_MESSAGE),
   ));
-  const handler = useRef<(value: string) => void>(() => undefined);
+  const handler = useRef<(value: string) => DesktopDeepLinkConsumption | null>(() => null);
 
   handler.current = value => {
     let action: string | null = null;
@@ -70,7 +70,7 @@ export const useDesktopDeepLinks = ({
       const baseUrl = connectApiBaseUrlFromDeepLink(value);
       if (!baseUrl) {
         setDeepLinkError(REJECTED_DEEP_LINK_MESSAGE);
-        return;
+        return null;
       }
       const candidate: DesktopProfile = {
         id: createProfileId(),
@@ -82,26 +82,44 @@ export const useDesktopDeepLinks = ({
       setDeepLinkError(null);
       setEditorNotice(CONNECT_CANDIDATE_NOTICE);
       stageCandidateRef.current(candidate, phaseRef.current);
-      return;
+      return { kind: 'connect-confirmation', target: baseUrl };
     }
 
     if (action === 'open') {
       const currentPhase = phaseRef.current;
       const currentProfileId = profileIdRef.current;
       if (currentPhase === 'loading') {
-        startupOpenLinks.current.push(value);
-        return;
-      }
-      if ((currentPhase === 'connecting' || currentPhase === 'connected') && currentProfileId) {
-        if (activeProfileId.current !== currentProfileId
-          || !navigation.receive(value, currentProfileId)) {
+        const path = dashboardPathFromDeepLink(value);
+        if (!path) {
           setDeepLinkError(REJECTED_DEEP_LINK_MESSAGE);
+          return null;
         }
-        return;
+        startupOpenLinks.current.push(value);
+        return { kind: 'open-queued', target: path };
+      }
+      const boundProfileId = currentPhase === 'connecting' || currentPhase === 'connected'
+        ? currentProfileId
+        : activeProfileId.current;
+      if (boundProfileId) {
+        if ((currentPhase === 'connecting' || currentPhase === 'connected')
+          && activeProfileId.current !== boundProfileId) {
+          setDeepLinkError(REJECTED_DEEP_LINK_MESSAGE);
+          return null;
+        }
+        const result = navigation.receiveWithState(value, boundProfileId);
+        if (!result) {
+          setDeepLinkError(REJECTED_DEEP_LINK_MESSAGE);
+          return null;
+        }
+        return {
+          kind: result.state === 'queued' ? 'open-queued' : 'open-navigated',
+          target: result.path,
+        };
       }
     }
 
     setDeepLinkError(REJECTED_DEEP_LINK_MESSAGE);
+    return null;
   };
 
   useEffect(() => deepLinks?.subscribe(value => handler.current(value)), [deepLinks]);

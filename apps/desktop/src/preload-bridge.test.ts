@@ -5,18 +5,18 @@ import { IPC_CHANNELS } from './shared/contract';
 
 class FakeIpc implements PreloadIpc {
   readonly invocations: Array<{ channel: string; args: unknown[] }> = [];
-  readonly listeners = new Map<string, (event: unknown, value: string) => void>();
+  readonly listeners = new Map<string, (event: unknown, value: unknown) => void>();
 
   async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
     this.invocations.push({ channel, args });
     return undefined;
   }
 
-  on(channel: string, listener: (event: unknown, value: string) => void): void {
+  on(channel: string, listener: (event: unknown, value: unknown) => void): void {
     this.listeners.set(channel, listener);
   }
 
-  removeListener(channel: string, listener: (event: unknown, value: string) => void): void {
+  removeListener(channel: string, listener: (event: unknown, value: unknown) => void): void {
     if (this.listeners.get(channel) === listener) this.listeners.delete(channel);
   }
 }
@@ -85,27 +85,57 @@ describe('desktop preload bridge', () => {
     const ipc = new FakeIpc();
     const bridge = createDesktopBridge(ipc);
     const received: string[] = [];
-    const unsubscribe = bridge.app.onDeepLink(value => received.push(value));
-    ipc.listeners.get(IPC_CHANNELS.deepLink)?.({ sender: 'must-not-leak' }, 'propr://open?path=%2Ftasks');
+    const unsubscribe = bridge.app.onDeepLink(value => {
+      received.push(value);
+      return { kind: 'open-queued', target: '/tasks' };
+    });
+    ipc.listeners.get(IPC_CHANNELS.deepLink)?.({ sender: 'must-not-leak' }, {
+      deliveryId: 1,
+      url: 'propr://open?path=%2Ftasks',
+    });
     assert.deepEqual(received, ['propr://open?path=%2Ftasks']);
     unsubscribe();
     assert.equal(ipc.listeners.has(IPC_CHANNELS.deepLink), true);
   });
 
-  it('buffers startup and second-instance deep links until the renderer subscribes', () => {
+  it('buffers startup and second-instance deep links until the renderer subscribes', async () => {
     const ipc = new FakeIpc();
     const bridge = createDesktopBridge(ipc);
     const receiveDeepLink = ipc.listeners.get(IPC_CHANNELS.deepLink);
     assert.ok(receiveDeepLink, 'preload must register its IPC listener eagerly');
 
-    receiveDeepLink({}, 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000');
-    receiveDeepLink({}, 'propr://open?path=%2Ftasks');
+    receiveDeepLink({}, { deliveryId: 1, url: 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000' });
+    receiveDeepLink({}, { deliveryId: 2, url: 'propr://open?path=%2Ftasks' });
 
     const received: string[] = [];
-    bridge.app.onDeepLink(value => received.push(value));
+    bridge.app.onDeepLink(value => {
+      received.push(value);
+      return value.includes('connect')
+        ? { kind: 'connect-confirmation', target: 'http://localhost:4000' }
+        : { kind: 'open-queued', target: '/tasks' };
+    });
     assert.deepEqual(received, [
       'propr://connect?api=http%3A%2F%2Flocalhost%3A4000',
       'propr://open?path=%2Ftasks',
+    ]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(ipc.invocations, [
+      {
+        channel: IPC_CHANNELS.deepLinkAcknowledgement,
+        args: [{
+          deliveryId: 1,
+          url: 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000',
+          consumption: { kind: 'connect-confirmation', target: 'http://localhost:4000' },
+        }],
+      },
+      {
+        channel: IPC_CHANNELS.deepLinkAcknowledgement,
+        args: [{
+          deliveryId: 2,
+          url: 'propr://open?path=%2Ftasks',
+          consumption: { kind: 'open-queued', target: '/tasks' },
+        }],
+      },
     ]);
   });
 });

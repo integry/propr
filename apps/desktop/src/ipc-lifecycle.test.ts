@@ -828,6 +828,10 @@ describe('desktop IPC shutdown gate', () => {
       const shutdown = createDesktopShutdownCoordinator({
         credentials: { dispose: async () => { order.push('credentials-dispose'); } },
         lifecycle: { shutdown: async () => { order.push('lifecycle-shutdown'); } },
+        deepLinks: {
+          close: () => { order.push('deep-links-close'); },
+          whenIdle: async () => { order.push('deep-links-drain'); },
+        },
         ipc: {
           close: () => { order.push('ipc-close'); registered.close(); },
           awaitIdle: () => { order.push('ipc-drain'); return registered.awaitIdle(); },
@@ -858,6 +862,9 @@ describe('desktop IPC shutdown gate', () => {
       await shutdown.awaitFinished();
 
       assert.equal(handlers.size, 0);
+      assert.equal(order.indexOf('deep-links-close') > order.indexOf('shutdown-started'), true);
+      assert.equal(order.indexOf('deep-links-close') < order.indexOf('ipc-close'), true);
+      assert.equal(order.indexOf('deep-links-drain') > order.indexOf('ipc-close'), true);
       assert.equal(order.indexOf('profiles-close') > order.indexOf('ipc-drain'), true);
       assert.equal(order.indexOf('session-dispose') > order.indexOf('profiles-close'), true);
       assert.deepEqual(order.slice(-3), ['ipc-dispose', 'window-destroy', 'app-quit']);
