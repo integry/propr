@@ -223,7 +223,8 @@ $initialOwnershipState = ConvertFrom-Json `
   -InputObject $strictUtf8.GetString($initialManifestBytes) -ErrorAction Stop
 $initialManifestKeys = @($initialOwnershipState.PSObject.Properties | ForEach-Object { $_.Name })
 $expectedInitialManifestKeys = @(
-  'SchemaVersion','ManifestType','State','RunId','CreatedUtcTicks','ExpiresUtcTicks',
+  'SchemaVersion','ManifestType','State','Generation','AuthorityState',
+  'RunId','CreatedUtcTicks','ExpiresUtcTicks',
   'InstallerPath','InstallerEntryIdentity','InstallerSha256','InstallerProductCode',
   'Fixture','FixtureRoot','BaselineClean','InstallAttempted','MsiTransactionState',
   'Directories','Files','RegistryKeys','RegistryValues','Users','Profiles'
@@ -233,6 +234,10 @@ if ($initialManifestKeys.Count -ne $expectedInitialManifestKeys.Count -or
       $initialManifestKeys -cnotcontains $_
     }).Count -ne 0 -or
     $initialOwnershipState.SchemaVersion -ne 3 -or
+    ($initialOwnershipState.Generation -isnot [long] -and
+      $initialOwnershipState.Generation -isnot [int]) -or
+    $initialOwnershipState.Generation -ne 0 -or
+    [string]$initialOwnershipState.AuthorityState -cne 'PROVISIONAL' -or
     [string]$initialOwnershipState.ManifestType -cne
       'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -or
     [string]$initialOwnershipState.State -cne 'ACTIVE' -or
@@ -266,6 +271,8 @@ $ownershipState = [ordered]@{
   SchemaVersion = 3
   ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
   State = 'ACTIVE'
+  Generation = [int64]$initialOwnershipState.Generation
+  AuthorityState = 'PROVISIONAL'
   RunId = $ownershipRunId
   CreatedUtcTicks = [int64]$initialOwnershipState.CreatedUtcTicks
   ExpiresUtcTicks = [int64]$initialOwnershipState.ExpiresUtcTicks
@@ -286,25 +293,282 @@ $ownershipState = [ordered]@{
   Profiles = @()
 }
 
-function Write-OwnershipManifest {
-  $temporaryManifest = "$ownershipManifestPath.new"
-  $bytes = [Text.Encoding]::UTF8.GetBytes(
-    ($ownershipState | ConvertTo-Json -Depth 6 -Compress))
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class ProPROwnershipAtomicFile
+{
+    private const uint MOVEFILE_REPLACE_EXISTING = 0x1;
+    private const uint MOVEFILE_WRITE_THROUGH = 0x8;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true,
+        EntryPoint = "MoveFileExW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool MoveFileExW(
+        string existingFileName, string newFileName, uint flags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string path, uint access, uint share, IntPtr security, uint creation,
+        uint flags, IntPtr template);
+
+    public static string ReadHandle(SafeFileHandle handle)
+    {
+        BY_HANDLE_FILE_INFORMATION information;
+        if (handle == null || handle.IsInvalid ||
+            !GetFileInformationByHandle(handle, out information))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "ownership manifest identity read failed");
+        if ((information.FileAttributes & (0x10 | 0x400)) != 0)
+            throw new InvalidOperationException("ownership manifest entry is invalid");
+        return String.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
+            information.FileIndexHigh, information.FileIndexLow);
+    }
+
+    public static string ReadEntry(string path)
+    {
+        using (SafeFileHandle handle = CreateFile(
+            path, 0x80, 0x7, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero))
+        {
+            if (handle == null || handle.IsInvalid)
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "ownership manifest identity open failed");
+            return ReadHandle(handle);
+        }
+    }
+
+    public static void ReplaceSameDirectory(string temporaryPath, string destinationPath)
+    {
+        string temporaryFullPath = System.IO.Path.GetFullPath(temporaryPath);
+        string destinationFullPath = System.IO.Path.GetFullPath(destinationPath);
+        if (!String.Equals(System.IO.Path.GetDirectoryName(temporaryFullPath),
+                System.IO.Path.GetDirectoryName(destinationFullPath),
+                StringComparison.OrdinalIgnoreCase) ||
+            !System.IO.File.Exists(temporaryFullPath) ||
+            !System.IO.File.Exists(destinationFullPath))
+            throw new InvalidOperationException("ownership publication precondition failed");
+        if (!MoveFileExW(temporaryFullPath, destinationFullPath,
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "ownership publication replacement failed");
+    }
+}
+'@
+
+function Read-OwnershipManifestSnapshot([string]$Path) {
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if ($item.PSIsContainer -or
+      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      $item.Length -le 0 -or $item.Length -gt 65536) {
+    throw 'ownership manifest snapshot metadata is invalid'
+  }
+  $bytes = [byte[]]::new([int]$item.Length)
   $stream = [IO.FileStream]::new(
-    $temporaryManifest,
-    [IO.FileMode]::Create,
-    [IO.FileAccess]::Write,
-    [IO.FileShare]::None,
-    4096,
-    [IO.FileOptions]::WriteThrough
-  )
+    $item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+    [IO.FileShare]'ReadWrite, Delete', 4096, [IO.FileOptions]::SequentialScan)
   try {
-    $stream.Write($bytes, 0, $bytes.Length)
-    $stream.Flush($true)
+    $entryIdentity = [ProPROwnershipAtomicFile]::ReadHandle($stream.SafeFileHandle)
+    $offset = 0
+    while ($offset -lt $bytes.Length) {
+      $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+      if ($read -eq 0) { throw 'ownership manifest snapshot read was incomplete' }
+      $offset += $read
+    }
+    if ($stream.ReadByte() -ne -1) { throw 'ownership manifest snapshot changed during read' }
+    $currentItem = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($currentItem.Length -ne $bytes.Length -or
+        [ProPROwnershipAtomicFile]::ReadEntry($Path) -cne $entryIdentity) {
+      throw 'ownership manifest pathname changed during read'
+    }
   } finally {
     $stream.Dispose()
   }
-  [IO.File]::Move($temporaryManifest, $ownershipManifestPath, $true)
+  $json = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+  return [PSCustomObject]@{
+    Json = $json
+    Record = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+  }
+}
+
+function Assert-OwnershipManifestEnvelope($Record) {
+  $keys = if ($Record -is [Collections.IDictionary]) {
+    @($Record.Keys)
+  } else {
+    @($Record.PSObject.Properties | ForEach-Object { $_.Name })
+  }
+  $expectedKeys = @(
+    'SchemaVersion','ManifestType','State','Generation','AuthorityState',
+    'RunId','CreatedUtcTicks','ExpiresUtcTicks','InstallerPath',
+    'InstallerEntryIdentity','InstallerSha256','InstallerProductCode','Fixture',
+    'FixtureRoot','BaselineClean','InstallAttempted','MsiTransactionState',
+    'Directories','Files','RegistryKeys','RegistryValues','Users','Profiles'
+  )
+  if ($keys.Count -ne $expectedKeys.Count -or
+      @($expectedKeys | Where-Object { $keys -cnotcontains $_ }).Count -ne 0 -or
+      $Record.SchemaVersion -ne 3 -or
+      [string]$Record.ManifestType -cne 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP' -or
+      [string]$Record.State -cnotin @('ACTIVE','EMPTY') -or
+      ($Record.Generation -isnot [long] -and $Record.Generation -isnot [int]) -or
+      $Record.Generation -lt 0 -or
+      [string]$Record.AuthorityState -cnotin @('PROVISIONAL','NONPROVISIONAL') -or
+      [string]$Record.RunId -cne $ownershipRunId -or
+      [string]$Record.InstallerEntryIdentity -notmatch '^[a-f0-9]{24}$' -or
+      [string]$Record.InstallerSha256 -notmatch '^[a-f0-9]{64}$' -or
+      [string]$Record.InstallerProductCode -notmatch
+        '^\{[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}\}$' -or
+      $Record.Fixture -isnot [bool] -or $Record.Fixture -or
+      $Record.BaselineClean -isnot [bool] -or
+      $Record.InstallAttempted -isnot [bool]) {
+    throw 'ownership manifest envelope is invalid'
+  }
+}
+
+function Assert-CompleteMsiOwnershipAuthority {
+  Assert-OwnershipManifestEnvelope $ownershipState
+  if ([string]$ownershipState.State -cne 'ACTIVE' -or
+      [string]$ownershipState.AuthorityState -cne 'NONPROVISIONAL' -or
+      [string]$ownershipState.MsiTransactionState -cne 'COMMITTED' -or
+      !$ownershipState.BaselineClean -or !$ownershipState.InstallAttempted -or
+      @($ownershipState.Directories).Count -ne 2 -or
+      @($ownershipState.Files).Count -ne 1 -or
+      @($ownershipState.RegistryKeys).Count -ne 2 -or
+      @($ownershipState.RegistryValues).Count -ne 1) {
+    throw 'complete MSI ownership authority is structurally invalid'
+  }
+  $directoryKinds = @($ownershipState.Directories | ForEach-Object { [string]$_.Kind })
+  $registryKinds = @($ownershipState.RegistryKeys | ForEach-Object { [string]$_.Kind })
+  if (@($directoryKinds | Select-Object -Unique).Count -ne 2 -or
+      $directoryKinds -cnotcontains 'INSTALL_ROOT' -or
+      $directoryKinds -cnotcontains 'SHORTCUT_FOLDER' -or
+      @($registryKinds | Select-Object -Unique).Count -ne 2 -or
+      $registryKinds -cnotcontains 'PROTOCOL' -or $registryKinds -cnotcontains 'APP_PATH') {
+    throw 'complete MSI ownership authority identity set is invalid'
+  }
+  foreach ($record in @($ownershipState.Directories)) {
+    if ($record.Owned -isnot [bool] -or !$record.Owned -or
+        $record.Provisional -isnot [bool] -or $record.Provisional -or
+        [string]$record.Identity -notmatch '^[a-f0-9]{24}$' -or
+        [string]$record.TreeIdentity -notmatch '^[a-f0-9]{64}$') {
+      throw 'complete MSI directory authority is invalid'
+    }
+  }
+  foreach ($record in @($ownershipState.Files)) {
+    if ([string]$record.Kind -cne 'SHORTCUT_FILE' -or
+        $record.Owned -isnot [bool] -or !$record.Owned -or
+        $record.Provisional -isnot [bool] -or $record.Provisional -or
+        [string]$record.Identity -notmatch '^[a-f0-9]{64}$' -or
+        [string]$record.EntryIdentity -notmatch '^[a-f0-9]{24}$') {
+      throw 'complete MSI file authority is invalid'
+    }
+  }
+  foreach ($record in @($ownershipState.RegistryKeys)) {
+    if ($record.Owned -isnot [bool] -or !$record.Owned -or
+        $record.Provisional -isnot [bool] -or $record.Provisional -or
+        [string]$record.Identity -notmatch '^[a-f0-9]{64}$') {
+      throw 'complete MSI registry authority is invalid'
+    }
+  }
+  $value = $ownershipState.RegistryValues[0]
+  if ([string]$value.Kind -cne 'HKCU_INSTALLED' -or
+      $value.Owned -isnot [bool] -or !$value.Owned -or
+      $value.Provisional -isnot [bool] -or $value.Provisional -or
+      $value.BaselineKeyExisted -isnot [bool] -or
+      $value.BaselineValueExisted -isnot [bool] -or
+      $value.KeyCreatedByRun -isnot [bool] -or
+      [string]::IsNullOrEmpty([string]$value.IdentityValueKind) -or
+      [string]::IsNullOrEmpty([string]$value.IdentityValueData)) {
+    throw 'complete MSI registry-value authority is invalid'
+  }
+  Assert-InstallerArtifactAuthority
+}
+
+function Assert-PublishedMsiOwnershipAuthority([string]$ExpectedTransactionState) {
+  if ($ExpectedTransactionState -cnotin @('COMMITTED','ROLLED_BACK_CLEAN')) {
+    throw 'published MSI authority expectation is invalid'
+  }
+  $published = Read-OwnershipManifestSnapshot $ownershipManifestPath
+  Assert-OwnershipManifestEnvelope $published.Record
+  if ([int64]$published.Record.Generation -ne [int64]$ownershipState.Generation -or
+      [string]$published.Record.AuthorityState -cne 'NONPROVISIONAL' -or
+      [string]$published.Record.MsiTransactionState -cne $ExpectedTransactionState -or
+      [string]$published.Record.RunId -cne $ownershipRunId) {
+    throw 'published MSI authority generation is invalid'
+  }
+  if ($ExpectedTransactionState -ceq 'COMMITTED') {
+    Assert-CompleteMsiOwnershipAuthority
+  } elseif (@($published.Record.Directories).Count -ne 0 -or
+      @($published.Record.Files).Count -ne 0 -or
+      @($published.Record.RegistryKeys).Count -ne 0) {
+    throw 'published rollback authority is not clean'
+  }
+  Assert-InstallerArtifactAuthority
+}
+
+function Write-OwnershipManifest {
+  $temporaryManifest = "$ownershipManifestPath.new"
+  Assert-OwnershipManifestEnvelope $ownershipState
+  $previousGeneration = [int64]$ownershipState.Generation
+  if ($previousGeneration -eq [int64]::MaxValue) {
+    throw 'ownership manifest generation is exhausted'
+  }
+  $ownershipState.Generation = $previousGeneration + 1
+  try {
+    Assert-OwnershipManifestEnvelope $ownershipState
+    $json = $ownershipState | ConvertTo-Json -Depth 6 -Compress
+    $roundTrip = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+    Assert-OwnershipManifestEnvelope $roundTrip
+    if ([int64]$roundTrip.Generation -ne [int64]$ownershipState.Generation) {
+      throw 'ownership manifest generation round trip failed'
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    $stream = [IO.FileStream]::new(
+      $temporaryManifest, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+      [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    try {
+      $stream.Write($bytes, 0, $bytes.Length)
+      $stream.Flush($true)
+    } finally {
+      $stream.Dispose()
+    }
+    $current = Read-OwnershipManifestSnapshot $ownershipManifestPath
+    Assert-OwnershipManifestEnvelope $current.Record
+    if ([int64]$current.Record.Generation -ne $previousGeneration) {
+      throw 'ownership manifest generation is stale'
+    }
+    [ProPROwnershipAtomicFile]::ReplaceSameDirectory(
+      $temporaryManifest, $ownershipManifestPath)
+    $published = Read-OwnershipManifestSnapshot $ownershipManifestPath
+    Assert-OwnershipManifestEnvelope $published.Record
+    if ($published.Json -cne $json -or
+        [int64]$published.Record.Generation -ne [int64]$ownershipState.Generation) {
+      throw 'ownership manifest durable publication re-read failed'
+    }
+  } catch {
+    $ownershipState.Generation = $previousGeneration
+    throw
+  }
 }
 
 function Test-SamePath([string]$Left, [string]$Right) {
@@ -804,6 +1068,7 @@ function Write-WatchdogMarker(
     'PATHS',
     'BASELINE',
     'MSI_INSTALL',
+    'AUTHORITY_PUBLICATION',
     'OWNERSHIP_CAPTURE',
     'INSTALL_TREE_SCAN',
     'APPLICATION_IMAGE',
@@ -1800,7 +2065,7 @@ try {
     if ($null -ne $msiTransactionFailure) {
       Invoke-BoundedExternalOperation `
         -Stage 'INSTALL' `
-        -Substage 'OWNERSHIP_CAPTURE' `
+        -Substage 'AUTHORITY_PUBLICATION' `
         -TimeoutMilliseconds $externalOperationTimeoutMilliseconds `
         -Operation {
           Wait-ExactCleanMsiBaselineAfterRollback
@@ -1818,13 +2083,21 @@ try {
             KeyCreatedByRun = $false
           })
           $ownershipState.MsiTransactionState = 'ROLLED_BACK_CLEAN'
+          $ownershipState.AuthorityState = 'NONPROVISIONAL'
           Write-OwnershipManifest
+        }
+      Invoke-BoundedExternalOperation `
+        -Stage 'INSTALL' `
+        -Substage 'OWNERSHIP_CAPTURE' `
+        -TimeoutMilliseconds $externalOperationTimeoutMilliseconds `
+        -Operation {
+          Assert-PublishedMsiOwnershipAuthority 'ROLLED_BACK_CLEAN'
         }
       throw $msiTransactionFailure
     } else {
       Invoke-BoundedExternalOperation `
         -Stage 'INSTALL' `
-        -Substage 'OWNERSHIP_CAPTURE' `
+        -Substage 'AUTHORITY_PUBLICATION' `
         -TimeoutMilliseconds $externalOperationTimeoutMilliseconds `
         -Operation {
           if (!$script:msiInstallCompleted) {
@@ -1940,7 +2213,16 @@ try {
             KeyCreatedByRun = $script:hkcuDesktopKeyCreatedByRun
           })
           $ownershipState.MsiTransactionState = 'COMMITTED'
+          $ownershipState.AuthorityState = 'NONPROVISIONAL'
+          Assert-CompleteMsiOwnershipAuthority
           Write-OwnershipManifest
+        }
+      Invoke-BoundedExternalOperation `
+        -Stage 'INSTALL' `
+        -Substage 'OWNERSHIP_CAPTURE' `
+        -TimeoutMilliseconds $externalOperationTimeoutMilliseconds `
+        -Operation {
+          Assert-PublishedMsiOwnershipAuthority 'COMMITTED'
         }
     }
     Write-Stage 'INSTALL' 'COMPLETE'

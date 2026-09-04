@@ -24,6 +24,7 @@ $watchdogSubstages = @(
   'PATHS',
   'BASELINE',
   'MSI_INSTALL',
+  'AUTHORITY_PUBLICATION',
   'OWNERSHIP_CAPTURE',
   'INSTALL_TREE_SCAN',
   'APPLICATION_IMAGE',
@@ -259,6 +260,19 @@ public static class ProPRInstallerEntryIdentity
     private static extern bool GetFileInformationByHandle(
         SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
 
+    public static string ReadHandle(SafeFileHandle handle)
+    {
+        if (handle == null || handle.IsInvalid)
+            throw new InvalidOperationException("installer identity handle is invalid");
+        BY_HANDLE_FILE_INFORMATION information;
+        if (!GetFileInformationByHandle(handle, out information))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "installer identity read failed");
+        if ((information.FileAttributes & (0x10 | 0x400)) != 0)
+            throw new InvalidOperationException("installer entry is not an ordinary file");
+        return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
+            information.FileIndexHigh, information.FileIndexLow);
+    }
+
     public static string Read(string path)
     {
         using (SafeFileHandle handle = CreateFile(
@@ -266,13 +280,7 @@ public static class ProPRInstallerEntryIdentity
         {
             if (handle == null || handle.IsInvalid)
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "installer identity open failed");
-            BY_HANDLE_FILE_INFORMATION information;
-            if (!GetFileInformationByHandle(handle, out information))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "installer identity read failed");
-            if ((information.FileAttributes & (0x10 | 0x400)) != 0)
-                throw new InvalidOperationException("installer entry is not an ordinary file");
-            return string.Format("{0:x8}{1:x8}{2:x8}", information.VolumeSerialNumber,
-                information.FileIndexHigh, information.FileIndexLow);
+            return ReadHandle(handle);
         }
     }
 }
@@ -702,6 +710,8 @@ function Write-InitialOwnershipManifest(
     SchemaVersion = 3
     ManifestType = 'PROPR_WINDOWS_INSTALLED_APP_OWNERSHIP'
     State = 'ACTIVE'
+    Generation = [int64]0
+    AuthorityState = 'PROVISIONAL'
     RunId = $identifiers.RunId
     CreatedUtcTicks = $createdUtcTicks
     ExpiresUtcTicks = $createdUtcTicks + ([TimeSpan]::TicksPerHour * 3)
@@ -724,6 +734,9 @@ function Write-InitialOwnershipManifest(
   $manifestJson = $manifest | ConvertTo-Json -Depth 6 -Compress
   $roundTrip = ConvertFrom-Json -InputObject $manifestJson -ErrorAction Stop
   if ([string]$roundTrip.RunId -cne $identifiers.RunId -or
+      ($roundTrip.Generation -isnot [long] -and $roundTrip.Generation -isnot [int]) -or
+      $roundTrip.Generation -ne 0 -or
+      [string]$roundTrip.AuthorityState -cne 'PROVISIONAL' -or
       [string]$roundTrip.InstallerEntryIdentity -cne
         $identifiers.InstallerEntryIdentity -or
       [string]$roundTrip.InstallerSha256 -cne $identifiers.InstallerSha256 -or
@@ -750,7 +763,9 @@ function Write-InitialOwnershipManifest(
 
 function Test-MsiCriticalMarker($Marker) {
   return $null -ne $Marker -and [string]$Marker.Stage -ceq 'INSTALL' -and
-    [string]$Marker.Substage -in @('MSI_INSTALL','OWNERSHIP_CAPTURE') -and
+    [string]$Marker.Substage -in @(
+      'MSI_INSTALL','AUTHORITY_PUBLICATION','OWNERSHIP_CAPTURE'
+    ) -and
     !([string]$Marker.Substage -ceq 'OWNERSHIP_CAPTURE' -and
       [string]$Marker.Status -ceq 'COMPLETE')
 }
@@ -770,6 +785,8 @@ function Get-DurableMsiTransactionReceipt {
       [IO.FileOptions]::SequentialScan
     )
     try {
+      $manifestEntryIdentity = [ProPRInstallerEntryIdentity]::ReadHandle(
+        $stream.SafeFileHandle)
       $offset = 0
       while ($offset -lt $bytes.Length) {
         $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
@@ -777,6 +794,12 @@ function Get-DurableMsiTransactionReceipt {
         $offset += $read
       }
       if ($stream.ReadByte() -ne -1) { return 'UNAVAILABLE' }
+      $currentItem = Get-Item -LiteralPath $ownershipManifestPath -Force -ErrorAction Stop
+      if ($currentItem.Length -ne $bytes.Length -or
+          [ProPRInstallerEntryIdentity]::Read($ownershipManifestPath) -cne
+            $manifestEntryIdentity) {
+        return 'UNAVAILABLE'
+      }
     } finally {
       $stream.Dispose()
     }
@@ -785,7 +808,8 @@ function Get-DurableMsiTransactionReceipt {
       -ErrorAction Stop
     $manifestKeys = @($manifest.PSObject.Properties | ForEach-Object { $_.Name })
     $expectedManifestKeys = @(
-      'SchemaVersion','ManifestType','State','RunId','CreatedUtcTicks','ExpiresUtcTicks',
+      'SchemaVersion','ManifestType','State','Generation','AuthorityState',
+      'RunId','CreatedUtcTicks','ExpiresUtcTicks',
       'InstallerPath','InstallerEntryIdentity','InstallerSha256','InstallerProductCode',
       'Fixture','FixtureRoot','BaselineClean','InstallAttempted','MsiTransactionState',
       'Directories','Files','RegistryKeys','RegistryValues','Users','Profiles'
@@ -795,13 +819,20 @@ function Get-DurableMsiTransactionReceipt {
           $manifestKeys -cnotcontains $_
         }).Count -ne 0 -or
         $manifest.SchemaVersion -ne 3 -or
+        ($manifest.Generation -isnot [long] -and $manifest.Generation -isnot [int]) -or
+        $manifest.Generation -lt 0 -or
+        [string]$manifest.AuthorityState -cnotin @('PROVISIONAL','NONPROVISIONAL') -or
         [string]$manifest.RunId -cne $ownershipRunId -or
         !(Test-InstallerArtifactAuthority $manifest) -or
         [string]$manifest.State -notin @('ACTIVE','EMPTY')) { return 'UNAVAILABLE' }
     if ([string]$manifest.State -ceq 'EMPTY' -and
         [string]$manifest.MsiTransactionState -ceq 'NONE' -and
-        !$manifest.InstallAttempted) { return 'ROLLED_BACK_CLEAN' }
+        !$manifest.InstallAttempted -and
+        [string]$manifest.AuthorityState -ceq 'NONPROVISIONAL') {
+      return 'ROLLED_BACK_CLEAN'
+    }
     if ([string]$manifest.MsiTransactionState -ceq 'ROLLED_BACK_CLEAN' -and
+        [string]$manifest.AuthorityState -ceq 'NONPROVISIONAL' -and
         @($manifest.Directories).Count -eq 0 -and @($manifest.Files).Count -eq 0 -and
         @($manifest.RegistryKeys).Count -eq 0 -and
         (($manifest.Fixture -and @($manifest.RegistryValues).Count -eq 0) -or
@@ -809,7 +840,10 @@ function Get-DurableMsiTransactionReceipt {
             !$manifest.RegistryValues[0].Owned))) {
       return 'ROLLED_BACK_CLEAN'
     }
-    if ([string]$manifest.MsiTransactionState -cne 'COMMITTED') { return 'UNAVAILABLE' }
+    if ([string]$manifest.MsiTransactionState -cne 'COMMITTED' -or
+        [string]$manifest.AuthorityState -cne 'NONPROVISIONAL') {
+      return 'UNAVAILABLE'
+    }
     $ownedDirectories = @($manifest.Directories | Where-Object {
       $_.Owned -and [string]$_.Kind -in @('INSTALL_ROOT','SHORTCUT_FOLDER') -and
       !$_.Provisional -and
