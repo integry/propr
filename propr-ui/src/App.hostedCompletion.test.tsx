@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 
 const runtimeConfigMock = vi.hoisted(() => ({
+  getRuntimeApiBaseUrlState: vi.fn(() => ({ apiBaseUrl: '', issue: null })),
   hostedUiConnectionIssue: vi.fn(),
   isHostedOAuthCompletionRoute: vi.fn(),
 }));
@@ -23,6 +24,7 @@ const ioMock = vi.hoisted(() => vi.fn(() => ({
 
 vi.mock('./config/runtimeConfig', () => ({
   getApiBaseUrl: vi.fn(() => ''),
+  getRuntimeApiBaseUrlState: runtimeConfigMock.getRuntimeApiBaseUrlState,
   hostedUiConnectionIssue: runtimeConfigMock.hostedUiConnectionIssue,
   isHostedOAuthCompletionRoute: runtimeConfigMock.isHostedOAuthCompletionRoute,
   isHostedUiOrigin: vi.fn(() => true),
@@ -53,6 +55,7 @@ describe('hosted OAuth completion route', () => {
         pathname === '/login' && new URLSearchParams(search).get('oauth_complete') === 'true'
     );
     runtimeConfigMock.hostedUiConnectionIssue.mockReturnValue({
+      code: 'HOSTED_STACK_REQUIRED',
       title: 'Connect a ProPR stack',
       message: 'This hosted UI needs a selected local stack before it can make API calls.',
     });

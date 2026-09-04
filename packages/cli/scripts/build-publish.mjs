@@ -2,11 +2,11 @@
 // Build a standalone, publishable npm package for the CLI.
 //
 // The in-repo package is the scoped workspace package `@propr/cli`, which depends
-// on the workspace package `@propr/shared`. Neither scoped package is published to
-// npm, so we ship the CLI under the unscoped public name `propr-cli` with
-// `@propr/shared` *vendored* into `dist/vendor/shared/` (it is dependency-free) and
-// the two `@propr/shared` imports rewritten to a relative path. The result has no
-// scoped dependencies and installs cleanly from the public registry.
+// on the workspace packages `@propr/shared` and `@propr/local-setup`. These scoped
+// packages are not published to npm, so we ship the CLI under the unscoped public
+// name `propr-cli` with both packages vendored into `dist/vendor/` and their imports
+// rewritten to relative paths. The result has no scoped dependencies and installs
+// cleanly from the public registry.
 //
 // Usage:
 //   node scripts/build-publish.mjs            # build the staging package + npm pack --dry-run
@@ -35,9 +35,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const cliDir = resolve(here, "..");
 const repoRoot = resolve(cliDir, "..", "..");
 const sharedDir = join(repoRoot, "packages", "shared");
+const localSetupDir = join(repoRoot, "packages", "local-setup");
 const stageDir = join(repoRoot, "dist-publish", "propr-cli");
 const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2024.12.2";
-
 const run = (cmd, cmdArgs, cwd = repoRoot) =>
   execFileSync(cmd, cmdArgs, { cwd, stdio: "inherit" });
 
@@ -75,6 +75,11 @@ const buildLauncherManifest = (version) => {
 
 // 1. Build the workspace packages we depend on.
 run("npm", ["run", "build", "-w", "@propr/shared"]);
+run("npm", ["run", "build", "-w", "@propr/local-setup"]);
+// TypeScript does not remove outputs for deleted source files. Start the
+// publishable CLI build from an empty output directory so retired authority
+// implementations cannot survive as stale package-controlled executables or JS.
+rmSync(join(cliDir, "dist"), { recursive: true, force: true });
 run("npm", ["run", "build", "-w", "@propr/cli"]);
 
 // 2. Stage the CLI dist + README.
@@ -89,7 +94,7 @@ for (const requiredSkillFile of ["SKILL.md", join("agents", "openai.yaml")]) {
 const nativeArtifacts = {
   "darwin-arm64": "88f07c0c7a4371f4fb227a4691009d09517de582ba49297d28d03ac94e586615",
   "darwin-x64": "62183c0f4083cb8c98e09e2d2c688f8f81703e12b0f22320c335b51e927eaf53",
-  "linux-arm64": "29b28b76ed8781f2567897ad9ba576798bbb669937048218e0416601788e0f1c",
+  "linux-arm64": "916679f413251c4b23c51167987a874bbbdd9d96991882bfac9093e0ea5fa051",
   "linux-x64": "7199378f1c7b443a05c596eae7c66f9a77cc01b4a493c07748df0df1083950f6",
 };
 for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {
@@ -98,17 +103,37 @@ for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {
   const actual = createHash("sha256").update(readFileSync(artifact)).digest("hex");
   if (actual !== expected) throw new Error(`${platformArch} directory-operations artifact failed integrity verification`);
 }
-for (const auditedFile of ["directory-operations.c", "README.md"]) {
+const authorityArtifacts = {
+  "darwin-arm64/connect-authority-broker": "75fda2624bf093555e726b968401321fef61ea7ae0479f4c1892be0dfc6554c0",
+  "darwin-x64/connect-authority-broker": "e5a49be0db85655b9ff1d0614de9d61defd41a0a1b2eff8f11571407f10d809b",
+};
+for (const [relativeArtifact, expected] of Object.entries(authorityArtifacts)) {
+  const artifact = join(stageDir, "dist", "native", "prebuilds", relativeArtifact);
+  if (!existsSync(artifact)) throw new Error(`Native authority broker is missing: ${artifact}`);
+  const actual = createHash("sha256").update(readFileSync(artifact)).digest("hex");
+  if (actual !== expected) throw new Error(`${relativeArtifact} failed integrity verification`);
+}
+for (const auditedFile of [
+  "directory-operations.c",
+  "darwin-authority-broker.c",
+  "README.md",
+]) {
   const bundled = join(stageDir, "dist", "native", auditedFile);
   if (!existsSync(bundled)) throw new Error(`Audited native helper file is missing: ${bundled}`);
 }
 
-// 3. Vendor shared's compiled JS (dependency-free) into dist/vendor/shared.
-const vendorDir = join(stageDir, "dist", "vendor", "shared");
-mkdirSync(vendorDir, { recursive: true });
-for (const file of readdirSync(join(sharedDir, "dist"))) {
-  if (file.endsWith(".js")) {
-    cpSync(join(sharedDir, "dist", file), join(vendorDir, file));
+// 3. Vendor the compiled workspace packages into dist/vendor.
+const vendorRoot = join(stageDir, "dist", "vendor");
+const vendorPackages = [
+  { source: sharedDir, destination: join(vendorRoot, "shared") },
+  { source: localSetupDir, destination: join(vendorRoot, "local-setup") },
+];
+for (const { source, destination } of vendorPackages) {
+  mkdirSync(destination, { recursive: true });
+  for (const file of readdirSync(join(source, "dist"))) {
+    if (file.endsWith(".js")) {
+      cpSync(join(source, "dist", file), join(destination, file));
+    }
   }
 }
 
@@ -122,23 +147,29 @@ const stripMaps = (dir) => {
 };
 stripMaps(join(stageDir, "dist"));
 
-// 5. Rewrite the `@propr/shared` import specifier to the vendored relative path.
-const rewriteSharedImports = (dir) => {
+// 5. Rewrite private workspace imports to their vendored relative paths.
+const vendoredImports = new Map([
+  ["@propr/shared", join(vendorRoot, "shared", "index.js")],
+  ["@propr/local-setup", join(vendorRoot, "local-setup", "index.js")],
+]);
+const rewriteVendoredImports = (dir) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      rewriteSharedImports(full);
+      rewriteVendoredImports(full);
     } else if (entry.name.endsWith(".js")) {
-      const src = readFileSync(full, "utf8");
-      if (src.includes('"@propr/shared"')) {
-        let sharedPath = relative(dirname(full), join(vendorDir, "index.js")).split(sep).join("/");
-        if (!sharedPath.startsWith(".")) sharedPath = `./${sharedPath}`;
-        writeFileSync(full, src.replaceAll('"@propr/shared"', `"${sharedPath}"`));
+      let src = readFileSync(full, "utf8");
+      for (const [specifier, target] of vendoredImports) {
+        if (!src.includes(`"${specifier}"`)) continue;
+        let vendorPath = relative(dirname(full), target).split(sep).join("/");
+        if (!vendorPath.startsWith(".")) vendorPath = `./${vendorPath}`;
+        src = src.replaceAll(`"${specifier}"`, `"${vendorPath}"`);
       }
+      writeFileSync(full, src);
     }
   }
 };
-rewriteSharedImports(join(stageDir, "dist"));
+rewriteVendoredImports(join(stageDir, "dist"));
 
 // 6. Write the unscoped package.json (no scoped deps, no build scripts).
 const cliPkg = JSON.parse(readFileSync(join(cliDir, "package.json"), "utf8"));

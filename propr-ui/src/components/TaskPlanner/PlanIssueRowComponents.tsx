@@ -10,6 +10,7 @@ import { ProviderLogo } from '../ui/ProviderLogo';
 import AgentModelSelector from './AgentModelSelector';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 import { getModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
+import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
 
 interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; }
 
@@ -311,7 +312,7 @@ export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId 
 
                   return (
                     <div key={attachment.id} className="inline-flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm">
-                      {isImage ? <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-gray-200 border border-gray-300"><img src={getAttachmentUrl(draftId, attachment.id)} alt={attachment.originalName} className="w-full h-full object-cover" crossOrigin="use-credentials" /></div> : renderAttachmentIcon()}
+                      {isImage ? <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-gray-200 border border-gray-300"><AuthenticatedAttachmentImage src={getAttachmentUrl(draftId, attachment.id)} alt={attachment.originalName} className="w-full h-full object-cover" /></div> : renderAttachmentIcon()}
                       <span className="text-gray-700 max-w-[150px] truncate" title={attachment.originalName}>
                         {attachment.originalName}
                       </span>

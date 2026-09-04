@@ -19,8 +19,11 @@ import {
   ensurePrivateDirectory,
   secureExistingPrivateDirectory,
   secureExistingPrivateFile,
+  validateExistingPrivateDirectory,
+  validateExistingPrivateFile,
   writePrivateFileAtomic,
 } from "../utils/privateFilesystem.js";
+import { canonicalRootKey } from "./rootKey.js";
 
 /**
  * Default configuration directory name.
@@ -62,6 +65,8 @@ export class ConfigManager {
   private configFilePath: string;
   private config: CLIConfig;
   private initialized: boolean = false;
+  private readonly warn: (message: string) => void;
+  private readonly readOnly: boolean;
 
   /**
    * Creates a new ConfigManager instance.
@@ -69,10 +74,15 @@ export class ConfigManager {
    * @param customConfigDir - Optional custom configuration directory path.
    *                          Defaults to ~/.propr
    */
-  constructor(customConfigDir?: string) {
+  constructor(
+    customConfigDir?: string,
+    options: { warn?: (message: string) => void; readOnly?: boolean } = {},
+  ) {
     this.configDir = customConfigDir ?? path.join(os.homedir(), CONFIG_DIR_NAME);
     this.configFilePath = path.join(this.configDir, CONFIG_FILE_NAME);
     this.config = { ...DEFAULT_CONFIG };
+    this.warn = options.warn ?? ((message) => console.warn(message));
+    this.readOnly = options.readOnly ?? false;
   }
 
   /**
@@ -99,15 +109,19 @@ export class ConfigManager {
    */
   async load(): Promise<CLIConfig> {
     try {
-      if (secureExistingPrivateDirectory(this.configDir)) {
-        secureExistingPrivateFile(this.configFilePath);
+      const directoryExists = this.readOnly
+        ? validateExistingPrivateDirectory(this.configDir)
+        : await secureExistingPrivateDirectory(this.configDir);
+      if (directoryExists) {
+        if (this.readOnly) validateExistingPrivateFile(this.configFilePath);
+        else await secureExistingPrivateFile(this.configFilePath);
       }
       const data = await fs.promises.readFile(this.configFilePath, "utf-8");
       const parsed = JSON.parse(data);
 
       // Validate that parsed data is an object
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        console.warn(
+        this.warn(
           `Warning: Configuration file at ${this.configFilePath} contains invalid data. Using defaults.`
         );
         this.config = { ...DEFAULT_CONFIG };
@@ -132,7 +146,7 @@ export class ConfigManager {
 
       if (err instanceof SyntaxError) {
         // JSON parsing error - corrupted file
-        console.warn(
+        this.warn(
           `Warning: Configuration file at ${this.configFilePath} is corrupted (invalid JSON). Using defaults.`
         );
         this.config = { ...DEFAULT_CONFIG };
@@ -140,7 +154,7 @@ export class ConfigManager {
       }
 
       // Other errors (permission issues, etc.)
-      console.warn(
+      this.warn(
         `Warning: Could not read configuration file at ${this.configFilePath}: ${err.message}. Using defaults.`
       );
       this.config = { ...DEFAULT_CONFIG };
@@ -207,7 +221,7 @@ export class ConfigManager {
     ) {
       for (const [root, enabled] of Object.entries(data.tunnelEnabledByRoot as Record<string, unknown>)) {
         if (path.isAbsolute(root) && typeof enabled === "boolean") {
-          tunnelEnabledByRoot[path.resolve(root)] = enabled;
+          tunnelEnabledByRoot[canonicalRootKey(root)] = enabled;
         }
       }
     }
@@ -218,7 +232,7 @@ export class ConfigManager {
     // If no stackRoot was recorded, there is no safe root to associate with the
     // flag, so leave it unset and fall back to that stack's own .env default.
     if (typeof data.tunnelEnabled === "boolean" && typeof data.stackRoot === "string") {
-      const legacyRoot = path.resolve(data.stackRoot);
+      const legacyRoot = canonicalRootKey(path.resolve(data.stackRoot));
       if (!(legacyRoot in tunnelEnabledByRoot)) {
         tunnelEnabledByRoot[legacyRoot] = data.tunnelEnabled;
       }
@@ -274,7 +288,8 @@ export class ConfigManager {
    * @returns A promise that resolves when the configuration is saved.
    */
   async save(): Promise<void> {
-    ensurePrivateDirectory(this.configDir);
+    if (this.readOnly) throw new Error("Configuration manager is read-only");
+    await ensurePrivateDirectory(this.configDir);
 
     // Only write non-undefined values
     const dataToWrite: Record<string, unknown> = {};
@@ -285,7 +300,7 @@ export class ConfigManager {
     }
 
     const content = JSON.stringify(dataToWrite, null, 2);
-    writePrivateFileAtomic(this.configFilePath, content);
+    await writePrivateFileAtomic(this.configFilePath, content);
   }
 
   /**
@@ -515,7 +530,7 @@ export class ConfigManager {
    * it to false.
    */
   getTunnelEnabled(root: string): boolean | undefined {
-    return this.config.tunnelEnabledByRoot?.[path.resolve(root)];
+    return this.config.tunnelEnabledByRoot?.[canonicalRootKey(path.resolve(root))];
   }
 
   /**
@@ -524,7 +539,7 @@ export class ConfigManager {
    * applies again (used to roll back a failed toggle).
    */
   async setTunnelEnabled(root: string, enabled: boolean | undefined): Promise<void> {
-    const normalizedRoot = path.resolve(root);
+    const normalizedRoot = canonicalRootKey(path.resolve(root));
     const states = { ...(this.config.tunnelEnabledByRoot ?? {}) };
     if (enabled === undefined) {
       delete states[normalizedRoot];
@@ -616,9 +631,10 @@ export class ConfigManager {
  * @returns A promise that resolves to an initialized ConfigManager.
  */
 export async function createConfigManager(
-  customConfigDir?: string
+  customConfigDir?: string,
+  options: { warn?: (message: string) => void; readOnly?: boolean } = {},
 ): Promise<ConfigManager> {
-  const manager = new ConfigManager(customConfigDir);
+  const manager = new ConfigManager(customConfigDir, options);
   await manager.init();
   return manager;
 }

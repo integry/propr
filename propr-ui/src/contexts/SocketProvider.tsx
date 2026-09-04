@@ -1,8 +1,15 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
-import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import React, { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react';
+import type { Socket } from '@propr/client';
+import { DESKTOP_TRANSPORT_SCOPE_QUERY, TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
-import { getApiBaseUrl } from '../config/runtimeConfig';
+import {
+  getDesktopConnectionScope,
+  getDesktopSocketConfigurationKey,
+  getProprClient,
+  handleDesktopAccessCode,
+  subscribeDesktopConnectionScope,
+} from '../api/apiClient';
+import { isDesktopRuntime } from '../config/runtimeMode';
 
 interface SocketProviderProps {
   children: React.ReactNode;
@@ -17,6 +24,11 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
   const indexingUpdateCallbacksRef = useRef<Set<(payload: IndexingUpdatePayload) => void>>(new Set());
   const queueStatsUpdateCallbacksRef = useRef<Set<(payload: QueueStatsUpdatePayload) => void>>(new Set());
   const taskLiveUpdateCallbacksRef = useRef<Set<(payload: TaskLiveUpdatePayload) => void>>(new Set());
+  const socketConfigurationKey = useSyncExternalStore(
+    subscribeDesktopConnectionScope,
+    getDesktopSocketConfigurationKey,
+    getDesktopSocketConfigurationKey,
+  );
 
   useEffect(() => {
     if (disabled) {
@@ -25,32 +37,70 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       return;
     }
 
-    // Connect to the backend WebSocket server using the same runtime-configured
-    // API base URL as REST calls, so REST and Socket.IO always share an origin.
-    // When empty, socket.io-client connects to the same origin.
-    const socketUrl = getApiBaseUrl() || undefined;
-
-    const newSocket = io(socketUrl, {
+    const desktopScope = getDesktopConnectionScope();
+    if (isDesktopRuntime() && !desktopScope) {
+      setSocket(null);
+      setIsConnected(false);
+      return;
+    }
+    setIsConnected(false);
+    const newSocket = getProprClient().connectSocket({
       transports: ['websocket'],
-      withCredentials: true,
       autoConnect: true,
-      // Use path for socket.io which is the standard /socket.io/
       path: '/socket.io/',
+      forceNew: true,
+      ...(desktopScope ? {
+        auth: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope },
+        query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope },
+      } : {}),
     });
+    let disposed = false;
+    const isCurrentScope = (): boolean => {
+      if (disposed) return false;
+      const current = getDesktopConnectionScope();
+      return current?.profileId === desktopScope?.profileId
+        && current?.transportScope === desktopScope?.transportScope;
+    };
+    const handleAuthenticationCode = (code: string | undefined, reconnect = false): void => {
+      if (!isCurrentScope()) return;
+      void handleDesktopAccessCode(code, desktopScope).then(classification => {
+        if (!isCurrentScope()) return;
+        if (classification === 'authorization-changed' && reconnect) {
+          newSocket.disconnect();
+          if (!isCurrentScope()) return;
+          newSocket.connect();
+        }
+      });
+    };
 
-    newSocket.on('connect', () => {
+    const connected = () => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Connected to WebSocket server');
       setIsConnected(true);
-    });
+    };
 
-    newSocket.on('disconnect', (reason) => {
+    const disconnected = (reason: string) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Disconnected from WebSocket server:', reason);
       setIsConnected(false);
-    });
+    };
 
-    newSocket.on('connect_error', (error) => {
+    const connectionError = (error: Error) => {
+      if (!isCurrentScope()) return;
+      setIsConnected(false);
       console.error('[SocketContext] Connection error:', error.message);
-    });
+      const code = (error as Error & { data?: { code?: string } }).data?.code;
+      handleAuthenticationCode(code);
+    };
+
+    const authenticationError = (value: { code?: string } | undefined) => {
+      handleAuthenticationCode(value?.code, true);
+    };
+
+    newSocket.on('connect', connected);
+    newSocket.on('disconnect', disconnected);
+    newSocket.on('connect_error', connectionError);
+    newSocket.on('authentication:error', authenticationError);
 
     // Set up global event listeners
     newSocket.on(TASK_UPDATE, (payload: TaskUpdatePayload) => {
@@ -82,9 +132,20 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
 
     return () => {
       console.log('[SocketContext] Cleaning up socket connection');
+      setIsConnected(false);
+      disposed = true;
+      newSocket.off('connect', connected);
+      newSocket.off('disconnect', disconnected);
+      newSocket.off('connect_error', connectionError);
+      newSocket.off('authentication:error', authenticationError);
+      newSocket.off(TASK_UPDATE);
+      newSocket.off(DRAFT_UPDATE);
+      newSocket.off(INDEXING_UPDATE);
+      newSocket.off(QUEUE_STATS_UPDATE);
+      newSocket.off(TASK_LIVE_UPDATE);
       newSocket.disconnect();
     };
-  }, [disabled]);
+  }, [disabled, socketConfigurationKey]);
 
   const subscribeToTask = useCallback((taskId: string) => {
     if (socket && isConnected) {

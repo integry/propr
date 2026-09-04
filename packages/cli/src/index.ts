@@ -37,6 +37,7 @@ import {
   createUiCommand,
   createDocsCommand,
   createTunnelCommand,
+  createConnectCommand,
   createTankCommand,
   createRelayCommand,
   createRuntimeCommand,
@@ -44,6 +45,10 @@ import {
   printChecks,
   STACK_CONFIG_CHECK_NAME,
 } from "./commands/index.js";
+import {
+  CONNECT_STATUS_EXIT,
+  invalidConnectRootStatus,
+} from "./commands/connectCommand.js";
 
 // Re-export completion generation for programmatic use
 export { completionScript, buildCompletionMetadata } from "./completion.js";
@@ -111,8 +116,72 @@ export type {
   FormatOutputOptions,
 } from "./utils/index.js";
 
-// Load environment variables
-config();
+/** Return only raw CLI arguments which precede the POSIX end-of-options marker. */
+function argsBeforeEndOfOptions(argv: readonly string[]): readonly string[] {
+  const args = argv.slice(2);
+  const delimiterIndex = args.indexOf("--");
+  return delimiterIndex === -1 ? args : args.slice(0, delimiterIndex);
+}
+
+/** Parse the discovery shape without depending on option order or spelling. */
+export function isExplicitConnectStatusInvocation(argv: readonly string[]): boolean {
+  const args = argsBeforeEndOfOptions(argv);
+  const positionals: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--root") {
+      const value = args[index + 1];
+      if (value !== undefined && value !== "" && !value.startsWith("-")) {
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--root=")) {
+      continue;
+    }
+    if (arg === "--project" || arg === "-p") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--project=") || arg === "--json" || arg === "-j") continue;
+    if (!arg.startsWith("-")) positionals.push(arg);
+  }
+  return positionals[0] === "connect" && positionals[1] === "status";
+}
+
+/** Require one non-empty raw root option before Commander can reject or overwrite it. */
+export function hasExactlyOneExplicitConnectStatusRoot(argv: readonly string[]): boolean {
+  if (!isExplicitConnectStatusInvocation(argv)) return false;
+  const args = argsBeforeEndOfOptions(argv);
+  let rootCount = 0;
+  let rootIsValid = true;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--root") {
+      rootCount += 1;
+      const value = args[index + 1];
+      if (value === undefined || value === "" || value.startsWith("-")) {
+        rootIsValid = false;
+      } else {
+        index += 1;
+      }
+    } else if (arg.startsWith("--root=")) {
+      rootCount += 1;
+      if (arg.slice("--root=".length).length === 0) rootIsValid = false;
+    }
+  }
+  return rootCount === 1 && rootIsValid;
+}
+
+// Identify the command shape before Commander validates required, malformed, or
+// duplicate root options. Every Connect status invocation (and therefore every
+// --json failure shape) must avoid pre-reading a replaceable cwd/.env.
+const connectStatusInvocation = isExplicitConnectStatusInvocation(process.argv);
+const connectStatusHelpRequested = connectStatusInvocation
+  && argsBeforeEndOfOptions(process.argv).some((arg) => arg === "--help" || arg === "-h");
+const malformedConnectStatusRoot = connectStatusInvocation
+  && !hasExactlyOneExplicitConnectStatusRoot(process.argv);
+if (!connectStatusInvocation) config();
 
 const packageJson = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")
@@ -342,6 +411,7 @@ program.addCommand(createStopCommand());
 program.addCommand(createUiCommand());
 program.addCommand(createDocsCommand());
 program.addCommand(createTunnelCommand());
+program.addCommand(createConnectCommand());
 program.addCommand(createTankCommand());
 program.addCommand(createRelayCommand());
 program.addCommand(createRuntimeCommand());
@@ -394,6 +464,15 @@ if (isCliEntryPoint() && !process.argv.slice(2).length) {
       process.exit(1);
     }
   })();
+} else if (isCliEntryPoint() && connectStatusHelpRequested) {
+  // Parse a canonical help shape so a malformed `--root` cannot consume the
+  // help flag as its required value. Commander remains the help authority.
+  program.parse([...process.argv.slice(0, 2), "connect", "status", "--help"]);
+} else if (isCliEntryPoint() && malformedConnectStatusRoot) {
+  const document = invalidConnectRootStatus();
+  process.stdout.write(`${JSON.stringify(document)}\n`);
+  process.stderr.write(`ProPR Connect discovery: ${document.status}.\n`);
+  process.exitCode = CONNECT_STATUS_EXIT[document.status];
 } else if (isCliEntryPoint()) {
   program.parse();
 }

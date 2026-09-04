@@ -104,6 +104,7 @@ The hosted ProPR UI at `https://app.propr.dev` can drive a locally-running stack
 | `propr tunnel on` | Start the cloudflared sidecar; requires a configured token and a running stack (`--force` starts it ahead of the stack) |
 | `propr tunnel off` | Stop the sidecar; the token and env values are left untouched |
 | `propr tunnel verify` | Check the sidecar plus the public `/api/status` (expects OK/auth), `/` (expects 404), and `/socket.io/` (expects reachable) |
+| `propr connect status --json --root <explicit-root>` | Emit the bounded secret-free desktop discovery contract and verify that the remote API origin and public stack identity match |
 
 Architecture, the full configuration, enablement semantics, verification, and troubleshooting live on the dedicated [Hosted UI Tunnel](../operations/hosted-ui-tunnel.md) page — including the two facts that catch operators most often: `PROPR_UI_TUNNEL_TOKEN` is a live Cloudflare credential to keep out of source control and logs, and enabling the tunnel on an already-running stack requires `propr start --restart` (or `propr tunnel setup --start`) before OAuth redirects and cookies use the hosted URLs.
 

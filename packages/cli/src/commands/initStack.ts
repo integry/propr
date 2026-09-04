@@ -9,7 +9,7 @@
 
 import { Command } from "commander";
 import { randomBytes } from "node:crypto";
-import { existsSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, chmodSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -20,6 +20,7 @@ import {
   secureExistingPrivateFile,
   writePrivateFileAtomic,
 } from "../utils/privateFilesystem.js";
+import { getOrCreatePublicInstanceIdentity } from "../connectIdentity.js";
 
 export function materializeSessionSecret(
   template: string,
@@ -171,16 +172,26 @@ export async function scaffoldStack(
   for (const sub of ["data", "logs", "repos"]) {
     const dir = join(rootDir, sub);
     const created = !existsSync(dir);
-    ensurePrivateDirectory(dir);
+    await ensurePrivateDirectory(dir);
     (created ? result.dirsCreated : result.dirsSkipped).push(sub);
   }
+
+  // The public installation identity belongs to the durable data boundary, not
+  // .env or a tunnel credential. Re-scaffolding/upgrading preserves it; replacing
+  // the stack data creates a fresh identity on the next initialization.
+  // macOS commonly spells its temporary-directory ancestor as /var even
+  // though the already-created root is canonically beneath /private/var.
+  // Canonicalize the root, then append the literal data entry so the identity
+  // layer still observes and rejects a symlink at data itself.
+  const canonicalRootDir = realpathSync.native(rootDir);
+  await getOrCreatePublicInstanceIdentity(join(canonicalRootDir, "data"));
 
   // 2. Load the environment content that will be used below.
   const envExists = existsSync(envPath);
   let envContent: string;
   let shouldWriteEnv = false;
   if (envExists && !options.force) {
-    secureExistingPrivateFile(envPath);
+    await secureExistingPrivateFile(envPath);
     envContent = readFileSync(envPath, "utf-8");
     result.envSkipped = true;
     const nodeEnv = envContent.match(/^\s*(?:export\s+)?NODE_ENV\s*=\s*([^#\r\n]*)/m)?.[1]
@@ -202,9 +213,9 @@ export async function scaffoldStack(
       materializeSessionSecret(readFileSync(example, "utf-8")),
     );
     if (options.force && envExists) {
-      secureExistingPrivateFile(envPath);
+      await secureExistingPrivateFile(envPath);
       const bakPath = `${envPath}.bak`;
-      writePrivateFileAtomic(bakPath, readFileSync(envPath), { secureParent: false });
+      await writePrivateFileAtomic(bakPath, readFileSync(envPath), { secureParent: false });
       result.envBackedUp = true;
     }
     shouldWriteEnv = true;
@@ -234,10 +245,9 @@ export async function scaffoldStack(
   result.pendingCredentials = toAppend;
 
   if (shouldWriteEnv) {
-    writePrivateFileAtomic(envPath, envContent, { secureParent: false });
+    await writePrivateFileAtomic(envPath, envContent, { secureParent: false });
     result.envCreated = true;
   }
-
   // 3b. When Vibe is in play, pre-create its prompt-cache dir so spawned Vibe
   //     agent containers can bind-mount a writable host directory. Creating it
   //     here (owned by the invoking user) avoids Docker auto-creating it as
