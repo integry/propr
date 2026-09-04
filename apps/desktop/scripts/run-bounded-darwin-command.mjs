@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 
 const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024;
 const EXIT_FOR_SIGNAL = new Map([['SIGHUP', 129], ['SIGINT', 130], ['SIGTERM', 143]]);
+const GROUP_GUARD_ARGUMENT = '--internal-process-group-guard';
+const GROUP_GUARD_RELEASE = 'release-process-group-guard';
+const GROUP_GUARD_RESULT = 'process-group-command-result';
 
 export class BoundedProcessError extends Error {
   constructor(reason, result) {
@@ -29,13 +32,53 @@ const appendBounded = (chunks, chunk, state, maximumBytes, forward) => {
 };
 
 const signalProcessGroup = (child, signal, platform) => {
-  if (!child.pid) return;
+  if (!child?.pid) return;
   try {
     if (platform === 'win32') child.kill(signal);
     else process.kill(-child.pid, signal);
   } catch (error) {
     if (error?.code !== 'ESRCH') throw error;
   }
+};
+
+const runProcessGroupGuard = async argv => {
+  if (argv[0] !== '--' || typeof argv[1] !== 'string' || argv[1].length === 0) {
+    process.exitCode = 1;
+    return;
+  }
+
+  // The guard is the process-group leader and deliberately survives TERM. Keeping its PID
+  // occupied until its supervisor releases or kills it prevents the PGID from being reused
+  // while a TERM-ignoring descendant may still belong to the group.
+  const ignoredSignals = [...EXIT_FOR_SIGNAL.keys()];
+  const ignoreSignal = () => {};
+  for (const signal of ignoredSignals) process.on(signal, ignoreSignal);
+
+  let commandResult;
+  let resultPublished = false;
+  const publishResult = result => {
+    if (resultPublished) return;
+    resultPublished = true;
+    commandResult = result;
+    if (process.send) {
+      process.send({ type: GROUP_GUARD_RESULT, ...result }, () => {});
+    }
+  };
+
+  const command = nodeSpawn(argv[1], argv.slice(2), {
+    detached: false,
+    shell: false,
+    windowsHide: true,
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  command.once('error', () => publishResult({ exitCode: 1, signal: null }));
+  command.once('close', (exitCode, signal) => publishResult({ exitCode, signal }));
+
+  process.on('message', message => {
+    if (message?.type !== GROUP_GUARD_RELEASE || !commandResult) return;
+    process.exitCode = commandResult.exitCode ?? 1;
+    process.disconnect?.();
+  });
 };
 
 export const runBoundedProcess = async ({
@@ -66,7 +109,9 @@ export const runBoundedProcess = async ({
   let requestedSignal;
   let forceTimer;
   let drainTimer;
+  let timeout;
   let child;
+  let commandResult;
   let resolveForcedSettlement;
   const forcedSettlement = new Promise(resolve => { resolveForcedSettlement = resolve; });
 
@@ -102,11 +147,18 @@ export const runBoundedProcess = async ({
   }
 
   try {
-    child = spawn(executable, arguments_, {
+    const guardProcessGroup = platform !== 'win32';
+    child = spawn(
+      guardProcessGroup ? process.execPath : executable,
+      guardProcessGroup
+        ? [fileURLToPath(import.meta.url), GROUP_GUARD_ARGUMENT, '--', executable, ...arguments_]
+        : arguments_, {
       detached: platform !== 'win32',
       shell: false,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: guardProcessGroup
+        ? ['ignore', 'pipe', 'pipe', 'ipc']
+        : ['ignore', 'pipe', 'pipe'],
     });
     onSpawn?.(child);
     if (primaryReason) signalProcessGroup(child, 'SIGTERM', platform);
@@ -119,16 +171,28 @@ export const runBoundedProcess = async ({
       forwardOutput ? process.stderr : undefined,
     ));
 
-    const timeout = setTimeout(() => requestTermination('timeout'), timeoutMs);
+    timeout = setTimeout(() => requestTermination('timeout'), timeoutMs);
     const closeResult = new Promise((resolve, reject) => {
       child.once('error', reject);
-      child.once('close', (exitCode, signal) => resolve({ exitCode, signal }));
+      if (guardProcessGroup) {
+        child.on('message', message => {
+          if (message?.type !== GROUP_GUARD_RESULT || commandResult) return;
+          commandResult = { exitCode: message.exitCode, signal: message.signal };
+          if (!primaryReason) {
+            // Keep the outer bound active until the guard itself closes.
+            child.send({ type: GROUP_GUARD_RELEASE }, () => {});
+          }
+        });
+      }
+      child.once('close', (exitCode, signal) => resolve(commandResult ?? { exitCode, signal }));
     });
     const result = await Promise.race([closeResult, forcedSettlement])
       .finally(() => clearTimeout(timeout));
     if (forceTimer) clearTimeout(forceTimer);
     if (drainTimer) clearTimeout(drainTimer);
     if (result.drainTimedOut) {
+      try { child.disconnect?.(); } catch { /* The IPC channel may already be closed. */ }
+      child.channel?.unref?.();
       child.stdout?.destroy();
       child.stderr?.destroy();
       child.unref();
@@ -150,6 +214,7 @@ export const runBoundedProcess = async ({
     if (error instanceof BoundedProcessError) throw error;
     throw new BoundedProcessError('spawn-or-io', { cause: error });
   } finally {
+    if (timeout) clearTimeout(timeout);
     if (forceTimer) clearTimeout(forceTimer);
     if (drainTimer) clearTimeout(drainTimer);
     for (const [signal, handler] of signalHandlers) signalSource.off(signal, handler);
@@ -184,7 +249,9 @@ const parseCli = argv => {
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
-  try {
+  if (process.argv[2] === GROUP_GUARD_ARGUMENT) {
+    await runProcessGroupGuard(process.argv.slice(3));
+  } else try {
     const options = parseCli(process.argv.slice(2));
     const result = await runBoundedProcess(options);
     if (options.stdoutFile) {

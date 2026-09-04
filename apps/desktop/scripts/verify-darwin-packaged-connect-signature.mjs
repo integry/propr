@@ -22,7 +22,7 @@ const normalizeLines = value => value.replace(/\r\n?/gu, '\n').split('\n');
 
 export const assertDarwinSigningEvidence = ({
   expectedCertificateSha1,
-  identities,
+  certificates,
   signatureDetails,
   designatedRequirement,
   previousDesignatedRequirement,
@@ -30,12 +30,11 @@ export const assertDarwinSigningEvidence = ({
   const expectedSha1 = expectedCertificateSha1.toUpperCase();
   if (!SHA1_PATTERN.test(expectedSha1)) throw new Error('invalid-certificate-fingerprint');
 
-  const validIdentities = normalizeLines(identities)
-    .map(line => /^\s*\d+\)\s+([A-Fa-f0-9]{40})\s+"[^"]+"\s*$/u.exec(line)?.[1]?.toUpperCase())
+  const certificateFingerprints = normalizeLines(certificates)
+    .map(line => /^\s*SHA-1 hash:\s*([A-Fa-f0-9]{40})\s*$/u.exec(line)?.[1]?.toUpperCase())
     .filter(Boolean);
-  if (validIdentities.length !== 1 || validIdentities[0] !== expectedSha1
-    || !normalizeLines(identities).some(line => /^\s*1 valid identities found\s*$/u.test(line))) {
-    throw new Error('identity-not-unique');
+  if (certificateFingerprints.length !== 1 || certificateFingerprints[0] !== expectedSha1) {
+    throw new Error('certificate-not-unique');
   }
 
   const details = normalizeLines(signatureDetails);
@@ -60,9 +59,9 @@ export const assertDarwinSigningEvidence = ({
 };
 
 const inspectDarwinSigningEvidence = async ({ application, keychain }) => {
-  const [identityResult, signatureResult, requirementResult] = await Promise.all([
+  const [certificateResult, signatureResult, requirementResult] = await Promise.all([
     runVerificationCommand('/usr/bin/security', [
-      'find-identity', '-v', '-p', 'codesigning', keychain,
+      'find-certificate', '-a', '-Z', keychain,
     ]),
     runVerificationCommand('/usr/bin/codesign', ['-d', '--verbose=4', application]),
     runVerificationCommand('/usr/bin/codesign', ['-d', '-r-', application]),
@@ -71,7 +70,7 @@ const inspectDarwinSigningEvidence = async ({ application, keychain }) => {
     '--verify', '--deep', '--strict', application,
   ]);
   return {
-    identities: `${identityResult.stdout}\n${identityResult.stderr}`,
+    certificates: `${certificateResult.stdout}\n${certificateResult.stderr}`,
     signatureDetails: `${signatureResult.stdout}\n${signatureResult.stderr}`,
     designatedRequirement: `${requirementResult.stdout}\n${requirementResult.stderr}`,
   };

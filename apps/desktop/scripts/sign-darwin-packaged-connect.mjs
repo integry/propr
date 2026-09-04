@@ -21,7 +21,9 @@ export const signDarwinPackagedConnectApplication = async ({
     platform: 'darwin',
     identity: certificateSha1,
     keychain,
-    identityValidation: true,
+    // The identity is selected by its generated fingerprint. Avoid osx-sign's trust-dependent
+    // `security find-identity` lookup: this disposable keychain is intentionally never trusted.
+    identityValidation: false,
     // Preserve inside-out signing while avoiding one noninteractive codesign process per binary.
     batchCodesignCalls: true,
     preEmbedProvisioningProfile: false,

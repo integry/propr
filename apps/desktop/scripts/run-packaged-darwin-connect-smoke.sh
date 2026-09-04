@@ -37,7 +37,7 @@ stage_marker() {
   local stage="$1"
   local code="$2"
   case "$stage" in
-    KEY_CERTIFICATE_GENERATION|KEYCHAIN_CREATION_SELECTION|TRUST_INSTALLATION|IDENTITY_IMPORT|PARTITION_LIST_UPDATE|APPLICATION_SIGNING|INITIAL_SIGNATURE_VERIFICATION|PAIR_REPROBE_JOURNEY|STABLE_SIGNATURE_VERIFICATION|TRUST_REMOVAL|KEYCHAIN_RESTORATION_DELETION|TEMPORARY_FILE_CLEANUP) ;;
+    KEY_CERTIFICATE_GENERATION|KEYCHAIN_CREATION_SELECTION|IDENTITY_IMPORT|PARTITION_LIST_UPDATE|APPLICATION_SIGNING|INITIAL_SIGNATURE_VERIFICATION|PAIR_REPROBE_JOURNEY|STABLE_SIGNATURE_VERIFICATION|KEYCHAIN_RESTORATION_DELETION|TEMPORARY_FILE_CLEANUP) ;;
     *) return 1 ;;
   esac
   case "$code" in
@@ -95,15 +95,9 @@ requirement_proof=''
 identity_sha1=''
 original_default=''
 original_keychains=()
-trust_installed=0
 keychain_created=0
 keychain_state_captured=0
 active_stage=''
-
-remove_trust() {
-  if (( trust_installed == 0 )); then return 0; fi
-  run_bounded "$CLEANUP_TIMEOUT_MS" /usr/bin/security remove-trusted-cert "$root_certificate"
-}
 
 restore_and_delete_keychain() {
   local restore_status=0
@@ -137,7 +131,6 @@ cleanup_keychain() {
   local cleanup_status=0
   trap - EXIT HUP INT TERM
   set +e
-  run_stage TRUST_REMOVAL remove_trust || cleanup_status=1
   run_stage KEYCHAIN_RESTORATION_DELETION restore_and_delete_keychain || cleanup_status=1
   run_stage TEMPORARY_FILE_CLEANUP remove_temporary_files || cleanup_status=1
   unset keychain_password identity_password certificate_serial
@@ -244,12 +237,6 @@ generate_key_and_certificates() {
   fi
 }
 
-install_trust() {
-  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/security add-trusted-cert \
-    -r trustRoot -p codeSign -k "$keychain_path" "$root_certificate" || return $?
-  trust_installed=1
-}
-
 import_identity() {
   run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/security import "$identity_archive" \
     -k "$keychain_path" -P "$identity_password" -T /usr/bin/codesign
@@ -281,7 +268,6 @@ verify_stable_signature() {
 
 run_stage KEY_CERTIFICATE_GENERATION generate_key_and_certificates
 run_stage KEYCHAIN_CREATION_SELECTION create_and_select_keychain
-run_stage TRUST_INSTALLATION install_trust
 run_stage IDENTITY_IMPORT import_identity
 run_stage PARTITION_LIST_UPDATE update_partition_list
 unset keychain_password identity_password certificate_serial

@@ -66,6 +66,37 @@ test('timeout terminates the owned process group including a descendant', async 
   }
 });
 
+test('SIGKILL escalation survives leader close and removes a TERM-ignoring descendant', async () => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'propr-darwin-escalation-'));
+  const descendantPidPath = join(fixtureRoot, 'descendant.pid');
+  try {
+    await assert.rejects(runBoundedProcess({
+      executable: process.execPath,
+      arguments: ['-e', [
+        'const { spawn } = require("node:child_process");',
+        'process.on("SIGTERM", () => process.exit(0));',
+        'spawn(process.execPath, ["-e", [',
+        '  "const { writeFileSync } = require(\\"node:fs\\");",',
+        '  "process.on(\\"SIGTERM\\", () => {});",',
+        '  "writeFileSync(process.argv[1], String(process.pid));",',
+        '  "setInterval(() => {}, 1000);",',
+        '].join(" "), process.argv[1]], { stdio: "ignore" });',
+        'setInterval(() => {}, 1000);',
+      ].join(' '), descendantPidPath],
+      timeoutMs: 500,
+      terminationGraceMs: 150,
+      maxOutputBytes: 1_024,
+    }), error => error instanceof BoundedProcessError
+      && error.reason === 'timeout'
+      && error.result.exitCode === 0);
+    const descendantPid = Number(await readFile(descendantPidPath, 'utf8'));
+    assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
+    await waitForProcessExit(descendantPid);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test('timeout remains primary while TERM runs the wrapper cleanup', async () => {
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'propr-darwin-cleanup-'));
   const cleanupPath = join(fixtureRoot, 'cleanup.txt');

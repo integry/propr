@@ -64,11 +64,13 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinRunner, /keychain_password="\$\(run_bounded_forward[\s\S]*?\/usr\/bin\/openssl rand -hex 32\)"/u);
     assert.match(darwinRunner, /identity_password="\$\(run_bounded_forward[\s\S]*?\/usr\/bin\/openssl rand -hex 32\)"/u);
     assert.match(darwinRunner, /extendedKeyUsage = critical,codeSigning/u);
-    assert.match(darwinRunner, /\/usr\/bin\/security add-trusted-cert \\[\s\S]*?-r trustRoot -p codeSign/u);
+    assert.doesNotMatch(darwinRunner, /add-trusted-cert|remove-trusted-cert|trustRoot/u);
     assert.match(darwinRunner, /\/usr\/bin\/security import "\$identity_archive" \\[\s\S]*?-T \/usr\/bin\/codesign/u);
     assert.match(darwinRunner, /\/usr\/bin\/security set-key-partition-list \\[\s\S]*?-S apple-tool:,apple:,codesign:/u);
     assert.match(darwinRunner, /run_bounded "\$SIGNING_TIMEOUT_MS" node "\$application_signer"/u);
-    assert.match(darwinSigner, /identityValidation: true/u);
+    assert.match(darwinSigner, /identityValidation: false/u);
+    assert.match(darwinVerifier, /'find-certificate', '-a', '-Z', keychain/u);
+    assert.doesNotMatch(darwinVerifier, /find-identity/u);
     assert.match(darwinSigner, /batchCodesignCalls: true/u);
     assert.match(darwinSigner, /preEmbedProvisioningProfile: false/u);
     assert.match(darwinSigner, /timestamp: 'none'/u);
@@ -85,14 +87,12 @@ describe('packaged Connect target-native credential setup', () => {
     const expectedStages = [
       'KEY_CERTIFICATE_GENERATION',
       'KEYCHAIN_CREATION_SELECTION',
-      'TRUST_INSTALLATION',
       'IDENTITY_IMPORT',
       'PARTITION_LIST_UPDATE',
       'APPLICATION_SIGNING',
       'INITIAL_SIGNATURE_VERIFICATION',
       'PAIR_REPROBE_JOURNEY',
       'STABLE_SIGNATURE_VERIFICATION',
-      'TRUST_REMOVAL',
       'KEYCHAIN_RESTORATION_DELETION',
       'TEMPORARY_FILE_CLEANUP',
     ];
@@ -126,6 +126,8 @@ describe('packaged Connect target-native credential setup', () => {
   test('Darwin bounds setup, nested signing, verification, journey, cleanup, and the wrapper', () => {
     assert.match(boundedDarwinRunner, /detached: platform !== 'win32'/u);
     assert.match(boundedDarwinRunner, /process\.kill\(-child\.pid, signal\)/u);
+    assert.match(boundedDarwinRunner, /GROUP_GUARD_RELEASE/u);
+    assert.match(boundedDarwinRunner, /prevents the PGID from being reused/u);
     assert.match(boundedDarwinRunner, /signalProcessGroup\(child, 'SIGTERM'/u);
     assert.match(boundedDarwinRunner, /signalProcessGroup\(child, 'SIGKILL'/u);
     assert.match(boundedDarwinRunner, /maximumBytes - state\.bytes/u);
@@ -137,13 +139,13 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinRunner, /run_bounded_forward "\$JOURNEY_TIMEOUT_MS" npm run smoke:connect-package/u);
   });
 
-  test('Darwin restores keychain state and deletes identity, trust, credentials, and files on every exit', () => {
+  test('Darwin restores keychain state and deletes identity, credentials, and files on every exit', () => {
     assert.match(darwinRunner, /trap cleanup_keychain EXIT/u);
     assert.match(darwinRunner, /trap 'exit_for_signal 129' HUP/u);
     assert.match(darwinRunner, /trap 'exit_for_signal 130' INT/u);
     assert.match(darwinRunner, /trap 'exit_for_signal 143' TERM/u);
     assert.match(darwinRunner, /if \[\[ -n "\$active_stage" \]\]; then\n\s+stage_marker "\$active_stage" FAILED/u);
-    assert.match(darwinRunner, /run_bounded "\$CLEANUP_TIMEOUT_MS" \/usr\/bin\/security remove-trusted-cert "\$root_certificate"/u);
+    assert.doesNotMatch(darwinRunner, /add-trusted-cert|remove-trusted-cert|trustRoot/u);
     assert.match(darwinRunner, /\/usr\/bin\/security list-keychains -d user -s \\[\s\S]*?"\$\{original_keychains\[@\]\}"/u);
     assert.match(darwinRunner, /\/usr\/bin\/security default-keychain -d user -s \\[\s\S]*?"\$original_default"/u);
     assert.match(darwinRunner, /\/usr\/bin\/security delete-keychain "\$keychain_path"/u);
