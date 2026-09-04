@@ -85,17 +85,20 @@ export class QueueBroadcaster {
    */
   async broadcastQueueStats(): Promise<void> {
     try {
-      const [waiting, active, completed, failed, delayed] = await Promise.all([
+      const [waiting, activeJobs, completed, failed, delayed] = await Promise.all([
         this.queue.getWaitingCount(),
-        this.queue.getActiveCount(),
+        this.queue.getJobs(['active']),
         this.queue.getCompletedCount(),
         this.queue.getFailedCount(),
         this.queue.getDelayedCount()
       ]);
+      const active = activeJobs.length;
+      const activeGoals = activeJobs.filter(job => job.name === 'processGoal').length;
 
       const stats: QueueStatsData = {
         waiting,
         active,
+        activeGoals,
         completed,
         failed,
         delayed,

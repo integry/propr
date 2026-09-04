@@ -15,6 +15,7 @@ import {
   MoreHorizontal,
   ScrollText,
   Settings,
+  Target,
   ShieldCheck,
   X,
 } from 'lucide-react';
@@ -51,13 +52,14 @@ const getNavigationState = (pathname: string) => {
     more: pathname === '/' || pathMatches(pathname, '/plans') ||
       (pathMatches(pathname, '/studio') && !newPlan) ||
       pathMatches(pathname, '/ai-agents') || pathMatches(pathname, '/llm-logs') ||
-      pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members'),
+      pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members') || pathMatches(pathname, '/goals'),
   };
 };
 
 const getMoreItems = (user: CurrentUser | null) => [
   { label: 'Dashboard', to: '/', icon: Home },
   { label: 'Plans', to: '/plans', icon: ScrollText },
+  { label: 'Goals', to: '/goals', icon: Target },
   ...(userHasPermission(user, 'instance.manage_agents')
     ? [{ label: 'Coding Agents', to: '/ai-agents', icon: Bot }]
     : []),

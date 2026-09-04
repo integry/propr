@@ -6,18 +6,13 @@ import { executeDockerCommand } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
 import { loadAgentRuntimePackageState } from './runtime/agentRuntimePackages.js';
+import { GoalCapabilityProbe, type GoalCapability } from './goalCapabilities.js';
+import type { AgentRegistryOperationalStatus } from './agentRegistryTypes.js';
 import { SyntheticAgentRegistry, type BeginSyntheticRoutingOptions, type SyntheticRoutingSession } from './SyntheticAgentRegistry.js';
 import { createAgentFromConfig } from './createAgentFromConfig.js';
 import { resolveDefaultAgentConfig, resolveUnifiedAgentImage } from './agentImagePreparation.js';
 
-export interface AgentRegistryOperationalStatus {
-    unifiedAgentImage: {
-        status: 'ready' | 'unavailable';
-        imageTag?: string;
-        error?: string;
-        recordedAt?: string;
-    };
-}
+export type { AgentRegistryOperationalStatus } from './agentRegistryTypes.js';
 
 const RUNTIME_PACKAGE_STATE_CHECK_INTERVAL_MS = 5000;
 const UNIFIED_AGENT_IMAGE_RETRY_INTERVAL_MS = 60_000;
@@ -41,6 +36,7 @@ export class AgentRegistry {
     private pendingBackgroundRefresh: Promise<void> | null = null;
     private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
     private unifiedAgentImageRetryTimer: NodeJS.Timeout | null = null;
+    private goalCapabilityProbe = new GoalCapabilityProbe();
     private syntheticAgents = new SyntheticAgentRegistry(this.agents, this.agentsByAlias);
 
     private constructor() {
@@ -135,6 +131,7 @@ export class AgentRegistry {
             // that can still use the previous image.
             this.agents.clear();
             this.agentsByAlias.clear();
+            this.goalCapabilityProbe.clear();
             for (const config of configs) {
                 if (!config.enabled) {
                     logger.debug({ agentAlias: config.alias }, 'Skipping disabled agent');
@@ -258,6 +255,11 @@ export class AgentRegistry {
      */
     getAllAgents(): Agent[] {
         return Array.from(this.agents.values());
+    }
+
+    /** Capability-probes the exact configured image using non-inference introspection. */
+    async getGoalCapabilities(options: { force?: boolean } = {}): Promise<GoalCapability[]> {
+        return this.goalCapabilityProbe.getAll(this.getAllAgents(), options);
     }
 
     /**
@@ -466,6 +468,7 @@ export class AgentRegistry {
         this.unavailableUnifiedAgentImage = null;
         this.agents.clear();
         this.agentsByAlias.clear();
+        this.goalCapabilityProbe.clear();
         const agent = new ClaudeAgent(result.config);
         this.agents.set(result.config.id, agent);
         this.agentsByAlias.set(result.config.alias, agent);

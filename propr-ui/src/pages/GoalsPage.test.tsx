@@ -1,0 +1,239 @@
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import GoalsPage from './GoalsPage';
+import * as goalsApi from '../api/goals';
+import { getInstanceCatalog, getTaskLiveDetails } from '../api/proprApi';
+
+vi.mock('../api/goals', () => ({
+  getGoalCapabilities: vi.fn(), listGoals: vi.fn(), getGoal: vi.fn(), createGoal: vi.fn(),
+  pauseGoal: vi.fn(), resumeGoal: vi.fn(), cancelGoal: vi.fn(), deleteGoal: vi.fn(), requestGoalModel: vi.fn(), sendGoalInput: vi.fn(),
+  checkpointGoal: vi.fn(), requestGoalCheckpointInterval: vi.fn(),
+}));
+vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn(), getTaskLiveDetails: vi.fn() }));
+const socket = vi.hoisted(() => ({
+  isConnected: false as boolean, subscribeToTask: vi.fn(), unsubscribeFromTask: vi.fn(),
+  subscribeToTaskLive: vi.fn(), unsubscribeFromTaskLive: vi.fn(),
+  onTaskUpdate: vi.fn((handler?: (payload: never) => void) => { void handler; return vi.fn(); }),
+  onTaskLiveUpdate: vi.fn((handler?: (payload: never) => void) => { void handler; return vi.fn(); }),
+}));
+vi.mock('../contexts/useSocket', () => ({ useSocket: () => socket }));
+
+const capability = {
+  agentId: 'agent-1', agentAlias: 'codex', agentType: 'codex', goalCapable: true,
+  lifecycle: { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' } as const,
+  controls: { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true },
+  models: ['gpt-5.6-sol', 'gpt-5.6-luna'], defaultModel: 'gpt-5.6-sol',
+};
+const goal: goalsApi.Goal = {
+  id: 'goal-1', owner: 'owner', repository: 'acme/web', objective: 'Ship the dashboard',
+  launchStrategy: 'orchestrate', initialPrompt: '/goal Ship the dashboard\n\nLaunch strategy — Agent orchestrates through ProPR',
+  baseBranch: null, branchName: 'goal/dashboard', worktreePath: '/tmp/worktree',
+  agent: { id: 'agent-1', alias: 'codex', type: 'codex' }, requestedModel: 'gpt-5.6-sol', effectiveModel: 'gpt-5.6-sol',
+  maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,
+  control: { requestGeneration: 0, acknowledgedGeneration: 0, pending: false },
+  failureReason: null, pausePending: false,
+  taskId: 'goal-task-1', sessionId: 'thread-1', conversationId: null, finalPr: null, artifacts: [],
+  checkpoint: null,
+  artifactStats: { issues: 1, openIssues: 1, pullRequests: 1, openPullRequests: 1 },
+  liveSummary: { currentTask: 'Implement API', todos: [{ id: 'todo-1', content: 'Implement API', status: 'in_progress' },], tokenUsage: { input_tokens: 10, output_tokens: 5 }, nativeGoal: null },
+  taskState: 'claude_execution', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  startedAt: new Date().toISOString(), pausedAt: null, completedAt: null, elapsedMs: 1000, activeMs: 1000, pausedMs: 0,
+};
+
+describe('GoalsPage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    socket.isConnected = false;
+    socket.onTaskUpdate.mockImplementation(() => vi.fn());
+    socket.onTaskLiveUpdate.mockImplementation(() => vi.fn());
+    vi.mocked(goalsApi.getGoalCapabilities).mockResolvedValue({ agents: [capability] });
+    vi.mocked(getInstanceCatalog).mockResolvedValue({ agents: [], repositories: [{ name: 'acme/web', enabled: true }] });
+    vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [] });
+    vi.mocked(goalsApi.getGoal).mockResolvedValue({ goal });
+    vi.mocked(getTaskLiveDetails).mockResolvedValue({ events: [], todos: [{ id: 'todo-1', content: 'Implement API', status: 'in_progress' }], currentTask: 'Implement API', tokenUsage: { input_tokens: 10, output_tokens: 5 } });
+    vi.mocked(goalsApi.pauseGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'paused', pausedAt: new Date().toISOString() } });
+    vi.mocked(goalsApi.sendGoalInput).mockResolvedValue({ goal });
+    vi.mocked(goalsApi.cancelGoal).mockResolvedValue({ goal: { ...goal, desiredState: 'cancelled', resultState: null } });
+    vi.mocked(goalsApi.deleteGoal).mockResolvedValue();
+    vi.mocked(goalsApi.requestGoalModel).mockResolvedValue({ goal: { ...goal, requestedModel: 'gpt-5.6-luna' } });
+    vi.mocked(goalsApi.checkpointGoal).mockResolvedValue({ goal });
+    vi.mocked(goalsApi.requestGoalCheckpointInterval).mockResolvedValue({ goal });
+  });
+
+  it('creates exactly one native goal from repository, agent, model and objective', async () => {
+    vi.mocked(goalsApi.createGoal).mockResolvedValue({ goal });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /><Route path="/goals/:goalId" element={<div>Goal detail</div>} /></Routes></MemoryRouter>);
+    await screen.findByRole('option', { name: 'Codex' });
+    expect(screen.getByRole('button', { name: /acme.*web/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'GPT-5.6 Sol' })).toHaveValue('gpt-5.6-sol');
+    fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Ship the dashboard' } });
+    fireEvent.click(screen.getByLabelText('Agent orchestrates through ProPR'));
+    fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
+    await waitFor(() => expect(goalsApi.createGoal).toHaveBeenCalledWith(expect.objectContaining({ repository: 'acme/web', agentId: 'agent-1', model: 'gpt-5.6-sol', objective: 'Ship the dashboard', launchStrategy: 'orchestrate' })));
+    expect(await screen.findByText('Goal detail')).toBeInTheDocument();
+  });
+
+  it('configures worker checkpoints only for direct goals', async () => {
+    vi.mocked(goalsApi.createGoal).mockResolvedValue({ goal: { ...goal, launchStrategy: 'direct' } });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /><Route path="/goals/:goalId" element={<div>Goal detail</div>} /></Routes></MemoryRouter>);
+    await screen.findByRole('option', { name: 'Codex' });
+    fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Ship the dashboard' } });
+    const checkpointSlider = screen.getByRole('slider', { name: 'Checkpoint frequency' });
+    expect(checkpointSlider).toHaveAttribute('aria-valuetext', '15 minutes');
+    const checkpointOptions = screen.getByLabelText('Checkpoint frequency options');
+    for (const minutes of [5, 10, 15, 30, 60, 120]) {
+      expect(within(checkpointOptions).getByText(String(minutes))).toBeInTheDocument();
+    }
+    fireEvent.change(checkpointSlider, { target: { value: '3' } });
+    expect(checkpointSlider).toHaveAttribute('aria-valuetext', '30 minutes');
+    fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
+    await waitFor(() => expect(goalsApi.createGoal).toHaveBeenCalledWith(expect.objectContaining({
+      launchStrategy: 'direct', checkpointIntervalMinutes: 30,
+    })));
+  });
+
+  it('hides unsupported runtime diagnostics when at least one agent supports goals', async () => {
+    vi.mocked(goalsApi.getGoalCapabilities).mockResolvedValue({ agents: [
+      capability,
+      { ...capability, agentId: 'agent-2', agentAlias: 'opencode', agentType: 'opencode', goalCapable: false, reason: 'OpenCode does not support goal sessions' },
+    ] });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+
+    await screen.findByRole('option', { name: 'Codex' });
+    expect(screen.getByRole('option', { name: 'Opencode — unsupported' })).toBeDisabled();
+    expect(screen.queryByText('OpenCode does not support goal sessions')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Recheck runtimes' })).not.toBeInTheDocument();
+  });
+
+  it('shows each unsupported provider reason, gates creation, and can recheck runtimes', async () => {
+    vi.mocked(goalsApi.getGoalCapabilities)
+      .mockResolvedValueOnce({ agents: [
+        { ...capability, goalCapable: false, reason: 'Codex schema lacks thread/goal/clear' },
+        { ...capability, agentId: 'agent-2', agentAlias: 'antigravity', agentType: 'antigravity', goalCapable: false, reason: 'Antigravity lacks --conversation' },
+      ] })
+      .mockResolvedValueOnce({ agents: [capability] });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    expect(await screen.findByText('No configured coding-agent runtime currently supports goals.')).toBeInTheDocument();
+    expect(screen.getByText('Codex schema lacks thread/goal/clear')).toBeInTheDocument();
+    expect(screen.getByText('Antigravity lacks --conversation')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start goal' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Recheck runtimes' }));
+    await waitFor(() => expect(goalsApi.getGoalCapabilities).toHaveBeenCalledWith(true));
+    await waitFor(() => expect(screen.queryByText('Codex schema lacks thread/goal/clear')).not.toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Ship the dashboard' } });
+    expect(screen.getByRole('button', { name: 'Start goal' })).toBeEnabled();
+  });
+
+  it('projects native checklist, time, token, and repository artifact stats in the goal list', async () => {
+    vi.mocked(goalsApi.listGoals).mockResolvedValue({ goals: [{
+      ...goal,
+      liveSummary: {
+        ...goal.liveSummary,
+        nativeGoal: { objective: goal.objective, status: 'active', tokenBudget: 1000, tokensUsed: 330, timeUsedSeconds: 42 },
+      },
+    }] });
+    render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    expect(await screen.findByText('330 tokens')).toBeInTheDocument();
+    expect(screen.getByText('42s active')).toBeInTheDocument();
+    expect(screen.getByText('1/1 open issues')).toBeInTheDocument();
+    expect(screen.getByText('1/1 open PRs')).toBeInTheDocument();
+    expect(screen.getByText('Implement API')).toBeInTheDocument();
+    expect(screen.getByText(goal.objective)).toHaveClass('line-clamp-2');
+    expect(screen.getAllByText('Codex')).toHaveLength(2);
+    expect(screen.getAllByText('GPT-5.6 Sol')).toHaveLength(2);
+  });
+
+  it('renders existing task live details and sends canned status input through the same session', async () => {
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    expect((await screen.findAllByText('Implement API')).length).toBeGreaterThan(0);
+    expect(screen.getByText('15')).toBeInTheDocument();
+    expect(screen.getByText('Agent orchestrates through ProPR')).toBeInTheDocument();
+    expect(screen.getByText(/\/goal Ship the dashboard/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: "What's done?" }));
+    await waitFor(() => expect(goalsApi.sendGoalInput).toHaveBeenCalledWith('goal-1', { canned: 'done' }));
+    expect(goalsApi.pauseGoal).not.toHaveBeenCalled();
+  });
+
+  it('accepts a correction while the initial provider identity is still pending', async () => {
+    vi.mocked(goalsApi.getGoal).mockResolvedValue({ goal: { ...goal, sessionId: null } });
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    const correction = await screen.findByLabelText('Correction or follow-up');
+    fireEvent.change(correction, { target: { value: 'Use the existing API shape.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(goalsApi.sendGoalInput).toHaveBeenCalledWith('goal-1', { message: 'Use the existing API shape.' }));
+  });
+
+  it('requests the next model separately from the effective model and exposes cancellation', async () => {
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    await screen.findByRole('button', { name: 'Cancel' });
+    fireEvent.change(screen.getByLabelText('Model for next continuation'), { target: { value: 'gpt-5.6-luna' } });
+    await waitFor(() => expect(goalsApi.requestGoalModel).toHaveBeenCalledWith('goal-1', 'gpt-5.6-luna'));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(goalsApi.cancelGoal).toHaveBeenCalledWith('goal-1'));
+    expect(await screen.findByText('cancelling')).toBeInTheDocument();
+    expect(screen.getByText(/Cancelling at the provider boundary/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Correction or follow-up')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Model for next continuation')).not.toBeInTheDocument();
+  });
+
+  it('confirms deletion and returns to the goals list after the server stops and removes the goal', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /><Route path="/goals" element={<div>Goals list</div>} /></Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete goal' }));
+    await waitFor(() => expect(goalsApi.deleteGoal).toHaveBeenCalledWith('goal-1'));
+    expect(await screen.findByText('Goals list')).toBeInTheDocument();
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('stopped first'));
+  });
+
+  it('requests worker-owned checkpoint commits and adjusts their safe-boundary frequency', async () => {
+    const directGoal: goalsApi.Goal = {
+      ...goal,
+      launchStrategy: 'direct',
+      finalPr: { number: 42, url: 'https://github.com/acme/web/pull/42' },
+      checkpoint: {
+        intervalMinutes: 15, count: 2, lastAt: new Date().toISOString(), lastCommitSha: 'abc123',
+        error: null, pending: false, latest: null,
+      },
+    };
+    vi.mocked(goalsApi.getGoal).mockResolvedValue({ goal: directGoal });
+    vi.mocked(goalsApi.checkpointGoal).mockResolvedValue({ goal: { ...directGoal, checkpoint: { ...directGoal.checkpoint!, pending: true } } });
+    vi.mocked(goalsApi.requestGoalCheckpointInterval).mockResolvedValue({ goal: { ...directGoal, checkpoint: { ...directGoal.checkpoint!, intervalMinutes: 30 } } });
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Checkpoint now' }));
+    await waitFor(() => expect(goalsApi.checkpointGoal).toHaveBeenCalledWith('goal-1'));
+    expect(await screen.findByRole('button', { name: 'Checkpoint pending' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Checkpoint frequency'), { target: { value: '30' } });
+    await waitFor(() => expect(goalsApi.requestGoalCheckpointInterval).toHaveBeenCalledWith('goal-1', 30));
+    expect(screen.getByRole('link', { name: /Open draft PR/ })).toHaveAttribute('href', directGoal.finalPr!.url);
+  });
+
+  it('re-subscribes after reconnect and merges incremental native output', async () => {
+    socket.isConnected = true;
+    let liveHandler: ((payload: never) => void) | undefined;
+    socket.onTaskLiveUpdate.mockImplementation(handler => {
+      liveHandler = handler;
+      return vi.fn();
+    });
+    const page = () => <MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>;
+    const view = render(page());
+    await waitFor(() => expect(socket.subscribeToTaskLive).toHaveBeenCalledWith('goal-task-1'));
+    act(() => liveHandler?.({
+      taskId: 'goal-task-1', events: [{ id: 'initial', type: 'thought', content: 'Initial native output' }],
+      todos: [], currentTask: 'Implementing', tokenUsage: null,
+    } as never));
+    act(() => liveHandler?.({
+      taskId: 'goal-task-1', events: [{ id: 'next', type: 'thought', content: 'Incremental update' }],
+      todos: [], currentTask: 'Testing', tokenUsage: null,
+    } as never));
+    expect(await screen.findByText('Initial native output')).toBeInTheDocument();
+    expect(await screen.findByText('Incremental update')).toBeInTheDocument();
+
+    socket.isConnected = false;
+    view.rerender(page());
+    socket.isConnected = true;
+    view.rerender(page());
+    await waitFor(() => expect(socket.subscribeToTaskLive).toHaveBeenCalledTimes(2));
+  });
+});

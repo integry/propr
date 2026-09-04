@@ -17,6 +17,7 @@ import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/ind
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
+import { executeCodexAppServerGoal } from './codexAppServer.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -30,6 +31,7 @@ type CodexUsageMetrics = Awaited<ReturnType<typeof executeWithUsageTracking>>['u
 
 export class CodexAgent implements Agent {
     readonly config: AgentConfig;
+    readonly goalCapable = true;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 
@@ -40,9 +42,11 @@ export class CodexAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        if (options.executionMode === 'goal') return this.executeNativeGoal(options);
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel, metadata } = options;
+            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel,
+            executionMode = 'task', resumeSessionId, metadata } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -63,7 +67,7 @@ export class CodexAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
-                reasoningLevel: effectiveReasoningLevel
+                reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -100,6 +104,18 @@ export class CodexAgent implements Agent {
             }
             return this.handleTaskError({ error: error as Error, executionTime: Date.now() - startTime, issueRef, repo, effectiveModel });
         }
+    }
+
+    private async executeNativeGoal(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        await setWorktreeOwnership(options.worktreePath, options.issueRef.number, {
+            protectGitMetadata: options.environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
+        });
+        const worktreeGitContent = verifyWorktreeStructure(options.worktreePath, options.issueRef.number);
+        const result = await executeCodexAppServerGoal(this.config, options, this.timeoutMs);
+        if (result.success) {
+            verifyWorktreePostExecution(options.worktreePath, options.issueRef.number, worktreeGitContent);
+        }
+        return result;
     }
 
     private buildTaskExecutionResult(params: {

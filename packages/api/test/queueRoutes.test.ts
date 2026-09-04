@@ -79,9 +79,15 @@ test('/api/queue/stats represents every active job once and exposes only safe pr
           data: { repository: 'integry/propr', taskDescription: 'Sensitive imported task instructions' },
         },
         {
+          id: 'goal-job-7',
+          name: 'processGoal',
+          timestamp: Date.parse('2026-08-14T20:06:00.000Z'),
+          data: { repoOwner: 'integry', repoName: 'propr', title: 'Ship native goals' },
+        },
+        {
           id: 'issue-job-1',
           name: 'processGitHubIssue',
-          timestamp: Date.parse('2026-08-14T20:06:00.000Z'),
+          timestamp: Date.parse('2026-08-14T20:07:00.000Z'),
           data: { repoOwner: 'integry', repoName: 'propr', number: 1906 },
         },
       ];
@@ -96,7 +102,8 @@ test('/api/queue/stats represents every active job once and exposes only safe pr
   assert.deepEqual(requestedStates, [['active']], 'waiting and delayed jobs are not Running');
   assert.deepEqual(body(), {
     waiting: 3,
-    active: 6,
+    active: 7,
+    activeGoals: 1,
     activeJobs: [
       {
         id: 'issue-job-1',
@@ -143,11 +150,18 @@ test('/api/queue/stats represents every active job once and exposes only safe pr
         repository: 'integry/propr',
         createdAt: '2026-08-14T20:05:00.000Z',
       },
+      {
+        id: 'goal-job-7',
+        name: 'processGoal',
+        title: 'Ship native goals',
+        repository: 'integry/propr',
+        createdAt: '2026-08-14T20:06:00.000Z',
+      },
     ],
     completed: 8,
     failed: 1,
     delayed: 2,
-    total: 20,
+    total: 21,
   });
 });
 

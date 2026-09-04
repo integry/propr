@@ -22,6 +22,8 @@ interface CommitMessageObject {
 interface CommitOptions {
     issueNumber?: number;
     issueTitle?: string;
+    /** Create an empty commit when a remote branch must exist before agent edits begin. */
+    allowEmpty?: boolean;
 }
 
 export interface CommitResult {
@@ -102,7 +104,7 @@ function resolveCommitMessage(commitMessage: string | CommitMessageObject, issue
 }
 
 export async function commitChanges(worktreePath: string, commitMessage: string | CommitMessageObject, author: Author | null, options: CommitOptions = {}): Promise<CommitResult | null> {
-    const { issueNumber, issueTitle } = options;
+    const { issueNumber, issueTitle, allowEmpty = false } = options;
     try {
         await validateWorktree(worktreePath, issueNumber);
     } catch (validationError) {
@@ -127,10 +129,11 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
             }
         }
         const status = await git.status();
+        const stagedFiles = status.files.filter((file: FileStatusResult) => file.index !== ' ' && file.index !== '?');
 
         logGitStatus(status, worktreePath, issueNumber);
 
-        if (status.files.length === 0) {
+        if (stagedFiles.length === 0 && !allowEmpty) {
             logger.info({ worktreePath }, 'No changes to commit');
             return null;
         }
@@ -138,21 +141,25 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
         logger.info({
             worktreePath,
             issueNumber,
-            totalFiles: status.files.length,
-            files: status.files.map((f: FileStatusResult) => ({ path: f.path, index: f.index, working_dir: f.working_dir }))
+            totalFiles: stagedFiles.length,
+            files: stagedFiles.map((f: FileStatusResult) => ({ path: f.path, index: f.index, working_dir: f.working_dir }))
         }, 'Files to be committed');
 
         const finalCommitMessage = resolveCommitMessage(commitMessage, issueNumber, issueTitle);
 
-        const result = await git.commit(finalCommitMessage);
-        const commitHash = result.commit.replace(/^HEAD\s+/, '');
+        const result = allowEmpty && stagedFiles.length === 0
+            ? await git.raw(['commit', '--allow-empty', '-m', finalCommitMessage])
+            : await git.commit(finalCommitMessage);
+        const commitHash = typeof result === 'string'
+            ? (await git.revparse(['HEAD'])).trim()
+            : result.commit.replace(/^HEAD\s+/, '');
 
-        logger.info({ worktreePath, commitHash, filesChanged: status.files.length, issueNumber, commitMessage: finalCommitMessage }, 'Changes committed successfully');
+        logger.info({ worktreePath, commitHash, filesChanged: stagedFiles.length, issueNumber, commitMessage: finalCommitMessage }, 'Changes committed successfully');
 
         return {
             commitHash,
             commitMessage: finalCommitMessage,
-            filesChanged: status.files.map((file: FileStatusResult) => file.path)
+            filesChanged: stagedFiles.map((file: FileStatusResult) => file.path)
         };
 
     } catch (error) {

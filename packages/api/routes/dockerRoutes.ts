@@ -385,7 +385,7 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
  * Returns the container ID when the container was stopped, null otherwise.
  */
 async function stopRunningTaskContainer(taskId: string, state: TaskState, options: StopTaskExecutionOptions): Promise<string | null> {
-  const entry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.containerId);
+  const entry = state.history.findLast(h => h.state === 'claude_execution' && h.metadata?.containerId);
   const containerId = entry?.metadata?.containerId;
   if (!containerId) {
     console.log(`[stop-execution] No container ID found for task ${taskId}, relying on abort signal`);
@@ -425,7 +425,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
       const state = JSON.parse(stateData) as { history: Array<{ state: string; metadata?: { containerId?: string; containerName?: string } }> };
-      const entry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.containerId);
+      const entry = state.history.findLast(h => h.state === 'claude_execution' && h.metadata?.containerId);
       if (!entry?.metadata?.containerId) {
         res.status(404).json({ error: 'No Docker container info available for this task' });
         return;

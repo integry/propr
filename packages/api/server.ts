@@ -31,6 +31,7 @@ import {
   createUserRepoPreferencesRoutes,
   createAgentRuntimeRoutes, createNotificationRoutes,
   createAdminRoutes,
+  createGoalRoutes,
   createVisualPreviewAuthRoutes,
   createInstanceCatalogRoutes,
   attachmentUpload
@@ -284,8 +285,14 @@ function setupRoutes(): void {
   const visualPreviewAuthRoutes = createVisualPreviewAuthRoutes();
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
   const agentVersionRoutes = createAgentVersionRoutes();
+  const goalRoutes = createGoalRoutes({ db, taskQueue, redisClient });
+
+  app.use(['/api/task/:taskId', '/api/task/:taskId/*path', '/api/tasks/:taskId', '/api/execution/:sessionId', '/api/execution/:sessionId/*path', '/api/llm-metrics/:correlationId'], goalRoutes.requireGoalTaskOwnership);
 
   const operationalRoutes: RouteEntry[] = [
+    ['get', '/api/goals/capabilities', goalRoutes.capabilities], ['get', '/api/goals', goalRoutes.list], ['post', '/api/goals', goalRoutes.create], ['get', '/api/goals/:goalId', goalRoutes.get], ['delete', '/api/goals/:goalId', goalRoutes.remove],
+    ['post', '/api/goals/:goalId/pause', goalRoutes.pause], ['post', '/api/goals/:goalId/resume', goalRoutes.resume], ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel], ['patch', '/api/goals/:goalId/model', goalRoutes.requestModel], ['post', '/api/goals/:goalId/input', goalRoutes.input],
+    ['post', '/api/goals/:goalId/checkpoint', goalRoutes.checkpoint], ['patch', '/api/goals/:goalId/checkpoint-frequency', goalRoutes.requestCheckpointInterval],
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
     ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ...createTaskDeleteRouteEntries({ taskRoutes }), ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
     ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
