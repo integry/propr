@@ -7,6 +7,16 @@ import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
 import { isSafeExternalUrl, isTrustedRendererUrl } from './security';
 import { IPC_CHANNELS } from './shared/contract';
+import type { DesktopAcceptanceJourneyStage } from './shared/contract';
+
+export type DesktopAcceptanceOperation = 'PROFILE_SAVE' | 'PAIR' | 'PROBE' | 'ACTIVATE';
+export type DesktopAcceptanceOperationStatus =
+  | 'COMPLETED'
+  | 'READY'
+  | 'AUTHENTICATION_REQUIRED'
+  | 'INCOMPATIBLE'
+  | 'OFFLINE'
+  | 'REJECTED';
 
 interface RegisterIpcOptions {
   app: App;
@@ -22,6 +32,13 @@ interface RegisterIpcOptions {
   openExternal(url: string): Promise<void>;
   /** @internal Deterministic admitted-work accounting for lifecycle proof. */
   observeInvocation?(phase: 'entry' | 'exit', channel: string): void;
+  /** @internal Fixed, secret-free packaged Connect acceptance evidence. */
+  reportAcceptanceJourneyStage?(stage: DesktopAcceptanceJourneyStage): void;
+  /** @internal Fixed, secret-free packaged Connect operation evidence. */
+  reportAcceptanceOperation?(
+    operation: DesktopAcceptanceOperation,
+    status: DesktopAcceptanceOperationStatus,
+  ): void;
 }
 
 type Handler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown;
@@ -33,6 +50,32 @@ export interface RegisteredIpcHandlers {
 }
 
 const closingError = (): Error => new Error('DESKTOP_CLOSING');
+const acceptanceStages = new Set<DesktopAcceptanceJourneyStage>([
+  'AUTHENTICATION_REQUIRED',
+  'CREDENTIAL_COMMITTED',
+  'AUTHENTICATED_REPROBE_READY',
+  'ACTIVATION_COMMITTED',
+  'ACTIVATION_PUBLISHED',
+  'REACT_CONNECTED',
+]);
+const acceptanceOperations = new Map<string, DesktopAcceptanceOperation>([
+  [IPC_CHANNELS.profilesSave, 'PROFILE_SAVE'],
+  [IPC_CHANNELS.authenticationPair, 'PAIR'],
+  [IPC_CHANNELS.connectionProbe, 'PROBE'],
+  [IPC_CHANNELS.connectionActivate, 'ACTIVATE'],
+]);
+
+const acceptanceStatus = (result: unknown): DesktopAcceptanceOperationStatus => {
+  if (!result || typeof result !== 'object' || Array.isArray(result) || !('status' in result)) {
+    return 'COMPLETED';
+  }
+  const status = (result as { status?: unknown }).status;
+  if (status === 'ready') return 'READY';
+  if (status === 'authentication-required') return 'AUTHENTICATION_REQUIRED';
+  if (status === 'incompatible') return 'INCOMPATIBLE';
+  if (status === 'offline') return 'OFFLINE';
+  return 'COMPLETED';
+};
 
 export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcHandlers => {
   const channels = new Set<string>();
@@ -54,8 +97,13 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       const invocation = Promise.resolve().then(() => handler(event, ...args));
       active.add(invocation);
       try {
-        return await invocation;
+        const result = await invocation;
+        const operation = acceptanceOperations.get(channel);
+        if (operation) options.reportAcceptanceOperation?.(operation, acceptanceStatus(result));
+        return result;
       } catch (error) {
+        const operation = acceptanceOperations.get(channel);
+        if (operation) options.reportAcceptanceOperation?.(operation, 'REJECTED');
         options.logger.log('error', 'desktop.ipc.failed', { channel, code: 'IPC_OPERATION_FAILED' });
         throw new Error('Desktop operation failed [IPC_OPERATION_FAILED]');
       } finally {
@@ -136,6 +184,12 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
     if (args.length) throw new Error('Invalid Connect rediscovery request');
     return options.connectDiscovery.rediscover(profileId);
   });
+  if (options.reportAcceptanceJourneyStage) {
+    handle(IPC_CHANNELS.acceptanceJourneyStage, (_event, stage, ...args) => {
+      if (args.length || !acceptanceStages.has(stage)) throw new Error('Invalid acceptance journey stage');
+      options.reportAcceptanceJourneyStage!(stage);
+    });
+  }
   handle(IPC_CHANNELS.lifecycleStatus, () => options.lifecycle.status());
   handle(IPC_CHANNELS.lifecycleStart, () => options.lifecycle.start());
   handle(IPC_CHANNELS.lifecycleStop, () => options.lifecycle.stop());

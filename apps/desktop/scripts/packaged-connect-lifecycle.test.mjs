@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { lstat, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, test } from 'node:test';
 import {
   CHILD_CAPTURE_MAX_BYTES,
+  CONNECT_DISCOVERY_MILESTONE_EVENT,
+  CONNECT_JOURNEY_FAILURE_EVENT,
+  CONNECT_JOURNEY_STAGE_EVENT,
+  CONNECT_JOURNEY_OPERATION_EVENT,
+  CONNECT_NETWORK_PERMISSION_EVENT,
+  CONNECT_RENDERER_OWNERSHIP_EVENT,
   CONNECT_READY_EVENT,
+  createIdempotentJourneyFixtureClose,
   isExactReadyRecord,
   preservePrimaryWithCleanup,
   removeAuthorizedConnectFixture,
@@ -90,6 +97,19 @@ const run = ({ app = new FakeChild(), onApp, onKiller, ...options } = {}) => {
 };
 
 describe('packaged Connect bounded child lifecycle', () => {
+  test('requires exact three starts, three browser approvals, one poll, and one activation', async () => {
+    const harness = await readFile(new URL('./smoke-packaged-connect.mjs', import.meta.url), 'utf8');
+    const accounting = harness.slice(
+      harness.indexOf('if (discoveries.length !== 8'),
+      harness.indexOf('|| bootstrap.some(request => request.authorization !== null)'),
+    );
+    assert.match(accounting, /pairingStarts\.length !== 3/u);
+    assert.match(accounting, /pairingBrowsers\.length !== 3/u);
+    assert.match(accounting, /pairingPolls\.length !== 1/u);
+    assert.match(accounting, /pairingActivations\.length !== 1/u);
+    assert.doesNotMatch(accounting, /pairingPolls\.length < 3/u);
+  });
+
   test('accepts an exact ready proof followed by a clean exit', async () => {
     const { result, invocations } = await run({
       onApp: app => {
@@ -104,6 +124,259 @@ describe('packaged Connect bounded child lifecycle', () => {
       records: [{ event: CONNECT_READY_EVENT }],
     });
     assert.equal(invocations.length, 1);
+  });
+
+  test('does not accept an intermediate discovery milestone as terminal readiness', async () => {
+    const { result } = await run({
+      onApp: app => {
+        app.write({
+          event: CONNECT_DISCOVERY_MILESTONE_EVENT,
+          code: 'JOURNEY_DISCOVERY_VALIDATED',
+          ignored: 'bounded-extra-field',
+        });
+        app.close(0, null);
+      },
+    });
+    assert.deepEqual(result, {
+      ok: false,
+      category: 'child-exit-before-ready',
+      capture: 'complete',
+      records: [{
+        event: CONNECT_DISCOVERY_MILESTONE_EVENT,
+        code: 'JOURNEY_DISCOVERY_VALIDATED',
+      }],
+    });
+  });
+
+  test('returns only exact allowlisted journey stages', async () => {
+    const { result } = await run({
+      onApp: app => {
+        app.write({
+          event: CONNECT_JOURNEY_STAGE_EVENT,
+          code: 'JOURNEY_PAIR_TRANSPORT',
+          url: 'https://not-returned.example.test/private',
+        });
+        app.write({ event: CONNECT_JOURNEY_STAGE_EVENT, code: 'UNBOUNDED_STAGE' });
+        app.write({
+          event: CONNECT_JOURNEY_OPERATION_EVENT,
+          operation: 'PROBE',
+          status: 'AUTHENTICATION_REQUIRED',
+          error: 'not-returned',
+        });
+        app.write({
+          event: CONNECT_RENDERER_OWNERSHIP_EVENT,
+          schemaVersion: 1,
+          resourceCategory: 'xhr',
+          mainRendererPresent: true,
+          mainRendererLive: true,
+          webContentsIdMatches: true,
+          webContentsAbsentOrMatches: true,
+          mainFrameLive: true,
+          rendererDocumentTrusted: true,
+          rendererDocumentAuthorityEqual: true,
+          frameOmitted: true,
+          framePresent: false,
+          frameMatchesMainFrame: false,
+          frameExplicitlyForeign: false,
+          rendererOwned: false,
+          url: 'not-returned',
+        });
+        app.close(0, null);
+      },
+    });
+    assert.equal(result.category, 'child-exit-before-ready');
+    assert.deepEqual(result.records, [
+      { event: CONNECT_JOURNEY_STAGE_EVENT, code: 'JOURNEY_PAIR_TRANSPORT' },
+      { event: CONNECT_JOURNEY_STAGE_EVENT },
+      {
+        event: CONNECT_JOURNEY_OPERATION_EVENT,
+        operation: 'PROBE',
+        status: 'AUTHENTICATION_REQUIRED',
+      },
+      {
+        event: CONNECT_RENDERER_OWNERSHIP_EVENT,
+        schemaVersion: 1,
+        resourceCategory: 'xhr',
+        mainRendererPresent: true,
+        mainRendererLive: true,
+        webContentsIdMatches: true,
+        webContentsAbsentOrMatches: true,
+        mainFrameLive: true,
+        rendererDocumentTrusted: true,
+        rendererDocumentAuthorityEqual: true,
+        frameOmitted: true,
+        framePresent: false,
+        frameMatchesMainFrame: false,
+        frameExplicitlyForeign: false,
+        rendererOwned: false,
+      },
+    ]);
+    assert.doesNotMatch(JSON.stringify(result), /not-returned|UNBOUNDED_STAGE|url|error/u);
+  });
+
+  test('retains the latest bounded journey stage when earlier diagnostics fill the cap', async () => {
+    const { result } = await run({
+      onApp: app => {
+        for (let index = 0; index < 20; index += 1) {
+          app.write({ event: 'desktop.app.ready', code: 'DETAIL_REDACTED' });
+        }
+        app.write({
+          event: CONNECT_JOURNEY_OPERATION_EVENT,
+          operation: 'ACTIVATE',
+          status: 'REJECTED',
+          error: 'not-returned',
+        });
+        app.write({ event: CONNECT_JOURNEY_STAGE_EVENT, code: 'JOURNEY_PAIR_ACTIVATION_DASHBOARD' });
+        app.close(0, null);
+      },
+    });
+    assert.equal(result.records.length, 20);
+    assert.deepEqual(result.records.at(-2), {
+      event: CONNECT_JOURNEY_OPERATION_EVENT,
+      operation: 'ACTIVATE',
+      status: 'REJECTED',
+    });
+    assert.deepEqual(result.records.at(-1), {
+      event: CONNECT_JOURNEY_STAGE_EVENT,
+      code: 'JOURNEY_PAIR_ACTIVATION_DASHBOARD',
+    });
+    assert.doesNotMatch(JSON.stringify(result), /not-returned/u);
+  });
+
+  test('retains only fixed terminal journey failure evidence when diagnostics fill the cap', async () => {
+    const { result } = await run({
+      onApp: app => {
+        for (let index = 0; index < 20; index += 1) {
+          app.write({ event: 'desktop.app.ready', code: 'DETAIL_REDACTED' });
+        }
+        app.write({
+          event: CONNECT_JOURNEY_FAILURE_EVENT,
+          phase: 'pair',
+          stage: 'JOURNEY_PAIR_REACT_CONNECTED',
+          reason: 'RENDERER_STATE_TIMEOUT',
+          error: 'secret-SENTINEL',
+          url: 'https://not-returned.example.test/private',
+          responseBody: 'not-returned',
+          token: 'not-returned',
+          path: privateWindowsPath,
+          environment: 'not-returned',
+        });
+        app.write({ event: 'desktop.app.start_failed', error: 'secret-SENTINEL' });
+        app.close(1, null);
+      },
+    });
+    assert.equal(result.records.length, 20);
+    assert.deepEqual(result.records.at(-1), {
+      event: CONNECT_JOURNEY_FAILURE_EVENT,
+      phase: 'pair',
+      stage: 'JOURNEY_PAIR_REACT_CONNECTED',
+      reason: 'RENDERER_STATE_TIMEOUT',
+    });
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      /secret-SENTINEL|not-returned|private-user|url|responseBody|token|path|environment/u,
+    );
+  });
+
+  test('drops non-allowlisted terminal journey failure fields', async () => {
+    const { result } = await run({
+      onApp: app => {
+        app.write({
+          event: CONNECT_JOURNEY_FAILURE_EVENT,
+          phase: 'hostile-phase',
+          stage: 'HOSTILE_STAGE',
+          reason: 'hostile-reason',
+          error: 'secret-SENTINEL',
+        });
+        app.close(1, null);
+      },
+    });
+    assert.deepEqual(result.records, [{ event: CONNECT_JOURNEY_FAILURE_EVENT }]);
+    assert.doesNotMatch(JSON.stringify(result), /hostile|secret-SENTINEL/u);
+  });
+
+  test('returns only fixed secret-free Local Network Access decision evidence', async () => {
+    const fixed = {
+      event: CONNECT_NETWORK_PERMISSION_EVENT,
+      schemaVersion: 1,
+      permissionCategory: 'loopback-network',
+      decision: 'request',
+      allowed: true,
+      activeBindingCurrent: true,
+      webContentsPresent: true,
+      webContentsEqualsMainWindow: true,
+      mainWindowPresent: true,
+      isMainFrame: true,
+      requestingUrlPresent: true,
+      requestingUrlTrusted: true,
+      rendererDocumentUrlTrusted: true,
+      requestingOriginAuthorityValid: true,
+      requestingOriginAuthorityEqual: true,
+    };
+    const { result } = await run({
+      onApp: app => {
+        app.write({ ...fixed, url: 'not-returned' });
+        app.write({ ...fixed, permissionCategory: 'notifications', requestingUrl: 'not-returned' });
+        app.close(0, null);
+      },
+    });
+    assert.deepEqual(result.records, [
+      fixed,
+      { event: CONNECT_NETWORK_PERMISSION_EVENT },
+    ]);
+    assert.doesNotMatch(JSON.stringify(result), /not-returned|"url":|"requestingUrl":/u);
+  });
+
+  test('fails closed when an otherwise allowlisted journey stage contains a secret', async () => {
+    const { result } = await run({
+      onApp: app => {
+        app.write({
+          event: CONNECT_JOURNEY_STAGE_EVENT,
+          code: 'JOURNEY_REPROBE_TRANSPORT',
+          detail: 'secret-SENTINEL',
+        });
+        app.close(0, null);
+      },
+    });
+    assert.equal(result.category, 'output-rejected');
+    assert.deepEqual(result.records, [{
+      event: CONNECT_JOURNEY_STAGE_EVENT,
+      code: 'JOURNEY_REPROBE_TRANSPORT',
+    }]);
+    assert.doesNotMatch(JSON.stringify(result), /SENTINEL|detail/u);
+  });
+
+  test('publishes the sole terminal READY only after each real journey phase', async () => {
+    const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
+    assert.equal((main.match(/'desktop\.renderer\.connect_discovery\.ready'/gu) ?? []).length, 1);
+    const connectBranch = main.slice(
+      main.indexOf('if (connectSmoke) {'),
+      main.indexOf('} else if (transportSmoke)'),
+    );
+    const discovery = connectBranch.indexOf('await runPackagedConnectDiscoverySmoke');
+    const journey = connectBranch.indexOf('await runPackagedConnectJourneySmoke');
+    const ready = connectBranch.indexOf('await publishPackagedConnectReady');
+    assert.ok(discovery >= 0 && discovery < journey && journey < ready);
+
+    const harness = await readFile(new URL('./smoke-packaged-connect.mjs', import.meta.url), 'utf8');
+    const pair = harness.indexOf("outcome = await runPhase('pair')");
+    const reprobe = harness.indexOf("outcome = await runPhase('reprobe')");
+    const persistedEvidence = harness.indexOf('const applicationRequests = journeyFixture.requests');
+    assert.ok(pair >= 0 && pair < reprobe && reprobe < persistedEvidence);
+
+    const manual = main.indexOf("'JOURNEY_PAIR_MANUAL_FORM'");
+    const browser = main.indexOf("reportPackagedConnectJourneyStage('JOURNEY_PAIR_BROWSER_APPROVAL')");
+    const credential = main.indexOf("'JOURNEY_PAIR_CREDENTIAL_COMMITTED'");
+    const reprobeReady = main.indexOf("'JOURNEY_PAIR_AUTHENTICATED_REPROBE_READY'");
+    const activation = main.indexOf("'JOURNEY_PAIR_ACTIVATION_COMMITTED'");
+    const publication = main.indexOf("'JOURNEY_PAIR_ACTIVATION_PUBLISHED'");
+    const react = main.indexOf("'JOURNEY_PAIR_REACT_CONNECTED'");
+    assert.ok(manual >= 0 && browser >= 0 && credential >= 0 && reprobeReady >= 0
+      && activation >= 0 && publication >= 0 && react >= 0);
+    assert.match(main, /await stages\.waitFor\('CREDENTIAL_COMMITTED'\)[\s\S]*?await stages\.waitFor\('AUTHENTICATED_REPROBE_READY'\)[\s\S]*?await stages\.waitFor\('ACTIVATION_COMMITTED'\)[\s\S]*?await stages\.waitFor\('ACTIVATION_PUBLISHED'\)[\s\S]*?await stages\.waitFor\('REACT_CONNECTED'\)/u);
+    assert.match(main, /if \(packagedSmokeTest && !transportSmoke && !connectJourney\)/u);
+    assert.match(main, /if \(packagedSmokeTest && !connectJourney\) \{/u);
+    assert.doesNotMatch(main, /JOURNEY_PAIR_RENDERER|JOURNEY_REPROBE_RENDERER/u);
   });
 
   test('forces a ready app with a hung descendant through an exact bounded taskkill invocation', async () => {
@@ -363,6 +636,33 @@ describe('packaged Connect fixture cleanup', () => {
       clearTimeout(timer);
     }
   };
+
+  test('closes the journey fixture once and tolerates only the already-stopped server condition', async () => {
+    let socketCloses = 0;
+    let httpCloses = 0;
+    const close = createIdempotentJourneyFixtureClose({
+      closeSocketServer: async () => { socketCloses += 1; },
+      closeHttpServer: async () => {
+        httpCloses += 1;
+        throw Object.assign(new Error('server already stopped'), { code: 'ERR_SERVER_NOT_RUNNING' });
+      },
+    });
+    const first = close();
+    const second = close();
+    assert.equal(first, second);
+    await Promise.all([first, second, close()]);
+    assert.equal(socketCloses, 1);
+    assert.equal(httpCloses, 1);
+
+    const failure = createIdempotentJourneyFixtureClose({
+      closeSocketServer: async () => undefined,
+      closeHttpServer: async () => {
+        throw Object.assign(new Error('/private/path-SENTINEL'), { code: 'EIO' });
+      },
+    });
+    await assert.rejects(failure(), { code: 'EIO' });
+    assert.equal(failure(), failure());
+  });
 
   test('retries a transient Windows EBUSY only inside the authorized fixture', async () => {
     let attempts = 0;

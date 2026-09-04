@@ -5,6 +5,12 @@ import { TextDecoder } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 export const CONNECT_READY_EVENT = 'desktop.renderer.connect_discovery.ready';
+export const CONNECT_DISCOVERY_MILESTONE_EVENT = 'desktop.renderer.connect_discovery.milestone';
+export const CONNECT_JOURNEY_STAGE_EVENT = 'desktop.renderer.connect_journey.stage';
+export const CONNECT_JOURNEY_FAILURE_EVENT = 'desktop.renderer.connect_journey.failure';
+export const CONNECT_NETWORK_PERMISSION_EVENT = 'desktop.renderer.connect_network_permission';
+export const CONNECT_JOURNEY_OPERATION_EVENT = 'desktop.renderer.connect_journey.operation';
+export const CONNECT_RENDERER_OWNERSHIP_EVENT = 'desktop.renderer.connect_request_ownership';
 export const CHILD_CAPTURE_MAX_BYTES = 64 * 1024;
 export const CHILD_DIAGNOSTIC_MAX_RECORDS = 20;
 
@@ -23,6 +29,12 @@ const diagnosticEvents = new Set([
   'desktop.log.write_failed',
   'desktop.main_process.uncaught_exception',
   CONNECT_READY_EVENT,
+  CONNECT_DISCOVERY_MILESTONE_EVENT,
+  CONNECT_JOURNEY_STAGE_EVENT,
+  CONNECT_JOURNEY_FAILURE_EVENT,
+  CONNECT_NETWORK_PERMISSION_EVENT,
+  CONNECT_JOURNEY_OPERATION_EVENT,
+  CONNECT_RENDERER_OWNERSHIP_EVENT,
   'desktop.renderer.connect_discovery.phase',
   'desktop.renderer.connect_discovery.status',
   'desktop.renderer.gone',
@@ -39,6 +51,42 @@ const diagnosticCodes = new Set([
   'LOG_WRITE_FAILED',
   'OPERATION_FAILED',
   'UNCAUGHT_EXCEPTION',
+]);
+const journeyStageCodes = new Set([
+  'JOURNEY_DISCOVERY_RENDERER',
+  'JOURNEY_DISCOVERY_VALIDATED',
+  'JOURNEY_STORAGE_BACKEND',
+  'JOURNEY_NEGATIVE_MALFORMED',
+  'JOURNEY_NEGATIVE_OVERSIZED',
+  'JOURNEY_NEGATIVE_EXPIRY',
+  'JOURNEY_NEGATIVE_CANCEL',
+  'JOURNEY_NEGATIVE_STATE',
+  'JOURNEY_PAIR_MANUAL_FORM',
+  'JOURNEY_PAIR_BROWSER_APPROVAL',
+  'JOURNEY_PAIR_ACTIVATION_DASHBOARD',
+  'JOURNEY_PAIR_AUTHENTICATION_REQUIRED',
+  'JOURNEY_PAIR_CREDENTIAL_COMMITTED',
+  'JOURNEY_PAIR_AUTHENTICATED_REPROBE_READY',
+  'JOURNEY_PAIR_ACTIVATION_COMMITTED',
+  'JOURNEY_PAIR_ACTIVATION_PUBLISHED',
+  'JOURNEY_PAIR_REACT_CONNECTED',
+  'JOURNEY_PAIR_TRANSPORT',
+  'JOURNEY_PAIR_COMPLETE',
+  'JOURNEY_REPROBE_ACTIVATION_DASHBOARD',
+  'JOURNEY_REPROBE_AUTHENTICATED_REPROBE_READY',
+  'JOURNEY_REPROBE_ACTIVATION_COMMITTED',
+  'JOURNEY_REPROBE_ACTIVATION_PUBLISHED',
+  'JOURNEY_REPROBE_REACT_CONNECTED',
+  'JOURNEY_REPROBE_TRANSPORT',
+  'JOURNEY_REPROBE_COMPLETE',
+]);
+const journeyFailurePhases = new Set(['pair', 'reprobe']);
+const journeyFailureReasons = new Set([
+  'APPROVAL_REJECTED',
+  'JOURNEY_FAILED',
+  'RENDERER_STAGE_TIMEOUT',
+  'RENDERER_STATE_TIMEOUT',
+  'TRANSPORT_EVIDENCE_TIMEOUT',
 ]);
 const diagnosticPhases = new Set([
   'config-read',
@@ -60,26 +108,135 @@ const diagnosticCategories = new Set([
   'type-mismatch',
   'unexpected',
 ]);
+const networkPermissionCategories = new Set([
+  'local-network-access',
+  'local-network',
+  'loopback-network',
+]);
+const networkPermissionDecisions = new Set(['check', 'request']);
+const networkPermissionBooleanFields = [
+  'activeBindingCurrent',
+  'webContentsPresent',
+  'webContentsEqualsMainWindow',
+  'mainWindowPresent',
+  'isMainFrame',
+  'requestingUrlPresent',
+  'requestingUrlTrusted',
+  'rendererDocumentUrlTrusted',
+  'requestingOriginAuthorityValid',
+  'requestingOriginAuthorityEqual',
+];
+const journeyOperations = new Set(['PROFILE_SAVE', 'PAIR', 'PROBE', 'ACTIVATE']);
+const journeyOperationStatuses = new Set([
+  'COMPLETED', 'READY', 'AUTHENTICATION_REQUIRED', 'INCOMPATIBLE', 'OFFLINE', 'REJECTED',
+]);
+const rendererOwnershipResourceCategories = new Set(['xhr', 'webSocket', 'other']);
+const rendererOwnershipBooleanFields = [
+  'mainRendererPresent',
+  'mainRendererLive',
+  'webContentsIdMatches',
+  'webContentsAbsentOrMatches',
+  'mainFrameLive',
+  'rendererDocumentTrusted',
+  'rendererDocumentAuthorityEqual',
+  'frameOmitted',
+  'framePresent',
+  'frameMatchesMainFrame',
+  'frameExplicitlyForeign',
+  'rendererOwned',
+];
 
-export const boundedChildDiagnostics = records => records.flatMap(record => {
-  if (!record || typeof record !== 'object' || !diagnosticEvents.has(record.event)) return [];
-  const nestedCode = record.error && typeof record.error === 'object' ? record.error.code : undefined;
-  const candidateCode = typeof record.code === 'string' ? record.code : nestedCode;
-  const phase = typeof record.phase === 'string' ? record.phase : undefined;
-  const substep = typeof record.substep === 'string' ? record.substep : undefined;
-  const category = typeof record.category === 'string' ? record.category : undefined;
-  return [{
-    event: record.event,
-    ...(diagnosticPhases.has(phase) && diagnosticPhaseCodes.has(candidateCode)
-      ? {
-          phase,
-          code: candidateCode,
-          ...(candidateCode === 'FAILED' && diagnosticSubsteps.has(substep) ? { substep } : {}),
-          ...(candidateCode === 'FAILED' && diagnosticCategories.has(category) ? { category } : {}),
-        }
-      : diagnosticCodes.has(candidateCode) ? { code: candidateCode } : {}),
-  }];
-}).slice(0, CHILD_DIAGNOSTIC_MAX_RECORDS);
+const boundedNetworkPermissionEvidence = record => {
+  if (record.schemaVersion !== 1
+    || !networkPermissionCategories.has(record.permissionCategory)
+    || !networkPermissionDecisions.has(record.decision)
+    || typeof record.allowed !== 'boolean'
+    || networkPermissionBooleanFields.some(field => typeof record[field] !== 'boolean')) return {};
+  return {
+    schemaVersion: 1,
+    permissionCategory: record.permissionCategory,
+    decision: record.decision,
+    allowed: record.allowed,
+    ...Object.fromEntries(networkPermissionBooleanFields.map(field => [field, record[field]])),
+  };
+};
+
+const boundedJourneyOperationEvidence = record => {
+  if (!journeyOperations.has(record.operation) || !journeyOperationStatuses.has(record.status)) return {};
+  return { operation: record.operation, status: record.status };
+};
+
+const boundedRendererOwnershipEvidence = record => {
+  if (record.schemaVersion !== 1
+    || !rendererOwnershipResourceCategories.has(record.resourceCategory)
+    || rendererOwnershipBooleanFields.some(field => typeof record[field] !== 'boolean')) return {};
+  return {
+    schemaVersion: 1,
+    resourceCategory: record.resourceCategory,
+    ...Object.fromEntries(rendererOwnershipBooleanFields.map(field => [field, record[field]])),
+  };
+};
+
+export const boundedChildDiagnostics = records => {
+  const diagnostics = records.flatMap(record => {
+    if (!record || typeof record !== 'object' || !diagnosticEvents.has(record.event)) return [];
+    if (record.event === CONNECT_NETWORK_PERMISSION_EVENT) {
+      return [{ event: record.event, ...boundedNetworkPermissionEvidence(record) }];
+    }
+    if (record.event === CONNECT_JOURNEY_OPERATION_EVENT) {
+      return [{ event: record.event, ...boundedJourneyOperationEvidence(record) }];
+    }
+    if (record.event === CONNECT_JOURNEY_FAILURE_EVENT) {
+      return [{
+        event: record.event,
+        ...(journeyFailurePhases.has(record.phase)
+          && (record.stage === 'JOURNEY_NOT_STARTED' || journeyStageCodes.has(record.stage))
+          && journeyFailureReasons.has(record.reason)
+          ? { phase: record.phase, stage: record.stage, reason: record.reason }
+          : {}),
+      }];
+    }
+    if (record.event === CONNECT_RENDERER_OWNERSHIP_EVENT) {
+      return [{ event: record.event, ...boundedRendererOwnershipEvidence(record) }];
+    }
+    const nestedCode = record.error && typeof record.error === 'object' ? record.error.code : undefined;
+    const candidateCode = typeof record.code === 'string' ? record.code : nestedCode;
+    const phase = typeof record.phase === 'string' ? record.phase : undefined;
+    const substep = typeof record.substep === 'string' ? record.substep : undefined;
+    const category = typeof record.category === 'string' ? record.category : undefined;
+    return [{
+      event: record.event,
+      ...(journeyStageCodes.has(candidateCode)
+        && (record.event === CONNECT_DISCOVERY_MILESTONE_EVENT
+          || record.event === CONNECT_JOURNEY_STAGE_EVENT)
+        ? { code: candidateCode }
+        : diagnosticPhases.has(phase) && diagnosticPhaseCodes.has(candidateCode)
+        ? {
+            phase,
+            code: candidateCode,
+            ...(candidateCode === 'FAILED' && diagnosticSubsteps.has(substep) ? { substep } : {}),
+            ...(candidateCode === 'FAILED' && diagnosticCategories.has(category) ? { category } : {}),
+          }
+        : diagnosticCodes.has(candidateCode) ? { code: candidateCode } : {}),
+    }];
+  });
+  const bounded = diagnostics.slice(0, CHILD_DIAGNOSTIC_MAX_RECORDS);
+  if (diagnostics.length > CHILD_DIAGNOSTIC_MAX_RECORDS) {
+    const latestCriticalEvidence = [
+      diagnostics.findLast(record => record.event === CONNECT_JOURNEY_OPERATION_EVENT),
+      diagnostics.findLast(record => record.event === CONNECT_RENDERER_OWNERSHIP_EVENT),
+      diagnostics.findLast(record => typeof record.code === 'string'
+        && (record.event === CONNECT_DISCOVERY_MILESTONE_EVENT
+          || record.event === CONNECT_JOURNEY_STAGE_EVENT)),
+      diagnostics.findLast(record => record.event === CONNECT_JOURNEY_FAILURE_EVENT),
+    ].filter(Boolean);
+    const withoutLatestCriticalEvidence = bounded.filter(record => !latestCriticalEvidence.includes(record));
+    return withoutLatestCriticalEvidence
+      .slice(0, CHILD_DIAGNOSTIC_MAX_RECORDS - latestCriticalEvidence.length)
+      .concat(latestCriticalEvidence);
+  }
+  return bounded;
+};
 
 const exactKeys = (record, expected) => {
   const actual = Object.keys(record).sort();
@@ -669,6 +826,24 @@ export const preservePrimaryWithCleanup = (outcome, cleanup) => cleanup.ok ? out
   ...outcome,
   secondary: [...new Set([...(outcome.secondary ?? []), cleanup.category])],
 });
+
+export const createIdempotentJourneyFixtureClose = ({
+  closeSocketServer,
+  closeHttpServer,
+}) => {
+  let closePromise;
+  return () => {
+    closePromise ??= (async () => {
+      await closeSocketServer();
+      try {
+        await closeHttpServer();
+      } catch (error) {
+        if (error?.code !== 'ERR_SERVER_NOT_RUNNING') throw error;
+      }
+    })();
+    return closePromise;
+  };
+};
 
 if (isIsolatedCleanupProcess) {
   let input = '';

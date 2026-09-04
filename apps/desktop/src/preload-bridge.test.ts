@@ -70,6 +70,17 @@ describe('desktop preload bridge', () => {
     assert.deepEqual(Object.keys(bridge.discovery).sort(), ['discover', 'rediscover', 'supported']);
   });
 
+  it('exposes only a fixed stage reporter when packaged Connect acceptance is authorized', async () => {
+    const ipc = new FakeIpc();
+    const bridge = createDesktopBridge(ipc, true, true);
+    assert.deepEqual(Object.keys(bridge.acceptance ?? {}), ['reportJourneyStage']);
+    await bridge.acceptance?.reportJourneyStage('CREDENTIAL_COMMITTED');
+    assert.deepEqual(ipc.invocations, [{
+      channel: IPC_CHANNELS.acceptanceJourneyStage,
+      args: ['CREDENTIAL_COMMITTED'],
+    }]);
+  });
+
   it('does not expose Electron event objects to deep-link listeners', () => {
     const ipc = new FakeIpc();
     const bridge = createDesktopBridge(ipc);

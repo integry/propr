@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
+  DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED,
   ProprClient,
   ProprClientError,
   type PairingProtocolRequestOptions,
@@ -723,6 +724,17 @@ export class DesktopCredentialService {
     try {
       discovery = await discoveryClient.discoverDesktop(8_000, operation.signal);
     } catch (error) {
+      // Only the client's typed signal for the exact credential-free public
+      // discovery request is actionable here. Generic HTTP 401s, malformed
+      // identity, redirects, and authenticated operation failures stay strict.
+      if (error instanceof ProprClientError
+        && error.kind === 'invalid_response'
+        && error.code === DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED) {
+        return {
+          status: 'incompatible',
+          message: 'This instance requires authentication for public desktop discovery. Check its proxy configuration or update ProPR, then try again.',
+        };
+      }
       if (error instanceof ProprClientError && error.kind === 'invalid_response') {
         try {
           const current = await this.#profiles.readProfileCredential(input.id);
@@ -1039,10 +1051,19 @@ export class DesktopCredentialService {
     }
   }
 
+  /** Whether main still owns the complete binding required by renderer transport and LNA. */
+  hasActiveRendererBinding(): boolean {
+    const active = this.#active;
+    return active !== null
+      && this.#generation(active.profileId) === active.profileGeneration
+      && this.#selectionGeneration === active.selectionGeneration
+      && active.connectClaim.isCurrent();
+  }
+
   prepareRequest(
     url: string,
     originalHeaders: RequestHeaders,
-    details: { method?: string; resourceType?: string } = {},
+    details: { method?: string; rendererOwned?: boolean; resourceType?: string } = {},
     verifiedSocketCredential?: ActiveCredential,
   ): DesktopRequestDecision {
     if (this.#closed) return { cancel: true };
@@ -1085,16 +1106,31 @@ export class DesktopCredentialService {
       && this.#selectionGeneration === active.selectionGeneration
       && active.connectClaim.isCurrent();
     const isApiRequest = target?.pathname.startsWith('/api/') === true;
+    const socketScopeValues = target?.url.searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY) ?? [];
+    const isSocketCandidate = target?.pathname === '/socket.io/' || socketScopeValues.length > 0;
     const isSocketUpgrade = target?.pathname === '/socket.io/'
       && target.url.searchParams.get('transport') === 'websocket'
       && (details.resourceType === 'webSocket'
         || headerValues(originalHeaders, 'upgrade').some(value => value.toLowerCase() === 'websocket'));
 
+    // Session security supplies this ownership bit at the actual WebContents
+    // boundary. A foreign renderer may load only unmarked credentialless
+    // resources; it can never exercise a REST/Socket scope or receive a bearer.
+    if (details.rendererOwned === false) {
+      if (markedRestRequest || isSocketCandidate) return { cancel: true };
+      return { requestHeaders: headers };
+    }
+
+    // Chromium can cache Local Network Access after activation is discarded.
+    // The live main renderer must therefore remain pinned to the exact current
+    // origin even for sanitized traffic that does not carry a transport scope.
+    if (details.rendererOwned === true && target
+      && (!activeIsCurrent || target.origin !== active.origin)) return { cancel: true };
+
     if (isSocketUpgrade && target) {
-      const queryScopes = target.url.searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
-      if (queryScopes.length !== 1 || !TRANSPORT_SCOPE_PATTERN.test(queryScopes[0])
+      if (socketScopeValues.length !== 1 || !TRANSPORT_SCOPE_PATTERN.test(socketScopeValues[0])
         || !activeIsCurrent || active !== verifiedSocketCredential || target.origin !== active.origin
-        || queryScopes[0] !== active.transportScope) return { cancel: true };
+        || socketScopeValues[0] !== active.transportScope) return { cancel: true };
       headers.Authorization = `Bearer ${active.token}`;
       return { requestHeaders: headers };
     }
@@ -1111,14 +1147,16 @@ export class DesktopCredentialService {
   async prepareRequestAsync(
     url: string,
     originalHeaders: RequestHeaders,
-    details: { method?: string; resourceType?: string } = {},
+    details: { method?: string; rendererOwned?: boolean; resourceType?: string } = {},
   ): Promise<DesktopRequestDecision> {
     const target = requestOrigin(url);
     const isSocketUpgrade = target?.pathname === '/socket.io/'
       && target.url.searchParams.get('transport') === 'websocket'
       && (details.resourceType === 'webSocket'
         || headerValues(originalHeaders, 'upgrade').some(value => value.toLowerCase() === 'websocket'));
-    if (!isSocketUpgrade) return this.prepareRequest(url, originalHeaders, details);
+    if (!isSocketUpgrade || details.rendererOwned === false) {
+      return this.prepareRequest(url, originalHeaders, details);
+    }
     const active = this.#active;
     if (!active || target.origin !== active.origin) return this.prepareRequest(url, originalHeaders, details);
     try {

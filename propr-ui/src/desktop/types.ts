@@ -71,6 +71,14 @@ export interface DesktopConnectionAdapter {
   deactivate?(): void;
 }
 
+export type DesktopAcceptanceJourneyStage =
+  | 'AUTHENTICATION_REQUIRED'
+  | 'CREDENTIAL_COMMITTED'
+  | 'AUTHENTICATED_REPROBE_READY'
+  | 'ACTIVATION_COMMITTED'
+  | 'ACTIVATION_PUBLISHED'
+  | 'REACT_CONNECTED';
+
 export interface DesktopManagedTunnelRecoveryAdapter {
   /**
    * Request a secret-free Connect endpoint refresh for an existing profile.
@@ -92,6 +100,10 @@ export interface DesktopAdapters {
   localSetup: DesktopLocalSetupAdapter;
   connection: DesktopConnectionAdapter;
   managedTunnelRecovery?: DesktopManagedTunnelRecoveryAdapter;
+  /** @internal Authorized packaged-journey evidence; absent in production use. */
+  acceptance?: {
+    reportJourneyStage(stage: DesktopAcceptanceJourneyStage): Promise<void>;
+  };
 }
 
 /**

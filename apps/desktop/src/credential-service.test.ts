@@ -193,7 +193,7 @@ describe('main-process desktop credential service', () => {
     assert.equal(await store.readCredential(profile.id), null);
   });
 
-  it('durably rejects malformed relaunch discovery without sending the stored bearer', async () => {
+  it('fails malformed identity closed and classifies legacy public-discovery 401 safely', async () => {
     const store = await createStore();
     const profile = await store.save({ id: 'profile-malformed', label: 'A', apiBaseUrl: 'https://a.example.test' });
     await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
@@ -215,6 +215,71 @@ describe('main-process desktop credential service', () => {
     assert.equal(result.status, 'authentication-required');
     assert.equal(authorizations.some(Boolean), false);
     assert.equal(await store.readCredential(profile.id), null);
+
+    const legacyStore = await createStore();
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    const legacyService = new DesktopCredentialService({
+      profiles: legacyStore,
+      clientName: 'Legacy remote test',
+      openPairingBrowser: async () => undefined,
+      fetch: async (input, init) => {
+        requests.push({
+          url: input.toString(),
+          authorization: new Headers(init?.headers).get('Authorization'),
+        });
+        return json({ error: 'Unauthorized' }, 401);
+      },
+    });
+    credentialServices.push(legacyService);
+
+    const legacyResult = await legacyService.probe({
+      id: 'legacy-remote',
+      label: 'Legacy remote',
+      apiBaseUrl: 'https://legacy.example.test',
+    });
+
+    assert.deepEqual(legacyResult, {
+      status: 'incompatible',
+      message: 'This instance requires authentication for public desktop discovery. Check its proxy configuration or update ProPR, then try again.',
+    });
+    assert.deepEqual(requests, [{
+      url: 'https://legacy.example.test/api/desktop/discovery',
+      authorization: null,
+    }]);
+    assert.doesNotMatch(JSON.stringify(legacyResult), /Unauthorized|AUTHENTICATION_REQUIRED/);
+
+    const rejectedLegacyBodies = [
+      '{"error":"Unauthorized","policy":"private policy detail"}',
+      '{"error":"Unauthorized","error":"Unauthorized"}',
+      '{"code":"AUTHENTICATION_REQUIRED"}',
+    ];
+    for (const [index, body] of rejectedLegacyBodies.entries()) {
+      const adversarialStore = await createStore();
+      let adversarialRequests = 0;
+      const adversarialService = new DesktopCredentialService({
+        profiles: adversarialStore,
+        clientName: 'Adversarial legacy remote test',
+        openPairingBrowser: async () => undefined,
+        fetch: async (_input, init) => {
+          adversarialRequests += 1;
+          assert.equal(new Headers(init?.headers).get('Authorization'), null);
+          return new Response(body, {
+            status: 401, headers: { 'Content-Type': 'application/json' },
+          });
+        },
+      });
+      credentialServices.push(adversarialService);
+
+      const rejected = await adversarialService.probe({
+        id: `rejected-legacy-${index}`,
+        label: 'Rejected legacy remote',
+        apiBaseUrl: `https://rejected-${index}.example.test`,
+      });
+
+      assert.equal(rejected.status, 'authentication-required');
+      assert.equal(adversarialRequests, 1);
+      assert.doesNotMatch(JSON.stringify(rejected), /private policy detail|Unauthorized|AUTHENTICATION_REQUIRED/);
+    }
   });
 
   it('revalidates an old Socket.IO reconnect and sends zero bearer requests after identity rotation', async () => {

@@ -15,6 +15,7 @@ export {
   type ProprRequestOptions,
 } from './client.js';
 export {
+  DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED,
   isProprClientError,
   ProprClientError,
   type ProprClientErrorKind,

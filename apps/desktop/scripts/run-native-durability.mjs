@@ -5,6 +5,7 @@ const EXPECTED = Object.freeze({
   'credential-service': 72,
   'profile-store': 37,
   'pairing-shutdown': 10,
+  'pairing-browser': 1,
 });
 const expectedTotal = Object.values(EXPECTED).reduce((total, count) => total + count, 0);
 const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'));
@@ -15,6 +16,7 @@ const child = spawn(process.execPath, [
   'src/profile-store.test.ts',
   'src/credential-service.test.ts',
   'src/pairing-response-lifecycle.test.ts',
+  'src/credential-service.pairing-browser.test.ts',
 ], {
   cwd: fileURLToPath(new URL('..', import.meta.url)),
   env: process.env,
@@ -51,6 +53,7 @@ const executed = {
   'credential-service': plannedForSuite('main-process desktop credential service'),
   'profile-store': plannedForSuite('desktop profile store'),
   'pairing-shutdown': plannedForSuite('desktop pairing service IPC native shutdown lifecycle'),
+  'pairing-browser': plannedForSuite('DesktopCredentialService pairing browser sink'),
 };
 const reportedCategory = (category) => {
   const match = output.match(new RegExp(

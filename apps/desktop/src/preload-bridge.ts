@@ -15,6 +15,7 @@ export const createDesktopBridge = (
   connectDiscoverySupported = process.platform === 'darwin'
     || process.platform === 'linux'
     || process.platform === 'win32',
+  connectJourneyAcceptance = false,
 ): DesktopBridge => {
   const deepLinkListeners = new Set<(url: string) => void>();
   const pendingDeepLinks: string[] = [];
@@ -71,6 +72,11 @@ export const createDesktopBridge = (
       stop: () => invoke(ipc, IPC_CHANNELS.lifecycleStop),
       restart: () => invoke(ipc, IPC_CHANNELS.lifecycleRestart),
     },
+    ...(connectJourneyAcceptance ? {
+      acceptance: {
+        reportJourneyStage: (stage) => invoke(ipc, IPC_CHANNELS.acceptanceJourneyStage, stage),
+      },
+    } : {}),
   };
 
   Object.values(bridge).forEach(Object.freeze);
