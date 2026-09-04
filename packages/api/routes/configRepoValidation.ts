@@ -110,11 +110,21 @@ export function preserveRepoVisualPreview(
 
   return normalizedRepos.map(repo => {
     const repositoryKey = repo.name.trim().toLowerCase();
-    const explicit = changedByRepository.get(repositoryKey) || explicitByRepository.get(repositoryKey);
-    if (explicit) return { ...repo, visualPreview: explicit };
+    const changed = changedByRepository.get(repositoryKey);
+    if (changed) return { ...repo, visualPreview: changed };
 
-    const previous = previousRepos.find(candidate => candidate.name.trim().toLowerCase() === repositoryKey);
-    return { ...repo, visualPreview: normalizeStoredVisualPreviewSettings(previous?.visualPreview) };
+    const previousMatches = previousRepos.filter(
+      candidate => candidate.name.trim().toLowerCase() === repositoryKey
+    );
+    if (previousMatches.length > 0) {
+      const configured = previousMatches.find(
+        candidate => normalizeStoredVisualPreviewSettings(candidate.visualPreview).enabled
+      ) ?? previousMatches.find(candidate => candidate.visualPreview !== undefined);
+      return { ...repo, visualPreview: normalizeStoredVisualPreviewSettings(configured?.visualPreview) };
+    }
+
+    const explicit = explicitByRepository.get(repositoryKey);
+    return { ...repo, visualPreview: explicit ?? normalizeStoredVisualPreviewSettings(repo.visualPreview) };
   });
 }
 

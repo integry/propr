@@ -6,6 +6,7 @@ import {
 } from './services/visualPreviewOAuth.js';
 
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+const TOKEN_REFRESH_TIMEOUT_MS = 20_000;
 
 interface GitHubTokenRefreshResponse {
     access_token?: string;
@@ -185,7 +186,10 @@ async function performGitHubTokenRefresh(req: Request, force: boolean): Promise<
 
     try {
         const refreshRequest = buildTokenRefreshRequest(user);
-        const response = await fetch(refreshRequest.endpoint, refreshRequest.init);
+        const response = await fetch(refreshRequest.endpoint, {
+            ...refreshRequest.init,
+            signal: AbortSignal.timeout(TOKEN_REFRESH_TIMEOUT_MS),
+        });
         if (!response.ok) {
             console.error(`GitHub token refresh failed with status ${response.status}`);
             return { status: 'temporarily-unavailable' };
