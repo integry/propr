@@ -9,7 +9,7 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, posix, resolve, win32 } from "node:path";
 import type { OrchestratorConfig, OrchestratorModule } from "./types.js";
 import type { ConfigManager } from "../config/index.js";
 
@@ -129,4 +129,192 @@ export async function getHostConfig(opts: {
   }
   const cfg = orch.resolveHostConfig({ rootDir, env: process.env, manifestPath, cliOverrides });
   return { orch, cfg, rootDir };
+}
+
+export interface ConnectHostConfigSnapshotInput {
+  requestedRoot: string;
+  envFileValues: Readonly<Record<string, string>>;
+}
+
+/**
+ * Load all code/manifest state before Connect acquires root authority. The
+ * returned resolver is synchronous so authorized root bytes never cross an
+ * await boundary.
+ */
+const CONNECT_DOCKER_ENV_LIMITS = {
+  DOCKER_HOST: 4096,
+  DOCKER_CONTEXT: 255,
+  // Docker treats any non-empty value as enabling TLS. Keep the value bounded
+  // while preserving that documented transport-selection behavior.
+  DOCKER_TLS: 16,
+  DOCKER_TLS_VERIFY: 16,
+  DOCKER_CERT_PATH: 4096,
+  DOCKER_CONFIG: 4096,
+} as const;
+
+function environmentString(source: Readonly<Record<string, unknown>>, name: string, maximum = 4096): string | undefined {
+  const value = source[name];
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.includes("\0")
+    || /[\r\n]/.test(value)
+    || Buffer.byteLength(value, "utf8") > maximum
+  ) throw new Error("Connect process environment is invalid");
+  return value;
+}
+
+function platformPath(value: string, platform: NodeJS.Platform): boolean {
+  return platform === "win32" ? win32.isAbsolute(value) : posix.isAbsolute(value);
+}
+
+function validateSearchPath(value: string, platform: NodeJS.Platform): void {
+  const separator = platform === "win32" ? ";" : delimiter;
+  const entries = value.split(separator);
+  if (entries.length === 0 || entries.some((entry) => !entry || !platformPath(entry, platform))) {
+    throw new Error("Connect executable search environment is invalid");
+  }
+}
+
+function validateDockerHost(value: string, platform: NodeJS.Platform): void {
+  try {
+    const parsed = new URL(value);
+    if (parsed.password || parsed.search || parsed.hash) throw new Error();
+    if (parsed.protocol === "unix:") {
+      if (platform === "win32" || parsed.hostname || !posix.isAbsolute(parsed.pathname)) throw new Error();
+      return;
+    }
+    if (parsed.protocol === "npipe:") {
+      if (platform !== "win32" || !/^\/\/\.\/pipe\/[A-Za-z0-9_.-]+$/.test(parsed.pathname)) throw new Error();
+      return;
+    }
+    if (parsed.protocol === "tcp:" || parsed.protocol === "http:" || parsed.protocol === "https:") {
+      if (parsed.username || !parsed.hostname || (parsed.pathname !== "" && parsed.pathname !== "/")) throw new Error();
+      return;
+    }
+    if (parsed.protocol === "ssh:") {
+      if (!parsed.hostname || parsed.pathname !== "" && parsed.pathname !== "/") throw new Error();
+      return;
+    }
+  } catch {
+    // Fall through to the single fixed redacted validation error below.
+  }
+  throw new Error("Connect Docker transport environment is invalid");
+}
+
+/**
+ * Discovery needs executable lookup, OS bootstrap variables, and the trusted
+ * parent process's documented Docker transport selection. ProPR/configuration
+ * variables remain absent: the explicit root snapshot is their sole authority.
+ */
+export function connectExecutionEnvironment(
+  source: Readonly<Record<string, unknown>>,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {
+    throw new Error("Connect process environment is invalid");
+  }
+  const allowed: NodeJS.ProcessEnv = {};
+  const bootstrap = platform === "win32"
+    ? ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TMP", "TEMP"] as const
+    : ["PATH", "TMPDIR", "TMP", "TEMP", "HOME"] as const;
+  for (const name of bootstrap) {
+    const value = environmentString(source, name);
+    if (value === undefined) continue;
+    if (name === "PATH") validateSearchPath(value, platform);
+    else if (name === "PATHEXT") {
+      if (!value.split(";").every((entry) => /^\.[A-Za-z0-9]{1,16}$/.test(entry))) {
+        throw new Error("Connect executable search environment is invalid");
+      }
+    } else if (!platformPath(value, platform)) {
+      throw new Error("Connect platform environment is invalid");
+    }
+    allowed[name] = value;
+  }
+  if (platform === "win32") {
+    const userProfile = environmentString(source, "USERPROFILE");
+    const homeDrive = environmentString(source, "HOMEDRIVE");
+    const homePath = environmentString(source, "HOMEPATH");
+    if (userProfile !== undefined) {
+      if (!win32.isAbsolute(userProfile)) throw new Error("Connect platform environment is invalid");
+      allowed.USERPROFILE = userProfile;
+    } else if (homeDrive !== undefined || homePath !== undefined) {
+      if (!homeDrive || !/^[A-Za-z]:$/.test(homeDrive) || !homePath || !win32.isAbsolute(homePath)) {
+        throw new Error("Connect platform environment is invalid");
+      }
+      allowed.HOMEDRIVE = homeDrive;
+      allowed.HOMEPATH = homePath;
+    }
+  }
+  for (const [name, maximum] of Object.entries(CONNECT_DOCKER_ENV_LIMITS)) {
+    const value = environmentString(source, name, maximum);
+    if (value === undefined) continue;
+    if (name === "DOCKER_HOST") validateDockerHost(value, platform);
+    else if (name === "DOCKER_CONTEXT" && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/.test(value)) {
+      throw new Error("Connect Docker transport environment is invalid");
+    } else if (name === "DOCKER_TLS_VERIFY" && value !== "0" && value !== "1") {
+      throw new Error("Connect Docker transport environment is invalid");
+    } else if ((name === "DOCKER_CERT_PATH" || name === "DOCKER_CONFIG") && !platformPath(value, platform)) {
+      throw new Error("Connect Docker transport environment is invalid");
+    }
+    allowed[name] = value;
+  }
+  // A named context may itself select an ssh endpoint; without opening Docker's
+  // config here, preserving the socket when a context is explicit is the
+  // narrowest way to keep those documented contexts functional.
+  if (allowed.DOCKER_HOST?.startsWith("ssh://") || allowed.DOCKER_CONTEXT !== undefined) {
+    const socket = environmentString(source, "SSH_AUTH_SOCK");
+    if (socket !== undefined) {
+      const valid = platform === "win32"
+        ? win32.isAbsolute(socket) || /^\\\\\.\\pipe\\[A-Za-z0-9_.-]+$/.test(socket)
+        : posix.isAbsolute(socket);
+      if (!valid) throw new Error("Connect SSH transport environment is invalid");
+      allowed.SSH_AUTH_SOCK = socket;
+    }
+  }
+  return allowed;
+}
+
+export async function prepareConnectHostConfig(): Promise<{
+  orch: OrchestratorModule;
+  parseEnvFile(contents: string): Record<string, string>;
+  resolveSnapshot(input: ConnectHostConfigSnapshotInput): OrchestratorConfig;
+  inspectTunnel(cfg: OrchestratorConfig): { kind: "ok"; running: boolean } | { kind: "internalFailure" };
+}> {
+  const orch = await loadOrchestrator();
+  const orchPath = cachedPath ?? resolveOrchestratorPath();
+  const manifestPath = resolveManifestPath(orchPath);
+  if (!manifestPath) {
+    throw new Error("Connect host configuration manifest is unavailable");
+  }
+  const executionEnv = connectExecutionEnvironment(process.env);
+  return {
+    orch,
+    parseEnvFile: (contents) => orch.parseEnvFileContents(contents),
+    resolveSnapshot: ({ requestedRoot, envFileValues }) => {
+      return orch.resolveConfig(executionEnv, {
+        envFileValues,
+        stack: envFileValues.PROPR_STACK || "propr",
+        network: envFileValues.PROPR_NETWORK
+          || `${envFileValues.PROPR_STACK || "propr"}-net`,
+        envFileLocal: join(requestedRoot, ".env"),
+        envFileHost: join(requestedRoot, ".env"),
+        hostData: join(requestedRoot, "data"),
+        hostLogs: join(requestedRoot, "logs"),
+        hostRepos: join(requestedRoot, "repos"),
+        managedCredentialsDir: join(requestedRoot, "data", "agent-credentials"),
+        validateHostPaths: true,
+        manifestPath,
+      });
+    },
+    inspectTunnel: (cfg) => {
+      const inspection = orch.inspectStackStatus(cfg, { timeout: 3000, env: executionEnv });
+      if (!inspection.status) return { kind: "internalFailure" };
+      return {
+        kind: "ok",
+        running: Boolean(inspection.status.services.find((service) => service.service === "tunnel")?.running),
+      };
+    },
+  };
 }

@@ -54,6 +54,13 @@ export interface SetupSkillOfferOptions {
   install?: (target: AgentSkillTarget) => AgentSkillOperationResult;
 }
 
+export interface SetupCommandDependencies {
+  offerAgentSkill?: typeof offerSetupAgentSkill;
+  createConfig?: typeof createConfigManager;
+  runSequential?: typeof runSequentialSetup;
+  exit?: (code: number) => void;
+}
+
 /**
  * Offer the bundled operator skill once during guided setup. A non-interactive
  * invocation performs no home-directory writes unless explicit targets were
@@ -174,7 +181,7 @@ async function prepareInkGithubLogin(configManager: ConfigManager, root?: string
   if (!result.ok) console.warn(`GitHub login was not completed: ${result.message}`);
 }
 
-export function createSetupCommand(): Command {
+export function createSetupCommand(dependencies: SetupCommandDependencies = {}): Command {
   return new Command("setup")
     .description("Guided one-time setup for the local ProPR stack")
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
@@ -218,7 +225,7 @@ cannot prompt and exits with guidance — scaffold non-interactively instead wit
       try {
         let skillReadline: ReturnType<typeof createInterface> | undefined;
         const canPromptForSkill = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
-        await offerSetupAgentSkill({
+        await (dependencies.offerAgentSkill ?? offerSetupAgentSkill)({
           explicitTargets: options.installSkill,
           enabled: options.skill,
           interactive: canPromptForSkill,
@@ -231,7 +238,7 @@ cannot prompt and exits with guidance — scaffold non-interactively instead wit
         });
         skillReadline?.close();
 
-        const configManager = await createConfigManager();
+        const configManager = await (dependencies.createConfig ?? createConfigManager)();
         const { skipRemoteImageCheck } = options;
         const useInk = options.tui !== false && canRenderInkSetup();
 
@@ -244,23 +251,25 @@ cannot prompt and exits with guidance — scaffold non-interactively instead wit
             root: options.root,
             skipRemoteImageCheck,
           });
-          process.exit(result.completed ? 0 : 1);
+          (dependencies.exit ?? process.exit)(result.completed ? 0 : 1);
+          return;
         }
 
-        const result = await runSequentialSetup({
+        const result = await (dependencies.runSequential ?? runSequentialSetup)({
           configManager,
           root: options.root,
           skipRemoteImageCheck,
         });
-        process.exit(result.completed ? 0 : 1);
+        (dependencies.exit ?? process.exit)(result.completed ? 0 : 1);
       } catch (error) {
         if (error instanceof SequentialSetupUnavailableError) {
           // Already actionable guidance — print it verbatim, no "Error:" prefix.
           console.error(error.message);
-          process.exit(1);
+          (dependencies.exit ?? process.exit)(1);
+          return;
         }
         console.error(`Error during setup: ${(error as Error).message}`);
-        process.exit(1);
+        (dependencies.exit ?? process.exit)(1);
       }
     });
 }

@@ -1,0 +1,827 @@
+name: Desktop Package and Release
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-release-guard.yml'
+      - 'apps/desktop/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'packages/cli/**'
+      - 'packages/client/**'
+      - 'packages/local-setup/**'
+      - 'packages/shared/**'
+      - 'propr-ui/**'
+  push:
+    tags:
+      - 'desktop-v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  native-windows-durability:
+    name: Native Windows durability (x64)
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      PROPR_NATIVE_WINDOWS_DURABILITY_REQUIRED: '1'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up x64 Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          architecture: x64
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run production Windows child-process durability matrix
+        run: npm run test:native-durability -w @propr/desktop
+
+      - name: Typecheck desktop and renderer on Windows
+        run: npm run desktop:typecheck
+
+      - name: Test desktop runtime on Windows
+        run: npm run desktop:test
+
+      - name: Package Windows x64 desktop app
+        run: npm run desktop:package
+
+      - name: Launch packaged Windows desktop transport smoke
+        run: npm run desktop:smoke
+
+  validation-version:
+    name: Validate unsigned desktop package version
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release_sha: ${{ github.sha }}
+    steps:
+      - name: Checkout pull-request validation source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve unsigned validation version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          node -e 'if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(process.argv[1])) process.exit(1)' "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: Validate unsigned ${{ matrix.platform }}-${{ matrix.arch }} package
+    if: github.event_name == 'pull_request'
+    needs: validation-version
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.release_target == false }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            arch: x64
+            runner: ubuntu-24.04
+            release_target: true
+            release_profile: macos-linux-v1
+            artifact_group: canonical
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            release_target: true
+            release_profile: macos-linux-v1
+            artifact_group: canonical
+          - platform: darwin
+            arch: x64
+            runner: macos-15-intel
+            release_target: true
+            release_profile: macos-linux-v1
+            artifact_group: canonical
+          - platform: darwin
+            arch: arm64
+            runner: macos-15
+            release_target: true
+            release_profile: macos-linux-v1
+            artifact_group: canonical
+          - platform: win32
+            arch: x64
+            runner: windows-2025
+            release_target: false
+            release_profile: macos-linux-windows-v1
+            artifact_group: optional-windows
+          - platform: win32
+            arch: arm64
+            runner: windows-11-arm
+            release_target: false
+            release_profile: macos-linux-windows-v1
+            artifact_group: optional-windows
+    env:
+      PROPR_DESKTOP_VERSION: ${{ needs.validation-version.outputs.version }}
+    steps:
+      - name: Prove pull-request validation is secretless
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const forbidden = Object.keys(process.env).filter(name =>
+            /^PROPR_DESKTOP_(?:MAC_CERTIFICATE|WINDOWS_CERTIFICATE|APPLE_API_KEY|UPDATE_PRIVATE_KEY)/.test(name));
+          if (forbidden.length) throw new Error(`Release secrets reached unsigned PR validation: ${forbidden.join(', ')}`);
+          NODE
+
+      - name: Checkout pull-request validation source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify native runner architecture
+        shell: bash
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node -e 'if(process.platform!==process.env.EXPECTED_PLATFORM||process.arch!==process.env.EXPECTED_ARCH) throw new Error(`Expected ${process.env.EXPECTED_PLATFORM}-${process.env.EXPECTED_ARCH}, got ${process.platform}-${process.arch}`)'
+
+      - name: Run focused Windows supervisor behavior tests
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          & apps/desktop/scripts/test-installed-windows-app-supervisor.ps1 `
+            -Architecture '${{ matrix.arch }}'
+
+      - name: Audit committed dependency resolution
+        shell: bash
+        run: |
+          npm run audit:runtime
+          npm run desktop:audit:packaging
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Provision pinned WiX 3.14.1 binaries for Windows ARM64
+        if: matrix.platform == 'win32' && matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloadUrl = 'https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip'
+          $expectedSha256 = '6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31'
+          $archive = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64.zip'
+          $wixDirectory = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64'
+          if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $wixDirectory)) {
+            throw 'Pinned ARM64 WiX runner-temp paths are not fresh'
+          }
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archive -MaximumRedirection 5 -TimeoutSec 120
+          $archiveItem = Get-Item -LiteralPath $archive -Force
+          if ($archiveItem.PSIsContainer -or ($archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) `
+              -or $archiveItem.Length -le 0 -or $archiveItem.Length -gt 64MB) {
+            throw 'Pinned ARM64 WiX archive is not a regular file'
+          }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedSha256) {
+            throw 'Pinned ARM64 WiX archive digest mismatch'
+          }
+          New-Item -ItemType Directory -Path $wixDirectory | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $wixDirectory
+          Remove-Item -LiteralPath $archive -Force
+          "PROPR_DESKTOP_WIX_DIRECTORY=$wixDirectory" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Probe canonical WiX 3.14.1 compiler
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: node apps/desktop/scripts/build-windows-machine-installer.mjs probe '${{ matrix.arch }}' $env:PROPR_DESKTOP_WIX_DIRECTORY
+
+      - name: Install native Linux package tools
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio dbus-x11 fakeroot gnome-keyring libsecret-1-0 rpm zip
+
+      - name: Package desktop app from clean checkout
+        shell: bash
+        run: |
+          test ! -e packages/shared/dist
+          test ! -e packages/client/dist
+          test ! -e apps/desktop/out
+          npm run desktop:package
+
+      - name: Run Linux transaction durability parity
+        if: matrix.platform == 'linux'
+        run: npm run test:native-durability -w @propr/desktop
+
+      - name: Assert Windows MVP package excludes update authority
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: node apps/desktop/scripts/assert-windows-mvp-package.mjs "$(pwd)/apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}"
+
+      - name: Typecheck and test unsigned desktop runtime
+        shell: bash
+        run: |
+          npm run desktop:typecheck
+          npm run desktop:test
+
+      - name: Make Linux validation packages
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: PROPR_DESKTOP_ENABLE_DEB=1 PROPR_DESKTOP_ENABLE_RPM=1 npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+
+      - name: Make macOS validation packages
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+          npm run make:dmg -w @propr/desktop -- --arch=${{ matrix.arch }}
+
+      - name: Make Windows validation installer
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+
+      - name: Install and exercise ordinary-user Windows application
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
+          if ($installers.Count -ne 1) { throw 'Machine-wide Windows installer is missing or ambiguous' }
+          $runId = [Guid]::NewGuid().ToString('N')
+          $ownershipManifest = Join-Path ([IO.Path]::GetTempPath()) `
+            "propr-installed-app-ownership-$runId.json"
+          "PROPR_WINDOWS_INSTALLED_APP_RUN_ID=$runId" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PROPR_WINDOWS_INSTALLED_APP_MANIFEST=$ownershipManifest" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PROPR_WINDOWS_INSTALLED_APP_INSTALLER=$($installers[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & apps/desktop/scripts/run-installed-windows-app-harness.ps1 `
+            -Installer $installers[0].FullName `
+            -Architecture '${{ matrix.arch }}' `
+            -OwnershipManifest $ownershipManifest `
+            -ExpectedRunId $runId
+          "PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Always clean Windows installed-app ownership
+        if: always() && matrix.platform == 'win32' && env.PROPR_WINDOWS_INSTALLED_APP_RUN_ID != ''
+        shell: pwsh
+        run: |
+          & apps/desktop/scripts/run-installed-windows-app-workflow-cleanup.ps1 `
+            -OwnershipManifest $env:PROPR_WINDOWS_INSTALLED_APP_MANIFEST `
+            -Installer $env:PROPR_WINDOWS_INSTALLED_APP_INSTALLER `
+            -ExpectedRunId $env:PROPR_WINDOWS_INSTALLED_APP_RUN_ID
+
+      - name: Launch packaged Linux application
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo chown root:root "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export XDG_DATA_HOME="$1"
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run desktop:smoke
+          ' bash "$keyring_root"
+
+      - name: Launch packaged Windows application and exercise MVP desktop flows
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: npm run desktop:smoke
+
+      - name: Inspect packaged application
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: npm run desktop:smoke:inspect
+
+      - name: Inspect native validation packages
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = linux ]; then
+            dpkg-deb --info "$(find apps/desktop/out/make -type f -name '*.deb' -print -quit)" >/dev/null
+            rpm -qip "$(find apps/desktop/out/make -type f -name '*.rpm' -print -quit)" >/dev/null
+            unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
+          elif [ "${{ matrix.platform }}" = darwin ]; then
+            node apps/desktop/scripts/verify-darwin-image.mjs "$(find apps/desktop/out/make -type f -name '*.dmg' -print -quit)"
+            unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
+          fi
+
+      - name: Prove private-snapshot native DMG mounting is available
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs probe-dmg-private-snapshot-isolation \
+            --version "$PROPR_DESKTOP_VERSION" \
+            --profile "${{ matrix.release_profile }}" \
+            --make-directory apps/desktop/out/make \
+            --arch "${{ matrix.arch }}"
+
+      - name: Stage architecture-verified validation artifacts with native DMG mount evidence
+        shell: bash
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs stage \
+            --version "$PROPR_DESKTOP_VERSION" \
+            --profile "${{ matrix.release_profile }}" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --make-directory apps/desktop/out/make \
+            --output "desktop-release-${{ matrix.platform }}-${{ matrix.arch }}"
+
+      - name: Upload unsigned validation target
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-validation-${{ matrix.artifact_group }}-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: desktop-release-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Clean pinned Windows ARM64 WiX binaries
+        if: always() && matrix.platform == 'win32' && matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64.zip'
+          $wixDirectory = Join-Path $env:RUNNER_TEMP 'propr-wix3141-arm64'
+          Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $wixDirectory -Recurse -Force -ErrorAction SilentlyContinue
+          if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $wixDirectory)) {
+            throw 'Pinned ARM64 WiX cleanup failed'
+          }
+
+  finalize:
+    name: Finalize unsigned validation checksums
+    if: github.event_name == 'pull_request'
+    needs: [validation-version, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout pull-request validation source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install cross-format inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio p7zip-full rpm
+
+      - name: Download all unsigned native artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: propr-desktop-validation-canonical-*-${{ github.run_id }}
+          path: desktop-release-fragments
+
+      - name: Verify architecture, matrix completeness, and checksums
+        env:
+          RELEASE_VERSION: ${{ needs.validation-version.outputs.version }}
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs finalize \
+            --version "$RELEASE_VERSION" \
+            --profile macos-linux-v1 \
+            --input desktop-release-fragments \
+            --output desktop-release-final
+          (cd desktop-release-final && sha256sum --check SHA256SUMS)
+
+  preflight:
+    name: Protected read-only trusted release preflight
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'desktop-v')
+    runs-on: ubuntu-latest
+    environment:
+      name: desktop-release-preflight
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.preflight.outputs.version }}
+      release_sha: ${{ steps.preflight.outputs.release_sha }}
+      tag: ${{ steps.preflight.outputs.tag }}
+      tag_object_sha: ${{ steps.preflight.outputs.tag_object_sha }}
+    steps:
+      - name: Checkout exact event SHA without release secrets
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove protected preflight has no production authority
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const forbidden = Object.keys(process.env).filter(name =>
+            /^PROPR_DESKTOP_(?:MAC_CERTIFICATE|WINDOWS_CERTIFICATE|APPLE_API_KEY|UPDATE_PRIVATE_KEY)/.test(name));
+          if (forbidden.length) throw new Error(`Production release secrets reached preflight: ${forbidden.join(', ')}`);
+          NODE
+
+      - name: Create short-lived read-only preflight App token
+        id: preflight-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.PROPR_DESKTOP_PREFLIGHT_APP_ID }}
+          private-key: ${{ secrets.PROPR_DESKTOP_PREFLIGHT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-contents: read
+          permission-environments: read
+
+      - name: Verify protected-main provenance, immutable new tag, and environment policy
+        id: preflight
+        env:
+          GITHUB_TOKEN: ${{ steps.preflight-app-token.outputs.token }}
+        run: node apps/desktop/scripts/release-preflight.mjs
+
+  release-package:
+    name: Sign and package ${{ matrix.platform }}-${{ matrix.arch }} production target
+    if: needs.preflight.result == 'success'
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    environment:
+      name: desktop-release
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            arch: x64
+            runner: ubuntu-24.04
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - platform: darwin
+            arch: x64
+            runner: macos-15-intel
+          - platform: darwin
+            arch: arm64
+            runner: macos-15
+    env:
+      PROPR_DESKTOP_VERSION: ${{ needs.preflight.outputs.version }}
+      PROPR_DESKTOP_PRODUCTION_RELEASE: '1'
+      PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS: '1'
+      PROPR_DESKTOP_RELEASE_PROFILE: macos-linux-v1
+      UPDATE_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_UPDATE_PUBLIC_KEY }}
+      UPDATE_MANIFEST_URL: ${{ vars.PROPR_DESKTOP_UPDATE_MANIFEST_URL }}
+      UPDATE_MAC_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_MAC_SIGNING_IDENTITY }}
+      UPDATE_MAC_TEAM_ID: ${{ vars.PROPR_DESKTOP_MAC_TEAM_ID }}
+    steps:
+      - name: Revalidate immutable tag before checkout
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          TAG_OBJECT_SHA: ${{ needs.preflight.outputs.tag_object_sha }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/${{ github.repository }}/git/ref/tags/$RELEASE_TAG" --jq .object.sha)" = "$TAG_OBJECT_SHA"
+          test "$(gh api "repos/${{ github.repository }}/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_SHA"
+          ! gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1
+
+      - name: Checkout exact immutable release SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Verify checked out immutable SHA
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify native runner architecture
+        shell: bash
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node -e 'if(process.platform!==process.env.EXPECTED_PLATFORM||process.arch!==process.env.EXPECTED_ARCH) throw new Error(`Expected ${process.env.EXPECTED_PLATFORM}-${process.env.EXPECTED_ARCH}, got ${process.platform}-${process.arch}`)'
+
+      - name: Audit committed dependency resolution
+        shell: bash
+        run: |
+          npm run audit:runtime
+          npm run desktop:audit:packaging
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install native Linux package tools
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio dbus-x11 fakeroot gnome-keyring libsecret-1-0 rpm zip
+
+      - name: Configure required macOS signing and notarization
+        if: matrix.platform == 'darwin'
+        shell: bash
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.PROPR_DESKTOP_MAC_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.PROPR_DESKTOP_MAC_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.PROPR_DESKTOP_APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.PROPR_DESKTOP_APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.PROPR_DESKTOP_APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          for name in CERTIFICATE_P12_BASE64 CERTIFICATE_PASSWORD APPLE_API_KEY_P8_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER_ID UPDATE_MAC_SIGNING_IDENTITY UPDATE_MAC_TEAM_ID; do
+            test -n "${!name}" || { echo "Required production macOS field $name is missing" >&2; exit 1; }
+          done
+          certificate="$RUNNER_TEMP/propr-desktop-signing.p12"
+          keychain="$RUNNER_TEMP/propr-desktop-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          printf '%s' "$CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          api_key="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY_ID.p8"
+          printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$api_key"
+          echo "PROPR_DESKTOP_MAC_SIGNING_IDENTITY=$UPDATE_MAC_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          echo "PROPR_DESKTOP_APPLE_API_KEY_FILE=$api_key" >> "$GITHUB_ENV"
+          echo "PROPR_DESKTOP_APPLE_API_KEY_ID=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
+          echo "PROPR_DESKTOP_APPLE_API_ISSUER_ID=$APPLE_API_ISSUER_ID" >> "$GITHUB_ENV"
+          echo "DESKTOP_PLATFORM_CODE_SIGNED=1" >> "$GITHUB_ENV"
+
+      - name: Require macOS signed-update runtime configuration
+        if: matrix.platform == 'darwin'
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          test -n "$UPDATE_PUBLIC_KEY" || { echo 'Required Ed25519 update public key is missing' >&2; exit 1; }
+          test -n "$UPDATE_MANIFEST_URL" || { echo 'Required update manifest URL is missing' >&2; exit 1; }
+          test "${DESKTOP_PLATFORM_CODE_SIGNED:-}" = 1 || { echo 'Production updates require a code-signed build' >&2; exit 1; }
+          identity="$UPDATE_MAC_TEAM_ID"
+          test -n "$identity" || { echo 'Required native signing identity is missing' >&2; exit 1; }
+          echo "PROPR_DESKTOP_ENABLE_UPDATES=1" >> "$GITHUB_ENV"
+          echo "PROPR_DESKTOP_CODE_SIGNED=1" >> "$GITHUB_ENV"
+          echo "PROPR_DESKTOP_UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL" >> "$GITHUB_ENV"
+          echo "PROPR_DESKTOP_UPDATE_PUBLIC_KEY=$UPDATE_PUBLIC_KEY" >> "$GITHUB_ENV"
+          echo "PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Package signed production app from clean checkout
+        shell: bash
+        run: |
+          test ! -e packages/shared/dist
+          test ! -e packages/client/dist
+          test ! -e apps/desktop/out
+          npm run desktop:package
+
+      - name: Typecheck and test production desktop runtime
+        shell: bash
+        run: |
+          npm run desktop:typecheck
+          npm run desktop:test
+
+      - name: Make Linux production packages
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: PROPR_DESKTOP_ENABLE_DEB=1 PROPR_DESKTOP_ENABLE_RPM=1 npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+
+      - name: Make and notarize macOS production packages
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+          npm run make:dmg -w @propr/desktop -- --arch=${{ matrix.arch }}
+          dmg="$(find apps/desktop/out/make -type f -name '*.dmg' -print -quit)"
+          xcrun notarytool submit "$dmg" \
+            --key "$PROPR_DESKTOP_APPLE_API_KEY_FILE" \
+            --key-id "$PROPR_DESKTOP_APPLE_API_KEY_ID" \
+            --issuer "$PROPR_DESKTOP_APPLE_API_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          node apps/desktop/scripts/verify-darwin-image.mjs "$dmg"
+
+      - name: Launch packaged Linux application
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo chown root:root "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          keyring_root="$(mktemp -d)"
+          trap 'rm -rf -- "$keyring_root"' EXIT
+          dbus-run-session -- bash -euo pipefail -c '
+            export XDG_DATA_HOME="$1"
+            export PROPR_DESKTOP_SMOKE_KEYRING_ROOT="$1"
+            eval "$(printf "%s\n" "propr-packaged-smoke" | gnome-keyring-daemon --unlock --components=secrets)"
+            xvfb-run --auto-servernum npm run desktop:smoke
+          ' bash "$keyring_root"
+
+      - name: Inspect signed and notarized macOS application
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          npm run desktop:smoke:inspect
+          application="apps/desktop/out/propr-desktop-darwin-${{ matrix.arch }}/propr-desktop.app"
+          codesign --verify --deep --strict --verbose=2 "$application"
+          spctl --assess --type execute --verbose=4 "$application"
+          signature_details="$(codesign -dv --verbose=4 "$application" 2>&1)"
+          actual_authority="$(printf '%s\n' "$signature_details" | sed -n 's/^Authority=//p' | head -1)"
+          actual_team_id="$(printf '%s\n' "$signature_details" | sed -n 's/^TeamIdentifier=//p' | head -1)"
+          designated_requirement="$(codesign -d -r- "$application" 2>&1 | sed -n 's/^designated =>/designated =>/p')"
+          test "$actual_authority" = "$UPDATE_MAC_SIGNING_IDENTITY"
+          test "$actual_team_id" = "$UPDATE_MAC_TEAM_ID"
+          test -n "$designated_requirement"
+          echo "PROPR_DESKTOP_ACTUAL_SIGNER_TYPE=apple-team-id" >> "$GITHUB_ENV"
+          echo "PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY=$actual_team_id" >> "$GITHUB_ENV"
+          {
+            echo 'PROPR_DESKTOP_ACTUAL_MAC_DESIGNATED_REQUIREMENT<<PROPR_EOF'
+            echo "$designated_requirement"
+            echo 'PROPR_EOF'
+          } >> "$GITHUB_ENV"
+
+      - name: Inspect native Linux production packages
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          dpkg-deb --info "$(find apps/desktop/out/make -type f -name '*.deb' -print -quit)" >/dev/null
+          rpm -qip "$(find apps/desktop/out/make -type f -name '*.rpm' -print -quit)" >/dev/null
+          unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
+
+      - name: Prove private-snapshot native DMG mounting is available
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs probe-dmg-private-snapshot-isolation \
+            --version "$PROPR_DESKTOP_VERSION" \
+            --profile "$PROPR_DESKTOP_RELEASE_PROFILE" \
+            --make-directory apps/desktop/out/make \
+            --arch "${{ matrix.arch }}"
+
+      - name: Stage architecture and signer verified production artifacts with native DMG mount evidence
+        shell: bash
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs stage \
+            --version "$PROPR_DESKTOP_VERSION" \
+            --profile "$PROPR_DESKTOP_RELEASE_PROFILE" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --make-directory apps/desktop/out/make \
+            --output "desktop-release-${{ matrix.platform }}-${{ matrix.arch }}"
+
+      - name: Upload trusted production target
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-production-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: desktop-release-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release-finalize:
+    name: Revalidate production architectures and finalize checksums
+    if: needs.preflight.result == 'success'
+    needs: [preflight, release-package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact immutable release SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Install cross-format inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio p7zip-full rpm
+
+      - name: Download all trusted native artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: propr-desktop-production-*-${{ github.run_id }}
+          path: desktop-release-fragments
+
+      - name: Verify architecture, signer evidence, matrix completeness, and checksums
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs finalize \
+            --version "$RELEASE_VERSION" \
+            --profile macos-linux-v1 \
+            --input desktop-release-fragments \
+            --output desktop-release-validated
+          (cd desktop-release-validated && sha256sum --check SHA256SUMS)
+
+      - name: Upload complete validated release set
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-validated-release-${{ needs.preflight.outputs.version }}-${{ github.run_id }}
+          path: desktop-release-validated
+          if-no-files-found: error
+          retention-days: 30
+
+  sign:
+    name: Sign trusted update metadata
+    if: needs.preflight.result == 'success'
+    needs: [preflight, release-finalize]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: desktop-release
+    permissions:
+      contents: read
+    steps:
+      - name: Revalidate immutable tag before secret use
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          TAG_OBJECT_SHA: ${{ needs.preflight.outputs.tag_object_sha }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/${{ github.repository }}/git/ref/tags/$RELEASE_TAG" --jq .object.sha)" = "$TAG_OBJECT_SHA"
+          test "$(gh api "repos/${{ github.repository }}/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_SHA"
+          ! gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1
+
+      - name: Checkout exact immutable release SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Download validated release set
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-validated-release-${{ needs.preflight.outputs.version }}-${{ github.run_id }}
+          path: desktop-release-validated
+
+      - name: Sign cryptographically bound update metadata
+        env:
+          PROPR_DESKTOP_UPDATE_PRIVATE_KEY: ${{ secrets.PROPR_DESKTOP_UPDATE_PRIVATE_KEY }}
+          PROPR_DESKTOP_UPDATE_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_UPDATE_PUBLIC_KEY }}
+          PROPR_DESKTOP_UPDATE_MANIFEST_URL: ${{ vars.PROPR_DESKTOP_UPDATE_MANIFEST_URL }}
+          PROPR_DESKTOP_MAC_TEAM_ID: ${{ vars.PROPR_DESKTOP_MAC_TEAM_ID }}
+          PROPR_DESKTOP_DARWIN_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_X64_FEED_URL }}
+          PROPR_DESKTOP_DARWIN_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_ARM64_FEED_URL }}
+          PROPR_DESKTOP_RELEASE_PROFILE: macos-linux-v1
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs sign \
+            --version "$RELEASE_VERSION" \
+            --profile "$PROPR_DESKTOP_RELEASE_PROFILE" \
+            --input desktop-release-validated \
+            --output desktop-release-signed
+          test -s desktop-release-signed/desktop-release.json.sig
+          (cd desktop-release-signed && sha256sum --check SHA256SUMS)
+
+      - name: Upload signed release set
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-signed-release-${{ needs.preflight.outputs.version }}-${{ github.run_id }}
+          path: desktop-release-signed
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish new immutable desktop release
+    if: needs.preflight.result == 'success'
+    needs: [preflight, sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout exact approved publication helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Download signed release set
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-signed-release-${{ needs.preflight.outputs.version }}-${{ github.run_id }}
+          path: desktop-release-final
+
+      - name: Publish only the preflight-approved tag and signed bytes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          TAG_OBJECT_SHA: ${{ needs.preflight.outputs.tag_object_sha }}
+          RELEASE_DIRECTORY: desktop-release-final
+          PROPR_DESKTOP_RELEASE_PROFILE: macos-linux-v1
+        run: |
+          set -euo pipefail
+          test -s desktop-release-final/desktop-release.json.sig
+          node apps/desktop/scripts/release-publish.mjs

@@ -33,8 +33,16 @@ function pwaShellAssetManifest(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
+  resolve: {
+    // Consume the workspace source in clean checkouts; @propr/client still
+    // builds to dist for packaged desktop/CLI consumers.
+    alias: {
+      '@propr/client': fileURLToPath(new URL('../packages/client/src/index.ts', import.meta.url)),
+    },
+  },
   define: {
     __APP_VERSION__: JSON.stringify(rootPkg.version),
+    __PROPR_DESKTOP__: 'false',
   },
   plugins: [react(), pwaShellAssetManifest()],
   test: {

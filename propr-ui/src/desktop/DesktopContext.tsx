@@ -1,0 +1,20 @@
+import { createContext, useContext } from 'react';
+import type { DesktopConnectionResult, DesktopPlatform, DesktopProfile } from './types';
+
+export interface DesktopContextValue {
+  isDesktop: true;
+  platform: DesktopPlatform;
+  profile: DesktopProfile;
+  connection: DesktopConnectionResult;
+  openProfileManager(): void;
+  /** Resolves when authenticated requests for the active profile are ready. */
+  authenticate(): Promise<void>;
+  openConnectionHelp(): Promise<void>;
+  retry(): void;
+  /** @internal Packaged acceptance signal owned by the committed connected renderer. */
+  reportConnectedRendererReady?(): Promise<void>;
+}
+
+export const DesktopContext = createContext<DesktopContextValue | null>(null);
+
+export const useDesktop = (): DesktopContextValue | null => useContext(DesktopContext);

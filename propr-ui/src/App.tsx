@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
+import { BrowserRouter, HashRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketProvider } from './contexts/SocketProvider'
@@ -11,6 +11,7 @@ import { getCurrentUser, INSTANCE_AUTHORIZATION_CHANGED_EVENT } from './api/prop
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
 import {
   hostedUiConnectionIssue,
+  getRuntimeApiBaseUrlState,
   isHostedOAuthCompletionRoute,
   isHostedUiOrigin,
   pathWithActiveHostedTunnelFlow,
@@ -21,6 +22,10 @@ import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
 import { ConnectAccountProvider } from './contexts/ConnectAccountContext'
 import { BrowserPushProvider } from './hooks/useBrowserPush'
 import { NotificationCenterProvider } from './contexts/NotificationCenterContext'
+import { currentUiPathname, isDesktopRuntime, publicAssetUrl } from './config/runtimeMode'
+import { DesktopPresentationBoundary } from './desktop/DesktopPresentationBoundary'
+
+const Router = isDesktopRuntime() ? HashRouter : BrowserRouter;
 
 const AiAgentsPage = lazy(() => import('./pages/AiAgentsPage'))
 const AccessManagementPage = lazy(() => import('./pages/AccessManagementPage'))
@@ -28,6 +33,7 @@ const Dashboard = lazy(() => import('./components/Dashboard'))
 const LlmLogsPage = lazy(() => import('./pages/LlmLogsPage'))
 const InboxPage = lazy(() => import('./pages/InboxPage'))
 const LoginPage = lazy(() => import('./pages/LoginPage'))
+const DesktopPairingPage = lazy(() => import('./pages/DesktopPairingPage'))
 const PlansPage = lazy(() => import('./pages/PlansPage'))
 const PlanStudioPage = lazy(() => import('./pages/PlanStudioPage'))
 const RepositoriesPage = lazy(() => import('./pages/RepositoriesPage'))
@@ -36,10 +42,7 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const SummaryBrowserPage = lazy(() => import('./pages/SummaryBrowserPage'))
 const TasksPage = lazy(() => import('./pages/TasksPage'))
 
-type CompatibilityState =
-  | { status: 'checking' }
-  | { status: 'ready' }
-  | { status: 'blocked'; title: string; message: string };
+type CompatibilityState = { status: 'checking' } | { status: 'ready' } | { status: 'blocked'; title: string; message: string };
 
 const AUTHORIZATION_REFRESH_INTERVAL_MS = 60_000;
 
@@ -92,7 +95,7 @@ const HostedConnectionBlocked: React.FC<{ title: string; message: string }> = ({
 const HostedOAuthCompletion: React.FC = () => (
   <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
     <main className="text-center">
-      <img src="/media/logo-and-name.png" alt="ProPR" className="mx-auto mb-4 h-12 w-auto" />
+      <img src={publicAssetUrl('/media/logo-and-name.png')} alt="ProPR" className="mx-auto mb-4 h-12 w-auto" />
       <h1 className="text-xl font-semibold text-gray-950">GitHub sign-in complete</h1>
       <p className="mt-3 text-sm text-gray-600">You can close this window and return to ProPR.</p>
     </main>
@@ -141,7 +144,7 @@ export const NotFoundRouteContent: React.FC<{ hostname?: string }> = ({ hostname
 const AppContent: React.FC = () => {
   const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
   // Auth check state - start loading unless already on login page
-  const [isLoading, setIsLoading] = useState(window.location.pathname !== '/login');
+  const [isLoading, setIsLoading] = useState(currentUiPathname() !== '/login');
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
 
@@ -162,7 +165,7 @@ const AppContent: React.FC = () => {
 
     const checkSession = async () => {
       // Don't check if we are already on login page
-      if (window.location.pathname === '/login') {
+      if (currentUiPathname() === '/login') {
         setIsLoading(false);
         return;
       }
@@ -195,7 +198,7 @@ const AppContent: React.FC = () => {
   }, [refreshCurrentUser]);
 
   useEffect(() => {
-    if (isDemoMode || window.location.pathname === '/login') return;
+    if (isDemoMode || currentUiPathname() === '/login') return;
     const refreshAuthorization = () => {
       if (document.visibilityState === 'hidden') return;
       void refreshCurrentUser().catch(error => {
@@ -235,6 +238,7 @@ const AppContent: React.FC = () => {
                     <Suspense fallback={<LoadingSpinner />}>
                       <Routes>
                     <Route path="/login" element={<LoginPage />} />
+                    <Route path="/desktop/pairing" element={<DesktopPairingPage />} />
                     <Route path="/revert" element={<RevertPage />} />
                     <Route
                       path="/"
@@ -360,7 +364,7 @@ const AppContent: React.FC = () => {
   );
 };
 
-const App: React.FC = () => {
+const WebApp: React.FC = () => {
   // The compatibility gate only applies to the hosted UI — a single static bundle
   // serving many per-instance proxies, where the UI and API are versioned
   // independently. On a local/self-hosted origin the UI and API ship together, so
@@ -374,7 +378,7 @@ const App: React.FC = () => {
   );
   const connectionIssue = isHostedOAuthCompletion
     ? null
-    : hostedUiConnectionIssue(
+    : getRuntimeApiBaseUrlState().issue ?? hostedUiConnectionIssue(
       window.location.hostname,
       window.__PROPR_CONFIG__,
       window.location.search
@@ -382,7 +386,6 @@ const App: React.FC = () => {
   const [compatibility, setCompatibility] = useState<CompatibilityState>(
     isHosted && !isHostedOAuthCompletion && !connectionIssue ? { status: 'checking' } : { status: 'ready' }
   );
-
   useEffect(() => {
     if (!isHosted || isHostedOAuthCompletion || connectionIssue) return;
     let cancelled = false;
@@ -452,4 +455,4 @@ const App: React.FC = () => {
   )
 }
 
-export default App
+export default function App() { return <DesktopPresentationBoundary fallback={<WebApp />} desktop={<DemoModeProvider><AppContent /></DemoModeProvider>} />; }

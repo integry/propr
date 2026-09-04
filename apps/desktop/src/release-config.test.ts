@@ -1,0 +1,295 @@
+import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
+import { describe, test } from 'node:test';
+import {
+  readCompleteEnvironmentGroup,
+  parseWindowsSignerPins,
+  requireProductionReleaseConfiguration,
+  resolveDesktopVersion,
+  resolveTrustedUpdateBuildConfig,
+  WINDOWS_INSTALLER_PRODUCT_VERSION_ERROR,
+} from './release-config';
+
+const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+const certificatePin = `certificate-sha256:${'1'.repeat(64)}`;
+const spkiPin = `spki-sha256:${'2'.repeat(64)}`;
+
+interface LinuxMaker {
+  name: 'deb' | 'rpm';
+  config: { options?: { bin?: string } };
+  prepareConfig: (targetArch: 'x64') => Promise<void>;
+}
+
+const isLinuxMaker = (maker: unknown): maker is LinuxMaker => {
+  if (typeof maker !== 'object' || maker === null || !('name' in maker)) return false;
+  return maker.name === 'deb' || maker.name === 'rpm';
+};
+
+describe('desktop release configuration', () => {
+  test('keeps Linux maker executables aligned with the packaged executable', async () => {
+    const previousDeb = process.env.PROPR_DESKTOP_ENABLE_DEB;
+    const previousRpm = process.env.PROPR_DESKTOP_ENABLE_RPM;
+    process.env.PROPR_DESKTOP_ENABLE_DEB = '1';
+    process.env.PROPR_DESKTOP_ENABLE_RPM = '1';
+    try {
+      const { default: forgeConfig } = await import('../forge.config');
+      const executableName = forgeConfig.packagerConfig?.executableName;
+      assert.equal(executableName, 'propr-desktop');
+
+      const linuxMakers = forgeConfig.makers?.filter(isLinuxMaker) ?? [];
+      assert.deepEqual(linuxMakers.map(maker => maker.name).sort(), ['deb', 'rpm']);
+      for (const maker of linuxMakers) {
+        await maker.prepareConfig('x64');
+        assert.equal(maker.config.options?.bin, executableName);
+        assert.notEqual(maker.config.options?.bin, '@propr/desktop');
+      }
+    } finally {
+      if (previousDeb === undefined) delete process.env.PROPR_DESKTOP_ENABLE_DEB;
+      else process.env.PROPR_DESKTOP_ENABLE_DEB = previousDeb;
+      if (previousRpm === undefined) delete process.env.PROPR_DESKTOP_ENABLE_RPM;
+      else process.env.PROPR_DESKTOP_ENABLE_RPM = previousRpm;
+    }
+  });
+
+  test('propagates an explicit independent desktop version', () => {
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      assert.equal(resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: '2.3.4' }, platform), '2.3.4');
+    }
+  });
+
+  test('accepts the exact MSI ProductVersion numeric boundary for Windows releases', () => {
+    assert.equal(
+      resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: '255.255.65535' }, 'win32'),
+      '255.255.65535',
+    );
+  });
+
+  test('preserves the stable SemVer diagnostic for malformed Windows release versions', () => {
+    for (const version of [
+      '01.2.3',
+      '1.02.3',
+      '1.2.03',
+      'v1.2.3',
+      '+1.2.3',
+      '-1.2.3',
+      '1.-2.3',
+      '1.2.+3',
+      '1.2.3.4',
+      '1.2.3.',
+      '1.2',
+      '1.2.3-rc.1',
+      '1.2.3+build.1',
+      '255.255.65535-rc.1',
+    ]) {
+      assert.throws(
+        () => resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: version }, 'win32'),
+        /canonical stable semver/,
+      );
+    }
+  });
+
+  test('rejects canonical stable Windows versions outside MSI bounds with one fixed actionable diagnostic', () => {
+    for (const version of [
+      '256.0.0',
+      '0.256.0',
+      '0.0.65536',
+      `${'9'.repeat(10_000)}.0.0`,
+    ]) {
+      assert.throws(
+        () => resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: version }, 'win32'),
+        { message: WINDOWS_INSTALLER_PRODUCT_VERSION_ERROR },
+      );
+    }
+  });
+
+  test('preserves stable SemVer policy outside the Windows MSI path', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      assert.equal(
+        resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: '256.256.65536' }, platform),
+        '256.256.65536',
+      );
+      assert.throws(
+        () => resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: '256.256.65536-rc.1' }, platform),
+        /canonical stable semver/,
+      );
+    }
+  });
+
+  test('keeps updates disabled unless they are explicitly enabled', () => {
+    assert.deepEqual(resolveTrustedUpdateBuildConfig({}), {
+      enabled: false,
+      manifestUrl: '',
+      publicKey: '',
+      signingIdentity: '',
+      windowsSignerPins: [],
+    });
+  });
+
+  test('requires a signed build and a complete trusted update configuration', () => {
+    const base = {
+      PROPR_DESKTOP_ENABLE_UPDATES: '1',
+      PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
+      PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
+      PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'Example Publisher',
+    };
+    assert.throws(() => resolveTrustedUpdateBuildConfig(base, 'darwin'), /CODE_SIGNED/);
+    assert.deepEqual(resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1' }, 'darwin'), {
+      enabled: true,
+      manifestUrl: 'https://updates.example.test/stable/desktop-release.json',
+      publicKey,
+      signingIdentity: 'Example Publisher',
+      windowsSignerPins: [],
+    });
+    assert.throws(
+      () => resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1', PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'http://example.test/update.json' }, 'darwin'),
+      /HTTPS/,
+    );
+    assert.throws(
+      () => resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1', PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://example.test/update.json?channel=stable' }, 'darwin'),
+      /query/,
+    );
+  });
+
+  test('parses canonical Windows certificate or SPKI SHA-256 pin allowlists for artifact signing', () => {
+    assert.deepEqual(parseWindowsSignerPins(`${certificatePin},${spkiPin}`), [certificatePin, spkiPin]);
+    for (const value of [
+      undefined,
+      '',
+      `certificate-sha256:${'A'.repeat(64)}`,
+      `certificate-sha256:${'1'.repeat(63)}`,
+      `${spkiPin},${certificatePin}`,
+      `${certificatePin},${certificatePin}`,
+      ` ${certificatePin}`,
+      `sha256:${'1'.repeat(64)}`,
+    ]) assert.throws(() => parseWindowsSignerPins(value), /required|sorted, unique/);
+
+    const base = {
+      PROPR_DESKTOP_ENABLE_UPDATES: '1',
+      PROPR_DESKTOP_CODE_SIGNED: '1',
+      PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
+      PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
+      PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'CN=Example Publisher',
+    };
+    assert.deepEqual(
+      resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_WINDOWS_SIGNER_PINS: certificatePin }, 'win32'),
+      { enabled: false, manifestUrl: '', publicKey: '', signingIdentity: '', windowsSignerPins: [] },
+    );
+  });
+
+  test('fails closed to unsupported Windows updates even when every update variable is configured or malformed', () => {
+    for (const env of [
+      {
+        PROPR_DESKTOP_ENABLE_UPDATES: '1',
+        PROPR_DESKTOP_CODE_SIGNED: '1',
+        PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
+        PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
+        PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'CN=Example Publisher',
+        PROPR_DESKTOP_WINDOWS_SIGNER_PINS: certificatePin,
+      },
+      {
+        PROPR_DESKTOP_ENABLE_UPDATES: '1',
+        PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'http://unsafe.example.test/update.json?configured=1',
+      },
+    ]) {
+      assert.deepEqual(resolveTrustedUpdateBuildConfig(env, 'win32'), {
+        enabled: false,
+        manifestUrl: '',
+        publicKey: '',
+        signingIdentity: '',
+        windowsSignerPins: [],
+      });
+    }
+  });
+
+  test('preserves opaque signing credentials while normalizing non-secret members', () => {
+    const password = '  certificate password  ';
+    assert.deepEqual(
+      readCompleteEnvironmentGroup(
+        {
+          CERT: '  /tmp/cert.pfx  ',
+          PASSWORD: password,
+          KEY_ID: '  key-id  ',
+        },
+        ['CERT', 'PASSWORD', 'KEY_ID'],
+        'Windows signing',
+        { opaqueNames: ['PASSWORD'] },
+      ),
+      {
+        CERT: '/tmp/cert.pfx',
+        PASSWORD: password,
+        KEY_ID: 'key-id',
+      },
+    );
+  });
+
+  test('rejects whitespace-only and partially configured signing groups with fixed diagnostics', () => {
+    assert.equal(readCompleteEnvironmentGroup({}, ['CERT', 'PASSWORD'], 'Windows signing'), undefined);
+    assert.throws(
+      () => readCompleteEnvironmentGroup({ CERT: '/tmp/cert.pfx' }, ['CERT', 'PASSWORD'], 'Windows signing'),
+      { message: 'Windows signing configuration is incomplete; missing PASSWORD' },
+    );
+    assert.throws(
+      () => readCompleteEnvironmentGroup(
+        { CERT: ' /tmp/cert.pfx ', PASSWORD: ' \t ' },
+        ['CERT', 'PASSWORD'],
+        'Windows signing',
+        { opaqueNames: ['PASSWORD'] },
+      ),
+      { message: 'Windows signing configuration is incomplete; missing PASSWORD' },
+    );
+    assert.throws(
+      () => readCompleteEnvironmentGroup(
+        { CERT: ' ', PASSWORD: '  credential  ', KEY_ID: '' },
+        ['CERT', 'PASSWORD', 'KEY_ID'],
+        'Windows signing',
+        { opaqueNames: ['PASSWORD'] },
+      ),
+      { message: 'Windows signing configuration is incomplete; missing CERT, KEY_ID' },
+    );
+  });
+
+  test('fails closed when a production signing or notarization condition is absent', () => {
+    const enabledUpdates = resolveTrustedUpdateBuildConfig({
+      PROPR_DESKTOP_ENABLE_UPDATES: '1',
+      PROPR_DESKTOP_CODE_SIGNED: '1',
+      PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
+      PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
+      PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'TEAM123456',
+    }, 'darwin');
+    const disabledWindowsUpdates = resolveTrustedUpdateBuildConfig({
+      PROPR_DESKTOP_ENABLE_UPDATES: '1',
+      PROPR_DESKTOP_CODE_SIGNED: '1',
+      PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
+      PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
+      PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'CN=Example Publisher',
+    }, 'win32');
+    const group = { configured: 'yes' };
+    assert.throws(
+      () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: enabledUpdates, macSigning: group }),
+      /notarization/,
+    );
+    assert.throws(
+      () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: { enabled: false, manifestUrl: '', publicKey: '', signingIdentity: '', windowsSignerPins: [] }, macSigning: group, macNotarization: group }),
+      /signed updates/,
+    );
+    assert.throws(
+      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: disabledWindowsUpdates }),
+      /Authenticode/,
+    );
+    assert.throws(
+      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: disabledWindowsUpdates, windowsSigning: group }),
+      /artifact signer pin/,
+    );
+    assert.doesNotThrow(
+      () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: enabledUpdates, macSigning: group, macNotarization: group }),
+    );
+    assert.doesNotThrow(
+      () => requireProductionReleaseConfiguration({
+        platform: 'win32',
+        updateConfig: disabledWindowsUpdates,
+        windowsSigning: group,
+        windowsSignerPins: [certificatePin],
+      }),
+    );
+  });
+});

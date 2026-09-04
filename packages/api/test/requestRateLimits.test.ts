@@ -5,9 +5,12 @@ import express from 'express';
 import session from 'express-session';
 import {
   configureApiProxyTrust,
+  createApiRequestRateLimiter,
+  createDiscoveryRequestRateLimiter,
   createRequestRateLimiter,
   resolveRequestRateLimitPolicies,
 } from '../requestRateLimits.js';
+import { prohibitApiResponseCaching } from '../apiCacheControl.js';
 
 interface TestAppOptions {
   proxyEnvironment?: Record<string, string | undefined>;
@@ -75,6 +78,56 @@ test('returns a standard 429 response after the configured quota', async () => {
     code: 'RATE_LIMIT_EXCEEDED',
     error: 'Too many requests. Please try again later.',
   });
+});
+
+test('the real global API limiter keeps no-store headers when saturated', async () => {
+  const app = express();
+  app.use('/api', prohibitApiResponseCaching);
+  app.use('/api', createApiRequestRateLimiter({
+    PROPR_API_RATE_LIMIT_MAX: '1',
+    PROPR_API_RATE_LIMIT_WINDOW_MS: '60000',
+  }));
+  app.get('/api/resource', (_request, response) => response.json({ ok: true }));
+  const server = await listenTestApp(app);
+  openServers.push(server.close);
+
+  const success = await fetch(`${server.origin}/api/resource`);
+  const limited = await fetch(`${server.origin}/api/resource`);
+  assert.equal(success.status, 200);
+  assert.equal(limited.status, 429);
+  for (const response of [success, limited]) {
+    assert.equal(response.headers.get('cache-control'), 'no-store, max-age=0');
+    assert.equal(response.headers.get('pragma'), 'no-cache');
+  }
+});
+
+test('route limiting, 503, and errors inherit the earliest API no-store boundary', async () => {
+  const app = express();
+  app.use('/api', prohibitApiResponseCaching);
+  app.get('/api/discovery', createDiscoveryRequestRateLimiter({
+    PROPR_DISCOVERY_RATE_LIMIT_MAX: '1',
+    PROPR_DISCOVERY_RATE_LIMIT_WINDOW_MS: '60000',
+  }), (_request, response) => response.json({ ok: true }));
+  app.get('/api/unavailable', (_request, response) => response.status(503).json({ unavailable: true }));
+  app.get('/api/error', () => { throw new Error('private failure'); });
+  app.use((_error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+    void _next;
+    response.status(500).json({ error: 'Internal server error' });
+  });
+  const server = await listenTestApp(app);
+  openServers.push(server.close);
+
+  const responses = [
+    await fetch(`${server.origin}/api/discovery`),
+    await fetch(`${server.origin}/api/discovery`),
+    await fetch(`${server.origin}/api/unavailable`),
+    await fetch(`${server.origin}/api/error`),
+  ];
+  assert.deepEqual(responses.map(response => response.status), [200, 429, 503, 500]);
+  for (const response of responses) {
+    assert.equal(response.headers.get('cache-control'), 'no-store, max-age=0');
+    assert.equal(response.headers.get('pragma'), 'no-cache');
+  }
 });
 
 test('does not charge CORS preflight requests against the quota', async () => {
@@ -208,6 +261,9 @@ test('resolves secure defaults and explicit positive-integer overrides', () => {
   const defaults = resolveRequestRateLimitPolicies({});
   assert.deepEqual(defaults.api, { identifier: 'api', limit: 600, windowMs: 60_000 });
   assert.deepEqual(defaults.auth, { identifier: 'auth', limit: 30, windowMs: 900_000 });
+  assert.deepEqual(defaults.discovery, { identifier: 'desktop-discovery', limit: 60, windowMs: 60_000 });
+  assert.deepEqual(defaults.pairingStart, { identifier: 'desktop-pairing-start', limit: 10, windowMs: 900_000 });
+  assert.deepEqual(defaults.pairingPoll, { identifier: 'desktop-pairing-poll', limit: 180, windowMs: 900_000 });
   assert.deepEqual(defaults.webhook, { identifier: 'webhook', limit: 300, windowMs: 60_000 });
 
   const configured = resolveRequestRateLimitPolicies({

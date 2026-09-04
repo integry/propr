@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -15,6 +15,36 @@ import {
 } from '../scripts/run-test-suite.mjs';
 
 describe('release test-suite runner', () => {
+    test('prepares desktop runtime dependencies before clean desktop and full-suite tests', () => {
+        const rootPackage = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+        const desktopPackageUrl = new URL('../apps/desktop/package.json', import.meta.url);
+        const desktopPackage = JSON.parse(readFileSync(desktopPackageUrl, 'utf8'));
+        const workflow = readFileSync(new URL('../.github/workflows/pr-test-on-label.yml', import.meta.url), 'utf8');
+        const sharedBuild = 'npm run build --workspace=packages/shared';
+        const clientBuild = 'npm run build --workspace=packages/client';
+        const fullSuitePreparation = rootPackage.scripts['test:prepare'];
+        const desktopPreparation = desktopPackage.scripts['prepare:renderer'];
+
+        assert.ok(fullSuitePreparation.indexOf(sharedBuild) >= 0);
+        assert.ok(fullSuitePreparation.indexOf(clientBuild) > fullSuitePreparation.indexOf(sharedBuild));
+        assert.equal(desktopPackage.scripts.pretest, 'npm run prepare:renderer');
+        assert.ok(desktopPreparation.indexOf('npm run build -w @propr/client')
+            > desktopPreparation.indexOf('npm run build -w @propr/shared'));
+
+        const cleanSharedDist = workflow.indexOf('test ! -e packages/shared/dist');
+        const cleanClientDist = workflow.indexOf('test ! -e packages/client/dist');
+        const prepareFullSuite = workflow.indexOf('npm run test:prepare', cleanClientDist);
+        const assertSharedBuilt = workflow.indexOf('test -f packages/shared/dist/index.js', prepareFullSuite);
+        const assertClientBuilt = workflow.indexOf('test -f packages/client/dist/index.js', prepareFullSuite);
+        const runFullSuite = workflow.indexOf('npm run test:full:prepared', assertClientBuilt);
+        assert.ok(cleanSharedDist >= 0);
+        assert.ok(cleanClientDist > cleanSharedDist);
+        assert.ok(prepareFullSuite > cleanClientDist);
+        assert.ok(assertSharedBuilt > prepareFullSuite);
+        assert.ok(assertClientBuilt > prepareFullSuite);
+        assert.ok(runFullSuite > assertClientBuilt);
+    });
+
     test('selects supported test files deterministically and excludes live E2E', () => {
         assert.deepEqual(selectTestFiles([
             '/repo/test/z.test.ts',

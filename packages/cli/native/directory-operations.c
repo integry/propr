@@ -83,8 +83,19 @@ static napi_value open_at(napi_env env, napi_callback_info info) {
   }
   char path[4096];
   if (!path_argument(env, arguments[1], path, sizeof(path))) return NULL;
-  int result = openat(int32_argument(env, arguments[0]), path, int32_argument(env, arguments[2]),
-                      (mode_t)uint32_argument(env, arguments[3]));
+  int result;
+#if defined(__linux__) && defined(__aarch64__)
+  /*
+   * The arm64 prebuild is cross-compiled.  Invoke the fixed Linux syscall ABI
+   * instead of crossing the libc variadic openat boundary from that artifact.
+   */
+  result = (int)syscall(SYS_openat, int32_argument(env, arguments[0]), path,
+                        int32_argument(env, arguments[2]),
+                        (mode_t)uint32_argument(env, arguments[3]));
+#else
+  result = openat(int32_argument(env, arguments[0]), path, int32_argument(env, arguments[2]),
+                  (mode_t)uint32_argument(env, arguments[3]));
+#endif
   if (result == -1) return throw_errno(env, "openat");
   napi_value value;
   napi_create_int32(env, result, &value);
@@ -196,7 +207,15 @@ static napi_value lstat_at(napi_env env, napi_callback_info info) {
   char path[4096];
   if (!path_argument(env, arguments[1], path, sizeof(path))) return NULL;
   struct stat status;
-  if (fstatat(int32_argument(env, arguments[0]), path, &status, AT_SYMLINK_NOFOLLOW) == -1) {
+  int syscall_result;
+#if defined(__linux__) && defined(__aarch64__)
+  /* Avoid the cross-toolchain libc stat-version wrapper on Linux arm64. */
+  syscall_result = (int)syscall(SYS_newfstatat, int32_argument(env, arguments[0]), path,
+                                &status, AT_SYMLINK_NOFOLLOW);
+#else
+  syscall_result = fstatat(int32_argument(env, arguments[0]), path, &status, AT_SYMLINK_NOFOLLOW);
+#endif
+  if (syscall_result == -1) {
     return throw_errno(env, "fstatat");
   }
 
