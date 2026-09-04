@@ -12,8 +12,12 @@ import { createDesktopShutdownCoordinator } from './shutdown';
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>(settle => { resolve = settle; });
-  return { promise, resolve };
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 };
 
 const connectDiscovery = {
@@ -127,6 +131,83 @@ describe('desktop IPC shutdown gate', () => {
     assert.equal(saveCommitted, true);
     assert.deepEqual(reconciledOrigins, [null]);
   });
+
+  for (const staleReadOutcome of ['resolve', 'reject'] as const) {
+    it(`does not publish a stale reconciliation when its profile read ${staleReadOutcome}s`, async () => {
+      const handlers = new Map<string, (...args: any[]) => unknown>();
+      const firstRead = deferred<{
+        profiles: Array<{
+          id: string;
+          label: string;
+          apiBaseUrl: string;
+          createdAt: string;
+          updatedAt: string;
+        }>;
+        activeProfileId: string | null;
+      }>();
+      const firstReadStarted = deferred<void>();
+      const oldProfile = {
+        id: 'profile-a', label: 'A', apiBaseUrl: 'http://localhost:4000',
+        createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+      };
+      const currentProfile = {
+        id: 'profile-b', label: 'B', apiBaseUrl: 'http://127.0.0.1:4100',
+        createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:01:00.000Z',
+      };
+      let listCalls = 0;
+      const credentials = {
+        saveProfile: async (input: typeof oldProfile) => input,
+        listProfiles: async () => {
+          listCalls += 1;
+          if (listCalls === 1) {
+            firstReadStarted.resolve(undefined);
+            return firstRead.promise;
+          }
+          return { profiles: [currentProfile], activeProfileId: currentProfile.id };
+        },
+      } as unknown as DesktopCredentialService;
+      const reconciledOrigins: Array<string | null> = [];
+      registerIpcHandlers({
+        app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+        ipcMain: {
+          handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+          removeHandler: (channel: string) => { handlers.delete(channel); },
+        } as unknown as IpcMain,
+        profiles: {} as ProfileStore,
+        credentials,
+        connectDiscovery,
+        lifecycle: {} as LocalLifecycleController,
+        logger: { log: () => undefined } as unknown as DesktopLogger,
+        desktopSession: {} as Session,
+        devServerUrl: undefined,
+        packagedRendererUrl: 'propr-renderer://app/index.html',
+        openExternal: async () => undefined,
+        onRendererActiveProfileChanged: origin => { reconciledOrigins.push(origin); },
+      });
+      const event = {
+        senderFrame: { url: 'propr-renderer://app/index.html' },
+      } as unknown as IpcMainInvokeEvent;
+      const save = (profile: typeof oldProfile) => Promise.resolve(
+        handlers.get(IPC_CHANNELS.profilesSave)!(event, profile),
+      );
+
+      const staleSave = save(oldProfile);
+      await firstReadStarted.promise;
+      await save(currentProfile);
+      assert.deepEqual(reconciledOrigins, [currentProfile.apiBaseUrl]);
+
+      if (staleReadOutcome === 'resolve') {
+        firstRead.resolve({ profiles: [oldProfile], activeProfileId: oldProfile.id });
+        await staleSave;
+      } else {
+        firstRead.reject(new Error('stale profile read failed'));
+        await assert.rejects(staleSave, /Desktop operation failed \[IPC_OPERATION_FAILED\]/);
+      }
+
+      assert.equal(listCalls, 2);
+      assert.deepEqual(reconciledOrigins, [currentProfile.apiBaseUrl]);
+    });
+  }
 
   it('clears the renderer policy after re-pairing an active profile at a changed local origin', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();

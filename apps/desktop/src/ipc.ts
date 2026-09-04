@@ -82,6 +82,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   const channels = new Set<string>();
   const active = new Set<Promise<unknown>>();
   let closing = false;
+  let rendererActiveProfileReconciliationGeneration = 0;
   const trusted = (event: IpcMainInvokeEvent): boolean => {
     const senderUrl = event.senderFrame?.url ?? '';
     return isTrustedRendererUrl(senderUrl, options.devServerUrl, options.packagedRendererUrl);
@@ -115,16 +116,21 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   };
   const reconcileRendererActiveProfile = async (): Promise<void> => {
     if (!options.onRendererActiveProfileChanged) return;
+    const generation = ++rendererActiveProfileReconciliationGeneration;
     let current;
     try {
       current = await options.credentials.listProfiles();
     } catch (error) {
-      options.onRendererActiveProfileChanged(null);
+      if (generation === rendererActiveProfileReconciliationGeneration) {
+        options.onRendererActiveProfileChanged(null);
+      }
       throw error;
     }
     const activeOrigin = current.profiles
       .find(profile => profile.id === current.activeProfileId)?.apiBaseUrl ?? null;
-    options.onRendererActiveProfileChanged(activeOrigin);
+    if (generation === rendererActiveProfileReconciliationGeneration) {
+      options.onRendererActiveProfileChanged(activeOrigin);
+    }
   };
 
   handle(IPC_CHANNELS.appMetadata, () => ({
