@@ -83,13 +83,9 @@ run_stage() {
 umask 077
 keychain_root=''
 keychain_path=''
-root_private_key=''
-root_certificate=''
 leaf_private_key=''
-leaf_request=''
 leaf_certificate=''
 identity_archive=''
-root_config=''
 leaf_config=''
 requirement_proof=''
 identity_sha1=''
@@ -133,7 +129,7 @@ cleanup_keychain() {
   set +e
   run_stage KEYCHAIN_RESTORATION_DELETION restore_and_delete_keychain || cleanup_status=1
   run_stage TEMPORARY_FILE_CLEANUP remove_temporary_files || cleanup_status=1
-  unset keychain_password identity_password certificate_serial
+  unset keychain_password identity_password
   if (( cleanup_status != 0 )); then
     echo 'Packaged Darwin Connect acceptance cleanup failed.' >&2
     if (( primary_status == 0 )); then primary_status=1; fi
@@ -188,42 +184,26 @@ generate_key_and_certificates() {
   keychain_root="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" /usr/bin/mktemp -d)" || return $?
   [[ -n "$keychain_root" ]] || return 1
   keychain_path="$keychain_root/propr-packaged-connect-smoke.keychain-db"
-  root_private_key="$keychain_root/root-private.pem"
-  root_certificate="$keychain_root/root-certificate.pem"
   leaf_private_key="$keychain_root/leaf-private.pem"
-  leaf_request="$keychain_root/leaf-request.pem"
   leaf_certificate="$keychain_root/leaf-certificate.pem"
   identity_archive="$keychain_root/identity.p12"
-  root_config="$keychain_root/root.cnf"
   leaf_config="$keychain_root/leaf.cnf"
   requirement_proof="$keychain_root/designated-requirement.txt"
   keychain_password="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" \
     /usr/bin/openssl rand -hex 32)" || return $?
   identity_password="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" \
     /usr/bin/openssl rand -hex 32)" || return $?
-  builtin printf '%s\n' '[req]' 'distinguished_name = root_name' \
-    'x509_extensions = root_extensions' 'prompt = no' '' '[root_name]' \
-    'CN = ProPR Packaged Connect CI Root' '' '[root_extensions]' \
-    'basicConstraints = critical,CA:TRUE,pathlen:0' \
-    'keyUsage = critical,keyCertSign,cRLSign' 'subjectKeyIdentifier = hash' \
-    'authorityKeyIdentifier = keyid:always' > "$root_config" || return $?
-  builtin printf '%s\n' '[leaf_extensions]' \
+  builtin printf '%s\n' '[req]' 'distinguished_name = leaf_name' \
+    'x509_extensions = leaf_extensions' 'prompt = no' '' '[leaf_name]' \
+    'CN = ProPR Packaged Connect CI' '' '[leaf_extensions]' \
     'basicConstraints = critical,CA:FALSE' 'keyUsage = critical,digitalSignature' \
     'extendedKeyUsage = critical,codeSigning' 'subjectKeyIdentifier = hash' \
-    'authorityKeyIdentifier = keyid,issuer' > "$leaf_config" || return $?
+    'authorityKeyIdentifier = keyid:always,issuer' > "$leaf_config" || return $?
 
-  certificate_serial="$(run_bounded_forward "$COMMAND_TIMEOUT_MS" \
-    /usr/bin/openssl rand -hex 16)" || return $?
+  # A self-signed leaf makes the disposable PKCS#12 chain complete without modifying trust.
   run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/openssl req -new -x509 -newkey rsa:2048 \
-    -sha256 -nodes -days 1 -config "$root_config" -keyout "$root_private_key" \
-    -out "$root_certificate" || return $?
-  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/openssl req -new -newkey rsa:2048 \
-    -sha256 -nodes -subj '/CN=ProPR Packaged Connect CI' -keyout "$leaf_private_key" \
-    -out "$leaf_request" || return $?
-  run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/openssl x509 -req -sha256 -days 1 \
-    -in "$leaf_request" -CA "$root_certificate" -CAkey "$root_private_key" \
-    -set_serial "0x$certificate_serial" -extfile "$leaf_config" \
-    -extensions leaf_extensions -out "$leaf_certificate" || return $?
+    -sha256 -nodes -days 1 -config "$leaf_config" -keyout "$leaf_private_key" \
+    -out "$leaf_certificate" || return $?
   run_bounded "$COMMAND_TIMEOUT_MS" /usr/bin/openssl pkcs12 -export \
     -inkey "$leaf_private_key" -in "$leaf_certificate" -out "$identity_archive" \
     -passout "pass:$identity_password" || return $?
@@ -248,12 +228,12 @@ update_partition_list() {
 }
 
 sign_application() {
-  run_bounded "$SIGNING_TIMEOUT_MS" node "$application_signer" \
+  run_bounded_forward "$SIGNING_TIMEOUT_MS" node "$application_signer" \
     "$application" "$keychain_path" "$identity_sha1"
 }
 
 verify_initial_signature() {
-  run_bounded "$COMMAND_TIMEOUT_MS" node "$signature_verifier" establish \
+  run_bounded_forward "$COMMAND_TIMEOUT_MS" node "$signature_verifier" establish \
     "$application" "$keychain_path" "$identity_sha1" "$requirement_proof"
 }
 
@@ -262,7 +242,7 @@ run_pair_and_reprobe() {
 }
 
 verify_stable_signature() {
-  run_bounded "$COMMAND_TIMEOUT_MS" node "$signature_verifier" stable \
+  run_bounded_forward "$COMMAND_TIMEOUT_MS" node "$signature_verifier" stable \
     "$application" "$keychain_path" "$identity_sha1" "$requirement_proof"
 }
 
@@ -270,7 +250,7 @@ run_stage KEY_CERTIFICATE_GENERATION generate_key_and_certificates
 run_stage KEYCHAIN_CREATION_SELECTION create_and_select_keychain
 run_stage IDENTITY_IMPORT import_identity
 run_stage PARTITION_LIST_UPDATE update_partition_list
-unset keychain_password identity_password certificate_serial
+unset keychain_password identity_password
 run_stage APPLICATION_SIGNING sign_application
 run_stage INITIAL_SIGNATURE_VERIFICATION verify_initial_signature
 run_stage PAIR_REPROBE_JOURNEY run_pair_and_reprobe

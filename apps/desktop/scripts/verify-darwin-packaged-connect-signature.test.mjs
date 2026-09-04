@@ -11,7 +11,6 @@ const validEvidence = () => ({
     'Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop',
     'Identifier=dev.propr.desktop',
     'Authority=ProPR Packaged Connect CI',
-    'Authority=ProPR Packaged Connect CI Root',
   ].join('\n'),
   designatedRequirement: requirement,
 });

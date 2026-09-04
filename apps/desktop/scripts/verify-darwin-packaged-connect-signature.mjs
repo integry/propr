@@ -4,6 +4,11 @@ import { execFile as nodeExecFile } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import {
+  DARWIN_SIGNING_DIAGNOSTICS,
+  DarwinSigningDiagnosticError,
+  darwinSigningDiagnosticLine,
+} from './sign-darwin-packaged-connect.mjs';
 
 const execFile = promisify(nodeExecFile);
 const REQUIRED_IDENTIFIER = 'dev.propr.desktop';
@@ -34,14 +39,14 @@ export const assertDarwinSigningEvidence = ({
     .map(line => /^\s*SHA-1 hash:\s*([A-Fa-f0-9]{40})\s*$/u.exec(line)?.[1]?.toUpperCase())
     .filter(Boolean);
   if (certificateFingerprints.length !== 1 || certificateFingerprints[0] !== expectedSha1) {
-    throw new Error('certificate-not-unique');
+    throw new DarwinSigningDiagnosticError(DARWIN_SIGNING_DIAGNOSTICS.missingIdentityOrChain);
   }
 
   const details = normalizeLines(signatureDetails);
   if (details.some(line => line === 'Signature=adhoc')
     || !details.some(line => line.startsWith('Authority=') && line.length > 'Authority='.length)
     || !details.includes(`Identifier=${REQUIRED_IDENTIFIER}`)) {
-    throw new Error('signature-not-certificate-backed');
+    throw new DarwinSigningDiagnosticError(DARWIN_SIGNING_DIAGNOSTICS.codesignFailure);
   }
 
   const requirements = normalizeLines(designatedRequirement)
@@ -49,20 +54,26 @@ export const assertDarwinSigningEvidence = ({
   if (requirements.length !== 1
     || !requirements[0].includes(`identifier "${REQUIRED_IDENTIFIER}"`)
     || !requirements[0].toUpperCase().includes(`CERTIFICATE LEAF = H"${expectedSha1}"`)) {
-    throw new Error('designated-requirement-not-bound');
+    throw new DarwinSigningDiagnosticError(DARWIN_SIGNING_DIAGNOSTICS.requirementsFailure);
   }
   if (previousDesignatedRequirement !== undefined
     && requirements[0] !== previousDesignatedRequirement.trim()) {
-    throw new Error('designated-requirement-changed');
+    throw new DarwinSigningDiagnosticError(DARWIN_SIGNING_DIAGNOSTICS.requirementsFailure);
   }
   return requirements[0];
 };
 
 const inspectDarwinSigningEvidence = async ({ application, keychain }) => {
+  const certificatePromise = runVerificationCommand('/usr/bin/security', [
+    'find-certificate', '-a', '-Z', keychain,
+  ]).catch(error => {
+    throw new DarwinSigningDiagnosticError(
+      DARWIN_SIGNING_DIAGNOSTICS.missingIdentityOrChain,
+      error,
+    );
+  });
   const [certificateResult, signatureResult, requirementResult] = await Promise.all([
-    runVerificationCommand('/usr/bin/security', [
-      'find-certificate', '-a', '-Z', keychain,
-    ]),
+    certificatePromise,
     runVerificationCommand('/usr/bin/codesign', ['-d', '--verbose=4', application]),
     runVerificationCommand('/usr/bin/codesign', ['-d', '-r-', application]),
   ]);
@@ -109,8 +120,8 @@ if (isMain) {
     await verifyDarwinPackagedConnectSignature({
       mode, application, keychain, expectedCertificateSha1, proofPath,
     });
-  } catch {
-    process.stderr.write(`Darwin packaged Connect signing identity ${mode === 'stable' ? 'changed' : 'could not be established'}.\n`);
+  } catch (error) {
+    process.stderr.write(darwinSigningDiagnosticLine(error));
     process.exitCode = 1;
   }
 }

@@ -63,20 +63,26 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinRunner, /keychain_root="\$\(run_bounded_forward[^\n]*\/usr\/bin\/mktemp -d\)"/u);
     assert.match(darwinRunner, /keychain_password="\$\(run_bounded_forward[\s\S]*?\/usr\/bin\/openssl rand -hex 32\)"/u);
     assert.match(darwinRunner, /identity_password="\$\(run_bounded_forward[\s\S]*?\/usr\/bin\/openssl rand -hex 32\)"/u);
+    assert.match(darwinRunner, /x509_extensions = leaf_extensions/u);
+    assert.match(darwinRunner, /basicConstraints = critical,CA:FALSE/u);
     assert.match(darwinRunner, /extendedKeyUsage = critical,codeSigning/u);
+    assert.match(darwinRunner, /openssl req -new -x509 -newkey rsa:2048[\s\S]*?-days 1[\s\S]*?-config "\$leaf_config"/u);
+    assert.doesNotMatch(darwinRunner, /root_(?:private_key|certificate|config)|leaf_request|-CA(?:key)?\b/u);
     assert.doesNotMatch(darwinRunner, /add-trusted-cert|remove-trusted-cert|trustRoot/u);
     assert.match(darwinRunner, /\/usr\/bin\/security import "\$identity_archive" \\[\s\S]*?-T \/usr\/bin\/codesign/u);
     assert.match(darwinRunner, /\/usr\/bin\/security set-key-partition-list \\[\s\S]*?-S apple-tool:,apple:,codesign:/u);
-    assert.match(darwinRunner, /run_bounded "\$SIGNING_TIMEOUT_MS" node "\$application_signer"/u);
-    assert.match(darwinSigner, /identityValidation: false/u);
+    assert.match(darwinRunner, /run_bounded_forward "\$SIGNING_TIMEOUT_MS" node "\$application_signer"/u);
+    assert.doesNotMatch(darwinSigner, /from '@electron\/osx-sign'/u);
+    assert.match(darwinSigner, /discoverDarwinSignablePaths/u);
+    assert.match(darwinSigner, /'--sign', certificateSha1/u);
+    assert.match(darwinSigner, /'--keychain', keychain/u);
+    assert.match(darwinSigner, /'--timestamp=none'/u);
+    assert.match(darwinSigner, /'--preserve-metadata=identifier,entitlements,flags'/u);
     assert.match(darwinVerifier, /'find-certificate', '-a', '-Z', keychain/u);
     assert.doesNotMatch(darwinVerifier, /find-identity/u);
-    assert.match(darwinSigner, /batchCodesignCalls: true/u);
-    assert.match(darwinSigner, /preEmbedProvisioningProfile: false/u);
-    assert.match(darwinSigner, /timestamp: 'none'/u);
     assert.match(darwinSigner, /certificate leaf = H"\$\{certificateSha1\}"/u);
-    assert.match(darwinSigner, /ignore: \[PACKAGED_CONNECT_NATIVE_ARTIFACTS\]/u);
-    assert.match(darwinSigner, /strictVerify: true/u);
+    assert.match(darwinSigner, /filter\(filePath => !PACKAGED_CONNECT_NATIVE_ARTIFACTS\.test\(filePath\)\)/u);
+    assert.match(darwinSigner, /'--verify', '--deep', '--strict', application/u);
     const establish = darwinRunner.indexOf('node "$signature_verifier" establish');
     const smoke = darwinRunner.indexOf('npm run smoke:connect-package');
     const stable = darwinRunner.indexOf('node "$signature_verifier" stable');
@@ -133,10 +139,28 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(boundedDarwinRunner, /maximumBytes - state\.bytes/u);
     assert.match(darwinVerifier, /timeout: VERIFICATION_TIMEOUT_MS/u);
     assert.match(darwinVerifier, /maxBuffer: VERIFICATION_MAX_BUFFER/u);
+    assert.match(darwinSigner, /runBoundedProcess/u);
+    assert.match(darwinSigner, /timeoutMs: CODESIGN_TIMEOUT_MS/u);
+    assert.match(darwinSigner, /forwardOutput: false/u);
     assert.match(darwinRunner, /run_bounded "\$COMMAND_TIMEOUT_MS" \/usr\/bin\/security/gmu);
     assert.match(darwinRunner, /run_bounded "\$COMMAND_TIMEOUT_MS" \/usr\/bin\/openssl/gmu);
-    assert.match(darwinRunner, /run_bounded "\$SIGNING_TIMEOUT_MS" node "\$application_signer"/u);
+    assert.match(darwinRunner, /run_bounded_forward "\$SIGNING_TIMEOUT_MS" node "\$application_signer"/u);
     assert.match(darwinRunner, /run_bounded_forward "\$JOURNEY_TIMEOUT_MS" npm run smoke:connect-package/u);
+  });
+
+  test('Darwin failure diagnostics are fixed, classified, and secret-safe', () => {
+    for (const diagnostic of [
+      'MISSING_IDENTITY_OR_CHAIN',
+      'TRUST_REJECTION',
+      'REQUIREMENTS_FAILURE',
+      'CODESIGN_FAILURE',
+    ]) {
+      assert.match(darwinSigner, new RegExp(`['"]${diagnostic}['"]`, 'u'));
+    }
+    assert.match(darwinSigner, /DARWIN_PACKAGED_CONNECT_DIAGNOSTIC:\$\{classifyDarwinSigningFailure\(error\)\}/u);
+    assert.doesNotMatch(darwinSigner, /process\.stderr\.write\([^\n]*(?:application|keychain|certificateSha1|stderr|stdout)/u);
+    assert.match(darwinRunner, /run_bounded_forward "\$COMMAND_TIMEOUT_MS" node "\$signature_verifier" establish/u);
+    assert.match(darwinRunner, /run_bounded_forward "\$COMMAND_TIMEOUT_MS" node "\$signature_verifier" stable/u);
   });
 
   test('Darwin restores keychain state and deletes identity, credentials, and files on every exit', () => {
