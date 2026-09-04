@@ -11,6 +11,8 @@ export interface DesktopContextValue {
   authenticate(): Promise<void>;
   openConnectionHelp(): Promise<void>;
   retry(): void;
+  /** @internal Packaged acceptance signal owned by the committed connected renderer. */
+  reportConnectedRendererReady?(): Promise<void>;
 }
 
 export const DesktopContext = createContext<DesktopContextValue | null>(null);

@@ -728,23 +728,19 @@ const runPackagedConnectJourneySmoke = async (
   await stages.waitFor('ACTIVATION_COMMITTED');
   await stages.waitFor('ACTIVATION_PUBLISHED');
   await stages.waitFor('REACT_CONNECTED');
-  const proof = await window.webContents.executeJavaScript(`(async () => {
-    const waitFor = async predicate => {
-      const deadline = performance.now() + 15000;
-      do {
-        const value = predicate();
-        if (value) return value;
-        await new Promise(resolve => setTimeout(resolve, 25));
-      } while (performance.now() < deadline);
-      throw new Error('Packaged Connect journey renderer state timed out');
-    };
-    const dashboard = await waitFor(() => document.querySelector('.desktop-app'));
-    const connection = await waitFor(() => document.querySelector('.desktop-connection-pill.desktop-connection-ready'));
-    await waitFor(() => document.querySelector('.desktop-titlebar'));
+  const proof = await window.webContents.executeJavaScript(`(() => {
+    const dashboard = document.querySelector('.desktop-app');
+    const connection = document.querySelector('.desktop-connection-pill.desktop-connection-ready');
+    const titlebar = document.querySelector('.desktop-titlebar');
     return {
-      connected: dashboard instanceof HTMLElement && connection instanceof HTMLButtonElement,
-      rendererContractsContainSecret: JSON.stringify([window.proprDesktop, dashboard.dataset]).includes('propr_it_'),
-      title: connection.getAttribute('aria-label'),
+      connected: dashboard instanceof HTMLElement
+        && connection instanceof HTMLButtonElement
+        && titlebar instanceof HTMLElement,
+      rendererContractsContainSecret: JSON.stringify([
+        window.proprDesktop,
+        dashboard instanceof HTMLElement ? dashboard.dataset : null,
+      ]).includes('propr_it_'),
+      title: connection instanceof HTMLButtonElement ? connection.getAttribute('aria-label') : null,
     };
   })()`);
   if (proof?.connected !== true || proof?.rendererContractsContainSecret !== false

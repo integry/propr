@@ -169,7 +169,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   return (
     <div className="desktop-shell flex h-full min-h-0 flex-col overflow-hidden bg-light-100 relative">
-      {desktop && <DesktopTitleBar />}
+      {desktop && <DesktopTitleBar transportReady={isConnected && user !== null} />}
       <div className="desktop-shell-content relative flex min-h-0 flex-1 overflow-hidden">
       {/* Mobile Overlay */}
       {isSidebarOpen && (

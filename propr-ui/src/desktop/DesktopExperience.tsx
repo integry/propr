@@ -135,10 +135,6 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   }, [adapters, cancelDiscovery, enqueueProfileMutation, reportAcceptanceStage]);
 
   useEffect(() => {
-    if (state.phase === 'connected') void reportAcceptanceStage('REACT_CONNECTED');
-  }, [reportAcceptanceStage, state.phase]);
-
-  useEffect(() => {
     let cancelled = false;
     activeProfileId.current = null;
     void Promise.all([adapters.profiles.list(), adapters.profiles.getActiveId()]).then(([stored, activeId]) => {
