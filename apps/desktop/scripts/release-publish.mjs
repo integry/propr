@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { expectedProfileArtifacts, resolveReleaseProfile } from './release-profiles.mjs';
 
 const VERSIONED_TAG_PATTERN = /^desktop-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA_PATTERN = /^[a-f0-9]{40}$/;
@@ -16,13 +17,76 @@ const sha256File = async path => {
   return hash.digest('hex');
 };
 
-const readFinalAssetSet = async directory => {
+const validateFinalManifest = (manifest, profile, version, tag) => {
+  const expectedArtifacts = expectedProfileArtifacts(profile, version);
+  if (manifest?.schemaVersion !== 2 || manifest.releaseProfile !== profile.name
+    || manifest.version !== version || manifest.tag !== tag || !Array.isArray(manifest.artifacts)
+    || manifest.artifacts.length !== profile.artifactCount) {
+    throw new Error(`Signed release manifest does not match release profile ${profile.name}`);
+  }
+  const names = new Set();
+  for (const artifact of manifest.artifacts) {
+    const expected = expectedArtifacts.get(artifact?.fileName);
+    if (!expected || artifact.platform !== expected.platform || artifact.arch !== expected.arch
+      || artifact.kind !== expected.kind || names.has(artifact.fileName)
+      || !Number.isSafeInteger(artifact.size) || artifact.size <= 0
+      || typeof artifact.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(artifact.sha256)) {
+      throw new Error(`Signed release manifest contains an unexpected or duplicate artifact for profile ${profile.name}`);
+    }
+    names.add(artifact.fileName);
+    expectedArtifacts.set(artifact.fileName, { ...expected, size: artifact.size, sha256: artifact.sha256 });
+  }
+  if (names.size !== expectedArtifacts.size || [...expectedArtifacts.keys()].some(name => !names.has(name))) {
+    throw new Error(`Signed release manifest must contain exactly ${profile.artifactCount} native artifacts`);
+  }
+  const expectedSignerTargets = new Set([...profile.targets.keys()].filter(target => target.startsWith('darwin-') || target.startsWith('win32-')));
+  const signerTargets = Object.keys(manifest.nativeSigners ?? {});
+  if (signerTargets.length !== expectedSignerTargets.size
+    || signerTargets.some(target => !expectedSignerTargets.has(target))) {
+    throw new Error(`Signed release manifest signer metadata does not match release profile ${profile.name}`);
+  }
+  const feedTargets = Object.keys(manifest.feeds ?? {});
+  if (feedTargets.length !== 2 || !feedTargets.includes('darwin-x64') || !feedTargets.includes('darwin-arm64')) {
+    throw new Error('Signed release manifest must contain the exact two macOS update feeds');
+  }
+  const feedFiles = new Map();
+  for (const target of feedTargets) {
+    const feed = manifest.feeds[target];
+    const arch = target.split('-')[1];
+    if (feed?.target !== target || !Number.isSafeInteger(feed.feed?.size) || feed.feed.size <= 0
+      || typeof feed.feed.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(feed.feed.sha256)) {
+      throw new Error(`Signed release manifest has invalid update metadata for ${target}`);
+    }
+    feedFiles.set(`ProPR-Desktop-${version}-macos-${arch}-RELEASES.json`, {
+      size: feed.feed.size,
+      sha256: feed.feed.sha256,
+    });
+  }
+  if (!profile.windowsIncluded && Object.hasOwn(manifest, 'windowsSignerPins')) {
+    throw new Error(`Signed release manifest contains Windows metadata forbidden by profile ${profile.name}`);
+  }
+  if (profile.windowsIncluded && !Array.isArray(manifest.windowsSignerPins)) {
+    throw new Error(`Signed release manifest lacks Windows signer metadata required by profile ${profile.name}`);
+  }
+  return { expectedArtifacts, feedFiles };
+};
+
+const readFinalAssetSet = async (directory, profileName, version, tag) => {
+  const profile = resolveReleaseProfile(profileName);
   const entries = await readdir(directory, { withFileTypes: true });
   if (entries.some(entry => !entry.isFile())) throw new Error('Final release directory may contain only regular files');
   const names = entries.map(entry => entry.name).sort();
   if (new Set(names).size !== names.length || names.some(name => basename(name) !== name)) {
     throw new Error('Final release directory contains duplicate or invalid asset names');
   }
+  const manifest = JSON.parse(await readFile(join(directory, 'desktop-release.json'), 'utf8'));
+  const { expectedArtifacts, feedFiles } = validateFinalManifest(manifest, profile, version, tag);
+  const expectedChecksummedNames = new Set([
+    ...expectedArtifacts.keys(),
+    `ProPR-Desktop-${version}-macos-x64-RELEASES.json`,
+    `ProPR-Desktop-${version}-macos-arm64-RELEASES.json`,
+    ...REQUIRED_METADATA,
+  ]);
   const checksumLines = (await readFile(join(directory, CHECKSUM_FILE), 'utf8')).split(/\r?\n/).filter(Boolean);
   const checksums = new Map();
   for (const line of checksumLines) {
@@ -32,8 +96,9 @@ const readFinalAssetSet = async directory => {
     }
     checksums.set(match[2], match[1]);
   }
-  if (checksums.size === 0 || REQUIRED_METADATA.some(name => !checksums.has(name))) {
-    throw new Error('Finalized SHA256SUMS does not cover the signed release metadata');
+  if (checksums.size !== expectedChecksummedNames.size
+    || [...expectedChecksummedNames].some(name => !checksums.has(name))) {
+    throw new Error(`Finalized SHA256SUMS does not match release profile ${profile.name}`);
   }
   const expectedNames = [...checksums.keys(), CHECKSUM_FILE].sort();
   if (JSON.stringify(names) !== JSON.stringify(expectedNames)) {
@@ -47,6 +112,10 @@ const readFinalAssetSet = async directory => {
     const digest = await sha256File(path);
     if (name !== CHECKSUM_FILE && digest !== checksums.get(name)) {
       throw new Error(`Final release asset ${name} does not match finalized checksums`);
+    }
+    const manifestMetadata = expectedArtifacts.get(name) ?? feedFiles.get(name);
+    if (manifestMetadata && (details.size !== manifestMetadata.size || digest !== manifestMetadata.sha256)) {
+      throw new Error(`Final release asset ${name} does not match signed manifest metadata`);
     }
     assets.set(name, { name, path, size: details.size, sha256: digest });
   }
@@ -168,6 +237,7 @@ export const publishDesktopRelease = async ({
   releaseSha,
   tagObjectSha,
   directory,
+  profile: profileName,
   token,
   apiUrl = 'https://api.github.com',
   fetchImpl = fetch,
@@ -176,8 +246,9 @@ export const publishDesktopRelease = async ({
     || !SHA_PATTERN.test(tagObjectSha) || !token) {
     throw new Error('Desktop release publication inputs are invalid');
   }
+  const version = tag.startsWith('desktop-v') ? tag.slice('desktop-v'.length) : '';
   const finalDirectory = resolve(directory);
-  const expected = await readFinalAssetSet(finalDirectory);
+  const expected = await readFinalAssetSet(finalDirectory, profileName, version, tag);
   const apiOrigin = new URL(apiUrl).origin;
   const baseOptions = { fetchImpl, apiUrl, repository, token };
   const request = (path, options = {}) => githubRequest({ ...baseOptions, path, ...options });
@@ -253,6 +324,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     releaseSha: process.env.RELEASE_SHA,
     tagObjectSha: process.env.TAG_OBJECT_SHA,
     directory: process.env.RELEASE_DIRECTORY || 'desktop-release-final',
+    profile: process.env.PROPR_DESKTOP_RELEASE_PROFILE,
     token: process.env.GITHUB_TOKEN,
     apiUrl: process.env.GITHUB_API_URL,
   });

@@ -157,7 +157,7 @@ describe('desktop trusted release workflow', () => {
     assert.ok(!preflight.includes('permission-actions:'));
   });
 
-  test('keeps every certificate and the update private key inside preflight-dependent environment jobs', () => {
+  test('keeps required macOS certificates and the update private key inside preflight-dependent environment jobs', () => {
     const packageJob = job('release-package', 'release-finalize');
     const signing = job('sign', 'publish');
     for (const secret of [
@@ -166,8 +166,6 @@ describe('desktop trusted release workflow', () => {
       'PROPR_DESKTOP_APPLE_API_KEY_P8_BASE64',
       'PROPR_DESKTOP_APPLE_API_KEY_ID',
       'PROPR_DESKTOP_APPLE_API_ISSUER_ID',
-      'PROPR_DESKTOP_WINDOWS_CERTIFICATE_PFX_BASE64',
-      'PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD',
     ]) {
       assert.equal(workflow.match(new RegExp(`secrets\\.${secret}`, 'g'))?.length, 1);
       assert.ok(packageJob.includes(`secrets.${secret}`));
@@ -176,6 +174,8 @@ describe('desktop trusted release workflow', () => {
     assert.ok(signing.includes('secrets.PROPR_DESKTOP_UPDATE_PRIVATE_KEY'));
     assert.match(signing, /needs: \[preflight, release-finalize\]/);
     assert.match(signing, /environment:\s+name: desktop-release/);
+    assert.doesNotMatch(packageJob, /WINDOWS_CERTIFICATE|WINDOWS_SIGNING|WINDOWS_SIGNER_PINS/);
+    assert.doesNotMatch(signing, /WINDOWS_CERTIFICATE|WINDOWS_SIGNING|WINDOWS_SIGNER_PINS/);
   });
 
   test('fails closed for every production signing, notarization, update, and signer condition', () => {
@@ -188,9 +188,6 @@ describe('desktop trusted release workflow', () => {
       'APPLE_API_ISSUER_ID',
       'UPDATE_MAC_SIGNING_IDENTITY',
       'UPDATE_MAC_TEAM_ID',
-      'CERTIFICATE_PFX_BASE64',
-      'UPDATE_WINDOWS_SIGNING_IDENTITY',
-      'UPDATE_WINDOWS_SIGNER_PINS',
       'UPDATE_PUBLIC_KEY',
       'UPDATE_MANIFEST_URL',
     ]) assert.ok(production.includes(field), `missing fail-closed production field ${field}`);
@@ -198,23 +195,15 @@ describe('desktop trusted release workflow', () => {
       production,
       /for name in CERTIFICATE_P12_BASE64 CERTIFICATE_PASSWORD APPLE_API_KEY_P8_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER_ID UPDATE_MAC_SIGNING_IDENTITY UPDATE_MAC_TEAM_ID; do\s+test -n "\$\{!name\}"/,
     );
-    assert.match(production, /foreach \(\$entry in \$values\.GetEnumerator\(\)\) \{ if \(!\$entry\.Value\) \{ throw/);
     assert.ok(!production.includes('signing_present'));
     assert.ok(!production.includes('notarization_present'));
     assert.match(production, /Production updates require a code-signed build/);
     assert.match(production, /codesign --verify --deep --strict/);
     assert.match(production, /spctl --assess/);
     assert.match(production, /stapler validate/);
-    assert.match(production, /Authenticode signer does not match the configured build pin/);
-    assert.match(production, /TimeStamperCertificate/);
-    assert.match(production, /CertificateSha256/);
-    assert.match(production, /SpkiSha256/);
-    assert.match(production, /Windows artifacts have mixed Authenticode signers/);
-    assert.match(production, /certificate\|spki\)-sha256:\[a-f0-9\]\{64\}/);
-    assert.match(production, /release-architecture\.mjs inspect[\s\S]*--kind msi/);
-    assert.doesNotMatch(production, /--kind nupkg|full\.nupkg|\*Setup\.exe/);
-    assert.equal(production.match(/Expand-Archive -LiteralPath \$archive -DestinationPath \$wixDirectory/g)?.length, 1);
+    assert.doesNotMatch(production, /win32|Windows|WINDOWS_|\.msi/i);
     assert.match(production, /PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS: '1'/);
+    assert.match(production, /PROPR_DESKTOP_RELEASE_PROFILE: macos-linux-v1/);
   });
 
   test('preserves the opaque Windows certificate password for package and MSI signing', () => {
@@ -232,13 +221,14 @@ describe('desktop trusted release workflow', () => {
   });
 
   test('rechecks package architecture in staging and finalization and publishes only signed new releases', () => {
-    assert.equal(workflow.match(platformArchitecturePattern)?.length, 12);
+    assert.equal(workflow.match(platformArchitecturePattern)?.length, 10);
     assert.equal(workflow.match(/release-artifacts\.mjs stage/g)?.length, 2);
     assert.equal(workflow.match(/release-artifacts\.mjs finalize/g)?.length, 2);
     assert.match(job('finalize', 'preflight'), /needs: \[validation-version, package\]/);
     assert.match(job('release-finalize', 'sign'), /needs: \[preflight, release-package\]/);
-    assert.equal(workflow.match(/sudo apt-get install --yes cpio msitools p7zip-full rpm/g)?.length, 2);
-    assert.equal(workflow.match(/test -x \/usr\/bin\/msiextract/g)?.length, 2);
+    assert.equal(workflow.match(/sudo apt-get install --yes cpio p7zip-full rpm/g)?.length, 2);
+    assert.doesNotMatch(`${job('finalize', 'preflight')}\n${job('release-finalize', 'sign')}`, /msitools|msiextract/);
+    assert.equal(workflow.match(/--profile (?:"\$\{\{ matrix\.release_profile \}\}"|"\$PROPR_DESKTOP_RELEASE_PROFILE"|macos-linux-v1)/g)?.length, 7);
     const publish = job('publish');
     assert.match(publish, /test -s desktop-release-final\/desktop-release\.json\.sig/);
     assert.match(publish, /ref: \$\{\{ needs\.preflight\.outputs\.release_sha \}\}/);
@@ -252,16 +242,16 @@ describe('desktop trusted release workflow', () => {
   test('retains the exact native matrix when the workflow checkout uses CRLF', () => {
     const crlfFixture = workflow.replaceAll('\n', '\r\n');
     const normalizedFixture = normalizeWorkflowText(crlfFixture);
-    assert.equal(normalizedFixture.match(platformArchitecturePattern)?.length, 12);
+    assert.equal(normalizedFixture.match(platformArchitecturePattern)?.length, 10);
     assert.equal(normalizedFixture, workflow);
   });
 
   test('runs the native DMG layout suite on both macOS architectures', () => {
-    for (const [jobName, section] of [
-      ['unsigned validation', job('package', 'finalize')],
-      ['trusted production', job('release-package', 'release-finalize')],
+    for (const [jobName, section, targetCount] of [
+      ['unsigned validation', job('package', 'finalize'), 6],
+      ['trusted production', job('release-package', 'release-finalize'), 4],
     ] as const) {
-      assert.equal(section.match(platformArchitecturePattern)?.length, 6, `${jobName} must retain all six native jobs`);
+      assert.equal(section.match(platformArchitecturePattern)?.length, targetCount, `${jobName} has the wrong native target count`);
       assert.match(section, /- platform: darwin\n\s+arch: x64\n\s+runner: macos-15-intel/, `${jobName} is missing native macOS x64`);
       assert.match(section, /- platform: darwin\n\s+arch: arm64\n\s+runner: macos-15/, `${jobName} is missing native macOS arm64`);
       assert.match(
@@ -318,14 +308,25 @@ describe('desktop trusted release workflow', () => {
   });
 
 
-  test('keeps both Windows architectures and the complete machine-scope installer contract mandatory', () => {
-    for (const [jobName, section] of [
-      ['unsigned validation', job('package', 'finalize')],
-      ['trusted production', job('release-package', 'release-finalize')],
-    ] as const) {
+  test('keeps standalone native Windows durability assertions runnable but non-blocking', () => {
+    const section = job('native-windows-durability', 'validation-version');
+    assert.match(section, /if: github\.event_name == 'pull_request'/);
+    assert.match(section, /runs-on: windows-latest/);
+    assert.match(section, /continue-on-error: true/);
+    assert.match(section, /PROPR_NATIVE_WINDOWS_DURABILITY_REQUIRED: '1'/);
+    assert.match(section, /npm run test:native-durability -w @propr\/desktop/);
+    assert.match(section, /npm run desktop:typecheck/);
+    assert.match(section, /npm run desktop:test/);
+    assert.match(section, /npm run desktop:package/);
+    assert.match(section, /npm run desktop:smoke/);
+  });
+
+  test('keeps complete Windows validation assertions runnable but non-blocking and outside production', () => {
+    const section = job('package', 'finalize');
+    {
       assert.match(section, /- platform: win32\n\s+arch: x64\n\s+runner: windows-2025/);
       assert.match(section, /- platform: win32\n\s+arch: arm64\n\s+runner: windows-11-arm/);
-      assert.match(section, /Assert (?:signed )?Windows MVP package excludes update authority/);
+      assert.match(section, /Assert Windows MVP package excludes update authority/);
       assert.match(section, /Probe canonical WiX 3\.14\.1 compiler/);
       assert.match(
         section,
@@ -341,14 +342,18 @@ describe('desktop trusted release workflow', () => {
       assert.match(section, /PROPR_DESKTOP_WIX_DIRECTORY=\$wixDirectory/);
       assert.match(section, /Clean pinned Windows ARM64 WiX binaries\n\s+if: always\(\) && matrix\.platform == 'win32' && matrix\.arch == 'arm64'/);
       assert.doesNotMatch(section, /choco|Chocolatey|wixVendor|electron-winstaller/);
-      assert.match(section, /Install and exercise (?:signed )?ordinary-user Windows application/);
-      assert.match(section, /Launch (?:signed )?packaged Windows application and exercise MVP desktop flows/);
+      assert.match(section, /Install and exercise ordinary-user Windows application/);
+      assert.match(section, /Launch packaged Windows application and exercise MVP desktop flows/);
       assert.doesNotMatch(section, /READY|broker:build|windows-authority-build|windows-update-authority\.test|probe-packaged-windows-authority/,
-        `${jobName} retained a deferred Windows authority gate`);
+        'unsigned validation retained a deferred Windows authority gate');
     }
-    assert.equal(workflow.match(/\*Machine-Setup\.msi/g)?.length, 3);
-    assert.equal(workflow.match(/run-installed-windows-app-harness\.ps1/g)?.length, 2);
-    assert.equal(workflow.match(/PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1/g)?.length, 2);
+    assert.match(section, /continue-on-error: \$\{\{ matrix\.release_target == false \}\}/);
+    assert.match(section, /platform: win32[\s\S]*release_target: false[\s\S]*release_profile: macos-linux-windows-v1[\s\S]*artifact_group: optional-windows/);
+    const production = job('release-package', 'release-finalize');
+    assert.doesNotMatch(production, /platform: win32|Windows|WINDOWS_|\.msi/i);
+    assert.equal(workflow.match(/\*Machine-Setup\.msi/g)?.length, 1);
+    assert.equal(workflow.match(/run-installed-windows-app-harness\.ps1/g)?.length, 1);
+    assert.equal(workflow.match(/PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1/g)?.length, 1);
     assert.doesNotMatch(forgeConfig, /extraResource|windows-authority|postPackage/);
     assert.match(forgeConfig, /buildWindowsMachineInstaller/);
     assert.match(forgeConfig, /wixDirectory: process\.env\.PROPR_DESKTOP_WIX_DIRECTORY/);
@@ -395,24 +400,23 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAppTest, /-ExpectedPresent \$true/);
     assert.match(installedWindowsAppTest, /-ExpectedPresent \$false/);
     assert.match(installedWindowsAppTest, /machine uninstall left the common Start Menu folder behind/);
-    assert.equal(workflow.match(/https:\/\/github\.com\/wixtoolset\/wix3\/releases\/download\/wix3141rtm\/wix314-binaries\.zip/g)?.length, 2);
-    assert.equal(workflow.match(/6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31/g)?.length, 2);
+    assert.equal(workflow.match(/https:\/\/github\.com\/wixtoolset\/wix3\/releases\/download\/wix3141rtm\/wix314-binaries\.zip/g)?.length, 1);
+    assert.equal(workflow.match(/6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31/g)?.length, 1);
   });
 
-  test('revalidates each real WiX MSI first on native Windows and then from the same staged bytes on Linux', () => {
-    for (const [nativeJob, aggregateJob] of [
-      [job('package', 'finalize'), job('finalize', 'preflight')],
-      [job('release-package', 'release-finalize'), job('release-finalize', 'sign')],
-    ] as const) {
-      const make = nativeJob.search(/Make (?:signed )?Windows/);
-      const installed = nativeJob.indexOf('ordinary-user Windows application');
-      const stage = nativeJob.indexOf('release-artifacts.mjs stage');
-      const upload = nativeJob.indexOf('Upload');
-      assert.ok(make >= 0 && installed > make && stage > installed && upload > stage);
-      assert.match(aggregateJob, /sudo apt-get install --yes cpio msitools p7zip-full rpm/);
-      assert.match(aggregateJob, /test -x \/usr\/bin\/msiextract/);
-      assert.ok(aggregateJob.indexOf('Download all') < aggregateJob.indexOf('release-artifacts.mjs finalize'));
-    }
+  test('keeps native Windows MSI validation isolated from canonical aggregation', () => {
+    const nativeJob = job('package', 'finalize');
+    const aggregateJob = job('finalize', 'preflight');
+    const make = nativeJob.search(/Make Windows/);
+    const installed = nativeJob.indexOf('ordinary-user Windows application');
+    const stage = nativeJob.indexOf('release-artifacts.mjs stage');
+    const upload = nativeJob.indexOf('Upload');
+    assert.ok(make >= 0 && installed > make && stage > installed && upload > stage);
+    assert.ok(aggregateJob.indexOf('Download all') < aggregateJob.indexOf('release-artifacts.mjs finalize'));
+    assert.match(nativeJob, /propr-desktop-validation-\$\{\{ matrix\.artifact_group \}\}/);
+    assert.match(aggregateJob, /pattern: propr-desktop-validation-canonical-/);
+    assert.match(aggregateJob, /--profile macos-linux-v1/);
+    assert.doesNotMatch(aggregateJob, /msitools|msiextract|optional-windows/);
     assert.match(releaseArchitecture, /const MSIEXTRACT = '\/usr\/bin\/msiextract'/);
     assert.match(releaseArchitecture, /KERNEL_MSIEXEC = String\.raw`\\\\\?\\GLOBALROOT\\SystemRoot\\System32\\msiexec\.exe`/);
     assert.doesNotMatch(releaseArchitecture, /electron-winstaller|7z-(?:x64|arm64)\.exe/);
@@ -566,16 +570,15 @@ describe('desktop trusted release workflow', () => {
       /Get-ChildItem -LiteralPath \$installRoot -Force -ErrorAction Stop[\s\S]*Remove-Item -LiteralPath \$installRoot -Force -ErrorAction Stop/,
     );
 
-    for (const section of [job('package', 'finalize'), job('release-package', 'release-finalize')]) {
-      assert.match(section, /- platform: win32\n\s+arch: x64\n/);
-      assert.match(section, /- platform: win32\n\s+arch: arm64\n/);
-      assert.equal(section.match(/run-installed-windows-app-harness\.ps1/g)?.length, 1);
-      assert.equal(section.match(/test-installed-windows-app-supervisor\.ps1/g)?.length, 1);
-      assert.equal(section.match(/run-installed-windows-app-workflow-cleanup\.ps1/g)?.length, 1);
-      assert.match(section, /if: always\(\) && matrix\.platform == 'win32'/);
-      assert.match(section, /-OwnershipManifest \$env:PROPR_WINDOWS_INSTALLED_APP_MANIFEST/);
-      assert.match(section, /-ExpectedRunId \$env:PROPR_WINDOWS_INSTALLED_APP_RUN_ID/);
-    }
+    const windowsValidation = job('package', 'finalize');
+    assert.match(windowsValidation, /- platform: win32\n\s+arch: x64\n/);
+    assert.match(windowsValidation, /- platform: win32\n\s+arch: arm64\n/);
+    assert.equal(windowsValidation.match(/run-installed-windows-app-harness\.ps1/g)?.length, 1);
+    assert.equal(windowsValidation.match(/test-installed-windows-app-supervisor\.ps1/g)?.length, 1);
+    assert.equal(windowsValidation.match(/run-installed-windows-app-workflow-cleanup\.ps1/g)?.length, 1);
+    assert.match(windowsValidation, /if: always\(\) && matrix\.platform == 'win32'/);
+    assert.match(windowsValidation, /-OwnershipManifest \$env:PROPR_WINDOWS_INSTALLED_APP_MANIFEST/);
+    assert.match(windowsValidation, /-ExpectedRunId \$env:PROPR_WINDOWS_INSTALLED_APP_RUN_ID/);
   });
 
   test('runs executable supervisor acceptance on both Windows architectures and keeps supplementary contracts', () => {
