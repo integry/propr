@@ -117,6 +117,14 @@ export interface SystemFailureTransitionResult {
     event: NotificationEvent<'system_failure'> | null;
 }
 
+export interface NotificationSourceActivityIdentity {
+    type: 'task' | 'indexing';
+    key: string;
+    repository: string;
+    branch?: string;
+    lastActivityAt: TimestampInput;
+}
+
 interface NotificationEventRow {
     event_id: string;
     deduplication_key: string;
@@ -370,6 +378,73 @@ export class NotificationService {
 
         return this.database.transaction(async transaction => {
             if (!await this.pullRequestIsOpen(transaction, repository, prNumber)) return null;
+            return this.persistNotificationEvent(transaction, event, normalizedRecipients);
+        });
+    }
+
+    /**
+     * Create a stalled-activity event only while the activity snapshot that
+     * triggered it is still current. Terminal transitions can therefore race
+     * a detector safely: either this transaction creates the card first and
+     * the transition dismisses it, or this check observes the transition and
+     * skips the obsolete card.
+     */
+    async createSourceActivityNotificationEvent<K extends 'task' | 'indexing'>(
+        source: NotificationSourceActivityIdentity,
+        input: CreateNotificationEventInput<K>,
+        recipients: readonly NotificationRecipient[] = input.recipients ?? []
+    ): Promise<NotificationEvent<K> | null> {
+        assertIdentifier(source.key, 'notification source activity key');
+        const lastActivityAt = normalizeISO8601Timestamp(source.lastActivityAt);
+        const event = this.prepareNotificationEvent(input);
+        const normalizedRecipients = normalizeRecipients(recipients);
+
+        if (source.type !== input.kind || input.severity !== 'warning') {
+            throw new TypeError('source activity notifications must be matching warning events');
+        }
+        if (input.target.repository !== source.repository) {
+            throw new TypeError('source activity notification repository must match its source');
+        }
+        if (source.type === 'task') {
+            if (input.target.type !== 'task' || input.target.taskId !== source.key) {
+                throw new TypeError('task notification target must match its source activity');
+            }
+        } else if (
+            input.target.type !== 'indexing'
+            || input.target.branch !== source.branch
+        ) {
+            throw new TypeError('indexing notification target must match its source activity');
+        }
+
+        return this.database.transaction(async transaction => {
+            if (
+                input.target.type === 'task'
+                && input.target.prNumber !== undefined
+                && !await this.pullRequestIsOpen(
+                    transaction,
+                    input.target.repository,
+                    input.target.prNumber
+                )
+            ) return null;
+            const current = await transaction('notification_source_activity')
+                .select('status', 'last_activity_at', 'completed_at')
+                .where({
+                    activity_type: source.type,
+                    activity_key: source.key,
+                    repository: source.repository,
+                    branch: source.branch ?? null
+                })
+                .first() as {
+                    status?: unknown;
+                    last_activity_at?: unknown;
+                    completed_at?: unknown;
+                } | undefined;
+            if (
+                current?.completed_at !== null
+                || (current.status !== 'queued' && current.status !== 'processing')
+                || current.last_activity_at !== lastActivityAt
+            ) return null;
+
             return this.persistNotificationEvent(transaction, event, normalizedRecipients);
         });
     }
