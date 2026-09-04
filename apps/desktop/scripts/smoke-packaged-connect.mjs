@@ -590,6 +590,7 @@ try {
       platform: process.platform,
       arch: process.arch,
       authorityMechanism: authorityMechanism(),
+      ...(process.platform === 'darwin' ? { expectedStorageBackend: 'os-protected' } : {}),
       sensitiveNeedles,
       treeKillerPath,
       env: {
