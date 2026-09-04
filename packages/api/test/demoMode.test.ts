@@ -16,6 +16,7 @@ import { createQueueRoutes } from '../routes/queueRoutes.js';
 import { createStatusRoutes } from '../routes/statusRoutes.js';
 import { normalizeRepoConfig } from '../routes/configRepoValidation.js';
 import type { FlatRequest } from '../requestTypes.js';
+import { createRequestRateLimiter } from '../requestRateLimits.js';
 
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 const originalFrontendUrl = process.env.FRONTEND_URL;
@@ -170,7 +171,7 @@ test('demo Redis facade covers read-only route Redis usage', async () => {
   );
 });
 
-test('demo Express GET routes work with the in-memory Redis facade', async () => {
+test('demo Express routes work through the test-fixture limiter and remain read-only', async () => {
   process.env.PROPR_DEMO_MODE = 'true';
   process.env.FRONTEND_URL = 'http://localhost:5173';
   configureDemoMode();
@@ -185,7 +186,7 @@ test('demo Express GET routes work with the in-memory Redis facade', async () =>
     getDelayedCount: async () => 0,
   } as never;
   const app = express();
-  app.use(express.json());
+  app.use('/api', createRequestRateLimiter({ identifier: 'demo-mode-test-fixture', limit: 100, windowMs: 60_000 }), express.json());
   app.use('/api', demoModeReadOnlyMiddleware);
   setupAuth(app);
   app.use('/api', ensureAuthenticated);
@@ -197,7 +198,7 @@ test('demo Express GET routes work with the in-memory Redis facade', async () =>
   app.post('/api/activity', (_req, res) => res.json({ ok: true }));
 
   const statusResponse = await fetchFromApp(app, '/api/status');
-  assert.equal(statusResponse.status, 200);
+  assert.deepEqual([statusResponse.status, statusResponse.headers.get('ratelimit')?.includes('"demo-mode-test-fixture"')], [200, true]);
   const statusBody = await statusResponse.json() as { redis: string; worker: string; workerCount: number };
   assert.equal(statusBody.redis, 'connected');
   assert.equal(statusBody.worker, 'running');
