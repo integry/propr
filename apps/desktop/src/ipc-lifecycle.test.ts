@@ -622,6 +622,154 @@ describe('desktop IPC shutdown gate', () => {
     assert.equal(reconciledOrigin, null);
   });
 
+  it('reconciles the committed selection when activation rollback rejects', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const profiles = [
+      {
+        id: 'profile-a', label: 'A', apiBaseUrl: 'http://localhost:4000',
+        createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+      },
+      {
+        id: 'profile-b', label: 'B', apiBaseUrl: 'http://127.0.0.1:4100',
+        createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+      },
+    ];
+    let activeProfileId: string | null = profiles[0].id;
+    let listCalls = 0;
+    let discardCalls = 0;
+    const credentials = {
+      listProfiles: async () => {
+        listCalls += 1;
+        return { profiles, activeProfileId };
+      },
+      activate: async () => {
+        activeProfileId = profiles[1].id;
+        return {
+          status: 'ready', profileId: profiles[1].id,
+          transportScope: 'scope-b', identityEpoch: 'B'.repeat(22),
+        };
+      },
+      discardActivation: async (scope: { profileId: string; transportScope: string }) => {
+        discardCalls += 1;
+        assert.deepEqual(scope, { profileId: profiles[1].id, transportScope: 'scope-b' });
+        throw new Error('durable activation rollback failed');
+      },
+    } as unknown as DesktopCredentialService;
+    let policy = rendererContentSecurityPolicy(false, [profiles[0].apiBaseUrl]);
+    registerIpcHandlers({
+      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+      ipcMain: {
+        handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+        removeHandler: (channel: string) => { handlers.delete(channel); },
+      } as unknown as IpcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      connectDiscovery,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession: {
+        clearStorageData: async (options: Parameters<Session['clearStorageData']>[0]) => {
+          if (options?.origin === profiles[1].apiBaseUrl) throw new Error('storage clear failed');
+        },
+      } as unknown as Session,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+      onRendererActiveProfileChanged: origin => {
+        policy = rendererContentSecurityPolicy(false, origin ? [origin] : []);
+      },
+    });
+    const event = { senderFrame: { url: 'propr-renderer://app/index.html' } } as unknown as IpcMainInvokeEvent;
+
+    await assert.rejects(
+      Promise.resolve(handlers.get(IPC_CHANNELS.connectionActivate)!(event, 'T'.repeat(43))),
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
+    );
+
+    assert.equal(discardCalls, 1);
+    assert.equal(listCalls, 3);
+    assert.equal(policy.includes(profiles[0].apiBaseUrl), false);
+    assert.equal(policy.includes(profiles[1].apiBaseUrl), true);
+  });
+
+  it('reconciles a changed selection when activation rollback is stale', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const profiles = [
+      {
+        id: 'profile-a', label: 'A', apiBaseUrl: 'http://localhost:4000',
+        createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+      },
+      {
+        id: 'profile-b', label: 'B', apiBaseUrl: 'http://127.0.0.1:4100',
+        createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+      },
+      {
+        id: 'profile-c', label: 'C', apiBaseUrl: 'http://[::1]:4200',
+        createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+      },
+    ];
+    let activeProfileId: string | null = profiles[0].id;
+    let listCalls = 0;
+    let discardCalls = 0;
+    const credentials = {
+      listProfiles: async () => {
+        listCalls += 1;
+        return { profiles, activeProfileId };
+      },
+      activate: async () => {
+        activeProfileId = profiles[1].id;
+        return {
+          status: 'ready', profileId: profiles[1].id,
+          transportScope: 'scope-b', identityEpoch: 'B'.repeat(22),
+        };
+      },
+      discardActivation: async (scope: { profileId: string; transportScope: string }) => {
+        discardCalls += 1;
+        assert.equal(activeProfileId, profiles[2].id);
+        assert.deepEqual(scope, { profileId: profiles[1].id, transportScope: 'scope-b' });
+        return { discarded: false };
+      },
+    } as unknown as DesktopCredentialService;
+    let policy = rendererContentSecurityPolicy(false, [profiles[0].apiBaseUrl]);
+    registerIpcHandlers({
+      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+      ipcMain: {
+        handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+        removeHandler: (channel: string) => { handlers.delete(channel); },
+      } as unknown as IpcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      connectDiscovery,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession: {
+        clearStorageData: async (options: Parameters<Session['clearStorageData']>[0]) => {
+          if (options?.origin !== profiles[1].apiBaseUrl) return;
+          activeProfileId = profiles[2].id;
+          throw new Error('storage clear failed after selection changed');
+        },
+      } as unknown as Session,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+      onRendererActiveProfileChanged: origin => {
+        policy = rendererContentSecurityPolicy(false, origin ? [origin] : []);
+      },
+    });
+    const event = { senderFrame: { url: 'propr-renderer://app/index.html' } } as unknown as IpcMainInvokeEvent;
+
+    await assert.rejects(
+      Promise.resolve(handlers.get(IPC_CHANNELS.connectionActivate)!(event, 'T'.repeat(43))),
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
+    );
+
+    assert.equal(discardCalls, 1);
+    assert.equal(listCalls, 3);
+    assert.equal(policy.includes(profiles[0].apiBaseUrl), false);
+    assert.equal(policy.includes(profiles[1].apiBaseUrl), false);
+    assert.equal(policy.includes(profiles[2].apiBaseUrl), true);
+  });
+
   it('discards the exact activation when the post-commit profile read fails', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
     const ipcMain = {

@@ -199,11 +199,14 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       await reconcileRendererActiveProfile();
       return activated;
     } catch (error) {
-      const discarded = await options.credentials.discardActivation({
-        profileId: activated.profileId,
-        transportScope: activated.transportScope,
-      });
-      if (discarded.discarded) await reconcileRendererActiveProfile();
+      try {
+        await options.credentials.discardActivation({
+          profileId: activated.profileId,
+          transportScope: activated.transportScope,
+        });
+      } finally {
+        await reconcileRendererActiveProfile();
+      }
       throw error;
     }
   });
