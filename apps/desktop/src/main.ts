@@ -352,8 +352,10 @@ const deliverDeepLink = (value: string): void => {
   deepLinkDelivery.deliver(value);
 };
 
-const configurePackagedRendererProtocol = (): (() => void) => {
-  protocol.handle(PACKAGED_RENDERER_SCHEME, request => {
+const configurePackagedRendererProtocol = (
+  contentSecurityPolicy: () => string,
+): (() => void) => {
+  protocol.handle(PACKAGED_RENDERER_SCHEME, async request => {
     const requestUrl = new URL(request.url);
     if (requestUrl.hostname !== PACKAGED_RENDERER_HOST) {
       return new Response(null, { status: 404 });
@@ -370,7 +372,22 @@ const configurePackagedRendererProtocol = (): (() => void) => {
     if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
       return new Response(null, { status: 403 });
     }
-    return net.fetch(pathToFileURL(filePath).href);
+    const response = await net.fetch(pathToFileURL(filePath).href);
+    if (requestedPath !== 'renderer.html' || !response.ok) return response;
+
+    const packagedPolicy = rendererContentSecurityPolicy();
+    const html = await response.text();
+    if (!html.includes(packagedPolicy)) {
+      return new Response(null, { status: 500 });
+    }
+    const headers = new Headers(response.headers);
+    headers.delete('content-length');
+    headers.set('content-type', 'text/html; charset=UTF-8');
+    return new Response(html.replace(packagedPolicy, contentSecurityPolicy()), {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   });
   return () => { void protocol.unhandle(PACKAGED_RENDERER_SCHEME); };
 };
@@ -1137,7 +1154,6 @@ if (!hasSingleInstanceLock) {
       () => packagedSmokeEvidence?.write('desktop.log.write_failed'),
     );
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
-    const disposeRendererProtocol = configurePackagedRendererProtocol();
     const transportSmoke = packagedTransportSmoke();
     activePackagedTransportSmoke = transportSmoke;
     const connectSmoke = packagedConnectSmoke();
@@ -1146,6 +1162,23 @@ if (!hasSingleInstanceLock) {
       ? { phase: connectSmoke.journeyPhase, stage: 'JOURNEY_NOT_STARTED' }
       : null;
     if (transportSmoke && connectSmoke) throw new Error('Packaged desktop smoke modes are mutually exclusive');
+    const smokeProfileOrigin = packagedSmokeTest
+      ? normalizeApiBaseUrl(process.env.PROPR_DESKTOP_SMOKE_PROFILE_API_URL ?? '')
+      : null;
+    let rendererPolicyOrigins: readonly string[] = transportSmoke
+      ? [transportSmoke.firstOrigin, transportSmoke.secondOrigin]
+      : connectSmoke?.journeyEndpoint
+        ? [connectSmoke.journeyEndpoint]
+        : smokeProfileOrigin
+          ? [smokeProfileOrigin]
+          : [];
+    let rendererPolicyReloadGeneration = 0;
+    const rendererPolicyPinnedForSmoke = rendererPolicyOrigins.length > 0 && packagedSmokeTest;
+    const contentSecurityPolicy = (): string => rendererContentSecurityPolicy(
+      !app.isPackaged,
+      rendererPolicyOrigins,
+    );
+    const disposeRendererProtocol = configurePackagedRendererProtocol(contentSecurityPolicy);
     const journeyStages = connectSmoke?.journeyPhase
       ? createPackagedJourneyStageTracker(connectSmoke.journeyPhase)
       : null;
@@ -1213,7 +1246,7 @@ if (!hasSingleInstanceLock) {
         connectDiscovery.snapshotIdentityClaim(profileId, origin),
     });
     const sessionSecurity = configureDesktopSessionSecurity({
-      contentSecurityPolicy: () => rendererContentSecurityPolicy(!app.isPackaged),
+      contentSecurityPolicy,
       credentials,
       desktopSession: session.defaultSession,
       enableRendererNetworkBoundary: process.platform !== 'win32',
@@ -1247,6 +1280,22 @@ if (!hasSingleInstanceLock) {
       devServerUrl,
       packagedRendererUrl,
       openExternal: openAllowedExternalUrl,
+      onRendererEndpointActivated: (origin, renderer) => {
+        if (!app.isPackaged || rendererPolicyPinnedForSmoke) return;
+        const nextOrigins = origin.startsWith('http://') ? [origin] : [];
+        if (rendererPolicyOrigins.length === nextOrigins.length
+          && rendererPolicyOrigins.every((value, index) => value === nextOrigins[index])) return;
+        rendererPolicyOrigins = nextOrigins;
+        const reloadGeneration = ++rendererPolicyReloadGeneration;
+        // The next document receives the exact policy in both its meta tag and
+        // response header. Until then, the existing CSP and request boundary
+        // both fail closed for the newly activated endpoint.
+        setTimeout(() => {
+          if (rendererPolicyReloadGeneration === reloadGeneration && !renderer.isDestroyed()) {
+            renderer.reload();
+          }
+        }, 0);
+      },
       ...(journeyStages ? {
         reportAcceptanceJourneyStage: (stage: DesktopAcceptanceJourneyStage) => {
           journeyStages.record(stage);

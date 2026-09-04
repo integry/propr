@@ -103,6 +103,8 @@ describe('desktop IPC shutdown gate', () => {
         cleared.push(options);
       },
     } as unknown as Session;
+    const renderer = {};
+    let policyActivation: { origin: string; renderer: unknown } | null = null;
     registerIpcHandlers({
       app: {
         getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true,
@@ -117,9 +119,13 @@ describe('desktop IPC shutdown gate', () => {
       devServerUrl: undefined,
       packagedRendererUrl: 'propr-renderer://app/index.html',
       openExternal: async () => undefined,
+      onRendererEndpointActivated: (origin, activatedRenderer) => {
+        policyActivation = { origin, renderer: activatedRenderer };
+      },
     });
     const event = {
       senderFrame: { url: 'propr-renderer://app/index.html' },
+      sender: renderer,
     } as unknown as IpcMainInvokeEvent;
 
     const activated = await Promise.resolve(
@@ -130,6 +136,7 @@ describe('desktop IPC shutdown gate', () => {
       status: 'ready', profileId: 'profile-a', transportScope: 'scope-b', identityEpoch: 'B'.repeat(22),
     });
     assert.equal(listCalls, 2);
+    assert.deepEqual(policyActivation, { origin: after.apiBaseUrl, renderer });
     assert.deepEqual(cleared, [
       {
         origin: 'https://old.example.test',

@@ -1,4 +1,4 @@
-import type { App, IpcMain, IpcMainInvokeEvent, Session } from 'electron';
+import type { App, IpcMain, IpcMainInvokeEvent, Session, WebContents } from 'electron';
 import { clearDesktopInstanceCookies, logoutDesktopSession } from './desktop-session';
 import type { DesktopCredentialService } from './credential-service';
 import type { DesktopConnectDiscoveryService } from './connect-discovery';
@@ -30,6 +30,7 @@ interface RegisterIpcOptions {
   devServerUrl: string | undefined;
   packagedRendererUrl: string;
   openExternal(url: string): Promise<void>;
+  onRendererEndpointActivated?(origin: string, renderer: WebContents): void;
   /** @internal Deterministic admitted-work accounting for lifecycle proof. */
   observeInvocation?(phase: 'entry' | 'exit', channel: string): void;
   /** @internal Fixed, secret-free packaged Connect acceptance evidence. */
@@ -154,7 +155,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   handle(IPC_CHANNELS.authenticationPair, (_event, profile) => options.credentials.pair(profile));
   handle(IPC_CHANNELS.authenticationCancel, (_event, profileId) => options.credentials.cancelPairing(profileId));
   handle(IPC_CHANNELS.connectionProbe, (_event, profile) => options.credentials.probe(profile));
-  handle(IPC_CHANNELS.connectionActivate, async (_event, activationTicket) => {
+  handle(IPC_CHANNELS.connectionActivate, async (event, activationTicket) => {
     const before = await options.credentials.listProfiles();
     const activated = await options.credentials.activate(activationTicket);
     try {
@@ -165,6 +166,8 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
         .find(profile => profile.id === after.activeProfileId)?.apiBaseUrl;
       const origins = [previousOrigin, activatedOrigin].filter(origin => origin !== undefined);
       await clearDesktopInstanceCookies(options.desktopSession, origins);
+      if (!activatedOrigin) throw new Error('Desktop activation did not establish a renderer origin');
+      options.onRendererEndpointActivated?.(activatedOrigin, event.sender);
       return activated;
     } catch (error) {
       await options.credentials.discardActivation({
