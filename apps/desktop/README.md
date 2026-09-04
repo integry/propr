@@ -44,6 +44,13 @@ executable and fuse inspection without launching a window. Release CI launches b
 inspects macOS and Windows packages on their native runners, validates DMG/ZIP/DEB/RPM/MSI packages, and validates
 configured OS signatures.
 
+Darwin packaged Connect acceptance first inspects the normal unsigned package, then generates a one-run self-signed
+CA:false code-signing leaf in an isolated default keychain and signs only that smoke artifact. The signature uses an
+explicit certificate-bound designated requirement that is verified before the pair process and again after the
+reprobe process. Chromium creates and reopens its real Safe Storage key in the same disposable keychain; the harness
+does not pre-seed or widen access to that item. A signal-aware exit trap restores the runner's original keychain list
+and default, deletes the disposable keychain, and removes all temporary signing material.
+
 The first-release Windows MVP packages only the normal desktop application. Native self-update installation authority
 is deferred to issue #2000: no broker, bootstrap, launcher, service, or authority custom action is built, copied into
 `resources`, or installed by the MSI. Both Windows architectures remain mandatory release targets, and package/MSI

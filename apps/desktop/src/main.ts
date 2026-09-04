@@ -249,9 +249,12 @@ const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?:
   }
 };
 
-const reportPackagedConnectJourneyStage = (code: PackagedConnectJourneyStage): void => {
+const reportPackagedConnectJourneyStage = (
+  code: PackagedConnectJourneyStage,
+  evidence: { storageBackend: 'gnome_libsecret' | 'os-protected' } | undefined = undefined,
+): void => {
   if (packagedConnectJourneyDiagnosticState) packagedConnectJourneyDiagnosticState.stage = code;
-  log('info', PACKAGED_CONNECT_JOURNEY_STAGE_EVENT, { code });
+  log('info', PACKAGED_CONNECT_JOURNEY_STAGE_EVENT, { code, ...evidence });
 };
 
 const packagedConnectJourneyFailureReason = (error: unknown): PackagedConnectJourneyFailureReason => {
@@ -608,12 +611,14 @@ const runPackagedConnectJourneySmoke = async (
   phase: 'pair' | 'reprobe',
   stages: PackagedJourneyStageTracker,
 ): Promise<void> => {
-  reportPackagedConnectJourneyStage('JOURNEY_STORAGE_BACKEND');
   const security = profiles.security();
   const requiredStorageBackend = process.platform === 'linux' ? 'gnome_libsecret' : 'os-protected';
   if (!security.available || security.backend !== requiredStorageBackend) {
     throw new Error('Packaged Connect journey requires the production OS credential backend');
   }
+  reportPackagedConnectJourneyStage('JOURNEY_STORAGE_BACKEND', {
+    storageBackend: requiredStorageBackend,
+  });
   if (phase === 'pair') {
     const setMode = async (mode: 'success' | 'malformed' | 'oversized' | 'expiry' | 'cancel') => {
       const response = await session.defaultSession.fetch(`${endpoint}/__packaged/control/${mode}`, {

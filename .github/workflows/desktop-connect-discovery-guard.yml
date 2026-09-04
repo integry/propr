@@ -92,6 +92,9 @@ jobs:
       - name: Package the target-native desktop app
         run: npm run desktop:package
 
+      - name: Inspect the unsigned target-native desktop app
+        run: npm run desktop:smoke:inspect
+
       - name: Run packaged Linux main-to-renderer discovery
         if: matrix.platform == 'linux'
         shell: bash
@@ -112,47 +115,13 @@ jobs:
       - name: Run packaged Darwin main-to-renderer discovery
         if: matrix.platform == 'darwin'
         shell: bash
-        run: |
-          set -euo pipefail
-          keychain_root="$(mktemp -d)"
-          keychain_path="$keychain_root/propr-packaged-connect-smoke.keychain-db"
-          keychain_password="$(openssl rand -hex 32)"
-          original_keychains=()
-          while IFS= read -r keychain; do
-            keychain="${keychain#"${keychain%%[![:space:]]*}"}"
-            keychain="${keychain#\"}"
-            keychain="${keychain%\"}"
-            if [[ -n "$keychain" ]]; then
-              original_keychains+=("$keychain")
-            fi
-          done < <(security list-keychains -d user)
-          IFS= read -r original_default < <(security default-keychain -d user)
-          original_default="${original_default#"${original_default%%[![:space:]]*}"}"
-          original_default="${original_default#\"}"
-          original_default="${original_default%\"}"
-          cleanup_keychain() {
-            if (( ${#original_keychains[@]} > 0 )); then
-              security list-keychains -d user -s "${original_keychains[@]}" || true
-            else
-              security list-keychains -d user -s || true
-            fi
-            if [[ -n "$original_default" ]]; then
-              security default-keychain -d user -s "$original_default" || true
-            fi
-            security delete-keychain "$keychain_path" || true
-            rm -rf -- "$keychain_root"
-          }
-          trap cleanup_keychain EXIT
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security list-keychains -d user -s "$keychain_path"
-          security default-keychain -d user -s "$keychain_path"
-          unset keychain_password
-          safe_storage_secret="$(openssl rand -hex 32)"
-          security add-generic-password -a "ProPR Desktop" -s "ProPR Desktop Safe Storage" -w "$safe_storage_secret" -A "$keychain_path"
-          unset safe_storage_secret
-          npm run smoke:connect-package -w @propr/desktop
+        run: >-
+          node apps/desktop/scripts/run-bounded-darwin-command.mjs
+          --timeout-ms 480000
+          --termination-grace-ms 90000
+          --max-output-bytes 1048576
+          --forward-output true
+          -- bash apps/desktop/scripts/run-packaged-darwin-connect-smoke.sh '${{ matrix.arch }}'
 
       - name: Run packaged Windows main-to-renderer discovery as an ordinary user
         if: matrix.platform == 'win32'

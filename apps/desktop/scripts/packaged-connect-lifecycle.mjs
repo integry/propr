@@ -209,7 +209,14 @@ export const boundedChildDiagnostics = records => {
       ...(journeyStageCodes.has(candidateCode)
         && (record.event === CONNECT_DISCOVERY_MILESTONE_EVENT
           || record.event === CONNECT_JOURNEY_STAGE_EVENT)
-        ? { code: candidateCode }
+        ? {
+            code: candidateCode,
+            ...(candidateCode === 'JOURNEY_STORAGE_BACKEND'
+              && (record.storageBackend === 'gnome_libsecret'
+                || record.storageBackend === 'os-protected')
+              ? { storageBackend: record.storageBackend }
+              : {}),
+          }
         : diagnosticPhases.has(phase) && diagnosticPhaseCodes.has(candidateCode)
         ? {
             phase,
@@ -515,6 +522,7 @@ export const runPackagedConnectLifecycle = async ({
   platform,
   arch,
   authorityMechanism,
+  expectedStorageBackend,
   sensitiveNeedles = [],
   treeKillerPath,
   spawn = nodeSpawn,
@@ -528,6 +536,7 @@ export const runPackagedConnectLifecycle = async ({
   const first = deferred();
   let firstSettled = false;
   let invalidReadyObserved = false;
+  let reportedStorageBackend;
   let child;
   const settleFirst = value => {
     if (firstSettled) return;
@@ -539,8 +548,14 @@ export const runPackagedConnectLifecycle = async ({
     onSensitiveOutput: () => settleFirst({ category: 'output-rejected' }),
     onRecord: record => {
       if (records.length < RECORD_MAX_COUNT) records.push(record);
+      if (record.event === CONNECT_JOURNEY_STAGE_EVENT
+        && record.code === 'JOURNEY_STORAGE_BACKEND') {
+        reportedStorageBackend = record.storageBackend;
+      }
       if (record.event !== CONNECT_READY_EVENT) return;
-      const valid = isExactReadyRecord(record, { platform, arch, authorityMechanism });
+      const valid = isExactReadyRecord(record, { platform, arch, authorityMechanism })
+        && (expectedStorageBackend === undefined
+          || reportedStorageBackend === expectedStorageBackend);
       if (!valid) invalidReadyObserved = true;
       settleFirst(valid ? { category: 'ready' } : { category: 'ready-validation' });
     },
