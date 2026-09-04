@@ -114,7 +114,7 @@ describe('packaged Connect target-native credential setup', () => {
     const stable = darwinRunner.indexOf('node "$signature_verifier" stable');
     assert.ok(establish >= 0 && establish < smoke && smoke < stable);
     assert.match(packagedConnectSmoke, /const runPhase = async phase => await runPackagedConnectLifecycle\([\s\S]*?spawn: spawnLifecycleProcess/u);
-    assert.match(packagedConnectSmoke, /outcome = await runPhase\('pair'\);[\s\S]*?if \(outcome\.ok && journeyFixture\) \{\s*outcome = await runPhase\('reprobe'\);/u);
+    assert.match(packagedConnectSmoke, /outcome = await runPhase\('pair'\);\s*if \(outcome\.ok && journeyFixture\) \{\s*const pairingRequestCountAtPairTerminal = journeyFixture\.requests\.filter\(request =>[^{};]+\)\.length;\s*outcome = await runPhase\('reprobe'\);/u);
     assert.match(workflow, /target: darwin-x64\s+runner: macos-15-intel\s+platform: darwin\s+arch: x64/u);
     assert.match(workflow, /target: darwin-arm64\s+runner: macos-15\s+platform: darwin\s+arch: arm64/u);
   });
