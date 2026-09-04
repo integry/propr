@@ -86,10 +86,13 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinVerifier, /'find-certificate', '-a', '-Z', keychain/u);
     assert.match(darwinVerifier, /\['-d', '--verbose=4', application\]/u);
     assert.doesNotMatch(darwinVerifier, /'--test-requirement'|['"`]?-R(?:=|['"`])/u);
-    assert.match(darwinVerifier, /identifier "\$\{REQUIRED_IDENTIFIER\}" and certificate leaf = H"\$\{expectedSha1\}"/u);
     assert.match(darwinVerifier, /fingerprints\.length !== 1 \|\| fingerprints\[0\] !== expectedSha1/u);
     assert.match(darwinVerifier, /\^Signature size=\(\[1-9\]\\d\*\)\$/u);
-    assert.match(darwinVerifier, /requirementMatch\[1\]\.toUpperCase\(\) !== expected\.expectedSha1/u);
+    assert.match(darwinVerifier, /DESIGNATED_REQUIREMENT_PREFIX/u);
+    assert.match(darwinVerifier, /DESIGNATED_REQUIREMENT_GRAMMAR/u);
+    assert.match(darwinVerifier, /designatedLines\.length !== 1/u);
+    assert.match(darwinVerifier, /requirementMatch\[1\] !== REQUIRED_IDENTIFIER/u);
+    assert.match(darwinVerifier, /requirementMatch\[2\]\.toUpperCase\(\) !== expectedSha1/u);
     assert.doesNotMatch(darwinVerifier, /Authority=/u);
     assert.doesNotMatch(darwinVerifier, /extract-certificates/u);
     assert.doesNotMatch(darwinVerifier, /find-identity/u);
@@ -97,7 +100,7 @@ describe('packaged Connect target-native credential setup', () => {
     assert.match(darwinSigner, /filter\(filePath => !PACKAGED_CONNECT_NATIVE_ARTIFACTS\.test\(filePath\)\)/u);
     assert.match(darwinSigner, /'--verify', '--deep', '--strict', application/u);
     assert.match(darwinVerifier, /'--verify', '--deep', '--strict', application/u);
-    assert.match(darwinVerifier, /previousDesignatedRequirement !== designatedRequirement/u);
+    assert.match(darwinVerifier, /previousDesignatedRequirement !== normalizedRequirement/u);
     assert.match(desktopMain, /storageBackend: requiredStorageBackend/u);
     assert.match(packagedConnectSmoke, /expectedStorageBackend: 'os-protected'/u);
     assert.match(packagedConnectSmoke, /outcome = await runPhase\('pair'\);[\s\S]*?outcome = await runPhase\('reprobe'\)/u);
@@ -187,6 +190,9 @@ describe('packaged Connect target-native credential setup', () => {
       'SIGNATURE_DISPLAY_FAILURE',
       'EMBEDDED_REQUIREMENT_FAILURE',
       'STRICT_VERIFY_FAILURE',
+      'KEYCHAIN_EVIDENCE_FAILURE',
+      'SIGNATURE_METADATA_FAILURE',
+      'REQUIREMENT_EVIDENCE_FAILURE',
       'EVIDENCE_ASSERTION_FAILURE',
     ]) {
       assert.match(darwinVerifier, new RegExp(`['"]${diagnostic}['"]`, 'u'));

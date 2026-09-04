@@ -11,6 +11,8 @@ import {
 const REQUIRED_IDENTIFIER = 'dev.propr.desktop';
 const SHA1_PATTERN = /^[A-F0-9]{40}$/u;
 const CERTIFICATE_LINE = /^\s*SHA-1 hash:\s*([A-Fa-f0-9]{40})\s*$/gmu;
+const DESIGNATED_REQUIREMENT_PREFIX = /^designated\s*=>/iu;
+const DESIGNATED_REQUIREMENT_GRAMMAR = /^designated\s*=>\s*identifier\s+"([^"]+)"\s+and\s+certificate\s+leaf\s*=\s*H\s*"([A-F0-9]{40})"$/iu;
 const VERIFICATION_TIMEOUT_MS = 20_000;
 const VERIFICATION_TERMINATION_GRACE_MS = 1_000;
 const VERIFICATION_MAX_OUTPUT_BYTES = 256 * 1024;
@@ -20,6 +22,9 @@ export const DARWIN_VERIFICATION_DIAGNOSTICS = Object.freeze({
   signatureDisplayFailure: 'SIGNATURE_DISPLAY_FAILURE',
   embeddedRequirementFailure: 'EMBEDDED_REQUIREMENT_FAILURE',
   strictVerifyFailure: 'STRICT_VERIFY_FAILURE',
+  keychainEvidenceFailure: 'KEYCHAIN_EVIDENCE_FAILURE',
+  signatureMetadataFailure: 'SIGNATURE_METADATA_FAILURE',
+  requirementEvidenceFailure: 'REQUIREMENT_EVIDENCE_FAILURE',
   evidenceAssertionFailure: 'EVIDENCE_ASSERTION_FAILURE',
 });
 
@@ -63,33 +68,23 @@ const expectedRequirementsFor = expectedCertificateSha1 => {
 };
 
 const assertExactKeychainCertificate = (certificateDetails, expectedCertificateSha1) => {
+  const { expectedSha1 } = expectedRequirementsFor(expectedCertificateSha1);
   try {
-    const { expectedSha1 } = expectedRequirementsFor(expectedCertificateSha1);
     const fingerprints = [...certificateDetails.matchAll(CERTIFICATE_LINE)]
       .map(match => match[1].toUpperCase());
     if (fingerprints.length !== 1 || fingerprints[0] !== expectedSha1) {
       throw new Error('invalid-keychain-certificate-evidence');
     }
   } catch (cause) {
-    if (cause instanceof DarwinSigningDiagnosticError
-      && cause.diagnostic === DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure) {
-      throw cause;
-    }
     throw verificationFailure(
-      DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure,
+      DARWIN_VERIFICATION_DIAGNOSTICS.keychainEvidenceFailure,
       cause,
     );
   }
 };
 
-export const assertDarwinSigningEvidence = ({
-  expectedCertificateSha1,
-  signatureDetails,
-  designatedRequirement,
-  previousDesignatedRequirement,
-}) => {
+const assertSignatureMetadata = signatureDetails => {
   try {
-    const expected = expectedRequirementsFor(expectedCertificateSha1);
     const details = normalizeLines(signatureDetails).map(line => line.trim());
     const identifiers = details.filter(line => line.startsWith('Identifier='));
     const signatures = details.filter(line => line.startsWith('Signature'));
@@ -102,28 +97,59 @@ export const assertDarwinSigningEvidence = ({
       || identifiers[0] !== `Identifier=${REQUIRED_IDENTIFIER}`) {
       throw new Error('invalid-signature-display-evidence');
     }
-
-    const requirementMatch = designatedRequirement.match(
-      /^designated => identifier "dev\.propr\.desktop" and certificate leaf = H"([A-Fa-f0-9]{40})"\n$/u,
-    );
-    if (!requirementMatch || requirementMatch[1].toUpperCase() !== expected.expectedSha1) {
-      throw new Error('invalid-embedded-requirement-evidence');
-    }
-    if (previousDesignatedRequirement !== undefined
-      && previousDesignatedRequirement !== designatedRequirement) {
-      throw new Error('unstable-embedded-requirement-evidence');
-    }
-    return designatedRequirement;
   } catch (cause) {
-    if (cause instanceof DarwinSigningDiagnosticError
-      && cause.diagnostic === DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure) {
-      throw cause;
-    }
     throw verificationFailure(
-      DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure,
+      DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure,
       cause,
     );
   }
+};
+
+const assertDesignatedRequirement = (
+  designatedRequirement,
+  expectedSha1,
+  previousDesignatedRequirement,
+) => {
+  try {
+    const designatedLines = normalizeLines(designatedRequirement)
+      .map(line => line.trim())
+      .filter(line => DESIGNATED_REQUIREMENT_PREFIX.test(line));
+    if (designatedLines.length !== 1) {
+      throw new Error('ambiguous-embedded-requirement-evidence');
+    }
+    const requirementMatch = designatedLines[0].match(DESIGNATED_REQUIREMENT_GRAMMAR);
+    if (!requirementMatch
+      || requirementMatch[1] !== REQUIRED_IDENTIFIER
+      || requirementMatch[2].toUpperCase() !== expectedSha1) {
+      throw new Error('invalid-embedded-requirement-evidence');
+    }
+    const normalizedRequirement = `${designatedLines[0]}\n`;
+    if (previousDesignatedRequirement !== undefined
+      && previousDesignatedRequirement !== normalizedRequirement) {
+      throw new Error('unstable-embedded-requirement-evidence');
+    }
+    return normalizedRequirement;
+  } catch (cause) {
+    throw verificationFailure(
+      DARWIN_VERIFICATION_DIAGNOSTICS.requirementEvidenceFailure,
+      cause,
+    );
+  }
+};
+
+export const assertDarwinSigningEvidence = ({
+  expectedCertificateSha1,
+  signatureDetails,
+  designatedRequirement,
+  previousDesignatedRequirement,
+}) => {
+  const expected = expectedRequirementsFor(expectedCertificateSha1);
+  assertSignatureMetadata(signatureDetails);
+  return assertDesignatedRequirement(
+    designatedRequirement,
+    expected.expectedSha1,
+    previousDesignatedRequirement,
+  );
 };
 
 export const inspectDarwinSigningEvidence = async ({
@@ -163,8 +189,8 @@ export const inspectDarwinSigningEvidence = async ({
   );
   try {
     return {
-      signatureDetails: `${signatureResult.stdout}${signatureResult.stderr}`,
-      designatedRequirement: `${requirementResult.stdout}${requirementResult.stderr}`,
+      signatureDetails: `${signatureResult.stdout}\n${signatureResult.stderr}`,
+      designatedRequirement: `${requirementResult.stdout}\n${requirementResult.stderr}`,
     };
   } catch (cause) {
     throw verificationFailure(

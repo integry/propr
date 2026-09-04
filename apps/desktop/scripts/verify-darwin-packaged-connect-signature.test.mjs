@@ -65,8 +65,11 @@ const createVerifierSimulator = (overrides = {}) => {
       return {
         stdout: '',
         stderr: [
+          'Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop',
           `Identifier=${fixture.identifier}`,
+          'Format=app bundle with Mach-O universal (x86_64 arm64)',
           fixture.signatureLine,
+          'Info.plist entries=25',
         ].filter(value => value !== null).join('\n'),
       };
     }
@@ -147,7 +150,7 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     }
   });
 
-  test('accepts exactly the generated keychain fingerprint and byte-identical requirements', async () => {
+  test('accepts exactly the generated keychain fingerprint and stable normalized requirements', async () => {
     await withPrivateProofPath(async proofPath => {
       const displayedRequirement = `${requirementFor(fingerprint.toLowerCase())}\n`;
       await verifyEstablish(proofPath, { designatedRequirement: displayedRequirement });
@@ -174,7 +177,7 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
       await withPrivateProofPath(async proofPath => {
         await assert.rejects(
           verifyEstablish(proofPath, { certificateFingerprints }),
-          isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure),
+          isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.keychainEvidenceFailure),
         );
       });
     }
@@ -185,21 +188,27 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
       await withPrivateProofPath(async proofPath => {
         await assert.rejects(
           verifyEstablish(proofPath, { signatureLine }),
-          isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure),
+          isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure),
         );
       });
     }
   });
 
-  test('rejects the wrong identifier and wrong embedded leaf', async () => {
-    for (const fixture of [
-      { identifier: 'dev.other.desktop' },
-      { designatedRequirement: `${requirementFor(otherFingerprint)}\n` },
+  test('rejects the wrong signature identifier and embedded requirement leaf distinctly', async () => {
+    for (const [fixture, diagnostic] of [
+      [
+        { identifier: 'dev.other.desktop' },
+        DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure,
+      ],
+      [
+        { designatedRequirement: `${requirementFor(otherFingerprint)}\n` },
+        DARWIN_VERIFICATION_DIAGNOSTICS.requirementEvidenceFailure,
+      ],
     ]) {
       await withPrivateProofPath(async proofPath => {
         await assert.rejects(
           verifyEstablish(proofPath, fixture),
-          isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure),
+          isDiagnostic(diagnostic),
         );
       });
     }
@@ -217,7 +226,7 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
         runCommand: createVerifierSimulator({
           designatedRequirement: `${requirementFor(fingerprint.toLowerCase())}\n`,
         }).runCommand,
-      }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure));
+      }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.requirementEvidenceFailure));
     });
   });
 
@@ -263,7 +272,34 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
     }), isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.signatureDisplayFailure));
   });
 
-  test('rejects missing, ambiguous, or non-exact display and requirement evidence', () => {
+  test('accepts surrounding requirement metadata and CRLF, spacing, and keyword case variants', async () => {
+    await withPrivateProofPath(async proofPath => {
+      const selectedLine = [
+        'DeSiGnAtEd   =>  IDENTIFIER   "dev.propr.desktop"  AnD',
+        `CERTIFICATE  LEAF = h "${fingerprint.toLowerCase()}"`,
+      ].join(' ');
+      const requirementOutput = [
+        'Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop',
+        'warning: using architecture arm64',
+        `  ${selectedLine}  `,
+        'Format=app bundle with Mach-O thin (arm64)',
+      ].join('\r\n');
+      await verifyEstablish(proofPath, { designatedRequirement: requirementOutput });
+      assert.equal(await readFile(proofPath, 'utf8'), `${selectedLine}\n`);
+      await verifyDarwinPackagedConnectSignature({
+        mode: 'stable',
+        application,
+        expectedCertificateSha1: fingerprint,
+        proofPath,
+        keychain,
+        runCommand: createVerifierSimulator({
+          designatedRequirement: requirementOutput,
+        }).runCommand,
+      });
+    });
+  });
+
+  test('rejects missing, ambiguous, or non-exact signature metadata distinctly', () => {
     for (const evidence of [
       validEvidence({ signatureDetails: `Identifier=${REQUIRED_IDENTIFIER}` }),
       validEvidence({ signatureDetails: 'Signature size=1024' }),
@@ -271,14 +307,84 @@ describe('Darwin packaged Connect acceptance signature proof', () => {
         signatureDetails: `Identifier=${REQUIRED_IDENTIFIER}\nIdentifier=${REQUIRED_IDENTIFIER}\nSignature size=1024`,
       }),
       validEvidence({ signatureDetails: `Identifier=${REQUIRED_IDENTIFIER}\nSignature size=01` }),
-      validEvidence({ designatedRequirement: '' }),
-      validEvidence({ designatedRequirement: `${requirementFor(fingerprint)}\r\n` }),
-      validEvidence({ designatedRequirement: `${requirementFor(fingerprint)}\nextra\n` }),
     ]) {
       assert.throws(
         () => assertDarwinSigningEvidence(evidence),
-        isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure),
+        isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.signatureMetadataFailure),
       );
     }
+  });
+
+  test('rejects duplicate designated lines, wrong identifiers and leaves, and extra clauses', () => {
+    for (const designatedRequirement of [
+      '',
+      [requirementFor(fingerprint), requirementFor(fingerprint)].join('\n'),
+      `${requirementFor(fingerprint)}\n${requirementFor(otherFingerprint)}\n`,
+      `${requirementFor(fingerprint).replace(REQUIRED_IDENTIFIER, 'dev.other.desktop')}\n`,
+      `${requirementFor(fingerprint).replace(REQUIRED_IDENTIFIER, 'DEV.PROPR.DESKTOP')}\n`,
+      `${requirementFor(otherFingerprint)}\n`,
+      `${requirementFor(fingerprint)} or anchor apple\n`,
+      `${requirementFor(fingerprint)} and certificate 1 trusted\n`,
+      `designated => (${requirementExpressionFor(fingerprint)})\n`,
+    ]) {
+      assert.throws(
+        () => assertDarwinSigningEvidence(validEvidence({ designatedRequirement })),
+        isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.requirementEvidenceFailure),
+      );
+    }
+  });
+
+  test('ignores unrelated surrounding lines but requires exactly one designated line', () => {
+    for (const designatedRequirement of [
+      [
+        'Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop',
+        'Format=app bundle with Mach-O universal (x86_64 arm64)',
+      ].join('\n'),
+      [
+        'Executable=/private/tmp/propr-desktop.app/Contents/MacOS/propr-desktop',
+        requirementFor(fingerprint),
+        'Format=app bundle with Mach-O thin (x86_64)',
+        requirementFor(fingerprint),
+      ].join('\n'),
+    ]) {
+      assert.throws(
+        () => assertDarwinSigningEvidence(validEvidence({ designatedRequirement })),
+        isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.requirementEvidenceFailure),
+      );
+    }
+  });
+
+  test('normalizes only surrounding line whitespace when comparing stable requirements', () => {
+    const initial = validEvidence({
+      designatedRequirement: `metadata\r\n  ${requirementFor(fingerprint)}  \r\nmore metadata\r\n`,
+    });
+    assert.equal(
+      assertDarwinSigningEvidence(initial),
+      `${requirementFor(fingerprint)}\n`,
+    );
+    assert.equal(
+      assertDarwinSigningEvidence({
+        ...initial,
+        previousDesignatedRequirement: `${requirementFor(fingerprint)}\n`,
+      }),
+      `${requirementFor(fingerprint)}\n`,
+    );
+    assert.throws(
+      () => assertDarwinSigningEvidence({
+        ...initial,
+        designatedRequirement: `${requirementFor(fingerprint).replace(' and ', '  and ')}\n`,
+        previousDesignatedRequirement: `${requirementFor(fingerprint)}\n`,
+      }),
+      isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.requirementEvidenceFailure),
+    );
+  });
+
+  test('retains EVIDENCE_ASSERTION_FAILURE for invalid verifier inputs', () => {
+    assert.throws(
+      () => assertDarwinSigningEvidence(validEvidence({
+        expectedCertificateSha1: 'not-a-sha1',
+      })),
+      isDiagnostic(DARWIN_VERIFICATION_DIAGNOSTICS.evidenceAssertionFailure),
+    );
   });
 });
