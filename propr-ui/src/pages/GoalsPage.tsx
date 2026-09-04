@@ -22,6 +22,7 @@ import { formatAgentLabel } from '../utils/agentStatus';
 import { getModelDisplayName } from '../utils/modelDisplay';
 
 const buttonClass = 'inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50';
+const checkpointIntervalOptions = [5, 10, 15, 30, 60, 120];
 const duration = (milliseconds: number) => {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -55,7 +56,7 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
   const [launchStrategy, setLaunchStrategy] = useState<GoalLaunchStrategy>('direct');
   const [parallelism, setParallelism] = useState('');
   const [ultrafix, setUltrafix] = useState(false);
-  const [checkpointInterval, setCheckpointInterval] = useState('15');
+  const [checkpointInterval, setCheckpointInterval] = useState(15);
   const [submitting, setSubmitting] = useState(false);
   const [rechecking, setRechecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +109,7 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
       const result = await createGoal({
         repository, agentId, model, objective, launchStrategy,
         ...(parallelism ? { maxParallelTasks: Number(parallelism) } : {}),
-        ...(launchStrategy === 'direct' ? { checkpointIntervalMinutes: Number(checkpointInterval) } : {}),
+        ...(launchStrategy === 'direct' ? { checkpointIntervalMinutes: checkpointInterval } : {}),
         ultrafix,
       });
       onCreated(result.goal);
@@ -152,10 +153,28 @@ function CreateGoalForm({ onCreated }: { onCreated: (goal: Goal) => void }) {
           <label className="flex cursor-pointer gap-3 rounded-md border border-slate-200 p-3 text-sm text-slate-700"><input aria-label="Agent orchestrates through ProPR" type="radio" name="launch-strategy" value="orchestrate" checked={launchStrategy === 'orchestrate'} onChange={() => setLaunchStrategy('orchestrate')} /><span><strong className="block text-slate-900">Agent orchestrates through ProPR</strong>The agent owns decomposition, creates issues, and starts and monitors their implementation through ProPR.</span></label>
         </div>
       </fieldset>
-      {launchStrategy === 'direct' && <label className="mt-4 block text-sm font-medium text-slate-700">Checkpoint frequency (minutes)
-        <input aria-label="Checkpoint frequency" type="number" min="5" max="120" step="1" value={checkpointInterval} onChange={event => setCheckpointInterval(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 p-2 md:w-48" required />
-        <span className="mt-1 block text-xs font-normal text-slate-500">Automatic commits run at safe provider-turn boundaries, from 5 to 120 minutes.</span>
-      </label>}
+      {launchStrategy === 'direct' && <div className="mt-4 max-w-xl">
+        <div className="flex items-center justify-between gap-3">
+          <label htmlFor="checkpoint-frequency" className="text-sm font-medium text-slate-700">Checkpoint frequency</label>
+          <output htmlFor="checkpoint-frequency" className="rounded-full bg-primary-500/10 px-2.5 py-1 text-xs font-semibold text-primary-700">{checkpointInterval} minutes</output>
+        </div>
+        <input
+          id="checkpoint-frequency"
+          aria-label="Checkpoint frequency"
+          aria-valuetext={`${checkpointInterval} minutes`}
+          type="range"
+          min="0"
+          max={checkpointIntervalOptions.length - 1}
+          step="1"
+          value={checkpointIntervalOptions.indexOf(checkpointInterval)}
+          onChange={event => setCheckpointInterval(checkpointIntervalOptions[Number(event.target.value)])}
+          className="mt-3 h-2 w-full cursor-pointer accent-primary-600"
+        />
+        <div aria-label="Checkpoint frequency options" className="mt-1 flex justify-between text-xs text-slate-500">
+          {checkpointIntervalOptions.map(minutes => <span key={minutes}>{minutes}</span>)}
+        </div>
+        <p className="mt-1 text-xs text-slate-500">Automatic commits run at safe provider-turn boundaries.</p>
+      </div>}
       <label className="mt-4 block text-sm font-medium text-slate-700">Objective
         <textarea aria-label="Objective" value={objective} onChange={event => setObjective(event.target.value)} rows={5} className="mt-1 w-full rounded-md border border-slate-300 p-2" required />
       </label>

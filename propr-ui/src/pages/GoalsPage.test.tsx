@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import GoalsPage from './GoalsPage';
@@ -79,7 +79,14 @@ describe('GoalsPage', () => {
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /><Route path="/goals/:goalId" element={<div>Goal detail</div>} /></Routes></MemoryRouter>);
     await screen.findByRole('option', { name: 'Codex' });
     fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Ship the dashboard' } });
-    fireEvent.change(screen.getByLabelText('Checkpoint frequency'), { target: { value: '30' } });
+    const checkpointSlider = screen.getByRole('slider', { name: 'Checkpoint frequency' });
+    expect(checkpointSlider).toHaveAttribute('aria-valuetext', '15 minutes');
+    const checkpointOptions = screen.getByLabelText('Checkpoint frequency options');
+    for (const minutes of [5, 10, 15, 30, 60, 120]) {
+      expect(within(checkpointOptions).getByText(String(minutes))).toBeInTheDocument();
+    }
+    fireEvent.change(checkpointSlider, { target: { value: '3' } });
+    expect(checkpointSlider).toHaveAttribute('aria-valuetext', '30 minutes');
     fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
     await waitFor(() => expect(goalsApi.createGoal).toHaveBeenCalledWith(expect.objectContaining({
       launchStrategy: 'direct', checkpointIntervalMinutes: 30,
