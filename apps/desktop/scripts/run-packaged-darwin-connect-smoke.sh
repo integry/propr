@@ -234,7 +234,7 @@ sign_application() {
 
 verify_initial_signature() {
   run_bounded_forward "$COMMAND_TIMEOUT_MS" node "$signature_verifier" establish \
-    "$application" "$keychain_path" "$identity_sha1" "$requirement_proof"
+    "$application" "$identity_sha1" "$requirement_proof"
 }
 
 run_pair_and_reprobe() {
@@ -243,7 +243,7 @@ run_pair_and_reprobe() {
 
 verify_stable_signature() {
   run_bounded_forward "$COMMAND_TIMEOUT_MS" node "$signature_verifier" stable \
-    "$application" "$keychain_path" "$identity_sha1" "$requirement_proof"
+    "$application" "$identity_sha1" "$requirement_proof"
 }
 
 run_stage KEY_CERTIFICATE_GENERATION generate_key_and_certificates
