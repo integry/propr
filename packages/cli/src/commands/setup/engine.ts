@@ -44,7 +44,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       const clientOptions = { baseUrl: localhostServiceUrl(cfg.apiPort) };
       const client = configManager
         ? createApiClientWithConfig(configManager, clientOptions)
-        : createApiClient(clientOptions);
+        : await createApiClient(clientOptions);
       const { getVisualPreviewAuthStatus, saveVisualPreviewUploadToken } = await import("../../api/visualPreviewAuth.js");
       const current = await getVisualPreviewAuthStatus(client);
       if (current.status === "active") {
@@ -92,8 +92,8 @@ function createSetupActions(
       try {
         if (actions.detectGithubAuthMode(params.rootDir).mode === "demo") return health;
         reportVisualPreviewCredential(await actions.configureVisualPreviewCredential(params.rootDir), reporter);
-      } catch (error) {
-        const line = `visual previews: could not import the gh CLI token (${(error as Error).message}); add a PAT in Settings`;
+      } catch {
+        const line = "visual previews: could not import the gh CLI token; add a PAT in Settings";
         reporter.onLog?.(line);
         reporter.onProgress?.({ type: "log", line });
       }
